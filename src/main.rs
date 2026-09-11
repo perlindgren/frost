@@ -56,10 +56,9 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     let half_width = u.line_width * 0.5;
     let aa = 0.75 / u.size.x;
     let alpha = 1.0 - smoothstep(half_width - aa, half_width + aa, dist);
-    // Fall back to the window background where the line is not present.
-    let bg = vec3<f32>(0.07, 0.09, 0.14);
-    let color = mix(bg, vec3<f32>(1.0), alpha);
-    return vec4<f32>(color, 1.0);
+    // Emit the line's color and coverage; the existing attachment (cleared
+    // background) is composited underneath via alpha blending.
+    return vec4<f32>(vec3<f32>(1.0), alpha);
 }
 "#;
 
@@ -214,7 +213,7 @@ impl Frost {
                 compilation_options: PipelineCompilationOptions::default(),
                 targets: &[Some(ColorTargetState {
                     format,
-                    blend: None,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: ColorWrites::ALL,
                 })],
             }),
