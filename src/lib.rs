@@ -161,6 +161,7 @@ pub fn run<P: Process>(process: P) -> Result<(), Box<dyn Error>> {
         line_pipeline: None,
         circle_pipeline: None,
         rect_pipeline: None,
+        format: None,
         process,
     };
     event_loop.run_app(&mut app)?;
@@ -292,6 +293,9 @@ struct Frost<P: Process> {
     line_pipeline: Option<RenderPipeline>,
     circle_pipeline: Option<RenderPipeline>,
     rect_pipeline: Option<RenderPipeline>,
+    /// The surface format the current pipelines were built for; they are only
+    /// rebuilt when this changes.
+    format: Option<TextureFormat>,
     process: P,
 }
 
@@ -335,6 +339,7 @@ impl<P: Process> ApplicationHandler for Frost<P> {
         );
 
         self.set_up_pipelines(config.format);
+        self.format = Some(config.format);
         self.surface = Some(surface);
         // Commit the first frame immediately so the compositor maps the window.
         self.render();
@@ -398,7 +403,12 @@ impl<P: Process> Frost<P> {
             config.width,
             config.height
         );
-        self.set_up_pipelines(config.format);
+        // Pipelines depend only on the surface format, not the size, so they
+        // are rebuilt only if the format actually changed.
+        if self.format != Some(config.format) {
+            self.set_up_pipelines(config.format);
+            self.format = Some(config.format);
+        }
     }
 
     /// Creates the shared line and circle pipelines. Uniform buffers and bind
