@@ -1,11 +1,12 @@
 //! frost — a minimal winit + wgpu immediate-mode drawing library.
 //!
-//! Provide a [`Process`]: a function called once per frame with a [`Canvas`].
+//! Provide a [`Process`]: a function called once per frame with a [`Canvas`]
+//! and the delta time in seconds since the previous frame.
 //! Draw with window-centered pixel coordinates: the origin is the window
 //! center, y points down, so the top-left corner is `(-width/2, height/2)`.
 //!
 //! ```no_run
-//! frost::run(|ctx: &mut frost::Canvas| {
+//! frost::run(|ctx: &mut frost::Canvas, _dt: f32| {
 //!     let (w, h) = ctx.size();
 //!     ctx.line(-w / 2.0, h / 2.0, w / 2.0, -h / 2.0);
 //!     ctx.circle(0.0, 0.0, h / 4.0);
@@ -19,6 +20,7 @@ use std::error::Error;
 use std::future::Future;
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
+use std::time::Instant;
 
 use wgpu::{
     Adapter, BindGroup, BindGroupDescriptor, BindGroupEntry, BindingResource, Buffer,
@@ -120,17 +122,56 @@ enum Draw {
 }
 
 /// Called once per frame; draw into `canvas`.
+///
+/// `dt` is the time in seconds since the previous frame (`0.0` on the first
+/// frame, clamped to at most `1.0`s to absorb stalls). Use it to advance
+/// animation state such as a [`Tween`].
 pub trait Process {
-    fn process(&mut self, canvas: &mut Canvas);
+    fn process(&mut self, canvas: &mut Canvas, dt: f32);
 }
 
-/// Any closure `FnMut(&mut Canvas)` is a [`Process`].
+/// Any closure `FnMut(&mut Canvas, f32)` is a [`Process`].
 impl<F> Process for F
 where
-    F: FnMut(&mut Canvas),
+    F: FnMut(&mut Canvas, f32),
 {
-    fn process(&mut self, canvas: &mut Canvas) {
-        self(canvas);
+    fn process(&mut self, canvas: &mut Canvas, dt: f32) {
+        self(canvas, dt);
+    }
+}
+
+/// A linear ping-pong progress value driven by a time step.
+///
+/// Each [`Tween::tick`] advances from `0.0` toward `1.0` over `duration`
+/// seconds and then back toward `0.0`, in an endless loop. Multiplied by a
+/// target distance it yields a constant-rate position that eases linearly
+/// between two endpoints.
+#[derive(Clone, Copy)]
+pub struct Tween {
+    /// Position within the current round trip, in `0.0..2.0`.
+    phase: f32,
+    /// Seconds for one leg (the `0.0 -> 1.0` travel).
+    duration: f32,
+}
+
+impl Tween {
+    /// Creates a tween whose one-way travel takes `duration` seconds.
+    pub fn new(duration: f32) -> Self {
+        Self {
+            phase: 0.0,
+            duration: duration.max(1e-6),
+        }
+    }
+
+    /// Advances by `dt` seconds and returns the current progress in `0.0..1.0`
+    /// (ping-pong: `0.0 -> 1.0 -> 0.0 -> 1.0 -> ...`).
+    pub fn tick(&mut self, dt: f32) -> f32 {
+        self.phase = (self.phase + dt / self.duration) % 2.0;
+        if self.phase < 1.0 {
+            self.phase
+        } else {
+            2.0 - self.phase
+        }
     }
 }
 
@@ -155,6 +196,7 @@ pub fn run<P: Process>(process: P) -> Result<(), Box<dyn Error>> {
         device,
         queue,
         window_id: None,
+        window: None,
         logical_size: (0, 0),
         scale: 1.0,
         surface: None,
@@ -162,6 +204,7 @@ pub fn run<P: Process>(process: P) -> Result<(), Box<dyn Error>> {
         circle_pipeline: None,
         rect_pipeline: None,
         format: None,
+        last_time: None,
         process,
     };
     event_loop.run_app(&mut app)?;
@@ -287,6 +330,9 @@ struct Frost<P: Process> {
     queue: Queue,
     #[allow(dead_code)]
     window_id: Option<WindowId>,
+    /// The winit window (shared), kept so we can call `request_redraw` for
+    /// continuous per-frame rendering.
+    window: Option<Arc<Window>>,
     logical_size: (u32, u32),
     scale: f32,
     surface: Option<Surface<'static>>,
@@ -296,6 +342,8 @@ struct Frost<P: Process> {
     /// The surface format the current pipelines were built for; they are only
     /// rebuilt when this changes.
     format: Option<TextureFormat>,
+    /// Timestamp of the previous rendered frame, used to compute `dt`.
+    last_time: Option<Instant>,
     process: P,
 }
 
@@ -305,9 +353,11 @@ impl<P: Process> ApplicationHandler for Frost<P> {
             return;
         }
 
-        let window = event_loop
-            .create_window(Window::default_attributes().with_title("frost"))
-            .expect("failed to create window");
+        let window = Arc::new(
+            event_loop
+                .create_window(Window::default_attributes().with_title("frost"))
+                .expect("failed to create window"),
+        );
         // winit (Wayland) only delivers RedrawRequested after a compositor
         // frame callback, so explicitly request the first frame; otherwise
         // the window is never mapped and nothing is ever drawn.
@@ -322,10 +372,15 @@ impl<P: Process> ApplicationHandler for Frost<P> {
             self.scale
         );
 
+        // An `Arc<Window>` is passed by value to `create_surface`, so the
+        // resulting `Surface` is 'static without borrowing `self.window`. We
+        // keep a clone of the `Arc` for per-frame `request_redraw`.
         let surface = self
             .instance
-            .create_surface(window)
+            .create_surface(window.clone())
             .expect("failed to create wgpu surface");
+        // Keep the window for per-frame `request_redraw` (continuous frames).
+        self.window = Some(window);
         let pixel_size = self.pixel_size();
         let config = surface
             .get_default_config(&self.adapter, pixel_size.0, pixel_size.1)
@@ -373,7 +428,14 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                 self.scale = scale_factor as f32;
                 self.resize();
             }
-            WindowEvent::RedrawRequested => self.render(),
+            WindowEvent::RedrawRequested => {
+                self.render();
+                // winit only delivers RedrawRequested after we ask for it, so
+                // request the next frame to keep animation running continuously.
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
             _ => {}
         }
     }
@@ -534,7 +596,13 @@ impl<P: Process> Frost<P> {
 
         // Ask the user what to draw this frame, in their coordinate system.
         let mut canvas = Canvas::new(self.pixel_size());
-        self.process.process(&mut canvas);
+        let now = Instant::now();
+        let dt = self
+            .last_time
+            .map(|last| now.duration_since(last).as_secs_f32().min(1.0))
+            .unwrap_or(0.0);
+        self.last_time = Some(now);
+        self.process.process(&mut canvas, dt);
 
         let (Some(line_pipeline), Some(circle_pipeline), Some(rect_pipeline)) = (
             self.line_pipeline.as_ref(),

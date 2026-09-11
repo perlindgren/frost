@@ -1,6 +1,6 @@
 fn main() {
     env_logger::init();
-    if let Err(err) = frost::run(|ctx: &mut frost::Canvas| {
+    if let Err(err) = frost::run(|ctx: &mut frost::Canvas, _dt: f32| {
         let (w, h) = ctx.size();
         // Diagonal from the top-left corner to the bottom-right corner.
         ctx.line(-w / 2.0, h / 2.0, w / 2.0, -h / 2.0);
