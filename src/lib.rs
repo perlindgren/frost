@@ -71,8 +71,8 @@ impl Canvas {
     /// Draws a line from `(x0, y0)` to `(x1, y1)`, default width 2 px.
     pub fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
         self.draws.push(Draw::Line {
-            a: self.to_pixels(x0, y0),
-            b: self.to_pixels(x1, y1),
+            a: self.user_to_pixels(x0, y0),
+            b: self.user_to_pixels(x1, y1),
             width: DEFAULT_LINE_WIDTH,
         });
     }
@@ -80,14 +80,23 @@ impl Canvas {
     /// Draws a filled circle centered at `(cx, cy)` with `radius` in pixels.
     pub fn circle(&mut self, cx: f32, cy: f32, radius: f32) {
         self.draws.push(Draw::Circle {
-            center: self.to_pixels(cx, cy),
+            center: self.user_to_pixels(cx, cy),
             radius: radius.max(0.0),
         });
     }
 
-    /// Window-centered user coordinates → pixel coordinates (top-left origin,
-    /// y down), for the shaders.
-    fn to_pixels(&self, x: f32, y: f32) -> [f32; 2] {
+    /// Draws a filled rectangle centered at `(cx, cy)` with `dx` and `dy`
+    /// extents (half-width and half-height) in pixels.
+    pub fn rectangle(&mut self, cx: f32, cy: f32, dx: f32, dy: f32) {
+        self.draws.push(Draw::Rectangle {
+            center: self.user_to_pixels(cx, cy),
+            extent: [dx.max(0.0), dy.max(0.0)],
+        });
+    }
+
+    /// Converts user coordinates (window center origin, y down) to the pixel
+    /// coordinates the shaders use (top-left origin, y down).
+    fn user_to_pixels(&self, x: f32, y: f32) -> [f32; 2] {
         [x + self.size.0 / 2.0, self.size.1 / 2.0 - y]
     }
 }
@@ -103,6 +112,10 @@ enum Draw {
     Circle {
         center: [f32; 2],
         radius: f32,
+    },
+    Rectangle {
+        center: [f32; 2],
+        extent: [f32; 2],
     },
 }
 
@@ -147,6 +160,7 @@ pub fn run<P: Process>(process: P) -> Result<(), Box<dyn Error>> {
         surface: None,
         line_pipeline: None,
         circle_pipeline: None,
+        rect_pipeline: None,
         process,
     };
     event_loop.run_app(&mut app)?;
@@ -228,6 +242,43 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#;
 
+const RECT_SHADER: &str = r#"
+struct RectUniforms {
+    center: vec2<f32>,
+    extent: vec2<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> u: RectUniforms;
+
+@vertex
+fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    // Full-screen triangle in NDC so the fragment shader runs everywhere.
+    let positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    return vec4<f32>(positions[i], 0.0, 1.0);
+}
+
+@fragment
+fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
+    let p = frag_coord.xy;
+    // Signed distance in pixels from the fragment to the rectangle border:
+    // negative inside, positive outside.
+    let d = max(
+        abs(p.x - u.center.x) - u.extent.x,
+        abs(p.y - u.center.y) - u.extent.y,
+    );
+    let aa = 0.75; // ~1px anti-alias band.
+    let alpha = 1.0 - smoothstep(-aa, aa, d);
+    // Emit the rectangle's color and coverage; composited over the existing
+    // attachment via alpha blending.
+    return vec4<f32>(vec3<f32>(1.0), alpha);
+}
+"#;
+
 struct Frost<P: Process> {
     instance: Instance,
     adapter: Adapter,
@@ -240,6 +291,7 @@ struct Frost<P: Process> {
     surface: Option<Surface<'static>>,
     line_pipeline: Option<RenderPipeline>,
     circle_pipeline: Option<RenderPipeline>,
+    rect_pipeline: Option<RenderPipeline>,
     process: P,
 }
 
@@ -375,6 +427,17 @@ impl<P: Process> Frost<P> {
             format,
             "circle pipeline",
         ));
+
+        let rect_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("rectangle shaders"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(RECT_SHADER)),
+        });
+        self.rect_pipeline = Some(Self::create_pipeline(
+            device,
+            &rect_module,
+            format,
+            "rectangle pipeline",
+        ));
     }
 
     /// Builds a render pipeline for a full-screen-triangle shader whose single
@@ -463,9 +526,11 @@ impl<P: Process> Frost<P> {
         let mut canvas = Canvas::new(self.pixel_size());
         self.process.process(&mut canvas);
 
-        let (Some(line_pipeline), Some(circle_pipeline)) =
-            (self.line_pipeline.as_ref(), self.circle_pipeline.as_ref())
-        else {
+        let (Some(line_pipeline), Some(circle_pipeline), Some(rect_pipeline)) = (
+            self.line_pipeline.as_ref(),
+            self.circle_pipeline.as_ref(),
+            self.rect_pipeline.as_ref(),
+        ) else {
             return;
         };
 
@@ -513,6 +578,16 @@ impl<P: Process> Frost<P> {
                             &circle_uniform_data(center, radius),
                         );
                         pass.set_pipeline(circle_pipeline);
+                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.draw(0..3, 0..1);
+                    }
+                    Draw::Rectangle { center, extent } => {
+                        let (_buffer, bind_group) = self.primitive_uniform(
+                            rect_pipeline,
+                            "rectangle uniforms",
+                            &rect_uniform_data(center, extent),
+                        );
+                        pass.set_pipeline(rect_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         pass.draw(0..3, 0..1);
                     }
@@ -573,6 +648,16 @@ fn circle_uniform_data(center: [f32; 2], radius: f32) -> Vec<u8> {
         .collect();
     data.resize(16, 0);
     data
+}
+
+/// Rectangle uniform data: center and extent. 16 bytes is already a multiple
+/// of the 8-byte alignment, so no padding is needed.
+fn rect_uniform_data(center: [f32; 2], extent: [f32; 2]) -> Vec<u8> {
+    center
+        .iter()
+        .chain(extent.iter())
+        .flat_map(|f| f.to_le_bytes())
+        .collect()
 }
 
 struct NoopWaker;

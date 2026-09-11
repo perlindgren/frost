@@ -52,3 +52,4 @@ Environment="HSA_OVERRIDE_GFX_VERSION=11.0.0" "OLLAMA_MAX_VRAM=24GiB" "OLLAMA_KE
 NAME           ID              SIZE     PROCESSOR    CONTEXT    UNTIL   
 qwen3.8:27b    22130167c4c2    17 GB    100% GPU     98304      Forever
 ```
+- `journalctl -u ollama.service -f` (to follow the output of the ollama server)
