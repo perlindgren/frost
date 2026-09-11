@@ -146,11 +146,7 @@ pub fn run<P: Process>(process: P) -> Result<(), Box<dyn Error>> {
         scale: 1.0,
         surface: None,
         line_pipeline: None,
-        line_bind_group: None,
-        line_uniform: None,
         circle_pipeline: None,
-        circle_bind_group: None,
-        circle_uniform: None,
         process,
     };
     event_loop.run_app(&mut app)?;
@@ -243,11 +239,7 @@ struct Frost<P: Process> {
     scale: f32,
     surface: Option<Surface<'static>>,
     line_pipeline: Option<RenderPipeline>,
-    line_bind_group: Option<BindGroup>,
-    line_uniform: Option<Buffer>,
     circle_pipeline: Option<RenderPipeline>,
-    circle_bind_group: Option<BindGroup>,
-    circle_uniform: Option<Buffer>,
     process: P,
 }
 
@@ -357,8 +349,8 @@ impl<P: Process> Frost<P> {
         self.set_up_pipelines(config.format);
     }
 
-    /// Creates the shared line and circle pipelines, with one uniform buffer
-    /// (and bind group) each, reused for every draw call of the frame.
+    /// Creates the shared line and circle pipelines. Uniform buffers and bind
+    /// groups are created per draw call, see `primitive_uniform`.
     fn set_up_pipelines(&mut self, format: TextureFormat) {
         let device = &self.device;
 
@@ -366,51 +358,34 @@ impl<P: Process> Frost<P> {
             label: Some("line shaders"),
             source: ShaderSource::Wgsl(Cow::Borrowed(SHADER)),
         });
-        let line_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("line uniforms"),
-            size: 24,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let (line_pipeline, line_bind_group) =
-            Self::create_pipeline(device, &line_module, format, &line_buffer, "line pipeline");
+        self.line_pipeline = Some(Self::create_pipeline(
+            device,
+            &line_module,
+            format,
+            "line pipeline",
+        ));
 
         let circle_module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("circle shaders"),
             source: ShaderSource::Wgsl(Cow::Borrowed(CIRCLE_SHADER)),
         });
-        let circle_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("circle uniforms"),
-            size: 16,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let (circle_pipeline, circle_bind_group) = Self::create_pipeline(
+        self.circle_pipeline = Some(Self::create_pipeline(
             device,
             &circle_module,
             format,
-            &circle_buffer,
             "circle pipeline",
-        );
-
-        self.line_uniform = Some(line_buffer);
-        self.line_pipeline = Some(line_pipeline);
-        self.line_bind_group = Some(line_bind_group);
-        self.circle_uniform = Some(circle_buffer);
-        self.circle_pipeline = Some(circle_pipeline);
-        self.circle_bind_group = Some(circle_bind_group);
+        ));
     }
 
-    /// Builds a render pipeline and matching bind group for a full-screen-triangle
-    /// shader whose single uniform is bound at binding 0.
+    /// Builds a render pipeline for a full-screen-triangle shader whose single
+    /// uniform is bound at binding 0.
     fn create_pipeline(
         device: &Device,
         module: &ShaderModule,
         format: TextureFormat,
-        buffer: &Buffer,
         label: &str,
-    ) -> (RenderPipeline, BindGroup) {
-        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+    ) -> RenderPipeline {
+        device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some(label),
             layout: None,
             vertex: VertexState {
@@ -434,7 +409,30 @@ impl<P: Process> Frost<P> {
             multisample: MultisampleState::default(),
             multiview_mask: None,
             cache: None,
+        })
+    }
+
+    /// Creates the uniform buffer for one draw call plus its bind group.
+    ///
+    /// One buffer per draw call is required: `write_buffer` copies are flushed
+    /// as a batch *before any draw executes*, so a buffer shared between draws
+    /// would make every draw read the last-written parameters. The buffer and
+    /// bind group may be dropped as soon as the command buffer is submitted;
+    /// wgpu keeps them alive until the GPU is finished with them.
+    fn primitive_uniform(
+        &self,
+        pipeline: &RenderPipeline,
+        label: &str,
+        data: &[u8],
+    ) -> (Buffer, BindGroup) {
+        let device = &self.device;
+        let buffer = device.create_buffer(&BufferDescriptor {
+            label: Some(label),
+            size: data.len() as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
+        self.queue.write_buffer(&buffer, 0, data);
         let layout = pipeline.get_bind_group_layout(0);
         let bind_group = device.create_bind_group(&BindGroupDescriptor {
             label: Some(label),
@@ -442,32 +440,13 @@ impl<P: Process> Frost<P> {
             entries: &[BindGroupEntry {
                 binding: 0,
                 resource: BindingResource::Buffer(BufferBinding {
-                    buffer,
+                    buffer: &buffer,
                     offset: 0,
                     size: None,
                 }),
             }],
         });
-        (pipeline, bind_group)
-    }
-
-    fn write_line_uniform(&self, buffer: &Buffer, a: [f32; 2], b: [f32; 2], width: f32) {
-        let data = a
-            .iter()
-            .chain(b.iter())
-            .chain(std::iter::once(&width))
-            .flat_map(|f| f.to_le_bytes())
-            .collect::<Vec<u8>>();
-        self.queue.write_buffer(buffer, 0, &data);
-    }
-
-    fn write_circle_uniform(&self, buffer: &Buffer, center: [f32; 2], radius: f32) {
-        let data = center
-            .iter()
-            .chain(std::iter::once(&radius))
-            .flat_map(|f| f.to_le_bytes())
-            .collect::<Vec<u8>>();
-        self.queue.write_buffer(buffer, 0, &data);
+        (buffer, bind_group)
     }
 
     fn render(&mut self) {
@@ -484,21 +463,8 @@ impl<P: Process> Frost<P> {
         let mut canvas = Canvas::new(self.pixel_size());
         self.process.process(&mut canvas);
 
-        let (
-            Some(line_pipeline),
-            Some(line_bind_group),
-            Some(line_uniform),
-            Some(circle_pipeline),
-            Some(circle_bind_group),
-            Some(circle_uniform),
-        ) = (
-            self.line_pipeline.as_ref(),
-            self.line_bind_group.as_ref(),
-            self.line_uniform.as_ref(),
-            self.circle_pipeline.as_ref(),
-            self.circle_bind_group.as_ref(),
-            self.circle_uniform.as_ref(),
-        )
+        let (Some(line_pipeline), Some(circle_pipeline)) =
+            (self.line_pipeline.as_ref(), self.circle_pipeline.as_ref())
         else {
             return;
         };
@@ -526,21 +492,28 @@ impl<P: Process> Frost<P> {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            // One uniform buffer per primitive kind, rewritten per draw call;
-            // write_buffer flushes before the command buffer executes, so each
-            // draw sees its own parameters.
+            // A fresh uniform buffer (and bind group) per draw call, since all
+            // write_buffer copies complete before any draw executes.
             for draw in canvas.draws {
                 match draw {
                     Draw::Line { a, b, width } => {
-                        self.write_line_uniform(line_uniform, a, b, width);
+                        let (_buffer, bind_group) = self.primitive_uniform(
+                            line_pipeline,
+                            "line uniforms",
+                            &line_uniform_data(a, b, width),
+                        );
                         pass.set_pipeline(line_pipeline);
-                        pass.set_bind_group(0, line_bind_group, &[]);
+                        pass.set_bind_group(0, &bind_group, &[]);
                         pass.draw(0..3, 0..1);
                     }
                     Draw::Circle { center, radius } => {
-                        self.write_circle_uniform(circle_uniform, center, radius);
+                        let (_buffer, bind_group) = self.primitive_uniform(
+                            circle_pipeline,
+                            "circle uniforms",
+                            &circle_uniform_data(center, radius),
+                        );
                         pass.set_pipeline(circle_pipeline);
-                        pass.set_bind_group(0, circle_bind_group, &[]);
+                        pass.set_bind_group(0, &bind_group, &[]);
                         pass.draw(0..3, 0..1);
                     }
                 }
@@ -575,6 +548,31 @@ impl<P: Process> Frost<P> {
             }
         }
     }
+}
+
+/// Line uniform data, zero-padded to the 24-byte minimum binding size
+/// of the `Uniforms` struct.
+fn line_uniform_data(a: [f32; 2], b: [f32; 2], width: f32) -> Vec<u8> {
+    let mut data: Vec<u8> = a
+        .iter()
+        .chain(b.iter())
+        .chain(std::iter::once(&width))
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    data.resize(24, 0);
+    data
+}
+
+/// Circle uniform data, zero-padded to the 16-byte minimum binding size
+/// of the `CircleUniforms` struct.
+fn circle_uniform_data(center: [f32; 2], radius: f32) -> Vec<u8> {
+    let mut data: Vec<u8> = center
+        .iter()
+        .chain(std::iter::once(&radius))
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    data.resize(16, 0);
+    data
 }
 
 struct NoopWaker;
