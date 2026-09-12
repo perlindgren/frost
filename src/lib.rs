@@ -449,8 +449,15 @@ impl<P: Process> ApplicationHandler for Frost<P> {
         // the window is never mapped and nothing is ever drawn.
         window.request_redraw();
         self.window_id = Some(window.id());
-        self.logical_size = (window.inner_size().width, window.inner_size().height);
-        self.scale = window.scale_factor() as f32;
+        // winit reports the client area in *physical* pixels, so convert it
+        // to logical here; `pixel_size()` multiplies by the scale factor.
+        let inner = window.inner_size();
+        let scale = window.scale_factor();
+        self.scale = scale as f32;
+        self.logical_size = (
+            (inner.width as f64 / scale).max(1.0).round() as u32,
+            (inner.height as f64 / scale).max(1.0).round() as u32,
+        );
         log::info!(
             "window created ({}x{} @ {:.2}x)",
             self.logical_size.0,
@@ -505,8 +512,14 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
+                // `size` is the physical client size; store the logical size
+                // so `pixel_size()` reproduces the true physical pixels.
                 if size.width > 0 && size.height > 0 {
-                    self.logical_size = (size.width, size.height);
+                    let scale = (self.scale as f64).max(0.01);
+                    self.logical_size = (
+                        (size.width as f64 / scale).max(1.0).round() as u32,
+                        (size.height as f64 / scale).max(1.0).round() as u32,
+                    );
                     self.resize();
                 }
             }
