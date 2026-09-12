@@ -3,15 +3,28 @@
 //! Provide a [`Process`]: a function called once per frame with a [`Canvas`]
 //! and the delta time in seconds since the previous frame.
 //! Draw with window-centered pixel coordinates: the origin is the window
-//! center, y points down, so the top-left corner is `(-width/2, height/2)`.
+//! center, y points up, so the top-left corner is `(-width/2, height/2)`.
 //!
 //! ```no_run
 //! frost::run(|ctx: &mut frost::Canvas, _dt: f32| {
 //!     let (w, h) = ctx.size();
-//!     ctx.line(-w / 2.0, h / 2.0, w / 2.0, -h / 2.0);
-//!     ctx.circle(0.0, 0.0, h / 4.0);
+//!     ctx.set_background(frost::Color { r: 0.05, g: 0.06, b: 0.12 });
+//!     ctx.line(
+//!         -w / 2.0, h / 2.0, w / 2.0, -h / 2.0,
+//!         frost::Color { r: 1.0, g: 1.0, b: 1.0 },
+//!         0.0,
+//!     );
+//!     ctx.circle(
+//!         0.0, 0.0, h / 4.0,
+//!         frost::Color { r: 0.9, g: 0.4, b: 0.2 },
+//!         1.0,
+//!     );
 //! });
 //! ```
+//!
+//! Draw order is set by each object's `z`: lower `z` is drawn first (further
+//! back). Objects with the same `z` are drawn in call order, so the last one
+//! drawn is on top.
 //!
 //! Key presses are logged and Escape closes the window.
 
@@ -24,7 +37,7 @@ use std::time::Instant;
 
 use wgpu::{
     Adapter, BindGroup, BindGroupDescriptor, BindGroupEntry, BindingResource, Buffer,
-    BufferBinding, BufferDescriptor, BufferUsages, Color, ColorTargetState, ColorWrites,
+    BufferBinding, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
     CommandEncoderDescriptor, CurrentSurfaceTexture, Device, DeviceDescriptor, FragmentState,
     Instance, MultisampleState, PipelineCompilationOptions, PrimitiveState, Queue,
     RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor,
@@ -37,24 +50,45 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::NamedKey;
 use winit::window::{Window, WindowId};
 
-const BACKGROUND: Color = Color {
+/// The background color when the user does not override it with
+/// [`Canvas::set_background`].
+const DEFAULT_BACKGROUND: Color = Color {
     r: 0.07,
     g: 0.09,
     b: 0.14,
-    a: 1.0,
 };
 const DEFAULT_LINE_WIDTH: f32 = 2.0;
 
 // ============================ public API ============================
 
+/// An RGB color with channels in `0.0..=1.0`, used for the background and for
+/// the color of each drawn object.
+#[derive(Clone, Copy, Debug)]
+pub struct Color {
+    /// Red channel.
+    pub r: f32,
+    /// Green channel.
+    pub g: f32,
+    /// Blue channel.
+    pub b: f32,
+}
+
+impl Color {
+    /// The channels as `[r, g, b]`.
+    fn channels(&self) -> [f32; 3] {
+        [self.r, self.g, self.b]
+    }
+}
+
 /// The drawing surface handed to [`Process::process`] each frame.
 ///
 /// Coordinates are in pixels with the origin at the window center and the y
-/// axis pointing down: the top-left corner is `(-width/2, height/2)` and the
+/// axis pointing up: the top-left corner is `(-width/2, height/2)` and the
 /// bottom-right corner is `(width/2, -height/2)`.
 pub struct Canvas {
     size: (f32, f32),
     draws: Vec<Draw>,
+    background: Color,
 }
 
 impl Canvas {
@@ -62,6 +96,7 @@ impl Canvas {
         Self {
             size: (pixel_size.0 as f32, pixel_size.1 as f32),
             draws: Vec::new(),
+            background: DEFAULT_BACKGROUND,
         }
     }
 
@@ -70,33 +105,62 @@ impl Canvas {
         self.size
     }
 
-    /// Draws a line from `(x0, y0)` to `(x1, y1)`, default width 2 px.
-    pub fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+    /// Sets the background color for this frame.
+    ///
+    /// The default is a dark blue. The setting only lasts for the current
+    /// frame, since a fresh canvas is created each frame, so call it again
+    /// each frame to keep a custom background.
+    pub fn set_background(&mut self, color: Color) {
+        self.background = color
+    }
+
+    /// Draws a line from `(x0, y0)` to `(x1, y1)` in `color`, default width
+    /// 2 px.
+    ///
+    /// `z` is the draw order: lower `z` is drawn first (further back). Lines
+    /// with the same `z` are drawn in call order, so the last one drawn is on
+    /// top.
+    pub fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, color: Color, z: f32) {
         self.draws.push(Draw::Line {
             a: self.user_to_pixels(x0, y0),
             b: self.user_to_pixels(x1, y1),
             width: DEFAULT_LINE_WIDTH,
+            color,
+            z,
         });
     }
 
-    /// Draws a filled circle centered at `(cx, cy)` with `radius` in pixels.
-    pub fn circle(&mut self, cx: f32, cy: f32, radius: f32) {
+    /// Draws a filled circle centered at `(cx, cy)` with `radius` in pixels,
+    /// in `color`.
+    ///
+    /// `z` is the draw order: lower `z` is drawn first (further back). Circles
+    /// with the same `z` are drawn in call order, so the last one drawn is on
+    /// top.
+    pub fn circle(&mut self, cx: f32, cy: f32, radius: f32, color: Color, z: f32) {
         self.draws.push(Draw::Circle {
             center: self.user_to_pixels(cx, cy),
             radius: radius.max(0.0),
+            color,
+            z,
         });
     }
 
     /// Draws a filled rectangle centered at `(cx, cy)` with `dx` and `dy`
-    /// extents (half-width and half-height) in pixels.
-    pub fn rectangle(&mut self, cx: f32, cy: f32, dx: f32, dy: f32) {
+    /// extents (half-width and half-height) in pixels, in `color`.
+    ///
+    /// `z` is the draw order: lower `z` is drawn first (further back).
+    /// Rectangles with the same `z` are drawn in call order, so the last one
+    /// drawn is on top.
+    pub fn rectangle(&mut self, cx: f32, cy: f32, dx: f32, dy: f32, color: Color, z: f32) {
         self.draws.push(Draw::Rectangle {
             center: self.user_to_pixels(cx, cy),
             extent: [dx.max(0.0), dy.max(0.0)],
+            color,
+            z,
         });
     }
 
-    /// Converts user coordinates (window center origin, y down) to the pixel
+    /// Converts user coordinates (window center origin, y up) to the pixel
     /// coordinates the shaders use (top-left origin, y down).
     fn user_to_pixels(&self, x: f32, y: f32) -> [f32; 2] {
         [x + self.size.0 / 2.0, self.size.1 / 2.0 - y]
@@ -104,21 +168,40 @@ impl Canvas {
 }
 
 /// A drawing recorded for the current frame, in pixel space.
+///
+/// `z` is the draw order: lower `z` is drawn first (further back). Drawings
+/// with the same `z` are drawn in call order, so the last one drawn is on top.
 #[derive(Clone, Copy)]
 enum Draw {
     Line {
         a: [f32; 2],
         b: [f32; 2],
         width: f32,
+        color: Color,
+        z: f32,
     },
     Circle {
         center: [f32; 2],
         radius: f32,
+        color: Color,
+        z: f32,
     },
     Rectangle {
         center: [f32; 2],
         extent: [f32; 2],
+        color: Color,
+        z: f32,
     },
+}
+
+impl Draw {
+    fn z(&self) -> f32 {
+        match self {
+            Draw::Line { z, .. } => *z,
+            Draw::Circle { z, .. } => *z,
+            Draw::Rectangle { z, .. } => *z,
+        }
+    }
 }
 
 /// Called once per frame; draw into `canvas`.
@@ -219,6 +302,7 @@ const SHADER: &str = r#"
 struct Uniforms {
     a: vec2<f32>,
     b: vec2<f32>,
+    color: vec3<f32>,
     width: f32,
 };
 
@@ -249,13 +333,14 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     let alpha = 1.0 - smoothstep(half_width - aa, half_width + aa, dist);
     // Emit the line's color and coverage; composited over the existing
     // attachment via alpha blending.
-    return vec4<f32>(vec3<f32>(1.0), alpha);
+    return vec4<f32>(u.color, alpha);
 }
 "#;
 
 const CIRCLE_SHADER: &str = r#"
 struct CircleUniforms {
     center: vec2<f32>,
+    color: vec3<f32>,
     radius: f32,
 };
 
@@ -282,7 +367,7 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     let alpha = 1.0 - smoothstep(u.radius - aa, u.radius + aa, d);
     // Emit the circle's color and coverage; composited over the existing
     // attachment via alpha blending.
-    return vec4<f32>(vec3<f32>(1.0), alpha);
+    return vec4<f32>(u.color, alpha);
 }
 "#;
 
@@ -290,6 +375,7 @@ const RECT_SHADER: &str = r#"
 struct RectUniforms {
     center: vec2<f32>,
     extent: vec2<f32>,
+    color: vec3<f32>,
 };
 
 @group(0) @binding(0)
@@ -319,7 +405,7 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     let alpha = 1.0 - smoothstep(-aa, aa, d);
     // Emit the rectangle's color and coverage; composited over the existing
     // attachment via alpha blending.
-    return vec4<f32>(vec3<f32>(1.0), alpha);
+    return vec4<f32>(u.color, alpha);
 }
 "#;
 
@@ -592,7 +678,7 @@ impl<P: Process> Frost<P> {
         let Some(output) = output else {
             return;
         };
-        log::info!("render: acquired surface texture, submitting frame");
+        log::trace!("render: acquired surface texture, submitting frame");
 
         // Ask the user what to draw this frame, in their coordinate system.
         let mut canvas = Canvas::new(self.pixel_size());
@@ -603,6 +689,14 @@ impl<P: Process> Frost<P> {
             .unwrap_or(0.0);
         self.last_time = Some(now);
         self.process.process(&mut canvas, dt);
+
+        // Paint order: ascending z, lower z behind. `sort_by` is stable, so
+        // draws with equal z keep call order and the last drawn is on top.
+        canvas.draws.sort_by(|a, b| {
+            a.z()
+                .partial_cmp(&b.z())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let (Some(line_pipeline), Some(circle_pipeline), Some(rect_pipeline)) = (
             self.line_pipeline.as_ref(),
@@ -626,7 +720,12 @@ impl<P: Process> Frost<P> {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(BACKGROUND),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: canvas.background.r as f64,
+                            g: canvas.background.g as f64,
+                            b: canvas.background.b as f64,
+                            a: 1.0,
+                        }),
                         store: StoreOp::Store,
                     },
                 })],
@@ -639,31 +738,43 @@ impl<P: Process> Frost<P> {
             // write_buffer copies complete before any draw executes.
             for draw in canvas.draws {
                 match draw {
-                    Draw::Line { a, b, width } => {
+                    Draw::Line {
+                        a, b, width, color, ..
+                    } => {
                         let (_buffer, bind_group) = self.primitive_uniform(
                             line_pipeline,
                             "line uniforms",
-                            &line_uniform_data(a, b, width),
+                            &line_uniform_data(a, b, color, width),
                         );
                         pass.set_pipeline(line_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         pass.draw(0..3, 0..1);
                     }
-                    Draw::Circle { center, radius } => {
+                    Draw::Circle {
+                        center,
+                        radius,
+                        color,
+                        ..
+                    } => {
                         let (_buffer, bind_group) = self.primitive_uniform(
                             circle_pipeline,
                             "circle uniforms",
-                            &circle_uniform_data(center, radius),
+                            &circle_uniform_data(center, color, radius),
                         );
                         pass.set_pipeline(circle_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         pass.draw(0..3, 0..1);
                     }
-                    Draw::Rectangle { center, extent } => {
+                    Draw::Rectangle {
+                        center,
+                        extent,
+                        color,
+                        ..
+                    } => {
                         let (_buffer, bind_group) = self.primitive_uniform(
                             rect_pipeline,
                             "rectangle uniforms",
-                            &rect_uniform_data(center, extent),
+                            &rect_uniform_data(center, extent, color),
                         );
                         pass.set_pipeline(rect_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
@@ -674,7 +785,7 @@ impl<P: Process> Frost<P> {
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(output);
-        log::info!("render: frame presented");
+        log::trace!("render: frame presented");
     }
 
     /// Acquires the current surface texture.
@@ -703,39 +814,57 @@ impl<P: Process> Frost<P> {
     }
 }
 
-/// Line uniform data, zero-padded to the 24-byte minimum binding size
-/// of the `Uniforms` struct.
-fn line_uniform_data(a: [f32; 2], b: [f32; 2], width: f32) -> Vec<u8> {
-    let mut data: Vec<u8> = a
-        .iter()
-        .chain(b.iter())
-        .chain(std::iter::once(&width))
-        .flat_map(|f| f.to_le_bytes())
-        .collect();
-    data.resize(24, 0);
+/// Writes `value` as little-endian f32 bytes into `data` at byte `offset`.
+fn write_f32_at(data: &mut [u8], offset: usize, value: f32) {
+    data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+/// Line uniform data, 32 bytes, matching the WGSL uniform-space layout of
+/// the `Uniforms` Wgsl struct: `a` @ 0, `b` @ 8, `color` @ 16 (a vec3<f32>
+/// is 16-byte aligned in uniform space), `width` @ 28 (the next member is
+/// aligned to its own alignment, so the f32 follows the vec3 without a gap);
+/// the struct size rounds up to 32.
+fn line_uniform_data(a: [f32; 2], b: [f32; 2], color: Color, width: f32) -> Vec<u8> {
+    let mut data = vec![0u8; 32];
+    write_f32_at(&mut data, 0, a[0]);
+    write_f32_at(&mut data, 4, a[1]);
+    write_f32_at(&mut data, 8, b[0]);
+    write_f32_at(&mut data, 12, b[1]);
+    write_f32_at(&mut data, 16, color.r);
+    write_f32_at(&mut data, 20, color.g);
+    write_f32_at(&mut data, 24, color.b);
+    write_f32_at(&mut data, 28, width);
     data
 }
 
-/// Circle uniform data, zero-padded to the 16-byte minimum binding size
-/// of the `CircleUniforms` struct.
-fn circle_uniform_data(center: [f32; 2], radius: f32) -> Vec<u8> {
+/// Circle uniform data, 32 bytes, matching the WGSL uniform-space layout of
+/// the `CircleUniforms` Wgsl struct: `center` @ 0, `color` @ 16 (a
+/// vec3<f32> is 16-byte aligned in uniform space, leaving an 8-byte gap),
+/// `radius` @ 28 (the next member is aligned to its own alignment, so the
+/// f32 follows the vec3 without a gap); the struct size rounds up to 32.
+fn circle_uniform_data(center: [f32; 2], color: Color, radius: f32) -> Vec<u8> {
+    let mut data = vec![0u8; 32];
+    write_f32_at(&mut data, 0, center[0]);
+    write_f32_at(&mut data, 4, center[1]);
+    write_f32_at(&mut data, 16, color.r);
+    write_f32_at(&mut data, 20, color.g);
+    write_f32_at(&mut data, 24, color.b);
+    write_f32_at(&mut data, 28, radius);
+    data
+}
+
+/// Rectangle uniform data, matching the `RectUniforms` Wgsl struct: center,
+/// extent, color. The 28 bytes of data are zero-padded to the struct's
+/// 32-byte minimum binding size.
+fn rect_uniform_data(center: [f32; 2], extent: [f32; 2], color: Color) -> Vec<u8> {
     let mut data: Vec<u8> = center
         .iter()
-        .chain(std::iter::once(&radius))
+        .chain(extent.iter())
+        .chain(color.channels().iter())
         .flat_map(|f| f.to_le_bytes())
         .collect();
-    data.resize(16, 0);
+    data.resize(32, 0);
     data
-}
-
-/// Rectangle uniform data: center and extent. 16 bytes is already a multiple
-/// of the 8-byte alignment, so no padding is needed.
-fn rect_uniform_data(center: [f32; 2], extent: [f32; 2]) -> Vec<u8> {
-    center
-        .iter()
-        .chain(extent.iter())
-        .flat_map(|f| f.to_le_bytes())
-        .collect()
 }
 
 struct NoopWaker;
