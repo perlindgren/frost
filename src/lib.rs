@@ -12,6 +12,7 @@
 //!     ctx.line(
 //!         -w / 2.0, h / 2.0, w / 2.0, -h / 2.0,
 //!         frost::Color { r: 1.0, g: 1.0, b: 1.0 },
+//!         2.0,
 //!         0.0,
 //!     );
 //!     ctx.circle(
@@ -57,8 +58,6 @@ const DEFAULT_BACKGROUND: Color = Color {
     g: 0.09,
     b: 0.14,
 };
-const DEFAULT_LINE_WIDTH: f32 = 2.0;
-
 // ============================ public API ============================
 
 /// An RGB color with channels in `0.0..=1.0`, used for the background and for
@@ -114,17 +113,26 @@ impl Canvas {
         self.background = color
     }
 
-    /// Draws a line from `(x0, y0)` to `(x1, y1)` in `color`, default width
-    /// 2 px.
+    /// Draws a line from `(x0, y0)` to `(x1, y1)` in `color` with `width` in
+    /// pixels.
     ///
     /// `z` is the draw order: lower `z` is drawn first (further back). Lines
     /// with the same `z` are drawn in call order, so the last one drawn is on
     /// top.
-    pub fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, color: Color, z: f32) {
+    pub fn line(
+        &mut self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        color: Color,
+        width: f32,
+        z: f32,
+    ) {
         self.draws.push(Draw::Line {
             a: self.user_to_pixels(x0, y0),
             b: self.user_to_pixels(x1, y1),
-            width: DEFAULT_LINE_WIDTH,
+            width: width.max(0.0),
             color,
             z,
         });

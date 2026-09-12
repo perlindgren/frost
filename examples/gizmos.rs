@@ -19,6 +19,7 @@ fn main() {
                 g: 0.7,
                 b: 0.9,
             },
+            2.0, // 2 px long line
             0.0,
         );
         // Circle at the window center, radius = height / 4.
@@ -45,6 +46,7 @@ fn main() {
                 g: 0.9,
                 b: 0.5,
             },
+            5.0, // 5 px short line
             1.0,
         );
 
