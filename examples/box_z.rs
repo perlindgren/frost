@@ -1,6 +1,6 @@
 fn main() {
     env_logger::init();
-    if let Err(err) = frost::run(|ctx: &mut frost::Canvas, _dt: f32| {
+    if let Err(err) = frost::run(frost::Scene::default(), |ctx: &mut frost::Context, _dt: f32| {
         // Dark blue background.
         ctx.set_background(frost::Color {
             r: 0.05,

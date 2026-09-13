@@ -1,26 +1,31 @@
 //! frost — a minimal winit + wgpu immediate-mode drawing library.
 //!
-//! Provide a [`Process`]: a function called once per frame with a [`Canvas`]
-//! and the delta time in seconds since the previous frame.
-//! Draw with window-centered pixel coordinates: the origin is the window
-//! center, y points up, so the top-left corner is `(-width/2, height/2)`.
+//! Provide a [`Scene`] and a [`Process`]: a function called once per frame
+//! with a [`Context`] and the delta time in seconds since the previous
+//! frame. The scene is drawn every frame, *after* the process runs, so the
+//! process can mutate it in place to animate it. Draw with window-centered
+//! pixel coordinates: the origin is the window center, y points up, so the
+//! top-left corner is `(-width/2, height/2)`.
 //!
 //! ```no_run
-//! frost::run(|ctx: &mut frost::Canvas, _dt: f32| {
-//!     let (w, h) = ctx.size();
-//!     ctx.set_background(frost::Color { r: 0.05, g: 0.06, b: 0.12 });
-//!     ctx.line(
-//!         -w / 2.0, h / 2.0, w / 2.0, -h / 2.0,
-//!         frost::Color { r: 1.0, g: 1.0, b: 1.0 },
-//!         2.0,
-//!         0.0,
-//!     );
-//!     ctx.circle(
-//!         0.0, 0.0, h / 4.0,
-//!         frost::Color { r: 0.9, g: 0.4, b: 0.2 },
-//!         1.0,
-//!     );
-//! });
+//! frost::run(
+//!     frost::Scene::default(),
+//!     |ctx: &mut frost::Context, _dt: f32| {
+//!         let (w, h) = ctx.size();
+//!         ctx.set_background(frost::Color { r: 0.05, g: 0.06, b: 0.12 });
+//!         ctx.line(
+//!             -w / 2.0, h / 2.0, w / 2.0, -h / 2.0,
+//!             frost::Color { r: 1.0, g: 1.0, b: 1.0 },
+//!             2.0,
+//!             0.0,
+//!         );
+//!         ctx.circle(
+//!             0.0, 0.0, h / 4.0,
+//!             frost::Color { r: 0.9, g: 0.4, b: 0.2 },
+//!             1.0,
+//!         );
+//!     },
+//! );
 //! ```
 //!
 //! Draw order is set by each object's `z`: lower `z` is drawn first (further
@@ -33,7 +38,8 @@
 //! Beyond the immediate draws, a [`Scene`] is a tree of [`SceneNode`]s where
 //! each node holds a [`Transform`] (relative to its parent) plus its own
 //! optional [`Shape`]; the transform applies to the node's shape and composes
-//! onto its children. Draw a scene with [`Canvas::draw_scene`].
+//! onto its children. The scene passed to [`run`] is drawn every frame; use
+//! [`Canvas::draw_scene`] to draw additional scenes.
 //!
 //! Key presses are logged and Escape closes the window.
 
@@ -41,7 +47,7 @@ use std::borrow::Cow;
 use std::error::Error;
 use std::future::Future;
 use std::sync::Arc;
-use std::task::{Context, Poll, Wake, Waker};
+use std::task::{Context as TaskContext, Poll, Wake, Waker};
 use std::time::Instant;
 
 use wgpu::{
@@ -92,7 +98,8 @@ impl Color {
     }
 }
 
-/// The drawing surface handed to [`Process::process`] each frame.
+/// The drawing surface for a frame, reachable through the [`Context`] passed
+/// to [`Process::process`] (which derefs to it).
 ///
 /// Coordinates are in pixels with the origin at the window center and the y
 /// axis pointing up: the top-left corner is `(-width/2, height/2)` and the
@@ -182,6 +189,9 @@ impl Canvas {
     }
 
     /// Draws a [`Scene`] into the canvas.
+    ///
+    /// The scene passed to [`run`] is drawn automatically every frame, after
+    /// the [`Process`] runs; use this method to draw additional scenes.
     ///
     /// Scene coordinates are the same user space as the direct draw methods:
     /// the origin is at the window center, y points up, and positive
@@ -415,16 +425,33 @@ pub struct SceneNode {
 
 /// A tree of [`SceneNode`]s rooted at a single node.
 ///
-/// Draw a scene with [`Canvas::draw_scene`].
+/// Pass a scene to [`run`]: it is drawn every frame, *after* the [`Process`]
+/// runs, so the process can mutate it in place (via [`Context::scene`]) to
+/// animate it. Use [`Canvas::draw_scene`] to draw additional scenes.
 #[derive(Clone, Debug)]
 pub struct Scene {
-    root: SceneNode,
+    /// The root node; the scene is walked depth-first from here.
+    pub root: SceneNode,
 }
 
 impl Scene {
     /// Creates a scene from its root node.
     pub fn new(root: SceneNode) -> Self {
         Self { root }
+    }
+}
+
+impl Default for Scene {
+    /// An empty scene: an identity root node with no shape and no children,
+    /// for apps that only use the immediate draw methods.
+    fn default() -> Self {
+        Self {
+            root: SceneNode {
+                transform: Transform::identity(),
+                shape: None,
+                children: Vec::new(),
+            },
+        }
     }
 }
 
@@ -574,64 +601,163 @@ fn clamp_box_to_area(min: [f32; 2], max: [f32; 2], area: [u32; 2]) -> Option<[u3
     }
 }
 
-/// Called once per frame; draw into `canvas`.
+/// The per-frame context handed to [`Process::process`].
 ///
-/// `dt` is the time in seconds since the previous frame (`0.0` on the first
-/// frame, clamped to at most `1.0`s to absorb stalls). Use it to advance
-/// animation state such as a [`Tween`].
-pub trait Process {
-    fn process(&mut self, canvas: &mut Canvas, dt: f32);
+/// Derefs to the frame's [`Canvas`] (background and immediate draws) and
+/// [`scene`](Context::scene) gives mutable access to the [`Scene`] passed to
+/// [`run`]: mutate it here to animate it, and it is drawn after the process
+/// returns.
+pub struct Context<'c> {
+    canvas: &'c mut Canvas,
+    scene: &'c mut Scene,
 }
 
-/// Any closure `FnMut(&mut Canvas, f32)` is a [`Process`].
+impl Context<'_> {
+    /// Mutable access to the scene owned by [`run`].
+    pub fn scene(&mut self) -> &mut Scene {
+        &mut *self.scene
+    }
+}
+
+impl std::ops::Deref for Context<'_> {
+    type Target = Canvas;
+
+    fn deref(&self) -> &Canvas {
+        self.canvas
+    }
+}
+
+impl std::ops::DerefMut for Context<'_> {
+    fn deref_mut(&mut self) -> &mut Canvas {
+        self.canvas
+    }
+}
+
+/// Called once per frame; mutate the scene and draw into the canvas.
+///
+/// `ctx` gives mutable access to the scene owned by [`run`] (via
+/// [`Context::scene`]) and derefs to the frame's [`Canvas`] for the
+/// background and the immediate draw methods. `dt` is the time in seconds
+/// since the previous frame (`0.0` on the first frame, clamped to at most
+/// `1.0`s to absorb stalls). Use it to advance animation state such as a
+/// [`Tween`].
+pub trait Process {
+    fn process(&mut self, ctx: &mut Context, dt: f32);
+}
+
+/// Any closure `FnMut(&mut Context, f32)` is a [`Process`].
 impl<F> Process for F
 where
-    F: FnMut(&mut Canvas, f32),
+    F: FnMut(&mut Context, f32),
 {
-    fn process(&mut self, canvas: &mut Canvas, dt: f32) {
-        self(canvas, dt);
+    fn process(&mut self, ctx: &mut Context, dt: f32) {
+        self(ctx, dt);
     }
 }
 
-/// A linear ping-pong progress value driven by a time step.
+/// A value that a [`Tween`] can interpolate.
 ///
-/// Each [`Tween::tick`] advances from `0.0` toward `1.0` over `duration`
-/// seconds and then back toward `0.0`, in an endless loop. Multiplied by a
-/// target distance it yields a constant-rate position that eases linearly
-/// between two endpoints.
-#[derive(Clone, Copy)]
-pub struct Tween {
-    /// Position within the current round trip, in `0.0..2.0`.
-    phase: f32,
-    /// Seconds for one leg (the `0.0 -> 1.0` travel).
+/// Implement it for your own types to tween them; it is implemented for
+/// `f32` and `[f32; 2]`.
+pub trait Tweenable: Copy {
+    /// Linearly interpolates from `self` toward `other`: `t = 0.0` yields
+    /// `self`, `t = 1.0` yields `other`.
+    fn tween(self, other: Self, t: f32) -> Self;
+}
+
+impl Tweenable for f32 {
+    fn tween(self, other: Self, t: f32) -> Self {
+        self + (other - self) * t
+    }
+}
+
+impl Tweenable for [f32; 2] {
+    fn tween(self, other: Self, t: f32) -> Self {
+        [self[0].tween(other[0], t), self[1].tween(other[1], t)]
+    }
+}
+
+/// How a [`Tween`] behaves once its duration has elapsed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Repeat {
+    /// Travel to the target and stay there.
+    Once,
+    /// Jump back to the start and travel again.
+    Loop,
+    /// Travel to the target, then back to the start, forever.
+    PingPong,
+}
+
+/// A linear tween of a value from `from` to `to` over `duration` seconds.
+///
+/// Each [`Tween::tick`] advances the tween by a time step and returns the
+/// current interpolated value. With the default [`Repeat::PingPong`] the
+/// value travels `from -> to -> from -> ...` at constant speed; see
+/// [`Tween::repeat`] for the other modes.
+#[derive(Clone, Copy, Debug)]
+pub struct Tween<T: Tweenable> {
+    from: T,
+    to: T,
+    /// Elapsed time, in seconds, since the tween was created.
+    time: f32,
+    /// Seconds for one leg (the `from -> to` travel).
     duration: f32,
+    repeat: Repeat,
 }
 
-impl Tween {
-    /// Creates a tween whose one-way travel takes `duration` seconds.
-    pub fn new(duration: f32) -> Self {
+impl<T: Tweenable> Tween<T> {
+    /// Creates a [`Repeat::PingPong`] tween whose one-way travel from `from`
+    /// to `to` takes `duration` seconds.
+    pub fn new(from: T, to: T, duration: f32) -> Self {
         Self {
-            phase: 0.0,
+            from,
+            to,
+            time: 0.0,
             duration: duration.max(1e-6),
+            repeat: Repeat::PingPong,
         }
     }
 
-    /// Advances by `dt` seconds and returns the current progress in `0.0..1.0`
-    /// (ping-pong: `0.0 -> 1.0 -> 0.0 -> 1.0 -> ...`).
-    pub fn tick(&mut self, dt: f32) -> f32 {
-        self.phase = (self.phase + dt / self.duration) % 2.0;
-        if self.phase < 1.0 {
-            self.phase
-        } else {
-            2.0 - self.phase
+    /// Sets the repeat mode.
+    pub fn repeat(mut self, repeat: Repeat) -> Self {
+        self.repeat = repeat;
+        self
+    }
+
+    /// Advances by `dt` seconds and returns the current interpolated value.
+    pub fn tick(&mut self, dt: f32) -> T {
+        self.time += dt;
+        match self.repeat {
+            Repeat::Once => {
+                let t = (self.time / self.duration).min(1.0);
+                self.from.tween(self.to, t)
+            }
+            Repeat::Loop => {
+                let t = (self.time % self.duration) / self.duration;
+                self.from.tween(self.to, t)
+            }
+            Repeat::PingPong => {
+                let cycle = self.time % (2.0 * self.duration);
+                let t = if cycle < self.duration {
+                    cycle / self.duration
+                } else {
+                    1.0 - (cycle - self.duration) / self.duration
+                };
+                self.from.tween(self.to, t)
+            }
         }
     }
 }
 
-/// Opens the window and runs the event loop, calling `process` once per frame.
+/// Opens the window and runs the event loop, calling `process` once per
+/// frame and drawing `scene` after each call.
+///
+/// The scene is drawn every frame, *after* `process` returns, so `process`
+/// can mutate it (via [`Context::scene`]) to animate it. Pass
+/// [`Scene::default`] for apps that only use the immediate draw methods.
 ///
 /// The window closes on Escape or when the user requests it.
-pub fn run<P: Process>(process: P) -> Result<(), Box<dyn Error>> {
+pub fn run<P: Process>(scene: Scene, process: P) -> Result<(), Box<dyn Error>> {
     log::info!("frost starting up");
 
     let instance = Instance::default();
@@ -659,6 +785,7 @@ pub fn run<P: Process>(process: P) -> Result<(), Box<dyn Error>> {
         shape_pipeline: None,
         format: None,
         last_time: None,
+        scene,
         process,
     };
     event_loop.run_app(&mut app)?;
@@ -857,6 +984,8 @@ struct Frost<P: Process> {
     format: Option<TextureFormat>,
     /// Timestamp of the previous rendered frame, used to compute `dt`.
     last_time: Option<Instant>,
+    /// The scene drawn every frame, after the process runs.
+    scene: Scene,
     process: P,
 }
 
@@ -1131,7 +1260,8 @@ impl<P: Process> Frost<P> {
         };
         log::trace!("render: acquired surface texture, submitting frame");
 
-        // Ask the user what to draw this frame, in their coordinate system.
+        // Let the user update the scene and draw this frame, in their
+        // coordinate system.
         let mut canvas = Canvas::new(self.pixel_size());
         let now = Instant::now();
         let dt = self
@@ -1139,7 +1269,17 @@ impl<P: Process> Frost<P> {
             .map(|last| now.duration_since(last).as_secs_f32().min(1.0))
             .unwrap_or(0.0);
         self.last_time = Some(now);
-        self.process.process(&mut canvas, dt);
+        let process = &mut self.process;
+        let scene = &mut self.scene;
+        {
+            let mut ctx = Context {
+                canvas: &mut canvas,
+                scene,
+            };
+            process.process(&mut ctx, dt);
+        }
+        // The scene was just updated; draw it into the frame's draw list.
+        canvas.draw_scene(&self.scene);
 
         // Paint order: ascending z, lower z behind. `sort_by` is stable, so
         // draws with equal z keep call order and the last drawn is on top.
@@ -1405,7 +1545,7 @@ impl Wake for NoopWaker {
 
 fn block_on<F: Future>(future: F) -> F::Output {
     let waker = Waker::from(Arc::new(NoopWaker));
-    let mut cx = Context::from_waker(&waker);
+    let mut cx = TaskContext::from_waker(&waker);
     let mut future = std::pin::pin!(future);
     loop {
         if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
@@ -1743,5 +1883,37 @@ mod tests {
         assert_eq!(f32_at(68), 1.0);
         assert_eq!(f32_at(72), 0.0);
         assert_eq!(data.len(), 80);
+    }
+
+    #[test]
+    fn tween_ping_pong_travels_to_and_fro() {
+        let mut tw = Tween::new(0.0, 100.0, 1.0); // 1s per leg, ping-pong
+        assert_eq!(tw.tick(0.5), 50.0); // halfway to `to`
+        assert_eq!(tw.tick(0.5), 100.0); // at `to`
+        assert_eq!(tw.tick(0.5), 50.0); // halfway back
+        assert_eq!(tw.tick(0.5), 0.0); // back at `from`, cycle restarts
+    }
+
+    #[test]
+    fn tween_once_stays_at_the_end() {
+        let mut tw = Tween::new(0.0, 10.0, 1.0).repeat(Repeat::Once);
+        assert_eq!(tw.tick(0.5), 5.0);
+        assert_eq!(tw.tick(0.5), 10.0);
+        assert_eq!(tw.tick(5.0), 10.0); // stays at the target
+    }
+
+    #[test]
+    fn tween_loop_wraps_at_the_end() {
+        let mut tw = Tween::new(0.0, 10.0, 1.0).repeat(Repeat::Loop);
+        assert_eq!(tw.tick(0.5), 5.0);
+        assert_eq!(tw.tick(0.4), 9.0);
+        assert_eq!(tw.tick(0.1), 0.0); // wrapped back to `from`
+        assert_eq!(tw.tick(0.5), 5.0);
+    }
+
+    #[test]
+    fn tween_interpolates_vectors() {
+        let mut tw = Tween::new([0.0, 10.0], [20.0, 0.0], 1.0);
+        assert_eq!(tw.tick(0.5), [10.0, 5.0]);
     }
 }
