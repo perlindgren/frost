@@ -3,8 +3,8 @@
 //! constant 100px/s), and one vector tween drives a small circle back and
 //! forth between `(-100, -100)` and `(100, -100)` (1.5s per leg).
 //!
-//! The scene is empty (`Scene::default()`), so only the immediate draw
-//! methods are used. Run with:
+//! The scene holds only a background node, so the content comes from the
+//! immediate draw methods. Run with:
 //!
 //! ```text
 //! cargo run --example tween
@@ -20,12 +20,6 @@ struct Demo {
 impl frost::Process for Demo {
     fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
         let (w, h) = ctx.size();
-        // Deep indigo background, set per frame.
-        ctx.set_background(frost::Color {
-            r: 0.09,
-            g: 0.06,
-            b: 0.16,
-        });
         // Diagonal from the top-left corner to the bottom-right corner.
         ctx.line(
             -w / 2.0,
@@ -104,7 +98,18 @@ fn main() {
     env_logger::init();
     log::info!("frost started");
     if let Err(err) = frost::run(
-        frost::Scene::default(),
+        frost::Scene::new(frost::SceneNode {
+            transform: frost::Transform::identity(),
+            // Deep indigo background; the node's transform is ignored.
+            shape: Some(frost::Shape::Background {
+                color: frost::Color {
+                    r: 0.09,
+                    g: 0.06,
+                    b: 0.16,
+                },
+            }),
+            children: vec![],
+        }),
         Demo {
             line_x: frost::Tween::new(200.0, 300.0, 1.0),
             dot: frost::Tween::new([100.0, 100.0], [-100.0, -100.0], 1.5),

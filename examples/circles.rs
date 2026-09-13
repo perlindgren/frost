@@ -1,14 +1,21 @@
 fn main() {
     env_logger::init();
-    if let Err(err) = frost::run(frost::Scene::default(), |ctx: &mut frost::Context, _dt: f32| {
-        let (w, h) = ctx.size();
-        // Deep indigo background, set per frame.
-        ctx.set_background(frost::Color {
-            r: 0.09,
-            g: 0.06,
-            b: 0.16,
-        });
-        // Big circle at the window center.
+    if let Err(err) = frost::run(
+        frost::Scene::new(frost::SceneNode {
+            transform: frost::Transform::identity(),
+            // Deep indigo background; the node's transform is ignored.
+            shape: Some(frost::Shape::Background {
+                color: frost::Color {
+                    r: 0.09,
+                    g: 0.06,
+                    b: 0.16,
+                },
+            }),
+            children: vec![],
+        }),
+        |ctx: &mut frost::Context, _dt: f32| {
+            let (w, h) = ctx.size();
+            // Big circle at the window center.
         ctx.circle(
             0.0,
             0.0,
@@ -33,7 +40,8 @@ fn main() {
             },
             0.0,
         );
-    }) {
+        })
+    {
         log::error!("frost failed: {err}");
         std::process::exit(1);
     }

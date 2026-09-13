@@ -1,13 +1,20 @@
 fn main() {
     env_logger::init();
-    if let Err(err) = frost::run(frost::Scene::default(), |ctx: &mut frost::Context, _dt: f32| {
-        // Dark blue background.
-        ctx.set_background(frost::Color {
-            r: 0.05,
-            g: 0.06,
-            b: 0.12,
-        });
-        // A 100 x 100 px square centered at the window origin (0, 0), red.
+    if let Err(err) = frost::run(
+        frost::Scene::new(frost::SceneNode {
+            transform: frost::Transform::identity(),
+            // Dark blue background; the node's transform is ignored.
+            shape: Some(frost::Shape::Background {
+                color: frost::Color {
+                    r: 0.05,
+                    g: 0.06,
+                    b: 0.12,
+                },
+            }),
+            children: vec![],
+        }),
+        |ctx: &mut frost::Context, _dt: f32| {
+            // A 100 x 100 px square centered at the window origin (0, 0), red.
         ctx.rectangle(
             0.0,
             0.0,
@@ -61,7 +68,8 @@ fn main() {
             },
             0.0,
         );
-    }) {
+        })
+    {
         log::error!("frost failed: {err}");
         std::process::exit(1);
     }

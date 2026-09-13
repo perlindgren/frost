@@ -21,15 +21,8 @@ impl frost::Process for Demo {
     fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
         self.spin += dt * 0.25;
 
-        // Deep indigo background, set per frame.
-        ctx.set_background(frost::Color {
-            r: 0.09,
-            g: 0.06,
-            b: 0.16,
-        });
-
         // Move the center circle according to the clamped spin angle.
-        let circle = &mut ctx.scene().root;
+        let circle = &mut ctx.scene().root.children[0];
         circle.transform = frost::Transform::translate(
             (self.spin % TAU).sin() * 140.0,
             (self.spin % TAU).cos() * 100.0,
@@ -37,7 +30,7 @@ impl frost::Process for Demo {
 
         // Rotate around the parent, then push out to the orbit radius: the
         // rectangle orbits while the rotation tumbles its own shape.
-        let orbit = &mut ctx.scene().root.children[0];
+        let orbit = &mut ctx.scene().root.children[0].children[0];
         orbit.transform =
             frost::Transform::rotate(self.spin).compose(&frost::Transform::translate(
                 (self.spin * 3.0 % TAU).sin() * 200.0,
@@ -56,38 +49,49 @@ fn main() {
 
     let scene = frost::Scene::new(frost::SceneNode {
         transform: frost::Transform::identity(),
-        shape: Some(frost::Shape::Circle {
-            center: [0.0, 0.0],
-            radius: 90.0,
+        // Deep indigo background; the node's transform is ignored.
+        shape: Some(frost::Shape::Background {
             color: frost::Color {
-                r: 0.25,
-                g: 0.35,
-                b: 0.6,
+                r: 0.09,
+                g: 0.06,
+                b: 0.16,
             },
         }),
         children: vec![Box::new(frost::SceneNode {
             transform: frost::Transform::identity(),
-            shape: Some(frost::Shape::Rectangle {
+            shape: Some(frost::Shape::Circle {
                 center: [0.0, 0.0],
-                extent: [20.0, 20.0],
+                radius: 90.0,
                 color: frost::Color {
-                    r: 0.9,
-                    g: 0.45,
-                    b: 0.2,
+                    r: 0.25,
+                    g: 0.35,
+                    b: 0.6,
                 },
             }),
             children: vec![Box::new(frost::SceneNode {
                 transform: frost::Transform::identity(),
-                shape: Some(frost::Shape::Circle {
-                    center: [55.0, 0.0],
-                    radius: 12.0,
+                shape: Some(frost::Shape::Rectangle {
+                    center: [0.0, 0.0],
+                    extent: [20.0, 20.0],
                     color: frost::Color {
-                        r: 0.95,
-                        g: 0.85,
-                        b: 0.3,
+                        r: 0.9,
+                        g: 0.45,
+                        b: 0.2,
                     },
                 }),
-                children: vec![],
+                children: vec![Box::new(frost::SceneNode {
+                    transform: frost::Transform::identity(),
+                    shape: Some(frost::Shape::Circle {
+                        center: [55.0, 0.0],
+                        radius: 12.0,
+                        color: frost::Color {
+                            r: 0.95,
+                            g: 0.85,
+                            b: 0.3,
+                        },
+                    }),
+                    children: vec![],
+                })],
             })],
         })],
     });

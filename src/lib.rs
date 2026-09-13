@@ -8,11 +8,17 @@
 //! top-left corner is `(-width/2, height/2)`.
 //!
 //! ```no_run
+//! let scene = frost::Scene::new(frost::SceneNode {
+//!     transform: frost::Transform::identity(),
+//!     shape: Some(frost::Shape::Background {
+//!         color: frost::Color { r: 0.05, g: 0.06, b: 0.12 },
+//!     }),
+//!     children: Vec::new(),
+//! });
 //! frost::run(
-//!     frost::Scene::default(),
+//!     scene,
 //!     |ctx: &mut frost::Context, _dt: f32| {
 //!         let (w, h) = ctx.size();
-//!         ctx.set_background(frost::Color { r: 0.05, g: 0.06, b: 0.12 });
 //!         ctx.line(
 //!             -w / 2.0, h / 2.0, w / 2.0, -h / 2.0,
 //!             frost::Color { r: 1.0, g: 1.0, b: 1.0 },
@@ -38,7 +44,9 @@
 //! Beyond the immediate draws, a [`Scene`] is a tree of [`SceneNode`]s where
 //! each node holds a [`Transform`] (relative to its parent) plus its own
 //! optional [`Shape`]; the transform applies to the node's shape and composes
-//! onto its children. The scene passed to [`run`] is drawn every frame; use
+//! onto its children. A [`Shape::Background`] node fills the whole window
+//! with its color, ignoring its transform, and is drawn at the very back.
+//! The scene passed to [`run`] is drawn every frame; use
 //! [`Canvas::draw_scene`] to draw additional scenes.
 //!
 //! Key presses are logged and Escape closes the window.
@@ -65,8 +73,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::NamedKey;
 use winit::window::{Window, WindowId};
 
-/// The background color when the user does not override it with
-/// [`Canvas::set_background`].
+/// The frame's clear color when no [`Shape::Background`] is drawn.
 const DEFAULT_BACKGROUND: Color = Color {
     r: 0.07,
     g: 0.09,
@@ -81,7 +88,7 @@ const AA_BAND: f32 = 0.75;
 
 /// An RGB color with channels in `0.0..=1.0`, used for the background and for
 /// the color of each drawn object.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Color {
     /// Red channel.
     pub r: f32,
@@ -107,7 +114,6 @@ impl Color {
 pub struct Canvas {
     size: (f32, f32),
     draws: Vec<Draw>,
-    background: Color,
 }
 
 impl Canvas {
@@ -115,22 +121,12 @@ impl Canvas {
         Self {
             size: (pixel_size.0 as f32, pixel_size.1 as f32),
             draws: Vec::new(),
-            background: DEFAULT_BACKGROUND,
         }
     }
 
     /// The window size in pixels as `(width, height)`.
     pub fn size(&self) -> (f32, f32) {
         self.size
-    }
-
-    /// Sets the background color for this frame.
-    ///
-    /// The default is a dark blue. The setting only lasts for the current
-    /// frame, since a fresh canvas is created each frame, so call it again
-    /// each frame to keep a custom background.
-    pub fn set_background(&mut self, color: Color) {
-        self.background = color
     }
 
     /// Draws a line from `(x0, y0)` to `(x1, y1)` in `color` with `width` in
@@ -205,6 +201,8 @@ impl Canvas {
     ///
     /// All scene shapes share `z = 0.0`, so they are ordered by tree position
     /// and interleave with immediate draws by the usual stable `z` ordering.
+    /// A [`Shape::Background`] is the exception: it ignores its transform,
+    /// always sorts to the very back, and becomes the frame's clear color.
     pub fn draw_scene(&mut self, scene: &Scene) {
         self.draw_node(&scene.root, &Transform::identity());
     }
@@ -214,37 +212,47 @@ impl Canvas {
         // (local -> parent space), then the parent's world transform.
         let world = node.transform.compose(parent);
         if let Some(shape) = &node.shape {
-            // Scale the anti-alias band with the transform's scale so it stays
-            // a constant number of screen pixels wide under scaling.
+            // Scale the anti-alias band with the transform's scale so it
+            // stays a constant number of screen pixels wide under scaling.
             let [sx, sy] = world.scales();
             let aa = AA_BAND / sx.max(sy).max(1e-9);
-            let (center, params, kind, color) = match shape {
-                Shape::Circle {
-                    center,
-                    radius,
-                    color,
-                } => (*center, [(*radius).max(0.0), 0.0], 0.0, *color),
-                Shape::Rectangle {
-                    center,
-                    extent,
-                    color,
-                } => {
-                    (*center, [extent[0].max(0.0), extent[1].max(0.0)], 1.0, *color)
-                }
-            };
-            self.draws.push(Draw::Shape {
+            let draw = match shape {
                 // The shape shader evaluates in pixel space (top-left, y
                 // down), so compose the user-to-pixel transform onto the
                 // world transform, like the direct-draw methods do for
                 // their arguments.
-                world: world.compose(&self.user_to_pixel()),
-                center,
-                params,
-                kind,
-                aa,
-                color,
-                z: 0.0,
-            });
+                Shape::Circle {
+                    center,
+                    radius,
+                    color,
+                } => Draw::Shape {
+                    world: world.compose(&self.user_to_pixel()),
+                    center: *center,
+                    params: [(*radius).max(0.0), 0.0],
+                    kind: 0.0,
+                    aa,
+                    color: *color,
+                    z: 0.0,
+                },
+                Shape::Rectangle {
+                    center,
+                    extent,
+                    color,
+                } => Draw::Shape {
+                    world: world.compose(&self.user_to_pixel()),
+                    center: *center,
+                    params: [extent[0].max(0.0), extent[1].max(0.0)],
+                    kind: 1.0,
+                    aa,
+                    color: *color,
+                    z: 0.0,
+                },
+                // The background ignores its transform: it is recorded in
+                // call order and becomes the frame's clear color at render
+                // time.
+                Shape::Background { color } => Draw::Background { color: *color },
+            };
+            self.draws.push(draw);
         }
         for child in &node.children {
             self.draw_node(child, &world);
@@ -388,7 +396,9 @@ impl Transform {
 /// A filled geometric shape that a [`SceneNode`] can hold.
 ///
 /// Coordinates and sizes are in the node's local space, in pixels; the
-/// composed transforms of every ancestor apply to the shape.
+/// composed transforms of every ancestor apply to the shape, except for
+/// [`Shape::Background`], which fills the whole window regardless of
+/// transform.
 #[derive(Clone, Copy, Debug)]
 pub enum Shape {
     /// A filled circle centered at `center` with `radius`.
@@ -401,6 +411,17 @@ pub enum Shape {
     Rectangle {
         center: [f32; 2],
         extent: [f32; 2],
+        color: Color,
+    },
+    /// Fills the whole window with `color`.
+    ///
+    /// The node's transform (and its ancestors') is ignored, and the
+    /// background is always at the very back of the frame: at render time it
+    /// becomes the window's clear color, so it costs no draw call. Hang it on
+    /// the scene root or anywhere else in the tree — position does not matter.
+    /// When several nodes hold backgrounds, the last one in depth-first call
+    /// order is the one that shows.
+    Background {
         color: Color,
     },
 }
@@ -459,7 +480,7 @@ impl Default for Scene {
 ///
 /// `z` is the draw order: lower `z` is drawn first (further back). Drawings
 /// with the same `z` are drawn in call order, so the last one drawn is on top.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Draw {
     Line {
         a: [f32; 2],
@@ -495,6 +516,11 @@ enum Draw {
         color: Color,
         z: f32,
     },
+    /// A [`Shape::Background`]: never drawn; it is promoted to the frame's
+    /// clear color at render time.
+    Background {
+        color: Color,
+    },
 }
 
 impl Draw {
@@ -504,6 +530,8 @@ impl Draw {
             Draw::Circle { z, .. } => *z,
             Draw::Rectangle { z, .. } => *z,
             Draw::Shape { z, .. } => *z,
+            // The background is always at the very back.
+            Draw::Background { .. } => f32::MIN,
         }
     }
 
@@ -511,8 +539,12 @@ impl Draw {
     /// anti-alias band the shaders render beyond each geometric edge.
     ///
     /// `area` is the render area in pixels; the result is clamped to it, or
-    /// `None` if the draw is fully outside the surface.
+    /// `None` if the draw is fully outside the surface or is a background
+    /// (which is never drawn — it becomes the frame's clear color).
     fn scissor_rect(&self, area: [u32; 2]) -> Option<[u32; 4]> {
+        if let Draw::Background { .. } = self {
+            return None;
+        }
         let (min, max) = match self {
             Draw::Line { a, b, width, .. } => {
                 let pad = width * 0.5 + AA_BAND;
@@ -578,6 +610,8 @@ impl Draw {
                 }
                 (min, max)
             }
+            // A background never draws; the early return above covers it.
+            Draw::Background { .. } => unreachable!(),
         };
         clamp_box_to_area(min, max, area)
     }
@@ -601,9 +635,22 @@ fn clamp_box_to_area(min: [f32; 2], max: [f32; 2], area: [u32; 2]) -> Option<[u3
     }
 }
 
+/// The frame's clear color: the color of the last [`Draw::Background`] in
+/// call order, or [`DEFAULT_BACKGROUND`] when the frame has none.
+fn clear_color(draws: &[Draw]) -> Color {
+    draws
+        .iter()
+        .rev()
+        .find_map(|draw| match draw {
+            Draw::Background { color } => Some(*color),
+            _ => None,
+        })
+        .unwrap_or(DEFAULT_BACKGROUND)
+}
+
 /// The per-frame context handed to [`Process::process`].
 ///
-/// Derefs to the frame's [`Canvas`] (background and immediate draws) and
+/// Derefs to the frame's [`Canvas`] (immediate draws) and
 /// [`scene`](Context::scene) gives mutable access to the [`Scene`] passed to
 /// [`run`]: mutate it here to animate it, and it is drawn after the process
 /// returns.
@@ -637,7 +684,7 @@ impl std::ops::DerefMut for Context<'_> {
 ///
 /// `ctx` gives mutable access to the scene owned by [`run`] (via
 /// [`Context::scene`]) and derefs to the frame's [`Canvas`] for the
-/// background and the immediate draw methods. `dt` is the time in seconds
+/// immediate draw methods. `dt` is the time in seconds
 /// since the previous frame (`0.0` on the first frame, clamped to at most
 /// `1.0`s to absorb stalls). Use it to advance animation state such as a
 /// [`Tween`].
@@ -1298,6 +1345,10 @@ impl<P: Process> Frost<P> {
             return;
         };
 
+        // The frame's clear color: the last background node in call order,
+        // or the default when the frame has none.
+        let clear = clear_color(&canvas.draws);
+
         let view = output
             .texture
             .create_view(&TextureViewDescriptor::default());
@@ -1313,9 +1364,9 @@ impl<P: Process> Frost<P> {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: canvas.background.r as f64,
-                            g: canvas.background.g as f64,
-                            b: canvas.background.b as f64,
+                            r: clear.r as f64,
+                            g: clear.g as f64,
+                            b: clear.b as f64,
                             a: 1.0,
                         }),
                         store: StoreOp::Store,
@@ -1335,7 +1386,8 @@ impl<P: Process> Frost<P> {
             let render_area = [output.texture.width(), output.texture.height()];
             for draw in canvas.draws {
                 let Some([x, y, w, h]) = draw.scissor_rect(render_area) else {
-                    // Fully outside the surface; nothing to draw.
+                    // Fully outside the surface, or a background (which
+                    // became the clear color); nothing to draw.
                     continue;
                 };
                 pass.set_scissor_rect(x, y, w, h);
@@ -1407,6 +1459,9 @@ impl<P: Process> Frost<P> {
                         pass.set_bind_group(0, &bind_group, &[]);
                         pass.draw(0..3, 0..1);
                     }
+                    // A background's scissor rect is `None`, so it continued
+                    // above; this arm keeps the match exhaustive.
+                    Draw::Background { .. } => {}
                 }
             }
         }
@@ -1915,5 +1970,93 @@ mod tests {
     fn tween_interpolates_vectors() {
         let mut tw = Tween::new([0.0, 10.0], [20.0, 0.0], 1.0);
         assert_eq!(tw.tick(0.5), [10.0, 5.0]);
+    }
+
+    #[test]
+    fn clear_color_falls_back_to_the_default_without_a_background() {
+        let draws = [Draw::Circle {
+            center: [0.0, 0.0],
+            radius: 5.0,
+            color: black(),
+            z: 0.0,
+        }];
+        assert_eq!(clear_color(&draws), DEFAULT_BACKGROUND);
+    }
+
+    #[test]
+    fn clear_color_is_the_background_when_the_frame_has_one() {
+        let indigo = Color {
+            r: 0.09,
+            g: 0.06,
+            b: 0.16,
+        };
+        let draws = [
+            Draw::Background { color: indigo },
+            Draw::Circle {
+                center: [0.0, 0.0],
+                radius: 5.0,
+                color: black(),
+                z: 0.0,
+            },
+        ];
+        assert_eq!(clear_color(&draws), indigo);
+    }
+
+    #[test]
+    fn clear_color_is_the_last_background_in_call_order() {
+        let first = Color {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+        };
+        let second = Color {
+            r: 0.0,
+            g: 0.0,
+            b: 1.0,
+        };
+        let draws = [
+            Draw::Background { color: first },
+            Draw::Background { color: second },
+        ];
+        assert_eq!(clear_color(&draws), second);
+    }
+
+    #[test]
+    fn background_node_sorts_to_the_back_and_keeps_its_color() {
+        let mut canvas = Canvas::new((100, 100));
+        canvas.draw_scene(&Scene::new(SceneNode {
+            transform: Transform::identity(),
+            shape: Some(Shape::Rectangle {
+                center: [0.0, 0.0],
+                extent: [10.0, 10.0],
+                color: black(),
+            }),
+            children: vec![Box::new(SceneNode {
+                // Transformed on purpose: the background must ignore it.
+                transform: Transform::translate(50.0, 50.0),
+                shape: Some(Shape::Background {
+                    color: Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 1.0,
+                    },
+                }),
+                children: vec![],
+            })],
+        }));
+        canvas
+            .draws
+            .sort_by(|a, b| a.z().partial_cmp(&b.z()).unwrap_or(std::cmp::Ordering::Equal));
+        let [Draw::Background { color }, Draw::Shape { .. }] = &canvas.draws[..] else {
+            panic!("expected one background and one shape, got {:?}", canvas.draws);
+        };
+        assert_eq!(
+            *color,
+            Color {
+                r: 0.0,
+                g: 0.0,
+                b: 1.0
+            }
+        );
     }
 }
