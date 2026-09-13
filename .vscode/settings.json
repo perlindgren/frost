@@ -1,3 +1,13 @@
 {
-    "editor.formatOnSave": true
+    "editor.formatOnSave": true,
+    "cSpell.ignoreWords": [
+        "GGUF",
+        "LOCALAPPDATA",
+        "OLLAMA",
+        "deepseek",
+        "journalctl",
+        "nvtop",
+        "qwen",
+        "unsloth"
+    ]
 }

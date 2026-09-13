@@ -1,6 +1,8 @@
 //! A scene tree animated in place: a central circle, a rectangle orbiting it
 //! while it tumbles, and a small circle riding on the rectangle that
-//! counter-rotates.
+//! counter-rotates. The root starts at zero size and eases to full size as
+//! the rectangle first reaches the bottom of its orbit, so the whole scene
+//! blooms outward from a point.
 //!
 //! The scene is built once and passed to `frost::run`, which draws it every
 //! frame. The process advances the orbit angle and mutates the nodes'
@@ -10,7 +12,7 @@
 //! cargo run --example scene
 //! ```
 
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 
 struct Demo {
     /// Orbit and tumble angle in radians.
@@ -20,6 +22,16 @@ struct Demo {
 impl frost::Process for Demo {
     fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
         self.spin += dt * 0.25;
+
+        // Grow the root from a point to full size as the rectangle travels
+        // from the top of its orbit to the bottom: the orbit angle is
+        // 3 * spin, so the first bottom is at spin = PI / 3. The eased
+        // lerp (smoothstep) starts and ends at zero velocity, so the scene
+        // eases in from rest and settles exactly at (1.0, 1.0) as the
+        // rectangle bottoms out; the clamp then holds it there.
+        let progress = (self.spin / (PI / 3.0)).clamp(0.0, 1.0);
+        let s = progress * progress * (3.0 - 2.0 * progress);
+        ctx.scene().root.scale = [s, s];
 
         // Move the center circle according to the clamped spin angle.
         let circle = &mut ctx.scene().root.children[0];
@@ -49,6 +61,7 @@ fn main() {
 
     let scene = frost::Scene::new(frost::SceneNode {
         transform: frost::Transform::identity(),
+        scale: [1.0, 1.0],
         // Deep indigo background; the node's transform is ignored.
         shape: Some(frost::Shape::Background {
             color: frost::Color {
@@ -59,6 +72,7 @@ fn main() {
         }),
         children: vec![Box::new(frost::SceneNode {
             transform: frost::Transform::identity(),
+            scale: [1.0, 1.0],
             shape: Some(frost::Shape::Circle {
                 center: [0.0, 0.0],
                 radius: 90.0,
@@ -70,6 +84,7 @@ fn main() {
             }),
             children: vec![Box::new(frost::SceneNode {
                 transform: frost::Transform::identity(),
+                scale: [1.0, 1.0],
                 shape: Some(frost::Shape::Rectangle {
                     center: [0.0, 0.0],
                     extent: [20.0, 20.0],
@@ -81,6 +96,7 @@ fn main() {
                 }),
                 children: vec![Box::new(frost::SceneNode {
                     transform: frost::Transform::identity(),
+                    scale: [1.0, 1.0],
                     shape: Some(frost::Shape::Circle {
                         center: [55.0, 0.0],
                         radius: 12.0,

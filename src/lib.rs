@@ -10,6 +10,7 @@
 //! ```no_run
 //! let scene = frost::Scene::new(frost::SceneNode {
 //!     transform: frost::Transform::identity(),
+//!     scale: [1.0, 1.0],
 //!     shape: Some(frost::Shape::Background {
 //!         color: frost::Color { r: 0.05, g: 0.06, b: 0.12 },
 //!     }),
@@ -42,10 +43,11 @@
 //! frame's cost scales with the objects' on-screen areas, not the window size.
 //!
 //! Beyond the immediate draws, a [`Scene`] is a tree of [`SceneNode`]s where
-//! each node holds a [`Transform`] (relative to its parent) plus its own
-//! optional [`Shape`]; the transform applies to the node's shape and composes
-//! onto its children. A [`Shape::Background`] node fills the whole window
-//! with its color, ignoring its transform, and is drawn at the very back.
+//! each node holds a [`Transform`] and a `scale`, both relative to its
+//! parent, plus its own optional [`Shape`]; the scale and transform apply to
+//! the node's shape and compose onto its children. A [`Shape::Background`]
+//! node fills the whole window with its color, ignoring its transform, and
+//! is drawn at the very back.
 //! The scene passed to [`run`] is drawn every frame; use
 //! [`Canvas::draw_scene`] to draw additional scenes.
 //!
@@ -193,9 +195,10 @@ impl Canvas {
     /// the origin is at the window center, y points up, and positive
     /// rotations are counterclockwise on screen.
     ///
-    /// The scene is walked depth-first from the root. Each node's transform is
-    /// relative to its parent and composes onto the parent's, so a
-    /// descendant's world transform is the full root-to-leaf composition.
+    /// The scene is walked depth-first from the root. Each node's transform
+    /// and scale are relative to its parent and compose onto the parent's
+    /// (scale innermost), so a descendant's world transform is the full
+    /// root-to-leaf composition.
     /// Every node with a shape draws it (in the node's own local space)
     /// before its children, so parents paint under their descendants.
     ///
@@ -208,9 +211,14 @@ impl Canvas {
     }
 
     fn draw_node(&mut self, node: &SceneNode, parent: &Transform) {
-        // The node's world transform in user space: its own transform first
-        // (local -> parent space), then the parent's world transform.
-        let world = node.transform.compose(parent);
+        // The node's world transform in user space: its scale first
+        // (innermost, in the node's own space), then its transform (local ->
+        // parent space), then the parent's world transform. Through `world`
+        // the scale therefore applies to the node's shape and to its whole
+        // subtree, just like the transform.
+        let local = Transform::scale(node.scale[0], node.scale[1])
+            .compose(&node.transform);
+        let world = local.compose(parent);
         if let Some(shape) = &node.shape {
             // Scale the anti-alias band with the transform's scale so it
             // stays a constant number of screen pixels wide under scaling.
@@ -428,16 +436,20 @@ pub enum Shape {
 
 /// A node in a [`Scene`] tree.
 ///
-/// A node is a [`Transform`] plus its own optional [`Shape`] and its
-/// children. The transform is relative to the node's parent and applies to
-/// the node's own shape as well as composing onto all descendants. A node
-/// without a shape (`shape: None`) is a pure group or pivot node, and a node
-/// without children is a leaf.
+/// A node is a [`Transform`] and a `scale`, plus its own optional [`Shape`]
+/// and its children. Both the transform and the scale are relative to the
+/// node's parent and apply to the node's own shape as well as composing onto
+/// all descendants. A node without a shape (`shape: None`) is a pure group
+/// or pivot node, and a node without children is a leaf.
 #[derive(Clone, Debug)]
 pub struct SceneNode {
     /// The transform from the parent's coordinate space to this node's,
     /// applied to the node's own shape and composed onto its children.
     pub transform: Transform,
+    /// The node's non-uniform scale, applied in its own coordinate space
+    /// before its transform, so it scales the node's shape and its whole
+    /// subtree. `[1.0, 1.0]` (the default) is no scaling.
+    pub scale: [f32; 2],
     /// The shape this node draws, in its own local space, if any.
     pub shape: Option<Shape>,
     /// The child nodes, positioned in this node's coordinate space.
@@ -469,6 +481,7 @@ impl Default for Scene {
         Self {
             root: SceneNode {
                 transform: Transform::identity(),
+                scale: [1.0, 1.0],
                 shape: None,
                 children: Vec::new(),
             },
@@ -1744,6 +1757,7 @@ mod tests {
         let mut canvas = Canvas::new((100, 100));
         let scene = Scene::new(SceneNode {
             transform: Transform::translate(10.0, 0.0),
+            scale: [1.0, 1.0],
             shape: Some(Shape::Circle {
                 center: [0.0, 0.0],
                 radius: 5.0,
@@ -1751,9 +1765,11 @@ mod tests {
             }),
             children: vec![Box::new(SceneNode {
                 transform: Transform::scale_uniform(2.0),
+                scale: [1.0, 1.0],
                 shape: None,
                 children: vec![Box::new(SceneNode {
                     transform: Transform::identity(),
+                    scale: [1.0, 1.0],
                     shape: Some(Shape::Circle {
                         center: [1.0, 1.0],
                         radius: 1.0,
@@ -1798,9 +1814,11 @@ mod tests {
         let mut canvas = Canvas::new((100, 100));
         let scene = Scene::new(SceneNode {
             transform: Transform::rotate(std::f32::consts::FRAC_PI_2),
+            scale: [1.0, 1.0],
             shape: None,
             children: vec![Box::new(SceneNode {
                 transform: Transform::translate(10.0, 0.0),
+                scale: [1.0, 1.0],
                 shape: Some(Shape::Circle {
                     center: [0.0, 0.0],
                     radius: 1.0,
@@ -1825,6 +1843,7 @@ mod tests {
         let mut canvas = Canvas::new((100, 100));
         let scene = Scene::new(SceneNode {
             transform: Transform::identity(),
+            scale: [1.0, 1.0],
             shape: Some(Shape::Circle {
                 center: [0.0, 0.0],
                 radius: 10.0,
@@ -2026,6 +2045,7 @@ mod tests {
         let mut canvas = Canvas::new((100, 100));
         canvas.draw_scene(&Scene::new(SceneNode {
             transform: Transform::identity(),
+            scale: [1.0, 1.0],
             shape: Some(Shape::Rectangle {
                 center: [0.0, 0.0],
                 extent: [10.0, 10.0],
@@ -2034,6 +2054,7 @@ mod tests {
             children: vec![Box::new(SceneNode {
                 // Transformed on purpose: the background must ignore it.
                 transform: Transform::translate(50.0, 50.0),
+                scale: [1.0, 1.0],
                 shape: Some(Shape::Background {
                     color: Color {
                         r: 0.0,
@@ -2058,5 +2079,56 @@ mod tests {
                 b: 1.0
             }
         );
+    }
+
+    #[test]
+    fn node_scale_applies_to_the_shape_and_its_subtree() {
+        let mut canvas = Canvas::new((100, 100));
+        let scene = Scene::new(SceneNode {
+            // Scale 2x in x only; the transform still positions the node.
+            transform: Transform::translate(10.0, 0.0),
+            scale: [2.0, 1.0],
+            shape: Some(Shape::Circle {
+                center: [1.0, 1.0],
+                radius: 1.0,
+                color: black(),
+            }),
+            children: vec![Box::new(SceneNode {
+                transform: Transform::translate(1.0, 0.0),
+                scale: [1.0, 1.0],
+                shape: Some(Shape::Circle {
+                    center: [0.0, 0.0],
+                    radius: 1.0,
+                    color: black(),
+                }),
+                children: vec![],
+            })],
+        });
+        canvas.draw_scene(&scene);
+        let [
+            Draw::Shape {
+                world: w0,
+                center: c0,
+                aa: aa0,
+                ..
+            },
+            Draw::Shape {
+                world: w1,
+                center: c1,
+                ..
+            },
+        ] = &canvas.draws[..]
+        else {
+            panic!("expected two shape draws");
+        };
+        // The node's scale applies before its transform: (1, 1) -> (2, 1)
+        // -> (12, 1) in user space, (62, 49) in pixel space.
+        assert_eq!(w0.apply(*c0), [62.0, 49.0]);
+        // The child's (1, 0) translation is scaled by the parent's 2x:
+        // (0, 0) -> (1, 0) -> (2, 0) -> (12, 0) in user space, (62, 50) in
+        // pixel space.
+        assert_eq!(w1.apply(*c1), [62.0, 50.0]);
+        // The AA band compensates for the 2x world scale.
+        assert!((aa0 - AA_BAND / 2.0).abs() < 1e-6);
     }
 }
