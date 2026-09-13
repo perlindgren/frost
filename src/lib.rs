@@ -30,6 +30,11 @@
 //! Each object is clipped to its tight bounding box (the scissor test), so a
 //! frame's cost scales with the objects' on-screen areas, not the window size.
 //!
+//! Beyond the immediate draws, a [`Scene`] is a tree of [`SceneNode`]s where
+//! each node holds a [`Transform`] (relative to its parent) plus its own
+//! optional [`Shape`]; the transform applies to the node's shape and composes
+//! onto its children. Draw a scene with [`Canvas::draw_scene`].
+//!
 //! Key presses are logged and Escape closes the window.
 
 use std::borrow::Cow;
@@ -176,10 +181,250 @@ impl Canvas {
         });
     }
 
+    /// Draws a [`Scene`] into the canvas.
+    ///
+    /// Scene coordinates are the same user space as the direct draw methods:
+    /// the origin is at the window center, y points up, and positive
+    /// rotations are counterclockwise on screen.
+    ///
+    /// The scene is walked depth-first from the root. Each node's transform is
+    /// relative to its parent and composes onto the parent's, so a
+    /// descendant's world transform is the full root-to-leaf composition.
+    /// Every node with a shape draws it (in the node's own local space)
+    /// before its children, so parents paint under their descendants.
+    ///
+    /// All scene shapes share `z = 0.0`, so they are ordered by tree position
+    /// and interleave with immediate draws by the usual stable `z` ordering.
+    pub fn draw_scene(&mut self, scene: &Scene) {
+        self.draw_node(&scene.root, &Transform::identity());
+    }
+
+    fn draw_node(&mut self, node: &SceneNode, parent: &Transform) {
+        // The node's world transform in user space: its own transform first
+        // (local -> parent space), then the parent's world transform.
+        let world = node.transform.compose(parent);
+        if let Some(shape) = &node.shape {
+            // Scale the anti-alias band with the transform's scale so it stays
+            // a constant number of screen pixels wide under scaling.
+            let [sx, sy] = world.scales();
+            let aa = AA_BAND / sx.max(sy).max(1e-9);
+            let (center, params, kind, color) = match shape {
+                Shape::Circle {
+                    center,
+                    radius,
+                    color,
+                } => (*center, [(*radius).max(0.0), 0.0], 0.0, *color),
+                Shape::Rectangle {
+                    center,
+                    extent,
+                    color,
+                } => {
+                    (*center, [extent[0].max(0.0), extent[1].max(0.0)], 1.0, *color)
+                }
+            };
+            self.draws.push(Draw::Shape {
+                // The shape shader evaluates in pixel space (top-left, y
+                // down), so compose the user-to-pixel transform onto the
+                // world transform, like the direct-draw methods do for
+                // their arguments.
+                world: world.compose(&self.user_to_pixel()),
+                center,
+                params,
+                kind,
+                aa,
+                color,
+                z: 0.0,
+            });
+        }
+        for child in &node.children {
+            self.draw_node(child, &world);
+        }
+    }
+
+    /// The affine transform from user coordinates (window center origin,
+    /// y up) to the pixel coordinates the shaders use (top-left origin,
+    /// y down): `(x, y) -> (x + w/2, h/2 - y)`.
+    fn user_to_pixel(&self) -> Transform {
+        Transform {
+            m: [[1.0, 0.0], [0.0, -1.0]],
+            t: [self.size.0 / 2.0, self.size.1 / 2.0],
+        }
+    }
+
     /// Converts user coordinates (window center origin, y up) to the pixel
     /// coordinates the shaders use (top-left origin, y down).
     fn user_to_pixels(&self, x: f32, y: f32) -> [f32; 2] {
-        [x + self.size.0 / 2.0, self.size.1 / 2.0 - y]
+        self.user_to_pixel().apply([x, y])
+    }
+}
+
+/// A 2D affine transform: `p' = m * p + t`.
+///
+/// The rows of `m` are `m[0]` and `m[1]`, so a point `(x, y)` maps to
+/// `(m[0][0]*x + m[0][1]*y + t[0], m[1][0]*x + m[1][1]*y + t[1])`. Rotation
+/// angles are measured from the +x axis toward +y, i.e. counter-clockwise in
+/// the window-centered y-up coordinates.
+#[derive(Clone, Copy, Debug)]
+pub struct Transform {
+    m: [[f32; 2]; 2],
+    t: [f32; 2],
+}
+
+impl Transform {
+    /// The identity transform (no change).
+    pub const fn identity() -> Self {
+        Self {
+            m: [[1.0, 0.0], [0.0, 1.0]],
+            t: [0.0, 0.0],
+        }
+    }
+
+    /// A translation by `(x, y)`.
+    pub const fn translate(x: f32, y: f32) -> Self {
+        Self {
+            m: [[1.0, 0.0], [0.0, 1.0]],
+            t: [x, y],
+        }
+    }
+
+    /// A rotation by `angle` radians, counter-clockwise in y-up coordinates.
+    pub fn rotate(angle: f32) -> Self {
+        let (s, c) = angle.sin_cos();
+        Self {
+            m: [[c, -s], [s, c]],
+            t: [0.0, 0.0],
+        }
+    }
+
+    /// A scale by `x` horizontally and `y` vertically.
+    pub const fn scale(x: f32, y: f32) -> Self {
+        Self {
+            m: [[x, 0.0], [0.0, y]],
+            t: [0.0, 0.0],
+        }
+    }
+
+    /// A uniform scale by `s`.
+    pub const fn scale_uniform(s: f32) -> Self {
+        Self::scale(s, s)
+    }
+
+    /// The transform that applies `self` first, then `other`:
+    /// `self.compose(other)` maps a point `p` to `other.apply(self.apply(p))`.
+    ///
+    /// In matrix form, with `p' = m * p + t`, the composition multiplies in
+    /// the opposite order of the application order: `other.m * self.m`.
+    pub fn compose(&self, other: &Transform) -> Transform {
+        let s = self.m;
+        let o = other.m;
+        Transform {
+            m: [
+                [
+                    o[0][0] * s[0][0] + o[0][1] * s[1][0],
+                    o[0][0] * s[0][1] + o[0][1] * s[1][1],
+                ],
+                [
+                    o[1][0] * s[0][0] + o[1][1] * s[1][0],
+                    o[1][0] * s[0][1] + o[1][1] * s[1][1],
+                ],
+            ],
+            t: [
+                o[0][0] * self.t[0] + o[0][1] * self.t[1] + other.t[0],
+                o[1][0] * self.t[0] + o[1][1] * self.t[1] + other.t[1],
+            ],
+        }
+    }
+
+    /// Applies the transform to a point.
+    pub fn apply(&self, p: [f32; 2]) -> [f32; 2] {
+        [
+            self.m[0][0] * p[0] + self.m[0][1] * p[1] + self.t[0],
+            self.m[1][0] * p[0] + self.m[1][1] * p[1] + self.t[1],
+        ]
+    }
+
+    /// The inverse transform, or `None` if the transform is degenerate (its
+    /// linear part collapses points onto a line or a point).
+    fn invert(&self) -> Option<Transform> {
+        let a = self.m[0][0];
+        let b = self.m[0][1];
+        let c = self.m[1][0];
+        let d = self.m[1][1];
+        let det = a * d - b * c;
+        if det.abs() < 1e-12 {
+            return None;
+        }
+        let inv = 1.0 / det;
+        Some(Transform {
+            m: [[d * inv, -b * inv], [-c * inv, a * inv]],
+            t: [
+                -(self.t[0] * d - self.t[1] * b) * inv,
+                (self.t[0] * c - self.t[1] * a) * inv,
+            ],
+        })
+    }
+
+    /// The scale factors along the x and y axes (the norms of the matrix
+    /// columns), so the anti-alias band can be kept a constant size in
+    /// screen pixels under scaling.
+    fn scales(&self) -> [f32; 2] {
+        [
+            (self.m[0][0] * self.m[0][0] + self.m[1][0] * self.m[1][0]).sqrt(),
+            (self.m[0][1] * self.m[0][1] + self.m[1][1] * self.m[1][1]).sqrt(),
+        ]
+    }
+}
+
+/// A filled geometric shape that a [`SceneNode`] can hold.
+///
+/// Coordinates and sizes are in the node's local space, in pixels; the
+/// composed transforms of every ancestor apply to the shape.
+#[derive(Clone, Copy, Debug)]
+pub enum Shape {
+    /// A filled circle centered at `center` with `radius`.
+    Circle {
+        center: [f32; 2],
+        radius: f32,
+        color: Color,
+    },
+    /// A filled rectangle centered at `center` with half-widths `extent`.
+    Rectangle {
+        center: [f32; 2],
+        extent: [f32; 2],
+        color: Color,
+    },
+}
+
+/// A node in a [`Scene`] tree.
+///
+/// A node is a [`Transform`] plus its own optional [`Shape`] and its
+/// children. The transform is relative to the node's parent and applies to
+/// the node's own shape as well as composing onto all descendants. A node
+/// without a shape (`shape: None`) is a pure group or pivot node, and a node
+/// without children is a leaf.
+#[derive(Clone, Debug)]
+pub struct SceneNode {
+    /// The transform from the parent's coordinate space to this node's,
+    /// applied to the node's own shape and composed onto its children.
+    pub transform: Transform,
+    /// The shape this node draws, in its own local space, if any.
+    pub shape: Option<Shape>,
+    /// The child nodes, positioned in this node's coordinate space.
+    pub children: Vec<Box<SceneNode>>,
+}
+
+/// A tree of [`SceneNode`]s rooted at a single node.
+///
+/// Draw a scene with [`Canvas::draw_scene`].
+#[derive(Clone, Debug)]
+pub struct Scene {
+    root: SceneNode,
+}
+
+impl Scene {
+    /// Creates a scene from its root node.
+    pub fn new(root: SceneNode) -> Self {
+        Self { root }
     }
 }
 
@@ -208,6 +453,21 @@ enum Draw {
         color: Color,
         z: f32,
     },
+    Shape {
+        /// The transform from the shape's local space to pixel space.
+        world: Transform,
+        /// The shape center in its local space.
+        center: [f32; 2],
+        /// Circle: `[radius, 0.0]`; rectangle: `[half_width, half_height]`.
+        params: [f32; 2],
+        /// `0.0` for a circle, `1.0` for a rectangle.
+        kind: f32,
+        /// The anti-alias band in local units (the screen `AA_BAND` divided
+        /// by the transform's scale).
+        aa: f32,
+        color: Color,
+        z: f32,
+    },
 }
 
 impl Draw {
@@ -216,6 +476,7 @@ impl Draw {
             Draw::Line { z, .. } => *z,
             Draw::Circle { z, .. } => *z,
             Draw::Rectangle { z, .. } => *z,
+            Draw::Shape { z, .. } => *z,
         }
     }
 
@@ -254,19 +515,62 @@ impl Draw {
                     center[1] + extent[1] + AA_BAND,
                 ],
             ),
+            Draw::Shape {
+                world,
+                center,
+                params,
+                kind,
+                aa,
+                ..
+            } => {
+                // The shape's bounding box in its local space, including the
+                // local anti-alias band. A circle's box is a square around its
+                // radius; a rectangle's box is its extents.
+                let (hx, hy) = if *kind < 0.5 {
+                    let r = params[0].max(0.0) + *aa;
+                    (r, r)
+                } else {
+                    (
+                        params[0].max(0.0) + *aa,
+                        params[1].max(0.0) + *aa,
+                    )
+                };
+                // The box may be rotated, so transform its four corners and
+                // take the axis-aligned bounding box of the result.
+                let corners = [
+                    world.apply([center[0] - hx, center[1] - hy]),
+                    world.apply([center[0] + hx, center[1] - hy]),
+                    world.apply([center[0] - hx, center[1] + hy]),
+                    world.apply([center[0] + hx, center[1] + hy]),
+                ];
+                let mut min = corners[0];
+                let mut max = corners[0];
+                for corner in corners.iter().skip(1) {
+                    min = [min[0].min(corner[0]), min[1].min(corner[1])];
+                    max = [max[0].max(corner[0]), max[1].max(corner[1])];
+                }
+                (min, max)
+            }
         };
-        // `floor`/`ceil` pick the pixel columns and rows the box touches;
-        // the clamps keep the box inside the surface (float-to-int casts
-        // saturate, so out-of-range coordinates stay consistent).
-        let x0 = min[0].max(0.0).floor() as u32;
-        let y0 = min[1].max(0.0).floor() as u32;
-        let x1 = max[0].min(area[0] as f32).ceil() as u32;
-        let y1 = max[1].min(area[1] as f32).ceil() as u32;
-        if x1 > x0 && y1 > y0 {
-            Some([x0, y0, x1 - x0, y1 - y0])
-        } else {
-            None
-        }
+        clamp_box_to_area(min, max, area)
+    }
+}
+
+/// The tight pixel rectangle a bounding box touches, clamped to the render
+/// `area`, or `None` if the box is empty or fully outside the surface.
+///
+/// `floor`/`ceil` pick the pixel columns and rows the box touches; the
+/// clamps keep the box inside the surface (float-to-int casts saturate, so
+/// out-of-range coordinates stay consistent).
+fn clamp_box_to_area(min: [f32; 2], max: [f32; 2], area: [u32; 2]) -> Option<[u32; 4]> {
+    let x0 = min[0].max(0.0).floor() as u32;
+    let y0 = min[1].max(0.0).floor() as u32;
+    let x1 = max[0].min(area[0] as f32).ceil() as u32;
+    let y1 = max[1].min(area[1] as f32).ceil() as u32;
+    if x1 > x0 && y1 > y0 {
+        Some([x0, y0, x1 - x0, y1 - y0])
+    } else {
+        None
     }
 }
 
@@ -352,6 +656,7 @@ pub fn run<P: Process>(process: P) -> Result<(), Box<dyn Error>> {
         line_pipeline: None,
         circle_pipeline: None,
         rect_pipeline: None,
+        shape_pipeline: None,
         format: None,
         last_time: None,
         process,
@@ -480,6 +785,56 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#;
 
+const SHAPE_SHADER: &str = r#"
+struct ShapeUniforms {
+    to_local: mat2x2<f32>,
+    translation: vec2<f32>,
+    center: vec2<f32>,
+    params: vec2<f32>,
+    color: vec3<f32>,
+    misc: vec2<f32>, // x: anti-alias band (local units), y: kind (0.0 circle, 1.0 rectangle)
+};
+
+@group(0) @binding(0)
+var<uniform> u: ShapeUniforms;
+
+@vertex
+fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    // Full-screen triangle in NDC; the scissor is set on the CPU to the
+    // shape's bounding box, so fragments outside it are discarded and the
+    // fragment shader only runs over the pixels the shape can write.
+    let positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    return vec4<f32>(positions[i], 0.0, 1.0);
+}
+
+@fragment
+fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
+    // Convert the fragment's pixel coordinate into the shape's local space
+    // (the inverse of its world transform), then evaluate the signed
+    // distance there, so rotation and scaling apply for free. The matrix
+    // is stored column-major, so it multiplies the coordinate as a column
+    // vector, matching the Rust-side transform convention.
+    let p = u.to_local * frag_coord.xy + u.translation;
+    var d: f32;
+    if (u.misc.y < 0.5) {
+        d = length(p - u.center) - u.params.x;
+    } else {
+        // Signed distance in local units from the fragment to the
+        // rectangle border: negative inside, positive outside.
+        let q = abs(p - u.center) - u.params;
+        d = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0);
+    }
+    let alpha = 1.0 - smoothstep(-u.misc.x, u.misc.x, d);
+    // Emit the shape's color and coverage; composited over the existing
+    // attachment via alpha blending.
+    return vec4<f32>(u.color, alpha);
+}
+"#;
+
 struct Frost<P: Process> {
     instance: Instance,
     adapter: Adapter,
@@ -496,6 +851,7 @@ struct Frost<P: Process> {
     line_pipeline: Option<RenderPipeline>,
     circle_pipeline: Option<RenderPipeline>,
     rect_pipeline: Option<RenderPipeline>,
+    shape_pipeline: Option<RenderPipeline>,
     /// The surface format the current pipelines were built for; they are only
     /// rebuilt when this changes.
     format: Option<TextureFormat>,
@@ -680,6 +1036,17 @@ impl<P: Process> Frost<P> {
             format,
             "rectangle pipeline",
         ));
+
+        let shape_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("shape shaders"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(SHAPE_SHADER)),
+        });
+        self.shape_pipeline = Some(Self::create_pipeline(
+            device,
+            &shape_module,
+            format,
+            "shape pipeline",
+        ));
     }
 
     /// Builds a render pipeline for a full-screen-triangle shader whose single
@@ -782,10 +1149,11 @@ impl<P: Process> Frost<P> {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let (Some(line_pipeline), Some(circle_pipeline), Some(rect_pipeline)) = (
+        let (Some(line_pipeline), Some(circle_pipeline), Some(rect_pipeline), Some(shape_pipeline)) = (
             self.line_pipeline.as_ref(),
             self.circle_pipeline.as_ref(),
             self.rect_pipeline.as_ref(),
+            self.shape_pipeline.as_ref(),
         ) else {
             return;
         };
@@ -876,6 +1244,29 @@ impl<P: Process> Frost<P> {
                         pass.set_bind_group(0, &bind_group, &[]);
                         pass.draw(0..3, 0..1);
                     }
+                    Draw::Shape {
+                        world,
+                        center,
+                        params,
+                        kind,
+                        aa,
+                        color,
+                        ..
+                    } => {
+                        let Some(inv) = world.invert() else {
+                            // Degenerate transform; the shape collapses to a
+                            // line or a point and its inverse does not exist.
+                            continue;
+                        };
+                        let (_buffer, bind_group) = self.primitive_uniform(
+                            shape_pipeline,
+                            "shape uniforms",
+                            &shape_uniform_data(inv, center, params, kind, aa, color),
+                        );
+                        pass.set_pipeline(shape_pipeline);
+                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.draw(0..3, 0..1);
+                    }
                 }
             }
         }
@@ -960,6 +1351,49 @@ fn rect_uniform_data(center: [f32; 2], extent: [f32; 2], color: Color) -> Vec<u8
         .flat_map(|f| f.to_le_bytes())
         .collect();
     data.resize(32, 0);
+    data
+}
+
+/// Shape uniform data, 80 bytes, matching the WGSL uniform-space layout of
+/// the `ShapeUniforms` Wgsl struct. Per the WGSL memory layout rules (and
+/// naga's `Layouter`), in the uniform address space a mat2x2<f32> is 16
+/// bytes total with 8-byte alignment, so its two vec2 columns are packed at
+/// @ 0 and @ 8; a vec3<f32> is 12 bytes with 16-byte alignment; a vec2<f32>
+/// is 8 bytes with 8-byte alignment. With that rule, the struct lays out as:
+/// `to_local` @ 0 (column 0 = (m[0][0], m[1][0]) at @ 0, column 1 =
+/// (m[0][1], m[1][1]) at @ 8; stored column-major, so the WGSL matrix holds
+/// the Rust matrix element-for-element and `m * p + t` in the shader
+/// reproduces `Transform::apply`), `translation` @ 16, `center` @ 24,
+/// `params` @ 32, `color` @ 48 (spanning 48..60), `misc` @ 64 (aa @ 64,
+/// kind @ 68); the struct size rounds up to 80.
+fn shape_uniform_data(
+    to_local: Transform,
+    center: [f32; 2],
+    params: [f32; 2],
+    kind: f32,
+    aa: f32,
+    color: Color,
+) -> Vec<u8> {
+    let mut data = vec![0u8; 80];
+    let m = to_local.m;
+    // mat2x2: 16 bytes total, vec2 columns with an 8-byte stride.
+    write_f32_at(&mut data, 0, m[0][0]);
+    write_f32_at(&mut data, 4, m[1][0]);
+    write_f32_at(&mut data, 8, m[0][1]);
+    write_f32_at(&mut data, 12, m[1][1]);
+    write_f32_at(&mut data, 16, to_local.t[0]);
+    write_f32_at(&mut data, 20, to_local.t[1]);
+    write_f32_at(&mut data, 24, center[0]);
+    write_f32_at(&mut data, 28, center[1]);
+    write_f32_at(&mut data, 32, params[0]);
+    write_f32_at(&mut data, 36, params[1]);
+    // vec3: 12 bytes with 16-byte alignment, so it starts at 48 and spans
+    // 48..60.
+    write_f32_at(&mut data, 48, color.r);
+    write_f32_at(&mut data, 52, color.g);
+    write_f32_at(&mut data, 56, color.b);
+    write_f32_at(&mut data, 64, aa);
+    write_f32_at(&mut data, 68, kind);
     data
 }
 
@@ -1048,5 +1482,266 @@ mod tests {
             z: 0.0,
         };
         assert_eq!(draw.scissor_rect([100, 100]), Some([0, 0, 51, 1]));
+    }
+
+    #[test]
+    fn transform_compose_applies_self_then_other() {
+        let rot = Transform::rotate(std::f32::consts::FRAC_PI_2);
+        let tr = Transform::translate(10.0, 0.0);
+        let world = rot.compose(&tr);
+        // (1, 0) rotates to (0, 1), then translates to (10, 1).
+        let p = world.apply([1.0, 0.0]);
+        assert!((p[0] - 10.0).abs() < 1e-4);
+        assert!((p[1] - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn transform_compose_respects_order() {
+        // Rotation and translation do not commute, so this pins down which
+        // order the composition applies them in.
+        let rot = Transform::rotate(std::f32::consts::FRAC_PI_2);
+        let tr = Transform::translate(10.0, 0.0);
+        // Translate first, then rotate: (1, 0) -> (11, 0) -> (0, 11).
+        let world = tr.compose(&rot);
+        let p = world.apply([1.0, 0.0]);
+        assert!(p[0].abs() < 1e-4);
+        assert!((p[1] - 11.0).abs() < 1e-4);
+        // The reverse composition: (1, 0) -> (0, 1) -> (10, 1).
+        let world = rot.compose(&tr);
+        let p = world.apply([1.0, 0.0]);
+        assert!((p[0] - 10.0).abs() < 1e-4);
+        assert!((p[1] - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn transform_inverse_round_trips() {
+        let world = Transform::translate(3.0, -4.0)
+            .compose(&Transform::rotate(0.7))
+            .compose(&Transform::scale(2.0, 0.5));
+        let Some(inv) = world.invert() else {
+            panic!("expected an inverse");
+        };
+        for p in [[1.2, -3.4], [-7.0, 2.0], [0.0, 0.0]] {
+            let back = world.apply(inv.apply(p));
+            assert!((back[0] - p[0]).abs() < 1e-3);
+            assert!((back[1] - p[1]).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn degenerate_transform_has_no_inverse() {
+        assert!(Transform::scale(0.0, 1.0).invert().is_none());
+        assert!(Transform::identity().invert().is_some());
+    }
+
+    #[test]
+    fn transform_scales_are_the_column_norms() {
+        // Scale first, then rotate: the stretch along each axis is exactly
+        // the scale factors, no matter the rotation.
+        let world = Transform::scale(2.0, 3.0).compose(&Transform::rotate(0.5));
+        let [sx, sy] = world.scales();
+        assert!((sx - 2.0).abs() < 1e-4);
+        assert!((sy - 3.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn draw_scene_composes_transforms_down_the_tree() {
+        let mut canvas = Canvas::new((100, 100));
+        let scene = Scene::new(SceneNode {
+            transform: Transform::translate(10.0, 0.0),
+            shape: Some(Shape::Circle {
+                center: [0.0, 0.0],
+                radius: 5.0,
+                color: black(),
+            }),
+            children: vec![Box::new(SceneNode {
+                transform: Transform::scale_uniform(2.0),
+                shape: None,
+                children: vec![Box::new(SceneNode {
+                    transform: Transform::identity(),
+                    shape: Some(Shape::Circle {
+                        center: [1.0, 1.0],
+                        radius: 1.0,
+                        color: black(),
+                    }),
+                    children: vec![],
+                })],
+            })],
+        });
+        canvas.draw_scene(&scene);
+        let [Draw::Shape {
+            world: w0,
+            center: c0,
+            aa: aa0,
+            ..
+        }, Draw::Shape {
+            world: w1,
+            center: c1,
+            aa: aa1,
+            ..
+        }] = &canvas.draws[..]
+        else {
+            panic!("expected two shape draws");
+        };
+        // The root circle translates to (10, 0) in user space, which is
+        // (60, 50) in pixel space on a 100x100 window (x + w/2, h/2 - y).
+        assert_eq!(w0.apply(*c0), [60.0, 50.0]);
+        assert!((*aa0 - AA_BAND).abs() < 1e-6);
+        // The grandchild's own scale applies first, then the root's
+        // translate: (1, 1) -> (2, 2) -> (12, 2) in user space, (62, 48) in
+        // pixel space, and the local AA band halves to stay 0.75 screen
+        // pixels.
+        assert_eq!(w1.apply(*c1), [62.0, 48.0]);
+        assert!((*aa1 - AA_BAND / 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn draw_scene_rotates_a_translated_child() {
+        // A translated child of a rotated parent (an orbiting shape): the
+        // parent's rotation must rotate the child's translation, not the
+        // other way around.
+        let mut canvas = Canvas::new((100, 100));
+        let scene = Scene::new(SceneNode {
+            transform: Transform::rotate(std::f32::consts::FRAC_PI_2),
+            shape: None,
+            children: vec![Box::new(SceneNode {
+                transform: Transform::translate(10.0, 0.0),
+                shape: Some(Shape::Circle {
+                    center: [0.0, 0.0],
+                    radius: 1.0,
+                    color: black(),
+                }),
+                children: vec![],
+            })],
+        });
+        canvas.draw_scene(&scene);
+        let [Draw::Shape { world: w, center: c, .. }] = &canvas.draws[..] else {
+            panic!("expected one shape draw");
+        };
+        // (0, 0) translates to (10, 0) and rotates to (0, 10) in user space,
+        // which is (50, 40) in pixel space on a 100x100 window.
+        assert_eq!(w.apply(*c), [50.0, 40.0]);
+    }
+
+    #[test]
+    fn scene_shape_at_user_origin_lands_at_window_center() {
+        // Regression: a scene shape at the user-space origin must land at
+        // the window center, not the top-left pixel corner.
+        let mut canvas = Canvas::new((100, 100));
+        let scene = Scene::new(SceneNode {
+            transform: Transform::identity(),
+            shape: Some(Shape::Circle {
+                center: [0.0, 0.0],
+                radius: 10.0,
+                color: black(),
+            }),
+            children: vec![],
+        });
+        canvas.draw_scene(&scene);
+        let [Draw::Shape { world: w, center: c, .. }] = &canvas.draws[..] else {
+            panic!("expected one shape draw");
+        };
+        assert_eq!(w.apply(*c), [50.0, 50.0]);
+    }
+
+    #[test]
+    fn shape_scissor_under_non_uniform_scale() {
+        let draw = Draw::Shape {
+            world: Transform::scale(2.0, 1.0),
+            center: [25.0, 50.0],
+            params: [10.0, 0.0],
+            kind: 0.0,
+            aa: 0.75 / 2.0,
+            color: black(),
+            z: 0.0,
+        };
+        // The local box (25 ± 10.375, 50 ± 10.375) stretches to
+        // x: [29.25, 70.75] and y: [39.625, 60.375].
+        assert_eq!(draw.scissor_rect([100, 100]), Some([29, 39, 42, 22]));
+    }
+
+    #[test]
+    fn shape_scissor_under_rotation() {
+        // The center is chosen so that the 45° rotation (about the origin)
+        // maps it onto (50, 50).
+        let center = [50.0 * std::f32::consts::SQRT_2, 0.0];
+        let draw = Draw::Shape {
+            world: Transform::rotate(std::f32::consts::FRAC_PI_4),
+            center,
+            params: [10.0, 0.0],
+            kind: 0.0,
+            aa: 0.75,
+            color: black(),
+            z: 0.0,
+        };
+        // The ±10.75 box rotated 45° has half-extent 10.75 * sqrt(2), so the
+        // axis-aligned box is [34.797, 65.203] on both axes.
+        assert_eq!(draw.scissor_rect([100, 100]), Some([34, 34, 32, 32]));
+    }
+
+    #[test]
+    fn off_screen_shape_has_no_scissor() {
+        let draw = Draw::Shape {
+            world: Transform::identity(),
+            center: [-200.0, -200.0],
+            params: [10.0, 0.0],
+            kind: 0.0,
+            aa: 0.75,
+            color: black(),
+            z: 0.0,
+        };
+        assert_eq!(draw.scissor_rect([100, 100]), None);
+    }
+
+    #[test]
+    fn shape_uniform_bytes_follow_the_wgsl_layout() {
+        // Lock the byte layout of `shape_uniform_data` to the WGSL
+        // uniform-space layout of `ShapeUniforms`, so a reorder of the Wgsl
+        // struct is caught here. Distinct values make any offset swap
+        // visible. Layout per the WGSL memory layout rules (naga's
+        // `Layouter`): mat2x2<f32> is 16 bytes total with 8-byte alignment
+        // (vec2 columns, stride 8), so `to_local` spans 0..16 with column 0
+        // at 0 and column 1 at 8; `translation` @ 16; `center` @ 24;
+        // `params` @ 32; vec3<f32> (12 bytes, 16-byte aligned) `color` @ 48;
+        // `misc` vec2 @ 64; struct span rounds up to 80.
+        let inv = Transform::translate(1.5, -2.5).invert().unwrap();
+        let data = shape_uniform_data(inv, [7.0, 8.0], [9.0, 10.0], 1.0, 0.25, Color {
+            r: 0.1,
+            g: 0.2,
+            b: 0.3,
+        });
+        assert_eq!(data.len(), 80);
+
+        let f32_at = |off: usize| {
+            f32::from_le_bytes(data[off..off + 4].try_into().unwrap())
+        };
+        // to_local is the identity matrix (inverting a pure translation keeps
+        // the matrix identity), stored column-major: column 0 = (1, 0) at @ 0,
+        // column 1 = (0, 1) at @ 8.
+        assert_eq!(f32_at(0), 1.0);
+        assert_eq!(f32_at(4), 0.0);
+        assert_eq!(f32_at(8), 0.0);
+        assert_eq!(f32_at(12), 1.0);
+        // The inverse of translate(1.5, -2.5) is translate(-1.5, 2.5).
+        assert_eq!(f32_at(16), -1.5);
+        assert_eq!(f32_at(20), 2.5);
+        assert_eq!(f32_at(24), 7.0);
+        assert_eq!(f32_at(28), 8.0);
+        assert_eq!(f32_at(32), 9.0);
+        assert_eq!(f32_at(36), 10.0);
+        // `params` ends at 40; the 16-byte-aligned vec3 color starts at 48,
+        // so bytes 40..48 are padding (zeroed by the `vec![0u8; 80]` init).
+        assert_eq!(f32_at(40), 0.0);
+        assert_eq!(f32_at(48), 0.1);
+        assert_eq!(f32_at(52), 0.2);
+        assert_eq!(f32_at(56), 0.3);
+        // Bytes 60..64 are the vec3's trailing padding, and the `misc` vec2
+        // begins at byte 64: `aa` at 64, `kind` at 68; 72..80 is the
+        // struct's alignment padding.
+        assert_eq!(f32_at(60), 0.0);
+        assert_eq!(f32_at(64), 0.25);
+        assert_eq!(f32_at(68), 1.0);
+        assert_eq!(f32_at(72), 0.0);
+        assert_eq!(data.len(), 80);
     }
 }
