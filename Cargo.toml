@@ -8,3 +8,9 @@ env_logger = "0.11.11"
 log = "0.4.34"
 wgpu = "30.0.1"
 winit = "0.30.13"
+
+[dev-dependencies]
+# Same naga version wgpu 30.0.1 uses internally, so `cargo test`
+# validates the .wgsl files with the exact frontend
+# `Device::create_shader_module` runs — no GPU or window required.
+naga = { version = "30.0.0", features = ["wgsl-in"] }

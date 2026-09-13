@@ -3,11 +3,15 @@
     "cSpell.ignoreWords": [
         "GGUF",
         "LOCALAPPDATA",
+        "Multisample",
         "OLLAMA",
         "deepseek",
         "journalctl",
         "nvtop",
         "qwen",
-        "unsloth"
+        "unsloth",
+        "wgpu",
+        "wgsl",
+        "winit"
     ]
 }
