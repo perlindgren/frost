@@ -27,6 +27,9 @@
 //! back). Objects with the same `z` are drawn in call order, so the last one
 //! drawn is on top.
 //!
+//! Each object is clipped to its tight bounding box (the scissor test), so a
+//! frame's cost scales with the objects' on-screen areas, not the window size.
+//!
 //! Key presses are logged and Escape closes the window.
 
 use std::borrow::Cow;
@@ -58,6 +61,11 @@ const DEFAULT_BACKGROUND: Color = Color {
     g: 0.09,
     b: 0.14,
 };
+
+/// The anti-alias band in pixels, mirrored by the `aa` constant in the SDF
+/// shader sources; keep the two in sync so bounding boxes cover every pixel
+/// the shaders can write.
+const AA_BAND: f32 = 0.75;
 // ============================ public API ============================
 
 /// An RGB color with channels in `0.0..=1.0`, used for the background and for
@@ -210,6 +218,56 @@ impl Draw {
             Draw::Rectangle { z, .. } => *z,
         }
     }
+
+    /// The tight pixel rectangle the draw can write to, including the
+    /// anti-alias band the shaders render beyond each geometric edge.
+    ///
+    /// `area` is the render area in pixels; the result is clamped to it, or
+    /// `None` if the draw is fully outside the surface.
+    fn scissor_rect(&self, area: [u32; 2]) -> Option<[u32; 4]> {
+        let (min, max) = match self {
+            Draw::Line { a, b, width, .. } => {
+                let pad = width * 0.5 + AA_BAND;
+                (
+                    [a[0].min(b[0]) - pad, a[1].min(b[1]) - pad],
+                    [a[0].max(b[0]) + pad, a[1].max(b[1]) + pad],
+                )
+            }
+            Draw::Circle {
+                center, radius, ..
+            } => {
+                let pad = *radius + AA_BAND;
+                (
+                    [center[0] - pad, center[1] - pad],
+                    [center[0] + pad, center[1] + pad],
+                )
+            }
+            Draw::Rectangle {
+                center, extent, ..
+            } => (
+                [
+                    center[0] - extent[0] - AA_BAND,
+                    center[1] - extent[1] - AA_BAND,
+                ],
+                [
+                    center[0] + extent[0] + AA_BAND,
+                    center[1] + extent[1] + AA_BAND,
+                ],
+            ),
+        };
+        // `floor`/`ceil` pick the pixel columns and rows the box touches;
+        // the clamps keep the box inside the surface (float-to-int casts
+        // saturate, so out-of-range coordinates stay consistent).
+        let x0 = min[0].max(0.0).floor() as u32;
+        let y0 = min[1].max(0.0).floor() as u32;
+        let x1 = max[0].min(area[0] as f32).ceil() as u32;
+        let y1 = max[1].min(area[1] as f32).ceil() as u32;
+        if x1 > x0 && y1 > y0 {
+            Some([x0, y0, x1 - x0, y1 - y0])
+        } else {
+            None
+        }
+    }
 }
 
 /// Called once per frame; draw into `canvas`.
@@ -319,8 +377,9 @@ var<uniform> u: Uniforms;
 
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    // Full-screen triangle in NDC: the fragment shader must evaluate over
-    // the whole window, wherever the line is.
+    // Full-screen triangle in NDC; the scissor is set on the CPU to the
+    // line's bounding box, so fragments outside it are discarded and the
+    // fragment shader only runs over the pixels the line can write.
     let positions = array<vec2<f32>, 3>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>(3.0, -1.0),
@@ -357,7 +416,9 @@ var<uniform> u: CircleUniforms;
 
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    // Full-screen triangle in NDC so the fragment shader runs everywhere.
+    // Full-screen triangle in NDC; the scissor is set on the CPU to the
+    // circle's bounding box, so fragments outside it are discarded and the
+    // fragment shader only runs over the pixels the circle can write.
     let positions = array<vec2<f32>, 3>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>(3.0, -1.0),
@@ -391,7 +452,9 @@ var<uniform> u: RectUniforms;
 
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    // Full-screen triangle in NDC so the fragment shader runs everywhere.
+    // Full-screen triangle in NDC; the scissor is set on the CPU to the
+    // rectangle's bounding box, so fragments outside it are discarded and
+    // the fragment shader only runs over the pixels it can write.
     let positions = array<vec2<f32>, 3>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>(3.0, -1.0),
@@ -755,9 +818,21 @@ impl<P: Process> Frost<P> {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            // A fresh uniform buffer (and bind group) per draw call, since all
-            // write_buffer copies complete before any draw executes.
+            // One pass for the whole frame. The background is cleared once
+            // for the full surface, then each draw sets the scissor to its
+            // tight bounding box, so fragments outside it are discarded and
+            // the fragment shader only runs over the pixels the object can
+            // write. The viewport is left at the full surface, so the
+            // shaders' pixel coordinates stay absolute.
+            let render_area = [output.texture.width(), output.texture.height()];
             for draw in canvas.draws {
+                let Some([x, y, w, h]) = draw.scissor_rect(render_area) else {
+                    // Fully outside the surface; nothing to draw.
+                    continue;
+                };
+                pass.set_scissor_rect(x, y, w, h);
+                // A fresh uniform buffer (and bind group) per draw call, since
+                // all write_buffer copies complete before any draw executes.
                 match draw {
                     Draw::Line {
                         a, b, width, color, ..
@@ -902,5 +977,76 @@ fn block_on<F: Future>(future: F) -> F::Output {
         if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
             return value;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn black() -> Color {
+        Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+        }
+    }
+
+    #[test]
+    fn line_scissor_includes_width_and_aa_band() {
+        let draw = Draw::Line {
+            a: [10.0, 20.0],
+            b: [30.0, 40.0],
+            width: 2.0,
+            color: black(),
+            z: 0.0,
+        };
+        // pad = width/2 + AA_BAND = 1.75
+        assert_eq!(draw.scissor_rect([100, 100]), Some([8, 18, 24, 24]));
+    }
+
+    #[test]
+    fn circle_scissor_includes_aa_band() {
+        let draw = Draw::Circle {
+            center: [50.0, 50.0],
+            radius: 10.0,
+            color: black(),
+            z: 0.0,
+        };
+        assert_eq!(draw.scissor_rect([100, 100]), Some([39, 39, 22, 22]));
+    }
+
+    #[test]
+    fn rectangle_scissor_includes_aa_band() {
+        let draw = Draw::Rectangle {
+            center: [50.0, 50.0],
+            extent: [10.0, 20.0],
+            color: black(),
+            z: 0.0,
+        };
+        assert_eq!(draw.scissor_rect([100, 100]), Some([39, 29, 22, 42]));
+    }
+
+    #[test]
+    fn off_screen_draw_has_no_scissor() {
+        let draw = Draw::Circle {
+            center: [-200.0, -200.0],
+            radius: 10.0,
+            color: black(),
+            z: 0.0,
+        };
+        assert_eq!(draw.scissor_rect([100, 100]), None);
+    }
+
+    #[test]
+    fn scissor_is_clamped_to_the_render_area() {
+        let draw = Draw::Line {
+            a: [-50.0, 0.0],
+            b: [50.0, 0.0],
+            width: 0.0,
+            color: black(),
+            z: 0.0,
+        };
+        assert_eq!(draw.scissor_rect([100, 100]), Some([0, 0, 51, 1]));
     }
 }
