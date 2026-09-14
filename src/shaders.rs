@@ -75,8 +75,8 @@ mod tests {
 
     /// The member offsets WGSL assigns to `SpriteUniforms` must match the
     /// CPU-side uniform writer in `sprite_uniform_data` (mat2x2 @0, vec2 @16,
-    /// vec2 @24, vec3 @32 — 12 bytes, 16-byte aligned — and f32 @44;
-    /// 48 bytes total). This
+    /// vec2 @24, vec3 @32 — 12 bytes, 16-byte aligned — f32 @44, and vec4
+    /// @48; 64 bytes total). This
     /// is the GPU-side mirror of
     /// `sprite_uniform_bytes_follow_the_wgsl_layout` in lib.rs, so a layout
     /// drift on either side fails a test.
@@ -101,9 +101,9 @@ mod tests {
             ),
             _ => unreachable!("SpriteUniforms must be a struct"),
         };
-        assert_eq!(offsets, [0, 16, 24, 32, 44]);
+        assert_eq!(offsets, [0, 16, 24, 32, 44, 48]);
         // The struct's total size must equal the CPU-side buffer length,
         // otherwise the buffer would be too short or carry dead bytes.
-        assert_eq!(total_size, 48);
+        assert_eq!(total_size, 64);
     }
 }

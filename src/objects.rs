@@ -194,6 +194,29 @@ pub enum Shape {
         /// unchanged; 0.0 makes the sprite fully transparent.
         alpha: f32,
     },
+    /// A text: `text` laid out with the font loaded by [`Shape::text`] at
+    /// `size` pixels per em.
+    ///
+    /// The text block is centered on the node's origin, one font pixel per
+    /// scene pixel, and the node's transform and scale apply to it exactly
+    /// as they do to the other shapes. Each glyph is drawn as a tinted
+    /// texture quad sampling a shared glyph atlas: `color` is the glyph
+    /// color (white gives white text), and `alpha` is the text's overall
+    /// opacity.
+    Text {
+        /// The string to lay out.
+        text: String,
+        /// The font file's bytes, shared by every text shape that loaded
+        /// the same file.
+        font: Arc<[u8]>,
+        /// The font size in pixels per em.
+        size: f32,
+        /// The glyph color, multiplied with every mask pixel.
+        color: Color,
+        /// The text's opacity, multiplied with the mask's own alpha
+        /// channel.
+        alpha: f32,
+    },
 }
 
 impl Shape {
@@ -221,6 +244,60 @@ impl Shape {
             },
             alpha: 1.0,
         })
+    }
+
+    /// Creates a text shape from the font file at `path`.
+    ///
+    /// The file is read immediately and checked to be a TrueType/OpenType
+    /// font, so a missing file or a non-font file fails here, not at render
+    /// time. The bytes live behind an [`Arc`], so every text shape that
+    /// loaded the same file shares one buffer, and the render pipeline can
+    /// cache one glyph atlas per (font, size) pair.
+    pub fn text(
+        path: impl AsRef<Path>,
+        text: impl Into<String>,
+        size: f32,
+    ) -> Result<Self, TextError> {
+        let bytes = std::fs::read(path.as_ref()).map_err(TextError::Io)?;
+        swash::FontRef::from_index(&bytes, 0).ok_or(TextError::InvalidFont)?;
+        Ok(Self::Text {
+            text: text.into(),
+            font: Arc::from(bytes),
+            size,
+            color: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+            },
+            alpha: 1.0,
+        })
+    }
+}
+
+/// An error while creating a [`Shape::Text`] from a font file.
+#[derive(Debug)]
+pub enum TextError {
+    /// The file could not be read.
+    Io(std::io::Error),
+    /// The file was read but is not a TrueType/OpenType font.
+    InvalidFont,
+}
+
+impl std::fmt::Display for TextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(err) => write!(f, "failed to read the font file: {err}"),
+            Self::InvalidFont => write!(f, "the font file is not a TrueType/OpenType font"),
+        }
+    }
+}
+
+impl std::error::Error for TextError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(err) => Some(err),
+            Self::InvalidFont => None,
+        }
     }
 }
 

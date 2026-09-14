@@ -92,6 +92,8 @@ pub use winit::keyboard::KeyCode;
 mod shaders;
 use shaders::*;
 
+mod text;
+
 /// The frame's clear color when no [`Shape::Background`] is drawn.
 const DEFAULT_BACKGROUND: Color = Color {
     r: 0.07,
@@ -266,8 +268,28 @@ impl Canvas {
                     world: world.compose(&self.user_to_pixel()),
                     data: data.clone(),
                     size: [(*width as f32).max(0.0), (*height as f32).max(0.0)],
+                    texture_size: [*width, *height],
                     aa,
                     tint: *color,
+                    alpha: *alpha,
+                    uv_rect: [0.0, 0.0, 1.0, 1.0],
+                    z: 0.0,
+                },
+                // Text is recorded in user space; `Canvas::expand_text`
+                // lays it out and turns each glyph into a sprite quad
+                // before the frame is rendered.
+                Shape::Text {
+                    text,
+                    font,
+                    size,
+                    color,
+                    alpha,
+                } => Draw::Text {
+                    world,
+                    font: font.clone(),
+                    text: text.clone(),
+                    size: *size,
+                    color: *color,
                     alpha: *alpha,
                     z: 0.0,
                 },
@@ -291,6 +313,110 @@ impl Canvas {
             m: [[1.0, 0.0], [0.0, -1.0]],
             t: [self.size.0 / 2.0, self.size.1 / 2.0],
         }
+    }
+
+    /// Expands every [`Draw::Text`] in this frame into one
+    /// [`Draw::Sprite`] per shaped glyph, spliced in at the text draw's
+    /// position so the stable z-sort keeps the glyph quads where the text
+    /// node was.
+    ///
+    /// The glyphs are laid out with `text::layout` (pen positions, y up,
+    /// from the text's left baseline origin) and rasterized with
+    /// `text::rasterize` into the per-`(font, size)` atlas in `atlases`,
+    /// which the caller keeps between frames so unchanged text never
+    /// re-rasterizes and its texture buffer keeps a stable identity.
+    /// Each glyph's quad is centered on its ink box; the whole text block
+    /// is centered on the text node's origin.
+    pub(crate) fn expand_text(&mut self, atlases: &mut HashMap<(u64, u32), text::Atlas>) {
+        let draws = std::mem::take(&mut self.draws);
+        let mut expanded = Vec::with_capacity(draws.len());
+        for draw in draws {
+            match draw {
+                Draw::Text {
+                    world,
+                    font,
+                    text: string,
+                    size,
+                    color,
+                    alpha,
+                    z,
+                } => {
+                    // A broken font leaves the text undrawn; `Shape::text`
+                    // validates the font up front, so this only guards a
+                    // buffer that turned out unreadable.
+                    let Some(layout) = text::layout(&font, &string, size) else {
+                        continue;
+                    };
+                    let key = (Arc::as_ptr(&font) as *const () as u64, size.to_bits());
+                    let mut atlas = atlases.get(&key).cloned().unwrap_or_default();
+                    // Rasterize the glyphs the atlas does not have yet.
+                    let mut missing = Vec::new();
+                    for glyph in &layout.glyphs {
+                        if atlas.has(glyph.id) {
+                            continue;
+                        }
+                        if let Some(raster) = text::rasterize(&font, glyph.id, size) {
+                            missing.push((glyph.id, raster));
+                        }
+                    }
+                    if !missing.is_empty() {
+                        atlas.insert_many(&missing);
+                    }
+                    // Keep the atlas in the map even when nothing was
+                    // packed (e.g. all-space text) so later frames hit it.
+                    let atlas = atlases.entry(key).or_insert(atlas);
+                    let [sx, sy] = world.scales();
+                    let aa = AA_BAND / sx.max(sy).max(1e-9);
+                    // Center the text block (width by ascent + descent,
+                    // baseline at the pen-space origin, y up) on the node's
+                    // origin.
+                    let origin = [
+                        -layout.width / 2.0,
+                        (layout.ascent - layout.descent) / 2.0,
+                    ];
+                    let (atlas_w, atlas_h) = (atlas.width as f32, atlas.height as f32);
+                    for glyph in &layout.glyphs {
+                        let Some(cell) = atlas.cell(glyph.id) else {
+                            continue;
+                        };
+                        let (gw, gh) = (cell.width as f32, cell.height as f32);
+                        // The glyph's pen position in the node's local
+                        // space, plus the ink box's center offset from the
+                        // pen: `left` right and `top - height / 2` above the
+                        // baseline.
+                        let ink = [
+                            origin[0] + glyph.x + cell.left as f32 + gw / 2.0,
+                            origin[1] + glyph.y + cell.top as f32 - gh / 2.0,
+                        ];
+                        let glyph_world = Transform::translate(ink[0], ink[1])
+                            .compose(&world)
+                            .compose(&self.user_to_pixel());
+                        // Inset the cell by half a texel so the quad's edges
+                        // sample the edge texels exactly instead of blending
+                        // with the neighboring cell.
+                        let uv_rect = [
+                            (cell.x as f32 + 0.5) / atlas_w,
+                            (cell.y as f32 + 0.5) / atlas_h,
+                            (cell.x as f32 + cell.width as f32 - 0.5) / atlas_w,
+                            (cell.y as f32 + cell.height as f32 - 0.5) / atlas_h,
+                        ];
+                        expanded.push(Draw::Sprite {
+                            world: glyph_world,
+                            data: atlas.data.clone(),
+                            size: [gw, gh],
+                            texture_size: [atlas.width, atlas.height],
+                            aa,
+                            tint: color,
+                            alpha,
+                            uv_rect,
+                            z,
+                        });
+                    }
+                }
+                other => expanded.push(other),
+            }
+        }
+        self.draws = expanded;
     }
 
     /// Converts user coordinates (window center origin, y up) to the pixel
@@ -346,16 +472,46 @@ enum Draw {
         /// The transform from the sprite's local space to pixel space.
         world: Transform,
         /// The RGBA8 pixel data, row by row, top row first. Two sprites
-        /// created from the same file share this buffer.
+        /// created from the same file share this buffer; glyph quads
+        /// expanded by [`Canvas::expand_text`] share the same atlas buffer.
         data: Arc<[u8]>,
-        /// The texture size in local units, one unit per texture pixel.
+        /// The local extent of the quad in local units; the sampled region
+        /// spans `uv_rect` of the texture.
         size: [f32; 2],
+        /// The sampled texture's size in pixels. Normally equal to
+        /// `size` (one unit per texture pixel); for glyph quads the texture
+        /// is a shared atlas that is larger than the quad.
+        texture_size: [u32; 2],
         /// The anti-alias band in local units (the screen `AA_BAND` divided
         /// by the transform's scale).
         aa: f32,
         /// The per-pixel tint, multiplied with every sampled pixel.
         tint: Color,
         /// The sprite's opacity, multiplied with the texture's own alpha.
+        alpha: f32,
+        /// The sub-rectangle of the texture the quad covers, as
+        /// `[min_x, min_y, max_x, max_y]` in [0, 1] texture coordinates
+        /// (top-left origin). `[0.0, 0.0, 1.0, 1.0]` covers the whole
+        /// texture.
+        uv_rect: [f32; 4],
+        z: f32,
+    },
+    /// A block of text: expanded into one [`Draw::Sprite`] per glyph by
+    /// [`Canvas::expand_text`] before the frame is rendered, so this
+    /// variant never reaches the render loop itself.
+    Text {
+        /// The node's world transform in user space (not yet composed with
+        /// the user-to-pixel transform).
+        world: Transform,
+        /// The font file's bytes.
+        font: Arc<[u8]>,
+        /// The string to lay out.
+        text: String,
+        /// The font size in pixels per em.
+        size: f32,
+        /// The glyph color.
+        color: Color,
+        /// The text's opacity.
         alpha: f32,
         z: f32,
     },
@@ -374,6 +530,7 @@ impl Draw {
             Draw::Rectangle { z, .. } => *z,
             Draw::Shape { z, .. } => *z,
             Draw::Sprite { z, .. } => *z,
+            Draw::Text { z, .. } => *z,
             // The background is always at the very back.
             Draw::Background { .. } => f32::MIN,
         }
@@ -449,6 +606,9 @@ impl Draw {
             }
             // A background never draws; the early return above covers it.
             Draw::Background { .. } => unreachable!(),
+            // Text is expanded into glyph sprites by `Canvas::expand_text`
+            // before the render loop, so it never reaches the scissor.
+            Draw::Text { .. } => unreachable!(),
         };
         clamp_box_to_area(min, max, area)
     }
@@ -698,6 +858,7 @@ pub fn run<P: Process>(scene: Scene, process: P) -> Result<(), Box<dyn Error>> {
         shape_pipeline: None,
         sprite_pipeline: None,
         sprite_resources: HashMap::new(),
+        text_atlases: HashMap::new(),
         format: None,
         last_time: None,
         scene,
@@ -736,6 +897,12 @@ struct Frost<P: Process> {
     /// A `TextureView` keeps its texture alive, so only the view and the
     /// sampler are stored.
     sprite_resources: HashMap<*const (), (TextureView, Sampler)>,
+    /// The rasterized glyph atlas for each distinct `(font, size)` pair,
+    /// keyed by the font buffer's pointer and the size's bits. Kept between
+    /// frames so unchanged text never re-rasterizes and its pixel buffer —
+    /// and therefore the GPU texture in `sprite_resources` — keeps a stable
+    /// identity.
+    text_atlases: HashMap<(u64, u32), text::Atlas>,
     /// The surface format the current pipelines were built for; they are only
     /// rebuilt when this changes.
     format: Option<TextureFormat>,
@@ -1178,6 +1345,9 @@ impl<P: Process> Frost<P> {
         }
         // The scene was just updated; draw it into the frame's draw list.
         canvas.draw_scene(&self.scene);
+        // Expand the text into per-glyph sprite quads before the sort, so
+        // each glyph keeps its node's position in the paint order.
+        canvas.expand_text(&mut self.text_atlases);
 
         // Paint order: ascending z, lower z behind. `sort_by` is stable, so
         // draws with equal z keep call order and the last drawn is on top.
@@ -1321,8 +1491,10 @@ impl<P: Process> Frost<P> {
                         world,
                         data,
                         size,
+                        texture_size,
                         tint,
                         alpha,
+                        uv_rect,
                         ..
                     } => {
                         let Some(inv) = world.invert() else {
@@ -1333,12 +1505,14 @@ impl<P: Process> Frost<P> {
                         // Look up the GPU resources for this image, creating
                         // them on first use. Two sprites from the same file
                         // share one texture, so the image is uploaded once
-                        // per file.
+                        // per file; glyph quads from the same atlas share
+                        // one atlas texture the same way.
                         let key = Arc::as_ptr(&data) as *const ();
                         let (view, sampler) = match self.sprite_resources.get(&key) {
                             Some((view, sampler)) => (view.clone(), sampler.clone()),
                             None => {
-                                let (view, sampler) = self.sprite_texture(&data, size);
+                                let (view, sampler) =
+                                    self.sprite_texture(&data, [texture_size[0] as f32, texture_size[1] as f32]);
                                 self.sprite_resources
                                     .insert(key, (view.clone(), sampler.clone()));
                                 (view, sampler)
@@ -1349,7 +1523,7 @@ impl<P: Process> Frost<P> {
                             "sprite uniforms",
                             &view,
                             &sampler,
-                            &sprite_uniform_data(inv, size, tint, alpha),
+                            &sprite_uniform_data(inv, size, tint, alpha, uv_rect),
                         );
                         pass.set_pipeline(sprite_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
@@ -1358,6 +1532,10 @@ impl<P: Process> Frost<P> {
                     // A background's scissor rect is `None`, so it continued
                     // above; this arm keeps the match exhaustive.
                     Draw::Background { .. } => {}
+                    // Text is expanded into glyph sprites before the render
+                    // loop, so it never reaches the match; this arm keeps it
+                    // exhaustive.
+                    Draw::Text { .. } => {}
                 }
             }
         }
@@ -1488,19 +1666,20 @@ fn shape_uniform_data(
     data
 }
 
-/// Sprite uniform data, 48 bytes, matching the WGSL uniform-space layout of
+/// Sprite uniform data, 64 bytes, matching the WGSL uniform-space layout of
 /// the `SpriteUniforms` Wgsl struct. The mat2x2 column packing is the same
 /// as in [`shape_uniform_data`]; `translation` sits at @ 16, `size` (a
 /// vec2) at @ 24, the tint `vec3` at @ 32 (12 bytes, 16-byte aligned,
-/// spanning 32..44), and the scalar `alpha` (4-byte aligned) at @ 44; the
-/// struct size is 48.
+/// spanning 32..44), the scalar `alpha` (4-byte aligned) at @ 44, and the
+/// `uv_rect` `vec4` (16-byte aligned) at @ 48; the struct size is 64.
 fn sprite_uniform_data(
     to_local: Transform,
     size: [f32; 2],
     tint: Color,
     alpha: f32,
+    uv_rect: [f32; 4],
 ) -> Vec<u8> {
-    let mut data = vec![0u8; 48];
+    let mut data = vec![0u8; 64];
     let m = to_local.m;
     // mat2x2: 16 bytes total, vec2 columns with an 8-byte stride.
     write_f32_at(&mut data, 0, m[0][0]);
@@ -1518,6 +1697,10 @@ fn sprite_uniform_data(
     write_f32_at(&mut data, 36, tint.g);
     write_f32_at(&mut data, 40, tint.b);
     write_f32_at(&mut data, 44, alpha);
+    write_f32_at(&mut data, 48, uv_rect[0]);
+    write_f32_at(&mut data, 52, uv_rect[1]);
+    write_f32_at(&mut data, 56, uv_rect[2]);
+    write_f32_at(&mut data, 60, uv_rect[3]);
     data
 }
 
@@ -2094,9 +2277,11 @@ mod tests {
             world,
             data,
             size,
+            texture_size,
             aa,
             tint,
             alpha,
+            uv_rect,
             z,
         }] = &canvas.draws[..]
         else {
@@ -2105,10 +2290,12 @@ mod tests {
         // The sprite's local space is centered on the origin.
         assert_eq!(world.apply([0.0, 0.0]), [50.0, 50.0]);
         assert_eq!(*size, [4.0, 4.0]);
+        assert_eq!(*texture_size, [4, 4]);
         assert_eq!(data.len(), 16);
         assert!((*aa - AA_BAND).abs() < 1e-6);
         assert_eq!(*tint, black());
         assert_eq!(*alpha, 1.0);
+        assert_eq!(*uv_rect, [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(*z, 0.0);
     }
 
@@ -2118,9 +2305,11 @@ mod tests {
             world: Transform::translate(50.0, 50.0),
             data: Arc::new([0u8; 16]),
             size: [40.0, 20.0],
+            texture_size: [40, 20],
             aa: 0.75,
             tint: black(),
             alpha: 1.0,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
             z: 0.0,
         };
         // The box is (50 ± 20.75, 50 ± 10.75), i.e. [29.25, 70.75] on x and
@@ -2139,9 +2328,11 @@ mod tests {
                 .compose(&Transform::translate(50.0, 50.0)),
             data: Arc::new([0u8; 16]),
             size: [40.0, 20.0],
+            texture_size: [40, 20],
             aa: 0.75,
             tint: black(),
             alpha: 1.0,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
             z: 0.0,
         };
         assert_eq!(draw.scissor_rect([100, 100]), Some([27, 27, 46, 46]));
@@ -2153,8 +2344,9 @@ mod tests {
         // uniform-space layout of `SpriteUniforms`, the same way the shape
         // test does: the mat2x2 `<f32>` spans 0..16 (column 0 @ 0, column 1
         // @ 8), `translation` @ 16, `size` @ 24, the tint vec3 (12 bytes,
-        // 16-byte aligned) @ 32 spanning 32..44, and the scalar alpha @ 44;
-        // the struct size is 48.
+        // 16-byte aligned) @ 32 spanning 32..44, the scalar alpha @ 44, and
+        // the `uv_rect` vec4 (16-byte aligned) @ 48 spanning 48..64; the
+        // struct size is 64.
         let inv = Transform::translate(1.5, -2.5).invert().unwrap();
         let data = sprite_uniform_data(
             inv,
@@ -2165,8 +2357,9 @@ mod tests {
                 b: 0.125,
             },
             0.75,
+            [0.25, 0.5, 0.75, 1.0],
         );
-        assert_eq!(data.len(), 48);
+        assert_eq!(data.len(), 64);
 
         let f32_at = |off: usize| {
             f32::from_le_bytes(data[off..off + 4].try_into().unwrap())
@@ -2188,6 +2381,122 @@ mod tests {
         // The scalar alpha is 4-byte aligned, so it occupies the 44..48
         // slot that used to be alignment padding.
         assert_eq!(f32_at(44), 0.75);
+        // The uv_rect vec4 is 16-byte aligned, so it sits in the 48..64
+        // slot; a whole-texture sprite passes the identity rect.
+        assert_eq!(f32_at(48), 0.25);
+        assert_eq!(f32_at(52), 0.5);
+        assert_eq!(f32_at(56), 0.75);
+        assert_eq!(f32_at(60), 1.0);
+    }
+
+    /// The font file used by the expand_text tests, loaded from the crate's
+    /// asset directory.
+    fn test_font() -> Arc<[u8]> {
+        Arc::from(
+            std::fs::read(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/fonts/JameGem08_2026-Regular.ttf"
+            ))
+            .expect("test font should be readable"),
+        )
+    }
+
+    #[test]
+    fn expand_text_splices_glyph_sprites_in_place() {
+        // A text draw between two circle draws must be replaced by its
+        // glyph sprites without disturbing the neighbours' positions: the
+        // circles keep their slots and the sprites inherit the text's tint,
+        // alpha and z.
+        let font = test_font();
+        let size = 48.0;
+        let mut canvas = Canvas::new((800, 600));
+        let tint = Color { r: 1.0, g: 0.5, b: 0.25 };
+        canvas.draws = vec![
+            Draw::Circle {
+                center: [-100.0, 0.0],
+                radius: 10.0,
+                color: black(),
+                z: 0.0,
+            },
+            Draw::Text {
+                world: Transform::identity(),
+                font: font.clone(),
+                text: "hi".to_string(),
+                size,
+                color: tint,
+                alpha: 0.9,
+                z: 1.0,
+            },
+            Draw::Circle {
+                center: [100.0, 0.0],
+                radius: 10.0,
+                color: black(),
+                z: 2.0,
+            },
+        ];
+        let mut atlases: HashMap<(u64, u32), text::Atlas> = HashMap::new();
+        canvas.expand_text(&mut atlases);
+
+        // The layout's glyph count is the source of truth for how many
+        // sprites the text should produce (every glyph of "hi" has ink).
+        let layout =
+            text::layout(&font, "hi", size).expect("the test font should shape 'hi'");
+        assert_eq!(canvas.draws.len(), 2 + layout.glyphs.len());
+        let [Draw::Circle { z: z0, .. }, .., Draw::Circle { z: z1, .. }] =
+            &canvas.draws[..]
+        else {
+            panic!("the circles must keep their slots");
+        };
+        assert_eq!(*z0, 0.0);
+        assert_eq!(*z1, 2.0);
+        for draw in canvas.draws.iter().skip(1).take(layout.glyphs.len()) {
+            let Draw::Sprite { size, texture_size, uv_rect, tint, alpha, z, .. } = draw
+            else {
+                panic!("every spliced draw must be a sprite");
+            };
+            assert_eq!(*tint, Color { r: 1.0, g: 0.5, b: 0.25 });
+            assert_eq!(*alpha, 0.9);
+            assert_eq!(*z, 1.0);
+            // Glyph quads are a sub-rectangle of the 512x512 atlas.
+            assert_eq!(*texture_size, [512, 512]);
+            assert!(size[0] > 0.0 && size[1] > 0.0);
+            assert!(uv_rect[0] < uv_rect[2]);
+            assert!(uv_rect[1] < uv_rect[3]);
+        }
+    }
+
+    #[test]
+    fn expand_text_reuses_the_atlas_across_frames() {
+        // A second frame with the same font, text and size must not
+        // re-rasterize: the atlas data Arc stays the same pointer, so the
+        // GPU texture is reused and no bytes are re-uploaded.
+        let font = test_font();
+        let size: f32 = 48.0;
+        let mut atlases: HashMap<(u64, u32), text::Atlas> = HashMap::new();
+        let key = (Arc::as_ptr(&font) as *const () as u64, size.to_bits());
+
+        let mut frame = || {
+            let mut canvas = Canvas::new((800, 600));
+            canvas.draws = vec![Draw::Text {
+                world: Transform::identity(),
+                font: font.clone(),
+                text: "hello world".to_string(),
+                size,
+                color: Color { r: 1.0, g: 1.0, b: 1.0 },
+                alpha: 1.0,
+                z: 0.0,
+            }];
+            canvas.expand_text(&mut atlases);
+            let Draw::Sprite { data, .. } = &canvas.draws[0] else {
+                panic!("the first glyph must be a sprite");
+            };
+            Arc::as_ptr(data)
+        };
+        let first = frame();
+        let second = frame();
+        assert_eq!(first, second, "frame two must reuse the atlas buffer");
+        // The atlas was actually registered under its font key.
+        assert!(atlases.contains_key(&key));
     }
 
     #[test]
