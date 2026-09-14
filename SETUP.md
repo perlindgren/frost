@@ -77,7 +77,7 @@
 - Run in one terminal:
 
 ````shell
-.\llama.exe serve -hf unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M --parallel 1 "-ngl" all "-fa" on "-c" 65536 "-ctk" q8_0 "-ctv" q8_0
+.\llama.exe serve -hf unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M --parallel 1 "-ngl" all "-fa" on "-c" 98304 "-ctk" q8_0 "-ctv" q8_0
 ``
   - `-fa` flash attention (needed for context quantization)
   - `-ctx` q8_0 quantization
@@ -104,13 +104,13 @@ llm-pi-ai:
       models:
         - id: unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M
           name: unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M
-          maxTokens: 65536
-          contextWindow: 65536
+          maxTokens: 16384
+          contextWindow: 98304
 # Provider Tuning Configuration
 temperature: 0.15 # Drastically lowers hallucinations for precise syntax
 top_p: 0.90 # Filters out low-probability logic steps
 frequency_penalty: 0.0 # Ensures essential Rust structural syntax keywords are repeated cleanly
-max_tokens: 65536 # Grants a large output context window per agent thought
+max_tokens: 16384 # Per-thought answer budget; keeps worst-case generation bounded (context is clamped per request anyway)
 agent-default-model:
   provider: llama-local
   model: unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M
@@ -122,7 +122,7 @@ agent-default-model:
 - Run in one terminal:
 
 ```shell
-HSA_OVERRIDE_GFX_VERSION=11.0.0 llama-server -hf unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M --parallel 1 -ngl all -fa on -c 65536 -ctk q8_0 -ctv q8_0
+HSA_OVERRIDE_GFX_VERSION=11.0.0 llama-server -hf unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M --parallel 1 -ngl all -fa on -c 98304 -ctk q8_0 -ctv q8_0
 ```
 
 - Run in another terminal:
