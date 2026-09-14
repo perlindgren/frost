@@ -4,13 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-env_logger = "0.11.11"
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4.34"
 wgpu = "30.0.1"
 winit = "0.30.13"
 
 [dev-dependencies]
+# Logger initialization for the examples and tests only; the library
+# itself just uses the `log` facade, so consumers choose their own.
+env_logger = "0.11.11"
 # Same naga version wgpu 30.0.1 uses internally, so `cargo test`
 # validates the .wgsl files with the exact frontend
 # `Device::create_shader_module` runs — no GPU or window required.
