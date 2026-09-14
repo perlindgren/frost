@@ -51,10 +51,11 @@
 //! The scene passed to [`run`] is drawn every frame; use
 //! [`Canvas::draw_scene`] to draw additional scenes.
 //!
-//! Key presses are logged and Escape closes the window.
+//! Key presses are logged, the currently held keys are reported by
+//! [`Context::key_down`], and Escape closes the window.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::future::Future;
 use std::sync::Arc;
@@ -76,11 +77,17 @@ use wgpu::{
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::NamedKey;
+use winit::keyboard::{NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 mod objects;
 pub use objects::*;
+
+/// The physical keyboard keys used by [`Context::key_down`], such as
+/// `KeyCode::KeyW`. Physical keys identify the key's position on the
+/// keyboard (its scancode), independent of the active layout, which is what
+/// game controls like WASD want.
+pub use winit::keyboard::KeyCode;
 
 mod shaders;
 use shaders::*;
@@ -507,12 +514,21 @@ fn clear_color(draws: &[Draw]) -> Color {
 pub struct Context<'c> {
     canvas: &'c mut Canvas,
     scene: &'c mut Scene,
+    keys: &'c HashSet<KeyCode>,
 }
 
 impl Context<'_> {
     /// Mutable access to the scene owned by [`run`].
     pub fn scene(&mut self) -> &mut Scene {
         &mut *self.scene
+    }
+
+    /// Whether the physical `key` is currently held down.
+    ///
+    /// The state is updated as keyboard events arrive, so it reflects every
+    /// press and release since the previous frame.
+    pub fn key_down(&self, key: KeyCode) -> bool {
+        self.keys.contains(&key)
     }
 }
 
@@ -685,6 +701,7 @@ pub fn run<P: Process>(scene: Scene, process: P) -> Result<(), Box<dyn Error>> {
         format: None,
         last_time: None,
         scene,
+        keys: HashSet::new(),
         process,
     };
     event_loop.run_app(&mut app)?;
@@ -726,6 +743,8 @@ struct Frost<P: Process> {
     last_time: Option<Instant>,
     /// The scene drawn every frame, after the process runs.
     scene: Scene,
+    /// The physical keys currently held down, updated as keyboard events arrive.
+    keys: HashSet<KeyCode>,
     process: P,
 }
 
@@ -798,10 +817,27 @@ impl<P: Process> ApplicationHandler for Frost<P> {
         match event {
             WindowEvent::KeyboardInput { event, .. } => {
                 log::info!("key event: {event:?}");
+                // Track the held physical keys so `Context::key_down` can
+                // report them to the process on the next frame.
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    match event.state {
+                        ElementState::Pressed => {
+                            self.keys.insert(code);
+                        }
+                        ElementState::Released => {
+                            self.keys.remove(&code);
+                        }
+                    }
+                }
                 if event.state == ElementState::Pressed && event.logical_key == NamedKey::Escape {
                     log::info!("escape pressed, exiting");
                     event_loop.exit();
                 }
+            }
+            WindowEvent::Focused(false) => {
+                // The window lost focus: key releases may never arrive, so
+                // drop the held-key state rather than stick the keys.
+                self.keys.clear();
             }
             WindowEvent::CloseRequested => {
                 log::info!("window close requested, exiting");
@@ -1131,10 +1167,12 @@ impl<P: Process> Frost<P> {
         self.last_time = Some(now);
         let process = &mut self.process;
         let scene = &mut self.scene;
+        let keys = &self.keys;
         {
             let mut ctx = Context {
                 canvas: &mut canvas,
                 scene,
+                keys,
             };
             process.process(&mut ctx, dt);
         }
@@ -1734,6 +1772,29 @@ mod tests {
             panic!("expected one shape draw");
         };
         assert_eq!(w.apply(*c), [50.0, 50.0]);
+    }
+
+    #[test]
+    fn context_reports_held_keys() {
+        let mut canvas = Canvas::new((100, 100));
+        let mut scene = Scene::default();
+        let mut keys = HashSet::new();
+        {
+            let ctx = Context {
+                canvas: &mut canvas,
+                scene: &mut scene,
+                keys: &keys,
+            };
+            assert!(!ctx.key_down(KeyCode::KeyW));
+        }
+        keys.insert(KeyCode::KeyW);
+        let ctx = Context {
+            canvas: &mut canvas,
+            scene: &mut scene,
+            keys: &keys,
+        };
+        assert!(ctx.key_down(KeyCode::KeyW));
+        assert!(!ctx.key_down(KeyCode::KeyA));
     }
 
     #[test]
