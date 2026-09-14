@@ -35,7 +35,7 @@ fn main() {
     let root = std::env!("CARGO_MANIFEST_DIR");
     let hello = match frost::Shape::text(
         format!("{root}/assets/fonts/JameGem08_2026-Regular.ttf"),
-        "H",
+        "Sub",
         48.0,
     ) {
         Ok(shape) => shape,
@@ -61,8 +61,22 @@ fn main() {
             // process() nudges it vertically each frame.
             transform: frost::Transform::identity(),
             scale: [1.0, 1.0],
-            shape: Some(hello),
-            children: vec![],
+            shape: Some(frost::Shape::Circle {
+                center: [0.0, 0.0],
+                radius: 90.0,
+                color: frost::Color {
+                    r: 0.25,
+                    g: 0.35,
+                    b: 0.6,
+                },
+            }),
+
+            children: vec![Box::new(frost::SceneNode {
+                transform: frost::Transform::identity(),
+                scale: [1.0, 1.0],
+                shape: Some(hello),
+                children: vec![],
+            })],
         })],
     });
 

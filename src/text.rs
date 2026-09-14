@@ -59,11 +59,14 @@ pub(crate) fn layout(font: &[u8], text: &str, size: f32) -> Option<TextLayout> {
     let mut width = 0.0;
     let mut glyphs = Vec::new();
     shaper.shape_with(|cluster| {
+        // `glyph.x` is the offset from this cluster's pen, so the pen's
+        // position must be added on.
+        let cluster_pen = width;
         width += cluster.advance();
         for glyph in cluster.glyphs {
             glyphs.push(PlacedGlyph {
                 id: glyph.id,
-                x: glyph.x,
+                x: cluster_pen + glyph.x,
                 y: glyph.y,
             });
         }
@@ -107,14 +110,15 @@ pub(crate) fn rasterize(font: &[u8], id: u16, size: f32) -> Option<RasterGlyph> 
     if width == 0 || height == 0 {
         return None;
     }
-    // `render` fills the mask with a BottomLeft origin: row 0 of
-    // `image.data` is the glyph's *bottom* row. Flip the rows into the
-    // top-first order the GPU atlas uses, and replicate the mask's alpha
-    // into RGBA so the sprite shader tints and fades it like any texture.
+    // swash renders with a BottomLeft origin, but the mask buffer is still
+    // written top first (row 0 of `image.data` is the glyph's *top* row)
+    // and `placement.top` is the pen-space y of that top row, so the rows
+    // copy straight across. Replicate the mask's alpha into RGBA so the
+    // sprite shader tints and fades it like any texture.
     let mut data = vec![0u8; (width as usize) * (height as usize) * 4];
     for row in 0..height as usize {
         let src = row * width as usize;
-        let dst = ((height as usize - 1 - row) * width as usize) * 4;
+        let dst = row * (width as usize) * 4;
         for col in 0..width as usize {
             let a = image.data[src + col];
             data[dst + col * 4..dst + col * 4 + 4].copy_from_slice(&[a, a, a, a]);
@@ -279,6 +283,16 @@ mod tests {
             );
             x = glyph.x;
         }
+        // The pen must actually travel across the text; with a dozen or so
+        // glyphs the last one starts well past the middle of the block
+        // (this catches cluster-relative offsets that never advance).
+        let last = layout.glyphs.last().expect("there should be a last glyph");
+        assert!(
+            last.x > layout.width / 2.0,
+            "the last glyph's pen should be past the middle of the text: {} vs width {}",
+            last.x,
+            layout.width
+        );
     }
 
     /// A real glyph rasterizes to an inked mask; a missing glyph does not.
@@ -294,6 +308,33 @@ mod tests {
         assert!(glyph.data.iter().any(|&a| a > 0), "the mask should be inked");
         // A glyph id that does not exist in the font rasterizes to nothing.
         assert!(rasterize(&font, 9999, 48.0).is_none());
+    }
+
+    /// The rasterized mask must be top first: for 'h', the top half of the
+    /// mask (the bowl) carries far more ink than the bottom half (the
+    /// stem alone). A flipped mask would put the bowl on the bottom.
+    #[test]
+    fn rasterize_produces_a_top_first_mask() {
+        let font = example_font();
+        let layout = layout(&font, "h", 48.0).expect("the font should shape 'h'");
+        let glyph =
+            rasterize(&font, layout.glyphs[0].id, 48.0).expect("'h' should have outlines");
+        let w = glyph.width as usize;
+        let h = glyph.height as usize;
+        let row_ink = |row: usize| -> u32 {
+            glyph.data[row * w * 4..(row + 1) * w * 4]
+                .chunks(4)
+                .map(|px| px[3] as u32)
+                .sum()
+        };
+        let top_half = (0..h / 2).map(row_ink).sum::<u32>();
+        let bottom_half = (h / 2..h).map(row_ink).sum::<u32>();
+        assert!(
+            top_half > bottom_half,
+            "'h' should ink its top half (the bowl) more than its bottom half: {} vs {}",
+            top_half,
+            bottom_half
+        );
     }
 
     /// The shelf packer lays cells left to right, wraps to a new shelf, and
