@@ -1,6 +1,9 @@
 //! The scene objects: the [`Transform`], [`Color`], [`Shape`], [`SceneNode`]
 //! and [`Scene`] types that make up the scene tree drawn by frost.
 
+use std::path::Path;
+use std::sync::Arc;
+
 /// An RGB color with channels in `0.0..=1.0`, used for the background and for
 /// the color of each drawn object.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -143,7 +146,7 @@ impl Transform {
 /// composed transforms of every ancestor apply to the shape, except for
 /// [`Shape::Background`], which fills the whole window regardless of
 /// transform.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Shape {
     /// A filled circle centered at `center` with `radius`.
     Circle {
@@ -168,6 +171,86 @@ pub enum Shape {
     Background {
         color: Color,
     },
+    /// A sprite: the RGBA pixels of a PNG image, created by
+    /// [`Shape::sprite`].
+    ///
+    /// The sprite is centered on the node's origin, one texture pixel per
+    /// scene pixel, and the node's transform and scale apply to it exactly as
+    /// they do to the other shapes. `color` is a per-pixel tint multiplied
+    /// with every sampled pixel; white (`[1.0, 1.0, 1.0]`) leaves the
+    /// texture unchanged. The texture's own alpha channel is scaled by
+    /// `alpha`, so `alpha` is the sprite's overall opacity.
+    Sprite {
+        /// The RGBA8 pixel data, row by row, top row first.
+        data: Arc<[u8]>,
+        /// The texture width in pixels.
+        width: u32,
+        /// The texture height in pixels.
+        height: u32,
+        /// The per-pixel tint, multiplied with every sampled pixel.
+        color: Color,
+        /// The sprite's opacity, multiplied with the texture's own alpha
+        /// channel. 1.0 (the default) leaves the texture's transparency
+        /// unchanged; 0.0 makes the sprite fully transparent.
+        alpha: f32,
+    },
+}
+
+impl Shape {
+    /// Creates a sprite shape from the PNG file at `path`.
+    ///
+    /// The file is read and decoded to RGBA8 immediately, so a missing file
+    /// or a non-PNG file fails here, not at render time. The pixels live
+    /// behind an [`Arc`], so cloning a sprite shape — or any scene node or
+    /// scene containing one — is cheap: all the clones share the same
+    /// buffer.
+    pub fn sprite(path: impl AsRef<Path>) -> Result<Self, SpriteError> {
+        let bytes = std::fs::read(path.as_ref()).map_err(SpriteError::Io)?;
+        let image = image::load_from_memory(&bytes).map_err(SpriteError::Decode)?;
+        let rgba = image.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        let data = Arc::from(rgba.into_raw().into_boxed_slice());
+        Ok(Self::Sprite {
+            data,
+            width,
+            height,
+            color: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+            },
+            alpha: 1.0,
+        })
+    }
+}
+
+/// An error while creating a [`Shape::Sprite`] from a PNG file.
+#[derive(Debug)]
+pub enum SpriteError {
+    /// The file could not be read.
+    Io(std::io::Error),
+    /// The file was read but is not a decodable PNG image.
+    Decode(image::ImageError),
+}
+
+impl std::fmt::Display for SpriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(err) => write!(f, "failed to read the sprite file: {err}"),
+            Self::Decode(err) => {
+                write!(f, "failed to decode the sprite as a PNG image: {err}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SpriteError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(err) => Some(err),
+            Self::Decode(err) => Some(err),
+        }
+    }
 }
 
 /// A node in a [`Scene`] tree.

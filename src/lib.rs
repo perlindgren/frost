@@ -54,6 +54,7 @@
 //! Key presses are logged and Escape closes the window.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::error::Error;
 use std::future::Future;
 use std::sync::Arc;
@@ -61,13 +62,16 @@ use std::task::{Context as TaskContext, Poll, Wake, Waker};
 use std::time::Instant;
 
 use wgpu::{
-    Adapter, BindGroup, BindGroupDescriptor, BindGroupEntry, BindingResource, Buffer,
-    BufferBinding, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
-    CommandEncoderDescriptor, CurrentSurfaceTexture, Device, DeviceDescriptor, FragmentState,
-    Instance, MultisampleState, PipelineCompilationOptions, PrimitiveState, Queue,
-    RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor,
-    RequestAdapterOptions, ShaderModule, ShaderModuleDescriptor, ShaderSource, StoreOp, Surface,
-    SurfaceTexture, TextureFormat, TextureViewDescriptor, VertexState,
+    Adapter, AddressMode, BindGroup, BindGroupDescriptor, BindGroupEntry, BindingResource,
+    Buffer, BufferBinding, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
+    CommandEncoderDescriptor, CurrentSurfaceTexture, Device, DeviceDescriptor, Extent3d,
+    FilterMode, FragmentState, Instance, MipmapFilterMode, MultisampleState,
+    PipelineCompilationOptions, PrimitiveState, Queue, RenderPassColorAttachment,
+    RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, RequestAdapterOptions,
+    Sampler, SamplerDescriptor, ShaderModule, ShaderModuleDescriptor, ShaderSource, StoreOp,
+    Surface, SurfaceTexture, TexelCopyBufferLayout, TexelCopyTextureInfo, TextureAspect,
+    TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
+    TextureViewDescriptor, VertexState,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
@@ -242,6 +246,24 @@ impl Canvas {
                     color: *color,
                     z: 0.0,
                 },
+                // The sprite's local space is centered on the origin, one
+                // texture pixel per scene pixel, so its extent is the
+                // texture size.
+                Shape::Sprite {
+                    data,
+                    width,
+                    height,
+                    color,
+                    alpha,
+                } => Draw::Sprite {
+                    world: world.compose(&self.user_to_pixel()),
+                    data: data.clone(),
+                    size: [(*width as f32).max(0.0), (*height as f32).max(0.0)],
+                    aa,
+                    tint: *color,
+                    alpha: *alpha,
+                    z: 0.0,
+                },
                 // The background ignores its transform: it is recorded in
                 // call order and becomes the frame's clear color at render
                 // time.
@@ -275,7 +297,7 @@ impl Canvas {
 ///
 /// `z` is the draw order: lower `z` is drawn first (further back). Drawings
 /// with the same `z` are drawn in call order, so the last one drawn is on top.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum Draw {
     Line {
         a: [f32; 2],
@@ -311,6 +333,25 @@ enum Draw {
         color: Color,
         z: f32,
     },
+    /// A sprite: a texture sampled in the sprite's local space, which is
+    /// centered on the origin and extends by `size / 2` along each axis.
+    Sprite {
+        /// The transform from the sprite's local space to pixel space.
+        world: Transform,
+        /// The RGBA8 pixel data, row by row, top row first. Two sprites
+        /// created from the same file share this buffer.
+        data: Arc<[u8]>,
+        /// The texture size in local units, one unit per texture pixel.
+        size: [f32; 2],
+        /// The anti-alias band in local units (the screen `AA_BAND` divided
+        /// by the transform's scale).
+        aa: f32,
+        /// The per-pixel tint, multiplied with every sampled pixel.
+        tint: Color,
+        /// The sprite's opacity, multiplied with the texture's own alpha.
+        alpha: f32,
+        z: f32,
+    },
     /// A [`Shape::Background`]: never drawn; it is promoted to the frame's
     /// clear color at render time.
     Background {
@@ -325,6 +366,7 @@ impl Draw {
             Draw::Circle { z, .. } => *z,
             Draw::Rectangle { z, .. } => *z,
             Draw::Shape { z, .. } => *z,
+            Draw::Sprite { z, .. } => *z,
             // The background is always at the very back.
             Draw::Background { .. } => f32::MIN,
         }
@@ -389,27 +431,40 @@ impl Draw {
                         params[1].max(0.0) + *aa,
                     )
                 };
-                // The box may be rotated, so transform its four corners and
-                // take the axis-aligned bounding box of the result.
-                let corners = [
-                    world.apply([center[0] - hx, center[1] - hy]),
-                    world.apply([center[0] + hx, center[1] - hy]),
-                    world.apply([center[0] - hx, center[1] + hy]),
-                    world.apply([center[0] + hx, center[1] + hy]),
-                ];
-                let mut min = corners[0];
-                let mut max = corners[0];
-                for corner in corners.iter().skip(1) {
-                    min = [min[0].min(corner[0]), min[1].min(corner[1])];
-                    max = [max[0].max(corner[0]), max[1].max(corner[1])];
-                }
-                (min, max)
+                aabb_of_box(world, *center, hx, hy)
+            }
+            Draw::Sprite {
+                world, size, aa, ..
+            } => {
+                // The sprite's box is the texture, centered on the origin,
+                // plus the local anti-alias band.
+                aabb_of_box(world, [0.0, 0.0], size[0] * 0.5 + *aa, size[1] * 0.5 + *aa)
             }
             // A background never draws; the early return above covers it.
             Draw::Background { .. } => unreachable!(),
         };
         clamp_box_to_area(min, max, area)
     }
+}
+
+/// The axis-aligned bounding box of the four transformed corners of a box in
+/// local space centered at `center` with half extents `(hx, hy)`. The box may
+/// be rotated or skewed by `world`, so the corners are transformed first and
+/// the axis-aligned box of the result is taken.
+fn aabb_of_box(world: &Transform, center: [f32; 2], hx: f32, hy: f32) -> ([f32; 2], [f32; 2]) {
+    let corners = [
+        world.apply([center[0] - hx, center[1] - hy]),
+        world.apply([center[0] + hx, center[1] - hy]),
+        world.apply([center[0] - hx, center[1] + hy]),
+        world.apply([center[0] + hx, center[1] + hy]),
+    ];
+    let mut min = corners[0];
+    let mut max = corners[0];
+    for corner in corners.iter().skip(1) {
+        min = [min[0].min(corner[0]), min[1].min(corner[1])];
+        max = [max[0].max(corner[0]), max[1].max(corner[1])];
+    }
+    (min, max)
 }
 
 /// The tight pixel rectangle a bounding box touches, clamped to the render
@@ -625,6 +680,8 @@ pub fn run<P: Process>(scene: Scene, process: P) -> Result<(), Box<dyn Error>> {
         circle_pipeline: None,
         rect_pipeline: None,
         shape_pipeline: None,
+        sprite_pipeline: None,
+        sprite_resources: HashMap::new(),
         format: None,
         last_time: None,
         scene,
@@ -655,6 +712,13 @@ struct Frost<P: Process> {
     circle_pipeline: Option<RenderPipeline>,
     rect_pipeline: Option<RenderPipeline>,
     shape_pipeline: Option<RenderPipeline>,
+    sprite_pipeline: Option<RenderPipeline>,
+    /// The GPU resources for each distinct sprite image, keyed by the
+    /// pointer of its pixel-data `Arc`. Sprites sharing one file share one
+    /// texture, so the map stays bounded by the number of distinct images.
+    /// A `TextureView` keeps its texture alive, so only the view and the
+    /// sampler are stored.
+    sprite_resources: HashMap<*const (), (TextureView, Sampler)>,
     /// The surface format the current pipelines were built for; they are only
     /// rebuilt when this changes.
     format: Option<TextureFormat>,
@@ -852,6 +916,17 @@ impl<P: Process> Frost<P> {
             format,
             "shape pipeline",
         ));
+
+        let sprite_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("sprite shaders"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(SPRITE_SHADER)),
+        });
+        self.sprite_pipeline = Some(Self::create_pipeline(
+            device,
+            &sprite_module,
+            format,
+            "sprite pipeline",
+        ));
     }
 
     /// Builds a render pipeline for a full-screen-triangle shader whose single
@@ -926,6 +1001,115 @@ impl<P: Process> Frost<P> {
         (buffer, bind_group)
     }
 
+    /// Creates the sprite's texture, view and sampler for one image.
+    ///
+    /// The pixels arrive as tightly packed RGBA8 bytes (one per texel), so
+    /// the upload is a single `write_texture` of `width * height * 4` bytes
+    /// with `bytes_per_row = width * 4`. The texture is created in
+    /// `Rgba8UnormSrgb` so the sample lands in linear space and the
+    /// sRGB blending state produces the same colors the file was authored
+    /// in. The texture itself is kept alive by the view: `TextureView`
+    /// holds a reference to its texture, so storing the view in
+    /// `sprite_resources` is enough.
+    fn sprite_texture(&self, data: &[u8], size: [f32; 2]) -> (TextureView, Sampler) {
+        let width = (size[0] as u32).max(1);
+        let height = (size[1] as u32).max(1);
+        let texture = self.device.create_texture(&TextureDescriptor {
+            label: Some("sprite texture"),
+            size: Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&TextureViewDescriptor::default());
+        self.queue.write_texture(
+            TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            data,
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: None,
+            },
+            Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let sampler = self.device.create_sampler(&SamplerDescriptor {
+            label: Some("sprite sampler"),
+            address_mode_u: AddressMode::ClampToEdge,
+            address_mode_v: AddressMode::ClampToEdge,
+            address_mode_w: AddressMode::ClampToEdge,
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            mipmap_filter: MipmapFilterMode::Nearest,
+            lod_min_clamp: 0.0,
+            lod_max_clamp: f32::MAX,
+            compare: None,
+            anisotropy_clamp: 1,
+            border_color: None,
+        });
+        (view, sampler)
+    }
+
+    /// Creates the uniform buffer and three-entry bind group (uniform,
+    /// texture view, sampler) for one sprite draw call. Same per-draw
+    /// buffer rationale as [`Frost::primitive_uniform`].
+    fn sprite_uniform(
+        &self,
+        pipeline: &RenderPipeline,
+        label: &str,
+        view: &TextureView,
+        sampler: &Sampler,
+        data: &[u8],
+    ) -> (Buffer, BindGroup) {
+        let device = &self.device;
+        let buffer = device.create_buffer(&BufferDescriptor {
+            label: Some(label),
+            size: data.len() as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&buffer, 0, data);
+        let layout = pipeline.get_bind_group_layout(0);
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some(label),
+            layout: &layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::TextureView(view),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+        (buffer, bind_group)
+    }
+
     fn render(&mut self) {
         let (output, reconfigure) = self.acquire_frame();
         if reconfigure {
@@ -965,11 +1149,18 @@ impl<P: Process> Frost<P> {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let (Some(line_pipeline), Some(circle_pipeline), Some(rect_pipeline), Some(shape_pipeline)) = (
+        let (
+            Some(line_pipeline),
+            Some(circle_pipeline),
+            Some(rect_pipeline),
+            Some(shape_pipeline),
+            Some(sprite_pipeline),
+        ) = (
             self.line_pipeline.as_ref(),
             self.circle_pipeline.as_ref(),
             self.rect_pipeline.as_ref(),
             self.shape_pipeline.as_ref(),
+            self.sprite_pipeline.as_ref(),
         ) else {
             return;
         };
@@ -1085,6 +1276,44 @@ impl<P: Process> Frost<P> {
                             &shape_uniform_data(inv, center, params, kind, aa, color),
                         );
                         pass.set_pipeline(shape_pipeline);
+                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.draw(0..3, 0..1);
+                    }
+                    Draw::Sprite {
+                        world,
+                        data,
+                        size,
+                        tint,
+                        alpha,
+                        ..
+                    } => {
+                        let Some(inv) = world.invert() else {
+                            // Degenerate transform; the sprite collapses to a
+                            // line or a point and its inverse does not exist.
+                            continue;
+                        };
+                        // Look up the GPU resources for this image, creating
+                        // them on first use. Two sprites from the same file
+                        // share one texture, so the image is uploaded once
+                        // per file.
+                        let key = Arc::as_ptr(&data) as *const ();
+                        let (view, sampler) = match self.sprite_resources.get(&key) {
+                            Some((view, sampler)) => (view.clone(), sampler.clone()),
+                            None => {
+                                let (view, sampler) = self.sprite_texture(&data, size);
+                                self.sprite_resources
+                                    .insert(key, (view.clone(), sampler.clone()));
+                                (view, sampler)
+                            }
+                        };
+                        let (_buffer, bind_group) = self.sprite_uniform(
+                            sprite_pipeline,
+                            "sprite uniforms",
+                            &view,
+                            &sampler,
+                            &sprite_uniform_data(inv, size, tint, alpha),
+                        );
+                        pass.set_pipeline(sprite_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         pass.draw(0..3, 0..1);
                     }
@@ -1218,6 +1447,39 @@ fn shape_uniform_data(
     write_f32_at(&mut data, 56, color.b);
     write_f32_at(&mut data, 64, aa);
     write_f32_at(&mut data, 68, kind);
+    data
+}
+
+/// Sprite uniform data, 48 bytes, matching the WGSL uniform-space layout of
+/// the `SpriteUniforms` Wgsl struct. The mat2x2 column packing is the same
+/// as in [`shape_uniform_data`]; `translation` sits at @ 16, `size` (a
+/// vec2) at @ 24, the tint `vec3` at @ 32 (12 bytes, 16-byte aligned,
+/// spanning 32..44), and the scalar `alpha` (4-byte aligned) at @ 44; the
+/// struct size is 48.
+fn sprite_uniform_data(
+    to_local: Transform,
+    size: [f32; 2],
+    tint: Color,
+    alpha: f32,
+) -> Vec<u8> {
+    let mut data = vec![0u8; 48];
+    let m = to_local.m;
+    // mat2x2: 16 bytes total, vec2 columns with an 8-byte stride.
+    write_f32_at(&mut data, 0, m[0][0]);
+    write_f32_at(&mut data, 4, m[1][0]);
+    write_f32_at(&mut data, 8, m[0][1]);
+    write_f32_at(&mut data, 12, m[1][1]);
+    write_f32_at(&mut data, 16, to_local.t[0]);
+    write_f32_at(&mut data, 20, to_local.t[1]);
+    write_f32_at(&mut data, 24, size[0]);
+    write_f32_at(&mut data, 28, size[1]);
+    // vec3: 12 bytes with 16-byte alignment, so it starts at 32 and spans
+    // 32..44. The scalar alpha is 4-byte aligned, so it lands in the
+    // 44..48 slot that used to be alignment padding.
+    write_f32_at(&mut data, 32, tint.r);
+    write_f32_at(&mut data, 36, tint.g);
+    write_f32_at(&mut data, 40, tint.b);
+    write_f32_at(&mut data, 44, alpha);
     data
 }
 
@@ -1746,5 +2008,201 @@ mod tests {
         assert_eq!(w1.apply(*c1), [62.0, 50.0]);
         // The AA band compensates for the 2x world scale.
         assert!((aa0 - AA_BAND / 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn scene_sprite_at_user_origin_lands_at_window_center() {
+        // A sprite node at the user-space origin must be centered on the
+        // window center (not offset to a corner), and its texture size, tint
+        // and z must travel onto the draw untouched.
+        let mut canvas = Canvas::new((100, 100));
+        let scene = Scene::new(SceneNode {
+            transform: Transform::identity(),
+            scale: [1.0, 1.0],
+            shape: Some(Shape::Sprite {
+                data: Arc::new([0u8; 16]),
+                width: 4,
+                height: 4,
+                color: black(),
+                alpha: 1.0,
+            }),
+            children: vec![],
+        });
+        canvas.draw_scene(&scene);
+        let [Draw::Sprite {
+            world,
+            data,
+            size,
+            aa,
+            tint,
+            alpha,
+            z,
+        }] = &canvas.draws[..]
+        else {
+            panic!("expected one sprite draw");
+        };
+        // The sprite's local space is centered on the origin.
+        assert_eq!(world.apply([0.0, 0.0]), [50.0, 50.0]);
+        assert_eq!(*size, [4.0, 4.0]);
+        assert_eq!(data.len(), 16);
+        assert!((*aa - AA_BAND).abs() < 1e-6);
+        assert_eq!(*tint, black());
+        assert_eq!(*alpha, 1.0);
+        assert_eq!(*z, 0.0);
+    }
+
+    #[test]
+    fn sprite_scissor_is_the_texture_box_plus_aa_band() {
+        let draw = Draw::Sprite {
+            world: Transform::translate(50.0, 50.0),
+            data: Arc::new([0u8; 16]),
+            size: [40.0, 20.0],
+            aa: 0.75,
+            tint: black(),
+            alpha: 1.0,
+            z: 0.0,
+        };
+        // The box is (50 ± 20.75, 50 ± 10.75), i.e. [29.25, 70.75] on x and
+        // [39.25, 60.75] on y.
+        assert_eq!(draw.scissor_rect([100, 100]), Some([29, 39, 42, 22]));
+    }
+
+    #[test]
+    fn sprite_scissor_under_rotation() {
+        // A 45° rotation about the sprite's own center: the local box
+        // (±20.75, ±10.75) rotates to an axis-aligned box with half-extent
+        // (20.75 + 10.75) / sqrt(2) = 22.274 on both axes, centered on
+        // (50, 50).
+        let draw = Draw::Sprite {
+            world: Transform::rotate(std::f32::consts::FRAC_PI_4)
+                .compose(&Transform::translate(50.0, 50.0)),
+            data: Arc::new([0u8; 16]),
+            size: [40.0, 20.0],
+            aa: 0.75,
+            tint: black(),
+            alpha: 1.0,
+            z: 0.0,
+        };
+        assert_eq!(draw.scissor_rect([100, 100]), Some([27, 27, 46, 46]));
+    }
+
+    #[test]
+    fn sprite_uniform_bytes_follow_the_wgsl_layout() {
+        // Lock the byte layout of `sprite_uniform_data` to the WGSL
+        // uniform-space layout of `SpriteUniforms`, the same way the shape
+        // test does: the mat2x2 `<f32>` spans 0..16 (column 0 @ 0, column 1
+        // @ 8), `translation` @ 16, `size` @ 24, the tint vec3 (12 bytes,
+        // 16-byte aligned) @ 32 spanning 32..44, and the scalar alpha @ 44;
+        // the struct size is 48.
+        let inv = Transform::translate(1.5, -2.5).invert().unwrap();
+        let data = sprite_uniform_data(
+            inv,
+            [12.0, 34.0],
+            Color {
+                r: 0.5,
+                g: 0.25,
+                b: 0.125,
+            },
+            0.75,
+        );
+        assert_eq!(data.len(), 48);
+
+        let f32_at = |off: usize| {
+            f32::from_le_bytes(data[off..off + 4].try_into().unwrap())
+        };
+        // `to_local` is the identity matrix (inverting a pure translation
+        // leaves the matrix identity), stored column-major.
+        assert_eq!(f32_at(0), 1.0);
+        assert_eq!(f32_at(4), 0.0);
+        assert_eq!(f32_at(8), 0.0);
+        assert_eq!(f32_at(12), 1.0);
+        // The inverse of translate(1.5, -2.5) is translate(-1.5, 2.5).
+        assert_eq!(f32_at(16), -1.5);
+        assert_eq!(f32_at(20), 2.5);
+        assert_eq!(f32_at(24), 12.0);
+        assert_eq!(f32_at(28), 34.0);
+        assert_eq!(f32_at(32), 0.5);
+        assert_eq!(f32_at(36), 0.25);
+        assert_eq!(f32_at(40), 0.125);
+        // The scalar alpha is 4-byte aligned, so it occupies the 44..48
+        // slot that used to be alignment padding.
+        assert_eq!(f32_at(44), 0.75);
+    }
+
+    #[test]
+    fn sprite_loader_round_trips_a_png_file() {
+        let path = std::env::temp_dir().join(format!(
+            "frost-sprite-test-{}.png",
+            std::process::id()
+        ));
+        let buf: Vec<u8> = [
+            [255u8, 0, 0, 255],
+            [0, 255, 0, 128],
+            [0, 0, 255, 0],
+            [10, 20, 30, 40],
+        ]
+        .iter()
+        .flat_map(|pixel| pixel.iter().copied())
+        .collect();
+        image::save_buffer(&path, &buf, 2, 2, image::ColorType::Rgba8)
+            .expect("writing the test png");
+        let shape = match Shape::sprite(&path) {
+            Ok(shape) => shape,
+            Err(err) => panic!("failed to load the test png: {err}"),
+        };
+        let Shape::Sprite {
+            data,
+            width,
+            height,
+            color,
+            alpha,
+        } = shape else {
+            panic!("expected a sprite shape");
+        };
+        assert_eq!((width, height), (2, 2));
+        // The decoded RGBA8 buffer matches the file's pixels byte for byte.
+        assert_eq!(&data[..], &buf[..]);
+        // The default tint is white and the default opacity is 1.0.
+        assert_eq!(
+            color,
+            Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0
+            }
+        );
+        assert_eq!(alpha, 1.0);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn cloned_sprites_share_their_pixel_buffer() {
+        // The pixels live behind an `Arc`: cloning a sprite shape must not
+        // copy the buffer.
+        let path = std::env::temp_dir().join(format!(
+            "frost-sprite-share-{}.png",
+            std::process::id()
+        ));
+        let buf = [255u8, 0, 0, 255, 0, 255, 0, 255];
+        image::save_buffer(&path, &buf, 2, 1, image::ColorType::Rgba8)
+            .expect("writing the test png");
+        let shape = Shape::sprite(&path).unwrap();
+        let Shape::Sprite { data: a, .. } = &shape else {
+            panic!("expected a sprite shape");
+        };
+        let Shape::Sprite { data: b, .. } = &shape.clone() else {
+            panic!("expected a sprite shape");
+        };
+        assert!(Arc::ptr_eq(a, b));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sprite_loader_reports_a_missing_file_as_io() {
+        let err = Shape::sprite("frost-missing-sprite-file.png").unwrap_err();
+        assert!(matches!(
+            err,
+            SpriteError::Io(err) if err.kind() == std::io::ErrorKind::NotFound
+        ));
     }
 }

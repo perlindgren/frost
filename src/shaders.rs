@@ -13,6 +13,9 @@ pub(crate) const RECT_SHADER: &str = include_str!("../shaders/rectangle.wgsl");
 /// The shape (scene circle/rectangle) shader source.
 pub(crate) const SHAPE_SHADER: &str = include_str!("../shaders/shape.wgsl");
 
+/// The sprite (texture) shader source.
+pub(crate) const SPRITE_SHADER: &str = include_str!("../shaders/sprite.wgsl");
+
 #[cfg(test)]
 mod tests {
     //! Shader validation without running anything: naga's WGSL frontend is
@@ -21,7 +24,7 @@ mod tests {
 
     use super::*;
 
-    /// All four shaders parse as valid WGSL.
+    /// All five shaders parse as valid WGSL.
     #[test]
     fn all_shaders_parse_as_wgsl() {
         let shaders = [
@@ -29,6 +32,7 @@ mod tests {
             ("circle.wgsl", CIRCLE_SHADER),
             ("rectangle.wgsl", RECT_SHADER),
             ("shape.wgsl", SHAPE_SHADER),
+            ("sprite.wgsl", SPRITE_SHADER),
         ];
         for (name, source) in shaders {
             naga::front::wgsl::parse_str(source)
@@ -67,5 +71,39 @@ mod tests {
         // The struct's total size must equal the CPU-side buffer length,
         // otherwise the buffer would be too short or carry dead bytes.
         assert_eq!(total_size, 80);
+    }
+
+    /// The member offsets WGSL assigns to `SpriteUniforms` must match the
+    /// CPU-side uniform writer in `sprite_uniform_data` (mat2x2 @0, vec2 @16,
+    /// vec2 @24, vec3 @32 — 12 bytes, 16-byte aligned — and f32 @44;
+    /// 48 bytes total). This
+    /// is the GPU-side mirror of
+    /// `sprite_uniform_bytes_follow_the_wgsl_layout` in lib.rs, so a layout
+    /// drift on either side fails a test.
+    #[test]
+    fn sprite_uniform_offsets_match_the_cpu_layout() {
+        let module = naga::front::wgsl::parse_str(SPRITE_SHADER)
+            .expect("sprite.wgsl should parse (see all_shaders_parse_as_wgsl)");
+        let ty = module
+            .types
+            .iter()
+            .find_map(|(_, ty)| match &ty.inner {
+                naga::TypeInner::Struct { .. } if ty.name.as_deref() == Some("SpriteUniforms") => {
+                    Some(ty)
+                }
+                _ => None,
+            })
+            .expect("sprite.wgsl should declare the SpriteUniforms struct");
+        let (offsets, total_size) = match &ty.inner {
+            naga::TypeInner::Struct { members, span } => (
+                members.iter().map(|m| m.offset).collect::<Vec<u32>>(),
+                *span,
+            ),
+            _ => unreachable!("SpriteUniforms must be a struct"),
+        };
+        assert_eq!(offsets, [0, 16, 24, 32, 44]);
+        // The struct's total size must equal the CPU-side buffer length,
+        // otherwise the buffer would be too short or carry dead bytes.
+        assert_eq!(total_size, 48);
     }
 }
