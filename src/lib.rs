@@ -41,10 +41,12 @@
 //! frame's cost scales with the objects' on-screen areas, not the window size.
 //!
 //! Beyond the immediate draws, a [`Scene`] is a tree of [`SceneNode`]s where
-//! each node holds a [`Transform`], a `scale`, and an `order`, all relative
-//! to its parent, plus its own optional [`Shape`]; the scale and transform
-//! apply to the node's shape and compose onto its children, and the order
-//! does the same for the subtree's draw order. A [`Shape::Background`]
+//! each node holds a [`Transform`], a `scale`, a `modulate`, and an `order`,
+//! all relative to its parent, plus its own optional [`Shape`]; the scale
+//! and transform apply to the node's shape and compose onto its children,
+//! the modulate multiplies into the node's shape color and composes onto
+//! its children's, and the order does the same for the subtree's draw
+//! order. A [`Shape::Background`]
 //! node fills the whole window with its color, ignoring its transform, and
 //! is drawn at the very back.
 //! The scene passed to [`run`] is drawn every frame; use
@@ -205,7 +207,10 @@ impl Canvas {
     /// The scene is walked depth-first from the root. Each node's transform
     /// and scale are relative to its parent and compose onto the parent's
     /// (scale innermost), so a descendant's world transform is the full
-    /// root-to-leaf composition.
+    /// root-to-leaf composition. Each node's modulate multiplies into its
+    /// shape's color and composes onto its children's, so a descendant's
+    /// color is the channel-wise product of the modulates on the path from
+    /// the root.
     /// Every node with a shape draws it (in the node's own local space)
     /// before its children, so parents paint under their descendants.
     ///
@@ -214,14 +219,25 @@ impl Canvas {
     /// A [`Shape::Background`] is the exception: it ignores its transform,
     /// always sorts to the very back, and becomes the frame's clear color.
     pub fn draw_scene(&mut self, scene: &Scene) {
-        self.draw_node(&scene.root, &Transform::identity(), 0.0);
+        self.draw_node(&scene.root, &Transform::identity(), 0.0, WHITE);
     }
 
-    fn draw_node(&mut self, node: &SceneNode, parent: &Transform, order: f32) {
+    fn draw_node(
+        &mut self,
+        node: &SceneNode,
+        parent: &Transform,
+        order: f32,
+        modulate: Color,
+    ) {
         // The node's effective draw order: the order inherited from its
         // ancestors plus its own, applied to the node's shape and passed on
         // to its whole subtree, just like the transform and the scale.
         let order = order + node.order;
+        // The node's effective color modulation: the modulation inherited
+        // from its ancestors multiplied by its own, applied to the node's
+        // shape's color and passed on to its whole subtree, just like the
+        // transform and the scale.
+        let modulate = modulate.mul(node.modulate);
         // The node's world transform in user space: its scale first
         // (innermost, in the node's own space), then its transform (local ->
         // parent space), then the parent's world transform. Through `world`
@@ -250,7 +266,7 @@ impl Canvas {
                     params: [(*radius).max(0.0), 0.0],
                     kind: 0.0,
                     aa,
-                    color: *color,
+                    color: color.mul(modulate),
                     z: order,
                 },
                 Shape::Rectangle {
@@ -263,7 +279,7 @@ impl Canvas {
                     params: [extent[0].max(0.0), extent[1].max(0.0)],
                     kind: 1.0,
                     aa,
-                    color: *color,
+                    color: color.mul(modulate),
                     z: order,
                 },
                 // The sprite's local space is centered on the origin, one
@@ -281,7 +297,7 @@ impl Canvas {
                     size: [(*width as f32).max(0.0), (*height as f32).max(0.0)],
                     texture_size: [*width, *height],
                     aa,
-                    tint: *color,
+                    tint: color.mul(modulate),
                     alpha: *alpha,
                     uv_rect: [0.0, 0.0, 1.0, 1.0],
                     z: order,
@@ -300,19 +316,21 @@ impl Canvas {
                     font: font.clone(),
                     text: text.clone(),
                     size: *size,
-                    color: *color,
+                    color: color.mul(modulate),
                     alpha: *alpha,
                     z: order,
                 },
                 // The background ignores its transform: it is recorded in
                 // call order and becomes the frame's clear color at render
                 // time.
-                Shape::Background { color } => Draw::Background { color: *color },
+                Shape::Background { color } => {
+                    Draw::Background { color: color.mul(modulate) }
+                }
             };
             self.draws.push(draw);
         }
         for child in &node.children {
-            self.draw_node(child, &world, order);
+            self.draw_node(child, &world, order, modulate);
         }
     }
 
@@ -2095,6 +2113,7 @@ mod tests {
         let scene = Scene::new(SceneNode {
             transform: Transform::translate(10.0, 0.0),
             scale: [1.0, 1.0],
+            modulate: WHITE,
             order: 0.0,
             shape: Some(Shape::Circle {
                 center: [0.0, 0.0],
@@ -2104,11 +2123,13 @@ mod tests {
             children: vec![Box::new(SceneNode {
                 transform: Transform::scale_uniform(2.0),
                 scale: [1.0, 1.0],
+                modulate: WHITE,
                 order: 0.0,
                 shape: None,
                 children: vec![Box::new(SceneNode {
                     transform: Transform::identity(),
                     scale: [1.0, 1.0],
+                    modulate: WHITE,
                     order: 0.0,
                     shape: Some(Shape::Circle {
                         center: [1.0, 1.0],
@@ -2155,11 +2176,13 @@ mod tests {
         let scene = Scene::new(SceneNode {
             transform: Transform::rotate(std::f32::consts::FRAC_PI_2),
             scale: [1.0, 1.0],
+            modulate: WHITE,
             order: 0.0,
             shape: None,
             children: vec![Box::new(SceneNode {
                 transform: Transform::translate(10.0, 0.0),
                 scale: [1.0, 1.0],
+                modulate: WHITE,
                 order: 0.0,
                 shape: Some(Shape::Circle {
                     center: [0.0, 0.0],
@@ -2186,6 +2209,7 @@ mod tests {
         let scene = Scene::new(SceneNode {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
+            modulate: WHITE,
             order: 0.0,
             shape: Some(Shape::Circle {
                 center: [0.0, 0.0],
@@ -2384,6 +2408,7 @@ mod tests {
         canvas.draw_scene(&Scene::new(SceneNode {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
+            modulate: WHITE,
             order: 0.0,
             shape: Some(Shape::Rectangle {
                 center: [0.0, 0.0],
@@ -2394,6 +2419,7 @@ mod tests {
                 // Transformed on purpose: the background must ignore it.
                 transform: Transform::translate(50.0, 50.0),
                 scale: [1.0, 1.0],
+                modulate: WHITE,
                 order: 0.0,
                 shape: Some(Shape::Background {
                     color: Color {
@@ -2430,6 +2456,7 @@ mod tests {
             // Scale 2x in x only; the transform still positions the node.
             transform: Transform::translate(10.0, 0.0),
             scale: [2.0, 1.0],
+            modulate: WHITE,
             order: 0.0,
             shape: Some(Shape::Circle {
                 center: [1.0, 1.0],
@@ -2439,6 +2466,7 @@ mod tests {
             children: vec![Box::new(SceneNode {
                 transform: Transform::translate(1.0, 0.0),
                 scale: [1.0, 1.0],
+                modulate: WHITE,
                 order: 0.0,
                 shape: Some(Shape::Circle {
                     center: [0.0, 0.0],
@@ -2485,6 +2513,7 @@ mod tests {
         let scene = Scene::new(SceneNode {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
+            modulate: WHITE,
             order: 1.0,
             shape: Some(Shape::Circle {
                 center: [0.0, 0.0],
@@ -2494,6 +2523,7 @@ mod tests {
             children: vec![Box::new(SceneNode {
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
+                modulate: WHITE,
                 order: 2.0,
                 shape: Some(Shape::Circle {
                     center: [0.0, 0.0],
@@ -2503,6 +2533,7 @@ mod tests {
                 children: vec![Box::new(SceneNode {
                     transform: Transform::identity(),
                     scale: [1.0, 1.0],
+                    modulate: WHITE,
                     order: 4.0,
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
@@ -2523,6 +2554,135 @@ mod tests {
     }
 
     #[test]
+    fn node_modulate_multiplies_into_the_shape_and_its_subtree() {
+        // A chain of nodes: the root modulates red to half and blue out,
+        // the child modulates green to half and opacity to half. Each node's
+        // own shape color is the channel-wise product of the modulates on
+        // the path from the root, accumulated like the order.
+        let white = Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        };
+        let mut canvas = Canvas::new((100, 100));
+        let scene = Scene::new(SceneNode {
+            transform: Transform::identity(),
+            scale: [1.0, 1.0],
+            modulate: Color {
+                r: 0.5,
+                g: 1.0,
+                b: 0.0,
+                a: 1.0,
+            },
+            order: 0.0,
+            shape: Some(Shape::Circle {
+                center: [0.0, 0.0],
+                radius: 1.0,
+                color: white,
+            }),
+            children: vec![Box::new(SceneNode {
+                transform: Transform::identity(),
+                scale: [1.0, 1.0],
+                modulate: Color {
+                    r: 1.0,
+                    g: 0.5,
+                    b: 1.0,
+                    a: 0.5,
+                },
+                order: 0.0,
+                shape: Some(Shape::Circle {
+                    center: [0.0, 0.0],
+                    radius: 1.0,
+                    color: white,
+                }),
+                children: vec![],
+            })],
+        });
+        canvas.draw_scene(&scene);
+        let [
+            Draw::Shape { color: c0, .. },
+            Draw::Shape { color: c1, .. },
+        ] = &canvas.draws[..]
+        else {
+            panic!("expected two shape draws");
+        };
+        // The root's own shape is white times its own modulate.
+        assert_eq!(*c0, Color { r: 0.5, g: 1.0, b: 0.0, a: 1.0 });
+        // The child inherits the root's modulate multiplied by its own:
+        // blue stays zeroed by the root, and the child's half opacity
+        // multiplies into the alpha channel.
+        assert_eq!(*c1, Color { r: 0.5, g: 0.5, b: 0.0, a: 0.5 });
+    }
+
+    #[test]
+    fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
+        // The modulate multiplies the sprite's tint and the text's color,
+        // channel by channel, but leaves the separate `alpha` opacity field
+        // untouched: the opacity is not a color.
+        let mut canvas = Canvas::new((100, 100));
+        canvas.draw_scene(&Scene::new(SceneNode {
+            transform: Transform::identity(),
+            scale: [1.0, 1.0],
+            modulate: Color {
+                r: 0.5,
+                g: 1.0,
+                b: 1.0,
+                a: 0.5,
+            },
+            order: 0.0,
+            shape: Some(Shape::Sprite {
+                data: Arc::new([0u8; 16]),
+                width: 4,
+                height: 4,
+                color: Color {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
+                alpha: 0.25,
+            }),
+            children: vec![],
+        }));
+        canvas.draw_scene(&Scene::new(SceneNode {
+            transform: Transform::identity(),
+            scale: [1.0, 1.0],
+            modulate: Color {
+                r: 0.25,
+                g: 0.5,
+                b: 1.0,
+                a: 1.0,
+            },
+            order: 0.0,
+            shape: Some(Shape::Text {
+                text: "hi".to_string(),
+                font: Arc::new([0u8]),
+                size: 12.0,
+                color: Color {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
+                alpha: 0.75,
+            }),
+            children: vec![],
+        }));
+        let [
+            Draw::Sprite { tint, alpha, .. },
+            Draw::Text { color, alpha: t_alpha, .. },
+        ] = &canvas.draws[..]
+        else {
+            panic!("expected a sprite and a text draw");
+        };
+        assert_eq!(*tint, Color { r: 0.5, g: 1.0, b: 1.0, a: 0.5 });
+        assert_eq!(*alpha, 0.25);
+        assert_eq!(*color, Color { r: 0.25, g: 0.5, b: 1.0, a: 1.0 });
+        assert_eq!(*t_alpha, 0.75);
+    }
+
+    #[test]
     fn scene_sprite_at_user_origin_lands_at_window_center() {
         // A sprite node at the user-space origin must be centered on the
         // window center (not offset to a corner), and its texture size, tint
@@ -2531,6 +2691,7 @@ mod tests {
         let scene = Scene::new(SceneNode {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
+            modulate: WHITE,
             order: 0.0,
             shape: Some(Shape::Sprite {
                 data: Arc::new([0u8; 16]),

@@ -29,7 +29,26 @@ impl Color {
     pub(crate) fn channels(&self) -> [f32; 4] {
         [self.r, self.g, self.b, self.a]
     }
+
+    /// Multiplies this color by `other` channel by channel.
+    pub(crate) fn mul(&self, other: Color) -> Color {
+        Color {
+            r: self.r * other.r,
+            g: self.g * other.g,
+            b: self.b * other.b,
+            a: self.a * other.a,
+        }
+    }
 }
+
+/// White at full opacity: the identity for channel-wise multiplication, the
+/// [`SceneNode::modulate`] that leaves colors unchanged.
+pub(crate) const WHITE: Color = Color {
+    r: 1.0,
+    g: 1.0,
+    b: 1.0,
+    a: 1.0,
+};
 
 /// A 2D affine transform: `p' = m * p + t`.
 ///
@@ -358,15 +377,16 @@ impl std::error::Error for SpriteError {
 
 /// A node in a [`Scene`] tree.
 ///
-/// A node is a [`Transform`], a `scale`, and an `order`, plus its own
-/// optional [`Shape`] and its children. The transform and the scale are
-/// relative to the node's parent and apply to the node's own shape as well as
-/// composing onto all descendants; the order does the same for the subtree's
-/// draw order. A node without a shape (`shape: None`) is a pure group or
-/// pivot node, and a node without children is a leaf. A node literal can
-/// leave any fields out by writing `..SceneNode::default()`: the omitted
-/// fields take the identity transform, no scale, order `0.0`, no shape, and
-/// no children.
+/// A node is a [`Transform`], a `scale`, a `modulate`, and an `order`, plus
+/// its own optional [`Shape`] and its children. The transform and the scale
+/// are relative to the node's parent and apply to the node's own shape as
+/// well as composing onto all descendants; the modulate multiplies into the
+/// node's own shape color as well as composing onto all descendants'; the
+/// order does the same for the subtree's draw order. A node without a shape
+/// (`shape: None`) is a pure group or pivot node, and a node without
+/// children is a leaf. A node literal can leave any fields out by writing
+/// `..SceneNode::default()`: the omitted fields take the identity transform,
+/// no scale, a white modulate, order `0.0`, no shape, and no children.
 #[derive(Clone, Debug)]
 pub struct SceneNode {
     /// The transform from the parent's coordinate space to this node's,
@@ -376,6 +396,13 @@ pub struct SceneNode {
     /// before its transform, so it scales the node's shape and its whole
     /// subtree. `[1.0, 1.0]` (the default) is no scaling.
     pub scale: [f32; 2],
+    /// The node's color modulation, multiplied channel by channel into the
+    /// node's own shape color and composed (multiplied) onto its children's,
+    /// so it tints the whole subtree, just like the scale and the transform:
+    /// the node's `modulate` multiplies the modulation inherited from its
+    /// ancestors, and that product is what its children inherit. White
+    /// (all channels `1.0`, the default) leaves the colors unchanged.
+    pub modulate: Color,
     /// The node's draw-order offset, added to the order inherited from its
     /// ancestors: the node's own shape draws at that total, and the same
     /// total is passed on to the children, so the order propagates down the
@@ -389,12 +416,13 @@ pub struct SceneNode {
 }
 
 impl Default for SceneNode {
-    /// An identity node: identity transform, no scale, order `0.0`, no
-    /// shape, and no children.
+    /// An identity node: identity transform, no scale, a white modulate,
+    /// order `0.0`, no shape, and no children.
     fn default() -> Self {
         Self {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
+            modulate: WHITE,
             order: 0.0,
             shape: None,
             children: Vec::new(),
