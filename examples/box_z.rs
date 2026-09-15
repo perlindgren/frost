@@ -2,9 +2,6 @@ fn main() {
     env_logger::init();
     if let Err(err) = frost::run(
         frost::Scene::new(frost::SceneNode {
-            transform: frost::Transform::identity(),
-            scale: [1.0, 1.0],
-            order: 0.0,
             // Dark blue background; the node's transform is ignored.
             shape: Some(frost::Shape::Background {
                 color: frost::Color {
@@ -13,7 +10,7 @@ fn main() {
                     b: 0.12,
                 },
             }),
-            children: vec![],
+            ..Default::default()
         }),
         |ctx: &mut frost::Context, _dt: f32| {
             // A 100 x 100 px square centered at the window origin (0, 0), red.

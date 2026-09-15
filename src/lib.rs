@@ -9,13 +9,10 @@
 //!
 //! ```no_run
 //! let scene = frost::Scene::new(frost::SceneNode {
-//!     transform: frost::Transform::identity(),
-//!     scale: [1.0, 1.0],
-//!     order: 0.0,
 //!     shape: Some(frost::Shape::Background {
 //!         color: frost::Color { r: 0.05, g: 0.06, b: 0.12 },
 //!     }),
-//!     children: Vec::new(),
+//!     ..Default::default()
 //! });
 //! frost::run(
 //!     scene,

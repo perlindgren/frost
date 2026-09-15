@@ -16,9 +16,6 @@ fn main() {
     log::info!("frost started");
 
     let scene = frost::Scene::new(frost::SceneNode {
-        transform: frost::Transform::identity(),
-        scale: [1.0, 1.0],
-        order: 0.0,
         // Deep indigo background; the node's transform is ignored.
         shape: Some(frost::Shape::Background {
             color: frost::Color {
@@ -28,9 +25,7 @@ fn main() {
             },
         }),
         children: vec![Box::new(frost::SceneNode {
-            transform: frost::Transform::identity(),
             scale: [2.0, 1.0],
-            order: 0.0,
             shape: Some(frost::Shape::Rectangle {
                 center: [0.0, 0.0],
                 extent: [40.0, 40.0],
@@ -40,8 +35,9 @@ fn main() {
                     b: 0.2,
                 },
             }),
-            children: vec![],
+            ..Default::default()
         })],
+        ..Default::default()
     });
 
     if let Err(err) = frost::run(scene, |_ctx: &mut frost::Context, _dt: f32| {}) {

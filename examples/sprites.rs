@@ -80,9 +80,6 @@ fn main() {
         .expect("failed to load assets/sprites/brick.png");
 
     let scene = frost::Scene::new(frost::SceneNode {
-        transform: frost::Transform::identity(),
-        scale: [1.0, 1.0],
-        order: 0.0,
         // Deep indigo background; the node's transform is ignored.
         shape: Some(frost::Shape::Background {
             color: frost::Color {
@@ -94,25 +91,22 @@ fn main() {
         children: vec![
             Box::new(frost::SceneNode {
                 transform: frost::Transform::translate(-160.0, 0.0),
-                scale: [1.0, 1.0],
-                order: 0.0,
                 shape: Some(brick),
-                children: vec![],
+                ..Default::default()
             }),
             Box::new(frost::SceneNode {
                 transform: frost::Transform::translate(160.0, 0.0),
-                scale: [1.0, 1.0],
-                order: 0.0,
                 shape: Some(button),
                 children: vec![Box::new(frost::SceneNode {
                     transform: frost::Transform::translate(0.0, 120.0),
                     scale: [0.5, 0.5],
-                    order: 0.0,
                     shape: Some(rider),
-                    children: vec![],
+                    ..Default::default()
                 })],
+                ..Default::default()
             }),
         ],
+        ..Default::default()
     });
 
     if let Err(err) = frost::run(

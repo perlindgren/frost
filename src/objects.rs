@@ -352,7 +352,10 @@ impl std::error::Error for SpriteError {
 /// relative to the node's parent and apply to the node's own shape as well as
 /// composing onto all descendants; the order does the same for the subtree's
 /// draw order. A node without a shape (`shape: None`) is a pure group or
-/// pivot node, and a node without children is a leaf.
+/// pivot node, and a node without children is a leaf. A node literal can
+/// leave any fields out by writing `..SceneNode::default()`: the omitted
+/// fields take the identity transform, no scale, order `0.0`, no shape, and
+/// no children.
 #[derive(Clone, Debug)]
 pub struct SceneNode {
     /// The transform from the parent's coordinate space to this node's,
@@ -372,6 +375,20 @@ pub struct SceneNode {
     pub shape: Option<Shape>,
     /// The child nodes, positioned in this node's coordinate space.
     pub children: Vec<Box<SceneNode>>,
+}
+
+impl Default for SceneNode {
+    /// An identity node: identity transform, no scale, order `0.0`, no
+    /// shape, and no children.
+    fn default() -> Self {
+        Self {
+            transform: Transform::identity(),
+            scale: [1.0, 1.0],
+            order: 0.0,
+            shape: None,
+            children: Vec::new(),
+        }
+    }
 }
 
 /// A tree of [`SceneNode`]s rooted at a single node.
@@ -396,14 +413,6 @@ impl Default for Scene {
     /// An empty scene: an identity root node with no shape and no children,
     /// for apps that only use the immediate draw methods.
     fn default() -> Self {
-        Self {
-            root: SceneNode {
-                transform: Transform::identity(),
-                scale: [1.0, 1.0],
-                order: 0.0,
-                shape: None,
-                children: Vec::new(),
-            },
-        }
+        Self { root: SceneNode::default() }
     }
 }

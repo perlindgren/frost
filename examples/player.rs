@@ -61,9 +61,6 @@ fn main() {
 
     if let Err(err) = frost::run(
         frost::Scene::new(frost::SceneNode {
-            transform: frost::Transform::identity(),
-            scale: [1.0, 1.0],
-            order: 0.0,
             // Deep indigo background; the node's transform is ignored.
             shape: Some(frost::Shape::Background {
                 color: frost::Color {
@@ -74,12 +71,10 @@ fn main() {
             }),
             children: vec![Box::new(frost::SceneNode {
                 // The button starts at the window center, facing +x.
-                transform: frost::Transform::translate(0.0, 0.0),
-                scale: [1.0, 1.0],
-                order: 0.0,
                 shape: Some(button),
-                children: vec![],
+                ..Default::default()
             })],
+            ..Default::default()
         }),
         Demo {
             pos: [0.0, 0.0],
