@@ -71,6 +71,7 @@ fn main() {
     let scene = frost::Scene::new(frost::SceneNode {
         transform: frost::Transform::identity(),
         scale: [1.0, 1.0],
+        order: 0.0,
         // Deep indigo background; the node's transform is ignored.
         shape: Some(frost::Shape::Background {
             color: frost::Color {
@@ -84,6 +85,7 @@ fn main() {
             // process() nudges it vertically each frame.
             transform: frost::Transform::identity(),
             scale: [1.0, 1.0],
+            order: 0.0,
             shape: Some(frost::Shape::Circle {
                 center: [0.0, 0.0],
                 radius: 90.0,
@@ -98,24 +100,28 @@ fn main() {
                 Box::new(frost::SceneNode {
                     transform: frost::Transform::translate(0.0, 50.0),
                     scale: [1.0, 1.0],
+                    order: 0.0,
                     shape: Some(s),
                     children: vec![],
                 }),
                 Box::new(frost::SceneNode {
                     transform: frost::Transform::translate(0.0, 0.0),
                     scale: [1.0, 1.0],
+                    order: 0.0,
                     shape: Some(u),
                     children: vec![],
                 }),
                 Box::new(frost::SceneNode {
                     transform: frost::Transform::translate(0.0, -50.0),
                     scale: [1.0, 1.0],
+                    order: 0.0,
                     shape: Some(b),
                     children: vec![],
                 }),
                 Box::new(frost::SceneNode {
                     transform: frost::Transform::translate(-10.0, -90.0),
                     scale: [1.0, 1.0],
+                    order: 0.0,
                     shape: Some(zero),
                     children: vec![],
                 }),

@@ -11,6 +11,7 @@
 //! let scene = frost::Scene::new(frost::SceneNode {
 //!     transform: frost::Transform::identity(),
 //!     scale: [1.0, 1.0],
+//!     order: 0.0,
 //!     shape: Some(frost::Shape::Background {
 //!         color: frost::Color { r: 0.05, g: 0.06, b: 0.12 },
 //!     }),
@@ -43,9 +44,10 @@
 //! frame's cost scales with the objects' on-screen areas, not the window size.
 //!
 //! Beyond the immediate draws, a [`Scene`] is a tree of [`SceneNode`]s where
-//! each node holds a [`Transform`] and a `scale`, both relative to its
-//! parent, plus its own optional [`Shape`]; the scale and transform apply to
-//! the node's shape and compose onto its children. A [`Shape::Background`]
+//! each node holds a [`Transform`], a `scale`, and an `order`, all relative
+//! to its parent, plus its own optional [`Shape`]; the scale and transform
+//! apply to the node's shape and compose onto its children, and the order
+//! does the same for the subtree's draw order. A [`Shape::Background`]
 //! node fills the whole window with its color, ignoring its transform, and
 //! is drawn at the very back.
 //! The scene passed to [`run`] is drawn every frame; use
@@ -214,10 +216,14 @@ impl Canvas {
     /// A [`Shape::Background`] is the exception: it ignores its transform,
     /// always sorts to the very back, and becomes the frame's clear color.
     pub fn draw_scene(&mut self, scene: &Scene) {
-        self.draw_node(&scene.root, &Transform::identity());
+        self.draw_node(&scene.root, &Transform::identity(), 0.0);
     }
 
-    fn draw_node(&mut self, node: &SceneNode, parent: &Transform) {
+    fn draw_node(&mut self, node: &SceneNode, parent: &Transform, order: f32) {
+        // The node's effective draw order: the order inherited from its
+        // ancestors plus its own, applied to the node's shape and passed on
+        // to its whole subtree, just like the transform and the scale.
+        let order = order + node.order;
         // The node's world transform in user space: its scale first
         // (innermost, in the node's own space), then its transform (local ->
         // parent space), then the parent's world transform. Through `world`
@@ -247,7 +253,7 @@ impl Canvas {
                     kind: 0.0,
                     aa,
                     color: *color,
-                    z: 0.0,
+                    z: order,
                 },
                 Shape::Rectangle {
                     center,
@@ -260,7 +266,7 @@ impl Canvas {
                     kind: 1.0,
                     aa,
                     color: *color,
-                    z: 0.0,
+                    z: order,
                 },
                 // The sprite's local space is centered on the origin, one
                 // texture pixel per scene pixel, so its extent is the
@@ -280,7 +286,7 @@ impl Canvas {
                     tint: *color,
                     alpha: *alpha,
                     uv_rect: [0.0, 0.0, 1.0, 1.0],
-                    z: 0.0,
+                    z: order,
                 },
                 // Text is recorded in user space; `Canvas::expand_text`
                 // lays it out and turns each glyph into a sprite quad
@@ -298,7 +304,7 @@ impl Canvas {
                     size: *size,
                     color: *color,
                     alpha: *alpha,
-                    z: 0.0,
+                    z: order,
                 },
                 // The background ignores its transform: it is recorded in
                 // call order and becomes the frame's clear color at render
@@ -308,7 +314,7 @@ impl Canvas {
             self.draws.push(draw);
         }
         for child in &node.children {
-            self.draw_node(child, &world);
+            self.draw_node(child, &world, order);
         }
     }
 
@@ -2086,6 +2092,7 @@ mod tests {
         let scene = Scene::new(SceneNode {
             transform: Transform::translate(10.0, 0.0),
             scale: [1.0, 1.0],
+            order: 0.0,
             shape: Some(Shape::Circle {
                 center: [0.0, 0.0],
                 radius: 5.0,
@@ -2094,10 +2101,12 @@ mod tests {
             children: vec![Box::new(SceneNode {
                 transform: Transform::scale_uniform(2.0),
                 scale: [1.0, 1.0],
+                order: 0.0,
                 shape: None,
                 children: vec![Box::new(SceneNode {
                     transform: Transform::identity(),
                     scale: [1.0, 1.0],
+                    order: 0.0,
                     shape: Some(Shape::Circle {
                         center: [1.0, 1.0],
                         radius: 1.0,
@@ -2143,10 +2152,12 @@ mod tests {
         let scene = Scene::new(SceneNode {
             transform: Transform::rotate(std::f32::consts::FRAC_PI_2),
             scale: [1.0, 1.0],
+            order: 0.0,
             shape: None,
             children: vec![Box::new(SceneNode {
                 transform: Transform::translate(10.0, 0.0),
                 scale: [1.0, 1.0],
+                order: 0.0,
                 shape: Some(Shape::Circle {
                     center: [0.0, 0.0],
                     radius: 1.0,
@@ -2172,6 +2183,7 @@ mod tests {
         let scene = Scene::new(SceneNode {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
+            order: 0.0,
             shape: Some(Shape::Circle {
                 center: [0.0, 0.0],
                 radius: 10.0,
@@ -2365,6 +2377,7 @@ mod tests {
         canvas.draw_scene(&Scene::new(SceneNode {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
+            order: 0.0,
             shape: Some(Shape::Rectangle {
                 center: [0.0, 0.0],
                 extent: [10.0, 10.0],
@@ -2374,6 +2387,7 @@ mod tests {
                 // Transformed on purpose: the background must ignore it.
                 transform: Transform::translate(50.0, 50.0),
                 scale: [1.0, 1.0],
+                order: 0.0,
                 shape: Some(Shape::Background {
                     color: Color {
                         r: 0.0,
@@ -2407,6 +2421,7 @@ mod tests {
             // Scale 2x in x only; the transform still positions the node.
             transform: Transform::translate(10.0, 0.0),
             scale: [2.0, 1.0],
+            order: 0.0,
             shape: Some(Shape::Circle {
                 center: [1.0, 1.0],
                 radius: 1.0,
@@ -2415,6 +2430,7 @@ mod tests {
             children: vec![Box::new(SceneNode {
                 transform: Transform::translate(1.0, 0.0),
                 scale: [1.0, 1.0],
+                order: 0.0,
                 shape: Some(Shape::Circle {
                     center: [0.0, 0.0],
                     radius: 1.0,
@@ -2452,6 +2468,52 @@ mod tests {
     }
 
     #[test]
+    fn node_order_accumulates_down_the_tree_like_the_transform() {
+        // A chain of nodes with orders 1, 2, 4: each node's own shape draws
+        // at the order inherited from its ancestors plus its own, and the
+        // children inherit that total, so the z's are 1, 3, 7.
+        let mut canvas = Canvas::new((100, 100));
+        let scene = Scene::new(SceneNode {
+            transform: Transform::identity(),
+            scale: [1.0, 1.0],
+            order: 1.0,
+            shape: Some(Shape::Circle {
+                center: [0.0, 0.0],
+                radius: 1.0,
+                color: black(),
+            }),
+            children: vec![Box::new(SceneNode {
+                transform: Transform::identity(),
+                scale: [1.0, 1.0],
+                order: 2.0,
+                shape: Some(Shape::Circle {
+                    center: [0.0, 0.0],
+                    radius: 1.0,
+                    color: black(),
+                }),
+                children: vec![Box::new(SceneNode {
+                    transform: Transform::identity(),
+                    scale: [1.0, 1.0],
+                    order: 4.0,
+                    shape: Some(Shape::Circle {
+                        center: [0.0, 0.0],
+                        radius: 1.0,
+                        color: black(),
+                    }),
+                    children: vec![],
+                })],
+            })],
+        });
+        canvas.draw_scene(&scene);
+        let zs = canvas
+            .draws
+            .iter()
+            .map(|draw| draw.z())
+            .collect::<Vec<_>>();
+        assert_eq!(zs, vec![1.0, 3.0, 7.0]);
+    }
+
+    #[test]
     fn scene_sprite_at_user_origin_lands_at_window_center() {
         // A sprite node at the user-space origin must be centered on the
         // window center (not offset to a corner), and its texture size, tint
@@ -2460,6 +2522,7 @@ mod tests {
         let scene = Scene::new(SceneNode {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
+            order: 0.0,
             shape: Some(Shape::Sprite {
                 data: Arc::new([0u8; 16]),
                 width: 4,

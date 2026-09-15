@@ -4,6 +4,7 @@ fn main() {
         frost::Scene::new(frost::SceneNode {
             transform: frost::Transform::identity(),
             scale: [1.0, 1.0],
+            order: 0.0,
             // Dark blue background; the node's transform is ignored.
             shape: Some(frost::Shape::Background {
                 color: frost::Color {

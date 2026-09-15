@@ -347,11 +347,12 @@ impl std::error::Error for SpriteError {
 
 /// A node in a [`Scene`] tree.
 ///
-/// A node is a [`Transform`] and a `scale`, plus its own optional [`Shape`]
-/// and its children. Both the transform and the scale are relative to the
-/// node's parent and apply to the node's own shape as well as composing onto
-/// all descendants. A node without a shape (`shape: None`) is a pure group
-/// or pivot node, and a node without children is a leaf.
+/// A node is a [`Transform`], a `scale`, and an `order`, plus its own
+/// optional [`Shape`] and its children. The transform and the scale are
+/// relative to the node's parent and apply to the node's own shape as well as
+/// composing onto all descendants; the order does the same for the subtree's
+/// draw order. A node without a shape (`shape: None`) is a pure group or
+/// pivot node, and a node without children is a leaf.
 #[derive(Clone, Debug)]
 pub struct SceneNode {
     /// The transform from the parent's coordinate space to this node's,
@@ -361,6 +362,12 @@ pub struct SceneNode {
     /// before its transform, so it scales the node's shape and its whole
     /// subtree. `[1.0, 1.0]` (the default) is no scaling.
     pub scale: [f32; 2],
+    /// The node's draw-order offset, added to the order inherited from its
+    /// ancestors: the node's own shape draws at that total, and the same
+    /// total is passed on to the children, so the order propagates down the
+    /// whole subtree, just like the scale and the transform. `0.0` (the
+    /// default) keeps the subtree at its inherited draw order.
+    pub order: f32,
     /// The shape this node draws, in its own local space, if any.
     pub shape: Option<Shape>,
     /// The child nodes, positioned in this node's coordinate space.
@@ -393,6 +400,7 @@ impl Default for Scene {
             root: SceneNode {
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
+                order: 0.0,
                 shape: None,
                 children: Vec::new(),
             },

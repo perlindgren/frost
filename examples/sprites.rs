@@ -82,6 +82,7 @@ fn main() {
     let scene = frost::Scene::new(frost::SceneNode {
         transform: frost::Transform::identity(),
         scale: [1.0, 1.0],
+        order: 0.0,
         // Deep indigo background; the node's transform is ignored.
         shape: Some(frost::Shape::Background {
             color: frost::Color {
@@ -94,16 +95,19 @@ fn main() {
             Box::new(frost::SceneNode {
                 transform: frost::Transform::translate(-160.0, 0.0),
                 scale: [1.0, 1.0],
+                order: 0.0,
                 shape: Some(brick),
                 children: vec![],
             }),
             Box::new(frost::SceneNode {
                 transform: frost::Transform::translate(160.0, 0.0),
                 scale: [1.0, 1.0],
+                order: 0.0,
                 shape: Some(button),
                 children: vec![Box::new(frost::SceneNode {
                     transform: frost::Transform::translate(0.0, 120.0),
                     scale: [0.5, 0.5],
+                    order: 0.0,
                     shape: Some(rider),
                     children: vec![],
                 })],
