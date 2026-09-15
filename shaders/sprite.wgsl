@@ -2,7 +2,7 @@ struct SpriteUniforms {
     to_local: mat2x2<f32>,
     translation: vec2<f32>,
     size: vec2<f32>, // local extent of the quad in local units
-    tint: vec3<f32>, // multiplied with every sampled pixel
+    tint: vec4<f32>, // multiplied with every sampled pixel
     alpha: f32, // multiplied with the texture's own alpha
     uv_rect: vec4<f32>, // [min_x, min_y, max_x, max_y] sub-rect of the texture
 };
@@ -44,7 +44,8 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     // Sample the quad's [0, 1] uv remapped into the texture sub-rectangle it
     // covers; for a whole-texture sprite the remap is the identity.
     let t = textureSample(tex, samp, mix(u.uv_rect.xy, u.uv_rect.zw, uv));
-    // Emit the tinted texture color, scaled by the sprite's alpha, and
-    // composited over the existing attachment via alpha blending.
-    return vec4<f32>(t.rgb * u.tint, t.a * u.alpha);
+    // Emit the tinted texture color, scaled by the sprite's alpha and the
+    // tint's own alpha, and composited over the existing attachment via
+    // alpha blending.
+    return vec4<f32>(t.rgb * u.tint.rgb, t.a * u.alpha * u.tint.a);
 }

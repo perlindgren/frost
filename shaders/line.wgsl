@@ -1,7 +1,7 @@
 struct Uniforms {
     a: vec2<f32>,
     b: vec2<f32>,
-    color: vec3<f32>,
+    color: vec4<f32>,
     width: f32,
 };
 
@@ -33,5 +33,5 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     let alpha = 1.0 - smoothstep(half_width - aa, half_width + aa, dist);
     // Emit the line's color and coverage; composited over the existing
     // attachment via alpha blending.
-    return vec4<f32>(u.color, alpha);
+    return vec4<f32>(u.color.rgb, alpha * u.color.a);
 }

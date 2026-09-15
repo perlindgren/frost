@@ -4,8 +4,14 @@
 use std::path::Path;
 use std::sync::Arc;
 
-/// An RGB color with channels in `0.0..=1.0`, used for the background and for
-/// the color of each drawn object.
+/// An RGBA color with channels in `0.0..=1.0`, used for the background and
+/// for the color of each drawn object.
+///
+/// The alpha channel is the color's opacity: shapes emit
+/// `coverage * a`, and sprites and text emit `texture_alpha * opacity * a`
+/// (their separate `alpha` field and the color's alpha multiply). `1.0`
+/// (opaque) is the default for the colors created by [`Shape::sprite`] and
+/// [`Shape::text`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Color {
     /// Red channel.
@@ -14,12 +20,14 @@ pub struct Color {
     pub g: f32,
     /// Blue channel.
     pub b: f32,
+    /// Alpha channel: the color's opacity. `1.0` is opaque.
+    pub a: f32,
 }
 
 impl Color {
-    /// The channels as `[r, g, b]`.
-    pub(crate) fn channels(&self) -> [f32; 3] {
-        [self.r, self.g, self.b]
+    /// The channels as `[r, g, b, a]`.
+    pub(crate) fn channels(&self) -> [f32; 4] {
+        [self.r, self.g, self.b, self.a]
     }
 }
 
@@ -177,9 +185,10 @@ pub enum Shape {
     /// The sprite is centered on the node's origin, one texture pixel per
     /// scene pixel, and the node's transform and scale apply to it exactly as
     /// they do to the other shapes. `color` is a per-pixel tint multiplied
-    /// with every sampled pixel; white (`[1.0, 1.0, 1.0]`) leaves the
-    /// texture unchanged. The texture's own alpha channel is scaled by
-    /// `alpha`, so `alpha` is the sprite's overall opacity.
+    /// with every sampled pixel; white (`r: 1.0, g: 1.0, b: 1.0, a: 1.0`)
+    /// leaves the texture unchanged. The texture's own alpha channel is
+    /// scaled by `alpha` and by `color.a`, so the sprite's overall opacity
+    /// is the product of the two.
     Sprite {
         /// The RGBA8 pixel data, row by row, top row first.
         data: Arc<[u8]>,
@@ -201,8 +210,8 @@ pub enum Shape {
     /// scene pixel, and the node's transform and scale apply to it exactly
     /// as they do to the other shapes. Each glyph is drawn as a tinted
     /// texture quad sampling a shared glyph atlas: `color` is the glyph
-    /// color (white gives white text), and `alpha` is the text's overall
-    /// opacity.
+    /// color (white gives white text), and the text's overall opacity is the
+    /// product of `alpha` and `color.a`.
     Text {
         /// The string to lay out.
         text: String,
@@ -241,6 +250,7 @@ impl Shape {
                 r: 1.0,
                 g: 1.0,
                 b: 1.0,
+                a: 1.0,
             },
             alpha: 1.0,
         })
@@ -283,6 +293,7 @@ impl Shape {
                 r: 1.0,
                 g: 1.0,
                 b: 1.0,
+                a: 1.0,
             },
             alpha: 1.0,
         })

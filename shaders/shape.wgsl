@@ -3,7 +3,7 @@ struct ShapeUniforms {
     translation: vec2<f32>,
     center: vec2<f32>,
     params: vec2<f32>,
-    color: vec3<f32>,
+    color: vec4<f32>,
     misc: vec2<f32>, // x: anti-alias band (local units), y: kind (0.0 circle, 1.0 rectangle)
 };
 
@@ -43,5 +43,5 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     let alpha = 1.0 - smoothstep(-u.misc.x, u.misc.x, d);
     // Emit the shape's color and coverage; composited over the existing
     // attachment via alpha blending.
-    return vec4<f32>(u.color, alpha);
+    return vec4<f32>(u.color.rgb, alpha * u.color.a);
 }

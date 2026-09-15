@@ -76,6 +76,7 @@ fn main() {
                 r: 0.09,
                 g: 0.06,
                 b: 0.16,
+                a: 1.0,
             },
         }),
         children: vec![Box::new(frost::SceneNode {
@@ -86,6 +87,7 @@ fn main() {
                     r: 0.25,
                     g: 0.35,
                     b: 0.6,
+                    a: 1.0,
                 },
             }),
             children: vec![Box::new(frost::SceneNode {

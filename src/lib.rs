@@ -10,7 +10,7 @@
 //! ```no_run
 //! let scene = frost::Scene::new(frost::SceneNode {
 //!     shape: Some(frost::Shape::Background {
-//!         color: frost::Color { r: 0.05, g: 0.06, b: 0.12 },
+//!         color: frost::Color { r: 0.05, g: 0.06, b: 0.12, a: 1.0 },
 //!     }),
 //!     ..Default::default()
 //! });
@@ -20,13 +20,13 @@
 //!         let (w, h) = ctx.size();
 //!         ctx.line(
 //!             -w / 2.0, h / 2.0, w / 2.0, -h / 2.0,
-//!             frost::Color { r: 1.0, g: 1.0, b: 1.0 },
+//!             frost::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
 //!             2.0,
 //!             0.0,
 //!         );
 //!         ctx.circle(
 //!             0.0, 0.0, h / 4.0,
-//!             frost::Color { r: 0.9, g: 0.4, b: 0.2 },
+//!             frost::Color { r: 0.9, g: 0.4, b: 0.2, a: 1.0 },
 //!             1.0,
 //!         );
 //!     },
@@ -104,6 +104,7 @@ const DEFAULT_BACKGROUND: Color = Color {
     r: 0.07,
     g: 0.09,
     b: 0.14,
+    a: 1.0,
 };
 
 /// The anti-alias band in pixels, mirrored by the `aa` constant in the SDF
@@ -1628,7 +1629,7 @@ impl<P: Process> Frost<P> {
                             r: clear.r as f64,
                             g: clear.g as f64,
                             b: clear.b as f64,
-                            a: 1.0,
+                            a: clear.a as f64,
                         }),
                         store: StoreOp::Store,
                     },
@@ -1814,7 +1815,7 @@ fn write_f32_at(data: &mut [u8], offset: usize, value: f32) {
 /// aligned to its own alignment, so the f32 follows the vec3 without a gap);
 /// the struct size rounds up to 32.
 fn line_uniform_data(a: [f32; 2], b: [f32; 2], color: Color, width: f32) -> Vec<u8> {
-    let mut data = vec![0u8; 32];
+    let mut data = vec![0u8; 48];
     write_f32_at(&mut data, 0, a[0]);
     write_f32_at(&mut data, 4, a[1]);
     write_f32_at(&mut data, 8, b[0]);
@@ -1822,29 +1823,31 @@ fn line_uniform_data(a: [f32; 2], b: [f32; 2], color: Color, width: f32) -> Vec<
     write_f32_at(&mut data, 16, color.r);
     write_f32_at(&mut data, 20, color.g);
     write_f32_at(&mut data, 24, color.b);
-    write_f32_at(&mut data, 28, width);
+    write_f32_at(&mut data, 28, color.a);
+    write_f32_at(&mut data, 32, width);
     data
 }
 
-/// Circle uniform data, 32 bytes, matching the WGSL uniform-space layout of
+/// Circle uniform data, 48 bytes, matching the WGSL uniform-space layout of
 /// the `CircleUniforms` Wgsl struct: `center` @ 0, `color` @ 16 (a
-/// vec3<f32> is 16-byte aligned in uniform space, leaving an 8-byte gap),
-/// `radius` @ 28 (the next member is aligned to its own alignment, so the
-/// f32 follows the vec3 without a gap); the struct size rounds up to 32.
+/// vec4<f32> is 16-byte aligned in uniform space, leaving an 8-byte gap),
+/// `radius` @ 32 (the next member is aligned to its own alignment, so the
+/// f32 follows the vec4 without a gap); the struct size rounds up to 48.
 fn circle_uniform_data(center: [f32; 2], color: Color, radius: f32) -> Vec<u8> {
-    let mut data = vec![0u8; 32];
+    let mut data = vec![0u8; 48];
     write_f32_at(&mut data, 0, center[0]);
     write_f32_at(&mut data, 4, center[1]);
     write_f32_at(&mut data, 16, color.r);
     write_f32_at(&mut data, 20, color.g);
     write_f32_at(&mut data, 24, color.b);
-    write_f32_at(&mut data, 28, radius);
+    write_f32_at(&mut data, 28, color.a);
+    write_f32_at(&mut data, 32, radius);
     data
 }
 
 /// Rectangle uniform data, matching the `RectUniforms` Wgsl struct: center,
-/// extent, color. The 28 bytes of data are zero-padded to the struct's
-/// 32-byte minimum binding size.
+/// extent, color. The 32 bytes of data exactly fill the struct's 32-byte
+/// size, so no padding is needed.
 fn rect_uniform_data(center: [f32; 2], extent: [f32; 2], color: Color) -> Vec<u8> {
     let mut data: Vec<u8> = center
         .iter()
@@ -1866,8 +1869,8 @@ fn rect_uniform_data(center: [f32; 2], extent: [f32; 2], color: Color) -> Vec<u8
 /// (m[0][1], m[1][1]) at @ 8; stored column-major, so the WGSL matrix holds
 /// the Rust matrix element-for-element and `m * p + t` in the shader
 /// reproduces `Transform::apply`), `translation` @ 16, `center` @ 24,
-/// `params` @ 32, `color` @ 48 (spanning 48..60), `misc` @ 64 (aa @ 64,
-/// kind @ 68); the struct size rounds up to 80.
+/// `params` @ 32, `color` @ 48 (a vec4<f32>, spanning 48..64), `misc` @ 64
+/// (aa @ 64, kind @ 68); the struct size rounds up to 80.
 fn shape_uniform_data(
     to_local: Transform,
     center: [f32; 2],
@@ -1889,22 +1892,23 @@ fn shape_uniform_data(
     write_f32_at(&mut data, 28, center[1]);
     write_f32_at(&mut data, 32, params[0]);
     write_f32_at(&mut data, 36, params[1]);
-    // vec3: 12 bytes with 16-byte alignment, so it starts at 48 and spans
-    // 48..60.
+    // vec4: 16 bytes with 16-byte alignment, so it starts at 48 and spans
+    // 48..64.
     write_f32_at(&mut data, 48, color.r);
     write_f32_at(&mut data, 52, color.g);
     write_f32_at(&mut data, 56, color.b);
+    write_f32_at(&mut data, 60, color.a);
     write_f32_at(&mut data, 64, aa);
     write_f32_at(&mut data, 68, kind);
     data
 }
 
-/// Sprite uniform data, 64 bytes, matching the WGSL uniform-space layout of
+/// Sprite uniform data, 80 bytes, matching the WGSL uniform-space layout of
 /// the `SpriteUniforms` Wgsl struct. The mat2x2 column packing is the same
 /// as in [`shape_uniform_data`]; `translation` sits at @ 16, `size` (a
-/// vec2) at @ 24, the tint `vec3` at @ 32 (12 bytes, 16-byte aligned,
-/// spanning 32..44), the scalar `alpha` (4-byte aligned) at @ 44, and the
-/// `uv_rect` `vec4` (16-byte aligned) at @ 48; the struct size is 64.
+/// vec2) at @ 24, the tint `vec4` at @ 32 (16 bytes, 16-byte aligned,
+/// spanning 32..48), the scalar `alpha` (4-byte aligned) at @ 48, and the
+/// `uv_rect` `vec4` (16-byte aligned) at @ 64; the struct size is 80.
 fn sprite_uniform_data(
     to_local: Transform,
     size: [f32; 2],
@@ -1912,7 +1916,7 @@ fn sprite_uniform_data(
     alpha: f32,
     uv_rect: [f32; 4],
 ) -> Vec<u8> {
-    let mut data = vec![0u8; 64];
+    let mut data = vec![0u8; 80];
     let m = to_local.m;
     // mat2x2: 16 bytes total, vec2 columns with an 8-byte stride.
     write_f32_at(&mut data, 0, m[0][0]);
@@ -1923,17 +1927,18 @@ fn sprite_uniform_data(
     write_f32_at(&mut data, 20, to_local.t[1]);
     write_f32_at(&mut data, 24, size[0]);
     write_f32_at(&mut data, 28, size[1]);
-    // vec3: 12 bytes with 16-byte alignment, so it starts at 32 and spans
-    // 32..44. The scalar alpha is 4-byte aligned, so it lands in the
-    // 44..48 slot that used to be alignment padding.
+    // vec4: 16 bytes with 16-byte alignment, so it starts at 32 and spans
+    // 32..48. The scalar alpha is 4-byte aligned, so it follows the tint at
+    // 48, and the 16-byte-aligned uv_rect starts at 64.
     write_f32_at(&mut data, 32, tint.r);
     write_f32_at(&mut data, 36, tint.g);
     write_f32_at(&mut data, 40, tint.b);
-    write_f32_at(&mut data, 44, alpha);
-    write_f32_at(&mut data, 48, uv_rect[0]);
-    write_f32_at(&mut data, 52, uv_rect[1]);
-    write_f32_at(&mut data, 56, uv_rect[2]);
-    write_f32_at(&mut data, 60, uv_rect[3]);
+    write_f32_at(&mut data, 44, tint.a);
+    write_f32_at(&mut data, 48, alpha);
+    write_f32_at(&mut data, 64, uv_rect[0]);
+    write_f32_at(&mut data, 68, uv_rect[1]);
+    write_f32_at(&mut data, 72, uv_rect[2]);
+    write_f32_at(&mut data, 76, uv_rect[3]);
     data
 }
 
@@ -1962,6 +1967,7 @@ mod tests {
             r: 0.0,
             g: 0.0,
             b: 0.0,
+            a: 1.0,
         }
     }
 
@@ -2276,13 +2282,14 @@ mod tests {
         // `Layouter`): mat2x2<f32> is 16 bytes total with 8-byte alignment
         // (vec2 columns, stride 8), so `to_local` spans 0..16 with column 0
         // at 0 and column 1 at 8; `translation` @ 16; `center` @ 24;
-        // `params` @ 32; vec3<f32> (12 bytes, 16-byte aligned) `color` @ 48;
-        // `misc` vec2 @ 64; struct span rounds up to 80.
+        // `params` @ 32; vec4<f32> (16 bytes, 16-byte aligned) `color` @ 48
+        // (spanning 48..64); `misc` vec2 @ 64; struct span rounds up to 80.
         let inv = Transform::translate(1.5, -2.5).invert().unwrap();
         let data = shape_uniform_data(inv, [7.0, 8.0], [9.0, 10.0], 1.0, 0.25, Color {
             r: 0.1,
             g: 0.2,
             b: 0.3,
+            a: 0.4,
         });
         assert_eq!(data.len(), 80);
 
@@ -2303,16 +2310,16 @@ mod tests {
         assert_eq!(f32_at(28), 8.0);
         assert_eq!(f32_at(32), 9.0);
         assert_eq!(f32_at(36), 10.0);
-        // `params` ends at 40; the 16-byte-aligned vec3 color starts at 48,
+        // `params` ends at 40; the 16-byte-aligned vec4 color starts at 48,
         // so bytes 40..48 are padding (zeroed by the `vec![0u8; 80]` init).
         assert_eq!(f32_at(40), 0.0);
         assert_eq!(f32_at(48), 0.1);
         assert_eq!(f32_at(52), 0.2);
         assert_eq!(f32_at(56), 0.3);
-        // Bytes 60..64 are the vec3's trailing padding, and the `misc` vec2
-        // begins at byte 64: `aa` at 64, `kind` at 68; 72..80 is the
-        // struct's alignment padding.
-        assert_eq!(f32_at(60), 0.0);
+        // The vec4's alpha channel follows its RGB channels at byte 60, and
+        // the `misc` vec2 begins at byte 64: `aa` at 64, `kind` at 68;
+        // 72..80 is the struct's alignment padding.
+        assert_eq!(f32_at(60), 0.4);
         assert_eq!(f32_at(64), 0.25);
         assert_eq!(f32_at(68), 1.0);
         assert_eq!(f32_at(72), 0.0);
@@ -2336,6 +2343,7 @@ mod tests {
             r: 0.09,
             g: 0.06,
             b: 0.16,
+            a: 1.0,
         };
         let draws = [
             Draw::Background { color: indigo },
@@ -2355,11 +2363,13 @@ mod tests {
             r: 1.0,
             g: 0.0,
             b: 0.0,
+            a: 1.0,
         };
         let second = Color {
             r: 0.0,
             g: 0.0,
             b: 1.0,
+            a: 1.0,
         };
         let draws = [
             Draw::Background { color: first },
@@ -2390,6 +2400,7 @@ mod tests {
                         r: 0.0,
                         g: 0.0,
                         b: 1.0,
+                        a: 1.0,
                     },
                 }),
                 children: vec![],
@@ -2406,7 +2417,8 @@ mod tests {
             Color {
                 r: 0.0,
                 g: 0.0,
-                b: 1.0
+                b: 1.0,
+                a: 1.0
             }
         );
     }
@@ -2600,10 +2612,10 @@ mod tests {
         // Lock the byte layout of `sprite_uniform_data` to the WGSL
         // uniform-space layout of `SpriteUniforms`, the same way the shape
         // test does: the mat2x2 `<f32>` spans 0..16 (column 0 @ 0, column 1
-        // @ 8), `translation` @ 16, `size` @ 24, the tint vec3 (12 bytes,
-        // 16-byte aligned) @ 32 spanning 32..44, the scalar alpha @ 44, and
-        // the `uv_rect` vec4 (16-byte aligned) @ 48 spanning 48..64; the
-        // struct size is 64.
+        // @ 8), `translation` @ 16, `size` @ 24, the tint vec4 (16 bytes,
+        // 16-byte aligned) @ 32 spanning 32..48, the scalar alpha @ 48, and
+        // the `uv_rect` vec4 (16-byte aligned) @ 64 spanning 64..80; the
+        // struct size is 80.
         let inv = Transform::translate(1.5, -2.5).invert().unwrap();
         let data = sprite_uniform_data(
             inv,
@@ -2612,11 +2624,12 @@ mod tests {
                 r: 0.5,
                 g: 0.25,
                 b: 0.125,
+                a: 0.3,
             },
             0.75,
             [0.25, 0.5, 0.75, 1.0],
         );
-        assert_eq!(data.len(), 64);
+        assert_eq!(data.len(), 80);
 
         let f32_at = |off: usize| {
             f32::from_le_bytes(data[off..off + 4].try_into().unwrap())
@@ -2635,15 +2648,20 @@ mod tests {
         assert_eq!(f32_at(32), 0.5);
         assert_eq!(f32_at(36), 0.25);
         assert_eq!(f32_at(40), 0.125);
-        // The scalar alpha is 4-byte aligned, so it occupies the 44..48
-        // slot that used to be alignment padding.
-        assert_eq!(f32_at(44), 0.75);
-        // The uv_rect vec4 is 16-byte aligned, so it sits in the 48..64
-        // slot; a whole-texture sprite passes the identity rect.
-        assert_eq!(f32_at(48), 0.25);
-        assert_eq!(f32_at(52), 0.5);
-        assert_eq!(f32_at(56), 0.75);
-        assert_eq!(f32_at(60), 1.0);
+        // The tint's alpha channel follows its RGB channels at byte 44.
+        assert_eq!(f32_at(44), 0.3);
+        // The scalar alpha is 4-byte aligned, so it occupies the 48..52 slot
+        // right after the tint.
+        assert_eq!(f32_at(48), 0.75);
+        // Bytes 52..64 are the struct's alignment padding (zeroed by the
+        // `vec![0u8; 80]` init), so the 16-byte-aligned uv_rect starts at 64;
+        // a whole-texture sprite passes the identity rect.
+        assert_eq!(f32_at(52), 0.0);
+        assert_eq!(f32_at(56), 0.0);
+        assert_eq!(f32_at(64), 0.25);
+        assert_eq!(f32_at(68), 0.5);
+        assert_eq!(f32_at(72), 0.75);
+        assert_eq!(f32_at(76), 1.0);
     }
 
     /// The font file used by the expand_text tests, loaded from the crate's
@@ -2667,7 +2685,7 @@ mod tests {
         let font = test_font();
         let size = 48.0;
         let mut canvas = Canvas::new((800, 600));
-        let tint = Color { r: 1.0, g: 0.5, b: 0.25 };
+        let tint = Color { r: 1.0, g: 0.5, b: 0.25, a: 1.0 };
         canvas.draws = vec![
             Draw::Circle {
                 center: [-100.0, 0.0],
@@ -2711,7 +2729,7 @@ mod tests {
             else {
                 panic!("every spliced draw must be a sprite");
             };
-            assert_eq!(*tint, Color { r: 1.0, g: 0.5, b: 0.25 });
+            assert_eq!(*tint, Color { r: 1.0, g: 0.5, b: 0.25, a: 1.0 });
             assert_eq!(*alpha, 0.9);
             assert_eq!(*z, 1.0);
             // Glyph quads are a sub-rectangle of the 512x512 atlas.
@@ -2739,7 +2757,7 @@ mod tests {
                 font: font.clone(),
                 text: "hello world".to_string(),
                 size,
-                color: Color { r: 1.0, g: 1.0, b: 1.0 },
+                color: Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
                 alpha: 1.0,
                 z: 0.0,
             }];
@@ -2795,7 +2813,8 @@ mod tests {
             Color {
                 r: 1.0,
                 g: 1.0,
-                b: 1.0
+                b: 1.0,
+                a: 1.0
             }
         );
         assert_eq!(alpha, 1.0);

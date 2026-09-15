@@ -51,6 +51,7 @@ impl frost::Process for Demo {
                 r: 1.0,
                 g: 0.75 + 0.25 * (self.t * 0.7).sin(),
                 b: 0.6 + 0.4 * (self.t * 0.7).cos(),
+                a: 1.0,
             };
         }
 
@@ -86,6 +87,7 @@ fn main() {
                 r: 0.09,
                 g: 0.06,
                 b: 0.16,
+                a: 1.0,
             },
         }),
         children: vec![

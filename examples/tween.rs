@@ -30,6 +30,7 @@ impl frost::Process for Demo {
                 r: 0.6,
                 g: 0.7,
                 b: 0.9,
+                a: 1.0,
             },
             2.0,
             0.0,
@@ -43,6 +44,7 @@ impl frost::Process for Demo {
                 r: 0.9,
                 g: 0.55,
                 b: 0.25,
+                a: 1.0,
             },
             0.0,
         );
@@ -58,6 +60,7 @@ impl frost::Process for Demo {
                 r: 0.4,
                 g: 0.9,
                 b: 0.5,
+                a: 1.0,
             },
             5.0,
             1.0,
@@ -73,6 +76,7 @@ impl frost::Process for Demo {
                 r: 0.95,
                 g: 0.35,
                 b: 0.4,
+                a: 1.0,
             },
             1.0,
         );
@@ -87,6 +91,7 @@ impl frost::Process for Demo {
                 r: 0.95,
                 g: 0.85,
                 b: 0.3,
+                a: 1.0,
             },
             1.0,
         );
@@ -105,6 +110,7 @@ fn main() {
                     r: 0.09,
                     g: 0.06,
                     b: 0.16,
+                    a: 1.0,
                 },
             }),
             ..Default::default()
