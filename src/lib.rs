@@ -61,7 +61,7 @@ use std::future::Future;
 #[cfg(target_arch = "wasm32")]
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context as TaskContext, Poll, Wake, Waker};
+use std::task::{Context as TaskContext, Poll, Waker};
 
 use wgpu::{
     Adapter, AddressMode, BindGroup, BindGroupDescriptor, BindGroupEntry, BindingResource,
@@ -140,6 +140,7 @@ impl Canvas {
     /// `z` is the draw order: lower `z` is drawn first (further back). Lines
     /// with the same `z` are drawn in call order, so the last one drawn is on
     /// top.
+    #[allow(clippy::too_many_arguments)] // immediate-mode draw call
     pub fn line(
         &mut self,
         x0: f32,
@@ -1185,8 +1186,7 @@ impl<P: Process> WebFrost<P> {
         // The event loop itself keeps running between polls (the web
         // ControlFlow::Poll strategy reschedules every frame), so a waker
         // that never wakes is fine: the next iteration polls again.
-        let waker = Waker::from(Arc::new(NoopWaker));
-        let mut cx = TaskContext::from_waker(&waker);
+        let mut cx = TaskContext::from_waker(Waker::noop());
         let outcome = match future.as_mut().poll(&mut cx) {
             Poll::Pending => return, // the loop polls again on the next iteration
             Poll::Ready(outcome) => outcome,
@@ -2025,12 +2025,6 @@ fn sprite_uniform_data(
     data
 }
 
-struct NoopWaker;
-
-impl Wake for NoopWaker {
-    fn wake(self: Arc<Self>) {}
-}
-
 /// Drives `future` on this thread until it completes.
 ///
 /// Native only: in the browser the main thread cannot block on a future,
@@ -2038,8 +2032,7 @@ impl Wake for NoopWaker {
 /// [`run`].
 #[cfg(not(target_arch = "wasm32"))]
 fn block_on<F: Future>(future: F) -> F::Output {
-    let waker = Waker::from(Arc::new(NoopWaker));
-    let mut cx = TaskContext::from_waker(&waker);
+    let mut cx = TaskContext::from_waker(Waker::noop());
     let mut future = std::pin::pin!(future);
     loop {
         if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
