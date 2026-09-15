@@ -1,12 +1,14 @@
-//! Text shapes: TTF glyphs drawn through the scene tree. "hello world" is
-//! set in `assets/fonts/JameGem08_2026-Regular.ttf` at 48 pixels and
-//! centered on the screen (a node at the user-space origin is the screen
-//! center, so the text node carries the identity transform). The node
-//! sways gently up and down to show the text moving like any other shape.
-//! Run with:
+//! Text shapes: TTF glyphs drawn through the scene tree. "SUB0" is set in
+//! `assets/fonts/JameGem08_2026-Regular.ttf`: the letters S, U, and B at
+//! 48 pixels stacked around the screen center, and a large 0 at the lower
+//! left, all riding on a circle that sways gently up and down like any
+//! other node in the tree. The three letters are treated as channels:
+//! each one's alpha is modulated 120 degrees out of phase with the
+//! others, sweeping from 0 to 1 and back over one second, infinitely
+//! repeated. Run with:
 //!
 //! ```text
-//! cargo run --example text
+//! cargo run --example sub_zero
 //! ```
 
 struct Demo {
@@ -20,9 +22,28 @@ impl frost::Process for Demo {
 
         // The whole line drifts up and down around the screen center, like
         // any other node in the tree.
-        let text = &mut ctx.scene().root.children[0];
-        text.transform =
+        let line = &mut ctx.scene().root.children[0];
+        line.transform =
             frost::Transform::translate(0.0, (self.t % std::f32::consts::TAU).sin() * 40.0);
+
+        // The S, U, and B letters — the first three children; the zero
+        // keeps its default white modulate — are three channels, 120
+        // degrees out of phase with each other. Each channel's alpha
+        // sweeps 0 -> 1 -> 0 over one second and repeats forever: a
+        // raised cosine, so the sweep is smooth. The sweep rides on each
+        // node's `modulate`, white except for the animated alpha, which
+        // multiplies into the white glyph color channel by channel.
+        let t = self.t;
+        for (child, k) in line.children.iter_mut().zip([0, 1, 2]) {
+            let phase = k as f32 * std::f32::consts::TAU / 3.0;
+            let alpha = 0.5 * (1.0 - (std::f32::consts::TAU * t + phase).cos());
+            child.modulate = frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: alpha,
+            };
+        }
         log::trace!("process: dt {:?}", dt);
     }
 }
