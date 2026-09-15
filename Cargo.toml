@@ -13,6 +13,22 @@ swash = "0.2.10"
 wgpu = "30.0.1"
 winit = "0.30.13"
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Surfaces Rust panics in the browser console instead of the wasm module
+# dying silently; the web example installs it before anything else.
+console_error_panic_hook = "0.1"
+# DOM access for the page's loading placeholder (see `hide_fallback` and
+# `show_fallback`); already in the dependency graph via winit, so this adds
+# no new crate — just the features we use.
+web-sys = { version = "0.3", features = [
+    "CssStyleDeclaration",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "Node",
+    "Window",
+] }
+
 [dev-dependencies]
 # Logger initialization for the examples and tests only; the library
 # itself just uses the `log` facade, so consumers choose their own.
