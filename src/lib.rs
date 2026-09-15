@@ -62,7 +62,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll, Wake, Waker};
-use std::time::Instant;
 
 use wgpu::{
     Adapter, AddressMode, BindGroup, BindGroupDescriptor, BindGroupEntry, BindingResource,
@@ -78,9 +77,9 @@ use wgpu::{
 };
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
 #[cfg(target_arch = "wasm32")]
-use winit::event_loop::StartCause;
+use winit::event::StartCause;
+use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
@@ -865,7 +864,7 @@ pub fn run<P: Process>(scene: Scene, process: P) -> Result<(), Box<dyn Error>> {
         sprite_resources: HashMap::new(),
         text_atlases: HashMap::new(),
         format: None,
-        last_time: None,
+        last_millis: None,
         scene,
         keys: HashSet::new(),
         process,
@@ -939,8 +938,9 @@ struct Frost<P: Process> {
     /// The surface format the current pipelines were built for; they are only
     /// rebuilt when this changes.
     format: Option<TextureFormat>,
-    /// Timestamp of the previous rendered frame, used to compute `dt`.
-    last_time: Option<Instant>,
+    /// Millisecond timestamp of the previous rendered frame, used to
+    /// compute `dt` (see `now_millis`).
+    last_millis: Option<f64>,
     /// The scene drawn every frame, after the process runs.
     scene: Scene,
     /// The physical keys currently held down, updated as keyboard events arrive.
@@ -1239,7 +1239,7 @@ impl<P: Process> WebFrost<P> {
             sprite_resources: HashMap::new(),
             text_atlases: HashMap::new(),
             format: None,
-            last_time: None,
+            last_millis: None,
             scene: core.scene,
             keys: HashSet::new(),
             process: core.process,
@@ -1278,6 +1278,29 @@ fn show_fallback(message: &str) {
     node.set_text_content(Some(message));
     if let Some(fallback) = fallback.dyn_ref::<web_sys::HtmlElement>() {
         let _ = fallback.style().set_property("color", "#e5695e");
+    }
+}
+
+/// Monotonic milliseconds since an arbitrary process-start epoch:
+/// `std::time::Instant` on native, and the browser's `performance.now()`
+/// on wasm — `Instant::now()` panics on wasm32-unknown-unknown, where the
+/// clock has to come from the page. Only differences between two calls
+/// matter (see `Frost::last_millis`), so the epochs may differ.
+fn now_millis() -> f64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // `Instant` has no absolute epoch, so pin one at the first call;
+        // `elapsed` stays monotonic.
+        static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let epoch = *EPOCH.get_or_init(std::time::Instant::now);
+        epoch.elapsed().as_secs_f64() * 1000.0
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window()
+            .and_then(|window| window.performance())
+            .map(|performance| performance.now())
+            .unwrap_or(0.0)
     }
 }
 
@@ -1624,12 +1647,12 @@ impl<P: Process> Frost<P> {
         // Let the user update the scene and draw this frame, in their
         // coordinate system.
         let mut canvas = Canvas::new(self.pixel_size());
-        let now = Instant::now();
+        let now = now_millis();
         let dt = self
-            .last_time
-            .map(|last| now.duration_since(last).as_secs_f32().min(1.0))
+            .last_millis
+            .map(|last| ((now - last).max(0.0) / 1000.0).min(1.0) as f32)
             .unwrap_or(0.0);
-        self.last_time = Some(now);
+        self.last_millis = Some(now);
         let process = &mut self.process;
         let scene = &mut self.scene;
         let keys = &self.keys;
