@@ -259,10 +259,25 @@ impl Shape {
         size: f32,
     ) -> Result<Self, TextError> {
         let bytes = std::fs::read(path.as_ref()).map_err(TextError::Io)?;
-        swash::FontRef::from_index(&bytes, 0).ok_or(TextError::InvalidFont)?;
+        Self::text_bytes(&bytes, text, size)
+    }
+
+    /// Creates a text shape from font data already in memory, for example
+    /// bytes embedded into the binary with `include_bytes!`.
+    ///
+    /// Like [`Shape::text`], the bytes are checked to be a
+    /// TrueType/OpenType font up front and live behind an [`Arc`], but no
+    /// file is read — this is how text shapes are created in environments
+    /// without a file system, such as a web browser.
+    pub fn text_bytes(
+        font: &[u8],
+        text: impl Into<String>,
+        size: f32,
+    ) -> Result<Self, TextError> {
+        swash::FontRef::from_index(font, 0).ok_or(TextError::InvalidFont)?;
         Ok(Self::Text {
             text: text.into(),
-            font: Arc::from(bytes),
+            font: Arc::from(font),
             size,
             color: Color {
                 r: 1.0,
