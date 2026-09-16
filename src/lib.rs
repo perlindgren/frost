@@ -58,6 +58,11 @@
 //!
 //! Key presses are logged, the currently held keys are reported by
 //! [`Context::key_down`], and Escape closes the window.
+//!
+//! Presentation is vsync'd by default: frames are presented once per
+//! vertical blank, at the display's refresh rate — the rate
+//! [`Context::expected_fps`] reports. [`run_configured`] takes a [`Config`]
+//! to turn vsync off for uncapped frame rates.
 
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -435,6 +440,7 @@ pub struct Context<'c> {
     canvas: &'c mut Canvas,
     scene: &'c mut Scene,
     keys: &'c HashSet<KeyCode>,
+    expected_fps: Option<f32>,
 }
 
 impl Context<'_> {
@@ -449,6 +455,18 @@ impl Context<'_> {
     /// press and release since the previous frame.
     pub fn key_down(&self, key: KeyCode) -> bool {
         self.keys.contains(&key)
+    }
+
+    /// The frame rate this app is expected to run at, in frames per second.
+    ///
+    /// `Some(fps)` when [`Config::vsync`] is on and winit reports the
+    /// refresh rate of the monitor the window sits on: with vsync, frames
+    /// are presented once per vertical blank, at exactly that rate.
+    /// `None` when vsync is off (presentation is uncapped, so there is no
+    /// expected rate) or the refresh rate is unknown — the latter happens
+    /// on some displays and in the browser.
+    pub fn expected_fps(&self) -> Option<f32> {
+        self.expected_fps
     }
 }
 
@@ -488,6 +506,25 @@ where
     }
 }
 
+/// Options for [`run_configured`].
+#[derive(Clone, Copy, Debug)]
+pub struct Config {
+    /// Present frames in sync with the display's vertical blank ("vsync").
+    ///
+    /// When `true`, frames are presented once per vertical blank and the
+    /// frame rate is capped at the display's refresh rate — the rate
+    /// [`Context::expected_fps`] reports. When `false`, frames are
+    /// presented as soon as they are rendered, uncapped.
+    pub vsync: bool,
+}
+
+impl Default for Config {
+    /// Vsync on: the frame rate is capped at the display's refresh rate.
+    fn default() -> Self {
+        Self { vsync: true }
+    }
+}
+
 /// Opens the window and runs the event loop, calling `process` once per
 /// frame and drawing `scene` after each call.
 ///
@@ -498,6 +535,19 @@ where
 /// The window closes on Escape or when the user requests it.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run<P: Process>(scene: Scene, process: P) -> Result<(), Box<dyn Error>> {
+    run_configured(scene, process, Config::default())
+}
+
+/// Same as [`run`], but with the given [`Config`].
+///
+/// Use it to turn vsync off (for uncapped frame rates) or to inspect the
+/// expected frame rate via [`Context::expected_fps`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_configured<P: Process>(
+    scene: Scene,
+    process: P,
+    config: Config,
+) -> Result<(), Box<dyn Error>> {
     log::info!("frost starting up");
 
     let instance = Instance::default();
@@ -509,7 +559,15 @@ pub fn run<P: Process>(scene: Scene, process: P) -> Result<(), Box<dyn Error>> {
         .expect("failed to create GPU device");
 
     let event_loop = EventLoop::new()?;
-    let mut app = Frost::new(instance, adapter, device, queue, scene, process);
+    let mut app = Frost::new(
+        instance,
+        adapter,
+        device,
+        queue,
+        config.vsync,
+        scene,
+        process,
+    );
     event_loop.run_app(&mut app)?;
 
     log::info!("event loop finished");
@@ -527,11 +585,21 @@ pub fn run<P: Process>(scene: Scene, process: P) -> Result<(), Box<dyn Error>> {
 /// frame is drawn as soon as the adapter and device resolve.
 #[cfg(target_arch = "wasm32")]
 pub fn run<P: Process>(scene: Scene, process: P) -> Result<(), Box<dyn Error>> {
+    run_configured(scene, process, Config::default())
+}
+
+/// Same as [`run`](self::run), but with the given [`Config`].
+#[cfg(target_arch = "wasm32")]
+pub fn run_configured<P: Process>(
+    scene: Scene,
+    process: P,
+    config: Config,
+) -> Result<(), Box<dyn Error>> {
     log::info!("frost starting up");
 
     let instance = Instance::default();
     let event_loop = EventLoop::new()?;
-    let mut app = WebFrost::new(instance, scene, process);
+    let mut app = WebFrost::new(instance, scene, process, config.vsync);
     event_loop.run_app(&mut app)?;
 
     log::info!("event loop finished");

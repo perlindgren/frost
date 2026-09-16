@@ -20,8 +20,8 @@ use wgpu::{
     Adapter, AddressMode, BindGroup, BindGroupDescriptor, BindGroupEntry, BindingResource, Buffer,
     BufferBinding, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
     CommandEncoderDescriptor, CurrentSurfaceTexture, Device, Extent3d, FilterMode, FragmentState,
-    Instance, MipmapFilterMode, MultisampleState, PipelineCompilationOptions, PrimitiveState,
-    Queue, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline,
+    Instance, MipmapFilterMode, MultisampleState, PipelineCompilationOptions, PresentMode,
+    PrimitiveState, Queue, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline,
     RenderPipelineDescriptor, Sampler, SamplerDescriptor, ShaderModule, ShaderModuleDescriptor,
     ShaderSource, StoreOp, Surface, SurfaceTexture, TexelCopyBufferLayout, TexelCopyTextureInfo,
     TextureAspect, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
@@ -294,11 +294,28 @@ fn clear_color(draws: &[Draw]) -> Color {
         .unwrap_or(DEFAULT_BACKGROUND)
 }
 
+/// The surface presentation mode for the user's vsync request: `AutoVsync`
+/// presents once per vertical blank (capped at the display's refresh rate),
+/// `AutoNoVsync` presents as soon as frames are rendered. Both `Auto*`
+/// modes fall back to a supported mode when their preference is unavailable,
+/// so they are safe to request on every platform.
+fn present_mode_for(vsync: bool) -> PresentMode {
+    if vsync {
+        PresentMode::AutoVsync
+    } else {
+        PresentMode::AutoNoVsync
+    }
+}
+
 pub(crate) struct Frost<P: Process> {
     instance: Instance,
     adapter: Adapter,
     device: Device,
     queue: Queue,
+    /// The user's vsync request; maps to the surface's presentation mode
+    /// (`PresentMode::AutoVsync` / `AutoNoVsync`) when the surface is
+    /// (re)configured.
+    vsync: bool,
     #[allow(dead_code)]
     window_id: Option<WindowId>,
     /// The winit window (shared), kept so we can call `request_redraw` for
@@ -330,6 +347,11 @@ pub(crate) struct Frost<P: Process> {
     /// Millisecond timestamp of the previous rendered frame, used to
     /// compute `dt` (see `now_millis`).
     last_millis: Option<f64>,
+    /// The expected frame rate in Hz: the refresh rate of the monitor the
+    /// window sits on, as winit reports it. `None` when vsync is off
+    /// (presentation is uncapped) or the rate is unknown; see
+    /// `Context::expected_fps`.
+    expected_fps: Option<f32>,
     /// The scene drawn every frame, after the process runs.
     scene: Scene,
     /// The physical keys currently held down, updated as keyboard events arrive.
@@ -345,6 +367,7 @@ impl<P: Process> Frost<P> {
         adapter: Adapter,
         device: Device,
         queue: Queue,
+        vsync: bool,
         scene: Scene,
         process: P,
     ) -> Self {
@@ -353,6 +376,7 @@ impl<P: Process> Frost<P> {
             adapter,
             device,
             queue,
+            vsync,
             window_id: None,
             window: None,
             logical_size: (0, 0),
@@ -367,6 +391,7 @@ impl<P: Process> Frost<P> {
             text_atlases: HashMap::new(),
             format: None,
             last_millis: None,
+            expected_fps: None,
             scene,
             keys: HashSet::new(),
             process,
@@ -489,6 +514,7 @@ impl<P: Process> ApplicationHandler for Frost<P> {
 struct Core<P: Process> {
     scene: Scene,
     process: P,
+    vsync: bool,
 }
 
 /// The in-flight async GPU setup on the web.
@@ -604,10 +630,14 @@ impl<P: Process> ApplicationHandler for WebFrost<P> {
 impl<P: Process> WebFrost<P> {
     /// The web app's initial state: nothing has happened yet — no window,
     /// the GPU setup not started, and no `Frost` to hand the canvas to.
-    pub(crate) fn new(instance: Instance, scene: Scene, process: P) -> Self {
+    pub(crate) fn new(instance: Instance, scene: Scene, process: P, vsync: bool) -> Self {
         Self {
             instance: Some(instance),
-            core: Some(Core { scene, process }),
+            core: Some(Core {
+                scene,
+                process,
+                vsync,
+            }),
             window: None,
             gpu: GpuInit::Idle,
             frost: None,
@@ -658,7 +688,15 @@ impl<P: Process> WebFrost<P> {
             .take()
             .expect("`core` is only taken once, when the GPU setup completes");
 
-        let mut frost = Frost::new(instance, adapter, device, queue, core.scene, core.process);
+        let mut frost = Frost::new(
+            instance,
+            adapter,
+            device,
+            queue,
+            core.vsync,
+            core.scene,
+            core.process,
+        );
         frost.attach_window(window);
         self.frost = Some(frost);
     }
@@ -743,6 +781,19 @@ impl<P: Process> Frost<P> {
             self.scale
         );
 
+        // With vsync, presentation runs once per vertical blank, so the
+        // expected frame rate is the refresh rate of the monitor the window
+        // sits on, as winit reports it (unknown on some displays and in the
+        // browser). Without vsync there is no expected rate at all.
+        self.expected_fps = if self.vsync {
+            window
+                .current_monitor()
+                .and_then(|monitor| monitor.refresh_rate_millihertz())
+                .map(|millihertz| millihertz as f32 / 1000.0)
+        } else {
+            None
+        };
+
         // An `Arc<Window>` is passed by value to `create_surface`, so the
         // resulting `Surface` is 'static without borrowing `self.window`. We
         // keep a clone of the `Arc` for per-frame `request_redraw`.
@@ -753,15 +804,19 @@ impl<P: Process> Frost<P> {
         // Keep the window for per-frame `request_redraw` (continuous frames).
         self.window = Some(window);
         let pixel_size = self.pixel_size();
-        let config = surface
+        let mut config = surface
             .get_default_config(&self.adapter, pixel_size.0, pixel_size.1)
             .expect("no compatible surface format");
+        // The default config picks the first supported presentation mode;
+        // apply the user's vsync request explicitly.
+        config.present_mode = present_mode_for(self.vsync);
         surface.configure(&self.device, &config);
         log::info!(
-            "surface configured at {}x{}, format {:?}",
+            "surface configured at {}x{}, format {:?}, present_mode {:?}",
             config.width,
             config.height,
-            config.format
+            config.format,
+            config.present_mode
         );
 
         self.set_up_pipelines(config.format);
@@ -787,9 +842,10 @@ impl<P: Process> Frost<P> {
             return;
         };
         let pixel_size = self.pixel_size();
-        let config = surface
+        let mut config = surface
             .get_default_config(&self.adapter, pixel_size.0, pixel_size.1)
             .expect("no compatible surface format");
+        config.present_mode = present_mode_for(self.vsync);
         surface.configure(&self.device, &config);
         log::info!(
             "window resized to {}x{} ({}x{} px)",
@@ -1075,6 +1131,7 @@ impl<P: Process> Frost<P> {
                 canvas: &mut canvas,
                 scene,
                 keys,
+                expected_fps: self.expected_fps,
             };
             process.process(&mut ctx, dt);
         }
@@ -1721,6 +1778,7 @@ mod tests {
                 canvas: &mut canvas,
                 scene: &mut scene,
                 keys: &keys,
+                expected_fps: None,
             };
             assert!(!ctx.key_down(KeyCode::KeyW));
         }
@@ -1729,6 +1787,7 @@ mod tests {
             canvas: &mut canvas,
             scene: &mut scene,
             keys: &keys,
+            expected_fps: None,
         };
         assert!(ctx.key_down(KeyCode::KeyW));
         assert!(!ctx.key_down(KeyCode::KeyA));
@@ -2545,5 +2604,16 @@ mod tests {
         parent.visit();
         assert!(parent.child.done);
         assert!(parent.saw_done);
+    }
+
+    #[test]
+    fn present_mode_follows_the_vsync_flag() {
+        assert_eq!(present_mode_for(true), PresentMode::AutoVsync);
+        assert_eq!(present_mode_for(false), PresentMode::AutoNoVsync);
+    }
+
+    #[test]
+    fn config_defaults_to_vsync_on() {
+        assert!(crate::Config::default().vsync);
     }
 }
