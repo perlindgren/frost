@@ -463,37 +463,91 @@ impl Node for SceneNode {
     }
 }
 
-/// A tree of [`SceneNode`]s rooted at a single node.
+/// A rendering layer of a [`Scene`]: an independent draw group with its own
+/// layer order and its own root node.
+///
+/// Layers are hard draw partitions: every node of a layer is drawn after
+/// (on top of) every node of a layer with a lower `order`, and before every
+/// node of a layer with a higher `order`, no matter the nodes' local
+/// `order` values. Within a layer the local ordering applies: lower local
+/// order first, ties resolved in tree order.
+///
+/// The scene's root subtree is itself a group, at the implicit layer order
+/// `0.0`, declared before every explicit layer: it is drawn before any
+/// layer with the same or a higher order, and after any layer with a lower
+/// order. A [`Shape::Background`] inside a layer keeps the background
+/// behavior of every group: it never draws, it only contributes to the
+/// frame's clear color.
+#[derive(Clone, Debug)]
+pub struct Layer {
+    /// The layer's order: higher order is closer to the camera (drawn
+    /// later, on top of layers with a lower order).
+    pub order: f32,
+    /// The root node of the layer's tree, walked like a scene's root.
+    pub root: SceneNode,
+}
+
+impl Layer {
+    /// Creates a layer at the default order `0.0` from its root node.
+    pub fn new(root: SceneNode) -> Self {
+        Self {
+            order: 0.0,
+            root,
+        }
+    }
+}
+
+/// A tree of [`SceneNode`]s rooted at a single node, plus zero or more
+/// rendering [`Layer`]s.
 ///
 /// Pass a scene to [`run`]: every frame the user's [`Process`] runs, then
 /// the tree is updated with [`Scene::visit`] (every node's [`Node::process`],
-/// children before their parent), and only then is the scene drawn — so
-/// both can mutate it in place (via [`Context::scene`]) to animate it. Use
-/// [`Canvas::draw_scene`] to draw additional scenes.
+/// children before their parent, on the root tree and on every layer's
+/// tree), and only then is the scene drawn — so both can mutate it in place
+/// (via [`Context::scene`]) to animate it. Use [`Canvas::draw_scene`] to
+/// draw additional scenes.
+///
+/// The root subtree and the layers are separate draw groups: the root
+/// subtree is the group at the implicit layer order `0.0`, and each layer
+/// is its own group at its [`Layer::order`]. Groups are painted by ascending
+/// order — higher order closer to the camera, drawn later, on top — and
+/// within a group the local ordering applies.
 #[derive(Clone, Debug)]
 pub struct Scene {
     /// The root node; the scene is walked depth-first from here.
     pub root: SceneNode,
+    /// The scene's rendering layers, in declaration order.
+    pub layers: Vec<Layer>,
 }
 
 impl Scene {
-    /// Creates a scene from its root node.
+    /// Creates a scene from its root node, with no layers.
     pub fn new(root: SceneNode) -> Self {
-        Self { root }
+        Self {
+            root,
+            layers: Vec::new(),
+        }
     }
 
     /// Updates the whole tree in one call: visits the root, which visits
     /// every child, and so on down the tree, so each node's
-    /// [`Node::process`] runs exactly once, children before their parent.
+    /// [`Node::process`] runs exactly once, children before their parent —
+    /// on the root tree and on every layer's tree.
     pub fn visit(&mut self) {
         self.root.visit();
+        for layer in &mut self.layers {
+            layer.root.visit();
+        }
     }
 }
 
 impl Default for Scene {
     /// An empty scene: an identity root node with no shape and no children,
-    /// for apps that only use the immediate draw methods.
+    /// and no layers, for apps that only use the immediate draw methods.
     fn default() -> Self {
-        Self { root: SceneNode::default() }
+        Self {
+            root: SceneNode::default(),
+            layers: Vec::new(),
+        }
     }
 }

@@ -39,6 +39,13 @@
 //! back). Objects with the same `z` are drawn in call order, so the last one
 //! drawn is on top.
 //!
+//! A [`Scene`] can additionally define rendering [`Layer`]s: hard draw
+//! partitions, each with its own order and its own root node. Groups are
+//! painted by ascending layer order — higher order closer to the camera,
+//! drawn later, on top — and the scene's root subtree is the group at the
+//! implicit order `0.0`, declared before the explicit layers. Within a group
+//! the local `z` ordering applies.
+//!
 //! Each object is clipped to its tight bounding box (the scissor test), so a
 //! frame's cost scales with the objects' on-screen areas, not the window size.
 //!
@@ -98,7 +105,14 @@ pub use tween::*;
 /// bottom-right corner is `(width/2, -height/2)`.
 pub struct Canvas {
     size: (f32, f32),
+    /// The base draw group: the immediate draw methods and every scene's
+    /// root subtree, mixed by `z` and call order.
     draws: Vec<Draw>,
+    /// One draw list per explicit scene layer, in declaration order (the
+    /// same index as in `layer_orders`).
+    layer_draws: Vec<Vec<Draw>>,
+    /// The order of each explicit scene layer, in declaration order.
+    layer_orders: Vec<f32>,
 }
 
 impl Canvas {
@@ -106,6 +120,8 @@ impl Canvas {
         Self {
             size: (pixel_size.0 as f32, pixel_size.1 as f32),
             draws: Vec::new(),
+            layer_draws: Vec::new(),
+            layer_orders: Vec::new(),
         }
     }
 
@@ -189,123 +205,33 @@ impl Canvas {
     /// Every node with a shape draws it (in the node's own local space)
     /// before its children, so parents paint under their descendants.
     ///
-    /// All scene shapes share `z = 0.0`, so they are ordered by tree position
-    /// and interleave with immediate draws by the usual stable `z` ordering.
-    /// A [`Shape::Background`] is the exception: it ignores its transform,
-    /// always sorts to the very back, and becomes the frame's clear color.
+    /// The scene's root subtree joins the base group — the same group as
+    /// the immediate draw methods — so its shapes interleave with the
+    /// immediate draws by the usual stable `z` ordering, each shape carrying
+    /// the `z` accumulated from its ancestors' `order` values.
+    ///
+    /// The scene's layers are separate groups: each layer is painted as a
+    /// whole at its [`Layer::order`], after every group with a lower order
+    /// and before every group with a higher one (higher order on top), and
+    /// within the layer the local ordering applies.
+    ///
+    /// A [`Shape::Background`] is the exception in every group: it ignores
+    /// its transform, never draws, and becomes the frame's clear color.
     pub fn draw_scene(&mut self, scene: &Scene) {
-        self.draw_node(&scene.root, &Transform::identity(), 0.0, WHITE);
-    }
-
-    fn draw_node(
-        &mut self,
-        node: &SceneNode,
-        parent: &Transform,
-        order: f32,
-        modulate: Color,
-    ) {
-        // The node's effective draw order: the order inherited from its
-        // ancestors plus its own, applied to the node's shape and passed on
-        // to its whole subtree, just like the transform and the scale.
-        let order = order + node.order;
-        // The node's effective color modulation: the modulation inherited
-        // from its ancestors multiplied by its own, applied to the node's
-        // shape's color and passed on to its whole subtree, just like the
-        // transform and the scale.
-        let modulate = modulate.mul(node.modulate);
-        // The node's world transform in user space: its scale first
-        // (innermost, in the node's own space), then its transform (local ->
-        // parent space), then the parent's world transform. Through `world`
-        // the scale therefore applies to the node's shape and to its whole
-        // subtree, just like the transform.
-        let local = Transform::scale(node.scale[0], node.scale[1])
-            .compose(&node.transform);
-        let world = local.compose(parent);
-        if let Some(shape) = &node.shape {
-            // Scale the anti-alias band with the transform's scale so it
-            // stays a constant number of screen pixels wide under scaling.
-            let [sx, sy] = world.scales();
-            let aa = AA_BAND / sx.max(sy).max(1e-9);
-            let draw = match shape {
-                // The shape shader evaluates in pixel space (top-left, y
-                // down), so compose the user-to-pixel transform onto the
-                // world transform, like the direct-draw methods do for
-                // their arguments.
-                Shape::Circle {
-                    center,
-                    radius,
-                    color,
-                } => Draw::Shape {
-                    world: world.compose(&self.user_to_pixel()),
-                    center: *center,
-                    params: [(*radius).max(0.0), 0.0],
-                    kind: 0.0,
-                    aa,
-                    color: color.mul(modulate),
-                    z: order,
-                },
-                Shape::Rectangle {
-                    center,
-                    extent,
-                    color,
-                } => Draw::Shape {
-                    world: world.compose(&self.user_to_pixel()),
-                    center: *center,
-                    params: [extent[0].max(0.0), extent[1].max(0.0)],
-                    kind: 1.0,
-                    aa,
-                    color: color.mul(modulate),
-                    z: order,
-                },
-                // The sprite's local space is centered on the origin, one
-                // texture pixel per scene pixel, so its extent is the
-                // texture size.
-                Shape::Sprite {
-                    data,
-                    width,
-                    height,
-                    color,
-                    alpha,
-                } => Draw::Sprite {
-                    world: world.compose(&self.user_to_pixel()),
-                    data: data.clone(),
-                    size: [(*width as f32).max(0.0), (*height as f32).max(0.0)],
-                    texture_size: [*width, *height],
-                    aa,
-                    tint: color.mul(modulate),
-                    alpha: *alpha,
-                    uv_rect: [0.0, 0.0, 1.0, 1.0],
-                    z: order,
-                },
-                // Text is recorded in user space; `Canvas::expand_text`
-                // lays it out and turns each glyph into a sprite quad
-                // before the frame is rendered.
-                Shape::Text {
-                    text,
-                    font,
-                    size,
-                    color,
-                    alpha,
-                } => Draw::Text {
-                    world,
-                    font: font.clone(),
-                    text: text.clone(),
-                    size: *size,
-                    color: color.mul(modulate),
-                    alpha: *alpha,
-                    z: order,
-                },
-                // The background ignores its transform: it is recorded in
-                // call order and becomes the frame's clear color at render
-                // time.
-                Shape::Background { color } => {
-                    Draw::Background { color: color.mul(modulate) }
-                }
-            };
-            self.draws.push(draw);
-        }
-        for child in &node.children {
-            self.draw_node(child, &world, order, modulate);
+        let pixel = self.user_to_pixel();
+        draw_node(pixel, &scene.root, &Transform::identity(), 0.0, WHITE, &mut self.draws);
+        for layer in &scene.layers {
+            let index = self.layer_orders.len();
+            self.layer_orders.push(layer.order);
+            self.layer_draws.push(Vec::new());
+            draw_node(
+                pixel,
+                &layer.root,
+                &Transform::identity(),
+                0.0,
+                WHITE,
+                &mut self.layer_draws[index],
+            );
         }
     }
 
@@ -319,10 +245,12 @@ impl Canvas {
         }
     }
 
-    /// Expands every [`Draw::Text`] in this frame into one
-    /// [`Draw::Sprite`] per shaped glyph, spliced in at the text draw's
-    /// position so the stable z-sort keeps the glyph quads where the text
-    /// node was.
+    /// Expands every [`Draw::Text`] in every draw group of this frame — the
+    /// base group and each layer's group — into one [`Draw::Sprite`] per
+    /// shaped glyph, spliced in at the text draw's position so the stable
+    /// z-sort keeps the glyph quads where the text node was. The glyphs stay
+    /// in the group their text node belongs to, so a layer's text is sorted
+    /// within that layer.
     ///
     /// The glyphs are laid out with `text::layout` (pen positions, y up,
     /// from the text's left baseline origin) and rasterized with
@@ -332,95 +260,13 @@ impl Canvas {
     /// Each glyph's quad is centered on its ink box; the whole text block
     /// is centered on the text node's origin.
     pub(crate) fn expand_text(&mut self, atlases: &mut HashMap<(u64, u32), text::Atlas>) {
+        let pixel = self.user_to_pixel();
         let draws = std::mem::take(&mut self.draws);
-        let mut expanded = Vec::with_capacity(draws.len());
-        for draw in draws {
-            match draw {
-                Draw::Text {
-                    world,
-                    font,
-                    text: string,
-                    size,
-                    color,
-                    alpha,
-                    z,
-                } => {
-                    // A broken font leaves the text undrawn; `Shape::text`
-                    // validates the font up front, so this only guards a
-                    // buffer that turned out unreadable.
-                    let Some(layout) = text::layout(&font, &string, size) else {
-                        continue;
-                    };
-                    let key = (Arc::as_ptr(&font) as *const () as u64, size.to_bits());
-                    let mut atlas = atlases.get(&key).cloned().unwrap_or_default();
-                    // Rasterize the glyphs the atlas does not have yet.
-                    let mut missing = Vec::new();
-                    for glyph in &layout.glyphs {
-                        if atlas.has(glyph.id) {
-                            continue;
-                        }
-                        if let Some(raster) = text::rasterize(&font, glyph.id, size) {
-                            missing.push((glyph.id, raster));
-                        }
-                    }
-                    if !missing.is_empty() {
-                        atlas.insert_many(&missing);
-                    }
-                    // Keep the atlas in the map even when nothing was
-                    // packed (e.g. all-space text) so later frames hit it.
-                    let atlas = atlases.entry(key).or_insert(atlas);
-                    let [sx, sy] = world.scales();
-                    let aa = AA_BAND / sx.max(sy).max(1e-9);
-                    // Center the text block (width by ascent + descent,
-                    // baseline at the pen-space origin, y up) on the node's
-                    // origin.
-                    let origin = [
-                        -layout.width / 2.0,
-                        (layout.ascent - layout.descent) / 2.0,
-                    ];
-                    let (atlas_w, atlas_h) = (atlas.width as f32, atlas.height as f32);
-                    for glyph in &layout.glyphs {
-                        let Some(cell) = atlas.cell(glyph.id) else {
-                            continue;
-                        };
-                        let (gw, gh) = (cell.width as f32, cell.height as f32);
-                        // The glyph's pen position in the node's local
-                        // space, plus the ink box's center offset from the
-                        // pen: `left` right and `top - height / 2` above the
-                        // baseline.
-                        let ink = [
-                            origin[0] + glyph.x + cell.left as f32 + gw / 2.0,
-                            origin[1] + glyph.y + cell.top as f32 - gh / 2.0,
-                        ];
-                        let glyph_world = Transform::translate(ink[0], ink[1])
-                            .compose(&world)
-                            .compose(&self.user_to_pixel());
-                        // Inset the cell by half a texel so the quad's edges
-                        // sample the edge texels exactly instead of blending
-                        // with the neighboring cell.
-                        let uv_rect = [
-                            (cell.x as f32 + 0.5) / atlas_w,
-                            (cell.y as f32 + 0.5) / atlas_h,
-                            (cell.x as f32 + cell.width as f32 - 0.5) / atlas_w,
-                            (cell.y as f32 + cell.height as f32 - 0.5) / atlas_h,
-                        ];
-                        expanded.push(Draw::Sprite {
-                            world: glyph_world,
-                            data: atlas.data.clone(),
-                            size: [gw, gh],
-                            texture_size: [atlas.width, atlas.height],
-                            aa,
-                            tint: color,
-                            alpha,
-                            uv_rect,
-                            z,
-                        });
-                    }
-                }
-                other => expanded.push(other),
-            }
+        self.draws = expand_text_list(pixel, draws, atlases);
+        for list in &mut self.layer_draws {
+            let draws = std::mem::take(list);
+            *list = expand_text_list(pixel, draws, atlases);
         }
-        self.draws = expanded;
     }
 
     /// Converts user coordinates (window center origin, y up) to the pixel
@@ -428,6 +274,277 @@ impl Canvas {
     fn user_to_pixels(&self, x: f32, y: f32) -> [f32; 2] {
         self.user_to_pixel().apply([x, y])
     }
+
+    /// The frame's draws in paint order.
+    ///
+    /// The base group and every explicit scene layer are separate draw
+    /// groups. The groups are painted by ascending layer order — higher
+    /// order on top — with the base group at order `0.0`, declared before
+    /// every layer, so at an equal order it is painted first. Within each
+    /// group, the draws are sorted by ascending `z`; the sort is stable, so
+    /// draws with equal `z` keep call order and the last drawn is on top.
+    pub(crate) fn paint_order(&mut self) -> Vec<Draw> {
+        // The groups as (layer order, declaration index): the base group is
+        // order 0.0, declared before every layer, so at an equal order it
+        // is painted first.
+        enum Group {
+            Base,
+            Layer(usize),
+        }
+        let mut groups: Vec<Group> = Vec::with_capacity(1 + self.layer_draws.len());
+        groups.push(Group::Base);
+        groups.extend((0..self.layer_draws.len()).map(Group::Layer));
+        let order_of = |group: &Group| match group {
+            Group::Base => (0.0f32, 0usize),
+            Group::Layer(index) => (self.layer_orders[*index], *index + 1),
+        };
+        groups.sort_by(|a, b| {
+            let (order_a, declared_a) = order_of(a);
+            let (order_b, declared_b) = order_of(b);
+            order_a
+                .partial_cmp(&order_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(declared_a.cmp(&declared_b))
+        });
+        let mut painted = Vec::new();
+        for group in groups {
+            let list = match group {
+                Group::Base => &mut self.draws,
+                Group::Layer(index) => &mut self.layer_draws[index],
+            };
+            let mut draws = std::mem::take(list);
+            draws.sort_by(|a, b| {
+                a.z()
+                    .partial_cmp(&b.z())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            painted.append(&mut draws);
+        }
+        painted
+    }
+}
+
+/// Draws one [`SceneNode`] and its subtree into `draws`, depth-first: the
+/// node's shape (if any) before its children, so parents paint under their
+/// descendants.
+///
+/// `parent` is the node's ancestors' world transform in user space, `order`
+/// their accumulated draw order, and `modulate` their accumulated color
+/// modulation; each is combined with the node's own value and passed on to
+/// the children, so a descendant's values are the full root-to-leaf
+/// composition.
+fn draw_node(
+    user_to_pixel: Transform,
+    node: &SceneNode,
+    parent: &Transform,
+    order: f32,
+    modulate: Color,
+    draws: &mut Vec<Draw>,
+) {
+    // The node's effective draw order: the order inherited from its
+    // ancestors plus its own, applied to the node's shape and passed on to
+    // its whole subtree, just like the transform and the scale.
+    let order = order + node.order;
+    // The node's effective color modulation: the modulation inherited from
+    // its ancestors multiplied by its own, applied to the node's shape's
+    // color and passed on to its whole subtree, just like the transform and
+    // the scale.
+    let modulate = modulate.mul(node.modulate);
+    // The node's world transform in user space: its scale first (innermost,
+    // in the node's own space), then its transform (local -> parent space),
+    // then the parent's world transform. Through `world` the scale
+    // therefore applies to the node's shape and to its whole subtree, just
+    // like the transform.
+    let local = Transform::scale(node.scale[0], node.scale[1]).compose(&node.transform);
+    let world = local.compose(parent);
+    if let Some(shape) = &node.shape {
+        // Scale the anti-alias band with the transform's scale so it stays a
+        // constant number of screen pixels wide under scaling.
+        let [sx, sy] = world.scales();
+        let aa = AA_BAND / sx.max(sy).max(1e-9);
+        let draw = match shape {
+            // The shape shader evaluates in pixel space (top-left, y down),
+            // so compose the user-to-pixel transform onto the world
+            // transform, like the direct-draw methods do for their
+            // arguments.
+            Shape::Circle {
+                center,
+                radius,
+                color,
+            } => Draw::Shape {
+                world: world.compose(&user_to_pixel),
+                center: *center,
+                params: [(*radius).max(0.0), 0.0],
+                kind: 0.0,
+                aa,
+                color: color.mul(modulate),
+                z: order,
+            },
+            Shape::Rectangle {
+                center,
+                extent,
+                color,
+            } => Draw::Shape {
+                world: world.compose(&user_to_pixel),
+                center: *center,
+                params: [extent[0].max(0.0), extent[1].max(0.0)],
+                kind: 1.0,
+                aa,
+                color: color.mul(modulate),
+                z: order,
+            },
+            // The sprite's local space is centered on the origin, one
+            // texture pixel per scene pixel, so its extent is the texture
+            // size.
+            Shape::Sprite {
+                data,
+                width,
+                height,
+                color,
+                alpha,
+            } => Draw::Sprite {
+                world: world.compose(&user_to_pixel),
+                data: data.clone(),
+                size: [(*width as f32).max(0.0), (*height as f32).max(0.0)],
+                texture_size: [*width, *height],
+                aa,
+                tint: color.mul(modulate),
+                alpha: *alpha,
+                uv_rect: [0.0, 0.0, 1.0, 1.0],
+                z: order,
+            },
+            // Text is recorded in user space; `Canvas::expand_text` lays it
+            // out and turns each glyph into a sprite quad before the frame
+            // is rendered.
+            Shape::Text {
+                text,
+                font,
+                size,
+                color,
+                alpha,
+            } => Draw::Text {
+                world,
+                font: font.clone(),
+                text: text.clone(),
+                size: *size,
+                color: color.mul(modulate),
+                alpha: *alpha,
+                z: order,
+            },
+            // The background ignores its transform: it is recorded in call
+            // order and becomes the frame's clear color at render time.
+            Shape::Background { color } => Draw::Background {
+                color: color.mul(modulate),
+            },
+        };
+        draws.push(draw);
+    }
+    for child in &node.children {
+        draw_node(user_to_pixel, child, &world, order, modulate, draws);
+    }
+}
+
+/// Expands every [`Draw::Text`] in the list into one [`Draw::Sprite`] per
+/// shaped glyph, spliced in at the text draw's position so the stable
+/// z-sort keeps the glyph quads where the text node was.
+///
+/// The glyphs are laid out with `text::layout` (pen positions, y up, from
+/// the text's left baseline origin) and rasterized with `text::rasterize`
+/// into the per-`(font, size)` atlas in `atlases`, which the caller keeps
+/// between frames so unchanged text never re-rasterizes and its texture
+/// buffer keeps a stable identity. Each glyph's quad is centered on its ink
+/// box; the whole text block is centered on the text node's origin.
+fn expand_text_list(
+    user_to_pixel: Transform,
+    draws: Vec<Draw>,
+    atlases: &mut HashMap<(u64, u32), text::Atlas>,
+) -> Vec<Draw> {
+    let mut expanded = Vec::with_capacity(draws.len());
+    for draw in draws {
+        match draw {
+            Draw::Text {
+                world,
+                font,
+                text: string,
+                size,
+                color,
+                alpha,
+                z,
+            } => {
+                // A broken font leaves the text undrawn; `Shape::text`
+                // validates the font up front, so this only guards a buffer
+                // that turned out unreadable.
+                let Some(layout) = text::layout(&font, &string, size) else {
+                    continue;
+                };
+                let key = (Arc::as_ptr(&font) as *const () as u64, size.to_bits());
+                let mut atlas = atlases.get(&key).cloned().unwrap_or_default();
+                // Rasterize the glyphs the atlas does not have yet.
+                let mut missing = Vec::new();
+                for glyph in &layout.glyphs {
+                    if atlas.has(glyph.id) {
+                        continue;
+                    }
+                    if let Some(raster) = text::rasterize(&font, glyph.id, size) {
+                        missing.push((glyph.id, raster));
+                    }
+                }
+                if !missing.is_empty() {
+                    atlas.insert_many(&missing);
+                }
+                // Keep the atlas in the map even when nothing was packed
+                // (e.g. all-space text) so later frames hit it.
+                let atlas = atlases.entry(key).or_insert(atlas);
+                let [sx, sy] = world.scales();
+                let aa = AA_BAND / sx.max(sy).max(1e-9);
+                // Center the text block (width by ascent + descent, baseline
+                // at the pen-space origin, y up) on the node's origin.
+                let origin = [
+                    -layout.width / 2.0,
+                    (layout.ascent - layout.descent) / 2.0,
+                ];
+                let (atlas_w, atlas_h) = (atlas.width as f32, atlas.height as f32);
+                for glyph in &layout.glyphs {
+                    let Some(cell) = atlas.cell(glyph.id) else {
+                        continue;
+                    };
+                    let (gw, gh) = (cell.width as f32, cell.height as f32);
+                    // The glyph's pen position in the node's local space,
+                    // plus the ink box's center offset from the pen: `left`
+                    // right and `top - height / 2` above the baseline.
+                    let ink = [
+                        origin[0] + glyph.x + cell.left as f32 + gw / 2.0,
+                        origin[1] + glyph.y + cell.top as f32 - gh / 2.0,
+                    ];
+                    let glyph_world = Transform::translate(ink[0], ink[1])
+                        .compose(&world)
+                        .compose(&user_to_pixel);
+                    // Inset the cell by half a texel so the quad's edges
+                    // sample the edge texels exactly instead of blending
+                    // with the neighboring cell.
+                    let uv_rect = [
+                        (cell.x as f32 + 0.5) / atlas_w,
+                        (cell.y as f32 + 0.5) / atlas_h,
+                        (cell.x as f32 + cell.width as f32 - 0.5) / atlas_w,
+                        (cell.y as f32 + cell.height as f32 - 0.5) / atlas_h,
+                    ];
+                    expanded.push(Draw::Sprite {
+                        world: glyph_world,
+                        data: atlas.data.clone(),
+                        size: [gw, gh],
+                        texture_size: [atlas.width, atlas.height],
+                        aa,
+                        tint: color,
+                        alpha,
+                        uv_rect,
+                        z,
+                    });
+                }
+            }
+            other => expanded.push(other),
+        }
+    }
+    expanded
 }
 
 /// The per-frame context handed to [`Process::process`].

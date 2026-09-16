@@ -152,7 +152,7 @@ pub(crate) enum Draw {
 }
 
 impl Draw {
-    fn z(&self) -> f32 {
+    pub(crate) fn z(&self) -> f32 {
         match self {
             Draw::Line { z, .. } => *z,
             Draw::Circle { z, .. } => *z,
@@ -1144,13 +1144,12 @@ impl<P: Process> Frost<P> {
         // each glyph keeps its node's position in the paint order.
         canvas.expand_text(&mut self.text_atlases);
 
-        // Paint order: ascending z, lower z behind. `sort_by` is stable, so
-        // draws with equal z keep call order and the last drawn is on top.
-        canvas.draws.sort_by(|a, b| {
-            a.z()
-                .partial_cmp(&b.z())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // Paint order: the draw groups (the base group and the scene's
+        // layers) by ascending layer order, higher order on top; within each
+        // group, ascending z, lower z behind. The sorts are stable, so
+        // draws with equal keys keep call order and the last drawn is on
+        // top.
+        let draws = canvas.paint_order();
 
         let (
             Some(line_pipeline),
@@ -1168,9 +1167,9 @@ impl<P: Process> Frost<P> {
             return;
         };
 
-        // The frame's clear color: the last background node in call order,
+        // The frame's clear color: the last background node in paint order,
         // or the default when the frame has none.
-        let clear = clear_color(&canvas.draws);
+        let clear = clear_color(&draws);
 
         let view = output
             .texture
@@ -1207,7 +1206,7 @@ impl<P: Process> Frost<P> {
             // write. The viewport is left at the full surface, so the
             // shaders' pixel coordinates stay absolute.
             let render_area = [output.texture.width(), output.texture.height()];
-            for draw in canvas.draws {
+            for draw in draws {
                 let Some([x, y, w, h]) = draw.scissor_rect(render_area) else {
                     // Fully outside the surface, or a background (which
                     // became the clear color); nothing to draw.
@@ -1992,6 +1991,242 @@ mod tests {
                 a: 1.0
             }
         );
+    }
+
+    #[test]
+    fn layers_are_hard_draw_partitions() {
+        let mut canvas = Canvas::new((100, 100));
+        let scene = Scene {
+            root: SceneNode::default(),
+            layers: vec![
+                Layer {
+                    order: -1.0,
+                    root: SceneNode {
+                        // High local z, but the layer's low order still puts
+                        // it behind every group with a higher order.
+                        transform: Transform::identity(),
+                        scale: [1.0, 1.0],
+                        modulate: WHITE,
+                        order: 100.0,
+                        shape: Some(Shape::Circle {
+                            center: [0.0, 0.0],
+                            radius: 1.0,
+                            color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                        }),
+                        children: vec![],
+                    },
+                },
+                Layer {
+                    order: 1.0,
+                    root: SceneNode {
+                        // Low local z, but the layer's high order still puts
+                        // it on top.
+                        transform: Transform::identity(),
+                        scale: [1.0, 1.0],
+                        modulate: WHITE,
+                        order: -100.0,
+                        shape: Some(Shape::Circle {
+                            center: [0.0, 0.0],
+                            radius: 1.0,
+                            color: Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 },
+                        }),
+                        children: vec![],
+                    },
+                },
+            ],
+        };
+        canvas.draw_scene(&scene);
+        let painted = canvas.paint_order();
+        assert_eq!(painted.len(), 2);
+        // The red (low layer) paints before the blue (high layer), no matter
+        // how far apart their local z values are.
+        assert!(matches!(
+            &painted[0],
+            Draw::Shape { color, .. } if color.r == 1.0 && color.b == 0.0
+        ));
+        assert!(matches!(
+            &painted[1],
+            Draw::Shape { color, .. } if color.b == 1.0 && color.r == 0.0
+        ));
+    }
+
+    #[test]
+    fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers() {
+        let mut canvas = Canvas::new((100, 100));
+        let scene = Scene {
+            root: SceneNode::default(),
+            layers: vec![
+                Layer {
+                    order: 1.0,
+                    root: SceneNode {
+                        transform: Transform::identity(),
+                        scale: [1.0, 1.0],
+                        modulate: WHITE,
+                        order: 0.0,
+                        shape: None,
+                        // Local ascending z: red (100) before green (200).
+                        children: vec![
+                            Box::new(SceneNode {
+                                transform: Transform::identity(),
+                                scale: [1.0, 1.0],
+                                modulate: WHITE,
+                                order: 100.0,
+                                shape: Some(Shape::Circle {
+                                    center: [0.0, 0.0],
+                                    radius: 1.0,
+                                    color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                                }),
+                                children: vec![],
+                            }),
+                            Box::new(SceneNode {
+                                transform: Transform::identity(),
+                                scale: [1.0, 1.0],
+                                modulate: WHITE,
+                                order: 200.0,
+                                shape: Some(Shape::Circle {
+                                    center: [0.0, 0.0],
+                                    radius: 1.0,
+                                    color: Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 },
+                                }),
+                                children: vec![],
+                            }),
+                        ],
+                    },
+                },
+                Layer {
+                    order: 2.0,
+                    root: SceneNode {
+                        transform: Transform::identity(),
+                        scale: [1.0, 1.0],
+                        modulate: WHITE,
+                        order: 0.0,
+                        shape: Some(Shape::Circle {
+                            center: [0.0, 0.0],
+                            radius: 1.0,
+                            color: Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 },
+                        }),
+                        children: vec![],
+                    },
+                },
+            ],
+        };
+        canvas.draw_scene(&scene);
+        let painted = canvas.paint_order();
+        assert_eq!(painted.len(), 3);
+        // The high layer's blue paints last even though its local z (0) is
+        // far below the red's (100) and the green's (200): the layer's
+        // order wins, and z never leaks across layers.
+        assert!(matches!(
+            &painted[0],
+            Draw::Shape { color, .. } if color.r == 1.0 && color.g == 0.0
+        ));
+        assert!(matches!(
+            &painted[1],
+            Draw::Shape { color, .. } if color.g == 1.0 && color.r == 0.0
+        ));
+        assert!(matches!(
+            &painted[2],
+            Draw::Shape { color, .. } if color.b == 1.0 && color.r == 0.0
+        ));
+    }
+
+    #[test]
+    fn the_base_group_paints_first_at_equal_order() {
+        let mut canvas = Canvas::new((100, 100));
+        canvas.circle(0.0, 0.0, 1.0, Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }, 0.0);
+        let scene = Scene {
+            root: SceneNode::default(),
+            layers: vec![Layer {
+                order: 0.0,
+                root: SceneNode {
+                    // Negative local z, but the base group is declared
+                    // before the layer, so at the equal order 0.0 it still
+                    // paints first.
+                    transform: Transform::identity(),
+                    scale: [1.0, 1.0],
+                    modulate: WHITE,
+                    order: -1.0,
+                    shape: Some(Shape::Circle {
+                        center: [0.0, 0.0],
+                        radius: 1.0,
+                        color: Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 },
+                    }),
+                    children: vec![],
+                },
+            }],
+        };
+        canvas.draw_scene(&scene);
+        let painted = canvas.paint_order();
+        assert_eq!(painted.len(), 2);
+        // The base group's circle (an immediate draw) paints before the
+        // layer's shape, even though the layer draw's local z is lower.
+        assert!(matches!(
+            &painted[0],
+            Draw::Circle { color, .. } if color.r == 1.0 && color.b == 0.0
+        ));
+        assert!(matches!(
+            &painted[1],
+            Draw::Shape { color, .. } if color.b == 1.0 && color.r == 0.0
+        ));
+    }
+
+    #[test]
+    fn a_background_in_a_higher_layer_sets_the_clear_color() {
+        let mut canvas = Canvas::new((100, 100));
+        let scene = Scene {
+            root: SceneNode {
+                transform: Transform::identity(),
+                scale: [1.0, 1.0],
+                modulate: WHITE,
+                order: 0.0,
+                shape: Some(Shape::Background {
+                    color: Color { r: 0.1, g: 0.0, b: 0.0, a: 1.0 },
+                }),
+                children: vec![],
+            },
+            layers: vec![Layer {
+                order: 1.0,
+                root: SceneNode {
+                    transform: Transform::identity(),
+                    scale: [1.0, 1.0],
+                    modulate: WHITE,
+                    order: 0.0,
+                    shape: Some(Shape::Background {
+                        color: Color { r: 0.0, g: 0.1, b: 0.0, a: 1.0 },
+                    }),
+                    children: vec![],
+                },
+            }],
+        };
+        canvas.draw_scene(&scene);
+        let painted = canvas.paint_order();
+        // The higher layer's background is last in paint order, so it is
+        // the frame's clear color; the base group's background is not.
+        assert_eq!(
+            clear_color(&painted),
+            Color { r: 0.0, g: 0.1, b: 0.0, a: 1.0 }
+        );
+    }
+
+    #[test]
+    fn without_layers_the_paint_order_is_the_global_z_sort() {
+        let mut canvas = Canvas::new((100, 100));
+        canvas.circle(0.0, 0.0, 1.0, Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }, 1.0);
+        canvas.circle(0.0, 0.0, 1.0, Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 }, -1.0);
+        let scene = Scene::new(SceneNode::default());
+        canvas.draw_scene(&scene);
+        let painted = canvas.paint_order();
+        assert_eq!(painted.len(), 2);
+        // Same result as the pre-layer global z sort: green (-1) behind
+        // red (1).
+        assert!(matches!(
+            &painted[0],
+            Draw::Circle { color, .. } if color.g == 1.0 && color.r == 0.0
+        ));
+        assert!(matches!(
+            &painted[1],
+            Draw::Circle { color, .. } if color.r == 1.0 && color.g == 0.0
+        ));
     }
 
     #[test]
