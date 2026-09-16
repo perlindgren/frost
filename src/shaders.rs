@@ -44,7 +44,7 @@ mod tests {
     /// CPU-side uniform writer in `shape_uniform_data` (mat2x2 @0, vec2 @16,
     /// vec2 @24, vec2 @32, vec4 @48 — 16 bytes, 16-byte aligned — vec2 @64,
     /// 80 bytes total). This is the GPU-side mirror of
-    /// `shape_uniform_bytes_follow_the_wgsl_layout` in lib.rs, so a layout
+    /// `shape_uniform_bytes_follow_the_wgsl_layout` in backend.rs, so a layout
     /// drift on either side fails a test.
     #[test]
     fn shape_uniform_offsets_match_the_cpu_layout() {
@@ -78,7 +78,7 @@ mod tests {
     /// vec2 @24, vec4 @32 — 16 bytes, 16-byte aligned — f32 @48, and vec4
     /// @64; 80 bytes total). This
     /// is the GPU-side mirror of
-    /// `sprite_uniform_bytes_follow_the_wgsl_layout` in lib.rs, so a layout
+    /// `sprite_uniform_bytes_follow_the_wgsl_layout` in backend.rs, so a layout
     /// drift on either side fails a test.
     #[test]
     fn sprite_uniform_offsets_match_the_cpu_layout() {

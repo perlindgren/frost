@@ -130,17 +130,3 @@ HSA_OVERRIDE_GFX_VERSION=11.0.0 llama-server -hf unsloth/Qwen3.8-27B-GGUF:UD-Q4_
 ```shell
 npx @deepseek-ai/dsh web
 ```
-
-## Examples
-
-Run the examples with:
-
-```shell
-RUST_LOG=info cargo --example gizmo
-```
-
-or under Win11 with Powershell:
-
-```powershell
-$env:RUST_LOG="info"; cargo run --example gizmos
-```
