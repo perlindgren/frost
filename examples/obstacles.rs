@@ -14,6 +14,12 @@
 //! cargo run --example obstacles
 //! ```
 
+/// The button's linear speed, in pixels per second.
+const SPEED: f32 = 100.0;
+
+/// The button's angular speed, in radians per second — 360 degrees per second.
+const ROT_SPEED: f32 = std::f32::consts::TAU;
+
 /// The full width and height of each obstacle square, in pixels.
 const SIZE: f32 = 100.0;
 
@@ -84,7 +90,7 @@ impl frost::Process for Demo {
         // The player, unchanged from player.rs.
         // `Q` turns counter-clockwise (a positive angle), `E` clockwise.
         let drot = axis(ctx, frost::KeyCode::KeyQ, frost::KeyCode::KeyE);
-        self.rot += drot * std::f32::consts::TAU * dt;
+        self.rot += drot * ROT_SPEED * dt;
 
         // The WASD direction in the button's own frame, rotated into the
         // world by the facing angle. At `rot == 0` this is the unrotated
@@ -92,8 +98,8 @@ impl frost::Process for Demo {
         let (sin, cos) = self.rot.sin_cos();
         let dx = axis(ctx, frost::KeyCode::KeyD, frost::KeyCode::KeyA);
         let dy = axis(ctx, frost::KeyCode::KeyW, frost::KeyCode::KeyS);
-        self.pos[0] += (dx * cos - dy * sin) * 100.0 * dt;
-        self.pos[1] += (dx * sin + dy * cos) * 100.0 * dt;
+        self.pos[0] += (dx * cos - dy * sin) * SPEED * dt;
+        self.pos[1] += (dx * sin + dy * cos) * SPEED * dt;
 
         let button = &mut ctx.scene().root.children[0];
         // Rotate about the button's center, then place it at `pos`.
