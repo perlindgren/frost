@@ -1,8 +1,9 @@
-//! Text shapes: TTF glyphs drawn through the scene tree. "hello world" is
-//! set in `assets/fonts/JameGem08_2026-Regular.ttf` at 48 pixels and
-//! centered on the screen (a node at the user-space origin is the screen
-//! center, so the text node carries the identity transform). The node
-//! sways gently up and down to show the text moving like any other shape.
+//! Text shapes: TTF glyphs drawn through the scene tree. "Sub" is set in
+//! `assets/fonts/JameGem08_2026-Regular.ttf` at 48 pixels on top of a
+//! circle at the window center: the text node is a child of the circle
+//! node and carries the identity transform, so the text sits at the screen
+//! center. The circle, with the text riding on it, sways gently up and down
+//! to show the text moving like any other shape.
 //! Run with:
 //!
 //! ```text
