@@ -2,8 +2,10 @@
 //!
 //! Provide a [`Scene`] and a [`Process`]: a function called once per frame
 //! with a [`Context`] and the delta time in seconds since the previous
-//! frame. The scene is drawn every frame, *after* the process runs, so the
-//! process can mutate it in place to animate it. Draw with window-centered
+//! frame. The scene is drawn every frame, *after* the process runs and the
+//! scene's tree has been updated by a visit (every node's
+//! [`Node::process`], children before their parent), so both can mutate it
+//! in place to animate it. Draw with window-centered
 //! pixel coordinates: the origin is the window center, y points up, so the
 //! top-left corner is `(-width/2, height/2)`.
 //!
@@ -46,7 +48,9 @@
 //! and transform apply to the node's shape and compose onto its children,
 //! the modulate multiplies into the node's shape color and composes onto
 //! its children's, and the order does the same for the subtree's draw
-//! order. A [`Shape::Background`]
+//! order. Every [`SceneNode`] is a [`Node`]: its [`Node::visit`] walks its
+//! children before itself (post-order), so the whole tree updates with a
+//! single [`Scene::visit`]. A [`Shape::Background`]
 //! node fills the whole window with its color, ignoring its transform, and
 //! is drawn at the very back.
 //! The scene passed to [`run`] is drawn every frame; use
@@ -1595,6 +1599,9 @@ impl<P: Process> Frost<P> {
             };
             process.process(&mut ctx, dt);
         }
+        // The user's process ran; now update the scene tree itself: every
+        // node's `Node::process`, children before their parent.
+        self.scene.visit();
         // The scene was just updated; draw it into the frame's draw list.
         canvas.draw_scene(&self.scene);
         // Expand the text into per-glyph sprite quads before the sort, so
@@ -3011,5 +3018,53 @@ mod tests {
             err,
             SpriteError::Io(err) if err.kind() == std::io::ErrorKind::NotFound
         ));
+    }
+
+    /// A custom test node that records that its `process` has run.
+    #[derive(Debug)]
+    struct Visited {
+        /// Whether `process` has run.
+        done: bool,
+    }
+
+    impl Node for Visited {
+        fn process(&mut self) {
+            self.done = true;
+        }
+        fn visit(&mut self) {
+            self.process();
+        }
+    }
+
+    /// A custom test parent, in the shape of the trait's docs: it owns its
+    /// child and visits the child before processing itself.
+    #[derive(Debug)]
+    struct VisitParent {
+        child: Box<Visited>,
+        /// The child's state as observed when this node was processed.
+        saw_done: bool,
+    }
+
+    impl Node for VisitParent {
+        fn process(&mut self) {
+            self.saw_done = self.child.done;
+        }
+        fn visit(&mut self) {
+            self.child.visit();
+            self.process();
+        }
+    }
+
+    #[test]
+    fn node_visit_runs_children_before_their_parent() {
+        // Post-order: when the parent's `process` runs, its child's
+        // `process` must have already run.
+        let mut parent = VisitParent {
+            child: Box::new(Visited { done: false }),
+            saw_done: false,
+        };
+        parent.visit();
+        assert!(parent.child.done);
+        assert!(parent.saw_done);
     }
 }

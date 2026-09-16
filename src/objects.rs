@@ -375,6 +375,24 @@ impl std::error::Error for SpriteError {
     }
 }
 
+/// A node in a scene tree.
+///
+/// Every node knows how to update itself and walk its own children, so a
+/// whole tree updates with a single call to [`Node::visit`]: the visit runs
+/// on every node in post-order (children before their parent), and each
+/// node's [`Node::process`] runs once per visit.
+pub trait Node {
+    /// Per-frame update for this node, called once per [`Node::visit`],
+    /// after the node's children have been visited. The default does
+    /// nothing.
+    fn process(&mut self) {}
+
+    /// Visits this node and all of its descendants in post-order: each
+    /// child's [`Node::visit`] runs before [`Node::process`] on this node,
+    /// so a node's `process` sees its children already updated.
+    fn visit(&mut self);
+}
+
 /// A node in a [`Scene`] tree.
 ///
 /// A node is a [`Transform`], a `scale`, a `modulate`, and an `order`, plus
@@ -387,6 +405,10 @@ impl std::error::Error for SpriteError {
 /// children is a leaf. A node literal can leave any fields out by writing
 /// `..SceneNode::default()`: the omitted fields take the identity transform,
 /// no scale, a white modulate, order `0.0`, no shape, and no children.
+///
+/// A [`SceneNode`] is a [`Node`]: its [`Node::visit`] walks its children and
+/// then runs its (default, no-op) [`Node::process`], so a whole scene tree
+/// updates with a single [`Scene::visit`].
 #[derive(Clone, Debug)]
 pub struct SceneNode {
     /// The transform from the parent's coordinate space to this node's,
@@ -430,11 +452,24 @@ impl Default for SceneNode {
     }
 }
 
+impl Node for SceneNode {
+    /// Visits every child first, then updates this node itself (post-order),
+    /// so [`Node::process`] sees the children already updated.
+    fn visit(&mut self) {
+        for child in &mut self.children {
+            child.visit();
+        }
+        self.process();
+    }
+}
+
 /// A tree of [`SceneNode`]s rooted at a single node.
 ///
-/// Pass a scene to [`run`]: it is drawn every frame, *after* the [`Process`]
-/// runs, so the process can mutate it in place (via [`Context::scene`]) to
-/// animate it. Use [`Canvas::draw_scene`] to draw additional scenes.
+/// Pass a scene to [`run`]: every frame the user's [`Process`] runs, then
+/// the tree is updated with [`Scene::visit`] (every node's [`Node::process`],
+/// children before their parent), and only then is the scene drawn — so
+/// both can mutate it in place (via [`Context::scene`]) to animate it. Use
+/// [`Canvas::draw_scene`] to draw additional scenes.
 #[derive(Clone, Debug)]
 pub struct Scene {
     /// The root node; the scene is walked depth-first from here.
@@ -445,6 +480,13 @@ impl Scene {
     /// Creates a scene from its root node.
     pub fn new(root: SceneNode) -> Self {
         Self { root }
+    }
+
+    /// Updates the whole tree in one call: visits the root, which visits
+    /// every child, and so on down the tree, so each node's
+    /// [`Node::process`] runs exactly once, children before their parent.
+    pub fn visit(&mut self) {
+        self.root.visit();
     }
 }
 
