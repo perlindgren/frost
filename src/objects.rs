@@ -135,6 +135,15 @@ impl Transform {
         ]
     }
 
+    /// This transform with its translation scaled by `f`: the same linear
+    /// part, and the translation `(f * t[0], f * t[1])`.
+    pub(crate) fn scaled_translation(&self, f: f32) -> Transform {
+        Transform {
+            m: self.m,
+            t: [self.t[0] * f, self.t[1] * f],
+        }
+    }
+
     /// The inverse transform, or `None` if the transform is degenerate (its
     /// linear part collapses points onto a line or a point).
     pub(crate) fn invert(&self) -> Option<Transform> {
@@ -464,7 +473,7 @@ impl Node for SceneNode {
 }
 
 /// A rendering layer of a [`Scene`]: an independent draw group with its own
-/// layer order and its own root node.
+/// layer order, its own parallax speed, and its own root node.
 ///
 /// Layers are hard draw partitions: every node of a layer is drawn after
 /// (on top of) every node of a layer with a lower `order`, and before every
@@ -483,18 +492,41 @@ pub struct Layer {
     /// The layer's order: higher order is closer to the camera (drawn
     /// later, on top of layers with a lower order).
     pub order: f32,
+    /// The layer's parallax speed, as a multiple of the scene's camera
+    /// motion: `1.0` (the default) follows the camera exactly, a higher
+    /// speed makes the layer's contents move faster than the camera (the
+    /// layer reads as closer), and a lower speed slower (farther away).
+    /// Ignored when the scene has no [`Scene::camera`].
+    pub speed: f32,
     /// The root node of the layer's tree, walked like a scene's root.
     pub root: SceneNode,
 }
 
 impl Layer {
-    /// Creates a layer at the default order `0.0` from its root node.
+    /// Creates a layer at the default order `0.0` and the default speed
+    /// `1.0`, from its root node.
     pub fn new(root: SceneNode) -> Self {
         Self {
             order: 0.0,
+            speed: 1.0,
             root,
         }
     }
+}
+
+/// The position of a node within a [`Scene`]: the group that contains the
+/// node — the base group (the scene's root subtree) or one of the scene's
+/// explicit [`Layer`]s — and the child-index path from that group's root
+/// down to the node.
+#[derive(Clone, Debug)]
+pub struct NodePath {
+    /// The group the node lives in: `None` for the base group (the scene's
+    /// root subtree), `Some(i)` for the `i`th layer of the scene.
+    pub group: Option<usize>,
+    /// Child indices from the group's root down to the node: the first is
+    /// the root's child, the second that child's child, and so on. An empty
+    /// path names the group's root itself.
+    pub children: Vec<usize>,
 }
 
 /// A tree of [`SceneNode`]s rooted at a single node, plus zero or more
@@ -512,20 +544,33 @@ impl Layer {
 /// is its own group at its [`Layer::order`]. Groups are painted by ascending
 /// order — higher order closer to the camera, drawn later, on top — and
 /// within a group the local ordering applies.
+///
+/// If the scene has a [`Scene::camera`], the scene is drawn in that node's
+/// coordinate space instead of the fixed window-centered user space: the
+/// camera node stays at the window origin and the rest of the scene moves
+/// and rotates around it, so a camera hung under a moving node follows it.
+/// Each group renders from the camera scaled by its speed — the base group
+/// at the full speed `1.0`, and each layer at its [`Layer::speed`].
 #[derive(Clone, Debug)]
 pub struct Scene {
     /// The root node; the scene is walked depth-first from here.
     pub root: SceneNode,
     /// The scene's rendering layers, in declaration order.
     pub layers: Vec<Layer>,
+    /// The scene's camera node, if any: the scene is drawn in that node's
+    /// coordinate space, so the node stays at the window origin while the
+    /// rest of the scene moves around it. `None` (the default) draws the
+    /// scene in the fixed window-centered user space.
+    pub camera: Option<NodePath>,
 }
 
 impl Scene {
-    /// Creates a scene from its root node, with no layers.
+    /// Creates a scene from its root node, with no layers and no camera.
     pub fn new(root: SceneNode) -> Self {
         Self {
             root,
             layers: Vec::new(),
+            camera: None,
         }
     }
 
@@ -539,15 +584,44 @@ impl Scene {
             layer.root.visit();
         }
     }
+
+    /// The world transform of the node at `path` — the node's own scale and
+    /// transform composed over its ancestors', up to its group's root — or
+    /// `None` if the path names no node (a missing layer or a missing
+    /// child).
+    pub(crate) fn world_at(&self, path: &NodePath) -> Option<Transform> {
+        let root = match path.group {
+            None => &self.root,
+            Some(index) => &self.layers.get(index)?.root,
+        };
+        let mut node = root;
+        let mut parent = Transform::identity();
+        for &index in &path.children {
+            let local =
+                Transform::scale(node.scale[0], node.scale[1]).compose(&node.transform);
+            parent = local.compose(&parent);
+            node = node.children.get(index)?;
+        }
+        let local = Transform::scale(node.scale[0], node.scale[1]).compose(&node.transform);
+        Some(local.compose(&parent))
+    }
+
+    /// The world transform of the scene's camera node, if the scene has a
+    /// camera and its path names a node.
+    pub(crate) fn camera_world(&self) -> Option<Transform> {
+        self.camera.as_ref().and_then(|path| self.world_at(path))
+    }
 }
 
 impl Default for Scene {
     /// An empty scene: an identity root node with no shape and no children,
-    /// and no layers, for apps that only use the immediate draw methods.
+    /// no layers, and no camera, for apps that only use the immediate draw
+    /// methods.
     fn default() -> Self {
         Self {
             root: SceneNode::default(),
             layers: Vec::new(),
+            camera: None,
         }
     }
 }

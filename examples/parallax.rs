@@ -1,17 +1,22 @@
-//! The obstacles example with rendering layers added.
+//! The layers example with a camera added: a parallax demo.
 //!
-//! The frame is split into three layers with orders -1, 0, and 1, each
-//! holding four `SIZE` x `SIZE` squares at random positions (fully inside
-//! the visible area) with random colors and the default draw order. A layer
-//! is a hard draw partition: a whole layer is drawn after every lower-
-//! ordered layer and before every higher-ordered one (higher order closer
-//! to the camera, on top), no matter what the local z values are; within a
-//! layer the local draw order applies.
+//! A shapeless camera pivot node hangs under the player node, and the
+//! scene's camera points at it, so the camera follows the player: the
+//! player stays at the window origin while the rest of the scene moves
+//! around it. `WASD` scrolls the world in the opposite direction of the
+//! player's heading, and `Q`/`E` turn the view rather than the player
+//! sprite — the player's rotation is the camera's rotation.
 //!
-//! The background lives in the scene's root — the base group at the
-//! implicit order 0.0 — so it is still rendered first, behind all the
-//! layers. The button is in the middle layer (order 0.0); it is unchanged
-//! from player.rs and sits on top of that layer's squares (local order 1).
+//! The three layers have the same orders as in layers.rs — -1, 0, and 1,
+//! each with four random squares — but different parallax speeds: the far
+//! layer (order -1) moves at half the camera's speed, the player's layer
+//! (order 0) at the full speed, and the near layer (order 1) at double
+//! speed, so moving the player makes the layers sweep past at different
+//! rates — the classic parallax effect.
+//!
+//! The background lives in the scene's root — the base group, which
+//! follows the camera at the full speed 1.0; its transform is ignored
+//! anyway, so it always fills the window.
 //!
 //! The rectangles are generated once, on the first frame — the window size
 //! is only known once the first frame runs — and keep their generated
@@ -21,13 +26,13 @@
 //! Run with:
 //!
 //! ```text
-//! cargo run --example layers
+//! cargo run --example parallax
 //! ```
 
-/// The button's linear speed, in pixels per second.
+/// The player's linear speed, in pixels per second.
 const SPEED: f32 = 100.0;
 
-/// The button's angular speed, in radians per second — 360 degrees per second.
+/// The player's angular speed, in radians per second — 360 degrees per second.
 const ROT_SPEED: f32 = std::f32::consts::TAU;
 
 /// The full width and height of each rectangle, in pixels.
@@ -40,12 +45,17 @@ const RECTS: usize = 4;
 /// layer, 1 on top.
 const LAYER_ORDERS: [f32; 3] = [-1.0, 0.0, 1.0];
 
-/// The index of the layer the button lives in (its order is 0.0).
+/// The layer parallax speeds, matching `LAYER_ORDERS` back to front: the
+/// far layer moves at half the camera's speed, the player's layer at the
+/// full speed, and the near layer at double speed.
+const LAYER_SPEEDS: [f32; 3] = [0.5, 1.0, 2.0];
+
+/// The index of the layer the player lives in (its order is 0.0).
 const PLAYER_LAYER: usize = 1;
 
 /// A fixed rectangle: a square centered at `pos` in `color`.
 struct Rect {
-    /// The square's center in window-centered pixels.
+    /// The square's center in world pixels (window-centered coordinates).
     pos: [f32; 2],
     color: frost::Color,
 }
@@ -93,9 +103,11 @@ fn axis(ctx: &frost::Context, positive: frost::KeyCode, negative: frost::KeyCode
 }
 
 struct Demo {
-    /// The button's position in window-centered pixels.
+    /// The player's position in world pixels (window-centered coordinates);
+    /// the camera keeps the player at the window origin on screen.
     pos: [f32; 2],
-    /// The button's facing angle in radians, counter-clockwise from +x.
+    /// The player's (and camera's) facing angle in radians,
+    /// counter-clockwise from +x.
     rot: f32,
     /// The rectangles per layer, generated once from the first frame's
     /// window size and kept unchanged for the whole run.
@@ -104,12 +116,12 @@ struct Demo {
 
 impl frost::Process for Demo {
     fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
-        // The player, unchanged from player.rs.
+        // The player, as in layers.rs.
         // `Q` turns counter-clockwise (a positive angle), `E` clockwise.
         let drot = axis(ctx, frost::KeyCode::KeyQ, frost::KeyCode::KeyE);
         self.rot += drot * ROT_SPEED * dt;
 
-        // The WASD direction in the button's own frame, rotated into the
+        // The WASD direction in the player's own frame, rotated into the
         // world by the facing angle. At `rot == 0` this is the unrotated
         // direction, i.e. the original behavior.
         let (sin, cos) = self.rot.sin_cos();
@@ -118,17 +130,19 @@ impl frost::Process for Demo {
         self.pos[0] += (dx * cos - dy * sin) * SPEED * dt;
         self.pos[1] += (dx * sin + dy * cos) * SPEED * dt;
 
-        // The button's node lives in the middle layer, not in the scene's
-        // root.
-        let button = &mut ctx.scene().layers[PLAYER_LAYER].root.children[0];
-        // Rotate about the button's center, then place it at `pos`.
-        button.transform = frost::Transform::rotate(self.rot)
+        // The player's node lives in the middle layer, not in the scene's
+        // root; its shapeless child is the camera.
+        let player = &mut ctx.scene().layers[PLAYER_LAYER].root.children[0];
+        // Rotate about the player's center, then place it at `pos`. The
+        // camera hangs under the player, so it follows with no work here.
+        player.transform = frost::Transform::rotate(self.rot)
             .compose(&frost::Transform::translate(self.pos[0], self.pos[1]));
 
         // The rectangles: generated once, at random positions with the whole
         // square inside the visible area, in random colors, one set per
-        // layer. They are added to the layer roots as children, so each
-        // layer's squares are drawn as that layer's own group.
+        // layer. They are added to the layer roots as children with fixed
+        // world transforms, so the parallax comes purely from the camera
+        // view moving at each layer's speed.
         if self.rects.is_none() {
             let (w, h) = ctx.size();
             let mut rng = Rng::new();
@@ -183,29 +197,35 @@ fn main() {
     let button = frost::Shape::sprite(format!("{root}/assets/sprites/Button.png"))
         .expect("failed to load assets/sprites/Button.png");
 
-    // The three layers, back to front. Each starts empty; the rectangles are
-    // added to them at the first frame.
+    // The three layers, back to front, each with its parallax speed. Each
+    // starts empty; the rectangles are added to them at the first frame.
     let mut layers: Vec<frost::Layer> = LAYER_ORDERS
         .iter()
-        .map(|&order| frost::Layer {
+        .zip(LAYER_SPEEDS.iter())
+        .map(|(&order, &speed)| frost::Layer {
             order,
-            speed: 1.0,
+            speed,
             root: frost::SceneNode::default(),
         })
         .collect();
-    layers[PLAYER_LAYER].root.children.push(Box::new(frost::SceneNode {
-        // The button starts at the window center, facing +x; order 1.0 puts
-        // it on top of its layer's squares, which all default to 0.0.
+    // The player: the button node, with a shapeless camera pivot as its
+    // child — the scene's camera, so the player stays at the window origin
+    // and the world moves around it.
+    let mut player = frost::SceneNode {
+        // Order 1.0 puts it on top of its layer's squares, which all
+        // default to 0.0.
         order: 1.0,
         shape: Some(button),
         ..Default::default()
-    }));
+    };
+    player.children.push(Box::new(frost::SceneNode::default()));
+    layers[PLAYER_LAYER].root.children.push(Box::new(player));
 
     if let Err(err) = frost::run(
         frost::Scene {
             // The background lives in the base group (the scene's root),
-            // which paints behind every explicit layer; its transform is
-            // ignored.
+            // which follows the camera at the full speed 1.0; its transform
+            // is ignored anyway.
             root: frost::SceneNode {
                 shape: Some(frost::Shape::Background {
                     color: frost::Color {
@@ -218,7 +238,13 @@ fn main() {
                 ..Default::default()
             },
             layers,
-            camera: None,
+            // The camera is the player's shapeless child pivot: layer -1
+            // moves at half the camera's speed, layer 0 (the player's) at
+            // the full speed, and layer 1 at double speed.
+            camera: Some(frost::NodePath {
+                group: Some(PLAYER_LAYER),
+                children: vec![0, 0],
+            }),
         },
         Demo {
             pos: [0.0, 0.0],

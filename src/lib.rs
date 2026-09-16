@@ -46,6 +46,13 @@
 //! implicit order `0.0`, declared before the explicit layers. Within a group
 //! the local `z` ordering applies.
 //!
+//! A [`Scene`] can also designate a camera node ([`Scene::camera`]): the
+//! scene is then drawn in that node's coordinate space, so the node stays at
+//! the window origin while the rest of the scene moves around it — hang the
+//! camera under a moving node and it follows. Each group renders from the
+//! camera scaled by its speed: the base group at the full speed `1.0`, each
+//! [`Layer`] at its [`Layer::speed`].
+//!
 //! Each object is clipped to its tight bounding box (the scissor test), so a
 //! frame's cost scales with the objects' on-screen areas, not the window size.
 //!
@@ -215,11 +222,35 @@ impl Canvas {
     /// and before every group with a higher one (higher order on top), and
     /// within the layer the local ordering applies.
     ///
+    /// If the scene has a [`Scene::camera`], every group is drawn in the
+    /// camera node's coordinate space instead of the fixed window-centered
+    /// user space: the scene is transformed by the inverse of the camera's
+    /// world transform (with the translation scaled per group), so the
+    /// camera stays at the window origin and the scene moves and rotates
+    /// around it. Each group uses the camera's translation scaled by its
+    /// speed — the base group at `1.0`, each layer at its [`Layer::speed`] —
+    /// so a layer with a higher speed moves faster than the camera (it reads
+    /// as closer) and one with a lower speed slower (farther away).
+    ///
     /// A [`Shape::Background`] is the exception in every group: it ignores
     /// its transform, never draws, and becomes the frame's clear color.
     pub fn draw_scene(&mut self, scene: &Scene) {
         let pixel = self.user_to_pixel();
-        draw_node(pixel, &scene.root, &Transform::identity(), 0.0, WHITE, &mut self.draws);
+        // The scene's camera, when it has one: the groups are drawn in the
+        // camera node's coordinate space, so it stays at the window origin
+        // and the scene moves around it. Without a camera (or with a
+        // degenerate camera transform) the groups draw in the fixed
+        // window-centered user space.
+        let camera = scene.camera_world();
+        // The base group renders from the camera at the full speed 1.0.
+        let view = |speed: f32| match &camera {
+            Some(c) => c
+                .scaled_translation(speed)
+                .invert()
+                .unwrap_or(Transform::identity()),
+            None => Transform::identity(),
+        };
+        draw_node(pixel, &scene.root, &view(1.0), 0.0, WHITE, &mut self.draws);
         for layer in &scene.layers {
             let index = self.layer_orders.len();
             self.layer_orders.push(layer.order);
@@ -227,7 +258,7 @@ impl Canvas {
             draw_node(
                 pixel,
                 &layer.root,
-                &Transform::identity(),
+                &view(layer.speed),
                 0.0,
                 WHITE,
                 &mut self.layer_draws[index],
