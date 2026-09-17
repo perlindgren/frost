@@ -1369,11 +1369,11 @@ fn write_f32_at(data: &mut [u8], offset: usize, value: f32) {
     data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-/// Line uniform data, 32 bytes, matching the WGSL uniform-space layout of
-/// the `Uniforms` Wgsl struct: `a` @ 0, `b` @ 8, `color` @ 16 (a vec3<f32>
-/// is 16-byte aligned in uniform space), `width` @ 28 (the next member is
-/// aligned to its own alignment, so the f32 follows the vec3 without a gap);
-/// the struct size rounds up to 32.
+/// Line uniform data, 48 bytes, matching the WGSL uniform-space layout of
+/// the `Uniforms` Wgsl struct: `a` @ 0, `b` @ 8, `color` @ 16 (a vec4<f32>
+/// is 16-byte aligned in uniform space, leaving an 8-byte gap), `width` @
+/// 32 (the next member is aligned to its own alignment, so the f32 follows
+/// the vec4 without a gap); the struct size rounds up to 48.
 fn line_uniform_data(a: [f32; 2], b: [f32; 2], color: Color, width: f32) -> Vec<u8> {
     let mut data = vec![0u8; 48];
     write_f32_at(&mut data, 0, a[0]);
