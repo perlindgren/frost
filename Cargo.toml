@@ -31,6 +31,8 @@ web-sys = { version = "0.3", features = [
 ] }
 
 [dev-dependencies]
+# Command line parsing for the `repeat` example (`--repeat_x`, `--repeat_y`).
+clap = { version = "4", features = ["derive"] }
 # Logger initialization for the examples and tests only; the library
 # itself just uses the `log` facade, so consumers choose their own.
 env_logger = "0.11.11"

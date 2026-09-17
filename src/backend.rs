@@ -247,7 +247,7 @@ impl Draw {
 /// local space centered at `center` with half extents `(hx, hy)`. The box may
 /// be rotated or skewed by `world`, so the corners are transformed first and
 /// the axis-aligned box of the result is taken.
-fn aabb_of_box(world: &Transform, center: [f32; 2], hx: f32, hy: f32) -> ([f32; 2], [f32; 2]) {
+pub(crate) fn aabb_of_box(world: &Transform, center: [f32; 2], hx: f32, hy: f32) -> ([f32; 2], [f32; 2]) {
     let corners = [
         world.apply([center[0] - hx, center[1] - hy]),
         world.apply([center[0] + hx, center[1] - hy]),
@@ -2002,6 +2002,7 @@ mod tests {
                 Layer {
                     order: -1.0,
                     speed: 1.0,
+                    repeat: [0.0, 0.0],
                     root: SceneNode {
                         // High local z, but the layer's low order still puts
                         // it behind every group with a higher order.
@@ -2020,6 +2021,7 @@ mod tests {
                 Layer {
                     order: 1.0,
                     speed: 1.0,
+                    repeat: [0.0, 0.0],
                     root: SceneNode {
                         // Low local z, but the layer's high order still puts
                         // it on top.
@@ -2062,6 +2064,7 @@ mod tests {
                 Layer {
                     order: 1.0,
                     speed: 1.0,
+                    repeat: [0.0, 0.0],
                     root: SceneNode {
                         transform: Transform::identity(),
                         scale: [1.0, 1.0],
@@ -2100,6 +2103,7 @@ mod tests {
                 Layer {
                     order: 2.0,
                     speed: 1.0,
+                    repeat: [0.0, 0.0],
                     root: SceneNode {
                         transform: Transform::identity(),
                         scale: [1.0, 1.0],
@@ -2145,6 +2149,7 @@ mod tests {
             layers: vec![Layer {
                 order: 0.0,
                 speed: 1.0,
+                repeat: [0.0, 0.0],
                 root: SceneNode {
                     // Negative local z, but the base group is declared
                     // before the layer, so at the equal order 0.0 it still
@@ -2195,6 +2200,7 @@ mod tests {
             layers: vec![Layer {
                 order: 1.0,
                 speed: 1.0,
+                repeat: [0.0, 0.0],
                 root: SceneNode {
                     transform: Transform::identity(),
                     scale: [1.0, 1.0],
@@ -2247,6 +2253,7 @@ mod tests {
             layers: vec![Layer {
                 order: 0.0,
                 speed: 1.0,
+                repeat: [0.0, 0.0],
                 root: SceneNode {
                     transform: Transform::identity(),
                     scale: [1.0, 1.0],
@@ -2322,6 +2329,7 @@ mod tests {
                     // Double the camera's speed: the layer's point at the
                     // camera's position shifts twice the camera's offset.
                     speed: 2.0,
+                    repeat: [0.0, 0.0],
                     root: SceneNode {
                         transform: Transform::translate(10.0, 0.0),
                         scale: [1.0, 1.0],
@@ -2340,6 +2348,7 @@ mod tests {
                     // Half the camera's speed: the same point shifts half
                     // the camera's offset.
                     speed: 0.5,
+                    repeat: [0.0, 0.0],
                     root: SceneNode {
                         transform: Transform::translate(10.0, 0.0),
                         scale: [1.0, 1.0],
@@ -2374,6 +2383,225 @@ mod tests {
         // Blue, at half speed: user (10 - 0.5*10, 0) = (5, 0) ->
         // pixel (55, 50).
         assert_eq!(world.apply([0.0, 0.0]), [55.0, 50.0]);
+    }
+
+    /// A layer with no repeat, a circle at the origin: the scene for the
+    /// repeat tests, built at the given repeat offsets.
+    fn repeat_layer_scene(repeat: [f32; 2]) -> Scene {
+        Scene {
+            root: SceneNode::default(),
+            layers: vec![Layer {
+                order: 0.0,
+                speed: 1.0,
+                repeat,
+                root: SceneNode {
+                    transform: Transform::identity(),
+                    scale: [1.0, 1.0],
+                    modulate: WHITE,
+                    order: 0.0,
+                    shape: Some(Shape::Circle {
+                        center: [0.0, 0.0],
+                        radius: 1.0,
+                        color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                    }),
+                    children: vec![],
+                },
+            }],
+            camera: None,
+        }
+    }
+
+    #[test]
+    fn a_zero_repeat_layer_draws_its_content_once() {
+        let mut canvas = Canvas::new((100, 100));
+        let scene = repeat_layer_scene([0.0, 0.0]);
+        canvas.draw_scene(&scene);
+        let painted = canvas.paint_order();
+        assert_eq!(painted.len(), 1);
+        // The single copy is undispaced: user (0, 0) -> pixel (50, 50).
+        let Draw::Shape { world, .. } = &painted[0] else {
+            panic!("expected one shape draw");
+        };
+        assert_eq!(world.apply([0.0, 0.0]), [50.0, 50.0]);
+    }
+
+    #[test]
+    fn a_repeating_layer_draws_one_copy_per_overlapping_tile() {
+        let mut canvas = Canvas::new((100, 100));
+        // The window spans user x in [-50, 50]: with a period of 100 it
+        // overlaps exactly two tiles, at offsets -100 and 0.
+        let scene = repeat_layer_scene([100.0, 0.0]);
+        canvas.draw_scene(&scene);
+        let painted = canvas.paint_order();
+        assert_eq!(painted.len(), 2);
+        // The base content (offset 0.0) is drawn first...
+        let Draw::Shape { world, .. } = &painted[0] else {
+            panic!("expected one shape draw");
+        };
+        assert_eq!(world.apply([0.0, 0.0]), [50.0, 50.0]);
+        // ...then its copy displaced by one period, off the window's left
+        // edge: user (-100, 0) -> pixel (-50, 50).
+        let Draw::Shape { world, .. } = &painted[1] else {
+            panic!("expected one shape draw");
+        };
+        assert_eq!(world.apply([0.0, 0.0]), [-50.0, 50.0]);
+    }
+
+    #[test]
+    fn repeat_offsets_follow_the_camera() {
+        let mut canvas = Canvas::new((100, 100));
+        // A camera at user x = 60 shifts the window to layer x in
+        // [10, 110]: the overlapping tiles are now 0 and 100.
+        let scene = Scene {
+            root: SceneNode {
+                transform: Transform::identity(),
+                scale: [1.0, 1.0],
+                modulate: WHITE,
+                order: 0.0,
+                shape: None,
+                children: vec![Box::new(SceneNode {
+                    transform: Transform::translate(60.0, 0.0),
+                    ..Default::default()
+                })],
+            },
+            camera: Some(NodePath {
+                group: None,
+                children: vec![0],
+            }),
+            ..repeat_layer_scene([100.0, 0.0])
+        };
+        canvas.draw_scene(&scene);
+        let painted = canvas.paint_order();
+        assert_eq!(painted.len(), 2);
+        // Base: the camera's offset is subtracted: user (0 - 60, 0) =
+        // (-60, 0) -> pixel (-10, 50).
+        let Draw::Shape { world, .. } = &painted[0] else {
+            panic!("expected one shape draw");
+        };
+        assert_eq!(world.apply([0.0, 0.0]), [-10.0, 50.0]);
+        // The copy has shifted with the camera, to the window's right
+        // edge: user (100 - 60, 0) = (40, 0) -> pixel (90, 50).
+        let Draw::Shape { world, .. } = &painted[1] else {
+            panic!("expected one shape draw");
+        };
+        assert_eq!(world.apply([0.0, 0.0]), [90.0, 50.0]);
+    }
+
+    #[test]
+    fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
+        let mut canvas = Canvas::new((100, 100));
+        // A rectangle twenty wide, centered at layer x = 95: it straddles
+        // the tile boundary at 100. With a period of 100 (greater than its
+        // 20 width), it is legal: the window must see its two copies, one
+        // at each edge.
+        let scene = Scene {
+            root: SceneNode {
+                transform: Transform::identity(),
+                scale: [1.0, 1.0],
+                modulate: WHITE,
+                order: 0.0,
+                shape: None,
+                // A camera at 145 puts the window at layer x in [95, 195],
+                // straddling the boundary.
+                children: vec![Box::new(SceneNode {
+                    transform: Transform::translate(145.0, 0.0),
+                    ..Default::default()
+                })],
+            },
+            camera: Some(NodePath {
+                group: None,
+                children: vec![0],
+            }),
+            layers: vec![Layer {
+                order: 0.0,
+                speed: 1.0,
+                repeat: [100.0, 0.0],
+                root: SceneNode {
+                    transform: Transform::identity(),
+                    scale: [1.0, 1.0],
+                    modulate: WHITE,
+                    order: 0.0,
+                    shape: Some(Shape::Rectangle {
+                        center: [95.0, 0.0],
+                        extent: [10.0, 5.0],
+                        color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                    }),
+                    children: vec![],
+                },
+            }],
+        };
+        canvas.draw_scene(&scene);
+        let painted = canvas.paint_order();
+        // No abort, and both copies are recorded: the object's part past
+        // the boundary appears on the opposite side of the window.
+        assert_eq!(painted.len(), 2);
+        // The base copy is clipped at the window's left edge: user
+        // (95 - 145, 0) = (-50, 0) -> pixel (0, 50).
+        let Draw::Shape { world, .. } = &painted[0] else {
+            panic!("expected one shape draw");
+        };
+        assert_eq!(world.apply([95.0, 0.0]), [0.0, 50.0]);
+        // Its wrapped copy is clipped at the right edge: user
+        // (95 + 100 - 145, 0) = (50, 0) -> pixel (100, 50).
+        let Draw::Shape { world, .. } = &painted[1] else {
+            panic!("expected one shape draw");
+        };
+        assert_eq!(world.apply([95.0, 0.0]), [100.0, 50.0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "minimum repeat offset")]
+    fn repeat_smaller_than_the_window_aborts() {
+        let mut canvas = Canvas::new((100, 100));
+        let scene = repeat_layer_scene([50.0, 0.0]);
+        canvas.draw_scene(&scene);
+    }
+
+    #[test]
+    #[should_panic(expected = "drawn twice")]
+    fn an_object_wider_than_its_repeat_aborts() {
+        let mut canvas = Canvas::new((100, 100));
+        // A rectangle one hundred and twenty wide exceeds its period of
+        // 100: its copies would overlap, so the same object would be drawn
+        // twice.
+        let scene = Scene {
+            layers: vec![Layer {
+                order: 0.0,
+                speed: 1.0,
+                repeat: [100.0, 0.0],
+                root: SceneNode {
+                    transform: Transform::identity(),
+                    scale: [1.0, 1.0],
+                    modulate: WHITE,
+                    order: 0.0,
+                    shape: Some(Shape::Rectangle {
+                        center: [0.0, 0.0],
+                        extent: [60.0, 5.0],
+                        color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                    }),
+                    children: vec![],
+                },
+            }],
+            ..repeat_layer_scene([0.0, 0.0])
+        };
+        canvas.draw_scene(&scene);
+    }
+
+    #[test]
+    fn repeat_is_per_axis() {
+        // Both axes repeat: the window overlaps two tiles in each, so four
+        // copies.
+        let mut canvas = Canvas::new((100, 100));
+        let scene = repeat_layer_scene([100.0, 100.0]);
+        canvas.draw_scene(&scene);
+        let painted = canvas.paint_order();
+        assert_eq!(painted.len(), 4);
+        // One axis repeats: two copies, not four.
+        let mut canvas = Canvas::new((100, 100));
+        let scene = repeat_layer_scene([100.0, 0.0]);
+        canvas.draw_scene(&scene);
+        let painted = canvas.paint_order();
+        assert_eq!(painted.len(), 2);
     }
 
     #[test]

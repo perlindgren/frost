@@ -487,7 +487,7 @@ impl Node for SceneNode {
 /// order. A [`Shape::Background`] inside a layer keeps the background
 /// behavior of every group: it never draws, it only contributes to the
 /// frame's clear color.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Layer {
     /// The layer's order: higher order is closer to the camera (drawn
     /// later, on top of layers with a lower order).
@@ -498,6 +498,22 @@ pub struct Layer {
     /// layer reads as closer), and a lower speed slower (farther away).
     /// Ignored when the scene has no [`Scene::camera`].
     pub speed: f32,
+    /// The layer's repetition: `(repeat_x, repeat_y)`. `(0.0, 0.0)` (the
+    /// default) draws the layer once. A non-zero component tiles the layer
+    /// in both directions along that axis with a period of `abs(component)`
+    /// pixels, so a moving camera can scroll through the layer infinitely:
+    /// the layer is drawn once per tile the window overlaps — with a
+    /// pure-translation camera, at most the two tiles the window is in,
+    /// because the minimum period is the window's width/height — and an
+    /// object crossing a tile boundary is split into wrapping slices, the
+    /// part past the boundary appearing on the opposite side of the window
+    /// (each copy is re-used, with just a displacement, and clipped by the
+    /// per-object scissor test, so no object is ever drawn twice). A
+    /// non-zero period below the window size on that axis, or an object
+    /// whose extent in a repeating axis exceeds its period (the same object
+    /// would be drawn twice), aborts the program with an error. The
+    /// component's sign is ignored.
+    pub repeat: [f32; 2],
     /// The root node of the layer's tree, walked like a scene's root.
     pub root: SceneNode,
 }
@@ -509,6 +525,7 @@ impl Layer {
         Self {
             order: 0.0,
             speed: 1.0,
+            repeat: [0.0, 0.0],
             root,
         }
     }

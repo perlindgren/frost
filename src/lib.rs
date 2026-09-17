@@ -40,11 +40,15 @@
 //! drawn is on top.
 //!
 //! A [`Scene`] can additionally define rendering [`Layer`]s: hard draw
-//! partitions, each with its own order and its own root node. Groups are
-//! painted by ascending layer order — higher order closer to the camera,
-//! drawn later, on top — and the scene's root subtree is the group at the
-//! implicit order `0.0`, declared before the explicit layers. Within a group
-//! the local `z` ordering applies.
+//! partitions, each with its own order, its own parallax speed, and its own
+//! root node. Groups are painted by ascending layer order — higher order
+//! closer to the camera, drawn later, on top — and the scene's root subtree
+//! is the group at the implicit order `0.0`, declared before the explicit
+//! layers. Within a group the local `z` ordering applies. A layer's
+//! [`Layer::repeat`] tiles it in one or both axes with a period of at least
+//! the window size, so it can be scrolled through infinitely — an object
+//! crossing a tile boundary is split into wrapping slices, and any setup
+//! that would draw the same object twice aborts with an error.
 //!
 //! A [`Scene`] can also designate a camera node ([`Scene::camera`]): the
 //! scene is then drawn in that node's coordinate space, so the node stays at
@@ -234,6 +238,17 @@ impl Canvas {
     ///
     /// A [`Shape::Background`] is the exception in every group: it ignores
     /// its transform, never draws, and becomes the frame's clear color.
+    ///
+    /// A layer with a non-zero [`Layer::repeat`] component is drawn once per
+    /// tile the window overlaps — the same content, re-used with just a
+    /// displacement — so it can be scrolled through infinitely. With a
+    /// pure-translation camera the window overlaps at most two tiles per
+    /// axis, because the minimum period is the window's width/height; a
+    /// rotated camera may overlap more, and every tile it overlaps is
+    /// drawn. An object crossing a tile boundary is split into wrapping
+    /// slices by the per-object scissor test. A period below the window
+    /// size, or an object whose extent in a repeating axis exceeds its
+    /// period, aborts the program with an error.
     pub fn draw_scene(&mut self, scene: &Scene) {
         let pixel = self.user_to_pixel();
         // The scene's camera, when it has one: the groups are drawn in the
@@ -255,14 +270,20 @@ impl Canvas {
             let index = self.layer_orders.len();
             self.layer_orders.push(layer.order);
             self.layer_draws.push(Vec::new());
-            draw_node(
-                pixel,
-                &layer.root,
-                &view(layer.speed),
-                0.0,
-                WHITE,
-                &mut self.layer_draws[index],
-            );
+            // A repeating layer is drawn once per tile the window overlaps,
+            // each copy displaced by the tile's offset in the layer's own
+            // coordinate space (before the camera view is applied).
+            let view = view(layer.speed);
+            for (ox, oy) in layer_repeat_offsets(layer, &view, self.size) {
+                draw_node(
+                    pixel,
+                    &layer.root,
+                    &Transform::translate(ox, oy).compose(&view),
+                    0.0,
+                    WHITE,
+                    &mut self.layer_draws[index],
+                );
+            }
         }
     }
 
@@ -472,6 +493,149 @@ fn draw_node(
     }
     for child in &node.children {
         draw_node(user_to_pixel, child, &world, order, modulate, draws);
+    }
+}
+
+/// The tile offsets a repeating [`Layer`] is drawn at for this frame, in
+/// the layer's own coordinate space (before the camera view is applied):
+/// one offset per tile the window overlaps. A non-repeating axis
+/// (`repeat` component `0.0`) overlaps exactly one tile, at offset `0.0`;
+/// a repeating axis overlaps every tile that the window's box overlaps, at
+/// the axis's `abs(repeat)` period — with a pure-translation camera the
+/// window is at most as large as the period, so exactly two tiles. The
+/// offsets are ordered so `(0.0, 0.0)` comes first when it is among them,
+/// so the stable z-sort keeps the base content drawn before its copies at
+/// equal `z`.
+///
+/// Aborts the program with an error when a non-zero repeat period is
+/// smaller than the window's width/height (the minimum repeat offset), or
+/// when an object's extent in a repeating axis exceeds that axis's period
+/// (the same object would be drawn twice).
+fn layer_repeat_offsets(layer: &Layer, view: &Transform, size: (f32, f32)) -> Vec<(f32, f32)> {
+    let (w, h) = size;
+    // The window in the layer's coordinate space: the user-space window
+    // rectangle (origin center, y up) mapped by the inverse view, as an
+    // axis-aligned box.
+    let to_layer = view.invert().unwrap_or(Transform::identity());
+    let corners = [
+        to_layer.apply([-w / 2.0, -h / 2.0]),
+        to_layer.apply([w / 2.0, -h / 2.0]),
+        to_layer.apply([-w / 2.0, h / 2.0]),
+        to_layer.apply([w / 2.0, h / 2.0]),
+    ];
+    let mut min = corners[0];
+    let mut max = corners[0];
+    for corner in corners.iter().skip(1) {
+        min = [min[0].min(corner[0]), min[1].min(corner[1])];
+        max = [max[0].max(corner[0]), max[1].max(corner[1])];
+    }
+    // The tile offsets of the axis: every tile the window's box overlaps, or
+    // the single tile at 0.0 for a non-repeating axis. With a
+    // pure-translation camera the box is the window itself, at most one
+    // period wide, so this is exactly two tiles; a rotated camera widens
+    // the box, and the extra tiles cover it.
+    let offsets = |component: f32, min_edge: f32, max_edge: f32, window: f32, axis: u8| -> Vec<f32> {
+        if component == 0.0 {
+            return vec![0.0];
+        }
+        let period = component.abs();
+        if period < window {
+            let (name, what) = match axis {
+                0 => ("repeat_x", "the window width"),
+                _ => ("repeat_y", "the window height"),
+            };
+            panic!(
+                "frost: the layer's {name} {component} is smaller than {what} \
+                 ({window}px); the minimum repeat offset is the window size"
+            );
+        }
+        // The tiles [k * period, (k + 1) * period) the box [min_edge,
+        // max_edge] overlaps.
+        let k0 = (min_edge / period).floor() as i64;
+        let k1 = ((max_edge / period).ceil() - 1.0) as i64;
+        (k0..=k1).map(|k| k as f32 * period).collect()
+    };
+    let xs = offsets(layer.repeat[0], min[0], max[0], w, 0);
+    let ys = offsets(layer.repeat[1], min[1], max[1], h, 1);
+    check_layer_repeat_extent(&layer.root, &Transform::identity(), layer.repeat);
+    let mut tile_offsets = xs
+        .iter()
+        .flat_map(|x| ys.iter().map(move |y| (*x, *y)))
+        .collect::<Vec<_>>();
+    if let Some(index) = tile_offsets.iter().position(|&(x, y)| x == 0.0 && y == 0.0) {
+        tile_offsets.swap(0, index);
+    }
+    tile_offsets
+}
+
+/// Aborts the program with an error when an object of a repeating layer has
+/// an extent in a repeating axis that exceeds that axis's period: beyond
+/// that, the object wraps more than once and the same object would be drawn
+/// twice.
+///
+/// `parent` is the node's ancestors' transform in the layer's coordinate
+/// space (the same accumulation as in [`draw_node`], without the camera
+/// view), so each object's extent is measured in layer-space pixels — where
+/// the repeat period lives. The extent is the object's axis-aligned box,
+/// which is exact for the axis-parallel tile displacements.
+fn check_layer_repeat_extent(node: &SceneNode, parent: &Transform, repeat: [f32; 2]) {
+    let local = Transform::scale(node.scale[0], node.scale[1]).compose(&node.transform);
+    let world = local.compose(parent);
+    if let Some((kind, center, half)) = node.shape.as_ref().and_then(shape_local_box) {
+        let (box_min, box_max) = aabb_of_box(&world, center, half[0], half[1]);
+        let width = box_max[0] - box_min[0];
+        let height = box_max[1] - box_min[1];
+        if repeat[0] != 0.0 && width > repeat[0].abs() {
+            panic!(
+                "frost: a {kind} in the repeating layer is wider ({width:.1}px) \
+                 than its repeat_x offset ({}px); the same object would be \
+                 drawn twice",
+                repeat[0].abs()
+            );
+        }
+        if repeat[1] != 0.0 && height > repeat[1].abs() {
+            panic!(
+                "frost: a {kind} in the repeating layer is taller ({height:.1}px) \
+                 than its repeat_y offset ({}px); the same object would be \
+                 drawn twice",
+                repeat[1].abs()
+            );
+        }
+    }
+    for child in &node.children {
+        check_layer_repeat_extent(child, &world, repeat);
+    }
+}
+
+/// The shape's box in its node's local space — its kind, its center, and
+/// its half extents — or `None` for shapes that never draw
+/// (`Shape::Background`) or cannot be measured (a broken font).
+///
+/// A text block is its laid-out width by its `ascent + descent`, centered
+/// on the node's origin like its glyphs (see `expand_text_list`).
+fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> {
+    match shape {
+        Shape::Circle { center, radius, .. } => {
+            Some(("circle", *center, [*radius, *radius]))
+        }
+        Shape::Rectangle { center, extent, .. } => {
+            Some(("rectangle", *center, [extent[0], extent[1]]))
+        }
+        // A sprite's local space is centered on the origin, one texture
+        // pixel per scene pixel.
+        Shape::Sprite { width, height, .. } => {
+            Some(("sprite", [0.0, 0.0], [*width as f32 / 2.0, *height as f32 / 2.0]))
+        }
+        Shape::Text { font, text, size, .. } => {
+            let layout = text::layout(font, text, *size)?;
+            Some((
+                "text",
+                [0.0, 0.0],
+                [layout.width / 2.0, (layout.ascent + layout.descent) / 2.0],
+            ))
+        }
+        // A background never draws; nothing to measure.
+        Shape::Background { .. } => None,
     }
 }
 

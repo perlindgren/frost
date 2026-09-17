@@ -190,6 +190,7 @@ fn main() {
         .map(|&order| frost::Layer {
             order,
             speed: 1.0,
+            repeat: [0.0, 0.0],
             root: frost::SceneNode::default(),
         })
         .collect();
