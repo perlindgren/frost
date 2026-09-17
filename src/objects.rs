@@ -502,17 +502,28 @@ pub struct Layer {
     /// default) draws the layer once. A non-zero component tiles the layer
     /// in both directions along that axis with a period of `abs(component)`
     /// pixels, so a moving camera can scroll through the layer infinitely:
-    /// the layer is drawn once per tile the window overlaps — with a
-    /// pure-translation camera, at most the two tiles the window is in,
-    /// because the minimum period is the window's width/height — and an
-    /// object crossing a tile boundary is split into wrapping slices, the
-    /// part past the boundary appearing on the opposite side of the window
+    /// the layer is drawn once per copy of its content that can overlap
+    /// the window — with a pure-translation camera, only the few copies
+    /// the window's box and the content's span around it reach, because
+    /// the minimum period is the window's width/height — and an object
+    /// crossing a tile boundary is split into wrapping slices, the part
+    /// past the boundary appearing on the opposite side of the window
     /// (each copy is re-used, with just a displacement, and clipped by the
     /// per-object scissor test, so no object is ever drawn twice). A
     /// non-zero period below the window size on that axis, or an object
     /// whose extent in a repeating axis exceeds its period (the same object
     /// would be drawn twice), aborts the program with an error. The
     /// component's sign is ignored.
+    ///
+    /// The repetition is a periodic extension of the layer's *current*
+    /// content: each copy carries the content as it is now, displaced by
+    /// its offset, so content that moves through the layer's space is
+    /// re-tiled as it moves. An object a camera follows exactly stays at
+    /// the window's center wherever it wanders: its wrapped copies sit one
+    /// full period away, off the window's edge, because the period is at
+    /// least the window size. A unique object (such as a player) is
+    /// usually given its own non-repeating layer, because it is not part
+    /// of the pattern that should tile.
     pub repeat: [f32; 2],
     /// The root node of the layer's tree, walked like a scene's root.
     pub root: SceneNode,

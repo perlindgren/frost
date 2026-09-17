@@ -239,16 +239,17 @@ impl Canvas {
     /// A [`Shape::Background`] is the exception in every group: it ignores
     /// its transform, never draws, and becomes the frame's clear color.
     ///
-    /// A layer with a non-zero [`Layer::repeat`] component is drawn once per
-    /// tile the window overlaps — the same content, re-used with just a
-    /// displacement — so it can be scrolled through infinitely. With a
-    /// pure-translation camera the window overlaps at most two tiles per
-    /// axis, because the minimum period is the window's width/height; a
-    /// rotated camera may overlap more, and every tile it overlaps is
-    /// drawn. An object crossing a tile boundary is split into wrapping
-    /// slices by the per-object scissor test. A period below the window
-    /// size, or an object whose extent in a repeating axis exceeds its
-    /// period, aborts the program with an error.
+    /// A layer with a non-zero [`Layer::repeat`] component is drawn once
+    /// per copy of its content that can overlap the window — the same
+    /// content, re-used with just a displacement — so it can be scrolled
+    /// through infinitely. With a pure-translation camera the window's box
+    /// is at most one period wide, so only the few copies it and the
+    /// content's span around it reach are drawn per axis; a rotated camera
+    /// widens the box, and every copy it reaches is drawn. An object
+    /// crossing a tile boundary is split into wrapping slices by the
+    /// per-object scissor test. A period below the window size, or an
+    /// object whose extent in a repeating axis exceeds its period, aborts
+    /// the program with an error.
     pub fn draw_scene(&mut self, scene: &Scene) {
         let pixel = self.user_to_pixel();
         // The scene's camera, when it has one: the groups are drawn in the
@@ -496,16 +497,16 @@ fn draw_node(
     }
 }
 
-/// The tile offsets a repeating [`Layer`] is drawn at for this frame, in
+/// The copy offsets a repeating [`Layer`] is drawn at for this frame, in
 /// the layer's own coordinate space (before the camera view is applied):
-/// one offset per tile the window overlaps. A non-repeating axis
-/// (`repeat` component `0.0`) overlaps exactly one tile, at offset `0.0`;
-/// a repeating axis overlaps every tile that the window's box overlaps, at
-/// the axis's `abs(repeat)` period — with a pure-translation camera the
-/// window is at most as large as the period, so exactly two tiles. The
-/// offsets are ordered so `(0.0, 0.0)` comes first when it is among them,
-/// so the stable z-sort keeps the base content drawn before its copies at
-/// equal `z`.
+/// one offset per copy of the content that can overlap the window. A
+/// non-repeating axis (`repeat` component `0.0`) has exactly one copy, at
+/// offset `0.0`; a repeating axis has one copy per `abs(repeat)` period
+/// that can reach the window's box — with a pure-translation camera the
+/// box is at most one period wide, so only the few copies it and the
+/// content's span around it reach. The offsets are ordered so `(0.0, 0.0)`
+/// comes first when it is among them, so the stable z-sort keeps the base
+/// content drawn before its copies at equal `z`.
 ///
 /// Aborts the program with an error when a non-zero repeat period is
 /// smaller than the window's width/height (the minimum repeat offset), or
@@ -529,11 +530,21 @@ fn layer_repeat_offsets(layer: &Layer, view: &Transform, size: (f32, f32)) -> Ve
         min = [min[0].min(corner[0]), min[1].min(corner[1])];
         max = [max[0].max(corner[0]), max[1].max(corner[1])];
     }
-    // The tile offsets of the axis: every tile the window's box overlaps, or
-    // the single tile at 0.0 for a non-repeating axis. With a
-    // pure-translation camera the box is the window itself, at most one
-    // period wide, so this is exactly two tiles; a rotated camera widens
-    // the box, and the extra tiles cover it.
+    // The layer's content extent in the layer's coordinate space (the union
+    // of all its objects' boxes), or None when the layer has no drawable
+    // objects: a copy of the content displaced by k * period spans
+    // [content_min + k * period, content_max + k * period], and the content
+    // need not sit inside the tile [0, period).
+    let content = check_layer_repeat_extent(&layer.root, &Transform::identity(), layer.repeat);
+    // The offsets of the axis: every copy of the content that can reach
+    // the window's box [min_edge, max_edge], or the single copy at 0.0 for
+    // a non-repeating axis. A copy displaced by k * period spans
+    // [content_min + k * period, content_max + k * period], so the copies
+    // that reach the box run one content span further out than the tiles
+    // the box alone overlaps. With a pure-translation camera the box is
+    // the window itself, at most one period wide, so this is only a few
+    // copies; a rotated camera widens the box, and the extra copies cover
+    // it.
     let offsets = |component: f32, min_edge: f32, max_edge: f32, window: f32, axis: u8| -> Vec<f32> {
         if component == 0.0 {
             return vec![0.0];
@@ -549,15 +560,21 @@ fn layer_repeat_offsets(layer: &Layer, view: &Transform, size: (f32, f32)) -> Ve
                  ({window}px); the minimum repeat offset is the window size"
             );
         }
-        // The tiles [k * period, (k + 1) * period) the box [min_edge,
-        // max_edge] overlaps.
-        let k0 = (min_edge / period).floor() as i64;
-        let k1 = ((max_edge / period).ceil() - 1.0) as i64;
+        let (content_min, content_max) = match (content, axis) {
+            (Some((cmin, cmax)), 0) => (cmin[0], cmax[0]),
+            (Some((cmin, cmax)), _) => (cmin[1], cmax[1]),
+            (None, _) => (0.0, 0.0),
+        };
+        // The copies [k * period] whose displaced content overlaps the box:
+        // content_min + k * period < max_edge and content_max + k * period
+        // > min_edge, a copy just touching the box (zero visible width) is
+        // not drawn, matching the window-edge convention elsewhere.
+        let k0 = ((min_edge - content_max) / period).floor() as i64 + 1;
+        let k1 = ((max_edge - content_min) / period).ceil() as i64 - 1;
         (k0..=k1).map(|k| k as f32 * period).collect()
     };
     let xs = offsets(layer.repeat[0], min[0], max[0], w, 0);
     let ys = offsets(layer.repeat[1], min[1], max[1], h, 1);
-    check_layer_repeat_extent(&layer.root, &Transform::identity(), layer.repeat);
     let mut tile_offsets = xs
         .iter()
         .flat_map(|x| ys.iter().map(move |y| (*x, *y)))
@@ -578,9 +595,17 @@ fn layer_repeat_offsets(layer: &Layer, view: &Transform, size: (f32, f32)) -> Ve
 /// view), so each object's extent is measured in layer-space pixels — where
 /// the repeat period lives. The extent is the object's axis-aligned box,
 /// which is exact for the axis-parallel tile displacements.
-fn check_layer_repeat_extent(node: &SceneNode, parent: &Transform, repeat: [f32; 2]) {
+///
+/// Returns the union of all the layer's objects' boxes — the content's
+/// extent in the layer's coordinate space — or `None` when the layer has
+/// no drawable objects. [`layer_repeat_offsets`] uses it to reach the
+/// copies of the content that can overlap the window's box: the content
+/// need not sit inside the tile `[0, period)`, so a copy displaced by
+/// `k * period` can reach the box even when that tile does not.
+fn check_layer_repeat_extent(node: &SceneNode, parent: &Transform, repeat: [f32; 2]) -> Option<([f32; 2], [f32; 2])> {
     let local = Transform::scale(node.scale[0], node.scale[1]).compose(&node.transform);
     let world = local.compose(parent);
+    let mut extent = None;
     if let Some((kind, center, half)) = node.shape.as_ref().and_then(shape_local_box) {
         let (box_min, box_max) = aabb_of_box(&world, center, half[0], half[1]);
         let width = box_max[0] - box_min[0];
@@ -601,10 +626,20 @@ fn check_layer_repeat_extent(node: &SceneNode, parent: &Transform, repeat: [f32;
                 repeat[1].abs()
             );
         }
+        extent = Some((box_min, box_max));
     }
     for child in &node.children {
-        check_layer_repeat_extent(child, &world, repeat);
+        if let Some((child_min, child_max)) = check_layer_repeat_extent(child, &world, repeat) {
+            extent = Some(match extent {
+                Some((min, max)) => (
+                    [min[0].min(child_min[0]), min[1].min(child_min[1])],
+                    [max[0].max(child_max[0]), max[1].max(child_max[1])],
+                ),
+                None => (child_min, child_max),
+            });
+        }
     }
+    extent
 }
 
 /// The shape's box in its node's local space — its kind, its center, and

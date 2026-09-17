@@ -2385,8 +2385,11 @@ mod tests {
         assert_eq!(world.apply([0.0, 0.0]), [55.0, 50.0]);
     }
 
-    /// A layer with no repeat, a circle at the origin: the scene for the
-    /// repeat tests, built at the given repeat offsets.
+    /// A layer, a circle straddling the window's bottom-left corner: the
+    /// scene for the repeat tests, built at the given repeat offsets.
+    /// Straddling an edge makes the layer's tiling visible: the base copy
+    /// shows at the bottom-left edge and its period copies at the
+    /// opposite edges.
     fn repeat_layer_scene(repeat: [f32; 2]) -> Scene {
         Scene {
             root: SceneNode::default(),
@@ -2400,7 +2403,7 @@ mod tests {
                     modulate: WHITE,
                     order: 0.0,
                     shape: Some(Shape::Circle {
-                        center: [0.0, 0.0],
+                        center: [-50.0, -50.0],
                         radius: 1.0,
                         color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
                     }),
@@ -2418,40 +2421,47 @@ mod tests {
         canvas.draw_scene(&scene);
         let painted = canvas.paint_order();
         assert_eq!(painted.len(), 1);
-        // The single copy is undispaced: user (0, 0) -> pixel (50, 50).
+        // The single copy is undispaced: user (-50, -50) -> pixel
+        // (0, 100).
         let Draw::Shape { world, .. } = &painted[0] else {
             panic!("expected one shape draw");
         };
-        assert_eq!(world.apply([0.0, 0.0]), [50.0, 50.0]);
+        assert_eq!(world.apply([-50.0, -50.0]), [0.0, 100.0]);
     }
 
     #[test]
-    fn a_repeating_layer_draws_one_copy_per_overlapping_tile() {
+    fn a_repeating_layer_draws_only_the_copies_reaching_the_window() {
         let mut canvas = Canvas::new((100, 100));
-        // The window spans user x in [-50, 50]: with a period of 100 it
-        // overlaps exactly two tiles, at offsets -100 and 0.
+        // The window spans user x in [-50, 50]: with a period of 100, the
+        // circle straddling the bottom edge is visible in its base copy at
+        // the left edge and in its copy displaced by one period at the
+        // right edge — two copies, and no copy further out, because the
+        // one displaced by -100 lies fully off the window.
         let scene = repeat_layer_scene([100.0, 0.0]);
         canvas.draw_scene(&scene);
         let painted = canvas.paint_order();
         assert_eq!(painted.len(), 2);
-        // The base content (offset 0.0) is drawn first...
+        // The base content (offset 0.0) is drawn first: user (-50, -50)
+        // -> pixel (0, 100).
         let Draw::Shape { world, .. } = &painted[0] else {
             panic!("expected one shape draw");
         };
-        assert_eq!(world.apply([0.0, 0.0]), [50.0, 50.0]);
-        // ...then its copy displaced by one period, off the window's left
-        // edge: user (-100, 0) -> pixel (-50, 50).
+        assert_eq!(world.apply([-50.0, -50.0]), [0.0, 100.0]);
+        // ...then its copy displaced by one period, at the right edge:
+        // user (50, -50) -> pixel (100, 100).
         let Draw::Shape { world, .. } = &painted[1] else {
             panic!("expected one shape draw");
         };
-        assert_eq!(world.apply([0.0, 0.0]), [-50.0, 50.0]);
+        assert_eq!(world.apply([-50.0, -50.0]), [100.0, 100.0]);
     }
 
     #[test]
     fn repeat_offsets_follow_the_camera() {
         let mut canvas = Canvas::new((100, 100));
         // A camera at user x = 60 shifts the window to layer x in
-        // [10, 110]: the overlapping tiles are now 0 and 100.
+        // [10, 110]: the circle's base copy has scrolled fully off the
+        // window's left edge, and only its copy displaced by one period
+        // reaches it — at the window's bottom edge.
         let scene = Scene {
             root: SceneNode {
                 transform: Transform::identity(),
@@ -2472,19 +2482,52 @@ mod tests {
         };
         canvas.draw_scene(&scene);
         let painted = canvas.paint_order();
-        assert_eq!(painted.len(), 2);
-        // Base: the camera's offset is subtracted: user (0 - 60, 0) =
-        // (-60, 0) -> pixel (-10, 50).
+        assert_eq!(painted.len(), 1);
+        // The copy has shifted with the camera, to the window's bottom
+        // edge: user (50 - 60, -50) = (-10, -50) -> pixel (40, 100).
         let Draw::Shape { world, .. } = &painted[0] else {
             panic!("expected one shape draw");
         };
-        assert_eq!(world.apply([0.0, 0.0]), [-10.0, 50.0]);
-        // The copy has shifted with the camera, to the window's right
-        // edge: user (100 - 60, 0) = (40, 0) -> pixel (90, 50).
-        let Draw::Shape { world, .. } = &painted[1] else {
-            panic!("expected one shape draw");
+        assert_eq!(world.apply([-50.0, -50.0]), [40.0, 100.0]);
+    }
+
+    #[test]
+    fn a_copy_from_a_tile_the_window_does_not_overlap_reaches_the_window() {
+        // The content need not sit inside the tile [0, period): a circle
+        // at layer x = -60 lies in the tile [-100, 0), and the window's
+        // box [-50, 50] overlaps only the tiles [-100, 0) and [0, 100).
+        // The circle's copy displaced by one period is at 40, inside the
+        // window, though its tile [100, 200) does not overlap it — it must
+        // be drawn, or it would pop into the middle of the window the
+        // moment a moving camera's box crossed the tile boundary at 100.
+        let mut canvas = Canvas::new((100, 100));
+        let scene = Scene {
+            root: SceneNode::default(),
+            layers: vec![Layer {
+                order: 0.0,
+                speed: 1.0,
+                repeat: [100.0, 0.0],
+                root: SceneNode {
+                    shape: Some(Shape::Circle {
+                        center: [-60.0, 0.0],
+                        radius: 1.0,
+                        color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                    }),
+                    ..Default::default()
+                },
+            }],
+            camera: None,
         };
-        assert_eq!(world.apply([0.0, 0.0]), [90.0, 50.0]);
+        canvas.draw_scene(&scene);
+        let painted = canvas.paint_order();
+        // Exactly one copy's displaced content reaches the window's box:
+        // the period copy at 40, in the window's mid-right: pixel (90, 50).
+        // The base copy at -60 lies fully off the window's left edge.
+        assert_eq!(painted.len(), 1);
+        let Draw::Shape { world, .. } = &painted[0] else {
+            panic!("expected a shape draw");
+        };
+        assert_eq!(world.apply([-60.0, 0.0]), [90.0, 50.0]);
     }
 
     #[test]
@@ -2589,8 +2632,8 @@ mod tests {
 
     #[test]
     fn repeat_is_per_axis() {
-        // Both axes repeat: the window overlaps two tiles in each, so four
-        // copies.
+        // Both axes repeat: the circle straddling the bottom-left corner
+        // is visible at all four corners of the window — four copies.
         let mut canvas = Canvas::new((100, 100));
         let scene = repeat_layer_scene([100.0, 100.0]);
         canvas.draw_scene(&scene);
@@ -2602,6 +2645,81 @@ mod tests {
         canvas.draw_scene(&scene);
         let painted = canvas.paint_order();
         assert_eq!(painted.len(), 2);
+    }
+
+    #[test]
+    fn a_camera_followed_object_in_a_repeating_layer_stays_at_the_window_center() {
+        // The camera-followed-object case (the parallax player): an object
+        // that moves through the layer's space while the camera follows it.
+        // The object's base copy is drawn whenever the object is inside
+        // the window's box — which, under the following camera, is always —
+        // so the object stays at the window's center no matter how far it
+        // wanders. Its wrapped copies, one full period away, sit off the
+        // window's edges, because the period is at least the window size.
+        let scene = |repeat: [f32; 2], pos: f32| Scene {
+            root: SceneNode::default(),
+            layers: vec![Layer {
+                order: 0.0,
+                speed: 1.0,
+                repeat,
+                root: SceneNode {
+                    shape: None,
+                    children: vec![
+                        // The moving object, at layer x = pos.
+                        Box::new(SceneNode {
+                            transform: Transform::translate(pos, 0.0),
+                            shape: Some(Shape::Circle {
+                                center: [0.0, 0.0],
+                                radius: 1.0,
+                                color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                            }),
+                            ..Default::default()
+                        }),
+                        // The shapeless camera pivot, following the object.
+                        Box::new(SceneNode {
+                            transform: Transform::translate(pos, 0.0),
+                            ..Default::default()
+                        }),
+                    ],
+                    ..Default::default()
+                },
+            }],
+            camera: Some(NodePath {
+                group: Some(0),
+                children: vec![1],
+            }),
+        };
+        // pos = 60: the window spans layer x in [10, 110]. The object's
+        // base copy is at the window center: user (60 - 60, 0) = (0, 0)
+        // -> pixel (50, 50).
+        let mut canvas = Canvas::new((100, 100));
+        canvas.draw_scene(&scene([100.0, 0.0], 60.0));
+        let painted = canvas.paint_order();
+        assert_eq!(painted.len(), 1);
+        let Draw::Shape { world, .. } = &painted[0] else {
+            panic!("expected a shape draw");
+        };
+        assert_eq!(world.apply([0.0, 0.0]), [50.0, 50.0]);
+        // pos = 150: the object has wandered a window and a half from the
+        // origin; it is still at the window center.
+        let mut canvas = Canvas::new((100, 100));
+        canvas.draw_scene(&scene([100.0, 0.0], 150.0));
+        let painted = canvas.paint_order();
+        assert_eq!(painted.len(), 1);
+        let Draw::Shape { world, .. } = &painted[0] else {
+            panic!("expected a shape draw");
+        };
+        assert_eq!(world.apply([0.0, 0.0]), [50.0, 50.0]);
+        // A non-repeating layer has no such limit: the same object is
+        // drawn at the window center, wherever it is.
+        let mut canvas = Canvas::new((100, 100));
+        canvas.draw_scene(&scene([0.0, 0.0], 150.0));
+        let painted = canvas.paint_order();
+        assert_eq!(painted.len(), 1);
+        let Draw::Shape { world, .. } = &painted[0] else {
+            panic!("expected a shape draw");
+        };
+        assert_eq!(world.apply([0.0, 0.0]), [50.0, 50.0]);
     }
 
     #[test]
