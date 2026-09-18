@@ -19,6 +19,8 @@ use wgpu::{
     TextureViewDescriptor, VertexState,
 };
 use winit::application::ApplicationHandler;
+#[cfg(not(target_arch = "wasm32"))]
+use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{NamedKey, PhysicalKey};
@@ -158,11 +160,42 @@ pub(crate) fn create_window(event_loop: &ActiveEventLoop) -> Arc<Window> {
             .create_window(attributes)
             .expect("failed to create window"),
     );
+    // Center the window on its monitor so frost always opens in the middle
+    // of the screen. Native only: on the web the page decides where the
+    // canvas sits.
+    #[cfg(not(target_arch = "wasm32"))]
+    center_on_screen(event_loop, &window);
     // winit (Wayland) only delivers RedrawRequested after a compositor
     // frame callback, so explicitly request the first frame; otherwise
     // the window is never mapped and nothing is ever drawn.
     window.request_redraw();
     window
+}
+
+/// Centers `window` on the monitor it sits on, so frost always opens in
+/// the middle of the screen. Both the monitor's size and the window's
+/// outer size (title bar and borders included) are in physical pixels, so
+/// the position is computed in physical pixels too — no scale-factor
+/// conversion. When the window is larger than the monitor, it is clamped
+/// to the monitor's top-left.
+#[cfg(not(target_arch = "wasm32"))]
+fn center_on_screen(event_loop: &ActiveEventLoop, window: &Window) {
+    let Some(monitor) = window
+        .current_monitor()
+        .or_else(|| event_loop.primary_monitor())
+    else {
+        return;
+    };
+    let screen = monitor.size();
+    let frame = window.outer_size();
+    let x = ((screen.width as i64 - frame.width as i64) / 2).max(0) as i32;
+    let y = ((screen.height as i64 - frame.height as i64) / 2).max(0) as i32;
+    window.set_outer_position(PhysicalPosition::new(x, y));
+    log::info!(
+        "window centered at ({x}, {y}) px on a {}x{} monitor",
+        screen.width,
+        screen.height
+    );
 }
 
 impl<P: Process> ApplicationHandler for Frost<P> {
