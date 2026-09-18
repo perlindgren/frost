@@ -1,12 +1,16 @@
-//! A tomato plant that grows: the same three-slice chain as the `tomato`
-//! example (`plant1.png` the base, `plant2.png` the middle, `plant3.png`
-//! the top, chained through hand-picked joint positions), but scaled from
-//! zero to its full size over 10 seconds. The scale is anchored at the
-//! plant's root joint — plant1's lower joint — so the root stays in place
-//! while the plant grows out of it. At full size the plant keeps swaying
-//! in the same travelling wind as the `tomato` example: the base rock
-//! turns the whole plant around its lower joint, and the two joints above
-//! it bend a little more each, so the tip moves the most. Run with:
+//! A tomato plant that grows slice by slice: the same three-slice chain as
+//! the `tomato` example (`plant1.png` the base, `plant2.png` the middle,
+//! `plant3.png` the top, chained through hand-picked joint positions), but
+//! each slice grows from zero to its full size on its own timetable — the
+//! base over 3 seconds, the middle over 6, the top over 9 — all starting
+//! at the same time. Each slice grows out of its lower joint, the joint it
+//! attaches to the previous slice through, so the chain stays connected
+//! while it grows, the root joint (plant1's lower joint) stays in place,
+//! and each upper slice sprouts from the moving top of the one below it.
+//! From 9 seconds on the plant is at full size and keeps swaying in the
+//! same travelling wind as the `tomato` example: the base rock turns the
+//! whole plant around its lower joint, and the two joints above it bend a
+//! little more each, so the tip moves the most. Run with:
 //!
 //! ```text
 //! cargo run --example grow
@@ -31,10 +35,12 @@ const JOINTS: [[(f32, f32); 2]; 3] = [
 /// Shrinks the whole plant so its 969 px span fits the 600 px window.
 const SCALE: f32 = 0.55;
 
-/// How long the plant takes to grow from zero to its full size, in
-/// seconds. The growth is linear; afterwards the plant stays at full
-/// size and keeps swaying.
-const GROW_TIME: f32 = 10.0;
+/// How long each slice takes to grow from zero to its full size, in
+/// seconds, in chain order: the base over 3 s, the middle over 6, the top
+/// over 9. All slices start at the same time, each grows linearly out of
+/// its own lower joint, and after the last slice is done the plant stays
+/// at full size and keeps swaying.
+const GROW_TIMES: [f32; 3] = [3.0, 6.0, 9.0];
 
 /// The world position of the plant's root joint (plant1's lower joint).
 /// The chain's midpoint sits 301.5 px above that joint in the current art
@@ -96,24 +102,31 @@ impl frost::Process for Demo {
         let bend1 = (self.t * 1.2 - 0.8).sin() * 0.04;
         let bend2 = (self.t * 1.2 - 1.6).sin() * 0.07;
 
-        // The growth factor: 0 at startup, 1 from GROW_TIME on, linear
-        // in between.
-        let grown = (self.t / GROW_TIME).min(1.0);
+        // The growth factor of each slice: 0 at startup, 1 from its own
+        // GROW_TIMES entry on, linear in between. All slices grow
+        // concurrently.
+        let grown = [
+            (self.t / GROW_TIMES[0]).min(1.0),
+            (self.t / GROW_TIMES[1]).min(1.0),
+            (self.t / GROW_TIMES[2]).min(1.0),
+        ];
 
         // The plant node anchors the chain: its origin is plant1's lower
-        // joint, its scale grows the whole plant out of that joint, and
-        // the base rock turns everything around that joint. The origin
-        // maps to itself under any scale and the rotation also turns
-        // around it, so the root joint never moves.
+        // joint, and the base rock turns everything around that joint. The
+        // origin maps to itself under the rotation, so the root joint
+        // never moves. The fit scale is constant — the growth is applied
+        // to each slice individually below.
         let plant = &mut ctx.scene().root.children[0];
-        plant.scale = [SCALE * grown, SCALE * grown];
         plant.transform = frost::Transform::rotate(base)
             .compose(&frost::Transform::translate(ANCHOR[0], ANCHOR[1]));
 
         // Lay the chain out in the plant's own (unscaled) space: the first
         // slice's lower joint sits at the plant's origin, and each next
         // slice's lower joint sits on the previous slice's upper joint,
-        // rotated by that slice's bend.
+        // rotated by that slice's bend. Each slice is scaled by its growth
+        // factor around its own lower joint, so it grows out of the joint
+        // it attaches to the previous slice through — and the upper joint
+        // the next slice attaches to moves with it.
         let mut anchor = [0.0f32, 0.0];
         for (i, (link, node)) in self.links.iter().zip(&mut plant.children).enumerate() {
             let bend = match i {
@@ -122,13 +135,16 @@ impl frost::Process for Demo {
                 _ => bend1 + bend2,
             };
             let rot = frost::Transform::rotate(bend);
+            let g = grown[i];
             node.transform = frost::Transform::translate(-link.from[0], -link.from[1])
+                .compose(&frost::Transform::scale_uniform(g))
                 .compose(&rot)
                 .compose(&frost::Transform::translate(anchor[0], anchor[1]));
             // The next anchor: this slice's upper joint, measured from its
-            // own lower joint and rotated by the slice's bend.
+            // own lower joint, scaled by the slice's growth, and rotated
+            // by the slice's bend.
             let d = [link.to[0] - link.from[0], link.to[1] - link.from[1]];
-            let step = rot.apply(d);
+            let step = rot.apply([g * d[0], g * d[1]]);
             anchor = [anchor[0] + step[0], anchor[1] + step[1]];
         }
 
@@ -169,8 +185,9 @@ fn main() {
             },
         }),
         children: vec![Box::new(frost::SceneNode {
-            // The plant starts at zero size; the process grows it.
-            scale: [0.0, 0.0],
+            // The plant's fit scale is constant; the process grows each
+            // slice individually.
+            scale: [SCALE, SCALE],
             children: vec![
                 Box::new(frost::SceneNode {
                     shape: Some(plant1),
