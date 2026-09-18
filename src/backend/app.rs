@@ -21,7 +21,7 @@ use wgpu::{
 use winit::application::ApplicationHandler;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
@@ -101,6 +101,9 @@ pub(crate) struct Frost<P: Process> {
     /// window. Updated as cursor events arrive; the frame's `Canvas` works
     /// in the same physical-pixel space.
     mouse: Option<[f32; 2]>,
+    /// The mouse buttons currently held down, updated as mouse input
+    /// events arrive.
+    mouse_buttons: HashSet<MouseButton>,
     process: P,
 }
 
@@ -140,6 +143,7 @@ impl<P: Process> Frost<P> {
             scene,
             keys: HashSet::new(),
             mouse: None,
+            mouse_buttons: HashSet::new(),
             process,
         }
     }
@@ -244,15 +248,29 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                 // when building the `Context`.
                 self.mouse = Some([position.x as f32, position.y as f32]);
             }
+            WindowEvent::MouseInput { state, button, .. } => {
+                match state {
+                    ElementState::Pressed => {
+                        self.mouse_buttons.insert(button);
+                    }
+                    ElementState::Released => {
+                        self.mouse_buttons.remove(&button);
+                    }
+                }
+            }
             WindowEvent::CursorLeft { .. } => {
                 self.mouse = None;
+                // A release outside the window may never arrive, so drop
+                // the held buttons rather than stick them.
+                self.mouse_buttons.clear();
             }
             WindowEvent::Focused(false) => {
-                // The window lost focus: key releases may never arrive, so
-                // drop the held-key state rather than stick the keys. The
-                // cursor position may likewise be stale.
+                // The window lost focus: key and button releases may never
+                // arrive, so drop the held state rather than stick the
+                // controls. The cursor position may likewise be stale.
                 self.keys.clear();
                 self.mouse = None;
+                self.mouse_buttons.clear();
             }
             WindowEvent::CloseRequested => {
                 log::info!("window close requested, exiting");
@@ -688,6 +706,7 @@ impl<P: Process> Frost<P> {
         let process = &mut self.process;
         let scene = &mut self.scene;
         let keys = &self.keys;
+        let mouse_buttons = &self.mouse_buttons;
         {
             let mut ctx = Context {
                 canvas: &mut canvas,
@@ -695,6 +714,7 @@ impl<P: Process> Frost<P> {
                 keys,
                 expected_fps: self.expected_fps,
                 mouse,
+                mouse_buttons,
             };
             process.process(&mut ctx, dt);
         }

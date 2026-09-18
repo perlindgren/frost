@@ -83,7 +83,8 @@
 //!
 //! Key presses are logged, the currently held keys are reported by
 //! [`Context::key_down`], the mouse cursor's position by
-//! [`Context::mouse_position`], and Escape closes the window.
+//! [`Context::mouse_position`], the held mouse buttons by
+//! [`Context::mouse_button_down`], and Escape closes the window.
 //!
 //! Presentation is vsync'd by default: frames are presented once per
 //! vertical blank, at the display's refresh rate — the rate
@@ -108,6 +109,10 @@ pub use objects::*;
 /// keyboard (its scancode), independent of the active layout, which is what
 /// game controls like WASD want.
 pub use winit::keyboard::KeyCode;
+
+/// The mouse buttons used by [`Context::mouse_button_down`], such as
+/// `MouseButton::Left`.
+pub use winit::event::MouseButton;
 
 mod particles;
 pub use particles::*;
@@ -805,6 +810,8 @@ pub struct Context<'c> {
     /// The cursor's position in user coordinates, or `None` when the cursor
     /// is outside the window (or has never moved into it).
     mouse: Option<[f32; 2]>,
+    /// The mouse buttons currently held down.
+    mouse_buttons: &'c HashSet<MouseButton>,
 }
 
 impl Context<'_> {
@@ -844,6 +851,16 @@ impl Context<'_> {
     /// reported, so keep one yourself if you want the pointer to stick.
     pub fn mouse_position(&self) -> Option<[f32; 2]> {
         self.mouse
+    }
+
+    /// Whether the `button` mouse button is currently held down.
+    ///
+    /// The state is updated as mouse input events arrive, so it reflects
+    /// every press and release since the previous frame. When the cursor
+    /// leaves the window or the window loses focus, the held state is
+    /// dropped, so a button can never appear stuck down.
+    pub fn mouse_button_down(&self, button: MouseButton) -> bool {
+        self.mouse_buttons.contains(&button)
     }
 }
 

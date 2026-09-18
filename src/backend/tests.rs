@@ -6,7 +6,7 @@ use wgpu::PresentMode;
 use super::*;
 use crate::objects::*;
 use crate::text;
-use crate::{Canvas, Context, KeyCode};
+use crate::{Canvas, Context, KeyCode, MouseButton};
 
 fn black() -> Color {
     Color {
@@ -258,6 +258,7 @@ fn context_reports_held_keys() {
     let mut canvas = Canvas::new((100, 100));
     let mut scene = Scene::default();
     let mut keys = HashSet::new();
+    let mouse_buttons = HashSet::new();
     {
         let ctx = Context {
             canvas: &mut canvas,
@@ -265,6 +266,7 @@ fn context_reports_held_keys() {
             keys: &keys,
             expected_fps: None,
             mouse: None,
+            mouse_buttons: &mouse_buttons,
         };
         assert!(!ctx.key_down(KeyCode::KeyW));
     }
@@ -275,6 +277,7 @@ fn context_reports_held_keys() {
         keys: &keys,
         expected_fps: None,
         mouse: None,
+        mouse_buttons: &mouse_buttons,
     };
     assert!(ctx.key_down(KeyCode::KeyW));
     assert!(!ctx.key_down(KeyCode::KeyA));
@@ -285,12 +288,14 @@ fn context_reports_mouse_position() {
     let mut canvas = Canvas::new((100, 100));
     let mut scene = Scene::default();
     let keys = HashSet::new();
+    let mouse_buttons = HashSet::new();
     let ctx = Context {
         canvas: &mut canvas,
         scene: &mut scene,
         keys: &keys,
         expected_fps: None,
         mouse: None,
+        mouse_buttons: &mouse_buttons,
     };
     assert_eq!(ctx.mouse_position(), None);
     let ctx = Context {
@@ -299,8 +304,39 @@ fn context_reports_mouse_position() {
         keys: &keys,
         expected_fps: None,
         mouse: Some([12.0, -34.0]),
+        mouse_buttons: &mouse_buttons,
     };
     assert_eq!(ctx.mouse_position(), Some([12.0, -34.0]));
+}
+
+#[test]
+fn context_reports_held_mouse_button() {
+    let mut canvas = Canvas::new((100, 100));
+    let mut scene = Scene::default();
+    let keys = HashSet::new();
+    let mut mouse_buttons = HashSet::new();
+    {
+        let ctx = Context {
+            canvas: &mut canvas,
+            scene: &mut scene,
+            keys: &keys,
+            expected_fps: None,
+            mouse: None,
+            mouse_buttons: &mouse_buttons,
+        };
+        assert!(!ctx.mouse_button_down(MouseButton::Left));
+    }
+    mouse_buttons.insert(MouseButton::Left);
+    let ctx = Context {
+        canvas: &mut canvas,
+        scene: &mut scene,
+        keys: &keys,
+        expected_fps: None,
+        mouse: None,
+        mouse_buttons: &mouse_buttons,
+    };
+    assert!(ctx.mouse_button_down(MouseButton::Left));
+    assert!(!ctx.mouse_button_down(MouseButton::Right));
 }
 
 #[test]

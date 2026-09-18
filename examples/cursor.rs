@@ -4,8 +4,11 @@
 //! only visible content in an otherwise transparent 1920x1080 canvas, so
 //! the demo scales it to `CAN_SIZE` pixels wide and offsets its node so
 //! the can's center — not the texture's center — sits on the cursor. The
-//! cursor position comes from [`frost::Context::mouse_position`]. Run
-//! with:
+//! cursor position comes from [`frost::Context::mouse_position`]. Holding
+//! the left mouse button down turns the can a quarter turn
+//! counter-clockwise around the pointer over `ROTATE_TIME` seconds;
+//! releasing turns it back the same way (both through
+//! [`frost::Context::mouse_button_down`]). Run with:
 //!
 //! ```text
 //! cargo run --example cursor
@@ -33,6 +36,14 @@ const CAN_SIZE: f32 = 100.0;
 /// Scales the whole texture so the can's content is `CAN_SIZE` wide.
 const CAN_SCALE: f32 = CAN_SIZE / (CAN_BOX[1][0] - CAN_BOX[0][0]);
 
+/// The can's rotated pose: a quarter turn counter-clockwise, applied while
+/// the left mouse button is held down.
+const CAN_ANGLE: f32 = std::f32::consts::FRAC_PI_2;
+
+/// Seconds for the can to travel between its two poses, on press and on
+/// release alike.
+const ROTATE_TIME: f32 = 0.5;
+
 /// The can's content center in node-local space: the sprite is centered on
 /// its node's origin and the scene's y axis points up, so the content
 /// center's image pixels `(cx, cy)` convert to `(cx - w/2, h/2 - cy)` —
@@ -43,22 +54,35 @@ const CAN_LOCAL: [f32; 2] = {
     [cx - CAN_IMAGE[0] / 2.0, CAN_IMAGE[1] / 2.0 - cy]
 };
 
-/// The node position that puts the can's content center exactly on
-/// `(mx, my)`: the center sits `CAN_LOCAL` from the node's origin in
-/// node-local space, so the origin takes the negative of that offset,
-/// scaled.
-fn can_position(mx: f32, my: f32) -> [f32; 2] {
-    [mx - CAN_LOCAL[0] * CAN_SCALE, my - CAN_LOCAL[1] * CAN_SCALE]
+/// The node transform that puts the can's content center exactly on
+/// `(mx, my)` and rotates the can by `angle` radians around that center.
+///
+/// The content center sits `CAN_LOCAL` (scaled by `CAN_SCALE`) from the
+/// node's origin in node space, so the transform shifts the center to the
+/// origin, rotates, then shifts back to the pointer. At `angle = 0` the
+/// rotation is the identity, so this is exactly the unrotated
+/// pointer-follow position.
+fn can_transform(mx: f32, my: f32, angle: f32) -> frost::Transform {
+    frost::Transform::translate(-CAN_LOCAL[0] * CAN_SCALE, -CAN_LOCAL[1] * CAN_SCALE)
+        .compose(&frost::Transform::rotate(angle))
+        .compose(&frost::Transform::translate(mx, my))
 }
 
 struct Demo {
     /// The cursor's last reported position; the can sticks here while the
     /// cursor is outside the window.
     mouse: [f32; 2],
+    /// Whether the left mouse button is currently pressed.
+    pressed: bool,
+    /// The can's current rotation, in radians counter-clockwise.
+    angle: f32,
+    /// The rotation tween, restarted from `angle` on every press or
+    /// release so a quick tap never jumps the can.
+    rotation: frost::Tween<f32>,
 }
 
 impl frost::Process for Demo {
-    fn process(&mut self, ctx: &mut frost::Context, _dt: f32) {
+    fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
         // Stretch the grass to exactly fill the window, whatever its aspect
         // ratio, so it stays filled across resizes.
         let (w, h) = ctx.size();
@@ -71,9 +95,23 @@ impl frost::Process for Demo {
             self.mouse = pos;
         }
         let [mx, my] = self.mouse;
-        let [px, py] = can_position(mx, my);
+
+        // Hold the left mouse button down to turn the can a quarter turn
+        // counter-clockwise around the pointer; release to turn it back.
+        // Each leg is a `ROTATE_TIME`-second tween restarted from wherever
+        // the can currently is, so a mid-rotation press or release picks
+        // up from the can's live angle.
+        let pressed = ctx.mouse_button_down(frost::MouseButton::Left);
+        if pressed != self.pressed {
+            self.pressed = pressed;
+            let target = if pressed { CAN_ANGLE } else { 0.0 };
+            self.rotation =
+                frost::Tween::new(self.angle, target, ROTATE_TIME).repeat(frost::Repeat::Once);
+        }
+        self.angle = self.rotation.tick(dt);
+
         let can = &mut ctx.scene().root.children[1];
-        can.transform = frost::Transform::translate(px, py);
+        can.transform = can_transform(mx, my, self.angle);
     }
 }
 
@@ -117,7 +155,17 @@ fn main() {
         ..Default::default()
     });
 
-    if let Err(err) = frost::run(scene, Demo { mouse: [0.0, 0.0] }) {
+    // The rotation tween starts as a 0→0 tween that never moves; the first
+    // button event replaces it.
+    if let Err(err) = frost::run(
+        scene,
+        Demo {
+            mouse: [0.0, 0.0],
+            pressed: false,
+            angle: 0.0,
+            rotation: frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once),
+        },
+    ) {
         log::error!("frost failed: {err}");
         std::process::exit(1);
     }
