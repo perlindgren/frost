@@ -1,0 +1,884 @@
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+
+use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::future::Future;
+#[cfg(not(target_arch = "wasm32"))]
+use std::task::{Context as TaskContext, Poll, Waker};
+
+use wgpu::{
+    Adapter, AddressMode, BindGroup, BindGroupDescriptor, BindGroupEntry, BindingResource, Buffer,
+    BufferBinding, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
+    CommandEncoderDescriptor, CurrentSurfaceTexture, Device, Extent3d, FilterMode, FragmentState,
+    Instance, MipmapFilterMode, MultisampleState, PipelineCompilationOptions, PresentMode,
+    PrimitiveState, Queue, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline,
+    RenderPipelineDescriptor, Sampler, SamplerDescriptor, ShaderModule, ShaderModuleDescriptor,
+    ShaderSource, StoreOp, Surface, SurfaceTexture, TexelCopyBufferLayout, TexelCopyTextureInfo,
+    TextureAspect, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
+    TextureViewDescriptor, VertexState,
+};
+use winit::application::ApplicationHandler;
+use winit::event::{ElementState, WindowEvent};
+use winit::event_loop::ActiveEventLoop;
+use winit::keyboard::{NamedKey, PhysicalKey};
+use winit::window::{Window, WindowId};
+
+use crate::backend::frame::*;
+use crate::objects::*;
+use crate::shaders::*;
+use crate::text;
+use crate::{Canvas, Context, KeyCode, Process};
+#[cfg(target_arch = "wasm32")]
+use crate::backend::wasm::hide_fallback;
+
+/// The surface presentation mode for the user's vsync request: `AutoVsync`
+/// presents once per vertical blank (capped at the display's refresh rate),
+/// `AutoNoVsync` presents as soon as frames are rendered. Both `Auto*`
+/// modes fall back to a supported mode when their preference is unavailable,
+/// so they are safe to request on every platform.
+pub(crate) fn present_mode_for(vsync: bool) -> PresentMode {
+    if vsync {
+        PresentMode::AutoVsync
+    } else {
+        PresentMode::AutoNoVsync
+    }
+}
+
+pub(crate) struct Frost<P: Process> {
+    instance: Instance,
+    adapter: Adapter,
+    device: Device,
+    queue: Queue,
+    /// The user's vsync request; maps to the surface's presentation mode
+    /// (`PresentMode::AutoVsync` / `AutoNoVsync`) when the surface is
+    /// (re)configured.
+    vsync: bool,
+    #[allow(dead_code)]
+    window_id: Option<WindowId>,
+    /// The winit window (shared), kept so we can call `request_redraw` for
+    /// continuous per-frame rendering.
+    window: Option<Arc<Window>>,
+    logical_size: (u32, u32),
+    scale: f32,
+    surface: Option<Surface<'static>>,
+    line_pipeline: Option<RenderPipeline>,
+    circle_pipeline: Option<RenderPipeline>,
+    rect_pipeline: Option<RenderPipeline>,
+    shape_pipeline: Option<RenderPipeline>,
+    sprite_pipeline: Option<RenderPipeline>,
+    /// The GPU resources for each distinct sprite image, keyed by the
+    /// pointer of its pixel-data `Arc`. Sprites sharing one file share one
+    /// texture, so the map stays bounded by the number of distinct images.
+    /// A `TextureView` keeps its texture alive, so only the view and the
+    /// sampler are stored.
+    sprite_resources: HashMap<*const (), (TextureView, Sampler)>,
+    /// The rasterized glyph atlas for each distinct `(font, size)` pair,
+    /// keyed by the font buffer's pointer and the size's bits. Kept between
+    /// frames so unchanged text never re-rasterizes and its pixel buffer —
+    /// and therefore the GPU texture in `sprite_resources` — keeps a stable
+    /// identity.
+    text_atlases: HashMap<(u64, u32), text::Atlas>,
+    /// The surface format the current pipelines were built for; they are only
+    /// rebuilt when this changes.
+    format: Option<TextureFormat>,
+    /// Millisecond timestamp of the previous rendered frame, used to
+    /// compute `dt` (see `now_millis`).
+    last_millis: Option<f64>,
+    /// The expected frame rate in Hz: the refresh rate of the monitor the
+    /// window sits on, as winit reports it. `None` when vsync is off
+    /// (presentation is uncapped) or the rate is unknown; see
+    /// `Context::expected_fps`.
+    expected_fps: Option<f32>,
+    /// The scene drawn every frame, after the process runs.
+    scene: Scene,
+    /// The physical keys currently held down, updated as keyboard events arrive.
+    keys: HashSet<KeyCode>,
+    process: P,
+}
+
+impl<P: Process> Frost<P> {
+    /// The app's initial state: the GPU is ready, but there is no window
+    /// and no surface yet — `attach_window` creates both.
+    pub(crate) fn new(
+        instance: Instance,
+        adapter: Adapter,
+        device: Device,
+        queue: Queue,
+        vsync: bool,
+        scene: Scene,
+        process: P,
+    ) -> Self {
+        Self {
+            instance,
+            adapter,
+            device,
+            queue,
+            vsync,
+            window_id: None,
+            window: None,
+            logical_size: (0, 0),
+            scale: 1.0,
+            surface: None,
+            line_pipeline: None,
+            circle_pipeline: None,
+            rect_pipeline: None,
+            shape_pipeline: None,
+            sprite_pipeline: None,
+            sprite_resources: HashMap::new(),
+            text_atlases: HashMap::new(),
+            format: None,
+            last_millis: None,
+            expected_fps: None,
+            scene,
+            keys: HashSet::new(),
+            process,
+        }
+    }
+}
+
+/// Creates the frost window and requests its first frame.
+///
+/// On the web, winit's canvas is neither appended to the page nor sized by
+/// default: without the append it is invisible, and without a size it stays
+/// the browser's 300x150 default.
+pub(crate) fn create_window(event_loop: &ActiveEventLoop) -> Arc<Window> {
+    let attributes = Window::default_attributes().with_title("frost");
+    #[cfg(target_arch = "wasm32")]
+    let attributes = {
+        use winit::dpi::LogicalSize;
+        use winit::platform::web::WindowAttributesExtWebSys;
+
+        attributes
+            .with_append(true)
+            .with_inner_size(LogicalSize::new(900, 600))
+    };
+    let window = Arc::new(
+        event_loop
+            .create_window(attributes)
+            .expect("failed to create window"),
+    );
+    // winit (Wayland) only delivers RedrawRequested after a compositor
+    // frame callback, so explicitly request the first frame; otherwise
+    // the window is never mapped and nothing is ever drawn.
+    window.request_redraw();
+    window
+}
+
+impl<P: Process> ApplicationHandler for Frost<P> {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.surface.is_some() {
+            return;
+        }
+        self.attach_window(create_window(event_loop));
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::KeyboardInput { event, .. } => {
+                log::info!("key event: {event:?}");
+                // Track the held physical keys so `Context::key_down` can
+                // report them to the process on the next frame.
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    match event.state {
+                        ElementState::Pressed => {
+                            self.keys.insert(code);
+                        }
+                        ElementState::Released => {
+                            self.keys.remove(&code);
+                        }
+                    }
+                }
+                if event.state == ElementState::Pressed && event.logical_key == NamedKey::Escape {
+                    log::info!("escape pressed, exiting");
+                    event_loop.exit();
+                }
+            }
+            WindowEvent::Focused(false) => {
+                // The window lost focus: key releases may never arrive, so
+                // drop the held-key state rather than stick the keys.
+                self.keys.clear();
+            }
+            WindowEvent::CloseRequested => {
+                log::info!("window close requested, exiting");
+                event_loop.exit();
+            }
+            WindowEvent::Resized(size) => {
+                // `size` is the physical client size; store the logical size
+                // so `pixel_size()` reproduces the true physical pixels.
+                if size.width > 0 && size.height > 0 {
+                    let scale = (self.scale as f64).max(0.01);
+                    self.logical_size = (
+                        (size.width as f64 / scale).max(1.0).round() as u32,
+                        (size.height as f64 / scale).max(1.0).round() as u32,
+                    );
+                    self.resize();
+                }
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.scale = scale_factor as f32;
+                self.resize();
+            }
+            WindowEvent::RedrawRequested => {
+                self.render();
+                // winit only delivers RedrawRequested after we ask for it, so
+                // request the next frame to keep animation running continuously.
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Monotonic milliseconds since an arbitrary process-start epoch:
+/// `std::time::Instant` on native, and the browser's `performance.now()`
+/// on wasm — `Instant::now()` panics on wasm32-unknown-unknown, where the
+/// clock has to come from the page. Only differences between two calls
+/// matter (see `Frost::last_millis`), so the epochs may differ.
+fn now_millis() -> f64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // `Instant` has no absolute epoch, so pin one at the first call;
+        // `elapsed` stays monotonic.
+        static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let epoch = *EPOCH.get_or_init(std::time::Instant::now);
+        epoch.elapsed().as_secs_f64() * 1000.0
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window()
+            .and_then(|window| window.performance())
+            .map(|performance| performance.now())
+            .unwrap_or(0.0)
+    }
+}
+impl<P: Process> Frost<P> {
+    /// Sizes the surface from `window`, builds the pipelines and renders
+    /// the first frame.
+    ///
+    /// Called from [`Self::resumed`] once a window exists; on the web the
+    /// window is created before the async GPU setup completes, and this runs
+    /// when it does.
+    pub(crate) fn attach_window(&mut self, window: Arc<Window>) {
+        self.window_id = Some(window.id());
+        // winit reports the client area in *physical* pixels, so convert it
+        // to logical here; `pixel_size()` multiplies by the scale factor.
+        let inner = window.inner_size();
+        let scale = window.scale_factor();
+        self.scale = scale as f32;
+        self.logical_size = (
+            (inner.width as f64 / scale).max(1.0).round() as u32,
+            (inner.height as f64 / scale).max(1.0).round() as u32,
+        );
+        log::info!(
+            "window created ({}x{} @ {:.2}x)",
+            self.logical_size.0,
+            self.logical_size.1,
+            self.scale
+        );
+
+        // With vsync, presentation runs once per vertical blank, so the
+        // expected frame rate is the refresh rate of the monitor the window
+        // sits on, as winit reports it (unknown on some displays and in the
+        // browser). Without vsync there is no expected rate at all.
+        self.expected_fps = if self.vsync {
+            window
+                .current_monitor()
+                .and_then(|monitor| monitor.refresh_rate_millihertz())
+                .map(|millihertz| millihertz as f32 / 1000.0)
+        } else {
+            None
+        };
+
+        // An `Arc<Window>` is passed by value to `create_surface`, so the
+        // resulting `Surface` is 'static without borrowing `self.window`. We
+        // keep a clone of the `Arc` for per-frame `request_redraw`.
+        let surface = self
+            .instance
+            .create_surface(window.clone())
+            .expect("failed to create wgpu surface");
+        // Keep the window for per-frame `request_redraw` (continuous frames).
+        self.window = Some(window);
+        let pixel_size = self.pixel_size();
+        let mut config = surface
+            .get_default_config(&self.adapter, pixel_size.0, pixel_size.1)
+            .expect("no compatible surface format");
+        // The default config picks the first supported presentation mode;
+        // apply the user's vsync request explicitly.
+        config.present_mode = present_mode_for(self.vsync);
+        surface.configure(&self.device, &config);
+        log::info!(
+            "surface configured at {}x{}, format {:?}, present_mode {:?}",
+            config.width,
+            config.height,
+            config.format,
+            config.present_mode
+        );
+
+        self.set_up_pipelines(config.format);
+        self.format = Some(config.format);
+        self.surface = Some(surface);
+        // Commit the first frame immediately so the compositor maps the window.
+        self.render();
+        // On the web, the page shows a "Loading frost…" placeholder until the
+        // first frame lands; remove it now that it has.
+        #[cfg(target_arch = "wasm32")]
+        hide_fallback();
+    }
+
+    fn pixel_size(&self) -> (u32, u32) {
+        (
+            (self.logical_size.0 as f64 * self.scale as f64).max(1.0) as u32,
+            (self.logical_size.1 as f64 * self.scale as f64).max(1.0) as u32,
+        )
+    }
+
+    fn resize(&mut self) {
+        let Some(surface) = self.surface.as_ref() else {
+            return;
+        };
+        let pixel_size = self.pixel_size();
+        let mut config = surface
+            .get_default_config(&self.adapter, pixel_size.0, pixel_size.1)
+            .expect("no compatible surface format");
+        config.present_mode = present_mode_for(self.vsync);
+        surface.configure(&self.device, &config);
+        log::info!(
+            "window resized to {}x{} ({}x{} px)",
+            self.logical_size.0,
+            self.logical_size.1,
+            config.width,
+            config.height
+        );
+        // Pipelines depend only on the surface format, not the size, so they
+        // are rebuilt only if the format actually changed.
+        if self.format != Some(config.format) {
+            self.set_up_pipelines(config.format);
+            self.format = Some(config.format);
+        }
+    }
+
+    /// Creates the shared line and circle pipelines. Uniform buffers and bind
+    /// groups are created per draw call, see `primitive_uniform`.
+    fn set_up_pipelines(&mut self, format: TextureFormat) {
+        let device = &self.device;
+
+        let line_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("line shaders"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(LINE_SHADER)),
+        });
+        self.line_pipeline = Some(Self::create_pipeline(
+            device,
+            &line_module,
+            format,
+            "line pipeline",
+        ));
+
+        let circle_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("circle shaders"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(CIRCLE_SHADER)),
+        });
+        self.circle_pipeline = Some(Self::create_pipeline(
+            device,
+            &circle_module,
+            format,
+            "circle pipeline",
+        ));
+
+        let rect_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("rectangle shaders"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(RECT_SHADER)),
+        });
+        self.rect_pipeline = Some(Self::create_pipeline(
+            device,
+            &rect_module,
+            format,
+            "rectangle pipeline",
+        ));
+
+        let shape_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("shape shaders"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(SHAPE_SHADER)),
+        });
+        self.shape_pipeline = Some(Self::create_pipeline(
+            device,
+            &shape_module,
+            format,
+            "shape pipeline",
+        ));
+
+        let sprite_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("sprite shaders"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(SPRITE_SHADER)),
+        });
+        self.sprite_pipeline = Some(Self::create_pipeline(
+            device,
+            &sprite_module,
+            format,
+            "sprite pipeline",
+        ));
+    }
+
+    /// Builds a render pipeline for a full-screen-triangle shader whose single
+    /// uniform is bound at binding 0.
+    fn create_pipeline(
+        device: &Device,
+        module: &ShaderModule,
+        format: TextureFormat,
+        label: &str,
+    ) -> RenderPipeline {
+        device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some(label),
+            layout: None,
+            vertex: VertexState {
+                module,
+                entry_point: Some("vs_main"),
+                compilation_options: PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(FragmentState {
+                module,
+                entry_point: Some("fs_main"),
+                compilation_options: PipelineCompilationOptions::default(),
+                targets: &[Some(ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: ColorWrites::ALL,
+                })],
+            }),
+            primitive: PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+
+    /// Creates the uniform buffer for one draw call plus its bind group.
+    ///
+    /// One buffer per draw call is required: `write_buffer` copies are flushed
+    /// as a batch *before any draw executes*, so a buffer shared between draws
+    /// would make every draw read the last-written parameters. The buffer and
+    /// bind group may be dropped as soon as the command buffer is submitted;
+    /// wgpu keeps them alive until the GPU is finished with them.
+    fn primitive_uniform(
+        &self,
+        pipeline: &RenderPipeline,
+        label: &str,
+        data: &[u8],
+    ) -> (Buffer, BindGroup) {
+        let device = &self.device;
+        let buffer = device.create_buffer(&BufferDescriptor {
+            label: Some(label),
+            size: data.len() as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&buffer, 0, data);
+        let layout = pipeline.get_bind_group_layout(0);
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some(label),
+            layout: &layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: &buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            }],
+        });
+        (buffer, bind_group)
+    }
+
+    /// Creates the sprite's texture, view and sampler for one image.
+    ///
+    /// The pixels arrive as tightly packed RGBA8 bytes (one per texel), so
+    /// the upload is a single `write_texture` of `width * height * 4` bytes
+    /// with `bytes_per_row = width * 4`. The texture is created in
+    /// `Rgba8UnormSrgb` so the sample lands in linear space and the
+    /// sRGB blending state produces the same colors the file was authored
+    /// in. The texture itself is kept alive by the view: `TextureView`
+    /// holds a reference to its texture, so storing the view in
+    /// `sprite_resources` is enough.
+    fn sprite_texture(&self, data: &[u8], size: [f32; 2]) -> (TextureView, Sampler) {
+        let width = (size[0] as u32).max(1);
+        let height = (size[1] as u32).max(1);
+        let texture = self.device.create_texture(&TextureDescriptor {
+            label: Some("sprite texture"),
+            size: Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&TextureViewDescriptor::default());
+        self.queue.write_texture(
+            TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            data,
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: None,
+            },
+            Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let sampler = self.device.create_sampler(&SamplerDescriptor {
+            label: Some("sprite sampler"),
+            address_mode_u: AddressMode::ClampToEdge,
+            address_mode_v: AddressMode::ClampToEdge,
+            address_mode_w: AddressMode::ClampToEdge,
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            mipmap_filter: MipmapFilterMode::Nearest,
+            lod_min_clamp: 0.0,
+            lod_max_clamp: f32::MAX,
+            compare: None,
+            anisotropy_clamp: 1,
+            border_color: None,
+        });
+        (view, sampler)
+    }
+
+    /// Creates the uniform buffer and three-entry bind group (uniform,
+    /// texture view, sampler) for one sprite draw call. Same per-draw
+    /// buffer rationale as [`Frost::primitive_uniform`].
+    fn sprite_uniform(
+        &self,
+        pipeline: &RenderPipeline,
+        label: &str,
+        view: &TextureView,
+        sampler: &Sampler,
+        data: &[u8],
+    ) -> (Buffer, BindGroup) {
+        let device = &self.device;
+        let buffer = device.create_buffer(&BufferDescriptor {
+            label: Some(label),
+            size: data.len() as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&buffer, 0, data);
+        let layout = pipeline.get_bind_group_layout(0);
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some(label),
+            layout: &layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::TextureView(view),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+        (buffer, bind_group)
+    }
+
+    fn render(&mut self) {
+        let (output, reconfigure) = self.acquire_frame();
+        if reconfigure {
+            self.resize();
+        }
+        let Some(output) = output else {
+            return;
+        };
+        log::trace!("render: acquired surface texture, submitting frame");
+
+        // Let the user update the scene and draw this frame, in their
+        // coordinate system.
+        let mut canvas = Canvas::new(self.pixel_size());
+        let now = now_millis();
+        let dt = self
+            .last_millis
+            .map(|last| ((now - last).max(0.0) / 1000.0).min(1.0) as f32)
+            .unwrap_or(0.0);
+        self.last_millis = Some(now);
+        let process = &mut self.process;
+        let scene = &mut self.scene;
+        let keys = &self.keys;
+        {
+            let mut ctx = Context {
+                canvas: &mut canvas,
+                scene,
+                keys,
+                expected_fps: self.expected_fps,
+            };
+            process.process(&mut ctx, dt);
+        }
+        // The user's process ran; now update the scene tree itself: every
+        // node's `Node::process`, children before their parent.
+        self.scene.visit();
+        // The scene was just updated; draw it into the frame's draw list.
+        canvas.draw_scene(&self.scene);
+        // Expand the text into per-glyph sprite quads before the sort, so
+        // each glyph keeps its node's position in the paint order.
+        canvas.expand_text(&mut self.text_atlases);
+
+        // Paint order: the draw groups (the base group and the scene's
+        // layers) by ascending layer order, higher order on top; within each
+        // group, ascending z, lower z behind. The sorts are stable, so
+        // draws with equal keys keep call order and the last drawn is on
+        // top.
+        let draws = canvas.paint_order();
+
+        let (
+            Some(line_pipeline),
+            Some(circle_pipeline),
+            Some(rect_pipeline),
+            Some(shape_pipeline),
+            Some(sprite_pipeline),
+        ) = (
+            self.line_pipeline.as_ref(),
+            self.circle_pipeline.as_ref(),
+            self.rect_pipeline.as_ref(),
+            self.shape_pipeline.as_ref(),
+            self.sprite_pipeline.as_ref(),
+        ) else {
+            return;
+        };
+
+        // The frame's clear color: the last background node in paint order,
+        // or the default when the frame has none.
+        let clear = clear_color(&draws);
+
+        let view = output
+            .texture
+            .create_view(&TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: clear.r as f64,
+                            g: clear.g as f64,
+                            b: clear.b as f64,
+                            a: clear.a as f64,
+                        }),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            // One pass for the whole frame. The background is cleared once
+            // for the full surface, then each draw sets the scissor to its
+            // tight bounding box, so fragments outside it are discarded and
+            // the fragment shader only runs over the pixels the object can
+            // write. The viewport is left at the full surface, so the
+            // shaders' pixel coordinates stay absolute.
+            let render_area = [output.texture.width(), output.texture.height()];
+            for draw in draws {
+                let Some([x, y, w, h]) = draw.scissor_rect(render_area) else {
+                    // Fully outside the surface, or a background (which
+                    // became the clear color); nothing to draw.
+                    continue;
+                };
+                pass.set_scissor_rect(x, y, w, h);
+                // A fresh uniform buffer (and bind group) per draw call, since
+                // all write_buffer copies complete before any draw executes.
+                match draw {
+                    Draw::Line {
+                        a, b, width, color, ..
+                    } => {
+                        let (_buffer, bind_group) = self.primitive_uniform(
+                            line_pipeline,
+                            "line uniforms",
+                            &line_uniform_data(a, b, color, width),
+                        );
+                        pass.set_pipeline(line_pipeline);
+                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.draw(0..3, 0..1);
+                    }
+                    Draw::Circle {
+                        center,
+                        radius,
+                        color,
+                        ..
+                    } => {
+                        let (_buffer, bind_group) = self.primitive_uniform(
+                            circle_pipeline,
+                            "circle uniforms",
+                            &circle_uniform_data(center, color, radius),
+                        );
+                        pass.set_pipeline(circle_pipeline);
+                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.draw(0..3, 0..1);
+                    }
+                    Draw::Rectangle {
+                        center,
+                        extent,
+                        color,
+                        ..
+                    } => {
+                        let (_buffer, bind_group) = self.primitive_uniform(
+                            rect_pipeline,
+                            "rectangle uniforms",
+                            &rect_uniform_data(center, extent, color),
+                        );
+                        pass.set_pipeline(rect_pipeline);
+                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.draw(0..3, 0..1);
+                    }
+                    Draw::Shape {
+                        world,
+                        center,
+                        params,
+                        kind,
+                        aa,
+                        color,
+                        ..
+                    } => {
+                        let Some(inv) = world.invert() else {
+                            // Degenerate transform; the shape collapses to a
+                            // line or a point and its inverse does not exist.
+                            continue;
+                        };
+                        let (_buffer, bind_group) = self.primitive_uniform(
+                            shape_pipeline,
+                            "shape uniforms",
+                            &shape_uniform_data(inv, center, params, kind, aa, color),
+                        );
+                        pass.set_pipeline(shape_pipeline);
+                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.draw(0..3, 0..1);
+                    }
+                    Draw::Sprite {
+                        world,
+                        data,
+                        size,
+                        texture_size,
+                        tint,
+                        alpha,
+                        uv_rect,
+                        ..
+                    } => {
+                        let Some(inv) = world.invert() else {
+                            // Degenerate transform; the sprite collapses to a
+                            // line or a point and its inverse does not exist.
+                            continue;
+                        };
+                        // Look up the GPU resources for this image, creating
+                        // them on first use. Two sprites from the same file
+                        // share one texture, so the image is uploaded once
+                        // per file; glyph quads from the same atlas share
+                        // one atlas texture the same way.
+                        let key = Arc::as_ptr(&data) as *const ();
+                        let (view, sampler) = match self.sprite_resources.get(&key) {
+                            Some((view, sampler)) => (view.clone(), sampler.clone()),
+                            None => {
+                                let (view, sampler) =
+                                    self.sprite_texture(&data, [texture_size[0] as f32, texture_size[1] as f32]);
+                                self.sprite_resources
+                                    .insert(key, (view.clone(), sampler.clone()));
+                                (view, sampler)
+                            }
+                        };
+                        let (_buffer, bind_group) = self.sprite_uniform(
+                            sprite_pipeline,
+                            "sprite uniforms",
+                            &view,
+                            &sampler,
+                            &sprite_uniform_data(inv, size, tint, alpha, uv_rect),
+                        );
+                        pass.set_pipeline(sprite_pipeline);
+                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.draw(0..3, 0..1);
+                    }
+                    // A background's scissor rect is `None`, so it continued
+                    // above; this arm keeps the match exhaustive.
+                    Draw::Background { .. } => {}
+                    // Text is expanded into glyph sprites before the render
+                    // loop, so it never reaches the match; this arm keeps it
+                    // exhaustive.
+                    Draw::Text { .. } => {}
+                }
+            }
+        }
+        self.queue.submit([encoder.finish()]);
+        self.queue.present(output);
+        log::trace!("render: frame presented");
+    }
+
+    /// Acquires the current surface texture.
+    ///
+    /// Returns the texture and whether the surface should be reconfigured
+    /// because it is only suboptimal.
+    fn acquire_frame(&self) -> (Option<SurfaceTexture>, bool) {
+        let Some(surface) = self.surface.as_ref() else {
+            return (None, false);
+        };
+        match surface.get_current_texture() {
+            CurrentSurfaceTexture::Success(tex) => (Some(tex), false),
+            CurrentSurfaceTexture::Suboptimal(tex) => {
+                log::info!("suboptimal surface texture, reconfiguring");
+                (Some(tex), true)
+            }
+            CurrentSurfaceTexture::Timeout => {
+                log::info!("surface timeout, skipping frame");
+                (None, false)
+            }
+            _ => {
+                log::info!("no surface texture available, skipping frame");
+                (None, false)
+            }
+        }
+    }
+}
+
+/// Drives `future` on this thread until it completes.
+///
+/// Native only: in the browser the main thread cannot block on a future,
+/// because the browser only resolves it once the thread is free. See
+/// [`run`].
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
+    let mut cx = TaskContext::from_waker(Waker::noop());
+    let mut future = std::pin::pin!(future);
+    loop {
+        if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+            return value;
+        }
+    }
+}
