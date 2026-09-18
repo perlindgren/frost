@@ -82,7 +82,8 @@
 //! lifetime.
 //!
 //! Key presses are logged, the currently held keys are reported by
-//! [`Context::key_down`], and Escape closes the window.
+//! [`Context::key_down`], the mouse cursor's position by
+//! [`Context::mouse_position`], and Escape closes the window.
 //!
 //! Presentation is vsync'd by default: frames are presented once per
 //! vertical blank, at the display's refresh rate — the rate
@@ -801,6 +802,9 @@ pub struct Context<'c> {
     scene: &'c mut Scene,
     keys: &'c HashSet<KeyCode>,
     expected_fps: Option<f32>,
+    /// The cursor's position in user coordinates, or `None` when the cursor
+    /// is outside the window (or has never moved into it).
+    mouse: Option<[f32; 2]>,
 }
 
 impl Context<'_> {
@@ -827,6 +831,19 @@ impl Context<'_> {
     /// on some displays and in the browser.
     pub fn expected_fps(&self) -> Option<f32> {
         self.expected_fps
+    }
+
+    /// The mouse cursor's position in user coordinates (origin at the
+    /// window's center, y up), or `None` when the cursor is outside the
+    /// window.
+    ///
+    /// The position is updated as cursor events arrive, so it reflects the
+    /// cursor's latest position rather than its position at frame start.
+    /// While the cursor is outside the window — after it has left, or
+    /// before it has first moved in — the last known position is no longer
+    /// reported, so keep one yourself if you want the pointer to stick.
+    pub fn mouse_position(&self) -> Option<[f32; 2]> {
+        self.mouse
     }
 }
 

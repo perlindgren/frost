@@ -264,6 +264,7 @@ fn context_reports_held_keys() {
             scene: &mut scene,
             keys: &keys,
             expected_fps: None,
+            mouse: None,
         };
         assert!(!ctx.key_down(KeyCode::KeyW));
     }
@@ -273,9 +274,33 @@ fn context_reports_held_keys() {
         scene: &mut scene,
         keys: &keys,
         expected_fps: None,
+        mouse: None,
     };
     assert!(ctx.key_down(KeyCode::KeyW));
     assert!(!ctx.key_down(KeyCode::KeyA));
+}
+
+#[test]
+fn context_reports_mouse_position() {
+    let mut canvas = Canvas::new((100, 100));
+    let mut scene = Scene::default();
+    let keys = HashSet::new();
+    let ctx = Context {
+        canvas: &mut canvas,
+        scene: &mut scene,
+        keys: &keys,
+        expected_fps: None,
+        mouse: None,
+    };
+    assert_eq!(ctx.mouse_position(), None);
+    let ctx = Context {
+        canvas: &mut canvas,
+        scene: &mut scene,
+        keys: &keys,
+        expected_fps: None,
+        mouse: Some([12.0, -34.0]),
+    };
+    assert_eq!(ctx.mouse_position(), Some([12.0, -34.0]));
 }
 
 #[test]

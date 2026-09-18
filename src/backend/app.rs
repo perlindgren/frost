@@ -96,6 +96,11 @@ pub(crate) struct Frost<P: Process> {
     scene: Scene,
     /// The physical keys currently held down, updated as keyboard events arrive.
     keys: HashSet<KeyCode>,
+    /// The mouse cursor's position in physical pixels, `(0, 0)` at the
+    /// window's upper-left corner, or `None` when the cursor is outside the
+    /// window. Updated as cursor events arrive; the frame's `Canvas` works
+    /// in the same physical-pixel space.
+    mouse: Option<[f32; 2]>,
     process: P,
 }
 
@@ -134,6 +139,7 @@ impl<P: Process> Frost<P> {
             expected_fps: None,
             scene,
             keys: HashSet::new(),
+            mouse: None,
             process,
         }
     }
@@ -232,10 +238,21 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                     event_loop.exit();
                 }
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                // `position` is already in physical pixels, the same space
+                // the frame's `Canvas` works in; flip it to user coordinates
+                // when building the `Context`.
+                self.mouse = Some([position.x as f32, position.y as f32]);
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.mouse = None;
+            }
             WindowEvent::Focused(false) => {
                 // The window lost focus: key releases may never arrive, so
-                // drop the held-key state rather than stick the keys.
+                // drop the held-key state rather than stick the keys. The
+                // cursor position may likewise be stale.
                 self.keys.clear();
+                self.mouse = None;
             }
             WindowEvent::CloseRequested => {
                 log::info!("window close requested, exiting");
@@ -652,13 +669,22 @@ impl<P: Process> Frost<P> {
 
         // Let the user update the scene and draw this frame, in their
         // coordinate system.
-        let mut canvas = Canvas::new(self.pixel_size());
+        let pixel_size = self.pixel_size();
+        let mut canvas = Canvas::new(pixel_size);
         let now = now_millis();
         let dt = self
             .last_millis
             .map(|last| ((now - last).max(0.0) / 1000.0).min(1.0) as f32)
             .unwrap_or(0.0);
         self.last_millis = Some(now);
+        // Flip the cursor from window (upper-left, y-down) to user
+        // coordinates: origin at the window's center, y up.
+        let mouse = self.mouse.map(|[mx, my]| {
+            [
+                mx - pixel_size.0 as f32 / 2.0,
+                pixel_size.1 as f32 / 2.0 - my,
+            ]
+        });
         let process = &mut self.process;
         let scene = &mut self.scene;
         let keys = &self.keys;
@@ -668,6 +694,7 @@ impl<P: Process> Frost<P> {
                 scene,
                 keys,
                 expected_fps: self.expected_fps,
+                mouse,
             };
             process.process(&mut ctx, dt);
         }
