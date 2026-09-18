@@ -108,6 +108,9 @@ mod text;
 mod tween;
 pub use tween::*;
 
+mod collision;
+pub use collision::*;
+
 /// The drawing surface for a frame, reachable through the [`Context`] passed
 /// to [`Process::process`] (which derefs to it).
 ///

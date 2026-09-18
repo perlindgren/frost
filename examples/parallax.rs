@@ -43,7 +43,7 @@
 //! ```
 
 /// The player's linear speed, in pixels per second.
-const SPEED: f32 = 100.0;
+const SPEED: f32 = 200.0;
 
 /// The player's angular speed, in radians per second — 360 degrees per second.
 const ROT_SPEED: f32 = std::f32::consts::TAU;
