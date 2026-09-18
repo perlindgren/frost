@@ -74,6 +74,13 @@
 //! The scene passed to [`run`] is drawn every frame; use
 //! [`Canvas::draw_scene`] to draw additional scenes.
 //!
+//! A [`ParticleSystem`] is a plain collection of [`Particle`]s for
+//! effects like smoke or sparks. It is pure simulation, independent of the
+//! renderer: spawn particles in [`Process::process`], advance them each
+//! frame with [`ParticleSystem::update`] under a constant gravity, and
+//! draw them with the immediate draws, fading each one by its remaining
+//! lifetime.
+//!
 //! Key presses are logged, the currently held keys are reported by
 //! [`Context::key_down`], and Escape closes the window.
 //!
@@ -100,6 +107,9 @@ pub use objects::*;
 /// keyboard (its scancode), independent of the active layout, which is what
 /// game controls like WASD want.
 pub use winit::keyboard::KeyCode;
+
+mod particles;
+pub use particles::*;
 
 mod shaders;
 

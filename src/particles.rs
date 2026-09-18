@@ -1,0 +1,149 @@
+//! Simple particle simulation, independent of the renderer.
+//!
+//! A [`ParticleSystem`] is a plain collection of [`Particle`]s: each holds
+//! a position, a velocity, a remaining lifetime, and a size. A
+//! [`ParticleSystem::update`] advances every particle by the frame's delta
+//! time under a constant gravity and removes the dead ones, so a
+//! [`crate::Process`] can spawn, update, and draw the particles once per
+//! frame — the drawing stays with the caller, in the renderer's
+//! coordinates.
+
+/// A single particle: a position, a velocity, a lifetime, and a size.
+///
+/// Build one as a struct literal and [`ParticleSystem::spawn`] it, and read
+/// the system's [`ParticleSystem::particles`] back to draw each one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Particle {
+    /// Position, in user-space pixels (window-centered, y up).
+    pub pos: [f32; 2],
+    /// Velocity, in pixels per second.
+    pub vel: [f32; 2],
+    /// Remaining lifetime, in seconds; the particle dies when it runs out.
+    pub life: f32,
+    /// The lifetime the particle was spawned with, so a caller can compute
+    /// its life fraction (`life / max_life`) for a fade.
+    pub max_life: f32,
+    /// Draw size, in pixels (a radius when drawn as a circle).
+    pub size: f32,
+}
+
+/// A plain collection of [`Particle`]s, advanced by [`ParticleSystem::update`].
+///
+/// The simulation is pure math: nothing here knows about the renderer. A
+/// [`crate::Process`] spawns particles, updates them each frame, and draws
+/// them.
+#[derive(Clone, Debug, Default)]
+pub struct ParticleSystem {
+    /// The live particles, in spawn order.
+    pub particles: Vec<Particle>,
+}
+
+impl ParticleSystem {
+    /// Creates an empty system.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a particle. The system has no capacity, so the caller controls
+    /// the spawn rate.
+    pub fn spawn(&mut self, particle: Particle) {
+        self.particles.push(particle);
+    }
+
+    /// Advances every particle by `dt` seconds under a constant `gravity`
+    /// (in pixels per second, per second) and removes the dead ones.
+    ///
+    /// Each step is a semi-implicit Euler: the velocity takes the gravity
+    /// first, then the position takes the new velocity, which stays stable
+    /// under gravity; then the lifetime is decremented and the particles
+    /// whose life has run out are removed.
+    pub fn update(&mut self, dt: f32, gravity: [f32; 2]) {
+        for p in &mut self.particles {
+            p.vel[0] += gravity[0] * dt;
+            p.vel[1] += gravity[1] * dt;
+            p.pos[0] += p.vel[0] * dt;
+            p.pos[1] += p.vel[1] * dt;
+            p.life -= dt;
+        }
+        self.particles.retain(|p| p.life > 0.0);
+    }
+
+    /// The number of live particles.
+    pub fn len(&self) -> usize {
+        self.particles.len()
+    }
+
+    /// Whether the system has no live particles.
+    pub fn is_empty(&self) -> bool {
+        self.particles.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A particle at `pos` with `vel`, a lifetime of `life` seconds, and
+    /// the given `size`; its `max_life` is its `life`.
+    fn particle(pos: [f32; 2], vel: [f32; 2], life: f32, size: f32) -> Particle {
+        Particle {
+            pos,
+            vel,
+            life,
+            max_life: life,
+            size,
+        }
+    }
+
+    #[test]
+    fn update_integrates_position_and_velocity() {
+        // A particle moving right at 10 px/s under gravity pulling it down
+        // at 2 px/s/s, for a 1s step: the velocity takes the gravity first
+        // (semi-implicit Euler), then the position takes the new velocity.
+        let mut sys = ParticleSystem::new();
+        sys.spawn(particle([0.0, 0.0], [10.0, 0.0], 10.0, 1.0));
+        sys.update(1.0, [0.0, -2.0]);
+        let p = &sys.particles[0];
+        assert_eq!(p.vel, [10.0, -2.0]);
+        assert_eq!(p.pos, [10.0, -2.0]);
+        assert_eq!(p.life, 9.0);
+    }
+
+    #[test]
+    fn dead_particles_are_removed() {
+        let mut sys = ParticleSystem::new();
+        sys.spawn(particle([0.0, 0.0], [0.0, 0.0], 1.0, 1.0));
+        sys.spawn(particle([5.0, 0.0], [0.0, 0.0], 2.0, 1.0));
+        sys.update(1.0, [0.0, 0.0]); // the first one's life runs out exactly
+        assert_eq!(sys.len(), 1);
+        assert_eq!(sys.particles[0].pos, [5.0, 0.0]);
+        sys.update(1.0, [0.0, 0.0]); // the second one runs out too
+        assert!(sys.is_empty());
+    }
+
+    #[test]
+    fn spawn_preserves_order() {
+        let mut sys = ParticleSystem::new();
+        sys.spawn(particle([1.0, 0.0], [0.0, 0.0], 1.0, 1.0));
+        sys.spawn(particle([2.0, 0.0], [0.0, 0.0], 1.0, 1.0));
+        sys.spawn(particle([3.0, 0.0], [0.0, 0.0], 1.0, 1.0));
+        assert_eq!(
+            sys.particles.iter().map(|p| p.pos[0]).collect::<Vec<_>>(),
+            [1.0, 2.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn steps_are_deterministic() {
+        // The same spawn and step, twice, give the same particles.
+        let step = |sys: &mut ParticleSystem| {
+            sys.spawn(particle([0.0, 0.0], [0.0, 10.0], 5.0, 2.0));
+            sys.update(0.1, [0.0, -1.0]);
+        };
+        let mut a = ParticleSystem::new();
+        let mut b = ParticleSystem::new();
+        step(&mut a);
+        step(&mut b);
+        assert_eq!(a.particles, b.particles);
+    }
+}
