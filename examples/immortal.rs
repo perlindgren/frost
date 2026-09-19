@@ -8,8 +8,8 @@
 //! Pressing and releasing the right mouse button toggles between the two
 //! tools (both through [`frost::Context::mouse_button_down`]):
 //!
-//! - The watering can, `assets/sprites/water_can.png`, follows the
-//!   pointer: the sprite is cropped to the can, so the demo scales it to
+//! - The watering can, `assets/sprites/water_can_outline.png`, follows
+//!   the pointer: the sprite is cropped to the can, so the demo scales it
 //!   `CAN_SIZE` pixels wide and its node — the texture's center — lands on
 //!   the cursor. Holding the left mouse button down turns the can a
 //!   quarter turn counter-clockwise around the pointer over
@@ -40,21 +40,21 @@ const WINDOW: [u32; 2] = [1920, 1080];
 /// `grass.png`'s texture size in pixels: a full-bleed 1920x1080 photo.
 const GRASS_SIZE: [f32; 2] = [1920.0, 1080.0];
 
-/// `water_can.png`'s texture size in pixels: the can's content, cropped
-/// to the image.
-const CAN_IMAGE: [f32; 2] = [331.0, 247.0];
+/// `water_can_outline.png`'s texture size in pixels: the can's content,
+/// cropped to the image.
+const CAN_IMAGE: [f32; 2] = [333.0, 251.0];
 
 /// The can's visible content in the image's own pixel space: `(0, 0)` is
 /// the upper-left corner, `x` grows to the right, `y` grows down. The
 /// crop fills the image, so the content box is the whole texture.
 const CAN_BOX: [[f32; 2]; 2] = [
     [0.0, 0.0], // content upper-left
-    [331.0, 247.0], // content lower-right
+    [333.0, 251.0], // content lower-right
 ];
 
 /// The rendered can's width in pixels; its height follows the content's
-/// 334:251 aspect ratio.
-const CAN_SIZE: f32 = 100.0;
+/// 333:251 aspect ratio.
+const CAN_SIZE: f32 = 200.0;
 
 /// Scales the whole texture so the can's content is `CAN_SIZE` wide.
 const CAN_SCALE: f32 = CAN_SIZE / (CAN_BOX[1][0] - CAN_BOX[0][0]);
@@ -77,8 +77,8 @@ const CAN_LOCAL: [f32; 2] = {
     [cx - CAN_IMAGE[0] / 2.0, CAN_IMAGE[1] / 2.0 - cy]
 };
 
-/// The spout tip in `water_can.png`'s pixel space: `(0, 0)` is the
-/// upper-left corner, `x` grows right, `y` grows down.
+/// The spout tip in `water_can_outline.png`'s pixel space: `(0, 0)` is
+/// the upper-left corner, `x` grows right, `y` grows down.
 const SPOUT: [f32; 2] = [0.0, 25.0];
 
 /// The spout tip in node-local space, with the same y flip as
@@ -549,8 +549,8 @@ fn main() {
     let root = std::env!("CARGO_MANIFEST_DIR");
     let grass = frost::Shape::sprite(format!("{root}/assets/sprites/grass.png"))
         .expect("failed to load assets/sprites/grass.png");
-    let can = frost::Shape::sprite(format!("{root}/assets/sprites/water_can.png"))
-        .expect("failed to load assets/sprites/water_can.png");
+    let can = frost::Shape::sprite(format!("{root}/assets/sprites/water_can_outline.png"))
+        .expect("failed to load assets/sprites/water_can_outline.png");
     let spray1 = frost::Shape::sprite(format!("{root}/assets/sprites/Spray1.png"))
         .expect("failed to load assets/sprites/Spray1.png");
     let spray2 = frost::Shape::sprite(format!("{root}/assets/sprites/Spray2.png"))
