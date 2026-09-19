@@ -3,12 +3,13 @@
 //!
 //! The two sprites share the same draw order (both `0.0`), so within their
 //! group the tie resolves in tree order: the foreground sprite is the later
-//! child and draws on top of the base. Both carry the same transform — the
-//! one that puts the anchor point `(310, 1124)` of the 638×1140 image (in
-//! its own pixel space, `(0, 0)` upper-left, `y` down) onto the parent's
-//! origin — and the two images are the same size, so the overlay lines up
-//! pixel for pixel. The parent sits on the scene's origin, the window's
-//! center. Run with:
+//! child and draws on top of the base. Each child carries the transform
+//! that puts the anchor point `(308, 411)` of the 638×469 image (in its
+//! own pixel space, `(0, 0)` upper-left, `y` down) onto the parent's
+//! origin, and the parent carries the inverse transform, so the image's
+//! center sits on the window's center and the whole image fits the window.
+//! The two images are the same size, so the children's transforms are
+//! identical and the overlay lines up pixel for pixel. Run with:
 //!
 //! ```text
 //! cargo run --example tomato_sprite
@@ -17,7 +18,7 @@
 /// The anchor point in each image's pixel space: `(0, 0)` at the
 /// upper-left, `x` right, `y` down. It is the point of the image that
 /// sits on the parent node's origin.
-const ANCHOR: (f32, f32) = (310.0, 1124.0);
+const ANCHOR: (f32, f32) = (308.0, 411.0);
 
 /// A sprite's texture size in pixels.
 fn sprite_size(shape: &frost::Shape) -> [f32; 2] {
@@ -47,9 +48,11 @@ fn main() {
     let tomato_fg = frost::Shape::sprite(format!("{root}/assets/sprites/tomato_fg.png"))
         .expect("failed to load assets/sprites/tomato_fg.png");
 
-    // Each sprite anchors the same image point onto its node's origin.
-    // Both images are the same size, so the two transforms are identical
-    // and the overlay lines up pixel for pixel.
+    // The anchor's node-local offset. A child translates by its negation
+    // to put the anchor on the parent's origin — the same convention
+    // `tomato.rs` uses for its joints — and the parent translates by the
+    // offset itself, so the image's center lands on the window's center
+    // and the whole 638×469 image fits the window.
     let base = local_anchor(sprite_size(&tomato));
     let foreground = local_anchor(sprite_size(&tomato_fg));
 
@@ -66,11 +69,14 @@ fn main() {
         }),
         children: vec![Box::new(frost::SceneNode {
             // The dummy parent: no shape of its own, it only holds the
-            // two sprite siblings on the scene's origin, the window's
-            // center.
+            // two sprite siblings, shifted so the image's center sits on
+            // the window's center.
+            transform: frost::Transform::translate(base[0], base[1]),
             children: vec![
                 Box::new(frost::SceneNode {
-                    transform: frost::Transform::translate(base[0], base[1]),
+                    // The negated anchor offset puts the anchor on the
+                    // parent's origin.
+                    transform: frost::Transform::translate(-base[0], -base[1]),
                     // The same draw order as the foreground sibling: with
                     // equal order the tie resolves in tree order, so the
                     // base draws first...
@@ -79,7 +85,7 @@ fn main() {
                     ..Default::default()
                 }),
                 Box::new(frost::SceneNode {
-                    transform: frost::Transform::translate(foreground[0], foreground[1]),
+                    transform: frost::Transform::translate(-foreground[0], -foreground[1]),
                     // ...and the later sibling, the overlay, draws on top.
                     order: 0.0,
                     shape: Some(tomato_fg),

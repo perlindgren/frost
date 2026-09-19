@@ -42,7 +42,7 @@ src/backend/frame.rs  Draw list model: Draw enum, scissor rects, uniform writers
 src/backend/wasm.rs   WebFrost: deferred async GPU setup + fallback DOM helpers
 src/backend/tests.rs  GPU-free backend tests (uniform layout, canvas behavior)
 shaders/*.wgsl        line, circle, rectangle, shape (SDF circle+rect), sprite
-examples/             23 runnable demos (see table below)
+examples/             24 runnable demos (see table below)
 assets/               sprites/*.png (+ .pxo sidecars for brick, water_can),
                       fonts/JameGem08_2026-Regular.ttf, audio/swoof.wav
 src/TODO.md           next planned feature (Body / rigid bodies)
@@ -398,6 +398,12 @@ All load assets via `CARGO_MANIFEST_DIR`. Run with `cargo run --example <name>`
 |              | on every hover edge) so rect and label grow together; a press edge  |
 |              | over the button arms it, and an armed release over the button plays |
 |              | the swoosh once                                                     |
+| tomato_sprite| the tomato sprite with its `tomato_fg.png` overlay, both siblings   |
+|              | under a shapeless dummy parent node, both at the same draw order:   |
+|              | the tie resolves in tree order, so the later sibling (the overlay)  |
+|              | draws on top; each child puts the image px `(308, 411)` on          |
+|              | the parent's origin; the parent carries the inverse, so the         |
+|              | image's center sits on the window's center                          |
 
 `cursor.rs` is the most complete reference demo: `CAN_IMAGE [331,247]` scaled
 to 100 px, a 90° CCW tilt tween (0.5 s, rebuilt on press/release edges),
@@ -441,4 +447,5 @@ cargo test               # expect 102 passed + 2 doctests
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0
 cargo run --example button   # hover-scale + click-swoosh check; window exits 0
+cargo run --example tomato_sprite   # overlay check; window exits 0
 ```
