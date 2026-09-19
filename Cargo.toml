@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4.34"
+rodio = "0.22.2"
 # Font parsing, Unicode text shaping and glyph rasterization for
 # `Shape::Text`. Pure Rust (the Fontation project); the whole dependency
 # tree (skrifa, yazi, zeno) resolves from the local registry cache.
