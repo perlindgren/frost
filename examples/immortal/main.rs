@@ -36,6 +36,13 @@
 //! watering can in slot 1 sit ghosted at 20 percent alpha, via their nodes'
 //! modulate.
 //!
+//! On the grass, at `grass.png` pixel (923, 514), a tomato plant grows
+//! slice by slice: the same three-slice chain and travelling wind as the
+//! `grow` example, reused through the [`plant`] module. The base grows over
+//! 3 seconds, the middle over 6, the top over 9, all starting at launch —
+//! concurrently with the tool system — and the root joint stays glued to
+//! that grass pixel across resizes.
+//!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
 //!
@@ -43,12 +50,23 @@
 //! cargo run --example immortal
 //! ```
 
+mod plant;
+
 /// The window's inner size in logical pixels, via `Config::window_size`.
 /// The grass photo is exactly this size, so it fills the window 1:1.
 const WINDOW: [u32; 2] = [1920, 1080];
 
 /// `grass.png`'s texture size in pixels: a full-bleed 1920x1080 photo.
 const GRASS_SIZE: [f32; 2] = [1920.0, 1080.0];
+
+/// The plant's root joint in `grass.png`'s pixel space: the point on the
+/// grass the plant grows out of — `(0, 0)` at the upper-left, `x` right,
+/// `y` down.
+const PLANT_POS: [f32; 2] = [923.0, 514.0];
+
+/// The plant's fit scale, the same as the `grow` example: the 969 px full
+/// plant spans about 533 px around the root joint.
+const PLANT_SCALE: f32 = 0.55;
 
 /// `water_can_outline.png`'s texture size in pixels: the can's content,
 /// cropped to the image.
@@ -400,6 +418,10 @@ struct Demo {
     /// added each frame and one particle is spawned per whole unit, so the
     /// rate holds at any dt.
     acc: f32,
+    /// The tomato plant on the grass: its own growth clock, stepped once
+    /// per frame and laid out on the plant node (root children[2]) in
+    /// parallel with the tool system.
+    plant: plant::Plant,
 }
 
 impl frost::Process for Demo {
@@ -419,6 +441,16 @@ impl frost::Process for Demo {
         // Mid left: `MARGIN` clear of the left border, centered vertically.
         items.transform =
             frost::Transform::translate(-(w / 2.0) + MARGIN + ITEMS_SIZE[0] * s / 2.0, 0.0);
+
+        // Grow the plant on its own clock, in parallel with the tool
+        // system: the root joint stays glued to `PLANT_POS` on the grass,
+        // which the grass stretch maps to this user-space anchor.
+        self.plant.step(dt);
+        let anchor = [
+            PLANT_POS[0] * w / GRASS_SIZE[0] - w / 2.0,
+            h / 2.0 - PLANT_POS[1] * h / GRASS_SIZE[1],
+        ];
+        self.plant.layout(&mut ctx.scene().root.children[2], anchor);
 
         // Follow the pointer, keeping the last known position while the
         // cursor is outside the window.
@@ -441,7 +473,7 @@ impl frost::Process for Demo {
             self.burst = None;
             self.rotation =
                 frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once);
-            let tool_node = &mut ctx.scene().root.children[2];
+            let tool_node = &mut ctx.scene().root.children[3];
             if to_spray {
                 self.showing_spray2 = false;
                 tool_node.shape = Some(self.spray1.clone());
@@ -555,7 +587,7 @@ impl frost::Process for Demo {
             }
         }
 
-        let tool_node = &mut ctx.scene().root.children[2];
+        let tool_node = &mut ctx.scene().root.children[3];
         tool_node.transform = match self.tool {
             Tool::WaterCan => can_transform(mx, my, self.angle),
             Tool::SprayCan => spray_transform(mx, my, self.angle),
@@ -611,7 +643,7 @@ impl Demo {
             return;
         }
         self.showing_spray2 = on;
-        ctx.scene().root.children[2].shape = Some(if on {
+        ctx.scene().root.children[3].shape = Some(if on {
             self.spray2.clone()
         } else {
             self.spray1.clone()
@@ -638,6 +670,13 @@ fn main() {
         .expect("failed to load assets/sprites/items.png");
     let basket = frost::Shape::sprite(format!("{root}/assets/sprites/basket.png"))
         .expect("failed to load assets/sprites/basket.png");
+    let plant1 = frost::Shape::sprite(format!("{root}/assets/sprites/plant1.png"))
+        .expect("failed to load assets/sprites/plant1.png");
+    let plant2 = frost::Shape::sprite(format!("{root}/assets/sprites/plant2.png"))
+        .expect("failed to load assets/sprites/plant2.png");
+    let plant3 = frost::Shape::sprite(format!("{root}/assets/sprites/plant3.png"))
+        .expect("failed to load assets/sprites/plant3.png");
+    let plant = plant::Plant::new([&plant1, &plant2, &plant3]);
 
     let scene = frost::Scene::new(frost::SceneNode {
         // Dark ground under the grass; only the sparse transparent gaps in
@@ -723,11 +762,35 @@ fn main() {
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
+                // The tomato plant on the grass: its origin is the root
+                // joint (plant1's lower joint), positioned by the process
+                // every frame. The fit scale is constant — each slice grows
+                // individually, riding the node. Its slice children paint on
+                // top of the grass; it sits under the tool node, so the
+                // cursor paints above the plant.
+                scale: [PLANT_SCALE, PLANT_SCALE],
+                children: vec![
+                    Box::new(frost::SceneNode {
+                        shape: Some(plant1),
+                        ..Default::default()
+                    }),
+                    Box::new(frost::SceneNode {
+                        shape: Some(plant2),
+                        ..Default::default()
+                    }),
+                    Box::new(frost::SceneNode {
+                        shape: Some(plant3),
+                        ..Default::default()
+                    }),
+                ],
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
                 // The active tool, starting as the watering can: scaled to
                 // `CAN_SIZE` wide. The toggle switches the shape — and the
                 // scale, since the spray frames are drawn at their natural
                 // size — on this same node. It stays the last child, so the
-                // cursor paints above the panel.
+                // cursor paints above the panel and the plant.
                 // Starts at the window's center; the process moves it to
                 // the pointer from the first frame on.
                 scale: [CAN_SCALE, CAN_SCALE],
@@ -758,6 +821,7 @@ fn main() {
             spray: frost::ParticleSystem::new(),
             rng: Rng::new(),
             acc: 0.0,
+            plant,
         },
         frost::Config {
             window_size: Some(WINDOW),

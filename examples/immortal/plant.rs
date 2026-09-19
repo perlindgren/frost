@@ -1,0 +1,195 @@
+//! A tomato plant that grows slice by slice and sways in a travelling wind,
+//! factored out of the `grow` example so the `immortal` example can grow one
+//! on its grass: the same three-slice chain (`plant1.png` the base,
+//! `plant2.png` the middle, `plant3.png` the top, chained through
+//! hand-picked joint positions), where each slice grows from zero to its
+//! full size on its own timetable — the base over 3 seconds, the middle over
+//! 6, the top over 9 — all starting at the same time. Each slice grows out
+//! of its lower joint, the joint it attaches to the previous slice through,
+//! so the chain stays connected while it grows, the root joint (plant1's
+//! lower joint) stays in place, and each upper slice sprouts from the moving
+//! top of the one below it. From 9 seconds on the plant is at full size and
+//! keeps swaying: the base rock turns the whole plant around its lower
+//! joint, and the two joints above it bend a little more each, so the tip
+//! moves the most.
+//!
+//! The joints are given in each image's own pixel space: `(0, 0)` is the
+//! image's upper-left corner, `x` grows to the right and `y` grows down. A
+//! sprite is centered on its node's origin, and the scene's y axis points
+//! up, so a joint at image pixels `(jx, jy)` of an `w`x`h` image is
+//! converted to the node-local offset `(jx - w/2, h/2 - jy)` — the y flip
+//! included.
+//!
+//! The plant's layout is driven by a [`Plant`] value: `new` builds the
+//! chain from the three slice shapes, `step` advances the growth clock, and
+//! `layout` lays the chain out in a plant node whose children — in chain
+//! order — are the three slice nodes, anchoring the root joint at a given
+//! parent-space point and applying the base rock and the joint bends. The
+//! plant's fit scale is the plant node's own `scale`, set once by the
+//! caller: the node's scale applies before its transform, to its subtree,
+//! so the whole plant sizes around the root joint while the joint itself
+//! still lands exactly on the anchor.
+
+/// The hand-picked joints of the three slices, in each image's pixel space:
+/// `(0, 0)` at the upper-left, `x` right, `y` down. `[0]` is where the
+/// slice attaches to the previous one, `[1]` where the next slice attaches.
+pub const JOINTS: [[(f32, f32); 2]; 3] = [
+    [(321.0, 671.0), (321.0, 578.0)], // plant1, the base
+    [(319.0, 581.0), (318.0, 351.0)], // plant2, the middle
+    [(318.0, 463.0), (309.0, 89.0)],  // plant3, the top
+];
+
+/// How long each slice takes to grow from zero to its full size, in
+/// seconds, in chain order: the base over 3 s, the middle over 6, the top
+/// over 9. All slices start at the same time, each grows linearly out of
+/// its own lower joint, and after the last slice is done the plant stays
+/// at full size and keeps swaying.
+pub const GROW_TIMES: [f32; 3] = [3.0, 6.0, 9.0];
+
+/// The travelling wind's angular frequency, in radians per second: the base
+/// rock and the two joint bends lag each other by a fixed phase.
+const SWAY_FREQ: f32 = 1.2;
+
+/// The base rock's amplitude, in radians: it turns the whole plant around
+/// its lower joint.
+const SWAY_BASE: f32 = 0.025;
+
+/// The middle joint's extra bend, in radians, lagging the base rock: each
+/// bend is a little stronger than the last, so the tip moves the most.
+const SWAY_BEND1: (f32, f32) = (0.8, 0.04);
+
+/// The top joint's extra bend, in radians, lagging the middle joint.
+const SWAY_BEND2: (f32, f32) = (1.6, 0.07);
+
+/// One slice's two joints, already converted to node-local coordinates.
+struct Link {
+    /// The local position of the joint that attaches to the previous slice.
+    from: [f32; 2],
+    /// The local position of the joint that the next slice attaches to.
+    to: [f32; 2],
+}
+
+/// Converts a joint from the image's pixel space — `(0, 0)` at the upper-
+/// left, `y` down — to node-local coordinates: the sprite is centered on
+/// the node's origin and the scene's y axis points up.
+fn local_joint(jx: f32, jy: f32, size: [f32; 2]) -> [f32; 2] {
+    [jx - size[0] / 2.0, size[1] / 2.0 - jy]
+}
+
+/// The loaded sprite's texture size in pixels.
+fn sprite_size(shape: &frost::Shape) -> [f32; 2] {
+    match shape {
+        frost::Shape::Sprite { width, height, .. } => [*width as f32, *height as f32],
+        _ => unreachable!("the slice is a sprite"),
+    }
+}
+
+/// A slice's joints in node-local space, from the hand-picked pixel
+/// coordinates and the texture's real size.
+fn link(shape: &frost::Shape, joints: [(f32, f32); 2]) -> Link {
+    let size = sprite_size(shape);
+    Link {
+        from: local_joint(joints[0].0, joints[0].1, size),
+        to: local_joint(joints[1].0, joints[1].1, size),
+    }
+}
+
+/// A three-slice plant that grows out of its root joint and sways in a
+/// travelling wind. The shapes themselves live in the scene; the value only
+/// keeps the growth clock and the slices' joints in node-local space.
+pub struct Plant {
+    /// Elapsed time in seconds.
+    t: f32,
+    /// The three slices in chain order, with their joints in node-local
+    /// space.
+    links: [Link; 3],
+}
+
+impl Plant {
+    /// Builds the plant from the three slice shapes in chain order
+    /// (`plant1`, `plant2`, `plant3`), with each slice's joints converted
+    /// from `JOINTS` to node-local space against its texture's real size.
+    /// The growth clock starts at zero.
+    pub fn new(shapes: [&frost::Shape; 3]) -> Self {
+        Plant {
+            t: 0.0,
+            links: [
+                link(shapes[0], JOINTS[0]),
+                link(shapes[1], JOINTS[1]),
+                link(shapes[2], JOINTS[2]),
+            ],
+        }
+    }
+
+    /// Advances the growth clock by `dt` seconds.
+    pub fn step(&mut self, dt: f32) {
+        self.t += dt;
+    }
+
+    /// Lays the plant out in `node`, whose children — in chain order — are
+    /// the three slice nodes.
+    ///
+    /// `node`'s origin is the plant's root joint (plant1's lower joint):
+    /// the base rock turns the whole plant around that joint, and its
+    /// transform is set to that rotation composed with a translation to
+    /// `anchor` — the root joint's position in the node's parent space — so
+    /// the joint never moves. The node's own `scale` (set once by the
+    /// caller) sizes the whole plant around the root joint. Each slice is
+    /// then scaled by its growth factor around its own lower joint, so it
+    /// grows out of the joint it attaches to the previous slice through,
+    /// bent by its share of the wind, and the next slice sprouts from its
+    /// moving upper joint.
+    pub fn layout(&self, node: &mut frost::SceneNode, anchor: [f32; 2]) {
+        // A gentle travelling wind: the base rock and the two joint bends
+        // lag each other, and each bend is a little stronger than the last,
+        // so the tip of the plant moves the most.
+        let base = (self.t * SWAY_FREQ).sin() * SWAY_BASE;
+        let bend1 = (self.t * SWAY_FREQ - SWAY_BEND1.0).sin() * SWAY_BEND1.1;
+        let bend2 = (self.t * SWAY_FREQ - SWAY_BEND2.0).sin() * SWAY_BEND2.1;
+
+        // The growth factor of each slice: 0 at startup, 1 from its own
+        // GROW_TIMES entry on, linear in between. All slices grow
+        // concurrently.
+        let grown = [
+            (self.t / GROW_TIMES[0]).min(1.0),
+            (self.t / GROW_TIMES[1]).min(1.0),
+            (self.t / GROW_TIMES[2]).min(1.0),
+        ];
+
+        // The plant node anchors the chain: its origin is plant1's lower
+        // joint, and the base rock turns everything around that joint. The
+        // origin maps to itself under the rotation, so the root joint
+        // never moves. The fit scale is constant — the growth is applied
+        // to each slice individually below.
+        node.transform = frost::Transform::rotate(base)
+            .compose(&frost::Transform::translate(anchor[0], anchor[1]));
+
+        // Lay the chain out in the plant's own (unscaled) space: the first
+        // slice's lower joint sits at the plant's origin, and each next
+        // slice's lower joint sits on the previous slice's upper joint,
+        // rotated by that slice's bend. Each slice is scaled by its growth
+        // factor around its own lower joint, so it grows out of the joint
+        // it attaches to the previous slice through — and the upper joint
+        // the next slice attaches to moves with it.
+        let mut anchor = [0.0f32, 0.0];
+        for (i, (link, node)) in self.links.iter().zip(&mut node.children).enumerate() {
+            let bend = match i {
+                0 => 0.0,
+                1 => bend1,
+                _ => bend1 + bend2,
+            };
+            let rot = frost::Transform::rotate(bend);
+            let g = grown[i];
+            node.transform = frost::Transform::translate(-link.from[0], -link.from[1])
+                .compose(&frost::Transform::scale_uniform(g))
+                .compose(&rot)
+                .compose(&frost::Transform::translate(anchor[0], anchor[1]));
+            // The next anchor: this slice's upper joint, measured from its
+            // own lower joint, scaled by the slice's growth, and rotated
+            // by the slice's bend.
+            let d = [link.to[0] - link.from[0], link.to[1] - link.from[1]];
+            let step = rot.apply([g * d[0], g * d[1]]);
+            anchor = [anchor[0] + step[0], anchor[1] + step[1]];
+        }
+    }
+}
