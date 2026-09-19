@@ -42,7 +42,7 @@ src/backend/frame.rs  Draw list model: Draw enum, scissor rects, uniform writers
 src/backend/wasm.rs   WebFrost: deferred async GPU setup + fallback DOM helpers
 src/backend/tests.rs  GPU-free backend tests (uniform layout, canvas behavior)
 shaders/*.wgsl        line, circle, rectangle, shape (SDF circle+rect), sprite
-examples/             24 runnable demos (see table below)
+examples/             25 runnable demos (see table below)
 assets/               sprites/*.png (+ .pxo sidecars for brick, water_can),
                       fonts/JameGem08_2026-Regular.ttf, audio/swoof.wav
 src/TODO.md           next planned feature (Body / rigid bodies)
@@ -55,8 +55,11 @@ numbers use a hand-rolled splitmix64 `Rng(u64)`.
 ## The public API (src/lib.rs)
 
 - `frost::run(scene: Scene, process: P) -> Result<(), ...>` — the entry point.
-  `run_configured` takes a `Config { vsync: bool }` (default on) to turn vsync
-  off for uncapped frame rates. Both exist for native and wasm32.
+  `run_configured` takes a `Config { vsync: bool, window_size: Option<[u32;2]> }`
+  (vsync default on, window size default platform) to turn vsync off for
+  uncapped frame rates or open the window at a specific inner size in logical
+  pixels (the user can still resize afterwards). Both exist for native and
+  wasm32.
 - `Process` — `fn process(&mut self, ctx: &mut Context, dt: f32)`; `dt` is
   seconds since the previous frame (`0.0` on the first, clamped to 1.0s).
   **Any `FnMut(&mut Context, f32)` closure is a `Process`.**
@@ -190,8 +193,9 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
 
 ## The GPU side (src/backend/app.rs, shaders/)
 
-- `Frost<P>` holds the wgpu instance/adapter/device/queue, `vsync`, the window
-  (`Arc<Window>`), logical size + scale factor, the surface, the five pipelines
+- `Frost<P>` holds the wgpu instance/adapter/device/queue, `vsync` and
+  `window_size` (the `Config` values), the window (`Arc<Window>`), logical
+  size + scale factor, the surface, the five pipelines
   (line/circle/rect/shape/sprite), `sprite_resources` (a
   `HashMap<*const (), (TextureView, Sampler)>` keyed by the sprite pixel-data
   `Arc`'s pointer — sprites from the same file, and glyph quads from the same
@@ -218,8 +222,9 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
   buttons, `CursorLeft`/`Focused(false)` **clear** the held state (no stuck
   controls), resize/scale-factor reconfigure the surface (pipelines rebuild
   only if the format changed), `RedrawRequested` → `render()` + re-request.
-  The window opens centered on the monitor and requests its first redraw
-  explicitly (Wayland won't deliver one otherwise).
+  The window opens at the `Config`'s `window_size` (or the platform default),
+  centered on the monitor, and requests its first redraw explicitly (Wayland
+  won't deliver one otherwise).
 - `block_on` (native only) drives the adapter/device futures with a no-op
   waker — the browser can't block on them, hence `WebFrost`.
 
@@ -404,6 +409,7 @@ All load assets via `CARGO_MANIFEST_DIR`. Run with `cargo run --example <name>`
 |              | draws on top; each child puts the image px `(308, 411)` on          |
 |              | the parent's origin; the parent carries the inverse, so the         |
 |              | image's center sits on the window's center                          |
+| immortal     | the cursor demo in a 1920x1080 window (Config window_size)          |
 
 `cursor.rs` is the most complete reference demo: `CAN_IMAGE [331,247]` scaled
 to 100 px, a 90° CCW tilt tween (0.5 s, rebuilt on press/release edges),
@@ -448,4 +454,5 @@ cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0
 cargo run --example button   # hover-scale + click-swoosh check; window exits 0
 cargo run --example tomato_sprite   # overlay check; window exits 0
+cargo run --example immortal   # 1920x1080 window: grass fills it 1:1; exits 0
 ```
