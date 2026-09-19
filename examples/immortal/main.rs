@@ -5,8 +5,18 @@
 //! without being stretched, and is re-stretched every frame to keep it
 //! covered if the window is resized.
 //!
-//! Pressing and releasing the right mouse button toggles between the two
-//! tools (both through [`frost::Context::mouse_button_down`]):
+//! The mouse can hold two tools at once: the active one, drawn as the
+//! cursor's sprite, and a stored one, drawn nowhere. It starts with
+//! neither. Pressing and releasing the right mouse button (both through
+//! [`frost::Context::mouse_button_down`]) switches the two: the stored
+//! tool becomes the active one and the active one is stored. A left click
+//! on a slot — a press and a release on the same slot — swaps the active
+//! tool with the slot's: the tool in a populated slot moves to the mouse,
+//! and the active tool moves into an empty slot, in which case the mouse
+//! shows no sprite, still holding the stored tool, if any.
+//!
+//! While the active tool is held, the left button uses it on the grass —
+//! a click over a slot instead swaps it with the slot's tool:
 //!
 //! - The watering can, `assets/sprites/water_can_outline.png`, follows
 //!   the pointer: the sprite is cropped to the can, so the demo scales it
@@ -31,10 +41,9 @@
 //! top and bottom borders, and sits 20 pixels clear of the left border,
 //! centered vertically — mid left. Its space is split into four slots, 0 to
 //! 3 from the top, evenly along the y axis inside a 60 pixel margin at the
-//! top and bottom. The watering can rests in slot 3 and the spray can in
-//! slot 2, drawn on top of the panel; a basket in slot 0 and a second
-//! watering can in slot 1 sit ghosted at 20 percent alpha, via their nodes'
-//! modulate.
+//! top and bottom. The spray can rests in slot 2 and the watering can in
+//! slot 3, drawn on top of the panel; slots 0 and 1 start empty, and a
+//! left click can park either tool in any slot.
 //!
 //! On the grass, six tomato plants grow slice by slice: the same slice-
 //! chain construction and travelling wind as the `grow` example, reused
@@ -82,9 +91,6 @@ const PLANT_SCALE: f32 = 0.45;
 /// `water_can_outline.png`'s texture size in pixels: the can's content,
 /// cropped to the image.
 const CAN_IMAGE: [f32; 2] = [333.0, 251.0];
-
-/// `basket.png`'s texture size in pixels.
-const BASKET_IMAGE: [f32; 2] = [271.0, 251.0];
 
 /// The can's visible content in the image's own pixel space: `(0, 0)` is
 /// the upper-left corner, `x` grows to the right, `y` grows down. The
@@ -216,16 +222,6 @@ const CAN_SLOT: usize = 3;
 /// The slot the resting spray can sits in.
 const SPRAY_SLOT: usize = 2;
 
-/// The slot the ghosted basket sits in.
-const BASKET_SLOT: usize = 0;
-
-/// The slot the ghosted second watering can sits in.
-const CAN2_SLOT: usize = 1;
-
-/// The alpha the ghosted slot 0 and slot 1 items carry, applied as their
-/// nodes' modulate.
-const GHOST_ALPHA: f32 = 0.2;
-
 /// The padding each resting can keeps from its slot's edges, in pixels.
 const SLOT_INSET: f32 = 12.0;
 
@@ -245,6 +241,37 @@ fn slot_scale(size: [f32; 2]) -> f32 {
     let w = ITEMS_SIZE[0] - 2.0 * SLOT_INSET;
     let h = (ITEMS_SIZE[1] - 2.0 * SLOT_MARGIN) / SLOTS as f32 - 2.0 * SLOT_INSET;
     (w / size[0]).min(h / size[1])
+}
+
+/// Whether the user-space point `p` is inside slot `i`, for the panel node
+/// `items`: the slot's cell in the panel's local space — the full panel
+/// width by the strip's per-slot height, centered on `slot_local(i)` —
+/// mapped through the panel's world transform, the same scale-then-
+/// transform composition the renderer draws it with.
+fn slot_hovered(items: &frost::SceneNode, i: usize, p: [f32; 2]) -> bool {
+    let world =
+        frost::Transform::scale(items.scale[0], items.scale[1]).compose(&items.transform);
+    let [cx, cy] = world.apply(slot_local(i));
+    (p[0] - cx).abs() <= ITEMS_SIZE[0] * items.scale[0] / 2.0
+        && (p[1] - cy).abs()
+            <= (ITEMS_SIZE[1] - 2.0 * SLOT_MARGIN) * items.scale[1] / SLOTS as f32 / 2.0
+}
+
+/// The tool a slot node holds, read from the sprite it shows: the two
+/// sprites have different texture sizes, so the size identifies the tool,
+/// and a node with no shape holds nothing.
+fn slot_tool(node: &frost::SceneNode) -> Option<Tool> {
+    let (w, h) = match &node.shape {
+        Some(frost::Shape::Sprite { width, height, .. }) => (*width as f32, *height as f32),
+        _ => return None,
+    };
+    if (w, h) == (CAN_IMAGE[0], CAN_IMAGE[1]) {
+        Some(Tool::WaterCan)
+    } else if (w, h) == (SPRAY_IMAGE[0], SPRAY_IMAGE[1]) {
+        Some(Tool::SprayCan)
+    } else {
+        None
+    }
 }
 
 /// `Spray1.png` and `Spray2.png`'s texture size in pixels: both frames
@@ -378,8 +405,10 @@ impl Rng {
     }
 }
 
-/// The two cursor tools, toggled by pressing and releasing the right
-/// mouse button.
+/// The two cursor tools. The mouse holds one active tool, drawn as the
+/// cursor, and one stored tool, drawn nowhere: the right-button switch
+/// swaps the two, and a left click on a slot swaps the active tool with
+/// the slot's.
 #[derive(Clone, Copy, PartialEq)]
 enum Tool {
     /// The watering can: hold the left button to tilt it and pour water.
@@ -392,13 +421,23 @@ struct Demo {
     /// The cursor's last reported position; the tool sticks here while the
     /// cursor is outside the window.
     mouse: [f32; 2],
-    /// The active tool.
-    tool: Tool,
+    /// The active tool, or `None` while the mouse holds none: the one
+    /// drawn as the cursor. A left click on a slot swaps it with the
+    /// slot's tool, and the right-button switch swaps it with the stored
+    /// one.
+    active: Option<Tool>,
+    /// The second tool the mouse holds, or `None`: stored without a
+    /// sprite; the right-button switch swaps it with the active tool.
+    held: Option<Tool>,
+    /// The slot the current left press started on, if any: a press that
+    /// starts on a slot is a swap click, completed only if the release
+    /// lands on the same slot.
+    press_slot: Option<usize>,
     /// Whether the left mouse button was down on the previous frame; the
     /// press and release edges are derived from it.
     pressed: bool,
     /// Whether the right mouse button was down on the previous frame; the
-    /// tool toggles on its release.
+    /// two held tools switch on its release.
     right_pressed: bool,
     /// The active can's current rotation, in radians counter-clockwise:
     /// the watering can's tilt or the spray can's burst angle.
@@ -485,45 +524,74 @@ impl frost::Process for Demo {
         let left = ctx.mouse_button_down(frost::MouseButton::Left);
         let right = ctx.mouse_button_down(frost::MouseButton::Right);
 
-        // A press followed by a release of the right mouse button toggles
-        // between the tools. Switching resets the can to its upright,
-        // at-rest pose and puts the new tool's shape and scale on the node,
-        // so neither tool inherits the other's tilt, burst, or sprite.
+        // The slot the pointer is over, if any: a left click swaps the
+        // active tool with a slot's tool, and the click is recognized by
+        // the press and the release both landing on the same slot.
+        let items_node = &ctx.scene().root.children[1];
+        let on_slot = (0..SLOTS).find(|&i| slot_hovered(items_node, i, self.mouse));
+
+        // A press followed by a release of the right mouse button switches
+        // the two tools the mouse holds: the stored one becomes the active
+        // one and the active one is stored, each in its upright, at-rest
+        // pose.
         if self.right_pressed && !right {
-            let to_spray = self.tool == Tool::WaterCan;
-            self.tool = if to_spray {
-                Tool::SprayCan
-            } else {
-                Tool::WaterCan
-            };
-            self.angle = 0.0;
-            self.burst = None;
-            self.rotation = frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once);
-            let tool_node = &mut ctx.scene().root.children[3];
-            if to_spray {
-                self.showing_spray2 = false;
-                tool_node.shape = Some(self.spray1.clone());
-                tool_node.scale = [1.0, 1.0];
-            } else {
-                tool_node.shape = Some(self.can.clone());
-                tool_node.scale = [CAN_SCALE, CAN_SCALE];
-            }
+            std::mem::swap(&mut self.active, &mut self.held);
+            self.set_active(ctx, self.active);
         }
         self.right_pressed = right;
 
-        match self.tool {
-            // Hold the left mouse button down to turn the can a quarter
-            // turn counter-clockwise around the pointer; release to turn it
-            // back. Each leg is a `ROTATE_TIME`-second tween restarted from
-            // wherever the can currently is, so a mid-rotation press or
-            // release picks up from the can's live angle.
-            Tool::WaterCan => {
-                if left != self.pressed {
-                    self.pressed = left;
-                    let target = if left { CAN_ANGLE } else { 0.0 };
-                    self.rotation = frost::Tween::new(self.angle, target, ROTATE_TIME)
-                        .repeat(frost::Repeat::Once);
+        // The left button's press and release edges. A press that starts
+        // on a slot is a swap click: it uses no tool, and the release
+        // completes the swap only if it lands on the same slot. A press
+        // that starts elsewhere is a use of the active tool.
+        if left && !self.pressed {
+            self.press_slot = on_slot;
+            if on_slot.is_none() && self.active == Some(Tool::WaterCan) {
+                // Hold the left mouse button down to turn the can a quarter
+                // turn counter-clockwise around the pointer; the release
+                // turns it back. Each leg is a `ROTATE_TIME`-second tween
+                // restarted from wherever the can currently is, so a
+                // mid-rotation press or release picks up from the can's
+                // live angle.
+                self.rotation =
+                    frost::Tween::new(self.angle, CAN_ANGLE, ROTATE_TIME).repeat(frost::Repeat::Once);
+            } else if on_slot.is_none() && self.active == Some(Tool::SprayCan) {
+                // A fresh press — one after a release, not a re-press
+                // mid-burst — triggers a burst while the can stands
+                // upright.
+                if self.burst.is_none() {
+                    self.burst = Some(0.0);
+                    // PingPong is the tween's default: `0 ->
+                    // BURST_ANGLE` in `BURST_HALF` seconds and back in the
+                    // same time, so the tilting and the return take
+                    // `BURST_TIME` in all. The ticking below stops there,
+                    // before the cycle could wrap.
+                    self.rotation = frost::Tween::new(0.0, BURST_ANGLE, BURST_HALF);
+                    self.set_spray_frame(ctx, true);
                 }
+            }
+        } else if !left && self.pressed {
+            if let Some(slot) = self.press_slot {
+                // The press started on a slot: complete the swap only if
+                // the release is still on that slot.
+                if on_slot == Some(slot) {
+                    self.swap_with_slot(ctx, slot);
+                }
+            } else if self.active == Some(Tool::WaterCan) {
+                // A release that started in the world turns the can back
+                // the same way, over `ROTATE_TIME`.
+                self.rotation =
+                    frost::Tween::new(self.angle, 0.0, ROTATE_TIME).repeat(frost::Repeat::Once);
+            }
+            self.press_slot = None;
+        }
+        self.pressed = left;
+
+        // The active tool's live pose, ticked every frame so an ongoing
+        // tilt, return, or burst keeps moving; no tool held is a no-op.
+        match self.active {
+            // The watering can pours at the full tilt.
+            Some(Tool::WaterCan) => {
                 self.angle = self.rotation.tick(dt);
 
                 // Water pours out of the spout once the can is fully
@@ -551,24 +619,9 @@ impl frost::Process for Demo {
                     }
                 }
             }
-            // A fresh press of the left button — one after a release, not a
-            // hold or a re-press mid-burst — triggers a burst while the can
-            // stands upright.
-            Tool::SprayCan => {
-                if left && !self.pressed && self.burst.is_none() {
-                    self.pressed = left;
-                    self.burst = Some(0.0);
-                    // PingPong is the tween's default: `0 -> BURST_ANGLE`
-                    // in `BURST_HALF` seconds and back in the same time, so
-                    // the tilting and the return take `BURST_TIME` in all.
-                    // The ticking below stops there, before the cycle could
-                    // wrap.
-                    self.rotation = frost::Tween::new(0.0, BURST_ANGLE, BURST_HALF);
-                    self.set_spray_frame(ctx, true);
-                } else {
-                    self.pressed = left;
-                }
-
+            // The spray can: the burst, once a press started it, runs to
+            // `BURST_TIME`; nothing to do while no burst is in flight.
+            Some(Tool::SprayCan) => {
                 if let Some(t) = self.burst {
                     let nt = t + dt;
                     if nt >= BURST_TIME {
@@ -608,13 +661,18 @@ impl frost::Process for Demo {
                     }
                 }
             }
+            // No tool held: nothing to tilt, burst, or emit.
+            None => {}
         }
 
-        let tool_node = &mut ctx.scene().root.children[3];
-        tool_node.transform = match self.tool {
-            Tool::WaterCan => can_transform(mx, my, self.angle),
-            Tool::SprayCan => spray_transform(mx, my, self.angle),
-        };
+        // A fresh transform is only needed while the node shows a tool.
+        if let Some(tool) = self.active {
+            let tool_node = &mut ctx.scene().root.children[3];
+            tool_node.transform = match tool {
+                Tool::WaterCan => can_transform(mx, my, self.angle),
+                Tool::SprayCan => spray_transform(mx, my, self.angle),
+            };
+        }
 
         // Advance the particles even while not emitting, so an ongoing
         // stream keeps falling until it dies out.
@@ -657,6 +715,59 @@ impl frost::Process for Demo {
 }
 
 impl Demo {
+    /// Makes `tool` the active tool — `None` for no tool: it resets the
+    /// can to its upright, at-rest pose (angle, burst, rotation tween, and
+    /// frame) and puts the tool's shape and scale on the node, or clears
+    /// it, so no tool inherits another's tilt, burst, or sprite.
+    fn set_active(&mut self, ctx: &mut frost::Context, tool: Option<Tool>) {
+        self.active = tool;
+        self.angle = 0.0;
+        self.burst = None;
+        self.rotation = frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once);
+        self.showing_spray2 = false;
+        let tool_node = &mut ctx.scene().root.children[3];
+        match tool {
+            Some(Tool::WaterCan) => {
+                tool_node.shape = Some(self.can.clone());
+                tool_node.scale = [CAN_SCALE, CAN_SCALE];
+            }
+            Some(Tool::SprayCan) => {
+                tool_node.shape = Some(self.spray1.clone());
+                tool_node.scale = [1.0, 1.0];
+            }
+            None => {
+                tool_node.shape = None;
+            }
+        }
+    }
+
+    /// Swaps the active tool with whatever rests in slot `slot`: the
+    /// slot's tool becomes the active one — or nothing, if the slot is
+    /// empty, in which case the mouse shows no sprite, still holding the
+    /// stored tool, if any — and the active tool moves into the slot.
+    fn swap_with_slot(&mut self, ctx: &mut frost::Context, slot: usize) {
+        let slot_tool = slot_tool(&ctx.scene().root.children[1].children[slot]);
+        let incoming = self.active;
+        self.set_active(ctx, slot_tool);
+        self.slot_set(&mut ctx.scene().root.children[1].children[slot], incoming);
+    }
+
+    /// Rests `tool` — or nothing — in the slot's node: the tool's shape at
+    /// the slot-fit scale, or no shape at all.
+    fn slot_set(&mut self, node: &mut frost::SceneNode, tool: Option<Tool>) {
+        match tool {
+            Some(Tool::WaterCan) => {
+                node.shape = Some(self.can.clone());
+                node.scale = [slot_scale(CAN_IMAGE), slot_scale(CAN_IMAGE)];
+            }
+            Some(Tool::SprayCan) => {
+                node.shape = Some(self.spray1.clone());
+                node.scale = [slot_scale(SPRAY_IMAGE), slot_scale(SPRAY_IMAGE)];
+            }
+            None => node.shape = None,
+        }
+    }
+
     /// Shows the pressed spray frame (`spray2`) if `on` and the at-rest
     /// frame (`spray1`) otherwise, but only when the tool node currently
     /// shows the other one, so the swap — a cheap `Arc` clone — happens at
@@ -691,8 +802,6 @@ fn main() {
         .expect("failed to load assets/sprites/Spray2.png");
     let items = frost::Shape::sprite(format!("{root}/assets/sprites/items.png"))
         .expect("failed to load assets/sprites/items.png");
-    let basket = frost::Shape::sprite(format!("{root}/assets/sprites/basket.png"))
-        .expect("failed to load assets/sprites/basket.png");
     let plant1 = frost::Shape::sprite(format!("{root}/assets/sprites/plant1.png"))
         .expect("failed to load assets/sprites/plant1.png");
     let plant2 = frost::Shape::sprite(format!("{root}/assets/sprites/plant2.png"))
@@ -756,44 +865,29 @@ fn main() {
             Box::new(frost::SceneNode {
                 // The inventory panel, positioned and scaled by the process
                 // every frame: mid left, `MARGIN` clear of the top, bottom,
-                // and left borders. Its four resting items are its children
-                // — a node paints its shape before its children, so they
-                // render on top of the panel — and they ride its fit on
-                // resize. The slot 0 and slot 1 items carry `GHOST_ALPHA`
-                // via their nodes' modulate.
+                // and left borders. Its children are the four slots, one per
+                // slot in slot order — a node paints its shape before its
+                // children, so a resting tool renders on top of the panel —
+                // and they ride its fit on resize. The spray can rests in
+                // slot 2 and the watering can in slot 3; slots 0 and 1
+                // start empty, and a left click can park either tool in any
+                // slot.
                 shape: Some(items),
                 children: vec![
                     Box::new(frost::SceneNode {
-                        // The basket at rest, centered in slot 0, ghosted.
+                        // Slot 0: empty at start.
                         transform: frost::Transform::translate(
-                            slot_local(BASKET_SLOT)[0],
-                            slot_local(BASKET_SLOT)[1],
+                            slot_local(0)[0],
+                            slot_local(0)[1],
                         ),
-                        scale: [slot_scale(BASKET_IMAGE), slot_scale(BASKET_IMAGE)],
-                        modulate: frost::Color {
-                            r: 1.0,
-                            g: 1.0,
-                            b: 1.0,
-                            a: GHOST_ALPHA,
-                        },
-                        shape: Some(basket),
                         ..Default::default()
                     }),
                     Box::new(frost::SceneNode {
-                        // The second watering can at rest, centered in slot
-                        // 1, ghosted.
+                        // Slot 1: empty at start.
                         transform: frost::Transform::translate(
-                            slot_local(CAN2_SLOT)[0],
-                            slot_local(CAN2_SLOT)[1],
+                            slot_local(1)[0],
+                            slot_local(1)[1],
                         ),
-                        scale: [slot_scale(CAN_IMAGE), slot_scale(CAN_IMAGE)],
-                        modulate: frost::Color {
-                            r: 1.0,
-                            g: 1.0,
-                            b: 1.0,
-                            a: GHOST_ALPHA,
-                        },
-                        shape: Some(can.clone()),
                         ..Default::default()
                     }),
                     Box::new(frost::SceneNode {
@@ -832,15 +926,13 @@ fn main() {
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
-                // The active tool, starting as the watering can: scaled to
-                // `CAN_SIZE` wide. The toggle switches the shape — and the
-                // scale, since the spray frames are drawn at their natural
-                // size — on this same node. It stays the last child, so the
-                // cursor paints above the panel and the plant.
-                // Starts at the window's center; the process moves it to
-                // the pointer from the first frame on.
-                scale: [CAN_SCALE, CAN_SCALE],
-                shape: Some(can.clone()),
+                // The active tool, starting with no shape: the mouse starts
+                // holding no tool at all. Every switch — a slot swap or the
+                // right-button switch — changes the shape — and the scale,
+                // since the spray frames are drawn at their natural size —
+                // on this same node; the stored tool is drawn nowhere. It
+                // stays the last child, so the cursor paints above the
+                // panel and the plant.
                 ..Default::default()
             }),
         ],
@@ -853,7 +945,9 @@ fn main() {
         scene,
         Demo {
             mouse: [0.0, 0.0],
-            tool: Tool::WaterCan,
+            active: None,
+            held: None,
+            press_slot: None,
             pressed: false,
             right_pressed: false,
             angle: 0.0,
