@@ -26,12 +26,15 @@
 //!   clockwise tilting — it emits a green spray from the nozzle
 //!   (`SPRAY_NOZZLE`, in image pixels).
 //!
-//! `assets/sprites/items.png` is a full-screen inventory overlay, drawn 1:1
-//! at the window center like the grass and re-stretched with it on resize:
-//! its panel sits on the left of the screen. The panel's space is split
-//! into four slots, 0 to 3 from the top, evenly along the y axis; the
-//! watering can rests in slot 3 and the spray can in slot 2, drawn on top
-//! of the panel.
+//! `assets/sprites/items.png` is the inventory panel itself. It is scaled
+//! uniformly to fit the window's height, with a 20 pixel clearance to the
+//! top and bottom borders, and sits 20 pixels clear of the left border,
+//! centered vertically — mid left. Its space is split into four slots, 0 to
+//! 3 from the top, evenly along the y axis inside a 60 pixel margin at the
+//! top and bottom. The watering can rests in slot 3 and the spray can in
+//! slot 2, drawn on top of the panel; a basket in slot 0 and a second
+//! watering can in slot 1 sit ghosted at 20 percent alpha, via their nodes'
+//! modulate.
 //!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
@@ -50,6 +53,9 @@ const GRASS_SIZE: [f32; 2] = [1920.0, 1080.0];
 /// `water_can_outline.png`'s texture size in pixels: the can's content,
 /// cropped to the image.
 const CAN_IMAGE: [f32; 2] = [333.0, 251.0];
+
+/// `basket.png`'s texture size in pixels.
+const BASKET_IMAGE: [f32; 2] = [271.0, 251.0];
 
 /// The can's visible content in the image's own pixel space: `(0, 0)` is
 /// the upper-left corner, `x` grows to the right, `y` grows down. The
@@ -161,22 +167,20 @@ fn spout(mx: f32, my: f32, angle: f32) -> ([f32; 2], [f32; 2]) {
     ([mx + ox, my + oy], [ox / l, oy / l])
 }
 
-/// `items.png`'s texture size in pixels: a full-screen inventory overlay,
-/// the same size as the window, so it is drawn 1:1 at the window center
-/// like the grass and re-stretched with it on resize.
-const ITEMS_SIZE: [f32; 2] = [1920.0, 1080.0];
+/// `items.png`'s texture size in pixels: the cropped panel itself.
+const ITEMS_SIZE: [f32; 2] = [389.0, 991.0];
 
-/// The panel's visible content in `items.png`'s pixel space: `(0, 0)` is
-/// the upper-left corner, `x` grows right, `y` grows down. The panel is
-/// the vertical strip near the left edge of the overlay.
-const ITEMS_BOX: [[f32; 2]; 2] = [
-    [48.0, 57.0], // content upper-left
-    [436.0, 1047.0], // content lower-right
-];
+/// The clearance the panel keeps from the window's top, bottom, and left
+/// borders, in pixels.
+const MARGIN: f32 = 20.0;
 
 /// The panel's logical slots, 0 (top) to 3 (bottom), evenly distributed
-/// over the panel's height.
+/// over the slot strip's height.
 const SLOTS: usize = 4;
+
+/// The margin the slot strip keeps from the panel's top and bottom edges,
+/// in pixels.
+const SLOT_MARGIN: f32 = 60.0;
 
 /// The slot the resting watering can sits in.
 const CAN_SLOT: usize = 3;
@@ -184,25 +188,34 @@ const CAN_SLOT: usize = 3;
 /// The slot the resting spray can sits in.
 const SPRAY_SLOT: usize = 2;
 
+/// The slot the ghosted basket sits in.
+const BASKET_SLOT: usize = 0;
+
+/// The slot the ghosted second watering can sits in.
+const CAN2_SLOT: usize = 1;
+
+/// The alpha the ghosted slot 0 and slot 1 items carry, applied as their
+/// nodes' modulate.
+const GHOST_ALPHA: f32 = 0.2;
+
 /// The padding each resting can keeps from its slot's edges, in pixels.
 const SLOT_INSET: f32 = 12.0;
 
 /// The center of slot `i` (0 = top) in the items node's local space: the
-/// slot's image-pixel center offset from the window center, with the y
-/// flip, so a child translated here lands on the slot's center once the
-/// overlay is drawn 1:1 at the window center.
+/// slot's image-pixel center inside the margin-inset strip, y-flipped
+/// about the panel's center, so a child translated here lands on the
+/// slot's center.
 fn slot_local(i: usize) -> [f32; 2] {
-    let h = ITEMS_BOX[1][1] - ITEMS_BOX[0][1];
-    let px = (ITEMS_BOX[0][0] + ITEMS_BOX[1][0]) / 2.0;
-    let py = ITEMS_BOX[0][1] + (i as f32 + 0.5) * (h / SLOTS as f32);
-    [px - ITEMS_SIZE[0] / 2.0, ITEMS_SIZE[1] / 2.0 - py]
+    let h = ITEMS_SIZE[1] - 2.0 * SLOT_MARGIN;
+    let py = SLOT_MARGIN + (i as f32 + 0.5) * (h / SLOTS as f32);
+    [0.0, ITEMS_SIZE[1] / 2.0 - py]
 }
 
 /// The uniform scale that fits a `size`-pixel sprite into one slot,
 /// keeping `SLOT_INSET` clear of the slot's edges.
 fn slot_scale(size: [f32; 2]) -> f32 {
-    let w = ITEMS_BOX[1][0] - ITEMS_BOX[0][0] - 2.0 * SLOT_INSET;
-    let h = (ITEMS_BOX[1][1] - ITEMS_BOX[0][1]) / SLOTS as f32 - 2.0 * SLOT_INSET;
+    let w = ITEMS_SIZE[0] - 2.0 * SLOT_INSET;
+    let h = (ITEMS_SIZE[1] - 2.0 * SLOT_MARGIN) / SLOTS as f32 - 2.0 * SLOT_INSET;
     (w / size[0]).min(h / size[1])
 }
 
@@ -396,10 +409,16 @@ impl frost::Process for Demo {
         let (w, h) = ctx.size();
         let grass = &mut ctx.scene().root.children[0];
         grass.scale = [w / GRASS_SIZE[0], h / GRASS_SIZE[1]];
-        // Stretch the overlay with the window too, so the panel — and the
-        // cans riding on its slots, as the node's children — stay in place.
+        // Fit the panel into the window's height with `MARGIN` clear of the
+        // top and bottom borders; the x scale follows, keeping the aspect
+        // ratio. The cans, riding on its slots as the node's children, stay
+        // in place.
         let items = &mut ctx.scene().root.children[1];
-        items.scale = [w / ITEMS_SIZE[0], h / ITEMS_SIZE[1]];
+        let s = (h - 2.0 * MARGIN) / ITEMS_SIZE[1];
+        items.scale = [s, s];
+        // Mid left: `MARGIN` clear of the left border, centered vertically.
+        items.transform =
+            frost::Transform::translate(-(w / 2.0) + MARGIN + ITEMS_SIZE[0] * s / 2.0, 0.0);
 
         // Follow the pointer, keeping the last known position while the
         // cursor is outside the window.
@@ -617,6 +636,8 @@ fn main() {
         .expect("failed to load assets/sprites/Spray2.png");
     let items = frost::Shape::sprite(format!("{root}/assets/sprites/items.png"))
         .expect("failed to load assets/sprites/items.png");
+    let basket = frost::Shape::sprite(format!("{root}/assets/sprites/basket.png"))
+        .expect("failed to load assets/sprites/basket.png");
 
     let scene = frost::Scene::new(frost::SceneNode {
         // Dark ground under the grass; only the sparse transparent gaps in
@@ -636,14 +657,48 @@ fn main() {
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
-                // The inventory overlay: the full-screen image, stretched
-                // with the window like the grass, so its panel sits on the
-                // left of the screen, roughly vertically centered. Its two
-                // resting cans are its children — a node paints its shape
-                // before its children, so the cans render on top of the
-                // panel — and they ride the overlay's stretch on resize.
+                // The inventory panel, positioned and scaled by the process
+                // every frame: mid left, `MARGIN` clear of the top, bottom,
+                // and left borders. Its four resting items are its children
+                // — a node paints its shape before its children, so they
+                // render on top of the panel — and they ride its fit on
+                // resize. The slot 0 and slot 1 items carry `GHOST_ALPHA`
+                // via their nodes' modulate.
                 shape: Some(items),
                 children: vec![
+                    Box::new(frost::SceneNode {
+                        // The basket at rest, centered in slot 0, ghosted.
+                        transform: frost::Transform::translate(
+                            slot_local(BASKET_SLOT)[0],
+                            slot_local(BASKET_SLOT)[1],
+                        ),
+                        scale: [slot_scale(BASKET_IMAGE), slot_scale(BASKET_IMAGE)],
+                        modulate: frost::Color {
+                            r: 1.0,
+                            g: 1.0,
+                            b: 1.0,
+                            a: GHOST_ALPHA,
+                        },
+                        shape: Some(basket),
+                        ..Default::default()
+                    }),
+                    Box::new(frost::SceneNode {
+                        // The second watering can at rest, centered in slot
+                        // 1, ghosted.
+                        transform: frost::Transform::translate(
+                            slot_local(CAN2_SLOT)[0],
+                            slot_local(CAN2_SLOT)[1],
+                        ),
+                        scale: [slot_scale(CAN_IMAGE), slot_scale(CAN_IMAGE)],
+                        modulate: frost::Color {
+                            r: 1.0,
+                            g: 1.0,
+                            b: 1.0,
+                            a: GHOST_ALPHA,
+                        },
+                        shape: Some(can.clone()),
+                        ..Default::default()
+                    }),
                     Box::new(frost::SceneNode {
                         // The spray can at rest, centered in slot 2.
                         transform: frost::Transform::translate(
