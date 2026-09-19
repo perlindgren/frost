@@ -62,6 +62,14 @@
 //! is fully grown — concurrently with the tool system. Each root joint
 //! stays glued to its own `grass.png` pixel across resizes.
 //!
+//! A swarm of ten vipers buzzes around the flower bench — the row of
+//! plants — concurrently with everything else, through the [`vipers`]
+//! module: each viper orbits one of the plants at its own radius, speed,
+//! and height, and the two frames, `assets/sprites/Getingeye1.png` and
+//! `assets/sprites/Getingeye2.png`, alternate at its own wingbeat rate —
+//! the sprite is a viper flying to the right, flipped about its center
+//! while it flies to the left.
+//!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
 //!
@@ -70,6 +78,7 @@
 //! ```
 
 mod plant;
+mod vipers;
 
 /// The window's inner size in logical pixels, via `Config::window_size`.
 /// The grass photo is exactly this size, so it fills the window 1:1.
@@ -410,6 +419,11 @@ fn nozzle(mx: f32, my: f32, angle: f32) -> ([f32; 2], [f32; 2]) {
     ([mx + ox, my + oy], [ox / l, oy / l])
 }
 
+/// `Getingeye1.png` and `Getingeye2.png`'s texture size in pixels: both
+/// frames are the same size, and the swarm fits that width to the
+/// rendered bee width inside the [`vipers`] module.
+const VIPER_IMAGE: [f32; 2] = [1140.0, 638.0];
+
 /// A tiny deterministic random source (splitmix64), so the example needs
 /// no external random crate: seeded from the current time, it gives a
 /// different stream on each run.
@@ -495,6 +509,11 @@ struct Demo {
     /// them is a cheap `Arc` clone of the pixel buffer.
     spray1: frost::Shape,
     spray2: frost::Shape,
+    /// The two viper frames, loaded once: `viper1` the first wingbeat
+    /// frame and `viper2` the second; the swarm's bee nodes swap between
+    /// them as cheap `Arc` clones.
+    viper1: frost::Shape,
+    viper2: frost::Shape,
     /// The drops pouring out of the spout: the simulation state, stepped
     /// once per frame.
     water: frost::ParticleSystem,
@@ -513,6 +532,11 @@ struct Demo {
     /// matching child of the plants node (root children[2]), in parallel
     /// with the tool system.
     plants: [plant::Plant; PLANT_POS.len()],
+    /// The swarm of vipers buzzing around the flower bench — the row of
+    /// plants — in parallel with the tool system and the plants: stepped
+    /// every frame and laid out on the matching child of the vipers node
+    /// (root children[4]).
+    vipers: vipers::Vipers,
 }
 
 impl frost::Process for Demo {
@@ -541,22 +565,30 @@ impl frost::Process for Demo {
             -h / 2.0 + MARGIN + HELD_SIZE[1] * held_panel.scale[1] / 2.0,
         );
 
+        // The plants' root joints in user space, where the grass stretch
+        // maps each `PLANT_POS` pixel: the plants stay glued to them, and
+        // the vipers orbit around them.
+        let anchors = PLANT_POS.map(|pos| [
+            pos[0] * w / GRASS_SIZE[0] - w / 2.0,
+            h / 2.0 - pos[1] * h / GRASS_SIZE[1],
+        ]);
+
         // Grow the plants one at a time, in parallel with the tool
         // system: the first starts at launch, each next one starts when
-        // the previous is fully grown. Each root joint stays glued to its
-        // `PLANT_POS` pixel on the grass, which the grass stretch maps to
-        // the matching user-space anchor.
+        // the previous is fully grown.
         let plants_node = &mut ctx.scene().root.children[2];
-        for (i, &pos) in PLANT_POS.iter().enumerate() {
+        for (i, anchor) in anchors.iter().enumerate() {
             if i == 0 || self.plants[i - 1].fully_grown() {
                 self.plants[i].step(dt);
             }
-            let anchor = [
-                pos[0] * w / GRASS_SIZE[0] - w / 2.0,
-                h / 2.0 - pos[1] * h / GRASS_SIZE[1],
-            ];
-            self.plants[i].layout(&mut plants_node.children[i], anchor);
+            self.plants[i].layout(&mut plants_node.children[i], *anchor);
         }
+
+        // Buzz the vipers around the flower bench, in parallel with
+        // everything else: each viper orbits its home plant's root joint.
+        let vipers_node = &mut ctx.scene().root.children[4];
+        self.vipers.step(dt, &anchors);
+        self.vipers.layout(vipers_node, [&self.viper1, &self.viper2]);
 
         // Follow the pointer, keeping the last known position while the
         // cursor is outside the window.
@@ -711,7 +743,7 @@ impl frost::Process for Demo {
 
         // A fresh transform is only needed while the node shows a tool.
         if let Some(tool) = self.active {
-            let tool_node = &mut ctx.scene().root.children[4];
+            let tool_node = &mut ctx.scene().root.children[5];
             tool_node.transform = match tool {
                 Tool::WaterCan => can_transform(mx, my, self.angle),
                 Tool::SprayCan => spray_transform(mx, my, self.angle),
@@ -769,7 +801,7 @@ impl Demo {
         self.burst = None;
         self.rotation = frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once);
         self.showing_spray2 = false;
-        let tool_node = &mut ctx.scene().root.children[4];
+        let tool_node = &mut ctx.scene().root.children[5];
         match tool {
             Some(Tool::WaterCan) => {
                 tool_node.shape = Some(self.can.clone());
@@ -826,7 +858,7 @@ impl Demo {
             return;
         }
         self.showing_spray2 = on;
-        ctx.scene().root.children[4].shape = Some(if on {
+        ctx.scene().root.children[5].shape = Some(if on {
             self.spray2.clone()
         } else {
             self.spray1.clone()
@@ -875,6 +907,10 @@ fn main() {
         .expect("failed to load assets/sprites/Spray1.png");
     let spray2 = frost::Shape::sprite(format!("{root}/assets/sprites/Spray2.png"))
         .expect("failed to load assets/sprites/Spray2.png");
+    let viper1 = frost::Shape::sprite(format!("{root}/assets/sprites/Getingeye1.png"))
+        .expect("failed to load assets/sprites/Getingeye1.png");
+    let viper2 = frost::Shape::sprite(format!("{root}/assets/sprites/Getingeye2.png"))
+        .expect("failed to load assets/sprites/Getingeye2.png");
     let items = frost::Shape::sprite(format!("{root}/assets/sprites/items.png"))
         .expect("failed to load assets/sprites/items.png");
     let held_items =
@@ -1034,13 +1070,26 @@ fn main() {
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
+                // The vipers' swarm around the flower bench: one child per
+                // bee, in swarm order. The group carries no shape or scale
+                // of its own; the process lays each bee's pose, flip, and
+                // wingbeat frame out on its child every frame. It sits
+                // under the tool node, so the cursor paints above the
+                // bees.
+                children: (0..vipers::N)
+                    .map(|_| Box::new(frost::SceneNode::default()))
+                    .collect(),
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
                 // The active tool, starting with no shape: the mouse starts
                 // holding no tool at all. Every switch — a slot swap or the
                 // right-button switch — changes the shape — and the scale,
                 // since the spray frames are drawn at their natural size —
                 // on this same node; the stored tool is mirrored in the
                 // held panel's right cell instead. It stays the last child,
-                // so the cursor paints above the panel and the plant.
+                // so the cursor paints above the panel, the plants, and
+                // the bees.
                 ..Default::default()
             }),
         ],
@@ -1065,6 +1114,8 @@ fn main() {
             can,
             spray1,
             spray2,
+            viper1,
+            viper2,
             water: frost::ParticleSystem::new(),
             spray: frost::ParticleSystem::new(),
             rng: Rng::new(),
@@ -1073,6 +1124,7 @@ fn main() {
             // zero and the process steps it when the previous is fully
             // grown.
             plants: std::array::from_fn(|_| plant.clone()),
+            vipers: vipers::Vipers::new(VIPER_IMAGE),
         },
         frost::Config {
             window_size: Some(WINDOW),
