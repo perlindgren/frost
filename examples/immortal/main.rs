@@ -422,7 +422,7 @@ fn nozzle(mx: f32, my: f32, angle: f32) -> ([f32; 2], [f32; 2]) {
 /// `Getingeye1.png` and `Getingeye2.png`'s texture size in pixels: both
 /// frames are the same size, and the swarm fits that width to the
 /// rendered bee width inside the [`vipers`] module.
-const VIPER_IMAGE: [f32; 2] = [1140.0, 638.0];
+const VIPER_IMAGE: [f32; 2] = [198.0, 179.0];
 
 /// A tiny deterministic random source (splitmix64), so the example needs
 /// no external random crate: seeded from the current time, it gives a

@@ -26,7 +26,7 @@ pub const N: usize = 10;
 
 /// The rendered width of a bee, in pixels; the height follows the
 /// sprite's own aspect ratio.
-const BEE_SIZE: f32 = 100.0;
+const BEE_SIZE: f32 = 25.0;
 
 /// The golden ratio's fractional part, the deterministic "random"
 /// generator: `frac(i * GOLDEN)` spreads the bees' parameters over their
@@ -168,7 +168,8 @@ impl Vipers {
             let [ax, ay] = anchors[bee.home];
             let pos = [
                 ax + a.cos() * r,
-                ay + bee.hover + a.sin() * r * TILT
+                ay + bee.hover
+                    + a.sin() * r * TILT
                     + bee.bob_amp * (t * bee.bob_freq + 3.0 * bee.phase).sin(),
             ];
             // The velocity from the last step, or a synthetic rightward
