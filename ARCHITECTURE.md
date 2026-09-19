@@ -32,6 +32,8 @@ src/objects.rs        Color, Transform, Shape, Node, SceneNode, Layer, Scene,
 src/tween.rs          Tween<T> (f32 / [f32;2]) with Repeat modes
 src/particles.rs      Particle, ParticleSystem (pure simulation)
 src/collision.rs      OrientedBox, Circle, Collider, push_out, reflect (pure math)
+src/audio.rs          Audio (device + loop player), Sound (decoded buffer),
+                      AudioError — native-only, rodio-based
 src/text.rs           CPU text shaping/rasterization on swash, glyph shelf atlas
 src/shaders.rs        include_str! of the 5 WGSL sources + naga layout tests
 src/backend/mod.rs    `app`, `frame`, `wasm` (wasm32 only), `tests` (test only)
@@ -40,9 +42,9 @@ src/backend/frame.rs  Draw list model: Draw enum, scissor rects, uniform writers
 src/backend/wasm.rs   WebFrost: deferred async GPU setup + fallback DOM helpers
 src/backend/tests.rs  GPU-free backend tests (uniform layout, canvas behavior)
 shaders/*.wgsl        line, circle, rectangle, shape (SDF circle+rect), sprite
-examples/             21 runnable demos (see table below)
+examples/             22 runnable demos (see table below)
 assets/               sprites/*.png (+ .pxo sidecars for brick, water_can),
-                      fonts/JameGem08_2026-Regular.ttf
+                      fonts/JameGem08_2026-Regular.ttf, audio/swoof.wav
 src/TODO.md           next planned feature (Body / rigid bodies)
 ```
 
@@ -70,6 +72,8 @@ numbers use a hand-rolled splitmix64 `Rng(u64)`.
 - Re-exports: `KeyCode`, `MouseButton`, `Tween`/`Repeat`,
   `ParticleSystem`/`Particle`, and everything from `objects` (`Scene`,
   `SceneNode`, `Node`, `Shape`, `Color`, `Transform`, `Layer`, `Canvas`).
+- Native only (no wasm32): `Audio`, `Sound`, `AudioError` (see
+  "Audio (native only)" below).
 
 **Coordinate system.** User space is in **pixels**, origin at the **window
 center**, **y pointing up**: top-left = `(-w/2, h/2)`. The canvas works in
@@ -300,10 +304,54 @@ must mirror these layouts**; the GPU-side mirror tests live in
 `src/backend/tests.rs`. If you change a shader uniform struct, update the
 writer and both test sides together.
 
+## Audio (native only)
+
+`src/audio.rs` plays sounds through **rodio** on the host's default output
+device. The module is `#[cfg(not(target_arch = "wasm32"))]`-gated in
+`lib.rs` (rodio's cpal device layer is native-only), so wasm builds never
+compile it; `Audio`/`Sound`/`AudioError` are re-exported from the root only
+on native targets.
+
+- `Sound::load(path)` / `Sound::load_bytes(bytes)` — **load-time decode**:
+  the file (WAV, FLAC, MP3, OGG Vorbis, AAC, M4A) is read and decoded once,
+  into an in-memory `rodio::buffer::SamplesBuffer` of f32 samples, so a bad
+  path or format is an `AudioError` up front, not at play time. The samples
+  sit behind an `Arc`, so re-triggering a `Sound` shares one buffer and
+  clones are cheap. Accessors: `channels()`, `sample_rate()`, `duration()`.
+- `Audio::new()` — opens the default output device
+  (`DeviceSinkBuilder::open_default_sink`), silences the drop log
+  (`log_on_drop(false)`), and builds the single loop `Player` on the device's
+  mixer. `Audio` owns the device; dropping it stops everything.
+- `Audio::play_once(&sound)` — **one-shot, parallel overlap**: a copy of the
+  buffer is `amplify`-ed by the master volume and `add`-ed to the mixer, so
+  the same sound re-triggers freely and copies overlap. The volume is frozen
+  at trigger time.
+- `Audio::play_loop(&sound)` / `stop_loop()` — **loop, single sequential
+  player**: `play_loop` `clear()`s, `append`s `buffer.repeat_infinite()`,
+  `play()`s (a `clear` leaves the player paused, so the `play()` is
+  load-bearing), and sets the loop's volume. Only one sound loops at a time;
+  `play_loop` on a running loop restarts with the new sound. `stop_loop`
+  `clear()`s. The master volume applies to the loop live.
+- `Audio::set_volume(v)` — clamps to `0.0..=1.0` and stores the f32 bits in
+  an `AtomicU32` (no cast needed: rodio's `Float`/`Sample` are `f32`); it
+  updates the loop player immediately and one-shots from the next trigger.
+- `AudioError` — hand-rolled `Debug` enum with a manual `Display`/`source()`
+  in the project's `TextError`/`SpriteError` style: `Io(std::io::Error)`,
+  `Decode(rodio::decoder::DecoderError)` (held by value; `Clone`), and
+  `Device(Box<rodio::DeviceSinkError>)` (boxed because the device error is
+  not `Clone`).
+
+Tests are **device-free** (no `DeviceSinkBuilder`/`Audio::new()`), so
+`cargo test` runs headless: a synthetic in-code PCM16 WAV decodes to the
+right channel/rate/length, the bundled `swoof.wav` decodes, a missing path is
+`AudioError::Io`, garbage bytes are `AudioError::Decode`, and the
+`clamp01`/f32-bits helpers round-trip. `Sound::load_bytes` carries a doctest
+that decodes an in-code WAV.
+
 ## Testing
 
-Baseline: **97 tests + 1 doctest** passing, `cargo build --examples` clean.
-Notable test areas:
+Baseline: **102 tests + 2 doctests** passing, `cargo build --examples`
+clean. Notable test areas:
 
 - `src/shaders.rs` — naga parse + uniform-offset assertions (above).
 - `src/backend/tests.rs` — GPU-free: uniform-layout mirrors, scissor math,
@@ -311,6 +359,8 @@ Notable test areas:
   `context_reports_held_mouse_button`.
 - `src/collision.rs` — push-out separation, reflect restitution semantics.
 - `src/tween.rs`, `src/particles.rs`, `src/text.rs` — behavior unit tests.
+- `src/audio.rs` — device-free decode tests (synthetic WAV, bundled
+  `swoof.wav`, error variants) + the `load_bytes` doctest.
 
 ## Examples (examples/)
 
@@ -342,6 +392,8 @@ All load assets via `CARGO_MANIFEST_DIR`. Run with `cargo run --example <name>`
 | particles    | a `ParticleSystem` fountain with life-fraction alpha               |
 | cursor       | a watering-can cursor: mouse-following sprite, press-to-tilt tween, |
 |              | spout-emitted water particles over a full-screen grass field       |
+| sound        | one-shot + looping playback of a decoded WAV: Space re-triggers     |
+|              | (pulsing circle), L toggles the loop (wobbling ring), +/- the bar   |
 
 `cursor.rs` is the most complete reference demo: `CAN_IMAGE [331,247]` scaled
 to 100 px, a 90° CCW tilt tween (0.5 s, rebuilt on press/release edges),
@@ -381,6 +433,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 
 ```
 cargo build --examples   # expect EXIT 0
-cargo test               # expect 97 passed + 1 doctest
+cargo test               # expect 102 passed + 2 doctests
 cargo run --example cursor   # visual check; closing the window exits 0
+cargo run --example sound    # Space/L/+/- check; closing the window exits 0
 ```

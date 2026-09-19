@@ -6,13 +6,20 @@ edition = "2024"
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4.34"
-rodio = "0.22.2"
 # Font parsing, Unicode text shaping and glyph rasterization for
 # `Shape::Text`. Pure Rust (the Fontation project); the whole dependency
 # tree (skrifa, yazi, zeno) resolves from the local registry cache.
 swash = "0.2.10"
 wgpu = "30.0.1"
 winit = "0.30.13"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Native audio output for `Audio`/`Sound` (one-shot and looping playback).
+# Target-gated because rodio's cpal device layer is native-only; the crate
+# must stay buildable for `wasm32-unknown-unknown` (see `text_web`), and the
+# audio module itself is `#[cfg(not(target_arch = "wasm32"))]`-gated in
+# `src/lib.rs`, so wasm builds never compile rodio.
+rodio = "0.22.2"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Surfaces Rust panics in the browser console instead of the wasm module

@@ -86,6 +86,9 @@
 //! [`Context::mouse_position`], the held mouse buttons by
 //! [`Context::mouse_button_down`], and Escape closes the window.
 //!
+//! On native targets, [`Sound`]s decoded at load time play through an
+//! [`Audio`]: one-shots mix in parallel, and one sound loops at a time.
+//!
 //! Presentation is vsync'd by default: frames are presented once per
 //! vertical blank, at the display's refresh rate — the rate
 //! [`Context::expected_fps`] reports. [`run_configured`] takes a [`Config`]
@@ -126,6 +129,11 @@ pub use tween::*;
 
 mod collision;
 pub use collision::*;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod audio;
+#[cfg(not(target_arch = "wasm32"))]
+pub use audio::{Audio, AudioError, Sound};
 
 /// The drawing surface for a frame, reachable through the [`Context`] passed
 /// to [`Process::process`] (which derefs to it).
