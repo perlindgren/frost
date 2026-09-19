@@ -6,8 +6,8 @@
 //! covered if the window is resized.
 //!
 //! The mouse can hold two tools at once: the active one, drawn as the
-//! cursor's sprite, and a stored one, drawn nowhere. It starts with
-//! neither. Pressing and releasing the right mouse button (both through
+//! cursor's sprite, and a stored one, mirrored in the held-items panel. It
+//! starts with neither. Pressing and releasing the right mouse button (both through
 //! [`frost::Context::mouse_button_down`]) switches the two: the stored
 //! tool becomes the active one and the active one is stored. A left click
 //! on a slot — a press and a release on the same slot — swaps the active
@@ -44,6 +44,14 @@
 //! top and bottom. The spray can rests in slot 2 and the watering can in
 //! slot 3, drawn on top of the panel; slots 0 and 1 start empty, and a
 //! left click can park either tool in any slot.
+//!
+//! `assets/sprites/held_items.png` is a small panel in the bottom right
+//! corner, `MARGIN` pixels clear of the window's right and bottom borders,
+//! drawn at its natural size. It mirrors the mouse's two tools: the active
+//! one in the left half, the stored one in the right half, each sprite
+//! scaled to fit its half — so the tools are always visible, even while
+//! the active one is drawn as the cursor and the stored one would
+//! otherwise be drawn nowhere.
 //!
 //! On the grass, six tomato plants grow slice by slice: the same slice-
 //! chain construction and travelling wind as the `grow` example, reused
@@ -207,6 +215,33 @@ const ITEMS_SIZE: [f32; 2] = [389.0, 991.0];
 /// The clearance the panel keeps from the window's top, bottom, and left
 /// borders, in pixels.
 const MARGIN: f32 = 20.0;
+
+/// `held_items.png`'s texture size in pixels; the held-items panel is
+/// drawn at this natural size, `MARGIN` clear of the window's right and
+/// bottom borders.
+const HELD_SIZE: [f32; 2] = [389.0, 200.0];
+
+/// The clearance a held cell keeps from the edges of its half of the
+/// panel, in pixels: past the panel's frame, with room to spare.
+const HELD_INSET: f32 = 20.0;
+
+/// The center of held cell `i` — 0 the left cell, 1 the right cell — in
+/// the held node's local space: the half-panel center, y-flipped about
+/// the panel's center. Both cells sit on the panel's horizontal midline,
+/// so the local y is 0.
+fn held_local(i: usize) -> [f32; 2] {
+    let x = HELD_SIZE[0] / 4.0;
+    [if i == 0 { -x } else { x }, 0.0]
+}
+
+/// The uniform scale that fits a `size`-pixel sprite into one held cell —
+/// the panel's half width by its full height, keeping `HELD_INSET` clear
+/// of the cell's edges.
+fn held_scale(size: [f32; 2]) -> f32 {
+    let w = HELD_SIZE[0] / 2.0 - 2.0 * HELD_INSET;
+    let h = HELD_SIZE[1] - 2.0 * HELD_INSET;
+    (w / size[0]).min(h / size[1])
+}
 
 /// The panel's logical slots, 0 (top) to 3 (bottom), evenly distributed
 /// over the slot strip's height.
@@ -406,9 +441,9 @@ impl Rng {
 }
 
 /// The two cursor tools. The mouse holds one active tool, drawn as the
-/// cursor, and one stored tool, drawn nowhere: the right-button switch
-/// swaps the two, and a left click on a slot swaps the active tool with
-/// the slot's.
+/// cursor, and one stored tool, mirrored in the held-items panel: the
+/// right-button switch swaps the two, and a left click on a slot swaps the
+/// active tool with the slot's.
 #[derive(Clone, Copy, PartialEq)]
 enum Tool {
     /// The watering can: hold the left button to tilt it and pour water.
@@ -422,12 +457,13 @@ struct Demo {
     /// cursor is outside the window.
     mouse: [f32; 2],
     /// The active tool, or `None` while the mouse holds none: the one
-    /// drawn as the cursor. A left click on a slot swaps it with the
-    /// slot's tool, and the right-button switch swaps it with the stored
-    /// one.
+    /// drawn as the cursor and mirrored in the left cell of the
+    /// held-items panel. A left click on a slot swaps it with the slot's
+    /// tool, and the right-button switch swaps it with the stored one.
     active: Option<Tool>,
     /// The second tool the mouse holds, or `None`: stored without a
-    /// sprite; the right-button switch swaps it with the active tool.
+    /// sprite of its own, mirrored in the right cell of the held-items
+    /// panel; the right-button switch swaps it with the active tool.
     held: Option<Tool>,
     /// The slot the current left press started on, if any: a press that
     /// starts on a slot is a swap click, completed only if the release
@@ -497,19 +533,27 @@ impl frost::Process for Demo {
         items.transform =
             frost::Transform::translate(-(w / 2.0) + MARGIN + ITEMS_SIZE[0] * s / 2.0, 0.0);
 
+        // Bottom right: `MARGIN` clear of the right and bottom borders, at
+        // the panel's natural size.
+        let held_panel = &mut ctx.scene().root.children[3];
+        held_panel.transform = frost::Transform::translate(
+            w / 2.0 - MARGIN - HELD_SIZE[0] * held_panel.scale[0] / 2.0,
+            -h / 2.0 + MARGIN + HELD_SIZE[1] * held_panel.scale[1] / 2.0,
+        );
+
         // Grow the plants one at a time, in parallel with the tool
         // system: the first starts at launch, each next one starts when
         // the previous is fully grown. Each root joint stays glued to its
         // `PLANT_POS` pixel on the grass, which the grass stretch maps to
         // the matching user-space anchor.
         let plants_node = &mut ctx.scene().root.children[2];
-        for i in 0..PLANT_POS.len() {
+        for (i, &pos) in PLANT_POS.iter().enumerate() {
             if i == 0 || self.plants[i - 1].fully_grown() {
                 self.plants[i].step(dt);
             }
             let anchor = [
-                PLANT_POS[i][0] * w / GRASS_SIZE[0] - w / 2.0,
-                h / 2.0 - PLANT_POS[i][1] * h / GRASS_SIZE[1],
+                pos[0] * w / GRASS_SIZE[0] - w / 2.0,
+                h / 2.0 - pos[1] * h / GRASS_SIZE[1],
             ];
             self.plants[i].layout(&mut plants_node.children[i], anchor);
         }
@@ -667,7 +711,7 @@ impl frost::Process for Demo {
 
         // A fresh transform is only needed while the node shows a tool.
         if let Some(tool) = self.active {
-            let tool_node = &mut ctx.scene().root.children[3];
+            let tool_node = &mut ctx.scene().root.children[4];
             tool_node.transform = match tool {
                 Tool::WaterCan => can_transform(mx, my, self.angle),
                 Tool::SprayCan => spray_transform(mx, my, self.angle),
@@ -725,7 +769,7 @@ impl Demo {
         self.burst = None;
         self.rotation = frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once);
         self.showing_spray2 = false;
-        let tool_node = &mut ctx.scene().root.children[3];
+        let tool_node = &mut ctx.scene().root.children[4];
         match tool {
             Some(Tool::WaterCan) => {
                 tool_node.shape = Some(self.can.clone());
@@ -739,6 +783,11 @@ impl Demo {
                 tool_node.shape = None;
             }
         }
+        // Mirror both tools into the held-items panel: the active one in
+        // the left cell, the stored one in the right. Every tool change —
+        // the right-button switch and the slot swaps alike — goes through
+        // this method, so this single sync keeps the panel current.
+        self.sync_held(ctx);
     }
 
     /// Swaps the active tool with whatever rests in slot `slot`: the
@@ -777,11 +826,37 @@ impl Demo {
             return;
         }
         self.showing_spray2 = on;
-        ctx.scene().root.children[3].shape = Some(if on {
+        ctx.scene().root.children[4].shape = Some(if on {
             self.spray2.clone()
         } else {
             self.spray1.clone()
         });
+    }
+
+    /// Mirrors the mouse's two tools into the held-items panel: the active
+    /// tool in the left cell, the stored one in the right, each at its
+    /// at-rest frame in the held-fit scale — or an empty cell for `None`.
+    fn sync_held(&mut self, ctx: &mut frost::Context) {
+        let held = &mut ctx.scene().root.children[3];
+        self.cell_set(&mut held.children[0], self.active);
+        self.cell_set(&mut held.children[1], self.held);
+    }
+
+    /// Puts `tool` — or nothing — in a held cell's node: the tool's shape
+    /// at the held-fit scale, always the at-rest frame, or no shape at
+    /// all.
+    fn cell_set(&mut self, node: &mut frost::SceneNode, tool: Option<Tool>) {
+        match tool {
+            Some(Tool::WaterCan) => {
+                node.shape = Some(self.can.clone());
+                node.scale = [held_scale(CAN_IMAGE), held_scale(CAN_IMAGE)];
+            }
+            Some(Tool::SprayCan) => {
+                node.shape = Some(self.spray1.clone());
+                node.scale = [held_scale(SPRAY_IMAGE), held_scale(SPRAY_IMAGE)];
+            }
+            None => node.shape = None,
+        }
     }
 }
 
@@ -802,6 +877,9 @@ fn main() {
         .expect("failed to load assets/sprites/Spray2.png");
     let items = frost::Shape::sprite(format!("{root}/assets/sprites/items.png"))
         .expect("failed to load assets/sprites/items.png");
+    let held_items =
+        frost::Shape::sprite(format!("{root}/assets/sprites/held_items.png"))
+            .expect("failed to load assets/sprites/held_items.png");
     let plant1 = frost::Shape::sprite(format!("{root}/assets/sprites/plant1.png"))
         .expect("failed to load assets/sprites/plant1.png");
     let plant2 = frost::Shape::sprite(format!("{root}/assets/sprites/plant2.png"))
@@ -926,13 +1004,43 @@ fn main() {
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
+                // The held-items panel in the bottom right corner, anchored
+                // there by the process every frame: `MARGIN` clear of the
+                // right and bottom borders, at its natural size. Its two
+                // children mirror the mouse's tools — child 0 (the left
+                // cell) the active one, child 1 (the right cell) the
+                // stored one — each painted on top of the panel, since a
+                // node paints its shape before its children; the cells are
+                // synced by `set_active`.
+                shape: Some(held_items),
+                children: vec![
+                    Box::new(frost::SceneNode {
+                        // The left cell: the active tool, empty at start.
+                        transform: frost::Transform::translate(
+                            held_local(0)[0],
+                            held_local(0)[1],
+                        ),
+                        ..Default::default()
+                    }),
+                    Box::new(frost::SceneNode {
+                        // The right cell: the stored tool, empty at start.
+                        transform: frost::Transform::translate(
+                            held_local(1)[0],
+                            held_local(1)[1],
+                        ),
+                        ..Default::default()
+                    }),
+                ],
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
                 // The active tool, starting with no shape: the mouse starts
                 // holding no tool at all. Every switch — a slot swap or the
                 // right-button switch — changes the shape — and the scale,
                 // since the spray frames are drawn at their natural size —
-                // on this same node; the stored tool is drawn nowhere. It
-                // stays the last child, so the cursor paints above the
-                // panel and the plant.
+                // on this same node; the stored tool is mirrored in the
+                // held panel's right cell instead. It stays the last child,
+                // so the cursor paints above the panel and the plant.
                 ..Default::default()
             }),
         ],
