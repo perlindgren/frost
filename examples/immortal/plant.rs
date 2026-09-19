@@ -33,18 +33,20 @@
 /// The hand-picked joints of the three slices, in each image's pixel space:
 /// `(0, 0)` at the upper-left, `x` right, `y` down. `[0]` is where the
 /// slice attaches to the previous one, `[1]` where the next slice attaches.
-pub const JOINTS: [[(f32, f32); 2]; 3] = [
-    [(321.0, 671.0), (321.0, 578.0)], // plant1, the base
-    [(319.0, 581.0), (318.0, 351.0)], // plant2, the middle
-    [(318.0, 463.0), (309.0, 89.0)],  // plant3, the top
+pub const JOINTS: [[(f32, f32); 2]; 5] = [
+    [(317.0, 671.0), (317.0, 578.0)], // plant1, the base
+    [(319.0, 581.0), (318.0, 351.0)], // plant2, the low middle
+    [(318.0, 463.0), (309.0, 89.0)],  // plant3, the middle
+    [(306.0, 412.0), (301.0, 166.0)], // plant4, the high middle
+    [(317.0, 671.0), (317.0, 578.0)], // plant5, the top
 ];
 
 /// How long each slice takes to grow from zero to its full size, in
-/// seconds, in chain order: the base over 3 s, the middle over 6, the top
-/// over 9. All slices start at the same time, each grows linearly out of
+/// seconds, in chain order: the base over 3 s, the next over 6, etc.
+/// All slices start at the same time, each grows linearly out of
 /// its own lower joint, and after the last slice is done the plant stays
 /// at full size and keeps swaying.
-pub const GROW_TIMES: [f32; 3] = [3.0, 6.0, 9.0];
+pub const GROW_TIMES: [f32; 5] = [3.0, 6.0, 9.0, 12.0, 15.0];
 
 /// The time at which the plant is fully grown: the last slice's growth
 /// time — from then on every slice holds at full length while the plant
@@ -61,10 +63,7 @@ const SWAY_BASE: f32 = 0.025;
 
 /// The middle joint's extra bend, in radians, lagging the base rock: each
 /// bend is a little stronger than the last, so the tip moves the most.
-const SWAY_BEND1: (f32, f32) = (0.8, 0.04);
-
-/// The top joint's extra bend, in radians, lagging the middle joint.
-const SWAY_BEND2: (f32, f32) = (1.6, 0.07);
+const SWAY_BENDS: [(f32, f32); 4] = [(0.8, 0.04), (1.6, 0.07), (2.4, 0.1), (3.2, 0.12)];
 
 /// One slice's two joints, already converted to node-local coordinates.
 #[derive(Clone)]
@@ -101,7 +100,7 @@ fn link(shape: &frost::Shape, joints: [(f32, f32); 2]) -> Link {
 }
 
 /// A three-slice plant that grows out of its root joint and sways in a
-/// travelling wind. The shapes themselves live in the scene; the value only
+/// traveling wind. The shapes themselves live in the scene; the value only
 /// keeps the growth clock and the slices' joints in node-local space.
 #[derive(Clone)]
 pub struct Plant {
@@ -109,21 +108,23 @@ pub struct Plant {
     t: f32,
     /// The three slices in chain order, with their joints in node-local
     /// space.
-    links: [Link; 3],
+    links: [Link; 5],
 }
 
 impl Plant {
-    /// Builds the plant from the three slice shapes in chain order
-    /// (`plant1`, `plant2`, `plant3`), with each slice's joints converted
+    /// Builds the plant from the five slice shapes in chain order
+    /// (`plant1`, `plant2`, `plant3`, `plant4`, `plant5`), with each slice's joints converted
     /// from `JOINTS` to node-local space against its texture's real size.
     /// The growth clock starts at zero.
-    pub fn new(shapes: [&frost::Shape; 3]) -> Self {
+    pub fn new(shapes: [&frost::Shape; 5]) -> Self {
         Plant {
             t: 0.0,
             links: [
                 link(shapes[0], JOINTS[0]),
                 link(shapes[1], JOINTS[1]),
                 link(shapes[2], JOINTS[2]),
+                link(shapes[3], JOINTS[3]),
+                link(shapes[4], JOINTS[4]),
             ],
         }
     }
@@ -153,12 +154,12 @@ impl Plant {
     /// bent by its share of the wind, and the next slice sprouts from its
     /// moving upper joint.
     pub fn layout(&self, node: &mut frost::SceneNode, anchor: [f32; 2]) {
-        // A gentle travelling wind: the base rock and the two joint bends
+        // A gentle traveling wind: the base rock and the two joint bends
         // lag each other, and each bend is a little stronger than the last,
         // so the tip of the plant moves the most.
         let base = (self.t * SWAY_FREQ).sin() * SWAY_BASE;
-        let bend1 = (self.t * SWAY_FREQ - SWAY_BEND1.0).sin() * SWAY_BEND1.1;
-        let bend2 = (self.t * SWAY_FREQ - SWAY_BEND2.0).sin() * SWAY_BEND2.1;
+        let bend1 = (self.t * SWAY_FREQ - SWAY_BENDS[0].0).sin() * SWAY_BENDS[0].1;
+        let bend2 = (self.t * SWAY_FREQ - SWAY_BENDS[1].0).sin() * SWAY_BENDS[1].1;
 
         // The growth factor of each slice: 0 at startup, 1 from its own
         // GROW_TIMES entry on, linear in between. All slices grow
@@ -167,6 +168,8 @@ impl Plant {
             (self.t / GROW_TIMES[0]).min(1.0),
             (self.t / GROW_TIMES[1]).min(1.0),
             (self.t / GROW_TIMES[2]).min(1.0),
+            (self.t / GROW_TIMES[3]).min(1.0),
+            (self.t / GROW_TIMES[4]).min(1.0),
         ];
 
         // The plant node anchors the chain: its origin is plant1's lower

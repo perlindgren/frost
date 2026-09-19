@@ -74,7 +74,7 @@ const PLANT_POS: [[f32; 2]; 6] = [
 
 /// The plant's fit scale, the same as the `grow` example: the 969 px full
 /// plant spans about 533 px around the root joint.
-const PLANT_SCALE: f32 = 0.55;
+const PLANT_SCALE: f32 = 0.45;
 
 /// `water_can_outline.png`'s texture size in pixels: the can's content,
 /// cropped to the image.
@@ -87,7 +87,7 @@ const BASKET_IMAGE: [f32; 2] = [271.0, 251.0];
 /// the upper-left corner, `x` grows to the right, `y` grows down. The
 /// crop fills the image, so the content box is the whole texture.
 const CAN_BOX: [[f32; 2]; 2] = [
-    [0.0, 0.0], // content upper-left
+    [0.0, 0.0],     // content upper-left
     [333.0, 251.0], // content lower-right
 ];
 
@@ -122,8 +122,7 @@ const SPOUT: [f32; 2] = [0.0, 25.0];
 
 /// The spout tip in node-local space, with the same y flip as
 /// `CAN_LOCAL`; the water is emitted from here, rotated with the can.
-const SPOUT_LOCAL: [f32; 2] =
-    [SPOUT[0] - CAN_IMAGE[0] / 2.0, CAN_IMAGE[1] / 2.0 - SPOUT[1]];
+const SPOUT_LOCAL: [f32; 2] = [SPOUT[0] - CAN_IMAGE[0] / 2.0, CAN_IMAGE[1] / 2.0 - SPOUT[1]];
 
 /// The node transform that puts the can's content center exactly on
 /// `(mx, my)` and rotates the can by `angle` radians around that center.
@@ -257,8 +256,10 @@ const SPRAY_PIVOT: [f32; 2] = [98.0, 60.0];
 
 /// The pivot in node-local space, with the same y flip as
 /// `SPOUT_LOCAL`; the spray can's node transform keeps it on the cursor.
-const SPRAY_PIVOT_LOCAL: [f32; 2] =
-    [SPRAY_PIVOT[0] - SPRAY_IMAGE[0] / 2.0, SPRAY_IMAGE[1] / 2.0 - SPRAY_PIVOT[1]];
+const SPRAY_PIVOT_LOCAL: [f32; 2] = [
+    SPRAY_PIVOT[0] - SPRAY_IMAGE[0] / 2.0,
+    SPRAY_IMAGE[1] / 2.0 - SPRAY_PIVOT[1],
+];
 
 /// The nozzle tip in the `Spray{1,2}.png` pixel space: the point where
 /// the green spray is emitted, rotated with the can.
@@ -266,8 +267,10 @@ const SPRAY_NOZZLE: [f32; 2] = [21.0, 13.0];
 
 /// The nozzle tip in node-local space, with the same y flip as
 /// `SPRAY_PIVOT_LOCAL`.
-const SPRAY_NOZZLE_LOCAL: [f32; 2] =
-    [SPRAY_NOZZLE[0] - SPRAY_IMAGE[0] / 2.0, SPRAY_IMAGE[1] / 2.0 - SPRAY_NOZZLE[1]];
+const SPRAY_NOZZLE_LOCAL: [f32; 2] = [
+    SPRAY_NOZZLE[0] - SPRAY_IMAGE[0] / 2.0,
+    SPRAY_IMAGE[1] / 2.0 - SPRAY_NOZZLE[1],
+];
 
 /// The burst's tilt, in radians: 45 degrees clockwise, negative because
 /// the scene's y axis points up and counter-clockwise is positive.
@@ -485,11 +488,14 @@ impl frost::Process for Demo {
         // so neither tool inherits the other's tilt, burst, or sprite.
         if self.right_pressed && !right {
             let to_spray = self.tool == Tool::WaterCan;
-            self.tool = if to_spray { Tool::SprayCan } else { Tool::WaterCan };
+            self.tool = if to_spray {
+                Tool::SprayCan
+            } else {
+                Tool::WaterCan
+            };
             self.angle = 0.0;
             self.burst = None;
-            self.rotation =
-                frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once);
+            self.rotation = frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once);
             let tool_node = &mut ctx.scene().root.children[3];
             if to_spray {
                 self.showing_spray2 = false;
@@ -512,8 +518,8 @@ impl frost::Process for Demo {
                 if left != self.pressed {
                     self.pressed = left;
                     let target = if left { CAN_ANGLE } else { 0.0 };
-                    self.rotation =
-                        frost::Tween::new(self.angle, target, ROTATE_TIME).repeat(frost::Repeat::Once);
+                    self.rotation = frost::Tween::new(self.angle, target, ROTATE_TIME)
+                        .repeat(frost::Repeat::Once);
                 }
                 self.angle = self.rotation.tick(dt);
 
@@ -582,16 +588,13 @@ impl frost::Process for Demo {
                             self.acc += SPRAY_RATE * dt;
                             while self.acc >= 1.0 {
                                 self.acc -= 1.0;
-                                let a =
-                                    base + self.rng.in_range(-SPRAY_SPREAD, SPRAY_SPREAD);
+                                let a = base + self.rng.in_range(-SPRAY_SPREAD, SPRAY_SPREAD);
                                 let life = self.rng.in_range(SPRAY_LIFE.0, SPRAY_LIFE.1);
                                 self.spray.spawn(frost::Particle {
                                     pos: [nx, ny],
                                     vel: [
-                                        a.cos()
-                                            * self.rng.in_range(SPRAY_SPEED.0, SPRAY_SPEED.1),
-                                        a.sin()
-                                            * self.rng.in_range(SPRAY_SPEED.0, SPRAY_SPEED.1),
+                                        a.cos() * self.rng.in_range(SPRAY_SPEED.0, SPRAY_SPEED.1),
+                                        a.sin() * self.rng.in_range(SPRAY_SPEED.0, SPRAY_SPEED.1),
                                     ],
                                     life,
                                     max_life: life,
@@ -693,7 +696,11 @@ fn main() {
         .expect("failed to load assets/sprites/plant2.png");
     let plant3 = frost::Shape::sprite(format!("{root}/assets/sprites/plant3.png"))
         .expect("failed to load assets/sprites/plant3.png");
-    let plant = plant::Plant::new([&plant1, &plant2, &plant3]);
+    let plant4 = frost::Shape::sprite(format!("{root}/assets/sprites/plant4.png"))
+        .expect("failed to load assets/sprites/plant4.png");
+    let plant5 = frost::Shape::sprite(format!("{root}/assets/sprites/plant5.png"))
+        .expect("failed to load assets/sprites/plant5.png");
+    let plant = plant::Plant::new([&plant1, &plant2, &plant3, &plant4, &plant5]);
 
     // One plant node, cloned for each plant: its origin is the root joint
     // (plant1's lower joint), positioned by the process every frame. The
@@ -712,6 +719,14 @@ fn main() {
             }),
             Box::new(frost::SceneNode {
                 shape: Some(plant3),
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
+                shape: Some(plant4),
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
+                shape: Some(plant5),
                 ..Default::default()
             }),
         ],
