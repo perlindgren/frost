@@ -19,6 +19,7 @@ use wgpu::{
     TextureViewDescriptor, VertexState,
 };
 use winit::application::ApplicationHandler;
+use winit::dpi::LogicalSize;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -56,6 +57,9 @@ pub(crate) struct Frost<P: Process> {
     /// (`PresentMode::AutoVsync` / `AutoNoVsync`) when the surface is
     /// (re)configured.
     vsync: bool,
+    /// The `Config`'s initial window inner size in logical pixels, or
+    /// `None` for the platform default; used once in `create_window`.
+    window_size: Option<[u32; 2]>,
     #[allow(dead_code)]
     window_id: Option<WindowId>,
     /// The winit window (shared), kept so we can call `request_redraw` for
@@ -116,6 +120,7 @@ impl<P: Process> Frost<P> {
         device: Device,
         queue: Queue,
         vsync: bool,
+        window_size: Option<[u32; 2]>,
         scene: Scene,
         process: P,
     ) -> Self {
@@ -125,6 +130,7 @@ impl<P: Process> Frost<P> {
             device,
             queue,
             vsync,
+            window_size,
             window_id: None,
             window: None,
             logical_size: (0, 0),
@@ -151,20 +157,29 @@ impl<P: Process> Frost<P> {
 
 /// Creates the frost window and requests its first frame.
 ///
-/// On the web, winit's canvas is neither appended to the page nor sized by
-/// default: without the append it is invisible, and without a size it stays
-/// the browser's 300x150 default.
-pub(crate) fn create_window(event_loop: &ActiveEventLoop) -> Arc<Window> {
-    let attributes = Window::default_attributes().with_title("frost");
+/// `window_size` is the `Config`'s initial inner size in logical pixels;
+/// `None` keeps the platform default. On the web, winit's canvas is
+/// neither appended to the page nor sized by default: without the append
+/// it is invisible, and without a size it stays the browser's 300x150
+/// default — so an unset size falls back to 900x600 there.
+pub(crate) fn create_window(
+    event_loop: &ActiveEventLoop,
+    window_size: Option<[u32; 2]>,
+) -> Arc<Window> {
+    let mut attributes = Window::default_attributes().with_title("frost");
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some([width, height]) = window_size {
+        attributes = attributes.with_inner_size(LogicalSize::new(width, height));
+    }
     #[cfg(target_arch = "wasm32")]
-    let attributes = {
-        use winit::dpi::LogicalSize;
+    {
         use winit::platform::web::WindowAttributesExtWebSys;
 
-        attributes
+        let [width, height] = window_size.unwrap_or([900, 600]);
+        attributes = attributes
             .with_append(true)
-            .with_inner_size(LogicalSize::new(900, 600))
-    };
+            .with_inner_size(LogicalSize::new(width, height));
+    }
     let window = Arc::new(
         event_loop
             .create_window(attributes)
@@ -213,7 +228,7 @@ impl<P: Process> ApplicationHandler for Frost<P> {
         if self.surface.is_some() {
             return;
         }
-        self.attach_window(create_window(event_loop));
+        self.attach_window(create_window(event_loop, self.window_size));
     }
 
     fn window_event(

@@ -918,12 +918,21 @@ pub struct Config {
     /// [`Context::expected_fps`] reports. When `false`, frames are
     /// presented as soon as they are rendered, uncapped.
     pub vsync: bool,
+    /// The window's initial inner size in logical pixels, `[width, height]`.
+    ///
+    /// `None` keeps the platform default (winit's default window size, or
+    /// the web canvas's 900x600 default). The user can resize the window
+    /// afterwards; this only sets the size it opens at.
+    pub window_size: Option<[u32; 2]>,
 }
 
 impl Default for Config {
-    /// Vsync on: the frame rate is capped at the display's refresh rate.
+    /// Vsync on, and the platform's default window size.
     fn default() -> Self {
-        Self { vsync: true }
+        Self {
+            vsync: true,
+            window_size: None,
+        }
     }
 }
 
@@ -942,8 +951,9 @@ pub fn run<P: Process>(scene: Scene, process: P) -> Result<(), Box<dyn Error>> {
 
 /// Same as [`run`], but with the given [`Config`].
 ///
-/// Use it to turn vsync off (for uncapped frame rates) or to inspect the
-/// expected frame rate via [`Context::expected_fps`].
+/// Use it to turn vsync off (for uncapped frame rates), to open the window
+/// at a specific [`Config::window_size`], or to inspect the expected frame
+/// rate via [`Context::expected_fps`].
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_configured<P: Process>(
     scene: Scene,
@@ -967,6 +977,7 @@ pub fn run_configured<P: Process>(
         device,
         queue,
         config.vsync,
+        config.window_size,
         scene,
         process,
     );
@@ -1001,7 +1012,7 @@ pub fn run_configured<P: Process>(
 
     let instance = Instance::default();
     let event_loop = EventLoop::new()?;
-    let mut app = WebFrost::new(instance, scene, process, config.vsync);
+    let mut app = WebFrost::new(instance, scene, process, config.vsync, config.window_size);
     event_loop.run_app(&mut app)?;
 
     log::info!("event loop finished");

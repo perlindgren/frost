@@ -31,6 +31,7 @@ struct Core<P: Process> {
     scene: Scene,
     process: P,
     vsync: bool,
+    window_size: Option<[u32; 2]>,
 }
 
 /// The in-flight async GPU setup on the web.
@@ -68,7 +69,8 @@ impl<P: Process> ApplicationHandler for WebFrost<P> {
         // Create the canvas immediately so the page shows *something* while
         // the GPU setup is in flight.
         if self.window.is_none() {
-            self.window = Some(create_window(event_loop));
+            let window_size = self.core.as_ref().map(|core| core.window_size);
+            self.window = Some(create_window(event_loop, window_size));
         }
         if matches!(self.gpu, GpuInit::Idle) {
             // The async block owns its own `Instance` clone (a cheap
@@ -146,13 +148,20 @@ impl<P: Process> ApplicationHandler for WebFrost<P> {
 impl<P: Process> WebFrost<P> {
     /// The web app's initial state: nothing has happened yet — no window,
     /// the GPU setup not started, and no `Frost` to hand the canvas to.
-    pub(crate) fn new(instance: Instance, scene: Scene, process: P, vsync: bool) -> Self {
+    pub(crate) fn new(
+        instance: Instance,
+        scene: Scene,
+        process: P,
+        vsync: bool,
+        window_size: Option<[u32; 2]>,
+    ) -> Self {
         Self {
             instance: Some(instance),
             core: Some(Core {
                 scene,
                 process,
                 vsync,
+                window_size,
             }),
             window: None,
             gpu: GpuInit::Idle,
@@ -210,6 +219,7 @@ impl<P: Process> WebFrost<P> {
             device,
             queue,
             core.vsync,
+            core.window_size,
             core.scene,
             core.process,
         );
