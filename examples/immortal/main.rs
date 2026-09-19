@@ -36,10 +36,11 @@
 //! watering can in slot 1 sit ghosted at 20 percent alpha, via their nodes'
 //! modulate.
 //!
-//! On the grass, six tomato plants grow slice by slice: the same
-//! three-slice chain and travelling wind as the `grow` example, reused
-//! through the [`plant`] module. The base grows over 3 seconds, the middle
-//! over 6, the top over 9. They grow one at a time, in `PLANT_POS` order —
+//! On the grass, six tomato plants grow slice by slice: the same slice-
+//! chain construction and travelling wind as the `grow` example, reused
+//! through the [`plant`] module, but with five slices — the base grows over
+//! 3 seconds, the low middle over 6, the middle over 9, the high middle
+//! over 12, the top over 15. They grow one at a time, in `PLANT_POS` order —
 //! the first starts at launch, and each next one starts when the previous
 //! is fully grown — concurrently with the tool system. Each root joint
 //! stays glued to its own `grass.png` pixel across resizes.
@@ -72,8 +73,10 @@ const PLANT_POS: [[f32; 2]; 6] = [
     [1463.0, 719.0],
 ];
 
-/// The plant's fit scale, the same as the `grow` example: the 969 px full
-/// plant spans about 533 px around the root joint.
+/// The plant's fit scale: the full plant spans about 1797 px around the
+/// root joint — its top edge 1614 px above it, its bottom edge 183 px
+/// below — so at this scale the tops can reach past the window's top edge
+/// on the plants anchored high on the grass.
 const PLANT_SCALE: f32 = 0.45;
 
 /// `water_can_outline.png`'s texture size in pixels: the can's content,

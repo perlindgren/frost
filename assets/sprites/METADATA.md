@@ -15,3 +15,4 @@ Sprites with anchor points:
    
 - The flower bench plant positions, relative to the top left corner (0,0)
     - (923, 514), (1248, 546), (1633, 603) (739, 571) (1081, 640) (1463, 719)
+

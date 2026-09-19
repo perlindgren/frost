@@ -1,14 +1,16 @@
 //! A tomato plant that grows slice by slice and sways in a travelling wind,
 //! factored out of the `grow` example so the `immortal` example can grow one
-//! on its grass: the same three-slice chain (`plant1.png` the base,
-//! `plant2.png` the middle, `plant3.png` the top, chained through
-//! hand-picked joint positions), where each slice grows from zero to its
-//! full size on its own timetable — the base over 3 seconds, the middle over
-//! 6, the top over 9 — all starting at the same time. Each slice grows out
+//! on its grass: five slices (`plant1.png` the base, `plant2.png` the low
+//! middle, `plant3.png` the middle, `plant4.png` the high middle,
+//! `plant5.png` the top, chained through hand-picked joint positions),
+//! where each slice grows from zero to its full size on its own timetable —
+//! the base over 3 seconds, the low middle over 6, the middle over 9, the
+//! high middle over 12, the top over 15 — all starting at the same time.
+//! Each slice grows out
 //! of its lower joint, the joint it attaches to the previous slice through,
 //! so the chain stays connected while it grows, the root joint (plant1's
 //! lower joint) stays in place, and each upper slice sprouts from the moving
-//! top of the one below it. From 9 seconds on the plant is at full size and
+//! top of the one below it. From 15 seconds on the plant is at full size and
 //! keeps swaying: the base rock turns the whole plant around its lower
 //! joint, and the two joints above it bend a little more each, so the tip
 //! moves the most.
@@ -21,16 +23,16 @@
 //! included.
 //!
 //! The plant's layout is driven by a [`Plant`] value: `new` builds the
-//! chain from the three slice shapes, `step` advances the growth clock, and
+//! chain from the five slice shapes, `step` advances the growth clock, and
 //! `layout` lays the chain out in a plant node whose children — in chain
-//! order — are the three slice nodes, anchoring the root joint at a given
+//! order — are the five slice nodes, anchoring the root joint at a given
 //! parent-space point and applying the base rock and the joint bends. The
 //! plant's fit scale is the plant node's own `scale`, set once by the
 //! caller: the node's scale applies before its transform, to its subtree,
 //! so the whole plant sizes around the root joint while the joint itself
 //! still lands exactly on the anchor.
 
-/// The hand-picked joints of the three slices, in each image's pixel space:
+/// The hand-picked joints of the five slices, in each image's pixel space:
 /// `(0, 0)` at the upper-left, `x` right, `y` down. `[0]` is where the
 /// slice attaches to the previous one, `[1]` where the next slice attaches.
 pub const JOINTS: [[(f32, f32); 2]; 5] = [
@@ -38,7 +40,7 @@ pub const JOINTS: [[(f32, f32); 2]; 5] = [
     [(319.0, 581.0), (318.0, 351.0)], // plant2, the low middle
     [(318.0, 463.0), (309.0, 89.0)],  // plant3, the middle
     [(306.0, 412.0), (301.0, 166.0)], // plant4, the high middle
-    [(317.0, 671.0), (317.0, 578.0)], // plant5, the top
+    [(124.0, 196.0), (124.0, 100.0)], // plant5, the top
 ];
 
 /// How long each slice takes to grow from zero to its full size, in
@@ -61,8 +63,11 @@ const SWAY_FREQ: f32 = 1.2;
 /// its lower joint.
 const SWAY_BASE: f32 = 0.025;
 
-/// The middle joint's extra bend, in radians, lagging the base rock: each
-/// bend is a little stronger than the last, so the tip moves the most.
+/// The joints' extra bends, in radians, each lagging the base rock: each
+/// entry is a phase lag and an amplitude. `layout` uses the first two —
+/// the first joint above the base bends by `[0]`, the next by `[0] + [1]`,
+/// a little more — and the top slices follow the base rock and those two
+/// bends as one, so the tip moves the most.
 const SWAY_BENDS: [(f32, f32); 4] = [(0.8, 0.04), (1.6, 0.07), (2.4, 0.1), (3.2, 0.12)];
 
 /// One slice's two joints, already converted to node-local coordinates.
@@ -99,14 +104,14 @@ fn link(shape: &frost::Shape, joints: [(f32, f32); 2]) -> Link {
     }
 }
 
-/// A three-slice plant that grows out of its root joint and sways in a
+/// A five-slice plant that grows out of its root joint and sways in a
 /// traveling wind. The shapes themselves live in the scene; the value only
 /// keeps the growth clock and the slices' joints in node-local space.
 #[derive(Clone)]
 pub struct Plant {
     /// Elapsed time in seconds.
     t: f32,
-    /// The three slices in chain order, with their joints in node-local
+    /// The five slices in chain order, with their joints in node-local
     /// space.
     links: [Link; 5],
 }
@@ -141,7 +146,7 @@ impl Plant {
     }
 
     /// Lays the plant out in `node`, whose children — in chain order — are
-    /// the three slice nodes.
+    /// the five slice nodes.
     ///
     /// `node`'s origin is the plant's root joint (plant1's lower joint):
     /// the base rock turns the whole plant around that joint, and its
