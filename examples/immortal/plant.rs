@@ -46,6 +46,11 @@ pub const JOINTS: [[(f32, f32); 2]; 3] = [
 /// at full size and keeps swaying.
 pub const GROW_TIMES: [f32; 3] = [3.0, 6.0, 9.0];
 
+/// The time at which the plant is fully grown: the last slice's growth
+/// time — from then on every slice holds at full length while the plant
+/// keeps swaying.
+pub const FULL_GROW_TIME: f32 = *GROW_TIMES.last().expect("GROW_TIMES is non-empty");
+
 /// The travelling wind's angular frequency, in radians per second: the base
 /// rock and the two joint bends lag each other by a fixed phase.
 const SWAY_FREQ: f32 = 1.2;
@@ -62,6 +67,7 @@ const SWAY_BEND1: (f32, f32) = (0.8, 0.04);
 const SWAY_BEND2: (f32, f32) = (1.6, 0.07);
 
 /// One slice's two joints, already converted to node-local coordinates.
+#[derive(Clone)]
 struct Link {
     /// The local position of the joint that attaches to the previous slice.
     from: [f32; 2],
@@ -97,6 +103,7 @@ fn link(shape: &frost::Shape, joints: [(f32, f32); 2]) -> Link {
 /// A three-slice plant that grows out of its root joint and sways in a
 /// travelling wind. The shapes themselves live in the scene; the value only
 /// keeps the growth clock and the slices' joints in node-local space.
+#[derive(Clone)]
 pub struct Plant {
     /// Elapsed time in seconds.
     t: f32,
@@ -124,6 +131,12 @@ impl Plant {
     /// Advances the growth clock by `dt` seconds.
     pub fn step(&mut self, dt: f32) {
         self.t += dt;
+    }
+
+    /// Whether the plant is fully grown: the last slice has reached its
+    /// full length, and from here on the plant only keeps swaying.
+    pub fn fully_grown(&self) -> bool {
+        self.t >= FULL_GROW_TIME
     }
 
     /// Lays the plant out in `node`, whose children — in chain order — are

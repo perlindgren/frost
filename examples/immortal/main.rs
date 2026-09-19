@@ -36,12 +36,13 @@
 //! watering can in slot 1 sit ghosted at 20 percent alpha, via their nodes'
 //! modulate.
 //!
-//! On the grass, at `grass.png` pixel (923, 514), a tomato plant grows
-//! slice by slice: the same three-slice chain and travelling wind as the
-//! `grow` example, reused through the [`plant`] module. The base grows over
-//! 3 seconds, the middle over 6, the top over 9, all starting at launch —
-//! concurrently with the tool system — and the root joint stays glued to
-//! that grass pixel across resizes.
+//! On the grass, six tomato plants grow slice by slice: the same
+//! three-slice chain and travelling wind as the `grow` example, reused
+//! through the [`plant`] module. The base grows over 3 seconds, the middle
+//! over 6, the top over 9. They grow one at a time, in `PLANT_POS` order —
+//! the first starts at launch, and each next one starts when the previous
+//! is fully grown — concurrently with the tool system. Each root joint
+//! stays glued to its own `grass.png` pixel across resizes.
 //!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
@@ -59,10 +60,17 @@ const WINDOW: [u32; 2] = [1920, 1080];
 /// `grass.png`'s texture size in pixels: a full-bleed 1920x1080 photo.
 const GRASS_SIZE: [f32; 2] = [1920.0, 1080.0];
 
-/// The plant's root joint in `grass.png`'s pixel space: the point on the
-/// grass the plant grows out of — `(0, 0)` at the upper-left, `x` right,
-/// `y` down.
-const PLANT_POS: [f32; 2] = [923.0, 514.0];
+/// The plants' root joints in `grass.png`'s pixel space — `(0, 0)` at the
+/// upper-left, `x` right, `y` down — in growth order: the first grows from
+/// launch, and each next one starts when the previous is fully grown.
+const PLANT_POS: [[f32; 2]; 6] = [
+    [923.0, 514.0],
+    [1248.0, 546.0],
+    [1633.0, 603.0],
+    [739.0, 571.0],
+    [1081.0, 640.0],
+    [1463.0, 719.0],
+];
 
 /// The plant's fit scale, the same as the `grow` example: the 969 px full
 /// plant spans about 533 px around the root joint.
@@ -418,10 +426,12 @@ struct Demo {
     /// added each frame and one particle is spawned per whole unit, so the
     /// rate holds at any dt.
     acc: f32,
-    /// The tomato plant on the grass: its own growth clock, stepped once
-    /// per frame and laid out on the plant node (root children[2]) in
-    /// parallel with the tool system.
-    plant: plant::Plant,
+    /// The tomato plants on the grass, in growth order: each has its own
+    /// growth clock, and the process steps it only once the previous one
+    /// is fully grown — the first from launch on — then lays it out on the
+    /// matching child of the plants node (root children[2]), in parallel
+    /// with the tool system.
+    plants: [plant::Plant; PLANT_POS.len()],
 }
 
 impl frost::Process for Demo {
@@ -442,15 +452,22 @@ impl frost::Process for Demo {
         items.transform =
             frost::Transform::translate(-(w / 2.0) + MARGIN + ITEMS_SIZE[0] * s / 2.0, 0.0);
 
-        // Grow the plant on its own clock, in parallel with the tool
-        // system: the root joint stays glued to `PLANT_POS` on the grass,
-        // which the grass stretch maps to this user-space anchor.
-        self.plant.step(dt);
-        let anchor = [
-            PLANT_POS[0] * w / GRASS_SIZE[0] - w / 2.0,
-            h / 2.0 - PLANT_POS[1] * h / GRASS_SIZE[1],
-        ];
-        self.plant.layout(&mut ctx.scene().root.children[2], anchor);
+        // Grow the plants one at a time, in parallel with the tool
+        // system: the first starts at launch, each next one starts when
+        // the previous is fully grown. Each root joint stays glued to its
+        // `PLANT_POS` pixel on the grass, which the grass stretch maps to
+        // the matching user-space anchor.
+        let plants_node = &mut ctx.scene().root.children[2];
+        for i in 0..PLANT_POS.len() {
+            if i == 0 || self.plants[i - 1].fully_grown() {
+                self.plants[i].step(dt);
+            }
+            let anchor = [
+                PLANT_POS[i][0] * w / GRASS_SIZE[0] - w / 2.0,
+                h / 2.0 - PLANT_POS[i][1] * h / GRASS_SIZE[1],
+            ];
+            self.plants[i].layout(&mut plants_node.children[i], anchor);
+        }
 
         // Follow the pointer, keeping the last known position while the
         // cursor is outside the window.
@@ -678,6 +695,29 @@ fn main() {
         .expect("failed to load assets/sprites/plant3.png");
     let plant = plant::Plant::new([&plant1, &plant2, &plant3]);
 
+    // One plant node, cloned for each plant: its origin is the root joint
+    // (plant1's lower joint), positioned by the process every frame. The
+    // fit scale is constant — each slice grows individually, riding the
+    // node. The clones are cheap `Arc` clones of the slice pixel buffers.
+    let plant_node = frost::SceneNode {
+        scale: [PLANT_SCALE, PLANT_SCALE],
+        children: vec![
+            Box::new(frost::SceneNode {
+                shape: Some(plant1),
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
+                shape: Some(plant2),
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
+                shape: Some(plant3),
+                ..Default::default()
+            }),
+        ],
+        ..Default::default()
+    };
+
     let scene = frost::Scene::new(frost::SceneNode {
         // Dark ground under the grass; only the sparse transparent gaps in
         // the grass texture show it.
@@ -762,27 +802,15 @@ fn main() {
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
-                // The tomato plant on the grass: its origin is the root
-                // joint (plant1's lower joint), positioned by the process
-                // every frame. The fit scale is constant — each slice grows
-                // individually, riding the node. Its slice children paint on
-                // top of the grass; it sits under the tool node, so the
-                // cursor paints above the plant.
-                scale: [PLANT_SCALE, PLANT_SCALE],
-                children: vec![
-                    Box::new(frost::SceneNode {
-                        shape: Some(plant1),
-                        ..Default::default()
-                    }),
-                    Box::new(frost::SceneNode {
-                        shape: Some(plant2),
-                        ..Default::default()
-                    }),
-                    Box::new(frost::SceneNode {
-                        shape: Some(plant3),
-                        ..Default::default()
-                    }),
-                ],
+                // The plants on the grass: one plant node per `PLANT_POS`
+                // entry, in growth order. The group carries no shape or
+                // scale of its own; each plant child holds the fit scale
+                // and is positioned by the process every frame. The slices
+                // paint on top of the grass; the group sits under the tool
+                // node, so the cursor paints above the plants.
+                children: (0..PLANT_POS.len())
+                    .map(|_| Box::new(plant_node.clone()))
+                    .collect(),
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
@@ -821,7 +849,10 @@ fn main() {
             spray: frost::ParticleSystem::new(),
             rng: Rng::new(),
             acc: 0.0,
-            plant,
+            // Six identical growth clocks, one per plant: each starts at
+            // zero and the process steps it when the previous is fully
+            // grown.
+            plants: std::array::from_fn(|_| plant.clone()),
         },
         frost::Config {
             window_size: Some(WINDOW),
