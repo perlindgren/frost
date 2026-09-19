@@ -26,6 +26,13 @@
 //!   clockwise tilting — it emits a green spray from the nozzle
 //!   (`SPRAY_NOZZLE`, in image pixels).
 //!
+//! `assets/sprites/items.png` is a full-screen inventory overlay, drawn 1:1
+//! at the window center like the grass and re-stretched with it on resize:
+//! its panel sits on the left of the screen. The panel's space is split
+//! into four slots, 0 to 3 from the top, evenly along the y axis; the
+//! watering can rests in slot 3 and the spray can in slot 2, drawn on top
+//! of the panel.
+//!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
 //!
@@ -152,6 +159,51 @@ fn spout(mx: f32, my: f32, angle: f32) -> ([f32; 2], [f32; 2]) {
     let (ox, oy) = (c * ex - s * ey, s * ex + c * ey);
     let l = (ox * ox + oy * oy).sqrt();
     ([mx + ox, my + oy], [ox / l, oy / l])
+}
+
+/// `items.png`'s texture size in pixels: a full-screen inventory overlay,
+/// the same size as the window, so it is drawn 1:1 at the window center
+/// like the grass and re-stretched with it on resize.
+const ITEMS_SIZE: [f32; 2] = [1920.0, 1080.0];
+
+/// The panel's visible content in `items.png`'s pixel space: `(0, 0)` is
+/// the upper-left corner, `x` grows right, `y` grows down. The panel is
+/// the vertical strip near the left edge of the overlay.
+const ITEMS_BOX: [[f32; 2]; 2] = [
+    [48.0, 57.0], // content upper-left
+    [436.0, 1047.0], // content lower-right
+];
+
+/// The panel's logical slots, 0 (top) to 3 (bottom), evenly distributed
+/// over the panel's height.
+const SLOTS: usize = 4;
+
+/// The slot the resting watering can sits in.
+const CAN_SLOT: usize = 3;
+
+/// The slot the resting spray can sits in.
+const SPRAY_SLOT: usize = 2;
+
+/// The padding each resting can keeps from its slot's edges, in pixels.
+const SLOT_INSET: f32 = 12.0;
+
+/// The center of slot `i` (0 = top) in the items node's local space: the
+/// slot's image-pixel center offset from the window center, with the y
+/// flip, so a child translated here lands on the slot's center once the
+/// overlay is drawn 1:1 at the window center.
+fn slot_local(i: usize) -> [f32; 2] {
+    let h = ITEMS_BOX[1][1] - ITEMS_BOX[0][1];
+    let px = (ITEMS_BOX[0][0] + ITEMS_BOX[1][0]) / 2.0;
+    let py = ITEMS_BOX[0][1] + (i as f32 + 0.5) * (h / SLOTS as f32);
+    [px - ITEMS_SIZE[0] / 2.0, ITEMS_SIZE[1] / 2.0 - py]
+}
+
+/// The uniform scale that fits a `size`-pixel sprite into one slot,
+/// keeping `SLOT_INSET` clear of the slot's edges.
+fn slot_scale(size: [f32; 2]) -> f32 {
+    let w = ITEMS_BOX[1][0] - ITEMS_BOX[0][0] - 2.0 * SLOT_INSET;
+    let h = (ITEMS_BOX[1][1] - ITEMS_BOX[0][1]) / SLOTS as f32 - 2.0 * SLOT_INSET;
+    (w / size[0]).min(h / size[1])
 }
 
 /// `Spray1.png` and `Spray2.png`'s texture size in pixels: both frames
@@ -344,6 +396,10 @@ impl frost::Process for Demo {
         let (w, h) = ctx.size();
         let grass = &mut ctx.scene().root.children[0];
         grass.scale = [w / GRASS_SIZE[0], h / GRASS_SIZE[1]];
+        // Stretch the overlay with the window too, so the panel — and the
+        // cans riding on its slots, as the node's children — stay in place.
+        let items = &mut ctx.scene().root.children[1];
+        items.scale = [w / ITEMS_SIZE[0], h / ITEMS_SIZE[1]];
 
         // Follow the pointer, keeping the last known position while the
         // cursor is outside the window.
@@ -366,7 +422,7 @@ impl frost::Process for Demo {
             self.burst = None;
             self.rotation =
                 frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once);
-            let tool_node = &mut ctx.scene().root.children[1];
+            let tool_node = &mut ctx.scene().root.children[2];
             if to_spray {
                 self.showing_spray2 = false;
                 tool_node.shape = Some(self.spray1.clone());
@@ -480,7 +536,7 @@ impl frost::Process for Demo {
             }
         }
 
-        let tool_node = &mut ctx.scene().root.children[1];
+        let tool_node = &mut ctx.scene().root.children[2];
         tool_node.transform = match self.tool {
             Tool::WaterCan => can_transform(mx, my, self.angle),
             Tool::SprayCan => spray_transform(mx, my, self.angle),
@@ -536,7 +592,7 @@ impl Demo {
             return;
         }
         self.showing_spray2 = on;
-        ctx.scene().root.children[1].shape = Some(if on {
+        ctx.scene().root.children[2].shape = Some(if on {
             self.spray2.clone()
         } else {
             self.spray1.clone()
@@ -559,6 +615,8 @@ fn main() {
         .expect("failed to load assets/sprites/Spray1.png");
     let spray2 = frost::Shape::sprite(format!("{root}/assets/sprites/Spray2.png"))
         .expect("failed to load assets/sprites/Spray2.png");
+    let items = frost::Shape::sprite(format!("{root}/assets/sprites/items.png"))
+        .expect("failed to load assets/sprites/items.png");
 
     let scene = frost::Scene::new(frost::SceneNode {
         // Dark ground under the grass; only the sparse transparent gaps in
@@ -578,10 +636,43 @@ fn main() {
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
+                // The inventory overlay: the full-screen image, stretched
+                // with the window like the grass, so its panel sits on the
+                // left of the screen, roughly vertically centered. Its two
+                // resting cans are its children — a node paints its shape
+                // before its children, so the cans render on top of the
+                // panel — and they ride the overlay's stretch on resize.
+                shape: Some(items),
+                children: vec![
+                    Box::new(frost::SceneNode {
+                        // The spray can at rest, centered in slot 2.
+                        transform: frost::Transform::translate(
+                            slot_local(SPRAY_SLOT)[0],
+                            slot_local(SPRAY_SLOT)[1],
+                        ),
+                        scale: [slot_scale(SPRAY_IMAGE), slot_scale(SPRAY_IMAGE)],
+                        shape: Some(spray1.clone()),
+                        ..Default::default()
+                    }),
+                    Box::new(frost::SceneNode {
+                        // The watering can at rest, centered in slot 3.
+                        transform: frost::Transform::translate(
+                            slot_local(CAN_SLOT)[0],
+                            slot_local(CAN_SLOT)[1],
+                        ),
+                        scale: [slot_scale(CAN_IMAGE), slot_scale(CAN_IMAGE)],
+                        shape: Some(can.clone()),
+                        ..Default::default()
+                    }),
+                ],
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
                 // The active tool, starting as the watering can: scaled to
                 // `CAN_SIZE` wide. The toggle switches the shape — and the
                 // scale, since the spray frames are drawn at their natural
-                // size — on this same node.
+                // size — on this same node. It stays the last child, so the
+                // cursor paints above the panel.
                 // Starts at the window's center; the process moves it to
                 // the pointer from the first frame on.
                 scale: [CAN_SCALE, CAN_SCALE],
