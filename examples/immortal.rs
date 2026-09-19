@@ -234,13 +234,17 @@ fn spray_transform(mx: f32, my: f32, angle: f32) -> frost::Transform {
 /// The nozzle tip's world (user) position and the direction the spray
 /// leaves it, for the can at `(mx, my)` rotated `angle` radians.
 ///
-/// The tip sits `SPRAY_NOZZLE_LOCAL` from the pivot in node space;
-/// rotating that offset by `angle` — the same rotation the can itself
-/// undergoes, about the pivot — gives its world offset. The spray leaves
-/// along the rotated offset's direction, i.e. straight out of the nozzle:
-/// at the full tilt that is nearly straight up.
+/// The tip sits `SPRAY_NOZZLE_LOCAL - SPRAY_PIVOT_LOCAL` from the pivot in
+/// node space; rotating that offset by `angle` — the same rotation the can
+/// itself undergoes, about the pivot, which sits on the cursor — gives its
+/// world offset. The spray leaves along the rotated offset's direction,
+/// i.e. straight out of the nozzle: at the full tilt that is nearly
+/// straight up.
 fn nozzle(mx: f32, my: f32, angle: f32) -> ([f32; 2], [f32; 2]) {
-    let (ex, ey) = (SPRAY_NOZZLE_LOCAL[0], SPRAY_NOZZLE_LOCAL[1]);
+    let (ex, ey) = (
+        SPRAY_NOZZLE_LOCAL[0] - SPRAY_PIVOT_LOCAL[0],
+        SPRAY_NOZZLE_LOCAL[1] - SPRAY_PIVOT_LOCAL[1],
+    );
     let (c, s) = (angle.cos(), angle.sin());
     let (ox, oy) = (c * ex - s * ey, s * ex + c * ey);
     let l = (ox * ox + oy * oy).sqrt();
