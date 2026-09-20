@@ -412,7 +412,8 @@ All load assets via `CARGO_MANIFEST_DIR`. Run with `cargo run --example <name>`
 | immortal     | 1920x1080 (Config window_size); right button toggles can / spray;  |
 |              | plants grow one at a time; vipers orbit the row; a bug swarm pops  |
 |              | up out of the grass in batches of three per plant; spray mist       |
-|              | touching a bug wounds it - five hits, one per frame per bug - and   |
+|              | touching a bug wounds it - five hits, one per 0.2 s per bug, a      |
+|              | white pip above the bug per hit it can still take - and            |
 |              | the killing blow starts the two-phase death: over 0.3 s it flips    |
 |              | upside down (y scale to fully inverted, position/growth/facing/frame|
 |              | frozen), then over 0.5 s the inverted sprite shrinks to nothing     |
