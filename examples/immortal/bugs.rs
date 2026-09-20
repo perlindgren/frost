@@ -14,6 +14,11 @@
 //! of one of the three tjatter clips (low, mid, high) for that frame, and
 //! the demo plays it through [`frost::Audio`].
 //!
+//! Every bug that pops up out of the grass — a batch spawn or a respawn
+//! — plops: [Bugs::step] reports the index of one of the three plopp
+//! clips (`bugs_plopp1.wav`, `bugs_plopp2.wav`, `bugs_plopp3.wav`) for
+//! that frame, and the demo plays it through [`frost::Audio`].
+//!
 //! A bug takes [HITS_TO_KILL] hits from the spray can's green mist before
 //! it dies — a wounded bug takes its next hit only after a
 //! [HIT_COOLDOWN] second, so the mist wears it down one hit at a time —
@@ -53,7 +58,7 @@ pub const BUGS_PER_PLANT: usize = 3;
 /// Rendered bug width in user-space px (the bees are 25 px wide).
 const BUG_SIZE: f32 = 40.0;
 /// How long the y-scale spawn growth takes, in seconds.
-const GROW_TIME: f32 = 3.0;
+const GROW_TIME: f32 = 0.75;
 /// Distance from the park target at which a bug stops walking, in px.
 const ARRIVE: f32 = 4.0;
 /// How close another bug must be to an arriving bug's destination for the
@@ -188,6 +193,22 @@ pub struct Bugs {
     rng: Rng,
 }
 
+/// What [Bugs::step] reports for one frame: the clip indices the demo
+/// should play through [`frost::Audio`].
+#[derive(Default)]
+pub struct StepEvents {
+    /// One entry per bug that reached its destination this frame while
+    /// another bug was on the grass within [TJATTER_RANGE] of it: index
+    /// 0 for the low tjatter clip, 1 for the mid, 2 for the high, picked
+    /// at random by the swarm.
+    pub tjatters: Vec<usize>,
+    /// One entry per bug that popped up out of the grass this frame — a
+    /// batch spawn or a respawn: index 0, 1 or 2 into the three plopp
+    /// clips (`bugs_plopp1.wav`, `bugs_plopp2.wav`, `bugs_plopp3.wav`),
+    /// picked at random by the swarm.
+    pub plops: Vec<usize>,
+}
+
 impl Bugs {
     /// Build an empty swarm over the three walk frames.
     ///
@@ -234,16 +255,23 @@ impl Bugs {
     /// destination recovers one hit of health every [REGEN_TIME] seconds,
     /// capped at [MAX_HEALTH] ([Bug::parked]).
     ///
-    /// Returns the indices of the tjatter clips to play this frame, one
-    /// per bug that reached its destination this frame while another bug
-    /// was on the grass within [TJATTER_RANGE] of its destination: index
-    /// 0 for the low clip, 1 for the mid, 2 for the high, picked at
+    /// Returns the [StepEvents] for this frame: the indices of the
+    /// tjatter clips to play (one per bug that reached its destination
+    /// this frame while another bug was on the grass within
+    /// [TJATTER_RANGE] of its destination: index 0 for the low clip, 1
+    /// for the mid, 2 for the high) and the indices of the plopp clips
+    /// to play (one per bug that popped up out of the grass this frame —
+    /// a batch spawn or a respawn: index 0, 1 or 2), each picked at
     /// random by the swarm.
-    pub fn step(&mut self, dt: f32, anchors: &[[f32; 2]], active: usize) -> Vec<usize> {
+    pub fn step(&mut self, dt: f32, anchors: &[[f32; 2]], active: usize) -> StepEvents {
         if dt < 0.0 {
-            return Vec::new();
+            return StepEvents::default();
         }
         self.t += dt;
+
+        // The plopp clip index for every bug that pops up out of the
+        // grass this frame, batch spawns and respawns alike.
+        let mut plops = Vec::new();
 
         while self.plants_done < active.min(anchors.len()) {
             let home = self.plants_done;
@@ -280,6 +308,9 @@ impl Bugs {
                     respawn: None,
                 };
                 self.bugs.push(bug);
+                // The bug pops up out of the grass: one random plopp
+                // clip.
+                plops.push((self.rng.next_f32() * 3.0) as usize);
             }
         }
 
@@ -313,6 +344,9 @@ impl Bugs {
                     bug.parked = 0.0;
                     bug.arrived = false;
                     bug.hit_cooldown = 0.0;
+                    // The bug pops back up out of the grass: one random
+                    // plopp clip.
+                    plops.push((self.rng.next_f32() * 3.0) as usize);
                 } else {
                     bug.respawn = Some(r - dt);
                 }
@@ -428,7 +462,7 @@ impl Bugs {
                 tjatters.push((self.rng.next_f32() * 3.0) as usize);
             }
         }
-        tjatters
+        StepEvents { tjatters, plops }
     }
 
     /// Land one mist hit at `p`: every live bug within half the rendered
@@ -814,8 +848,9 @@ mod tests {
         let mut bugs = Bugs::new([&frame; 3]);
         bugs.step(dt, &ANCHORS, 1);
         let spawn = bugs.bugs.iter().map(|b| b.pos).collect::<Vec<_>>();
-        // Well under GROW_TIME: every bug holds its exact spawn spot.
-        for _ in 0..55 {
+        // While the growth clock runs: every bug holds its exact spawn
+        // spot.
+        while bugs.bugs[0].grow < GROW_TIME {
             bugs.step(dt, &ANCHORS, 1);
             for (i, b) in bugs.bugs.iter().enumerate() {
                 assert_eq!(b.pos, spawn[i], "bug {i} moved while growing");
@@ -1125,16 +1160,17 @@ mod tests {
         let scale = BUG_SIZE / 10.0;
         let mut bugs = Bugs::new([&frame; 3]);
         bugs.step(dt, &ANCHORS, 1);
-        // One fifth of the way through the growth: the bugs hold their
-        // exact spawn spots, so the positions below are stable.
-        for _ in 0..6 {
+        // A few steps into the growth: the bugs hold their exact spawn
+        // spots, so the positions below are stable, and the rounds below
+        // land the killing blow before the growth clock runs out.
+        for _ in 0..2 {
             bugs.step(dt, &ANCHORS, 1);
         }
         assert!(bugs.bugs.iter().all(|b| b.grow < GROW_TIME));
         let pos: Vec<[f32; 2]> = bugs.bugs.iter().map(|b| b.pos).collect();
-        // A drop on each exact spawn spot, five rounds of one hit each,
-        // spaced by the hit cooldown: every bug takes one hit per round,
-        // and the fifth round is the killing blow.
+        // A drop on each exact spawn spot, one hit per round, spaced by
+        // the hit cooldown: every bug takes one hit per round, and the
+        // last round is the killing blow.
         for _ in 0..HITS_TO_KILL {
             for p in &pos {
                 assert!(bugs.hit_at(*p) >= 1, "a drop found no bug");
@@ -1309,12 +1345,16 @@ mod tests {
         pin(&mut bugs, 0, 900.0);
         pin(&mut bugs, 2, -900.0);
         // Bug 1's own arrival finds no one within range: silent.
-        let clips = bugs.step(dt, &ANCHORS, 1);
+        let events = bugs.step(dt, &ANCHORS, 1);
         assert!(
             bugs.bugs[1].arrived,
             "bug 1 never reached its destination"
         );
-        assert!(clips.is_empty(), "a lone arrival chattered: {clips:?}");
+        assert!(
+            events.tjatters.is_empty(),
+            "a lone arrival chattered: {:?}",
+            events.tjatters
+        );
 
         // Bug 0 lands exactly on its spot: bug 1's park spot is 36 px
         // away, inside [TJATTER_RANGE] — the arrival chatters once, on a
@@ -1324,25 +1364,30 @@ mod tests {
             ANCHORS[b0.home][0] + b0.idle[0],
             ANCHORS[b0.home][1] + b0.idle[1] + ground,
         ];
-        let clips = bugs.step(dt, &ANCHORS, 1);
+        let events = bugs.step(dt, &ANCHORS, 1);
         assert!(
             bugs.bugs[0].arrived,
             "bug 0 never reached its destination"
         );
         assert_eq!(
-            clips.len(),
+            events.tjatters.len(),
             1,
             "the arrival chattered {} times, not once",
-            clips.len()
+            events.tjatters.len()
         );
         assert!(
-            (0..3).contains(&clips[0]),
-            "clip index {clips:?} left the tjatter range"
+            (0..3).contains(&events.tjatters[0]),
+            "clip index {:?} left the tjatter range",
+            events.tjatters
         );
 
         // The next frame nobody arrives: nothing plays.
-        let clips = bugs.step(dt, &ANCHORS, 1);
-        assert!(clips.is_empty(), "a parked bug chattered again: {clips:?}");
+        let events = bugs.step(dt, &ANCHORS, 1);
+        assert!(
+            events.tjatters.is_empty(),
+            "a parked bug chattered again: {:?}",
+            events.tjatters
+        );
 
         // And a bug that parks with no company chatters nothing.
         let mut alone = Bugs::new([&frame; 3]);
@@ -1350,14 +1395,77 @@ mod tests {
         pin(&mut alone, 0, 0.0);
         pin(&mut alone, 1, 900.0);
         pin(&mut alone, 2, -900.0);
-        let clips = alone.step(dt, &ANCHORS, 1);
+        let events = alone.step(dt, &ANCHORS, 1);
         assert!(
             alone.bugs[0].arrived,
             "the lone bug never reached its destination"
         );
         assert!(
-            clips.is_empty(),
-            "a bug that parks alone chattered: {clips:?}"
+            events.tjatters.is_empty(),
+            "a bug that parks alone chattered: {:?}",
+            events.tjatters
+        );
+    }
+
+    /// Every bug that pops up out of the grass — a batch spawn or a
+    /// respawn — reports exactly one plopp clip index (0, 1 or 2) for
+    /// the frame it pops up in, and a frame with no pop-ups reports
+    /// none.
+    #[test]
+    fn every_pop_up_gets_a_plopp() {
+        let frame = frost::Shape::Sprite {
+            data: std::sync::Arc::new([0u8; 1]),
+            width: 10,
+            height: 10,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+        };
+        let dt = 0.05;
+        let mut bugs = Bugs::new([&frame; 3]);
+
+        // The first step spawns plant one's batch: three bugs pop up,
+        // each with its own in-range plopp clip, and none of them has
+        // arrived anywhere yet.
+        let events = bugs.step(dt, &ANCHORS, 1);
+        assert_eq!(
+            events.plops.len(),
+            BUGS_PER_PLANT,
+            "one plopp per bug that popped up"
+        );
+        for clip in &events.plops {
+            assert!(
+                (0..3).contains(clip),
+                "the plopp clip index {clip:?} left its range"
+            );
+        }
+        assert!(events.tjatters.is_empty(), "growing bugs chattered");
+
+        // The next step pops up nothing: no plopp.
+        let events = bugs.step(dt, &ANCHORS, 1);
+        assert!(
+            events.plops.is_empty(),
+            "a frame without pop-ups plops: {:?}",
+            events.plops
+        );
+
+        // A bug that finishes its respawn delay pops back up: exactly
+        // one plopp, in range.
+        bugs.bugs[0].respawn = Some(dt);
+        let events = bugs.step(dt, &ANCHORS, 1);
+        assert_eq!(
+            events.plops.len(),
+            1,
+            "the respawn plops more than once"
+        );
+        assert!(
+            (0..3).contains(&events.plops[0]),
+            "the respawn plopp index {:?} left its range",
+            events.plops[0]
         );
     }
 }

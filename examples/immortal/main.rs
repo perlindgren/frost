@@ -112,6 +112,12 @@
 //! `TjatterHigh.wav` — at random, and the demo plays it through
 //! [`frost::Audio`].
 //!
+//! Every bug that pops up out of the grass — a batch spawn or a respawn
+//! — plops: the swarm picks one of the three plopp clips —
+//! `assets/audio/bugs_plopp1.wav`, `bugs_plopp2.wav`, and
+//! `bugs_plopp3.wav` — at random, and the demo plays it through
+//! [`frost::Audio`].
+//!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
 //!
@@ -608,14 +614,18 @@ struct Demo {
     /// plant starts growing, and the swarm steps and lays them out on the
     /// matching child of the bugs node (root children[5]).
     bugs: bugs::Bugs,
-    /// The audio output, opened once at startup; the bug tjatter clips
-    /// play through it.
+    /// The audio output, opened once at startup; the bug tjatter and
+    /// plopp clips play through it.
     audio: frost::Audio,
     /// The three bug tjatter clips (low, mid, high), decoded once at
     /// startup; a bug that reaches its destination while another bug is
     /// within 50 px of it chatters on one of them, the swarm's random
     /// pick.
     tjatters: [frost::Sound; 3],
+    /// The three bug plopp clips (1, 2, 3), decoded once at startup; a
+    /// bug that pops up out of the grass — a batch spawn or a respawn —
+    /// plops on one of them, the swarm's random pick.
+    plops: [frost::Sound; 3],
 }
 
 impl frost::Process for Demo {
@@ -693,14 +703,20 @@ impl frost::Process for Demo {
         // Waddle the bugs to the plants, in parallel with everything
         // else: three spawn each time a plant starts growing.
         let bugs_node = &mut ctx.scene().root.children[5];
-        let tjatters = self.bugs.step(dt, &anchors, active_plants);
+        let events = self.bugs.step(dt, &anchors, active_plants);
         self.bugs
             .layout(bugs_node, [&self.bug1, &self.bug2, &self.bug3]);
         // An arrival chatters: a bug that just reached its destination
         // while another bug was on the grass nearby plays one of the
         // tjatter clips, the swarm's random pick.
-        for clip in tjatters {
+        for clip in events.tjatters {
             self.audio.play_once(&self.tjatters[clip]);
+        }
+        // A pop-up plops: a bug that just came up out of the grass — a
+        // batch spawn or a respawn — plays one of the plopp clips, the
+        // swarm's random pick.
+        for clip in events.plops {
+            self.audio.play_once(&self.plops[clip]);
         }
 
         // Follow the pointer, keeping the last known position while the
@@ -1073,10 +1089,12 @@ fn main() {
         .expect("failed to load assets/sprites/flower.png");
     let plant = plant::Plant::new([&plant1, &plant2, &plant3, &plant4, &plant5]);
 
-    // The audio output and the three bug tjatter clips, decoded once at
-    // startup; a bug that reaches its destination while another bug is
-    // on the grass within 50 px of it chatters on one of them, the
-    // swarm's random pick.
+    // The audio output, decoded once at startup, and the bug clips: the
+    // three tjatter clips (a bug that reaches its destination while
+    // another bug is on the grass within 50 px of it chatters on one of
+    // them, the swarm's random pick) and the three plopp clips (a bug
+    // that pops up out of the grass — a batch spawn or a respawn —
+    // plops on one of them, the swarm's random pick).
     let audio = frost::Audio::new()
         .expect("failed to open the audio output device");
     let tjatters = [
@@ -1086,6 +1104,14 @@ fn main() {
             .expect("failed to load assets/audio/TjatterMid.wav"),
         frost::Sound::load(format!("{root}/assets/audio/TjatterHigh.wav"))
             .expect("failed to load assets/audio/TjatterHigh.wav"),
+    ];
+    let plops = [
+        frost::Sound::load(format!("{root}/assets/audio/bugs_plopp1.wav"))
+            .expect("failed to load assets/audio/bugs_plopp1.wav"),
+        frost::Sound::load(format!("{root}/assets/audio/bugs_plopp2.wav"))
+            .expect("failed to load assets/audio/bugs_plopp2.wav"),
+        frost::Sound::load(format!("{root}/assets/audio/bugs_plopp3.wav"))
+            .expect("failed to load assets/audio/bugs_plopp3.wav"),
     ];
 
     // One plant node, cloned for each plant: its origin is the root joint
@@ -1297,6 +1323,7 @@ fn main() {
             bug3,
             audio,
             tjatters,
+            plops,
             flower,
             water: frost::ParticleSystem::new(),
             spray: frost::ParticleSystem::new(),
