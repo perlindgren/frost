@@ -26,7 +26,12 @@
 //! chain from the five slice shapes, `step` advances the growth clock, and
 //! `layout` lays the chain out in a plant node whose children — in chain
 //! order — are the five slice nodes, anchoring the root joint at a given
-//! parent-space point and applying the base rock and the joint bends. The
+//! parent-space point and applying the base rock and the joint bends.
+//! Once a slice is fully grown, its flowers open: the four lower slices'
+//! hand-picked spawn points — [FLOWER_SPAWNS]; the top slice bears none —
+//! are populated with the flower shape `layout` receives, one slot per
+//! point, in the flower children that follow the slice nodes, and each
+//! flower rides its slice's transform so it sways with the plant. The
 //! plant's fit scale is the plant node's own `scale`, set once by the
 //! caller: the node's scale applies before its transform, to its subtree,
 //! so the whole plant sizes around the root joint while the joint itself
@@ -56,6 +61,40 @@ pub const GROW_TIMES: [f32; 5] = [3.0, 6.0, 9.0, 12.0, 15.0];
 /// time — from then on every slice holds at full length while the plant
 /// keeps swaying.
 pub const FULL_GROW_TIME: f32 = *GROW_TIMES.last().expect("GROW_TIMES is non-empty");
+
+/// The flower spawn points of the four lower slices — the top slice bears
+/// none — in each slice image's pixel space: `(0, 0)` at the upper-left,
+/// `x` right, `y` down; `FLOWER_SPAWNS[i]` holds slice `i`'s points. `new`
+/// converts them to node-local space against each texture's real size, and
+/// `layout` opens them on the frame their slice reaches full size.
+pub const FLOWER_SPAWNS: [&[(f32, f32)]; 4] = [
+    &[(308.0, 615.0)], // plant1, the base
+    &[(306.0, 496.0), (638.0, 428.0), (304.0, 392.0)], // plant2, the low middle
+    &[
+        (315.0, 392.0),
+        (326.0, 315.0),
+        (297.0, 258.0),
+        (320.0, 203.0),
+        (300.0, 128.0),
+    ], // plant3, the middle
+    &[
+        (339.0, 364.0),
+        (298.0, 318.0),
+        (356.0, 258.0),
+        (388.0, 228.0),
+        (334.0, 203.0),
+        (283.0, 182.0),
+    ], // plant4, the high middle
+];
+
+/// The flower slots per plant: one shapeless slot per [FLOWER_SPAWNS]
+/// point, in flattened slice order — the plant node's children after the
+/// five slice nodes.
+pub const FLOWER_N: usize =
+    FLOWER_SPAWNS[0].len()
+        + FLOWER_SPAWNS[1].len()
+        + FLOWER_SPAWNS[2].len()
+        + FLOWER_SPAWNS[3].len();
 
 /// The travelling wind's angular frequency, in radians per second: the base
 /// rock and the two joint bends lag each other by a fixed phase.
@@ -106,11 +145,17 @@ fn link(shape: &frost::Shape, joints: [(f32, f32); 2]) -> Link {
     }
 }
 
-type TomatoSpawn = [Vec<(f32, f32)>; 4];
+/// A slice's flower spawn points in node-local space, from the hand-
+/// picked pixel coordinates and the texture's real size.
+fn flower_points(shape: &frost::Shape, pts: &[(f32, f32)]) -> Vec<[f32; 2]> {
+    let size = sprite_size(shape);
+    pts.iter().map(|&(jx, jy)| local_joint(jx, jy, size)).collect()
+}
 
 /// A five-slice plant that grows out of its root joint and sways in a
 /// traveling wind. The shapes themselves live in the scene; the value only
-/// keeps the growth clock and the slices' joints in node-local space.
+/// keeps the growth clock, the slices' joints, and the flower spawn
+/// points — all in node-local space.
 #[derive(Clone)]
 pub struct Plant {
     /// Elapsed time in seconds.
@@ -118,14 +163,18 @@ pub struct Plant {
     /// The five slices in chain order, with their joints in node-local
     /// space.
     links: [Link; 5],
-    tomato_spawn: TomatoSpawn,
+    /// The four lower slices' flower spawn points in node-local space, in
+    /// flattened slice order: `new` converts [FLOWER_SPAWNS] against each
+    /// texture's real size.
+    tomato_spawn: [Vec<[f32; 2]>; 4],
 }
 
 impl Plant {
     /// Builds the plant from the five slice shapes in chain order
-    /// (`plant1`, `plant2`, `plant3`, `plant4`, `plant5`), with each slice's joints converted
-    /// from `JOINTS` to node-local space against its texture's real size.
-    /// The growth clock starts at zero.
+    /// (`plant1`, `plant2`, `plant3`, `plant4`, `plant5`), with each
+    /// slice's joints converted from `JOINTS` and the flower spawn points
+    /// from `FLOWER_SPAWNS` to node-local space against the textures' real
+    /// sizes. The growth clock starts at zero.
     pub fn new(shapes: [&frost::Shape; 5]) -> Self {
         Plant {
             t: 0.0,
@@ -137,23 +186,10 @@ impl Plant {
                 link(shapes[4], JOINTS[4]),
             ],
             tomato_spawn: [
-                vec![(308.0, 615.0)],
-                vec![(306.0, 496.0), (638.0, 428.0), (304.0, 392.0)],
-                vec![
-                    (315.0, 392.0),
-                    (326.0, 315.0),
-                    (297.0, 258.0),
-                    (320.0, 203.0),
-                    (300.0, 128.0),
-                ],
-                vec![
-                    (339.0, 364.0),
-                    (298.0, 318.0),
-                    (356.0, 258.0),
-                    (388.0, 228.0),
-                    (334.0, 203.0),
-                    (283.0, 182.0),
-                ],
+                flower_points(shapes[0], FLOWER_SPAWNS[0]),
+                flower_points(shapes[1], FLOWER_SPAWNS[1]),
+                flower_points(shapes[2], FLOWER_SPAWNS[2]),
+                flower_points(shapes[3], FLOWER_SPAWNS[3]),
             ],
         }
     }
@@ -199,7 +235,10 @@ impl Plant {
     }
 
     /// Lays the plant out in `node`, whose children — in chain order — are
-    /// the five slice nodes.
+    /// the five slice nodes followed by the [FLOWER_N] flower slots, in
+    /// flattened [FLOWER_SPAWNS] order. `flower` is the shape opened in a
+    /// slot once its slice is fully grown; `layout` owns the slots'
+    /// visibility and transforms from that frame on.
     ///
     /// `node`'s origin is the plant's root joint (plant1's lower joint):
     /// the base rock turns the whole plant around that joint, and its
@@ -211,7 +250,12 @@ impl Plant {
     /// grows out of the joint it attaches to the previous slice through,
     /// bent by its share of the wind, and the next slice sprouts from its
     /// moving upper joint.
-    pub fn layout(&self, node: &mut frost::SceneNode, anchor: [f32; 2]) {
+    pub fn layout(
+        &self,
+        node: &mut frost::SceneNode,
+        anchor: [f32; 2],
+        flower: &frost::Shape,
+    ) {
         // A gentle traveling wind: the base rock and the two joint bends
         // lag each other, and each bend is a little stronger than the last,
         // so the tip of the plant moves the most.
@@ -246,6 +290,7 @@ impl Plant {
         // it attaches to the previous slice through — and the upper joint
         // the next slice attaches to moves with it.
         let mut anchor = [0.0f32, 0.0];
+        let mut slice_tf = [frost::Transform::identity(); 5];
         for (i, (link, node)) in self.links.iter().zip(&mut node.children).enumerate() {
             let bend = match i {
                 0 => 0.0,
@@ -258,12 +303,36 @@ impl Plant {
                 .compose(&frost::Transform::scale_uniform(g))
                 .compose(&rot)
                 .compose(&frost::Transform::translate(anchor[0], anchor[1]));
+            slice_tf[i] = node.transform;
             // The next anchor: this slice's upper joint, measured from its
             // own lower joint, scaled by the slice's growth, and rotated
             // by the slice's bend.
             let d = [link.to[0] - link.from[0], link.to[1] - link.from[1]];
             let step = rot.apply([g * d[0], g * d[1]]);
             anchor = [anchor[0] + step[0], anchor[1] + step[1]];
+        }
+
+        // The four lower slices' flowers, on the flower slots that follow
+        // the five slice children, in flattened spawn order: a slice's
+        // flowers open on the frame its slice reaches full size, and each
+        // flower is laid on its spawn point mapped through the slice's
+        // current transform, so the flowers sway with the plant.
+        let mut slot = 0usize;
+        for (i, spawns) in self.tomato_spawn.iter().enumerate() {
+            let open = self.t >= GROW_TIMES[i];
+            for &pt in spawns {
+                let child = &mut node.children[5 + slot];
+                if open {
+                    let p = slice_tf[i].apply(pt);
+                    child.transform = frost::Transform::translate(p[0], p[1]);
+                    if child.shape.is_none() {
+                        child.shape = Some(flower.clone());
+                    }
+                } else {
+                    child.shape = None;
+                }
+                slot += 1;
+            }
         }
     }
 }
@@ -296,6 +365,25 @@ mod tests {
         let mut p = Plant::new([&s, &s, &s, &s, &s]);
         p.t = t;
         p
+    }
+
+    /// A plant node built the way the example builds it: the five slice
+    /// shapes followed by the [FLOWER_N] shapeless flower slots.
+    fn plant_node() -> frost::SceneNode {
+        let s = slice();
+        let mut children: Vec<Box<frost::SceneNode>> = (0..5)
+            .map(|_| {
+                Box::new(frost::SceneNode {
+                    shape: Some(s.clone()),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        children.extend((0..FLOWER_N).map(|_| Box::new(frost::SceneNode::default())));
+        frost::SceneNode {
+            children,
+            ..Default::default()
+        }
     }
 
     /// [Plant::grown_layers] counts the [GROW_TIMES] entries the growth
@@ -342,6 +430,87 @@ mod tests {
                 [3.5, 0.0],
                 [4.5, 0.0],
             ]
+        );
+    }
+
+    /// [Plant::layout] opens a slice's flower slots on the frame its slice
+    /// reaches full size, slice by slice from the base up: before
+    /// GROW_TIMES[0] every slot is shapeless, and from each GROW_TIMES[i]
+    /// on slice i's slots — 1, then 4, then 9, then 15 in total — carry
+    /// the flower shape, in flattened spawn order.
+    #[test]
+    fn flowers_open_as_each_slice_finishes_growing() {
+        let s = slice();
+        let mut node = plant_node();
+
+        // Before the base slice finishes, no flower has opened.
+        let p = plant_at(GROW_TIMES[0] - 0.001);
+        p.layout(&mut node, [0.0, 0.0], &s);
+        for c in node.children.iter().skip(5) {
+            assert!(c.shape.is_none(), "a flower opened early");
+        }
+
+        // From each slice's GROW_TIMES entry on, its slots are open:
+        // slices 0..=i hold exactly their own spawn points.
+        let mut open = 0usize;
+        for (i, g) in GROW_TIMES[..4].iter().enumerate() {
+            open += FLOWER_SPAWNS[i].len();
+            let p = plant_at(*g);
+            p.layout(&mut node, [0.0, 0.0], &s);
+            for (j, c) in node.children.iter().enumerate().skip(5) {
+                assert_eq!(
+                    c.shape.is_some(),
+                    j - 5 < open,
+                    "flower slot {j} wrong at t = {g}"
+                );
+            }
+        }
+    }
+
+    /// [Plant::layout] lays each flower on its slice's spawn point mapped
+    /// through the slice's current transform: at a swayed, fully grown
+    /// plant every flower's laid-out position equals its slice's transform
+    /// applied to the spawn point, and one frame later the wind has moved
+    /// the plant — the flowers moved with it.
+    #[test]
+    fn flowers_ride_their_slices_through_the_sway() {
+        let s = slice();
+        let t = FULL_GROW_TIME + 1.0;
+        let p = plant_at(t);
+        let mut node = plant_node();
+        p.layout(&mut node, [0.0, 0.0], &s);
+
+        // Each flower sits on its slice: the child's translate is the
+        // slice's transform applied to the spawn point.
+        let mut offset = 0usize;
+        for (i, spawns) in p.tomato_spawn.iter().enumerate() {
+            for &pt in spawns {
+                let flower = node.children[5 + offset].transform.apply([0.0, 0.0]);
+                let on_slice = node.children[i].transform.apply(pt);
+                assert!(
+                    (flower[0] - on_slice[0]).abs() <= 1e-4
+                        && (flower[1] - on_slice[1]).abs() <= 1e-4,
+                    "flower slot {} of slice {i} off its spawn point",
+                    offset
+                );
+                offset += 1;
+            }
+        }
+        assert_eq!(offset, FLOWER_N);
+
+        // One frame later the wind has turned the plant — the base flower's
+        // composed position (node transform then slot transform) moved.
+        let p = plant_at(t + 1.0);
+        let mut node2 = plant_node();
+        p.layout(&mut node2, [0.0, 0.0], &s);
+        let composed = |node: &frost::SceneNode| {
+            node.transform.apply(node.children[5].transform.apply([0.0, 0.0]))
+        };
+        let a = composed(&node);
+        let b = composed(&node2);
+        assert!(
+            (a[0] - b[0]).abs() + (a[1] - b[1]).abs() > 1e-3,
+            "the base flower did not move with the sway"
         );
     }
 }

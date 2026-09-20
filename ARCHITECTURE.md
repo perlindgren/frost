@@ -410,9 +410,11 @@ All load assets via `CARGO_MANIFEST_DIR`. Run with `cargo run --example <name>`
 |              | the parent's origin; the parent carries the inverse, so the         |
 |              | image's center sits on the window's center                          |
 | immortal     | 1920x1080 (Config window_size); right button toggles can / spray;  |
-|              | plants grow one at a time, one viper per fully grown plant layer  |
-|              | orbits the row; a bug swarm pops up out of the grass in           |
-|              | batches of three per plant; spray mist                             |
+|              | plants grow one at a time, each slice opening its flowers once    |
+|              | fully grown (the four lower slices' hand-picked spawn points, the |
+|              | top slice bearing none, populated with `flower.png`); one viper   |
+|              | per fully grown plant layer orbits the row; a bug swarm pops up   |
+|              | out of the grass in batches of three per plant; spray mist        |
 |              | touching a bug wounds it - five hits, one per 0.2 s per bug, a      |
 |              | white pip above the bug per hit it can still take - and            |
 |              | the killing blow starts the two-phase death: over 0.5 s it bounces  |
@@ -461,7 +463,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 102 passed + 2 doctests
-cargo test --examples    # expect 6 passed (the immortal bug tests)
+cargo test --examples    # expect 14 passed (the immortal example tests)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0
 cargo run --example button   # hover-scale + click-swoosh check; window exits 0

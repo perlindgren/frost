@@ -60,7 +60,11 @@
 //! over 12, the top over 15. They grow one at a time, in `PLANT_POS` order —
 //! the first starts at launch, and each next one starts when the previous
 //! is fully grown — concurrently with the tool system. Each root joint
-//! stays glued to its own `grass.png` pixel across resizes.
+//! stays glued to its own `grass.png` pixel across resizes. Once a slice is
+//! fully grown, its flowers open: the four lower slices' hand-picked spawn
+//! points — the top slice bears none — are populated with
+//! `assets/sprites/flower.png`, one slot per point, and each flower rides
+//! its slice's transform so it sways with the plant.
 //!
 //! A swarm of thirty vipers buzzes around the flower bench — the row of
 //! plants — concurrently with everything else, through the [`vipers`]
@@ -563,6 +567,10 @@ struct Demo {
     bug1: frost::Shape,
     bug2: frost::Shape,
     bug3: frost::Shape,
+    /// The flower shape, opened on a plant slice's spawn points once the
+    /// slice reaches full size; the plant nodes' flower slots swap it in
+    /// as cheap `Arc` clones.
+    flower: frost::Shape,
     /// The drops pouring out of the spout: the simulation state, stepped
     /// once per frame.
     water: frost::ParticleSystem,
@@ -645,7 +653,7 @@ impl frost::Process for Demo {
                 self.plants[i].step(dt);
             }
             grown_layers += self.plants[i].grown_layers();
-            self.plants[i].layout(&mut plants_node.children[i], *anchor);
+            self.plants[i].layout(&mut plants_node.children[i], *anchor, &self.flower);
         }
 
         // Buzz the vipers around the flower bench, in parallel with
@@ -1037,36 +1045,47 @@ fn main() {
         .expect("failed to load assets/sprites/plant4.png");
     let plant5 = frost::Shape::sprite(format!("{root}/assets/sprites/plant5.png"))
         .expect("failed to load assets/sprites/plant5.png");
+    let flower = frost::Shape::sprite(format!("{root}/assets/sprites/flower.png"))
+        .expect("failed to load assets/sprites/flower.png");
     let plant = plant::Plant::new([&plant1, &plant2, &plant3, &plant4, &plant5]);
 
     // One plant node, cloned for each plant: its origin is the root joint
     // (plant1's lower joint), positioned by the process every frame. The
     // fit scale is constant — each slice grows individually, riding the
-    // node. The clones are cheap `Arc` clones of the slice pixel buffers.
+    // node. The five slice children are followed by the FLOWER_N shapeless
+    // flower slots: the process opens each on its slice's full growth and
+    // lays it on the slice's spawn point, so the flowers paint on top of
+    // the slices and sway with the plant. The clones are cheap `Arc`
+    // clones of the slice pixel buffers.
+    let mut plant_children: Vec<Box<frost::SceneNode>> = vec![
+        Box::new(frost::SceneNode {
+            shape: Some(plant1),
+            ..Default::default()
+        }),
+        Box::new(frost::SceneNode {
+            shape: Some(plant2),
+            ..Default::default()
+        }),
+        Box::new(frost::SceneNode {
+            shape: Some(plant3),
+            ..Default::default()
+        }),
+        Box::new(frost::SceneNode {
+            shape: Some(plant4),
+            ..Default::default()
+        }),
+        Box::new(frost::SceneNode {
+            shape: Some(plant5),
+            ..Default::default()
+        }),
+    ];
+    plant_children.extend(
+        (0..plant::FLOWER_N)
+            .map(|_| Box::new(frost::SceneNode::default())),
+    );
     let plant_node = frost::SceneNode {
         scale: [PLANT_SCALE, PLANT_SCALE],
-        children: vec![
-            Box::new(frost::SceneNode {
-                shape: Some(plant1),
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                shape: Some(plant2),
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                shape: Some(plant3),
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                shape: Some(plant4),
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                shape: Some(plant5),
-                ..Default::default()
-            }),
-        ],
+        children: plant_children,
         ..Default::default()
     };
 
@@ -1237,6 +1256,7 @@ fn main() {
             bug1,
             bug2,
             bug3,
+            flower,
             water: frost::ParticleSystem::new(),
             spray: frost::ParticleSystem::new(),
             rng: Rng::new(),

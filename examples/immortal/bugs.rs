@@ -419,7 +419,7 @@ impl Bugs {
                     (
                         bug.facing * self.scale,
                         self.scale * g * (1.0 - 2.0 * u),
-                        4.0 * BOUNCE_HEIGHT * u * (1.0 - u),
+                        bounce_lift(t),
                     )
                 }
                 Some(t) => {
