@@ -26,7 +26,7 @@ pub const BUGS_PER_PLANT: usize = 3;
 /// Rendered bug width in user-space px (the bees are 25 px wide).
 const BUG_SIZE: f32 = 40.0;
 /// How long the y-scale spawn growth takes, in seconds.
-const GROW_TIME: f32 = 2.0;
+const GROW_TIME: f32 = 3.0;
 /// Distance from the park target at which a bug stops walking, in px.
 const ARRIVE: f32 = 4.0;
 /// Walking-speed dead band for the facing flip, in px/s.
@@ -35,7 +35,12 @@ const ARRIVE: f32 = 4.0;
 /// walk (30), so parked bugs hold their facing while walking ones flip.
 const FACING_EPS: f32 = 6.0;
 /// The sprite tint: the node `modulate` multiplied over the walk frames.
-const TINT: frost::Color = frost::Color { r: 0.8, g: 0.2, b: 0.2, a: 1.0 };
+const TINT: frost::Color = frost::Color {
+    r: 0.8,
+    g: 0.2,
+    b: 0.2,
+    a: 1.0,
+};
 
 /// One bug in the swarm.
 struct Bug {
@@ -148,8 +153,8 @@ impl Bugs {
                     frame: 0,
                     shown: u8::MAX,
                     grow: 0.0,
-                    speed: self.rng.in_range(30.0, 60.0),
-                    wob_amp: self.rng.in_range(8.0, 18.0),
+                    speed: self.rng.in_range(10.0, 30.0),
+                    wob_amp: self.rng.in_range(15.0, 30.0),
                     wob_freq: self.rng.in_range(1.5, 3.5),
                     wob_phase: self.rng.next_f32() * 2.0 * std::f32::consts::PI,
                     step_rate: self.rng.in_range(6.0, 10.0),
@@ -170,10 +175,7 @@ impl Bugs {
                 // Swarm walk: advance toward the wobbled destination,
                 // never more than one stride this frame.
                 let wob = (self.t * bug.wob_freq + bug.wob_phase).sin() * bug.wob_amp;
-                let dest = [
-                    target[0] - dy / dist * wob,
-                    target[1] + dx / dist * wob,
-                ];
+                let dest = [target[0] - dy / dist * wob, target[1] + dx / dist * wob];
                 let k = ((bug.speed * dt) / dist).min(1.0);
                 [
                     bug.pos[0] + (dest[0] - bug.pos[0]) * k,
