@@ -908,9 +908,11 @@ mod tests {
         );
     }
 
-    /// A bug the spray touches while it is still growing out of the grass
-    /// freezes its growth at the hit: the death animation scales off the
-    /// height the bug had when sprayed, and the bug never pops past it.
+    /// A bug the mist kills while it is still growing out of the grass
+    /// freezes its growth at the killing blow: the death animation scales
+    /// off the height the bug had when it died, and the bug never pops
+    /// past it — not while it dies, not while it waits out its respawn
+    /// delay.
     #[test]
     fn a_bug_hit_while_growing_freezes_its_growth() {
         let frame = frost::Shape::Sprite {
@@ -936,10 +938,14 @@ mod tests {
         }
         assert!(bugs.bugs.iter().all(|b| b.grow < GROW_TIME));
         let pos: Vec<[f32; 2]> = bugs.bugs.iter().map(|b| b.pos).collect();
-        // A drop on each exact spawn spot marks at least that bug; after
-        // three drops every bug is dying.
-        for p in &pos {
-            assert!(bugs.hit_at(*p) >= 1);
+        // A drop on each exact spawn spot, five rounds of one per frame:
+        // every bug takes one hit per round, and the fifth round is the
+        // killing blow.
+        for _ in 0..HITS_TO_KILL {
+            for p in &pos {
+                assert!(bugs.hit_at(*p) >= 1, "a drop found no bug");
+            }
+            bugs.step(dt, &ANCHORS, 1);
         }
         assert!(bugs.bugs.iter().all(|b| b.dying.is_some()));
         let frozen_grow: Vec<f32> = bugs.bugs.iter().map(|b| b.grow).collect();
@@ -952,20 +958,28 @@ mod tests {
         };
         for _ in 0..40 {
             bugs.step(dt, &ANCHORS, 1);
-            if bugs.bugs.is_empty() {
-                break;
-            }
             bugs.layout(&mut node, [&frame; 3]);
             for (i, b) in bugs.bugs.iter().enumerate() {
-                assert_eq!(b.grow, frozen_grow[i], "a dying bug kept growing");
-                // The laid-out height never exceeds the death-time height.
+                if b.dying.is_some() {
+                    assert_eq!(b.grow, frozen_grow[i], "a dying bug kept growing");
+                }
+                // The laid-out height never exceeds the death-time height —
+                // while the bug dies, and while it waits.
                 let h = node.children[i].scale[1].abs();
                 assert!(
                     h <= scale * frozen_grow[i] / GROW_TIME + 1e-3,
                     "bug {i} popped past its death-time height"
                 );
             }
+            if bugs.bugs.iter().all(|b| b.respawn.is_some()) {
+                break;
+            }
         }
-        assert!(bugs.bugs.is_empty(), "the bugs were never removed");
+        assert!(
+            bugs.bugs
+                .iter()
+                .all(|b| b.dying.is_none() && b.respawn.is_some()),
+            "the dead bugs never entered their respawn delay"
+        );
     }
 }

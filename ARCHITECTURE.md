@@ -412,10 +412,12 @@ All load assets via `CARGO_MANIFEST_DIR`. Run with `cargo run --example <name>`
 | immortal     | 1920x1080 (Config window_size); right button toggles can / spray;  |
 |              | plants grow one at a time; vipers orbit the row; a bug swarm pops  |
 |              | up out of the grass in batches of three per plant; spray mist       |
-|              | touching a bug kills it: over 0.3 s it flips upside down (y scale   |
-|              | to fully inverted, position/growth/facing/frame frozen), then over  |
-|              | 0.5 s the inverted sprite shrinks to nothing while its center sinks |
-|              | through the grass; killed bugs never respawn                        |
+|              | touching a bug wounds it - five hits, one per frame per bug - and   |
+|              | the killing blow starts the two-phase death: over 0.3 s it flips    |
+|              | upside down (y scale to fully inverted, position/growth/facing/frame|
+|              | frozen), then over 0.5 s the inverted sprite shrinks to nothing     |
+|              | while its center sinks through the grass; after a random 5-10 s     |
+|              | delay the bug pops back up at its spawn spot, fully healed          |
 
 `cursor.rs` is the most complete reference demo: `CAN_IMAGE [331,247]` scaled
 to 100 px, a 90° CCW tilt tween (0.5 s, rebuilt on press/release edges),

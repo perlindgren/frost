@@ -82,13 +82,16 @@
 //! walking, flipped about its center while it moves left, tinted dark
 //! red by the node's `modulate`.
 //!
-//! A bug the spray can's mist touches dies in two phases: over 0.3
+//! A bug takes five hits from the spray can's green mist before it dies
+//! — a frame's worth of overlapping drops is still just one hit on the
+//! same bug — and the killing blow starts the two-phase death: over 0.3
 //! seconds it flips upside down — its node's y scale sweeps from upright
 //! to fully inverted about the sprite center while its position, growth,
 //! and walk frame freeze — and then, over 0.5 seconds, the inverted
 //! sprite shrinks to nothing while its center sinks through the grass.
-//! Killed bugs never respawn, so a later plant's batch can reuse their
-//! slots, and the population only falls when the spray kills a bug.
+//! The dead bug then waits out a random 5 to 10 second delay and pops
+//! back up at its spawn spot, fully healed, so the population dips and
+//! recovers with the spraying.
 //!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
@@ -800,9 +803,10 @@ impl frost::Process for Demo {
         self.water.update(dt, [0.0, -GRAVITY]);
         self.spray.update(dt, [0.0, -SPRAY_GRAVITY]);
 
-        // Mist touching a bug kills it: every live spray drop marks each
-        // bug within its reach, starting the bug's flip-then-sink death.
-        // The water can's drops never touch the bugs.
+        // Mist touching a bug wounds it: each live spray drop hits every
+        // bug within its reach, but a bug takes at most one hit per
+        // frame, and five hits start the flip-then-sink death. The water
+        // can's drops never touch the bugs.
         for p in &self.spray.particles {
             self.bugs.hit_at(p.pos);
         }
@@ -1188,8 +1192,9 @@ fn main() {
             viper1,
             viper2,
             // Three bugs per plant, each plant's batch exactly once: the
-            // population climbs 3, 6, …, 18 over the first 75 seconds and
-            // only falls when the spray kills a bug.
+            // population climbs 3, 6, …, 18 over the first 75 seconds; a
+            // killed bug pops back up at its spawn spot after a random 5
+            // to 10 second delay.
             bugs: bugs::Bugs::new([&bug1, &bug2, &bug3]),
             bug1,
             bug2,
