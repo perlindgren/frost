@@ -67,8 +67,9 @@
 //! module: one viper per plant layer, and the swarm is not all in the air
 //! at once — each fully grown layer spawns its own viper, so the swarm
 //! grows five by five as the bench does, with every viper orbiting the
-//! plant whose layer spawned it. Each viper flies at its own radius,
-//! speed, and height, and the two frames,
+//! segment its layer spawned it, at that segment's midpoint along the
+//! static, fully grown chain — the sway left out. Each viper flies at its
+//! own radius, speed, and height above the midpoint, and the two frames,
 //! `assets/sprites/Getingeye1.png` and `assets/sprites/Getingeye2.png`,
 //! alternate at its own wingbeat rate — the sprite is a viper flying to
 //! the right, flipped about its center while it flies to the left.
@@ -583,8 +584,8 @@ struct Demo {
     /// plants — in parallel with the tool system and the plants: one
     /// viper per fully grown plant layer, so the swarm grows as the bench
     /// does; stepped every frame with the number of fully grown layers
-    /// and laid out on the matching child of the vipers node
-    /// (root children[4]).
+    /// and the layer-segment midpoints, and laid out on the matching
+    /// child of the vipers node (root children[4]).
     vipers: vipers::Vipers,
     /// The swarm of bugs waddling to the plants: three spawn each time a
     /// plant starts growing, and the swarm steps and lays them out on the
@@ -620,7 +621,7 @@ impl frost::Process for Demo {
 
         // The plants' root joints in user space, where the grass stretch
         // maps each `PLANT_POS` pixel: the plants stay glued to them, and
-        // the vipers orbit around them.
+        // the vipers' orbit centers lift off them.
         let anchors = PLANT_POS.map(|pos| {
             [
                 pos[0] * w / GRASS_SIZE[0] - w / 2.0,
@@ -648,9 +649,19 @@ impl frost::Process for Demo {
 
         // Buzz the vipers around the flower bench, in parallel with
         // everything else: one viper per fully grown layer, so the swarm
-        // grows as the bench does — `grown_layers` is how many exist.
+        // grows as the bench does — `grown_layers` is how many exist —
+        // and each viper circles the segment its layer spawned it, at
+        // that segment's midpoint along the static, fully grown chain,
+        // the sway left out, lifted to its plant's anchor at the fit
+        // scale.
         let vipers_node = &mut ctx.scene().root.children[4];
-        self.vipers.step(dt, &anchors, grown_layers);
+        let centers: [[[f32; 2]; vipers::LAYERS]; PLANT_POS.len()] =
+            std::array::from_fn(|i| {
+                self.plants[i]
+                    .layer_midpoints()
+                    .map(|m| [anchors[i][0] + m[0] * PLANT_SCALE, anchors[i][1] + m[1] * PLANT_SCALE])
+            });
+        self.vipers.step(dt, &centers, grown_layers);
         self.vipers
             .layout(vipers_node, [&self.viper1, &self.viper2]);
 

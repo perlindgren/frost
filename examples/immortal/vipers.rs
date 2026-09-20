@@ -1,9 +1,11 @@
 //! A swarm of thirty vipers — one per plant layer — buzzing around the
 //! flower bench, the row of plants on the grass, concurrently with the
-//! tools and the plants themselves. Each viper orbits the root joint of
-//! its home plant at its own radius, speed, and height, breathing its
-//! radius and bobbing vertically, so the swarm reads as a loose cluster
-//! circling the bench rather than a rigid formation.
+//! tools and the plants themselves. Each viper orbits the segment its
+//! layer spawned it — the midpoint of that segment along the static,
+//! fully grown chain, the sway left out — at its own radius, speed, and
+//! height, breathing its radius and bobbing vertically, so the swarm
+//! reads as a loose cluster circling the bench rather than a rigid
+//! formation.
 //!
 //! The swarm is not all in the air at once: each fully grown plant layer
 //! spawns one viper, so the swarm grows layer by layer as the bench
@@ -90,7 +92,7 @@ struct Bee {
     /// The frame last laid out on the bee's node, so the shape swap — a
     /// cheap `Arc` clone — happens at most once per wingbeat change.
     shown: u8,
-    /// The plant the bee orbits, in anchor order: the plant whose layer
+    /// The plant the bee orbits, in bench order: the plant whose layer
     /// spawned the bee — `i / LAYERS` — fixed on the bee's first step.
     home: usize,
     /// The orbit phase, in radians.
@@ -99,8 +101,8 @@ struct Bee {
     omega: f32,
     /// The orbit's radius, in pixels, before the wobble.
     radius: f32,
-    /// The height, in pixels, of the orbit's center above the home
-    /// plant's root joint.
+    /// The height, in pixels, of the orbit's center above the midpoint
+    /// of the segment that spawned the bee.
     hover: f32,
     /// The wobble's frequency, in radians per second: the radius breathes
     /// by ±15 % at this rate.
@@ -163,36 +165,39 @@ impl Vipers {
         }
     }
 
-    /// Advances the swarm by `dt` seconds around `anchors`, the plants'
-    /// root joints in user space, in bench order.
+    /// Advances the swarm by `dt` seconds around `centers`, the orbit
+    /// centers in user space: for each plant, in bench order, the
+    /// [LAYERS] midpoints of its layer segments along the static, fully
+    /// grown chain — the sway left out.
     ///
     /// `spawned` is how many of the swarm's vipers exist: the number of
     /// fully grown plant layers on the bench. The swarm is not all in the
     /// air at once — each fully grown layer spawns one viper, and viper
-    /// `i` orbits the plant whose layer spawned it, anchor `i / LAYERS`
-    /// — so only the spawned prefix steps; the rest keeps waiting in the
-    /// grass.
+    /// `i` orbits the midpoint of the segment that spawned it,
+    /// `centers[i / LAYERS][i % LAYERS]` — so only the spawned prefix
+    /// steps; the rest keeps waiting in the grass.
     ///
-    /// Each bee's orbit is an ellipse around its home plant's root joint,
-    /// lifted by its `hover` height: the orbit angle advances at its own
-    /// `omega`, the radius breathes by ±15 % at its own wobble rate, and
-    /// a slow vertical bob rides on top, so no two bees trace the same
-    /// path. The velocity is the difference to the last position, and the
-    /// facing follows its x with a dead band, so the sprite flips only
-    /// when the bee is clearly flying one way or the other.
-    pub fn step(&mut self, dt: f32, anchors: &[[f32; 2]], spawned: usize) {
+    /// Each bee's orbit is an ellipse around the midpoint of the segment
+    /// that spawned it, lifted by its `hover` height: the orbit angle
+    /// advances at its own `omega`, the radius breathes by ±15 % at its
+    /// own wobble rate, and a slow vertical bob rides on top, so no two
+    /// bees trace the same path. The velocity is the difference to the
+    /// last position, and the facing follows its x with a dead band, so
+    /// the sprite flips only when the bee is clearly flying one way or
+    /// the other.
+    pub fn step(&mut self, dt: f32, centers: &[[[f32; 2]; LAYERS]], spawned: usize) {
         self.t += dt;
         let t = self.t;
         for (i, bee) in self.bees.iter_mut().enumerate().take(spawned) {
             if !bee.placed {
-                bee.home = (i / LAYERS) % anchors.len();
+                bee.home = (i / LAYERS) % centers.len();
             }
             let a = bee.phase + t * bee.omega;
             let r = bee.radius * (0.85 + 0.15 * (t * bee.wob + 2.0 * bee.phase).sin());
-            let [ax, ay] = anchors[bee.home];
+            let [cx, cy] = centers[bee.home][i % LAYERS];
             let pos = [
-                ax + a.cos() * r,
-                ay + bee.hover
+                cx + a.cos() * r,
+                cy + bee.hover
                     + a.sin() * r * TILT
                     + bee.bob_amp * (t * bee.bob_freq + 3.0 * bee.phase).sin(),
             ];
@@ -254,6 +259,18 @@ mod tests {
         [1463.0, 719.0],
     ];
 
+    /// The orbit centers for the test anchors: each plant's [LAYERS]
+    /// layer-segment midpoints, the k-th offset by `(20k, 20k)` from its
+    /// root joint — the values are arbitrary, the tests only check
+    /// spawning, homing, and where the orbits sit.
+    fn centers() -> [[[f32; 2]; LAYERS]; 6] {
+        std::array::from_fn(|p| {
+            std::array::from_fn(|k| {
+                [ANCHORS[p][0] + k as f32 * 20.0, ANCHORS[p][1] + k as f32 * 20.0]
+            })
+        })
+    }
+
     /// A one-pixel sprite, so the layout tests have a shape to swap.
     fn frame() -> frost::Shape {
         frost::Shape::Sprite {
@@ -276,21 +293,22 @@ mod tests {
     /// whose layer spawned it — `i / LAYERS`.
     #[test]
     fn a_grown_layer_spawns_its_own_viper() {
+        let c = centers();
         let mut v = Vipers::new([100.0, 90.0]);
 
         // No layer is grown yet: nothing steps, nothing is placed.
-        v.step(0.05, &ANCHORS, 0);
+        v.step(0.05, &c, 0);
         assert!(v.bees.iter().all(|b| !b.placed));
 
         // Plant 0's first layer finishes: viper 0 spawns on plant 0.
-        v.step(0.05, &ANCHORS, 1);
+        v.step(0.05, &c, 1);
         assert!(v.bees[0].placed);
         assert_eq!(v.bees[0].home, 0);
         assert!(!v.bees[1].placed);
 
         // All of plant 0's layers, then plant 1's first: the homes
         // follow the layer order, five per plant.
-        v.step(0.05, &ANCHORS, 6);
+        v.step(0.05, &c, 6);
         for i in 0..6 {
             assert!(v.bees[i].placed, "bee {i} was not spawned");
             assert_eq!(v.bees[i].home, i / LAYERS, "bee {i} homes wrong");
@@ -299,10 +317,38 @@ mod tests {
 
         // The bench is fully grown: all thirty are in the air, and an
         // over-supplied count cannot place a ghost.
-        v.step(0.05, &ANCHORS, N + 1);
+        v.step(0.05, &c, N + 1);
         for (i, bee) in v.bees.iter().enumerate() {
             assert!(bee.placed, "bee {i} never spawned");
             assert_eq!(bee.home, i / LAYERS, "bee {i} homes wrong");
+        }
+    }
+
+    /// A spawned viper circles the segment that spawned it: its position
+    /// stays within its breathing radius of that segment's midpoint, and
+    /// at the midpoint's height plus the hover — not at the home plant's
+    /// root joint.
+    #[test]
+    fn a_viper_orbits_its_own_segment() {
+        let c = centers();
+        let mut v = Vipers::new([100.0, 90.0]);
+        v.step(0.05, &c, N);
+        for (i, bee) in v.bees.iter().enumerate() {
+            let [cx, cy] = c[i / LAYERS][i % LAYERS];
+            // The radius breathes by ±15 %, so the horizontal distance
+            // from the orbit center never exceeds the nominal radius.
+            let dx = (bee.pos[0] - cx).abs();
+            assert!(
+                dx <= bee.radius + 1e-3,
+                "bee {i} drifted {dx} px sideways from its segment's midpoint"
+            );
+            // And the vertical distance from the midpoint is the hover
+            // plus at most the tilted radius and the bob.
+            let dy = (bee.pos[1] - (cy + bee.hover)).abs();
+            assert!(
+                dy <= bee.radius * TILT + bee.bob_amp + 1e-3,
+                "bee {i} drifted {dy} px vertically from its segment's midpoint"
+            );
         }
     }
 
@@ -319,7 +365,7 @@ mod tests {
             ..Default::default()
         };
 
-        v.step(0.05, &ANCHORS, 3);
+        v.step(0.05, &centers(), 3);
         v.layout(&mut node, [&f, &f]);
         for i in 0..3 {
             assert!(node.children[i].shape.is_some(), "bee {i} is invisible");
