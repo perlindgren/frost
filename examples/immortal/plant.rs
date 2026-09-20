@@ -30,7 +30,9 @@
 //! plant's fit scale is the plant node's own `scale`, set once by the
 //! caller: the node's scale applies before its transform, to its subtree,
 //! so the whole plant sizes around the root joint while the joint itself
-//! still lands exactly on the anchor.
+//! still lands exactly on the anchor. The [`layer_midpoints`] function
+//! gives the five layer-segment midpoints along the static, fully grown
+//! chain — the sway left out — for the vipers' orbit centers.
 
 /// The hand-picked joints of the five slices, in each image's pixel space:
 /// `(0, 0)` at the upper-left, `x` right, `y` down. `[0]` is where the
@@ -174,6 +176,28 @@ impl Plant {
         GROW_TIMES.iter().filter(|&&g| self.t >= g).count()
     }
 
+    /// The midpoints of the five layer segments along the static, fully
+    /// grown chain — the sway left out — in the plant node's local space:
+    /// the origin at the root joint, y up, before the caller's fit scale.
+    /// Segment `i` runs from the joint the slice attaches to the previous
+    /// slice through to the joint the next slice attaches to, so the
+    /// midpoint sits half a grown slice on from the chain's running joint,
+    /// and the next segment continues from the previous slice's upper
+    /// joint.
+    pub fn layer_midpoints(&self) -> [[f32; 2]; 5] {
+        let mut midpoints = [[0.0, 0.0]; 5];
+        let mut p = [0.0f32, 0.0];
+        for i in 0..5 {
+            let d = [
+                self.links[i].to[0] - self.links[i].from[0],
+                self.links[i].to[1] - self.links[i].from[1],
+            ];
+            midpoints[i] = [p[0] + d[0] / 2.0, p[1] + d[1] / 2.0];
+            p = [p[0] + d[0], p[1] + d[1]];
+        }
+        midpoints
+    }
+
     /// Lays the plant out in `node`, whose children — in chain order — are
     /// the five slice nodes.
     ///
@@ -293,5 +317,31 @@ mod tests {
         }
         assert_eq!(plant_at(FULL_GROW_TIME).grown_layers(), GROW_TIMES.len());
         assert_eq!(plant_at(FULL_GROW_TIME + 100.0).grown_layers(), GROW_TIMES.len());
+    }
+
+    /// [Plant::layer_midpoints] walks the static, fully grown chain — the
+    /// sway left out: midpoint `i` is half a slice on from the chain's
+    /// running joint, and each next midpoint continues from the previous
+    /// slice's upper joint.
+    #[test]
+    fn layer_midpoints_walks_the_static_chain() {
+        let s = slice();
+        let mut p = Plant::new([&s, &s, &s, &s, &s]);
+        // One unit link per slice: the chain runs along +x, one step at a
+        // time, from the root joint at the origin.
+        for i in 0..5 {
+            p.links[i].from = [i as f32, 0.0];
+            p.links[i].to = [i as f32 + 1.0, 0.0];
+        }
+        assert_eq!(
+            p.layer_midpoints(),
+            [
+                [0.5, 0.0],
+                [1.5, 0.0],
+                [2.5, 0.0],
+                [3.5, 0.0],
+                [4.5, 0.0],
+            ]
+        );
     }
 }
