@@ -56,9 +56,9 @@ impl frost::Process for Demo {
         // Hover: hit-test against the button's base (unscaled) extents, so
         // the trigger region stays put while the button animates and can
         // never flicker at its growing edge.
-        let hovered = ctx.mouse_position().is_some_and(|[mx, my]| {
-            mx.abs() <= BUTTON_W / 2.0 && my.abs() <= BUTTON_H / 2.0
-        });
+        let hovered = ctx
+            .mouse_position()
+            .is_some_and(|[mx, my]| mx.abs() <= BUTTON_W / 2.0 && my.abs() <= BUTTON_H / 2.0);
         let down = ctx.mouse_button_down(frost::MouseButton::Left);
 
         // A hover edge rebuilds the tween from the live scale, so an edge
@@ -66,23 +66,14 @@ impl frost::Process for Demo {
         if hovered != self.hovered {
             self.hover_tween = frost::Tween::new(
                 self.scale,
-                if hovered {
-                    HOVER_SCALE
-                } else {
-                    1.0
-                },
+                if hovered { HOVER_SCALE } else { 1.0 },
                 HOVER_TIME,
             )
             .repeat(frost::Repeat::Once);
             self.hovered = hovered;
         }
         self.scale = self.hover_tween.tick(dt);
-        ctx.scene()
-            .root
-            .children
-            .get_mut(0)
-            .unwrap()
-            .scale = [self.scale, self.scale];
+        ctx.scene().root.children.get_mut(0).unwrap().scale = [self.scale, self.scale];
 
         // Click: the press edge arms the button when it happens over it,
         // and an armed release over the button plays the swoosh once.
@@ -91,7 +82,7 @@ impl frost::Process for Demo {
         }
         if !down && self.pressed {
             if self.armed && hovered {
-                self.audio.play_once(&self.swoosh);
+                self.audio.play_once(&self.swoosh, None);
             }
             self.armed = false;
         }
@@ -104,11 +95,9 @@ fn main() {
     log::info!("frost started");
 
     let root = std::env!("CARGO_MANIFEST_DIR");
-    let swoosh =
-        frost::Sound::load(format!("{root}/assets/audio/swoof.wav"))
-            .expect("failed to load assets/audio/swoof.wav");
-    let audio =
-        frost::Audio::new().expect("failed to open the audio output device");
+    let swoosh = frost::Sound::load(format!("{root}/assets/audio/swoof.wav"))
+        .expect("failed to load assets/audio/swoof.wav");
+    let audio = frost::Audio::new().expect("failed to open the audio output device");
     let label = frost::Shape::text(
         format!("{root}/assets/fonts/JameGem08_2026-Regular.ttf"),
         "play",

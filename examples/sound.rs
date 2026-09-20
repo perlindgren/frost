@@ -89,7 +89,7 @@ impl frost::Process for Demo {
 
         // Space: retrigger the one-shot and fire the pulse.
         if ctx.key_down(frost::KeyCode::Space) {
-            self.audio.play_once(&self.swoosh);
+            self.audio.play_once(&self.swoosh, None);
             self.pulse = 1.0;
         }
         // L: start the loop, or stop it if it is already playing.

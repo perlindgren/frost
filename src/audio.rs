@@ -72,10 +72,13 @@ impl Audio {
     /// One-shots mix in parallel, so the same sound can be retriggered as
     /// fast as you like and the copies overlap freely; each copy runs to
     /// the end of the sound on its own.
-    pub fn play_once(&self, sound: &Sound) {
-        self.sink
-            .mixer()
-            .add(sound.buffer.clone().amplify(self.volume()));
+    pub fn play_once(&self, sound: &Sound, volume: Option<f32>) {
+        self.sink.mixer().add(
+            sound
+                .buffer
+                .clone()
+                .amplify(volume.unwrap_or_else(|| self.volume())),
+        );
     }
 
     /// Starts looping a sound, or replaces the current loop with it.
@@ -105,8 +108,7 @@ impl Audio {
     /// the next [`Audio::play_once`] on.
     pub fn set_volume(&self, volume: f32) {
         let volume = clamp01(volume);
-        self.volume
-            .store(volume.to_bits(), Ordering::SeqCst);
+        self.volume.store(volume.to_bits(), Ordering::SeqCst);
         self.loop_player.set_volume(volume);
     }
 
@@ -304,9 +306,11 @@ mod tests {
         let sound = Sound::load_bytes(&wav_pcm16(1, 8_000, &samples)).unwrap();
         assert_eq!(sound.channels(), 1);
         assert_eq!(sound.sample_rate(), 8_000);
-        let frames =
-            sound.duration() * sound.sample_rate() as f32 * sound.channels() as f32;
-        assert!((frames - 800.0).abs() < 1.0, "expected ~800 frames, got {frames}");
+        let frames = sound.duration() * sound.sample_rate() as f32 * sound.channels() as f32;
+        assert!(
+            (frames - 800.0).abs() < 1.0,
+            "expected ~800 frames, got {frames}"
+        );
     }
 
     #[test]
@@ -316,8 +320,7 @@ mod tests {
                 .expect("the demo asset should decode");
         assert_eq!(sound.channels(), 2);
         assert_eq!(sound.sample_rate(), 44_100);
-        let frames =
-            sound.duration() * sound.sample_rate() as f32 * sound.channels() as f32;
+        let frames = sound.duration() * sound.sample_rate() as f32 * sound.channels() as f32;
         assert!(frames > 10_000.0, "expected >10_000 frames, got {frames}");
         assert!(sound.duration().is_finite());
     }

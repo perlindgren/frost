@@ -910,8 +910,7 @@ impl frost::Process for Demo {
             if started[i] {
                 active_plants += 1;
                 if !self.plants[i].complete() {
-                    self.waters[i] =
-                        (self.waters[i] - dt / (DRAIN_TIME * GROW_SLOWDOWN)).max(0.0);
+                    self.waters[i] = (self.waters[i] - dt / (DRAIN_TIME * GROW_SLOWDOWN)).max(0.0);
                     // The growth clock runs slow, and holds while the
                     // reserve is dry.
                     if self.waters[i] > 0.0 {
@@ -930,12 +929,14 @@ impl frost::Process for Demo {
         // the sway left out, lifted to its plant's anchor at the fit
         // scale.
         let vipers_node = &mut ctx.scene().root.children[4];
-        let centers: [[[f32; 2]; vipers::LAYERS]; PLANT_POS.len()] =
-            std::array::from_fn(|i| {
-                self.plants[i]
-                    .layer_midpoints()
-                    .map(|m| [anchors[i][0] + m[0] * PLANT_SCALE, anchors[i][1] + m[1] * PLANT_SCALE])
-            });
+        let centers: [[[f32; 2]; vipers::LAYERS]; PLANT_POS.len()] = std::array::from_fn(|i| {
+            self.plants[i].layer_midpoints().map(|m| {
+                [
+                    anchors[i][0] + m[0] * PLANT_SCALE,
+                    anchors[i][1] + m[1] * PLANT_SCALE,
+                ]
+            })
+        });
         self.vipers.step(dt, &centers, grown_layers);
         self.vipers
             .layout(vipers_node, [&self.viper1, &self.viper2]);
@@ -950,13 +951,13 @@ impl frost::Process for Demo {
         // while another bug was on the grass nearby plays one of the
         // tjatter clips, the swarm's random pick.
         for clip in events.tjatters {
-            self.audio.play_once(&self.tjatters[clip]);
+            self.audio.play_once(&self.tjatters[clip], None);
         }
         // A pop-up plops: a bug that just came up out of the grass — a
         // batch spawn or a respawn — plays one of the plopp clips, the
         // swarm's random pick.
         for clip in events.plops {
-            self.audio.play_once(&self.plops[clip]);
+            self.audio.play_once(&self.plops[clip], None);
         }
 
         // Follow the pointer, keeping the last known position while the
@@ -1073,8 +1074,10 @@ impl frost::Process for Demo {
                     ];
                 }
             }
-            ctx.scene().root.children[8].children[0].transform =
-                frost::Transform::translate(body[0] - TOMATO_PICK_SCALE * ox, body[1] - TOMATO_PICK_SCALE * oy);
+            ctx.scene().root.children[8].children[0].transform = frost::Transform::translate(
+                body[0] - TOMATO_PICK_SCALE * ox,
+                body[1] - TOMATO_PICK_SCALE * oy,
+            );
         }
 
         // The fruit that has been dropped into the basket: each one stays
@@ -1211,8 +1214,7 @@ impl frost::Process for Demo {
         // and fully tilted, the same condition the drops spawn on — and
         // stops the frame pouring ends, the can turning back upright or
         // the tool switching away from it.
-        let pouring = self.active == Some(Tool::WaterCan)
-            && self.angle >= CAN_ANGLE - TILT_EPS;
+        let pouring = self.active == Some(Tool::WaterCan) && self.angle >= CAN_ANGLE - TILT_EPS;
         if pouring != self.pouring {
             self.pouring = pouring;
             if pouring {
@@ -1264,7 +1266,7 @@ impl frost::Process for Demo {
         for p in &self.spray.particles {
             let hit = self.bugs.hit_at(p.pos);
             for clip in hit.ajs {
-                self.audio.play_once(&self.ajs[clip]);
+                self.audio.play_once(&self.ajs[clip], Some(0.5));
             }
         }
 
@@ -1465,36 +1467,33 @@ impl Demo {
         let hit = {
             let plant_nodes = &ctx.scene().root.children[2].children;
             let [hx, hy] = tomato_pick_half(sprite_size(&self.tomato));
-            self.plants
-                .iter()
-                .enumerate()
-                .find_map(|(pi, p)| {
-                    (0..plant::FLOWER_N)
-                        .find(|&si| {
-                            if p.is_harvested(si) || !p.ripe(si) {
-                                return false;
-                            }
-                            let center = p
-                                .tomato_center(si, &plant_nodes[pi].children[5 + si], &self.tomato);
-                            let world =
-                                frost::Transform::scale(PLANT_SCALE, PLANT_SCALE)
-                                    .compose(&plant_nodes[pi].transform);
-                            let [cx, cy] = world.apply(center);
-                            (cx - self.mouse[0]).abs() <= hx && (cy - self.mouse[1]).abs() <= hy
-                        })
-                        .map(|si| (pi, si))
-                })
+            self.plants.iter().enumerate().find_map(|(pi, p)| {
+                (0..plant::FLOWER_N)
+                    .find(|&si| {
+                        if p.is_harvested(si) || !p.ripe(si) {
+                            return false;
+                        }
+                        let center =
+                            p.tomato_center(si, &plant_nodes[pi].children[5 + si], &self.tomato);
+                        let world = frost::Transform::scale(PLANT_SCALE, PLANT_SCALE)
+                            .compose(&plant_nodes[pi].transform);
+                        let [cx, cy] = world.apply(center);
+                        (cx - self.mouse[0]).abs() <= hx && (cy - self.mouse[1]).abs() <= hy
+                    })
+                    .map(|si| (pi, si))
+            })
         };
         let (pi, si) = hit?;
         self.plants[pi].harvest(si);
         // Rehome the pivot: out of the slot, into the held-fruit
         // container, at the pick scale under the pointer.
         let root = &mut ctx.scene().root;
-        let pivot = root.children[2].children[pi].children[5 + si].children.remove(1);
+        let pivot = root.children[2].children[pi].children[5 + si]
+            .children
+            .remove(1);
         let mut pivot = *pivot;
         pivot.scale = [TOMATO_PICK_SCALE, TOMATO_PICK_SCALE];
-        pivot.transform =
-            frost::Transform::translate(self.mouse[0], self.mouse[1]);
+        pivot.transform = frost::Transform::translate(self.mouse[0], self.mouse[1]);
         root.children[8].children.push(Box::new(pivot));
         Some((pi, si))
     }
@@ -1530,16 +1529,16 @@ impl Demo {
             // Scale the pivot into the basket's local space and pin it so
             // the body's center maps back to the release point.
             pivot.scale = [TOMATO_PICK_SCALE / s, TOMATO_PICK_SCALE / s];
-            pivot.transform = frost::Transform::translate(
-                (body[0] - center[0]) / s,
-                (body[1] - center[1]) / s,
-            );
+            pivot.transform =
+                frost::Transform::translate((body[0] - center[0]) / s, (body[1] - center[1]) / s);
             root.children[7].children[1].children.push(Box::new(pivot));
         } else {
             // Snap back to the plant; the layout reposes the pivot this
             // same frame.
             self.plants[pi].unharvest(si);
-            root.children[2].children[pi].children[5 + si].children.push(Box::new(pivot));
+            root.children[2].children[pi].children[5 + si]
+                .children
+                .push(Box::new(pivot));
         }
     }
 }
@@ -1605,8 +1604,7 @@ fn main() {
     // mist drops its health), and the watering loop (it plays, looping,
     // while water pours out of the spout, silenced the frame pouring
     // stops).
-    let audio = frost::Audio::new()
-        .expect("failed to open the audio output device");
+    let audio = frost::Audio::new().expect("failed to open the audio output device");
     let tjatters = [
         frost::Sound::load(format!("{root}/assets/audio/TjatterLow.wav"))
             .expect("failed to load assets/audio/TjatterLow.wav"),
@@ -1850,7 +1848,9 @@ fn main() {
                         shape: Some(basket_back),
                         ..Default::default()
                     }),
-                    Box::new(frost::SceneNode { ..Default::default() }),
+                    Box::new(frost::SceneNode {
+                        ..Default::default()
+                    }),
                     Box::new(frost::SceneNode {
                         shape: Some(basket_front),
                         ..Default::default()
@@ -1986,8 +1986,14 @@ mod tests {
         let anchor = [10.0, -20.0];
         assert!(in_root_hitbox([anchor[0] + ROOT_RADIUS, anchor[1]], anchor));
         assert!(in_root_hitbox([anchor[0], anchor[1] + ROOT_RADIUS], anchor));
-        assert!(!in_root_hitbox([anchor[0] + ROOT_RADIUS * 1.01, anchor[1]], anchor));
-        assert!(!in_root_hitbox([anchor[0], anchor[1] - ROOT_RADIUS * 1.01], anchor));
+        assert!(!in_root_hitbox(
+            [anchor[0] + ROOT_RADIUS * 1.01, anchor[1]],
+            anchor
+        ));
+        assert!(!in_root_hitbox(
+            [anchor[0], anchor[1] - ROOT_RADIUS * 1.01],
+            anchor
+        ));
     }
 
     /// The basket rides in the bottom left corner of a 1920×1080 window:
@@ -2040,10 +2046,7 @@ mod tests {
         for lx in [-103.0, -60.0, 0.0, 60.0, 107.0] {
             for ly in [-5.0, 20.0, 60.0, 95.0] {
                 assert!(basket_accepts(lx, ly));
-                let body = frost::Collider::Box(frost::OrientedBox::new(
-                    [lx, ly],
-                    [4.0, 4.0],
-                ));
+                let body = frost::Collider::Box(frost::OrientedBox::new([lx, ly], [4.0, 4.0]));
                 for wall in basket_walls() {
                     assert!(
                         body.push_out(&frost::Collider::Box(wall)).is_none(),
@@ -2055,6 +2058,9 @@ mod tests {
         // The left wall's face: inside it.
         let body = frost::Collider::Box(frost::OrientedBox::new([-124.0, 30.0], [4.0, 4.0]));
         let left = frost::Collider::Box(basket_walls()[0]);
-        assert!(body.push_out(&left).is_some(), "the wall's face must collide");
+        assert!(
+            body.push_out(&left).is_some(),
+            "the wall's face must collide"
+        );
     }
 }
