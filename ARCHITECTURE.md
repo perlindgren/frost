@@ -414,8 +414,10 @@ All load assets via `CARGO_MANIFEST_DIR`. Run with `cargo run --example <name>`
 |              | fully grown (the four lower slices' hand-picked spawn points, the |
 |              | top slice bearing none, populated with `flower.png`); one viper   |
 |              | per fully grown plant layer orbits the row; a bug swarm pops up   |
-|              | out of the grass in batches of three per plant; spray mist        |
-|              | touching a bug wounds it - three starting hits, one per 0.2 s   |
+|              | out of the grass in batches of three per plant, growing over     |
+|              | 0.75 s; each pop-up - a batch spawn or a respawn - plops on a   |
+|              | random plopp clip (bugs_plopp1/2/3.wav); spray mist touching a |
+|              | bug wounds it - three starting hits, one per 0.2 s              |
 |              | per bug, a bug at its park spot regaining one hit every 5 s     |
 |              | (capped at six), a white pip above the bug per hit it can still |
 |              | take; a bug reaching its park spot while another bug is within |
@@ -467,7 +469,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 102 passed + 2 doctests
-cargo test --examples    # expect 16 passed (the immortal example tests)
+cargo test --examples    # expect 17 passed (the immortal example tests)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0
 cargo run --example button   # hover-scale + click-swoosh check; window exits 0

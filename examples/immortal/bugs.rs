@@ -849,14 +849,16 @@ mod tests {
         bugs.step(dt, &ANCHORS, 1);
         let spawn = bugs.bugs.iter().map(|b| b.pos).collect::<Vec<_>>();
         // While the growth clock runs: every bug holds its exact spawn
-        // spot.
+        // spot. The state is checked before each step — the step that
+        // finishes the growth clock is the bug's first walking step, so
+        // its end-of-frame state is free to move.
         while bugs.bugs[0].grow < GROW_TIME {
-            bugs.step(dt, &ANCHORS, 1);
             for (i, b) in bugs.bugs.iter().enumerate() {
                 assert_eq!(b.pos, spawn[i], "bug {i} moved while growing");
                 assert_eq!(b.walk, 0.0);
                 assert!(!b.placed);
             }
+            bugs.step(dt, &ANCHORS, 1);
         }
         // Past GROW_TIME: the movement logic must have taken over.
         for _ in 0..20 {
