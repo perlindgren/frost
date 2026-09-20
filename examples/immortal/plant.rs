@@ -167,6 +167,13 @@ impl Plant {
         self.t >= FULL_GROW_TIME
     }
 
+    /// The layers the plant has fully grown: how many of [GROW_TIMES] the
+    /// growth clock has reached — one per slice, from the base up, and
+    /// [GROW_TIMES.len()] once the plant is fully grown.
+    pub fn grown_layers(&self) -> usize {
+        GROW_TIMES.iter().filter(|&&g| self.t >= g).count()
+    }
+
     /// Lays the plant out in `node`, whose children — in chain order — are
     /// the five slice nodes.
     ///
@@ -234,5 +241,57 @@ impl Plant {
             let step = rot.apply([g * d[0], g * d[1]]);
             anchor = [anchor[0] + step[0], anchor[1] + step[1]];
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A one-pixel sprite: `Plant::new` only needs the slice shapes'
+    /// texture size.
+    fn slice() -> frost::Shape {
+        frost::Shape::Sprite {
+            data: std::sync::Arc::new([0u8; 4]),
+            width: 1,
+            height: 1,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+        }
+    }
+
+    /// A plant with a settable growth clock, so [Plant::grown_layers]'s
+    /// boundaries can be checked without stepping.
+    fn plant_at(t: f32) -> Plant {
+        let s = slice();
+        let mut p = Plant::new([&s, &s, &s, &s, &s]);
+        p.t = t;
+        p
+    }
+
+    /// [Plant::grown_layers] counts the [GROW_TIMES] entries the growth
+    /// clock has reached — one per slice, from the base up: a layer is
+    /// grown on the frame the clock first reaches its entry, and the count
+    /// saturates at [GROW_TIMES.len()] once the plant is fully grown.
+    #[test]
+    fn grown_layers_counts_reached_slice_times() {
+        assert_eq!(plant_at(0.0).grown_layers(), 0);
+        assert_eq!(plant_at(GROW_TIMES[0]).grown_layers(), 1);
+        assert_eq!(plant_at(GROW_TIMES[1] - 0.001).grown_layers(), 1);
+        assert_eq!(plant_at(GROW_TIMES[1]).grown_layers(), 2);
+        for (k, g) in GROW_TIMES.iter().enumerate() {
+            assert_eq!(
+                plant_at(*g).grown_layers(),
+                k + 1,
+                "layer {k} counted wrong at t = {g}"
+            );
+        }
+        assert_eq!(plant_at(FULL_GROW_TIME).grown_layers(), GROW_TIMES.len());
+        assert_eq!(plant_at(FULL_GROW_TIME + 100.0).grown_layers(), GROW_TIMES.len());
     }
 }

@@ -1,17 +1,25 @@
-//! A swarm of ten vipers buzzing around the flower bench — the row of
-//! plants on the grass — concurrently with the tools and the plants
-//! themselves. Each viper orbits the root joint of its home plant at its
-//! own radius, speed, and height, breathing its radius and bobbing
-//! vertically, so the swarm reads as a loose cluster circling the bench
-//! rather than a rigid formation.
+//! A swarm of thirty vipers — one per plant layer — buzzing around the
+//! flower bench, the row of plants on the grass, concurrently with the
+//! tools and the plants themselves. Each viper orbits the root joint of
+//! its home plant at its own radius, speed, and height, breathing its
+//! radius and bobbing vertically, so the swarm reads as a loose cluster
+//! circling the bench rather than a rigid formation.
+//!
+//! The swarm is not all in the air at once: each fully grown plant layer
+//! spawns one viper, so the swarm grows layer by layer as the bench
+//! grows. Viper `i` is the `(i % LAYERS)`-th layer's viper of plant
+//! `i / LAYERS` — the plants grow one at a time, each layer in turn, so
+//! the layers' completion order is the swarm order — and only the
+//! spawned prefix of the swarm steps and draws.
 //!
 //! The sprites are `Getingeye1.png` and `Getingeye2.png`, two frames of a
 //! viper flying to the right. The swarm is driven by a [`Vipers`] value:
-//! `new` builds the ten bees from a deterministic schedule of the bee
+//! `new` builds the thirty bees from a deterministic schedule of the bee
 //! index, so each run looks the same and no random crate is needed,
 //! `step` advances the swarm by `dt` seconds around the plants' root
-//! joints, and `layout` lays the bees out in a node whose children — in
-//! swarm order — are the ten bee nodes.
+//! joints given how many layers have fully grown, and `layout` lays the
+//! bees out in a node whose children — in swarm order — are the thirty
+//! bee nodes.
 //!
 //! A bee's facing comes from the sign of its velocity's x: the sprite is
 //! drawn unflipped while the bee flies to the right and is flipped about
@@ -21,8 +29,15 @@
 //! alternate at each bee's own wingbeat rate, so the swarm flaps out of
 //! phase with itself.
 
-/// The swarm size: ten bees.
-pub const N: usize = 10;
+/// The swarm size: thirty bees, one per plant layer — five per plant
+/// across the six-plant bench, all in the air once the bench is fully
+/// grown.
+pub const N: usize = 30;
+
+/// The layers each plant has, in chain order: the swarm has
+/// [LAYERS] × six = [N] vipers, and viper `i` belongs to plant
+/// `i / LAYERS`, the plant whose layer spawned it.
+pub const LAYERS: usize = 5;
 
 /// The rendered width of a bee, in pixels; the height follows the
 /// sprite's own aspect ratio.
@@ -63,8 +78,9 @@ struct Bee {
     /// it flies to the left; the sprite is flipped about its center for
     /// the left.
     facing: f32,
-    /// Whether the bee has been placed at least once: until then its
-    /// `pos` is a dummy and its velocity is synthetic.
+    /// Whether the bee has been spawned — its plant layer has fully
+    /// grown — and placed at least once: until then its `pos` is a dummy
+    /// and its velocity is synthetic, and its slot draws nothing.
     placed: bool,
     /// The wingbeat clock, in beats: it advances by `flap_speed * dt` and
     /// the frame is its integer part modulo 2.
@@ -74,8 +90,8 @@ struct Bee {
     /// The frame last laid out on the bee's node, so the shape swap — a
     /// cheap `Arc` clone — happens at most once per wingbeat change.
     shown: u8,
-    /// The plant the bee orbits, in anchor order; fixed on the first
-    /// step, when the anchor count is known.
+    /// The plant the bee orbits, in anchor order: the plant whose layer
+    /// spawned the bee — `i / LAYERS` — fixed on the bee's first step.
     home: usize,
     /// The orbit phase, in radians.
     phase: f32,
@@ -97,10 +113,12 @@ struct Bee {
     flap_speed: f32,
 }
 
-/// A swarm of ten vipers buzzing around the flower bench.
+/// A swarm of thirty vipers — one per plant layer — buzzing around the
+/// flower bench.
 pub struct Vipers {
-    /// The ten bees, in swarm order: bee `i` rides child `i` of the
-    /// vipers node.
+    /// The thirty bees, in swarm order: bee `i` rides child `i` of the
+    /// vipers node and is the `(i % LAYERS)`-th layer's viper of plant
+    /// `i / LAYERS`.
     bees: [Bee; N],
     /// The swarm's clock, in seconds.
     t: f32,
@@ -146,8 +164,14 @@ impl Vipers {
     }
 
     /// Advances the swarm by `dt` seconds around `anchors`, the plants'
-    /// root joints in user space, in bench order: bee `i` orbits anchor
-    /// `i % anchors.len()`.
+    /// root joints in user space, in bench order.
+    ///
+    /// `spawned` is how many of the swarm's vipers exist: the number of
+    /// fully grown plant layers on the bench. The swarm is not all in the
+    /// air at once — each fully grown layer spawns one viper, and viper
+    /// `i` orbits the plant whose layer spawned it, anchor `i / LAYERS`
+    /// — so only the spawned prefix steps; the rest keeps waiting in the
+    /// grass.
     ///
     /// Each bee's orbit is an ellipse around its home plant's root joint,
     /// lifted by its `hover` height: the orbit angle advances at its own
@@ -156,12 +180,12 @@ impl Vipers {
     /// path. The velocity is the difference to the last position, and the
     /// facing follows its x with a dead band, so the sprite flips only
     /// when the bee is clearly flying one way or the other.
-    pub fn step(&mut self, dt: f32, anchors: &[[f32; 2]]) {
+    pub fn step(&mut self, dt: f32, anchors: &[[f32; 2]], spawned: usize) {
         self.t += dt;
         let t = self.t;
-        for (i, bee) in self.bees.iter_mut().enumerate() {
+        for (i, bee) in self.bees.iter_mut().enumerate().take(spawned) {
             if !bee.placed {
-                bee.home = i % anchors.len();
+                bee.home = (i / LAYERS) % anchors.len();
             }
             let a = bee.phase + t * bee.omega;
             let r = bee.radius * (0.85 + 0.15 * (t * bee.wob + 2.0 * bee.phase).sin());
@@ -193,19 +217,115 @@ impl Vipers {
     }
 
     /// Lays the swarm out in `node`, whose children — in swarm order —
-    /// are the ten bee nodes: each bee's transform carries it to its
-    /// position, its scale fits the sprite to `BEE_SIZE` and flips it
-    /// about its center while it flies to the left, and its shape swaps
+    /// are the thirty bee nodes: each spawned bee's transform carries it
+    /// to its position, its scale fits the sprite to `BEE_SIZE` and flips
+    /// it about its center while it flies to the left, and its shape swaps
     /// between the two frames — cheap `Arc` clones — at most once per
-    /// wingbeat change.
+    /// wingbeat change. The unspawned slots are cleared, so a viper that
+    /// no layer has spawned yet never draws.
     pub fn layout(&mut self, node: &mut frost::SceneNode, frames: [&frost::Shape; 2]) {
         for (bee, child) in self.bees.iter_mut().zip(&mut node.children) {
+            if !bee.placed {
+                child.shape = None;
+                continue;
+            }
             child.transform = frost::Transform::translate(bee.pos[0], bee.pos[1]);
             child.scale = [bee.facing * self.scale, self.scale];
             if bee.shown != bee.frame {
                 child.shape = Some(frames[bee.frame as usize].clone());
                 bee.shown = bee.frame;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The six plant roots in `grass.png`'s pixel space (`y` down), in
+    /// growth order — the same points `main.rs` anchors the plants to.
+    const ANCHORS: [[f32; 2]; 6] = [
+        [923.0, 514.0],
+        [1248.0, 546.0],
+        [1633.0, 603.0],
+        [739.0, 571.0],
+        [1081.0, 640.0],
+        [1463.0, 719.0],
+    ];
+
+    /// A one-pixel sprite, so the layout tests have a shape to swap.
+    fn frame() -> frost::Shape {
+        frost::Shape::Sprite {
+            data: std::sync::Arc::new([0u8; 1]),
+            width: 1,
+            height: 1,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+        }
+    }
+
+    /// The swarm is not all in the air at once: a viper exists only once
+    /// its plant layer has fully grown, so stepping with `spawned` places
+    /// exactly the first `spawned` bees, and bee `i` homes to the plant
+    /// whose layer spawned it — `i / LAYERS`.
+    #[test]
+    fn a_grown_layer_spawns_its_own_viper() {
+        let mut v = Vipers::new([100.0, 90.0]);
+
+        // No layer is grown yet: nothing steps, nothing is placed.
+        v.step(0.05, &ANCHORS, 0);
+        assert!(v.bees.iter().all(|b| !b.placed));
+
+        // Plant 0's first layer finishes: viper 0 spawns on plant 0.
+        v.step(0.05, &ANCHORS, 1);
+        assert!(v.bees[0].placed);
+        assert_eq!(v.bees[0].home, 0);
+        assert!(!v.bees[1].placed);
+
+        // All of plant 0's layers, then plant 1's first: the homes
+        // follow the layer order, five per plant.
+        v.step(0.05, &ANCHORS, 6);
+        for i in 0..6 {
+            assert!(v.bees[i].placed, "bee {i} was not spawned");
+            assert_eq!(v.bees[i].home, i / LAYERS, "bee {i} homes wrong");
+        }
+        assert!(!v.bees[6].placed, "bee 6 spawned early");
+
+        // The bench is fully grown: all thirty are in the air, and an
+        // over-supplied count cannot place a ghost.
+        v.step(0.05, &ANCHORS, N + 1);
+        for (i, bee) in v.bees.iter().enumerate() {
+            assert!(bee.placed, "bee {i} never spawned");
+            assert_eq!(bee.home, i / LAYERS, "bee {i} homes wrong");
+        }
+    }
+
+    /// `layout` draws only the spawned prefix: unspawned slots stay
+    /// shapeless, so a viper that no layer has spawned yet never shows.
+    #[test]
+    fn layout_keeps_unspawned_slots_empty() {
+        let f = frame();
+        let mut v = Vipers::new([100.0, 90.0]);
+        let mut node = frost::SceneNode {
+            children: (0..N)
+                .map(|_| Box::new(frost::SceneNode::default()))
+                .collect(),
+            ..Default::default()
+        };
+
+        v.step(0.05, &ANCHORS, 3);
+        v.layout(&mut node, [&f, &f]);
+        for i in 0..3 {
+            assert!(node.children[i].shape.is_some(), "bee {i} is invisible");
+        }
+        for (i, child) in node.children.iter().enumerate().skip(3) {
+            assert!(child.shape.is_none(), "unspawned bee {i} drew");
         }
     }
 }

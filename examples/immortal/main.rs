@@ -62,13 +62,16 @@
 //! is fully grown — concurrently with the tool system. Each root joint
 //! stays glued to its own `grass.png` pixel across resizes.
 //!
-//! A swarm of ten vipers buzzes around the flower bench — the row of
+//! A swarm of thirty vipers buzzes around the flower bench — the row of
 //! plants — concurrently with everything else, through the [`vipers`]
-//! module: each viper orbits one of the plants at its own radius, speed,
-//! and height, and the two frames, `assets/sprites/Getingeye1.png` and
-//! `assets/sprites/Getingeye2.png`, alternate at its own wingbeat rate —
-//! the sprite is a viper flying to the right, flipped about its center
-//! while it flies to the left.
+//! module: one viper per plant layer, and the swarm is not all in the air
+//! at once — each fully grown layer spawns its own viper, so the swarm
+//! grows five by five as the bench does, with every viper orbiting the
+//! plant whose layer spawned it. Each viper flies at its own radius,
+//! speed, and height, and the two frames,
+//! `assets/sprites/Getingeye1.png` and `assets/sprites/Getingeye2.png`,
+//! alternate at its own wingbeat rate — the sprite is a viper flying to
+//! the right, flipped about its center while it flies to the left.
 //!
 //! A swarm of bugs waddles across the grass in step with the plants —
 //! three new bugs every time a plant starts growing, so the population
@@ -307,7 +310,7 @@ const CAN_SLOT: usize = 3;
 const SPRAY_SLOT: usize = 2;
 
 /// The padding each resting can keeps from its slot's edges, in pixels.
-const SLOT_INSET: f32 = 12.0;
+const SLOT_INSET: f32 = 30.0;
 
 /// The center of slot `i` (0 = top) in the items node's local space: the
 /// slot's image-pixel center inside the margin-inset strip, y-flipped
@@ -333,8 +336,7 @@ fn slot_scale(size: [f32; 2]) -> f32 {
 /// mapped through the panel's world transform, the same scale-then-
 /// transform composition the renderer draws it with.
 fn slot_hovered(items: &frost::SceneNode, i: usize, p: [f32; 2]) -> bool {
-    let world =
-        frost::Transform::scale(items.scale[0], items.scale[1]).compose(&items.transform);
+    let world = frost::Transform::scale(items.scale[0], items.scale[1]).compose(&items.transform);
     let [cx, cy] = world.apply(slot_local(i));
     (p[0] - cx).abs() <= ITEMS_SIZE[0] * items.scale[0] / 2.0
         && (p[1] - cy).abs()
@@ -578,8 +580,10 @@ struct Demo {
     /// with the tool system.
     plants: [plant::Plant; PLANT_POS.len()],
     /// The swarm of vipers buzzing around the flower bench — the row of
-    /// plants — in parallel with the tool system and the plants: stepped
-    /// every frame and laid out on the matching child of the vipers node
+    /// plants — in parallel with the tool system and the plants: one
+    /// viper per fully grown plant layer, so the swarm grows as the bench
+    /// does; stepped every frame with the number of fully grown layers
+    /// and laid out on the matching child of the vipers node
     /// (root children[4]).
     vipers: vipers::Vipers,
     /// The swarm of bugs waddling to the plants: three spawn each time a
@@ -617,37 +621,45 @@ impl frost::Process for Demo {
         // The plants' root joints in user space, where the grass stretch
         // maps each `PLANT_POS` pixel: the plants stay glued to them, and
         // the vipers orbit around them.
-        let anchors = PLANT_POS.map(|pos| [
-            pos[0] * w / GRASS_SIZE[0] - w / 2.0,
-            h / 2.0 - pos[1] * h / GRASS_SIZE[1],
-        ]);
+        let anchors = PLANT_POS.map(|pos| {
+            [
+                pos[0] * w / GRASS_SIZE[0] - w / 2.0,
+                h / 2.0 - pos[1] * h / GRASS_SIZE[1],
+            ]
+        });
 
         // Grow the plants one at a time, in parallel with the tool
         // system: the first starts at launch, each next one starts when
         // the previous is fully grown; `active_plants` counts the spawned
         // ones — the ones whose growth clock has started — for the bug
-        // swarm.
+        // swarm, and `grown_layers` counts the fully grown ones, layer by
+        // layer, for the viper swarm.
         let plants_node = &mut ctx.scene().root.children[2];
         let mut active_plants = 0usize;
+        let mut grown_layers = 0usize;
         for (i, anchor) in anchors.iter().enumerate() {
             if i == 0 || self.plants[i - 1].fully_grown() {
                 active_plants += 1;
                 self.plants[i].step(dt);
             }
+            grown_layers += self.plants[i].grown_layers();
             self.plants[i].layout(&mut plants_node.children[i], *anchor);
         }
 
         // Buzz the vipers around the flower bench, in parallel with
-        // everything else: each viper orbits its home plant's root joint.
+        // everything else: one viper per fully grown layer, so the swarm
+        // grows as the bench does — `grown_layers` is how many exist.
         let vipers_node = &mut ctx.scene().root.children[4];
-        self.vipers.step(dt, &anchors);
-        self.vipers.layout(vipers_node, [&self.viper1, &self.viper2]);
+        self.vipers.step(dt, &anchors, grown_layers);
+        self.vipers
+            .layout(vipers_node, [&self.viper1, &self.viper2]);
 
         // Waddle the bugs to the plants, in parallel with everything
         // else: three spawn each time a plant starts growing.
         let bugs_node = &mut ctx.scene().root.children[5];
         self.bugs.step(dt, &anchors, active_plants);
-        self.bugs.layout(bugs_node, [&self.bug1, &self.bug2, &self.bug3]);
+        self.bugs
+            .layout(bugs_node, [&self.bug1, &self.bug2, &self.bug3]);
 
         // Follow the pointer, keeping the last known position while the
         // cursor is outside the window.
@@ -688,8 +700,8 @@ impl frost::Process for Demo {
                 // restarted from wherever the can currently is, so a
                 // mid-rotation press or release picks up from the can's
                 // live angle.
-                self.rotation =
-                    frost::Tween::new(self.angle, CAN_ANGLE, ROTATE_TIME).repeat(frost::Repeat::Once);
+                self.rotation = frost::Tween::new(self.angle, CAN_ANGLE, ROTATE_TIME)
+                    .repeat(frost::Repeat::Once);
             } else if on_slot.is_none() && self.active == Some(Tool::SprayCan) {
                 // A fresh press — one after a release, not a re-press
                 // mid-burst — triggers a burst while the can stands
@@ -1000,9 +1012,8 @@ fn main() {
         .expect("failed to load assets/sprites/Bug3a.png");
     let items = frost::Shape::sprite(format!("{root}/assets/sprites/items.png"))
         .expect("failed to load assets/sprites/items.png");
-    let held_items =
-        frost::Shape::sprite(format!("{root}/assets/sprites/held_items.png"))
-            .expect("failed to load assets/sprites/held_items.png");
+    let held_items = frost::Shape::sprite(format!("{root}/assets/sprites/held_items.png"))
+        .expect("failed to load assets/sprites/held_items.png");
     let plant1 = frost::Shape::sprite(format!("{root}/assets/sprites/plant1.png"))
         .expect("failed to load assets/sprites/plant1.png");
     let plant2 = frost::Shape::sprite(format!("{root}/assets/sprites/plant2.png"))
@@ -1077,18 +1088,12 @@ fn main() {
                 children: vec![
                     Box::new(frost::SceneNode {
                         // Slot 0: empty at start.
-                        transform: frost::Transform::translate(
-                            slot_local(0)[0],
-                            slot_local(0)[1],
-                        ),
+                        transform: frost::Transform::translate(slot_local(0)[0], slot_local(0)[1]),
                         ..Default::default()
                     }),
                     Box::new(frost::SceneNode {
                         // Slot 1: empty at start.
-                        transform: frost::Transform::translate(
-                            slot_local(1)[0],
-                            slot_local(1)[1],
-                        ),
+                        transform: frost::Transform::translate(slot_local(1)[0], slot_local(1)[1]),
                         ..Default::default()
                     }),
                     Box::new(frost::SceneNode {
@@ -1139,18 +1144,12 @@ fn main() {
                 children: vec![
                     Box::new(frost::SceneNode {
                         // The left cell: the active tool, empty at start.
-                        transform: frost::Transform::translate(
-                            held_local(0)[0],
-                            held_local(0)[1],
-                        ),
+                        transform: frost::Transform::translate(held_local(0)[0], held_local(0)[1]),
                         ..Default::default()
                     }),
                     Box::new(frost::SceneNode {
                         // The right cell: the stored tool, empty at start.
-                        transform: frost::Transform::translate(
-                            held_local(1)[0],
-                            held_local(1)[1],
-                        ),
+                        transform: frost::Transform::translate(held_local(1)[0], held_local(1)[1]),
                         ..Default::default()
                     }),
                 ],
@@ -1158,11 +1157,12 @@ fn main() {
             }),
             Box::new(frost::SceneNode {
                 // The vipers' swarm around the flower bench: one child per
-                // bee, in swarm order. The group carries no shape or scale
-                // of its own; the process lays each bee's pose, flip, and
-                // wingbeat frame out on its child every frame. It sits
-                // under the tool node, so the cursor paints above the
-                // bees.
+                // bee, in swarm order; the process lays each spawned
+                // bee's pose, flip, and wingbeat frame out on its child
+                // every frame, and the unspawned slots — the ones no plant
+                // layer has spawned yet — never draw. The group carries no
+                // shape or scale of its own. It sits under the tool node,
+                // so the cursor paints above the bees.
                 children: (0..vipers::N)
                     .map(|_| Box::new(frost::SceneNode::default()))
                     .collect(),

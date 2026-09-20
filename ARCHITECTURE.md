@@ -410,8 +410,9 @@ All load assets via `CARGO_MANIFEST_DIR`. Run with `cargo run --example <name>`
 |              | the parent's origin; the parent carries the inverse, so the         |
 |              | image's center sits on the window's center                          |
 | immortal     | 1920x1080 (Config window_size); right button toggles can / spray;  |
-|              | plants grow one at a time; vipers orbit the row; a bug swarm pops  |
-|              | up out of the grass in batches of three per plant; spray mist       |
+|              | plants grow one at a time, one viper per fully grown plant layer  |
+|              | orbits the row; a bug swarm pops up out of the grass in           |
+|              | batches of three per plant; spray mist                             |
 |              | touching a bug wounds it - five hits, one per 0.2 s per bug, a      |
 |              | white pip above the bug per hit it can still take - and            |
 |              | the killing blow starts the two-phase death: over 0.3 s it flips    |
