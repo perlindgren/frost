@@ -70,6 +70,18 @@
 //! the sprite is a viper flying to the right, flipped about its center
 //! while it flies to the left.
 //!
+//! A swarm of bugs waddles across the grass in step with the plants —
+//! three new bugs every time a plant starts growing, so the population
+//! climbs 3, 6, …, 18 over the first 75 seconds — through the [`bugs`]
+//! module: each bug pops up out of the ground at a random point inside
+//! the convex hull of the six plant roots, standing up over 2 seconds
+//! via its node's y scale, then swarm-walks — a straight line with a
+//! sinusoidal perpendicular wobble — to a park spot around the plant it
+//! was born for, where it sways in place. Each bug cycles the three
+//! frames `assets/sprites/Bug1a.png`, `Bug2a.png`, and `Bug3a.png` while
+//! walking, flipped about its center while it moves left, tinted dark
+//! red by the node's `modulate`.
+//!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
 //!
@@ -77,6 +89,7 @@
 //! cargo run --example immortal
 //! ```
 
+mod bugs;
 mod plant;
 mod vipers;
 
@@ -98,6 +111,11 @@ const PLANT_POS: [[f32; 2]; 6] = [
     [1081.0, 640.0],
     [1463.0, 719.0],
 ];
+
+/// The bug swarm's population: three bugs per plant, so the scene carries
+/// one shape-less slot per bug and the swarm fills them as the plants
+/// start growing.
+const BUG_N: usize = bugs::BUGS_PER_PLANT * PLANT_POS.len();
 
 /// The plant's fit scale: the full plant spans about 1797 px around the
 /// root joint — its top edge 1614 px above it, its bottom edge 183 px
@@ -514,6 +532,11 @@ struct Demo {
     /// them as cheap `Arc` clones.
     viper1: frost::Shape,
     viper2: frost::Shape,
+    /// The three bug walk frames, loaded once; the swarm's bug nodes swap
+    /// between them as cheap `Arc` clones.
+    bug1: frost::Shape,
+    bug2: frost::Shape,
+    bug3: frost::Shape,
     /// The drops pouring out of the spout: the simulation state, stepped
     /// once per frame.
     water: frost::ParticleSystem,
@@ -537,6 +560,10 @@ struct Demo {
     /// every frame and laid out on the matching child of the vipers node
     /// (root children[4]).
     vipers: vipers::Vipers,
+    /// The swarm of bugs waddling to the plants: three spawn each time a
+    /// plant starts growing, and the swarm steps and lays them out on the
+    /// matching child of the bugs node (root children[5]).
+    bugs: bugs::Bugs,
 }
 
 impl frost::Process for Demo {
@@ -575,10 +602,14 @@ impl frost::Process for Demo {
 
         // Grow the plants one at a time, in parallel with the tool
         // system: the first starts at launch, each next one starts when
-        // the previous is fully grown.
+        // the previous is fully grown; `active_plants` counts the spawned
+        // ones — the ones whose growth clock has started — for the bug
+        // swarm.
         let plants_node = &mut ctx.scene().root.children[2];
+        let mut active_plants = 0usize;
         for (i, anchor) in anchors.iter().enumerate() {
             if i == 0 || self.plants[i - 1].fully_grown() {
+                active_plants += 1;
                 self.plants[i].step(dt);
             }
             self.plants[i].layout(&mut plants_node.children[i], *anchor);
@@ -589,6 +620,12 @@ impl frost::Process for Demo {
         let vipers_node = &mut ctx.scene().root.children[4];
         self.vipers.step(dt, &anchors);
         self.vipers.layout(vipers_node, [&self.viper1, &self.viper2]);
+
+        // Waddle the bugs to the plants, in parallel with everything
+        // else: three spawn each time a plant starts growing.
+        let bugs_node = &mut ctx.scene().root.children[5];
+        self.bugs.step(dt, &anchors, active_plants);
+        self.bugs.layout(bugs_node, [&self.bug1, &self.bug2, &self.bug3]);
 
         // Follow the pointer, keeping the last known position while the
         // cursor is outside the window.
@@ -743,7 +780,7 @@ impl frost::Process for Demo {
 
         // A fresh transform is only needed while the node shows a tool.
         if let Some(tool) = self.active {
-            let tool_node = &mut ctx.scene().root.children[5];
+            let tool_node = &mut ctx.scene().root.children[6];
             tool_node.transform = match tool {
                 Tool::WaterCan => can_transform(mx, my, self.angle),
                 Tool::SprayCan => spray_transform(mx, my, self.angle),
@@ -801,7 +838,7 @@ impl Demo {
         self.burst = None;
         self.rotation = frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once);
         self.showing_spray2 = false;
-        let tool_node = &mut ctx.scene().root.children[5];
+        let tool_node = &mut ctx.scene().root.children[6];
         match tool {
             Some(Tool::WaterCan) => {
                 tool_node.shape = Some(self.can.clone());
@@ -858,7 +895,7 @@ impl Demo {
             return;
         }
         self.showing_spray2 = on;
-        ctx.scene().root.children[5].shape = Some(if on {
+        ctx.scene().root.children[6].shape = Some(if on {
             self.spray2.clone()
         } else {
             self.spray1.clone()
@@ -911,6 +948,12 @@ fn main() {
         .expect("failed to load assets/sprites/Getingeye1.png");
     let viper2 = frost::Shape::sprite(format!("{root}/assets/sprites/Getingeye2.png"))
         .expect("failed to load assets/sprites/Getingeye2.png");
+    let bug1 = frost::Shape::sprite(format!("{root}/assets/sprites/Bug1a.png"))
+        .expect("failed to load assets/sprites/Bug1a.png");
+    let bug2 = frost::Shape::sprite(format!("{root}/assets/sprites/Bug2a.png"))
+        .expect("failed to load assets/sprites/Bug2a.png");
+    let bug3 = frost::Shape::sprite(format!("{root}/assets/sprites/Bug3a.png"))
+        .expect("failed to load assets/sprites/Bug3a.png");
     let items = frost::Shape::sprite(format!("{root}/assets/sprites/items.png"))
         .expect("failed to load assets/sprites/items.png");
     let held_items =
@@ -1082,14 +1125,27 @@ fn main() {
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
+                // The bugs' swarm on the grass: one shape-less child per
+                // slot, in spawn order; the process lays each spawned
+                // bug's pose, flip, growth, and walk frame out on its
+                // child every frame, and the unspawned slots never draw.
+                // The group carries no shape or scale of its own; it sits
+                // under the tool node, so the cursor paints above the
+                // bugs.
+                children: (0..BUG_N)
+                    .map(|_| Box::new(frost::SceneNode::default()))
+                    .collect(),
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
                 // The active tool, starting with no shape: the mouse starts
                 // holding no tool at all. Every switch — a slot swap or the
                 // right-button switch — changes the shape — and the scale,
                 // since the spray frames are drawn at their natural size —
                 // on this same node; the stored tool is mirrored in the
                 // held panel's right cell instead. It stays the last child,
-                // so the cursor paints above the panel, the plants, and
-                // the bees.
+                // so the cursor paints above the panel, the plants, the
+                // bees, and the bugs.
                 ..Default::default()
             }),
         ],
@@ -1116,6 +1172,12 @@ fn main() {
             spray2,
             viper1,
             viper2,
+            // Three bugs per plant: the swarm's population is capped at
+            // `BUG_N`, the scene's slot count.
+            bugs: bugs::Bugs::new([&bug1, &bug2, &bug3], BUG_N),
+            bug1,
+            bug2,
+            bug3,
             water: frost::ParticleSystem::new(),
             spray: frost::ParticleSystem::new(),
             rng: Rng::new(),
