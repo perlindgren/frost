@@ -24,7 +24,11 @@
 //!   the cursor. Holding the left mouse button down turns the can a
 //!   quarter turn counter-clockwise around the pointer over
 //!   `ROTATE_TIME` seconds; at the full tilt, water pours out of the spout
-//!   as blue drops, and releasing turns the can back the same way.
+//!   as blue drops, and releasing turns the can back the same way. While
+//!   the water actually pours — the can active and fully tilted, the same
+//!   condition the drops spawn on — the audio output loops
+//!   `assets/audio/WaterFlowSoft.wav`, silenced the frame pouring stops,
+//!   the can turning back upright or the tool switching away from it.
 //!
 //! - The spray can is drawn at its natural size, with the pivot
 //!   (`SPRAY_PIVOT`, in image pixels) on the cursor and the at-rest frame
@@ -72,20 +76,24 @@
 //! flower's center so the fruit hangs below it, on top of the flower.
 //! Each bloom rides its slice's transform so it sways with the plant.
 //!
-//! Every plant keeps a water reserve, full at launch: while a plant is
-//! growing — started, not yet fully grown — its reserve drains over
-//! `DRAIN_TIME` seconds, and growth proceeds only while the reserve
-//! holds; a plant whose reserve runs dry stops growing, its growth clock
-//! freezing, until the player pours water on its root. `DRAIN_TIME` is
-//! chosen so the first plant, fully watered at launch, runs dry just
-//! before its base slice is fully grown — the base grows over 3 seconds,
-//! the shortest of the five — so the bench pauses before its flowers can
-//! start developing. A drop that passes through a growing plant's rough
-//! hitbox — a `ROOT_RADIUS`-pixel circle around the root joint — restores
-//! the reserve by `DROP_WATER`; a full second of pouring, if every drop
-//! lands, is one full reserve. A blue fill on a dark background, `BAR_DX`
-//! wide, floats `BAR_LIFT` pixels above the root joint of every plant
-//! that has started growing and is not fully grown yet, showing its
+//! Every plant keeps a water reserve, full at launch, and the plants'
+//! growth runs at `1 / GROW_SLOWDOWN` of real time's pace — the slices,
+//! the flowers, and the tomatoes alike: while a plant is growing —
+//! started, not yet fully grown — its growth clock is stepped by
+//! `dt / GROW_SLOWDOWN`, and its reserve drains over `DRAIN_TIME` of that
+//! slowed clock — `GROW_SLOWDOWN * DRAIN_TIME` real seconds — and growth
+//! proceeds only while the reserve holds; a plant whose reserve runs dry
+//! stops growing, its growth clock freezing, until the player pours water
+//! on its root. `DRAIN_TIME` is chosen so the first plant, fully watered
+//! at launch, runs dry just before its base slice is fully grown — the
+//! base grows over 3 growth-clock seconds, the shortest of the five — so
+//! the bench pauses before its flowers can start developing. A drop that
+//! passes through a growing plant's rough hitbox — a `ROOT_RADIUS`-pixel
+//! circle around the root joint — restores the reserve by `DROP_WATER`; a
+//! full second of pouring, if every drop lands, is one full reserve,
+//! whatever pace the growth runs at. A blue fill on a dark background,
+//! `BAR_DX` wide, floats `BAR_LIFT` pixels above the root joint of every
+//! plant that has started growing and is not fully grown yet, showing its
 //! reserve.
 //!
 //! A swarm of thirty vipers buzzes around the flower bench — the row of
@@ -287,14 +295,25 @@ const PIP: frost::Color = frost::Color {
     a: 1.0,
 };
 
+/// The factor by which the plants' growth runs slow: the process steps a
+/// plant's growth clock by `dt / GROW_SLOWDOWN` per frame, so a slice
+/// that grows over its `plant::GROW_TIMES` span takes `GROW_SLOWDOWN`
+/// times that span in real time — the slices, the flowers, and the
+/// tomatoes alike — and the water reserve drains with the growth, over
+/// `GROW_SLOWDOWN * DRAIN_TIME` real seconds.
+const GROW_SLOWDOWN: f32 = 3.0;
+
 /// The time a plant's water reserve takes to drain from full (1.0) to dry
-/// (0.0), in seconds, while the plant is growing: the process drains a
-/// started plant that is not fully grown by `dt / DRAIN_TIME` per frame,
-/// and the span is chosen so the first plant — fully watered at launch —
-/// runs dry just before its base slice is fully grown (the base grows over
-/// 3 seconds; see `plant::GROW_TIMES[0]`), so the bench pauses before its
-/// flowers can start developing.
-const DRAIN_TIME: f32 = 2.5;
+/// (0.0), in growth-clock seconds, while the plant is growing: the
+/// process drains a started plant that is not fully grown by
+/// `dt / (DRAIN_TIME * GROW_SLOWDOWN)` per frame — the drain runs at the
+/// growth's slowed pace — and the span is chosen so the first plant —
+/// fully watered at launch — runs dry just before its base slice is fully
+/// grown: the base grows over 3 growth-clock seconds (`plant::GROW_TIMES[0]`),
+/// i.e. 9 real seconds at `GROW_SLOWDOWN`, and `DRAIN_TIME * GROW_SLOWDOWN`
+/// is 8.25 real seconds, so the bench pauses 0.75 seconds before the base
+/// completes, before its flowers can start developing.
+const DRAIN_TIME: f32 = 2.75;
 
 /// The radius of the rough hitbox around a plant's root joint, in user
 /// space pixels: a falling drop inside this circle of the root's anchor
@@ -692,9 +711,10 @@ struct Demo {
     plants: [plant::Plant; PLANT_POS.len()],
     /// The plants' water reserves, in growth order, each from 1.0 (well
     /// watered) to 0.0 (dry): the process drains a growing plant by
-    /// `dt / DRAIN_TIME` per frame and restores it by `DROP_WATER` per
-    /// drop that falls into its root hitbox, and a plant at 0.0 stops
-    /// growing, awaiting water.
+    /// `dt / (DRAIN_TIME * GROW_SLOWDOWN)` per frame — at the growth's
+    /// slowed pace — and restores it by `DROP_WATER` per drop that falls
+    /// into its root hitbox, and a plant at 0.0 stops growing, awaiting
+    /// water.
     waters: [f32; PLANT_POS.len()],
     /// The swarm of vipers buzzing around the flower bench — the row of
     /// plants — in parallel with the tool system and the plants: one
@@ -723,6 +743,17 @@ struct Demo {
     /// time the mist drops a bug's health the bug cries out on one of
     /// them, the swarm's random pick.
     ajs: [frost::Sound; 4],
+    /// The watering sound, `assets/audio/WaterFlowSoft.wav`, decoded once
+    /// at startup; the audio output's one loop, playing while water
+    /// actually pours out of the spout and silenced the frame pouring
+    /// stops.
+    pour: frost::Sound,
+    /// Whether the audio output's loop is currently playing the pour
+    /// sound: the process flips it on the pour's edges — the watering can
+    /// active and fully tilted (rising), pouring ending, the can turning
+    /// back upright or the tool switching away (falling) — starting the
+    /// loop on the rising edge and stopping it on the falling one.
+    pouring: bool,
 }
 
 impl frost::Process for Demo {
@@ -768,13 +799,15 @@ impl frost::Process for Demo {
         // swarm, and `grown_layers` counts the fully grown ones, layer by
         // layer, for the viper swarm.
         //
-        // Growth proceeds only while the plant is well watered: a started
-        // plant that is not fully grown drains its water reserve by
-        // `dt / DRAIN_TIME` every frame, and a plant whose reserve runs
-        // dry stops growing — its growth clock freezes — awaiting the
-        // player to pour water on its root; the falling drops are matched
-        // against the roots' hitboxes below, once the particles have been
-        // stepped.
+        // Growth proceeds only while the plant is well watered, and at
+        // `1 / GROW_SLOWDOWN` of real time's pace: a started plant that
+        // is not fully grown drains its water reserve by
+        // `dt / (DRAIN_TIME * GROW_SLOWDOWN)` every frame — the drain
+        // runs with the growth — and steps its clock by `dt /
+        // GROW_SLOWDOWN`; a plant whose reserve runs dry stops growing —
+        // its growth clock freezes — awaiting the player to pour water on
+        // its root; the falling drops are matched against the roots'
+        // hitboxes below, once the particles have been stepped.
         let plants_node = &mut ctx.scene().root.children[2];
         let mut active_plants = 0usize;
         let mut grown_layers = 0usize;
@@ -784,10 +817,12 @@ impl frost::Process for Demo {
             if started[i] {
                 active_plants += 1;
                 if !self.plants[i].fully_grown() {
-                    self.waters[i] = (self.waters[i] - dt / DRAIN_TIME).max(0.0);
-                    // The growth clock holds while the reserve is dry.
+                    self.waters[i] =
+                        (self.waters[i] - dt / (DRAIN_TIME * GROW_SLOWDOWN)).max(0.0);
+                    // The growth clock runs slow, and holds while the
+                    // reserve is dry.
                     if self.waters[i] > 0.0 {
-                        self.plants[i].step(dt);
+                        self.plants[i].step(dt / GROW_SLOWDOWN);
                     }
                 }
             }
@@ -987,6 +1022,22 @@ impl frost::Process for Demo {
             }
             // No tool held: nothing to tilt, burst, or emit.
             None => {}
+        }
+
+        // The pour sound follows the spout: it starts, looping, the frame
+        // water actually pours out of the can — the watering can active
+        // and fully tilted, the same condition the drops spawn on — and
+        // stops the frame pouring ends, the can turning back upright or
+        // the tool switching away from it.
+        let pouring = self.active == Some(Tool::WaterCan)
+            && self.angle >= CAN_ANGLE - TILT_EPS;
+        if pouring != self.pouring {
+            self.pouring = pouring;
+            if pouring {
+                self.audio.play_loop(&self.pour);
+            } else {
+                self.audio.stop_loop();
+            }
         }
 
         // A fresh transform is only needed while the node shows a tool.
@@ -1267,9 +1318,11 @@ fn main() {
     // another bug is on the grass within 50 px of it chatters on one of
     // them, the swarm's random pick), the three plopp clips (a bug that
     // pops up out of the grass — a batch spawn or a respawn — plops on
-    // one of them, the swarm's random pick), and the four Aj clips (the
-    // bug cries out on one of them, the swarm's random pick, every time
-    // the mist drops its health).
+    // one of them, the swarm's random pick), the four Aj clips (the bug
+    // cries out on one of them, the swarm's random pick, every time the
+    // mist drops its health), and the watering loop (it plays, looping,
+    // while water pours out of the spout, silenced the frame pouring
+    // stops).
     let audio = frost::Audio::new()
         .expect("failed to open the audio output device");
     let tjatters = [
@@ -1298,6 +1351,8 @@ fn main() {
         frost::Sound::load(format!("{root}/assets/audio/Aj4.wav"))
             .expect("failed to load assets/audio/Aj4.wav"),
     ];
+    let pour = frost::Sound::load(format!("{root}/assets/audio/WaterFlowSoft.wav"))
+        .expect("failed to load assets/audio/WaterFlowSoft.wav");
 
     // One plant node, cloned for each plant: its origin is the root joint
     // (plant1's lower joint), positioned by the process every frame. The
@@ -1533,6 +1588,8 @@ fn main() {
             tjatters,
             plops,
             ajs,
+            pour,
+            pouring: false,
             flower,
             tomato,
             tomato_fg,
@@ -1563,21 +1620,32 @@ fn main() {
 mod tests {
     use super::*;
 
-    /// A full reserve, drained at a 60 fps frame step, must run out
-    /// strictly before the first plant's base slice is fully grown — over
-    /// `plant::GROW_TIMES[0]` seconds — and only just before it: the bench
-    /// is meant to pause within the last second of the base's growth,
-    /// before the flowers can start developing.
+    /// A full reserve, drained at the growth's slowed pace — a 60 fps
+    /// frame step divided by `GROW_SLOWDOWN` — must run out strictly
+    /// before the first plant's base slice is fully grown — over
+    /// `plant::GROW_TIMES[0] * GROW_SLOWDOWN` real seconds — and only just
+    /// before it: the bench is meant to pause within the last real second
+    /// of the base's growth, before the flowers can start developing.
     #[test]
     fn first_plant_runs_dry_just_before_its_base_is_grown() {
         let dt = 1.0 / 60.0;
         let mut water = 1.0;
-        let mut t = 0.0;
+        let mut clock = 0.0; // growth-clock seconds
+        let mut t = 0.0; // real seconds
         while water > 0.0 {
-            water = (water - dt / DRAIN_TIME).max(0.0);
+            water = (water - dt / (DRAIN_TIME * GROW_SLOWDOWN)).max(0.0);
+            // The clock steps only while the reserve holds, as in the
+            // process.
+            if water > 0.0 {
+                clock += dt / GROW_SLOWDOWN;
+            }
             t += dt;
         }
-        let base = plant::GROW_TIMES[0];
+        let base = plant::GROW_TIMES[0] * GROW_SLOWDOWN;
+        assert!(
+            clock < plant::GROW_TIMES[0],
+            "the reserve must be dry before the base slice is fully grown (clock {clock} vs base {base})"
+        );
         assert!(
             t < base,
             "the reserve must be dry before the base slice is fully grown (dry at {t}, base at {base})"
