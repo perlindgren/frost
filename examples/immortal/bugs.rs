@@ -10,16 +10,17 @@
 //! is clearly moving left; the sprite tint comes from the node's `modulate`.
 //!
 //! A bug takes [HITS_TO_KILL] hits from the spray can's green mist before
-//! it dies — a frame's worth of overlapping drops is still just one hit
-//! on the same bug — so the mist wears it down over several frames. The
-//! killing blow starts the two-phase death, driven by the per-bug death
-//! clock [Bug::dying]: over [FLIP_TIME] it flips upside down — its node's
-//! y scale sweeps from upright to fully inverted about the sprite center,
-//! position, growth, facing and walk frame frozen — and then, over
-//! [SINK_TIME], the inverted sprite shrinks to nothing while its center
-//! sinks through the grass. When the clock reaches [FLIP_TIME] plus
-//! [SINK_TIME] the bug waits out a random delay in
-//! [RESPAWN_MIN]…[RESPAWN_MAX] and pops back up at its original spawn
+//! it dies — a wounded bug takes its next hit only after a
+//! [HIT_COOLDOWN] second, so the mist wears it down one hit at a time —
+//! and a row of pips above the bug counts the hits it can still take
+//! ([Bugs::health_pips]). The killing blow starts the two-phase death,
+//! driven by the per-bug death clock [Bug::dying]: over [FLIP_TIME] it
+//! flips upside down — its node's y scale sweeps from upright to fully
+//! inverted about the sprite center, position, growth, facing and walk
+//! frame frozen — and then, over [SINK_TIME], the inverted sprite shrinks
+//! to nothing while its center sinks through the grass. When the clock
+//! reaches [FLIP_TIME] plus [SINK_TIME] the bug waits out a random delay
+//! in [RESPAWN_MIN]…[RESPAWN_MAX] and pops back up at its original spawn
 //! spot, fully healed.
 //!
 //! Bugs are spawned into a fixed-size pool: the scene carries one
@@ -63,8 +64,15 @@ const FLIP_TIME: f32 = 0.3;
 /// How long the flip takes to shrink to nothing while sinking through the
 /// grass, in seconds.
 const SINK_TIME: f32 = 0.5;
-/// How many hits from the spray's mist a bug takes before it dies.
-const HITS_TO_KILL: u8 = 5;
+/// How many hits from the spray's mist a bug takes before it dies: the
+/// pips the bug's health counter starts with.
+pub const HITS_TO_KILL: u8 = 5;
+/// How long a wounded bug is immune to further mist hits, in seconds: a
+/// bug standing in the mist loses one hit per cooldown, so the mist wears
+/// it down over several cooldowns instead of a few frames.
+const HIT_COOLDOWN: f32 = 0.2;
+/// How far above the bug its health pips ride, in px.
+const PIP_GAP: f32 = 6.0;
 /// The dead bug's respawn window, in seconds: it pops back up at its
 /// spawn spot after a random delay in [RESPAWN_MIN, RESPAWN_MAX].
 const RESPAWN_MIN: f32 = 5.0;
@@ -111,11 +119,13 @@ struct Bug {
     /// delay.
     dying: Option<f32>,
     /// Hits from the mist still standing between this bug and death;
-    /// starts at [HITS_TO_KILL], and each hit takes it down by one.
+    /// starts at [HITS_TO_KILL], and each hit takes it down by one. The
+    /// pips above the bug's head count these.
     hits: u8,
-    /// True once this frame's mist has already hit the bug: it takes at
-    /// most one hit per frame, no matter how many drops touch it at once.
-    hit_this_frame: bool,
+    /// How much of the [HIT_COOLDOWN] after its last hit is left: while
+    /// it is above zero no drop can wound the bug again, no matter how
+    /// many touch it at once.
+    hit_cooldown: f32,
     /// Seconds left before the dead bug pops back up; `Some` while the
     /// bug is gone from the grass.
     respawn: Option<f32>,
@@ -181,8 +191,8 @@ impl Bugs {
     /// respawn delay when the clock reaches [FLIP_TIME] + [SINK_TIME];
     /// bugs in the delay count it down and, when it ends, pop back up at
     /// their spawn spot as fresh, fully healed bugs. Each bug's
-    /// [Bug::hit_this_frame] flag resets here, so the frame's mist pass
-    /// can land at most one new hit on any one bug.
+    /// [HIT_COOLDOWN] runs down here, so a wounded bug takes its next
+    /// hit only after the cooldown has elapsed.
     pub fn step(&mut self, dt: f32, anchors: &[[f32; 2]], active: usize) {
         if dt < 0.0 {
             return;
@@ -218,7 +228,7 @@ impl Bugs {
                     step_rate: self.rng.in_range(6.0, 10.0),
                     dying: None,
                     hits: HITS_TO_KILL,
-                    hit_this_frame: false,
+                    hit_cooldown: 0.0,
                     respawn: None,
                 };
                 self.bugs.push(bug);
@@ -226,9 +236,11 @@ impl Bugs {
         }
 
         for bug in &mut self.bugs {
-            // One frame of mist is one hit: clear the flag, so this
-            // frame's hit pass can land at most one more hit.
-            bug.hit_this_frame = false;
+            // The hit cooldown runs down every frame, so a wounded bug
+            // takes its next hit only after [HIT_COOLDOWN].
+            if bug.hit_cooldown > 0.0 {
+                bug.hit_cooldown = (bug.hit_cooldown - dt).max(0.0);
+            }
 
             // A dead bug sits out for its random respawn delay; when it
             // ends, the bug pops back up at its spawn spot as a fresh
@@ -246,6 +258,7 @@ impl Bugs {
                     bug.frame = 0;
                     bug.shown = u8::MAX;
                     bug.hits = HITS_TO_KILL;
+                    bug.hit_cooldown = 0.0;
                 } else {
                     bug.respawn = Some(r - dt);
                 }
@@ -324,20 +337,20 @@ impl Bugs {
     /// Land one mist hit at `p`: every live bug within half the rendered
     /// bug width of `p` takes one hit — its [Bug::hits] drops by one, and
     /// the hit starts its [Bug::dying] clock when that takes it to zero.
-    /// Dying and respawning bugs take no more hits, and a bug takes at
-    /// most one hit per frame ([Bug::hit_this_frame]) even when several
-    /// drops touch it at once. Returns the number of bugs hit.
+    /// Dying and respawning bugs take no more hits, and a wounded bug
+    /// takes its next hit only after its [HIT_COOLDOWN] has run out
+    /// ([Bug::hit_cooldown]). Returns the number of bugs hit.
     pub fn hit_at(&mut self, p: [f32; 2]) -> usize {
         let r2 = (BUG_SIZE / 2.0) * (BUG_SIZE / 2.0);
         let mut hits = 0;
         for bug in &mut self.bugs {
-            if bug.dying.is_some() || bug.respawn.is_some() || bug.hit_this_frame {
+            if bug.dying.is_some() || bug.respawn.is_some() || bug.hit_cooldown > 0.0 {
                 continue;
             }
             let dx = p[0] - bug.pos[0];
             let dy = p[1] - bug.pos[1];
             if dx * dx + dy * dy <= r2 {
-                bug.hit_this_frame = true;
+                bug.hit_cooldown = HIT_COOLDOWN;
                 bug.hits -= 1;
                 if bug.hits == 0 {
                     bug.dying = Some(0.0);
@@ -348,6 +361,22 @@ impl Bugs {
         hits
     }
 
+    /// The health counters of the bugs that are visible right now: for
+    /// every bug that has popped up, is not dying, and is not waiting out
+    /// its respawn delay — in pool order — the point above the bug where
+    /// the counter rides, and the number of pips to draw, one per hit it
+    /// can still take. The row tracks the bug's current height, so it
+    /// rides the growth and the walk with it.
+    pub fn health_pips(&self) -> Vec<([f32; 2], u8)> {
+        self.bugs
+            .iter()
+            .filter(|b| b.grow > 0.0 && b.dying.is_none() && b.respawn.is_none())
+            .map(|b| {
+                let half = b.grow / GROW_TIME * BUG_SIZE / 2.0;
+                ([b.pos[0], b.pos[1] + half + PIP_GAP], b.hits)
+            })
+            .collect()
+    }
 
     /// Write the spawned prefix of `node`'s children.
     ///
@@ -725,9 +754,9 @@ mod tests {
         assert!(bugs.bugs.iter().all(|b| b.grow >= GROW_TIME - 1e-6));
 
         // Wear the bug farthest from its two siblings down, one hit per
-        // frame: each round touches it at its current position three
-        // times in the same frame (the per-frame dedup makes that one
-        // hit), then steps.
+        // round: each round touches it at its current position three
+        // times in the same frame (the hit cooldown makes that one hit),
+        // then waits the cooldown out before the next round.
         let pos: Vec<[f32; 2]> = bugs.bugs.iter().map(|b| b.pos).collect();
         let farthest = (0..pos.len()).max_by(|&a, &b| {
             let da = pos.iter().enumerate().filter(|(i, _)| *i != a)
@@ -745,16 +774,20 @@ mod tests {
             bugs.hit_at(p);
             bugs.hit_at(p);
             assert!(hits >= 1, "the mist found no bug");
-            bugs.step(dt, &ANCHORS, 1);
+            assert_eq!(bugs.hit_at(p), 0, "the hit cooldown did not hold");
             assert_eq!(
                 bugs.bugs[farthest].hits,
                 HITS_TO_KILL - round,
-                "a frame of mist landed more than one hit"
+                "a round of mist landed more than one hit"
             );
             assert!(
                 bugs.bugs[farthest].dying.is_none(),
                 "a sub-lethal round started the death"
             );
+            // Wait the hit cooldown out before the next round.
+            for _ in 0..5 {
+                bugs.step(dt, &ANCHORS, 1);
+            }
         }
 
         // The killing blow, aimed at the bug's current position.
@@ -938,14 +971,16 @@ mod tests {
         }
         assert!(bugs.bugs.iter().all(|b| b.grow < GROW_TIME));
         let pos: Vec<[f32; 2]> = bugs.bugs.iter().map(|b| b.pos).collect();
-        // A drop on each exact spawn spot, five rounds of one per frame:
-        // every bug takes one hit per round, and the fifth round is the
-        // killing blow.
+        // A drop on each exact spawn spot, five rounds of one hit each,
+        // spaced by the hit cooldown: every bug takes one hit per round,
+        // and the fifth round is the killing blow.
         for _ in 0..HITS_TO_KILL {
             for p in &pos {
                 assert!(bugs.hit_at(*p) >= 1, "a drop found no bug");
             }
-            bugs.step(dt, &ANCHORS, 1);
+            for _ in 0..5 {
+                bugs.step(dt, &ANCHORS, 1);
+            }
         }
         assert!(bugs.bugs.iter().all(|b| b.dying.is_some()));
         let frozen_grow: Vec<f32> = bugs.bugs.iter().map(|b| b.grow).collect();

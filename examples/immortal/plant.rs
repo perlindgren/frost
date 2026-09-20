@@ -104,6 +104,8 @@ fn link(shape: &frost::Shape, joints: [(f32, f32); 2]) -> Link {
     }
 }
 
+type TomatoSpawn = [Vec<(f32, f32)>; 4];
+
 /// A five-slice plant that grows out of its root joint and sways in a
 /// traveling wind. The shapes themselves live in the scene; the value only
 /// keeps the growth clock and the slices' joints in node-local space.
@@ -114,6 +116,7 @@ pub struct Plant {
     /// The five slices in chain order, with their joints in node-local
     /// space.
     links: [Link; 5],
+    tomato_spawn: TomatoSpawn,
 }
 
 impl Plant {
@@ -130,6 +133,25 @@ impl Plant {
                 link(shapes[2], JOINTS[2]),
                 link(shapes[3], JOINTS[3]),
                 link(shapes[4], JOINTS[4]),
+            ],
+            tomato_spawn: [
+                vec![(308.0, 615.0)],
+                vec![(306.0, 496.0), (638.0, 428.0), (304.0, 392.0)],
+                vec![
+                    (315.0, 392.0),
+                    (326.0, 315.0),
+                    (297.0, 258.0),
+                    (320.0, 203.0),
+                    (300.0, 128.0),
+                ],
+                vec![
+                    (339.0, 364.0),
+                    (298.0, 318.0),
+                    (356.0, 258.0),
+                    (388.0, 228.0),
+                    (334.0, 203.0),
+                    (283.0, 182.0),
+                ],
             ],
         }
     }

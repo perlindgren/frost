@@ -83,12 +83,14 @@
 //! red by the node's `modulate`.
 //!
 //! A bug takes five hits from the spray can's green mist before it dies
-//! — a frame's worth of overlapping drops is still just one hit on the
-//! same bug — and the killing blow starts the two-phase death: over 0.3
-//! seconds it flips upside down — its node's y scale sweeps from upright
-//! to fully inverted about the sprite center while its position, growth,
-//! and walk frame freeze — and then, over 0.5 seconds, the inverted
-//! sprite shrinks to nothing while its center sinks through the grass.
+//! — a wounded bug takes its next hit only after a 0.2 s cooldown, so
+//! the mist wears it down one hit at a time — and a row of white pips
+//! above the bug counts the hits it can still take. The killing blow
+//! starts the two-phase death: over 0.3 seconds it flips upside down —
+//! its node's y scale sweeps from upright to fully inverted about the
+//! sprite center while its position, growth, and walk frame freeze — and
+//! then, over 0.5 seconds, the inverted sprite shrinks to nothing while
+//! its center sinks through the grass.
 //! The dead bug then waits out a random 5 to 10 second delay and pops
 //! back up at its spawn spot, fully healed, so the population dips and
 //! recovers with the spraying.
@@ -222,6 +224,15 @@ const Z: f32 = 2.0;
 const DROP: frost::Color = frost::Color {
     r: 0.35,
     g: 0.62,
+    b: 1.0,
+    a: 1.0,
+};
+
+/// The bugs' health pips: one white, 4 px across, per hit a bug can
+/// still take, in a row 6 px above it.
+const PIP: frost::Color = frost::Color {
+    r: 1.0,
+    g: 1.0,
     b: 1.0,
     a: 1.0,
 };
@@ -804,11 +815,25 @@ impl frost::Process for Demo {
         self.spray.update(dt, [0.0, -SPRAY_GRAVITY]);
 
         // Mist touching a bug wounds it: each live spray drop hits every
-        // bug within its reach, but a bug takes at most one hit per
-        // frame, and five hits start the flip-then-sink death. The water
-        // can's drops never touch the bugs.
+        // bug within its reach, but a wounded bug takes its next hit only
+        // after its hit cooldown, and five hits start the flip-then-sink
+        // death. The water can's drops never touch the bugs.
         for p in &self.spray.particles {
             self.bugs.hit_at(p.pos);
+        }
+
+        // Draw the bugs' health counters: one white pip per hit each
+        // visible bug can still take, in a row above it.
+        for ([cx, cy], hits) in self.bugs.health_pips() {
+            for i in 0..hits {
+                ctx.circle(
+                    cx - (bugs::HITS_TO_KILL as f32 - 1.0) * 3.0 + i as f32 * 6.0,
+                    cy,
+                    2.0,
+                    PIP,
+                    Z,
+                );
+            }
         }
 
         // Draw each particle as a circle whose alpha is its remaining life
