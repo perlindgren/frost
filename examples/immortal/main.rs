@@ -72,6 +72,22 @@
 //! flower's center so the fruit hangs below it, on top of the flower.
 //! Each bloom rides its slice's transform so it sways with the plant.
 //!
+//! Every plant keeps a water reserve, full at launch: while a plant is
+//! growing — started, not yet fully grown — its reserve drains over
+//! `DRAIN_TIME` seconds, and growth proceeds only while the reserve
+//! holds; a plant whose reserve runs dry stops growing, its growth clock
+//! freezing, until the player pours water on its root. `DRAIN_TIME` is
+//! chosen so the first plant, fully watered at launch, runs dry just
+//! before its base slice is fully grown — the base grows over 3 seconds,
+//! the shortest of the five — so the bench pauses before its flowers can
+//! start developing. A drop that passes through a growing plant's rough
+//! hitbox — a `ROOT_RADIUS`-pixel circle around the root joint — restores
+//! the reserve by `DROP_WATER`; a full second of pouring, if every drop
+//! lands, is one full reserve. A blue fill on a dark background, `BAR_DX`
+//! wide, floats `BAR_LIFT` pixels above the root joint of every plant
+//! that has started growing and is not fully grown yet, showing its
+//! reserve.
+//!
 //! A swarm of thirty vipers buzzes around the flower bench — the row of
 //! plants — concurrently with everything else, through the [`vipers`]
 //! module: one viper per plant layer, and the swarm is not all in the air
@@ -270,6 +286,56 @@ const PIP: frost::Color = frost::Color {
     b: 1.0,
     a: 1.0,
 };
+
+/// The time a plant's water reserve takes to drain from full (1.0) to dry
+/// (0.0), in seconds, while the plant is growing: the process drains a
+/// started plant that is not fully grown by `dt / DRAIN_TIME` per frame,
+/// and the span is chosen so the first plant — fully watered at launch —
+/// runs dry just before its base slice is fully grown (the base grows over
+/// 3 seconds; see `plant::GROW_TIMES[0]`), so the bench pauses before its
+/// flowers can start developing.
+const DRAIN_TIME: f32 = 2.5;
+
+/// The radius of the rough hitbox around a plant's root joint, in user
+/// space pixels: a falling drop inside this circle of the root's anchor
+/// waters that plant.
+const ROOT_RADIUS: f32 = 60.0;
+
+/// The share of a plant's water reserve one drop in its root hitbox
+/// restores: with the drops' `RATE`, a full second of pouring — every
+/// drop landing — is one full reserve.
+const DROP_WATER: f32 = 1.0 / RATE;
+
+/// The height of the water bar's center above the plant's root joint, in
+/// user space pixels: the bar floats just above the root — the spot the
+/// player pours on — because at the fit scale a fully grown plant's top
+/// reaches the window's top edge, leaving no room above the plant itself.
+const BAR_LIFT: f32 = 70.0;
+
+/// The water bar's half-extents, in user space pixels: the dark
+/// background is `BAR_DX + BAR_BORDER` wide by `BAR_DY + BAR_BORDER` tall
+/// and the blue fill is `BAR_DX` wide by `BAR_DY` tall, both centered on
+/// the same point, the fill's width tracking the reserve from the left
+/// edge.
+const BAR_DX: f32 = 44.0;
+const BAR_DY: f32 = 5.0;
+const BAR_BORDER: f32 = 2.0;
+
+/// The color of the water bar's background, the dry part of the bar.
+const BAR_BG: frost::Color = frost::Color {
+    r: 0.16,
+    g: 0.18,
+    b: 0.22,
+    a: 0.9,
+};
+
+/// Whether a drop at `pos` is inside the `ROOT_RADIUS`-pixel hitbox
+/// around the plant's root joint at `anchor`.
+fn in_root_hitbox(pos: [f32; 2], anchor: [f32; 2]) -> bool {
+    let dx = pos[0] - anchor[0];
+    let dy = pos[1] - anchor[1];
+    dx * dx + dy * dy <= ROOT_RADIUS * ROOT_RADIUS
+}
 
 /// The can is treated as fully tilted — and pouring — once it is within
 /// this many radians of `CAN_ANGLE`.
@@ -605,7 +671,8 @@ struct Demo {
     /// swap it in as cheap `Arc` clones, unmodulated.
     tomato_fg: frost::Shape,
     /// The drops pouring out of the spout: the simulation state, stepped
-    /// once per frame.
+    /// once per frame: each drop is also matched against the growing
+    /// plants' root hitboxes to restore their water reserves (`waters`).
     water: frost::ParticleSystem,
     /// The green spray emitted by the spray can: the simulation state,
     /// stepped once per frame.
@@ -618,10 +685,17 @@ struct Demo {
     acc: f32,
     /// The tomato plants on the grass, in growth order: each has its own
     /// growth clock, and the process steps it only once the previous one
-    /// is fully grown — the first from launch on — then lays it out on the
-    /// matching child of the plants node (root children[2]), in parallel
-    /// with the tool system.
+    /// is fully grown — the first from launch on — and only while its
+    /// water reserve (`waters`) holds, then lays it out on the matching
+    /// child of the plants node (root children[2]), in parallel with the
+    /// tool system.
     plants: [plant::Plant; PLANT_POS.len()],
+    /// The plants' water reserves, in growth order, each from 1.0 (well
+    /// watered) to 0.0 (dry): the process drains a growing plant by
+    /// `dt / DRAIN_TIME` per frame and restores it by `DROP_WATER` per
+    /// drop that falls into its root hitbox, and a plant at 0.0 stops
+    /// growing, awaiting water.
+    waters: [f32; PLANT_POS.len()],
     /// The swarm of vipers buzzing around the flower bench — the row of
     /// plants — in parallel with the tool system and the plants: one
     /// viper per fully grown plant layer, so the swarm grows as the bench
@@ -693,13 +767,29 @@ impl frost::Process for Demo {
         // ones — the ones whose growth clock has started — for the bug
         // swarm, and `grown_layers` counts the fully grown ones, layer by
         // layer, for the viper swarm.
+        //
+        // Growth proceeds only while the plant is well watered: a started
+        // plant that is not fully grown drains its water reserve by
+        // `dt / DRAIN_TIME` every frame, and a plant whose reserve runs
+        // dry stops growing — its growth clock freezes — awaiting the
+        // player to pour water on its root; the falling drops are matched
+        // against the roots' hitboxes below, once the particles have been
+        // stepped.
         let plants_node = &mut ctx.scene().root.children[2];
         let mut active_plants = 0usize;
         let mut grown_layers = 0usize;
+        let started: [bool; PLANT_POS.len()] =
+            std::array::from_fn(|i| i == 0 || self.plants[i - 1].fully_grown());
         for (i, anchor) in anchors.iter().enumerate() {
-            if i == 0 || self.plants[i - 1].fully_grown() {
+            if started[i] {
                 active_plants += 1;
-                self.plants[i].step(dt);
+                if !self.plants[i].fully_grown() {
+                    self.waters[i] = (self.waters[i] - dt / DRAIN_TIME).max(0.0);
+                    // The growth clock holds while the reserve is dry.
+                    if self.waters[i] > 0.0 {
+                        self.plants[i].step(dt);
+                    }
+                }
             }
             grown_layers += self.plants[i].grown_layers();
             self.plants[i].layout(
@@ -913,6 +1003,23 @@ impl frost::Process for Demo {
         self.water.update(dt, [0.0, -GRAVITY]);
         self.spray.update(dt, [0.0, -SPRAY_GRAVITY]);
 
+        // Water the roots: each drop that passes through a growing plant's
+        // rough hitbox — a `ROOT_RADIUS`-pixel circle around the root
+        // joint — restores the plant's water reserve by `DROP_WATER`,
+        // capped at full; the drops keep falling on through, so one stream
+        // can top up several roots at once.
+        for p in &self.water.particles {
+            for (i, anchor) in anchors.iter().enumerate() {
+                if started[i]
+                    && !self.plants[i].fully_grown()
+                    && self.waters[i] < 1.0
+                    && in_root_hitbox(p.pos, *anchor)
+                {
+                    self.waters[i] = (self.waters[i] + DROP_WATER).min(1.0);
+                }
+            }
+        }
+
         // Mist touching a bug wounds it: each live spray drop hits every
         // bug within its reach, but a wounded bug takes its next hit only
         // after its hit cooldown, and a hit that empties the counter
@@ -973,6 +1080,35 @@ impl frost::Process for Demo {
                 },
                 Z,
             );
+        }
+
+        // Draw the water bars: a dark background with a blue fill showing
+        // the reserve, `BAR_LIFT` pixels above the root joint of every
+        // plant that has started growing and is not fully grown yet —
+        // over the root, the spot the player pours on, because at the fit
+        // scale a fully grown plant's top reaches the window's top edge
+        // and leaves no room above the plant itself. The fill grows from
+        // the bar's left edge as the reserve refills.
+        for (i, anchor) in anchors.iter().enumerate() {
+            if started[i] && !self.plants[i].fully_grown() {
+                let level = self.waters[i];
+                ctx.rectangle(
+                    anchor[0],
+                    anchor[1] + BAR_LIFT,
+                    BAR_DX + BAR_BORDER,
+                    BAR_DY + BAR_BORDER,
+                    BAR_BG,
+                    Z,
+                );
+                ctx.rectangle(
+                    anchor[0] - BAR_DX * (1.0 - level),
+                    anchor[1] + BAR_LIFT,
+                    BAR_DX * level,
+                    BAR_DY,
+                    DROP,
+                    Z,
+                );
+            }
         }
     }
 }
@@ -1408,6 +1544,9 @@ fn main() {
             // zero and the process steps it when the previous is fully
             // grown.
             plants: std::array::from_fn(|_| plant.clone()),
+            // Six full water reserves, one per plant: each plant enters
+            // well watered, the first one draining from launch on.
+            waters: std::array::from_fn(|_| 1.0),
             vipers: vipers::Vipers::new(VIPER_IMAGE),
         },
         frost::Config {
@@ -1417,5 +1556,53 @@ fn main() {
     ) {
         log::error!("frost failed: {err}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A full reserve, drained at a 60 fps frame step, must run out
+    /// strictly before the first plant's base slice is fully grown — over
+    /// `plant::GROW_TIMES[0]` seconds — and only just before it: the bench
+    /// is meant to pause within the last second of the base's growth,
+    /// before the flowers can start developing.
+    #[test]
+    fn first_plant_runs_dry_just_before_its_base_is_grown() {
+        let dt = 1.0 / 60.0;
+        let mut water = 1.0;
+        let mut t = 0.0;
+        while water > 0.0 {
+            water = (water - dt / DRAIN_TIME).max(0.0);
+            t += dt;
+        }
+        let base = plant::GROW_TIMES[0];
+        assert!(
+            t < base,
+            "the reserve must be dry before the base slice is fully grown (dry at {t}, base at {base})"
+        );
+        assert!(
+            t >= base - 1.0,
+            "the reserve must dry just before the base slice, not long before (dry at {t}, base at {base})"
+        );
+    }
+
+    /// A full second of pouring — `RATE` drops, every one of them landing
+    /// in the root hitbox — restores exactly one full reserve.
+    #[test]
+    fn a_full_second_of_pouring_is_one_full_reserve() {
+        assert!((DROP_WATER * RATE - 1.0).abs() < 1e-6);
+    }
+
+    /// The root hitbox is a `ROOT_RADIUS`-pixel circle around the root
+    /// joint: a drop on the boundary is inside, one just past it is not.
+    #[test]
+    fn root_hitbox_is_a_circle_around_the_anchor() {
+        let anchor = [10.0, -20.0];
+        assert!(in_root_hitbox([anchor[0] + ROOT_RADIUS, anchor[1]], anchor));
+        assert!(in_root_hitbox([anchor[0], anchor[1] + ROOT_RADIUS], anchor));
+        assert!(!in_root_hitbox([anchor[0] + ROOT_RADIUS * 1.01, anchor[1]], anchor));
+        assert!(!in_root_hitbox([anchor[0], anchor[1] - ROOT_RADIUS * 1.01], anchor));
     }
 }
