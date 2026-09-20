@@ -25,4 +25,15 @@
 
 - Bugs attacking root of tree, bugs climbing 
 
-- 
+## Concrete prompts
+
+- /plan Now we want tomatoes to grow. Each plant is made from 5 layers.
+The layers have the following spawn coordinates, relative to their local coordinate system.
+ - plant1 (308,615) # root of plant
+ - plant2 (306,496), (638,428), (304,392)
+ - plant3 (315,392), (326,315), (297,258), (320,203), (300,128)
+ - plant4 (339,364), (298,318), (356,258), (388,228), (334,203), (283,182)
+ - plant5 # top of plant, no tomatoes spawned at this layer
+When a layer is fully grown, it should start spawning tomatoes. For now we just want to ensure that the spawn points are correct.
+Use the sprite `assets/sprites/flower.png` to render the tomato.
+ 

@@ -90,11 +90,12 @@
 //! — a wounded bug takes its next hit only after a 0.2 s cooldown, so
 //! the mist wears it down one hit at a time — and a row of white pips
 //! above the bug counts the hits it can still take. The killing blow
-//! starts the two-phase death: over 0.3 seconds it flips upside down —
-//! its node's y scale sweeps from upright to fully inverted about the
-//! sprite center while its position, growth, and walk frame freeze — and
-//! then, over 0.5 seconds, the inverted sprite shrinks to nothing while
-//! its center sinks through the grass.
+//! starts the two-phase death: over 0.5 seconds the bug bounces up off
+//! the grass and flips upside down in the air — its node's y scale
+//! sweeps from upright to fully inverted about the sprite center while
+//! its position, growth, and walk frame freeze — landing on its back,
+//! and then, over 0.5 seconds, the inverted sprite evaporates, shrinking
+//! to nothing while its center sinks through the grass.
 //! The dead bug then waits out a random 5 to 10 second delay and pops
 //! back up at its spawn spot, fully healed, so the population dips and
 //! recovers with the spraying.
@@ -839,8 +840,9 @@ impl frost::Process for Demo {
 
         // Mist touching a bug wounds it: each live spray drop hits every
         // bug within its reach, but a wounded bug takes its next hit only
-        // after its hit cooldown, and five hits start the flip-then-sink
-        // death. The water can's drops never touch the bugs.
+        // after its hit cooldown, and five hits start the
+        // bounce-then-evaporate death. The water can's drops never touch
+        // the bugs.
         for p in &self.spray.particles {
             self.bugs.hit_at(p.pos);
         }

@@ -415,10 +415,11 @@ All load assets via `CARGO_MANIFEST_DIR`. Run with `cargo run --example <name>`
 |              | batches of three per plant; spray mist                             |
 |              | touching a bug wounds it - five hits, one per 0.2 s per bug, a      |
 |              | white pip above the bug per hit it can still take - and            |
-|              | the killing blow starts the two-phase death: over 0.3 s it flips    |
-|              | upside down (y scale to fully inverted, position/growth/facing/frame|
-|              | frozen), then over 0.5 s the inverted sprite shrinks to nothing     |
-|              | while its center sinks through the grass; after a random 5-10 s     |
+|              | the killing blow starts the two-phase death: over 0.5 s it bounces  |
+|              | up off the grass, flipping upside down in the air (y scale to fully|
+|              | inverted, position/growth/facing/frame frozen), landing on its back;|
+|              | then over 0.5 s the inverted sprite evaporates, shrinking to nothing|
+|              | while its center sinks through the grass; after a random 5-10 s    |
 |              | delay the bug pops back up at its spawn spot, fully healed          |
 
 `cursor.rs` is the most complete reference demo: `CAN_IMAGE [331,247]` scaled

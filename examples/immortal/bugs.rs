@@ -14,14 +14,15 @@
 //! [HIT_COOLDOWN] second, so the mist wears it down one hit at a time —
 //! and a row of pips above the bug counts the hits it can still take
 //! ([Bugs::health_pips]). The killing blow starts the two-phase death,
-//! driven by the per-bug death clock [Bug::dying]: over [FLIP_TIME] it
-//! flips upside down — its node's y scale sweeps from upright to fully
-//! inverted about the sprite center, position, growth, facing and walk
-//! frame frozen — and then, over [SINK_TIME], the inverted sprite shrinks
-//! to nothing while its center sinks through the grass. When the clock
-//! reaches [FLIP_TIME] plus [SINK_TIME] the bug waits out a random delay
-//! in [RESPAWN_MIN]…[RESPAWN_MAX] and pops back up at its original spawn
-//! spot, fully healed.
+//! driven by the per-bug death clock [Bug::dying]: over [BOUNCE_TIME] it
+//! bounces up off the grass on the parabolic arc of [bounce_lift] while
+//! its node's y scale sweeps from upright to fully inverted about the
+//! sprite center, position, growth, facing and walk frame frozen, so it
+//! lands on its back; and then, over [SINK_TIME], the inverted sprite
+//! evaporates, shrinking to nothing while its center sinks through the
+//! grass. When the clock reaches [BOUNCE_TIME] plus [SINK_TIME] the bug
+//! waits out a random delay in [RESPAWN_MIN]…[RESPAWN_MAX] and pops back
+//! up at its original spawn spot, fully healed.
 //!
 //! Bugs are spawned into a fixed-size pool: the scene carries one
 //! shape-less child per slot, and [Bugs::layout] drives only the spawned
@@ -59,10 +60,13 @@ const TINT: frost::Color = frost::Color {
     b: 0.2,
     a: 1.0,
 };
-/// How long a sprayed bug takes to flip upside down, in seconds.
-const FLIP_TIME: f32 = 0.3;
-/// How long the flip takes to shrink to nothing while sinking through the
-/// grass, in seconds.
+/// How long a sprayed bug's death bounce takes, in seconds: it pops up
+/// off the grass, flips upside down in the air, and lands on its back.
+const BOUNCE_TIME: f32 = 0.5;
+/// How high the bug's center rises at the bounce's peak, in px.
+const BOUNCE_HEIGHT: f32 = 50.0;
+/// How long the landed, inverted bug takes to evaporate — shrink to
+/// nothing while its center sinks through the grass — in seconds.
 const SINK_TIME: f32 = 0.5;
 /// How many hits from the spray's mist a bug takes before it dies: the
 /// pips the bug's health counter starts with.
@@ -113,10 +117,11 @@ struct Bug {
     /// Walk-frame rate in steps/s while moving.
     step_rate: f32,
     /// The death clock in seconds, once the killing hit landed: `None`
-    /// while alive, `Some(t)` while dying. Under [FLIP_TIME] the bug is
-    /// mid-flip (position frozen), from [FLIP_TIME] on it sinks through
-    /// the grass, and at [FLIP_TIME] + [SINK_TIME] it enters its respawn
-    /// delay.
+    /// while alive, `Some(t)` while dying. Under [BOUNCE_TIME] the bug is
+    /// mid-bounce — riding the [bounce_lift] arc off the grass, flipping
+    /// over in the air (position frozen); from [BOUNCE_TIME] on it has
+    /// landed on its back and evaporates, sinking through the grass; at
+    /// [BOUNCE_TIME] + [SINK_TIME] it enters its respawn delay.
     dying: Option<f32>,
     /// Hits from the mist still standing between this bug and death;
     /// starts at [HITS_TO_KILL], and each hit takes it down by one. The
@@ -186,9 +191,10 @@ impl Bugs {
     /// [BUGS_PER_PLANT] bugs at points inside the hull of all the roots.
     /// Batches are counted per plant rather than by population, so a
     /// spray-killed bug never triggers a replacement batch. Dying bugs
-    /// tick their [Bug::dying] clock — holding the spot while they flip,
-    /// sinking through the grass once the flip is done — and enter their
-    /// respawn delay when the clock reaches [FLIP_TIME] + [SINK_TIME];
+    /// tick their [Bug::dying] clock — bouncing up off the grass and
+    /// flipping over in the air while they bounce, evaporating through
+    /// the grass once they have landed on their back — and enter their
+    /// respawn delay when the clock reaches [BOUNCE_TIME] + [SINK_TIME];
     /// bugs in the delay count it down and, when it ends, pop back up at
     /// their spawn spot as fresh, fully healed bugs. Each bug's
     /// [HIT_COOLDOWN] runs down here, so a wounded bug takes its next
@@ -265,21 +271,23 @@ impl Bugs {
                 continue;
             }
 
-            // Sprayed: the death clock runs. While the flip is in
+            // Sprayed: the death clock runs. While the bounce is in
             // flight the bug holds its spot — position, growth,
-            // facing and walk frame all frozen; once fully inverted,
+            // facing and walk frame all frozen; it rides the
+            // [bounce_lift] arc up off the grass and flips over in the
+            // air (both in [Bugs::layout]), then, landed on its back,
             // the center sinks through the grass while [Bugs::layout]
             // shrinks the sprite to nothing; when the clock runs out,
             // the bug enters its respawn delay.
             if let Some(dead) = bug.dying {
                 let t = dead + dt;
-                if t >= FLIP_TIME + SINK_TIME {
+                if t >= BOUNCE_TIME + SINK_TIME {
                     bug.dying = None;
                     bug.respawn = Some(self.rng.in_range(RESPAWN_MIN, RESPAWN_MAX));
                     continue;
                 }
                 bug.dying = Some(t);
-                if t >= FLIP_TIME {
+                if t >= BOUNCE_TIME {
                     bug.pos[1] -= (self.ground / SINK_TIME) * dt;
                 }
                 continue;
@@ -380,16 +388,18 @@ impl Bugs {
 
     /// Write the spawned prefix of `node`'s children.
     ///
-    /// Each slot's transform is the bug position and its modulate the
-    /// tint. Its scale is the uniform sprite scale with the x component
-    /// carrying the facing flip and the y component the 0→1 spawn growth —
-    /// or, for a dying bug, the death animation: the y component sweeps
-    /// to its negative over [FLIP_TIME], then both components shrink to
-    /// zero over [SINK_TIME]. Its shape swaps when the walk frame
-    /// changed, or when the slot still holds another frame's sprite. A
-    /// bug in its respawn delay is gone from the grass: its slot is
-    /// cleared and its last pose left in place. Slots past the spawned
-    /// prefix are cleared, so an unspawned slot never draws.
+    /// Each slot's transform is the bug position, plus the [bounce_lift]
+    /// arc while the bug is mid-bounce, and its modulate the tint. Its
+    /// scale is the uniform sprite scale with the x component carrying
+    /// the facing flip and the y component the 0→1 spawn growth — or, for
+    /// a dying bug, the death animation: over [BOUNCE_TIME] the y
+    /// component sweeps to its negative, so the airborne bug lands on
+    /// its back, and then both components shrink to zero over [SINK_TIME]
+    /// as it evaporates. Its shape swaps when the walk frame changed, or
+    /// when the slot still holds another frame's sprite. A bug in its
+    /// respawn delay is gone from the grass: its slot is cleared and its
+    /// last pose left in place. Slots past the spawned prefix are
+    /// cleared, so an unspawned slot never draws.
     pub fn layout(&mut self, node: &mut SceneNode, frames: [&frost::Shape; 3]) {
         for (bug, child) in self.bugs.iter_mut().zip(&mut node.children) {
             if bug.respawn.is_some() {
@@ -398,24 +408,34 @@ impl Bugs {
                 continue;
             }
             let g = bug.grow / GROW_TIME;
-            let (sx, sy) = match bug.dying {
-                Some(t) if t < FLIP_TIME => {
-                    // Flip phase: the y scale sweeps from upright to
-                    // fully inverted about the sprite center.
+            let (sx, sy, lift) = match bug.dying {
+                Some(t) if t < BOUNCE_TIME => {
+                    // Bounce phase: the center lifts off the grass on a
+                    // parabolic arc — peak at the halfway point, back on
+                    // the ground at the end — while the y scale sweeps
+                    // from upright to fully inverted, so the bug lands
+                    // on its back.
+                    let u = t / BOUNCE_TIME;
                     (
                         bug.facing * self.scale,
-                        self.scale * g * (1.0 - 2.0 * t / FLIP_TIME),
+                        self.scale * g * (1.0 - 2.0 * u),
+                        4.0 * BOUNCE_HEIGHT * u * (1.0 - u),
                     )
                 }
                 Some(t) => {
-                    // Sink phase: the inverted sprite shrinks to nothing
-                    // while [Bugs::step] sinks it through the grass.
-                    let s = 1.0 - (t - FLIP_TIME) / SINK_TIME;
-                    (bug.facing * self.scale * g * s, -self.scale * g * s)
+                    // Evaporate phase: the inverted sprite shrinks to
+                    // nothing while [Bugs::step] sinks it through the
+                    // grass.
+                    let s = 1.0 - (t - BOUNCE_TIME) / SINK_TIME;
+                    (
+                        bug.facing * self.scale * g * s,
+                        -self.scale * g * s,
+                        0.0,
+                    )
                 }
-                None => (bug.facing * self.scale, self.scale * g),
+                None => (bug.facing * self.scale, self.scale * g, 0.0),
             };
-            child.transform = frost::Transform::translate(bug.pos[0], bug.pos[1]);
+            child.transform = frost::Transform::translate(bug.pos[0], bug.pos[1] + lift);
             child.scale = [sx, sy];
             child.modulate = TINT;
             let frame = frames[bug.frame as usize];
@@ -428,6 +448,18 @@ impl Bugs {
             child.shape = None;
         }
     }
+}
+
+/// The death-bounce lift: how far above the death spot the bug's center
+/// rides at death-clock `t`, in px.
+///
+/// A parabolic arc that leaves the grass at `t == 0`, peaks at
+/// [BOUNCE_HEIGHT] halfway through [BOUNCE_TIME], and lands back on the
+/// grass at `t == BOUNCE_TIME`. The y scale sweeps upright→inverted over
+/// the same span, so the bug comes down on its back.
+fn bounce_lift(t: f32) -> f32 {
+    let u = (t / BOUNCE_TIME).clamp(0.0, 1.0);
+    4.0 * BOUNCE_HEIGHT * u * (1.0 - u)
 }
 
 /// Whether `shape` already holds `frame`'s sprite pixels.
@@ -712,15 +744,16 @@ mod tests {
     /// A bug the mist keeps touching takes [HITS_TO_KILL] hits before it
     /// dies — no matter how many drops touch it in a frame — and its
     /// death plays out in two phases: its position, growth, facing and
-    /// walk frame freeze at the killing blow; the laid-out y scale sweeps
-    /// from upright to fully inverted over [FLIP_TIME] while it still
-    /// sits on the grass; the center then sinks through the grass over
-    /// [SINK_TIME] while the whole scale shrinks to zero. The bug then
-    /// waits out a random delay in [RESPAWN_MIN]…[RESPAWN_MAX] — its slot
-    /// cleared meanwhile — and pops back up at its spawn spot, fully
-    /// healed.
+    /// walk frame freeze at the killing blow; over [BOUNCE_TIME] it
+    /// bounces up off the grass — the laid-out y scale sweeping from
+    /// upright to fully inverted in the air, so it lands on its back at
+    /// full height — and then, over [SINK_TIME], it evaporates: the
+    /// center sinks through the grass while the whole scale shrinks to
+    /// zero. The bug then waits out a random delay in [RESPAWN_MIN]…
+    /// [RESPAWN_MAX] — its slot cleared meanwhile — and pops back up at
+    /// its spawn spot, fully healed.
     #[test]
-    fn sprayed_bug_takes_hits_then_flips_sinks_and_respawns() {
+    fn sprayed_bug_takes_hits_then_bounces_evaporates_and_respawns() {
         let frame = frost::Shape::Sprite {
             data: std::sync::Arc::new([0u8; 1]),
             width: 10,
@@ -815,6 +848,8 @@ mod tests {
 
         let mut saw_upright = false;
         let mut min_y_scale = f32::MAX;
+        let mut max_abs_y_scale: f32 = 0.0;
+        let mut max_lift: f32 = 0.0;
         let mut first_y = f32::MIN;
         let mut last_y = f32::MAX;
         let mut last_abs_scale = f32::MAX;
@@ -829,18 +864,29 @@ mod tests {
                     assert_eq!(b.frame, frame0, "bug {i} walked while dying");
                     assert_eq!(b.facing, facing0, "bug {i} turned while dying");
                     assert_eq!(b.grow, grow0, "bug {i} kept growing while dying");
-                    if b.dying.unwrap() < FLIP_TIME {
+                    if b.dying.unwrap() < BOUNCE_TIME {
                         assert_eq!(
                             b.pos[1],
                             x0[1],
-                            "bug {i} sank during the flip"
+                            "bug {i} sank during the bounce"
                         );
+                        // Mid-bounce, the laid-out center rides the arc
+                        // strictly above the death spot.
+                        let laid_out_y = node.children[i]
+                            .transform
+                            .apply([0.0, 0.0])[1];
+                        assert!(
+                            laid_out_y > b.pos[1],
+                            "bug {i}'s bounce never left the grass"
+                        );
+                        max_lift = max_lift.max(laid_out_y - b.pos[1]);
                     }
                     let s = node.children[i].scale[1];
                     if s > 0.0 {
                         saw_upright = true;
                     }
                     min_y_scale = min_y_scale.min(s);
+                    max_abs_y_scale = max_abs_y_scale.max(s.abs());
                     first_y = first_y.max(b.pos[1]);
                     last_y = last_y.min(b.pos[1]);
                     last_abs_scale = last_abs_scale.min(s.abs());
@@ -873,15 +919,24 @@ mod tests {
             bugs.bugs.iter().all(|b| b.dying.is_none()),
             "a dying bug survived the full death"
         );
-        // The flip really inverted the sprite: it started upright and its
-        // y scale swept to the fully-inverted value.
-        assert!(saw_upright, "the flip never showed the upright phase");
+        // The bounce really left the grass and the flip really inverted
+        // the sprite: it started upright, rode the arc up to its peak,
+        // and came down fully inverted at full height, on its back.
+        assert!(saw_upright, "the death never showed the upright phase");
+        assert!(
+            (max_lift - BOUNCE_HEIGHT).abs() <= 1e-3,
+            "the bounce only rose to {max_lift} px of its {BOUNCE_HEIGHT} px arc"
+        );
         assert!(
             min_y_scale <= -0.9 * scale,
-            "the flip never inverted the sprite (min y scale {min_y_scale})"
+            "the bounce never inverted the sprite (min y scale {min_y_scale})"
         );
-        // The sink really carried the bugs through the grass: their y
-        // dropped at least halfway to the ground line, and the sprite
+        assert!(
+            max_abs_y_scale >= 0.99 * scale,
+            "the bug never came down at full height (max |y scale| {max_abs_y_scale})"
+        );
+        // The evaporate really carried the bugs through the grass: their
+        // y dropped at least halfway to the ground line, and the sprite
         // shrank most of the way to nothing.
         assert!(
             last_y < first_y - 0.5 * ground,
@@ -939,6 +994,23 @@ mod tests {
             came_back.iter().all(|c| *c),
             "a bug never came back from its respawn delay"
         );
+    }
+
+    /// The death-bounce arc [bounce_lift] leaves the grass at the ends,
+    /// peaks at [BOUNCE_HEIGHT] halfway through [BOUNCE_TIME], and is
+    /// symmetric about that halfway point.
+    #[test]
+    fn bounce_lift_arcs_off_the_grass_and_back() {
+        assert_eq!(bounce_lift(0.0), 0.0);
+        assert_eq!(bounce_lift(BOUNCE_TIME), 0.0);
+        assert_eq!(bounce_lift(BOUNCE_TIME / 2.0), BOUNCE_HEIGHT);
+        for u in [0.1, 0.25, 0.4, 0.6, 0.9] {
+            let t = BOUNCE_TIME * u;
+            assert!(
+                (bounce_lift(t) - bounce_lift(BOUNCE_TIME - t)).abs() <= 1e-4,
+                "the arc is not symmetric about its peak at t={t}"
+            );
+        }
     }
 
     /// A bug the mist kills while it is still growing out of the grass
