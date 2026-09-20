@@ -79,22 +79,22 @@
 //! Every plant keeps a water reserve, full at launch, and the plants'
 //! growth runs at `1 / GROW_SLOWDOWN` of real time's pace — the slices,
 //! the flowers, and the tomatoes alike: while a plant is growing —
-//! started, not yet fully grown — its growth clock is stepped by
-//! `dt / GROW_SLOWDOWN`, and its reserve drains over `DRAIN_TIME` of that
-//! slowed clock — `GROW_SLOWDOWN * DRAIN_TIME` real seconds — and growth
-//! proceeds only while the reserve holds; a plant whose reserve runs dry
-//! stops growing, its growth clock freezing, until the player pours water
-//! on its root. `DRAIN_TIME` is chosen so the first plant, fully watered
-//! at launch, runs dry just before its base slice is fully grown — the
-//! base grows over 3 growth-clock seconds, the shortest of the five — so
-//! the bench pauses before its flowers can start developing. A drop that
-//! passes through a growing plant's rough hitbox — a `ROOT_RADIUS`-pixel
-//! circle around the root joint — restores the reserve by `DROP_WATER`; a
-//! full second of pouring, if every drop lands, is one full reserve,
-//! whatever pace the growth runs at. A blue fill on a dark background,
-//! `BAR_DX` wide, floats `BAR_LIFT` pixels above the root joint of every
-//! plant that has started growing and is not fully grown yet, showing its
-//! reserve.
+//! started, not yet complete, its slices or its blooms still growing —
+//! its growth clock is stepped by `dt / GROW_SLOWDOWN`, and its reserve
+//! drains over `DRAIN_TIME` of that slowed clock —
+//! `GROW_SLOWDOWN * DRAIN_TIME` real seconds — and growth proceeds only
+//! while the reserve holds; a plant whose reserve runs dry stops growing,
+//! its growth clock freezing, until the player pours water on its root.
+//! `DRAIN_TIME` is chosen so the first plant, fully watered at launch,
+//! runs dry just before its base slice is fully grown — the base grows
+//! over 3 growth-clock seconds, the shortest of the five — so the bench
+//! pauses before its flowers can start developing. A drop that passes
+//! through a growing plant's rough hitbox — a `ROOT_RADIUS`-pixel circle
+//! around the root joint — restores the reserve by `DROP_WATER`; a full
+//! second of pouring, if every drop lands, is one full reserve, whatever
+//! pace the growth runs at. A blue fill on a dark background, `BAR_DX`
+//! wide, floats `BAR_LIFT` pixels above the root joint of every plant
+//! that has started growing and is not complete yet, showing its reserve.
 //!
 //! A swarm of thirty vipers buzzes around the flower bench — the row of
 //! plants — concurrently with everything else, through the [`vipers`]
@@ -305,7 +305,7 @@ const GROW_SLOWDOWN: f32 = 3.0;
 
 /// The time a plant's water reserve takes to drain from full (1.0) to dry
 /// (0.0), in growth-clock seconds, while the plant is growing: the
-/// process drains a started plant that is not fully grown by
+/// process drains a started plant that is not yet complete by
 /// `dt / (DRAIN_TIME * GROW_SLOWDOWN)` per frame — the drain runs at the
 /// growth's slowed pace — and the span is chosen so the first plant —
 /// fully watered at launch — runs dry just before its base slice is fully
@@ -710,8 +710,9 @@ struct Demo {
     /// tool system.
     plants: [plant::Plant; PLANT_POS.len()],
     /// The plants' water reserves, in growth order, each from 1.0 (well
-    /// watered) to 0.0 (dry): the process drains a growing plant by
-    /// `dt / (DRAIN_TIME * GROW_SLOWDOWN)` per frame — at the growth's
+    /// watered) to 0.0 (dry): the process drains a started plant that is
+    /// not yet complete by `dt / (DRAIN_TIME * GROW_SLOWDOWN)` per frame —
+    /// at the growth's
     /// slowed pace — and restores it by `DROP_WATER` per drop that falls
     /// into its root hitbox, and a plant at 0.0 stops growing, awaiting
     /// water.
@@ -801,10 +802,12 @@ impl frost::Process for Demo {
         //
         // Growth proceeds only while the plant is well watered, and at
         // `1 / GROW_SLOWDOWN` of real time's pace: a started plant that
-        // is not fully grown drains its water reserve by
+        // is not yet complete — its slices or its blooms still growing —
+        // drains its water reserve by
         // `dt / (DRAIN_TIME * GROW_SLOWDOWN)` every frame — the drain
         // runs with the growth — and steps its clock by `dt /
-        // GROW_SLOWDOWN`; a plant whose reserve runs dry stops growing —
+        // GROW_SLOWDOWN`, so fully grown slices keep opening blooms while
+        // the water holds; a plant whose reserve runs dry stops growing —
         // its growth clock freezes — awaiting the player to pour water on
         // its root; the falling drops are matched against the roots'
         // hitboxes below, once the particles have been stepped.
@@ -816,7 +819,7 @@ impl frost::Process for Demo {
         for (i, anchor) in anchors.iter().enumerate() {
             if started[i] {
                 active_plants += 1;
-                if !self.plants[i].fully_grown() {
+                if !self.plants[i].complete() {
                     self.waters[i] =
                         (self.waters[i] - dt / (DRAIN_TIME * GROW_SLOWDOWN)).max(0.0);
                     // The growth clock runs slow, and holds while the
@@ -1054,15 +1057,16 @@ impl frost::Process for Demo {
         self.water.update(dt, [0.0, -GRAVITY]);
         self.spray.update(dt, [0.0, -SPRAY_GRAVITY]);
 
-        // Water the roots: each drop that passes through a growing plant's
+        // Water the roots: each drop that passes through a started plant's
         // rough hitbox — a `ROOT_RADIUS`-pixel circle around the root
-        // joint — restores the plant's water reserve by `DROP_WATER`,
-        // capped at full; the drops keep falling on through, so one stream
-        // can top up several roots at once.
+        // joint — while the plant is not yet complete restores the plant's
+        // water reserve by `DROP_WATER`, capped at full; the drops keep
+        // falling on through, so one stream can top up several roots at
+        // once.
         for p in &self.water.particles {
             for (i, anchor) in anchors.iter().enumerate() {
                 if started[i]
-                    && !self.plants[i].fully_grown()
+                    && !self.plants[i].complete()
                     && self.waters[i] < 1.0
                     && in_root_hitbox(p.pos, *anchor)
                 {
@@ -1135,13 +1139,14 @@ impl frost::Process for Demo {
 
         // Draw the water bars: a dark background with a blue fill showing
         // the reserve, `BAR_LIFT` pixels above the root joint of every
-        // plant that has started growing and is not fully grown yet —
-        // over the root, the spot the player pours on, because at the fit
-        // scale a fully grown plant's top reaches the window's top edge
-        // and leaves no room above the plant itself. The fill grows from
-        // the bar's left edge as the reserve refills.
+        // plant that has started growing and is not complete yet — its
+        // slices or its blooms still growing — over the root, the spot the
+        // player pours on, because at the fit scale a fully grown plant's
+        // top reaches the window's top edge and leaves no room above the
+        // plant itself. The fill grows from the bar's left edge as the
+        // reserve refills.
         for (i, anchor) in anchors.iter().enumerate() {
-            if started[i] && !self.plants[i].fully_grown() {
+            if started[i] && !self.plants[i].complete() {
                 let level = self.waters[i];
                 ctx.rectangle(
                     anchor[0],

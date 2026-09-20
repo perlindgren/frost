@@ -13,7 +13,10 @@
 //! top of the one below it. From 15 seconds on the plant is at full size and
 //! keeps swaying: the base rock turns the whole plant around its lower
 //! joint, and the two joints above it bend a little more each, so the tip
-//! moves the most.
+//! moves the most. The clock keeps ticking past full size — the blooms
+//! that open off the finished slices keep growing, each flower and its
+//! tomato riding their slice's clock, the whole plant complete at
+//! `BLOOM_TIME`.
 //!
 //! The joints are given in each image's own pixel space: `(0, 0)` is the
 //! image's upper-left corner, `x` grows to the right and `y` grows down. A
@@ -112,6 +115,14 @@ pub const FLOWER_GROW_TIME: f32 = 10.0;
 /// it starts the moment its flower is fully grown and reaches full size
 /// [TOMATO_GROW_TIME] seconds later, growing out of the same point.
 pub const TOMATO_GROW_TIME: f32 = 10.0;
+
+/// The time at which the plant's last bloom reaches full size: the highest
+/// flower-bearing slice (the high middle — [FLOWER_SPAWNS][3]) finishes its
+/// slice at `GROW_TIMES[3]`, its flower reaches full size
+/// `FLOWER_GROW_TIME` seconds later, and its tomato reaches full size
+/// `TOMATO_GROW_TIME` seconds after that; from then on the plant is
+/// complete.
+pub const BLOOM_TIME: f32 = GROW_TIMES[3] + FLOWER_GROW_TIME + TOMATO_GROW_TIME;
 
 /// The ripe tomato's scale relative to the sprite's natural size: the fruit
 /// grows to one third of its natural size, so it stays small next to the
@@ -318,9 +329,19 @@ impl Plant {
     }
 
     /// Whether the plant is fully grown: the last slice has reached its
-    /// full length, and from here on the plant only keeps swaying.
+    /// full length; from here on every slice holds at full length while the
+    /// plant keeps swaying and its blooms keep growing, until it is
+    /// complete at `BLOOM_TIME`.
     pub fn fully_grown(&self) -> bool {
         self.t >= FULL_GROW_TIME
+    }
+
+    /// Whether the plant is complete: every slice is fully grown and every
+    /// bloom — each flower and its tomato — has reached full size, from
+    /// `BLOOM_TIME` on; before that, fully grown slices keep opening
+    /// blooms as the clock advances.
+    pub fn complete(&self) -> bool {
+        self.t >= BLOOM_TIME
     }
 
     /// The layers the plant has fully grown: how many of [GROW_TIMES] the
@@ -596,6 +617,20 @@ mod tests {
         }
         assert_eq!(plant_at(FULL_GROW_TIME).grown_layers(), GROW_TIMES.len());
         assert_eq!(plant_at(FULL_GROW_TIME + 100.0).grown_layers(), GROW_TIMES.len());
+    }
+
+    /// [Plant::complete] is false while the plant is still growing — the
+    /// slices, and the blooms that open off the finished slices — and true
+    /// from the last bloom's full growth on: the highest flower-bearing
+    /// slice's tomato, at [BLOOM_TIME]. Being fully grown is not being
+    /// complete: the blooms keep growing after the last slice is done.
+    #[test]
+    fn complete_tracks_the_last_bloom() {
+        assert!(!plant_at(0.0).complete());
+        assert!(!plant_at(FULL_GROW_TIME).complete());
+        assert!(!plant_at(BLOOM_TIME - 0.001).complete());
+        assert!(plant_at(BLOOM_TIME).complete());
+        assert!(plant_at(BLOOM_TIME + 100.0).complete());
     }
 
     /// [Plant::layer_midpoints] walks the static, fully grown chain — the
