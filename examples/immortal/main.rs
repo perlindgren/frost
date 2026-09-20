@@ -74,13 +74,21 @@
 //! three new bugs every time a plant starts growing, so the population
 //! climbs 3, 6, …, 18 over the first 75 seconds — through the [`bugs`]
 //! module: each bug pops up out of the ground at a random point inside
-//! the convex hull of the six plant roots, standing up over 2 seconds
+//! the convex hull of the six plant roots, standing up over 3 seconds
 //! via its node's y scale, then swarm-walks — a straight line with a
 //! sinusoidal perpendicular wobble — to a park spot around the plant it
 //! was born for, where it sways in place. Each bug cycles the three
 //! frames `assets/sprites/Bug1a.png`, `Bug2a.png`, and `Bug3a.png` while
 //! walking, flipped about its center while it moves left, tinted dark
 //! red by the node's `modulate`.
+//!
+//! A bug the spray can's mist touches dies in two phases: over 0.3
+//! seconds it flips upside down — its node's y scale sweeps from upright
+//! to fully inverted about the sprite center while its position, growth,
+//! and walk frame freeze — and then, over 0.5 seconds, the inverted
+//! sprite shrinks to nothing while its center sinks through the grass.
+//! Killed bugs never respawn, so a later plant's batch can reuse their
+//! slots, and the population only falls when the spray kills a bug.
 //!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
@@ -792,6 +800,13 @@ impl frost::Process for Demo {
         self.water.update(dt, [0.0, -GRAVITY]);
         self.spray.update(dt, [0.0, -SPRAY_GRAVITY]);
 
+        // Mist touching a bug kills it: every live spray drop marks each
+        // bug within its reach, starting the bug's flip-then-sink death.
+        // The water can's drops never touch the bugs.
+        for p in &self.spray.particles {
+            self.bugs.hit_at(p.pos);
+        }
+
         // Draw each particle as a circle whose alpha is its remaining life
         // fraction, so the streams fade as they fall.
         for p in &self.water.particles {
@@ -1172,9 +1187,10 @@ fn main() {
             spray2,
             viper1,
             viper2,
-            // Three bugs per plant: the swarm's population is capped at
-            // `BUG_N`, the scene's slot count.
-            bugs: bugs::Bugs::new([&bug1, &bug2, &bug3], BUG_N),
+            // Three bugs per plant, each plant's batch exactly once: the
+            // population climbs 3, 6, …, 18 over the first 75 seconds and
+            // only falls when the spray kills a bug.
+            bugs: bugs::Bugs::new([&bug1, &bug2, &bug3]),
             bug1,
             bug2,
             bug3,

@@ -9,11 +9,28 @@
 //! animated over three walk frames and is flipped about its center when it
 //! is clearly moving left; the sprite tint comes from the node's `modulate`.
 //!
+//! A bug takes [HITS_TO_KILL] hits from the spray can's green mist before
+//! it dies — a frame's worth of overlapping drops is still just one hit
+//! on the same bug — so the mist wears it down over several frames. The
+//! killing blow starts the two-phase death, driven by the per-bug death
+//! clock [Bug::dying]: over [FLIP_TIME] it flips upside down — its node's
+//! y scale sweeps from upright to fully inverted about the sprite center,
+//! position, growth, facing and walk frame frozen — and then, over
+//! [SINK_TIME], the inverted sprite shrinks to nothing while its center
+//! sinks through the grass. When the clock reaches [FLIP_TIME] plus
+//! [SINK_TIME] the bug waits out a random delay in
+//! [RESPAWN_MIN]…[RESPAWN_MAX] and pops back up at its original spawn
+//! spot, fully healed.
+//!
 //! Bugs are spawned into a fixed-size pool: the scene carries one
 //! shape-less child per slot, and [Bugs::layout] drives only the spawned
-//! prefix, so unspawned slots never draw. Like the vipers module, no random
+//! prefix, so unspawned slots never draw. Each plant receives its batch
+//! exactly once, in plant order, regardless of how many bugs survive, so
+//! the population climbs 3, 6, …, 18 over the first 75 seconds; a killed
+//! bug is gone from the grass for a few seconds, so the population dips
+//! and recovers with the spraying. Like the vipers module, no random
 //! crate is needed — a small splitmix64 [Rng] seeded from the clock
-//! decides spawn points, speeds and wobbles.
+//! decides spawn points, speeds, wobbles and respawn delays.
 
 use frost::SceneNode;
 
@@ -41,6 +58,18 @@ const TINT: frost::Color = frost::Color {
     b: 0.2,
     a: 1.0,
 };
+/// How long a sprayed bug takes to flip upside down, in seconds.
+const FLIP_TIME: f32 = 0.3;
+/// How long the flip takes to shrink to nothing while sinking through the
+/// grass, in seconds.
+const SINK_TIME: f32 = 0.5;
+/// How many hits from the spray's mist a bug takes before it dies.
+const HITS_TO_KILL: u8 = 5;
+/// The dead bug's respawn window, in seconds: it pops back up at its
+/// spawn spot after a random delay in [RESPAWN_MIN, RESPAWN_MAX].
+const RESPAWN_MIN: f32 = 5.0;
+/// Upper end of the respawn window (see [RESPAWN_MIN]).
+const RESPAWN_MAX: f32 = 10.0;
 
 /// One bug in the swarm.
 struct Bug {
@@ -60,8 +89,8 @@ struct Bug {
     walk: f32,
     /// The frame index [Bug::walk] currently lands on.
     frame: u8,
-    /// The frame last written into the node; the shape is swapped only when
-    /// the two differ.
+    /// The frame last written into the node; the shape is swapped when the
+    /// two differ, or when the slot still holds another frame's sprite.
     shown: u8,
     /// Seconds since the spawn; the y-scale grows until [GROW_TIME].
     grow: f32,
@@ -75,15 +104,32 @@ struct Bug {
     wob_phase: f32,
     /// Walk-frame rate in steps/s while moving.
     step_rate: f32,
+    /// The death clock in seconds, once the killing hit landed: `None`
+    /// while alive, `Some(t)` while dying. Under [FLIP_TIME] the bug is
+    /// mid-flip (position frozen), from [FLIP_TIME] on it sinks through
+    /// the grass, and at [FLIP_TIME] + [SINK_TIME] it enters its respawn
+    /// delay.
+    dying: Option<f32>,
+    /// Hits from the mist still standing between this bug and death;
+    /// starts at [HITS_TO_KILL], and each hit takes it down by one.
+    hits: u8,
+    /// True once this frame's mist has already hit the bug: it takes at
+    /// most one hit per frame, no matter how many drops touch it at once.
+    hit_this_frame: bool,
+    /// Seconds left before the dead bug pops back up; `Some` while the
+    /// bug is gone from the grass.
+    respawn: Option<f32>,
+    /// The spot the bug popped up from; where it returns after death.
+    spawn: [f32; 2],
 }
 
 /// The whole swarm: the spawned prefix of the scene's bug slot pool.
 pub struct Bugs {
     /// The spawned bugs, in spawn order.
     bugs: Vec<Bug>,
-    /// Total slots in the scene pool; the population cap.
-    max: usize,
-    /// How many plants have received their batch of bugs.
+    /// How many plants have received their batch of bugs; the population
+    /// cap follows from it (BUGS_PER_PLANT times the plant count, the
+    /// scene's slot count).
     plants_done: usize,
     /// Swarm clock in seconds (wobble phase source).
     t: f32,
@@ -98,9 +144,13 @@ pub struct Bugs {
 impl Bugs {
     /// Build an empty swarm over the three walk frames.
     ///
-    /// `max` is the number of scene slots (BUGS_PER_PLANT times the plant
-    /// count); the population only ever grows toward it.
-    pub fn new(frames: [&frost::Shape; 3], max: usize) -> Self {
+    /// The swarm is batch-gated by the plants, not by a population cap:
+    /// each plant receives its [BUGS_PER_PLANT] bugs exactly once (so the
+    /// scene's slot pool — BUGS_PER_PLANT times the plant count — is never
+    /// oversubscribed). A killed bug is not replaced by its plant's
+    /// batch: it pops back up at its own spawn spot after its respawn
+    /// delay.
+    pub fn new(frames: [&frost::Shape; 3]) -> Self {
         let (mut w, mut h) = (0.0f32, 0.0f32);
         for frame in frames {
             let [fw, fh] = sprite_size(frame);
@@ -110,7 +160,6 @@ impl Bugs {
         let scale = BUG_SIZE / w;
         Self {
             bugs: Vec::new(),
-            max,
             plants_done: 0,
             t: 0.0,
             scale,
@@ -125,14 +174,22 @@ impl Bugs {
     /// order) and `active` is how many of those plants have started
     /// growing; each newly active plant receives its batch of
     /// [BUGS_PER_PLANT] bugs at points inside the hull of all the roots.
+    /// Batches are counted per plant rather than by population, so a
+    /// spray-killed bug never triggers a replacement batch. Dying bugs
+    /// tick their [Bug::dying] clock — holding the spot while they flip,
+    /// sinking through the grass once the flip is done — and enter their
+    /// respawn delay when the clock reaches [FLIP_TIME] + [SINK_TIME];
+    /// bugs in the delay count it down and, when it ends, pop back up at
+    /// their spawn spot as fresh, fully healed bugs. Each bug's
+    /// [Bug::hit_this_frame] flag resets here, so the frame's mist pass
+    /// can land at most one new hit on any one bug.
     pub fn step(&mut self, dt: f32, anchors: &[[f32; 2]], active: usize) {
         if dt < 0.0 {
             return;
         }
         self.t += dt;
 
-        let want = (BUGS_PER_PLANT * active.min(anchors.len())).min(self.max);
-        while self.bugs.len() < want {
+        while self.plants_done < active.min(anchors.len()) {
             let home = self.plants_done;
             self.plants_done += 1;
             let hull = convex_hull(anchors);
@@ -144,6 +201,7 @@ impl Bugs {
                 ];
                 let bug = Bug {
                     pos,
+                    spawn: pos,
                     vel: [0.0, 0.0],
                     facing: 1.0,
                     placed: false,
@@ -158,12 +216,61 @@ impl Bugs {
                     wob_freq: self.rng.in_range(1.5, 3.5),
                     wob_phase: self.rng.next_f32() * 2.0 * std::f32::consts::PI,
                     step_rate: self.rng.in_range(6.0, 10.0),
+                    dying: None,
+                    hits: HITS_TO_KILL,
+                    hit_this_frame: false,
+                    respawn: None,
                 };
                 self.bugs.push(bug);
             }
         }
 
         for bug in &mut self.bugs {
+            // One frame of mist is one hit: clear the flag, so this
+            // frame's hit pass can land at most one more hit.
+            bug.hit_this_frame = false;
+
+            // A dead bug sits out for its random respawn delay; when it
+            // ends, the bug pops back up at its spawn spot as a fresh
+            // bug — same speed, park spot and first steps as the first
+            // time.
+            if let Some(r) = bug.respawn {
+                if r <= dt {
+                    bug.respawn = None;
+                    bug.pos = bug.spawn;
+                    bug.grow = 0.0;
+                    bug.vel = [0.0, 0.0];
+                    bug.facing = 1.0;
+                    bug.placed = false;
+                    bug.walk = 0.0;
+                    bug.frame = 0;
+                    bug.shown = u8::MAX;
+                    bug.hits = HITS_TO_KILL;
+                } else {
+                    bug.respawn = Some(r - dt);
+                }
+                continue;
+            }
+
+            // Sprayed: the death clock runs. While the flip is in
+            // flight the bug holds its spot — position, growth,
+            // facing and walk frame all frozen; once fully inverted,
+            // the center sinks through the grass while [Bugs::layout]
+            // shrinks the sprite to nothing; when the clock runs out,
+            // the bug enters its respawn delay.
+            if let Some(dead) = bug.dying {
+                let t = dead + dt;
+                if t >= FLIP_TIME + SINK_TIME {
+                    bug.dying = None;
+                    bug.respawn = Some(self.rng.in_range(RESPAWN_MIN, RESPAWN_MAX));
+                    continue;
+                }
+                bug.dying = Some(t);
+                if t >= FLIP_TIME {
+                    bug.pos[1] -= (self.ground / SINK_TIME) * dt;
+                }
+                continue;
+            }
             bug.grow = (bug.grow + dt).min(GROW_TIME);
             if bug.grow < GROW_TIME {
                 // Still growing out of the grass: hold the spawn spot.
@@ -214,24 +321,97 @@ impl Bugs {
         }
     }
 
+    /// Land one mist hit at `p`: every live bug within half the rendered
+    /// bug width of `p` takes one hit — its [Bug::hits] drops by one, and
+    /// the hit starts its [Bug::dying] clock when that takes it to zero.
+    /// Dying and respawning bugs take no more hits, and a bug takes at
+    /// most one hit per frame ([Bug::hit_this_frame]) even when several
+    /// drops touch it at once. Returns the number of bugs hit.
+    pub fn hit_at(&mut self, p: [f32; 2]) -> usize {
+        let r2 = (BUG_SIZE / 2.0) * (BUG_SIZE / 2.0);
+        let mut hits = 0;
+        for bug in &mut self.bugs {
+            if bug.dying.is_some() || bug.respawn.is_some() || bug.hit_this_frame {
+                continue;
+            }
+            let dx = p[0] - bug.pos[0];
+            let dy = p[1] - bug.pos[1];
+            if dx * dx + dy * dy <= r2 {
+                bug.hit_this_frame = true;
+                bug.hits -= 1;
+                if bug.hits == 0 {
+                    bug.dying = Some(0.0);
+                }
+                hits += 1;
+            }
+        }
+        hits
+    }
+
+
     /// Write the spawned prefix of `node`'s children.
     ///
-    /// Each slot's transform is the bug position, its scale is the uniform
-    /// sprite scale with the x component carrying the facing flip and the
-    /// y component the 0→1 spawn growth, its modulate is the tint, and its
-    /// shape swaps only when the walk frame changed. Unspawned slots are
-    /// left untouched (shape-less, so they draw nothing).
+    /// Each slot's transform is the bug position and its modulate the
+    /// tint. Its scale is the uniform sprite scale with the x component
+    /// carrying the facing flip and the y component the 0→1 spawn growth —
+    /// or, for a dying bug, the death animation: the y component sweeps
+    /// to its negative over [FLIP_TIME], then both components shrink to
+    /// zero over [SINK_TIME]. Its shape swaps when the walk frame
+    /// changed, or when the slot still holds another frame's sprite. A
+    /// bug in its respawn delay is gone from the grass: its slot is
+    /// cleared and its last pose left in place. Slots past the spawned
+    /// prefix are cleared, so an unspawned slot never draws.
     pub fn layout(&mut self, node: &mut SceneNode, frames: [&frost::Shape; 3]) {
         for (bug, child) in self.bugs.iter_mut().zip(&mut node.children) {
+            if bug.respawn.is_some() {
+                // Dead and waiting: clear the slot, keep the last pose.
+                child.shape = None;
+                continue;
+            }
             let g = bug.grow / GROW_TIME;
+            let (sx, sy) = match bug.dying {
+                Some(t) if t < FLIP_TIME => {
+                    // Flip phase: the y scale sweeps from upright to
+                    // fully inverted about the sprite center.
+                    (
+                        bug.facing * self.scale,
+                        self.scale * g * (1.0 - 2.0 * t / FLIP_TIME),
+                    )
+                }
+                Some(t) => {
+                    // Sink phase: the inverted sprite shrinks to nothing
+                    // while [Bugs::step] sinks it through the grass.
+                    let s = 1.0 - (t - FLIP_TIME) / SINK_TIME;
+                    (bug.facing * self.scale * g * s, -self.scale * g * s)
+                }
+                None => (bug.facing * self.scale, self.scale * g),
+            };
             child.transform = frost::Transform::translate(bug.pos[0], bug.pos[1]);
-            child.scale = [bug.facing * self.scale, self.scale * g];
+            child.scale = [sx, sy];
             child.modulate = TINT;
-            if bug.shown != bug.frame {
-                child.shape = Some(frames[bug.frame as usize].clone());
+            let frame = frames[bug.frame as usize];
+            if bug.shown != bug.frame || !same_sprite(&child.shape, frame) {
+                child.shape = Some(frame.clone());
                 bug.shown = bug.frame;
             }
         }
+        for child in node.children.iter_mut().skip(self.bugs.len()) {
+            child.shape = None;
+        }
+    }
+}
+
+/// Whether `shape` already holds `frame`'s sprite pixels.
+///
+/// The pointer test lets a slot inherit the node's shape only when it is
+/// truly the bug's frame, and force a swap when it is not.
+fn same_sprite(shape: &Option<frost::Shape>, frame: &frost::Shape) -> bool {
+    match (shape, frame) {
+        (
+            Some(frost::Shape::Sprite { data: a, .. }),
+            frost::Shape::Sprite { data: b, .. },
+        ) => std::sync::Arc::ptr_eq(a, b),
+        _ => false,
     }
 }
 
@@ -481,7 +661,7 @@ mod tests {
             alpha: 1.0,
         };
         let dt = 0.05;
-        let mut bugs = Bugs::new([&frame; 3], 3);
+        let mut bugs = Bugs::new([&frame; 3]);
         bugs.step(dt, &ANCHORS, 1);
         let spawn = bugs.bugs.iter().map(|b| b.pos).collect::<Vec<_>>();
         // Well under GROW_TIME: every bug holds its exact spawn spot.
@@ -498,5 +678,294 @@ mod tests {
             bugs.step(dt, &ANCHORS, 1);
         }
         assert!(bugs.bugs.iter().all(|b| b.placed));
+    }
+
+    /// A bug the mist keeps touching takes [HITS_TO_KILL] hits before it
+    /// dies — no matter how many drops touch it in a frame — and its
+    /// death plays out in two phases: its position, growth, facing and
+    /// walk frame freeze at the killing blow; the laid-out y scale sweeps
+    /// from upright to fully inverted over [FLIP_TIME] while it still
+    /// sits on the grass; the center then sinks through the grass over
+    /// [SINK_TIME] while the whole scale shrinks to zero. The bug then
+    /// waits out a random delay in [RESPAWN_MIN]…[RESPAWN_MAX] — its slot
+    /// cleared meanwhile — and pops back up at its spawn spot, fully
+    /// healed.
+    #[test]
+    fn sprayed_bug_takes_hits_then_flips_sinks_and_respawns() {
+        let frame = frost::Shape::Sprite {
+            data: std::sync::Arc::new([0u8; 1]),
+            width: 10,
+            height: 10,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+        };
+        let dt = 0.05;
+        let scale = BUG_SIZE / 10.0;
+        let ground = scale * 10.0 / 2.0;
+        let mut bugs = Bugs::new([&frame; 3]);
+        let mut node = frost::SceneNode {
+            children: (0..BUGS_PER_PLANT)
+                .map(|_| Box::new(frost::SceneNode::default()))
+                .collect(),
+            ..Default::default()
+        };
+
+        // Spawn the batch and grow it fully, so the bugs are free to move
+        // when the spray touches them.
+        bugs.step(dt, &ANCHORS, 1);
+        for _ in 0..80 {
+            bugs.step(dt, &ANCHORS, 1);
+        }
+        bugs.layout(&mut node, [&frame; 3]);
+        assert!(bugs.bugs.iter().all(|b| b.grow >= GROW_TIME - 1e-6));
+
+        // Wear the bug farthest from its two siblings down, one hit per
+        // frame: each round touches it at its current position three
+        // times in the same frame (the per-frame dedup makes that one
+        // hit), then steps.
+        let pos: Vec<[f32; 2]> = bugs.bugs.iter().map(|b| b.pos).collect();
+        let farthest = (0..pos.len()).max_by(|&a, &b| {
+            let da = pos.iter().enumerate().filter(|(i, _)| *i != a)
+                .map(|(_, q)| (q[0] - pos[a][0]).powi(2) + (q[1] - pos[a][1]).powi(2))
+                .fold(f32::MAX, f32::min);
+            let db = pos.iter().enumerate().filter(|(i, _)| *i != b)
+                .map(|(_, q)| (q[0] - pos[b][0]).powi(2) + (q[1] - pos[b][1]).powi(2))
+                .fold(f32::MAX, f32::min);
+            da.partial_cmp(&db).unwrap()
+        })
+        .unwrap();
+        for round in 1..HITS_TO_KILL {
+            let p = bugs.bugs[farthest].pos;
+            let hits = bugs.hit_at(p);
+            bugs.hit_at(p);
+            bugs.hit_at(p);
+            assert!(hits >= 1, "the mist found no bug");
+            bugs.step(dt, &ANCHORS, 1);
+            assert_eq!(
+                bugs.bugs[farthest].hits,
+                HITS_TO_KILL - round,
+                "a frame of mist landed more than one hit"
+            );
+            assert!(
+                bugs.bugs[farthest].dying.is_none(),
+                "a sub-lethal round started the death"
+            );
+        }
+
+        // The killing blow, aimed at the bug's current position.
+        let hits = bugs.hit_at(bugs.bugs[farthest].pos);
+        assert!(hits >= 1);
+        let initial = bugs.bugs.len();
+        // The farthest bug plus any sibling that wandered into the mist —
+        // the pool is never trimmed, so the indices stay valid for the
+        // whole death and respawn.
+        let marked_idx: Vec<usize> = (0..initial)
+            .filter(|&i| bugs.bugs[i].dying.is_some())
+            .collect();
+        assert!(!marked_idx.is_empty());
+        // What froze at the killing blow, in the same order: position,
+        // frame, facing, growth.
+        let frozen: Vec<([f32; 2], u8, f32, f32)> = marked_idx
+            .iter()
+            .map(|&i| {
+                let b = &bugs.bugs[i];
+                (b.pos, b.frame, b.facing, b.grow)
+            })
+            .collect();
+        let spawn: Vec<[f32; 2]> =
+            marked_idx.iter().map(|&i| bugs.bugs[i].spawn).collect();
+
+        let mut saw_upright = false;
+        let mut min_y_scale = f32::MAX;
+        let mut first_y = f32::MIN;
+        let mut last_y = f32::MAX;
+        let mut last_abs_scale = f32::MAX;
+        for _ in 0..40 {
+            bugs.step(dt, &ANCHORS, 1);
+            bugs.layout(&mut node, [&frame; 3]);
+            for (k, &i) in marked_idx.iter().enumerate() {
+                let b = &bugs.bugs[i];
+                if b.dying.is_some() {
+                    let (x0, frame0, facing0, grow0) = frozen[k];
+                    assert_eq!(b.pos[0], x0[0], "bug {i} slid sideways while dying");
+                    assert_eq!(b.frame, frame0, "bug {i} walked while dying");
+                    assert_eq!(b.facing, facing0, "bug {i} turned while dying");
+                    assert_eq!(b.grow, grow0, "bug {i} kept growing while dying");
+                    if b.dying.unwrap() < FLIP_TIME {
+                        assert_eq!(
+                            b.pos[1],
+                            x0[1],
+                            "bug {i} sank during the flip"
+                        );
+                    }
+                    let s = node.children[i].scale[1];
+                    if s > 0.0 {
+                        saw_upright = true;
+                    }
+                    min_y_scale = min_y_scale.min(s);
+                    first_y = first_y.max(b.pos[1]);
+                    last_y = last_y.min(b.pos[1]);
+                    last_abs_scale = last_abs_scale.min(s.abs());
+                } else {
+                    // The first frame the bug waits out its respawn: the
+                    // delay must be the one its death drew.
+                    let r =
+                        b.respawn.expect("a marked bug is neither dying nor waiting");
+                    assert!(
+                        r > RESPAWN_MIN && r < RESPAWN_MAX,
+                        "the respawn delay {r}s left the window"
+                    );
+                }
+            }
+            if marked_idx.iter().all(|&i| bugs.bugs[i].respawn.is_some()) {
+                break;
+            }
+        }
+
+        // The death completed: every marked bug is in its respawn delay,
+        // and the pool itself never shrank.
+        assert!(
+            marked_idx
+                .iter()
+                .all(|&i| bugs.bugs[i].respawn.is_some()),
+            "a marked bug never entered its respawn delay"
+        );
+        assert_eq!(bugs.bugs.len(), initial, "a bug left the pool");
+        assert!(
+            bugs.bugs.iter().all(|b| b.dying.is_none()),
+            "a dying bug survived the full death"
+        );
+        // The flip really inverted the sprite: it started upright and its
+        // y scale swept to the fully-inverted value.
+        assert!(saw_upright, "the flip never showed the upright phase");
+        assert!(
+            min_y_scale <= -0.9 * scale,
+            "the flip never inverted the sprite (min y scale {min_y_scale})"
+        );
+        // The sink really carried the bugs through the grass: their y
+        // dropped at least halfway to the ground line, and the sprite
+        // shrank most of the way to nothing.
+        assert!(
+            last_y < first_y - 0.5 * ground,
+            "the sink only carried the bugs to {last_y} from {first_y}"
+        );
+        assert!(
+            last_abs_scale < 0.5 * scale,
+            "the sink never shrank the sprite (last scale {last_abs_scale})"
+        );
+        // The waiting bugs' slots are cleared, and so are the unspawned
+        // ones.
+        for &i in &marked_idx {
+            assert!(
+                node.children[i].shape.is_none(),
+                "a waiting slot kept its sprite"
+            );
+        }
+        for child in node.children.iter().skip(initial) {
+            assert!(child.shape.is_none(), "an unspawned slot kept its sprite");
+        }
+
+        // Run the delays out: well past the worst case, every marked bug
+        // pops back up at its spawn spot, fully healed and regrowing from
+        // the grass.
+        let mut came_back = vec![false; marked_idx.len()];
+        for _ in 0..((RESPAWN_MAX + 2.0) / dt) as usize {
+            bugs.step(dt, &ANCHORS, 1);
+            bugs.layout(&mut node, [&frame; 3]);
+            for (k, &i) in marked_idx.iter().enumerate() {
+                if !came_back[k] && bugs.bugs[i].respawn.is_none() {
+                    came_back[k] = true;
+                    assert_eq!(
+                        bugs.bugs[i].pos, spawn[k],
+                        "bug {i} popped up away from its spawn spot"
+                    );
+                    assert_eq!(
+                        bugs.bugs[i].grow, 0.0,
+                        "bug {i} popped up pre-grown"
+                    );
+                    assert_eq!(
+                        bugs.bugs[i].hits, HITS_TO_KILL,
+                        "bug {i} popped up wounded"
+                    );
+                    assert!(
+                        node.children[i].shape.is_some(),
+                        "bug {i} popped back invisible"
+                    );
+                }
+            }
+            if came_back.iter().all(|c| *c) {
+                break;
+            }
+        }
+        assert!(
+            came_back.iter().all(|c| *c),
+            "a bug never came back from its respawn delay"
+        );
+    }
+
+    /// A bug the spray touches while it is still growing out of the grass
+    /// freezes its growth at the hit: the death animation scales off the
+    /// height the bug had when sprayed, and the bug never pops past it.
+    #[test]
+    fn a_bug_hit_while_growing_freezes_its_growth() {
+        let frame = frost::Shape::Sprite {
+            data: std::sync::Arc::new([0u8; 1]),
+            width: 10,
+            height: 10,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+        };
+        let dt = 0.05;
+        let scale = BUG_SIZE / 10.0;
+        let mut bugs = Bugs::new([&frame; 3]);
+        bugs.step(dt, &ANCHORS, 1);
+        // One fifth of the way through the growth: the bugs hold their
+        // exact spawn spots, so the positions below are stable.
+        for _ in 0..6 {
+            bugs.step(dt, &ANCHORS, 1);
+        }
+        assert!(bugs.bugs.iter().all(|b| b.grow < GROW_TIME));
+        let pos: Vec<[f32; 2]> = bugs.bugs.iter().map(|b| b.pos).collect();
+        // A drop on each exact spawn spot marks at least that bug; after
+        // three drops every bug is dying.
+        for p in &pos {
+            assert!(bugs.hit_at(*p) >= 1);
+        }
+        assert!(bugs.bugs.iter().all(|b| b.dying.is_some()));
+        let frozen_grow: Vec<f32> = bugs.bugs.iter().map(|b| b.grow).collect();
+
+        let mut node = frost::SceneNode {
+            children: (0..BUGS_PER_PLANT)
+                .map(|_| Box::new(frost::SceneNode::default()))
+                .collect(),
+            ..Default::default()
+        };
+        for _ in 0..40 {
+            bugs.step(dt, &ANCHORS, 1);
+            if bugs.bugs.is_empty() {
+                break;
+            }
+            bugs.layout(&mut node, [&frame; 3]);
+            for (i, b) in bugs.bugs.iter().enumerate() {
+                assert_eq!(b.grow, frozen_grow[i], "a dying bug kept growing");
+                // The laid-out height never exceeds the death-time height.
+                let h = node.children[i].scale[1].abs();
+                assert!(
+                    h <= scale * frozen_grow[i] / GROW_TIME + 1e-3,
+                    "bug {i} popped past its death-time height"
+                );
+            }
+        }
+        assert!(bugs.bugs.is_empty(), "the bugs were never removed");
     }
 }

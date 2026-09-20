@@ -409,7 +409,13 @@ All load assets via `CARGO_MANIFEST_DIR`. Run with `cargo run --example <name>`
 |              | draws on top; each child puts the image px `(308, 411)` on          |
 |              | the parent's origin; the parent carries the inverse, so the         |
 |              | image's center sits on the window's center                          |
-| immortal     | 1920x1080 (Config window_size); right button toggles can / spray    |
+| immortal     | 1920x1080 (Config window_size); right button toggles can / spray;  |
+|              | plants grow one at a time; vipers orbit the row; a bug swarm pops  |
+|              | up out of the grass in batches of three per plant; spray mist       |
+|              | touching a bug kills it: over 0.3 s it flips upside down (y scale   |
+|              | to fully inverted, position/growth/facing/frame frozen), then over  |
+|              | 0.5 s the inverted sprite shrinks to nothing while its center sinks |
+|              | through the grass; killed bugs never respawn                        |
 
 `cursor.rs` is the most complete reference demo: `CAN_IMAGE [331,247]` scaled
 to 100 px, a 90° CCW tilt tween (0.5 s, rebuilt on press/release edges),
@@ -450,6 +456,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 102 passed + 2 doctests
+cargo test --examples    # expect 6 passed (the immortal bug tests)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0
 cargo run --example button   # hover-scale + click-swoosh check; window exits 0
