@@ -415,8 +415,12 @@ All load assets via `CARGO_MANIFEST_DIR`. Run with `cargo run --example <name>`
 |              | top slice bearing none, populated with `flower.png`); one viper   |
 |              | per fully grown plant layer orbits the row; a bug swarm pops up   |
 |              | out of the grass in batches of three per plant; spray mist        |
-|              | touching a bug wounds it - five hits, one per 0.2 s per bug, a      |
-|              | white pip above the bug per hit it can still take - and            |
+|              | touching a bug wounds it - three starting hits, one per 0.2 s   |
+|              | per bug, a bug at its park spot regaining one hit every 5 s     |
+|              | (capped at six), a white pip above the bug per hit it can still |
+|              | take; a bug reaching its park spot while another bug is within |
+|              | 50 px of it chatters - a random tjatter clip (TjatterLow/Mid/  |
+|              | High.wav) plays - and                                          |
 |              | the killing blow starts the two-phase death: over 0.5 s it bounces  |
 |              | up off the grass, flipping upside down in the air (y scale to fully|
 |              | inverted, position/growth/facing/frame frozen), landing on its back;|
@@ -463,7 +467,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 102 passed + 2 doctests
-cargo test --examples    # expect 14 passed (the immortal example tests)
+cargo test --examples    # expect 16 passed (the immortal example tests)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0
 cargo run --example button   # hover-scale + click-swoosh check; window exits 0

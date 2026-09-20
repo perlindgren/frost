@@ -15,6 +15,7 @@
     - Bees swarming
     - Bugs walking and chatting
     - Tomatoes chatting
+    - Bugs eliminated (bumped and falling over)
 
 - Music 
     - menu music, game loop music

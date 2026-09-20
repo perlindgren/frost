@@ -9,11 +9,19 @@
 //! animated over three walk frames and is flipped about its center when it
 //! is clearly moving left; the sprite tint comes from the node's `modulate`.
 //!
+//! A bug that reaches its destination while another bug is on the grass
+//! within [TJATTER_RANGE] of it chatters: [Bugs::step] reports the index
+//! of one of the three tjatter clips (low, mid, high) for that frame, and
+//! the demo plays it through [`frost::Audio`].
+//!
 //! A bug takes [HITS_TO_KILL] hits from the spray can's green mist before
 //! it dies — a wounded bug takes its next hit only after a
 //! [HIT_COOLDOWN] second, so the mist wears it down one hit at a time —
 //! and a row of pips above the bug counts the hits it can still take
-//! ([Bugs::health_pips]). The killing blow starts the two-phase death,
+//! ([Bugs::health_pips]). A bug that has reached its park spot recovers
+//! one hit of health every [REGEN_TIME] seconds, up to [MAX_HEALTH], so a
+//! bug left in peace gets tougher the longer it stays. The killing blow
+//! starts the two-phase death,
 //! driven by the per-bug death clock [Bug::dying]: over [BOUNCE_TIME] it
 //! bounces up off the grass on the parabolic arc of [bounce_lift] while
 //! its node's y scale sweeps from upright to fully inverted about the
@@ -48,6 +56,13 @@ const BUG_SIZE: f32 = 40.0;
 const GROW_TIME: f32 = 3.0;
 /// Distance from the park target at which a bug stops walking, in px.
 const ARRIVE: f32 = 4.0;
+/// How close another bug must be to an arriving bug's destination for the
+/// arrival to trigger a tjatter, in px.
+///
+/// A plant's three park spots sit `BUG_SIZE * 0.9` apart (about 36 px)
+/// with up to 10 px of combined jitter, so this covers every sibling
+/// spot while the next-nearest sibling stays at least about 62 px away.
+const TJATTER_RANGE: f32 = 50.0;
 /// Walking-speed dead band for the facing flip, in px/s.
 ///
 /// It is above the parked sway's top speed (≈5.2) and below the slowest
@@ -69,8 +84,15 @@ const BOUNCE_HEIGHT: f32 = 50.0;
 /// nothing while its center sinks through the grass — in seconds.
 const SINK_TIME: f32 = 0.5;
 /// How many hits from the spray's mist a bug takes before it dies: the
-/// pips the bug's health counter starts with.
-pub const HITS_TO_KILL: u8 = 5;
+/// pips the bug's health counter starts with. A parked bug can climb it
+/// back by one every [REGEN_TIME] seconds, up to [MAX_HEALTH].
+pub const HITS_TO_KILL: u8 = 3;
+/// The health cap: a parked bug's pips top out at this many, no matter
+/// how long it has sat at its destination.
+const MAX_HEALTH: u8 = 6;
+/// How often a bug parked at its destination recovers one hit of health,
+/// in seconds.
+const REGEN_TIME: f32 = 5.0;
 /// How long a wounded bug is immune to further mist hits, in seconds: a
 /// bug standing in the mist loses one hit per cooldown, so the mist wears
 /// it down over several cooldowns instead of a few frames.
@@ -124,9 +146,19 @@ struct Bug {
     /// [BOUNCE_TIME] + [SINK_TIME] it enters its respawn delay.
     dying: Option<f32>,
     /// Hits from the mist still standing between this bug and death;
-    /// starts at [HITS_TO_KILL], and each hit takes it down by one. The
-    /// pips above the bug's head count these.
+    /// starts at [HITS_TO_KILL], each hit takes it down by one, and a
+    /// bug parked at its destination climbs it back by one every
+    /// [REGEN_TIME] seconds, capped at [MAX_HEALTH]. The pips above the
+    /// bug's head count it.
     hits: u8,
+    /// Seconds parked at the destination: while it is above [REGEN_TIME]
+    /// the bug has earned another hit of health (see [Bug::hits]).
+    parked: f32,
+    /// Whether the bug has already reached its destination this life:
+    /// set on the frame it first parks, so the arrival tjatter (see
+    /// [Bugs::step]) fires exactly once per bug — also for a bug that
+    /// parks from its very first grown frame.
+    arrived: bool,
     /// How much of the [HIT_COOLDOWN] after its last hit is left: while
     /// it is above zero no drop can wound the bug again, no matter how
     /// many touch it at once.
@@ -198,10 +230,18 @@ impl Bugs {
     /// bugs in the delay count it down and, when it ends, pop back up at
     /// their spawn spot as fresh, fully healed bugs. Each bug's
     /// [HIT_COOLDOWN] runs down here, so a wounded bug takes its next
-    /// hit only after the cooldown has elapsed.
-    pub fn step(&mut self, dt: f32, anchors: &[[f32; 2]], active: usize) {
+    /// hit only after the cooldown has elapsed, and a bug parked at its
+    /// destination recovers one hit of health every [REGEN_TIME] seconds,
+    /// capped at [MAX_HEALTH] ([Bug::parked]).
+    ///
+    /// Returns the indices of the tjatter clips to play this frame, one
+    /// per bug that reached its destination this frame while another bug
+    /// was on the grass within [TJATTER_RANGE] of its destination: index
+    /// 0 for the low clip, 1 for the mid, 2 for the high, picked at
+    /// random by the swarm.
+    pub fn step(&mut self, dt: f32, anchors: &[[f32; 2]], active: usize) -> Vec<usize> {
         if dt < 0.0 {
-            return;
+            return Vec::new();
         }
         self.t += dt;
 
@@ -234,6 +274,8 @@ impl Bugs {
                     step_rate: self.rng.in_range(6.0, 10.0),
                     dying: None,
                     hits: HITS_TO_KILL,
+                    parked: 0.0,
+                    arrived: false,
                     hit_cooldown: 0.0,
                     respawn: None,
                 };
@@ -241,7 +283,11 @@ impl Bugs {
             }
         }
 
-        for bug in &mut self.bugs {
+        // The bugs that reach their destination this frame, with their
+        // destinations: the arrival tjatter check runs after the loop,
+        // against the whole swarm's end-of-frame positions.
+        let mut arrivals: Vec<(usize, [f32; 2])> = Vec::new();
+        for (i, bug) in self.bugs.iter_mut().enumerate() {
             // The hit cooldown runs down every frame, so a wounded bug
             // takes its next hit only after [HIT_COOLDOWN].
             if bug.hit_cooldown > 0.0 {
@@ -264,6 +310,8 @@ impl Bugs {
                     bug.frame = 0;
                     bug.shown = u8::MAX;
                     bug.hits = HITS_TO_KILL;
+                    bug.parked = 0.0;
+                    bug.arrived = false;
                     bug.hit_cooldown = 0.0;
                 } else {
                     bug.respawn = Some(r - dt);
@@ -316,10 +364,29 @@ impl Bugs {
                 ]
             } else {
                 // Parked: a tiny in-place sway (below FACING_EPS).
-                [
+                let next = [
                     target[0] + (self.t * bug.wob_freq + bug.wob_phase).sin() * 1.5,
                     target[1],
-                ]
+                ];
+                // A bug at its destination recovers one hit of health
+                // every [REGEN_TIME] seconds, up to [MAX_HEALTH]; the
+                // cycle is consumed whether or not it pays out, so the
+                // counter never runs up while capped.
+                bug.parked += dt;
+                while bug.parked >= REGEN_TIME {
+                    bug.parked -= REGEN_TIME;
+                    if bug.hits < MAX_HEALTH {
+                        bug.hits += 1;
+                    }
+                }
+                // The first parked frame is the arrival: the bug has just
+                // reached its destination (a bug born on its spot counts
+                // too — it parks from its first grown frame).
+                if !bug.arrived {
+                    bug.arrived = true;
+                    arrivals.push((i, target));
+                }
+                next
             };
             if dt > 0.0 && bug.placed {
                 bug.vel = [(next[0] - bug.pos[0]) / dt, (next[1] - bug.pos[1]) / dt];
@@ -340,6 +407,28 @@ impl Bugs {
                 bug.frame = (bug.walk as u32 % 3) as u8;
             }
         }
+
+        // An arrival chatters — a random tjatter clip — only if another
+        // bug is on the grass at its destination: anything that is not
+        // dying and not sitting out a respawn delay, within
+        // [TJATTER_RANGE] of it.
+        let mut tjatters = Vec::new();
+        for (i, dest) in arrivals {
+            let company = self.bugs.iter().enumerate().any(|(j, b)| {
+                j != i
+                    && b.dying.is_none()
+                    && b.respawn.is_none()
+                    && {
+                        let dx = b.pos[0] - dest[0];
+                        let dy = b.pos[1] - dest[1];
+                        dx * dx + dy * dy <= TJATTER_RANGE * TJATTER_RANGE
+                    }
+            });
+            if company {
+                tjatters.push((self.rng.next_f32() * 3.0) as usize);
+            }
+        }
+        tjatters
     }
 
     /// Land one mist hit at `p`: every live bug within half the rendered
@@ -1087,6 +1176,188 @@ mod tests {
                 .iter()
                 .all(|b| b.dying.is_none() && b.respawn.is_some()),
             "the dead bugs never entered their respawn delay"
+        );
+    }
+
+    /// A bug parked at its destination recovers one hit of health every
+    /// [REGEN_TIME] seconds — not before the interval has run, and never
+    /// above [MAX_HEALTH] — while a bug still on its walk recovers
+    /// nothing, however long it walks.
+    #[test]
+    fn parked_bug_regeners_health_up_to_the_cap() {
+        let frame = frost::Shape::Sprite {
+            data: std::sync::Arc::new([0u8; 1]),
+            width: 10,
+            height: 10,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+        };
+        let dt = 0.05;
+        let scale = BUG_SIZE / 10.0;
+        let ground = scale * 10.0 / 2.0;
+
+        // Park a fully grown bug on its exact destination and watch its
+        // counter climb one hit per full interval, capping at
+        // [MAX_HEALTH].
+        let mut parked = Bugs::new([&frame; 3]);
+        parked.step(dt, &ANCHORS, 1);
+        let b = &mut parked.bugs[0];
+        b.grow = GROW_TIME;
+        b.pos = [
+            ANCHORS[b.home][0] + b.idle[0],
+            ANCHORS[b.home][1] + b.idle[1] + ground,
+        ];
+        // Just under one interval: the counter has not moved.
+        for _ in 0..99 {
+            parked.step(dt, &ANCHORS, 1);
+        }
+        assert_eq!(
+            parked.bugs[0].hits,
+            HITS_TO_KILL,
+            "the counter climbed before the interval ran"
+        );
+        // Cross the 5 s, 10 s and 15 s marks: one hit per full interval.
+        for (extra, hits) in [
+            (2, HITS_TO_KILL + 1),
+            (100, HITS_TO_KILL + 2),
+            (100, MAX_HEALTH),
+        ] {
+            for _ in 0..extra {
+                parked.step(dt, &ANCHORS, 1);
+            }
+            assert_eq!(
+                parked.bugs[0].hits, hits,
+                "the parked counter missed its climb to {hits}"
+            );
+        }
+        // Well past the cap: the counter holds at [MAX_HEALTH].
+        for _ in 0..100 {
+            parked.step(dt, &ANCHORS, 1);
+        }
+        assert_eq!(
+            parked.bugs[0].hits, MAX_HEALTH,
+            "the parked counter ran past the cap"
+        );
+
+        // A bug still on its walk recovers nothing: 900 px out at the
+        // top walking speed (30 px/s) is 30 s of walking, so it cannot
+        // reach its destination within the 20 s window below.
+        let mut walking = Bugs::new([&frame; 3]);
+        walking.step(dt, &ANCHORS, 1);
+        let b = &mut walking.bugs[0];
+        b.grow = GROW_TIME;
+        b.pos = [ANCHORS[b.home][0] + 900.0, ANCHORS[b.home][1] + ground];
+        for _ in 0..400 {
+            walking.step(dt, &ANCHORS, 1);
+        }
+        let b = &walking.bugs[0];
+        assert!(
+            (ANCHORS[b.home][0] + b.idle[0] - b.pos[0]).abs() > ARRIVE,
+            "the test bug reached its destination inside the window"
+        );
+        assert_eq!(
+            b.hits, HITS_TO_KILL,
+            "a walking bug regenerated before arriving"
+        );
+    }
+
+    /// A bug that reaches its destination while another bug is on the
+    /// grass within [TJATTER_RANGE] of it chatters: [Bugs::step] reports
+    /// exactly one tjatter clip index (0, 1 or 2) for the frame and
+    /// nothing on the frame after, when no bug arrives; a bug that parks
+    /// with every other bug far away chatters nothing.
+    #[test]
+    fn arriving_bug_chatters_only_when_a_bug_is_there() {
+        let frame = frost::Shape::Sprite {
+            data: std::sync::Arc::new([0u8; 1]),
+            width: 10,
+            height: 10,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+        };
+        let dt = 0.05;
+        let scale = BUG_SIZE / 10.0;
+        let ground = scale * 10.0 / 2.0;
+
+        // Deterministic park spots: the spawn jitter is replaced by the
+        // exact nominal offsets, so the siblings sit 36 px apart.
+        let pin = |bugs: &mut Bugs, j: usize, dx: f32| {
+            let b = &mut bugs.bugs[j];
+            b.idle = [(j as f32 - 1.0) * BUG_SIZE * 0.9, 0.0];
+            b.grow = GROW_TIME;
+            b.pos = [
+                ANCHORS[b.home][0] + b.idle[0] + dx,
+                ANCHORS[b.home][1] + b.idle[1] + ground,
+            ];
+        };
+
+        let mut bugs = Bugs::new([&frame; 3]);
+        bugs.step(dt, &ANCHORS, 1);
+        // Bug 1 parks on its spot; bugs 0 and 2 sit 900 px out, so
+        // neither can arrive within this test's window.
+        pin(&mut bugs, 1, 0.0);
+        pin(&mut bugs, 0, 900.0);
+        pin(&mut bugs, 2, -900.0);
+        // Bug 1's own arrival finds no one within range: silent.
+        let clips = bugs.step(dt, &ANCHORS, 1);
+        assert!(
+            bugs.bugs[1].arrived,
+            "bug 1 never reached its destination"
+        );
+        assert!(clips.is_empty(), "a lone arrival chattered: {clips:?}");
+
+        // Bug 0 lands exactly on its spot: bug 1's park spot is 36 px
+        // away, inside [TJATTER_RANGE] — the arrival chatters once, on a
+        // clip within the tjatter range.
+        let b0 = &mut bugs.bugs[0];
+        b0.pos = [
+            ANCHORS[b0.home][0] + b0.idle[0],
+            ANCHORS[b0.home][1] + b0.idle[1] + ground,
+        ];
+        let clips = bugs.step(dt, &ANCHORS, 1);
+        assert!(
+            bugs.bugs[0].arrived,
+            "bug 0 never reached its destination"
+        );
+        assert_eq!(
+            clips.len(),
+            1,
+            "the arrival chattered {} times, not once",
+            clips.len()
+        );
+        assert!(
+            (0..3).contains(&clips[0]),
+            "clip index {clips:?} left the tjatter range"
+        );
+
+        // The next frame nobody arrives: nothing plays.
+        let clips = bugs.step(dt, &ANCHORS, 1);
+        assert!(clips.is_empty(), "a parked bug chattered again: {clips:?}");
+
+        // And a bug that parks with no company chatters nothing.
+        let mut alone = Bugs::new([&frame; 3]);
+        alone.step(dt, &ANCHORS, 1);
+        pin(&mut alone, 0, 0.0);
+        pin(&mut alone, 1, 900.0);
+        pin(&mut alone, 2, -900.0);
+        let clips = alone.step(dt, &ANCHORS, 1);
+        assert!(
+            alone.bugs[0].arrived,
+            "the lone bug never reached its destination"
+        );
+        assert!(
+            clips.is_empty(),
+            "a bug that parks alone chattered: {clips:?}"
         );
     }
 }

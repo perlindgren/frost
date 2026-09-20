@@ -90,10 +90,12 @@
 //! walking, flipped about its center while it moves left, tinted dark
 //! red by the node's `modulate`.
 //!
-//! A bug takes five hits from the spray can's green mist before it dies
-//! — a wounded bug takes its next hit only after a 0.2 s cooldown, so
-//! the mist wears it down one hit at a time — and a row of white pips
-//! above the bug counts the hits it can still take. The killing blow
+//! A bug starts with three hits of health, loses one per mist hit — a
+//! wounded bug takes its next hit only after a 0.2 s cooldown, so the
+//! mist wears it down one hit at a time — and, once it has reached its
+//! park spot, recovers one hit every 5 seconds, up to six; a row of
+//! white pips above the bug counts the hits it can still take. The
+//! killing blow
 //! starts the two-phase death: over 0.5 seconds the bug bounces up off
 //! the grass and flips upside down in the air — its node's y scale
 //! sweeps from upright to fully inverted about the sprite center while
@@ -103,6 +105,12 @@
 //! The dead bug then waits out a random 5 to 10 second delay and pops
 //! back up at its spawn spot, fully healed, so the population dips and
 //! recovers with the spraying.
+//!
+//! A bug that reaches its destination while another bug is on the grass
+//! within 50 px of it chatters: the swarm picks one of the three tjatter
+//! clips — `assets/audio/TjatterLow.wav`, `TjatterMid.wav`, and
+//! `TjatterHigh.wav` — at random, and the demo plays it through
+//! [`frost::Audio`].
 //!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
@@ -600,6 +608,14 @@ struct Demo {
     /// plant starts growing, and the swarm steps and lays them out on the
     /// matching child of the bugs node (root children[5]).
     bugs: bugs::Bugs,
+    /// The audio output, opened once at startup; the bug tjatter clips
+    /// play through it.
+    audio: frost::Audio,
+    /// The three bug tjatter clips (low, mid, high), decoded once at
+    /// startup; a bug that reaches its destination while another bug is
+    /// within 50 px of it chatters on one of them, the swarm's random
+    /// pick.
+    tjatters: [frost::Sound; 3],
 }
 
 impl frost::Process for Demo {
@@ -677,9 +693,15 @@ impl frost::Process for Demo {
         // Waddle the bugs to the plants, in parallel with everything
         // else: three spawn each time a plant starts growing.
         let bugs_node = &mut ctx.scene().root.children[5];
-        self.bugs.step(dt, &anchors, active_plants);
+        let tjatters = self.bugs.step(dt, &anchors, active_plants);
         self.bugs
             .layout(bugs_node, [&self.bug1, &self.bug2, &self.bug3]);
+        // An arrival chatters: a bug that just reached its destination
+        // while another bug was on the grass nearby plays one of the
+        // tjatter clips, the swarm's random pick.
+        for clip in tjatters {
+            self.audio.play_once(&self.tjatters[clip]);
+        }
 
         // Follow the pointer, keeping the last known position while the
         // cursor is outside the window.
@@ -848,19 +870,21 @@ impl frost::Process for Demo {
 
         // Mist touching a bug wounds it: each live spray drop hits every
         // bug within its reach, but a wounded bug takes its next hit only
-        // after its hit cooldown, and five hits start the
-        // bounce-then-evaporate death. The water can's drops never touch
-        // the bugs.
+        // after its hit cooldown, and a hit that empties the counter
+        // starts the bounce-then-evaporate death. A bug at its park spot
+        // regains one hit of health every 5 seconds, up to six. The
+        // water can's drops never touch the bugs.
         for p in &self.spray.particles {
             self.bugs.hit_at(p.pos);
         }
 
         // Draw the bugs' health counters: one white pip per hit each
-        // visible bug can still take, in a row above it.
+        // visible bug can still take, in a row above it — centered on
+        // the bug's current count, three to six pips wide.
         for ([cx, cy], hits) in self.bugs.health_pips() {
             for i in 0..hits {
                 ctx.circle(
-                    cx - (bugs::HITS_TO_KILL as f32 - 1.0) * 3.0 + i as f32 * 6.0,
+                    cx - (hits as f32 - 1.0) * 3.0 + i as f32 * 6.0,
                     cy,
                     2.0,
                     PIP,
@@ -1048,6 +1072,21 @@ fn main() {
     let flower = frost::Shape::sprite(format!("{root}/assets/sprites/flower.png"))
         .expect("failed to load assets/sprites/flower.png");
     let plant = plant::Plant::new([&plant1, &plant2, &plant3, &plant4, &plant5]);
+
+    // The audio output and the three bug tjatter clips, decoded once at
+    // startup; a bug that reaches its destination while another bug is
+    // on the grass within 50 px of it chatters on one of them, the
+    // swarm's random pick.
+    let audio = frost::Audio::new()
+        .expect("failed to open the audio output device");
+    let tjatters = [
+        frost::Sound::load(format!("{root}/assets/audio/TjatterLow.wav"))
+            .expect("failed to load assets/audio/TjatterLow.wav"),
+        frost::Sound::load(format!("{root}/assets/audio/TjatterMid.wav"))
+            .expect("failed to load assets/audio/TjatterMid.wav"),
+        frost::Sound::load(format!("{root}/assets/audio/TjatterHigh.wav"))
+            .expect("failed to load assets/audio/TjatterHigh.wav"),
+    ];
 
     // One plant node, cloned for each plant: its origin is the root joint
     // (plant1's lower joint), positioned by the process every frame. The
@@ -1256,6 +1295,8 @@ fn main() {
             bug1,
             bug2,
             bug3,
+            audio,
+            tjatters,
             flower,
             water: frost::ParticleSystem::new(),
             spray: frost::ParticleSystem::new(),
