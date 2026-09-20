@@ -276,7 +276,7 @@ fn tomato_color(g: f32) -> frost::Color {
 /// given size: the negation of that point's node-local offset, with the
 /// same y flip as the slice joints, so the body's top sits on the leaf's
 /// parent's origin and the fruit hangs below it.
-fn tomato_leaf_offset(size: [f32; 2]) -> [f32; 2] {
+pub fn tomato_leaf_offset(size: [f32; 2]) -> [f32; 2] {
     let a = local_joint(TOMATO_TOP.0, TOMATO_TOP.1, size);
     [-a[0], -a[1]]
 }
@@ -296,6 +296,11 @@ pub struct Plant {
     /// flattened slice order: `new` converts [FLOWER_SPAWNS] against each
     /// texture's real size.
     tomato_spawn: [Vec<[f32; 2]>; 4],
+    /// Whether each bloom's tomato has been picked: while a slot is
+    /// harvested, the bloom's tomato pivot has been reparented out of the
+    /// plant's tree, so [Plant::layout] must skip it; unharvesting
+    /// restores the pivot and its growth.
+    harvested: [bool; FLOWER_N],
 }
 
 impl Plant {
@@ -320,6 +325,7 @@ impl Plant {
                 flower_points(shapes[2], FLOWER_SPAWNS[2]),
                 flower_points(shapes[3], FLOWER_SPAWNS[3]),
             ],
+            harvested: [false; FLOWER_N],
         }
     }
 
@@ -371,6 +377,67 @@ impl Plant {
             p = [p[0] + d[0], p[1] + d[1]];
         }
         midpoints
+    }
+
+    /// The lower slice that bloom `slot` grows from: the flattened
+    /// [FLOWER_SPAWNS] order runs slice by slice, so the slot index falls
+    /// into slice `i`'s span of slots.
+    pub fn slice_of(&self, slot: usize) -> usize {
+        let mut remaining = slot;
+        for (i, spawns) in self.tomato_spawn.iter().enumerate() {
+            if remaining < spawns.len() {
+                return i;
+            }
+            remaining -= spawns.len();
+        }
+        // Unreachable for a valid slot; fall back to the last slice.
+        self.tomato_spawn.len() - 1
+    }
+
+    /// Whether the bloom `slot` carries a ripe tomato: its tomato's growth
+    /// has reached full size — the fruit is fully developed and red — so
+    /// the player may pick it.
+    pub fn ripe(&self, slot: usize) -> bool {
+        let i = self.slice_of(slot);
+        self.t >= GROW_TIMES[i] + FLOWER_GROW_TIME + TOMATO_GROW_TIME
+    }
+
+    /// Whether the bloom `slot`'s tomato is currently picked: its pivot has
+    /// been reparented out of the plant's tree, and [Plant::layout] skips
+    /// the slot's tomato while this holds.
+    pub fn is_harvested(&self, slot: usize) -> bool {
+        self.harvested[slot]
+    }
+
+    /// Marks the bloom `slot`'s tomato as picked, so [Plant::layout] skips
+    /// its pivot — which the caller has reparented out of the tree.
+    pub fn harvest(&mut self, slot: usize) {
+        self.harvested[slot] = true;
+    }
+
+    /// Clears the bloom `slot`'s picked mark, so the next [Plant::layout]
+    /// restores its pivot — which the caller has reparented back into the
+    /// tree — with its growth.
+    pub fn unharvest(&mut self, slot: usize) {
+        self.harvested[slot] = false;
+    }
+
+    /// The body center of the bloom `slot`'s tomato, in the plant node's
+    /// local space — y up, before the caller's fit scale — for the slot
+    /// node whose transform lays the bloom's origin on its spawn point:
+    /// the pivot origin — the [TOMATO_TOP] stem point, on the flower's
+    /// center — shifted by the pivot scale times the [TOMATO_TOP] leaf
+    /// offset, mapped through the slot's translate.
+    pub fn tomato_center(
+        &self,
+        slot: usize,
+        slot_node: &frost::SceneNode,
+        tomato: &frost::Shape,
+    ) -> [f32; 2] {
+        let i = self.slice_of(slot);
+        let s = tomato_growth(self.t, GROW_TIMES[i]) * TOMATO_MAX_SCALE;
+        let [ox, oy] = tomato_leaf_offset(sprite_size(tomato));
+        slot_node.transform.apply([ox * s, oy * s])
     }
 
     /// Lays the plant out in `node`, whose children — in chain order — are
@@ -497,35 +564,41 @@ impl Plant {
                 // same point, a little later — it starts when the flower is
                 // fully grown — to [TOMATO_MAX_SCALE], and its two leaves
                 // keep the body's top pinned to the flower for the whole
-                // growth, the fruit hanging below it.
-                let tomato_pivot = &mut child.children[SLOT_TOMATO];
-                tomato_pivot.scale = [
-                    tg * TOMATO_MAX_SCALE,
-                    tg * TOMATO_MAX_SCALE,
-                ];
-                let [ox, oy] = tomato_leaf_offset(sprite_size(tomato));
-                // The background: the tinted fruit body, dark green to
-                // red.
-                let bg = &mut tomato_pivot.children[TOMATO_BG];
-                bg.transform = frost::Transform::translate(ox, oy);
-                if tg > 0.0 {
-                    if bg.shape.is_none() {
-                        bg.shape = Some(tomato.clone());
+                // growth, the fruit hanging below it. A harvested slot's
+                // pivot is reparented out of the tree, so it is skipped
+                // here — and a pivot sent back from a failed drop gets its
+                // stale carry transform reset to the plant's own.
+                if !self.harvested[slot] {
+                    let tomato_pivot = &mut child.children[SLOT_TOMATO];
+                    tomato_pivot.transform = frost::Transform::identity();
+                    tomato_pivot.scale = [
+                        tg * TOMATO_MAX_SCALE,
+                        tg * TOMATO_MAX_SCALE,
+                    ];
+                    let [ox, oy] = tomato_leaf_offset(sprite_size(tomato));
+                    // The background: the tinted fruit body, dark green to
+                    // red.
+                    let bg = &mut tomato_pivot.children[TOMATO_BG];
+                    bg.transform = frost::Transform::translate(ox, oy);
+                    if tg > 0.0 {
+                        if bg.shape.is_none() {
+                            bg.shape = Some(tomato.clone());
+                        }
+                        bg.modulate = tomato_color(tg);
+                    } else {
+                        bg.shape = None;
                     }
-                    bg.modulate = tomato_color(tg);
-                } else {
-                    bg.shape = None;
-                }
-                // The foreground: the dark calyx and stem, drawn on top,
-                // unmodulated.
-                let fg_leaf = &mut tomato_pivot.children[TOMATO_FG];
-                fg_leaf.transform = frost::Transform::translate(ox, oy);
-                if tg > 0.0 {
-                    if fg_leaf.shape.is_none() {
-                        fg_leaf.shape = Some(tomato_fg.clone());
+                    // The foreground: the dark calyx and stem, drawn on
+                    // top, unmodulated.
+                    let fg_leaf = &mut tomato_pivot.children[TOMATO_FG];
+                    fg_leaf.transform = frost::Transform::translate(ox, oy);
+                    if tg > 0.0 {
+                        if fg_leaf.shape.is_none() {
+                            fg_leaf.shape = Some(tomato_fg.clone());
+                        }
+                    } else {
+                        fg_leaf.shape = None;
                     }
-                } else {
-                    fg_leaf.shape = None;
                 }
                 slot += 1;
             }
@@ -789,6 +862,118 @@ mod tests {
         assert!(
             (a[0] - b[0]).abs() + (a[1] - b[1]).abs() > 1e-3,
             "the base flower did not move with the sway"
+        );
+    }
+
+    /// [Plant::tomato_center] puts the tomato's body center in the plant
+    /// node's local space, at full growth: the [TOMATO_TOP] stem point,
+    /// pinned to the slot origin, shifted by the pivot scale times the
+    /// [TOMATO_TOP] leaf offset — and for the 638×469 tomato image that
+    /// offset is (4, −144.5), so the body hangs 144.5 px below the stem.
+    #[test]
+    fn tomato_center_hangs_the_body_below_the_stem() {
+        // A shapeless stand-in with the real tomato image's size: only the
+        // width and height feed the offset.
+        let tomato = frost::Shape::Sprite {
+            data: std::sync::Arc::new([0u8; 4]),
+            width: 638,
+            height: 469,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+        };
+        let [ox, oy] = tomato_leaf_offset([638.0, 469.0]);
+        assert!((ox - 4.0).abs() < 1e-6, "stem x offset");
+        assert!((oy + 144.5).abs() < 1e-6, "stem y offset");
+
+        let p = plant_at(BLOOM_TIME + 1.0);
+        let slot_tf = frost::Transform::translate(10.0, -20.0);
+        let slot_node = frost::SceneNode {
+            transform: slot_tf,
+            ..Default::default()
+        };
+        let c = p.tomato_center(0, &slot_node, &tomato);
+        let want = slot_tf.apply([
+            ox * TOMATO_MAX_SCALE,
+            oy * TOMATO_MAX_SCALE,
+        ]);
+        assert!(
+            (c[0] - want[0]).abs() < 1e-6 && (c[1] - want[1]).abs() < 1e-6,
+            "body center off the offset: got {c:?}, want {want:?}"
+        );
+    }
+
+    /// [Plant::layout] skips a harvested slot's tomato pivot — which the
+    /// caller has reparented out of the tree — so it may run with the slot
+    /// down to its single flower leaf child, and it leaves the other
+    /// slots' pivots alone.
+    #[test]
+    fn layout_skips_a_harvested_slot() {
+        let s = slice();
+        let mut node = plant_node();
+        let mut p = plant_at(BLOOM_TIME + 1.0);
+
+        // Pick slot 0: mark it harvested and take its pivot out of the
+        // tree, the way the example's pick does.
+        p.harvest(0);
+        let _pivot = node.children[5].children.remove(1);
+
+        // The layout runs with the pivot gone and does not touch the
+        // picked slot's remaining child.
+        p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
+        assert_eq!(
+            node.children[5].children.len(),
+            1,
+            "layout touched the picked slot"
+        );
+        for c in node.children.iter().skip(6) {
+            assert_eq!(c.children.len(), 2, "a whole slot lost a child");
+        }
+    }
+
+    /// A pivot sent back from a failed drop is reposed by the next
+    /// [Plant::layout]: its stale carry transform is reset to the
+    /// identity, and its growth is restored.
+    #[test]
+    fn layout_reposes_a_sent_back_pivot() {
+        let s = slice();
+        let mut node = plant_node();
+        let mut p = plant_at(BLOOM_TIME + 1.0);
+
+        // Pick slot 0, carry the pivot with a stale transform, send it
+        // back, and clear the harvested mark — the failed-drop path.
+        p.harvest(0);
+        let mut pivot = *node.children[5].children.remove(1);
+        pivot.transform = frost::Transform::translate(123.0, -45.0);
+        pivot.scale = [0.15, 0.15];
+        node.children[5].children.push(Box::new(pivot));
+        p.unharvest(0);
+
+        // The layout resets the pivot to the plant's own pose: the
+        // transform is the identity again, and the scale is the
+        // full-growth scale.
+        p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
+        let t = &node.children[5].children[1];
+        let o = t.transform.apply([0.0, 0.0]);
+        let ex = t.transform.apply([1.0, 0.0]);
+        let ey = t.transform.apply([0.0, 1.0]);
+        assert!(
+            o[0].abs() < 1e-6 && o[1].abs() < 1e-6,
+            "the carry translation survived: {o:?}"
+        );
+        assert!(
+            (ex[0] - 1.0).abs() < 1e-6 && ex[1].abs() < 1e-6
+                && (ey[0]).abs() < 1e-6 && (ey[1] - 1.0).abs() < 1e-6,
+            "the carry rotation or scale survived: {ex:?} {ey:?}"
+        );
+        assert_eq!(
+            t.scale,
+            [TOMATO_MAX_SCALE, TOMATO_MAX_SCALE],
+            "the growth was not restored"
         );
     }
 }

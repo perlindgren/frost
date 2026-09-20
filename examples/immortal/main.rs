@@ -446,6 +446,82 @@ fn slot_scale(size: [f32; 2]) -> f32 {
     (w / size[0]).min(h / size[1])
 }
 
+/// The texture size of a sprite shape, in pixels.
+fn sprite_size(shape: &frost::Shape) -> [f32; 2] {
+    match shape {
+        frost::Shape::Sprite { width, height, .. } => [*width as f32, *height as f32],
+        _ => [0.0, 0.0],
+    }
+}
+
+/// `BasketBack.png` / `BasketFront.png`'s texture size in pixels: the two
+/// aligned halves of the harvest basket.
+const BASKET_IMAGE: [f32; 2] = [271.0, 251.0];
+
+/// The clearance the basket keeps from the items panel's right edge, in
+/// pixels.
+const BASKET_GAP: f32 = 24.0;
+
+/// The uniform scale a picked tomato rides at: the plant's fit scale on
+/// the tomato's full growth, so a picked fruit is exactly the size it had
+/// on the plant.
+const TOMATO_PICK_SCALE: f32 = plant::TOMATO_MAX_SCALE * PLANT_SCALE;
+
+/// The carried tomato's body box's half extents, in window pixels, for a
+/// `size`-pixel image: half the fruit's natural size at the pick scale.
+fn tomato_pick_half(size: [f32; 2]) -> [f32; 2] {
+    [
+        size[0] * TOMATO_PICK_SCALE / 2.0,
+        size[1] * TOMATO_PICK_SCALE / 2.0,
+    ]
+}
+
+/// The basket's U, in the basket node's local space (unscaled, y up,
+/// origin at the sprite's center): three invisible axis-aligned boxes —
+/// the left wall, the right wall, and the floor — that hold the dropped
+/// fruit inside the cavity, the mouth left open at the top.
+fn basket_walls() -> [frost::OrientedBox; 3] {
+    [
+        frost::OrientedBox::new([-124.0, 30.0], [16.0, 70.0]),
+        frost::OrientedBox::new([128.0, 30.0], [16.0, 70.0]),
+        frost::OrientedBox::new([2.0, -25.0], [130.0, 15.0]),
+    ]
+}
+
+/// The basket's cavity mouth's x bounds in local space: the inner faces of
+/// the [basket_walls] walls.
+const BASKET_MOUTH_X: (f32, f32) = (-108.0, 112.0);
+
+/// The basket's floor's top in local space: the inner face of the
+/// [basket_walls] bottom box.
+const BASKET_FLOOR: f32 = -10.0;
+
+/// The uniform scale the basket rides at: the same fit the items panel
+/// uses, so the basket keeps its proportions across resizes.
+fn basket_scale(h: f32) -> f32 {
+    (h - 2.0 * MARGIN) / ITEMS_SIZE[1]
+}
+
+/// The basket group's center in window-centered user space, for a window
+/// of the given size: in the bottom left, just right of the items panel —
+/// `BASKET_GAP` clear of its right edge — and `MARGIN` clear of the
+/// bottom border.
+fn basket_center(w: f32, h: f32) -> [f32; 2] {
+    let s = basket_scale(h);
+    [
+        -(w / 2.0) + MARGIN + ITEMS_SIZE[0] * s + BASKET_GAP + BASKET_IMAGE[0] * s / 2.0,
+        -h / 2.0 + MARGIN + BASKET_IMAGE[1] * s / 2.0,
+    ]
+}
+
+/// Whether a drop at the basket-local point `(lx, ly)` is kept: the body's
+/// center is inside the U — the mouth's x range and above the floor. There
+/// is no upper bound: fruit may be dropped above the rim, so it can pile
+/// high.
+fn basket_accepts(lx: f32, ly: f32) -> bool {
+    BASKET_MOUTH_X.0 < lx && lx < BASKET_MOUTH_X.1 && ly > BASKET_FLOOR
+}
+
 /// Whether the user-space point `p` is inside slot `i`, for the panel node
 /// `items`: the slot's cell in the panel's local space — the full panel
 /// width by the strip's per-slot height, centered on `slot_local(i)` —
@@ -644,6 +720,12 @@ struct Demo {
     /// Whether the left mouse button was down on the previous frame; the
     /// press and release edges are derived from it.
     pressed: bool,
+    /// The tomato being carried, if any: the plant index and the bloom
+    /// slot the fruit was picked from. While set, the fruit's pivot rides
+    /// the cursor in the held-fruit node (root children[8]) on top of
+    /// everything; the release either keeps it in the basket or sends it
+    /// back to its plant.
+    picking: Option<(usize, usize)>,
     /// Whether the right mouse button was down on the previous frame; the
     /// two held tools switch on its release.
     right_pressed: bool,
@@ -783,6 +865,15 @@ impl frost::Process for Demo {
             -h / 2.0 + MARGIN + HELD_SIZE[1] * held_panel.scale[1] / 2.0,
         );
 
+        // Bottom left: just right of the items panel — `BASKET_GAP` clear
+        // of its right edge — and `MARGIN` clear of the bottom border,
+        // scaled with the panel's fit so the basket keeps its proportions.
+        let basket = &mut ctx.scene().root.children[7];
+        let bs = basket_scale(h);
+        let bc = basket_center(w, h);
+        basket.scale = [bs, bs];
+        basket.transform = frost::Transform::translate(bc[0], bc[1]);
+
         // The plants' root joints in user space, where the grass stretch
         // maps each `PLANT_POS` pixel: the plants stay glued to them, and
         // the vipers' orbit centers lift off them.
@@ -811,12 +902,11 @@ impl frost::Process for Demo {
         // its growth clock freezes — awaiting the player to pour water on
         // its root; the falling drops are matched against the roots'
         // hitboxes below, once the particles have been stepped.
-        let plants_node = &mut ctx.scene().root.children[2];
         let mut active_plants = 0usize;
         let mut grown_layers = 0usize;
         let started: [bool; PLANT_POS.len()] =
             std::array::from_fn(|i| i == 0 || self.plants[i - 1].fully_grown());
-        for (i, anchor) in anchors.iter().enumerate() {
+        for (i, _anchor) in anchors.iter().enumerate() {
             if started[i] {
                 active_plants += 1;
                 if !self.plants[i].complete() {
@@ -830,13 +920,6 @@ impl frost::Process for Demo {
                 }
             }
             grown_layers += self.plants[i].grown_layers();
-            self.plants[i].layout(
-                &mut plants_node.children[i],
-                *anchor,
-                &self.flower,
-                &self.tomato,
-                &self.tomato_fg,
-            );
         }
 
         // Buzz the vipers around the flower bench, in parallel with
@@ -905,10 +988,17 @@ impl frost::Process for Demo {
         // The left button's press and release edges. A press that starts
         // on a slot is a swap click: it uses no tool, and the release
         // completes the swap only if it lands on the same slot. A press
-        // that starts elsewhere is a use of the active tool.
+        // that starts elsewhere is a use of the active tool — or a tomato
+        // pick, when no tool is held at all.
         if left && !self.pressed {
             self.press_slot = on_slot;
-            if on_slot.is_none() && self.active == Some(Tool::WaterCan) {
+            if on_slot.is_none() && self.active.is_none() && self.picking.is_none() {
+                // No tool held: pick up a fully developed tomato under the
+                // pointer and carry it to the basket.
+                if let Some(hit) = self.pick_tomato(ctx) {
+                    self.picking = Some(hit);
+                }
+            } else if on_slot.is_none() && self.active == Some(Tool::WaterCan) {
                 // Hold the left mouse button down to turn the can a quarter
                 // turn counter-clockwise around the pointer; the release
                 // turns it back. Each leg is a `ROTATE_TIME`-second tween
@@ -933,7 +1023,11 @@ impl frost::Process for Demo {
                 }
             }
         } else if !left && self.pressed {
-            if let Some(slot) = self.press_slot {
+            if let Some((pi, si)) = self.picking.take() {
+                // The press was a tomato pick: drop the fruit — into the
+                // basket, or back onto the plant.
+                self.drop_tomato(ctx, pi, si);
+            } else if let Some(slot) = self.press_slot {
                 // The press started on a slot: complete the swap only if
                 // the release is still on that slot.
                 if on_slot == Some(slot) {
@@ -948,6 +1042,91 @@ impl frost::Process for Demo {
             self.press_slot = None;
         }
         self.pressed = left;
+
+        // A carried tomato rides the cursor: the pivot under the pointer,
+        // the fruit's top pinned to it, in window-centered user space on
+        // top of everything. It is pushed out of the basket's U every
+        // frame — the body's square matched against the walls mapped into
+        // window space — so the fruit cannot be carried through a wall.
+        // There is no gravity, and no collision with the fruit already in
+        // the basket.
+        if self.picking.is_some() {
+            let basket = &ctx.scene().root.children[7];
+            let s = basket.scale[0];
+            let [bx, by] = basket.transform.apply([0.0, 0.0]);
+            let [ox, oy] = plant::tomato_leaf_offset(sprite_size(&self.tomato));
+            let [hx, hy] = tomato_pick_half(sprite_size(&self.tomato));
+            let mut body = [
+                self.mouse[0] + TOMATO_PICK_SCALE * ox,
+                self.mouse[1] + TOMATO_PICK_SCALE * oy,
+            ];
+            for wall in basket_walls() {
+                let wall_box = frost::Collider::Box(frost::OrientedBox::new(
+                    [bx + s * wall.center[0], by + s * wall.center[1]],
+                    [s * wall.half[0], s * wall.half[1]],
+                ));
+                let body_box = frost::Collider::Box(frost::OrientedBox::new(body, [hx, hy]));
+                if let Some(push) = body_box.push_out(&wall_box) {
+                    body = [
+                        body[0] + push.dir[0] * push.depth,
+                        body[1] + push.dir[1] * push.depth,
+                    ];
+                }
+            }
+            ctx.scene().root.children[8].children[0].transform =
+                frost::Transform::translate(body[0] - TOMATO_PICK_SCALE * ox, body[1] - TOMATO_PICK_SCALE * oy);
+        }
+
+        // The fruit that has been dropped into the basket: each one stays
+        // exactly where it was released — no gravity, no settling, no
+        // tomato-to-tomato collision — but none may sit inside a wall:
+        // every body's square is pushed out of the U's three walls, in
+        // window space, every frame.
+        {
+            let basket = &ctx.scene().root.children[7];
+            let s = basket.scale[0];
+            let [bx, by] = basket.transform.apply([0.0, 0.0]);
+            let [ox, oy] = plant::tomato_leaf_offset(sprite_size(&self.tomato));
+            let [hx, hy] = tomato_pick_half(sprite_size(&self.tomato));
+            for fruit in &mut ctx.scene().root.children[7].children[1].children {
+                let [tx, ty] = fruit.transform.apply([0.0, 0.0]);
+                let mut body = [
+                    bx + s * tx + TOMATO_PICK_SCALE * ox,
+                    by + s * ty + TOMATO_PICK_SCALE * oy,
+                ];
+                for wall in basket_walls() {
+                    let wall_box = frost::Collider::Box(frost::OrientedBox::new(
+                        [bx + s * wall.center[0], by + s * wall.center[1]],
+                        [s * wall.half[0], s * wall.half[1]],
+                    ));
+                    let body_box = frost::Collider::Box(frost::OrientedBox::new(body, [hx, hy]));
+                    if let Some(push) = body_box.push_out(&wall_box) {
+                        body = [
+                            body[0] + push.dir[0] * push.depth,
+                            body[1] + push.dir[1] * push.depth,
+                        ];
+                    }
+                }
+                fruit.transform = frost::Transform::translate(
+                    (body[0] - bx - TOMATO_PICK_SCALE * ox) / s,
+                    (body[1] - by - TOMATO_PICK_SCALE * oy) / s,
+                );
+            }
+        }
+
+        // Lay the plants out, after the input edges, so a tomato that was
+        // picked or snapped back this frame is reposed by its plant — and
+        // a picked slot's pivot, out of the tree, is simply skipped.
+        let plants_node = &mut ctx.scene().root.children[2];
+        for (i, anchor) in anchors.iter().enumerate() {
+            self.plants[i].layout(
+                &mut plants_node.children[i],
+                *anchor,
+                &self.flower,
+                &self.tomato,
+                &self.tomato_fg,
+            );
+        }
 
         // The active tool's live pose, ticked every frame so an ongoing
         // tilt, return, or burst keeps moving; no tool held is a no-op.
@@ -1269,6 +1448,100 @@ impl Demo {
             None => node.shape = None,
         }
     }
+
+    /// Picks up the fully developed tomato the pointer rests on — the
+    /// first hit in plant, then slot, order — and starts carrying it: the
+    /// fruit's pivot is reparented out of its plant's slot and into the
+    /// held-fruit container (root children[8]), at the pick scale, under
+    /// the pointer, so it paints above everything. The plant's slot is
+    /// marked harvested while it is carried; the pointer must not be on a
+    /// slot or holding a tool, which the caller checks. Returns the picked
+    /// plant and slot.
+    fn pick_tomato(&mut self, ctx: &mut frost::Context) -> Option<(usize, usize)> {
+        // The hit test: every plant's unharvested, ripe slots, their body
+        // centers mapped to window space through the plant node's current
+        // transform (the sway included), against the pointer's square
+        // around the cursor.
+        let hit = {
+            let plant_nodes = &ctx.scene().root.children[2].children;
+            let [hx, hy] = tomato_pick_half(sprite_size(&self.tomato));
+            self.plants
+                .iter()
+                .enumerate()
+                .find_map(|(pi, p)| {
+                    (0..plant::FLOWER_N)
+                        .find(|&si| {
+                            if p.is_harvested(si) || !p.ripe(si) {
+                                return false;
+                            }
+                            let center = p
+                                .tomato_center(si, &plant_nodes[pi].children[5 + si], &self.tomato);
+                            let world =
+                                frost::Transform::scale(PLANT_SCALE, PLANT_SCALE)
+                                    .compose(&plant_nodes[pi].transform);
+                            let [cx, cy] = world.apply(center);
+                            (cx - self.mouse[0]).abs() <= hx && (cy - self.mouse[1]).abs() <= hy
+                        })
+                        .map(|si| (pi, si))
+                })
+        };
+        let (pi, si) = hit?;
+        self.plants[pi].harvest(si);
+        // Rehome the pivot: out of the slot, into the held-fruit
+        // container, at the pick scale under the pointer.
+        let root = &mut ctx.scene().root;
+        let pivot = root.children[2].children[pi].children[5 + si].children.remove(1);
+        let mut pivot = *pivot;
+        pivot.scale = [TOMATO_PICK_SCALE, TOMATO_PICK_SCALE];
+        pivot.transform =
+            frost::Transform::translate(self.mouse[0], self.mouse[1]);
+        root.children[8].children.push(Box::new(pivot));
+        Some((pi, si))
+    }
+
+    /// Drops the carried tomato picked from (plant, slot) `(pi, si)`:
+    /// with the body's center inside the basket's U — the mouth's x range
+    /// and above the floor — the pivot is reparented into the basket's
+    /// fruit container (root children[7]'s middle child), so it renders
+    /// behind the front half and in front of the back, and it stays
+    /// exactly where it was released: no gravity, no tomato-to-tomato
+    /// collision, the fruit piles freely. Otherwise it goes back to its
+    /// plant — the harvest flag clears and the pivot is reparented into
+    /// the slot — where the layout, which runs later in the same frame,
+    /// reposes it.
+    fn drop_tomato(&mut self, ctx: &mut frost::Context, pi: usize, si: usize) {
+        // The body's center in window space, and its position in the
+        // basket's local space, where the U is measured.
+        let (w, h) = ctx.size();
+        let s = basket_scale(h);
+        let center = basket_center(w, h);
+        let [ox, oy] = plant::tomato_leaf_offset(sprite_size(&self.tomato));
+        let body = [
+            self.mouse[0] + TOMATO_PICK_SCALE * ox,
+            self.mouse[1] + TOMATO_PICK_SCALE * oy,
+        ];
+        let lx = (body[0] - center[0]) / s;
+        let ly = (body[1] - center[1]) / s;
+        let kept = basket_accepts(lx, ly);
+
+        let root = &mut ctx.scene().root;
+        let mut pivot = *root.children[8].children.remove(0);
+        if kept {
+            // Scale the pivot into the basket's local space and pin it so
+            // the body's center maps back to the release point.
+            pivot.scale = [TOMATO_PICK_SCALE / s, TOMATO_PICK_SCALE / s];
+            pivot.transform = frost::Transform::translate(
+                (body[0] - center[0]) / s,
+                (body[1] - center[1]) / s,
+            );
+            root.children[7].children[1].children.push(Box::new(pivot));
+        } else {
+            // Snap back to the plant; the layout reposes the pivot this
+            // same frame.
+            self.plants[pi].unharvest(si);
+            root.children[2].children[pi].children[5 + si].children.push(Box::new(pivot));
+        }
+    }
 }
 
 fn main() {
@@ -1316,6 +1589,10 @@ fn main() {
         .expect("failed to load assets/sprites/tomato.png");
     let tomato_fg = frost::Shape::sprite(format!("{root}/assets/sprites/tomato_fg.png"))
         .expect("failed to load assets/sprites/tomato_fg.png");
+    let basket_back = frost::Shape::sprite(format!("{root}/assets/sprites/BasketBack.png"))
+        .expect("failed to load assets/sprites/BasketBack.png");
+    let basket_front = frost::Shape::sprite(format!("{root}/assets/sprites/BasketFront.png"))
+        .expect("failed to load assets/sprites/BasketFront.png");
     let plant = plant::Plant::new([&plant1, &plant2, &plant3, &plant4, &plant5]);
 
     // The audio output, decoded once at startup, and the bug clips: the
@@ -1552,9 +1829,42 @@ fn main() {
                 // right-button switch — changes the shape — and the scale,
                 // since the spray frames are drawn at their natural size —
                 // on this same node; the stored tool is mirrored in the
-                // held panel's right cell instead. It stays the last child,
-                // so the cursor paints above the panel, the plants, the
-                // bees, and the bugs.
+                // held panel's right cell instead. It sits under the basket
+                // and the held-fruit node, so the cursor paints above the
+                // panel, the plants, the bees, and the bugs, and the
+                // carried fruit paints above the cursor.
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
+                // The harvest basket in the bottom left, just right of the
+                // items panel, positioned and scaled by the process every
+                // frame. Its children, in draw order, are the back half
+                // (child 0), the shapeless fruit container (child 1) that
+                // dropped tomatoes reparent into — piled on top of each
+                // other, with no gravity and no tomato-to-tomato
+                // collision — and the front half (child 2), so a dropped
+                // tomato renders behind the front rim and in front of the
+                // back.
+                children: vec![
+                    Box::new(frost::SceneNode {
+                        shape: Some(basket_back),
+                        ..Default::default()
+                    }),
+                    Box::new(frost::SceneNode { ..Default::default() }),
+                    Box::new(frost::SceneNode {
+                        shape: Some(basket_front),
+                        ..Default::default()
+                    }),
+                ],
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
+                // The held-fruit container: the carried tomato's pivot
+                // reparents here while the mouse button is down, so the
+                // fruit paints above everything — the panel, the plants,
+                // the basket, the cursor. The group carries no shape or
+                // scale of its own; the child rides the cursor in
+                // window-centered user space.
                 ..Default::default()
             }),
         ],
@@ -1571,6 +1881,7 @@ fn main() {
             held: None,
             press_slot: None,
             pressed: false,
+            picking: None,
             right_pressed: false,
             angle: 0.0,
             rotation: frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once),
@@ -1677,5 +1988,73 @@ mod tests {
         assert!(in_root_hitbox([anchor[0], anchor[1] + ROOT_RADIUS], anchor));
         assert!(!in_root_hitbox([anchor[0] + ROOT_RADIUS * 1.01, anchor[1]], anchor));
         assert!(!in_root_hitbox([anchor[0], anchor[1] - ROOT_RADIUS * 1.01], anchor));
+    }
+
+    /// The basket rides in the bottom left corner of a 1920×1080 window:
+    /// at the panel's fit scale, `BASKET_GAP` clear of the items panel's
+    /// right edge and `MARGIN` clear of the bottom border.
+    #[test]
+    fn basket_fits_just_right_of_the_items_panel() {
+        let (w, h) = (1920.0, 1080.0);
+        let s = basket_scale(h);
+        let c = basket_center(w, h);
+
+        // The same fit the items panel uses.
+        assert!((s - (h - 2.0 * MARGIN) / ITEMS_SIZE[1]).abs() < 1e-9);
+        // The panel's right edge, from its mid-left placement.
+        let panel_right = -(w / 2.0) + MARGIN + ITEMS_SIZE[0] * s;
+        assert!(
+            (c[0] - BASKET_IMAGE[0] * s / 2.0 - (panel_right + BASKET_GAP)).abs() < 1e-6,
+            "the basket's left edge is not BASKET_GAP right of the panel"
+        );
+        assert!(
+            (c[1] - BASKET_IMAGE[1] * s / 2.0 - (-h / 2.0 + MARGIN)).abs() < 1e-6,
+            "the basket's bottom edge is not MARGIN off the bottom border"
+        );
+    }
+
+    /// [basket_accepts] keeps a drop only inside the U's mouth: the x
+    /// range between the walls' inner faces, above the floor — with no
+    /// upper bound, so fruit dropped above the rim is kept and can pile
+    /// high.
+    #[test]
+    fn basket_accepts_inside_the_u() {
+        assert!(basket_accepts(0.0, 0.0), "the cavity's middle");
+        assert!(basket_accepts(-107.0, -9.0), "just inside the left mouth");
+        assert!(basket_accepts(111.0, -9.0), "just inside the right mouth");
+        assert!(basket_accepts(0.0, 500.0), "above the rim, for the pile");
+        assert!(!basket_accepts(-108.0, 0.0), "on the left mouth's edge");
+        assert!(!basket_accepts(112.0, 0.0), "on the right mouth's edge");
+        assert!(!basket_accepts(-109.0, 0.0), "outside the left mouth");
+        assert!(!basket_accepts(113.0, 0.0), "outside the right mouth");
+        assert!(!basket_accepts(0.0, -10.0), "on the floor");
+        assert!(!basket_accepts(0.0, -11.0), "below the floor");
+    }
+
+    /// The [basket_walls] U encloses its acceptance region: a small body
+    /// centered well inside the mouth — at least its radius clear of the
+    /// walls' inner faces, the floor, and the walls' tops — clears every
+    /// wall, while a body at the left wall's face sits in it.
+    #[test]
+    fn basket_walls_enclose_the_acceptance_region() {
+        for lx in [-103.0, -60.0, 0.0, 60.0, 107.0] {
+            for ly in [-5.0, 20.0, 60.0, 95.0] {
+                assert!(basket_accepts(lx, ly));
+                let body = frost::Collider::Box(frost::OrientedBox::new(
+                    [lx, ly],
+                    [4.0, 4.0],
+                ));
+                for wall in basket_walls() {
+                    assert!(
+                        body.push_out(&frost::Collider::Box(wall)).is_none(),
+                        "accepted point ({lx}, {ly}) inside a wall"
+                    );
+                }
+            }
+        }
+        // The left wall's face: inside it.
+        let body = frost::Collider::Box(frost::OrientedBox::new([-124.0, 30.0], [4.0, 4.0]));
+        let left = frost::Collider::Box(basket_walls()[0]);
+        assert!(body.push_out(&left).is_some(), "the wall's face must collide");
     }
 }
