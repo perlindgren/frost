@@ -61,10 +61,14 @@
 //! the first starts at launch, and each next one starts when the previous
 //! is fully grown — concurrently with the tool system. Each root joint
 //! stays glued to its own `grass.png` pixel across resizes. Once a slice is
-//! fully grown, its flowers open: the four lower slices' hand-picked spawn
-//! points — the top slice bears none — are populated with
-//! `assets/sprites/flower.png`, one slot per point, and each flower rides
-//! its slice's transform so it sways with the plant.
+//! fully grown, its blooms grow: at each of the four lower slices'
+//! hand-picked spawn points — the top slice bears none — a flower grows
+//! from zero to full size over 10 seconds, its `assets/sprites/flower.png`
+//! tinted light green to yellow; once the flower is fully grown, a tomato
+//! grows out of the same point over 10 seconds — the white body of
+//! `assets/sprites/tomato.png` tinted dark green to light red, with the
+//! dark calyx and stem of `assets/sprites/tomato_fg.png` drawn on top.
+//! Each bloom rides its slice's transform so it sways with the plant.
 //!
 //! A swarm of thirty vipers buzzes around the flower bench — the row of
 //! plants — concurrently with everything else, through the [`vipers`]
@@ -581,10 +585,18 @@ struct Demo {
     bug1: frost::Shape,
     bug2: frost::Shape,
     bug3: frost::Shape,
-    /// The flower shape, opened on a plant slice's spawn points once the
-    /// slice reaches full size; the plant nodes' flower slots swap it in
-    /// as cheap `Arc` clones.
+    /// The flower shape, grown on a plant slice's spawn points from the
+    /// frame its slice reaches full size; the plant nodes' flower leaves
+    /// swap it in as cheap `Arc` clones.
     flower: frost::Shape,
+    /// The tomato background (the white fruit body), grown out of each
+    /// flower once it is fully grown; the plant nodes' tomato leaves swap
+    /// it in as cheap `Arc` clones.
+    tomato: frost::Shape,
+    /// The tomato foreground (the dark calyx and stem), drawn on top of
+    /// the background at the same anchor; the plant nodes' tomato leaves
+    /// swap it in as cheap `Arc` clones, unmodulated.
+    tomato_fg: frost::Shape,
     /// The drops pouring out of the spout: the simulation state, stepped
     /// once per frame.
     water: frost::ParticleSystem,
@@ -679,7 +691,13 @@ impl frost::Process for Demo {
                 self.plants[i].step(dt);
             }
             grown_layers += self.plants[i].grown_layers();
-            self.plants[i].layout(&mut plants_node.children[i], *anchor, &self.flower);
+            self.plants[i].layout(
+                &mut plants_node.children[i],
+                *anchor,
+                &self.flower,
+                &self.tomato,
+                &self.tomato_fg,
+            );
         }
 
         // Buzz the vipers around the flower bench, in parallel with
@@ -1087,6 +1105,10 @@ fn main() {
         .expect("failed to load assets/sprites/plant5.png");
     let flower = frost::Shape::sprite(format!("{root}/assets/sprites/flower.png"))
         .expect("failed to load assets/sprites/flower.png");
+    let tomato = frost::Shape::sprite(format!("{root}/assets/sprites/tomato.png"))
+        .expect("failed to load assets/sprites/tomato.png");
+    let tomato_fg = frost::Shape::sprite(format!("{root}/assets/sprites/tomato_fg.png"))
+        .expect("failed to load assets/sprites/tomato_fg.png");
     let plant = plant::Plant::new([&plant1, &plant2, &plant3, &plant4, &plant5]);
 
     // The audio output, decoded once at startup, and the bug clips: the
@@ -1118,10 +1140,13 @@ fn main() {
     // (plant1's lower joint), positioned by the process every frame. The
     // fit scale is constant — each slice grows individually, riding the
     // node. The five slice children are followed by the FLOWER_N shapeless
-    // flower slots: the process opens each on its slice's full growth and
-    // lays it on the slice's spawn point, so the flowers paint on top of
-    // the slices and sway with the plant. The clones are cheap `Arc`
-    // clones of the slice pixel buffers.
+    // flower slots, each a pivot that the process lays on its slice's
+    // spawn point; a slot's children are a tomato pivot (the white fruit
+    // body leaf under the dark calyx-and-stem leaf, both pinned to the
+    // tomato's anchor) and the flower leaf on top, so the blooms paint on
+    // top of the slices and sway with the plant. The process grows and
+    // tints the leaves. The clones are cheap `Arc` clones of the slice and
+    // bloom pixel buffers.
     let mut plant_children: Vec<Box<frost::SceneNode>> = vec![
         Box::new(frost::SceneNode {
             shape: Some(plant1),
@@ -1144,10 +1169,28 @@ fn main() {
             ..Default::default()
         }),
     ];
-    plant_children.extend(
-        (0..plant::FLOWER_N)
-            .map(|_| Box::new(frost::SceneNode::default())),
-    );
+    plant_children.extend((0..plant::FLOWER_N).map(|_| {
+        Box::new(frost::SceneNode {
+            children: vec![
+                // The tomato pivot: shapeless; the process scales it to
+                // grow the fruit about the flower and lays its two leaves
+                // on the tomato's anchor.
+                Box::new(frost::SceneNode {
+                    children: vec![
+                        // The fruit body (background), under the
+                        // foreground.
+                        Box::new(frost::SceneNode::default()),
+                        // The calyx and stem (foreground), on top.
+                        Box::new(frost::SceneNode::default()),
+                    ],
+                    ..Default::default()
+                }),
+                // The flower leaf, on top of the tomato.
+                Box::new(frost::SceneNode::default()),
+            ],
+            ..Default::default()
+        })
+    }));
     let plant_node = frost::SceneNode {
         scale: [PLANT_SCALE, PLANT_SCALE],
         children: plant_children,
@@ -1325,6 +1368,8 @@ fn main() {
             tjatters,
             plops,
             flower,
+            tomato,
+            tomato_fg,
             water: frost::ParticleSystem::new(),
             spray: frost::ParticleSystem::new(),
             rng: Rng::new(),

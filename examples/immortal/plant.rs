@@ -27,17 +27,23 @@
 //! `layout` lays the chain out in a plant node whose children — in chain
 //! order — are the five slice nodes, anchoring the root joint at a given
 //! parent-space point and applying the base rock and the joint bends.
-//! Once a slice is fully grown, its flowers open: the four lower slices'
+//! Once a slice is fully grown, its blooms open: the four lower slices'
 //! hand-picked spawn points — [FLOWER_SPAWNS]; the top slice bears none —
-//! are populated with the flower shape `layout` receives, one slot per
-//! point, in the flower children that follow the slice nodes, and each
-//! flower rides its slice's transform so it sways with the plant. The
-//! plant's fit scale is the plant node's own `scale`, set once by the
-//! caller: the node's scale applies before its transform, to its subtree,
-//! so the whole plant sizes around the root joint while the joint itself
-//! still lands exactly on the anchor. The [`layer_midpoints`] function
-//! gives the five layer-segment midpoints along the static, fully grown
-//! chain — the sway left out — for the vipers' orbit centers.
+//! each get a flower slot, in the flower children that follow the slice
+//! nodes. A slot's flower grows from zero to full size over
+//! [FLOWER_GROW_TIME] seconds, its sprite tinted light green to yellow,
+//! and when the flower is fully grown its tomato grows out of the same
+//! point from zero to full size over [TOMATO_GROW_TIME] seconds: the white
+//! fruit body (`tomato.png`) tinted dark green to light red, with the dark
+//! calyx and stem (`tomato_fg.png`) drawn on top, both pinned to
+//! [TOMATO_ANCHOR]. Each slot rides its slice's transform so the whole
+//! bloom sways with the plant. The plant's fit scale is the plant node's
+//! own `scale`, set once by the caller: the node's scale applies before
+//! its transform, to its subtree, so the whole plant sizes around the root
+//! joint while the joint itself still lands exactly on the anchor. The
+//! [`layer_midpoints`] function gives the five layer-segment midpoints
+//! along the static, fully grown chain — the sway left out — for the
+//! vipers' orbit centers.
 
 /// The hand-picked joints of the five slices, in each image's pixel space:
 /// `(0, 0)` at the upper-left, `x` right, `y` down. `[0]` is where the
@@ -96,6 +102,66 @@ pub const FLOWER_N: usize =
         + FLOWER_SPAWNS[2].len()
         + FLOWER_SPAWNS[3].len();
 
+/// How long a flower takes to grow from zero to its full size, in seconds:
+/// it starts the moment its slice is fully grown and reaches full size
+/// [FLOWER_GROW_TIME] seconds later, growing out of its spawn point.
+pub const FLOWER_GROW_TIME: f32 = 10.0;
+
+/// How long a tomato takes to grow from zero to its full size, in seconds:
+/// it starts the moment its flower is fully grown and reaches full size
+/// [TOMATO_GROW_TIME] seconds later, growing out of the same point.
+pub const TOMATO_GROW_TIME: f32 = 10.0;
+
+/// The tomato's attachment anchor in the tomato images' pixel space:
+/// `(0, 0)` at the upper-left, `x` right, `y` down. Both `tomato.png` and
+/// `tomato_fg.png` are the same size and share this anchor, so the dark
+/// foreground lines up pixel-for-pixel on the white background; the anchor
+/// is where the stem meets the flower, and it stays pinned to the flower
+/// for the whole growth.
+pub const TOMATO_ANCHOR: (f32, f32) = (308.0, 411.0);
+
+/// The flower sprite's color at the start of its growth: light green.
+pub const FLOWER_BUD: frost::Color = frost::Color {
+    r: 0.6,
+    g: 0.85,
+    b: 0.4,
+    a: 1.0,
+};
+
+/// The flower sprite's color at full growth: yellow.
+pub const FLOWER_BLOOM: frost::Color = frost::Color {
+    r: 1.0,
+    g: 0.85,
+    b: 0.2,
+    a: 1.0,
+};
+
+/// The tomato background's color at the start of its growth: dark green.
+pub const TOMATO_GREEN: frost::Color = frost::Color {
+    r: 0.13,
+    g: 0.4,
+    b: 0.13,
+    a: 1.0,
+};
+
+/// The tomato background's color at full growth: light red.
+pub const TOMATO_RED: frost::Color = frost::Color {
+    r: 0.95,
+    g: 0.45,
+    b: 0.4,
+    a: 1.0,
+};
+
+/// The flower slot's children, in draw order: the tomato pivot first — so
+/// the flower leaf paints on top of the stem — then the flower leaf.
+const SLOT_TOMATO: usize = 0;
+const SLOT_FLOWER: usize = 1;
+
+/// The tomato pivot's children, in draw order: the white fruit body
+/// (background) first, then the dark calyx and stem (foreground) on top.
+const TOMATO_BG: usize = 0;
+const TOMATO_FG: usize = 1;
+
 /// The travelling wind's angular frequency, in radians per second: the base
 /// rock and the two joint bends lag each other by a fixed phase.
 const SWAY_FREQ: f32 = 1.2;
@@ -150,6 +216,49 @@ fn link(shape: &frost::Shape, joints: [(f32, f32); 2]) -> Link {
 fn flower_points(shape: &frost::Shape, pts: &[(f32, f32)]) -> Vec<[f32; 2]> {
     let size = sprite_size(shape);
     pts.iter().map(|&(jx, jy)| local_joint(jx, jy, size)).collect()
+}
+
+/// The flower's growth, 0..1, at plant-clock `t` for a slice that finishes
+/// growing at `grow_time`: zero before, one [FLOWER_GROW_TIME] seconds
+/// after, linear in between.
+fn flower_growth(t: f32, grow_time: f32) -> f32 {
+    ((t - grow_time) / FLOWER_GROW_TIME).clamp(0.0, 1.0)
+}
+
+/// The tomato's growth, 0..1, at plant-clock `t` for a slice that finishes
+/// growing at `grow_time`: it starts when the flower is fully grown
+/// ([FLOWER_GROW_TIME] seconds after the slice) and reaches one
+/// [TOMATO_GROW_TIME] seconds later, linear in between.
+fn tomato_growth(t: f32, grow_time: f32) -> f32 {
+    ((t - grow_time - FLOWER_GROW_TIME) / TOMATO_GROW_TIME).clamp(0.0, 1.0)
+}
+
+/// Lerps two colors channel by channel: `a` at `t = 0`, `b` at `t = 1`.
+fn mix(a: frost::Color, b: frost::Color, t: f32) -> frost::Color {
+    frost::Color {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: a.a + (b.a - a.a) * t,
+    }
+}
+
+/// The flower sprite's color at growth `g`: light green to yellow.
+fn flower_color(g: f32) -> frost::Color {
+    mix(FLOWER_BUD, FLOWER_BLOOM, g)
+}
+
+/// The tomato background's color at growth `g`: dark green to light red.
+fn tomato_color(g: f32) -> frost::Color {
+    mix(TOMATO_GREEN, TOMATO_RED, g)
+}
+
+/// The translate that puts the tomato's [TOMATO_ANCHOR] pixel on its leaf's
+/// origin, for an image of the given size: the negation of the anchor's
+/// node-local offset, with the same y flip as the slice joints.
+fn tomato_leaf_offset(size: [f32; 2]) -> [f32; 2] {
+    let a = local_joint(TOMATO_ANCHOR.0, TOMATO_ANCHOR.1, size);
+    [-a[0], -a[1]]
 }
 
 /// A five-slice plant that grows out of its root joint and sways in a
@@ -236,9 +345,16 @@ impl Plant {
 
     /// Lays the plant out in `node`, whose children — in chain order — are
     /// the five slice nodes followed by the [FLOWER_N] flower slots, in
-    /// flattened [FLOWER_SPAWNS] order. `flower` is the shape opened in a
-    /// slot once its slice is fully grown; `layout` owns the slots'
-    /// visibility and transforms from that frame on.
+    /// flattened [FLOWER_SPAWNS] order. Each flower slot is a pivot whose
+    /// children, in draw order, are a tomato pivot — whose children are the
+    /// `tomato` background leaf and the `tomato_fg` foreground leaf, both
+    /// pinned to [TOMATO_ANCHOR] — and the `flower` leaf on top. `layout`
+    /// owns the slots' and their leaves' visibility, growth, and tints from
+    /// that frame on: a slot's flower grows from zero to full size over
+    /// [FLOWER_GROW_TIME] seconds after its slice finishes, tinted light
+    /// green to yellow, and its tomato grows from zero to full size over
+    /// [TOMATO_GROW_TIME] seconds after the flower finishes, its background
+    /// tinted dark green to light red.
     ///
     /// `node`'s origin is the plant's root joint (plant1's lower joint):
     /// the base rock turns the whole plant around that joint, and its
@@ -255,6 +371,8 @@ impl Plant {
         node: &mut frost::SceneNode,
         anchor: [f32; 2],
         flower: &frost::Shape,
+        tomato: &frost::Shape,
+        tomato_fg: &frost::Shape,
     ) {
         // A gentle traveling wind: the base rock and the two joint bends
         // lag each other, and each bend is a little stronger than the last,
@@ -312,24 +430,67 @@ impl Plant {
             anchor = [anchor[0] + step[0], anchor[1] + step[1]];
         }
 
-        // The four lower slices' flowers, on the flower slots that follow
-        // the five slice children, in flattened spawn order: a slice's
-        // flowers open on the frame its slice reaches full size, and each
-        // flower is laid on its spawn point mapped through the slice's
-        // current transform, so the flowers sway with the plant.
+        // The four lower slices' blooms, on the flower slots that follow
+        // the five slice children, in flattened spawn order. A slot's
+        // flower grows from zero to full size over [FLOWER_GROW_TIME]
+        // seconds after its slice finishes, and its tomato grows from zero
+        // to full size over [TOMATO_GROW_TIME] seconds after the flower
+        // finishes. The slot is a pure pivot: it carries no shape, scale,
+        // or tint of its own (a tint there would leak onto the tomato),
+        // only the translate that lays its origin on the spawn point
+        // mapped through the slice's current transform, so the whole bloom
+        // sways with the plant.
         let mut slot = 0usize;
         for (i, spawns) in self.tomato_spawn.iter().enumerate() {
-            let open = self.t >= GROW_TIMES[i];
             for &pt in spawns {
                 let child = &mut node.children[5 + slot];
-                if open {
+                let fg = flower_growth(self.t, GROW_TIMES[i]);
+                let tg = tomato_growth(self.t, GROW_TIMES[i]);
+                if fg > 0.0 {
                     let p = slice_tf[i].apply(pt);
                     child.transform = frost::Transform::translate(p[0], p[1]);
-                    if child.shape.is_none() {
-                        child.shape = Some(flower.clone());
+                }
+                // The flower leaf, on top of the tomato: grows about the
+                // spawn point, tinted light green to yellow.
+                let flower_leaf = &mut child.children[SLOT_FLOWER];
+                if fg > 0.0 {
+                    if flower_leaf.shape.is_none() {
+                        flower_leaf.shape = Some(flower.clone());
+                    }
+                    flower_leaf.modulate = flower_color(fg);
+                } else {
+                    flower_leaf.shape = None;
+                }
+                flower_leaf.scale = [fg, fg];
+                // The tomato pivot: grows about the same point, a little
+                // later — it starts when the flower is fully grown — and
+                // its two leaves keep the stem's anchor pinned to the
+                // flower for the whole growth.
+                let tomato_pivot = &mut child.children[SLOT_TOMATO];
+                tomato_pivot.scale = [tg, tg];
+                let [ox, oy] = tomato_leaf_offset(sprite_size(tomato));
+                // The background: the tinted fruit body, dark green to
+                // light red.
+                let bg = &mut tomato_pivot.children[TOMATO_BG];
+                bg.transform = frost::Transform::translate(ox, oy);
+                if tg > 0.0 {
+                    if bg.shape.is_none() {
+                        bg.shape = Some(tomato.clone());
+                    }
+                    bg.modulate = tomato_color(tg);
+                } else {
+                    bg.shape = None;
+                }
+                // The foreground: the dark calyx and stem, drawn on top,
+                // unmodulated.
+                let fg_leaf = &mut tomato_pivot.children[TOMATO_FG];
+                fg_leaf.transform = frost::Transform::translate(ox, oy);
+                if tg > 0.0 {
+                    if fg_leaf.shape.is_none() {
+                        fg_leaf.shape = Some(tomato_fg.clone());
                     }
                 } else {
-                    child.shape = None;
+                    fg_leaf.shape = None;
                 }
                 slot += 1;
             }
@@ -368,7 +529,8 @@ mod tests {
     }
 
     /// A plant node built the way the example builds it: the five slice
-    /// shapes followed by the [FLOWER_N] shapeless flower slots.
+    /// shapes followed by the [FLOWER_N] flower slots, each a pivot holding
+    /// a tomato pivot (background leaf, foreground leaf) and a flower leaf.
     fn plant_node() -> frost::SceneNode {
         let s = slice();
         let mut children: Vec<Box<frost::SceneNode>> = (0..5)
@@ -379,7 +541,21 @@ mod tests {
                 })
             })
             .collect();
-        children.extend((0..FLOWER_N).map(|_| Box::new(frost::SceneNode::default())));
+        children.extend((0..FLOWER_N).map(|_| {
+            Box::new(frost::SceneNode {
+                children: vec![
+                    Box::new(frost::SceneNode {
+                        children: vec![
+                            Box::new(frost::SceneNode::default()),
+                            Box::new(frost::SceneNode::default()),
+                        ],
+                        ..Default::default()
+                    }),
+                    Box::new(frost::SceneNode::default()),
+                ],
+                ..Default::default()
+            })
+        }));
         frost::SceneNode {
             children,
             ..Default::default()
@@ -433,38 +609,85 @@ mod tests {
         );
     }
 
-    /// [Plant::layout] opens a slice's flower slots on the frame its slice
-    /// reaches full size, slice by slice from the base up: before
-    /// GROW_TIMES[0] every slot is shapeless, and from each GROW_TIMES[i]
-    /// on slice i's slots — 1, then 4, then 9, then 15 in total — carry
-    /// the flower shape, in flattened spawn order.
+    /// [Plant::layout] grows a slice's blooms, slice by slice from the base
+    /// up: a slice's flower starts growing from zero the frame its slice
+    /// reaches full size and is full size, yellow, [FLOWER_GROW_TIME]
+    /// seconds later; its tomato starts when the flower is done and is full
+    /// size, light red, [TOMATO_GROW_TIME] seconds after that.
     #[test]
-    fn flowers_open_as_each_slice_finishes_growing() {
+    fn flowers_and_tomatoes_grow_as_each_slice_finishes_growing() {
         let s = slice();
         let mut node = plant_node();
 
-        // Before the base slice finishes, no flower has opened.
+        // Before the base slice finishes, nothing has started to grow:
+        // every slot's flower and tomato leaves are shapeless, at zero
+        // growth.
         let p = plant_at(GROW_TIMES[0] - 0.001);
-        p.layout(&mut node, [0.0, 0.0], &s);
+        p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
         for c in node.children.iter().skip(5) {
-            assert!(c.shape.is_none(), "a flower opened early");
-        }
-
-        // From each slice's GROW_TIMES entry on, its slots are open:
-        // slices 0..=i hold exactly their own spawn points.
-        let mut open = 0usize;
-        for (i, g) in GROW_TIMES[..4].iter().enumerate() {
-            open += FLOWER_SPAWNS[i].len();
-            let p = plant_at(*g);
-            p.layout(&mut node, [0.0, 0.0], &s);
-            for (j, c) in node.children.iter().enumerate().skip(5) {
-                assert_eq!(
-                    c.shape.is_some(),
-                    j - 5 < open,
-                    "flower slot {j} wrong at t = {g}"
-                );
+            let f = &c.children[SLOT_FLOWER];
+            let t = &c.children[SLOT_TOMATO];
+            assert!(f.shape.is_none(), "a flower started early");
+            assert_eq!(f.scale, [0.0, 0.0]);
+            assert_eq!(t.scale, [0.0, 0.0]);
+            for leaf in t.children.iter() {
+                assert!(leaf.shape.is_none(), "a tomato started early");
             }
         }
+
+        // Mid flower growth, the flower is present but half sized, tinted
+        // between green and yellow; the tomato has not started.
+        let p = plant_at(GROW_TIMES[0] + FLOWER_GROW_TIME / 2.0);
+        p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
+        let f = &node.children[5].children[SLOT_FLOWER];
+        assert!(f.shape.is_some());
+        assert!((f.scale[0] - 0.5).abs() < 1e-6, "flower scale mid-growth");
+        let t = &node.children[5].children[SLOT_TOMATO];
+        assert_eq!(t.scale, [0.0, 0.0], "the tomato started early");
+        for leaf in t.children.iter() {
+            assert!(leaf.shape.is_none());
+        }
+
+        // At full flower growth the flower is full size and yellow; the
+        // tomato has not started.
+        let bloom = GROW_TIMES[0] + FLOWER_GROW_TIME;
+        let p = plant_at(bloom);
+        p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
+        let f = &node.children[5].children[SLOT_FLOWER];
+        assert_eq!(f.scale, [1.0, 1.0]);
+        assert_eq!(f.modulate, FLOWER_BLOOM, "flower color at full growth");
+        let t = &node.children[5].children[SLOT_TOMATO];
+        assert_eq!(t.scale, [0.0, 0.0]);
+
+        // Mid tomato growth, both tomato leaves are present and half sized;
+        // the background is tinted between green and red.
+        let p = plant_at(bloom + TOMATO_GROW_TIME / 2.0);
+        p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
+        let t = &node.children[5].children[SLOT_TOMATO];
+        assert!((t.scale[0] - 0.5).abs() < 1e-6, "tomato scale mid-growth");
+        assert!(t.children[TOMATO_BG].shape.is_some());
+        assert!(t.children[TOMATO_FG].shape.is_some());
+
+        // At full tomato growth the tomato is full size and light red; the
+        // foreground is unmodulated.
+        let p = plant_at(bloom + TOMATO_GROW_TIME);
+        p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
+        let t = &node.children[5].children[SLOT_TOMATO];
+        assert_eq!(t.scale, [1.0, 1.0]);
+        assert_eq!(
+            t.children[TOMATO_BG].modulate,
+            TOMATO_RED,
+            "tomato color at full growth"
+        );
+        assert_eq!(
+            t.children[TOMATO_FG].modulate,
+            frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0
+            }
+        );
     }
 
     /// [Plant::layout] lays each flower on its slice's spawn point mapped
@@ -478,7 +701,7 @@ mod tests {
         let t = FULL_GROW_TIME + 1.0;
         let p = plant_at(t);
         let mut node = plant_node();
-        p.layout(&mut node, [0.0, 0.0], &s);
+        p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
 
         // Each flower sits on its slice: the child's translate is the
         // slice's transform applied to the spawn point.
@@ -502,7 +725,7 @@ mod tests {
         // composed position (node transform then slot transform) moved.
         let p = plant_at(t + 1.0);
         let mut node2 = plant_node();
-        p.layout(&mut node2, [0.0, 0.0], &s);
+        p.layout(&mut node2, [0.0, 0.0], &s, &s, &s);
         let composed = |node: &frost::SceneNode| {
             node.transform.apply(node.children[5].transform.apply([0.0, 0.0]))
         };
