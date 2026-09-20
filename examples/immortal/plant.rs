@@ -16,7 +16,10 @@
 //! moves the most. The clock keeps ticking past full size — the blooms
 //! that open off the finished slices keep growing, each flower and its
 //! tomato riding their slice's clock, the whole plant complete at
-//! `BLOOM_TIME`.
+//! `BLOOM_TIME`. A tomato placed in the basket starts its bloom over:
+//! the flower is removed and regrows from zero on the same timetable —
+//! [FLOWER_GROW_TIME] for the flower, [TOMATO_GROW_TIME] for the tomato —
+//! and the plant is complete again only when every regrown bloom is full.
 //!
 //! The joints are given in each image's own pixel space: `(0, 0)` is the
 //! image's upper-left corner, `x` grows to the right and `y` grows down. A
@@ -296,11 +299,20 @@ pub struct Plant {
     /// flattened slice order: `new` converts [FLOWER_SPAWNS] against each
     /// texture's real size.
     tomato_spawn: [Vec<[f32; 2]>; 4],
-    /// Whether each bloom's tomato has been picked: while a slot is
-    /// harvested, the bloom's tomato pivot has been reparented out of the
-    /// plant's tree, so [Plant::layout] must skip it; unharvesting
-    /// restores the pivot and its growth.
+    /// Whether each bloom's tomato is currently picked: while a slot is
+    /// harvested, the bloom's tomato pivot is reparented out of the
+    /// plant's tree, so [Plant::layout] must skip it; a failed drop
+    /// unharvests the slot and restores the pivot, and a drop kept in the
+    /// basket regrows the bloom — the pivot goes, and a fresh one regrows
+    /// in its place.
     harvested: [bool; FLOWER_N],
+    /// The plant-clock moment each bloom's schedule was restarted by
+    /// [Plant::regrow] after its tomato was placed in the basket: `None`
+    /// keeps the bloom on its slice's first-bloom timetable, where the
+    /// flower starts at [GROW_TIMES]; at the stamped moment the flower
+    /// starts growing from zero over [FLOWER_GROW_TIME], its tomato over
+    /// [TOMATO_GROW_TIME] after it.
+    regrow_at: [Option<f32>; FLOWER_N],
 }
 
 impl Plant {
@@ -326,6 +338,7 @@ impl Plant {
                 flower_points(shapes[3], FLOWER_SPAWNS[3]),
             ],
             harvested: [false; FLOWER_N],
+            regrow_at: [None; FLOWER_N],
         }
     }
 
@@ -344,10 +357,17 @@ impl Plant {
 
     /// Whether the plant is complete: every slice is fully grown and every
     /// bloom — each flower and its tomato — has reached full size, from
-    /// `BLOOM_TIME` on; before that, fully grown slices keep opening
-    /// blooms as the clock advances.
+    /// `BLOOM_TIME` on, and every bloom reset by [Plant::regrow] after a
+    /// harvest into the basket has finished its second run — its flower
+    /// and tomato grown over their [FLOWER_GROW_TIME] and
+    /// [TOMATO_GROW_TIME] from the reset; before that, fully grown slices
+    /// keep opening blooms as the clock advances.
     pub fn complete(&self) -> bool {
         self.t >= BLOOM_TIME
+            && self
+                .regrow_at
+                .iter()
+                .all(|r| r.map_or(true, |r| self.t >= r + FLOWER_GROW_TIME + TOMATO_GROW_TIME))
     }
 
     /// The layers the plant has fully grown: how many of [GROW_TIMES] the
@@ -394,12 +414,20 @@ impl Plant {
         self.tomato_spawn.len() - 1
     }
 
+    /// The plant-clock moment the bloom `slot`'s flower starts growing:
+    /// its slice's [GROW_TIMES] entry on the first bloom, or the
+    /// [Plant::regrow] stamp after a harvest into the basket.
+    fn bloom_start(&self, slice: usize, slot: usize) -> f32 {
+        self.regrow_at[slot].unwrap_or(GROW_TIMES[slice])
+    }
+
     /// Whether the bloom `slot` carries a ripe tomato: its tomato's growth
     /// has reached full size — the fruit is fully developed and red — so
-    /// the player may pick it.
+    /// the player may pick it; a regrown bloom ripens on its restarted
+    /// schedule.
     pub fn ripe(&self, slot: usize) -> bool {
         let i = self.slice_of(slot);
-        self.t >= GROW_TIMES[i] + FLOWER_GROW_TIME + TOMATO_GROW_TIME
+        self.t >= self.bloom_start(i, slot) + FLOWER_GROW_TIME + TOMATO_GROW_TIME
     }
 
     /// Whether the bloom `slot`'s tomato is currently picked: its pivot has
@@ -422,6 +450,19 @@ impl Plant {
         self.harvested[slot] = false;
     }
 
+    /// Resets the bloom `slot` now that its tomato has been placed in the
+    /// basket: the picked mark clears — the caller gives the slot a fresh,
+    /// shapeless tomato pivot — and the bloom's schedule restarts from the
+    /// growth clock's current value, so the flower grows from zero to full
+    /// size over [FLOWER_GROW_TIME] and its tomato from zero to full size
+    /// over [TOMATO_GROW_TIME] after it, the same conditions as the first
+    /// bloom off the slice. The next [Plant::layout] removes the flower
+    /// and starts the regrowth.
+    pub fn regrow(&mut self, slot: usize) {
+        self.harvested[slot] = false;
+        self.regrow_at[slot] = Some(self.t);
+    }
+
     /// The body center of the bloom `slot`'s tomato, in the plant node's
     /// local space — y up, before the caller's fit scale — for the slot
     /// node whose transform lays the bloom's origin on its spawn point:
@@ -435,7 +476,7 @@ impl Plant {
         tomato: &frost::Shape,
     ) -> [f32; 2] {
         let i = self.slice_of(slot);
-        let s = tomato_growth(self.t, GROW_TIMES[i]) * TOMATO_MAX_SCALE;
+        let s = tomato_growth(self.t, self.bloom_start(i, slot)) * TOMATO_MAX_SCALE;
         let [ox, oy] = tomato_leaf_offset(sprite_size(tomato));
         slot_node.transform.apply([ox * s, oy * s])
     }
@@ -533,7 +574,8 @@ impl Plant {
         // flower grows from zero to full size over [FLOWER_GROW_TIME]
         // seconds after its slice finishes, and its tomato grows from zero
         // to full size over [TOMATO_GROW_TIME] seconds after the flower
-        // finishes. The slot is a pure pivot: it carries no shape, scale,
+        // finishes; a slot regrown after a harvest into the basket runs
+        // the same timetable from its reset. The slot is a pure pivot: it carries no shape, scale,
         // or tint of its own (a tint there would leak onto the tomato),
         // only the translate that lays its origin on the spawn point
         // mapped through the slice's current transform, so the whole bloom
@@ -542,8 +584,9 @@ impl Plant {
         for (i, spawns) in self.tomato_spawn.iter().enumerate() {
             for &pt in spawns {
                 let child = &mut node.children[5 + slot];
-                let fg = flower_growth(self.t, GROW_TIMES[i]);
-                let tg = tomato_growth(self.t, GROW_TIMES[i]);
+                let start = self.bloom_start(i, slot);
+                let fg = flower_growth(self.t, start);
+                let tg = tomato_growth(self.t, start);
                 if fg > 0.0 {
                     let p = slice_tf[i].apply(pt);
                     child.transform = frost::Transform::translate(p[0], p[1]);
@@ -633,6 +676,15 @@ mod tests {
         let s = slice();
         let mut p = Plant::new([&s, &s, &s, &s, &s]);
         p.t = t;
+        p
+    }
+
+    /// A plant whose bloom `slot` was reset by [Plant::regrow] at clock
+    /// `stamp`, so the regrowth's boundaries can be checked without
+    /// stepping.
+    fn plant_regrown(slot: usize, stamp: f32) -> Plant {
+        let mut p = plant_at(stamp);
+        p.regrow(slot);
         p
     }
 
@@ -975,5 +1027,120 @@ mod tests {
             [TOMATO_MAX_SCALE, TOMATO_MAX_SCALE],
             "the growth was not restored"
         );
+    }
+
+    /// [Plant::ripe] follows the regrown slot's restarted schedule — it is
+    /// false from the [Plant::regrow] stamp and true again [FLOWER_GROW_TIME]
+    /// plus [TOMATO_GROW_TIME] after it — while the other slots keep their
+    /// first-bloom ripeness.
+    #[test]
+    fn ripe_follows_the_regrown_schedule() {
+        let r = BLOOM_TIME + 1.0;
+        let done = r + FLOWER_GROW_TIME + TOMATO_GROW_TIME;
+        let mut p = plant_regrown(2, r);
+
+        assert!(p.ripe(0), "an untouched slot stays ripe");
+        assert!(!p.ripe(2), "the regrown slot is ripe right away");
+        p.step(done - r - 0.001);
+        assert!(!p.ripe(2), "the regrown slot ripens early");
+        p.step(0.001);
+        assert!(p.ripe(2), "the regrown slot ripens on schedule");
+    }
+
+    /// [Plant::complete] is false while a regrown bloom is still growing and
+    /// true from its second tomato's full growth — the [Plant::regrow] stamp
+    /// plus [FLOWER_GROW_TIME] plus [TOMATO_GROW_TIME] — the gate the
+    /// example's growth loop and watering hitbox run on.
+    #[test]
+    fn complete_waits_for_regrown_blooms() {
+        let r = BLOOM_TIME + 1.0;
+        let done = r + FLOWER_GROW_TIME + TOMATO_GROW_TIME;
+        let mut p = plant_regrown(2, r);
+
+        assert!(!p.complete(), "complete right after the regrow");
+        p.step(done - r - 0.001);
+        assert!(!p.complete(), "complete before the regrown tomato is full");
+        p.step(0.001);
+        assert!(p.complete(), "the regrown bloom finishes on schedule");
+    }
+
+    /// [Plant::regrow] restarts a slot's bloom after its tomato has been
+    /// placed in the basket: the next [Plant::layout] removes the flower
+    /// and the fresh, shapeless tomato pivot starts at zero; the flower
+    /// regrows from zero over [FLOWER_GROW_TIME], the tomato from zero over
+    /// [TOMATO_GROW_TIME] after it, and the slot is ripe again and the plant
+    /// complete when the second tomato is full — the other slots untouched.
+    #[test]
+    fn regrow_removes_the_flower_and_restarts_the_bloom() {
+        let s = slice();
+        let mut node = plant_node();
+        let mut p = plant_at(BLOOM_TIME + 1.0);
+        assert!(p.complete(), "the plant starts complete");
+
+        // Harvest slot 0 into the basket: mark it and take its pivot out of
+        // the tree, the way the pick does, then reset the bloom and give
+        // the slot a fresh, shapeless tomato pivot, the way the example
+        // does.
+        p.harvest(0);
+        let _pivot = *node.children[5].children.remove(1);
+        p.regrow(0);
+        node.children[5].children.push(Box::new(frost::SceneNode {
+            children: vec![
+                Box::new(frost::SceneNode::default()),
+                Box::new(frost::SceneNode::default()),
+            ],
+            ..Default::default()
+        }));
+
+        // At the reset moment the flower is gone and the tomato has not
+        // started — the bloom is removed.
+        p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
+        let f = &node.children[5].children[SLOT_FLOWER];
+        let t = &node.children[5].children[SLOT_TOMATO];
+        assert!(f.shape.is_none(), "the flower survived the harvest");
+        assert_eq!(f.scale, [0.0, 0.0]);
+        assert_eq!(t.scale, [0.0, 0.0]);
+        for leaf in t.children.iter() {
+            assert!(leaf.shape.is_none(), "a regrown leaf is shaped early");
+        }
+        assert!(!p.ripe(0), "the regrown fruit ripens early");
+        assert!(!p.complete(), "the plant is complete while regrowing");
+        // The other slots keep their first-bloom state.
+        let f1 = &node.children[6].children[SLOT_FLOWER];
+        assert!(f1.shape.is_some());
+        assert_eq!(f1.scale, [1.0, 1.0]);
+
+        // Mid flower growth, the flower is back at half size and the tomato
+        // has not started.
+        p.step(FLOWER_GROW_TIME / 2.0);
+        p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
+        let f = &node.children[5].children[SLOT_FLOWER];
+        assert!(f.shape.is_some(), "the flower did not come back");
+        assert!((f.scale[0] - 0.5).abs() < 1e-6, "the flower is not half grown");
+        assert_eq!(
+            node.children[5].children[SLOT_TOMATO].scale,
+            [0.0, 0.0],
+            "the tomato starts before the flower is full"
+        );
+
+        // The tomato starts when the flower is full and ripens
+        // [TOMATO_GROW_TIME] after, red at full size.
+        p.step(FLOWER_GROW_TIME / 2.0);
+        assert!(!p.ripe(0), "the regrown fruit ripens early");
+        p.step(TOMATO_GROW_TIME / 2.0);
+        p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
+        let t = &node.children[5].children[SLOT_TOMATO];
+        assert!(
+            (t.scale[0] - TOMATO_MAX_SCALE / 2.0).abs() < 1e-6,
+            "the regrown tomato is not half grown"
+        );
+        assert!(t.children[TOMATO_BG].shape.is_some());
+        p.step(TOMATO_GROW_TIME / 2.0);
+        assert!(p.ripe(0), "the regrown fruit does not ripen");
+        assert!(p.complete(), "the plant does not complete again");
+        p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
+        let t = &node.children[5].children[SLOT_TOMATO];
+        assert_eq!(t.scale, [TOMATO_MAX_SCALE, TOMATO_MAX_SCALE]);
+        assert_eq!(t.children[TOMATO_BG].modulate, TOMATO_RED);
     }
 }

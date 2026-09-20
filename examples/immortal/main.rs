@@ -389,6 +389,17 @@ const MARGIN: f32 = 20.0;
 /// bottom borders.
 const HELD_SIZE: [f32; 2] = [389.0, 200.0];
 
+/// `sustainble_immortality.png`'s texture size in pixels; the corner
+/// badge is drawn at `IMMORTALITY_SCALE` of this natural size, `MARGIN`
+/// clear of the window's top and right borders.
+const IMMORTALITY_SIZE: [f32; 2] = [536.0, 548.0];
+
+/// The badge's scale relative to its natural size: half of it.
+const IMMORTALITY_SCALE: f32 = 0.5;
+
+/// The badge's tint alpha: a faint watermark behind the play field.
+const IMMORTALITY_ALPHA: f32 = 0.2;
+
 /// The clearance a held cell keeps from the edges of its half of the
 /// panel, in pixels: past the panel's frame, with room to spare.
 const HELD_INSET: f32 = 20.0;
@@ -722,7 +733,7 @@ struct Demo {
     pressed: bool,
     /// The tomato being carried, if any: the plant index and the bloom
     /// slot the fruit was picked from. While set, the fruit's pivot rides
-    /// the cursor in the held-fruit node (root children[8]) on top of
+    /// the cursor in the held-fruit node (root children[9]) on top of
     /// everything; the release either keeps it in the basket or sends it
     /// back to its plant.
     picking: Option<(usize, usize)>,
@@ -873,6 +884,15 @@ impl frost::Process for Demo {
         let bc = basket_center(w, h);
         basket.scale = [bs, bs];
         basket.transform = frost::Transform::translate(bc[0], bc[1]);
+
+        // Top right: `MARGIN` clear of the top and right borders, at
+        // `IMMORTALITY_SCALE` of the badge's natural size.
+        let badge = &mut ctx.scene().root.children[8];
+        badge.scale = [IMMORTALITY_SCALE, IMMORTALITY_SCALE];
+        badge.transform = frost::Transform::translate(
+            w / 2.0 - MARGIN - IMMORTALITY_SIZE[0] * IMMORTALITY_SCALE / 2.0,
+            h / 2.0 - MARGIN - IMMORTALITY_SIZE[1] * IMMORTALITY_SCALE / 2.0,
+        );
 
         // The plants' root joints in user space, where the grass stretch
         // maps each `PLANT_POS` pixel: the plants stay glued to them, and
@@ -1074,7 +1094,7 @@ impl frost::Process for Demo {
                     ];
                 }
             }
-            ctx.scene().root.children[8].children[0].transform = frost::Transform::translate(
+            ctx.scene().root.children[9].children[0].transform = frost::Transform::translate(
                 body[0] - TOMATO_PICK_SCALE * ox,
                 body[1] - TOMATO_PICK_SCALE * oy,
             );
@@ -1454,7 +1474,7 @@ impl Demo {
     /// Picks up the fully developed tomato the pointer rests on — the
     /// first hit in plant, then slot, order — and starts carrying it: the
     /// fruit's pivot is reparented out of its plant's slot and into the
-    /// held-fruit container (root children[8]), at the pick scale, under
+    /// held-fruit container (root children[9]), at the pick scale, under
     /// the pointer, so it paints above everything. The plant's slot is
     /// marked harvested while it is carried; the pointer must not be on a
     /// slot or holding a tool, which the caller checks. Returns the picked
@@ -1494,7 +1514,7 @@ impl Demo {
         let mut pivot = *pivot;
         pivot.scale = [TOMATO_PICK_SCALE, TOMATO_PICK_SCALE];
         pivot.transform = frost::Transform::translate(self.mouse[0], self.mouse[1]);
-        root.children[8].children.push(Box::new(pivot));
+        root.children[9].children.push(Box::new(pivot));
         Some((pi, si))
     }
 
@@ -1504,10 +1524,12 @@ impl Demo {
     /// fruit container (root children[7]'s middle child), so it renders
     /// behind the front half and in front of the back, and it stays
     /// exactly where it was released: no gravity, no tomato-to-tomato
-    /// collision, the fruit piles freely. Otherwise it goes back to its
-    /// plant — the harvest flag clears and the pivot is reparented into
-    /// the slot — where the layout, which runs later in the same frame,
-    /// reposes it.
+    /// collision, the fruit piles freely — and the bloom it came from
+    /// starts over: the flower is removed and regrows from zero, its
+    /// tomato after it, on the same water-gated, slowed schedule.
+    /// Otherwise it goes back to its plant — the harvest flag clears and
+    /// the pivot is reparented into the slot — where the layout, which
+    /// runs later in the same frame, reposes it.
     fn drop_tomato(&mut self, ctx: &mut frost::Context, pi: usize, si: usize) {
         // The body's center in window space, and its position in the
         // basket's local space, where the U is measured.
@@ -1524,7 +1546,7 @@ impl Demo {
         let kept = basket_accepts(lx, ly);
 
         let root = &mut ctx.scene().root;
-        let mut pivot = *root.children[8].children.remove(0);
+        let mut pivot = *root.children[9].children.remove(0);
         if kept {
             // Scale the pivot into the basket's local space and pin it so
             // the body's center maps back to the release point.
@@ -1532,6 +1554,21 @@ impl Demo {
             pivot.transform =
                 frost::Transform::translate((body[0] - center[0]) / s, (body[1] - center[1]) / s);
             root.children[7].children[1].children.push(Box::new(pivot));
+            // The bloom starts over: the plant records the reset — which
+            // re-arms the growth clock, the watering hitbox and the water
+            // bar — and the slot takes a fresh, shapeless tomato pivot;
+            // the next layout removes the flower and regrows it from
+            // zero, the tomato after it.
+            self.plants[pi].regrow(si);
+            root.children[2].children[pi].children[5 + si].children.push(Box::new(
+                frost::SceneNode {
+                    children: vec![
+                        Box::new(frost::SceneNode::default()),
+                        Box::new(frost::SceneNode::default()),
+                    ],
+                    ..Default::default()
+                },
+            ));
         } else {
             // Snap back to the plant; the layout reposes the pivot this
             // same frame.
@@ -1592,6 +1629,13 @@ fn main() {
         .expect("failed to load assets/sprites/BasketBack.png");
     let basket_front = frost::Shape::sprite(format!("{root}/assets/sprites/BasketFront.png"))
         .expect("failed to load assets/sprites/BasketFront.png");
+    // The immortality badge: tinted down to a faint watermark.
+    let mut immortality =
+        frost::Shape::sprite(format!("{root}/assets/sprites/sustainble_immortality.png"))
+            .expect("failed to load assets/sprites/sustainble_immortality.png");
+    if let frost::Shape::Sprite { alpha, .. } = &mut immortality {
+        *alpha = IMMORTALITY_ALPHA;
+    }
     let plant = plant::Plant::new([&plant1, &plant2, &plant3, &plant4, &plant5]);
 
     // The audio output, decoded once at startup, and the bug clips: the
@@ -1827,10 +1871,10 @@ fn main() {
                 // right-button switch — changes the shape — and the scale,
                 // since the spray frames are drawn at their natural size —
                 // on this same node; the stored tool is mirrored in the
-                // held panel's right cell instead. It sits under the basket
-                // and the held-fruit node, so the cursor paints above the
-                // panel, the plants, the bees, and the bugs, and the
-                // carried fruit paints above the cursor.
+                // held panel's right cell instead. It sits under the basket,
+                // the badge, and the held-fruit node, so the cursor paints
+                // above the panel, the plants, the bees, and the bugs, and
+                // the carried fruit paints above the cursor.
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
@@ -1859,11 +1903,20 @@ fn main() {
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
+                // The immortality badge in the top right: half its
+                // natural size, `MARGIN` clear of the top and right
+                // borders, tinted to a faint watermark, positioned by the
+                // process every frame. It sits under the held-fruit node,
+                // so a carried tomato still paints above it.
+                shape: Some(immortality),
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
                 // The held-fruit container: the carried tomato's pivot
                 // reparents here while the mouse button is down, so the
                 // fruit paints above everything — the panel, the plants,
-                // the basket, the cursor. The group carries no shape or
-                // scale of its own; the child rides the cursor in
+                // the basket, the badge, the cursor. The group carries no
+                // shape or scale of its own; the child rides the cursor in
                 // window-centered user space.
                 ..Default::default()
             }),
