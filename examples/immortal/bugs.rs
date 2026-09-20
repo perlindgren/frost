@@ -19,6 +19,11 @@
 //! clips (`bugs_plopp1.wav`, `bugs_plopp2.wav`, `bugs_plopp3.wav`) for
 //! that frame, and the demo plays it through [`frost::Audio`].
 //!
+//! Every time the mist drops a bug's health, the bug cries out:
+//! [Bugs::hit_at] reports the index of one of the four Aj clips
+//! (`Aj1.wav`, `Aj2.wav`, `Aj3.wav`, `Aj4.wav`) for the wound, and the
+//! demo plays it through [`frost::Audio`].
+//!
 //! A bug takes [HITS_TO_KILL] hits from the spray can's green mist before
 //! it dies — a wounded bug takes its next hit only after a
 //! [HIT_COOLDOWN] second, so the mist wears it down one hit at a time —
@@ -207,6 +212,16 @@ pub struct StepEvents {
     /// clips (`bugs_plopp1.wav`, `bugs_plopp2.wav`, `bugs_plopp3.wav`),
     /// picked at random by the swarm.
     pub plops: Vec<usize>,
+}
+
+/// What [Bugs::hit_at] reports for one mist hit: the clip indices the
+/// demo should play through [`frost::Audio`].
+#[derive(Default)]
+pub struct HitEvents {
+    /// One entry per bug whose health the hit dropped: index 0 to 3 into
+    /// the four Aj clips (`Aj1.wav`, `Aj2.wav`, `Aj3.wav`, `Aj4.wav`),
+    /// picked at random by the swarm.
+    pub ajs: Vec<usize>,
 }
 
 impl Bugs {
@@ -470,10 +485,14 @@ impl Bugs {
     /// the hit starts its [Bug::dying] clock when that takes it to zero.
     /// Dying and respawning bugs take no more hits, and a wounded bug
     /// takes its next hit only after its [HIT_COOLDOWN] has run out
-    /// ([Bug::hit_cooldown]). Returns the number of bugs hit.
-    pub fn hit_at(&mut self, p: [f32; 2]) -> usize {
+    /// ([Bug::hit_cooldown]). Returns the [HitEvents] for this hit: one
+    /// Aj clip index per bug whose health the hit dropped (index 0 to 3
+    /// into the four Aj clips, `Aj1.wav` to `Aj4.wav`, each picked at
+    /// random by the swarm), so the number of bugs hit is the length of
+    /// its [HitEvents::ajs].
+    pub fn hit_at(&mut self, p: [f32; 2]) -> HitEvents {
         let r2 = (BUG_SIZE / 2.0) * (BUG_SIZE / 2.0);
-        let mut hits = 0;
+        let mut ajs = Vec::new();
         for bug in &mut self.bugs {
             if bug.dying.is_some() || bug.respawn.is_some() || bug.hit_cooldown > 0.0 {
                 continue;
@@ -486,10 +505,11 @@ impl Bugs {
                 if bug.hits == 0 {
                     bug.dying = Some(0.0);
                 }
-                hits += 1;
+                // The wound cries out: a random Aj clip.
+                ajs.push((self.rng.next_f32() * 4.0) as usize);
             }
         }
-        hits
+        HitEvents { ajs }
     }
 
     /// The health counters of the bugs that are visible right now: for
@@ -929,11 +949,15 @@ mod tests {
         .unwrap();
         for round in 1..HITS_TO_KILL {
             let p = bugs.bugs[farthest].pos;
-            let hits = bugs.hit_at(p);
+            let hits = bugs.hit_at(p).ajs.len();
             bugs.hit_at(p);
             bugs.hit_at(p);
             assert!(hits >= 1, "the mist found no bug");
-            assert_eq!(bugs.hit_at(p), 0, "the hit cooldown did not hold");
+            assert_eq!(
+                bugs.hit_at(p).ajs.len(),
+                0,
+                "the hit cooldown did not hold"
+            );
             assert_eq!(
                 bugs.bugs[farthest].hits,
                 HITS_TO_KILL - round,
@@ -950,8 +974,11 @@ mod tests {
         }
 
         // The killing blow, aimed at the bug's current position.
-        let hits = bugs.hit_at(bugs.bugs[farthest].pos);
+        let hit = bugs.hit_at(bugs.bugs[farthest].pos);
+        let hits = hit.ajs.len();
         assert!(hits >= 1);
+        // Each wound cries out on one of the four Aj clips.
+        assert!(hit.ajs.iter().all(|&c| c < 4));
         let initial = bugs.bugs.len();
         // The farthest bug plus any sibling that wandered into the mist —
         // the pool is never trimmed, so the indices stay valid for the
@@ -1175,7 +1202,10 @@ mod tests {
         // last round is the killing blow.
         for _ in 0..HITS_TO_KILL {
             for p in &pos {
-                assert!(bugs.hit_at(*p) >= 1, "a drop found no bug");
+                assert!(
+                    bugs.hit_at(*p).ajs.len() >= 1,
+                    "a drop found no bug"
+                );
             }
             for _ in 0..5 {
                 bugs.step(dt, &ANCHORS, 1);

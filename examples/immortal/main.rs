@@ -124,6 +124,11 @@
 //! `bugs_plopp3.wav` — at random, and the demo plays it through
 //! [`frost::Audio`].
 //!
+//! Every time the mist drops a bug's health, the bug cries out: the
+//! swarm picks one of the four Aj clips — `assets/audio/Aj1.wav`,
+//! `Aj2.wav`, `Aj3.wav`, and `Aj4.wav` — at random, and the demo plays
+//! it through [`frost::Audio`].
+//!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
 //!
@@ -640,6 +645,10 @@ struct Demo {
     /// bug that pops up out of the grass — a batch spawn or a respawn —
     /// plops on one of them, the swarm's random pick.
     plops: [frost::Sound; 3],
+    /// The four bug Aj clips (1 to 4), decoded once at startup; every
+    /// time the mist drops a bug's health the bug cries out on one of
+    /// them, the swarm's random pick.
+    ajs: [frost::Sound; 4],
 }
 
 impl frost::Process for Demo {
@@ -909,9 +918,13 @@ impl frost::Process for Demo {
         // after its hit cooldown, and a hit that empties the counter
         // starts the bounce-then-evaporate death. A bug at its park spot
         // regains one hit of health every 5 seconds, up to six. The
-        // water can's drops never touch the bugs.
+        // water can's drops never touch the bugs. Every wound cries out
+        // on one of the Aj clips, the swarm's random pick.
         for p in &self.spray.particles {
-            self.bugs.hit_at(p.pos);
+            let hit = self.bugs.hit_at(p.pos);
+            for clip in hit.ajs {
+                self.audio.play_once(&self.ajs[clip]);
+            }
         }
 
         // Draw the bugs' health counters: one white pip per hit each
@@ -1116,9 +1129,11 @@ fn main() {
     // The audio output, decoded once at startup, and the bug clips: the
     // three tjatter clips (a bug that reaches its destination while
     // another bug is on the grass within 50 px of it chatters on one of
-    // them, the swarm's random pick) and the three plopp clips (a bug
-    // that pops up out of the grass — a batch spawn or a respawn —
-    // plops on one of them, the swarm's random pick).
+    // them, the swarm's random pick), the three plopp clips (a bug that
+    // pops up out of the grass — a batch spawn or a respawn — plops on
+    // one of them, the swarm's random pick), and the four Aj clips (the
+    // bug cries out on one of them, the swarm's random pick, every time
+    // the mist drops its health).
     let audio = frost::Audio::new()
         .expect("failed to open the audio output device");
     let tjatters = [
@@ -1136,6 +1151,16 @@ fn main() {
             .expect("failed to load assets/audio/bugs_plopp2.wav"),
         frost::Sound::load(format!("{root}/assets/audio/bugs_plopp3.wav"))
             .expect("failed to load assets/audio/bugs_plopp3.wav"),
+    ];
+    let ajs = [
+        frost::Sound::load(format!("{root}/assets/audio/Aj1.wav"))
+            .expect("failed to load assets/audio/Aj1.wav"),
+        frost::Sound::load(format!("{root}/assets/audio/Aj2.wav"))
+            .expect("failed to load assets/audio/Aj2.wav"),
+        frost::Sound::load(format!("{root}/assets/audio/Aj3.wav"))
+            .expect("failed to load assets/audio/Aj3.wav"),
+        frost::Sound::load(format!("{root}/assets/audio/Aj4.wav"))
+            .expect("failed to load assets/audio/Aj4.wav"),
     ];
 
     // One plant node, cloned for each plant: its origin is the root joint
@@ -1371,6 +1396,7 @@ fn main() {
             audio,
             tjatters,
             plops,
+            ajs,
             flower,
             tomato,
             tomato_fg,
