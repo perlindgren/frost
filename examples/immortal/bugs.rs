@@ -164,6 +164,11 @@ impl Bugs {
         }
 
         for bug in &mut self.bugs {
+            bug.grow = (bug.grow + dt).min(GROW_TIME);
+            if bug.grow < GROW_TIME {
+                // Still growing out of the grass: hold the spawn spot.
+                continue;
+            }
             let target = [
                 anchors[bug.home][0] + bug.idle[0],
                 anchors[bug.home][1] + bug.idle[1] + self.ground,
@@ -206,7 +211,6 @@ impl Bugs {
                 bug.walk += dt * bug.step_rate;
                 bug.frame = (bug.walk as u32 % 3) as u8;
             }
-            bug.grow = (bug.grow + dt).min(GROW_TIME);
         }
     }
 
@@ -368,6 +372,10 @@ mod tests {
 
     /// Whether `p` lies on the inside (or on the boundary) of the convex
     /// ring `hull`, in whatever orientation the ring happens to have.
+    ///
+    /// The boundary tolerance is 1e-3 px of perpendicular distance: f32
+    /// sampling noise at these coordinate magnitudes is a few ulp, so a
+    /// strict zero-cross test would flag samples sitting on the edge.
     fn inside(hull: &[[f32; 2]], p: [f32; 2]) -> bool {
         let mut signed = 0.0f32;
         for w in 0..hull.len() {
@@ -379,8 +387,11 @@ mod tests {
         for w in 0..hull.len() {
             let a = hull[w];
             let b = hull[(w + 1) % hull.len()];
-            let cross = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
-            if cross.abs() > 1e-9 && (cross > 0.0) != ccw {
+            let dx = b[0] - a[0];
+            let dy = b[1] - a[1];
+            let cross = dx * (p[1] - a[1]) - dy * (p[0] - a[0]);
+            let dist = cross / (dx * dx + dy * dy).sqrt();
+            if dist.abs() > 1e-3 && (dist > 0.0) != ccw {
                 return false;
             }
         }
@@ -449,5 +460,43 @@ mod tests {
             (mx - cx).abs() < 20.0 && (my - cy).abs() < 10.0,
             "mean ({mx}, {my}) is far from the centroid ({cx}, {cy})"
         );
+    }
+
+    /// While a bug is still growing out of the grass it holds its spawn
+    /// spot — no walking, no frame advance, no movement baseline — and the
+    /// movement logic takes over only once the growth clock reaches
+    /// [GROW_TIME].
+    #[test]
+    fn bugs_hold_their_spot_while_growing() {
+        let frame = frost::Shape::Sprite {
+            data: std::sync::Arc::new([0u8; 1]),
+            width: 10,
+            height: 10,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+        };
+        let dt = 0.05;
+        let mut bugs = Bugs::new([&frame; 3], 3);
+        bugs.step(dt, &ANCHORS, 1);
+        let spawn = bugs.bugs.iter().map(|b| b.pos).collect::<Vec<_>>();
+        // Well under GROW_TIME: every bug holds its exact spawn spot.
+        for _ in 0..55 {
+            bugs.step(dt, &ANCHORS, 1);
+            for (i, b) in bugs.bugs.iter().enumerate() {
+                assert_eq!(b.pos, spawn[i], "bug {i} moved while growing");
+                assert_eq!(b.walk, 0.0);
+                assert!(!b.placed);
+            }
+        }
+        // Past GROW_TIME: the movement logic must have taken over.
+        for _ in 0..20 {
+            bugs.step(dt, &ANCHORS, 1);
+        }
+        assert!(bugs.bugs.iter().all(|b| b.placed));
     }
 }
