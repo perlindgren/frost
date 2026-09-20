@@ -66,8 +66,10 @@
 //! from zero to full size over 10 seconds, its `assets/sprites/flower.png`
 //! tinted light green to yellow; once the flower is fully grown, a tomato
 //! grows out of the same point over 10 seconds — the white body of
-//! `assets/sprites/tomato.png` tinted dark green to light red, with the
-//! dark calyx and stem of `assets/sprites/tomato_fg.png` drawn on top.
+//! `assets/sprites/tomato.png` tinted dark green to red, at one third of
+//! its natural size, with the dark calyx and stem of
+//! `assets/sprites/tomato_fg.png` drawn on top, the body's top pinned to the
+//! flower's center so the fruit hangs below it, on top of the flower.
 //! Each bloom rides its slice's transform so it sways with the plant.
 //!
 //! A swarm of thirty vipers buzzes around the flower bench — the row of
@@ -594,7 +596,7 @@ struct Demo {
     /// it in as cheap `Arc` clones.
     tomato: frost::Shape,
     /// The tomato foreground (the dark calyx and stem), drawn on top of
-    /// the background at the same anchor; the plant nodes' tomato leaves
+    /// the background at the same point; the plant nodes' tomato leaves
     /// swap it in as cheap `Arc` clones, unmodulated.
     tomato_fg: frost::Shape,
     /// The drops pouring out of the spout: the simulation state, stepped
@@ -1141,9 +1143,10 @@ fn main() {
     // fit scale is constant — each slice grows individually, riding the
     // node. The five slice children are followed by the FLOWER_N shapeless
     // flower slots, each a pivot that the process lays on its slice's
-    // spawn point; a slot's children are a tomato pivot (the white fruit
-    // body leaf under the dark calyx-and-stem leaf, both pinned to the
-    // tomato's anchor) and the flower leaf on top, so the blooms paint on
+    // spawn point; a slot's children are the flower leaf and, on top of
+    // it, a tomato pivot (the white fruit body leaf under the dark calyx-
+    // and-stem leaf, both pinned so the body's top sits on the flower's
+    // center and the fruit hangs below), so the blooms and fruit paint on
     // top of the slices and sway with the plant. The process grows and
     // tints the leaves. The clones are cheap `Arc` clones of the slice and
     // bloom pixel buffers.
@@ -1172,9 +1175,12 @@ fn main() {
     plant_children.extend((0..plant::FLOWER_N).map(|_| {
         Box::new(frost::SceneNode {
             children: vec![
-                // The tomato pivot: shapeless; the process scales it to
-                // grow the fruit about the flower and lays its two leaves
-                // on the tomato's anchor.
+                // The flower leaf, under the tomato.
+                Box::new(frost::SceneNode::default()),
+                // The tomato pivot, on top of the flower: shapeless; the
+                // process scales it to grow the fruit about the flower and
+                // lays its two leaves so the body's top sits on the flower's
+                // center, the fruit hanging below it.
                 Box::new(frost::SceneNode {
                     children: vec![
                         // The fruit body (background), under the
@@ -1185,8 +1191,6 @@ fn main() {
                     ],
                     ..Default::default()
                 }),
-                // The flower leaf, on top of the tomato.
-                Box::new(frost::SceneNode::default()),
             ],
             ..Default::default()
         })
