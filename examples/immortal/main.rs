@@ -1560,15 +1560,15 @@ impl Demo {
             // the next layout removes the flower and regrows it from
             // zero, the tomato after it.
             self.plants[pi].regrow(si);
-            root.children[2].children[pi].children[5 + si].children.push(Box::new(
-                frost::SceneNode {
+            root.children[2].children[pi].children[5 + si]
+                .children
+                .push(Box::new(frost::SceneNode {
                     children: vec![
                         Box::new(frost::SceneNode::default()),
                         Box::new(frost::SceneNode::default()),
                     ],
                     ..Default::default()
-                },
-            ));
+                }));
         } else {
             // Snap back to the plant; the layout reposes the pivot this
             // same frame.
@@ -1587,6 +1587,9 @@ fn main() {
     // `CARGO_MANIFEST_DIR` pins the asset paths to the crate root, so the
     // example works no matter where it is run from.
     let root = std::env!("CARGO_MANIFEST_DIR");
+    // let root = std::env::current_exe().expect("failed to get current exe");
+    // let root = root.parent().expect("failed to get parent directory");
+    // let root = root.to_str().expect("failed to convert root to string");
     let grass = frost::Shape::sprite(format!("{root}/assets/sprites/grass.png"))
         .expect("failed to load assets/sprites/grass.png");
     let can = frost::Shape::sprite(format!("{root}/assets/sprites/water_can_outline.png"))
