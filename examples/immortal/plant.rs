@@ -13,10 +13,12 @@
 //! top of the one below it. From 15 seconds on the plant is at full size and
 //! keeps swaying: the base rock turns the whole plant around its lower
 //! joint, and the two joints above it bend a little more each, so the tip
-//! moves the most. The clock keeps ticking past full size — the blooms
-//! that open off the finished slices keep growing, each flower and its
-//! tomato riding their slice's clock, the whole plant complete at
-//! `BLOOM_TIME`. A tomato placed in the basket starts its bloom over:
+//! moves the most. The clock keeps ticking past full size — a finished
+//! slice opens its blooms one flower at a time, the first the frame the
+//! slice is fully grown and each next a random [BLOOM_GAP_MIN] to
+//! [BLOOM_GAP_MAX] seconds after the previous, each flower and its tomato
+//! then riding its own start, the whole plant complete at [bloom_time].
+//! A tomato placed in the basket starts its bloom over:
 //! the flower is removed and regrows from zero on the same timetable —
 //! [FLOWER_GROW_TIME] for the flower, [TOMATO_GROW_TIME] for the tomato —
 //! and the plant is complete again only when every regrown bloom is full.
@@ -36,11 +38,15 @@
 //! Once a slice is fully grown, its blooms open: the four lower slices'
 //! hand-picked spawn points — [FLOWER_SPAWNS]; the top slice bears none —
 //! each get a flower slot, in the flower children that follow the slice
-//! nodes. A slot's flower grows from zero to full size over
-//! [FLOWER_GROW_TIME] seconds, its sprite tinted light green to yellow,
-//! and when the flower is fully grown its tomato grows out of the same
-//! point from zero to [TOMATO_MAX_SCALE] of its natural size over
-//! [TOMATO_GROW_TIME] seconds: the white fruit body (`tomato.png`) tinted
+//! nodes. The slice's flowers start one at a time — the first the frame
+//! the slice is fully grown, the next a random [BLOOM_GAP_MIN] to
+//! [BLOOM_GAP_MAX] seconds after the previous, until every flower on the
+//! slice is growing — and a slot's flower grows from zero to full size
+//! over [FLOWER_GROW_TIME] seconds from its start, its sprite tinted
+//! light green to yellow, and when the flower is fully grown its tomato
+//! grows out of the same point from zero to [TOMATO_MAX_SCALE] of its
+//! natural size over [TOMATO_GROW_TIME] seconds: the white fruit body
+//! (`tomato.png`) tinted
 //! dark green to red, with the dark calyx and stem (`tomato_fg.png`) drawn
 //! on top, both pinned to [TOMATO_TOP] so the body's top sits on the
 //! flower's center and the fruit hangs below it, on top of the flower. Each
@@ -120,8 +126,11 @@ pub fn slot_index(slot: usize) -> usize {
 }
 
 /// How long a flower takes to grow from zero to its full size, in seconds:
-/// it starts the moment its slice is fully grown and reaches full size
-/// [FLOWER_GROW_TIME] seconds later, growing out of its spawn point.
+/// it starts when its slice's staggered opening sets it in motion — one
+/// flower at a time, the first the frame the slice is fully grown, each
+/// next [BLOOM_GAP_MIN] to [BLOOM_GAP_MAX] seconds after the previous —
+/// and reaches full size [FLOWER_GROW_TIME] seconds later, growing out of
+/// its spawn point.
 pub const FLOWER_GROW_TIME: f32 = 10.0;
 
 /// How long a tomato takes to grow from zero to its full size, in seconds:
@@ -129,13 +138,13 @@ pub const FLOWER_GROW_TIME: f32 = 10.0;
 /// [TOMATO_GROW_TIME] seconds later, growing out of the same point.
 pub const TOMATO_GROW_TIME: f32 = 10.0;
 
-/// The time at which the plant's last bloom reaches full size: the highest
-/// flower-bearing slice (the high middle — [FLOWER_SPAWNS][3]) finishes its
-/// slice at `GROW_TIMES[3]`, its flower reaches full size
-/// `FLOWER_GROW_TIME` seconds later, and its tomato reaches full size
-/// `TOMATO_GROW_TIME` seconds after that; from then on the plant is
-/// complete.
-pub const BLOOM_TIME: f32 = GROW_TIMES[3] + FLOWER_GROW_TIME + TOMATO_GROW_TIME;
+/// The span, in seconds, between two flowers starting to grow on the same
+/// finished slice: the first starts the frame the slice is fully grown,
+/// the next starts a random [BLOOM_GAP_MIN, BLOOM_GAP_MAX) seconds after
+/// it — and so on, one at a time, until every flower on the slice is
+/// growing.
+pub const BLOOM_GAP_MIN: f32 = 2.0;
+pub const BLOOM_GAP_MAX: f32 = 5.0;
 
 /// The ripe tomato's scale relative to the sprite's natural size: the fruit
 /// grows to one third of its natural size, so it stays small next to the
@@ -294,10 +303,39 @@ pub fn tomato_leaf_offset(size: [f32; 2]) -> [f32; 2] {
     [-a[0], -a[1]]
 }
 
+/// The staggered first-bloom starts in flattened [FLOWER_SPAWNS] order,
+/// drawn from a fresh, clock-seeded [frost::Rng]: for each slice, a
+/// random permutation of its flower slots — the first starting on the
+/// slice's [GROW_TIMES] entry, each next a random [BLOOM_GAP_MIN,
+/// BLOOM_GAP_MAX) seconds after the previous one — so a finished slice
+/// opens its blooms one flower at a time until all of them are growing.
+fn staggered_starts() -> [f32; FLOWER_N] {
+    let mut rng = frost::Rng::new();
+    let mut starts = [0.0f32; FLOWER_N];
+    let mut slot = 0usize;
+    for (i, spawns) in FLOWER_SPAWNS.iter().enumerate() {
+        // A random order for this slice's flowers: a Fisher-Yates shuffle.
+        let mut order: Vec<usize> = (0..spawns.len()).collect();
+        for k in (1..order.len()).rev() {
+            let j = (rng.next_f32() * (k + 1) as f32) as usize;
+            order.swap(k, j);
+        }
+        let mut at = GROW_TIMES[i];
+        for (k, &s) in order.iter().enumerate() {
+            if k > 0 {
+                at += rng.in_range(BLOOM_GAP_MIN, BLOOM_GAP_MAX);
+            }
+            starts[slot + s] = at;
+        }
+        slot += spawns.len();
+    }
+    starts
+}
+
 /// A five-slice plant that grows out of its root joint and sways in a
 /// traveling wind. The shapes themselves live in the scene; the value only
-/// keeps the growth clock, the slices' joints, and the flower spawn
-/// points — all in node-local space.
+/// keeps the growth clock, the slices' joints, the flower spawn points —
+/// in node-local space — and the staggered first-bloom starts.
 #[derive(Clone)]
 pub struct Plant {
     /// Elapsed time in seconds.
@@ -319,10 +357,17 @@ pub struct Plant {
     /// The plant-clock moment each bloom's schedule was restarted by
     /// [Plant::regrow] after its tomato was placed in the basket: `None`
     /// keeps the bloom on its slice's first-bloom timetable, where the
-    /// flower starts at [GROW_TIMES]; at the stamped moment the flower
-    /// starts growing from zero over [FLOWER_GROW_TIME], its tomato over
-    /// [TOMATO_GROW_TIME] after it.
+    /// flower starts at the staggered [first_bloom_start] moment; at the
+    /// stamped moment the flower starts growing from zero over
+    /// [FLOWER_GROW_TIME], its tomato over [TOMATO_GROW_TIME] after it.
     regrow_at: [Option<f32>; FLOWER_N],
+    /// The plant-clock moment each slot's flower starts growing on the
+    /// first bloom: [Plant::new] draws them slice by slice, one flower at
+    /// a time — the first on the slice's [GROW_TIMES] entry, each next a
+    /// random [BLOOM_GAP_MIN, BLOOM_GAP_MAX) seconds after the previous —
+    /// so [Plant::regrow] can restart a bloom against its own staggered
+    /// start rather than the slice's.
+    first_bloom_start: [f32; FLOWER_N],
 }
 
 impl Plant {
@@ -349,6 +394,7 @@ impl Plant {
             ],
             harvested: [false; FLOWER_N],
             regrow_at: [None; FLOWER_N],
+            first_bloom_start: staggered_starts(),
         }
     }
 
@@ -360,20 +406,35 @@ impl Plant {
     /// Whether the plant is fully grown: the last slice has reached its
     /// full length; from here on every slice holds at full length while the
     /// plant keeps swaying and its blooms keep growing, until it is
-    /// complete at `BLOOM_TIME`.
+    /// complete at [bloom_time].
     pub fn fully_grown(&self) -> bool {
         self.t >= FULL_GROW_TIME
     }
 
+    /// The plant-clock moment the plant's last first bloom reaches full
+    /// size: the latest [first_bloom_start] entry — the last flower of the
+    /// latest slice's staggered opening — plus [FLOWER_GROW_TIME] plus
+    /// [TOMATO_GROW_TIME]; from that moment the plant is complete on its
+    /// first-bloom timetable, and every bloom restarted by [Plant::regrow]
+    /// after a harvest into the basket holds the completion back to its
+    /// own stamp plus both growth times.
+    fn bloom_time(&self) -> f32 {
+        *self
+            .first_bloom_start
+            .iter()
+            .max_by(|a, b| f32::total_cmp(a, b))
+            .expect("FLOWER_N is non-empty") + FLOWER_GROW_TIME + TOMATO_GROW_TIME
+    }
+
     /// Whether the plant is complete: every slice is fully grown and every
     /// bloom — each flower and its tomato — has reached full size, from
-    /// `BLOOM_TIME` on, and every bloom reset by [Plant::regrow] after a
+    /// [bloom_time] on, and every bloom reset by [Plant::regrow] after a
     /// harvest into the basket has finished its second run — its flower
     /// and tomato grown over their [FLOWER_GROW_TIME] and
     /// [TOMATO_GROW_TIME] from the reset; before that, fully grown slices
     /// keep opening blooms as the clock advances.
     pub fn complete(&self) -> bool {
-        self.t >= BLOOM_TIME
+        self.t >= self.bloom_time()
             && self
                 .regrow_at
                 .iter()
@@ -406,26 +467,11 @@ impl Plant {
         midpoints
     }
 
-    /// The lower slice that bloom `slot` grows from: the flattened
-    /// [FLOWER_SPAWNS] order runs slice by slice, so the slot index falls
-    /// into slice `i`'s span of slots.
-    pub fn slice_of(&self, slot: usize) -> usize {
-        let mut remaining = slot;
-        for (i, spawns) in self.tomato_spawn.iter().enumerate() {
-            if remaining < spawns.len() {
-                return i;
-            }
-            remaining -= spawns.len();
-        }
-        // Unreachable for a valid slot; fall back to the last slice.
-        self.tomato_spawn.len() - 1
-    }
-
     /// The plant-clock moment the bloom `slot`'s flower starts growing:
-    /// its slice's [GROW_TIMES] entry on the first bloom, or the
-    /// [Plant::regrow] stamp after a harvest into the basket.
-    fn bloom_start(&self, slice: usize, slot: usize) -> f32 {
-        self.regrow_at[slot].unwrap_or(GROW_TIMES[slice])
+    /// the slot's staggered [first_bloom_start] entry on the first bloom,
+    /// or the [Plant::regrow] stamp after a harvest into the basket.
+    fn bloom_start(&self, slot: usize) -> f32 {
+        self.regrow_at[slot].unwrap_or(self.first_bloom_start[slot])
     }
 
     /// Whether the bloom `slot` carries a ripe tomato: its tomato's growth
@@ -433,8 +479,7 @@ impl Plant {
     /// the player may pick it; a regrown bloom ripens on its restarted
     /// schedule.
     pub fn ripe(&self, slot: usize) -> bool {
-        let i = self.slice_of(slot);
-        self.t >= self.bloom_start(i, slot) + FLOWER_GROW_TIME + TOMATO_GROW_TIME
+        self.t >= self.bloom_start(slot) + FLOWER_GROW_TIME + TOMATO_GROW_TIME
     }
 
     /// Whether the bloom `slot`'s tomato is currently picked: its pivot has
@@ -482,8 +527,7 @@ impl Plant {
         slot_node: &frost::SceneNode,
         tomato: &frost::Shape,
     ) -> [f32; 2] {
-        let i = self.slice_of(slot);
-        let s = tomato_growth(self.t, self.bloom_start(i, slot)) * TOMATO_MAX_SCALE;
+        let s = tomato_growth(self.t, self.bloom_start(slot)) * TOMATO_MAX_SCALE;
         let [ox, oy] = tomato_leaf_offset(sprite_size(tomato));
         slot_node.transform.apply([ox * s, oy * s])
     }
@@ -498,10 +542,11 @@ impl Plant {
     /// body's top sits on the flower's center and the fruit hangs below
     /// it. `layout` owns the slots' and their leaves' visibility, growth,
     /// and tints from that frame on: a slot's flower grows from zero to
-    /// full size over [FLOWER_GROW_TIME] seconds after its slice finishes,
-    /// tinted light green to yellow, and its tomato grows from zero to
-    /// [TOMATO_MAX_SCALE] over [TOMATO_GROW_TIME] seconds after the flower
-    /// finishes, its background tinted dark green to red.
+    /// full size over [FLOWER_GROW_TIME] seconds from its staggered
+    /// [first_bloom_start], tinted light green to yellow, and its tomato
+    /// grows from zero to [TOMATO_MAX_SCALE] over [TOMATO_GROW_TIME]
+    /// seconds after the flower finishes, its background tinted dark green
+    /// to red.
     ///
     /// `node`'s origin is the plant's root joint (plant1's lower joint):
     /// the base rock turns the whole plant around that joint, and its
@@ -592,7 +637,7 @@ impl Plant {
         for (i, spawns) in self.tomato_spawn.iter().enumerate() {
             for &pt in spawns {
                 let child = &mut node.children[slot_index(slot)];
-                let start = self.bloom_start(i, slot);
+                let start = self.bloom_start(slot);
                 let fg = flower_growth(self.t, start);
                 let tg = tomato_growth(self.t, start);
                 if fg > 0.0 {
@@ -678,13 +723,38 @@ mod tests {
         }
     }
 
-    /// A plant with a settable growth clock, so [Plant::grown_layers]'s
-    /// boundaries can be checked without stepping.
+    /// The pinned first-bloom schedule of the test plants: each slice's
+    /// flowers start in slot order, a fixed [BLOOM_GAP_MIN] apart, so
+    /// every slot's start — and the plant's [Plant::bloom_time] — is a
+    /// known function of [GROW_TIMES] and [BLOOM_GAP_MIN].
+    fn pinned_starts() -> [f32; FLOWER_N] {
+        let mut starts = [0.0f32; FLOWER_N];
+        let mut slot = 0usize;
+        for (i, spawns) in FLOWER_SPAWNS.iter().enumerate() {
+            for k in 0..spawns.len() {
+                starts[slot] = GROW_TIMES[i] + k as f32 * BLOOM_GAP_MIN;
+                slot += 1;
+            }
+        }
+        starts
+    }
+
+    /// A plant with a settable growth clock and the pinned [pinned_starts]
+    /// first-bloom schedule, so the growth and the blooms' boundaries can
+    /// be checked without stepping.
     fn plant_at(t: f32) -> Plant {
         let s = slice();
         let mut p = Plant::new([&s, &s, &s, &s, &s]);
+        p.first_bloom_start = pinned_starts();
         p.t = t;
         p
+    }
+
+    /// A test plant at [Plant::bloom_time] plus one second: every first
+    /// bloom fully grown and ripe, the plant complete — the state the
+    /// harvest and regrow tests start from.
+    fn plant_complete() -> Plant {
+        plant_at(plant_at(0.0).bloom_time() + 1.0)
     }
 
     /// A plant whose bloom `slot` was reset by [Plant::regrow] at clock
@@ -752,18 +822,62 @@ mod tests {
         assert_eq!(plant_at(FULL_GROW_TIME + 100.0).grown_layers(), GROW_TIMES.len());
     }
 
+    /// [Plant::new] staggers each slice's first blooms: exactly one flower
+    /// starts the frame the slice is fully grown, and each next starts a
+    /// random [BLOOM_GAP_MIN, BLOOM_GAP_MAX) seconds after the previous
+    /// one — so within a slice the starts are strictly increasing, the
+    /// gaps in range, and the earliest is the slice's [GROW_TIMES] entry,
+    /// and the plant's [Plant::bloom_time] is the latest start plus the
+    /// flower and tomato growth times.
+    #[test]
+    fn the_first_blooms_stagger_across_each_slice() {
+        let s = slice();
+        let p = Plant::new([&s, &s, &s, &s, &s]);
+        let mut slot = 0usize;
+        for (i, spawns) in FLOWER_SPAWNS.iter().enumerate() {
+            let mut starts: Vec<f32> = (slot..slot + spawns.len())
+                .map(|k| p.first_bloom_start[k])
+                .collect();
+            starts.sort_by(f32::total_cmp);
+            assert_eq!(
+                starts[0],
+                GROW_TIMES[i],
+                "no flower on slice {i} starts the frame it finishes"
+            );
+            for w in starts.windows(2) {
+                let gap = w[1] - w[0];
+                assert!(
+                    (BLOOM_GAP_MIN..BLOOM_GAP_MAX).contains(&gap),
+                    "the gap {gap} on slice {i} is out of [2, 5)"
+                );
+            }
+            slot += spawns.len();
+        }
+        let last = *p
+            .first_bloom_start
+            .iter()
+            .max_by(|a, b| f32::total_cmp(a, b))
+            .expect("FLOWER_N is non-empty");
+        assert_eq!(
+            p.bloom_time(),
+            last + FLOWER_GROW_TIME + TOMATO_GROW_TIME,
+            "bloom_time off the latest start"
+        );
+    }
+
     /// [Plant::complete] is false while the plant is still growing — the
     /// slices, and the blooms that open off the finished slices — and true
-    /// from the last bloom's full growth on: the highest flower-bearing
-    /// slice's tomato, at [BLOOM_TIME]. Being fully grown is not being
+    /// from the last bloom's full growth on: the latest staggered flower's
+    /// tomato, at [Plant::bloom_time]. Being fully grown is not being
     /// complete: the blooms keep growing after the last slice is done.
     #[test]
     fn complete_tracks_the_last_bloom() {
+        let t = plant_at(0.0).bloom_time();
         assert!(!plant_at(0.0).complete());
         assert!(!plant_at(FULL_GROW_TIME).complete());
-        assert!(!plant_at(BLOOM_TIME - 0.001).complete());
-        assert!(plant_at(BLOOM_TIME).complete());
-        assert!(plant_at(BLOOM_TIME + 100.0).complete());
+        assert!(!plant_at(t - 0.001).complete());
+        assert!(plant_at(t).complete());
+        assert!(plant_at(t + 100.0).complete());
     }
 
     /// [Plant::layer_midpoints] walks the static, fully grown chain — the
@@ -886,7 +1000,9 @@ mod tests {
     #[test]
     fn flowers_ride_their_slices_through_the_sway() {
         let s = slice();
-        let t = FULL_GROW_TIME + 1.0;
+        // Past the latest staggered start: every flower is up, so each
+        // can be checked against its slice's spawn point.
+        let t = plant_at(0.0).bloom_time() + 1.0;
         let p = plant_at(t);
         let mut node = plant_node();
         p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
@@ -950,7 +1066,7 @@ mod tests {
         assert!((ox - 4.0).abs() < 1e-6, "stem x offset");
         assert!((oy + 144.5).abs() < 1e-6, "stem y offset");
 
-        let p = plant_at(BLOOM_TIME + 1.0);
+        let p = plant_complete();
         let slot_tf = frost::Transform::translate(10.0, -20.0);
         let slot_node = frost::SceneNode {
             transform: slot_tf,
@@ -975,7 +1091,7 @@ mod tests {
     fn layout_skips_a_harvested_slot() {
         let s = slice();
         let mut node = plant_node();
-        let mut p = plant_at(BLOOM_TIME + 1.0);
+        let mut p = plant_complete();
 
         // Pick slot 0: mark it harvested and take its pivot out of the
         // tree, the way the example's pick does.
@@ -1002,7 +1118,7 @@ mod tests {
     fn layout_reposes_a_sent_back_pivot() {
         let s = slice();
         let mut node = plant_node();
-        let mut p = plant_at(BLOOM_TIME + 1.0);
+        let mut p = plant_complete();
 
         // Pick slot 0, carry the pivot with a stale transform, send it
         // back, and clear the harvested mark — the failed-drop path.
@@ -1043,7 +1159,7 @@ mod tests {
     /// first-bloom ripeness.
     #[test]
     fn ripe_follows_the_regrown_schedule() {
-        let r = BLOOM_TIME + 1.0;
+        let r = plant_at(0.0).bloom_time() + 1.0;
         let done = r + FLOWER_GROW_TIME + TOMATO_GROW_TIME;
         let mut p = plant_regrown(2, r);
 
@@ -1061,7 +1177,7 @@ mod tests {
     /// example's growth loop and watering hitbox run on.
     #[test]
     fn complete_waits_for_regrown_blooms() {
-        let r = BLOOM_TIME + 1.0;
+        let r = plant_at(0.0).bloom_time() + 1.0;
         let done = r + FLOWER_GROW_TIME + TOMATO_GROW_TIME;
         let mut p = plant_regrown(2, r);
 
@@ -1082,7 +1198,7 @@ mod tests {
     fn regrow_removes_the_flower_and_restarts_the_bloom() {
         let s = slice();
         let mut node = plant_node();
-        let mut p = plant_at(BLOOM_TIME + 1.0);
+        let mut p = plant_complete();
         assert!(p.complete(), "the plant starts complete");
 
         // Harvest slot 0 into the basket: mark it and take its pivot out of

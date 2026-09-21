@@ -66,9 +66,12 @@
 //! the first starts at launch, and each next one starts when the previous
 //! is fully grown — concurrently with the tool system. Each root joint
 //! stays glued to its own `grass.png` pixel across resizes. Once a slice is
-//! fully grown, its blooms grow: at each of the four lower slices'
-//! hand-picked spawn points — the top slice bears none — a flower grows
-//! from zero to full size over 10 seconds, its `assets/sprites/flower.png`
+//! fully grown, its blooms grow — one flower at a time: the first starts
+//! the frame the slice finishes, and each next starts a random 2 to 5
+//! seconds after the previous one, until every flower on the slice is
+//! growing: at each of the four lower slices' hand-picked spawn points —
+//! the top slice bears none — a flower grows from zero to full size over
+//! 10 seconds from its start, its `assets/sprites/flower.png`
 //! tinted light green to yellow; once the flower is fully grown, a tomato
 //! grows out of the same point over 10 seconds — the white body of
 //! `assets/sprites/tomato.png` tinted dark green to red, at one third of
