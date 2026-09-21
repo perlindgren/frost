@@ -49,10 +49,10 @@
 //! the population climbs 3, 6, …, 18 over the first 75 seconds; a killed
 //! bug is gone from the grass for a few seconds, so the population dips
 //! and recovers with the spraying. Like the vipers module, no random
-//! crate is needed — a small splitmix64 [Rng] seeded from the clock
+//! crate is needed — the engine's [frost::Rng], seeded from the clock,
 //! decides spawn points, speeds, wobbles and respawn delays.
 
-use frost::SceneNode;
+use frost::{Rng, SceneNode};
 
 /// The three walk frames, in order.
 ///
@@ -701,42 +701,6 @@ fn sample_polygon(poly: &[[f32; 2]], rng: &mut Rng) -> [f32; 2] {
         a[0] + u * (b[0] - a[0]) + u * v * (c[0] - b[0]),
         a[1] + u * (b[1] - a[1]) + u * v * (c[1] - b[1]),
     ]
-}
-
-/// A tiny splitmix64 randomizer, so the module needs no random crate.
-///
-/// Seeded from the clock like the particle jitter in `main.rs`, so spawn
-/// points differ between runs.
-struct Rng(u64);
-
-impl Rng {
-    /// Seed from the clock.
-    fn new() -> Self {
-        let t = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x9e37_79b9_7f4a_7c15);
-        Self(t ^ 0x9e37_79b9_7f4a_7c15)
-    }
-
-    /// The next pseudo-random u64.
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-
-    /// A uniform f32 in [0, 1).
-    fn next_f32(&mut self) -> f32 {
-        (self.next_u64() >> 40) as f32 / (1u32 << 24) as f32
-    }
-
-    /// A uniform f32 in [lo, hi).
-    fn in_range(&mut self, lo: f32, hi: f32) -> f32 {
-        lo + self.next_f32() * (hi - lo)
-    }
 }
 
 #[cfg(test)]

@@ -81,6 +81,12 @@
 //! draw them with the immediate draws, fading each one by its remaining
 //! lifetime.
 //!
+//! Randomness comes from [`Rng`], a small seeded splitmix64 generator:
+//! seed it from the clock for a different stream on each run, or fix the
+//! seed for a reproducible one. It is pure integer arithmetic, so it runs
+//! identically on every target, native or `wasm32`, and keeps the crate
+//! free of a `rand` dependency.
+//!
 //! Key presses are logged, the currently held keys are reported by
 //! [`Context::key_down`], the mouse cursor's position by
 //! [`Context::mouse_position`], the held mouse buttons by
@@ -129,6 +135,9 @@ pub use tween::*;
 
 mod collision;
 pub use collision::*;
+
+mod rng;
+pub use rng::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod audio;

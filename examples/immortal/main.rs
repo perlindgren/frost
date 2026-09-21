@@ -669,36 +669,6 @@ fn nozzle(mx: f32, my: f32, angle: f32) -> ([f32; 2], [f32; 2]) {
 /// rendered bee width inside the [`vipers`] module.
 const VIPER_IMAGE: [f32; 2] = [198.0, 179.0];
 
-/// A tiny deterministic random source (splitmix64), so the example needs
-/// no external random crate: seeded from the current time, it gives a
-/// different stream on each run.
-struct Rng(u64);
-
-impl Rng {
-    fn new() -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x9E37_79B9_7F4A_7C15);
-        Self(nanos)
-    }
-
-    /// The next uniform value in [0, 1).
-    fn next_f32(&mut self) -> f32 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^= z >> 31;
-        (z >> 40) as f32 / (1u32 << 24) as f32
-    }
-
-    /// The next uniform value in [lo, hi].
-    fn in_range(&mut self, lo: f32, hi: f32) -> f32 {
-        lo + self.next_f32() * (hi - lo)
-    }
-}
-
 /// The two cursor tools. The mouse holds one active tool, drawn as the
 /// cursor, and one stored tool, mirrored in the held-items panel: the
 /// right-button switch swaps the two, and a left click on a slot swaps the
@@ -789,8 +759,10 @@ struct Demo {
     /// The green spray emitted by the spray can: the simulation state,
     /// stepped once per frame.
     spray: frost::ParticleSystem,
-    /// The random source, for the per-particle jitter.
-    rng: Rng,
+    /// The random source, for the per-particle jitter: the engine's
+    /// `frost::Rng`, seeded from the clock, so the jitter differs between
+    /// runs.
+    rng: frost::Rng,
     /// The emission accumulator: `RATE * dt` (or `SPRAY_RATE * dt`) is
     /// added each frame and one particle is spawned per whole unit, so the
     /// rate holds at any dt.
@@ -1967,7 +1939,7 @@ fn main() {
             tomato_fg,
             water: frost::ParticleSystem::new(),
             spray: frost::ParticleSystem::new(),
-            rng: Rng::new(),
+            rng: frost::Rng::new(),
             acc: 0.0,
             // Six identical growth clocks, one per plant: each starts at
             // zero and the process steps it when the previous is fully
