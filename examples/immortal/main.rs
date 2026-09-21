@@ -410,7 +410,7 @@ const MARGIN: f32 = 20.0;
 /// bottom borders.
 const HELD_SIZE: [f32; 2] = [389.0, 200.0];
 
-/// `sustainble_immortality.png`'s texture size in pixels; the corner
+/// `sustainable_immortality.png`'s texture size in pixels; the corner
 /// badge is drawn at `IMMORTALITY_SCALE` of this natural size, `MARGIN`
 /// clear of the window's top and right borders.
 const IMMORTALITY_SIZE: [f32; 2] = [536.0, 548.0];
@@ -1667,7 +1667,7 @@ impl Assets {
     /// in.
     fn load(root: &str) -> Self {
         let audio = frost::Audio::new().expect("failed to open the audio output device");
-        let mut immortality = sprite(root, "sustainble_immortality.png");
+        let mut immortality = sprite(root, "sustainable_immortality.png");
         if let frost::Shape::Sprite { alpha, .. } = &mut immortality {
             *alpha = IMMORTALITY_ALPHA;
         }
