@@ -49,8 +49,11 @@
 //! (`tomato.png`) tinted
 //! dark green to red, with the dark calyx and stem (`tomato_fg.png`) drawn
 //! on top, both pinned to [TOMATO_TOP] so the body's top sits on the
-//! flower's center and the fruit hangs below it, on top of the flower. Each
-//! slot rides its slice's transform so the whole bloom sways with the plant. The plant's fit scale is the plant node's
+//! flower's center and the fruit hangs below it, on top of the flower. A
+//! fully grown fruit stales on the plant's own clock: [STALE_DELAY] seconds
+//! after full growth, its body modulates from ripe red to the dark red of
+//! [TOMATO_STALE], over [STALE_TIME]. Each slot rides its slice's transform
+//! so the whole bloom sways with the plant. The plant's fit scale is the plant node's
 //! own `scale`, set once by the caller: the node's scale applies before
 //! its transform, to its subtree, so the whole plant sizes around the root
 //! joint while the joint itself still lands exactly on the anchor. The
@@ -138,6 +141,17 @@ pub const FLOWER_GROW_TIME: f32 = 10.0;
 /// [TOMATO_GROW_TIME] seconds later, growing out of the same point.
 pub const TOMATO_GROW_TIME: f32 = 10.0;
 
+/// How long a fully grown tomato holds its ripe red before it starts to
+/// stale, in seconds of the plant's growth clock — the same clock that
+/// grows it, so a water-starved plant's fruit stales only while the plant
+/// grows.
+pub const STALE_DELAY: f32 = 8.0;
+
+/// How long the staleness takes, in seconds of the plant's growth clock:
+/// once [STALE_DELAY] has passed after full growth, the fruit's body
+/// modulates from ripe red to [TOMATO_STALE] over this time.
+pub const STALE_TIME: f32 = 8.0;
+
 /// The span, in seconds, between two flowers starting to grow on the same
 /// finished slice: the first starts the frame the slice is fully grown,
 /// the next starts a random [BLOOM_GAP_MIN, BLOOM_GAP_MAX) seconds after
@@ -187,6 +201,14 @@ pub const TOMATO_GREEN: frost::Color = frost::Color {
 /// The tomato background's color at full growth: red.
 pub const TOMATO_RED: frost::Color = frost::Color {
     r: 1.0,
+    g: 0.0,
+    b: 0.0,
+    a: 1.0,
+};
+
+/// The tomato background's color at full staleness: dark red.
+pub const TOMATO_STALE: frost::Color = frost::Color {
+    r: 0.4,
     g: 0.0,
     b: 0.0,
     a: 1.0,
@@ -291,6 +313,14 @@ fn flower_color(g: f32) -> frost::Color {
 /// The tomato background's color at growth `g`: dark green to red.
 fn tomato_color(g: f32) -> frost::Color {
     mix(TOMATO_GREEN, TOMATO_RED, g)
+}
+
+/// The staleness, 0..1, at plant clock `t` of a bloom that started at
+/// `start`: zero until [STALE_DELAY] seconds after the fruit is fully
+/// grown — the start plus [FLOWER_GROW_TIME] plus [TOMATO_GROW_TIME] —
+/// then rising to 1 over [STALE_TIME].
+fn stale(t: f32, start: f32) -> f32 {
+    ((t - start - FLOWER_GROW_TIME - TOMATO_GROW_TIME - STALE_DELAY) / STALE_TIME).clamp(0.0, 1.0)
 }
 
 /// The translate that puts the tomato's [TOMATO_TOP] pixel — the body's top
@@ -546,7 +576,9 @@ impl Plant {
     /// [first_bloom_start], tinted light green to yellow, and its tomato
     /// grows from zero to [TOMATO_MAX_SCALE] over [TOMATO_GROW_TIME]
     /// seconds after the flower finishes, its background tinted dark green
-    /// to red.
+    /// to red — and a fully grown fruit stales on the plant's own clock:
+    /// [STALE_DELAY] seconds after full growth, its background modulates
+    /// from ripe red to [TOMATO_STALE] over [STALE_TIME].
     ///
     /// `node`'s origin is the plant's root joint (plant1's lower joint):
     /// the base rock turns the whole plant around that joint, and its
@@ -673,14 +705,16 @@ impl Plant {
                     ];
                     let [ox, oy] = tomato_leaf_offset(sprite_size(tomato));
                     // The background: the tinted fruit body, dark green to
-                    // red.
+                    // red while it grows — and once fully grown, modulated
+                    // from ripe red to the dark red of [TOMATO_STALE] as it
+                    // stales on the plant's own clock.
                     let bg = &mut tomato_pivot.children[TOMATO_BG];
                     bg.transform = frost::Transform::translate(ox, oy);
                     if tg > 0.0 {
                         if bg.shape.is_none() {
                             bg.shape = Some(tomato.clone());
                         }
-                        bg.modulate = tomato_color(tg);
+                        bg.modulate = mix(tomato_color(tg), TOMATO_STALE, stale(self.t, start));
                     } else {
                         bg.shape = None;
                     }
@@ -1266,5 +1300,48 @@ mod tests {
         let t = &node.children[slot_index(0)].children[SLOT_TOMATO];
         assert_eq!(t.scale, [TOMATO_MAX_SCALE, TOMATO_MAX_SCALE]);
         assert_eq!(t.children[TOMATO_BG].modulate, TOMATO_RED);
+    }
+
+    /// A fully grown tomato holds its ripe red for [STALE_DELAY] seconds of
+    /// the plant's clock, then modulates from red to [TOMATO_STALE] over
+    /// [STALE_TIME] and holds there — and a regrown fruit stales on its new
+    /// schedule, not the old one's.
+    #[test]
+    fn a_ripe_tomato_stales() {
+        let s = slice();
+        let mut node = plant_node();
+        let ripe_at = plant_at(0.0).bloom_start(0) + FLOWER_GROW_TIME + TOMATO_GROW_TIME;
+        for (dt, st) in [
+            (0.0, 0.0),
+            (STALE_DELAY * 0.99, 0.0),
+            (STALE_DELAY + 0.001, 0.001 / STALE_TIME),
+            (STALE_DELAY + STALE_TIME * 0.5, 0.5),
+            (STALE_DELAY + STALE_TIME, 1.0),
+            (STALE_DELAY + STALE_TIME + 50.0, 1.0),
+        ] {
+            let p = plant_at(ripe_at + dt);
+            p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
+            let bg = &node.children[slot_index(0)].children[SLOT_TOMATO].children[TOMATO_BG];
+            let want = mix(TOMATO_RED, TOMATO_STALE, st);
+            assert!(
+                (bg.modulate.r - want.r).abs() < 1e-6
+                    && (bg.modulate.g - want.g).abs() < 1e-6
+                    && (bg.modulate.b - want.b).abs() < 1e-6,
+                "t = {dt}: modulate {:?}, want {want:?}",
+                bg.modulate
+            );
+        }
+
+        // A regrown fruit stales on its new schedule: at its regrown full
+        // growth, well past where the old fruit would be fully stale, its
+        // background is ripe red again.
+        let mut p = plant_regrown(0, ripe_at);
+        p.t = ripe_at + FLOWER_GROW_TIME + TOMATO_GROW_TIME;
+        p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
+        let bg = &node.children[slot_index(0)].children[SLOT_TOMATO].children[TOMATO_BG];
+        assert_eq!(
+            bg.modulate, TOMATO_RED,
+            "the regrown fruit stales on the old schedule"
+        );
     }
 }

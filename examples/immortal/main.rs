@@ -78,7 +78,11 @@
 //! its natural size, with the dark calyx and stem of
 //! `assets/sprites/tomato_fg.png` drawn on top, the body's top pinned to the
 //! flower's center so the fruit hangs below it, on top of the flower.
-//! Each bloom rides its slice's transform so it sways with the plant.
+//! Each bloom rides its slice's transform so it sways with the plant. A
+//! fully grown fruit stales on its plant's own clock: 8 seconds after full
+//! growth, its body modulates from red to a dark red over 8 seconds — and a
+//! picked fruit carries the color it had at pick, frozen while it rides
+//! the cursor and kept when it lands in the basket.
 //!
 //! Every plant keeps a water reserve, full at launch, and the plants'
 //! growth runs at `1 / GROW_SLOWDOWN` of real time's pace — the slices,
