@@ -114,6 +114,7 @@ pub(crate) struct Frost<P: Process> {
 impl<P: Process> Frost<P> {
     /// The app's initial state: the GPU is ready, but there is no window
     /// and no surface yet — `attach_window` creates both.
+    #[allow(clippy::too_many_arguments)] // the full GPU setup and config arrive at once
     pub(crate) fn new(
         instance: Instance,
         adapter: Adapter,

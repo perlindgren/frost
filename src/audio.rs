@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn synthetic_wav_decodes() {
         let samples = square_wave(800, 8_000);
-        let sound = Sound::load_bytes(&wav_pcm16(1, 8_000, &samples)).unwrap();
+        let sound = Sound::load_bytes(wav_pcm16(1, 8_000, &samples)).unwrap();
         assert_eq!(sound.channels(), 1);
         assert_eq!(sound.sample_rate(), 8_000);
         let frames = sound.duration() * sound.sample_rate() as f32 * sound.channels() as f32;

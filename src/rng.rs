@@ -59,6 +59,13 @@ impl Rng {
     }
 }
 
+impl Default for Rng {
+    /// A clock-seeded generator: the same as [`Rng::new`].
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,9 +97,9 @@ mod tests {
         let mut rng = Rng::with_seed(1234567);
         for _ in 0..10_000 {
             let x = rng.next_f32();
-            assert!(x >= 0.0 && x < 1.0, "next_f32 out of range: {x}");
+            assert!((0.0..1.0).contains(&x), "next_f32 out of range: {x}");
             let y = rng.in_range(-2.5, 7.5);
-            assert!(y >= -2.5 && y < 7.5, "in_range out of bounds: {y}");
+            assert!((-2.5..7.5).contains(&y), "in_range out of bounds: {y}");
         }
     }
 }

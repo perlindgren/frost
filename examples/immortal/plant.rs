@@ -102,12 +102,22 @@ pub const FLOWER_SPAWNS: [&[(f32, f32)]; 4] = [
 
 /// The flower slots per plant: one shapeless slot per [FLOWER_SPAWNS]
 /// point, in flattened slice order — the plant node's children after the
-/// five slice nodes.
+/// [SLICE_N] slice nodes.
 pub const FLOWER_N: usize =
     FLOWER_SPAWNS[0].len()
         + FLOWER_SPAWNS[1].len()
         + FLOWER_SPAWNS[2].len()
         + FLOWER_SPAWNS[3].len();
+
+/// The slices per plant: the plant node's children are the [SLICE_N] slice
+/// nodes first, in chain order, and the [FLOWER_N] flower slots after them.
+pub const SLICE_N: usize = JOINTS.len();
+
+/// The plant node's child index of flower slot `slot`: the slots follow
+/// the slice children, in flattened [FLOWER_SPAWNS] order.
+pub fn slot_index(slot: usize) -> usize {
+    SLICE_N + slot
+}
 
 /// How long a flower takes to grow from zero to its full size, in seconds:
 /// it starts the moment its slice is fully grown and reaches full size
@@ -367,7 +377,7 @@ impl Plant {
             && self
                 .regrow_at
                 .iter()
-                .all(|r| r.map_or(true, |r| self.t >= r + FLOWER_GROW_TIME + TOMATO_GROW_TIME))
+                .all(|r| r.is_none_or(|r| self.t >= r + FLOWER_GROW_TIME + TOMATO_GROW_TIME))
     }
 
     /// The layers the plant has fully grown: how many of [GROW_TIMES] the
@@ -388,12 +398,9 @@ impl Plant {
     pub fn layer_midpoints(&self) -> [[f32; 2]; 5] {
         let mut midpoints = [[0.0, 0.0]; 5];
         let mut p = [0.0f32, 0.0];
-        for i in 0..5 {
-            let d = [
-                self.links[i].to[0] - self.links[i].from[0],
-                self.links[i].to[1] - self.links[i].from[1],
-            ];
-            midpoints[i] = [p[0] + d[0] / 2.0, p[1] + d[1] / 2.0];
+        for (m, link) in midpoints.iter_mut().zip(&self.links) {
+            let d = [link.to[0] - link.from[0], link.to[1] - link.from[1]];
+            *m = [p[0] + d[0] / 2.0, p[1] + d[1] / 2.0];
             p = [p[0] + d[0], p[1] + d[1]];
         }
         midpoints
@@ -482,8 +489,9 @@ impl Plant {
     }
 
     /// Lays the plant out in `node`, whose children — in chain order — are
-    /// the five slice nodes followed by the [FLOWER_N] flower slots, in
-    /// flattened [FLOWER_SPAWNS] order. Each flower slot is a pivot whose
+    /// the [SLICE_N] slice nodes followed by the [FLOWER_N] flower slots,
+    /// in flattened [FLOWER_SPAWNS] order — each slot at [slot_index].
+    /// Each flower slot is a pivot whose
     /// children, in draw order, are the `flower` leaf and a tomato pivot on
     /// top of it — whose children are the `tomato` background leaf and the
     /// `tomato_fg` foreground leaf, both pinned to [TOMATO_TOP] so the
@@ -583,7 +591,7 @@ impl Plant {
         let mut slot = 0usize;
         for (i, spawns) in self.tomato_spawn.iter().enumerate() {
             for &pt in spawns {
-                let child = &mut node.children[5 + slot];
+                let child = &mut node.children[slot_index(slot)];
                 let start = self.bloom_start(i, slot);
                 let fg = flower_growth(self.t, start);
                 let tg = tomato_growth(self.t, start);
@@ -694,7 +702,7 @@ mod tests {
     /// foreground leaf).
     fn plant_node() -> frost::SceneNode {
         let s = slice();
-        let mut children: Vec<Box<frost::SceneNode>> = (0..5)
+        let mut children: Vec<Box<frost::SceneNode>> = (0..SLICE_N)
             .map(|_| {
                 Box::new(frost::SceneNode {
                     shape: Some(s.clone()),
@@ -800,7 +808,7 @@ mod tests {
         // growth.
         let p = plant_at(GROW_TIMES[0] - 0.001);
         p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
-        for c in node.children.iter().skip(5) {
+        for c in node.children.iter().skip(SLICE_N) {
             let f = &c.children[SLOT_FLOWER];
             let t = &c.children[SLOT_TOMATO];
             assert!(f.shape.is_none(), "a flower started early");
@@ -815,10 +823,10 @@ mod tests {
         // between green and yellow; the tomato has not started.
         let p = plant_at(GROW_TIMES[0] + FLOWER_GROW_TIME / 2.0);
         p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
-        let f = &node.children[5].children[SLOT_FLOWER];
+        let f = &node.children[slot_index(0)].children[SLOT_FLOWER];
         assert!(f.shape.is_some());
         assert!((f.scale[0] - 0.5).abs() < 1e-6, "flower scale mid-growth");
-        let t = &node.children[5].children[SLOT_TOMATO];
+        let t = &node.children[slot_index(0)].children[SLOT_TOMATO];
         assert_eq!(t.scale, [0.0, 0.0], "the tomato started early");
         for leaf in t.children.iter() {
             assert!(leaf.shape.is_none());
@@ -829,17 +837,17 @@ mod tests {
         let bloom = GROW_TIMES[0] + FLOWER_GROW_TIME;
         let p = plant_at(bloom);
         p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
-        let f = &node.children[5].children[SLOT_FLOWER];
+        let f = &node.children[slot_index(0)].children[SLOT_FLOWER];
         assert_eq!(f.scale, [1.0, 1.0]);
         assert_eq!(f.modulate, FLOWER_BLOOM, "flower color at full growth");
-        let t = &node.children[5].children[SLOT_TOMATO];
+        let t = &node.children[slot_index(0)].children[SLOT_TOMATO];
         assert_eq!(t.scale, [0.0, 0.0]);
 
         // Mid tomato growth, both tomato leaves are present and half sized;
         // the background is tinted between green and red.
         let p = plant_at(bloom + TOMATO_GROW_TIME / 2.0);
         p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
-        let t = &node.children[5].children[SLOT_TOMATO];
+        let t = &node.children[slot_index(0)].children[SLOT_TOMATO];
         assert!(
             (t.scale[0] - TOMATO_MAX_SCALE / 2.0).abs() < 1e-6,
             "tomato scale mid-growth"
@@ -852,7 +860,7 @@ mod tests {
         // unmodulated.
         let p = plant_at(bloom + TOMATO_GROW_TIME);
         p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
-        let t = &node.children[5].children[SLOT_TOMATO];
+        let t = &node.children[slot_index(0)].children[SLOT_TOMATO];
         assert_eq!(t.scale, [TOMATO_MAX_SCALE, TOMATO_MAX_SCALE]);
         assert_eq!(
             t.children[TOMATO_BG].modulate,
@@ -888,7 +896,7 @@ mod tests {
         let mut offset = 0usize;
         for (i, spawns) in p.tomato_spawn.iter().enumerate() {
             for &pt in spawns {
-                let flower = node.children[5 + offset].transform.apply([0.0, 0.0]);
+                let flower = node.children[slot_index(offset)].transform.apply([0.0, 0.0]);
                 let on_slice = node.children[i].transform.apply(pt);
                 assert!(
                     (flower[0] - on_slice[0]).abs() <= 1e-4
@@ -907,7 +915,7 @@ mod tests {
         let mut node2 = plant_node();
         p.layout(&mut node2, [0.0, 0.0], &s, &s, &s);
         let composed = |node: &frost::SceneNode| {
-            node.transform.apply(node.children[5].transform.apply([0.0, 0.0]))
+            node.transform.apply(node.children[slot_index(0)].transform.apply([0.0, 0.0]))
         };
         let a = composed(&node);
         let b = composed(&node2);
@@ -972,17 +980,17 @@ mod tests {
         // Pick slot 0: mark it harvested and take its pivot out of the
         // tree, the way the example's pick does.
         p.harvest(0);
-        let _pivot = node.children[5].children.remove(1);
+        let _pivot = node.children[slot_index(0)].children.remove(SLOT_TOMATO);
 
         // The layout runs with the pivot gone and does not touch the
         // picked slot's remaining child.
         p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
         assert_eq!(
-            node.children[5].children.len(),
+            node.children[slot_index(0)].children.len(),
             1,
             "layout touched the picked slot"
         );
-        for c in node.children.iter().skip(6) {
+        for c in node.children.iter().skip(slot_index(1)) {
             assert_eq!(c.children.len(), 2, "a whole slot lost a child");
         }
     }
@@ -999,17 +1007,17 @@ mod tests {
         // Pick slot 0, carry the pivot with a stale transform, send it
         // back, and clear the harvested mark — the failed-drop path.
         p.harvest(0);
-        let mut pivot = *node.children[5].children.remove(1);
+        let mut pivot = *node.children[slot_index(0)].children.remove(SLOT_TOMATO);
         pivot.transform = frost::Transform::translate(123.0, -45.0);
         pivot.scale = [0.15, 0.15];
-        node.children[5].children.push(Box::new(pivot));
+        node.children[slot_index(0)].children.push(Box::new(pivot));
         p.unharvest(0);
 
         // The layout resets the pivot to the plant's own pose: the
         // transform is the identity again, and the scale is the
         // full-growth scale.
         p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
-        let t = &node.children[5].children[1];
+        let t = &node.children[slot_index(0)].children[SLOT_TOMATO];
         let o = t.transform.apply([0.0, 0.0]);
         let ex = t.transform.apply([1.0, 0.0]);
         let ey = t.transform.apply([0.0, 1.0]);
@@ -1082,9 +1090,9 @@ mod tests {
         // the slot a fresh, shapeless tomato pivot, the way the example
         // does.
         p.harvest(0);
-        let _pivot = *node.children[5].children.remove(1);
+        let _pivot = *node.children[slot_index(0)].children.remove(SLOT_TOMATO);
         p.regrow(0);
-        node.children[5].children.push(Box::new(frost::SceneNode {
+        node.children[slot_index(0)].children.push(Box::new(frost::SceneNode {
             children: vec![
                 Box::new(frost::SceneNode::default()),
                 Box::new(frost::SceneNode::default()),
@@ -1095,8 +1103,8 @@ mod tests {
         // At the reset moment the flower is gone and the tomato has not
         // started — the bloom is removed.
         p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
-        let f = &node.children[5].children[SLOT_FLOWER];
-        let t = &node.children[5].children[SLOT_TOMATO];
+        let f = &node.children[slot_index(0)].children[SLOT_FLOWER];
+        let t = &node.children[slot_index(0)].children[SLOT_TOMATO];
         assert!(f.shape.is_none(), "the flower survived the harvest");
         assert_eq!(f.scale, [0.0, 0.0]);
         assert_eq!(t.scale, [0.0, 0.0]);
@@ -1106,7 +1114,7 @@ mod tests {
         assert!(!p.ripe(0), "the regrown fruit ripens early");
         assert!(!p.complete(), "the plant is complete while regrowing");
         // The other slots keep their first-bloom state.
-        let f1 = &node.children[6].children[SLOT_FLOWER];
+        let f1 = &node.children[slot_index(1)].children[SLOT_FLOWER];
         assert!(f1.shape.is_some());
         assert_eq!(f1.scale, [1.0, 1.0]);
 
@@ -1114,11 +1122,11 @@ mod tests {
         // has not started.
         p.step(FLOWER_GROW_TIME / 2.0);
         p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
-        let f = &node.children[5].children[SLOT_FLOWER];
+        let f = &node.children[slot_index(0)].children[SLOT_FLOWER];
         assert!(f.shape.is_some(), "the flower did not come back");
         assert!((f.scale[0] - 0.5).abs() < 1e-6, "the flower is not half grown");
         assert_eq!(
-            node.children[5].children[SLOT_TOMATO].scale,
+            node.children[slot_index(0)].children[SLOT_TOMATO].scale,
             [0.0, 0.0],
             "the tomato starts before the flower is full"
         );
@@ -1129,7 +1137,7 @@ mod tests {
         assert!(!p.ripe(0), "the regrown fruit ripens early");
         p.step(TOMATO_GROW_TIME / 2.0);
         p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
-        let t = &node.children[5].children[SLOT_TOMATO];
+        let t = &node.children[slot_index(0)].children[SLOT_TOMATO];
         assert!(
             (t.scale[0] - TOMATO_MAX_SCALE / 2.0).abs() < 1e-6,
             "the regrown tomato is not half grown"
@@ -1139,7 +1147,7 @@ mod tests {
         assert!(p.ripe(0), "the regrown fruit does not ripen");
         assert!(p.complete(), "the plant does not complete again");
         p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
-        let t = &node.children[5].children[SLOT_TOMATO];
+        let t = &node.children[slot_index(0)].children[SLOT_TOMATO];
         assert_eq!(t.scale, [TOMATO_MAX_SCALE, TOMATO_MAX_SCALE]);
         assert_eq!(t.children[TOMATO_BG].modulate, TOMATO_RED);
     }

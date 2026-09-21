@@ -567,11 +567,11 @@ fn basket_accepts(lx: f32, ly: f32) -> bool {
 /// — piled on top of each other, with no gravity and no tomato-to-tomato
 /// collision — and the front half over the fruit, so a dropped tomato
 /// renders behind the front rim and in front of the back.
-fn basket_children(back: frost::Shape, front: frost::Shape) -> Vec<Box<frost::SceneNode>> {
-    let mut children = vec![
-        Box::new(frost::SceneNode::default()),
-        Box::new(frost::SceneNode::default()),
-        Box::new(frost::SceneNode::default()),
+fn basket_children(back: frost::Shape, front: frost::Shape) -> [frost::SceneNode; 3] {
+    let mut children = [
+        frost::SceneNode::default(),
+        frost::SceneNode::default(),
+        frost::SceneNode::default(),
     ];
     children[BASKET_BACK].shape = Some(back);
     children[BASKET_FRONT].shape = Some(front);
@@ -1521,7 +1521,7 @@ impl Demo {
                             return false;
                         }
                         let center =
-                            p.tomato_center(si, &plant_nodes[pi].children[5 + si], &self.tomato);
+                            p.tomato_center(si, &plant_nodes[pi].children[plant::slot_index(si)], &self.tomato);
                         let world = frost::Transform::scale(PLANT_SCALE, PLANT_SCALE)
                             .compose(&plant_nodes[pi].transform);
                         let [cx, cy] = world.apply(center);
@@ -1535,7 +1535,7 @@ impl Demo {
         // Rehome the pivot: out of the slot, into the held-fruit
         // container, at the pick scale under the pointer.
         let root = &mut ctx.scene().root;
-        let pivot = root.children[CHILD_PLANTS].children[pi].children[5 + si]
+        let pivot = root.children[CHILD_PLANTS].children[pi].children[plant::slot_index(si)]
             .children
             .remove(1);
         let mut pivot = *pivot;
@@ -1592,7 +1592,7 @@ impl Demo {
             // the next layout removes the flower and regrows it from
             // zero, the tomato after it.
             self.plants[pi].regrow(si);
-            root.children[CHILD_PLANTS].children[pi].children[5 + si]
+            root.children[CHILD_PLANTS].children[pi].children[plant::slot_index(si)]
                 .children
                 .push(Box::new(frost::SceneNode {
                     children: vec![
@@ -1605,7 +1605,7 @@ impl Demo {
             // Snap back to the plant; the layout reposes the pivot this
             // same frame.
             self.plants[pi].unharvest(si);
-            root.children[CHILD_PLANTS].children[pi].children[5 + si]
+            root.children[CHILD_PLANTS].children[pi].children[plant::slot_index(si)]
                 .children
                 .push(Box::new(pivot));
         }
@@ -1765,7 +1765,7 @@ fn main() {
     // `CARGO_MANIFEST_DIR` pins the asset paths to the crate root, so the
     // example works no matter where it is run from.
     let root = std::env!("CARGO_MANIFEST_DIR");
-    let assets = Assets::load(&root);
+    let assets = Assets::load(root);
     let plant = plant::Plant::new([
         &assets.plant1,
         &assets.plant2,
@@ -1981,7 +1981,10 @@ fn main() {
                 // frame; its children — the back half, the fruit
                 // container, and the front half — are built by
                 // `basket_children`.
-                children: basket_children(assets.basket_back, assets.basket_front),
+                children: basket_children(assets.basket_back, assets.basket_front)
+                    .into_iter()
+                    .map(Box::new)
+                    .collect(),
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
