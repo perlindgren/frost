@@ -1580,6 +1580,145 @@ impl Demo {
     }
 }
 
+/// Everything the example loads at startup, from the asset root: the
+/// sprite shapes, the audio output, and the bug and watering clips.
+/// [`Assets::load`] reads it all in one place; `main` hands it to the
+/// plant node, the scene, and the `Demo`.
+struct Assets {
+    /// The grass photo, exactly the window size: stretched to fill the
+    /// window by the process.
+    grass: frost::Shape,
+    /// The water can's outline, the active-tool sprite for
+    /// `Tool::WaterCan`.
+    can: frost::Shape,
+    /// The spray can's at-rest frame, the active-tool sprite for
+    /// `Tool::SprayCan`.
+    spray1: frost::Shape,
+    /// The spray can's pressed frame, swapped into the tool node while the
+    /// button is down.
+    spray2: frost::Shape,
+    /// The two viper frames: the swarm's shape swaps between them at most
+    /// once per wingbeat change.
+    viper1: frost::Shape,
+    viper2: frost::Shape,
+    /// The three bug walk frames: a slot's shape swaps when its bug's walk
+    /// frame changes.
+    bug1: frost::Shape,
+    bug2: frost::Shape,
+    bug3: frost::Shape,
+    /// The inventory panel, mid left: four slots, 0 to 3 from the top,
+    /// the spray can resting in slot 2 and the watering can in slot 3.
+    items: frost::Shape,
+    /// The held-items panel in the bottom right: the active tool in the
+    /// left half, the stored one in the right.
+    held_items: frost::Shape,
+    /// The five plant slices in chain order, from the root joint up.
+    plant1: frost::Shape,
+    plant2: frost::Shape,
+    plant3: frost::Shape,
+    plant4: frost::Shape,
+    plant5: frost::Shape,
+    /// The bloom's flower leaf, under its tomato.
+    flower: frost::Shape,
+    /// The tomato's white body leaf, the bloom's background.
+    tomato: frost::Shape,
+    /// The tomato's calyx-and-stem leaf, the bloom's foreground.
+    tomato_fg: frost::Shape,
+    /// The basket's back half, under the fruit.
+    basket_back: frost::Shape,
+    /// The basket's front half, over the fruit.
+    basket_front: frost::Shape,
+    /// The immortality badge, tinted down to a faint watermark.
+    immortality: frost::Shape,
+    /// The audio output, opened once at startup.
+    audio: frost::Audio,
+    /// The tjatter clips: a bug that reaches its destination while another
+    /// bug is on the grass within 50 px of it chatters on one of them, the
+    /// swarm's random pick.
+    tjatters: [frost::Sound; 3],
+    /// The plopp clips: a bug that pops up out of the grass — a batch
+    /// spawn or a respawn — plops on one of them, the swarm's random pick.
+    plops: [frost::Sound; 3],
+    /// The Aj clips: the bug cries out on one of them, the swarm's random
+    /// pick, every time the mist drops its health.
+    ajs: [frost::Sound; 4],
+    /// The watering loop: it plays, looping, while water pours out of the
+    /// spout, silenced the frame pouring stops.
+    pour: frost::Sound,
+}
+
+impl Assets {
+    /// Loads every sprite from `{root}/assets/sprites` and every sound
+    /// from `{root}/assets/audio`, opening the audio output first. The
+    /// immortality badge is tinted down to a faint watermark on the way
+    /// in.
+    fn load(root: &str) -> Self {
+        let audio = frost::Audio::new().expect("failed to open the audio output device");
+        let mut immortality = sprite(root, "sustainble_immortality.png");
+        if let frost::Shape::Sprite { alpha, .. } = &mut immortality {
+            *alpha = IMMORTALITY_ALPHA;
+        }
+        Assets {
+            grass: sprite(root, "grass.png"),
+            can: sprite(root, "water_can_outline.png"),
+            spray1: sprite(root, "Spray1.png"),
+            spray2: sprite(root, "Spray2.png"),
+            viper1: sprite(root, "Getingeye1.png"),
+            viper2: sprite(root, "Getingeye2.png"),
+            bug1: sprite(root, "Bug1a.png"),
+            bug2: sprite(root, "Bug2a.png"),
+            bug3: sprite(root, "Bug3a.png"),
+            items: sprite(root, "items.png"),
+            held_items: sprite(root, "held_items.png"),
+            plant1: sprite(root, "plant1.png"),
+            plant2: sprite(root, "plant2.png"),
+            plant3: sprite(root, "plant3.png"),
+            plant4: sprite(root, "plant4.png"),
+            plant5: sprite(root, "plant5.png"),
+            flower: sprite(root, "flower.png"),
+            tomato: sprite(root, "tomato.png"),
+            tomato_fg: sprite(root, "tomato_fg.png"),
+            basket_back: sprite(root, "BasketBack.png"),
+            basket_front: sprite(root, "BasketFront.png"),
+            immortality,
+            audio,
+            tjatters: [
+                sound(root, "TjatterLow.wav"),
+                sound(root, "TjatterMid.wav"),
+                sound(root, "TjatterHigh.wav"),
+            ],
+            plops: [
+                sound(root, "bugs_plopp1.wav"),
+                sound(root, "bugs_plopp2.wav"),
+                sound(root, "bugs_plopp3.wav"),
+            ],
+            ajs: [
+                sound(root, "Aj1.wav"),
+                sound(root, "Aj2.wav"),
+                sound(root, "Aj3.wav"),
+                sound(root, "Aj4.wav"),
+            ],
+            pour: sound(root, "WaterFlowSoft.wav"),
+        }
+    }
+}
+
+/// Loads the sprite `{root}/assets/sprites/{name}`, panicking with the
+/// full path on failure.
+fn sprite(root: &str, name: &str) -> frost::Shape {
+    let path = format!("{root}/assets/sprites/{name}");
+    frost::Shape::sprite(&path)
+        .unwrap_or_else(|err| panic!("failed to load {path}: {err}"))
+}
+
+/// Loads the sound `{root}/assets/audio/{name}`, panicking with the full
+/// path on failure.
+fn sound(root: &str, name: &str) -> frost::Sound {
+    let path = format!("{root}/assets/audio/{name}");
+    frost::Sound::load(&path)
+        .unwrap_or_else(|err| panic!("failed to load {path}: {err}"))
+}
+
 fn main() {
     env_logger::init();
     log::info!("frost started");
@@ -1587,99 +1726,14 @@ fn main() {
     // `CARGO_MANIFEST_DIR` pins the asset paths to the crate root, so the
     // example works no matter where it is run from.
     let root = std::env!("CARGO_MANIFEST_DIR");
-    // let root = std::env::current_exe().expect("failed to get current exe");
-    // let root = root.parent().expect("failed to get parent directory");
-    // let root = root.to_str().expect("failed to convert root to string");
-    let grass = frost::Shape::sprite(format!("{root}/assets/sprites/grass.png"))
-        .expect("failed to load assets/sprites/grass.png");
-    let can = frost::Shape::sprite(format!("{root}/assets/sprites/water_can_outline.png"))
-        .expect("failed to load assets/sprites/water_can_outline.png");
-    let spray1 = frost::Shape::sprite(format!("{root}/assets/sprites/Spray1.png"))
-        .expect("failed to load assets/sprites/Spray1.png");
-    let spray2 = frost::Shape::sprite(format!("{root}/assets/sprites/Spray2.png"))
-        .expect("failed to load assets/sprites/Spray2.png");
-    let viper1 = frost::Shape::sprite(format!("{root}/assets/sprites/Getingeye1.png"))
-        .expect("failed to load assets/sprites/Getingeye1.png");
-    let viper2 = frost::Shape::sprite(format!("{root}/assets/sprites/Getingeye2.png"))
-        .expect("failed to load assets/sprites/Getingeye2.png");
-    let bug1 = frost::Shape::sprite(format!("{root}/assets/sprites/Bug1a.png"))
-        .expect("failed to load assets/sprites/Bug1a.png");
-    let bug2 = frost::Shape::sprite(format!("{root}/assets/sprites/Bug2a.png"))
-        .expect("failed to load assets/sprites/Bug2a.png");
-    let bug3 = frost::Shape::sprite(format!("{root}/assets/sprites/Bug3a.png"))
-        .expect("failed to load assets/sprites/Bug3a.png");
-    let items = frost::Shape::sprite(format!("{root}/assets/sprites/items.png"))
-        .expect("failed to load assets/sprites/items.png");
-    let held_items = frost::Shape::sprite(format!("{root}/assets/sprites/held_items.png"))
-        .expect("failed to load assets/sprites/held_items.png");
-    let plant1 = frost::Shape::sprite(format!("{root}/assets/sprites/plant1.png"))
-        .expect("failed to load assets/sprites/plant1.png");
-    let plant2 = frost::Shape::sprite(format!("{root}/assets/sprites/plant2.png"))
-        .expect("failed to load assets/sprites/plant2.png");
-    let plant3 = frost::Shape::sprite(format!("{root}/assets/sprites/plant3.png"))
-        .expect("failed to load assets/sprites/plant3.png");
-    let plant4 = frost::Shape::sprite(format!("{root}/assets/sprites/plant4.png"))
-        .expect("failed to load assets/sprites/plant4.png");
-    let plant5 = frost::Shape::sprite(format!("{root}/assets/sprites/plant5.png"))
-        .expect("failed to load assets/sprites/plant5.png");
-    let flower = frost::Shape::sprite(format!("{root}/assets/sprites/flower.png"))
-        .expect("failed to load assets/sprites/flower.png");
-    let tomato = frost::Shape::sprite(format!("{root}/assets/sprites/tomato.png"))
-        .expect("failed to load assets/sprites/tomato.png");
-    let tomato_fg = frost::Shape::sprite(format!("{root}/assets/sprites/tomato_fg.png"))
-        .expect("failed to load assets/sprites/tomato_fg.png");
-    let basket_back = frost::Shape::sprite(format!("{root}/assets/sprites/BasketBack.png"))
-        .expect("failed to load assets/sprites/BasketBack.png");
-    let basket_front = frost::Shape::sprite(format!("{root}/assets/sprites/BasketFront.png"))
-        .expect("failed to load assets/sprites/BasketFront.png");
-    // The immortality badge: tinted down to a faint watermark.
-    let mut immortality =
-        frost::Shape::sprite(format!("{root}/assets/sprites/sustainble_immortality.png"))
-            .expect("failed to load assets/sprites/sustainble_immortality.png");
-    if let frost::Shape::Sprite { alpha, .. } = &mut immortality {
-        *alpha = IMMORTALITY_ALPHA;
-    }
-    let plant = plant::Plant::new([&plant1, &plant2, &plant3, &plant4, &plant5]);
-
-    // The audio output, decoded once at startup, and the bug clips: the
-    // three tjatter clips (a bug that reaches its destination while
-    // another bug is on the grass within 50 px of it chatters on one of
-    // them, the swarm's random pick), the three plopp clips (a bug that
-    // pops up out of the grass — a batch spawn or a respawn — plops on
-    // one of them, the swarm's random pick), the four Aj clips (the bug
-    // cries out on one of them, the swarm's random pick, every time the
-    // mist drops its health), and the watering loop (it plays, looping,
-    // while water pours out of the spout, silenced the frame pouring
-    // stops).
-    let audio = frost::Audio::new().expect("failed to open the audio output device");
-    let tjatters = [
-        frost::Sound::load(format!("{root}/assets/audio/TjatterLow.wav"))
-            .expect("failed to load assets/audio/TjatterLow.wav"),
-        frost::Sound::load(format!("{root}/assets/audio/TjatterMid.wav"))
-            .expect("failed to load assets/audio/TjatterMid.wav"),
-        frost::Sound::load(format!("{root}/assets/audio/TjatterHigh.wav"))
-            .expect("failed to load assets/audio/TjatterHigh.wav"),
-    ];
-    let plops = [
-        frost::Sound::load(format!("{root}/assets/audio/bugs_plopp1.wav"))
-            .expect("failed to load assets/audio/bugs_plopp1.wav"),
-        frost::Sound::load(format!("{root}/assets/audio/bugs_plopp2.wav"))
-            .expect("failed to load assets/audio/bugs_plopp2.wav"),
-        frost::Sound::load(format!("{root}/assets/audio/bugs_plopp3.wav"))
-            .expect("failed to load assets/audio/bugs_plopp3.wav"),
-    ];
-    let ajs = [
-        frost::Sound::load(format!("{root}/assets/audio/Aj1.wav"))
-            .expect("failed to load assets/audio/Aj1.wav"),
-        frost::Sound::load(format!("{root}/assets/audio/Aj2.wav"))
-            .expect("failed to load assets/audio/Aj2.wav"),
-        frost::Sound::load(format!("{root}/assets/audio/Aj3.wav"))
-            .expect("failed to load assets/audio/Aj3.wav"),
-        frost::Sound::load(format!("{root}/assets/audio/Aj4.wav"))
-            .expect("failed to load assets/audio/Aj4.wav"),
-    ];
-    let pour = frost::Sound::load(format!("{root}/assets/audio/WaterFlowSoft.wav"))
-        .expect("failed to load assets/audio/WaterFlowSoft.wav");
+    let assets = Assets::load(&root);
+    let plant = plant::Plant::new([
+        &assets.plant1,
+        &assets.plant2,
+        &assets.plant3,
+        &assets.plant4,
+        &assets.plant5,
+    ]);
 
     // One plant node, cloned for each plant: its origin is the root joint
     // (plant1's lower joint), positioned by the process every frame. The
@@ -1695,23 +1749,23 @@ fn main() {
     // bloom pixel buffers.
     let mut plant_children: Vec<Box<frost::SceneNode>> = vec![
         Box::new(frost::SceneNode {
-            shape: Some(plant1),
+            shape: Some(assets.plant1),
             ..Default::default()
         }),
         Box::new(frost::SceneNode {
-            shape: Some(plant2),
+            shape: Some(assets.plant2),
             ..Default::default()
         }),
         Box::new(frost::SceneNode {
-            shape: Some(plant3),
+            shape: Some(assets.plant3),
             ..Default::default()
         }),
         Box::new(frost::SceneNode {
-            shape: Some(plant4),
+            shape: Some(assets.plant4),
             ..Default::default()
         }),
         Box::new(frost::SceneNode {
-            shape: Some(plant5),
+            shape: Some(assets.plant5),
             ..Default::default()
         }),
     ];
@@ -1760,7 +1814,7 @@ fn main() {
         children: vec![
             Box::new(frost::SceneNode {
                 // Stretched to fill the window by the process, every frame.
-                shape: Some(grass),
+                shape: Some(assets.grass),
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
@@ -1773,7 +1827,7 @@ fn main() {
                 // slot 2 and the watering can in slot 3; slots 0 and 1
                 // start empty, and a left click can park either tool in any
                 // slot.
-                shape: Some(items),
+                shape: Some(assets.items),
                 children: vec![
                     Box::new(frost::SceneNode {
                         // Slot 0: empty at start.
@@ -1792,7 +1846,7 @@ fn main() {
                             slot_local(SPRAY_SLOT)[1],
                         ),
                         scale: [slot_scale(SPRAY_IMAGE), slot_scale(SPRAY_IMAGE)],
-                        shape: Some(spray1.clone()),
+                        shape: Some(assets.spray1.clone()),
                         ..Default::default()
                     }),
                     Box::new(frost::SceneNode {
@@ -1802,7 +1856,7 @@ fn main() {
                             slot_local(CAN_SLOT)[1],
                         ),
                         scale: [slot_scale(CAN_IMAGE), slot_scale(CAN_IMAGE)],
-                        shape: Some(can.clone()),
+                        shape: Some(assets.can.clone()),
                         ..Default::default()
                     }),
                 ],
@@ -1829,7 +1883,7 @@ fn main() {
                 // stored one — each painted on top of the panel, since a
                 // node paints its shape before its children; the cells are
                 // synced by `set_active`.
-                shape: Some(held_items),
+                shape: Some(assets.held_items),
                 children: vec![
                     Box::new(frost::SceneNode {
                         // The left cell: the active tool, empty at start.
@@ -1894,14 +1948,14 @@ fn main() {
                 // back.
                 children: vec![
                     Box::new(frost::SceneNode {
-                        shape: Some(basket_back),
+                        shape: Some(assets.basket_back),
                         ..Default::default()
                     }),
                     Box::new(frost::SceneNode {
                         ..Default::default()
                     }),
                     Box::new(frost::SceneNode {
-                        shape: Some(basket_front),
+                        shape: Some(assets.basket_front),
                         ..Default::default()
                     }),
                 ],
@@ -1913,7 +1967,7 @@ fn main() {
                 // borders, tinted to a faint watermark, positioned by the
                 // process every frame. It sits under the held-fruit node,
                 // so a carried tomato still paints above it.
-                shape: Some(immortality),
+                shape: Some(assets.immortality),
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
@@ -1945,28 +1999,28 @@ fn main() {
             rotation: frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once),
             burst: None,
             showing_spray2: false,
-            can,
-            spray1,
-            spray2,
-            viper1,
-            viper2,
+            can: assets.can,
+            spray1: assets.spray1,
+            spray2: assets.spray2,
+            viper1: assets.viper1,
+            viper2: assets.viper2,
             // Three bugs per plant, each plant's batch exactly once: the
             // population climbs 3, 6, …, 18 over the first 75 seconds; a
             // killed bug pops back up at its spawn spot after a random 5
             // to 10 second delay.
-            bugs: bugs::Bugs::new([&bug1, &bug2, &bug3]),
-            bug1,
-            bug2,
-            bug3,
-            audio,
-            tjatters,
-            plops,
-            ajs,
-            pour,
+            bugs: bugs::Bugs::new([&assets.bug1, &assets.bug2, &assets.bug3]),
+            bug1: assets.bug1,
+            bug2: assets.bug2,
+            bug3: assets.bug3,
+            audio: assets.audio,
+            tjatters: assets.tjatters,
+            plops: assets.plops,
+            ajs: assets.ajs,
+            pour: assets.pour,
             pouring: false,
-            flower,
-            tomato,
-            tomato_fg,
+            flower: assets.flower,
+            tomato: assets.tomato,
+            tomato_fg: assets.tomato_fg,
             water: frost::ParticleSystem::new(),
             spray: frost::ParticleSystem::new(),
             rng: frost::Rng::new(),
