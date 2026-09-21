@@ -78,39 +78,15 @@ struct Rect {
     color: frost::Color,
 }
 
-/// A tiny deterministic random source (splitmix64), so the example needs no
-/// external random crate: seeded from the current time, it gives a different
-/// set of rectangles on each run.
-struct Rng(u64);
-
-impl Rng {
-    fn new() -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x9E37_79B9_7F4A_7C15);
-        Self(nanos)
-    }
-
-    /// The next uniform value in [0, 1).
-    fn next_f32(&mut self) -> f32 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^= z >> 31;
-        (z >> 40) as f32 / (1u32 << 24) as f32
-    }
-
-    /// The next uniform value in [lo, hi]. When `hi <= lo` — the window is
-    /// smaller than a rectangle on that axis — the midpoint instead, so the
-    /// value stays as central as it can be.
-    fn in_range(&mut self, lo: f32, hi: f32) -> f32 {
-        if hi <= lo {
-            (lo + hi) / 2.0
-        } else {
-            lo + self.next_f32() * (hi - lo)
-        }
+/// [`frost::Rng::in_range`], but when the window is smaller than a
+/// rectangle on that axis (`hi <= lo`) the midpoint instead, so the value
+/// stays as central as it can be; no draw is consumed in that case, so the
+/// rest of the stream is unaffected.
+fn in_range(rng: &mut frost::Rng, lo: f32, hi: f32) -> f32 {
+    if hi <= lo {
+        (lo + hi) / 2.0
+    } else {
+        rng.in_range(lo, hi)
     }
 }
 
@@ -163,15 +139,15 @@ impl frost::Process for Demo {
         // camera view moving at each layer's speed.
         if self.rects.is_none() {
             let (w, h) = ctx.size();
-            let mut rng = Rng::new();
+            let mut rng = frost::Rng::new();
             let rects: [Vec<Rect>; 3] = [0, 1, 2].map(|_| {
                 (0..RECTS)
                     .map(|_| {
                         let half = SIZE / 2.0;
                         Rect {
                             pos: [
-                                rng.in_range(-w / 2.0 + half, w / 2.0 - half),
-                                rng.in_range(-h / 2.0 + half, h / 2.0 - half),
+                                in_range(&mut rng, -w / 2.0 + half, w / 2.0 - half),
+                                in_range(&mut rng, -h / 2.0 + half, h / 2.0 - half),
                             ],
                             color: frost::Color {
                                 r: rng.next_f32(),
