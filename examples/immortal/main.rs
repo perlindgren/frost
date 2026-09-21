@@ -567,23 +567,6 @@ fn slot_hovered(items: &frost::SceneNode, i: usize, p: [f32; 2]) -> bool {
             <= (ITEMS_SIZE[1] - 2.0 * SLOT_MARGIN) * items.scale[1] / SLOTS as f32 / 2.0
 }
 
-/// The tool a slot node holds, read from the sprite it shows: the two
-/// sprites have different texture sizes, so the size identifies the tool,
-/// and a node with no shape holds nothing.
-fn slot_tool(node: &frost::SceneNode) -> Option<Tool> {
-    let (w, h) = match &node.shape {
-        Some(frost::Shape::Sprite { width, height, .. }) => (*width as f32, *height as f32),
-        _ => return None,
-    };
-    if (w, h) == (CAN_IMAGE[0], CAN_IMAGE[1]) {
-        Some(Tool::WaterCan)
-    } else if (w, h) == (SPRAY_IMAGE[0], SPRAY_IMAGE[1]) {
-        Some(Tool::SprayCan)
-    } else {
-        None
-    }
-}
-
 /// `Spray1.png` and `Spray2.png`'s texture size in pixels: both frames
 /// are the same size and are drawn at their natural size, unscaled.
 const SPRAY_IMAGE: [f32; 2] = [136.0, 276.0];
@@ -715,6 +698,12 @@ struct Demo {
     /// sprite of its own, mirrored in the right cell of the held-items
     /// panel; the right-button switch swaps it with the active tool.
     held: Option<Tool>,
+    /// The tool each slot of the items panel holds at rest, in slot order
+    /// (0, the top slot, to `SLOTS - 1`, the bottom one), or `None` for an
+    /// empty slot: the slots' sprites are the visual mirror of this table,
+    /// laid out by [`slot_set`], so a slot's tool is read from here, never
+    /// from its sprite.
+    slots: [Option<Tool>; SLOTS],
     /// The slot the current left press started on, if any: a press that
     /// starts on a slot is a swap click, completed only if the release
     /// lands on the same slot.
@@ -1416,9 +1405,10 @@ impl Demo {
     /// empty, in which case the mouse shows no sprite, still holding the
     /// stored tool, if any — and the active tool moves into the slot.
     fn swap_with_slot(&mut self, ctx: &mut frost::Context, slot: usize) {
-        let slot_tool = slot_tool(&ctx.scene().root.children[CHILD_ITEMS].children[slot]);
         let incoming = self.active;
-        self.set_active(ctx, slot_tool);
+        let outgoing = self.slots[slot];
+        self.slots[slot] = incoming;
+        self.set_active(ctx, outgoing);
         self.slot_set(
             &mut ctx.scene().root.children[CHILD_ITEMS].children[slot],
             incoming,
@@ -2008,6 +1998,13 @@ fn main() {
         ..Default::default()
     });
 
+    // The tools at rest in the items panel's slots, mirroring the
+    // panel's seeded sprites: the spray can in SPRAY_SLOT, the watering
+    // can in CAN_SLOT, the other two slots empty.
+    let mut slots = [None; SLOTS];
+    slots[SPRAY_SLOT] = Some(Tool::SprayCan);
+    slots[CAN_SLOT] = Some(Tool::WaterCan);
+
     // The rotation tween starts as a 0→0 tween that never moves; the first
     // button event replaces it.
     if let Err(err) = frost::run_configured(
@@ -2016,6 +2013,7 @@ fn main() {
             mouse: [0.0, 0.0],
             active: None,
             held: None,
+            slots,
             press_slot: None,
             pressed: false,
             picking: None,
