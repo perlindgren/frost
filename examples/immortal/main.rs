@@ -209,6 +209,14 @@ const CHILD_BASKET: usize = 7;
 const CHILD_BADGE: usize = 8;
 const CHILD_HELD_FRUIT: usize = 9;
 
+/// The basket group's children, in draw order — the order in which
+/// [`basket_children`] builds them: the back half under the fruit, the
+/// shapeless fruit container the dropped tomatoes reparent into, and the
+/// front half over the fruit.
+const BASKET_BACK: usize = 0;
+const BASKET_FRUIT: usize = 1;
+const BASKET_FRONT: usize = 2;
+
 /// The plant's fit scale: the full plant spans about 1797 px around the
 /// root joint — its top edge 1614 px above it, its bottom edge 183 px
 /// below — so at this scale the tops can reach past the window's top edge
@@ -552,6 +560,22 @@ fn basket_center(w: f32, h: f32) -> [f32; 2] {
 /// high.
 fn basket_accepts(lx: f32, ly: f32) -> bool {
     BASKET_MOUTH_X.0 < lx && lx < BASKET_MOUTH_X.1 && ly > BASKET_FLOOR
+}
+
+/// The basket group's children, in draw order: the back half under the
+/// fruit, the shapeless fruit container the dropped tomatoes reparent into
+/// — piled on top of each other, with no gravity and no tomato-to-tomato
+/// collision — and the front half over the fruit, so a dropped tomato
+/// renders behind the front rim and in front of the back.
+fn basket_children(back: frost::Shape, front: frost::Shape) -> Vec<Box<frost::SceneNode>> {
+    let mut children = vec![
+        Box::new(frost::SceneNode::default()),
+        Box::new(frost::SceneNode::default()),
+        Box::new(frost::SceneNode::default()),
+    ];
+    children[BASKET_BACK].shape = Some(back);
+    children[BASKET_FRONT].shape = Some(front);
+    children
 }
 
 /// Whether the user-space point `p` is inside slot `i`, for the panel node
@@ -1105,7 +1129,7 @@ impl frost::Process for Demo {
             let [bx, by] = basket.transform.apply([0.0, 0.0]);
             let [ox, oy] = plant::tomato_leaf_offset(sprite_size(&self.tomato));
             let [hx, hy] = tomato_pick_half(sprite_size(&self.tomato));
-            for fruit in &mut ctx.scene().root.children[CHILD_BASKET].children[1].children {
+            for fruit in &mut ctx.scene().root.children[CHILD_BASKET].children[BASKET_FRUIT].children {
                 let [tx, ty] = fruit.transform.apply([0.0, 0.0]);
                 let mut body = [
                     bx + s * tx + TOMATO_PICK_SCALE * ox,
@@ -1526,9 +1550,9 @@ impl Demo {
     /// Drops the carried tomato picked from (plant, slot) `(pi, si)`:
     /// with the body's center inside the basket's U — the mouth's x range
     /// and above the floor — the pivot is reparented into the basket's
-    /// fruit container (root's [`CHILD_BASKET`] child's middle child), so
-    /// it renders
-    /// behind the front half and in front of the back, and it stays
+    /// fruit container (the [`BASKET_FRUIT`] child of the [`CHILD_BASKET`]
+    /// group), so it renders behind the front half and in front of the
+    /// back, and it stays
     /// exactly where it was released: no gravity, no tomato-to-tomato
     /// collision, the fruit piles freely — and the bloom it came from
     /// starts over: the flower is removed and regrows from zero, its
@@ -1559,7 +1583,7 @@ impl Demo {
             pivot.scale = [TOMATO_PICK_SCALE / s, TOMATO_PICK_SCALE / s];
             pivot.transform =
                 frost::Transform::translate((body[0] - center[0]) / s, (body[1] - center[1]) / s);
-            root.children[CHILD_BASKET].children[1]
+            root.children[CHILD_BASKET].children[BASKET_FRUIT]
                 .children
                 .push(Box::new(pivot));
             // The bloom starts over: the plant records the reset — which
@@ -1954,26 +1978,10 @@ fn main() {
             Box::new(frost::SceneNode {
                 // The harvest basket in the bottom left, just right of the
                 // items panel, positioned and scaled by the process every
-                // frame. Its children, in draw order, are the back half
-                // (child 0), the shapeless fruit container (child 1) that
-                // dropped tomatoes reparent into — piled on top of each
-                // other, with no gravity and no tomato-to-tomato
-                // collision — and the front half (child 2), so a dropped
-                // tomato renders behind the front rim and in front of the
-                // back.
-                children: vec![
-                    Box::new(frost::SceneNode {
-                        shape: Some(assets.basket_back),
-                        ..Default::default()
-                    }),
-                    Box::new(frost::SceneNode {
-                        ..Default::default()
-                    }),
-                    Box::new(frost::SceneNode {
-                        shape: Some(assets.basket_front),
-                        ..Default::default()
-                    }),
-                ],
+                // frame; its children — the back half, the fruit
+                // container, and the front half — are built by
+                // `basket_children`.
+                children: basket_children(assets.basket_back, assets.basket_front),
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
