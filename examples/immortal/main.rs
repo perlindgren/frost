@@ -38,7 +38,8 @@
 //!   degree clockwise turn and back while showing the pressed frame
 //!   (`assets/sprites/Spray2.png`), and during the first half — the
 //!   clockwise tilting — it emits a green spray from the nozzle
-//!   (`SPRAY_NOZZLE`, in image pixels).
+//!   (`SPRAY_NOZZLE`, in image pixels). The audio output plays the spray
+//!   hiss, `assets/audio/Spray.wav`, at 0.5 volume on every burst.
 //!
 //! `assets/sprites/items.png` is the inventory panel itself. It is scaled
 //! uniformly to fit the window's height, with a 20 pixel clearance to the
@@ -152,6 +153,10 @@
 //! swarm picks one of the four Aj clips — `assets/audio/Aj1.wav`,
 //! `Aj2.wav`, `Aj3.wav`, and `Aj4.wav` — at random, and the demo plays
 //! it through [`frost::Audio`].
+//!
+//! Every time the mist takes a bug's health to zero, the bug dies: the
+//! demo plays the bug death clip, `assets/audio/bugsDeath.wav`, through
+//! [`frost::Audio`].
 //!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
@@ -827,11 +832,19 @@ struct Demo {
     /// time the mist drops a bug's health the bug cries out on one of
     /// them, the swarm's random pick.
     ajs: [frost::Sound; 4],
+    /// The bug death clip, `assets/audio/bugsDeath.wav`, decoded once at
+    /// startup; it plays, at the default volume, for every bug a mist hit
+    /// kills.
+    death: frost::Sound,
     /// The watering sound, `assets/audio/WaterFlowSoft.wav`, decoded once
     /// at startup; the audio output's one loop, playing while water
     /// actually pours out of the spout and silenced the frame pouring
     /// stops.
     pour: frost::Sound,
+    /// The spray hiss, `assets/audio/Spray.wav`, decoded once at startup;
+    /// it plays, at 0.5 volume, on every fresh press that triggers a
+    /// spray burst.
+    spray_sound: frost::Sound,
     /// Whether the audio output's loop is currently playing the pour
     /// sound: the process flips it on the pour's edges — the watering can
     /// active and fully tilted (rising), pouring ending, the can turning
@@ -1024,6 +1037,7 @@ impl frost::Process for Demo {
                 // upright.
                 if self.burst.is_none() {
                     self.burst = Some(0.0);
+                    self.audio.play_once(&self.spray_sound, Some(0.5));
                     // PingPong is the tween's default: `0 ->
                     // BURST_ANGLE` in `BURST_HALF` seconds and back in the
                     // same time, so the tilting and the return take
@@ -1273,11 +1287,15 @@ impl frost::Process for Demo {
         // starts the bounce-then-evaporate death. A bug at its park spot
         // regains one hit of health every 5 seconds, up to six. The
         // water can's drops never touch the bugs. Every wound cries out
-        // on one of the Aj clips, the swarm's random pick.
+        // on one of the Aj clips, the swarm's random pick, and every
+        // killing blow plays the bug death clip.
         for p in &self.spray.particles {
             let hit = self.bugs.hit_at(p.pos);
             for clip in hit.ajs {
                 self.audio.play_once(&self.ajs[clip], Some(0.35));
+            }
+            for _ in 0..hit.deaths {
+                self.audio.play_once(&self.death, None);
             }
         }
 
@@ -1642,9 +1660,14 @@ struct Assets {
     /// The Aj clips: the bug cries out on one of them, the swarm's random
     /// pick, every time the mist drops its health.
     ajs: [frost::Sound; 4],
+    /// The bug death clip, `assets/audio/bugsDeath.wav`, decoded once at
+    /// startup.
+    death: frost::Sound,
     /// The watering loop: it plays, looping, while water pours out of the
     /// spout, silenced the frame pouring stops.
     pour: frost::Sound,
+    /// The spray hiss, `assets/audio/Spray.wav`, decoded once at startup.
+    spray: frost::Sound,
 }
 
 impl Assets {
@@ -1698,7 +1721,9 @@ impl Assets {
                 sound(root, "Aj3.wav"),
                 sound(root, "Aj4.wav"),
             ],
+            death: sound(root, "bugsDeath.wav"),
             pour: sound(root, "WaterFlowSoft.wav"),
+            spray: sound(root, "Spray.wav"),
         }
     }
 }
@@ -2016,7 +2041,9 @@ fn main() {
             tjatters: assets.tjatters,
             plops: assets.plops,
             ajs: assets.ajs,
+            death: assets.death,
             pour: assets.pour,
+            spray_sound: assets.spray,
             pouring: false,
             flower: assets.flower,
             tomato: assets.tomato,

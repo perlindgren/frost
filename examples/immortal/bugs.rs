@@ -24,6 +24,11 @@
 //! (`Aj1.wav`, `Aj2.wav`, `Aj3.wav`, `Aj4.wav`) for the wound, and the
 //! demo plays it through [`frost::Audio`].
 //!
+//! Every time the mist takes a bug's health to zero, the bug dies:
+//! [Bugs::hit_at] reports how many bugs the hit killed, and the demo
+//! plays the bug death clip, `bugsDeath.wav`, for each of them, through
+//! [`frost::Audio`].
+//!
 //! A bug takes [HITS_TO_KILL] hits from the spray can's green mist before
 //! it dies — a wounded bug takes its next hit only after a
 //! [HIT_COOLDOWN] second, so the mist wears it down one hit at a time —
@@ -215,13 +220,17 @@ pub struct StepEvents {
 }
 
 /// What [Bugs::hit_at] reports for one mist hit: the clip indices the
-/// demo should play through [`frost::Audio`].
+/// demo should play through [`frost::Audio`], and how many bugs the hit
+/// killed.
 #[derive(Default)]
 pub struct HitEvents {
     /// One entry per bug whose health the hit dropped: index 0 to 3 into
     /// the four Aj clips (`Aj1.wav`, `Aj2.wav`, `Aj3.wav`, `Aj4.wav`),
     /// picked at random by the swarm.
     pub ajs: Vec<usize>,
+    /// How many bugs the hit killed: a bug whose health the hit took to
+    /// zero starts its death.
+    pub deaths: usize,
 }
 
 impl Bugs {
@@ -489,10 +498,12 @@ impl Bugs {
     /// Aj clip index per bug whose health the hit dropped (index 0 to 3
     /// into the four Aj clips, `Aj1.wav` to `Aj4.wav`, each picked at
     /// random by the swarm), so the number of bugs hit is the length of
-    /// its [HitEvents::ajs].
+    /// its [HitEvents::ajs], and how many of those it killed is its
+    /// [HitEvents::deaths].
     pub fn hit_at(&mut self, p: [f32; 2]) -> HitEvents {
         let r2 = (BUG_SIZE / 2.0) * (BUG_SIZE / 2.0);
         let mut ajs = Vec::new();
+        let mut deaths = 0;
         for bug in &mut self.bugs {
             if bug.dying.is_some() || bug.respawn.is_some() || bug.hit_cooldown > 0.0 {
                 continue;
@@ -503,13 +514,15 @@ impl Bugs {
                 bug.hit_cooldown = HIT_COOLDOWN;
                 bug.hits -= 1;
                 if bug.hits == 0 {
+                    // The killing blow starts the death.
                     bug.dying = Some(0.0);
+                    deaths += 1;
                 }
                 // The wound cries out: a random Aj clip.
                 ajs.push((self.rng.next_f32() * 4.0) as usize);
             }
         }
-        HitEvents { ajs }
+        HitEvents { ajs, deaths }
     }
 
     /// The health counters of the bugs that are visible right now: for

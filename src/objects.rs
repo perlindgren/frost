@@ -560,12 +560,14 @@ pub struct NodePath {
 /// A tree of [`SceneNode`]s rooted at a single node, plus zero or more
 /// rendering [`Layer`]s.
 ///
-/// Pass a scene to [`run`]: every frame the user's [`Process`] runs, then
-/// the tree is updated with [`Scene::visit`] (every node's [`Node::process`],
-/// children before their parent, on the root tree and on every layer's
-/// tree), and only then is the scene drawn — so both can mutate it in place
-/// (via [`Context::scene`]) to animate it. Use [`Canvas::draw_scene`] to
-/// draw additional scenes.
+/// Pass a scene to [`run`](crate::run): every frame the user's
+/// [`Process`](crate::Process) runs, then the tree is updated with
+/// [`Scene::visit`] (every node's [`Node::process`], children before their
+/// parent, on the root tree and on every layer's tree), and only then is
+/// the scene drawn — so both can mutate it in place (via
+/// [`Context::scene`](crate::Context::scene)) to animate it. Use
+/// [`Canvas::draw_scene`](crate::Canvas::draw_scene) to draw additional
+/// scenes.
 ///
 /// The root subtree and the layers are separate draw groups: the root
 /// subtree is the group at the implicit layer order `0.0`, and each layer
