@@ -188,6 +188,22 @@ const PLANT_POS: [[f32; 2]; 6] = [
 /// start growing.
 const BUG_N: usize = bugs::BUGS_PER_PLANT * PLANT_POS.len();
 
+/// The scene root's children, in draw order — the order in which `main`
+/// builds them in the scene: the grass underlay, the items panel, the
+/// plants group, the held-items panel, the vipers group, the bugs group,
+/// the active tool, the basket, the immortality badge, and the carried
+/// fruit. The root node itself is the dark ground background.
+const CHILD_GRASS: usize = 0;
+const CHILD_ITEMS: usize = 1;
+const CHILD_PLANTS: usize = 2;
+const CHILD_HELD: usize = 3;
+const CHILD_VIPERS: usize = 4;
+const CHILD_BUGS: usize = 5;
+const CHILD_TOOL: usize = 6;
+const CHILD_BASKET: usize = 7;
+const CHILD_BADGE: usize = 8;
+const CHILD_HELD_FRUIT: usize = 9;
+
 /// The plant's fit scale: the full plant spans about 1797 px around the
 /// root joint — its top edge 1614 px above it, its bottom edge 183 px
 /// below — so at this scale the tops can reach past the window's top edge
@@ -703,7 +719,8 @@ struct Demo {
     pressed: bool,
     /// The tomato being carried, if any: the plant index and the bloom
     /// slot the fruit was picked from. While set, the fruit's pivot rides
-    /// the cursor in the held-fruit node (root children[9]) on top of
+    /// the cursor in the held-fruit node (root's [`CHILD_HELD_FRUIT`]
+    /// child) on top of
     /// everything; the release either keeps it in the basket or sends it
     /// back to its plant.
     picking: Option<(usize, usize)>,
@@ -771,7 +788,8 @@ struct Demo {
     /// growth clock, and the process steps it only once the previous one
     /// is fully grown — the first from launch on — and only while its
     /// water reserve (`waters`) holds, then lays it out on the matching
-    /// child of the plants node (root children[2]), in parallel with the
+    /// child of the plants node (root's [`CHILD_PLANTS`] child), in
+    /// parallel with the
     /// tool system.
     plants: [plant::Plant; PLANT_POS.len()],
     /// The plants' water reserves, in growth order, each from 1.0 (well
@@ -787,11 +805,11 @@ struct Demo {
     /// viper per fully grown plant layer, so the swarm grows as the bench
     /// does; stepped every frame with the number of fully grown layers
     /// and the layer-segment midpoints, and laid out on the matching
-    /// child of the vipers node (root children[4]).
+    /// child of the vipers node (root's [`CHILD_VIPERS`] child).
     vipers: vipers::Vipers,
     /// The swarm of bugs waddling to the plants: three spawn each time a
     /// plant starts growing, and the swarm steps and lays them out on the
-    /// matching child of the bugs node (root children[5]).
+    /// matching child of the bugs node (root's [`CHILD_BUGS`] child).
     bugs: bugs::Bugs,
     /// The audio output, opened once at startup; the bug tjatter and
     /// plopp clips play through it.
@@ -827,13 +845,13 @@ impl frost::Process for Demo {
         // Stretch the grass to exactly fill the window, whatever its aspect
         // ratio, so it stays filled across resizes.
         let (w, h) = ctx.size();
-        let grass = &mut ctx.scene().root.children[0];
+        let grass = &mut ctx.scene().root.children[CHILD_GRASS];
         grass.scale = [w / GRASS_SIZE[0], h / GRASS_SIZE[1]];
         // Fit the panel into the window's height with `MARGIN` clear of the
         // top and bottom borders; the x scale follows, keeping the aspect
         // ratio. The cans, riding on its slots as the node's children, stay
         // in place.
-        let items = &mut ctx.scene().root.children[1];
+        let items = &mut ctx.scene().root.children[CHILD_ITEMS];
         let s = (h - 2.0 * MARGIN) / ITEMS_SIZE[1];
         items.scale = [s, s];
         // Mid left: `MARGIN` clear of the left border, centered vertically.
@@ -842,7 +860,7 @@ impl frost::Process for Demo {
 
         // Bottom right: `MARGIN` clear of the right and bottom borders, at
         // the panel's natural size.
-        let held_panel = &mut ctx.scene().root.children[3];
+        let held_panel = &mut ctx.scene().root.children[CHILD_HELD];
         held_panel.transform = frost::Transform::translate(
             w / 2.0 - MARGIN - HELD_SIZE[0] * held_panel.scale[0] / 2.0,
             -h / 2.0 + MARGIN + HELD_SIZE[1] * held_panel.scale[1] / 2.0,
@@ -851,7 +869,7 @@ impl frost::Process for Demo {
         // Bottom left: just right of the items panel — `BASKET_GAP` clear
         // of its right edge — and `MARGIN` clear of the bottom border,
         // scaled with the panel's fit so the basket keeps its proportions.
-        let basket = &mut ctx.scene().root.children[7];
+        let basket = &mut ctx.scene().root.children[CHILD_BASKET];
         let bs = basket_scale(h);
         let bc = basket_center(w, h);
         basket.scale = [bs, bs];
@@ -859,7 +877,7 @@ impl frost::Process for Demo {
 
         // Top right: `MARGIN` clear of the top and right borders, at
         // `IMMORTALITY_SCALE` of the badge's natural size.
-        let badge = &mut ctx.scene().root.children[8];
+        let badge = &mut ctx.scene().root.children[CHILD_BADGE];
         badge.scale = [IMMORTALITY_SCALE, IMMORTALITY_SCALE];
         badge.transform = frost::Transform::translate(
             w / 2.0 - MARGIN - IMMORTALITY_SIZE[0] * IMMORTALITY_SCALE / 2.0,
@@ -920,7 +938,7 @@ impl frost::Process for Demo {
         // that segment's midpoint along the static, fully grown chain,
         // the sway left out, lifted to its plant's anchor at the fit
         // scale.
-        let vipers_node = &mut ctx.scene().root.children[4];
+        let vipers_node = &mut ctx.scene().root.children[CHILD_VIPERS];
         let centers: [[[f32; 2]; vipers::LAYERS]; PLANT_POS.len()] = std::array::from_fn(|i| {
             self.plants[i].layer_midpoints().map(|m| {
                 [
@@ -935,7 +953,7 @@ impl frost::Process for Demo {
 
         // Waddle the bugs to the plants, in parallel with everything
         // else: three spawn each time a plant starts growing.
-        let bugs_node = &mut ctx.scene().root.children[5];
+        let bugs_node = &mut ctx.scene().root.children[CHILD_BUGS];
         let events = self.bugs.step(dt, &anchors, active_plants);
         self.bugs
             .layout(bugs_node, [&self.bug1, &self.bug2, &self.bug3]);
@@ -965,7 +983,7 @@ impl frost::Process for Demo {
         // The slot the pointer is over, if any: a left click swaps the
         // active tool with a slot's tool, and the click is recognized by
         // the press and the release both landing on the same slot.
-        let items_node = &ctx.scene().root.children[1];
+        let items_node = &ctx.scene().root.children[CHILD_ITEMS];
         let on_slot = (0..SLOTS).find(|&i| slot_hovered(items_node, i, self.mouse));
 
         // A press followed by a release of the right mouse button switches
@@ -1044,7 +1062,7 @@ impl frost::Process for Demo {
         // There is no gravity, and no collision with the fruit already in
         // the basket.
         if self.picking.is_some() {
-            let basket = &ctx.scene().root.children[7];
+            let basket = &ctx.scene().root.children[CHILD_BASKET];
             let s = basket.scale[0];
             let [bx, by] = basket.transform.apply([0.0, 0.0]);
             let [ox, oy] = plant::tomato_leaf_offset(sprite_size(&self.tomato));
@@ -1066,10 +1084,11 @@ impl frost::Process for Demo {
                     ];
                 }
             }
-            ctx.scene().root.children[9].children[0].transform = frost::Transform::translate(
-                body[0] - TOMATO_PICK_SCALE * ox,
-                body[1] - TOMATO_PICK_SCALE * oy,
-            );
+            ctx.scene().root.children[CHILD_HELD_FRUIT].children[0].transform =
+                frost::Transform::translate(
+                    body[0] - TOMATO_PICK_SCALE * ox,
+                    body[1] - TOMATO_PICK_SCALE * oy,
+                );
         }
 
         // The fruit that has been dropped into the basket: each one stays
@@ -1078,12 +1097,12 @@ impl frost::Process for Demo {
         // every body's square is pushed out of the U's three walls, in
         // window space, every frame.
         {
-            let basket = &ctx.scene().root.children[7];
+            let basket = &ctx.scene().root.children[CHILD_BASKET];
             let s = basket.scale[0];
             let [bx, by] = basket.transform.apply([0.0, 0.0]);
             let [ox, oy] = plant::tomato_leaf_offset(sprite_size(&self.tomato));
             let [hx, hy] = tomato_pick_half(sprite_size(&self.tomato));
-            for fruit in &mut ctx.scene().root.children[7].children[1].children {
+            for fruit in &mut ctx.scene().root.children[CHILD_BASKET].children[1].children {
                 let [tx, ty] = fruit.transform.apply([0.0, 0.0]);
                 let mut body = [
                     bx + s * tx + TOMATO_PICK_SCALE * ox,
@@ -1112,7 +1131,7 @@ impl frost::Process for Demo {
         // Lay the plants out, after the input edges, so a tomato that was
         // picked or snapped back this frame is reposed by its plant — and
         // a picked slot's pivot, out of the tree, is simply skipped.
-        let plants_node = &mut ctx.scene().root.children[2];
+        let plants_node = &mut ctx.scene().root.children[CHILD_PLANTS];
         for (i, anchor) in anchors.iter().enumerate() {
             self.plants[i].layout(
                 &mut plants_node.children[i],
@@ -1218,7 +1237,7 @@ impl frost::Process for Demo {
 
         // A fresh transform is only needed while the node shows a tool.
         if let Some(tool) = self.active {
-            let tool_node = &mut ctx.scene().root.children[6];
+            let tool_node = &mut ctx.scene().root.children[CHILD_TOOL];
             tool_node.transform = match tool {
                 Tool::WaterCan => can_transform(mx, my, self.angle),
                 Tool::SprayCan => spray_transform(mx, my, self.angle),
@@ -1258,7 +1277,7 @@ impl frost::Process for Demo {
         for p in &self.spray.particles {
             let hit = self.bugs.hit_at(p.pos);
             for clip in hit.ajs {
-                self.audio.play_once(&self.ajs[clip], Some(0.5));
+                self.audio.play_once(&self.ajs[clip], Some(0.35));
             }
         }
 
@@ -1353,7 +1372,7 @@ impl Demo {
         self.burst = None;
         self.rotation = frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once);
         self.showing_spray2 = false;
-        let tool_node = &mut ctx.scene().root.children[6];
+        let tool_node = &mut ctx.scene().root.children[CHILD_TOOL];
         match tool {
             Some(Tool::WaterCan) => {
                 tool_node.shape = Some(self.can.clone());
@@ -1379,10 +1398,13 @@ impl Demo {
     /// empty, in which case the mouse shows no sprite, still holding the
     /// stored tool, if any — and the active tool moves into the slot.
     fn swap_with_slot(&mut self, ctx: &mut frost::Context, slot: usize) {
-        let slot_tool = slot_tool(&ctx.scene().root.children[1].children[slot]);
+        let slot_tool = slot_tool(&ctx.scene().root.children[CHILD_ITEMS].children[slot]);
         let incoming = self.active;
         self.set_active(ctx, slot_tool);
-        self.slot_set(&mut ctx.scene().root.children[1].children[slot], incoming);
+        self.slot_set(
+            &mut ctx.scene().root.children[CHILD_ITEMS].children[slot],
+            incoming,
+        );
     }
 
     /// Rests `tool` — or nothing — in the slot's node: the tool's shape at
@@ -1410,7 +1432,7 @@ impl Demo {
             return;
         }
         self.showing_spray2 = on;
-        ctx.scene().root.children[6].shape = Some(if on {
+        ctx.scene().root.children[CHILD_TOOL].shape = Some(if on {
             self.spray2.clone()
         } else {
             self.spray1.clone()
@@ -1421,7 +1443,7 @@ impl Demo {
     /// tool in the left cell, the stored one in the right, each at its
     /// at-rest frame in the held-fit scale — or an empty cell for `None`.
     fn sync_held(&mut self, ctx: &mut frost::Context) {
-        let held = &mut ctx.scene().root.children[3];
+        let held = &mut ctx.scene().root.children[CHILD_HELD];
         self.cell_set(&mut held.children[0], self.active);
         self.cell_set(&mut held.children[1], self.held);
     }
@@ -1446,7 +1468,8 @@ impl Demo {
     /// Picks up the fully developed tomato the pointer rests on — the
     /// first hit in plant, then slot, order — and starts carrying it: the
     /// fruit's pivot is reparented out of its plant's slot and into the
-    /// held-fruit container (root children[9]), at the pick scale, under
+    /// held-fruit container (root's [`CHILD_HELD_FRUIT`] child), at the
+    /// pick scale, under
     /// the pointer, so it paints above everything. The plant's slot is
     /// marked harvested while it is carried; the pointer must not be on a
     /// slot or holding a tool, which the caller checks. Returns the picked
@@ -1457,7 +1480,7 @@ impl Demo {
         // transform (the sway included), against the pointer's square
         // around the cursor.
         let hit = {
-            let plant_nodes = &ctx.scene().root.children[2].children;
+            let plant_nodes = &ctx.scene().root.children[CHILD_PLANTS].children;
             let [hx, hy] = tomato_pick_half(sprite_size(&self.tomato));
             self.plants.iter().enumerate().find_map(|(pi, p)| {
                 (0..plant::FLOWER_N)
@@ -1480,20 +1503,23 @@ impl Demo {
         // Rehome the pivot: out of the slot, into the held-fruit
         // container, at the pick scale under the pointer.
         let root = &mut ctx.scene().root;
-        let pivot = root.children[2].children[pi].children[5 + si]
+        let pivot = root.children[CHILD_PLANTS].children[pi].children[5 + si]
             .children
             .remove(1);
         let mut pivot = *pivot;
         pivot.scale = [TOMATO_PICK_SCALE, TOMATO_PICK_SCALE];
         pivot.transform = frost::Transform::translate(self.mouse[0], self.mouse[1]);
-        root.children[9].children.push(Box::new(pivot));
+        root.children[CHILD_HELD_FRUIT]
+            .children
+            .push(Box::new(pivot));
         Some((pi, si))
     }
 
     /// Drops the carried tomato picked from (plant, slot) `(pi, si)`:
     /// with the body's center inside the basket's U — the mouth's x range
     /// and above the floor — the pivot is reparented into the basket's
-    /// fruit container (root children[7]'s middle child), so it renders
+    /// fruit container (root's [`CHILD_BASKET`] child's middle child), so
+    /// it renders
     /// behind the front half and in front of the back, and it stays
     /// exactly where it was released: no gravity, no tomato-to-tomato
     /// collision, the fruit piles freely — and the bloom it came from
@@ -1518,21 +1544,23 @@ impl Demo {
         let kept = basket_accepts(lx, ly);
 
         let root = &mut ctx.scene().root;
-        let mut pivot = *root.children[9].children.remove(0);
+        let mut pivot = *root.children[CHILD_HELD_FRUIT].children.remove(0);
         if kept {
             // Scale the pivot into the basket's local space and pin it so
             // the body's center maps back to the release point.
             pivot.scale = [TOMATO_PICK_SCALE / s, TOMATO_PICK_SCALE / s];
             pivot.transform =
                 frost::Transform::translate((body[0] - center[0]) / s, (body[1] - center[1]) / s);
-            root.children[7].children[1].children.push(Box::new(pivot));
+            root.children[CHILD_BASKET].children[1]
+                .children
+                .push(Box::new(pivot));
             // The bloom starts over: the plant records the reset — which
             // re-arms the growth clock, the watering hitbox and the water
             // bar — and the slot takes a fresh, shapeless tomato pivot;
             // the next layout removes the flower and regrows it from
             // zero, the tomato after it.
             self.plants[pi].regrow(si);
-            root.children[2].children[pi].children[5 + si]
+            root.children[CHILD_PLANTS].children[pi].children[5 + si]
                 .children
                 .push(Box::new(frost::SceneNode {
                     children: vec![
@@ -1545,7 +1573,7 @@ impl Demo {
             // Snap back to the plant; the layout reposes the pivot this
             // same frame.
             self.plants[pi].unharvest(si);
-            root.children[2].children[pi].children[5 + si]
+            root.children[CHILD_PLANTS].children[pi].children[5 + si]
                 .children
                 .push(Box::new(pivot));
         }
@@ -1727,6 +1755,8 @@ fn main() {
                 a: 1.0,
             },
         }),
+        // The root's children, in draw order — the `CHILD_*` constants are
+        // the indices into this list.
         children: vec![
             Box::new(frost::SceneNode {
                 // Stretched to fill the window by the process, every frame.
