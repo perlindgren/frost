@@ -116,6 +116,9 @@ const WATER_FLOW_SOFT: &[u8] = include_bytes!("../../assets/audio/WaterFlowSoft.
 /// The spray hiss, `assets/audio/Spray.wav`.
 const SPRAY: &[u8] = include_bytes!("../../assets/audio/Spray.wav");
 
+/// The tomato drop clip, `assets/audio/tomatoDrop.wav`.
+const TOMATO_DROP: &[u8] = include_bytes!("../../assets/audio/TomatoDrop.wav");
+
 /// Everything the example loads at startup: the sprite shapes, the audio
 /// output, and the bug and watering clips, embedded at compile time with
 /// `include_bytes!` and decoded by [`Assets::load`].
@@ -185,6 +188,8 @@ pub struct Assets {
     pub pour: frost::Sound,
     /// The spray hiss, `assets/audio/Spray.wav`, decoded once at startup.
     pub spray: frost::Sound,
+    /// The tomato drop clip, `assets/audio/tomatoDrop.wav`, decoded once at startup.
+    pub tomato_drop: frost::Sound,
 }
 
 impl Assets {
@@ -240,6 +245,7 @@ impl Assets {
             death: sound("bugsDeath.wav", BUGS_DEATH),
             pour: sound("WaterFlowSoft.wav", WATER_FLOW_SOFT),
             spray: sound("Spray.wav", SPRAY),
+            tomato_drop: sound("tomatoDrop.wav", TOMATO_DROP),
         }
     }
 }

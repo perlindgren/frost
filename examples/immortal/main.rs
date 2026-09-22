@@ -78,7 +78,11 @@
 //! its natural size, with the dark calyx and stem of
 //! `assets/sprites/tomato_fg.png` drawn on top, the body's top pinned to the
 //! flower's center so the fruit hangs below it, on top of the flower.
-//! Each bloom rides its slice's transform so it sways with the plant.
+//! Each bloom rides its slice's transform so it sways with the plant. A
+//! fully grown fruit stales on its plant's own clock: 8 seconds after full
+//! growth, its body modulates from red to a dark red over 8 seconds — and a
+//! picked fruit carries the color it had at pick, frozen while it rides
+//! the cursor and kept when it lands in the basket.
 //!
 //! Every plant keeps a water reserve, full at launch, and the plants'
 //! growth runs at `1 / GROW_SLOWDOWN` of real time's pace — the slices,
@@ -201,19 +205,21 @@ const BUG_N: usize = bugs::BUGS_PER_PLANT * PLANT_POS.len();
 
 /// The scene root's children, in draw order — the order in which `main`
 /// builds them in the scene: the grass underlay, the items panel, the
-/// plants group, the held-items panel, the vipers group, the bugs group,
-/// the active tool, the basket, the immortality badge, and the carried
-/// fruit. The root node itself is the dark ground background.
+/// plants group, the fallen-fruit container, the held-items panel, the
+/// vipers group, the bugs group, the active tool, the basket, the
+/// immortality badge, and the carried fruit. The root node itself is the
+/// dark ground background.
 const CHILD_GRASS: usize = 0;
 const CHILD_ITEMS: usize = 1;
 const CHILD_PLANTS: usize = 2;
-const CHILD_HELD: usize = 3;
-const CHILD_VIPERS: usize = 4;
-const CHILD_BUGS: usize = 5;
-const CHILD_TOOL: usize = 6;
-const CHILD_BASKET: usize = 7;
-const CHILD_BADGE: usize = 8;
-const CHILD_HELD_FRUIT: usize = 9;
+const CHILD_FALLEN_FRUIT: usize = 3;
+const CHILD_HELD: usize = 4;
+const CHILD_VIPERS: usize = 5;
+const CHILD_BUGS: usize = 6;
+const CHILD_TOOL: usize = 7;
+const CHILD_BASKET: usize = 8;
+const CHILD_BADGE: usize = 9;
+const CHILD_HELD_FRUIT: usize = 10;
 
 /// The basket group's children, in draw order — the order in which
 /// [`basket_children`] builds them: the back half under the fruit, the
@@ -228,6 +234,13 @@ const BASKET_FRONT: usize = 2;
 /// below — so at this scale the tops can reach past the window's top edge
 /// on the plants anchored high on the grass.
 const PLANT_SCALE: f32 = 0.45;
+
+/// The fall speed of a dropped, overgrown tomato, in user pixels per
+/// second: it falls straight down from the point it let go, at this
+/// constant speed, until its body center reaches its destination — its
+/// spawn lowered by the plant's cumulative segment height, scaled into
+/// user space.
+const FALL_SPEED: f32 = 400.0;
 
 /// `water_can_outline.png`'s texture size in pixels: the can's content,
 /// cropped to the image.
@@ -712,6 +725,41 @@ enum Tool {
     SprayCan,
 }
 
+/// One overgrown tomato currently falling to the ground: its pivot — a
+/// child of the fallen-fruit container, the same order as its
+/// [Demo::falls] entry — carries the current position in its own
+/// transform; this entry carries the destination it falls toward.
+struct Fall {
+    /// The destination y, in user space: the spawn y lowered by the
+    /// plant's cumulative segment height, scaled into user space.
+    dest_y: f32,
+    /// Whether the fruit has reached its destination: its transform is
+    /// then kept, and the drop clip plays exactly once, on this flip.
+    landed: bool,
+}
+
+/// The slice — 0 to 3, from the root up — that bears the flattened bloom
+/// `slot`: the slots are laid out slice by slice in [plant::FLOWER_SPAWNS]
+/// order, one, three, five, six, so the slot's slice is the first whose
+/// running count passes it; the top slice bears no flowers.
+fn slice_of_slot(slot: usize) -> usize {
+    let mut rest = slot;
+    for (slice, spawns) in plant::FLOWER_SPAWNS.iter().enumerate() {
+        if rest < spawns.len() {
+            return slice;
+        }
+        rest -= spawns.len();
+    }
+    unreachable!("every slot belongs to one of the four lower slices")
+}
+
+/// The destination y, in user space, of a fall that let go at `spawn_y`:
+/// the spawn lowered by the plant's cumulative segment height, scaled
+/// into user space by the plant's fit scale.
+fn fall_destination(spawn_y: f32, segment_height: f32) -> f32 {
+    spawn_y - PLANT_SCALE * segment_height
+}
+
 struct Demo {
     /// The cursor's last reported position; the tool sticks here while the
     /// cursor is outside the window.
@@ -867,6 +915,15 @@ struct Demo {
     /// back upright or the tool switching away (falling) — starting the
     /// loop on the rising edge and stopping it on the falling one.
     pouring: bool,
+    /// The tomato drop clip, `assets/audio/TomatoDrop.wav`, decoded once
+    /// at startup; it plays, at the default volume, on the frame a
+    /// fallen, overgrown tomato reaches its destination.
+    tomato_drop: frost::Sound,
+    /// The overgrown tomatoes currently falling to the ground: one entry
+    /// per child of the fallen-fruit container, in the same order, added
+    /// as the fruits drop and never removed — landed fruits stay where
+    /// they fell.
+    falls: Vec<Fall>,
 }
 
 impl frost::Process for Demo {
@@ -1132,7 +1189,9 @@ impl frost::Process for Demo {
             let [bx, by] = basket.transform.apply([0.0, 0.0]);
             let [ox, oy] = plant::tomato_leaf_offset(sprite_size(&self.tomato));
             let [hx, hy] = tomato_pick_half(sprite_size(&self.tomato));
-            for fruit in &mut ctx.scene().root.children[CHILD_BASKET].children[BASKET_FRUIT].children {
+            for fruit in
+                &mut ctx.scene().root.children[CHILD_BASKET].children[BASKET_FRUIT].children
+            {
                 let [tx, ty] = fruit.transform.apply([0.0, 0.0]);
                 let mut body = [
                     bx + s * tx + TOMATO_PICK_SCALE * ox,
@@ -1170,6 +1229,101 @@ impl frost::Process for Demo {
                 &self.tomato,
                 &self.tomato_fg,
             );
+        }
+
+        // The overgrown tomatoes fall to the ground. When a slot's fruit
+        // reaches its final dark red — its staleness full, past the ripe
+        // red — the slot's tomato pivot leaves the plant's tree for the
+        // fallen-fruit container and falls straight down from exactly
+        // where it was laid out this frame, while the bloom restarts
+        // under the same semantics as a fruit dropped in the basket: the
+        // flower is removed and regrows from zero, its tomato after it,
+        // on the same water-gated, slowed schedule, which holds the
+        // plant's completion back as it does for a picked fruit.
+        let drops = {
+            let plant_nodes = &ctx.scene().root.children[CHILD_PLANTS].children;
+            self.plants
+                .iter()
+                .enumerate()
+                .flat_map(|(pi, p)| {
+                    // Shared, `Copy` borrows the `move` closure can own
+                    // without owning `self`.
+                    let plant_node = &plant_nodes[pi];
+                    let tomato = &self.tomato;
+                    (0..plant::FLOWER_N).filter_map(move |si| {
+                        if p.is_harvested(si) || !p.overgrown(si) {
+                            return None;
+                        }
+                        let center = p.tomato_center(
+                            si,
+                            &plant_node.children[plant::slot_index(si)],
+                            tomato,
+                        );
+                        let world = frost::Transform::scale(PLANT_SCALE, PLANT_SCALE)
+                            .compose(&plant_nodes[pi].transform);
+                        let spawn = world.apply(center);
+                        let dest_y = fall_destination(spawn[1], p.fall_height(slice_of_slot(si)));
+                        Some((pi, si, spawn, dest_y))
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        if !drops.is_empty() {
+            let [ox, oy] = plant::tomato_leaf_offset(sprite_size(&self.tomato));
+            let root = &mut ctx.scene().root;
+            for (pi, si, spawn, dest_y) in drops {
+                self.plants[pi].regrow(si);
+                // Rehome the pivot — the slot itself stays in the plant's
+                // children, as the picked-fruit paths leave it — out of
+                // the slot, into the fallen-fruit container, at the pick
+                // scale, pinned so the body's center sits exactly where
+                // the tomato was laid out this frame.
+                let slot =
+                    &mut root.children[CHILD_PLANTS].children[pi].children[plant::slot_index(si)];
+                let mut pivot = *slot.children.remove(1);
+                pivot.scale = [TOMATO_PICK_SCALE, TOMATO_PICK_SCALE];
+                pivot.transform = frost::Transform::translate(
+                    spawn[0] - TOMATO_PICK_SCALE * ox,
+                    spawn[1] - TOMATO_PICK_SCALE * oy,
+                );
+                // The slot takes a fresh, shapeless tomato pivot; the next
+                // layout regrows the flower and the tomato from zero.
+                slot.children.push(Box::new(frost::SceneNode {
+                    children: vec![
+                        Box::new(frost::SceneNode::default()),
+                        Box::new(frost::SceneNode::default()),
+                    ],
+                    ..Default::default()
+                }));
+                root.children[CHILD_FALLEN_FRUIT]
+                    .children
+                    .push(Box::new(pivot));
+                self.falls.push(Fall {
+                    dest_y,
+                    landed: false,
+                });
+            }
+        }
+
+        // The fallen fruit: each dropped tomato falls straight down from
+        // where it let go, at the fall speed, until its body center
+        // reaches its destination — the spawn lowered by the plant's
+        // cumulative segment height, scaled into user space — where it
+        // stops; the drop clip plays exactly once, on the landing frame.
+        let fallen = &mut ctx.scene().root.children[CHILD_FALLEN_FRUIT];
+        for (fall, node) in self.falls.iter_mut().zip(fallen.children.iter_mut()) {
+            if fall.landed {
+                continue;
+            }
+            let [x, y] = node.transform.apply([0.0, 0.0]);
+            if y > fall.dest_y {
+                let ny = (y - FALL_SPEED * dt).max(fall.dest_y);
+                node.transform = frost::Transform::translate(x, ny);
+                if ny <= fall.dest_y {
+                    fall.landed = true;
+                    self.audio.play_once(&self.tomato_drop, None);
+                }
+            }
         }
 
         // The active tool's live pose, ticked every frame so an ongoing
@@ -1523,8 +1677,11 @@ impl Demo {
                         if p.is_harvested(si) || !p.ripe(si) {
                             return false;
                         }
-                        let center =
-                            p.tomato_center(si, &plant_nodes[pi].children[plant::slot_index(si)], &self.tomato);
+                        let center = p.tomato_center(
+                            si,
+                            &plant_nodes[pi].children[plant::slot_index(si)],
+                            &self.tomato,
+                        );
                         let world = frost::Transform::scale(PLANT_SCALE, PLANT_SCALE)
                             .compose(&plant_nodes[pi].transform);
                         let [cx, cy] = world.apply(center);
@@ -1768,6 +1925,16 @@ fn main() {
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
+                // The fallen fruit: one child per dropped tomato, in drop
+                // order — the overgrown fruit's pivot reparents here when
+                // it lets go, and the process lays each fall out on its
+                // child until it lands. The group carries no shape or
+                // scale of its own; it sits under the held panel, the
+                // bees, and the bugs, so the fallen fruit paints on top
+                // of the grass and the plants, below everything else.
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
                 // The held-items panel in the bottom right corner, anchored
                 // there by the process every frame: `MARGIN` clear of the
                 // right and bottom borders, at its natural size. Its two
@@ -1908,6 +2075,8 @@ fn main() {
             pour: assets.pour,
             spray_sound: assets.spray,
             pouring: false,
+            tomato_drop: assets.tomato_drop,
+            falls: Vec::new(),
             flower: assets.flower,
             tomato: assets.tomato,
             tomato_fg: assets.tomato_fg,
@@ -2064,5 +2233,36 @@ mod tests {
             body.push_out(&left).is_some(),
             "the wall's face must collide"
         );
+    }
+
+    /// [slice_of_slot] gives the slice that bears a flattened bloom slot:
+    /// the slots are laid out slice by slice in [plant::FLOWER_SPAWNS]
+    /// order, one, three, five, six, so slot 0 sits on the root segment,
+    /// slots 1 through 3 on the next, 4 through 8 on the third, and 9
+    /// through 14 on the fourth — the top slice bears no flowers.
+    #[test]
+    fn the_slice_of_a_slot_counts_its_flowers_in_slice_order() {
+        assert_eq!(slice_of_slot(0), 0);
+        for slot in 1..=3 {
+            assert_eq!(slice_of_slot(slot), 1, "slot {slot}");
+        }
+        for slot in 4..=8 {
+            assert_eq!(slice_of_slot(slot), 2, "slot {slot}");
+        }
+        for slot in 9..15 {
+            assert_eq!(slice_of_slot(slot), 3, "slot {slot}");
+        }
+    }
+
+    /// [fall_destination] lowers the spawn by the segment height scaled
+    /// into user space: a tomato on the second segment — the sum of the
+    /// first two, 93 + 230 node-local px — that let go at y 500 stops at
+    /// 500 − 0.45 × 323 ≈ 354.65.
+    #[test]
+    fn the_fall_destination_lowes_the_spawn_by_the_scaled_segment_height() {
+        let dest = fall_destination(500.0, 93.0 + 230.0);
+        assert!((dest - (500.0 - PLANT_SCALE * 323.0)).abs() < 1e-6);
+        assert!((dest - 354.65).abs() < 1e-2);
+        assert!(dest < 500.0, "the destination is below the spawn");
     }
 }
