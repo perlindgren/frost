@@ -50,9 +50,11 @@
 //! dark green to red, with the dark calyx and stem (`tomato_fg.png`) drawn
 //! on top, both pinned to [TOMATO_TOP] so the body's top sits on the
 //! flower's center and the fruit hangs below it, on top of the flower. A
-//! fully grown fruit stales on the plant's own clock: [STALE_DELAY] seconds
-//! after full growth, its body modulates from ripe red to the dark red of
-//! [TOMATO_STALE], over [STALE_TIME]. Each slot rides its slice's transform
+//! fully grown fruit stales on the plant's aging clock — the one
+//! [Plant::age] advances every frame, with or without water:
+//! [STALE_DELAY] seconds after full growth, its body modulates from ripe
+//! red to the dark red of [TOMATO_STALE], over [STALE_TIME]. Each slot
+//! rides its slice's transform
 //! so the whole bloom sways with the plant. The plant's fit scale is the plant node's
 //! own `scale`, set once by the caller: the node's scale applies before
 //! its transform, to its subtree, so the whole plant sizes around the root
@@ -142,12 +144,12 @@ pub const FLOWER_GROW_TIME: f32 = 10.0;
 pub const TOMATO_GROW_TIME: f32 = 10.0;
 
 /// How long a fully grown tomato holds its ripe red before it starts to
-/// stale, in seconds of the plant's growth clock — the same clock that
-/// grows it, so a water-starved plant's fruit stales only while the plant
-/// grows.
+/// stale, in seconds of the plant's aging clock — the one [Plant::age]
+/// advances every frame, water or not — so a ripe fruit waits and stales
+/// on even while the plant's growth clock is frozen on a dry reserve.
 pub const STALE_DELAY: f32 = 8.0;
 
-/// How long the staleness takes, in seconds of the plant's growth clock:
+/// How long the staleness takes, in seconds of the plant's aging clock:
 /// once [STALE_DELAY] has passed after full growth, the fruit's body
 /// modulates from ripe red to [TOMATO_STALE] over this time.
 pub const STALE_TIME: f32 = 8.0;
@@ -315,12 +317,15 @@ fn tomato_color(g: f32) -> frost::Color {
     mix(TOMATO_GREEN, TOMATO_RED, g)
 }
 
-/// The staleness, 0..1, at plant clock `t` of a bloom that started at
-/// `start`: zero until [STALE_DELAY] seconds after the fruit is fully
-/// grown — the start plus [FLOWER_GROW_TIME] plus [TOMATO_GROW_TIME] —
-/// then rising to 1 over [STALE_TIME].
-fn stale(t: f32, start: f32) -> f32 {
-    ((t - start - FLOWER_GROW_TIME - TOMATO_GROW_TIME - STALE_DELAY) / STALE_TIME).clamp(0.0, 1.0)
+/// The staleness, 0..1, of a bloom whose tomato ripened at aging-clock
+/// moment `ripened_at` — `None` while it has not ripened: zero until
+/// [STALE_DELAY] seconds after the ripe moment, then rising to 1 over
+/// [STALE_TIME].
+fn stale(age: f32, ripened_at: Option<f32>) -> f32 {
+    match ripened_at {
+        Some(r) => ((age - r - STALE_DELAY) / STALE_TIME).clamp(0.0, 1.0),
+        None => 0.0,
+    }
 }
 
 /// The translate that puts the tomato's [TOMATO_TOP] pixel — the body's top
@@ -370,6 +375,13 @@ fn staggered_starts() -> [f32; FLOWER_N] {
 pub struct Plant {
     /// Elapsed time in seconds.
     t: f32,
+    /// The aging clock, in seconds: [Plant::age] advances it every frame
+    /// at the growth's slowed pace — water or not — and it is the clock
+    /// ripe tomatoes age on: [STALE_DELAY] after their ripe moment,
+    /// stamped in [ripened_at], they modulate from ripe red to
+    /// [TOMATO_STALE] over [STALE_TIME], so the wait and the stale
+    /// proceed even while the growth clock is frozen on a dry reserve.
+    age: f32,
     /// The five slices in chain order, with their joints in node-local
     /// space.
     links: [Link; 5],
@@ -398,6 +410,11 @@ pub struct Plant {
     /// so [Plant::regrow] can restart a bloom against its own staggered
     /// start rather than the slice's.
     first_bloom_start: [f32; FLOWER_N],
+    /// The aging-clock moment each bloom's tomato first reached full
+    /// growth, stamped by [Plant::age] on the frame the fruit ripens —
+    /// the stamp its staleness runs from — and reset to `None` by
+    /// [Plant::regrow], so the regrown fruit stamps its own ripe moment.
+    ripened_at: [Option<f32>; FLOWER_N],
 }
 
 impl Plant {
@@ -409,6 +426,7 @@ impl Plant {
     pub fn new(shapes: [&frost::Shape; 5]) -> Self {
         Plant {
             t: 0.0,
+            age: 0.0,
             links: [
                 link(shapes[0], JOINTS[0]),
                 link(shapes[1], JOINTS[1]),
@@ -425,12 +443,34 @@ impl Plant {
             harvested: [false; FLOWER_N],
             regrow_at: [None; FLOWER_N],
             first_bloom_start: staggered_starts(),
+            ripened_at: [None; FLOWER_N],
         }
     }
 
     /// Advances the growth clock by `dt` seconds.
     pub fn step(&mut self, dt: f32) {
         self.t += dt;
+    }
+
+    /// Advances the aging clock by `dt` seconds — the caller steps it
+    /// every frame at the growth's slowed pace, water or not — and stamps
+    /// the ripe moment of every bloom whose tomato has just reached full
+    /// growth: from its stamp the fruit waits [STALE_DELAY] and stales
+    /// over [STALE_TIME] on this clock, so a ripe fruit ages on while the
+    /// growth clock is frozen on a dry reserve. The stamp is the aging
+    /// clock's value at the fruit's ripe moment on the growth clock,
+    /// exact for any `dt`: within a frame the two clocks run in lockstep,
+    /// so the ripe moment — the schedule's ripe time — maps to
+    /// `age + (ripe_time - t)`.
+    pub fn age(&mut self, dt: f32) {
+        self.age += dt;
+        for slot in 0..FLOWER_N {
+            if self.ripened_at[slot].is_none() && self.ripe(slot) {
+                let ripe_time =
+                    self.bloom_start(slot) + FLOWER_GROW_TIME + TOMATO_GROW_TIME;
+                self.ripened_at[slot] = Some(self.age + (ripe_time - self.t));
+            }
+        }
     }
 
     /// Whether the plant is fully grown: the last slice has reached its
@@ -526,11 +566,11 @@ impl Plant {
     }
 
     /// Whether the bloom `slot` carries a fully overgrown tomato: its
-    /// staleness — the mix toward [TOMATO_STALE] — has reached full, so
-    /// the fruit has reached its final dark red and drops off the plant;
-    /// a regrown bloom overgrows on its restarted schedule.
+    /// staleness — the mix toward [TOMATO_STALE] on the aging clock — has
+    /// reached full, so the fruit has reached its final dark red and drops
+    /// off the plant; a regrown bloom overgrows on its restarted schedule.
     pub fn overgrown(&self, slot: usize) -> bool {
-        stale(self.t, self.bloom_start(slot)) >= 1.0
+        stale(self.age, self.ripened_at[slot]) >= 1.0
     }
 
     /// Whether the bloom `slot`'s tomato is currently picked: its pivot has
@@ -559,11 +599,13 @@ impl Plant {
     /// growth clock's current value, so the flower grows from zero to full
     /// size over [FLOWER_GROW_TIME] and its tomato from zero to full size
     /// over [TOMATO_GROW_TIME] after it, the same conditions as the first
-    /// bloom off the slice. The next [Plant::layout] removes the flower
-    /// and starts the regrowth.
+    /// bloom off the slice; the ripe stamp clears, so the staleness runs
+    /// from the regrown fruit's own ripe moment. The next [Plant::layout]
+    /// removes the flower and starts the regrowth.
     pub fn regrow(&mut self, slot: usize) {
         self.harvested[slot] = false;
         self.regrow_at[slot] = Some(self.t);
+        self.ripened_at[slot] = None;
     }
 
     /// The body center of the bloom `slot`'s tomato, in the plant node's
@@ -597,9 +639,10 @@ impl Plant {
     /// [first_bloom_start], tinted light green to yellow, and its tomato
     /// grows from zero to [TOMATO_MAX_SCALE] over [TOMATO_GROW_TIME]
     /// seconds after the flower finishes, its background tinted dark green
-    /// to red — and a fully grown fruit stales on the plant's own clock:
-    /// [STALE_DELAY] seconds after full growth, its background modulates
-    /// from ripe red to [TOMATO_STALE] over [STALE_TIME].
+    /// to red — and a fully grown fruit stales on the plant's aging
+    /// clock, which [Plant::age] advances with or without water:
+    /// [STALE_DELAY] seconds after the fruit's ripe moment, its background
+    /// modulates from ripe red to [TOMATO_STALE] over [STALE_TIME].
     ///
     /// `node`'s origin is the plant's root joint (plant1's lower joint):
     /// the base rock turns the whole plant around that joint, and its
@@ -735,7 +778,11 @@ impl Plant {
                         if bg.shape.is_none() {
                             bg.shape = Some(tomato.clone());
                         }
-                        bg.modulate = mix(tomato_color(tg), TOMATO_STALE, stale(self.t, start));
+                        bg.modulate = mix(
+                            tomato_color(tg),
+                            TOMATO_STALE,
+                            stale(self.age, self.ripened_at[slot]),
+                        );
                     } else {
                         bg.shape = None;
                     }
@@ -810,6 +857,22 @@ mod tests {
     /// harvest and regrow tests start from.
     fn plant_complete() -> Plant {
         plant_at(plant_at(0.0).bloom_time() + 1.0)
+    }
+
+    /// A test plant whose growth and aging clocks both read `t`, watered
+    /// through: every slot whose fruit ripened by `t` is stamped at its
+    /// ripe moment, so the staleness the tests check is the watered one —
+    /// the value the aging clock reproduces while the growth clock runs.
+    fn aged_at(t: f32) -> Plant {
+        let mut p = plant_at(t);
+        p.age = t;
+        for slot in 0..FLOWER_N {
+            let ripe_at = p.bloom_start(slot) + FLOWER_GROW_TIME + TOMATO_GROW_TIME;
+            if t >= ripe_at {
+                p.ripened_at[slot] = Some(ripe_at);
+            }
+        }
+        p
     }
 
     /// A plant whose bloom `slot` was reset by [Plant::regrow] at clock
@@ -1324,7 +1387,7 @@ mod tests {
     }
 
     /// A fully grown tomato holds its ripe red for [STALE_DELAY] seconds of
-    /// the plant's clock, then modulates from red to [TOMATO_STALE] over
+    /// the aging clock, then modulates from red to [TOMATO_STALE] over
     /// [STALE_TIME] and holds there — and a regrown fruit stales on its new
     /// schedule, not the old one's.
     #[test]
@@ -1340,7 +1403,7 @@ mod tests {
             (STALE_DELAY + STALE_TIME, 1.0),
             (STALE_DELAY + STALE_TIME + 50.0, 1.0),
         ] {
-            let p = plant_at(ripe_at + dt);
+            let p = aged_at(ripe_at + dt);
             p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
             let bg = &node.children[slot_index(0)].children[SLOT_TOMATO].children[TOMATO_BG];
             let want = mix(TOMATO_RED, TOMATO_STALE, st);
@@ -1355,9 +1418,12 @@ mod tests {
 
         // A regrown fruit stales on its new schedule: at its regrown full
         // growth, well past where the old fruit would be fully stale, its
-        // background is ripe red again.
-        let mut p = plant_regrown(0, ripe_at);
+        // background is ripe red again — the ripe stamp cleared by the
+        // regrow, so no stale has started on the new fruit.
+        let mut p = aged_at(ripe_at);
+        p.regrow(0);
         p.t = ripe_at + FLOWER_GROW_TIME + TOMATO_GROW_TIME;
+        p.age = p.t;
         p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
         let bg = &node.children[slot_index(0)].children[SLOT_TOMATO].children[TOMATO_BG];
         assert_eq!(
@@ -1366,8 +1432,67 @@ mod tests {
         );
     }
 
+    /// A ripe fruit waits [STALE_DELAY] and stales over [STALE_TIME] on
+    /// the aging clock alone — the growth clock frozen on a dry reserve:
+    /// the wait and the stale need no water, and [Plant::overgrown] turns
+    /// on at the end of the stale period.
+    #[test]
+    fn a_ripe_tomato_stales_on_a_dry_plant() {
+        let s = slice();
+        let mut node = plant_node();
+        let ripe_at = plant_at(0.0).bloom_start(0) + FLOWER_GROW_TIME + TOMATO_GROW_TIME;
+        let stale_done = STALE_DELAY + STALE_TIME;
+        for (dt, st) in [
+            (0.0, 0.0),
+            (STALE_DELAY * 0.99, 0.0),
+            (STALE_DELAY + 0.001, 0.001 / STALE_TIME),
+            (STALE_DELAY + STALE_TIME * 0.5, 0.5),
+            (stale_done, 1.0),
+            (stale_done + 50.0, 1.0),
+        ] {
+            let mut p = aged_at(ripe_at);
+            // The reserve is dry: the growth clock never advances again —
+            // only the aging clock runs.
+            p.age = ripe_at + dt;
+            p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
+            let bg = &node.children[slot_index(0)].children[SLOT_TOMATO].children[TOMATO_BG];
+            let want = mix(TOMATO_RED, TOMATO_STALE, st);
+            assert!(
+                (bg.modulate.r - want.r).abs() < 1e-6
+                    && (bg.modulate.g - want.g).abs() < 1e-6
+                    && (bg.modulate.b - want.b).abs() < 1e-6,
+                "dt = {dt}: modulate {:?}, want {want:?}",
+                bg.modulate
+            );
+            assert_eq!(
+                p.overgrown(0),
+                dt >= stale_done,
+                "overgrown at dt = {dt}"
+            );
+        }
+    }
+
+    /// [Plant::age] stamps the ripe moment exactly, whatever the frame
+    /// size: the stamp is the aging clock's value at the fruit's ripe
+    /// moment on the growth clock, so a frame that crosses the ripe moment
+    /// mid-way stamps the mid-way value, not the frame's end.
+    #[test]
+    fn age_stamps_the_ripe_moment_mid_frame() {
+        let ripe_at = plant_at(0.0).bloom_start(0) + FLOWER_GROW_TIME + TOMATO_GROW_TIME;
+        let mut p = plant_at(ripe_at - 1.0);
+        p.age = ripe_at - 1.0;
+        // One big frame crosses the ripe moment: the growth clock and the
+        // aging clock both advance by five.
+        p.step(5.0);
+        p.age(5.0);
+        assert!(
+            (p.ripened_at[0].expect("the fruit ripened this frame") - ripe_at).abs() < 1e-6,
+            "the stamp is the ripe moment, not the frame's end"
+        );
+    }
+
     /// [Plant::overgrown] turns on the frame the fruit passes the full
-    /// stale period — its bloom start plus both growth periods plus
+    /// stale period on the aging clock — its ripe moment plus
     /// [STALE_DELAY] and [STALE_TIME] — and stays on: that is the moment
     /// the example drops the tomato and regrows the slot.
     #[test]
@@ -1375,25 +1500,28 @@ mod tests {
         let start = plant_at(0.0).bloom_start(0);
         let over_at =
             start + FLOWER_GROW_TIME + TOMATO_GROW_TIME + STALE_DELAY + STALE_TIME;
-        assert!(!plant_at(over_at - 0.001).overgrown(0), "not yet fully stale");
-        assert!(plant_at(over_at).overgrown(0));
-        assert!(plant_at(over_at + 100.0).overgrown(0), "holds past the period");
+        assert!(!aged_at(over_at - 0.001).overgrown(0), "not yet fully stale");
+        assert!(aged_at(over_at).overgrown(0));
+        assert!(aged_at(over_at + 100.0).overgrown(0), "holds past the period");
     }
 
     /// [Plant::overgrown] follows the [Plant::regrow]-restarted schedule:
     /// a slot that is overgrown on its first bloom is not overgrown right
     /// after the reset, and turns overgrown again only after its new
-    /// bloom's full growth and stale period.
+    /// bloom's full growth and stale period — the ripe stamp clears with
+    /// the regrow, and the new fruit overgrows from its own ripe moment.
     #[test]
     fn overgrown_follows_the_regrown_schedule() {
         let cycle =
             FLOWER_GROW_TIME + TOMATO_GROW_TIME + STALE_DELAY + STALE_TIME;
         let over_at = plant_at(0.0).bloom_start(0) + cycle;
-        let mut p = plant_at(over_at);
+        let mut p = aged_at(over_at);
         assert!(p.overgrown(0), "the first bloom is fully overgrown");
         p.regrow(0);
         assert!(!p.overgrown(0), "the regrown bloom restarts its cycle");
         p.t = over_at + cycle;
+        p.age = p.t;
+        p.ripened_at[0] = Some(over_at + FLOWER_GROW_TIME + TOMATO_GROW_TIME);
         assert!(p.overgrown(0), "the new bloom overgrows on its own schedule");
     }
 

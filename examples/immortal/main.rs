@@ -79,8 +79,10 @@
 //! `assets/sprites/tomato_fg.png` drawn on top, the body's top pinned to the
 //! flower's center so the fruit hangs below it, on top of the flower.
 //! Each bloom rides its slice's transform so it sways with the plant. A
-//! fully grown fruit stales on its plant's own clock: 8 seconds after full
-//! growth, its body modulates from red to a dark red over 8 seconds — and a
+//! fully grown fruit stales on its plant's aging clock, which the process
+//! steps every frame at the growth's slowed pace — water or not: 8 seconds
+//! after full growth, its body modulates from red to a dark red over 8
+//! seconds, even on a dry plant whose growth clock is frozen — and a
 //! picked fruit carries the color it had at pick, frozen while it rides
 //! the cursor and kept when it lands in the basket.
 //!
@@ -867,7 +869,8 @@ struct Demo {
     /// at the growth's
     /// slowed pace — and restores it by `DROP_WATER` per drop that falls
     /// into its root hitbox, and a plant at 0.0 stops growing, awaiting
-    /// water.
+    /// water — its ripe tomatoes' wait and stale excepted, which run on
+    /// the plants' aging clocks, stepped with or without water.
     waters: [f32; PLANT_POS.len()],
     /// The swarm of vipers buzzing around the flower bench — the row of
     /// plants — in parallel with the tool system and the plants: one
@@ -997,7 +1000,11 @@ impl frost::Process for Demo {
         // the water holds; a plant whose reserve runs dry stops growing —
         // its growth clock freezes — awaiting the player to pour water on
         // its root; the falling drops are matched against the roots'
-        // hitboxes below, once the particles have been stepped.
+        // hitboxes below, once the particles have been stepped. The
+        // aging clock, stepped by the same slowed frame, runs with or
+        // without water: a ripe fruit's wait and stale —
+        // `plant::STALE_DELAY` then `plant::STALE_TIME` after full
+        // growth — proceed on a dry plant.
         let mut active_plants = 0usize;
         let mut grown_layers = 0usize;
         let started: [bool; PLANT_POS.len()] =
@@ -1013,6 +1020,9 @@ impl frost::Process for Demo {
                         self.plants[i].step(dt / GROW_SLOWDOWN);
                     }
                 }
+                // The aging clock runs every frame, water or not: ripe
+                // fruits wait and stale on it.
+                self.plants[i].age(dt / GROW_SLOWDOWN);
             }
             grown_layers += self.plants[i].grown_layers();
         }
