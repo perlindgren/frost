@@ -497,6 +497,19 @@ impl Plant {
         midpoints
     }
 
+    /// The cumulative fall height, in the plant node's local space — y up,
+    /// before the caller's fit scale — for a tomato on slice `slice`: the
+    /// sum of the vertical joint deltas of the segments from the root
+    /// through the slice's own, so a tomato on the root segment falls one
+    /// segment's height, one on the second segment the sum of the first
+    /// two, and so on.
+    pub fn fall_height(&self, slice: usize) -> f32 {
+        self.links[..=slice]
+            .iter()
+            .map(|l| l.to[1] - l.from[1])
+            .sum()
+    }
+
     /// The plant-clock moment the bloom `slot`'s flower starts growing:
     /// the slot's staggered [first_bloom_start] entry on the first bloom,
     /// or the [Plant::regrow] stamp after a harvest into the basket.
@@ -510,6 +523,14 @@ impl Plant {
     /// schedule.
     pub fn ripe(&self, slot: usize) -> bool {
         self.t >= self.bloom_start(slot) + FLOWER_GROW_TIME + TOMATO_GROW_TIME
+    }
+
+    /// Whether the bloom `slot` carries a fully overgrown tomato: its
+    /// staleness — the mix toward [TOMATO_STALE] — has reached full, so
+    /// the fruit has reached its final dark red and drops off the plant;
+    /// a regrown bloom overgrows on its restarted schedule.
+    pub fn overgrown(&self, slot: usize) -> bool {
+        stale(self.t, self.bloom_start(slot)) >= 1.0
     }
 
     /// Whether the bloom `slot`'s tomato is currently picked: its pivot has
@@ -1343,5 +1364,56 @@ mod tests {
             bg.modulate, TOMATO_RED,
             "the regrown fruit stales on the old schedule"
         );
+    }
+
+    /// [Plant::overgrown] turns on the frame the fruit passes the full
+    /// stale period — its bloom start plus both growth periods plus
+    /// [STALE_DELAY] and [STALE_TIME] — and stays on: that is the moment
+    /// the example drops the tomato and regrows the slot.
+    #[test]
+    fn overgrown_is_the_end_of_the_stale_period() {
+        let start = plant_at(0.0).bloom_start(0);
+        let over_at =
+            start + FLOWER_GROW_TIME + TOMATO_GROW_TIME + STALE_DELAY + STALE_TIME;
+        assert!(!plant_at(over_at - 0.001).overgrown(0), "not yet fully stale");
+        assert!(plant_at(over_at).overgrown(0));
+        assert!(plant_at(over_at + 100.0).overgrown(0), "holds past the period");
+    }
+
+    /// [Plant::overgrown] follows the [Plant::regrow]-restarted schedule:
+    /// a slot that is overgrown on its first bloom is not overgrown right
+    /// after the reset, and turns overgrown again only after its new
+    /// bloom's full growth and stale period.
+    #[test]
+    fn overgrown_follows_the_regrown_schedule() {
+        let cycle =
+            FLOWER_GROW_TIME + TOMATO_GROW_TIME + STALE_DELAY + STALE_TIME;
+        let over_at = plant_at(0.0).bloom_start(0) + cycle;
+        let mut p = plant_at(over_at);
+        assert!(p.overgrown(0), "the first bloom is fully overgrown");
+        p.regrow(0);
+        assert!(!p.overgrown(0), "the regrown bloom restarts its cycle");
+        p.t = over_at + cycle;
+        assert!(p.overgrown(0), "the new bloom overgrows on its own schedule");
+    }
+
+    /// [Plant::fall_height] is the cumulative vertical span of the
+    /// segments from the root down to the slice: a tomato on the root
+    /// segment falls one segment's height (93 node-local px), one on the
+    /// second the sum of the first two (93 + 230), and so on — before the
+    /// caller's fit scale.
+    #[test]
+    fn fall_height_sums_the_segments_from_the_root() {
+        let p = plant_at(0.0);
+        // Cross-checked against the hand-picked joint table.
+        let mut sum = 0.0;
+        for slice in 0..4 {
+            sum += JOINTS[slice][0].1 - JOINTS[slice][1].1;
+            assert!((p.fall_height(slice) - sum).abs() < 1e-6, "slice {slice}");
+        }
+        let want = [93.0, 323.0, 697.0, 943.0];
+        for slice in 0..4 {
+            assert!((p.fall_height(slice) - want[slice]).abs() < 1e-6, "slice {slice}");
+        }
     }
 }
