@@ -152,7 +152,8 @@ building the `Context` (physical y-down → user y-up).
     (the last one in depth-first call order wins; default is a dark blue-gray
     when none exists). It costs no draw call.
   - `Sprite { data: Arc<[u8]>, width, height, color, alpha }` — RGBA8 PNG from
-    `Shape::sprite(path)` (decoded eagerly; `SpriteError` on failure).
+    `Shape::sprite(path)` / `Shape::sprite_bytes(bytes)` (decoded eagerly;
+    `SpriteError` on failure).
     Centered on the node origin, 1 texture pixel per scene pixel. `color` tints
     every pixel (white = unchanged); overall opacity = texture alpha × `alpha`
     × `color.a`.
@@ -369,7 +370,10 @@ clean. Notable test areas:
 
 ## Examples (examples/)
 
-All load assets via `CARGO_MANIFEST_DIR`. Run with `cargo run --example <name>`
+Most load their assets from disk at runtime, pinned to the crate root via
+`CARGO_MANIFEST_DIR`; `immortal` and `text_web` embed their assets into the
+binary with `include_bytes!` instead, so they run with no asset files on
+disk. Run with `cargo run --example <name>`
 (`RUST_LOG=info` for logs; on Windows PowerShell:
 `RUST_LOG=info cargo run --example gizmos 2>&1 | Out-String`).
 
