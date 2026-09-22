@@ -16,6 +16,9 @@ pub(crate) const SHAPE_SHADER: &str = include_str!("../shaders/shape.wgsl");
 /// The sprite (texture) shader source.
 pub(crate) const SPRITE_SHADER: &str = include_str!("../shaders/sprite.wgsl");
 
+/// The batched particle shader source.
+pub(crate) const PARTICLES_SHADER: &str = include_str!("../shaders/particles.wgsl");
+
 #[cfg(test)]
 mod tests {
     //! Shader validation without running anything: naga's WGSL frontend is
@@ -24,7 +27,7 @@ mod tests {
 
     use super::*;
 
-    /// All five shaders parse as valid WGSL.
+    /// All six shaders parse as valid WGSL.
     #[test]
     fn all_shaders_parse_as_wgsl() {
         let shaders = [
@@ -33,6 +36,7 @@ mod tests {
             ("rectangle.wgsl", RECT_SHADER),
             ("shape.wgsl", SHAPE_SHADER),
             ("sprite.wgsl", SPRITE_SHADER),
+            ("particles.wgsl", PARTICLES_SHADER),
         ];
         for (name, source) in shaders {
             naga::front::wgsl::parse_str(source)
@@ -105,5 +109,36 @@ mod tests {
         // The struct's total size must equal the CPU-side buffer length,
         // otherwise the buffer would be too short or carry dead bytes.
         assert_eq!(total_size, 80);
+    }
+
+    /// The member offsets WGSL assigns to `ParticlesUniforms` must match the
+    /// CPU-side uniform writer in `particles_uniform_data` (vec2 @0, vec4 @16
+    /// — 16 bytes, 16-byte aligned — 32 bytes total). This is the GPU-side
+    /// mirror of the writer, so a layout drift on either side fails a test.
+    #[test]
+    fn particles_uniform_offsets_match_the_cpu_layout() {
+        let module = naga::front::wgsl::parse_str(PARTICLES_SHADER)
+            .expect("particles.wgsl should parse (see all_shaders_parse_as_wgsl)");
+        let ty = module
+            .types
+            .iter()
+            .find_map(|(_, ty)| match &ty.inner {
+                naga::TypeInner::Struct { .. } if ty.name.as_deref() == Some("ParticlesUniforms") => {
+                    Some(ty)
+                }
+                _ => None,
+            })
+            .expect("particles.wgsl should declare the ParticlesUniforms struct");
+        let (offsets, total_size) = match &ty.inner {
+            naga::TypeInner::Struct { members, span } => (
+                members.iter().map(|m| m.offset).collect::<Vec<u32>>(),
+                *span,
+            ),
+            _ => unreachable!("ParticlesUniforms must be a struct"),
+        };
+        assert_eq!(offsets, [0, 16]);
+        // The struct's total size must equal the CPU-side buffer length,
+        // otherwise the buffer would be too short or carry dead bytes.
+        assert_eq!(total_size, 32);
     }
 }

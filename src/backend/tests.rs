@@ -6,7 +6,7 @@ use wgpu::PresentMode;
 use super::*;
 use crate::objects::*;
 use crate::text;
-use crate::{Canvas, Context, KeyCode, MouseButton};
+use crate::{Canvas, Context, KeyCode, MouseButton, Particle};
 
 fn black() -> Color {
     Color {
@@ -386,6 +386,145 @@ fn off_screen_shape_has_no_scissor() {
         z: 0.0,
     };
     assert_eq!(draw.scissor_rect([100, 100]), None);
+}
+
+#[test]
+fn particles_scissor_covers_the_whole_surface() {
+    let draw = Draw::Particles {
+        data: vec![],
+        count: 0,
+        color: black(),
+        z: 0.0,
+    };
+    // The batch's particles can be anywhere, so the scissor is the whole
+    // render area; the per-particle quads are already tight.
+    assert_eq!(draw.scissor_rect([100, 100]), Some([0, 0, 100, 100]));
+}
+
+#[test]
+fn particles_uniform_bytes_follow_the_wgsl_layout() {
+    // Lock the byte layout of `particles_uniform_data` to the WGSL
+    // uniform-space layout of `ParticlesUniforms`, so a reorder of the
+    // WGSL struct is caught here. `size` (a vec2) spans 0..8; the
+    // 16-byte-aligned `color` vec4 starts at 16, so bytes 8..16 are
+    // padding; the struct spans 32 bytes.
+    let data = particles_uniform_data(
+        [1280.0, 720.0],
+        Color {
+            r: 0.1,
+            g: 0.2,
+            b: 0.3,
+            a: 0.4,
+        },
+    );
+    assert_eq!(data.len(), 32);
+
+    let f32_at = |off: usize| {
+        f32::from_le_bytes(data[off..off + 4].try_into().unwrap())
+    };
+    assert_eq!(f32_at(0), 1280.0);
+    assert_eq!(f32_at(4), 720.0);
+    // The padding between `size` and the 16-byte-aligned `color` is
+    // zeroed by the `vec![0u8; 32]` init.
+    assert_eq!(f32_at(8), 0.0);
+    assert_eq!(f32_at(12), 0.0);
+    assert_eq!(f32_at(16), 0.1);
+    assert_eq!(f32_at(20), 0.2);
+    assert_eq!(f32_at(24), 0.3);
+    assert_eq!(f32_at(28), 0.4);
+}
+
+#[test]
+fn canvas_particles_packs_instances_in_pixel_space() {
+    let mut canvas = Canvas::new((100, 100));
+    let particles = [
+        // A live particle with half its lifetime left.
+        Particle {
+            pos: [10.0, 20.0],
+            vel: [0.0, 0.0],
+            life: 2.0,
+            max_life: 4.0,
+            size: 3.0,
+        },
+        // A dead one: its life fraction clamps to zero.
+        Particle {
+            pos: [0.0, 0.0],
+            vel: [0.0, 0.0],
+            life: -1.0,
+            max_life: 2.0,
+            size: 1.0,
+        },
+        // An over-living one: its life clamps to one, and its negative
+        // size clamps to zero.
+        Particle {
+            pos: [-10.0, -10.0],
+            vel: [0.0, 0.0],
+            life: 6.0,
+            max_life: 4.0,
+            size: -2.0,
+        },
+        // No max lifetime: the life fraction is zero, so it fades out
+        // completely.
+        Particle {
+            pos: [5.0, -5.0],
+            vel: [0.0, 0.0],
+            life: 1.0,
+            max_life: 0.0,
+            size: 2.0,
+        },
+    ];
+    let tint = Color {
+        r: 0.5,
+        g: 0.25,
+        b: 0.75,
+        a: 0.5,
+    };
+    canvas.particles(&particles, tint, 2.5);
+    let [Draw::Particles {
+        data,
+        count,
+        color,
+        z,
+    }] = &canvas.draws[..]
+    else {
+        panic!("expected one particle draw");
+    };
+    assert_eq!(data.len(), 4 * 16);
+    assert_eq!(*count, 4);
+    assert_eq!(*color, tint);
+    assert_eq!(*z, 2.5);
+
+    // Each particle packs one vec4 of (px, py, size, life fraction) in
+    // pixel space (top-left origin, y down).
+    let f32_at = |particle: usize, field: usize| {
+        let off = particle * 16 + field * 4;
+        f32::from_le_bytes(data[off..off + 4].try_into().unwrap())
+    };
+    // user (10, 20) is (60, 30) in pixel space on a 100x100 window.
+    assert_eq!(f32_at(0, 0), 60.0);
+    assert_eq!(f32_at(0, 1), 30.0);
+    assert_eq!(f32_at(0, 2), 3.0);
+    assert_eq!(f32_at(0, 3), 0.5);
+    assert_eq!(f32_at(1, 0), 50.0);
+    assert_eq!(f32_at(1, 1), 50.0);
+    assert_eq!(f32_at(1, 2), 1.0);
+    assert_eq!(f32_at(1, 3), 0.0); // negative life clamps to zero
+    // user (-10, -10) is (40, 60) in pixel space.
+    assert_eq!(f32_at(2, 0), 40.0);
+    assert_eq!(f32_at(2, 1), 60.0);
+    assert_eq!(f32_at(2, 2), 0.0); // negative size clamps to zero
+    assert_eq!(f32_at(2, 3), 1.0); // over-living clamps to one
+    assert_eq!(f32_at(3, 0), 55.0);
+    assert_eq!(f32_at(3, 1), 55.0);
+    assert_eq!(f32_at(3, 2), 2.0);
+    assert_eq!(f32_at(3, 3), 0.0); // no max lifetime means no life fraction
+}
+
+#[test]
+fn canvas_particles_with_no_particles_adds_no_draw() {
+    let mut canvas = Canvas::new((100, 100));
+    canvas.particles(&[], black(), 0.0);
+    assert!(canvas.draws.is_empty());
 }
 
 #[test]

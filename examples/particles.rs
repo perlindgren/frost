@@ -1,14 +1,15 @@
 //! A fountain of particles: a [`frost::ParticleSystem`] driven from a
-//! [`frost::Process`], drawn as fading circles through the immediate
-//! `circle` method.
+//! [`frost::Process`], drawn as one batched (instanced) draw call through
+//! [`frost::Canvas::particles`].
 //!
 //! Every frame the demo adds `RATE * dt` to an emission accumulator and
 //! spawns one particle per whole unit: each starts at the source near the
 //! bottom edge, with an upward velocity in a spread cone, a random
 //! lifetime, and a random size. The system then updates every particle —
 //! gravity pulls it down, its life runs out, and the dead ones are removed.
-//! Each particle is drawn as a circle whose alpha is its remaining life
-//! fraction, so the fountain fades as it rises.
+//! The whole system is drawn in a single instanced draw: each particle is a
+//! circle whose alpha is its remaining life fraction, so the fountain fades
+//! as it rises.
 //!
 //! The simulation is pure math in the library; this example owns the
 //! spawning and the drawing, the split the library makes for every effect.
@@ -95,23 +96,10 @@ impl frost::Process for Demo {
         // Advance the simulation: gravity down, life out, the dead removed.
         self.system.update(dt, [0.0, -GRAVITY]);
 
-        // Draw each particle: a circle whose alpha is its remaining life
-        // fraction, so it fades out as it dies.
-        for p in &self.system.particles {
-            let fade = (p.life / p.max_life).clamp(0.0, 1.0);
-            ctx.circle(
-                p.pos[0],
-                p.pos[1],
-                p.size,
-                frost::Color {
-                    r: COLOR.r,
-                    g: COLOR.g,
-                    b: COLOR.b,
-                    a: fade,
-                },
-                Z,
-            );
-        }
+        // Draw the whole system in one batched (instanced) draw call: each
+        // particle is a circle whose alpha is its remaining life fraction,
+        // so it fades out as it dies.
+        ctx.particles(&self.system.particles, COLOR, Z);
         // The source, behind the particles.
         ctx.circle(source[0], source[1], SOURCE, COLOR, 0.5);
 

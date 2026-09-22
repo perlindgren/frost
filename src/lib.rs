@@ -218,6 +218,41 @@ impl Canvas {
         });
     }
 
+    /// Draws every particle in `particles` as circles in one batched
+    /// (instanced) draw call, in `color`, at draw order `z`.
+    ///
+    /// Each particle is a circle at its position with its `size` as radius,
+    /// and its alpha is scaled by its remaining life fraction
+    /// (`life / max_life`), so the batch fades out as its particles die.
+    ///
+    /// The whole batch shares one `color` and one `z` — per-particle color
+    /// needs one batch per color (or per-particle [`Canvas::circle`] calls,
+    /// which each take their own draw call).
+    pub fn particles(&mut self, particles: &[Particle], color: Color, z: f32) {
+        if particles.is_empty() {
+            return;
+        }
+        let mut data = Vec::with_capacity(particles.len() * 16);
+        for p in particles {
+            let [px, py] = self.user_to_pixels(p.pos[0], p.pos[1]);
+            let life = if p.max_life > 0.0 {
+                (p.life / p.max_life).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            // One `vec4<f32>` per particle: (px, py, size, life fraction).
+            for v in [px, py, p.size.max(0.0), life] {
+                data.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        self.draws.push(Draw::Particles {
+            data,
+            count: particles.len() as u32,
+            color,
+            z,
+        });
+    }
+
     /// Draws a filled rectangle centered at `(cx, cy)` with `dx` and `dy`
     /// extents (half-width and half-height) in pixels, in `color`.
     ///

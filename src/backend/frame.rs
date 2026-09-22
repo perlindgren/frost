@@ -85,6 +85,22 @@ pub(crate) enum Draw {
         uv_rect: [f32; 4],
         z: f32,
     },
+    /// A batch of particles drawn in one instanced draw call.
+    ///
+    /// `data` holds one `vec4<f32>` per particle — `(px, py, size, life
+    /// fraction)` in pixel space (top-left origin, y down), packed as
+    /// 16 bytes per particle, so `count == data.len() / 16`. The whole
+    /// batch shares `color`; each particle's alpha is additionally scaled
+    /// by its life fraction, so dying particles fade out.
+    Particles {
+        /// The packed instance data, four floats (16 bytes) per particle.
+        data: Vec<u8>,
+        /// The number of particles in `data`.
+        count: u32,
+        /// The batch's base tint.
+        color: Color,
+        z: f32,
+    },
     /// A block of text: expanded into one [`Draw::Sprite`] per glyph by
     /// [`Canvas::expand_text`] before the frame is rendered, so this
     /// variant never reaches the render loop itself.
@@ -119,6 +135,7 @@ impl Draw {
             Draw::Rectangle { z, .. } => *z,
             Draw::Shape { z, .. } => *z,
             Draw::Sprite { z, .. } => *z,
+            Draw::Particles { z, .. } => *z,
             Draw::Text { z, .. } => *z,
             // The background is always at the very back.
             Draw::Background { .. } => f32::MIN,
@@ -192,6 +209,12 @@ impl Draw {
                 // The sprite's box is the texture, centered on the origin,
                 // plus the local anti-alias band.
                 aabb_of_box(world, [0.0, 0.0], size[0] * 0.5 + *aa, size[1] * 0.5 + *aa)
+            }
+            // The batch's particles can be anywhere, so the scissor is the
+            // whole surface: the per-particle quads are already tight, and
+            // the rasterizer discards everything else for free.
+            Draw::Particles { .. } => {
+                ([0.0, 0.0], [area[0] as f32, area[1] as f32])
             }
             // A background never draws; the early return above covers it.
             Draw::Background { .. } => unreachable!(),
@@ -389,5 +412,20 @@ pub(crate) fn sprite_uniform_data(
     write_f32_at(&mut data, 68, uv_rect[1]);
     write_f32_at(&mut data, 72, uv_rect[2]);
     write_f32_at(&mut data, 76, uv_rect[3]);
+    data
+}
+
+/// Particle batch uniform data, 32 bytes, matching the WGSL uniform-space
+/// layout of the `ParticlesUniforms` Wgsl struct: `size` (a vec2) @ 0,
+/// `color` (a vec4) @ 16 (16 bytes, 16-byte aligned, leaving an 8-byte gap);
+/// the struct size rounds up to 32.
+pub(crate) fn particles_uniform_data(size: [f32; 2], color: Color) -> Vec<u8> {
+    let mut data = vec![0u8; 32];
+    write_f32_at(&mut data, 0, size[0]);
+    write_f32_at(&mut data, 4, size[1]);
+    write_f32_at(&mut data, 16, color.r);
+    write_f32_at(&mut data, 20, color.g);
+    write_f32_at(&mut data, 24, color.b);
+    write_f32_at(&mut data, 28, color.a);
     data
 }

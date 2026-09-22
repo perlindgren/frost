@@ -73,6 +73,11 @@ pub(crate) struct Frost<P: Process> {
     rect_pipeline: Option<RenderPipeline>,
     shape_pipeline: Option<RenderPipeline>,
     sprite_pipeline: Option<RenderPipeline>,
+    particle_pipeline: Option<RenderPipeline>,
+    /// The index buffer for particle batches: one quad per instance
+    /// (`[0, 1, 2, 2, 1, 3]`), created once and shared by every batched
+    /// draw in every frame.
+    particle_index_buffer: Option<Buffer>,
     /// The GPU resources for each distinct sprite image, keyed by the
     /// pointer of its pixel-data `Arc`. Sprites sharing one file share one
     /// texture, so the map stays bounded by the number of distinct images.
@@ -125,6 +130,22 @@ impl<P: Process> Frost<P> {
         scene: Scene,
         process: P,
     ) -> Self {
+        // The particle batch's index buffer is surface-format independent,
+        // so it is built here: every instance is one quad,
+        // `[0, 1, 2, 2, 1, 3]`. It is written before any draw can run, so a
+        // `write_buffer` upload has no hazard.
+        let particle_index_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("particle index buffer"),
+            size: 24,
+            usage: BufferUsages::INDEX | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut index_bytes = [0u8; 24];
+        for (i, v) in [0u32, 1, 2, 2, 1, 3].iter().enumerate() {
+            index_bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        queue.write_buffer(&particle_index_buffer, 0, &index_bytes);
+
         Self {
             instance,
             adapter,
@@ -142,6 +163,8 @@ impl<P: Process> Frost<P> {
             rect_pipeline: None,
             shape_pipeline: None,
             sprite_pipeline: None,
+            particle_pipeline: None,
+            particle_index_buffer: Some(particle_index_buffer),
             sprite_resources: HashMap::new(),
             text_atlases: HashMap::new(),
             format: None,
@@ -508,10 +531,23 @@ impl<P: Process> Frost<P> {
             format,
             "sprite pipeline",
         ));
+
+        let particles_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("particle shaders"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(PARTICLES_SHADER)),
+        });
+        self.particle_pipeline = Some(Self::create_pipeline(
+            device,
+            &particles_module,
+            format,
+            "particle pipeline",
+        ));
     }
 
-    /// Builds a render pipeline for a full-screen-triangle shader whose single
-    /// uniform is bound at binding 0.
+    /// Builds a render pipeline for a shader with no vertex buffers
+    /// (full-screen triangles, or instanced quads generated in the vertex
+    /// shader), one bind group at group 0, and a single alpha-blended color
+    /// target.
     fn create_pipeline(
         device: &Device,
         module: &ShaderModule,
@@ -691,6 +727,58 @@ impl<P: Process> Frost<P> {
         (buffer, bind_group)
     }
 
+    /// Creates the per-draw buffers and bind group for one particle batch:
+    /// the batch's uniform (the surface size and the base color) at binding
+    /// 0, and the packed per-particle instance data as a storage buffer
+    /// read by the vertex stage at binding 1. Same per-draw buffer
+    /// rationale as [`Frost::primitive_uniform`].
+    fn particle_uniform(
+        &self,
+        pipeline: &RenderPipeline,
+        data: &[u8],
+        uniform_data: &[u8],
+    ) -> (Buffer, Buffer, BindGroup) {
+        let device = &self.device;
+        let uniform_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("particle uniform buffer"),
+            size: uniform_data.len() as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&uniform_buffer, 0, uniform_data);
+        let instance_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("particle instance buffer"),
+            size: data.len() as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&instance_buffer, 0, data);
+        let layout = pipeline.get_bind_group_layout(0);
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("particle bind group"),
+            layout: &layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &uniform_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &instance_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+            ],
+        });
+        (uniform_buffer, instance_buffer, bind_group)
+    }
+
     fn render(&mut self) {
         let (output, reconfigure) = self.acquire_frame();
         if reconfigure {
@@ -756,13 +844,18 @@ impl<P: Process> Frost<P> {
             Some(rect_pipeline),
             Some(shape_pipeline),
             Some(sprite_pipeline),
+            Some(particle_pipeline),
         ) = (
             self.line_pipeline.as_ref(),
             self.circle_pipeline.as_ref(),
             self.rect_pipeline.as_ref(),
             self.shape_pipeline.as_ref(),
             self.sprite_pipeline.as_ref(),
+            self.particle_pipeline.as_ref(),
         ) else {
+            return;
+        };
+        let Some(particle_index_buffer) = &self.particle_index_buffer else {
             return;
         };
 
@@ -921,6 +1014,35 @@ impl<P: Process> Frost<P> {
                         pass.set_pipeline(sprite_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         pass.draw(0..3, 0..1);
+                    }
+                    Draw::Particles {
+                        data,
+                        count,
+                        color,
+                        ..
+                    } => {
+                        if count == 0 {
+                            continue;
+                        }
+                        // The whole batch is one instanced draw: the shared
+                        // index buffer expands every instance into a tight
+                        // quad, and the fragment stage evaluates the circle
+                        // SDF per pixel. The batch's uniform and instance
+                        // data get fresh per-draw buffers, the same
+                        // rationale as `primitive_uniform`.
+                        let uniform_data = particles_uniform_data(
+                            [render_area[0] as f32, render_area[1] as f32],
+                            color,
+                        );
+                        let (_uniform, _instances, bind_group) =
+                            self.particle_uniform(particle_pipeline, &data, &uniform_data);
+                        pass.set_pipeline(particle_pipeline);
+                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.set_index_buffer(
+                            particle_index_buffer.slice(..),
+                            wgpu::IndexFormat::Uint32,
+                        );
+                        pass.draw_indexed(0..6, 0, 0..count);
                     }
                     // A background's scissor rect is `None`, so it continued
                     // above; this arm keeps the match exhaustive.
