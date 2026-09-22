@@ -177,6 +177,7 @@
 mod assets_load;
 mod bugs;
 mod plant;
+mod tomato;
 mod vipers;
 
 use assets_load::Assets;
@@ -523,7 +524,7 @@ const BASKET_GAP: f32 = 24.0;
 /// The uniform scale a picked tomato rides at: the plant's fit scale on
 /// the tomato's full growth, so a picked fruit is exactly the size it had
 /// on the plant.
-const TOMATO_PICK_SCALE: f32 = plant::TOMATO_MAX_SCALE * PLANT_SCALE;
+const TOMATO_PICK_SCALE: f32 = tomato::TOMATO_MAX_SCALE * PLANT_SCALE;
 
 /// The carried tomato's body box's half extents, in window pixels, for a
 /// `size`-pixel image: half the fruit's natural size at the pick scale.
@@ -1003,7 +1004,7 @@ impl frost::Process for Demo {
         // hitboxes below, once the particles have been stepped. The
         // aging clock, stepped by the same slowed frame, runs with or
         // without water: a ripe fruit's wait and stale —
-        // `plant::STALE_DELAY` then `plant::STALE_TIME` after full
+        // `tomato::STALE_DELAY` then `tomato::STALE_TIME` after full
         // growth — proceed on a dry plant.
         let mut active_plants = 0usize;
         let mut grown_layers = 0usize;
@@ -1162,7 +1163,7 @@ impl frost::Process for Demo {
             let basket = &ctx.scene().root.children[CHILD_BASKET];
             let s = basket.scale[0];
             let [bx, by] = basket.transform.apply([0.0, 0.0]);
-            let [ox, oy] = plant::tomato_leaf_offset(sprite_size(&self.tomato));
+            let [ox, oy] = tomato::tomato_leaf_offset(sprite_size(&self.tomato));
             let [hx, hy] = tomato_pick_half(sprite_size(&self.tomato));
             let mut body = [
                 self.mouse[0] + TOMATO_PICK_SCALE * ox,
@@ -1197,7 +1198,7 @@ impl frost::Process for Demo {
             let basket = &ctx.scene().root.children[CHILD_BASKET];
             let s = basket.scale[0];
             let [bx, by] = basket.transform.apply([0.0, 0.0]);
-            let [ox, oy] = plant::tomato_leaf_offset(sprite_size(&self.tomato));
+            let [ox, oy] = tomato::tomato_leaf_offset(sprite_size(&self.tomato));
             let [hx, hy] = tomato_pick_half(sprite_size(&self.tomato));
             for fruit in
                 &mut ctx.scene().root.children[CHILD_BASKET].children[BASKET_FRUIT].children
@@ -1279,7 +1280,7 @@ impl frost::Process for Demo {
                 .collect::<Vec<_>>()
         };
         if !drops.is_empty() {
-            let [ox, oy] = plant::tomato_leaf_offset(sprite_size(&self.tomato));
+            let [ox, oy] = tomato::tomato_leaf_offset(sprite_size(&self.tomato));
             let root = &mut ctx.scene().root;
             for (pi, si, spawn, dest_y) in drops {
                 self.plants[pi].regrow(si);
@@ -1707,7 +1708,7 @@ impl Demo {
         let root = &mut ctx.scene().root;
         let pivot = root.children[CHILD_PLANTS].children[pi].children[plant::slot_index(si)]
             .children
-            .remove(1);
+            .remove(plant::SLOT_TOMATO);
         let mut pivot = *pivot;
         pivot.scale = [TOMATO_PICK_SCALE, TOMATO_PICK_SCALE];
         pivot.transform = frost::Transform::translate(self.mouse[0], self.mouse[1]);
@@ -1736,7 +1737,7 @@ impl Demo {
         let (w, h) = ctx.size();
         let s = basket_scale(h);
         let center = basket_center(w, h);
-        let [ox, oy] = plant::tomato_leaf_offset(sprite_size(&self.tomato));
+        let [ox, oy] = tomato::tomato_leaf_offset(sprite_size(&self.tomato));
         let body = [
             self.mouse[0] + TOMATO_PICK_SCALE * ox,
             self.mouse[1] + TOMATO_PICK_SCALE * oy,
