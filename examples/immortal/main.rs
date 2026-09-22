@@ -329,7 +329,8 @@ const GRAVITY: f32 = 420.0;
 /// The z the drops are drawn at, above the can.
 const Z: f32 = 2.0;
 
-/// The drop color; the alpha is set per drop from its remaining life.
+/// The drop color; the batched draw scales each drop's alpha by its
+/// remaining life fraction.
 const DROP: frost::Color = frost::Color {
     r: 0.35,
     g: 0.62,
@@ -669,8 +670,8 @@ const SPRAY_SIZE: (f32, f32) = (1.0, 2.5);
 /// lighter than `GRAVITY`, because mist falls slower than drops.
 const SPRAY_GRAVITY: f32 = 120.0;
 
-/// The spray's color; the alpha is set per particle from its remaining
-/// life.
+/// The spray's color; the batched draw scales each drop's alpha by its
+/// remaining life fraction.
 const SPRAY: frost::Color = frost::Color {
     r: 0.45,
     g: 0.9,
@@ -1495,38 +1496,11 @@ impl frost::Process for Demo {
             }
         }
 
-        // Draw each particle as a circle whose alpha is its remaining life
-        // fraction, so the streams fade as they fall.
-        for p in &self.water.particles {
-            let fade = (p.life / p.max_life).clamp(0.0, 1.0);
-            ctx.circle(
-                p.pos[0],
-                p.pos[1],
-                p.size,
-                frost::Color {
-                    r: DROP.r,
-                    g: DROP.g,
-                    b: DROP.b,
-                    a: fade,
-                },
-                Z,
-            );
-        }
-        for p in &self.spray.particles {
-            let fade = (p.life / p.max_life).clamp(0.0, 1.0);
-            ctx.circle(
-                p.pos[0],
-                p.pos[1],
-                p.size,
-                frost::Color {
-                    r: SPRAY.r,
-                    g: SPRAY.g,
-                    b: SPRAY.b,
-                    a: fade,
-                },
-                Z,
-            );
-        }
+        // Draw each stream as one batched (instanced) draw: every particle
+        // is a circle whose alpha is its remaining life fraction, so the
+        // streams fade as they fall.
+        ctx.particles(&self.water.particles, DROP, Z);
+        ctx.particles(&self.spray.particles, SPRAY, Z);
 
         // Draw the water bars: a dark background with a blue fill showing
         // the reserve, `BAR_LIFT` pixels above the root joint of every
