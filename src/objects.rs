@@ -266,7 +266,19 @@ impl Shape {
     /// buffer.
     pub fn sprite(path: impl AsRef<Path>) -> Result<Self, SpriteError> {
         let bytes = std::fs::read(path.as_ref()).map_err(SpriteError::Io)?;
-        let image = image::load_from_memory(&bytes).map_err(SpriteError::Decode)?;
+        Self::sprite_bytes(&bytes)
+    }
+
+    /// Creates a sprite shape from PNG data already in memory, for example
+    /// bytes embedded into the binary with `include_bytes!`.
+    ///
+    /// Like [`Shape::sprite`], the bytes are decoded to RGBA8 up front, so a
+    /// non-PNG buffer fails here, not at render time, and the pixels live
+    /// behind an [`Arc`], but no file is read — this is how sprite shapes
+    /// are created in environments without a file system, such as a web
+    /// browser.
+    pub fn sprite_bytes(bytes: impl AsRef<[u8]>) -> Result<Self, SpriteError> {
+        let image = image::load_from_memory(bytes.as_ref()).map_err(SpriteError::Decode)?;
         let rgba = image.to_rgba8();
         let (width, height) = rgba.dimensions();
         let data = Arc::from(rgba.into_raw().into_boxed_slice());

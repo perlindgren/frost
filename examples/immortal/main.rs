@@ -1619,10 +1619,7 @@ fn main() {
     env_logger::init();
     log::info!("frost started");
 
-    // `CARGO_MANIFEST_DIR` pins the asset paths to the crate root, so the
-    // example works no matter where it is run from.
-    let root = std::env!("CARGO_MANIFEST_DIR");
-    let assets = Assets::load(root);
+    let assets = Assets::load();
     let plant = plant::Plant::new([
         &assets.plant1,
         &assets.plant2,
