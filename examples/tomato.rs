@@ -47,28 +47,13 @@ struct Link {
     to: [f32; 2],
 }
 
-/// Converts a joint from the image's pixel space — `(0, 0)` at the upper-
-/// left, `y` down — to node-local coordinates: the sprite is centered on
-/// the node's origin and the scene's y axis points up.
-fn local_joint(jx: f32, jy: f32, size: [f32; 2]) -> [f32; 2] {
-    [jx - size[0] / 2.0, size[1] / 2.0 - jy]
-}
-
-/// The loaded sprite's texture size in pixels.
-fn sprite_size(shape: &frost::Shape) -> [f32; 2] {
-    match shape {
-        frost::Shape::Sprite { width, height, .. } => [*width as f32, *height as f32],
-        _ => unreachable!("the slice is a sprite"),
-    }
-}
-
 /// A slice's joints in node-local space, from the hand-picked pixel
 /// coordinates and the texture's real size.
 fn link(shape: &frost::Shape, joints: [(f32, f32); 2]) -> Link {
-    let size = sprite_size(shape);
+    let size = shape.sprite_size().expect("the slice is a sprite");
     Link {
-        from: local_joint(joints[0].0, joints[0].1, size),
-        to: local_joint(joints[1].0, joints[1].1, size),
+        from: frost::Transform::anchor([joints[0].0, joints[0].1], size),
+        to: frost::Transform::anchor([joints[1].0, joints[1].1], size),
     }
 }
 

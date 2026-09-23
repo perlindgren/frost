@@ -39,6 +39,18 @@ impl Color {
             a: self.a * other.a,
         }
     }
+
+    /// The linear interpolation from `self` toward `other` at fraction
+    /// `t`, channel by channel: `self` at `t = 0.0` and `other` at
+    /// `t = 1.0`.
+    pub fn lerp(&self, other: Color, t: f32) -> Color {
+        Color {
+            r: self.r + (other.r - self.r) * t,
+            g: self.g + (other.g - self.g) * t,
+            b: self.b + (other.b - self.b) * t,
+            a: self.a + (other.a - self.a) * t,
+        }
+    }
 }
 
 /// White at full opacity: the identity for channel-wise multiplication, the
@@ -99,6 +111,19 @@ impl Transform {
     /// A uniform scale by `s`.
     pub const fn scale_uniform(s: f32) -> Self {
         Self::scale(s, s)
+    }
+
+    /// The node-local coordinates of an image anchor: the offset from a
+    /// sprite's center to the anchor pixel, for a sprite that is centered
+    /// on its node's origin.
+    ///
+    /// Image pixels are numbered from `(0, 0)` at the upper-left, `y`
+    /// down; node-local coordinates have the image's center on the node's
+    /// origin, `y` up. So the anchor at image pixels `(ax, ay)` of an
+    /// image of `size` pixels is the offset `(ax - size[0] / 2,
+    /// size[1] / 2 - ay)`, the y flip included.
+    pub const fn anchor(anchor: [f32; 2], size: [f32; 2]) -> [f32; 2] {
+        [anchor[0] - size[0] / 2.0, size[1] / 2.0 - anchor[1]]
     }
 
     /// The transform that applies `self` first, then `other`:
@@ -337,6 +362,16 @@ impl Shape {
             },
             alpha: 1.0,
         })
+    }
+
+    /// The sprite's texture size in pixels, `[width, height]`, if the
+    /// shape is a sprite: `None` for circles, rectangles, backgrounds and
+    /// texts.
+    pub fn sprite_size(&self) -> Option<[f32; 2]> {
+        match self {
+            Self::Sprite { width, height, .. } => Some([*width as f32, *height as f32]),
+            _ => None,
+        }
     }
 }
 

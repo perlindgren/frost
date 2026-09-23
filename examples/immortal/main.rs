@@ -506,14 +506,6 @@ fn slot_scale(size: [f32; 2]) -> f32 {
     (w / size[0]).min(h / size[1])
 }
 
-/// The texture size of a sprite shape, in pixels.
-fn sprite_size(shape: &frost::Shape) -> [f32; 2] {
-    match shape {
-        frost::Shape::Sprite { width, height, .. } => [*width as f32, *height as f32],
-        _ => [0.0, 0.0],
-    }
-}
-
 /// `BasketBack.png` / `BasketFront.png`'s texture size in pixels: the two
 /// aligned halves of the harvest basket.
 const BASKET_IMAGE: [f32; 2] = [271.0, 251.0];
@@ -1164,8 +1156,8 @@ impl frost::Process for Demo {
             let basket = &ctx.scene().root.children[CHILD_BASKET];
             let s = basket.scale[0];
             let [bx, by] = basket.transform.apply([0.0, 0.0]);
-            let [ox, oy] = tomato::tomato_leaf_offset(sprite_size(&self.tomato));
-            let [hx, hy] = tomato_pick_half(sprite_size(&self.tomato));
+            let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
+            let [hx, hy] = tomato_pick_half(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
             let mut body = [
                 self.mouse[0] + TOMATO_PICK_SCALE * ox,
                 self.mouse[1] + TOMATO_PICK_SCALE * oy,
@@ -1199,8 +1191,8 @@ impl frost::Process for Demo {
             let basket = &ctx.scene().root.children[CHILD_BASKET];
             let s = basket.scale[0];
             let [bx, by] = basket.transform.apply([0.0, 0.0]);
-            let [ox, oy] = tomato::tomato_leaf_offset(sprite_size(&self.tomato));
-            let [hx, hy] = tomato_pick_half(sprite_size(&self.tomato));
+            let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
+            let [hx, hy] = tomato_pick_half(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
             for fruit in
                 &mut ctx.scene().root.children[CHILD_BASKET].children[BASKET_FRUIT].children
             {
@@ -1281,7 +1273,7 @@ impl frost::Process for Demo {
                 .collect::<Vec<_>>()
         };
         if !drops.is_empty() {
-            let [ox, oy] = tomato::tomato_leaf_offset(sprite_size(&self.tomato));
+            let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
             let root = &mut ctx.scene().root;
             for (pi, si, spawn, dest_y) in drops {
                 self.plants[pi].regrow(si);
@@ -1655,7 +1647,7 @@ impl Demo {
         // around the cursor.
         let hit = {
             let plant_nodes = &ctx.scene().root.children[CHILD_PLANTS].children;
-            let [hx, hy] = tomato_pick_half(sprite_size(&self.tomato));
+            let [hx, hy] = tomato_pick_half(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
             self.plants.iter().enumerate().find_map(|(pi, p)| {
                 (0..plant::FLOWER_N)
                     .find(|&si| {
@@ -1711,7 +1703,7 @@ impl Demo {
         let (w, h) = ctx.size();
         let s = basket_scale(h);
         let center = basket_center(w, h);
-        let [ox, oy] = tomato::tomato_leaf_offset(sprite_size(&self.tomato));
+        let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
         let body = [
             self.mouse[0] + TOMATO_PICK_SCALE * ox,
             self.mouse[1] + TOMATO_PICK_SCALE * oy,

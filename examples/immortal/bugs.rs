@@ -245,7 +245,7 @@ impl Bugs {
     pub fn new(frames: [&frost::Shape; 3]) -> Self {
         let (mut w, mut h) = (0.0f32, 0.0f32);
         for frame in frames {
-            let [fw, fh] = sprite_size(frame);
+            let [fw, fh] = frame.sprite_size().expect("the frames are sprites");
             w = w.max(fw);
             h = h.max(fh);
         }
@@ -629,14 +629,6 @@ fn same_sprite(shape: &Option<frost::Shape>, frame: &frost::Shape) -> bool {
             frost::Shape::Sprite { data: b, .. },
         ) => std::sync::Arc::ptr_eq(a, b),
         _ => false,
-    }
-}
-
-/// The loaded frame's texture size in pixels.
-fn sprite_size(shape: &frost::Shape) -> [f32; 2] {
-    match shape {
-        frost::Shape::Sprite { width, height, .. } => [*width as f32, *height as f32],
-        _ => unreachable!("the frames are sprites"),
     }
 }
 

@@ -82,24 +82,6 @@ pub const TOMATO_BG: usize = 0;
 /// body, un-tinted.
 pub const TOMATO_FG: usize = 1;
 
-/// The linear mix of `a` toward `b`, by `t`, in 0..1 — per channel.
-fn mix(a: frost::Color, b: frost::Color, t: f32) -> frost::Color {
-    frost::Color {
-        r: a.r + (b.r - a.r) * t,
-        g: a.g + (b.g - a.g) * t,
-        b: a.b + (b.b - a.b) * t,
-        a: a.a + (b.a - a.a) * t,
-    }
-}
-
-/// The loaded sprite's texture size in pixels: a tomato is a sprite.
-fn sprite_size(shape: &frost::Shape) -> [f32; 2] {
-    match shape {
-        frost::Shape::Sprite { width, height, .. } => [*width as f32, *height as f32],
-        _ => unreachable!("the tomato is a sprite"),
-    }
-}
-
 /// The tomato's growth, 0..1, at plant clock `t`, for a bloom that
 /// started at `bloom_start`: zero until the flower is fully grown — the
 /// start plus [plant::FLOWER_GROW_TIME] — then rising to 1 over
@@ -112,7 +94,7 @@ fn tomato_growth(t: f32, bloom_start: f32) -> f32 {
 /// [TOMATO_GREEN] at zero, running through the mix to the ripe red of
 /// [TOMATO_RED] at one.
 fn tomato_color(g: f32) -> frost::Color {
-    mix(TOMATO_GREEN, TOMATO_RED, g)
+    TOMATO_GREEN.lerp(TOMATO_RED, g)
 }
 
 /// The translate that puts the tomato's [TOMATO_TOP] pixel — the body's
@@ -261,7 +243,7 @@ impl Tomato {
         fg: &frost::Shape,
     ) {
         let g = self.growth(t, bloom_start);
-        let [ox, oy] = tomato_leaf_offset(sprite_size(body));
+        let [ox, oy] = tomato_leaf_offset(body.sprite_size().expect("the tomato is a sprite"));
         pivot.transform = frost::Transform::identity();
         pivot.scale = [
             g * TOMATO_MAX_SCALE,
@@ -273,7 +255,7 @@ impl Tomato {
             if bg.shape.is_none() {
                 bg.shape = Some(body.clone());
             }
-            bg.modulate = mix(tomato_color(g), TOMATO_STALE, self.stale(age));
+            bg.modulate = tomato_color(g).lerp(TOMATO_STALE, self.stale(age));
         } else {
             bg.shape = None;
         }

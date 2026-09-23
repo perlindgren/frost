@@ -196,36 +196,21 @@ struct Link {
     to: [f32; 2],
 }
 
-/// Converts a joint from the image's pixel space — `(0, 0)` at the upper-
-/// left, `y` down — to node-local coordinates: the sprite is centered on
-/// the node's origin and the scene's y axis points up.
-fn local_joint(jx: f32, jy: f32, size: [f32; 2]) -> [f32; 2] {
-    [jx - size[0] / 2.0, size[1] / 2.0 - jy]
-}
-
-/// The loaded sprite's texture size in pixels.
-fn sprite_size(shape: &frost::Shape) -> [f32; 2] {
-    match shape {
-        frost::Shape::Sprite { width, height, .. } => [*width as f32, *height as f32],
-        _ => unreachable!("the slice is a sprite"),
-    }
-}
-
 /// A slice's joints in node-local space, from the hand-picked pixel
 /// coordinates and the texture's real size.
 fn link(shape: &frost::Shape, joints: [(f32, f32); 2]) -> Link {
-    let size = sprite_size(shape);
+    let size = shape.sprite_size().expect("the slice is a sprite");
     Link {
-        from: local_joint(joints[0].0, joints[0].1, size),
-        to: local_joint(joints[1].0, joints[1].1, size),
+        from: frost::Transform::anchor([joints[0].0, joints[0].1], size),
+        to: frost::Transform::anchor([joints[1].0, joints[1].1], size),
     }
 }
 
 /// A slice's flower spawn points in node-local space, from the hand-
 /// picked pixel coordinates and the texture's real size.
 fn flower_points(shape: &frost::Shape, pts: &[(f32, f32)]) -> Vec<[f32; 2]> {
-    let size = sprite_size(shape);
-    pts.iter().map(|&(jx, jy)| local_joint(jx, jy, size)).collect()
+    let size = shape.sprite_size().expect("the slice is a sprite");
+    pts.iter().map(|&(jx, jy)| frost::Transform::anchor([jx, jy], size)).collect()
 }
 
 /// The flower's growth, 0..1, at plant-clock `t` for a slice that finishes
@@ -235,19 +220,9 @@ fn flower_growth(t: f32, grow_time: f32) -> f32 {
     ((t - grow_time) / FLOWER_GROW_TIME).clamp(0.0, 1.0)
 }
 
-/// Lerps two colors channel by channel: `a` at `t = 0`, `b` at `t = 1`.
-fn mix(a: frost::Color, b: frost::Color, t: f32) -> frost::Color {
-    frost::Color {
-        r: a.r + (b.r - a.r) * t,
-        g: a.g + (b.g - a.g) * t,
-        b: a.b + (b.b - a.b) * t,
-        a: a.a + (b.a - a.a) * t,
-    }
-}
-
 /// The flower sprite's color at growth `g`: light green to yellow.
 fn flower_color(g: f32) -> frost::Color {
-    mix(FLOWER_BUD, FLOWER_BLOOM, g)
+    FLOWER_BUD.lerp(FLOWER_BLOOM, g)
 }
 
 /// The staggered first-bloom starts in flattened [FLOWER_SPAWNS] order,
@@ -527,7 +502,7 @@ impl Plant {
         tomato: &frost::Shape,
     ) -> [f32; 2] {
         let s = self.tomatoes[slot].growth(self.t, self.bloom_start(slot)) * TOMATO_MAX_SCALE;
-        let [ox, oy] = tomato_leaf_offset(sprite_size(tomato));
+        let [ox, oy] = tomato_leaf_offset(tomato.sprite_size().expect("the tomato is a sprite"));
         slot_node.transform.apply([ox * s, oy * s])
     }
 
@@ -1278,7 +1253,7 @@ mod tests {
             let p = aged_at(ripe_at + dt);
             p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
             let bg = &node.children[slot_index(0)].children[SLOT_TOMATO].children[TOMATO_BG];
-            let want = mix(TOMATO_RED, TOMATO_STALE, st);
+            let want = TOMATO_RED.lerp(TOMATO_STALE, st);
             assert!(
                 (bg.modulate.r - want.r).abs() < 1e-6
                     && (bg.modulate.g - want.g).abs() < 1e-6
@@ -1328,7 +1303,7 @@ mod tests {
             p.age = ripe_at + dt;
             p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
             let bg = &node.children[slot_index(0)].children[SLOT_TOMATO].children[TOMATO_BG];
-            let want = mix(TOMATO_RED, TOMATO_STALE, st);
+            let want = TOMATO_RED.lerp(TOMATO_STALE, st);
             assert!(
                 (bg.modulate.r - want.r).abs() < 1e-6
                     && (bg.modulate.g - want.g).abs() < 1e-6

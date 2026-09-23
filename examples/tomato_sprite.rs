@@ -20,21 +20,7 @@
 /// sits on the parent node's origin.
 const ANCHOR: (f32, f32) = (308.0, 411.0);
 
-/// A sprite's texture size in pixels.
-fn sprite_size(shape: &frost::Shape) -> [f32; 2] {
-    match shape {
-        frost::Shape::Sprite { width, height, .. } => [*width as f32, *height as f32],
-        _ => unreachable!("the child is a sprite"),
-    }
-}
 
-/// The anchor's node-local coordinates: a sprite is centered on its node's
-/// origin and the scene's y axis points up, so an anchor at image pixels
-/// `(ax, ay)` of a `w`x`h` image is the offset `(ax - w/2, h/2 - ay)` —
-/// the y flip included.
-fn local_anchor(size: [f32; 2]) -> [f32; 2] {
-    [ANCHOR.0 - size[0] / 2.0, size[1] / 2.0 - ANCHOR.1]
-}
 
 fn main() {
     env_logger::init();
@@ -53,8 +39,15 @@ fn main() {
     // `tomato.rs` uses for its joints — and the parent translates by the
     // offset itself, so the image's center lands on the window's center
     // and the whole 638×469 image fits the window.
-    let base = local_anchor(sprite_size(&tomato));
-    let foreground = local_anchor(sprite_size(&tomato_fg));
+    let anchor = [ANCHOR.0, ANCHOR.1];
+    let base = frost::Transform::anchor(
+        anchor,
+        tomato.sprite_size().expect("the child is a sprite"),
+    );
+    let foreground = frost::Transform::anchor(
+        anchor,
+        tomato_fg.sprite_size().expect("the child is a sprite"),
+    );
 
     let scene = frost::Scene::new(frost::SceneNode {
         // The background hangs on the base group (the scene's root); its
