@@ -82,7 +82,8 @@
 //! fully grown fruit stales on its plant's aging clock, which the process
 //! steps every frame at the growth's slowed pace — water or not: 8 seconds
 //! after full growth, its body modulates from red to a dark red over 8
-//! seconds, even on a dry plant whose growth clock is frozen — and a
+//! seconds, even on a dry plant whose growth clock withers backward —
+//! and a
 //! picked fruit carries the color it had at pick, frozen while it rides
 //! the cursor and kept when it lands in the basket.
 //!
@@ -90,11 +91,20 @@
 //! growth runs at `1 / GROW_SLOWDOWN` of real time's pace — the slices,
 //! the flowers, and the tomatoes alike: while a plant is growing —
 //! started, not yet complete, its slices or its blooms still growing —
-//! its growth clock is stepped by `dt / GROW_SLOWDOWN`, and its reserve
-//! drains over `DRAIN_TIME` of that slowed clock —
+//! its growth clock is stepped forward by `dt / GROW_SLOWDOWN`, and its
+//! reserve drains over `DRAIN_TIME` of that slowed clock —
 //! `GROW_SLOWDOWN * DRAIN_TIME` real seconds — and growth proceeds only
-//! while the reserve holds; a plant whose reserve runs dry stops growing,
-//! its growth clock freezing, until the player pours water on its root.
+//! while the reserve holds; a plant whose reserve runs dry withers
+//! instead: its growth clock runs backward at half the growth's pace,
+//! the slices, the flowers, and the green fruit shrinking back together,
+//! and the plant's node modulates from white to yellow over
+//! `DRY_YELLOW_TIME` real seconds, until the point of full ripening —
+//! the moment every fruit it still bears is fully ripe — where the clock
+//! holds, while its ripe fruits keep waiting and staling on the aging
+//! clock; the withering stops the moment the reserve holds water again,
+//! the clock runs forward, and the node rewhitens over `DRY_WHITE_TIME`
+//! — a plant dry for 3 seconds is green again 1.5 seconds after it is
+//! watered.
 //! `DRAIN_TIME` is chosen so the first plant, fully watered at launch,
 //! runs dry just before its base slice is fully grown — the base grows
 //! over 3 growth-clock seconds, the shortest of the five — so the bench
@@ -104,7 +114,10 @@
 //! second of pouring, if every drop lands, is one full reserve, whatever
 //! pace the growth runs at. A blue fill on a dark background, `BAR_DX`
 //! wide, floats `BAR_LIFT` pixels above the root joint of every plant
-//! that has started growing and is not complete yet, showing its reserve.
+//! that has started growing and is not complete yet, showing its
+//! reserve; a dry reserve blinks the bar's background red — on and off
+//! in square halves of `DRY_BLINK` real seconds — so a withering
+//! plant's meter draws the eye.
 //!
 //! A swarm of thirty vipers buzzes around the flower bench — the row of
 //! plants — concurrently with everything else, through the [`vipers`]
@@ -393,6 +406,58 @@ const BAR_BG: frost::Color = frost::Color {
     a: 0.9,
 };
 
+/// The red the water bar's background blinks with while its plant's
+/// reserve is dry (0.0): the bar's border flashes on and off in square
+/// halves of `DRY_BLINK` real seconds, so a withering plant's meter
+/// draws the eye and tells the player the plant needs water.
+const DRY_RED: frost::Color = frost::Color {
+    r: 0.9,
+    g: 0.22,
+    b: 0.2,
+    a: 0.9,
+};
+
+/// One full cycle of the dry water bar's border blink, in real seconds:
+/// the border is lit for the first half of each period, dark for the
+/// second — two flashes per second at 0.5.
+const DRY_BLINK: f32 = 0.5;
+
+/// The real seconds a dry plant's withering takes to yellow: its node's
+/// modulate modulates from white to [DRY_YELLOW] over that span.
+const DRY_YELLOW_TIME: f32 = 6.0;
+
+/// The real seconds a watered plant takes to modulate back to white:
+/// twice as fast as the yellowing, so a plant dry for half a yellowing —
+/// 3 seconds — is green again 1.5 seconds after it is watered.
+const DRY_WHITE_TIME: f32 = 3.0;
+
+/// The white a watered plant's node modulates with — its original,
+/// healthy color; the layout lerps the plant's modulate from it to
+/// [DRY_YELLOW] over the plant's dryness.
+const PLANT_WHITE: frost::Color = frost::Color {
+    r: 1.0,
+    g: 1.0,
+    b: 1.0,
+    a: 1.0,
+};
+
+/// The yellow a dry plant's node modulates toward — the withering tint
+/// that yellows the slices, the flowers, and the fruit alike, the whole
+/// tree yellowing as its growth runs backward.
+const DRY_YELLOW: frost::Color = frost::Color {
+    r: 1.0,
+    g: 0.78,
+    b: 0.25,
+    a: 1.0,
+};
+
+/// Whether the dry plant's water bar border is lit at `time`: the square
+/// blink — on for the first half of every `DRY_BLINK` period, off for
+/// the second.
+fn dry_blink_on(time: f32) -> bool {
+    (time % DRY_BLINK) < DRY_BLINK * 0.5
+}
+
 /// Whether a drop at `pos` is inside the `ROOT_RADIUS`-pixel hitbox
 /// around the plant's root joint at `anchor`.
 fn in_root_hitbox(pos: [f32; 2], anchor: [f32; 2]) -> bool {
@@ -680,9 +745,11 @@ fn fall_destination(spawn_y: f32, segment_height: f32) -> f32 {
 }
 
 /// A tomato plant and its water reserve, kept together: the growth clock
-/// is paced by the reserve — the growth runs at its slowed pace only
-/// while the reserve holds — and the reserve refills from the drops that
-/// fall into the plant's root hitbox.
+/// is paced by the reserve — the growth runs at its slowed pace while the
+/// reserve holds, and withers backward at half that pace toward the point
+/// of full ripening while it is dry — the reserve refills from the drops
+/// that fall into the plant's root hitbox, and the dryness yellows the
+/// plant's node while the reserve is dry.
 struct WateredPlant {
     /// The plant's growth state: the slices' growth, the blooms, and the
     /// aging clock.
@@ -690,10 +757,16 @@ struct WateredPlant {
     /// The water reserve, 1.0 (well watered) to 0.0 (dry): drained by
     /// `dt / (DRAIN_TIME * GROW_SLOWDOWN)` per frame while the plant
     /// grows, restored by `DROP_WATER` per drop that falls into its root
-    /// hitbox; at 0.0 the growth holds, awaiting water — the ripe
-    /// tomatoes' wait and stale excepted, which run on the aging clock,
-    /// stepped with or without water.
+    /// hitbox; at 0.0 the growth withers — the clock runs backward at
+    /// half the growth's pace toward the point of full ripening, where it
+    /// holds — awaiting water; the ripe tomatoes' wait and stale run on
+    /// the aging clock, stepped with or without water.
     water: f32,
+    /// The dryness, 0.0 (white — watered) to 1.0 (full yellow — withered):
+    /// a dry plant climbs it over `DRY_YELLOW_TIME` real seconds, a
+    /// watered one falls it over `DRY_WHITE_TIME`, and the layout lerps
+    /// the plant's node modulate from white to `DRY_YELLOW` over it.
+    dryness: f32,
 }
 
 struct Demo {
@@ -789,18 +862,25 @@ struct Demo {
     /// added each frame and one particle is spawned per whole unit, so the
     /// rate holds at any dt.
     acc: f32,
+    /// The demo's running clock, in real seconds, from launch: the
+    /// process adds `dt` to it every frame, and it paces the dry water
+    /// bar's red border blink.
+    time: f32,
     /// The tomato plants and their water reserves on the grass, in growth
     /// order: each has its own growth clock, and the process steps it
     /// only once the previous one is fully grown — the first from launch
-    /// on — and only while its water reserve holds, then lays it out on
-    /// the matching child of the plants node (root's [`CHILD_PLANTS`]
-    /// child), in parallel with the tool system; the reserve of a
-    /// started plant that is not yet complete drains by `dt / (DRAIN_TIME
-    /// * GROW_SLOWDOWN)` per frame — at the growth's slowed pace — and
-    /// restores by `DROP_WATER` per drop that falls into its root hitbox,
-    /// and a plant at 0.0 stops growing, awaiting water — its ripe
-    /// tomatoes' wait and stale excepted, which run on the plants' aging
-    /// clocks, stepped with or without water.
+    /// on — forward by `dt / GROW_SLOWDOWN` while its water reserve
+    /// holds, then lays it out on the matching child of the plants node
+    /// (root's [`CHILD_PLANTS`] child), in parallel with the tool
+    /// system; the reserve of a started plant that is not yet complete
+    /// drains by `dt / (DRAIN_TIME * GROW_SLOWDOWN)` per frame — at the
+    /// growth's slowed pace — and restores by `DROP_WATER` per drop that
+    /// falls into its root hitbox, and a plant at 0.0 withers instead:
+    /// its growth clock runs backward at half the growth's pace toward
+    /// the point of full ripening, where it holds, its ripe tomatoes'
+    /// wait and stale running on the plants' aging clocks, stepped with
+    /// or without water, while its dryness yellows its node and the dry
+    /// water bar's border blinks red.
     plants: [WateredPlant; PLANT_POS.len()],
     /// The swarm of vipers buzzing around the flower bench — the row of
     /// plants — in parallel with the tool system and the plants: one
@@ -833,17 +913,18 @@ struct Demo {
 
 impl frost::Process for Demo {
     /// Steps the whole frame, in the order the game's invariants require:
-    /// the chrome fits the window and the plants' anchors lift off the
-    /// grass stretch; the plants grow on their water; the vipers and the
-    /// bugs step, and their arrival sounds play; the input's edges are
-    /// handled; the tomatoes are kept out of the basket's walls; the
-    /// plants are laid out; the overgrown fruits drop and the fallen
-    /// fruit steps; the tool ticks, emits, and takes its live pose; the
-    /// particles advance; the drops water the roots — after the
-    /// particles have stepped — and the mist wounds the bugs; and the
-    /// live overlay is drawn.
+    /// the demo's clock ticks; the chrome fits the window and the
+    /// plants' anchors lift off the grass stretch; the plants grow on
+    /// their water; the vipers and the bugs step, and their arrival
+    /// sounds play; the input's edges are handled; the tomatoes are kept
+    /// out of the basket's walls; the plants are laid out; the overgrown
+    /// fruits drop and the fallen fruit steps; the tool ticks, emits, and
+    /// takes its live pose; the particles advance; the drops water the
+    /// roots — after the particles have stepped — and the mist wounds the
+    /// bugs; and the live overlay is drawn.
     fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
         let (w, h) = ctx.size();
+        self.time += dt;
         let anchors = self.layout_chrome(ctx, w, h);
 
         let (active_plants, grown_layers, started) = self.grow_plants(dt);
@@ -936,13 +1017,16 @@ impl Demo {
             spray: frost::ParticleSystem::new(),
             rng: frost::Rng::new(),
             acc: 0.0,
+            time: 0.0,
             // Six plants with six full water reserves, one per slot:
             // each growth clock starts at zero and the process steps it
             // when the previous is fully grown, and each plant enters
-            // well watered, the first one draining from launch on.
+            // well watered and white — its dryness out — the first one
+            // draining from launch on.
             plants: std::array::from_fn(|_| WateredPlant {
                 plant: plant.clone(),
                 water: 1.0,
+                dryness: 0.0,
             }),
             vipers: vipers::Vipers::new(VIPER_IMAGE),
         }
@@ -1014,20 +1098,29 @@ impl Demo {
 
     /// Grows the plants one at a time, in parallel with the tool system:
     /// the first starts at launch, each next one starts when the previous
-    /// is fully grown. Growth proceeds only while the plant is well
-    /// watered, and at `1 / GROW_SLOWDOWN` of real time's pace: a started
-    /// plant that is not yet complete — its slices or its blooms still
-    /// growing — drains its water reserve by `dt / (DRAIN_TIME *
-    /// GROW_SLOWDOWN)` every frame — the drain runs with the growth — and
-    /// steps its clock by `dt / GROW_SLOWDOWN`, so fully grown slices keep
+    /// is fully grown — a plant that has not started sits untouched: its
+    /// clocks and its full reserve hold until the bench reaches it.
+    /// Growth proceeds only while the plant is well watered, and at
+    /// `1 / GROW_SLOWDOWN` of real time's pace: a started plant that is
+    /// not yet complete — its slices or its blooms still growing — drains
+    /// its water reserve by `dt / (DRAIN_TIME * GROW_SLOWDOWN)` every
+    /// frame — the drain runs with the growth — and steps its clock
+    /// forward by `dt / GROW_SLOWDOWN`, so fully grown slices keep
     /// opening blooms while the water holds; a plant whose reserve runs
-    /// dry stops growing — its growth clock freezes — awaiting the player
-    /// to pour water on its root; the falling drops are matched against
-    /// the roots' hitboxes later in the frame, once the particles have
-    /// been stepped. The aging clock, stepped by the same slowed frame,
-    /// runs with or without water: a ripe fruit's wait and stale —
-    /// `tomato::STALE_DELAY` then `tomato::STALE_TIME` after full growth
-    /// — proceed on a dry plant.
+    /// dry withers instead — its growth clock runs backward at half the
+    /// growth's pace, `dt / (GROW_SLOWDOWN * 2)`, the slices, the flowers,
+    /// and the green fruit shrinking back together, until the point of
+    /// full ripening, the moment every fruit it still bears is fully
+    /// ripe, where the clock holds — while its ripe fruits keep waiting
+    /// and staling on the aging clock, and its node yellows over
+    /// `DRY_YELLOW_TIME` real seconds, until the player pours water on
+    /// its root: the withering stops, the clock runs forward again, and
+    /// the node rewhitens over `DRY_WHITE_TIME`; the falling drops are
+    /// matched against the roots' hitboxes later in the frame, once the
+    /// particles have been stepped. The aging clock, stepped by the same
+    /// slowed frame, runs with or without water: a ripe fruit's wait and
+    /// stale — `tomato::STALE_DELAY` then `tomato::STALE_TIME` after full
+    /// growth — proceed on a dry plant.
     ///
     /// Returns the counts the swarms step on — `active_plants` for the
     /// bugs and `grown_layers` for the vipers — and the `started` table
@@ -1043,11 +1136,23 @@ impl Demo {
                 if !self.plants[i].plant.complete() {
                     self.plants[i].water =
                         (self.plants[i].water - dt / (DRAIN_TIME * GROW_SLOWDOWN)).max(0.0);
-                    // The growth clock runs slow, and holds while the
-                    // reserve is dry.
-                    if self.plants[i].water > 0.0 {
-                        self.plants[i].plant.step(dt / GROW_SLOWDOWN);
-                    }
+                }
+                // The growth clock runs slow: forward while the reserve
+                // is wet, and backward — the withering, at half the
+                // growth's pace — while it is dry, the plant shrinking
+                // toward the point of full ripening, where the clock
+                // holds. A dry plant yellows over DRY_YELLOW_TIME real
+                // seconds, and a watered one rewhitens over
+                // DRY_WHITE_TIME; the layout lerps the node's modulate
+                // from white to DRY_YELLOW over the dryness.
+                if self.plants[i].water > 0.0 {
+                    self.plants[i].plant.step(dt / GROW_SLOWDOWN);
+                    self.plants[i].dryness =
+                        (self.plants[i].dryness - dt / DRY_WHITE_TIME).max(0.0);
+                } else {
+                    self.plants[i].plant.wither(dt / (GROW_SLOWDOWN * 2.0));
+                    self.plants[i].dryness =
+                        (self.plants[i].dryness + dt / DRY_YELLOW_TIME).min(1.0);
                 }
                 // The aging clock runs every frame, water or not: ripe
                 // fruits wait and stale on it.
@@ -1296,7 +1401,9 @@ impl Demo {
 
     /// Lays the plants out at their anchors: a tomato picked or snapped
     /// back this frame is reposed by its plant, and a picked slot's
-    /// pivot, out of the tree, is simply skipped.
+    /// pivot, out of the tree, is simply skipped. The node's modulate
+    /// carries the plant's dryness — white when watered, yellowing as
+    /// it withers — so the whole tree tints with it.
     fn layout_plants(
         &mut self,
         ctx: &mut frost::Context,
@@ -1304,13 +1411,18 @@ impl Demo {
     ) {
         let plants_node = &mut ctx.scene().root.children[CHILD_PLANTS];
         for (i, anchor) in anchors.iter().enumerate() {
+            let plant_node = &mut plants_node.children[i];
             self.plants[i].plant.layout(
-                &mut plants_node.children[i],
+                plant_node,
                 *anchor,
                 &self.flower,
                 &self.tomato,
                 &self.tomato_fg,
             );
+            // The dryness tint: the modulate lerps from white to yellow
+            // over the withering, and back over the watering, so the
+            // slices, the flowers, and the fruit yellow with the plant.
+            plant_node.modulate = PLANT_WHITE.lerp(DRY_YELLOW, self.plants[i].dryness);
         }
     }
 
@@ -1620,16 +1732,24 @@ impl Demo {
         // player pours on, because at the fit scale a fully grown plant's
         // top reaches the window's top edge and leaves no room above the
         // plant itself. The fill grows from the bar's left edge as the
-        // reserve refills.
+        // reserve refills, and a dry reserve — the plant withering —
+        // blinks the background red: the border flashes on and off in
+        // square halves of `DRY_BLINK` real seconds, on the demo's clock.
         for (i, anchor) in anchors.iter().enumerate() {
             if started[i] && !self.plants[i].plant.complete() {
                 let level = self.plants[i].water;
+                // The dry plant's border blinks red on the demo's clock.
+                let bg = if level == 0.0 && dry_blink_on(self.time) {
+                    DRY_RED
+                } else {
+                    BAR_BG
+                };
                 ctx.rectangle(
                     anchor[0],
                     anchor[1] + BAR_LIFT,
                     BAR_DX + BAR_BORDER,
                     BAR_DY + BAR_BORDER,
-                    BAR_BG,
+                    bg,
                     Z,
                 );
                 ctx.rectangle(
@@ -2247,5 +2367,100 @@ mod tests {
         assert!((dest - (500.0 - PLANT_SCALE * 323.0)).abs() < 1e-6);
         assert!((dest - 354.65).abs() < 1e-2);
         assert!(dest < 500.0, "the destination is below the spawn");
+    }
+
+    /// The bench starts one plant at a time: the first grows from launch,
+    /// and the others sit untouched — their growth clocks and their full
+    /// reserves hold — until the previous plant is fully grown.
+    #[test]
+    fn only_the_first_plant_grows_until_the_bench_starts() {
+        let mut demo = Demo::new(Assets::load());
+        // A long frame: the unstarted plants' full reserves would carry
+        // them a whole base-slice of growth if their clocks ran.
+        let (active, _layers, started) = demo.grow_plants(9.0);
+        assert_eq!(active, 1);
+        assert_eq!(started, [true, false, false, false, false, false]);
+        for i in 1..PLANT_POS.len() {
+            assert_eq!(demo.plants[i].plant.grown_layers(), 0, "plant {i}");
+            assert_eq!(demo.plants[i].water, 1.0, "plant {i}");
+        }
+    }
+
+    /// A dry plant withers at half the growth's pace: a fully grown plant
+    /// whose reserve runs dry shrinks back through the last slice —
+    /// 0.5 growth-clock seconds — in 0.5 × 2 × `GROW_SLOWDOWN` real
+    /// seconds, twice as long as the same span would take growing.
+    #[test]
+    fn a_dry_plant_withers_at_half_the_growth_pace() {
+        let dt = 1.0 / 60.0;
+        let mut demo = Demo::new(Assets::load());
+        // Fully grown — all five slices — and dry: the withering runs.
+        demo.plants[0].plant.step(15.5);
+        demo.plants[0].water = 0.0;
+        assert_eq!(demo.plants[0].plant.grown_layers(), 5);
+        let mut t = 0.0;
+        for _ in 0..1000 {
+            if demo.plants[0].plant.grown_layers() < 5 {
+                break;
+            }
+            demo.grow_plants(dt);
+            t += dt;
+        }
+        assert!(
+            demo.plants[0].plant.grown_layers() < 5,
+            "the withering never ran back through the last slice"
+        );
+        let want = (15.5 - plant::FULL_GROW_TIME) * 2.0 * GROW_SLOWDOWN;
+        assert!(
+            (t - want).abs() < 2.0 * dt,
+            "the withering took {t} real seconds, want {want}"
+        );
+    }
+
+    /// A dry plant yellows over `DRY_YELLOW_TIME` real seconds, and a
+    /// watered one rewhitens over `DRY_WHITE_TIME`: a plant dry for half
+    /// a yellowing — 3 seconds — is green again 1.5 seconds after it is
+    /// watered.
+    #[test]
+    fn a_dry_plant_yellows_and_a_watered_one_regreens() {
+        let dt = 1.0 / 60.0;
+        let mut demo = Demo::new(Assets::load());
+        demo.plants[0].plant.step(5.0);
+        assert_eq!(demo.plants[0].dryness, 0.0);
+        // Three real seconds dry: half of the yellowing span.
+        demo.plants[0].water = 0.0;
+        for _ in 0..180 {
+            demo.grow_plants(dt);
+        }
+        assert!(
+            (demo.plants[0].dryness - 0.5).abs() < 1e-3,
+            "the dryness should be half-way yellow after 3 seconds, is {}",
+            demo.plants[0].dryness
+        );
+        // One and a half seconds watered: back to white.
+        demo.plants[0].water = 1.0;
+        for _ in 0..90 {
+            demo.grow_plants(dt);
+        }
+        assert!(
+            demo.plants[0].dryness < 1e-6,
+            "the watered plant should be white again, dryness is {}",
+            demo.plants[0].dryness
+        );
+    }
+
+    /// The dry water bar's border blinks red in square halves of
+    /// `DRY_BLINK` real seconds: lit at a period's start and first half,
+    /// dark in its second half, lit again at the next period.
+    #[test]
+    fn the_dry_bar_blinks_red_in_square_halves() {
+        assert!(dry_blink_on(0.0), "lit at the period's start");
+        assert!(dry_blink_on(DRY_BLINK * 0.25), "lit in the first half");
+        assert!(!dry_blink_on(DRY_BLINK * 0.75), "dark in the second half");
+        assert!(dry_blink_on(DRY_BLINK), "lit at the next period's start");
+        assert!(
+            !dry_blink_on(1.0 + DRY_BLINK * 0.75),
+            "dark in a later period's second half"
+        );
     }
 }
