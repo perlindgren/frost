@@ -53,8 +53,13 @@
 //! plant's aging clock — the one [Plant::age] advances every frame, with
 //! or without water: [tomato::STALE_DELAY] seconds after full growth, its
 //! body modulates from ripe red to the dark red of [tomato::TOMATO_STALE],
-//! over [tomato::STALE_TIME]. Each slot rides its slice's transform so the
-//! whole bloom sways with the plant.
+//! over [tomato::STALE_TIME]. A dry plant withers instead of holding:
+//! [Plant::wither] runs the growth clock backward — the slices, the
+//! flowers, and the green fruit all shrink back together — until the
+//! point of full ripening, the moment every fruit the plant still bears
+//! is fully ripe, where the clock holds while those fruits keep staling
+//! on the aging clock. Each slot rides its slice's transform so the whole
+//! bloom sways with the plant.
 //! The plant's fit scale is the plant node's own `scale`, set once by the
 //! caller: the node's scale applies before
 //! its transform, to its subtree, so the whole plant sizes around the root
@@ -308,6 +313,15 @@ impl Bloom {
         self.tomato.is_ripe(t, self.start())
     }
 
+    /// The plant-clock moment the bloom's tomato ripens on this schedule:
+    /// the [Bloom::start] plus the flower's [FLOWER_GROW_TIME] plus the
+    /// fruit's [tomato::TOMATO_GROW_TIME] — the ripe moment the fruit
+    /// waits and stales from, and, while the fruit is ripe, the moment
+    /// [Plant::wither] holds the growth clock at or above.
+    pub fn ripe_time(&self) -> f32 {
+        Tomato::ripe_time(self.start())
+    }
+
     /// Whether the bloom carries a fully overgrown tomato: its staleness
     /// — the mix toward [tomato::TOMATO_STALE] on the aging clock — has
     /// reached full, so the fruit has reached its final dark red and
@@ -396,8 +410,8 @@ pub struct Plant {
     /// ripe tomatoes age on: [tomato::STALE_DELAY] after their ripe
     /// moment, stamped in [tomato::Tomato::ripened_at], they modulate from
     /// ripe red to [tomato::TOMATO_STALE] over [tomato::STALE_TIME], so
-    /// the wait and the stale proceed even while the growth clock is
-    /// frozen on a dry reserve.
+    /// the wait and the stale proceed even while the growth clock withers
+    /// backward on a dry reserve.
     age: f32,
     /// The five slices in chain order, with their joints in node-local
     /// space.
@@ -449,16 +463,42 @@ impl Plant {
     /// the ripe moment of every bloom whose tomato has just reached full
     /// growth: from its stamp the fruit waits [tomato::STALE_DELAY] and
     /// stales over [tomato::STALE_TIME] on this clock, so a ripe fruit
-    /// ages on while the growth clock is frozen on a dry reserve. The
-    /// stamp is the aging clock's value at the fruit's ripe moment on the
-    /// growth clock, exact for any `dt`: within a frame the two clocks run
-    /// in lockstep, so the ripe moment — the schedule's ripe time — maps
-    /// to `age + (ripe_time - t)`.
+    /// ages on while the growth clock withers backward on a dry reserve.
+    /// The stamp is the aging clock's value at the fruit's ripe moment on
+    /// the growth clock, exact for any `dt`: within a frame the two clocks
+    /// run in lockstep, so the ripe moment — the schedule's ripe time —
+    /// maps to `age + (ripe_time - t)`.
     pub fn age(&mut self, dt: f32) {
         self.age += dt;
         for slot in 0..FLOWER_N {
             self.blooms[slot].stamp_ripe(self.t, self.age);
         }
+    }
+
+    /// The growth clock's withering floor: the latest ripe moment among
+    /// the blooms that are ripe at the current clock and not picked — the
+    /// point of full ripening, the moment every fruit the plant still
+    /// bears is fully ripe; `0.0` when the plant bears no ripe fruit, so
+    /// a dry plant without ripe fruit withers all the way back to a seed.
+    fn ripe_floor(&self) -> f32 {
+        self.blooms
+            .iter()
+            .filter(|b| !b.is_harvested() && b.is_ripe(self.t))
+            .map(Bloom::ripe_time)
+            .max_by(f32::total_cmp)
+            .unwrap_or(0.0)
+    }
+
+    /// Runs the growth clock backward by `dt` seconds — the dry-plant
+    /// withering: the slices, the flowers, and the green fruit all shrink
+    /// back together — but never below [Plant::ripe_floor], the point of
+    /// full ripening, so a ripe fruit's growth holds at full and the
+    /// clock rests at the floor while the fruit's wait and stale keep
+    /// running on the aging clock, [Plant::age]; a plant that bears no
+    /// ripe fruit withers all the way to zero. Watering runs the clock
+    /// forward again from wherever the withering held it.
+    pub fn wither(&mut self, dt: f32) {
+        self.t = (self.t - dt).max(self.ripe_floor());
     }
 
     /// Whether the plant is fully grown: the last slice has reached its
@@ -1416,9 +1456,10 @@ mod tests {
     }
 
     /// A ripe fruit waits [STALE_DELAY] and stales over [STALE_TIME] on
-    /// the aging clock alone — the growth clock frozen on a dry reserve:
-    /// the wait and the stale need no water, and [Plant::overgrown] turns
-    /// on at the end of the stale period.
+    /// the aging clock — the growth clock withering backward on a dry
+    /// reserve, but holding at the floor: the wait and the stale need no
+    /// water, and [Plant::overgrown] turns on at the end of the stale
+    /// period.
     #[test]
     fn a_ripe_tomato_stales_on_a_dry_plant() {
         let s = slice();
@@ -1434,9 +1475,12 @@ mod tests {
             (stale_done + 50.0, 1.0),
         ] {
             let mut p = aged_at(ripe_at);
-            // The reserve is dry: the growth clock never advances again —
-            // only the aging clock runs.
+            // The reserve is dry: the growth clock withers, but holds at
+            // the floor — the fruit's own ripe moment — so only the aging
+            // clock moves.
             p.age = ripe_at + dt;
+            p.wither(5.0);
+            assert_eq!(p.t, ripe_at, "the clock holds at the floor");
             p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
             let bg = &node.children[slot_index(0)].children[SLOT_TOMATO].children[TOMATO_BG];
             let want = TOMATO_RED.lerp(TOMATO_STALE, st);
@@ -1453,6 +1497,100 @@ mod tests {
                 "overgrown at dt = {dt}"
             );
         }
+    }
+
+    /// [Plant::wither] runs the growth clock backward by `dt` — the
+    /// dry-plant withering — while the plant bears no ripe fruit: with
+    /// nothing ripe to hold the floor, the clock withers all the way to
+    /// zero.
+    #[test]
+    fn wither_runs_the_clock_backward() {
+        let mut p = plant_at(20.0);
+        assert!(!p.blooms.iter().any(|b| b.is_ripe(p.t)), "no ripe fruit yet");
+        p.wither(5.0);
+        assert_eq!(p.t, 15.0, "the clock runs back by dt");
+        p.wither(100.0);
+        assert_eq!(p.t, 0.0, "with no ripe fruit the clock withers to zero");
+    }
+
+    /// [Plant::wither] holds the growth clock at the point of full
+    /// ripening — the latest ripe moment among the fruits the plant still
+    /// bears — so a ripe fruit's growth holds at full while its wait and
+    /// stale keep running on the aging clock: the clock never drops below
+    /// the floor, whatever the frame size.
+    #[test]
+    fn wither_holds_at_the_point_of_full_ripening() {
+        // Pinned schedule: at t = 29.5 the ripe fruits ripened at 23,
+        // 26, 28, and 29 — the floor is the latest, slot 4's ripe moment.
+        let mut p = aged_at(29.5);
+        p.wither(10.0);
+        assert_eq!(p.t, 29.0, "the clock stops at the floor, 29");
+        assert!(p.ripe(4), "the floor fruit holds at full growth");
+        // The aging clock keeps running while the clock holds: the ripe
+        // fruit stales on, and overgrows at the end of its stale period.
+        p.age(20.0);
+        p.wither(100.0);
+        assert_eq!(p.t, 29.0, "the clock still holds at the floor");
+        assert!(p.ripe(4), "the floor fruit is still fully ripe");
+        assert!(
+            p.overgrown(4),
+            "the ripe fruit kept staling at the floor: STALE_DELAY then STALE_TIME after 29, the aging clock at 49.5"
+        );
+    }
+
+    /// A picked fruit — carried out of the plant, not yet regrown — no
+    /// longer pins the floor: with no ripe fruit left on the plant,
+    /// [Plant::wither] withers the clock on past its ripe moment.
+    #[test]
+    fn wither_ignores_a_picked_fruit() {
+        // Pinned schedule: at t = 23 only slot 0 is ripe.
+        let mut p = aged_at(23.0);
+        p.harvest(0);
+        p.wither(10.0);
+        assert_eq!(
+            p.t, 13.0,
+            "the picked fruit's ripe moment no longer holds the floor"
+        );
+    }
+
+    /// A bloom regrown while its new fruit is not yet ripe — its ripe
+    /// moment still ahead of the clock — pins no floor either: the
+    /// withering runs on, the regrown flower and fruit shrinking back
+    /// with the rest.
+    #[test]
+    fn wither_ignores_a_not_yet_ripe_regrow() {
+        let mut p = plant_at(23.0);
+        p.regrow(0);
+        assert!(
+            !p.blooms[0].is_ripe(p.t),
+            "the new fruit's ripe moment is ahead of the clock"
+        );
+        p.wither(30.0);
+        assert_eq!(
+            p.t, 0.0,
+            "no ripe fruit left on the plant: the clock withers to zero"
+        );
+    }
+
+    /// A regrown fruit that has ripened pins the floor at its own ripe
+    /// moment — the restarted schedule's — not the first bloom's: the
+    /// withering holds the clock at the new fruit's ripe moment.
+    #[test]
+    fn wither_holds_at_the_regrown_ripe_moment() {
+        // Every other bloom on a schedule that ripens before the
+        // regrown fruit does: ripened at 20, well past by t = 25.
+        let mut p = plant_at(5.0);
+        for slot in 1..FLOWER_N {
+            p.blooms[slot].first_bloom_start = 0.0;
+        }
+        p.regrow(0);
+        p.step(20.0);
+        assert_eq!(p.t, 25.0);
+        p.wither(10.0);
+        assert_eq!(
+            p.t, 25.0,
+            "the floor is the regrown fruit's ripe moment, not the first bloom's"
+        );
     }
 
     /// [Plant::age] stamps the ripe moment exactly, whatever the frame

@@ -28,8 +28,8 @@ pub const TOMATO_GROW_TIME: f32 = 10.0;
 /// How long a fully grown tomato holds its ripe red before it starts to
 /// stale, in seconds of the plant's aging clock — the one
 /// [plant::Plant::age] advances every frame, water or not — so a ripe
-/// fruit waits and stales even while the plant's growth clock is frozen
-/// on a dry reserve.
+/// fruit waits and stales even while the plant's growth clock withers
+/// backward on a dry reserve.
 pub const STALE_DELAY: f32 = 8.0;
 
 /// How long the staleness takes, in seconds of the plant's aging clock:
