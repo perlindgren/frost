@@ -1,20 +1,28 @@
 //! Simple particle simulation, independent of the renderer.
 //!
 //! A [`ParticleSystem`] is a plain collection of [`Particle`]s: each holds
-//! a position, a velocity, a remaining lifetime, and a size. A
-//! [`ParticleSystem::update`] advances every particle by the frame's delta
-//! time under a constant gravity and removes the dead ones, so a
-//! [`crate::Process`] can spawn, update, and draw the particles once per
-//! frame. The drawing stays with the caller: put the system in the node's
-//! [`crate::Shape::Particles`] shape to draw it in the node's local space
-//! (transformed, scaled, and tinted by the node), or, for batches that live
-//! directly in the window's user space, with the deprecated
+//! a position, a velocity, a remaining lifetime, a size, a rotation, and a
+//! color. A [`ParticleSystem::update`] advances every particle by the
+//! frame's delta time under a constant gravity and removes the dead ones,
+//! so a [`crate::Process`] can spawn, update, and draw the particles once
+//! per frame. The drawing stays with the caller: put the system in the
+//! node's [`crate::Shape::Particles`] shape to draw it in the node's local
+//! space (transformed, scaled, and tinted by the node), or, for batches
+//! that live directly in the window's user space, with the deprecated
 //! [`crate::Canvas::particles`] draw.
 
-/// A single particle: a position, a velocity, a lifetime, and a size.
+use crate::objects::Color;
+
+/// A single particle: a position, a velocity, a lifetime, a size, a
+/// rotation, and a color.
 ///
 /// Build one as a struct literal and [`ParticleSystem::spawn`] it, and read
 /// the system's [`ParticleSystem::particles`] back to draw each one.
+///
+/// The particle's `size`, `angle`, and `color` are pure render properties:
+/// the simulation in [`ParticleSystem::update`] never touches them, so the
+/// caller can animate them (spin the `angle`, fade the `color`) between
+/// frames.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Particle {
     /// Position: the node's local space when the system is held in the
@@ -29,8 +37,20 @@ pub struct Particle {
     /// The lifetime the particle was spawned with, so a caller can compute
     /// its life fraction (`life / max_life`) for a fade.
     pub max_life: f32,
-    /// Draw size, in pixels (a radius when drawn as a circle).
+    /// Draw size, in pixels: the radius when the particle is drawn as a
+    /// circle, the half-width when it is drawn as a rectangle or a sprite
+    /// (see [`crate::ParticleShape`]).
     pub size: f32,
+    /// The particle's own rotation, in radians, on top of the node's: the
+    /// shape it is drawn with is rotated by this much in the node's local
+    /// space (positive counterclockwise, like the node's transform).
+    /// `0.0` leaves the batch's shape unrotated.
+    pub angle: f32,
+    /// The particle's own color, multiplied with the batch's base color
+    /// (and, for a node-attached batch, the node's composed modulate):
+    /// per-particle modulation. White (`1.0, 1.0, 1.0`) leaves the batch's
+    /// color unchanged.
+    pub color: Color,
 }
 
 /// A plain collection of [`Particle`]s, advanced by [`ParticleSystem::update`].
@@ -90,7 +110,8 @@ mod tests {
     use super::*;
 
     /// A particle at `pos` with `vel`, a lifetime of `life` seconds, and
-    /// the given `size`; its `max_life` is its `life`.
+    /// the given `size`; its `max_life` is its `life`, and it is unrotated
+    /// and white.
     fn particle(pos: [f32; 2], vel: [f32; 2], life: f32, size: f32) -> Particle {
         Particle {
             pos,
@@ -98,6 +119,13 @@ mod tests {
             life,
             max_life: life,
             size,
+            angle: 0.0,
+            color: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
         }
     }
 

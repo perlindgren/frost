@@ -178,6 +178,13 @@ impl frost::Process for Demo {
                     life,
                     max_life: life,
                     size: self.rng.in_range(EMBER_SIZE.0, EMBER_SIZE.1),
+                    angle: 0.0,
+                    color: frost::Color {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 1.0,
+                        a: 1.0,
+                    },
                 });
             }
             system.update(dt, EMBER_BUOYANCY);
@@ -207,6 +214,13 @@ impl frost::Process for Demo {
                 life,
                 max_life: life,
                 size: self.rng.in_range(SPARK_SIZE.0, SPARK_SIZE.1),
+                angle: 0.0,
+                color: frost::Color {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
             });
         }
         self.spray.update(dt, SPARK_GRAVITY);
@@ -276,6 +290,7 @@ fn main() {
                         shape: Some(frost::Shape::Particles {
                             system: frost::ParticleSystem::new(),
                             color: EMBER,
+                            shape: frost::ParticleShape::Circle,
                         }),
                         order: 1.0,
                         ..Default::default()

@@ -394,6 +394,10 @@ fn particles_scissor_covers_the_whole_surface() {
         data: vec![],
         count: 0,
         color: black(),
+        kind: 0.0,
+        aspect: 1.0,
+        sprite_data: None,
+        sprite_size: [0, 0],
         z: 0.0,
     };
     // The batch's particles can be anywhere, so the scissor is the whole
@@ -407,7 +411,7 @@ fn particles_uniform_bytes_follow_the_wgsl_layout() {
     // uniform-space layout of `ParticlesUniforms`, so a reorder of the
     // WGSL struct is caught here. `size` (a vec2) spans 0..8; the
     // 16-byte-aligned `color` vec4 starts at 16, so bytes 8..16 are
-    // padding; the struct spans 32 bytes.
+    // padding; `misc` (a vec2) starts at 32; the struct spans 48 bytes.
     let data = particles_uniform_data(
         [1280.0, 720.0],
         Color {
@@ -416,8 +420,10 @@ fn particles_uniform_bytes_follow_the_wgsl_layout() {
             b: 0.3,
             a: 0.4,
         },
+        2.0,
+        1.5,
     );
-    assert_eq!(data.len(), 32);
+    assert_eq!(data.len(), 48);
 
     let f32_at = |off: usize| {
         f32::from_le_bytes(data[off..off + 4].try_into().unwrap())
@@ -425,13 +431,18 @@ fn particles_uniform_bytes_follow_the_wgsl_layout() {
     assert_eq!(f32_at(0), 1280.0);
     assert_eq!(f32_at(4), 720.0);
     // The padding between `size` and the 16-byte-aligned `color` is
-    // zeroed by the `vec![0u8; 32]` init.
+    // zeroed by the `vec![0u8; 48]` init.
     assert_eq!(f32_at(8), 0.0);
     assert_eq!(f32_at(12), 0.0);
     assert_eq!(f32_at(16), 0.1);
     assert_eq!(f32_at(20), 0.2);
     assert_eq!(f32_at(24), 0.3);
     assert_eq!(f32_at(28), 0.4);
+    // `misc` carries the shape's kind and aspect at 32 and 36.
+    assert_eq!(f32_at(32), 2.0);
+    assert_eq!(f32_at(36), 1.5);
+    // 40..48 is the struct's alignment padding.
+    assert_eq!(f32_at(40), 0.0);
 }
 
 #[test]
@@ -439,6 +450,12 @@ fn particles_uniform_bytes_follow_the_wgsl_layout() {
 #[allow(deprecated)]
 fn canvas_particles_packs_instances_in_pixel_space() {
     let mut canvas = Canvas::new((100, 100));
+    let tint = Color {
+        r: 0.5,
+        g: 0.25,
+        b: 0.75,
+        a: 0.5,
+    };
     let particles = [
         // A live particle with half its lifetime left.
         Particle {
@@ -447,6 +464,8 @@ fn canvas_particles_packs_instances_in_pixel_space() {
             life: 2.0,
             max_life: 4.0,
             size: 3.0,
+            angle: 0.0,
+            color: tint,
         },
         // A dead one: its life fraction clamps to zero.
         Particle {
@@ -455,6 +474,8 @@ fn canvas_particles_packs_instances_in_pixel_space() {
             life: -1.0,
             max_life: 2.0,
             size: 1.0,
+            angle: 0.0,
+            color: tint,
         },
         // An over-living one: its life clamps to one, and its negative
         // size clamps to zero.
@@ -464,6 +485,8 @@ fn canvas_particles_packs_instances_in_pixel_space() {
             life: 6.0,
             max_life: 4.0,
             size: -2.0,
+            angle: 0.0,
+            color: tint,
         },
         // No max lifetime: the life fraction is zero, so it fades out
         // completely.
@@ -473,33 +496,31 @@ fn canvas_particles_packs_instances_in_pixel_space() {
             life: 1.0,
             max_life: 0.0,
             size: 2.0,
+            angle: 0.0,
+            color: tint,
         },
     ];
-    let tint = Color {
-        r: 0.5,
-        g: 0.25,
-        b: 0.75,
-        a: 0.5,
-    };
     canvas.particles(&particles, tint, 2.5);
     let [Draw::Particles {
         data,
         count,
         color,
         z,
+        ..
     }] = &canvas.draws[..]
     else {
         panic!("expected one particle draw");
     };
-    assert_eq!(data.len(), 4 * 16);
+    assert_eq!(data.len(), 4 * 32);
     assert_eq!(*count, 4);
     assert_eq!(*color, tint);
     assert_eq!(*z, 2.5);
 
-    // Each particle packs one vec4 of (px, py, size, life fraction) in
-    // pixel space (top-left origin, y down).
+    // Each particle packs two vec4s in pixel space (top-left origin, y
+    // down): (px, py, size, life fraction), then (angle, tint r, tint g,
+    // tint b).
     let f32_at = |particle: usize, field: usize| {
-        let off = particle * 16 + field * 4;
+        let off = particle * 32 + field * 4;
         f32::from_le_bytes(data[off..off + 4].try_into().unwrap())
     };
     // user (10, 20) is (60, 30) in pixel space on a 100x100 window.
@@ -520,6 +541,14 @@ fn canvas_particles_packs_instances_in_pixel_space() {
     assert_eq!(f32_at(3, 1), 55.0);
     assert_eq!(f32_at(3, 2), 2.0);
     assert_eq!(f32_at(3, 3), 0.0); // no max lifetime means no life fraction
+    // The angle is zero for every particle (circles), and the packed
+    // tint is the particle's own color.
+    for p in 0..4 {
+        assert_eq!(f32_at(p, 4), 0.0);
+        assert_eq!(f32_at(p, 5), tint.r);
+        assert_eq!(f32_at(p, 6), tint.g);
+        assert_eq!(f32_at(p, 7), tint.b);
+    }
 }
 
 #[test]

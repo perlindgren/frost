@@ -78,6 +78,11 @@ pub(crate) struct Frost<P: Process> {
     /// (`[0, 1, 2, 2, 1, 3]`), created once and shared by every batched
     /// draw in every frame.
     particle_index_buffer: Option<Buffer>,
+    /// A 1x1 white placeholder texture and its sampler, bound by every
+    /// non-sprite particle batch: the particle pipeline's bind group always
+    /// carries a texture (binding 2) and a sampler (binding 3), but the SDF
+    /// kinds — circles and rectangles — never sample it.
+    particle_placeholder: (TextureView, Sampler),
     /// The GPU resources for each distinct sprite image, keyed by the
     /// pointer of its pixel-data `Arc`. Sprites sharing one file share one
     /// texture, so the map stays bounded by the number of distinct images.
@@ -146,6 +151,62 @@ impl<P: Process> Frost<P> {
         }
         queue.write_buffer(&particle_index_buffer, 0, &index_bytes);
 
+        // The particle pipeline's bind group always carries a texture and a
+        // sampler: a sprite batch binds its image, and the SDF kinds —
+        // circles and rectangles, which never sample — bind this 1x1 white
+        // placeholder. It is surface-format independent, so it is built
+        // here, like the particle index buffer.
+        let placeholder_texture = device.create_texture(&TextureDescriptor {
+            label: Some("particle placeholder texture"),
+            size: Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            TexelCopyTextureInfo {
+                texture: &placeholder_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            &[255, 255, 255, 255],
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: None,
+            },
+            Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let particle_placeholder = (
+            placeholder_texture.create_view(&TextureViewDescriptor::default()),
+            device.create_sampler(&SamplerDescriptor {
+                label: Some("particle placeholder sampler"),
+                address_mode_u: AddressMode::ClampToEdge,
+                address_mode_v: AddressMode::ClampToEdge,
+                address_mode_w: AddressMode::ClampToEdge,
+                mag_filter: FilterMode::Linear,
+                min_filter: FilterMode::Linear,
+                mipmap_filter: MipmapFilterMode::Nearest,
+                lod_min_clamp: 0.0,
+                lod_max_clamp: f32::MAX,
+                compare: None,
+                anisotropy_clamp: 1,
+                border_color: None,
+            }),
+        );
+
         Self {
             instance,
             adapter,
@@ -165,6 +226,7 @@ impl<P: Process> Frost<P> {
             sprite_pipeline: None,
             particle_pipeline: None,
             particle_index_buffer: Some(particle_index_buffer),
+            particle_placeholder,
             sprite_resources: HashMap::new(),
             text_atlases: HashMap::new(),
             format: None,
@@ -728,15 +790,19 @@ impl<P: Process> Frost<P> {
     }
 
     /// Creates the per-draw buffers and bind group for one particle batch:
-    /// the batch's uniform (the surface size and the base color) at binding
-    /// 0, and the packed per-particle instance data as a storage buffer
-    /// read by the vertex stage at binding 1. Same per-draw buffer
-    /// rationale as [`Frost::primitive_uniform`].
+    /// the batch's uniform (the surface size, the base color, and the shape
+    /// kind and aspect) at binding 0, the packed per-particle instance data
+    /// as a storage buffer read by the vertex stage at binding 1, and the
+    /// sampled texture and sampler — the batch's image for a sprite batch,
+    /// the 1x1 placeholder for the SDF kinds — at bindings 2 and 3. Same
+    /// per-draw buffer rationale as [`Frost::primitive_uniform`].
     fn particle_uniform(
         &self,
         pipeline: &RenderPipeline,
         data: &[u8],
         uniform_data: &[u8],
+        view: &TextureView,
+        sampler: &Sampler,
     ) -> (Buffer, Buffer, BindGroup) {
         let device = &self.device;
         let uniform_buffer = device.create_buffer(&BufferDescriptor {
@@ -773,6 +839,14 @@ impl<P: Process> Frost<P> {
                         offset: 0,
                         size: None,
                     }),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::TextureView(view),
+                },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: BindingResource::Sampler(sampler),
                 },
             ],
         });
@@ -1019,23 +1093,56 @@ impl<P: Process> Frost<P> {
                         data,
                         count,
                         color,
+                        kind,
+                        aspect,
+                        sprite_data,
+                        sprite_size,
                         ..
                     } => {
                         if count == 0 {
                             continue;
                         }
+                        // The sampled texture: for a sprite batch, the
+                        // batch's image — shared with the sprite pipeline's
+                        // cache, so a particle image and a sprite from the
+                        // same file upload once — and for the SDF kinds,
+                        // which never sample, the 1x1 placeholder.
+                        let (view, sampler) =
+                            match sprite_data.filter(|_| kind >= 1.5) {
+                                Some(image) => {
+                                    let key = Arc::as_ptr(&image) as *const ();
+                                    match self.sprite_resources.get(&key) {
+                                        Some((view, sampler)) => {
+                                            (view.clone(), sampler.clone())
+                                        }
+                                        None => {
+                                            let (view, sampler) =
+                                                self.sprite_texture(&image, [
+                                                    sprite_size[0] as f32,
+                                                    sprite_size[1] as f32,
+                                                ]);
+                                            self.sprite_resources
+                                                .insert(key, (view.clone(), sampler.clone()));
+                                            (view, sampler)
+                                        }
+                                    }
+                                }
+                                None => self.particle_placeholder.clone(),
+                            };
                         // The whole batch is one instanced draw: the shared
                         // index buffer expands every instance into a tight
-                        // quad, and the fragment stage evaluates the circle
-                        // SDF per pixel. The batch's uniform and instance
+                        // quad, and the fragment stage evaluates the batch's
+                        // shape per pixel. The batch's uniform and instance
                         // data get fresh per-draw buffers, the same
                         // rationale as `primitive_uniform`.
                         let uniform_data = particles_uniform_data(
                             [render_area[0] as f32, render_area[1] as f32],
                             color,
+                            kind,
+                            aspect,
                         );
                         let (_uniform, _instances, bind_group) =
-                            self.particle_uniform(particle_pipeline, &data, &uniform_data);
+                            self.particle_uniform(particle_pipeline, &data, &uniform_data, &view, &sampler);
                         pass.set_pipeline(particle_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         pass.set_index_buffer(

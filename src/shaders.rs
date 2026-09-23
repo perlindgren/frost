@@ -113,8 +113,9 @@ mod tests {
 
     /// The member offsets WGSL assigns to `ParticlesUniforms` must match the
     /// CPU-side uniform writer in `particles_uniform_data` (vec2 @0, vec4 @16
-    /// — 16 bytes, 16-byte aligned — 32 bytes total). This is the GPU-side
-    /// mirror of the writer, so a layout drift on either side fails a test.
+    /// — 16 bytes, 16-byte aligned — vec2 @32, 48 bytes total). This is the
+    /// GPU-side mirror of the writer, so a layout drift on either side fails
+    /// a test.
     #[test]
     fn particles_uniform_offsets_match_the_cpu_layout() {
         let module = naga::front::wgsl::parse_str(PARTICLES_SHADER)
@@ -136,9 +137,9 @@ mod tests {
             ),
             _ => unreachable!("ParticlesUniforms must be a struct"),
         };
-        assert_eq!(offsets, [0, 16]);
+        assert_eq!(offsets, [0, 16, 32]);
         // The struct's total size must equal the CPU-side buffer length,
         // otherwise the buffer would be too short or carry dead bytes.
-        assert_eq!(total_size, 32);
+        assert_eq!(total_size, 48);
     }
 }

@@ -88,18 +88,31 @@ pub(crate) enum Draw {
     },
     /// A batch of particles drawn in one instanced draw call.
     ///
-    /// `data` holds one `vec4<f32>` per particle — `(px, py, size, life
-    /// fraction)` in pixel space (top-left origin, y down), packed as
-    /// 16 bytes per particle, so `count == data.len() / 16`. The whole
-    /// batch shares `color`; each particle's alpha is additionally scaled
-    /// by its life fraction, so dying particles fade out.
+    /// `data` holds two `vec4<f32>`s per particle — `(px, py, size, life
+    /// fraction)` and `(angle, tint.r, tint.g, tint.b)`, all in pixel space
+    /// (top-left origin, y down; the angle in pixel-space radians) — packed
+    /// as 32 bytes per particle, so `count == data.len() / 32`. The whole
+    /// batch shares `color`, `kind`, and `aspect`; each particle's alpha is
+    /// additionally scaled by its life fraction and its tint, so dying
+    /// particles fade out.
     Particles {
-        /// The packed instance data, four floats (16 bytes) per particle.
+        /// The packed instance data, eight floats (32 bytes) per particle.
         data: Vec<u8>,
         /// The number of particles in `data`.
         count: u32,
         /// The batch's base tint.
         color: Color,
+        /// The shape kind each particle is drawn as: `0.0` circle,
+        /// `1.0` rectangle, `2.0` sprite.
+        kind: f32,
+        /// The shape's height-to-width factor (`1.0` for a circle).
+        aspect: f32,
+        /// The sprite's RGBA8 pixel data, present only when `kind` is
+        /// `2.0`.
+        sprite_data: Option<Arc<[u8]>>,
+        /// The sprite's `(width, height)` in pixels, valid when `kind` is
+        /// `2.0`.
+        sprite_size: [u32; 2],
         z: f32,
     },
     /// A block of text: expanded into one [`Draw::Sprite`] per glyph by
@@ -416,38 +429,57 @@ pub(crate) fn sprite_uniform_data(
     data
 }
 
-/// Particle batch uniform data, 32 bytes, matching the WGSL uniform-space
+/// Particle batch uniform data, 48 bytes, matching the WGSL uniform-space
 /// layout of the `ParticlesUniforms` Wgsl struct: `size` (a vec2) @ 0,
-/// `color` (a vec4) @ 16 (16 bytes, 16-byte aligned, leaving an 8-byte gap);
-/// the struct size rounds up to 32.
-pub(crate) fn particles_uniform_data(size: [f32; 2], color: Color) -> Vec<u8> {
-    let mut data = vec![0u8; 32];
+/// `color` (a vec4) @ 16 (16 bytes, 16-byte aligned, leaving an 8-byte
+/// gap), and `misc` (a vec2: the shape's kind and aspect) @ 32; the struct
+/// size rounds up to 48.
+pub(crate) fn particles_uniform_data(
+    size: [f32; 2],
+    color: Color,
+    kind: f32,
+    aspect: f32,
+) -> Vec<u8> {
+    let mut data = vec![0u8; 48];
     write_f32_at(&mut data, 0, size[0]);
     write_f32_at(&mut data, 4, size[1]);
     write_f32_at(&mut data, 16, color.r);
     write_f32_at(&mut data, 20, color.g);
     write_f32_at(&mut data, 24, color.b);
     write_f32_at(&mut data, 28, color.a);
+    write_f32_at(&mut data, 32, kind);
+    write_f32_at(&mut data, 36, aspect);
     data
 }
 
-/// Packs one particle of a [`Draw::Particles`] batch: four little-endian
-/// floats, 16 bytes — the pixel position `(px, py)`, the pixel radius, and
-/// the remaining life fraction — in the layout `particles.wgsl` reads as
+/// Packs one particle of a [`Draw::Particles`] batch: eight little-endian
+/// floats, 32 bytes — first the pixel position `(px, py)`, the pixel size,
+/// and the remaining life fraction, then the pixel-space angle and the
+/// particle's tint `(r, g, b)` — in the layout `particles.wgsl` reads as
 /// `array<vec4<f32>>`.
 ///
 /// The life fraction is clamped to `0.0..=1.0` (and `0.0` for a
-/// `max_life <= 0`), and a negative radius is clamped to `0.0`.
-pub(crate) fn particle_instance(p: &Particle, px: f32, py: f32, size: f32) -> [u8; 16] {
+/// `max_life <= 0`), and a negative size is clamped to `0.0`.
+pub(crate) fn particle_instance(
+    p: &Particle,
+    px: f32,
+    py: f32,
+    size: f32,
+    angle: f32,
+) -> [u8; 32] {
     let life = if p.max_life > 0.0 {
         (p.life / p.max_life).clamp(0.0, 1.0)
     } else {
         0.0
     };
-    let mut out = [0u8; 16];
+    let mut out = [0u8; 32];
     out[0..4].copy_from_slice(&px.to_le_bytes());
     out[4..8].copy_from_slice(&py.to_le_bytes());
     out[8..12].copy_from_slice(&size.max(0.0).to_le_bytes());
     out[12..16].copy_from_slice(&life.to_le_bytes());
+    out[16..20].copy_from_slice(&angle.to_le_bytes());
+    out[20..24].copy_from_slice(&p.color.r.to_le_bytes());
+    out[24..28].copy_from_slice(&p.color.g.to_le_bytes());
+    out[28..32].copy_from_slice(&p.color.b.to_le_bytes());
     out
 }
