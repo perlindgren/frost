@@ -229,9 +229,9 @@ impl Canvas {
     /// and its alpha is scaled by its remaining life fraction
     /// (`life / max_life`), so the batch fades out as its particles die.
     ///
-    /// The whole batch shares one `color` and one `z` — per-particle color
-    /// needs one batch per color (or per-particle [`Canvas::circle`] calls,
-    /// which each take their own draw call).
+    /// The whole batch shares one base `color` and one `z`; each particle's
+    /// own `color` still multiplies with it, so per-particle tinting works
+    /// here too.
     ///
     /// The positions are in the canvas's user space — the window, not any
     /// node: no transform, scale, or modulate of any scene node applies to
@@ -246,15 +246,22 @@ impl Canvas {
         if particles.is_empty() {
             return;
         }
-        let mut data = Vec::with_capacity(particles.len() * 16);
+        let mut data = Vec::with_capacity(particles.len() * 32);
         for p in particles {
             let [px, py] = self.user_to_pixels(p.pos[0], p.pos[1]);
-            data.extend_from_slice(&particle_instance(p, px, py, p.size));
+            // Circles are rotationally symmetric, so the pixel-space angle
+            // the fragment rotates out never matters; 0.0 keeps the packing
+            // trivial.
+            data.extend_from_slice(&particle_instance(p, px, py, p.size, 0.0));
         }
         self.draws.push(Draw::Particles {
             data,
             count: particles.len() as u32,
             color,
+            kind: 0.0,
+            aspect: 1.0,
+            sprite_data: None,
+            sprite_size: [0, 0],
             z,
         });
     }
@@ -570,10 +577,15 @@ fn draw_node(
                 color: color.mul(modulate),
             }),
             // The particles ride the node's world transform and scale, are
-            // tinted by `color` times the composed modulate, and draw at the
-            // node's composed order — one instanced draw, just after the
-            // node's own shape (if any) and before its children.
-            Shape::Particles { system, color } => {
+            // tinted by `color` times the composed modulate (and each
+            // particle's own color), and draw at the node's composed order —
+            // one instanced draw, just after the node's own shape (if any)
+            // and before its children.
+            Shape::Particles {
+                system,
+                color,
+                shape,
+            } => {
                 if system.is_empty() {
                     // Like an empty `Canvas::particles` call: nothing to
                     // draw.
@@ -582,27 +594,57 @@ fn draw_node(
                     // The node's local space to the shader's pixel space,
                     // like the shapes' `world.compose(&user_to_pixel)`.
                     let to_pixel = world.compose(&user_to_pixel);
-                    // The world scale as a uniform radius factor: the
+                    // The world scale as a uniform size factor: the
                     // geometric mean of the two axis scales — exact under a
                     // uniform scale, area-preserving under a non-uniform
-                    // one, where a circle cannot be stretched into an
-                    // ellipse.
+                    // one, where the shape cannot be stretched
+                    // independently along the two axes and so keeps its
+                    // proportions.
                     let [sx, sy] = world.scales();
                     let radius_scale = (sx * sy).sqrt();
-                    let mut data = Vec::with_capacity(system.len() * 16);
+                    // The pixel-space angle of the node's local +x axis: the
+                    // direction `to_pixel` maps `(1, 0)` to. A particle's own
+                    // `angle` is measured in the local (y-up) frame, so it
+                    // adds to that base angle when the mapping preserves
+                    // orientation and subtracts from it when it flips the
+                    // y axis (the usual case: the pixel space is y-down) —
+                    // the flip turns a local counterclockwise turn into a
+                    // pixel-space clockwise one.
+                    let m = to_pixel.m;
+                    let base = m[1][0].atan2(m[0][0]);
+                    let flipped = (m[0][0] * m[1][1] - m[0][1] * m[1][0]) < 0.0;
+                    let (sprite_data, sprite_size) = match shape {
+                        ParticleShape::Sprite {
+                            data,
+                            width,
+                            height,
+                        } => (Some(data.clone()), [*width, *height]),
+                        _ => (None, [0, 0]),
+                    };
+                    let mut data = Vec::with_capacity(system.len() * 32);
                     for p in &system.particles {
                         let [px, py] = to_pixel.apply(p.pos);
+                        let angle = if flipped {
+                            base - p.angle
+                        } else {
+                            base + p.angle
+                        };
                         data.extend_from_slice(&particle_instance(
                             p,
                             px,
                             py,
                             p.size * radius_scale,
+                            angle,
                         ));
                     }
                     Some(Draw::Particles {
                         data,
                         count: system.len() as u32,
                         color: color.mul(modulate),
+                        kind: shape.kind(),
+                        aspect: shape.aspect(),
+                        sprite_data,
+                        sprite_size,
                         z: order,
                     })
                 }
@@ -1129,7 +1171,7 @@ mod tests {
     }
 
     /// A particle at `pos` with a full lifetime of `life` seconds (its
-    /// `max_life` is its `life`) and the given `size`.
+    /// `max_life` is its `life`) and the given `size`; unrotated and white.
     fn particle(pos: [f32; 2], life: f32, size: f32) -> Particle {
         Particle {
             pos,
@@ -1137,6 +1179,8 @@ mod tests {
             life,
             max_life: life,
             size,
+            angle: 0.0,
+            color: WHITE,
         }
     }
 
@@ -1157,6 +1201,7 @@ mod tests {
                 count,
                 color,
                 z,
+                ..
             }] => Batch {
                 data,
                 count: *count,
@@ -1167,10 +1212,12 @@ mod tests {
         }
     }
 
-    /// Reads the little-endian float at byte offset `i * 4` of the packed
-    /// instance data of the batch.
+    /// Reads the little-endian float at component `component` (0..4 in the
+    /// first instance `vec4`: position, size, life fraction; 4..7 in the
+    /// second: pixel-space angle and tint) of particle `particle` in the
+    /// packed instance data of the batch.
     fn instance_f32(batch: &Batch, particle: usize, component: usize) -> f32 {
-        let start = particle * 16 + component * 4;
+        let start = particle * 32 + component * 4;
         f32::from_le_bytes(batch.data[start..start + 4].try_into().unwrap())
     }
 
@@ -1190,6 +1237,7 @@ mod tests {
                     particles: vec![particle([5.0, 5.0], 4.0, 2.0)],
                 },
                 color: WHITE,
+                shape: ParticleShape::Circle,
             }),
             ..Default::default()
         };
@@ -1216,6 +1264,7 @@ mod tests {
                     particles: vec![particle([10.0, 0.0], 4.0, 3.0)],
                 },
                 color: WHITE,
+                shape: ParticleShape::Circle,
             }),
             ..Default::default()
         };
@@ -1237,6 +1286,7 @@ mod tests {
                     particles: vec![particle([0.0, 0.0], 4.0, 3.0)],
                 },
                 color: WHITE,
+                shape: ParticleShape::Circle,
             }),
             ..Default::default()
         };
@@ -1257,6 +1307,7 @@ mod tests {
                     particles: vec![particle([0.0, 0.0], 4.0, 3.0)],
                 },
                 color: WHITE,
+                shape: ParticleShape::Circle,
             }),
             ..Default::default()
         };
@@ -1301,6 +1352,7 @@ mod tests {
                     b: 0.5,
                     a: 1.0,
                 },
+                shape: ParticleShape::Circle,
             }),
             ..Default::default()
         };
@@ -1327,6 +1379,7 @@ mod tests {
             shape: Some(Shape::Particles {
                 system: ParticleSystem::new(),
                 color: WHITE,
+                shape: ParticleShape::Circle,
             }),
             ..Default::default()
         };
@@ -1361,6 +1414,7 @@ mod tests {
                     particles: vec![particle([0.0, 0.0], 4.0, 1.0)],
                 },
                 color: WHITE,
+                shape: ParticleShape::Circle,
             }),
             ..Default::default()
         };
@@ -1389,5 +1443,125 @@ mod tests {
         for draw in &draws {
             assert_eq!(draw.z(), 0.0);
         }
+    }
+
+    /// A node at the canvas origin whose shape is a particle batch with the
+    /// given per-particle `angle` and `color`.
+    fn particle_node(angle: f32, color: Color, shape: ParticleShape) -> SceneNode {
+        SceneNode {
+            shape: Some(Shape::Particles {
+                system: ParticleSystem {
+                    particles: vec![Particle {
+                        pos: [0.0, 0.0],
+                        vel: [0.0, 0.0],
+                        life: 4.0,
+                        max_life: 4.0,
+                        size: 1.0,
+                        angle,
+                        color,
+                    }],
+                },
+                color: WHITE,
+                shape,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn node_particles_pack_their_angle_and_color_in_pixel_space() {
+        // The pixel space is y-down, so a particle's local (y-up,
+        // counterclockwise-positive) angle packs negated: a quarter turn
+        // counterclockwise on screen is -FRAC_PI_4 in pixel space, and a
+        // clockwise quarter turn is +FRAC_PI_4. The particle's own color
+        // packs as the tint in the second instance vec4.
+        let color = Color {
+            r: 0.5,
+            g: 1.0,
+            b: 0.25,
+            a: 1.0,
+        };
+        for phi in [std::f32::consts::FRAC_PI_4, -std::f32::consts::FRAC_PI_4] {
+            let node = particle_node(phi, color, ParticleShape::Circle);
+            let mut draws = Vec::new();
+            draw_one(&node, &mut draws);
+            let batch = the_batch(&draws);
+            assert_eq!(instance_f32(&batch, 0, 4), -phi);
+            assert_eq!(instance_f32(&batch, 0, 5), color.r);
+            assert_eq!(instance_f32(&batch, 0, 6), color.g);
+            assert_eq!(instance_f32(&batch, 0, 7), color.b);
+        }
+    }
+
+    #[test]
+    fn node_particles_add_the_node_rotation_to_their_own_angle() {
+        // A node rotated a quarter turn counterclockwise maps its local +x
+        // axis to pixel angle -FRAC_PI_2 (y down), so a particle with its
+        // own angle phi packs at -FRAC_PI_2 - phi: the node's rotation and
+        // the particle's rotation compose in the local frame before the
+        // y-down flip is applied.
+        let phi = std::f32::consts::FRAC_PI_4;
+        let mut node = particle_node(phi, WHITE, ParticleShape::Circle);
+        node.transform = Transform::rotate(std::f32::consts::FRAC_PI_2);
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        let batch = the_batch(&draws);
+        let packed = instance_f32(&batch, 0, 4);
+        let expected = -(std::f32::consts::FRAC_PI_2 + phi);
+        assert!((packed - expected).abs() < 1e-4);
+    }
+
+    #[test]
+    fn node_particles_pass_the_shape_kind_aspect_and_sprite_to_the_draw() {
+        // The batch's uniform carries the shape's kind and aspect, and a
+        // sprite shape hands its image and size to the draw so the pipeline
+        // can bind (or cache) the texture.
+        let node = particle_node(
+            0.0,
+            WHITE,
+            ParticleShape::Rectangle { aspect: 2.0 },
+        );
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        let [Draw::Particles {
+            kind,
+            aspect,
+            sprite_data,
+            sprite_size,
+            ..
+        }] = &draws[..]
+        else {
+            panic!("expected one particle draw, got {draws:?}")
+        };
+        assert_eq!(*kind, 1.0);
+        assert_eq!(*aspect, 2.0);
+        assert!(sprite_data.is_none());
+        assert_eq!(*sprite_size, [0, 0]);
+
+        let sprite = ParticleShape::Sprite {
+            data: std::sync::Arc::from([255u8, 255, 255, 255]),
+            width: 2,
+            height: 3,
+        };
+        let node = particle_node(0.0, WHITE, sprite);
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        let [Draw::Particles {
+            kind,
+            aspect,
+            sprite_data,
+            sprite_size,
+            ..
+        }] = &draws[..]
+        else {
+            panic!("expected one particle draw, got {draws:?}")
+        };
+        assert_eq!(*kind, 2.0);
+        assert_eq!(*aspect, 1.5);
+        assert_eq!(
+            sprite_data.as_deref(),
+            Some(&[255u8, 255, 255, 255][..])
+        );
+        assert_eq!(*sprite_size, [2, 3]);
     }
 }

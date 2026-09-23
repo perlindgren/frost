@@ -203,6 +203,99 @@ impl Transform {
     }
 }
 
+/// The geometry of each particle in a [`Shape::Particles`] batch: one shape
+/// for the whole batch, shared by every particle.
+///
+/// The shape's extent is scaled by each particle's own [`Particle::size`]
+/// (its half-width), its orientation by each particle's own
+/// [`Particle::angle`], and its color by the particle's own
+/// [`Particle::color`] — the batch sets *what* each particle looks like,
+/// while the particles keep their individual position, scale, rotation, and
+/// tint.
+#[derive(Clone, Debug, Default)]
+pub enum ParticleShape {
+    /// A filled circle with the particle's `size` as its radius.
+    #[default]
+    Circle,
+    /// A filled rectangle, `size * 2` wide and `size * aspect * 2` tall,
+    /// centered on the particle.
+    Rectangle {
+        /// The rectangle's height-to-width ratio; `1.0` is a square.
+        aspect: f32,
+    },
+    /// A sprite image: each particle draws the whole image, scaled so its
+    /// width is `2 * size`, and centered on the particle — the texture's
+    /// own center `(1/2, 1/2)` sits on the particle's position.
+    ///
+    /// Created by [`ParticleShape::sprite`] and [`ParticleShape::sprite_bytes`];
+    /// the pixels are decoded up front and shared behind an [`Arc`], like a
+    /// [`Shape::Sprite`].
+    Sprite {
+        /// The RGBA8 pixel data, row by row, top row first.
+        data: Arc<[u8]>,
+        /// The texture width in pixels.
+        width: u32,
+        /// The texture height in pixels.
+        height: u32,
+    },
+}
+
+impl ParticleShape {
+    /// Creates a sprite particle shape from the PNG file at `path`.
+    ///
+    /// The file is read and decoded to RGBA8 immediately, so a missing file
+    /// or a non-PNG file fails here, not at render time. The pixels live
+    /// behind an [`Arc`], so cloning a scene containing the shape is cheap:
+    /// all the clones share the same buffer.
+    pub fn sprite(path: impl AsRef<Path>) -> Result<Self, SpriteError> {
+        let bytes = std::fs::read(path.as_ref()).map_err(SpriteError::Io)?;
+        Self::sprite_bytes(&bytes)
+    }
+
+    /// Creates a sprite particle shape from PNG data already in memory, for
+    /// example bytes embedded into the binary with `include_bytes!`.
+    ///
+    /// Like [`ParticleShape::sprite`], the bytes are decoded to RGBA8 up
+    /// front, so a non-PNG buffer fails here, not at render time, and the
+    /// pixels live behind an [`Arc`], but no file is read — this is how
+    /// sprite shapes are created in environments without a file system,
+    /// such as a web browser.
+    pub fn sprite_bytes(bytes: impl AsRef<[u8]>) -> Result<Self, SpriteError> {
+        let image = image::load_from_memory(bytes.as_ref()).map_err(SpriteError::Decode)?;
+        let rgba = image.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        let data = Arc::from(rgba.into_raw().into_boxed_slice());
+        Ok(Self::Sprite {
+            data,
+            width,
+            height,
+        })
+    }
+
+    /// The shape's kind as the render pipeline reads it: `0.0` for a
+    /// circle, `1.0` for a rectangle, `2.0` for a sprite.
+    pub(crate) fn kind(&self) -> f32 {
+        match self {
+            Self::Circle => 0.0,
+            Self::Rectangle { .. } => 1.0,
+            Self::Sprite { .. } => 2.0,
+        }
+    }
+
+    /// The shape's height-to-width factor: `1.0` for a circle, the given
+    /// `aspect` for a rectangle, and the texture's height over its width for
+    /// a sprite.
+    pub(crate) fn aspect(&self) -> f32 {
+        match self {
+            Self::Circle => 1.0,
+            Self::Rectangle { aspect } => *aspect,
+            Self::Sprite { width, height, .. } => {
+                (*height as f32).max(1.0) / (*width as f32).max(1.0)
+            }
+        }
+    }
+}
+
 /// A filled geometric shape that a [`SceneNode`] can hold.
 ///
 /// Coordinates and sizes are in the node's local space, in pixels; the
@@ -282,17 +375,25 @@ pub enum Shape {
         alpha: f32,
     },
     /// A batch of live particles from a [`ParticleSystem`], simulated in the
-    /// node's local space and drawn as one instanced draw of circles, each
-    /// at its particle's local position with its `size` as radius, fading by
-    /// its remaining life fraction.
+    /// node's local space and drawn as one instanced draw, each particle as
+    /// the batch's `shape` at its local position, fading by its remaining
+    /// life fraction.
+    ///
+    /// Every particle shares the batch's [`ParticleShape`], but keeps its
+    /// own position, scale, rotation, and color: each particle is drawn as
+    /// `shape`, scaled by its `size`, rotated by its `angle` (on top of the
+    /// node's rotation), and tinted by its `color` — so a spinning
+    /// rectangle or a tumbling sprite needs no engine support, just
+    /// `particle.angle += spin * dt;` in the update.
     ///
     /// The batch rides the node's world transform and scale exactly like the
     /// other shapes: a particle at local `(x, y)` lands wherever the node's
-    /// world transform maps it, and each radius is multiplied by the
-    /// geometric mean of the world's two axis scales — exact under a uniform
-    /// scale, and area-preserving under a non-uniform one, where the particle
-    /// stays a circle (it cannot be stretched into an ellipse). The batch is
-    /// tinted by `color` multiplied with the node's composed modulate, and it
+    /// world transform maps it, and each size is multiplied by the geometric
+    /// mean of the world's two axis scales — exact under a uniform scale, and
+    /// area-preserving under a non-uniform one (the particle's shape cannot
+    /// be stretched independently along the two axes, so it keeps its
+    /// proportions). The batch is tinted by `color` multiplied with the
+    /// node's composed modulate and with each particle's own `color`, and it
     /// draws at the node's composed order.
     ///
     /// The engine never advances the simulation: the node's owner spawns into
@@ -304,10 +405,14 @@ pub enum Shape {
     Particles {
         /// The live system whose particles make up the batch.
         system: ParticleSystem,
-        /// The batch's base tint, multiplied with every particle and then
-        /// with the node's composed modulate; white leaves the particles
-        /// uncolored by the batch itself.
+        /// The batch's base tint, multiplied with every particle (and its
+        /// own color) and then with the node's composed modulate; white
+        /// leaves the particles uncolored by the batch itself.
         color: Color,
+        /// The geometry each particle is drawn as; the whole batch shares
+        /// it. [`ParticleShape::Circle`] (the default) draws circles as
+        /// before.
+        shape: ParticleShape,
     },
 }
 

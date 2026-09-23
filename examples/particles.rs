@@ -90,6 +90,13 @@ impl frost::Process for Demo {
                 life,
                 max_life: life,
                 size: self.rng.in_range(SIZE.0, SIZE.1),
+                angle: 0.0,
+                color: frost::Color {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
             });
         }
 
