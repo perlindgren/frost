@@ -1057,8 +1057,8 @@ impl Demo {
         let mut grown_layers = 0usize;
         let started: [bool; PLANT_POS.len()] =
             std::array::from_fn(|i| i == 0 || self.plants[i - 1].fully_grown());
-        for i in 0..PLANT_POS.len() {
-            if started[i] {
+        for (i, &is_started) in started.iter().enumerate() {
+            if is_started {
                 active_plants += 1;
                 if !self.plants[i].complete() {
                     self.waters[i] = (self.waters[i] - dt / (DRAIN_TIME * GROW_SLOWDOWN)).max(0.0);
@@ -1621,9 +1621,15 @@ impl Demo {
 
         // Draw each stream as one batched (instanced) draw: every particle
         // is a circle whose alpha is its remaining life fraction, so the
-        // streams fade as they fall.
-        ctx.particles(&self.water.particles, DROP, Z);
-        ctx.particles(&self.spray.particles, SPRAY, Z);
+        // streams fade as they fall. The drops and the spray fly free from
+        // the moving tool, in the window's user space, so they stay on the
+        // (deprecated) immediate particle draw instead of riding a node's
+        // transform.
+        #[allow(deprecated)]
+        {
+            ctx.particles(&self.water.particles, DROP, Z);
+            ctx.particles(&self.spray.particles, SPRAY, Z);
+        }
 
         // Draw the water bars: a dark background with a blue fill showing
         // the reserve, `BAR_LIFT` pixels above the root joint of every

@@ -33,7 +33,6 @@ const RATE: f32 = 140.0;
 /// middle of the screen: the apex of a launch at speed `v` is
 /// `v^2 / (2 * GRAVITY)` above the source, so the peak speed follows the
 /// window height (computed in `process`).
-
 /// The base half-width of the launch cone, in radians around straight up;
 /// the breathing multiplies it.
 const SPREAD: f32 = 0.30;
@@ -201,9 +200,15 @@ impl frost::Process for Demo {
         // alpha is its remaining life fraction, so everything fades as
         // it dies.
         let colors = [GREEN, BLUE, cycle(self.t)];
-        ctx.particles(&self.fall.particles, FALL_COLOR, WATERFALL_Z);
-        for i in 0..3 {
-            ctx.particles(&self.fountains[i].system.particles, colors[i], ZS[i]);
+        // Free batches in the window's user space, so they stay on the
+        // (deprecated) immediate particle draw instead of riding a node's
+        // transform.
+        #[allow(deprecated)]
+        {
+            ctx.particles(&self.fall.particles, FALL_COLOR, WATERFALL_Z);
+            for i in 0..3 {
+                ctx.particles(&self.fountains[i].system.particles, colors[i], ZS[i]);
+            }
         }
 
         // The sources, behind the plumes.
