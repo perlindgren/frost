@@ -924,10 +924,64 @@ struct Demo {
 }
 
 impl frost::Process for Demo {
+    /// Steps the whole frame, in the order the game's invariants require:
+    /// the chrome fits the window and the plants' anchors lift off the
+    /// grass stretch; the plants grow on their water; the vipers and the
+    /// bugs step, and their arrival sounds play; the input's edges are
+    /// handled; the tomatoes are kept out of the basket's walls; the
+    /// plants are laid out; the overgrown fruits drop and the fallen
+    /// fruit steps; the tool ticks, emits, and takes its live pose; the
+    /// particles advance; the drops water the roots — after the
+    /// particles have stepped — and the mist wounds the bugs; and the
+    /// live overlay is drawn.
     fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
+        let (w, h) = ctx.size();
+        let anchors = self.layout_chrome(ctx, w, h);
+
+        let (active_plants, grown_layers, started) = self.grow_plants(dt);
+        self.step_vipers(ctx, dt, &anchors, grown_layers);
+
+        let events = self.step_bugs(ctx, dt, &anchors, active_plants);
+        self.play_bug_events(&events);
+        self.handle_input(ctx);
+
+        self.constrain_basket_fruit(ctx);
+
+        // Lay the plants out, after the input edges, so a tomato that was
+        // picked or snapped back this frame is reposed by its plant — and
+        // a picked slot's pivot, out of the tree, is simply skipped.
+        self.layout_plants(ctx, &anchors);
+
+        self.fall_overgrown_tomatoes(ctx);
+        self.step_falls(ctx, dt);
+
+        self.tick_tool(ctx, dt);
+        self.update_particles(dt);
+
+        // The drops water the roots only after the particles have
+        // stepped, so a drop that reaches a root this frame waters it
+        // this frame.
+        self.water_roots(&anchors, &started);
+        self.spray_hits();
+        self.draw_live(ctx, &anchors, &started);
+    }
+}
+
+impl Demo {
+    /// Fits the window's chrome — the grass, the items panel, the
+    /// held-items panel, the basket, and the immortality badge — into
+    /// whatever size the window has, and returns the plants' root joints
+    /// in user space, where the grass stretch maps each `PLANT_POS`
+    /// pixel: the plants stay glued to them, and the vipers' orbit
+    /// centers lift off them.
+    fn layout_chrome(
+        &mut self,
+        ctx: &mut frost::Context,
+        w: f32,
+        h: f32,
+    ) -> [[f32; 2]; PLANT_POS.len()] {
         // Stretch the grass to exactly fill the window, whatever its aspect
         // ratio, so it stays filled across resizes.
-        let (w, h) = ctx.size();
         let grass = &mut ctx.scene().root.children[CHILD_GRASS];
         grass.scale = [w / GRASS_SIZE[0], h / GRASS_SIZE[1]];
         // Fit the panel into the window's height with `MARGIN` clear of the
@@ -970,40 +1024,40 @@ impl frost::Process for Demo {
         // The plants' root joints in user space, where the grass stretch
         // maps each `PLANT_POS` pixel: the plants stay glued to them, and
         // the vipers' orbit centers lift off them.
-        let anchors = PLANT_POS.map(|pos| {
+        PLANT_POS.map(|pos| {
             [
                 pos[0] * w / GRASS_SIZE[0] - w / 2.0,
                 h / 2.0 - pos[1] * h / GRASS_SIZE[1],
             ]
-        });
+        })
+    }
 
-        // Grow the plants one at a time, in parallel with the tool
-        // system: the first starts at launch, each next one starts when
-        // the previous is fully grown; `active_plants` counts the spawned
-        // ones — the ones whose growth clock has started — for the bug
-        // swarm, and `grown_layers` counts the fully grown ones, layer by
-        // layer, for the viper swarm.
-        //
-        // Growth proceeds only while the plant is well watered, and at
-        // `1 / GROW_SLOWDOWN` of real time's pace: a started plant that
-        // is not yet complete — its slices or its blooms still growing —
-        // drains its water reserve by
-        // `dt / (DRAIN_TIME * GROW_SLOWDOWN)` every frame — the drain
-        // runs with the growth — and steps its clock by `dt /
-        // GROW_SLOWDOWN`, so fully grown slices keep opening blooms while
-        // the water holds; a plant whose reserve runs dry stops growing —
-        // its growth clock freezes — awaiting the player to pour water on
-        // its root; the falling drops are matched against the roots'
-        // hitboxes below, once the particles have been stepped. The
-        // aging clock, stepped by the same slowed frame, runs with or
-        // without water: a ripe fruit's wait and stale —
-        // `tomato::STALE_DELAY` then `tomato::STALE_TIME` after full
-        // growth — proceed on a dry plant.
+    /// Grows the plants one at a time, in parallel with the tool system:
+    /// the first starts at launch, each next one starts when the previous
+    /// is fully grown. Growth proceeds only while the plant is well
+    /// watered, and at `1 / GROW_SLOWDOWN` of real time's pace: a started
+    /// plant that is not yet complete — its slices or its blooms still
+    /// growing — drains its water reserve by `dt / (DRAIN_TIME *
+    /// GROW_SLOWDOWN)` every frame — the drain runs with the growth — and
+    /// steps its clock by `dt / GROW_SLOWDOWN`, so fully grown slices keep
+    /// opening blooms while the water holds; a plant whose reserve runs
+    /// dry stops growing — its growth clock freezes — awaiting the player
+    /// to pour water on its root; the falling drops are matched against
+    /// the roots' hitboxes later in the frame, once the particles have
+    /// been stepped. The aging clock, stepped by the same slowed frame,
+    /// runs with or without water: a ripe fruit's wait and stale —
+    /// `tomato::STALE_DELAY` then `tomato::STALE_TIME` after full growth
+    /// — proceed on a dry plant.
+    ///
+    /// Returns the counts the swarms step on — `active_plants` for the
+    /// bugs and `grown_layers` for the vipers — and the `started` table
+    /// the watering and the water bars read.
+    fn grow_plants(&mut self, dt: f32) -> (usize, usize, [bool; PLANT_POS.len()]) {
         let mut active_plants = 0usize;
         let mut grown_layers = 0usize;
         let started: [bool; PLANT_POS.len()] =
             std::array::from_fn(|i| i == 0 || self.plants[i - 1].fully_grown());
-        for (i, _anchor) in anchors.iter().enumerate() {
+        for i in 0..PLANT_POS.len() {
             if started[i] {
                 active_plants += 1;
                 if !self.plants[i].complete() {
@@ -1020,14 +1074,22 @@ impl frost::Process for Demo {
             }
             grown_layers += self.plants[i].grown_layers();
         }
+        (active_plants, grown_layers, started)
+    }
 
-        // Buzz the vipers around the flower bench, in parallel with
-        // everything else: one viper per fully grown layer, so the swarm
-        // grows as the bench does — `grown_layers` is how many exist —
-        // and each viper circles the segment its layer spawned it, at
-        // that segment's midpoint along the static, fully grown chain,
-        // the sway left out, lifted to its plant's anchor at the fit
-        // scale.
+    /// Buzzes the vipers around the flower bench, in parallel with
+    /// everything else: one viper per fully grown layer, so the swarm
+    /// grows as the bench does — `grown_layers` is how many exist — and
+    /// each viper circles the segment its layer spawned it, at that
+    /// segment's midpoint along the static, fully grown chain, the sway
+    /// left out, lifted to its plant's anchor at the fit scale.
+    fn step_vipers(
+        &mut self,
+        ctx: &mut frost::Context,
+        dt: f32,
+        anchors: &[[f32; 2]; PLANT_POS.len()],
+        grown_layers: usize,
+    ) {
         let vipers_node = &mut ctx.scene().root.children[CHILD_VIPERS];
         let centers: [[[f32; 2]; vipers::LAYERS]; PLANT_POS.len()] = std::array::from_fn(|i| {
             self.plants[i].layer_midpoints().map(|m| {
@@ -1040,32 +1102,54 @@ impl frost::Process for Demo {
         self.vipers.step(dt, &centers, grown_layers);
         self.vipers
             .layout(vipers_node, [&self.viper1, &self.viper2]);
+    }
 
-        // Waddle the bugs to the plants, in parallel with everything
-        // else: three spawn each time a plant starts growing.
+    /// Waddles the bugs to the plants, in parallel with everything else:
+    /// three spawn each time a plant starts growing — `active_plants` is
+    /// how many have started — and returns the step's arrival events,
+    /// which [Demo::play_bug_events] plays.
+    fn step_bugs(
+        &mut self,
+        ctx: &mut frost::Context,
+        dt: f32,
+        anchors: &[[f32; 2]; PLANT_POS.len()],
+        active_plants: usize,
+    ) -> bugs::StepEvents {
         let bugs_node = &mut ctx.scene().root.children[CHILD_BUGS];
-        let events = self.bugs.step(dt, &anchors, active_plants);
+        let events = self.bugs.step(dt, anchors, active_plants);
         self.bugs
             .layout(bugs_node, [&self.bug1, &self.bug2, &self.bug3]);
-        // An arrival chatters: a bug that just reached its destination
-        // while another bug was on the grass nearby plays one of the
-        // tjatter clips, the swarm's random pick.
-        for clip in events.tjatters {
-            self.audio.play_once(&self.tjatters[clip], None);
-        }
-        // A pop-up plops: a bug that just came up out of the grass — a
-        // batch spawn or a respawn — plays one of the plopp clips, the
-        // swarm's random pick.
-        for clip in events.plops {
-            self.audio.play_once(&self.plops[clip], None);
-        }
+        events
+    }
 
+    /// Plays the bugs' last step's arrival sounds: a bug that just
+    /// reached its destination while another bug was on the grass nearby
+    /// plays one of the tjatter clips, the swarm's random pick, and a bug
+    /// that just came up out of the grass — a batch spawn or a respawn —
+    /// plays one of the plopp clips.
+    fn play_bug_events(&mut self, events: &bugs::StepEvents) {
+        for clip in &events.tjatters {
+            self.audio.play_once(&self.tjatters[*clip], None);
+        }
+        for clip in &events.plops {
+            self.audio.play_once(&self.plops[*clip], None);
+        }
+    }
+
+    /// Follows the pointer, keeping the last known position while the
+    /// cursor is outside the window, and handles the mouse's edges: a
+    /// press that starts on a slot is a swap click, completed only if the
+    /// release lands on the same slot; a press that starts elsewhere is a
+    /// use of the active tool — the watering can's quarter turn, the
+    /// spray can's fresh burst — or a tomato pick, when no tool is held
+    /// at all; and a release of the right button switches the two tools
+    /// the mouse holds.
+    fn handle_input(&mut self, ctx: &mut frost::Context) {
         // Follow the pointer, keeping the last known position while the
         // cursor is outside the window.
         if let Some(pos) = ctx.mouse_position() {
             self.mouse = pos;
         }
-        let [mx, my] = self.mouse;
 
         let left = ctx.mouse_button_down(frost::MouseButton::Left);
         let right = ctx.mouse_button_down(frost::MouseButton::Right);
@@ -1144,7 +1228,14 @@ impl frost::Process for Demo {
             self.press_slot = None;
         }
         self.pressed = left;
+    }
 
+    /// Keeps the tomatoes out of the basket's walls: the carried fruit
+    /// rides the cursor, pushed out of the basket's U every frame, and
+    /// each dropped fruit stays exactly where it was released, none
+    /// sitting inside a wall. There is no gravity, and no
+    /// tomato-to-tomato collision.
+    fn constrain_basket_fruit(&mut self, ctx: &mut frost::Context) {
         // A carried tomato rides the cursor: the pivot under the pointer,
         // the fruit's top pinned to it, in window-centered user space on
         // top of everything. It is pushed out of the basket's U every
@@ -1220,10 +1311,16 @@ impl frost::Process for Demo {
                 );
             }
         }
+    }
 
-        // Lay the plants out, after the input edges, so a tomato that was
-        // picked or snapped back this frame is reposed by its plant — and
-        // a picked slot's pivot, out of the tree, is simply skipped.
+    /// Lays the plants out at their anchors: a tomato picked or snapped
+    /// back this frame is reposed by its plant, and a picked slot's
+    /// pivot, out of the tree, is simply skipped.
+    fn layout_plants(
+        &mut self,
+        ctx: &mut frost::Context,
+        anchors: &[[f32; 2]; PLANT_POS.len()],
+    ) {
         let plants_node = &mut ctx.scene().root.children[CHILD_PLANTS];
         for (i, anchor) in anchors.iter().enumerate() {
             self.plants[i].layout(
@@ -1234,16 +1331,18 @@ impl frost::Process for Demo {
                 &self.tomato_fg,
             );
         }
+    }
 
-        // The overgrown tomatoes fall to the ground. When a slot's fruit
-        // reaches its final dark red — its staleness full, past the ripe
-        // red — the slot's tomato pivot leaves the plant's tree for the
-        // fallen-fruit container and falls straight down from exactly
-        // where it was laid out this frame, while the bloom restarts
-        // under the same semantics as a fruit dropped in the basket: the
-        // flower is removed and regrows from zero, its tomato after it,
-        // on the same water-gated, slowed schedule, which holds the
-        // plant's completion back as it does for a picked fruit.
+    /// Drops the overgrown tomatoes to the ground: when a slot's fruit
+    /// reaches its final dark red — its staleness full, past the ripe
+    /// red — the slot's tomato pivot leaves the plant's tree for the
+    /// fallen-fruit container and falls straight down from exactly where
+    /// it was laid out this frame, while the bloom restarts under the
+    /// same semantics as a fruit dropped in the basket: the flower is
+    /// removed and regrows from zero, its tomato after it, on the same
+    /// water-gated, slowed schedule, which holds the plant's completion
+    /// back as it does for a picked fruit.
+    fn fall_overgrown_tomatoes(&mut self, ctx: &mut frost::Context) {
         let drops = {
             let plant_nodes = &ctx.scene().root.children[CHILD_PLANTS].children;
             self.plants
@@ -1308,12 +1407,14 @@ impl frost::Process for Demo {
                 });
             }
         }
+    }
 
-        // The fallen fruit: each dropped tomato falls straight down from
-        // where it let go, at the fall speed, until its body center
-        // reaches its destination — the spawn lowered by the plant's
-        // cumulative segment height, scaled into user space — where it
-        // stops; the drop clip plays exactly once, on the landing frame.
+    /// Steps the fallen fruit: each dropped tomato falls straight down
+    /// from where it let go, at the fall speed, until its body center
+    /// reaches its destination — the spawn lowered by the plant's
+    /// cumulative segment height, scaled into user space — where it
+    /// stops; the drop clip plays exactly once, on the landing frame.
+    fn step_falls(&mut self, ctx: &mut frost::Context, dt: f32) {
         let fallen = &mut ctx.scene().root.children[CHILD_FALLEN_FRUIT];
         for (fall, node) in self.falls.iter_mut().zip(fallen.children.iter_mut()) {
             if fall.landed {
@@ -1329,6 +1430,15 @@ impl frost::Process for Demo {
                 }
             }
         }
+    }
+
+    /// Ticks the active tool's live pose every frame so an ongoing
+    /// tilt, return, or burst keeps moving; no tool held is a no-op. The
+    /// watering can pours at the full tilt, the spray can runs its burst
+    /// to `BURST_TIME`, the pour sound starts and stops with the tilt,
+    /// and the tool node takes the live transform.
+    fn tick_tool(&mut self, ctx: &mut frost::Context, dt: f32) {
+        let [mx, my] = self.mouse;
 
         // The active tool's live pose, ticked every frame so an ongoing
         // tilt, return, or burst keeps moving; no tool held is a no-op.
@@ -1431,18 +1541,26 @@ impl frost::Process for Demo {
                 Tool::SprayCan => spray_transform(mx, my, self.angle),
             };
         }
+    }
 
-        // Advance the particles even while not emitting, so an ongoing
-        // stream keeps falling until it dies out.
+    /// Advances the particles even while not emitting, so an ongoing
+    /// stream keeps falling until it dies out.
+    fn update_particles(&mut self, dt: f32) {
         self.water.update(dt, [0.0, -GRAVITY]);
         self.spray.update(dt, [0.0, -SPRAY_GRAVITY]);
+    }
 
-        // Water the roots: each drop that passes through a started plant's
-        // rough hitbox — a `ROOT_RADIUS`-pixel circle around the root
-        // joint — while the plant is not yet complete restores the plant's
-        // water reserve by `DROP_WATER`, capped at full; the drops keep
-        // falling on through, so one stream can top up several roots at
-        // once.
+    /// Waters the roots: each drop that passes through a started plant's
+    /// rough hitbox — a `ROOT_RADIUS`-pixel circle around the root
+    /// joint — while the plant is not yet complete restores the plant's
+    /// water reserve by `DROP_WATER`, capped at full; the drops keep
+    /// falling on through, so one stream can top up several roots at
+    /// once.
+    fn water_roots(
+        &mut self,
+        anchors: &[[f32; 2]; PLANT_POS.len()],
+        started: &[bool; PLANT_POS.len()],
+    ) {
         for p in &self.water.particles {
             for (i, anchor) in anchors.iter().enumerate() {
                 if started[i]
@@ -1454,15 +1572,17 @@ impl frost::Process for Demo {
                 }
             }
         }
+    }
 
-        // Mist touching a bug wounds it: each live spray drop hits every
-        // bug within its reach, but a wounded bug takes its next hit only
-        // after its hit cooldown, and a hit that empties the counter
-        // starts the bounce-then-evaporate death. A bug at its park spot
-        // regains one hit of health every 5 seconds, up to six. The
-        // water can's drops never touch the bugs. Every wound cries out
-        // on one of the Aj clips, the swarm's random pick, and every
-        // killing blow plays the bug death clip.
+    /// Wounds the bugs the mist touches: each live spray drop hits every
+    /// bug within its reach, but a wounded bug takes its next hit only
+    /// after its hit cooldown, and a hit that empties the counter starts
+    /// the bounce-then-evaporate death. A bug at its park spot regains
+    /// one hit of health every 5 seconds, up to six. The water can's
+    /// drops never touch the bugs. Every wound cries out on one of the Aj
+    /// clips, the swarm's random pick, and every killing blow plays the
+    /// bug death clip.
+    fn spray_hits(&mut self) {
         for p in &self.spray.particles {
             let hit = self.bugs.hit_at(p.pos);
             for clip in hit.ajs {
@@ -1472,7 +1592,18 @@ impl frost::Process for Demo {
                 self.audio.play_once(&self.death, None);
             }
         }
+    }
 
+    /// Draws the frame's live overlay: the bugs' health counters, each
+    /// particle stream as one batched (instanced) draw, and the water
+    /// bars over the roots of every plant that has started growing and
+    /// is not complete yet.
+    fn draw_live(
+        &mut self,
+        ctx: &mut frost::Context,
+        anchors: &[[f32; 2]; PLANT_POS.len()],
+        started: &[bool; PLANT_POS.len()],
+    ) {
         // Draw the bugs' health counters: one white pip per hit each
         // visible bug can still take, in a row above it — centered on
         // the bug's current count, three to six pips wide.
@@ -1524,9 +1655,7 @@ impl frost::Process for Demo {
             }
         }
     }
-}
 
-impl Demo {
     /// Makes `tool` the active tool — `None` for no tool: it resets the
     /// can to its upright, at-rest pose (angle, burst, rotation tween, and
     /// frame) and puts the tool's shape and scale on the node, or clears
