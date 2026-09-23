@@ -435,6 +435,8 @@ fn particles_uniform_bytes_follow_the_wgsl_layout() {
 }
 
 #[test]
+// The test exercises the deprecated immediate particle draw itself.
+#[allow(deprecated)]
 fn canvas_particles_packs_instances_in_pixel_space() {
     let mut canvas = Canvas::new((100, 100));
     let particles = [
@@ -521,6 +523,8 @@ fn canvas_particles_packs_instances_in_pixel_space() {
 }
 
 #[test]
+// The test exercises the deprecated immediate particle draw itself.
+#[allow(deprecated)]
 fn canvas_particles_with_no_particles_adds_no_draw() {
     let mut canvas = Canvas::new((100, 100));
     canvas.particles(&[], black(), 0.0);

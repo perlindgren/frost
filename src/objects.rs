@@ -4,6 +4,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::particles::ParticleSystem;
+
 /// An RGBA color with channels in `0.0..=1.0`, used for the background and
 /// for the color of each drawn object.
 ///
@@ -278,6 +280,34 @@ pub enum Shape {
         /// The text's opacity, multiplied with the mask's own alpha
         /// channel.
         alpha: f32,
+    },
+    /// A batch of live particles from a [`ParticleSystem`], simulated in the
+    /// node's local space and drawn as one instanced draw of circles, each
+    /// at its particle's local position with its `size` as radius, fading by
+    /// its remaining life fraction.
+    ///
+    /// The batch rides the node's world transform and scale exactly like the
+    /// other shapes: a particle at local `(x, y)` lands wherever the node's
+    /// world transform maps it, and each radius is multiplied by the
+    /// geometric mean of the world's two axis scales — exact under a uniform
+    /// scale, and area-preserving under a non-uniform one, where the particle
+    /// stays a circle (it cannot be stretched into an ellipse). The batch is
+    /// tinted by `color` multiplied with the node's composed modulate, and it
+    /// draws at the node's composed order.
+    ///
+    /// The engine never advances the simulation: the node's owner spawns into
+    /// the system and calls [`ParticleSystem::update`] each frame, in the same
+    /// local space the particles are drawn in — for a system held on `node`,
+    /// `if let Some(Shape::Particles { system, .. }) = node.shape.as_mut() {
+    /// system.update(dt, gravity); }`. A system with no live particles draws
+    /// nothing.
+    Particles {
+        /// The live system whose particles make up the batch.
+        system: ParticleSystem,
+        /// The batch's base tint, multiplied with every particle and then
+        /// with the node's composed modulate; white leaves the particles
+        /// uncolored by the batch itself.
+        color: Color,
     },
 }
 

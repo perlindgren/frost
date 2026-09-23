@@ -5,8 +5,11 @@
 //! [`ParticleSystem::update`] advances every particle by the frame's delta
 //! time under a constant gravity and removes the dead ones, so a
 //! [`crate::Process`] can spawn, update, and draw the particles once per
-//! frame — the drawing stays with the caller, in the renderer's
-//! coordinates.
+//! frame. The drawing stays with the caller: put the system in the node's
+//! [`crate::Shape::Particles`] shape to draw it in the node's local space
+//! (transformed, scaled, and tinted by the node), or, for batches that live
+//! directly in the window's user space, with the deprecated
+//! [`crate::Canvas::particles`] draw.
 
 /// A single particle: a position, a velocity, a lifetime, and a size.
 ///
@@ -14,7 +17,10 @@
 /// the system's [`ParticleSystem::particles`] back to draw each one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Particle {
-    /// Position, in user-space pixels (window-centered, y up).
+    /// Position: the node's local space when the system is held in the
+    /// node's [`crate::Shape::Particles`] shape, or the window's user space
+    /// (window-centered, y up) for the deprecated
+    /// [`crate::Canvas::particles`] draw.
     pub pos: [f32; 2],
     /// Velocity, in pixels per second.
     pub vel: [f32; 2],

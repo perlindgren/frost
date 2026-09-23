@@ -76,10 +76,14 @@
 //!
 //! A [`ParticleSystem`] is a plain collection of [`Particle`]s for
 //! effects like smoke or sparks. It is pure simulation, independent of the
-//! renderer: spawn particles in [`Process::process`], advance them each
-//! frame with [`ParticleSystem::update`] under a constant gravity, and
-//! draw them with the immediate draws, fading each one by its remaining
-//! lifetime.
+//! renderer: spawn particles in [`Process::process`] and advance them each
+//! frame with [`ParticleSystem::update`] under a constant gravity. Draw
+//! them by putting the system in the node's [`Shape::Particles`] shape —
+//! the batch is then drawn in the node's local space, transformed,
+//! scaled, and tinted by the node — or, for batches that live directly in
+//! the window's user space, with the deprecated immediate
+//! [`Canvas::particles`] draw; either way each particle fades by its
+//! remaining lifetime.
 //!
 //! Randomness comes from [`Rng`], a small seeded splitmix64 generator:
 //! seed it from the clock for a different stream on each run, or fix the
@@ -228,6 +232,16 @@ impl Canvas {
     /// The whole batch shares one `color` and one `z` — per-particle color
     /// needs one batch per color (or per-particle [`Canvas::circle`] calls,
     /// which each take their own draw call).
+    ///
+    /// The positions are in the canvas's user space — the window, not any
+    /// node: no transform, scale, or modulate of any scene node applies to
+    /// the batch. To draw particles that follow a node (transformed,
+    /// scaled, and tinted by it), give the node a
+    /// [`Shape::Particles`] shape instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "give the node a `Shape::Particles` shape instead: the batch is drawn in the node's local space, with the node's world transform, scale, and composed modulate applied. Keep this method only for batches that live directly in the window's user space, with no node to attach them to"
+    )]
     pub fn particles(&mut self, particles: &[Particle], color: Color, z: f32) {
         if particles.is_empty() {
             return;
@@ -235,15 +249,7 @@ impl Canvas {
         let mut data = Vec::with_capacity(particles.len() * 16);
         for p in particles {
             let [px, py] = self.user_to_pixels(p.pos[0], p.pos[1]);
-            let life = if p.max_life > 0.0 {
-                (p.life / p.max_life).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            // One `vec4<f32>` per particle: (px, py, size, life fraction).
-            for v in [px, py, p.size.max(0.0), life] {
-                data.extend_from_slice(&v.to_le_bytes());
-            }
+            data.extend_from_slice(&particle_instance(p, px, py, p.size));
         }
         self.draws.push(Draw::Particles {
             data,
@@ -285,7 +291,10 @@ impl Canvas {
     /// color is the channel-wise product of the modulates on the path from
     /// the root.
     /// Every node with a shape draws it (in the node's own local space)
-    /// before its children, so parents paint under their descendants.
+    /// before its children — when the shape is a
+    /// [`Shape::Particles`] batch, it is transformed, scaled, and tinted by
+    /// the node, at the node's composed order — so parents paint under
+    /// their descendants.
     ///
     /// The scene's root subtree joins the base group — the same group as
     /// the immediate draw methods — so its shapes interleave with the
@@ -449,8 +458,8 @@ impl Canvas {
 }
 
 /// Draws one [`SceneNode`] and its subtree into `draws`, depth-first: the
-/// node's shape (if any) before its children, so parents paint under their
-/// descendants.
+/// node's shape (if any — which may itself be a [`Shape::Particles`] batch)
+/// before its children, so parents paint under their descendants.
 ///
 /// `parent` is the node's ancestors' world transform in user space, `order`
 /// their accumulated draw order, and `modulate` their accumulated color
@@ -495,7 +504,7 @@ fn draw_node(
                 center,
                 radius,
                 color,
-            } => Draw::Shape {
+            } => Some(Draw::Shape {
                 world: world.compose(&user_to_pixel),
                 center: *center,
                 params: [(*radius).max(0.0), 0.0],
@@ -503,12 +512,12 @@ fn draw_node(
                 aa,
                 color: color.mul(modulate),
                 z: order,
-            },
+            }),
             Shape::Rectangle {
                 center,
                 extent,
                 color,
-            } => Draw::Shape {
+            } => Some(Draw::Shape {
                 world: world.compose(&user_to_pixel),
                 center: *center,
                 params: [extent[0].max(0.0), extent[1].max(0.0)],
@@ -516,7 +525,7 @@ fn draw_node(
                 aa,
                 color: color.mul(modulate),
                 z: order,
-            },
+            }),
             // The sprite's local space is centered on the origin, one
             // texture pixel per scene pixel, so its extent is the texture
             // size.
@@ -526,7 +535,7 @@ fn draw_node(
                 height,
                 color,
                 alpha,
-            } => Draw::Sprite {
+            } => Some(Draw::Sprite {
                 world: world.compose(&user_to_pixel),
                 data: data.clone(),
                 size: [(*width as f32).max(0.0), (*height as f32).max(0.0)],
@@ -536,7 +545,7 @@ fn draw_node(
                 alpha: *alpha,
                 uv_rect: [0.0, 0.0, 1.0, 1.0],
                 z: order,
-            },
+            }),
             // Text is recorded in user space; `Canvas::expand_text` lays it
             // out and turns each glyph into a sprite quad before the frame
             // is rendered.
@@ -546,7 +555,7 @@ fn draw_node(
                 size,
                 color,
                 alpha,
-            } => Draw::Text {
+            } => Some(Draw::Text {
                 world,
                 font: font.clone(),
                 text: text.clone(),
@@ -554,14 +563,54 @@ fn draw_node(
                 color: color.mul(modulate),
                 alpha: *alpha,
                 z: order,
-            },
+            }),
             // The background ignores its transform: it is recorded in call
             // order and becomes the frame's clear color at render time.
-            Shape::Background { color } => Draw::Background {
+            Shape::Background { color } => Some(Draw::Background {
                 color: color.mul(modulate),
-            },
+            }),
+            // The particles ride the node's world transform and scale, are
+            // tinted by `color` times the composed modulate, and draw at the
+            // node's composed order — one instanced draw, just after the
+            // node's own shape (if any) and before its children.
+            Shape::Particles { system, color } => {
+                if system.is_empty() {
+                    // Like an empty `Canvas::particles` call: nothing to
+                    // draw.
+                    None
+                } else {
+                    // The node's local space to the shader's pixel space,
+                    // like the shapes' `world.compose(&user_to_pixel)`.
+                    let to_pixel = world.compose(&user_to_pixel);
+                    // The world scale as a uniform radius factor: the
+                    // geometric mean of the two axis scales — exact under a
+                    // uniform scale, area-preserving under a non-uniform
+                    // one, where a circle cannot be stretched into an
+                    // ellipse.
+                    let [sx, sy] = world.scales();
+                    let radius_scale = (sx * sy).sqrt();
+                    let mut data = Vec::with_capacity(system.len() * 16);
+                    for p in &system.particles {
+                        let [px, py] = to_pixel.apply(p.pos);
+                        data.extend_from_slice(&particle_instance(
+                            p,
+                            px,
+                            py,
+                            p.size * radius_scale,
+                        ));
+                    }
+                    Some(Draw::Particles {
+                        data,
+                        count: system.len() as u32,
+                        color: color.mul(modulate),
+                        z: order,
+                    })
+                }
+            }
         };
-        draws.push(draw);
+        if let Some(draw) = draw {
+            draws.push(draw);
+        }
     }
     for child in &node.children {
         draw_node(user_to_pixel, child, &world, order, modulate, draws);
@@ -715,7 +764,8 @@ fn check_layer_repeat_extent(node: &SceneNode, parent: &Transform, repeat: [f32;
 
 /// The shape's box in its node's local space — its kind, its center, and
 /// its half extents — or `None` for shapes that never draw
-/// (`Shape::Background`) or cannot be measured (a broken font).
+/// (`Shape::Background`) or cannot be measured (a broken font, or a live
+/// particle batch, whose extent is dynamic).
 ///
 /// A text block is its laid-out width by its `ascent + descent`, centered
 /// on the node's origin like its glyphs (see `expand_text_list`).
@@ -742,6 +792,11 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
         }
         // A background never draws; nothing to measure.
         Shape::Background { .. } => None,
+        // A particle batch has no fixed local box: its particles move,
+        // spawn, and die every frame, so its extent is dynamic and cannot
+        // be measured. A batch in a repeating layer therefore skips the
+        // period-overflow check.
+        Shape::Particles { .. } => None,
     }
 }
 
@@ -1061,4 +1116,278 @@ pub fn run_configured<P: Process>(
 
     log::info!("event loop finished");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The user-to-pixel transform of a `(100, 100)` canvas:
+    /// `(x, y) -> (x + 50, 50 - y)`.
+    fn pixel_map() -> Transform {
+        Transform::scale(1.0, -1.0).compose(&Transform::translate(50.0, 50.0))
+    }
+
+    /// A particle at `pos` with a full lifetime of `life` seconds (its
+    /// `max_life` is its `life`) and the given `size`.
+    fn particle(pos: [f32; 2], life: f32, size: f32) -> Particle {
+        Particle {
+            pos,
+            vel: [0.0, 0.0],
+            life,
+            max_life: life,
+            size,
+        }
+    }
+
+    /// The fields of a particle batch draw.
+    struct Batch<'a> {
+        data: &'a [u8],
+        count: u32,
+        color: Color,
+        z: f32,
+    }
+
+    /// The node's particle draw: panics if the node drew anything but
+    /// exactly one particle batch.
+    fn the_batch<'a>(draws: &'a [Draw]) -> Batch<'a> {
+        match draws {
+            [Draw::Particles {
+                data,
+                count,
+                color,
+                z,
+            }] => Batch {
+                data,
+                count: *count,
+                color: *color,
+                z: *z,
+            },
+            other => panic!("expected one particle draw, got {other:?}"),
+        }
+    }
+
+    /// Reads the little-endian float at byte offset `i * 4` of the packed
+    /// instance data of the batch.
+    fn instance_f32(batch: &Batch, particle: usize, component: usize) -> f32 {
+        let start = particle * 16 + component * 4;
+        f32::from_le_bytes(batch.data[start..start + 4].try_into().unwrap())
+    }
+
+    /// A node with one particle at `pos`, drawn alone at the canvas origin.
+    fn draw_one(node: &SceneNode, draws: &mut Vec<Draw>) {
+        draw_node(pixel_map(), node, &Transform::identity(), 0.0, WHITE, draws);
+    }
+
+    #[test]
+    fn node_particles_follow_the_node_world_transform() {
+        // A node translated to (10, 20) with a particle at local (5, 5):
+        // the particle lands at user (15, 25), pixel (65, 25).
+        let node = SceneNode {
+            transform: Transform::translate(10.0, 20.0),
+            shape: Some(Shape::Particles {
+                system: ParticleSystem {
+                    particles: vec![particle([5.0, 5.0], 4.0, 2.0)],
+                },
+                color: WHITE,
+            }),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        let batch = the_batch(&draws);
+        assert_eq!(batch.count, 1);
+        assert_eq!(instance_f32(&batch, 0, 0), 65.0);
+        assert_eq!(instance_f32(&batch, 0, 1), 25.0);
+        // The size is unscaled, the life fraction is one.
+        assert_eq!(instance_f32(&batch, 0, 2), 2.0);
+        assert_eq!(instance_f32(&batch, 0, 3), 1.0);
+    }
+
+    #[test]
+    fn node_particles_rotate_with_the_node() {
+        // A node rotated a quarter turn (counter-clockwise, y up) sends
+        // local (10, 0) to (0, 10), pixel (50, 40); a rotation keeps the
+        // scale factors at one, so the radius is unscaled.
+        let node = SceneNode {
+            transform: Transform::rotate(std::f32::consts::FRAC_PI_2),
+            shape: Some(Shape::Particles {
+                system: ParticleSystem {
+                    particles: vec![particle([10.0, 0.0], 4.0, 3.0)],
+                },
+                color: WHITE,
+            }),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        let batch = the_batch(&draws);
+        assert_eq!(instance_f32(&batch, 0, 0), 50.0);
+        assert_eq!(instance_f32(&batch, 0, 1), 40.0);
+        assert_eq!(instance_f32(&batch, 0, 2), 3.0);
+    }
+
+    #[test]
+    fn node_particles_scale_the_radius() {
+        // A uniform world scale of 2 doubles the radius.
+        let node = SceneNode {
+            scale: [2.0, 2.0],
+            shape: Some(Shape::Particles {
+                system: ParticleSystem {
+                    particles: vec![particle([0.0, 0.0], 4.0, 3.0)],
+                },
+                color: WHITE,
+            }),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        let batch = the_batch(&draws);
+        assert_eq!(instance_f32(&batch, 0, 2), 6.0);
+    }
+
+    #[test]
+    fn node_particles_nonuniform_scale_preserves_area() {
+        // A world scale of (2, 8) has a geometric mean of 4, so the radius
+        // is multiplied by 4 — the particle's area is preserved.
+        let node = SceneNode {
+            scale: [2.0, 8.0],
+            shape: Some(Shape::Particles {
+                system: ParticleSystem {
+                    particles: vec![particle([0.0, 0.0], 4.0, 3.0)],
+                },
+                color: WHITE,
+            }),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        let batch = the_batch(&draws);
+        assert_eq!(instance_f32(&batch, 0, 2), 12.0);
+    }
+
+    #[test]
+    fn node_particles_take_the_shape_color_times_the_composed_modulate() {
+        // A parent with modulate (0.5, 0.5, 0.5, 1) and order 2, a child
+        // with a particle shape of base color (1, 1, 0.5, 1), modulate
+        // (1, 0.5, 0.25, 1), and order 3: the composed modulate is
+        // (0.5, 0.25, 0.125, 1), so the batch is tinted
+        // (0.5, 0.25, 0.0625, 1) and draws at order 5.
+        let mut parent = SceneNode {
+            modulate: Color {
+                r: 0.5,
+                g: 0.5,
+                b: 0.5,
+                a: 1.0,
+            },
+            order: 2.0,
+            ..Default::default()
+        };
+        let child = SceneNode {
+            modulate: Color {
+                r: 1.0,
+                g: 0.5,
+                b: 0.25,
+                a: 1.0,
+            },
+            order: 3.0,
+            shape: Some(Shape::Particles {
+                system: ParticleSystem {
+                    particles: vec![particle([0.0, 0.0], 4.0, 1.0)],
+                },
+                color: Color {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 0.5,
+                    a: 1.0,
+                },
+            }),
+            ..Default::default()
+        };
+        parent.children.push(Box::new(child));
+        let mut draws = Vec::new();
+        draw_one(&parent, &mut draws);
+        let batch = the_batch(&draws);
+        assert_eq!(
+            batch.color,
+            Color {
+                r: 0.5,
+                g: 0.25,
+                b: 0.0625,
+                a: 1.0
+            }
+        );
+        assert_eq!(batch.z, 5.0);
+    }
+
+    #[test]
+    fn node_particles_empty_system_draws_nothing() {
+        // A particle shape with no live particles produces no draw.
+        let node = SceneNode {
+            shape: Some(Shape::Particles {
+                system: ParticleSystem::new(),
+                color: WHITE,
+            }),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        assert!(draws.is_empty());
+    }
+
+    #[test]
+    fn node_particles_paint_between_shape_and_children() {
+        // A grandparent with a circle, its child with a particle shape, and
+        // that child's child with a rectangle: the draws land in tree order
+        // — grandparent's shape, then the particle batch, then the child's
+        // shape — all at the same z, so the stable z-sort keeps exactly this
+        // order.
+        let grandparent_child = SceneNode {
+            shape: Some(Shape::Rectangle {
+                center: [0.0, 0.0],
+                extent: [2.0, 2.0],
+                color: Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
+            }),
+            ..Default::default()
+        };
+        let mut parent = SceneNode {
+            shape: Some(Shape::Particles {
+                system: ParticleSystem {
+                    particles: vec![particle([0.0, 0.0], 4.0, 1.0)],
+                },
+                color: WHITE,
+            }),
+            ..Default::default()
+        };
+        parent.children.push(Box::new(grandparent_child));
+        let mut grandparent = SceneNode {
+            shape: Some(Shape::Circle {
+                center: [0.0, 0.0],
+                radius: 4.0,
+                color: Color {
+                    r: 1.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0,
+                },
+            }),
+            ..Default::default()
+        };
+        grandparent.children.push(Box::new(parent));
+        let mut draws = Vec::new();
+        draw_one(&grandparent, &mut draws);
+        assert_eq!(draws.len(), 3);
+        assert!(matches!(&draws[0], Draw::Shape { .. }));
+        assert!(matches!(&draws[1], Draw::Particles { .. }));
+        assert!(matches!(&draws[2], Draw::Shape { .. }));
+        // The whole subtree drew at the composed order 0.
+        for draw in &draws {
+            assert_eq!(draw.z(), 0.0);
+        }
+    }
 }

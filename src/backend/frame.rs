@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::objects::*;
+use crate::particles::Particle;
 
 /// The frame's clear color when no [`Shape::Background`] is drawn.
 pub(crate) const DEFAULT_BACKGROUND: Color = Color {
@@ -428,4 +429,25 @@ pub(crate) fn particles_uniform_data(size: [f32; 2], color: Color) -> Vec<u8> {
     write_f32_at(&mut data, 24, color.b);
     write_f32_at(&mut data, 28, color.a);
     data
+}
+
+/// Packs one particle of a [`Draw::Particles`] batch: four little-endian
+/// floats, 16 bytes — the pixel position `(px, py)`, the pixel radius, and
+/// the remaining life fraction — in the layout `particles.wgsl` reads as
+/// `array<vec4<f32>>`.
+///
+/// The life fraction is clamped to `0.0..=1.0` (and `0.0` for a
+/// `max_life <= 0`), and a negative radius is clamped to `0.0`.
+pub(crate) fn particle_instance(p: &Particle, px: f32, py: f32, size: f32) -> [u8; 16] {
+    let life = if p.max_life > 0.0 {
+        (p.life / p.max_life).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let mut out = [0u8; 16];
+    out[0..4].copy_from_slice(&px.to_le_bytes());
+    out[4..8].copy_from_slice(&py.to_le_bytes());
+    out[8..12].copy_from_slice(&size.max(0.0).to_le_bytes());
+    out[12..16].copy_from_slice(&life.to_le_bytes());
+    out
 }

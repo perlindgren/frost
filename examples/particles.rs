@@ -98,8 +98,13 @@ impl frost::Process for Demo {
 
         // Draw the whole system in one batched (instanced) draw call: each
         // particle is a circle whose alpha is its remaining life fraction,
-        // so it fades out as it dies.
-        ctx.particles(&self.system.particles, COLOR, Z);
+        // so it fades out as it dies. The fountain is a free batch in the
+        // window's user space, so it stays on the (deprecated) immediate
+        // particle draw instead of riding a node's transform.
+        #[allow(deprecated)]
+        {
+            ctx.particles(&self.system.particles, COLOR, Z);
+        }
         // The source, behind the particles.
         ctx.circle(source[0], source[1], SOURCE, COLOR, 0.5);
 
