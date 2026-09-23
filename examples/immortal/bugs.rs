@@ -185,6 +185,27 @@ struct Bug {
     spawn: [f32; 2],
 }
 
+impl Bug {
+    /// Reset this bug to a fresh life at its spawn spot — the respawn
+    /// after a death: position, growth, facing and walk frame start
+    /// over and its health returns to [HITS_TO_KILL], while its home,
+    /// park spot, spawn spot, speed and wobble are kept.
+    fn revive(&mut self) {
+        self.pos = self.spawn;
+        self.grow = 0.0;
+        self.vel = [0.0, 0.0];
+        self.facing = 1.0;
+        self.placed = false;
+        self.walk = 0.0;
+        self.frame = 0;
+        self.shown = u8::MAX;
+        self.hits = HITS_TO_KILL;
+        self.parked = 0.0;
+        self.arrived = false;
+        self.hit_cooldown = 0.0;
+    }
+}
+
 /// The whole swarm: the spawned prefix of the scene's bug slot pool.
 pub struct Bugs {
     /// The spawned bugs, in spawn order.
@@ -265,19 +286,14 @@ impl Bugs {
     /// `anchors` are the plant root positions in user space (in plant
     /// order) and `active` is how many of those plants have started
     /// growing; each newly active plant receives its batch of
-    /// [BUGS_PER_PLANT] bugs at points inside the hull of all the roots.
-    /// Batches are counted per plant rather than by population, so a
-    /// spray-killed bug never triggers a replacement batch. Dying bugs
-    /// tick their [Bug::dying] clock — bouncing up off the grass and
-    /// flipping over in the air while they bounce, evaporating through
-    /// the grass once they have landed on their back — and enter their
-    /// respawn delay when the clock reaches [BOUNCE_TIME] + [SINK_TIME];
-    /// bugs in the delay count it down and, when it ends, pop back up at
-    /// their spawn spot as fresh, fully healed bugs. Each bug's
-    /// [HIT_COOLDOWN] runs down here, so a wounded bug takes its next
-    /// hit only after the cooldown has elapsed, and a bug parked at its
-    /// destination recovers one hit of health every [REGEN_TIME] seconds,
-    /// capped at [MAX_HEALTH] ([Bug::parked]).
+    /// [BUGS_PER_PLANT] bugs at points inside the hull of all the roots
+    /// ([spawn_batches]). Batches are counted per plant rather than by
+    /// population, so a spray-killed bug never triggers a replacement
+    /// batch. Then every bug steps its frame in pool order
+    /// ([step_bug]): its hit cooldown runs down, and it counts down its
+    /// respawn delay, ticks its death clock, grows out of the grass, or
+    /// walks and parks ([step_move]); the arrivals are checked against
+    /// the whole swarm's end-of-frame positions ([arrival_tjatters]).
     ///
     /// Returns the [StepEvents] for this frame: the indices of the
     /// tjatter clips to play (one per bug that reached its destination
@@ -296,7 +312,24 @@ impl Bugs {
         // The plopp clip index for every bug that pops up out of the
         // grass this frame, batch spawns and respawns alike.
         let mut plops = Vec::new();
+        self.spawn_batches(anchors, active, &mut plops);
 
+        // The bugs that reach their destination this frame, with their
+        // destinations: the arrival tjatter check runs after the loop,
+        // against the whole swarm's end-of-frame positions.
+        let mut arrivals: Vec<(usize, [f32; 2])> = Vec::new();
+        for i in 0..self.bugs.len() {
+            self.step_bug(i, dt, anchors, &mut plops, &mut arrivals);
+        }
+
+        let tjatters = self.arrival_tjatters(&arrivals);
+        StepEvents { tjatters, plops }
+    }
+
+    /// Deliver each newly active plant its batch of [BUGS_PER_PLANT]
+    /// bugs, at random points inside the hull of all the roots, one
+    /// random plopp clip into `plops` per pop-up.
+    fn spawn_batches(&mut self, anchors: &[[f32; 2]], active: usize, plops: &mut Vec<usize>) {
         while self.plants_done < active.min(anchors.len()) {
             let home = self.plants_done;
             self.plants_done += 1;
@@ -337,141 +370,171 @@ impl Bugs {
                 plops.push((self.rng.next_f32() * 3.0) as usize);
             }
         }
+    }
 
-        // The bugs that reach their destination this frame, with their
-        // destinations: the arrival tjatter check runs after the loop,
-        // against the whole swarm's end-of-frame positions.
-        let mut arrivals: Vec<(usize, [f32; 2])> = Vec::new();
-        for (i, bug) in self.bugs.iter_mut().enumerate() {
-            // The hit cooldown runs down every frame, so a wounded bug
-            // takes its next hit only after [HIT_COOLDOWN].
-            if bug.hit_cooldown > 0.0 {
-                bug.hit_cooldown = (bug.hit_cooldown - dt).max(0.0);
-            }
-
-            // A dead bug sits out for its random respawn delay; when it
-            // ends, the bug pops back up at its spawn spot as a fresh
-            // bug — same speed, park spot and first steps as the first
-            // time.
-            if let Some(r) = bug.respawn {
-                if r <= dt {
-                    bug.respawn = None;
-                    bug.pos = bug.spawn;
-                    bug.grow = 0.0;
-                    bug.vel = [0.0, 0.0];
-                    bug.facing = 1.0;
-                    bug.placed = false;
-                    bug.walk = 0.0;
-                    bug.frame = 0;
-                    bug.shown = u8::MAX;
-                    bug.hits = HITS_TO_KILL;
-                    bug.parked = 0.0;
-                    bug.arrived = false;
-                    bug.hit_cooldown = 0.0;
-                    // The bug pops back up out of the grass: one random
-                    // plopp clip.
-                    plops.push((self.rng.next_f32() * 3.0) as usize);
-                } else {
-                    bug.respawn = Some(r - dt);
-                }
-                continue;
-            }
-
-            // Sprayed: the death clock runs. While the bounce is in
-            // flight the bug holds its spot — position, growth,
-            // facing and walk frame all frozen; it rides the
-            // [bounce_lift] arc up off the grass and flips over in the
-            // air (both in [Bugs::layout]), then, landed on its back,
-            // the center sinks through the grass while [Bugs::layout]
-            // shrinks the sprite to nothing; when the clock runs out,
-            // the bug enters its respawn delay.
-            if let Some(dead) = bug.dying {
-                let t = dead + dt;
-                if t >= BOUNCE_TIME + SINK_TIME {
-                    bug.dying = None;
-                    bug.respawn = Some(self.rng.in_range(RESPAWN_MIN, RESPAWN_MAX));
-                    continue;
-                }
-                bug.dying = Some(t);
-                if t >= BOUNCE_TIME {
-                    bug.pos[1] -= (self.ground / SINK_TIME) * dt;
-                }
-                continue;
-            }
-            bug.grow = (bug.grow + dt).min(GROW_TIME);
-            if bug.grow < GROW_TIME {
-                // Still growing out of the grass: hold the spawn spot.
-                continue;
-            }
-            let target = [
-                anchors[bug.home][0] + bug.idle[0],
-                anchors[bug.home][1] + bug.idle[1] + self.ground,
-            ];
-            let dx = target[0] - bug.pos[0];
-            let dy = target[1] - bug.pos[1];
-            let dist = (dx * dx + dy * dy).sqrt();
-            let next = if dist > ARRIVE {
-                // Swarm walk: advance toward the wobbled destination,
-                // never more than one stride this frame.
-                let wob = (self.t * bug.wob_freq + bug.wob_phase).sin() * bug.wob_amp;
-                let dest = [target[0] - dy / dist * wob, target[1] + dx / dist * wob];
-                let k = ((bug.speed * dt) / dist).min(1.0);
-                [
-                    bug.pos[0] + (dest[0] - bug.pos[0]) * k,
-                    bug.pos[1] + (dest[1] - bug.pos[1]) * k,
-                ]
-            } else {
-                // Parked: a tiny in-place sway (below FACING_EPS).
-                let next = [
-                    target[0] + (self.t * bug.wob_freq + bug.wob_phase).sin() * 1.5,
-                    target[1],
-                ];
-                // A bug at its destination recovers one hit of health
-                // every [REGEN_TIME] seconds, up to [MAX_HEALTH]; the
-                // cycle is consumed whether or not it pays out, so the
-                // counter never runs up while capped.
-                bug.parked += dt;
-                while bug.parked >= REGEN_TIME {
-                    bug.parked -= REGEN_TIME;
-                    if bug.hits < MAX_HEALTH {
-                        bug.hits += 1;
-                    }
-                }
-                // The first parked frame is the arrival: the bug has just
-                // reached its destination (a bug born on its spot counts
-                // too — it parks from its first grown frame).
-                if !bug.arrived {
-                    bug.arrived = true;
-                    arrivals.push((i, target));
-                }
-                next
-            };
-            if dt > 0.0 && bug.placed {
-                bug.vel = [(next[0] - bug.pos[0]) / dt, (next[1] - bug.pos[1]) / dt];
-            } else {
-                bug.vel = [bug.speed, 0.0];
-                bug.placed = true;
-            }
-            bug.pos = next;
-
-            if bug.vel[0] > FACING_EPS {
-                bug.facing = 1.0;
-            } else if bug.vel[0] < -FACING_EPS {
-                bug.facing = -1.0;
-            }
-
-            if dist > ARRIVE {
-                bug.walk += dt * bug.step_rate;
-                bug.frame = (bug.walk as u32 % 3) as u8;
-            }
+    /// Step one bug's frame, in the order its state machine runs: its
+    /// [HIT_COOLDOWN] runs down every frame; a bug in its respawn delay
+    /// counts it down and pops back up at its spawn spot as a fresh,
+    /// fully healed bug when it ends ([Bug::revive]); a dying bug ticks
+    /// its [Bug::dying] clock and enters its respawn delay when it runs
+    /// out; a bug still growing out of the grass holds its spawn spot;
+    /// and a grown bug moves — [step_move] — after which its velocity,
+    /// facing and walk frame update from the move. A pop-up reports its
+    /// plopp into `plops`, an arrival its index and destination into
+    /// `arrivals`.
+    fn step_bug(
+        &mut self,
+        i: usize,
+        dt: f32,
+        anchors: &[[f32; 2]],
+        plops: &mut Vec<usize>,
+        arrivals: &mut Vec<(usize, [f32; 2])>,
+    ) {
+        let bug = &mut self.bugs[i];
+        // The hit cooldown runs down every frame, so a wounded bug
+        // takes its next hit only after [HIT_COOLDOWN].
+        if bug.hit_cooldown > 0.0 {
+            bug.hit_cooldown = (bug.hit_cooldown - dt).max(0.0);
         }
 
-        // An arrival chatters — a random tjatter clip — only if another
-        // bug is on the grass at its destination: anything that is not
-        // dying and not sitting out a respawn delay, within
-        // [TJATTER_RANGE] of it.
+        // A dead bug sits out for its random respawn delay; when it
+        // ends, the bug pops back up at its spawn spot as a fresh
+        // bug — same speed, park spot and first steps as the first
+        // time.
+        if let Some(r) = bug.respawn {
+            if r <= dt {
+                bug.respawn = None;
+                bug.revive();
+                // The bug pops back up out of the grass: one random
+                // plopp clip.
+                plops.push((self.rng.next_f32() * 3.0) as usize);
+            } else {
+                bug.respawn = Some(r - dt);
+            }
+            return;
+        }
+
+        // Sprayed: the death clock runs. While the bounce is in
+        // flight the bug holds its spot — position, growth,
+        // facing and walk frame all frozen; it rides the
+        // [bounce_lift] arc up off the grass and flips over in the
+        // air (both in [Bugs::layout]), then, landed on its back,
+        // the center sinks through the grass while [Bugs::layout]
+        // shrinks the sprite to nothing; when the clock runs out,
+        // the bug enters its respawn delay.
+        if let Some(dead) = bug.dying {
+            let t = dead + dt;
+            if t >= BOUNCE_TIME + SINK_TIME {
+                bug.dying = None;
+                bug.respawn = Some(self.rng.in_range(RESPAWN_MIN, RESPAWN_MAX));
+                return;
+            }
+            bug.dying = Some(t);
+            if t >= BOUNCE_TIME {
+                bug.pos[1] -= (self.ground / SINK_TIME) * dt;
+            }
+            return;
+        }
+        bug.grow = (bug.grow + dt).min(GROW_TIME);
+        if bug.grow < GROW_TIME {
+            // Still growing out of the grass: hold the spawn spot.
+            return;
+        }
+        let (next, dist) =
+            Self::step_move(bug, self.t, self.ground, dt, anchors, i, arrivals);
+        if dt > 0.0 && bug.placed {
+            bug.vel = [(next[0] - bug.pos[0]) / dt, (next[1] - bug.pos[1]) / dt];
+        } else {
+            bug.vel = [bug.speed, 0.0];
+            bug.placed = true;
+        }
+        bug.pos = next;
+
+        if bug.vel[0] > FACING_EPS {
+            bug.facing = 1.0;
+        } else if bug.vel[0] < -FACING_EPS {
+            bug.facing = -1.0;
+        }
+
+        if dist > ARRIVE {
+            bug.walk += dt * bug.step_rate;
+            bug.frame = (bug.walk as u32 % 3) as u8;
+        }
+    }
+
+    /// One grown bug's move for the frame, toward its park spot: the
+    /// target is the home root plus the bug's park offset, lifted onto
+    /// the grass. Past [ARRIVE] the bug swarm-walks — straight toward
+    /// the wobbled destination (the perpendicular sinusoid of
+    /// [Bug::wob_amp], [Bug::wob_freq] and [Bug::wob_phase] on the
+    /// swarm clock `t`), never more than one stride this frame; within
+    /// [ARRIVE] it parks, sways in place (below [FACING_EPS]), earns
+    /// its [REGEN_TIME] health, and registers its first parked frame —
+    /// the arrival — in `arrivals`. Returns the new position and the
+    /// distance from the bug to the target at the frame's start.
+    fn step_move(
+        bug: &mut Bug,
+        t: f32,
+        ground: f32,
+        dt: f32,
+        anchors: &[[f32; 2]],
+        i: usize,
+        arrivals: &mut Vec<(usize, [f32; 2])>,
+    ) -> ([f32; 2], f32) {
+        let target = [
+            anchors[bug.home][0] + bug.idle[0],
+            anchors[bug.home][1] + bug.idle[1] + ground,
+        ];
+        let dx = target[0] - bug.pos[0];
+        let dy = target[1] - bug.pos[1];
+        let dist = (dx * dx + dy * dy).sqrt();
+        let next = if dist > ARRIVE {
+            // Swarm walk: advance toward the wobbled destination,
+            // never more than one stride this frame.
+            let wob = (t * bug.wob_freq + bug.wob_phase).sin() * bug.wob_amp;
+            let dest = [target[0] - dy / dist * wob, target[1] + dx / dist * wob];
+            let k = ((bug.speed * dt) / dist).min(1.0);
+            [
+                bug.pos[0] + (dest[0] - bug.pos[0]) * k,
+                bug.pos[1] + (dest[1] - bug.pos[1]) * k,
+            ]
+        } else {
+            // Parked: a tiny in-place sway (below FACING_EPS).
+            let next = [
+                target[0] + (t * bug.wob_freq + bug.wob_phase).sin() * 1.5,
+                target[1],
+            ];
+            // A bug at its destination recovers one hit of health
+            // every [REGEN_TIME] seconds, up to [MAX_HEALTH]; the
+            // cycle is consumed whether or not it pays out, so the
+            // counter never runs up while capped.
+            bug.parked += dt;
+            while bug.parked >= REGEN_TIME {
+                bug.parked -= REGEN_TIME;
+                if bug.hits < MAX_HEALTH {
+                    bug.hits += 1;
+                }
+            }
+            // The first parked frame is the arrival: the bug has just
+            // reached its destination (a bug born on its spot counts
+            // too — it parks from its first grown frame).
+            if !bug.arrived {
+                bug.arrived = true;
+                arrivals.push((i, target));
+            }
+            next
+        };
+        (next, dist)
+    }
+
+    /// The arrival tjatter check, against the whole swarm's end-of-frame
+    /// positions: an arrival chatters — a random tjatter clip — only if
+    /// another bug is on the grass at its destination: anything that is
+    /// not dying and not sitting out a respawn delay, within
+    /// [TJATTER_RANGE] of it.
+    fn arrival_tjatters(&mut self, arrivals: &[(usize, [f32; 2])]) -> Vec<usize> {
         let mut tjatters = Vec::new();
-        for (i, dest) in arrivals {
+        for &(i, dest) in arrivals {
             let company = self.bugs.iter().enumerate().any(|(j, b)| {
                 j != i
                     && b.dying.is_none()
@@ -486,7 +549,7 @@ impl Bugs {
                 tjatters.push((self.rng.next_f32() * 3.0) as usize);
             }
         }
-        StepEvents { tjatters, plops }
+        tjatters
     }
 
     /// Land one mist hit at `p`: every live bug within half the rendered
