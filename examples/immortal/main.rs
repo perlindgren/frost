@@ -175,12 +175,13 @@
 //! ```
 
 mod assets_load;
+mod basket;
 mod bugs;
 mod plant;
 mod tomato;
 mod vipers;
 
-use assets_load::Assets;
+use assets_load::{Assets, Sounds};
 
 /// The window's inner size in logical pixels, via `Config::window_size`.
 /// The grass photo is exactly this size, so it fills the window 1:1.
@@ -223,14 +224,6 @@ const CHILD_TOOL: usize = 7;
 const CHILD_BASKET: usize = 8;
 const CHILD_BADGE: usize = 9;
 const CHILD_HELD_FRUIT: usize = 10;
-
-/// The basket group's children, in draw order — the order in which
-/// [`basket_children`] builds them: the back half under the fruit, the
-/// shapeless fruit container the dropped tomatoes reparent into, and the
-/// front half over the fruit.
-const BASKET_BACK: usize = 0;
-const BASKET_FRUIT: usize = 1;
-const BASKET_FRONT: usize = 2;
 
 /// The plant's fit scale: the full plant spans about 1797 px around the
 /// root joint — its top edge 1614 px above it, its bottom edge 183 px
@@ -506,14 +499,6 @@ fn slot_scale(size: [f32; 2]) -> f32 {
     (w / size[0]).min(h / size[1])
 }
 
-/// `BasketBack.png` / `BasketFront.png`'s texture size in pixels: the two
-/// aligned halves of the harvest basket.
-const BASKET_IMAGE: [f32; 2] = [271.0, 251.0];
-
-/// The clearance the basket keeps from the items panel's right edge, in
-/// pixels.
-const BASKET_GAP: f32 = 24.0;
-
 /// The uniform scale a picked tomato rides at: the plant's fit scale on
 /// the tomato's full growth, so a picked fruit is exactly the size it had
 /// on the plant.
@@ -526,68 +511,6 @@ fn tomato_pick_half(size: [f32; 2]) -> [f32; 2] {
         size[0] * TOMATO_PICK_SCALE / 2.0,
         size[1] * TOMATO_PICK_SCALE / 2.0,
     ]
-}
-
-/// The basket's U, in the basket node's local space (unscaled, y up,
-/// origin at the sprite's center): three invisible axis-aligned boxes —
-/// the left wall, the right wall, and the floor — that hold the dropped
-/// fruit inside the cavity, the mouth left open at the top.
-fn basket_walls() -> [frost::OrientedBox; 3] {
-    [
-        frost::OrientedBox::new([-124.0, 30.0], [16.0, 70.0]),
-        frost::OrientedBox::new([128.0, 30.0], [16.0, 70.0]),
-        frost::OrientedBox::new([2.0, -25.0], [130.0, 15.0]),
-    ]
-}
-
-/// The basket's cavity mouth's x bounds in local space: the inner faces of
-/// the [basket_walls] walls.
-const BASKET_MOUTH_X: (f32, f32) = (-108.0, 112.0);
-
-/// The basket's floor's top in local space: the inner face of the
-/// [basket_walls] bottom box.
-const BASKET_FLOOR: f32 = -10.0;
-
-/// The uniform scale the basket rides at: the same fit the items panel
-/// uses, so the basket keeps its proportions across resizes.
-fn basket_scale(h: f32) -> f32 {
-    (h - 2.0 * MARGIN) / ITEMS_SIZE[1]
-}
-
-/// The basket group's center in window-centered user space, for a window
-/// of the given size: in the bottom left, just right of the items panel —
-/// `BASKET_GAP` clear of its right edge — and `MARGIN` clear of the
-/// bottom border.
-fn basket_center(w: f32, h: f32) -> [f32; 2] {
-    let s = basket_scale(h);
-    [
-        -(w / 2.0) + MARGIN + ITEMS_SIZE[0] * s + BASKET_GAP + BASKET_IMAGE[0] * s / 2.0,
-        -h / 2.0 + MARGIN + BASKET_IMAGE[1] * s / 2.0,
-    ]
-}
-
-/// Whether a drop at the basket-local point `(lx, ly)` is kept: the body's
-/// center is inside the U — the mouth's x range and above the floor. There
-/// is no upper bound: fruit may be dropped above the rim, so it can pile
-/// high.
-fn basket_accepts(lx: f32, ly: f32) -> bool {
-    BASKET_MOUTH_X.0 < lx && lx < BASKET_MOUTH_X.1 && ly > BASKET_FLOOR
-}
-
-/// The basket group's children, in draw order: the back half under the
-/// fruit, the shapeless fruit container the dropped tomatoes reparent into
-/// — piled on top of each other, with no gravity and no tomato-to-tomato
-/// collision — and the front half over the fruit, so a dropped tomato
-/// renders behind the front rim and in front of the back.
-fn basket_children(back: frost::Shape, front: frost::Shape) -> [frost::SceneNode; 3] {
-    let mut children = [
-        frost::SceneNode::default(),
-        frost::SceneNode::default(),
-        frost::SceneNode::default(),
-    ];
-    children[BASKET_BACK].shape = Some(back);
-    children[BASKET_FRONT].shape = Some(front);
-    children
 }
 
 /// Whether the user-space point `p` is inside slot `i`, for the panel node
@@ -713,7 +636,7 @@ const VIPER_IMAGE: [f32; 2] = [198.0, 179.0];
 /// cursor, and one stored tool, mirrored in the held-items panel: the
 /// right-button switch swaps the two, and a left click on a slot swaps the
 /// active tool with the slot's.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Tool {
     /// The watering can: hold the left button to tilt it and pour water.
     WaterCan,
@@ -754,6 +677,23 @@ fn slice_of_slot(slot: usize) -> usize {
 /// into user space by the plant's fit scale.
 fn fall_destination(spawn_y: f32, segment_height: f32) -> f32 {
     spawn_y - PLANT_SCALE * segment_height
+}
+
+/// A tomato plant and its water reserve, kept together: the growth clock
+/// is paced by the reserve — the growth runs at its slowed pace only
+/// while the reserve holds — and the reserve refills from the drops that
+/// fall into the plant's root hitbox.
+struct WateredPlant {
+    /// The plant's growth state: the slices' growth, the blooms, and the
+    /// aging clock.
+    plant: plant::Plant,
+    /// The water reserve, 1.0 (well watered) to 0.0 (dry): drained by
+    /// `dt / (DRAIN_TIME * GROW_SLOWDOWN)` per frame while the plant
+    /// grows, restored by `DROP_WATER` per drop that falls into its root
+    /// hitbox; at 0.0 the growth holds, awaiting water — the ripe
+    /// tomatoes' wait and stale excepted, which run on the aging clock,
+    /// stepped with or without water.
+    water: f32,
 }
 
 struct Demo {
@@ -836,7 +776,7 @@ struct Demo {
     tomato_fg: frost::Shape,
     /// The drops pouring out of the spout: the simulation state, stepped
     /// once per frame: each drop is also matched against the growing
-    /// plants' root hitboxes to restore their water reserves (`waters`).
+    /// plants' root hitboxes to restore the plants' water reserves.
     water: frost::ParticleSystem,
     /// The green spray emitted by the spray can: the simulation state,
     /// stepped once per frame.
@@ -849,23 +789,19 @@ struct Demo {
     /// added each frame and one particle is spawned per whole unit, so the
     /// rate holds at any dt.
     acc: f32,
-    /// The tomato plants on the grass, in growth order: each has its own
-    /// growth clock, and the process steps it only once the previous one
-    /// is fully grown — the first from launch on — and only while its
-    /// water reserve (`waters`) holds, then lays it out on the matching
-    /// child of the plants node (root's [`CHILD_PLANTS`] child), in
-    /// parallel with the
-    /// tool system.
-    plants: [plant::Plant; PLANT_POS.len()],
-    /// The plants' water reserves, in growth order, each from 1.0 (well
-    /// watered) to 0.0 (dry): the process drains a started plant that is
-    /// not yet complete by `dt / (DRAIN_TIME * GROW_SLOWDOWN)` per frame —
-    /// at the growth's
-    /// slowed pace — and restores it by `DROP_WATER` per drop that falls
-    /// into its root hitbox, and a plant at 0.0 stops growing, awaiting
-    /// water — its ripe tomatoes' wait and stale excepted, which run on
-    /// the plants' aging clocks, stepped with or without water.
-    waters: [f32; PLANT_POS.len()],
+    /// The tomato plants and their water reserves on the grass, in growth
+    /// order: each has its own growth clock, and the process steps it
+    /// only once the previous one is fully grown — the first from launch
+    /// on — and only while its water reserve holds, then lays it out on
+    /// the matching child of the plants node (root's [`CHILD_PLANTS`]
+    /// child), in parallel with the tool system; the reserve of a
+    /// started plant that is not yet complete drains by `dt / (DRAIN_TIME
+    /// * GROW_SLOWDOWN)` per frame — at the growth's slowed pace — and
+    /// restores by `DROP_WATER` per drop that falls into its root hitbox,
+    /// and a plant at 0.0 stops growing, awaiting water — its ripe
+    /// tomatoes' wait and stale excepted, which run on the plants' aging
+    /// clocks, stepped with or without water.
+    plants: [WateredPlant; PLANT_POS.len()],
     /// The swarm of vipers buzzing around the flower bench — the row of
     /// plants — in parallel with the tool system and the plants: one
     /// viper per fully grown plant layer, so the swarm grows as the bench
@@ -877,45 +813,17 @@ struct Demo {
     /// plant starts growing, and the swarm steps and lays them out on the
     /// matching child of the bugs node (root's [`CHILD_BUGS`] child).
     bugs: bugs::Bugs,
-    /// The audio output, opened once at startup; the bug tjatter and
-    /// plopp clips play through it.
-    audio: frost::Audio,
-    /// The three bug tjatter clips (low, mid, high), decoded once at
-    /// startup; a bug that reaches its destination while another bug is
-    /// within 50 px of it chatters on one of them, the swarm's random
-    /// pick.
-    tjatters: [frost::Sound; 3],
-    /// The three bug plopp clips (1, 2, 3), decoded once at startup; a
-    /// bug that pops up out of the grass — a batch spawn or a respawn —
-    /// plops on one of them, the swarm's random pick.
-    plops: [frost::Sound; 3],
-    /// The four bug Aj clips (1 to 4), decoded once at startup; every
-    /// time the mist drops a bug's health the bug cries out on one of
-    /// them, the swarm's random pick.
-    ajs: [frost::Sound; 4],
-    /// The bug death clip, `assets/audio/bugsDeath.wav`, decoded once at
-    /// startup; it plays, at the default volume, for every bug a mist hit
-    /// kills.
-    death: frost::Sound,
-    /// The watering sound, `assets/audio/WaterFlowSoft.wav`, decoded once
-    /// at startup; the audio output's one loop, playing while water
-    /// actually pours out of the spout and silenced the frame pouring
-    /// stops.
-    pour: frost::Sound,
-    /// The spray hiss, `assets/audio/Spray.wav`, decoded once at startup;
-    /// it plays, at 0.5 volume, on every fresh press that triggers a
-    /// spray burst.
-    spray_sound: frost::Sound,
+    /// The audio output and every clip the demo plays, decoded once at
+    /// startup: the swarm's tjatter, plopp, and Aj arrays, and the
+    /// singles — the bug death, the watering loop, the spray hiss, and
+    /// the tomato drop — all playing through its device.
+    sounds: Sounds,
     /// Whether the audio output's loop is currently playing the pour
     /// sound: the process flips it on the pour's edges — the watering can
     /// active and fully tilted (rising), pouring ending, the can turning
     /// back upright or the tool switching away (falling) — starting the
     /// loop on the rising edge and stopping it on the falling one.
     pouring: bool,
-    /// The tomato drop clip, `assets/audio/TomatoDrop.wav`, decoded once
-    /// at startup; it plays, at the default volume, on the frame a
-    /// fallen, overgrown tomato reaches its destination.
-    tomato_drop: frost::Sound,
     /// The overgrown tomatoes currently falling to the ground: one entry
     /// per child of the fallen-fruit container, in the same order, added
     /// as the fruits drop and never removed — landed fruits stay where
@@ -968,6 +876,78 @@ impl frost::Process for Demo {
 }
 
 impl Demo {
+    /// Builds the demo's initial state out of the loaded `assets`: the
+    /// mouse holds no tool at all, the tools rest in the items panel's
+    /// slots — mirroring the panel's seeded sprites, the spray can in
+    /// `SPRAY_SLOT`, the watering can in `CAN_SLOT` — the six growth
+    /// clocks start at zero, the six water reserves start full, and the
+    /// swarms are seeded for their first batches.
+    fn new(assets: Assets) -> Demo {
+        // The tools at rest in the items panel's slots, mirroring the
+        // panel's seeded sprites: the spray can in SPRAY_SLOT, the
+        // watering can in CAN_SLOT, the other two slots empty.
+        let mut slots = [None; SLOTS];
+        slots[SPRAY_SLOT] = Some(Tool::SprayCan);
+        slots[CAN_SLOT] = Some(Tool::WaterCan);
+
+        let plant = plant::Plant::new([
+            &assets.plant1,
+            &assets.plant2,
+            &assets.plant3,
+            &assets.plant4,
+            &assets.plant5,
+        ]);
+
+        Demo {
+            mouse: [0.0, 0.0],
+            active: None,
+            held: None,
+            slots,
+            press_slot: None,
+            pressed: false,
+            picking: None,
+            right_pressed: false,
+            angle: 0.0,
+            // The rotation tween starts as a 0→0 tween that never moves;
+            // the first button event replaces it.
+            rotation: frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once),
+            burst: None,
+            showing_spray2: false,
+            can: assets.can,
+            spray1: assets.spray1,
+            spray2: assets.spray2,
+            viper1: assets.viper1,
+            viper2: assets.viper2,
+            // Three bugs per plant, each plant's batch exactly once: the
+            // population climbs 3, 6, …, 18 over the first 75 seconds; a
+            // killed bug pops back up at its spawn spot after a random 5
+            // to 10 second delay.
+            bugs: bugs::Bugs::new([&assets.bug1, &assets.bug2, &assets.bug3]),
+            bug1: assets.bug1,
+            bug2: assets.bug2,
+            bug3: assets.bug3,
+            sounds: assets.sounds,
+            pouring: false,
+            falls: Vec::new(),
+            flower: assets.flower,
+            tomato: assets.tomato,
+            tomato_fg: assets.tomato_fg,
+            water: frost::ParticleSystem::new(),
+            spray: frost::ParticleSystem::new(),
+            rng: frost::Rng::new(),
+            acc: 0.0,
+            // Six plants with six full water reserves, one per slot:
+            // each growth clock starts at zero and the process steps it
+            // when the previous is fully grown, and each plant enters
+            // well watered, the first one draining from launch on.
+            plants: std::array::from_fn(|_| WateredPlant {
+                plant: plant.clone(),
+                water: 1.0,
+            }),
+            vipers: vipers::Vipers::new(VIPER_IMAGE),
+        }
+    }
+
     /// Fits the window's chrome — the grass, the items panel, the
     /// held-items panel, the basket, and the immortality badge — into
     /// whatever size the window has, and returns the plants' root joints
@@ -1007,8 +987,8 @@ impl Demo {
         // of its right edge — and `MARGIN` clear of the bottom border,
         // scaled with the panel's fit so the basket keeps its proportions.
         let basket = &mut ctx.scene().root.children[CHILD_BASKET];
-        let bs = basket_scale(h);
-        let bc = basket_center(w, h);
+        let bs = basket::basket_scale(h);
+        let bc = basket::basket_center(w, h);
         basket.scale = [bs, bs];
         basket.transform = frost::Transform::translate(bc[0], bc[1]);
 
@@ -1056,23 +1036,24 @@ impl Demo {
         let mut active_plants = 0usize;
         let mut grown_layers = 0usize;
         let started: [bool; PLANT_POS.len()] =
-            std::array::from_fn(|i| i == 0 || self.plants[i - 1].fully_grown());
-        for (i, &is_started) in started.iter().enumerate() {
-            if is_started {
+            std::array::from_fn(|i| i == 0 || self.plants[i - 1].plant.fully_grown());
+        for i in 0..PLANT_POS.len() {
+            if started[i] {
                 active_plants += 1;
-                if !self.plants[i].complete() {
-                    self.waters[i] = (self.waters[i] - dt / (DRAIN_TIME * GROW_SLOWDOWN)).max(0.0);
+                if !self.plants[i].plant.complete() {
+                    self.plants[i].water =
+                        (self.plants[i].water - dt / (DRAIN_TIME * GROW_SLOWDOWN)).max(0.0);
                     // The growth clock runs slow, and holds while the
                     // reserve is dry.
-                    if self.waters[i] > 0.0 {
-                        self.plants[i].step(dt / GROW_SLOWDOWN);
+                    if self.plants[i].water > 0.0 {
+                        self.plants[i].plant.step(dt / GROW_SLOWDOWN);
                     }
                 }
                 // The aging clock runs every frame, water or not: ripe
                 // fruits wait and stale on it.
-                self.plants[i].age(dt / GROW_SLOWDOWN);
+                self.plants[i].plant.age(dt / GROW_SLOWDOWN);
             }
-            grown_layers += self.plants[i].grown_layers();
+            grown_layers += self.plants[i].plant.grown_layers();
         }
         (active_plants, grown_layers, started)
     }
@@ -1092,7 +1073,7 @@ impl Demo {
     ) {
         let vipers_node = &mut ctx.scene().root.children[CHILD_VIPERS];
         let centers: [[[f32; 2]; vipers::LAYERS]; PLANT_POS.len()] = std::array::from_fn(|i| {
-            self.plants[i].layer_midpoints().map(|m| {
+            self.plants[i].plant.layer_midpoints().map(|m| {
                 [
                     anchors[i][0] + m[0] * PLANT_SCALE,
                     anchors[i][1] + m[1] * PLANT_SCALE,
@@ -1129,10 +1110,10 @@ impl Demo {
     /// plays one of the plopp clips.
     fn play_bug_events(&mut self, events: &bugs::StepEvents) {
         for clip in &events.tjatters {
-            self.audio.play_once(&self.tjatters[*clip], None);
+            self.sounds.device.play_once(&self.sounds.tjatters[*clip], None);
         }
         for clip in &events.plops {
-            self.audio.play_once(&self.plops[*clip], None);
+            self.sounds.device.play_once(&self.sounds.plops[*clip], None);
         }
     }
 
@@ -1198,7 +1179,7 @@ impl Demo {
                 // upright.
                 if self.burst.is_none() {
                     self.burst = Some(0.0);
-                    self.audio.play_once(&self.spray_sound, Some(0.5));
+                    self.sounds.device.play_once(&self.sounds.spray, Some(0.5));
                     // PingPong is the tween's default: `0 ->
                     // BURST_ANGLE` in `BURST_HALF` seconds and back in the
                     // same time, so the tilting and the return take
@@ -1253,7 +1234,7 @@ impl Demo {
                 self.mouse[0] + TOMATO_PICK_SCALE * ox,
                 self.mouse[1] + TOMATO_PICK_SCALE * oy,
             ];
-            for wall in basket_walls() {
+            for wall in basket::basket_walls() {
                 let wall_box = frost::Collider::Box(frost::OrientedBox::new(
                     [bx + s * wall.center[0], by + s * wall.center[1]],
                     [s * wall.half[0], s * wall.half[1]],
@@ -1285,14 +1266,14 @@ impl Demo {
             let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
             let [hx, hy] = tomato_pick_half(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
             for fruit in
-                &mut ctx.scene().root.children[CHILD_BASKET].children[BASKET_FRUIT].children
+                &mut ctx.scene().root.children[CHILD_BASKET].children[basket::BASKET_FRUIT].children
             {
                 let [tx, ty] = fruit.transform.apply([0.0, 0.0]);
                 let mut body = [
                     bx + s * tx + TOMATO_PICK_SCALE * ox,
                     by + s * ty + TOMATO_PICK_SCALE * oy,
                 ];
-                for wall in basket_walls() {
+                for wall in basket::basket_walls() {
                     let wall_box = frost::Collider::Box(frost::OrientedBox::new(
                         [bx + s * wall.center[0], by + s * wall.center[1]],
                         [s * wall.half[0], s * wall.half[1]],
@@ -1323,7 +1304,7 @@ impl Demo {
     ) {
         let plants_node = &mut ctx.scene().root.children[CHILD_PLANTS];
         for (i, anchor) in anchors.iter().enumerate() {
-            self.plants[i].layout(
+            self.plants[i].plant.layout(
                 &mut plants_node.children[i],
                 *anchor,
                 &self.flower,
@@ -1354,10 +1335,10 @@ impl Demo {
                     let plant_node = &plant_nodes[pi];
                     let tomato = &self.tomato;
                     (0..plant::FLOWER_N).filter_map(move |si| {
-                        if p.is_harvested(si) || !p.overgrown(si) {
+                        if p.plant.is_harvested(si) || !p.plant.overgrown(si) {
                             return None;
                         }
-                        let center = p.tomato_center(
+                        let center = p.plant.tomato_center(
                             si,
                             &plant_node.children[plant::slot_index(si)],
                             tomato,
@@ -1365,7 +1346,8 @@ impl Demo {
                         let world = frost::Transform::scale(PLANT_SCALE, PLANT_SCALE)
                             .compose(&plant_nodes[pi].transform);
                         let spawn = world.apply(center);
-                        let dest_y = fall_destination(spawn[1], p.fall_height(slice_of_slot(si)));
+                        let dest_y =
+                            fall_destination(spawn[1], p.plant.fall_height(slice_of_slot(si)));
                         Some((pi, si, spawn, dest_y))
                     })
                 })
@@ -1375,7 +1357,7 @@ impl Demo {
             let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
             let root = &mut ctx.scene().root;
             for (pi, si, spawn, dest_y) in drops {
-                self.plants[pi].regrow(si);
+                self.plants[pi].plant.regrow(si);
                 // Rehome the pivot — the slot itself stays in the plant's
                 // children, as the picked-fruit paths leave it — out of
                 // the slot, into the fallen-fruit container, at the pick
@@ -1426,7 +1408,7 @@ impl Demo {
                 node.transform = frost::Transform::translate(x, ny);
                 if ny <= fall.dest_y {
                     fall.landed = true;
-                    self.audio.play_once(&self.tomato_drop, None);
+                    self.sounds.device.play_once(&self.sounds.tomato_drop, None);
                 }
             }
         }
@@ -1527,9 +1509,9 @@ impl Demo {
         if pouring != self.pouring {
             self.pouring = pouring;
             if pouring {
-                self.audio.play_loop(&self.pour);
+                self.sounds.device.play_loop(&self.sounds.pour);
             } else {
-                self.audio.stop_loop();
+                self.sounds.device.stop_loop();
             }
         }
 
@@ -1564,11 +1546,11 @@ impl Demo {
         for p in &self.water.particles {
             for (i, anchor) in anchors.iter().enumerate() {
                 if started[i]
-                    && !self.plants[i].complete()
-                    && self.waters[i] < 1.0
+                    && !self.plants[i].plant.complete()
+                    && self.plants[i].water < 1.0
                     && in_root_hitbox(p.pos, *anchor)
                 {
-                    self.waters[i] = (self.waters[i] + DROP_WATER).min(1.0);
+                    self.plants[i].water = (self.plants[i].water + DROP_WATER).min(1.0);
                 }
             }
         }
@@ -1586,10 +1568,10 @@ impl Demo {
         for p in &self.spray.particles {
             let hit = self.bugs.hit_at(p.pos);
             for clip in hit.ajs {
-                self.audio.play_once(&self.ajs[clip], Some(0.35));
+                self.sounds.device.play_once(&self.sounds.ajs[clip], Some(0.35));
             }
             for _ in 0..hit.deaths {
-                self.audio.play_once(&self.death, None);
+                self.sounds.device.play_once(&self.sounds.death, None);
             }
         }
     }
@@ -1640,8 +1622,8 @@ impl Demo {
         // plant itself. The fill grows from the bar's left edge as the
         // reserve refills.
         for (i, anchor) in anchors.iter().enumerate() {
-            if started[i] && !self.plants[i].complete() {
-                let level = self.waters[i];
+            if started[i] && !self.plants[i].plant.complete() {
+                let level = self.plants[i].water;
                 ctx.rectangle(
                     anchor[0],
                     anchor[1] + BAR_LIFT,
@@ -1786,10 +1768,10 @@ impl Demo {
             self.plants.iter().enumerate().find_map(|(pi, p)| {
                 (0..plant::FLOWER_N)
                     .find(|&si| {
-                        if p.is_harvested(si) || !p.ripe(si) {
+                        if p.plant.is_harvested(si) || !p.plant.ripe(si) {
                             return false;
                         }
-                        let center = p.tomato_center(
+                        let center = p.plant.tomato_center(
                             si,
                             &plant_nodes[pi].children[plant::slot_index(si)],
                             &self.tomato,
@@ -1803,7 +1785,7 @@ impl Demo {
             })
         };
         let (pi, si) = hit?;
-        self.plants[pi].harvest(si);
+        self.plants[pi].plant.harvest(si);
         // Rehome the pivot: out of the slot, into the held-fruit
         // container, at the pick scale under the pointer.
         let root = &mut ctx.scene().root;
@@ -1822,7 +1804,7 @@ impl Demo {
     /// Drops the carried tomato picked from (plant, slot) `(pi, si)`:
     /// with the body's center inside the basket's U — the mouth's x range
     /// and above the floor — the pivot is reparented into the basket's
-    /// fruit container (the [`BASKET_FRUIT`] child of the [`CHILD_BASKET`]
+    /// fruit container (the [`basket::BASKET_FRUIT`] child of the [`CHILD_BASKET`]
     /// group), so it renders behind the front half and in front of the
     /// back, and it stays
     /// exactly where it was released: no gravity, no tomato-to-tomato
@@ -1836,8 +1818,8 @@ impl Demo {
         // The body's center in window space, and its position in the
         // basket's local space, where the U is measured.
         let (w, h) = ctx.size();
-        let s = basket_scale(h);
-        let center = basket_center(w, h);
+        let s = basket::basket_scale(h);
+        let center = basket::basket_center(w, h);
         let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
         let body = [
             self.mouse[0] + TOMATO_PICK_SCALE * ox,
@@ -1845,7 +1827,7 @@ impl Demo {
         ];
         let lx = (body[0] - center[0]) / s;
         let ly = (body[1] - center[1]) / s;
-        let kept = basket_accepts(lx, ly);
+        let kept = basket::basket_accepts(lx, ly);
 
         let root = &mut ctx.scene().root;
         let mut pivot = *root.children[CHILD_HELD_FRUIT].children.remove(0);
@@ -1855,7 +1837,7 @@ impl Demo {
             pivot.scale = [TOMATO_PICK_SCALE / s, TOMATO_PICK_SCALE / s];
             pivot.transform =
                 frost::Transform::translate((body[0] - center[0]) / s, (body[1] - center[1]) / s);
-            root.children[CHILD_BASKET].children[BASKET_FRUIT]
+            root.children[CHILD_BASKET].children[basket::BASKET_FRUIT]
                 .children
                 .push(Box::new(pivot));
             // The bloom starts over: the plant records the reset — which
@@ -1863,7 +1845,7 @@ impl Demo {
             // bar — and the slot takes a fresh, shapeless tomato pivot;
             // the next layout removes the flower and regrows it from
             // zero, the tomato after it.
-            self.plants[pi].regrow(si);
+            self.plants[pi].plant.regrow(si);
             root.children[CHILD_PLANTS].children[pi].children[plant::slot_index(si)]
                 .children
                 .push(Box::new(frost::SceneNode {
@@ -1876,7 +1858,7 @@ impl Demo {
         } else {
             // Snap back to the plant; the layout reposes the pivot this
             // same frame.
-            self.plants[pi].unharvest(si);
+            self.plants[pi].plant.unharvest(si);
             root.children[CHILD_PLANTS].children[pi].children[plant::slot_index(si)]
                 .children
                 .push(Box::new(pivot));
@@ -1889,13 +1871,6 @@ fn main() {
     log::info!("frost started");
 
     let assets = Assets::load();
-    let plant = plant::Plant::new([
-        &assets.plant1,
-        &assets.plant2,
-        &assets.plant3,
-        &assets.plant4,
-        &assets.plant5,
-    ]);
 
     // One plant node, cloned for each plant: its origin is the root joint
     // (plant1's lower joint), positioned by the process every frame. The
@@ -1911,23 +1886,23 @@ fn main() {
     // bloom pixel buffers.
     let mut plant_children: Vec<Box<frost::SceneNode>> = vec![
         Box::new(frost::SceneNode {
-            shape: Some(assets.plant1),
+            shape: Some(assets.plant1.clone()),
             ..Default::default()
         }),
         Box::new(frost::SceneNode {
-            shape: Some(assets.plant2),
+            shape: Some(assets.plant2.clone()),
             ..Default::default()
         }),
         Box::new(frost::SceneNode {
-            shape: Some(assets.plant3),
+            shape: Some(assets.plant3.clone()),
             ..Default::default()
         }),
         Box::new(frost::SceneNode {
-            shape: Some(assets.plant4),
+            shape: Some(assets.plant4.clone()),
             ..Default::default()
         }),
         Box::new(frost::SceneNode {
-            shape: Some(assets.plant5),
+            shape: Some(assets.plant5.clone()),
             ..Default::default()
         }),
     ];
@@ -1976,7 +1951,7 @@ fn main() {
         children: vec![
             Box::new(frost::SceneNode {
                 // Stretched to fill the window by the process, every frame.
-                shape: Some(assets.grass),
+                shape: Some(assets.grass.clone()),
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
@@ -1989,7 +1964,7 @@ fn main() {
                 // slot 2 and the watering can in slot 3; slots 0 and 1
                 // start empty, and a left click can park either tool in any
                 // slot.
-                shape: Some(assets.items),
+                shape: Some(assets.items.clone()),
                 children: vec![
                     Box::new(frost::SceneNode {
                         // Slot 0: empty at start.
@@ -2055,7 +2030,7 @@ fn main() {
                 // stored one — each painted on top of the panel, since a
                 // node paints its shape before its children; the cells are
                 // synced by `set_active`.
-                shape: Some(assets.held_items),
+                shape: Some(assets.held_items.clone()),
                 children: vec![
                     Box::new(frost::SceneNode {
                         // The left cell: the active tool, empty at start.
@@ -2114,7 +2089,10 @@ fn main() {
                 // frame; its children — the back half, the fruit
                 // container, and the front half — are built by
                 // `basket_children`.
-                children: basket_children(assets.basket_back, assets.basket_front)
+                children: basket::basket_children(
+                    assets.basket_back.clone(),
+                    assets.basket_front.clone(),
+                )
                     .into_iter()
                     .map(Box::new)
                     .collect(),
@@ -2126,7 +2104,7 @@ fn main() {
                 // borders, tinted to a faint watermark, positioned by the
                 // process every frame. It sits under the held-fruit node,
                 // so a carried tomato still paints above it.
-                shape: Some(assets.immortality),
+                shape: Some(assets.immortality.clone()),
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
@@ -2142,69 +2120,9 @@ fn main() {
         ..Default::default()
     });
 
-    // The tools at rest in the items panel's slots, mirroring the
-    // panel's seeded sprites: the spray can in SPRAY_SLOT, the watering
-    // can in CAN_SLOT, the other two slots empty.
-    let mut slots = [None; SLOTS];
-    slots[SPRAY_SLOT] = Some(Tool::SprayCan);
-    slots[CAN_SLOT] = Some(Tool::WaterCan);
-
-    // The rotation tween starts as a 0→0 tween that never moves; the first
-    // button event replaces it.
     if let Err(err) = frost::run_configured(
         scene,
-        Demo {
-            mouse: [0.0, 0.0],
-            active: None,
-            held: None,
-            slots,
-            press_slot: None,
-            pressed: false,
-            picking: None,
-            right_pressed: false,
-            angle: 0.0,
-            rotation: frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once),
-            burst: None,
-            showing_spray2: false,
-            can: assets.can,
-            spray1: assets.spray1,
-            spray2: assets.spray2,
-            viper1: assets.viper1,
-            viper2: assets.viper2,
-            // Three bugs per plant, each plant's batch exactly once: the
-            // population climbs 3, 6, …, 18 over the first 75 seconds; a
-            // killed bug pops back up at its spawn spot after a random 5
-            // to 10 second delay.
-            bugs: bugs::Bugs::new([&assets.bug1, &assets.bug2, &assets.bug3]),
-            bug1: assets.bug1,
-            bug2: assets.bug2,
-            bug3: assets.bug3,
-            audio: assets.audio,
-            tjatters: assets.tjatters,
-            plops: assets.plops,
-            ajs: assets.ajs,
-            death: assets.death,
-            pour: assets.pour,
-            spray_sound: assets.spray,
-            pouring: false,
-            tomato_drop: assets.tomato_drop,
-            falls: Vec::new(),
-            flower: assets.flower,
-            tomato: assets.tomato,
-            tomato_fg: assets.tomato_fg,
-            water: frost::ParticleSystem::new(),
-            spray: frost::ParticleSystem::new(),
-            rng: frost::Rng::new(),
-            acc: 0.0,
-            // Six identical growth clocks, one per plant: each starts at
-            // zero and the process steps it when the previous is fully
-            // grown.
-            plants: std::array::from_fn(|_| plant.clone()),
-            // Six full water reserves, one per plant: each plant enters
-            // well watered, the first one draining from launch on.
-            waters: std::array::from_fn(|_| 1.0),
-            vipers: vipers::Vipers::new(VIPER_IMAGE),
-        },
+        Demo::new(assets),
         frost::Config {
             window_size: Some(WINDOW),
             ..Default::default()
@@ -2218,6 +2136,27 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [Demo::new] starts the demo mirroring the scene's seeded sprites
+    /// and the plants' full reserves: no tool is active or held, the
+    /// spray can rests in `SPRAY_SLOT` and the watering can in
+    /// `CAN_SLOT` with the other slots empty, every plant starts well
+    /// watered, nothing is falling, and no pour loop is running.
+    #[test]
+    fn the_initial_state_mirrors_the_seeded_scene() {
+        let demo = Demo::new(Assets::load());
+        assert_eq!(demo.active, None);
+        assert_eq!(demo.held, None);
+        assert_eq!(demo.picking, None);
+        assert_eq!(demo.slots[SPRAY_SLOT], Some(Tool::SprayCan));
+        assert_eq!(demo.slots[CAN_SLOT], Some(Tool::WaterCan));
+        assert_eq!(demo.slots[0], None);
+        assert_eq!(demo.slots[1], None);
+        assert_eq!(demo.plants.len(), PLANT_POS.len());
+        assert!(demo.plants.iter().all(|p| p.water == 1.0));
+        assert!(demo.falls.is_empty());
+        assert!(!demo.pouring);
+    }
 
     /// A full reserve, drained at the growth's slowed pace — a 60 fps
     /// frame step divided by `GROW_SLOWDOWN` — must run out strictly
@@ -2277,74 +2216,6 @@ mod tests {
             [anchor[0], anchor[1] - ROOT_RADIUS * 1.01],
             anchor
         ));
-    }
-
-    /// The basket rides in the bottom left corner of a 1920×1080 window:
-    /// at the panel's fit scale, `BASKET_GAP` clear of the items panel's
-    /// right edge and `MARGIN` clear of the bottom border.
-    #[test]
-    fn basket_fits_just_right_of_the_items_panel() {
-        let (w, h) = (1920.0, 1080.0);
-        let s = basket_scale(h);
-        let c = basket_center(w, h);
-
-        // The same fit the items panel uses.
-        assert!((s - (h - 2.0 * MARGIN) / ITEMS_SIZE[1]).abs() < 1e-9);
-        // The panel's right edge, from its mid-left placement.
-        let panel_right = -(w / 2.0) + MARGIN + ITEMS_SIZE[0] * s;
-        assert!(
-            (c[0] - BASKET_IMAGE[0] * s / 2.0 - (panel_right + BASKET_GAP)).abs() < 1e-6,
-            "the basket's left edge is not BASKET_GAP right of the panel"
-        );
-        assert!(
-            (c[1] - BASKET_IMAGE[1] * s / 2.0 - (-h / 2.0 + MARGIN)).abs() < 1e-6,
-            "the basket's bottom edge is not MARGIN off the bottom border"
-        );
-    }
-
-    /// [basket_accepts] keeps a drop only inside the U's mouth: the x
-    /// range between the walls' inner faces, above the floor — with no
-    /// upper bound, so fruit dropped above the rim is kept and can pile
-    /// high.
-    #[test]
-    fn basket_accepts_inside_the_u() {
-        assert!(basket_accepts(0.0, 0.0), "the cavity's middle");
-        assert!(basket_accepts(-107.0, -9.0), "just inside the left mouth");
-        assert!(basket_accepts(111.0, -9.0), "just inside the right mouth");
-        assert!(basket_accepts(0.0, 500.0), "above the rim, for the pile");
-        assert!(!basket_accepts(-108.0, 0.0), "on the left mouth's edge");
-        assert!(!basket_accepts(112.0, 0.0), "on the right mouth's edge");
-        assert!(!basket_accepts(-109.0, 0.0), "outside the left mouth");
-        assert!(!basket_accepts(113.0, 0.0), "outside the right mouth");
-        assert!(!basket_accepts(0.0, -10.0), "on the floor");
-        assert!(!basket_accepts(0.0, -11.0), "below the floor");
-    }
-
-    /// The [basket_walls] U encloses its acceptance region: a small body
-    /// centered well inside the mouth — at least its radius clear of the
-    /// walls' inner faces, the floor, and the walls' tops — clears every
-    /// wall, while a body at the left wall's face sits in it.
-    #[test]
-    fn basket_walls_enclose_the_acceptance_region() {
-        for lx in [-103.0, -60.0, 0.0, 60.0, 107.0] {
-            for ly in [-5.0, 20.0, 60.0, 95.0] {
-                assert!(basket_accepts(lx, ly));
-                let body = frost::Collider::Box(frost::OrientedBox::new([lx, ly], [4.0, 4.0]));
-                for wall in basket_walls() {
-                    assert!(
-                        body.push_out(&frost::Collider::Box(wall)).is_none(),
-                        "accepted point ({lx}, {ly}) inside a wall"
-                    );
-                }
-            }
-        }
-        // The left wall's face: inside it.
-        let body = frost::Collider::Box(frost::OrientedBox::new([-124.0, 30.0], [4.0, 4.0]));
-        let left = frost::Collider::Box(basket_walls()[0]);
-        assert!(
-            body.push_out(&left).is_some(),
-            "the wall's face must collide"
-        );
     }
 
     /// [slice_of_slot] gives the slice that bears a flattened bloom slot:

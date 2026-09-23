@@ -119,8 +119,48 @@ const SPRAY: &[u8] = include_bytes!("../../assets/audio/Spray.wav");
 /// The tomato drop clip, `assets/audio/tomatoDrop.wav`.
 const TOMATO_DROP: &[u8] = include_bytes!("../../assets/audio/TomatoDrop.wav");
 
-/// Everything the example loads at startup: the sprite shapes, the audio
-/// output, and the bug and watering clips, embedded at compile time with
+/// The audio output and every clip the example plays: the device, opened
+/// once at startup, and the clips it plays through — the swarm's random
+/// picks, the tjatter, plopp, and Aj arrays, and the named singles: the
+/// bug death, the watering loop, the spray hiss, and the tomato drop.
+pub struct Sounds {
+    /// The audio output, opened once at startup; every clip plays through
+    /// it.
+    pub device: frost::Audio,
+    /// The three bug tjatter clips (low, mid, high), decoded once at
+    /// startup; a bug that reaches its destination while another bug is
+    /// on the grass within 50 px of it chatters on one of them, the
+    /// swarm's random pick.
+    pub tjatters: [frost::Sound; 3],
+    /// The three bug plopp clips (1, 2, 3), decoded once at startup; a
+    /// bug that pops up out of the grass — a batch spawn or a respawn —
+    /// plops on one of them, the swarm's random pick.
+    pub plops: [frost::Sound; 3],
+    /// The four bug Aj clips (1 to 4), decoded once at startup; every
+    /// time the mist drops a bug's health the bug cries out on one of
+    /// them, the swarm's random pick.
+    pub ajs: [frost::Sound; 4],
+    /// The bug death clip, `assets/audio/bugsDeath.wav`, decoded once at
+    /// startup; it plays, at the default volume, for every bug a mist hit
+    /// kills.
+    pub death: frost::Sound,
+    /// The watering sound, `assets/audio/WaterFlowSoft.wav`, decoded once
+    /// at startup; the audio output's one loop, playing while water
+    /// actually pours out of the spout and silenced the frame pouring
+    /// stops.
+    pub pour: frost::Sound,
+    /// The spray hiss, `assets/audio/Spray.wav`, decoded once at startup;
+    /// it plays, at 0.5 volume, on every fresh press that triggers a
+    /// spray burst.
+    pub spray: frost::Sound,
+    /// The tomato drop clip, `assets/audio/TomatoDrop.wav`, decoded once
+    /// at startup; it plays, at the default volume, on the frame a
+    /// fallen, overgrown tomato reaches its destination.
+    pub tomato_drop: frost::Sound,
+}
+
+/// Everything the example loads at startup: the sprite shapes and the
+/// audio — the output and every clip — embedded at compile time with
 /// `include_bytes!` and decoded by [`Assets::load`].
 pub struct Assets {
     /// The grass photo, exactly the window size: stretched to fill the
@@ -168,28 +208,9 @@ pub struct Assets {
     pub basket_front: frost::Shape,
     /// The immortality badge, tinted down to a faint watermark.
     pub immortality: frost::Shape,
-    /// The audio output, opened once at startup.
-    pub audio: frost::Audio,
-    /// The tjatter clips: a bug that reaches its destination while another
-    /// bug is on the grass within 50 px of it chatters on one of them, the
-    /// swarm's random pick.
-    pub tjatters: [frost::Sound; 3],
-    /// The plopp clips: a bug that pops up out of the grass — a batch
-    /// spawn or a respawn — plops on one of them, the swarm's random pick.
-    pub plops: [frost::Sound; 3],
-    /// The Aj clips: the bug cries out on one of them, the swarm's random
-    /// pick, every time the mist drops its health.
-    pub ajs: [frost::Sound; 4],
-    /// The bug death clip, `assets/audio/bugsDeath.wav`, decoded once at
+    /// The audio output and every clip the example plays, decoded once at
     /// startup.
-    pub death: frost::Sound,
-    /// The watering loop: it plays, looping, while water pours out of the
-    /// spout, silenced the frame pouring stops.
-    pub pour: frost::Sound,
-    /// The spray hiss, `assets/audio/Spray.wav`, decoded once at startup.
-    pub spray: frost::Sound,
-    /// The tomato drop clip, `assets/audio/tomatoDrop.wav`, decoded once at startup.
-    pub tomato_drop: frost::Sound,
+    pub sounds: Sounds,
 }
 
 impl Assets {
@@ -225,27 +246,29 @@ impl Assets {
             basket_back: sprite("BasketBack.png", BASKET_BACK),
             basket_front: sprite("BasketFront.png", BASKET_FRONT),
             immortality,
-            audio,
-            tjatters: [
-                sound("TjatterLow.wav", TJATTER_LOW),
-                sound("TjatterMid.wav", TJATTER_MID),
-                sound("TjatterHigh.wav", TJATTER_HIGH),
-            ],
-            plops: [
-                sound("bugs_plopp1.wav", BUGS_PLOPP1),
-                sound("bugs_plopp2.wav", BUGS_PLOPP2),
-                sound("bugs_plopp3.wav", BUGS_PLOPP3),
-            ],
-            ajs: [
-                sound("Aj1.wav", AJ1),
-                sound("Aj2.wav", AJ2),
-                sound("Aj3.wav", AJ3),
-                sound("Aj4.wav", AJ4),
-            ],
-            death: sound("bugsDeath.wav", BUGS_DEATH),
-            pour: sound("WaterFlowSoft.wav", WATER_FLOW_SOFT),
-            spray: sound("Spray.wav", SPRAY),
-            tomato_drop: sound("tomatoDrop.wav", TOMATO_DROP),
+            sounds: Sounds {
+                device: audio,
+                tjatters: [
+                    sound("TjatterLow.wav", TJATTER_LOW),
+                    sound("TjatterMid.wav", TJATTER_MID),
+                    sound("TjatterHigh.wav", TJATTER_HIGH),
+                ],
+                plops: [
+                    sound("bugs_plopp1.wav", BUGS_PLOPP1),
+                    sound("bugs_plopp2.wav", BUGS_PLOPP2),
+                    sound("bugs_plopp3.wav", BUGS_PLOPP3),
+                ],
+                ajs: [
+                    sound("Aj1.wav", AJ1),
+                    sound("Aj2.wav", AJ2),
+                    sound("Aj3.wav", AJ3),
+                    sound("Aj4.wav", AJ4),
+                ],
+                death: sound("bugsDeath.wav", BUGS_DEATH),
+                pour: sound("WaterFlowSoft.wav", WATER_FLOW_SOFT),
+                spray: sound("Spray.wav", SPRAY),
+                tomato_drop: sound("tomatoDrop.wav", TOMATO_DROP),
+            },
         }
     }
 }
