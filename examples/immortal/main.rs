@@ -110,15 +110,15 @@
 //! `GROW_SLOWDOWN * DRAIN_TIME` real seconds — and growth proceeds only
 //! while the reserve holds; a plant whose reserve runs dry withers
 //! instead: its growth clock runs backward at half the growth's pace,
-//! the slices, the flowers, and the green fruit shrinking back together,
-//! and the plant's node modulates from white to yellow over
-//! `DRY_YELLOW_TIME` real seconds, until the point of full ripening —
-//! the moment every fruit it still bears is fully ripe — where the clock
-//! holds, while its ripe fruits keep waiting and staling on the aging
-//! clock; the withering stops the moment the reserve holds water again,
-//! the clock runs forward, and the node rewhitens over `DRY_WHITE_TIME`
-//! — a plant dry for 3 seconds is green again 1.5 seconds after it is
-//! watered.
+//! the slices, the flowers, and the fruit shrinking back together, and
+//! the plant's node modulates from white to yellow over
+//! `DRY_YELLOW_TIME` real seconds, all the way to a bare seed — the
+//! clock runs freely past any ripe fruit, which keeps waiting and staling
+//! on the aging clock and overgrows and drops as usual — until the plant
+//! is gone and its slot frees up; the withering stops the moment the
+//! reserve holds water again, the clock runs forward, and the node
+//! rewhitens over `DRY_WHITE_TIME` — a plant dry for 3 seconds is green
+//! again 1.5 seconds after it is watered.
 //! `DRAIN_TIME` is chosen so a freshly planted, fully watered seed runs
 //! dry just before its base slice is fully grown — the base grows over 3
 //! growth-clock seconds, the shortest of the five — so every planted plant
@@ -846,34 +846,22 @@ enum Tool {
 /// [Demo::falls] entry — carries the current position in its own
 /// transform; this entry carries the destination it falls toward.
 struct Fall {
-    /// The destination y, in user space: the spawn y lowered by the
-    /// plant's cumulative segment height, scaled into user space.
+    /// The destination y, in user space: the bottom anchor of the plant's
+    /// root segment, the root joint, where the fruit drops to the ground.
     dest_y: f32,
     /// Whether the fruit has reached its destination: its transform is
     /// then kept, and the drop clip plays exactly once, on this flip.
     landed: bool,
 }
 
-/// The slice — 0 to 3, from the root up — that bears the flattened bloom
-/// `slot`: the slots are laid out slice by slice in [plant::FLOWER_SPAWNS]
-/// order, one, three, five, six, so the slot's slice is the first whose
-/// running count passes it; the top slice bears no flowers.
-fn slice_of_slot(slot: usize) -> usize {
-    let mut rest = slot;
-    for (slice, spawns) in plant::FLOWER_SPAWNS.iter().enumerate() {
-        if rest < spawns.len() {
-            return slice;
-        }
-        rest -= spawns.len();
-    }
-    unreachable!("every slot belongs to one of the four lower slices")
-}
-
-/// The destination y, in user space, of a fall that let go at `spawn_y`:
-/// the spawn lowered by the plant's cumulative segment height, scaled
-/// into user space by the plant's fit scale.
-fn fall_destination(spawn_y: f32, segment_height: f32) -> f32 {
-    spawn_y - PLANT_SCALE * segment_height
+/// The destination y, in user space, of a falling overgrown tomato: the
+/// bottom anchor of its plant's root segment — the plant's root joint, the
+/// plant node's own origin — where the root segment meets the ground. The
+/// base rock pivots around that joint, so the sway leaves it fixed and the
+/// anchor is the node's origin mapped through its transform, the point the
+/// plant is laid out on.
+fn fall_destination(plant: &frost::SceneNode) -> f32 {
+    plant.transform.apply([0.0, 0.0])[1]
 }
 
 /// A tomato plant and its water reserve, kept together: the growth clock
@@ -1447,10 +1435,10 @@ impl Demo {
     /// while the water holds; a plant whose reserve runs dry withers
     /// instead — its growth clock runs backward at half the growth's
     /// pace, `dt / (GROW_SLOWDOWN * 2)`, the slices, the flowers, and the
-    /// green fruit shrinking back together, until the point of full
-    /// ripening, the moment every fruit it still bears is fully ripe,
-    /// where the clock holds — while its ripe fruits keep waiting and
-    /// staling on the aging clock, and its node yellows over
+    /// green fruit shrinking back together, all the way to a bare seed —
+    /// the clock runs freely past any ripe fruit, which keeps waiting and
+    /// staling on the aging clock and overgrows and drops as usual —
+    /// while its node yellows over
     /// `DRY_YELLOW_TIME` real seconds, until the player pours water on
     /// its root: the withering stops, the clock runs forward again, and
     /// the node rewhitens over `DRY_WHITE_TIME`; the falling drops are
@@ -1480,9 +1468,9 @@ impl Demo {
                 // The growth clock runs slow: forward while the reserve
                 // is wet, and backward — the withering, at half the
                 // growth's pace — while it is dry, the plant shrinking
-                // toward the point of full ripening, where the clock
-                // holds. A dry plant yellows over DRY_YELLOW_TIME real
-                // seconds, and a watered one rewhitens over
+                // back toward a bare seed, the clock running freely past
+                // any ripe fruit. A dry plant yellows over DRY_YELLOW_TIME
+                // real seconds, and a watered one rewhitens over
                 // DRY_WHITE_TIME; the layout lerps the node's modulate
                 // from white to DRY_YELLOW over the dryness.
                 if self.plants[i].water > 0.0 {
@@ -1856,8 +1844,11 @@ impl Demo {
                         let world = frost::Transform::scale(PLANT_SCALE, PLANT_SCALE)
                             .compose(&plant_nodes[pi].transform);
                         let spawn = world.apply(center);
-                        let dest_y =
-                            fall_destination(spawn[1], p.plant.fall_height(slice_of_slot(si)));
+                        // The tomato drops to the ground: the bottom anchor
+                        // of its plant's root segment, the root joint — not
+                        // a height measured from the spawn, which would miss
+                        // the sway and the flower's offset above the joint.
+                        let dest_y = fall_destination(plant_node);
                         Some((pi, si, spawn, dest_y))
                     })
                 })
@@ -1903,9 +1894,9 @@ impl Demo {
 
     /// Steps the fallen fruit: each dropped tomato falls straight down
     /// from where it let go, at the fall speed, until its body center
-    /// reaches its destination — the spawn lowered by the plant's
-    /// cumulative segment height, scaled into user space — where it
-    /// stops; the drop clip plays exactly once, on the landing frame.
+    /// reaches its destination — the bottom anchor of its plant's root
+    /// segment, the root joint, where the ground is — where it stops;
+    /// the drop clip plays exactly once, on the landing frame.
     fn step_falls(&mut self, ctx: &mut frost::Context, dt: f32) {
         let fallen = &mut ctx.scene().root.children[CHILD_FALLEN_FRUIT];
         for (fall, node) in self.falls.iter_mut().zip(fallen.children.iter_mut()) {
@@ -3072,35 +3063,18 @@ mod tests {
         ));
     }
 
-    /// [slice_of_slot] gives the slice that bears a flattened bloom slot:
-    /// the slots are laid out slice by slice in [plant::FLOWER_SPAWNS]
-    /// order, one, three, five, six, so slot 0 sits on the root segment,
-    /// slots 1 through 3 on the next, 4 through 8 on the third, and 9
-    /// through 14 on the fourth — the top slice bears no flowers.
+    /// [fall_destination] is the bottom anchor of the plant's root
+    /// segment — the root joint, the plant node's own origin: the base
+    /// rock pivots around that joint, so the sway leaves it fixed and the
+    /// destination is the anchor's user-space y, whatever the sway angle.
     #[test]
-    fn the_slice_of_a_slot_counts_its_flowers_in_slice_order() {
-        assert_eq!(slice_of_slot(0), 0);
-        for slot in 1..=3 {
-            assert_eq!(slice_of_slot(slot), 1, "slot {slot}");
-        }
-        for slot in 4..=8 {
-            assert_eq!(slice_of_slot(slot), 2, "slot {slot}");
-        }
-        for slot in 9..15 {
-            assert_eq!(slice_of_slot(slot), 3, "slot {slot}");
-        }
-    }
-
-    /// [fall_destination] lowers the spawn by the segment height scaled
-    /// into user space: a tomato on the second segment — the sum of the
-    /// first two, 93 + 230 node-local px — that let go at y 500 stops at
-    /// 500 − 0.45 × 323 ≈ 354.65.
-    #[test]
-    fn the_fall_destination_lowes_the_spawn_by_the_scaled_segment_height() {
-        let dest = fall_destination(500.0, 93.0 + 230.0);
-        assert!((dest - (500.0 - PLANT_SCALE * 323.0)).abs() < 1e-6);
-        assert!((dest - 354.65).abs() < 1e-2);
-        assert!(dest < 500.0, "the destination is below the spawn");
+    fn the_fall_destination_is_the_root_anchor() {
+        let node = frost::SceneNode {
+            transform: frost::Transform::rotate(0.4)
+                .compose(&frost::Transform::translate(100.0, 200.0)),
+            ..Default::default()
+        };
+        assert_eq!(fall_destination(&node), 200.0, "the anchor's y is the destination");
     }
 
     /// The bench starts bare: no plant grows, and no reserve drains,
