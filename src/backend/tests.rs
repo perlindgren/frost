@@ -912,6 +912,31 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
 }
 
 #[test]
+fn field_buffer_sizes_floor_at_the_wgsl_minimum_binding_size() {
+    // A lightless or occluder-less frame still binds both field buffers,
+    // and the WGSL layout's minimum binding size is the header plus one
+    // vec4 — the buffer must never be sized below it, or wgpu rejects the
+    // bind group.
+    assert_eq!(light_field_buffer_size(0), LIGHT_FIELD_BUFFER_MIN as u64);
+    assert_eq!(
+        light_field_buffer_size(1),
+        (LIGHT_FIELD_HEADER + LIGHT_RECORD) as u64
+    );
+    assert_eq!(
+        light_field_buffer_size(3),
+        (LIGHT_FIELD_HEADER + 3 * LIGHT_RECORD) as u64
+    );
+    assert_eq!(
+        occluder_field_buffer_size(0),
+        OCCLUDER_FIELD_BUFFER_MIN as u64
+    );
+    assert_eq!(
+        occluder_field_buffer_size(1),
+        (OCCLUDER_FIELD_HEADER + OCCLUDER_RECORD) as u64
+    );
+}
+
+#[test]
 fn background_node_sorts_to_the_back_and_keeps_its_color() {
     let mut canvas = Canvas::new((100, 100));
     canvas.draw_scene(&Scene::new(SceneNode {

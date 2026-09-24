@@ -84,12 +84,13 @@ pub(crate) struct Frost<P: Process> {
     /// kinds — circles and rectangles — never sample it.
     particle_placeholder: (TextureView, Sampler),
     /// The frame's light field storage buffer: a 32-byte header plus one
-    /// 32-byte record per light at the peak count so far. It starts at the
-    /// header's size (a lightless frame still binds it — the shaders read
-    /// the field for the ambient) and only ever grows: the WGSL field's
-    /// tail is an unsized array sized by the bound buffer, so a bigger
-    /// buffer simply holds more records, and a lighter frame writes a
-    /// shorter slice into the same buffer.
+    /// 32-byte record per light at the peak count so far. It starts at
+    /// the buffer's minimum size — the header plus one vec4, the WGSL
+    /// layout's minimum binding size — because a lightless frame still
+    /// binds it (the shaders read the field for the ambient), and it only
+    /// ever grows: the WGSL field's tail is an unsized array sized by the
+    /// bound buffer, so a bigger buffer simply holds more records, and a
+    /// lighter frame writes a shorter slice into the same buffer.
     field_buffer: Buffer,
     /// The frame's occluder field storage buffer: a 16-byte header plus one
     /// 48-byte record per occluder at the peak count so far. Same
@@ -165,22 +166,25 @@ impl<P: Process> Frost<P> {
         }
         queue.write_buffer(&particle_index_buffer, 0, &index_bytes);
 
-        // The light field buffer starts at the header's size: even a frame
-        // with no lights binds it (the shaders read the field to fetch the
-        // ambient), and it only grows when the light count peaks higher.
+        // The light field buffer starts at its minimum size — the header
+        // plus one vec4, the WGSL layout's minimum binding size: even a
+        // frame with no lights binds it (the shaders read the field to
+        // fetch the ambient), and it only grows when the light count peaks
+        // higher.
         let field_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("light field buffer"),
-            size: LIGHT_FIELD_HEADER as u64,
+            size: LIGHT_FIELD_BUFFER_MIN as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        // The occluder field buffer starts at the header's size: even a
+        // The occluder field buffer starts at its minimum size, the same
+        // WGSL minimum binding size as the light field buffer: even a
         // frame with no occluders binds it (the shaders read the field's
         // count), and it only grows when the occluder count peaks higher.
         let occluder_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("occluder field buffer"),
-            size: OCCLUDER_FIELD_HEADER as u64,
+            size: OCCLUDER_FIELD_BUFFER_MIN as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -991,11 +995,11 @@ impl<P: Process> Frost<P> {
 
     /// The frame's light field buffer, grown to hold the header plus
     /// `count` light records when the buffer is still too small. The
-    /// buffer only ever grows: its size is the peak light count so far,
-    /// and lighter frames reuse the bigger buffer, writing a shorter
-    /// slice.
+    /// buffer only ever grows: its size is the peak light count so far
+    /// (floored at the WGSL minimum binding size), and lighter frames
+    /// reuse the bigger buffer, writing a shorter slice.
     fn field_buffer_for(&mut self, count: u32) -> Buffer {
-        let size = (LIGHT_FIELD_HEADER + count as usize * LIGHT_RECORD) as u64;
+        let size = light_field_buffer_size(count);
         if size > self.field_buffer.size() {
             self.field_buffer = self.device.create_buffer(&BufferDescriptor {
                 label: Some("light field buffer"),
@@ -1011,7 +1015,7 @@ impl<P: Process> Frost<P> {
     /// `count` occluder records when the buffer is still too small. Same
     /// grow-only rationale as [`Frost::field_buffer_for`].
     fn occluder_buffer_for(&mut self, count: u32) -> Buffer {
-        let size = (OCCLUDER_FIELD_HEADER + count as usize * OCCLUDER_RECORD) as u64;
+        let size = occluder_field_buffer_size(count);
         if size > self.occluder_buffer.size() {
             self.occluder_buffer = self.device.create_buffer(&BufferDescriptor {
                 label: Some("occluder field buffer"),

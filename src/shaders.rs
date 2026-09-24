@@ -26,6 +26,7 @@ mod tests {
     //! so if these tests pass, module creation in the examples cannot fail.
 
     use super::*;
+    use crate::backend::{OCCLUDER_FIELD_BUFFER_MIN, LIGHT_FIELD_BUFFER_MIN};
 
     /// All six shaders parse as valid WGSL.
     #[test]
@@ -180,9 +181,10 @@ mod tests {
         assert_eq!(offsets, [0, 4, 16, 32]);
         // Naga books a dynamic array's footprint as one element (its
         // creation-time minimum), so the span is the 32-byte header plus
-        // one 16-byte vec4 — the real buffer length comes from the bound
-        // buffer, sized by the CPU to fit the frame's lights.
-        assert_eq!(span, 32 + 16);
+        // one 16-byte vec4 — wgpu's minimum binding size for the struct.
+        // The real buffer length comes from the bound buffer, sized by the
+        // CPU to fit the frame's lights, but never below this span.
+        assert_eq!(span as usize, LIGHT_FIELD_BUFFER_MIN);
         // The tail must be a dynamic array, sized by the bound buffer.
         let last_ty = &module.types[last.ty];
         match &last_ty.inner {
@@ -229,9 +231,10 @@ mod tests {
         assert_eq!(offsets, [0, 4, 16]);
         // Naga books a dynamic array's footprint as one element (its
         // creation-time minimum), so the span is the 16-byte header plus
-        // one 16-byte vec4 — the real buffer length comes from the bound
-        // buffer, sized by the CPU to fit the frame's occluders.
-        assert_eq!(span, 16 + 16);
+        // one 16-byte vec4 — wgpu's minimum binding size for the struct.
+        // The real buffer length comes from the bound buffer, sized by the
+        // CPU to fit the frame's occluders, but never below this span.
+        assert_eq!(span as usize, OCCLUDER_FIELD_BUFFER_MIN);
         // The tail must be a dynamic array, sized by the bound buffer.
         let last_ty = &module.types[last.ty];
         match &last_ty.inner {

@@ -523,7 +523,7 @@ impl Plant {
             .blooms
             .iter()
             .map(|b| b.first_bloom_start)
-            .max_by(|a, b| f32::total_cmp(a, b))
+            .max_by(f32::total_cmp)
             .expect("FLOWER_N is non-empty") + FLOWER_GROW_TIME + TOMATO_GROW_TIME
     }
 
@@ -687,6 +687,9 @@ impl Plant {
         tomato_fg: &frost::Shape,
     ) {
         let slice_tf = self.layout_chain(node, anchor);
+        // The three bloom leaves travel together from here down, bundled
+        // so [layout_bloom] stays a short-signature helper.
+        let shapes = BloomShapes { flower, tomato, tomato_fg };
 
         // The four lower slices' blooms, on the flower slots that follow
         // the five slice children, in flattened spawn order. A slot's
@@ -707,9 +710,7 @@ impl Plant {
                     &slice_tf[i],
                     pt,
                     &mut node.children[slot_index(slot)],
-                    flower,
-                    tomato,
-                    tomato_fg,
+                    shapes,
                 );
                 slot += 1;
             }
@@ -793,10 +794,9 @@ impl Plant {
         slice_tf: &frost::Transform,
         pt: [f32; 2],
         child: &mut frost::SceneNode,
-        flower: &frost::Shape,
-        tomato: &frost::Shape,
-        tomato_fg: &frost::Shape,
+        shapes: BloomShapes<'_>,
     ) {
+        let BloomShapes { flower, tomato, tomato_fg } = shapes;
         let start = self.blooms[slot].start();
         let fg = flower_growth(self.t, start);
         if fg > 0.0 {
@@ -827,6 +827,19 @@ impl Plant {
             self.blooms[slot].layout(tomato_pivot, self.t, self.age, tomato, tomato_fg);
         }
     }
+}
+
+/// The three leaves a bloom slot is drawn from, bundled so
+/// [Plant::layout_bloom] stays under the argument count clippy allows: the
+/// same trio [Plant::layout] is handed, borrowed for one layout pass.
+#[derive(Clone, Copy)]
+struct BloomShapes<'a> {
+    /// The bloom's flower leaf, the slot's first child.
+    flower: &'a frost::Shape,
+    /// The tomato's white body leaf.
+    tomato: &'a frost::Shape,
+    /// The tomato's calyx-and-stem leaf, drawn on top.
+    tomato_fg: &'a frost::Shape,
 }
 
 #[cfg(test)]
@@ -999,7 +1012,7 @@ mod tests {
             .blooms
             .iter()
             .map(|b| b.first_bloom_start)
-            .max_by(|a, b| f32::total_cmp(a, b))
+            .max_by(f32::total_cmp)
             .expect("FLOWER_N is non-empty");
         assert_eq!(
             p.bloom_time(),

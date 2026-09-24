@@ -538,6 +538,22 @@ pub(crate) const LIGHT_FIELD_HEADER: usize = 32;
 /// `(x, y, radius, intensity)` and `(r, g, b, 1.0)`.
 pub(crate) const LIGHT_RECORD: usize = 32;
 
+/// The minimum size of the light field buffer in bytes: the header plus
+/// one `vec4`. The WGSL field ends in an unsized `array<vec4<f32>>`, and
+/// wgpu's minimum binding size for such a struct is the header plus one
+/// element of that tail — so even a lightless frame, which still binds the
+/// buffer (the shaders read it for the ambient), must have at least this
+/// many bytes.
+pub(crate) const LIGHT_FIELD_BUFFER_MIN: usize = LIGHT_FIELD_HEADER + 16;
+
+/// The size of the light field buffer in bytes for `count` lights: the
+/// header plus one record per light, never below
+/// [`LIGHT_FIELD_BUFFER_MIN`].
+pub(crate) fn light_field_buffer_size(count: u32) -> u64 {
+    (LIGHT_FIELD_HEADER + count as usize * LIGHT_RECORD)
+        .max(LIGHT_FIELD_BUFFER_MIN) as u64
+}
+
 /// The frame's light field, packed little-endian for the GPU's storage
 /// buffer.
 ///
@@ -601,6 +617,19 @@ pub(crate) fn pack_light_field(draws: &[Draw], ambient: Color) -> LightField {
 /// The byte size of the occluder field's header: the occluder `count` (a
 /// u32) and 12 padding bytes.
 pub(crate) const OCCLUDER_FIELD_HEADER: usize = 16;
+
+/// The minimum size of the occluder field buffer in bytes: the header
+/// plus one `vec4`, the same WGSL minimum binding size as
+/// [`LIGHT_FIELD_BUFFER_MIN`].
+pub(crate) const OCCLUDER_FIELD_BUFFER_MIN: usize = OCCLUDER_FIELD_HEADER + 16;
+
+/// The size of the occluder field buffer in bytes for `count` occluders:
+/// the header plus one record per occluder, never below
+/// [`OCCLUDER_FIELD_BUFFER_MIN`].
+pub(crate) fn occluder_field_buffer_size(count: u32) -> u64 {
+    (OCCLUDER_FIELD_HEADER + count as usize * OCCLUDER_RECORD)
+        .max(OCCLUDER_FIELD_BUFFER_MIN) as u64
+}
 
 /// The byte size of one occluder record: three `vec4<f32>`s — the inverse
 /// transform's linear part, column-major; the inverse transform's
