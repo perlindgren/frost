@@ -58,14 +58,27 @@
 //! the active one is drawn as the cursor and the stored one would
 //! otherwise be drawn nowhere.
 //!
-//! On the grass, six tomato plants grow slice by slice: the same slice-
-//! chain construction and travelling wind as the `grow` example, reused
-//! through the [`plant`] module, but with five slices — the base grows over
-//! 3 seconds, the low middle over 6, the middle over 9, the high middle
-//! over 12, the top over 15. They grow one at a time, in `PLANT_POS` order —
-//! the first starts at launch, and each next one starts when the previous
-//! is fully grown — concurrently with the tool system. Each root joint
-//! stays glued to its own `grass.png` pixel across resizes. Once a slice is
+//! On the grass, six plant slots sit on the `PLANT_POS` root joints, and
+//! the bench starts bare: no plant is growing, but the basket holds one
+//! ripe tomato. A left click picks a tomato up — out of the basket, or
+//! off any plant's ripe fruit. A release inside the basket's walls drops
+//! the tomato in the basket, and a plant fruit released anywhere else
+//! snaps back to the slot it grew from. A basket tomato released anywhere
+//! but inside the basket's walls is planted: the seed flies over
+//! `FLY_TIME` real seconds to the nearest not-yet-planted slot's root
+//! anchor, is consumed on arrival, and that slot's plant starts growing
+//! from a fresh, full-water seed; a release with every slot already
+//! planted sends the tomato flying back to the spot it was picked up from
+//! in the basket. The planted plants grow side by side — every planted
+//! slot grows at once, each with the same slice-chain construction and
+//! travelling wind as the `grow` example, reused through the [`plant`]
+//! module, but with five slices — the base grows over 3 seconds, the low
+//! middle over 6, the middle over 9, the high middle over 12, the top over
+//! 15 — concurrently with the tool system. Each root joint stays glued to
+//! its own `grass.png` pixel across resizes. A planted plant whose water
+//! reserve runs dry withers back toward zero, and one that withers
+//! completely is gone — no slice, no bloom, nothing visible — its slot
+//! freed for the next seed. Once a slice is
 //! fully grown, its blooms grow — one flower at a time: the first starts
 //! the frame the slice finishes, and each next starts a random 2 to 5
 //! seconds after the previous one, until every flower on the slice is
@@ -87,10 +100,11 @@
 //! picked fruit carries the color it had at pick, frozen while it rides
 //! the cursor and kept when it lands in the basket.
 //!
-//! Every plant keeps a water reserve, full at launch, and the plants'
-//! growth runs at `1 / GROW_SLOWDOWN` of real time's pace — the slices,
-//! the flowers, and the tomatoes alike: while a plant is growing —
-//! started, not yet complete, its slices or its blooms still growing —
+//! Every planted plant keeps a water reserve, full when its seed lands,
+//! and the planted plants' growth runs at `1 / GROW_SLOWDOWN` of real
+//! time's pace — the slices, the flowers, and the tomatoes alike, all
+//! planted plants at once: while a plant is growing —
+//! planted, not yet complete, its slices or its blooms still growing —
 //! its growth clock is stepped forward by `dt / GROW_SLOWDOWN`, and its
 //! reserve drains over `DRAIN_TIME` of that slowed clock —
 //! `GROW_SLOWDOWN * DRAIN_TIME` real seconds — and growth proceeds only
@@ -105,9 +119,9 @@
 //! the clock runs forward, and the node rewhitens over `DRY_WHITE_TIME`
 //! — a plant dry for 3 seconds is green again 1.5 seconds after it is
 //! watered.
-//! `DRAIN_TIME` is chosen so the first plant, fully watered at launch,
-//! runs dry just before its base slice is fully grown — the base grows
-//! over 3 growth-clock seconds, the shortest of the five — so the bench
+//! `DRAIN_TIME` is chosen so a freshly planted, fully watered seed runs
+//! dry just before its base slice is fully grown — the base grows over 3
+//! growth-clock seconds, the shortest of the five — so every planted plant
 //! pauses before its flowers can start developing. A drop that passes
 //! through a growing plant's rough hitbox — a `ROOT_RADIUS`-pixel circle
 //! around the root joint — restores the reserve by `DROP_WATER`; a full
@@ -204,8 +218,9 @@ const WINDOW: [u32; 2] = [1920, 1080];
 const GRASS_SIZE: [f32; 2] = [1920.0, 1080.0];
 
 /// The plants' root joints in `grass.png`'s pixel space — `(0, 0)` at the
-/// upper-left, `x` right, `y` down — in growth order: the first grows from
-/// launch, and each next one starts when the previous is fully grown.
+/// upper-left, `x` right, `y` down — in slot order: the bench starts bare,
+/// and a seed dropped on the bench flies to the nearest not-yet-planted
+/// slot and starts its plant growing there.
 const PLANT_POS: [[f32; 2]; 6] = [
     [923.0, 514.0],
     [1248.0, 546.0],
@@ -363,13 +378,13 @@ const GROW_SLOWDOWN: f32 = 3.0;
 
 /// The time a plant's water reserve takes to drain from full (1.0) to dry
 /// (0.0), in growth-clock seconds, while the plant is growing: the
-/// process drains a started plant that is not yet complete by
+/// process drains a planted plant that is not yet complete by
 /// `dt / (DRAIN_TIME * GROW_SLOWDOWN)` per frame — the drain runs at the
-/// growth's slowed pace — and the span is chosen so the first plant —
-/// fully watered at launch — runs dry just before its base slice is fully
-/// grown: the base grows over 3 growth-clock seconds (`plant::GROW_TIMES[0]`),
+/// growth's slowed pace — and the span is chosen so a freshly planted,
+/// fully watered seed runs dry just before its base slice is fully grown:
+/// the base grows over 3 growth-clock seconds (`plant::GROW_TIMES[0]`),
 /// i.e. 9 real seconds at `GROW_SLOWDOWN`, and `DRAIN_TIME * GROW_SLOWDOWN`
-/// is 8.25 real seconds, so the bench pauses 0.75 seconds before the base
+/// is 8.25 real seconds, so the plant pauses 0.75 seconds before the base
 /// completes, before its flowers can start developing.
 const DRAIN_TIME: f32 = 2.75;
 
@@ -578,6 +593,48 @@ fn tomato_pick_half(size: [f32; 2]) -> [f32; 2] {
     ]
 }
 
+/// The seed tomato's flight time, in real seconds: the tween from its
+/// release point to the nearest not-yet-planted slot's root anchor — or,
+/// with every slot planted, back to its original spot in the basket.
+const FLY_TIME: f32 = 0.4;
+
+/// The starting tomato's body center in the basket's local space — the
+/// basket node's origin at the sprite's center, y up: a ripe fruit
+/// resting on the basket's floor — its body's bottom on the floor's top,
+/// `basket::BASKET_FLOOR` plus the body's half height at the basket's fit
+/// — mid-width.
+const BASKET_SEED: [f32; 2] = [0.0, 23.5];
+
+/// The plants' root joints in user space for a `w` by `h` window: each
+/// `PLANT_POS` pixel mapped the way the grass stretch maps the whole
+/// texture — the same mapping the chrome layout uses every frame — so a
+/// dropped seed flies to the anchor the plant will grow from.
+fn plant_anchors(w: f32, h: f32) -> [[f32; 2]; PLANT_POS.len()] {
+    std::array::from_fn(|i| {
+        let pos = PLANT_POS[i];
+        [
+            pos[0] * w / GRASS_SIZE[0] - w / 2.0,
+            h / 2.0 - pos[1] * h / GRASS_SIZE[1],
+        ]
+    })
+}
+
+/// The squared distance between two user-space points.
+fn dist2(a: [f32; 2], b: [f32; 2]) -> f32 {
+    (a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1])
+}
+
+/// The nearest not-yet-planted plant slot to the user-space point `p`:
+/// the slot whose `PLANT_POS` anchor — mapped for the `w` by `h` window —
+/// is closest, by squared distance; `None` when every slot is planted,
+/// which sends a dropped seed back to the basket instead.
+fn nearest_free_slot(p: [f32; 2], w: f32, h: f32, planted: &[bool; PLANT_POS.len()]) -> Option<usize> {
+    let anchors = plant_anchors(w, h);
+    (0..PLANT_POS.len())
+        .filter(|&i| !planted[i])
+        .min_by(|a, b| dist2(p, anchors[*a]).total_cmp(&dist2(p, anchors[*b])))
+}
+
 /// Whether the user-space point `p` is inside slot `i`, for the panel node
 /// `items`: the slot's cell in the panel's local space — the full panel
 /// width by the strip's per-slot height, centered on `slot_local(i)` —
@@ -751,6 +808,12 @@ fn fall_destination(spawn_y: f32, segment_height: f32) -> f32 {
 /// that fall into the plant's root hitbox, and the dryness yellows the
 /// plant's node while the reserve is dry.
 struct WateredPlant {
+    /// Whether a seed has landed in this slot and its plant is growing —
+    /// or, once planted, has not withered completely: until a seed lands,
+    /// the slot's plant stays a fresh, invisible seed at clock zero with
+    /// its full reserve, and a plant withered all the way to zero is gone
+    /// again, its slot freed and this flag cleared.
+    planted: bool,
     /// The plant's growth state: the slices' growth, the blooms, and the
     /// aging clock.
     plant: plant::Plant,
@@ -767,6 +830,52 @@ struct WateredPlant {
     /// watered one falls it over `DRY_WHITE_TIME`, and the layout lerps
     /// the plant's node modulate from white to `DRY_YELLOW` over it.
     dryness: f32,
+}
+
+/// The tomato the mouse is carrying: ripe fruit picked off a plant's slot,
+/// or a tomato picked up out of the basket.
+enum Pick {
+    /// Ripe fruit picked off plant `0`'s bloom slot `1`: the slot is
+    /// marked harvested while the fruit rides the cursor; the release
+    /// keeps it in the basket (the slot regrows) or sends it back to the
+    /// slot (the harvest clears).
+    Plant(usize, usize),
+    /// A tomato picked up out of the basket: `0` is its transform in the
+    /// basket's local space — the spot it was picked from, where a release
+    /// that does not plant flies back to it.
+    Basket(frost::Transform),
+}
+
+/// A seed tomato in flight: released outside the basket, it tweens from
+/// its release point — the fruit's body center, in user space — to its
+/// landing over `FLY_TIME` real seconds. While it flies, the fruit's
+/// pivot stays in the held-fruit node, posed every frame by
+/// [`Demo::step_flight`]; on arrival a slot landing consumes the seed and
+/// starts the slot's plant, a basket landing re-enters the basket.
+#[derive(Clone, Copy)]
+struct Fly {
+    /// The body-center tween in user space, `Repeat::Once`: it clamps at
+    /// its destination, so the last frame poses the fruit exactly on the
+    /// landing.
+    tween: frost::Tween<[f32; 2]>,
+    /// The flight's elapsed time, in real seconds, since the drop: the
+    /// landing settles when it reaches `FLY_TIME` — the tween's own
+    /// elapsed time is private, so the flight keeps its own clock.
+    time: f32,
+    /// Where the flight lands.
+    landing: Landing,
+}
+
+/// The landing of a seed's flight.
+#[derive(Clone, Copy)]
+enum Landing {
+    /// The seed plants into this slot on arrival: the fruit is consumed
+    /// and the slot's plant starts growing, full-watered.
+    Slot(usize),
+    /// Every slot is planted: the fruit flies back to the basket and
+    /// re-enters it at this basket-local transform — the spot it was
+    /// picked up from.
+    Basket(frost::Transform),
 }
 
 struct Demo {
@@ -795,13 +904,18 @@ struct Demo {
     /// Whether the left mouse button was down on the previous frame; the
     /// press and release edges are derived from it.
     pressed: bool,
-    /// The tomato being carried, if any: the plant index and the bloom
-    /// slot the fruit was picked from. While set, the fruit's pivot rides
-    /// the cursor in the held-fruit node (root's [`CHILD_HELD_FRUIT`]
-    /// child) on top of
-    /// everything; the release either keeps it in the basket or sends it
-    /// back to its plant.
-    picking: Option<(usize, usize)>,
+    /// The tomato being carried, if any: ripe fruit off a plant, or a
+    /// tomato out of the basket. While set, the fruit's pivot rides the
+    /// cursor in the held-fruit node (root's [`CHILD_HELD_FRUIT`] child)
+    /// on top of everything; the release either keeps a basket fruit in
+    /// the basket, sends a plant fruit back to its slot, or plants a
+    /// basket fruit on the bench.
+    picking: Option<Pick>,
+    /// The seed tomato currently in flight, if any: dropped outside the
+    /// basket, it tweens to its landing over `FLY_TIME` real seconds,
+    /// posed by [`Demo::step_flight`]; no new pick starts while a seed is
+    /// flying.
+    flying: Option<Fly>,
     /// Whether the right mouse button was down on the previous frame; the
     /// two held tools switch on its release.
     right_pressed: bool,
@@ -866,13 +980,14 @@ struct Demo {
     /// process adds `dt` to it every frame, and it paces the dry water
     /// bar's red border blink.
     time: f32,
-    /// The tomato plants and their water reserves on the grass, in growth
-    /// order: each has its own growth clock, and the process steps it
-    /// only once the previous one is fully grown — the first from launch
-    /// on — forward by `dt / GROW_SLOWDOWN` while its water reserve
-    /// holds, then lays it out on the matching child of the plants node
-    /// (root's [`CHILD_PLANTS`] child), in parallel with the tool
-    /// system; the reserve of a started plant that is not yet complete
+    /// The tomato plants and their water reserves on the grass, in slot
+    /// order: the bench starts bare — no plant planted, every clock at
+    /// zero, every reserve full — and a seed landing in a slot plants it.
+    /// Every planted plant grows at once: the process steps each planted
+    /// plant's clock forward by `dt / GROW_SLOWDOWN` while its water
+    /// reserve holds, then lays it out on the matching child of the plants
+    /// node (root's [`CHILD_PLANTS`] child), in parallel with the tool
+    /// system; the reserve of a planted plant that is not yet complete
     /// drains by `dt / (DRAIN_TIME * GROW_SLOWDOWN)` per frame — at the
     /// growth's slowed pace — and restores by `DROP_WATER` per drop that
     /// falls into its root hitbox, and a plant at 0.0 withers instead:
@@ -880,8 +995,20 @@ struct Demo {
     /// the point of full ripening, where it holds, its ripe tomatoes'
     /// wait and stale running on the plants' aging clocks, stepped with
     /// or without water, while its dryness yellows its node and the dry
-    /// water bar's border blinks red.
+    /// water bar's border blinks red; a planted plant that withers all
+    /// the way to zero is gone and its slot is freed — the plant resets
+    /// to a fresh seed, full-watered and white, un-planted.
     plants: [WateredPlant; PLANT_POS.len()],
+    /// The plant's five slice shapes, owned by the demo: every fresh seed
+    /// — the launch state and a withered-away plant's reset alike —
+    /// rebuilds its [plant::Plant] from them, so a freed slot always
+    /// regrows from the same five slices.
+    slices: [frost::Shape; 5],
+    /// Whether the basket still needs its starting tomato: the seed's
+    /// scale depends on the basket's fit, which the chrome layout sets,
+    /// so the first frame — after the chrome has laid the basket out —
+    /// drops one ripe tomato on the basket's floor and clears the flag.
+    basket_seed: bool,
     /// The swarm of vipers buzzing around the flower bench — the row of
     /// plants — in parallel with the tool system and the plants: one
     /// viper per fully grown plant layer, so the swarm grows as the bench
@@ -914,18 +1041,28 @@ struct Demo {
 impl frost::Process for Demo {
     /// Steps the whole frame, in the order the game's invariants require:
     /// the demo's clock ticks; the chrome fits the window and the
-    /// plants' anchors lift off the grass stretch; the plants grow on
+    /// plants' anchors lift off the grass stretch; the basket takes its
+    /// starting tomato on the first frame; the planted plants grow on
     /// their water; the vipers and the bugs step, and their arrival
-    /// sounds play; the input's edges are handled; the tomatoes are kept
-    /// out of the basket's walls; the plants are laid out; the overgrown
-    /// fruits drop and the fallen fruit steps; the tool ticks, emits, and
-    /// takes its live pose; the particles advance; the drops water the
-    /// roots — after the particles have stepped — and the mist wounds the
-    /// bugs; and the live overlay is drawn.
+    /// sounds play; the input's edges are handled; the seed tomato's
+    /// flight steps and settles; the tomatoes are kept out of the
+    /// basket's walls; the plants are laid out; the overgrown fruits drop
+    /// and the fallen fruit steps; the tool ticks, emits, and takes its
+    /// live pose; the particles advance; the drops water the roots —
+    /// after the particles have stepped — and the mist wounds the bugs;
+    /// and the live overlay is drawn.
     fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
         let (w, h) = ctx.size();
         self.time += dt;
         let anchors = self.layout_chrome(ctx, w, h);
+
+        // The first frame seeds the basket with its starting tomato: the
+        // seed's scale depends on the basket's fit, which the chrome
+        // layout above just set.
+        if self.basket_seed {
+            self.basket_seed = false;
+            self.seed_basket_tomato(ctx);
+        }
 
         let (active_plants, grown_layers, started) = self.grow_plants(dt);
         self.step_vipers(ctx, dt, &anchors, grown_layers);
@@ -933,6 +1070,11 @@ impl frost::Process for Demo {
         let events = self.step_bugs(ctx, dt, &anchors, active_plants);
         self.play_bug_events(&events);
         self.handle_input(ctx);
+
+        // A seed dropped this frame starts flying: the flight poses its
+        // pivot in the held-fruit node — before the basket walls push and
+        // the plants lay out — and settles it on its landing.
+        self.step_flight(ctx, dt);
 
         self.constrain_basket_fruit(ctx);
 
@@ -960,9 +1102,10 @@ impl Demo {
     /// Builds the demo's initial state out of the loaded `assets`: the
     /// mouse holds no tool at all, the tools rest in the items panel's
     /// slots — mirroring the panel's seeded sprites, the spray can in
-    /// `SPRAY_SLOT`, the watering can in `CAN_SLOT` — the six growth
-    /// clocks start at zero, the six water reserves start full, and the
-    /// swarms are seeded for their first batches.
+    /// `SPRAY_SLOT`, the watering can in `CAN_SLOT` — the bench starts
+    /// bare: no plant planted, all six growth clocks at zero, all six
+    /// water reserves full, and the basket still holding its starting
+    /// tomato, seeded on the first frame once the basket's fit is known.
     fn new(assets: Assets) -> Demo {
         // The tools at rest in the items panel's slots, mirroring the
         // panel's seeded sprites: the spray can in SPRAY_SLOT, the
@@ -971,12 +1114,21 @@ impl Demo {
         slots[SPRAY_SLOT] = Some(Tool::SprayCan);
         slots[CAN_SLOT] = Some(Tool::WaterCan);
 
+        // The plant's five slice shapes, owned by the demo: the launch
+        // plants and every withered-away plant's reset rebuild from them.
+        let slices = [
+            assets.plant1.clone(),
+            assets.plant2.clone(),
+            assets.plant3.clone(),
+            assets.plant4.clone(),
+            assets.plant5.clone(),
+        ];
         let plant = plant::Plant::new([
-            &assets.plant1,
-            &assets.plant2,
-            &assets.plant3,
-            &assets.plant4,
-            &assets.plant5,
+            &slices[0],
+            &slices[1],
+            &slices[2],
+            &slices[3],
+            &slices[4],
         ]);
 
         Demo {
@@ -987,6 +1139,7 @@ impl Demo {
             press_slot: None,
             pressed: false,
             picking: None,
+            flying: None,
             right_pressed: false,
             angle: 0.0,
             // The rotation tween starts as a 0→0 tween that never moves;
@@ -1018,16 +1171,18 @@ impl Demo {
             rng: frost::Rng::new(),
             acc: 0.0,
             time: 0.0,
-            // Six plants with six full water reserves, one per slot:
-            // each growth clock starts at zero and the process steps it
-            // when the previous is fully grown, and each plant enters
-            // well watered and white — its dryness out — the first one
-            // draining from launch on.
+            // Six bare slots, one per root joint: every plant enters as a
+            // fresh, invisible seed at clock zero, un-planted, with its
+            // reserve full and white — its dryness out — and a seed
+            // landing in a slot is what starts its plant growing.
             plants: std::array::from_fn(|_| WateredPlant {
+                planted: false,
                 plant: plant.clone(),
                 water: 1.0,
                 dryness: 0.0,
             }),
+            slices,
+            basket_seed: true,
             vipers: vipers::Vipers::new(VIPER_IMAGE),
         }
     }
@@ -1096,23 +1251,23 @@ impl Demo {
         })
     }
 
-    /// Grows the plants one at a time, in parallel with the tool system:
-    /// the first starts at launch, each next one starts when the previous
-    /// is fully grown — a plant that has not started sits untouched: its
-    /// clocks and its full reserve hold until the bench reaches it.
-    /// Growth proceeds only while the plant is well watered, and at
-    /// `1 / GROW_SLOWDOWN` of real time's pace: a started plant that is
-    /// not yet complete — its slices or its blooms still growing — drains
-    /// its water reserve by `dt / (DRAIN_TIME * GROW_SLOWDOWN)` every
-    /// frame — the drain runs with the growth — and steps its clock
-    /// forward by `dt / GROW_SLOWDOWN`, so fully grown slices keep
-    /// opening blooms while the water holds; a plant whose reserve runs
-    /// dry withers instead — its growth clock runs backward at half the
-    /// growth's pace, `dt / (GROW_SLOWDOWN * 2)`, the slices, the flowers,
-    /// and the green fruit shrinking back together, until the point of
-    /// full ripening, the moment every fruit it still bears is fully
-    /// ripe, where the clock holds — while its ripe fruits keep waiting
-    /// and staling on the aging clock, and its node yellows over
+    /// Grows the planted plants in parallel, in parallel with the tool
+    /// system: every planted slot grows at once, and a slot without a
+    /// planted seed sits untouched — its fresh plant's clocks and its
+    /// full reserve hold until a seed flies in. Growth proceeds only
+    /// while the plant is well watered, and at `1 / GROW_SLOWDOWN` of
+    /// real time's pace: a planted plant that is not yet complete — its
+    /// slices or its blooms still growing — drains its water reserve by
+    /// `dt / (DRAIN_TIME * GROW_SLOWDOWN)` every frame — the drain runs
+    /// with the growth — and steps its clock forward by
+    /// `dt / GROW_SLOWDOWN`, so fully grown slices keep opening blooms
+    /// while the water holds; a plant whose reserve runs dry withers
+    /// instead — its growth clock runs backward at half the growth's
+    /// pace, `dt / (GROW_SLOWDOWN * 2)`, the slices, the flowers, and the
+    /// green fruit shrinking back together, until the point of full
+    /// ripening, the moment every fruit it still bears is fully ripe,
+    /// where the clock holds — while its ripe fruits keep waiting and
+    /// staling on the aging clock, and its node yellows over
     /// `DRY_YELLOW_TIME` real seconds, until the player pours water on
     /// its root: the withering stops, the clock runs forward again, and
     /// the node rewhitens over `DRY_WHITE_TIME`; the falling drops are
@@ -1120,19 +1275,20 @@ impl Demo {
     /// particles have been stepped. The aging clock, stepped by the same
     /// slowed frame, runs with or without water: a ripe fruit's wait and
     /// stale — `tomato::STALE_DELAY` then `tomato::STALE_TIME` after full
-    /// growth — proceed on a dry plant.
+    /// growth — proceed on a dry plant. A planted plant that withers all
+    /// the way to zero is gone and its slot is freed: the plant resets to
+    /// a fresh, invisible seed — un-planted, full-watered and white — so
+    /// a new seed can land in the slot.
     ///
     /// Returns the counts the swarms step on — `active_plants` for the
     /// bugs and `grown_layers` for the vipers — and the `started` table
-    /// the watering and the water bars read.
+    /// the watering and the water bars read, which is the planted table:
+    /// a plant that withered away this frame is not in it.
     fn grow_plants(&mut self, dt: f32) -> (usize, usize, [bool; PLANT_POS.len()]) {
         let mut active_plants = 0usize;
         let mut grown_layers = 0usize;
-        let started: [bool; PLANT_POS.len()] =
-            std::array::from_fn(|i| i == 0 || self.plants[i - 1].plant.fully_grown());
         for i in 0..PLANT_POS.len() {
-            if started[i] {
-                active_plants += 1;
+            if self.plants[i].planted {
                 if !self.plants[i].plant.complete() {
                     self.plants[i].water =
                         (self.plants[i].water - dt / (DRAIN_TIME * GROW_SLOWDOWN)).max(0.0);
@@ -1157,10 +1313,35 @@ impl Demo {
                 // The aging clock runs every frame, water or not: ripe
                 // fruits wait and stale on it.
                 self.plants[i].plant.age(dt / GROW_SLOWDOWN);
+                // A planted plant that has withered completely is gone —
+                // no slice, no bloom, nothing visible — and its slot is
+                // free: the plant resets to a fresh, invisible seed, so
+                // a new seed can land in the slot.
+                if self.plants[i].plant.gone() {
+                    self.plants[i].planted = false;
+                    self.plants[i].plant = plant::Plant::new([
+                        &self.slices[0],
+                        &self.slices[1],
+                        &self.slices[2],
+                        &self.slices[3],
+                        &self.slices[4],
+                    ]);
+                    self.plants[i].water = 1.0;
+                    self.plants[i].dryness = 0.0;
+                }
+            }
+            // Counted after the reset, so a plant that withered away this
+            // frame is not in the count the bugs step on.
+            if self.plants[i].planted {
+                active_plants += 1;
             }
             grown_layers += self.plants[i].plant.grown_layers();
         }
-        (active_plants, grown_layers, started)
+        (
+            active_plants,
+            grown_layers,
+            std::array::from_fn(|i| self.plants[i].planted),
+        )
     }
 
     /// Buzzes the vipers around the flower bench, in parallel with
@@ -1227,9 +1408,10 @@ impl Demo {
     /// press that starts on a slot is a swap click, completed only if the
     /// release lands on the same slot; a press that starts elsewhere is a
     /// use of the active tool — the watering can's quarter turn, the
-    /// spray can's fresh burst — or a tomato pick, when no tool is held
-    /// at all; and a release of the right button switches the two tools
-    /// the mouse holds.
+    /// spray can's fresh burst — or a tomato pick — ripe fruit off a
+    /// plant, or a tomato out of the basket — when no tool is held at all
+    /// and no seed is flying; and a release of the right button switches
+    /// the two tools the mouse holds.
     fn handle_input(&mut self, ctx: &mut frost::Context) {
         // Follow the pointer, keeping the last known position while the
         // cursor is outside the window.
@@ -1263,11 +1445,20 @@ impl Demo {
         // pick, when no tool is held at all.
         if left && !self.pressed {
             self.press_slot = on_slot;
-            if on_slot.is_none() && self.active.is_none() && self.picking.is_none() {
-                // No tool held: pick up a fully developed tomato under the
-                // pointer and carry it to the basket.
-                if let Some(hit) = self.pick_tomato(ctx) {
-                    self.picking = Some(hit);
+            if on_slot.is_none()
+                && self.active.is_none()
+                && self.picking.is_none()
+                && self.flying.is_none()
+            {
+                // No tool held, no seed flying: pick up a tomato under the
+                // pointer — ripe fruit off a plant, or a tomato out of
+                // the basket — and carry it.
+                let pick = self
+                    .pick_tomato(ctx)
+                    .map(|(pi, si)| Pick::Plant(pi, si))
+                    .or_else(|| self.pick_basket_tomato(ctx));
+                if let Some(pick) = pick {
+                    self.picking = Some(pick);
                 }
             } else if on_slot.is_none() && self.active == Some(Tool::WaterCan) {
                 // Hold the left mouse button down to turn the can a quarter
@@ -1295,10 +1486,15 @@ impl Demo {
                 }
             }
         } else if !left && self.pressed {
-            if let Some((pi, si)) = self.picking.take() {
-                // The press was a tomato pick: drop the fruit — into the
-                // basket, or back onto the plant.
-                self.drop_tomato(ctx, pi, si);
+            if let Some(pick) = self.picking.take() {
+                // The press was a tomato pick: a plant fruit drops into
+                // the basket or back onto its slot, a basket fruit drops
+                // at its release — kept in the basket, or planted on the
+                // bench.
+                match pick {
+                    Pick::Plant(pi, si) => self.drop_tomato(ctx, pi, si),
+                    Pick::Basket(origin) => self.drop_basket_tomato(ctx, origin),
+                }
             } else if let Some(slot) = self.press_slot {
                 // The press started on a slot: complete the swap only if
                 // the release is still on that slot.
@@ -1320,7 +1516,9 @@ impl Demo {
     /// rides the cursor, pushed out of the basket's U every frame, and
     /// each dropped fruit stays exactly where it was released, none
     /// sitting inside a wall. There is no gravity, and no
-    /// tomato-to-tomato collision.
+    /// tomato-to-tomato collision. The seed's flight, while one is in
+    /// flight, poses the held-fruit node's pivot itself, so the ride is
+    /// skipped — the flight is brief and stays over the grass.
     fn constrain_basket_fruit(&mut self, ctx: &mut frost::Context) {
         // A carried tomato rides the cursor: the pivot under the pointer,
         // the fruit's top pinned to it, in window-centered user space on
@@ -1882,15 +2080,16 @@ impl Demo {
         }
     }
 
-    /// Picks up the fully developed tomato the pointer rests on — the
-    /// first hit in plant, then slot, order — and starts carrying it: the
-    /// fruit's pivot is reparented out of its plant's slot and into the
-    /// held-fruit container (root's [`CHILD_HELD_FRUIT`] child), at the
-    /// pick scale, under
+    /// Picks up the fully developed tomato a plant bears where the pointer
+    /// rests — the first hit in plant, then slot, order — the first pick
+    /// source tried, ahead of the basket's fruit, and starts carrying it:
+    /// the fruit's pivot is reparented out of its plant's slot and into
+    /// the held-fruit container (root's [`CHILD_HELD_FRUIT`] child), at
+    /// the pick scale, under
     /// the pointer, so it paints above everything. The plant's slot is
     /// marked harvested while it is carried; the pointer must not be on a
-    /// slot or holding a tool, which the caller checks. Returns the picked
-    /// plant and slot.
+    /// slot or holding a tool, and no seed may be in flight, which the
+    /// caller checks. Returns the picked plant and slot.
     fn pick_tomato(&mut self, ctx: &mut frost::Context) -> Option<(usize, usize)> {
         // The hit test: every plant's unharvested, ripe slots, their body
         // centers mapped to window space through the plant node's current
@@ -1935,9 +2134,11 @@ impl Demo {
         Some((pi, si))
     }
 
-    /// Drops the carried tomato picked from (plant, slot) `(pi, si)`:
-    /// with the body's center inside the basket's U — the mouth's x range
-    /// and above the floor — the pivot is reparented into the basket's
+    /// Drops the carried tomato picked from (plant, slot) `(pi, si)` — the
+    /// plant fruit's drop path; a basket fruit's goes through
+    /// [`Self::drop_basket_tomato`] instead. With the body's center inside
+    /// the basket's U — the mouth's x range and above the floor — the
+    /// pivot is reparented into the basket's
     /// fruit container (the [`basket::BASKET_FRUIT`] child of the [`CHILD_BASKET`]
     /// group), so it renders behind the front half and in front of the
     /// back, and it stays
@@ -1997,6 +2198,188 @@ impl Demo {
                 .children
                 .push(Box::new(pivot));
         }
+    }
+
+    /// Picks up the tomato the pointer rests on in the basket — the
+    /// topmost hit, the last child of the fruit container, the one drawn
+    /// on top of the rest — and starts carrying it: the fruit's pivot is
+    /// reparented out of the basket's fruit container and into the
+    /// held-fruit container (root's [`CHILD_HELD_FRUIT`] child), at the
+    /// pick scale under the pointer, so it paints on top of everything.
+    /// Returns the pick — the fruit's transform in the basket's local
+    /// space, the spot it was picked from.
+    fn pick_basket_tomato(&mut self, ctx: &mut frost::Context) -> Option<Pick> {
+        let [hx, hy] = tomato_pick_half(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
+        let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
+        // The hit test: every fruit's body center — its basket-local
+        // pivot position, the leaf offset at the basket's fit, and the
+        // basket's origin, mapped into window space — against the
+        // pointer's square around the cursor, topmost fruit first.
+        let hit = {
+            let basket = &ctx.scene().root.children[CHILD_BASKET];
+            let s = basket.scale[0];
+            let [bx, by] = basket.transform.apply([0.0, 0.0]);
+            let fruits = &basket.children[basket::BASKET_FRUIT].children;
+            fruits.iter().enumerate().rev().find(|(_, pivot)| {
+                let [px, py] = pivot.transform.apply([0.0, 0.0]);
+                let [cx, cy] = [
+                    bx + s * px + TOMATO_PICK_SCALE * ox,
+                    by + s * py + TOMATO_PICK_SCALE * oy,
+                ];
+                (cx - self.mouse[0]).abs() <= hx && (cy - self.mouse[1]).abs() <= hy
+            })
+        };
+        let (i, _) = hit?;
+        let root = &mut ctx.scene().root;
+        let basket_fruit = &mut root.children[CHILD_BASKET].children[basket::BASKET_FRUIT];
+        let origin = basket_fruit.children[i].transform;
+        let mut pivot = *basket_fruit.children.remove(i);
+        pivot.scale = [TOMATO_PICK_SCALE, TOMATO_PICK_SCALE];
+        pivot.transform = frost::Transform::translate(self.mouse[0], self.mouse[1]);
+        root.children[CHILD_HELD_FRUIT].children.insert(0, Box::new(pivot));
+        Some(Pick::Basket(origin))
+    }
+
+    /// Drops the carried tomato picked out of the basket: a release with
+    /// the body's center inside the basket's U — the mouth's x range and
+    /// above the floor — keeps the fruit in the basket at the release
+    /// point, the same reparent into the fruit container as a plant
+    /// fruit's basket drop, without a bloom to regrow. A release anywhere
+    /// else is a planting attempt: the seed flies to the nearest
+    /// not-yet-planted slot's root anchor, consumed on arrival, the slot's
+    /// plant starting from a fresh, full-watered seed — or, with every
+    /// slot planted, it flies back to the fruit's original spot in the
+    /// basket.
+    fn drop_basket_tomato(&mut self, ctx: &mut frost::Context, origin: frost::Transform) {
+        let (w, h) = ctx.size();
+        let s = basket::basket_scale(h);
+        let center = basket::basket_center(w, h);
+        let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
+        // The body's center in window space, and its position in the
+        // basket's local space, where the U is measured.
+        let body = [
+            self.mouse[0] + TOMATO_PICK_SCALE * ox,
+            self.mouse[1] + TOMATO_PICK_SCALE * oy,
+        ];
+        let lx = (body[0] - center[0]) / s;
+        let ly = (body[1] - center[1]) / s;
+        if basket::basket_accepts(lx, ly) {
+            // Keep the fruit in the basket, at the release point.
+            let root = &mut ctx.scene().root;
+            let mut pivot = *root.children[CHILD_HELD_FRUIT].children.remove(0);
+            pivot.scale = [TOMATO_PICK_SCALE / s, TOMATO_PICK_SCALE / s];
+            pivot.transform = frost::Transform::translate(lx, ly);
+            root.children[CHILD_BASKET].children[basket::BASKET_FRUIT]
+                .children
+                .push(Box::new(pivot));
+            return;
+        }
+        // The release is off the basket: a planting attempt. The seed
+        // flies to the nearest not-yet-planted slot's anchor — or, with
+        // every slot planted, back to the fruit's original spot in the
+        // basket, in window space.
+        let planted = std::array::from_fn(|i| self.plants[i].planted);
+        let (dest, landing) = match nearest_free_slot(body, w, h, &planted) {
+            Some(i) => (plant_anchors(w, h)[i], Landing::Slot(i)),
+            None => {
+                let [px, py] = origin.apply([0.0, 0.0]);
+                (
+                    [
+                        center[0] + s * px + TOMATO_PICK_SCALE * ox,
+                        center[1] + s * py + TOMATO_PICK_SCALE * oy,
+                    ],
+                    Landing::Basket(origin),
+                )
+            }
+        };
+        self.flying = Some(Fly {
+            tween: frost::Tween::new(body, dest, FLY_TIME).repeat(frost::Repeat::Once),
+            time: 0.0,
+            landing,
+        });
+        // The pivot stays in the held-fruit node for the flight;
+        // step_flight poses it each frame and settles it on arrival.
+    }
+
+    /// Steps the seed tomato's flight, if one is in flight: the body's
+    /// center tweens toward the landing over `FLY_TIME` real seconds, the
+    /// pivot riding the held-fruit node at the pick scale, and on arrival
+    /// the flight settles — a slot landing consumes the seed and starts
+    /// the slot's plant, a basket landing re-enters the fruit into the
+    /// basket at its original spot.
+    fn step_flight(&mut self, ctx: &mut frost::Context, dt: f32) {
+        let mut fly = match self.flying.take() {
+            Some(fly) => fly,
+            None => return,
+        };
+        fly.time += dt;
+        let center = fly.tween.tick(dt);
+        let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
+        ctx.scene().root.children[CHILD_HELD_FRUIT].children[0].transform =
+            frost::Transform::translate(
+                center[0] - TOMATO_PICK_SCALE * ox,
+                center[1] - TOMATO_PICK_SCALE * oy,
+            );
+        if fly.time < FLY_TIME {
+            self.flying = Some(fly);
+            return;
+        }
+        let landing = fly.landing;
+        let root = &mut ctx.scene().root;
+        let pivot = *root.children[CHILD_HELD_FRUIT].children.remove(0);
+        match landing {
+            Landing::Slot(i) => {
+                // The seed is consumed: the slot's plant starts growing
+                // from a fresh seed, full-watered and white.
+                self.plants[i].planted = true;
+                self.plants[i].water = 1.0;
+                self.plants[i].dryness = 0.0;
+            }
+            Landing::Basket(origin) => {
+                // Back into the basket, at the fruit's original spot.
+                let s = root.children[CHILD_BASKET].scale[0];
+                let mut pivot = pivot;
+                pivot.scale = [TOMATO_PICK_SCALE / s, TOMATO_PICK_SCALE / s];
+                pivot.transform = origin;
+                root.children[CHILD_BASKET].children[basket::BASKET_FRUIT]
+                    .children
+                    .push(Box::new(pivot));
+            }
+        }
+    }
+
+    /// Seeds the basket with its starting tomato — one ripe fruit
+    /// resting on the basket's floor, mid-width: a fresh pivot in the
+    /// basket's fruit container (the [`basket::BASKET_FRUIT`] child of
+    /// the [`CHILD_BASKET`] group), at the basket's fit scale, the body's
+    /// center on [`BASKET_SEED`]. The seed's scale depends on the
+    /// basket's fit, so it lands on the first frame, after the chrome has
+    /// laid the basket out.
+    fn seed_basket_tomato(&mut self, ctx: &mut frost::Context) {
+        let s = ctx.scene().root.children[CHILD_BASKET].scale[0];
+        let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
+        let k = TOMATO_PICK_SCALE / s;
+        let [cx, cy] = BASKET_SEED;
+        ctx.scene().root.children[CHILD_BASKET].children[basket::BASKET_FRUIT]
+            .children
+            .push(Box::new(frost::SceneNode {
+                transform: frost::Transform::translate(cx - k * ox, cy - k * oy),
+                scale: [k, k],
+                children: vec![
+                    Box::new(frost::SceneNode {
+                        shape: Some(self.tomato.clone()),
+                        transform: frost::Transform::translate(ox, oy),
+                        modulate: tomato::TOMATO_RED,
+                        ..Default::default()
+                    }),
+                    Box::new(frost::SceneNode {
+                        shape: Some(self.tomato_fg.clone()),
+                        transform: frost::Transform::translate(ox, oy),
+                        ..Default::default()
+                    }),
+                ],
+                ..Default::default()
+            }));
     }
 }
 
@@ -2274,19 +2657,23 @@ mod tests {
     /// [Demo::new] starts the demo mirroring the scene's seeded sprites
     /// and the plants' full reserves: no tool is active or held, the
     /// spray can rests in `SPRAY_SLOT` and the watering can in
-    /// `CAN_SLOT` with the other slots empty, every plant starts well
-    /// watered, nothing is falling, and no pour loop is running.
+    /// `CAN_SLOT` with the other slots empty, the bench is bare — no
+    /// slot planted, every reserve full, the basket seed waiting to be
+    /// seeded — nothing is falling, and no pour loop is running.
     #[test]
     fn the_initial_state_mirrors_the_seeded_scene() {
         let demo = Demo::new(Assets::load());
         assert_eq!(demo.active, None);
         assert_eq!(demo.held, None);
-        assert_eq!(demo.picking, None);
+        assert!(demo.picking.is_none());
+        assert!(demo.flying.is_none());
+        assert!(demo.basket_seed);
         assert_eq!(demo.slots[SPRAY_SLOT], Some(Tool::SprayCan));
         assert_eq!(demo.slots[CAN_SLOT], Some(Tool::WaterCan));
         assert_eq!(demo.slots[0], None);
         assert_eq!(demo.slots[1], None);
         assert_eq!(demo.plants.len(), PLANT_POS.len());
+        assert!(demo.plants.iter().all(|p| !p.planted));
         assert!(demo.plants.iter().all(|p| p.water == 1.0));
         assert!(demo.falls.is_empty());
         assert!(!demo.pouring);
@@ -2294,10 +2681,10 @@ mod tests {
 
     /// A full reserve, drained at the growth's slowed pace — a 60 fps
     /// frame step divided by `GROW_SLOWDOWN` — must run out strictly
-    /// before the first plant's base slice is fully grown — over
+    /// before a freshly planted seed's base slice is fully grown — over
     /// `plant::GROW_TIMES[0] * GROW_SLOWDOWN` real seconds — and only just
-    /// before it: the bench is meant to pause within the last real second
-    /// of the base's growth, before the flowers can start developing.
+    /// before it: the plant is meant to pause within the last real second
+    /// of the base's growth, before its flowers can start developing.
     #[test]
     fn first_plant_runs_dry_just_before_its_base_is_grown() {
         let dt = 1.0 / 60.0;
@@ -2383,21 +2770,140 @@ mod tests {
         assert!(dest < 500.0, "the destination is below the spawn");
     }
 
-    /// The bench starts one plant at a time: the first grows from launch,
-    /// and the others sit untouched — their growth clocks and their full
-    /// reserves hold — until the previous plant is fully grown.
+    /// The bench starts bare: no plant grows, and no reserve drains,
+    /// until a seed lands in a slot — then only the planted slot grows,
+    /// the other slots' seeds sitting untouched, full-watered.
     #[test]
-    fn only_the_first_plant_grows_until_the_bench_starts() {
+    fn the_bench_stays_bare_until_a_seed_lands() {
+        // A long frame with the bench bare: nothing would grow or drain
+        // even if the clocks ran.
         let mut demo = Demo::new(Assets::load());
-        // A long frame: the unstarted plants' full reserves would carry
-        // them a whole base-slice of growth if their clocks ran.
-        let (active, _layers, started) = demo.grow_plants(9.0);
-        assert_eq!(active, 1);
-        assert_eq!(started, [true, false, false, false, false, false]);
-        for i in 1..PLANT_POS.len() {
+        let (active, layers, started) = demo.grow_plants(9.0);
+        assert_eq!(active, 0);
+        assert_eq!(layers, 0);
+        assert_eq!(started, [false; PLANT_POS.len()]);
+        for i in 0..PLANT_POS.len() {
             assert_eq!(demo.plants[i].plant.grown_layers(), 0, "plant {i}");
             assert_eq!(demo.plants[i].water, 1.0, "plant {i}");
         }
+        // A seed lands in slot 3 and, kept watered, grows: ten real
+        // seconds — 3⅓ growth-clock seconds — is just past its base
+        // slice, and the other slots' seeds hold untouched.
+        let dt = 1.0 / 60.0;
+        demo.plants[3].planted = true;
+        for _ in 0..600 {
+            demo.plants[3].water = 1.0;
+            demo.grow_plants(dt);
+        }
+        let (active, _layers, started) = demo.grow_plants(dt);
+        assert_eq!(active, 1);
+        assert_eq!(started, [false, false, false, true, false, false]);
+        assert_eq!(demo.plants[3].plant.grown_layers(), 1);
+        for i in [0, 1, 2, 4, 5] {
+            assert_eq!(demo.plants[i].plant.grown_layers(), 0, "plant {i}");
+            assert_eq!(demo.plants[i].water, 1.0, "plant {i}");
+        }
+    }
+
+    /// Planted plants grow side by side: two planted slots run the same
+    /// slowed clock at once, so they reach the same layer together, while
+    /// the unplanted slots' seeds hold untouched.
+    #[test]
+    fn planted_plants_grow_side_by_side() {
+        let dt = 1.0 / 60.0;
+        let mut demo = Demo::new(Assets::load());
+        demo.plants[0].planted = true;
+        demo.plants[2].planted = true;
+        // Twenty real seconds — 6⅔ growth-clock seconds — every planted
+        // plant kept watered: both past their base and their low-middle
+        // slice, the same layer, together.
+        for _ in 0..1200 {
+            demo.plants[0].water = 1.0;
+            demo.plants[2].water = 1.0;
+            demo.grow_plants(dt);
+        }
+        let (active, _layers, started) = demo.grow_plants(dt);
+        assert_eq!(active, 2);
+        assert!(started[0] && started[2]);
+        assert!(!started[1] && !started[3] && !started[4] && !started[5]);
+        let g0 = demo.plants[0].plant.grown_layers();
+        let g2 = demo.plants[2].plant.grown_layers();
+        assert!(g0 >= 1, "plant 0 grew {g0} layers");
+        assert_eq!(g0, g2, "the planted plants grow in lockstep");
+        for i in [1, 3, 4, 5] {
+            assert_eq!(demo.plants[i].plant.grown_layers(), 0, "plant {i}");
+            assert_eq!(demo.plants[i].water, 1.0, "plant {i}");
+        }
+    }
+
+    /// A planted plant left dry withers all the way back to nothing —
+    /// its growth clock at zero, no slice, no bloom — and is gone: its
+    /// slot is freed, the plant reset to a fresh, full-watered seed.
+    #[test]
+    fn a_completely_withered_plant_is_gone_and_frees_its_slot() {
+        let dt = 1.0 / 60.0;
+        let mut demo = Demo::new(Assets::load());
+        // A fully grown plant — no ripe fruit, so nothing holds its
+        // clock above zero — left dry withers back to nothing.
+        demo.plants[0].planted = true;
+        demo.plants[0].plant.step(15.5);
+        demo.plants[0].water = 0.0;
+        let mut frames = 0usize;
+        while demo.plants[0].planted && frames < 20_000 {
+            demo.grow_plants(dt);
+            frames += 1;
+        }
+        assert!(
+            !demo.plants[0].planted,
+            "the plant never withered away in {frames} frames"
+        );
+        assert!(demo.plants[0].plant.gone());
+        assert_eq!(demo.plants[0].plant.grown_layers(), 0);
+        assert_eq!(demo.plants[0].water, 1.0);
+        assert_eq!(demo.plants[0].dryness, 0.0);
+    }
+
+    /// [plant_anchors] maps each `PLANT_POS` root joint the way the grass
+    /// stretch maps the whole texture: for a 1920x1080 window — the
+    /// grass's natural size — the joint's pixel is centered in the window.
+    #[test]
+    fn plant_anchors_center_the_joints_in_a_natural_size_window() {
+        let anchors = plant_anchors(GRASS_SIZE[0], GRASS_SIZE[1]);
+        let want: [[f32; 2]; PLANT_POS.len()] = [
+            [-37.0, 26.0],
+            [288.0, -6.0],
+            [673.0, -63.0],
+            [-221.0, -31.0],
+            [121.0, -100.0],
+            [503.0, -179.0],
+        ];
+        for i in 0..PLANT_POS.len() {
+            assert!(
+                (anchors[i][0] - want[i][0]).abs() < 1e-3
+                    && (anchors[i][1] - want[i][1]).abs() < 1e-3,
+                "anchor {i}: got {:?}, want {:?}",
+                anchors[i],
+                want[i]
+            );
+        }
+    }
+
+    /// [nearest_free_slot] picks the closest not-yet-planted slot: a point
+    /// on slot 1's anchor lands in slot 1, with slot 1 planted the same
+    /// point lands in the next closest free slot — slot 4 — and with
+    /// every slot planted there is no landing, so the seed goes back to
+    /// the basket.
+    #[test]
+    fn nearest_free_slot_picks_the_closest_unplanted_slot() {
+        let (w, h) = (GRASS_SIZE[0], GRASS_SIZE[1]);
+        let none_planted = [false; PLANT_POS.len()];
+        let p1 = plant_anchors(w, h)[1];
+        assert_eq!(nearest_free_slot(p1, w, h, &none_planted), Some(1));
+        let mut planted = none_planted;
+        planted[1] = true;
+        assert_eq!(nearest_free_slot(p1, w, h, &planted), Some(4));
+        let all_planted = [true; PLANT_POS.len()];
+        assert_eq!(nearest_free_slot(p1, w, h, &all_planted), None);
     }
 
     /// A dry plant withers at half the growth's pace: a fully grown plant
@@ -2408,7 +2914,9 @@ mod tests {
     fn a_dry_plant_withers_at_half_the_growth_pace() {
         let dt = 1.0 / 60.0;
         let mut demo = Demo::new(Assets::load());
-        // Fully grown — all five slices — and dry: the withering runs.
+        // A planted plant, fully grown — all five slices — and dry: the
+        // withering runs.
+        demo.plants[0].planted = true;
         demo.plants[0].plant.step(15.5);
         demo.plants[0].water = 0.0;
         assert_eq!(demo.plants[0].plant.grown_layers(), 5);
@@ -2439,6 +2947,7 @@ mod tests {
     fn a_dry_plant_yellows_and_a_watered_one_regreens() {
         let dt = 1.0 / 60.0;
         let mut demo = Demo::new(Assets::load());
+        demo.plants[0].planted = true;
         demo.plants[0].plant.step(5.0);
         assert_eq!(demo.plants[0].dryness, 0.0);
         // Three real seconds dry: half of the yellowing span.

@@ -93,7 +93,8 @@ pub const GROW_TIMES: [f32; 5] = [3.0, 6.0, 9.0, 12.0, 15.0];
 
 /// The time at which the plant is fully grown: the last slice's growth
 /// time — from then on every slice holds at full length while the plant
-/// keeps swaying.
+/// keeps swaying. Test-only: the demo's growth logic no longer reads it.
+#[cfg(test)]
 pub const FULL_GROW_TIME: f32 = *GROW_TIMES.last().expect("GROW_TIMES is non-empty");
 
 /// The flower spawn points of the four lower slices — the top slice bears
@@ -501,12 +502,13 @@ impl Plant {
         self.t = (self.t - dt).max(self.ripe_floor());
     }
 
-    /// Whether the plant is fully grown: the last slice has reached its
-    /// full length; from here on every slice holds at full length while the
-    /// plant keeps swaying and its blooms keep growing, until it is
-    /// complete at [bloom_time].
-    pub fn fully_grown(&self) -> bool {
-        self.t >= FULL_GROW_TIME
+    /// Whether the plant is gone: its growth clock has withered all the
+    /// way back to zero — no slice, no bloom, nothing visible — so the
+    /// slot it grows from is free for a new seed. A plant holding ripe,
+    /// unharvested fruit never withers past the floor its ripest fruit
+    /// sets, so a gone plant is always a bare one.
+    pub fn gone(&self) -> bool {
+        self.t <= 0.0
     }
 
     /// The plant-clock moment the plant's last first bloom reaches full
