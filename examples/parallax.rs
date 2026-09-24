@@ -251,7 +251,7 @@ fn main() {
                 group: Some(PLAYER_LAYER),
                 children: vec![0, 0],
             }),
-            ambient: frost::Scene::default().ambient,
+            ambient: frost::AMBIENT,
         },
         Demo {
             pos: [0.0, 0.0],

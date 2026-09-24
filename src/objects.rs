@@ -66,8 +66,11 @@ pub(crate) const WHITE: Color = Color {
 };
 
 /// The default ambient color: a dim neutral gray, the floor of a scene's
-/// light field where no light reaches.
-pub(crate) const AMBIENT: Color = Color {
+/// light field where no light reaches. [`Scene::new`] and
+/// [`Scene::default`] start from it, and a scene's
+/// [`ambient`](Scene::ambient) field can be set to it (or to any other
+/// color) to change the floor of every lit receiver.
+pub const AMBIENT: Color = Color {
     r: 0.3,
     g: 0.3,
     b: 0.3,

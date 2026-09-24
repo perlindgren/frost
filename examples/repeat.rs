@@ -262,7 +262,7 @@ fn main() {
                 group: None,
                 children: vec![0, 0],
             }),
-            ambient: frost::Scene::default().ambient,
+            ambient: frost::AMBIENT,
         },
         Demo {
             args,

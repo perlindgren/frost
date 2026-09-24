@@ -284,6 +284,35 @@ impl Canvas {
         });
     }
 
+    /// Registers a point light at `(x, y)` in the window's user space.
+    ///
+    /// Lights are never drawn: they join the frame's light field, which
+    /// every lit receiver ([`SceneNode::lit`]) evaluates per pixel. `color`
+    /// is the light's color, `intensity` its strength (`1.0` is full
+    /// strength, `0.0` is off), and `radius` its falloff extent in pixels:
+    /// the light reaches exactly `radius` pixels from `(x, y)`, fading to
+    /// zero at the edge.
+    ///
+    /// The light lives in the window's user space — not any scene node's:
+    /// no node's transform, scale, or modulate applies to it. For a light
+    /// that rides a node (transformed and tinted by it), give the node a
+    /// [`Shape::Light`] shape instead.
+    ///
+    /// The frame's light field is rebuilt from that frame's lights, so to
+    /// move a light, call this again each frame with the new position, and
+    /// the field's ambient floor comes from the scene's
+    /// [`ambient`](Scene::ambient).
+    pub fn light(&mut self, x: f32, y: f32, color: Color, intensity: f32, radius: f32) {
+        self.draws.push(Draw::Light {
+            pos: self.user_to_pixels(x, y),
+            radius: radius.max(0.0),
+            intensity,
+            color,
+            // The light is never drawn, so its draw order is irrelevant.
+            z: 0.0,
+        });
+    }
+
     /// Draws a [`Scene`] into the canvas.
     ///
     /// The scene passed to [`run`] is drawn automatically every frame, after
@@ -1588,6 +1617,107 @@ mod tests {
             Some(&[255u8, 255, 255, 255][..])
         );
         assert_eq!(*sprite_size, [2, 3]);
+    }
+
+    #[test]
+    fn canvas_light_lands_at_the_pixel_position_with_its_fields() {
+        // A light registered at user (10, 20) on a 100x100 canvas lands at
+        // pixel (60, 30); a negative radius clamps to zero, the intensity
+        // and color pass through, and the draw order is irrelevant, so it
+        // stays 0.0.
+        let mut canvas = Canvas::new((100, 100));
+        canvas.light(
+            10.0,
+            20.0,
+            Color {
+                r: 1.0,
+                g: 0.5,
+                b: 0.0,
+                a: 1.0,
+            },
+            2.0,
+            -16.0,
+        );
+        let [Draw::Light {
+            pos,
+            radius,
+            intensity,
+            color,
+            z,
+        }] = &canvas.draws[..]
+        else {
+            panic!("expected one light draw, got {:?}", canvas.draws);
+        };
+        assert_eq!(*pos, [60.0, 30.0]);
+        assert_eq!(*radius, 0.0);
+        assert_eq!(*intensity, 2.0);
+        assert_eq!(*color, Color { r: 1.0, g: 0.5, b: 0.0, a: 1.0 });
+        assert_eq!(*z, 0.0);
+    }
+
+    #[test]
+    fn immediate_and_scene_lights_pack_into_the_field_in_call_order() {
+        // A light registered immediately and one on a scene node, both at z
+        // 0: the immediate draw is pushed first (the process runs before
+        // the scene is drawn), so the stable z-sort keeps it first in the
+        // paint order, and the packed field's records follow.
+        let mut canvas = Canvas::new((100, 100));
+        canvas.light(
+            0.0,
+            0.0,
+            Color {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
+            1.0,
+            10.0,
+        );
+        let scene = Scene::new(SceneNode {
+            transform: Transform::translate(-10.0, 0.0),
+            shape: Some(Shape::Light {
+                light: Light {
+                    color: Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 1.0,
+                        a: 1.0,
+                    },
+                    intensity: 0.5,
+                    radius: 20.0,
+                },
+            }),
+            ..Default::default()
+        });
+        canvas.draw_scene(&scene);
+        let field = pack_light_field(&canvas.paint_order(), AMBIENT);
+        let f32_at = |data: &[u8], off: usize| {
+            f32::from_le_bytes(data[off..off + 4].try_into().unwrap())
+        };
+        assert_eq!(field.count, 2);
+        assert_eq!(field.data.len(), LIGHT_FIELD_HEADER + 2 * LIGHT_RECORD);
+        // The header carries the light count and the scene's ambient.
+        let count = u32::from_le_bytes(field.data[0..4].try_into().unwrap());
+        assert_eq!(count, 2);
+        assert_eq!(f32_at(&field.data, 16), AMBIENT.r);
+        // The immediate light first: user (0, 0) -> pixel (50, 50), radius
+        // 10, intensity 1, red.
+        let off = LIGHT_FIELD_HEADER;
+        assert_eq!(f32_at(&field.data, off), 50.0);
+        assert_eq!(f32_at(&field.data, off + 4), 50.0);
+        assert_eq!(f32_at(&field.data, off + 8), 10.0);
+        assert_eq!(f32_at(&field.data, off + 12), 1.0);
+        assert_eq!(f32_at(&field.data, off + 16), 1.0);
+        assert_eq!(f32_at(&field.data, off + 28), 1.0);
+        // The scene's light second: user (-10, 0) -> pixel (40, 50), radius
+        // 20, intensity 0.5, blue.
+        let off = LIGHT_FIELD_HEADER + LIGHT_RECORD;
+        assert_eq!(f32_at(&field.data, off), 40.0);
+        assert_eq!(f32_at(&field.data, off + 4), 50.0);
+        assert_eq!(f32_at(&field.data, off + 8), 20.0);
+        assert_eq!(f32_at(&field.data, off + 12), 0.5);
+        assert_eq!(f32_at(&field.data, off + 24), 1.0);
     }
 
     #[test]
