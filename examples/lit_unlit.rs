@@ -19,9 +19,9 @@
 
 /// The color of the huge background rectangle.
 const FLOOR: frost::Color = frost::Color {
-    r: 0.45,
-    g: 0.45,
-    b: 0.5,
+    r: 0.15,
+    g: 0.15,
+    b: 0.25,
     a: 1.0,
 };
 
@@ -37,13 +37,13 @@ const RECT: frost::Color = frost::Color {
 /// The light's color: a warm white.
 const LIGHT: frost::Color = frost::Color {
     r: 1.0,
-    g: 0.95,
-    b: 0.85,
+    g: 0.0,
+    b: 0.0,
     a: 1.0,
 };
 
 /// The light's strength.
-const LIGHT_INTENSITY: f32 = 1.5;
+const LIGHT_INTENSITY: f32 = 2.5;
 
 /// The light's falloff extent, in pixels: the radius of the circular pool
 /// around the cursor.
@@ -63,7 +63,13 @@ impl frost::Process for Demo {
         if let Some(pos) = ctx.mouse_position() {
             self.pos = pos;
         }
-        ctx.light(self.pos[0], self.pos[1], LIGHT, LIGHT_INTENSITY, LIGHT_RADIUS);
+        ctx.light(
+            self.pos[0],
+            self.pos[1],
+            LIGHT,
+            LIGHT_INTENSITY,
+            LIGHT_RADIUS,
+        );
     }
 }
 

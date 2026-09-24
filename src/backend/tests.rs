@@ -143,6 +143,7 @@ fn draw_scene_composes_transforms_down_the_tree() {
         scale: [1.0, 1.0],
         modulate: WHITE,
         lit: false,
+        occludes: false,
         order: 0.0,
         shape: Some(Shape::Circle {
             center: [0.0, 0.0],
@@ -154,6 +155,7 @@ fn draw_scene_composes_transforms_down_the_tree() {
             scale: [1.0, 1.0],
             modulate: WHITE,
             lit: false,
+            occludes: false,
             order: 0.0,
             shape: None,
             children: vec![Box::new(SceneNode {
@@ -161,6 +163,7 @@ fn draw_scene_composes_transforms_down_the_tree() {
                 scale: [1.0, 1.0],
                 modulate: WHITE,
                 lit: false,
+                occludes: false,
                 order: 0.0,
                 shape: Some(Shape::Circle {
                     center: [1.0, 1.0],
@@ -209,6 +212,7 @@ fn draw_scene_rotates_a_translated_child() {
         scale: [1.0, 1.0],
         modulate: WHITE,
         lit: false,
+        occludes: false,
         order: 0.0,
         shape: None,
         children: vec![Box::new(SceneNode {
@@ -216,6 +220,7 @@ fn draw_scene_rotates_a_translated_child() {
             scale: [1.0, 1.0],
             modulate: WHITE,
             lit: false,
+            occludes: false,
             order: 0.0,
             shape: Some(Shape::Circle {
                 center: [0.0, 0.0],
@@ -244,6 +249,7 @@ fn scene_shape_at_user_origin_lands_at_window_center() {
         scale: [1.0, 1.0],
         modulate: WHITE,
         lit: false,
+        occludes: false,
         order: 0.0,
         shape: Some(Shape::Circle {
             center: [0.0, 0.0],
@@ -355,6 +361,7 @@ fn shape_scissor_under_non_uniform_scale() {
         aa: 0.75 / 2.0,
         color: black(),
         lit: 0.0,
+        occludes: 0.0,
         z: 0.0,
     };
     // The local box (25 ± 10.375, 50 ± 10.375) stretches to
@@ -375,6 +382,7 @@ fn shape_scissor_under_rotation() {
         aa: 0.75,
         color: black(),
         lit: 0.0,
+        occludes: 0.0,
         z: 0.0,
     };
     // The ±10.75 box rotated 45° has half-extent 10.75 * sqrt(2), so the
@@ -392,6 +400,7 @@ fn off_screen_shape_has_no_scissor() {
         aa: 0.75,
         color: black(),
         lit: 0.0,
+        occludes: 0.0,
         z: 0.0,
     };
     assert_eq!(draw.scissor_rect([100, 100]), None);
@@ -781,6 +790,128 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
 }
 
 #[test]
+fn occluder_field_packs_an_empty_header() {
+    // No occluders: just the 16-byte header — count 0, 12 padding bytes —
+    // and no records.
+    let field = pack_occluder_field(&[Draw::Light {
+        pos: [10.0, 20.0],
+        radius: 5.0,
+        intensity: 1.0,
+        color: black(),
+        z: 0.0,
+    }]);
+    assert_eq!(field.count, 0);
+    assert_eq!(field.data.len(), OCCLUDER_FIELD_HEADER);
+    assert_eq!(u32::from_le_bytes(field.data[0..4].try_into().unwrap()), 0);
+    assert_eq!(&field.data[4..16], &[0u8; 12]);
+}
+
+#[test]
+fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
+    // Two flagged rectangles among unflagged, non-rectangle, and degenerate
+    // draws: count 2, the header, then one 48-byte record per occluder, in
+    // call order.
+    let translated = Draw::Shape {
+        world: Transform::translate(10.0, 20.0),
+        center: [3.0, -4.0],
+        params: [5.0, 2.0],
+        kind: 1.0,
+        aa: 0.0,
+        color: black(),
+        lit: 0.0,
+        occludes: 1.0,
+        z: 0.0,
+    };
+    let rotated = Draw::Shape {
+        world: Transform::rotate(std::f32::consts::FRAC_PI_2),
+        center: [1.0, 2.0],
+        params: [4.0, 6.0],
+        kind: 1.0,
+        aa: 0.0,
+        color: black(),
+        lit: 1.0,
+        occludes: 1.0,
+        z: 0.0,
+    };
+    let unflagged = Draw::Shape {
+        world: Transform::identity(),
+        center: [0.0, 0.0],
+        params: [1.0, 1.0],
+        kind: 1.0,
+        aa: 0.0,
+        color: black(),
+        lit: 0.0,
+        occludes: 0.0,
+        z: 0.0,
+    };
+    // Flagged, but a circle: only rectangles occlude.
+    let circle = Draw::Shape {
+        world: Transform::identity(),
+        center: [0.0, 0.0],
+        params: [1.0, 0.0],
+        kind: 0.0,
+        aa: 0.0,
+        color: black(),
+        lit: 0.0,
+        occludes: 1.0,
+        z: 0.0,
+    };
+    // Flagged, but collapsed to a line: the inverse does not exist, so the
+    // shape occludes nothing.
+    let degenerate = Draw::Shape {
+        world: Transform::scale(0.0, 1.0),
+        center: [0.0, 0.0],
+        params: [1.0, 1.0],
+        kind: 1.0,
+        aa: 0.0,
+        color: black(),
+        lit: 0.0,
+        occludes: 1.0,
+        z: 0.0,
+    };
+    let field =
+        pack_occluder_field(&[translated, unflagged, rotated, circle, degenerate]);
+    assert_eq!(field.count, 2);
+    assert_eq!(field.data.len(), OCCLUDER_FIELD_HEADER + 2 * OCCLUDER_RECORD);
+    // The header: count at 0, padding at 4..16.
+    assert_eq!(u32::from_le_bytes(field.data[0..4].try_into().unwrap()), 2);
+    assert_eq!(&field.data[4..16], &[0u8; 12]);
+    // Record 0 @ 16: the translate's inverse keeps the identity matrix,
+    // column-major (1, 0, 0, 1), the negated translation, the local center,
+    // the local half-extents, and two zero tail bytes.
+    let o = OCCLUDER_FIELD_HEADER;
+    assert_eq!(field_f32(&field.data, o), 1.0);
+    assert_eq!(field_f32(&field.data, o + 4), 0.0);
+    assert_eq!(field_f32(&field.data, o + 8), 0.0);
+    assert_eq!(field_f32(&field.data, o + 12), 1.0);
+    assert_eq!(field_f32(&field.data, o + 16), -10.0);
+    assert_eq!(field_f32(&field.data, o + 20), -20.0);
+    assert_eq!(field_f32(&field.data, o + 24), 3.0);
+    assert_eq!(field_f32(&field.data, o + 28), -4.0);
+    assert_eq!(field_f32(&field.data, o + 32), 5.0);
+    assert_eq!(field_f32(&field.data, o + 36), 2.0);
+    assert_eq!(field_f32(&field.data, o + 40), 0.0);
+    assert_eq!(field_f32(&field.data, o + 44), 0.0);
+    // Record 1 @ 64: the 90° rotation's inverse is the -90° rotation,
+    // column-major (m00, m10, m01, m11) = (0, -1, 1, 0); the translation is
+    // zero. The diagonals are cos(90°) in f32, so they are ~1e-8 rather
+    // than exactly 0.
+    let o = OCCLUDER_FIELD_HEADER + OCCLUDER_RECORD;
+    assert!(field_f32(&field.data, o).abs() < 1e-6);
+    assert_eq!(field_f32(&field.data, o + 4), -1.0);
+    assert_eq!(field_f32(&field.data, o + 8), 1.0);
+    assert!(field_f32(&field.data, o + 12).abs() < 1e-6);
+    assert_eq!(field_f32(&field.data, o + 16), 0.0);
+    assert_eq!(field_f32(&field.data, o + 20), 0.0);
+    assert_eq!(field_f32(&field.data, o + 24), 1.0);
+    assert_eq!(field_f32(&field.data, o + 28), 2.0);
+    assert_eq!(field_f32(&field.data, o + 32), 4.0);
+    assert_eq!(field_f32(&field.data, o + 36), 6.0);
+    assert_eq!(field_f32(&field.data, o + 40), 0.0);
+    assert_eq!(field_f32(&field.data, o + 44), 0.0);
+}
+
+#[test]
 fn background_node_sorts_to_the_back_and_keeps_its_color() {
     let mut canvas = Canvas::new((100, 100));
     canvas.draw_scene(&Scene::new(SceneNode {
@@ -788,6 +919,7 @@ fn background_node_sorts_to_the_back_and_keeps_its_color() {
         scale: [1.0, 1.0],
         modulate: WHITE,
         lit: false,
+        occludes: false,
         order: 0.0,
         shape: Some(Shape::Rectangle {
             center: [0.0, 0.0],
@@ -800,6 +932,7 @@ fn background_node_sorts_to_the_back_and_keeps_its_color() {
             scale: [1.0, 1.0],
             modulate: WHITE,
             lit: false,
+            occludes: false,
             order: 0.0,
             shape: Some(Shape::Background {
                 color: Color {
@@ -846,6 +979,7 @@ fn layers_are_hard_draw_partitions() {
                     scale: [1.0, 1.0],
                     modulate: WHITE,
                     lit: false,
+                    occludes: false,
                     order: 100.0,
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
@@ -866,6 +1000,7 @@ fn layers_are_hard_draw_partitions() {
                     scale: [1.0, 1.0],
                     modulate: WHITE,
                     lit: false,
+                    occludes: false,
                     order: -100.0,
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
@@ -909,6 +1044,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                     scale: [1.0, 1.0],
                     modulate: WHITE,
                     lit: false,
+                    occludes: false,
                     order: 0.0,
                     shape: None,
                     // Local ascending z: red (100) before green (200).
@@ -918,6 +1054,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                             scale: [1.0, 1.0],
                             modulate: WHITE,
                             lit: false,
+                            occludes: false,
                             order: 100.0,
                             shape: Some(Shape::Circle {
                                 center: [0.0, 0.0],
@@ -931,6 +1068,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                             scale: [1.0, 1.0],
                             modulate: WHITE,
                             lit: false,
+                            occludes: false,
                             order: 200.0,
                             shape: Some(Shape::Circle {
                                 center: [0.0, 0.0],
@@ -951,6 +1089,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                     scale: [1.0, 1.0],
                     modulate: WHITE,
                     lit: false,
+                    occludes: false,
                     order: 0.0,
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
@@ -1002,6 +1141,7 @@ fn the_base_group_paints_first_at_equal_order() {
                 scale: [1.0, 1.0],
                 modulate: WHITE,
                 lit: false,
+                occludes: false,
                 order: -1.0,
                 shape: Some(Shape::Circle {
                     center: [0.0, 0.0],
@@ -1038,6 +1178,7 @@ fn a_background_in_a_higher_layer_sets_the_clear_color() {
             scale: [1.0, 1.0],
             modulate: WHITE,
             lit: false,
+            occludes: false,
             order: 0.0,
             shape: Some(Shape::Background {
                 color: Color { r: 0.1, g: 0.0, b: 0.0, a: 1.0 },
@@ -1053,6 +1194,7 @@ fn a_background_in_a_higher_layer_sets_the_clear_color() {
                 scale: [1.0, 1.0],
                 modulate: WHITE,
                 lit: false,
+                occludes: false,
                 order: 0.0,
                 shape: Some(Shape::Background {
                     color: Color { r: 0.0, g: 0.1, b: 0.0, a: 1.0 },
@@ -1108,6 +1250,7 @@ fn a_camera_anchors_the_view_to_its_node() {
                 scale: [1.0, 1.0],
                 modulate: WHITE,
                 lit: false,
+                occludes: false,
                 order: 0.0,
                 shape: None,
                 children: vec![
@@ -1117,6 +1260,7 @@ fn a_camera_anchors_the_view_to_its_node() {
                         scale: [1.0, 1.0],
                         modulate: WHITE,
                         lit: false,
+                        occludes: false,
                         order: 0.0,
                         shape: Some(Shape::Circle {
                             center: [0.0, 0.0],
@@ -1132,6 +1276,7 @@ fn a_camera_anchors_the_view_to_its_node() {
                         scale: [1.0, 1.0],
                         modulate: WHITE,
                         lit: false,
+                        occludes: false,
                         order: 0.0,
                         shape: None,
                         children: vec![],
@@ -1165,6 +1310,7 @@ fn layer_speed_scales_the_camera_motion() {
             scale: [1.0, 1.0],
             modulate: WHITE,
             lit: false,
+            occludes: false,
             order: 0.0,
             shape: None,
             // The camera is a shapeless pivot under the scene's root.
@@ -1173,6 +1319,7 @@ fn layer_speed_scales_the_camera_motion() {
                 scale: [1.0, 1.0],
                 modulate: WHITE,
                 lit: false,
+                occludes: false,
                 order: 0.0,
                 shape: None,
                 children: vec![],
@@ -1190,6 +1337,7 @@ fn layer_speed_scales_the_camera_motion() {
                     scale: [1.0, 1.0],
                     modulate: WHITE,
                     lit: false,
+                    occludes: false,
                     order: 0.0,
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
@@ -1210,6 +1358,7 @@ fn layer_speed_scales_the_camera_motion() {
                     scale: [1.0, 1.0],
                     modulate: WHITE,
                     lit: false,
+                    occludes: false,
                     order: 0.0,
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
@@ -1260,6 +1409,7 @@ fn repeat_layer_scene(repeat: [f32; 2]) -> Scene {
                 scale: [1.0, 1.0],
                 modulate: WHITE,
                 lit: false,
+                occludes: false,
                 order: 0.0,
                 shape: Some(Shape::Circle {
                     center: [-50.0, -50.0],
@@ -1328,6 +1478,7 @@ fn repeat_offsets_follow_the_camera() {
             scale: [1.0, 1.0],
             modulate: WHITE,
             lit: false,
+            occludes: false,
             order: 0.0,
             shape: None,
             children: vec![Box::new(SceneNode {
@@ -1406,6 +1557,7 @@ fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
             scale: [1.0, 1.0],
             modulate: WHITE,
             lit: false,
+            occludes: false,
             order: 0.0,
             shape: None,
             // A camera at 145 puts the window at layer x in [95, 195],
@@ -1429,6 +1581,7 @@ fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
                 scale: [1.0, 1.0],
                 modulate: WHITE,
                 lit: false,
+                occludes: false,
                 order: 0.0,
                 shape: Some(Shape::Rectangle {
                     center: [95.0, 0.0],
@@ -1483,6 +1636,7 @@ fn an_object_wider_than_its_repeat_aborts() {
                 scale: [1.0, 1.0],
                 modulate: WHITE,
                 lit: false,
+                occludes: false,
                 order: 0.0,
                 shape: Some(Shape::Rectangle {
                     center: [0.0, 0.0],
@@ -1599,6 +1753,7 @@ fn the_camera_rotation_turns_the_view() {
             scale: [1.0, 1.0],
             modulate: WHITE,
             lit: false,
+            occludes: false,
             order: 0.0,
             shape: None,
             children: vec![
@@ -1608,6 +1763,7 @@ fn the_camera_rotation_turns_the_view() {
                     scale: [1.0, 1.0],
                     modulate: WHITE,
                     lit: false,
+                    occludes: false,
                     order: 0.0,
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
@@ -1623,6 +1779,7 @@ fn the_camera_rotation_turns_the_view() {
                     scale: [1.0, 1.0],
                     modulate: WHITE,
                     lit: false,
+                    occludes: false,
                     order: 0.0,
                     shape: None,
                     children: vec![],
@@ -1658,6 +1815,7 @@ fn a_missing_camera_path_renders_without_a_camera() {
             scale: [1.0, 1.0],
             modulate: WHITE,
             lit: false,
+            occludes: false,
             order: 0.0,
             shape: None,
             children: vec![Box::new(SceneNode {
@@ -1665,6 +1823,7 @@ fn a_missing_camera_path_renders_without_a_camera() {
                 scale: [1.0, 1.0],
                 modulate: WHITE,
                 lit: false,
+                occludes: false,
                 order: 0.0,
                 shape: Some(Shape::Circle {
                     center: [0.0, 0.0],
@@ -1702,6 +1861,7 @@ fn node_scale_applies_to_the_shape_and_its_subtree() {
         scale: [2.0, 1.0],
         modulate: WHITE,
         lit: false,
+        occludes: false,
         order: 0.0,
         shape: Some(Shape::Circle {
             center: [1.0, 1.0],
@@ -1713,6 +1873,7 @@ fn node_scale_applies_to_the_shape_and_its_subtree() {
             scale: [1.0, 1.0],
             modulate: WHITE,
             lit: false,
+            occludes: false,
             order: 0.0,
             shape: Some(Shape::Circle {
                 center: [0.0, 0.0],
@@ -1761,6 +1922,7 @@ fn node_order_accumulates_down_the_tree_like_the_transform() {
         scale: [1.0, 1.0],
         modulate: WHITE,
         lit: false,
+        occludes: false,
         order: 1.0,
         shape: Some(Shape::Circle {
             center: [0.0, 0.0],
@@ -1772,6 +1934,7 @@ fn node_order_accumulates_down_the_tree_like_the_transform() {
             scale: [1.0, 1.0],
             modulate: WHITE,
             lit: false,
+            occludes: false,
             order: 2.0,
             shape: Some(Shape::Circle {
                 center: [0.0, 0.0],
@@ -1783,6 +1946,7 @@ fn node_order_accumulates_down_the_tree_like_the_transform() {
                 scale: [1.0, 1.0],
                 modulate: WHITE,
                 lit: false,
+                occludes: false,
                 order: 4.0,
                 shape: Some(Shape::Circle {
                     center: [0.0, 0.0],
@@ -1825,6 +1989,7 @@ fn node_modulate_multiplies_into_the_shape_and_its_subtree() {
             a: 1.0,
         },
         lit: false,
+        occludes: false,
         order: 0.0,
         shape: Some(Shape::Circle {
             center: [0.0, 0.0],
@@ -1841,6 +2006,7 @@ fn node_modulate_multiplies_into_the_shape_and_its_subtree() {
                 a: 0.5,
             },
             lit: false,
+            occludes: false,
             order: 0.0,
             shape: Some(Shape::Circle {
                 center: [0.0, 0.0],
@@ -1882,6 +2048,7 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
             a: 0.5,
         },
         lit: false,
+        occludes: false,
         order: 0.0,
         shape: Some(Shape::Sprite {
             data: Arc::new([0u8; 16]),
@@ -1907,6 +2074,7 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
             a: 1.0,
         },
         lit: false,
+        occludes: false,
         order: 0.0,
         shape: Some(Shape::Text {
             text: "hi".to_string(),
@@ -1946,6 +2114,7 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
         scale: [1.0, 1.0],
         modulate: WHITE,
         lit: false,
+        occludes: false,
         order: 0.0,
         shape: Some(Shape::Sprite {
             data: Arc::new([0u8; 16]),

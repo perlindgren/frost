@@ -91,6 +91,12 @@ pub(crate) struct Frost<P: Process> {
     /// buffer simply holds more records, and a lighter frame writes a
     /// shorter slice into the same buffer.
     field_buffer: Buffer,
+    /// The frame's occluder field storage buffer: a 16-byte header plus one
+    /// 48-byte record per occluder at the peak count so far. Same
+    /// grow-only rationale as [`Frost::field_buffer`]; a frame with no
+    /// occluders still binds it (the shaders read the field's count), and
+    /// the WGSL field's tail is an unsized array sized by the bound buffer.
+    occluder_buffer: Buffer,
     /// The GPU resources for each distinct sprite image, keyed by the
     /// pointer of its pixel-data `Arc`. Sprites sharing one file share one
     /// texture, so the map stays bounded by the number of distinct images.
@@ -165,6 +171,16 @@ impl<P: Process> Frost<P> {
         let field_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("light field buffer"),
             size: LIGHT_FIELD_HEADER as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // The occluder field buffer starts at the header's size: even a
+        // frame with no occluders binds it (the shaders read the field's
+        // count), and it only grows when the occluder count peaks higher.
+        let occluder_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("occluder field buffer"),
+            size: OCCLUDER_FIELD_HEADER as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -246,6 +262,7 @@ impl<P: Process> Frost<P> {
             particle_index_buffer: Some(particle_index_buffer),
             particle_placeholder,
             field_buffer,
+            occluder_buffer,
             sprite_resources: HashMap::new(),
             text_atlases: HashMap::new(),
             format: None,
@@ -763,9 +780,14 @@ impl<P: Process> Frost<P> {
         (view, sampler)
     }
 
-    /// Creates the uniform buffer and four-entry bind group (uniform,
-    /// texture view, sampler, light field) for one sprite draw call. Same
-    /// per-draw buffer rationale as [`Frost::primitive_uniform`].
+    /// Creates the uniform buffer and five-entry bind group (uniform,
+    /// texture view, sampler, light field, occluder field) for one sprite
+    /// draw call. Same per-draw buffer rationale as
+    /// [`Frost::primitive_uniform`].
+    // The bind-group entries are deliberately flat: each takes the
+    // per-draw resources it binds, and the frame fields grow with the
+    // lighting features.
+    #[allow(clippy::too_many_arguments)]
     fn sprite_uniform(
         &self,
         pipeline: &RenderPipeline,
@@ -774,6 +796,7 @@ impl<P: Process> Frost<P> {
         sampler: &Sampler,
         data: &[u8],
         field_buffer: &Buffer,
+        occluder_buffer: &Buffer,
     ) -> (Buffer, BindGroup) {
         let device = &self.device;
         let buffer = device.create_buffer(&BufferDescriptor {
@@ -812,6 +835,14 @@ impl<P: Process> Frost<P> {
                         size: None,
                     }),
                 },
+                BindGroupEntry {
+                    binding: 4,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: occluder_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
             ],
         });
         (buffer, bind_group)
@@ -822,9 +853,14 @@ impl<P: Process> Frost<P> {
     /// kind and aspect) at binding 0, the packed per-particle instance data
     /// as a storage buffer read by the vertex stage at binding 1, the
     /// sampled texture and sampler — the batch's image for a sprite batch,
-    /// the 1x1 placeholder for the SDF kinds — at bindings 2 and 3, and the
-    /// frame's light field at binding 4. Same per-draw buffer rationale as
+    /// the 1x1 placeholder for the SDF kinds — at bindings 2 and 3, the
+    /// frame's light field at binding 4, and the frame's occluder field at
+    /// binding 5. Same per-draw buffer rationale as
     /// [`Frost::primitive_uniform`].
+    // The bind-group entries are deliberately flat: each takes the
+    // per-draw resources it binds, and the frame fields grow with the
+    // lighting features.
+    #[allow(clippy::too_many_arguments)]
     fn particle_uniform(
         &self,
         pipeline: &RenderPipeline,
@@ -833,6 +869,7 @@ impl<P: Process> Frost<P> {
         view: &TextureView,
         sampler: &Sampler,
         field_buffer: &Buffer,
+        occluder_buffer: &Buffer,
     ) -> (Buffer, Buffer, BindGroup) {
         let device = &self.device;
         let uniform_buffer = device.create_buffer(&BufferDescriptor {
@@ -886,21 +923,31 @@ impl<P: Process> Frost<P> {
                         size: None,
                     }),
                 },
+                BindGroupEntry {
+                    binding: 5,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: occluder_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
             ],
         });
         (uniform_buffer, instance_buffer, bind_group)
     }
 
     /// The shape draw's per-draw uniform buffer and bind group: the uniform
-    /// at binding 0 plus the frame's light field at binding 1. Shapes are
-    /// light receivers, so the field is bound even for an unlit shape — the
-    /// shader's `lit` guard lives in the uniform, not the binding.
+    /// at binding 0, the frame's light field at binding 1, and the frame's
+    /// occluder field at binding 2. Shapes are light receivers, so the
+    /// fields are bound even for an unlit shape — the shader's `lit` guard
+    /// lives in the uniform, not the binding.
     fn shape_uniform(
         &self,
         pipeline: &RenderPipeline,
         label: &str,
         data: &[u8],
         field_buffer: &Buffer,
+        occluder_buffer: &Buffer,
     ) -> (Buffer, BindGroup) {
         let uniform_buffer = self.device.create_buffer(&BufferDescriptor {
             label: Some(label),
@@ -929,6 +976,14 @@ impl<P: Process> Frost<P> {
                         size: None,
                     }),
                 },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: occluder_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
             ],
         });
         (uniform_buffer, bind_group)
@@ -950,6 +1005,22 @@ impl<P: Process> Frost<P> {
             });
         }
         self.field_buffer.clone()
+    }
+
+    /// The frame's occluder field buffer, grown to hold the header plus
+    /// `count` occluder records when the buffer is still too small. Same
+    /// grow-only rationale as [`Frost::field_buffer_for`].
+    fn occluder_buffer_for(&mut self, count: u32) -> Buffer {
+        let size = (OCCLUDER_FIELD_HEADER + count as usize * OCCLUDER_RECORD) as u64;
+        if size > self.occluder_buffer.size() {
+            self.occluder_buffer = self.device.create_buffer(&BufferDescriptor {
+                label: Some("occluder field buffer"),
+                size,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        self.occluder_buffer.clone()
     }
 
     fn render(&mut self) {
@@ -1018,6 +1089,12 @@ impl<P: Process> Frost<P> {
         let field = pack_light_field(&draws, self.scene.ambient);
         let field_buffer = self.field_buffer_for(field.count);
         self.queue.write_buffer(&field_buffer, 0, &field.data);
+
+        // The frame's occluder field: the flagged rectangle shapes packed
+        // in call order. Same grow-only buffer as the light field.
+        let occluders = pack_occluder_field(&draws);
+        let occluder_buffer = self.occluder_buffer_for(occluders.count);
+        self.queue.write_buffer(&occluder_buffer, 0, &occluders.data);
 
         let (
             Some(line_pipeline),
@@ -1151,6 +1228,7 @@ impl<P: Process> Frost<P> {
                             "shape uniforms",
                             &shape_uniform_data(inv, center, params, kind, aa, color, lit),
                             &field_buffer,
+                            &occluder_buffer,
                         );
                         pass.set_pipeline(shape_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
@@ -1195,6 +1273,7 @@ impl<P: Process> Frost<P> {
                             &sampler,
                             &sprite_uniform_data(inv, size, tint, alpha, lit, uv_rect),
                             &field_buffer,
+                            &occluder_buffer,
                         );
                         pass.set_pipeline(sprite_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
@@ -1261,6 +1340,7 @@ impl<P: Process> Frost<P> {
                             &view,
                             &sampler,
                             &field_buffer,
+                            &occluder_buffer,
                         );
                         pass.set_pipeline(particle_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);

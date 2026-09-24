@@ -551,6 +551,7 @@ fn draw_node(
                 aa,
                 color: color.mul(modulate),
                 lit: f32::from(node.lit),
+                occludes: f32::from(node.occludes),
                 z: order,
             }),
             Shape::Rectangle {
@@ -565,6 +566,7 @@ fn draw_node(
                 aa,
                 color: color.mul(modulate),
                 lit: f32::from(node.lit),
+                occludes: f32::from(node.occludes),
                 z: order,
             }),
             // The sprite's local space is centered on the origin, one

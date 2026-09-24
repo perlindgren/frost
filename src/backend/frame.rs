@@ -57,6 +57,10 @@ pub(crate) enum Draw {
         /// Whether the shape is lit by the frame's light field: `1.0` when
         /// the node's `lit` flag is set, `0.0` when unlit.
         lit: f32,
+        /// Whether the shape occludes the frame's lights: `1.0` when the
+        /// node's `occludes` flag is set, `0.0` when it casts no shadow.
+        /// Only rectangles (kind `1.0`) are packed into the occluder field.
+        occludes: f32,
         z: f32,
     },
     /// A sprite: a texture sampled in the sprite's local space, which is
@@ -592,4 +596,83 @@ pub(crate) fn pack_light_field(draws: &[Draw], ambient: Color) -> LightField {
         }
     }
     LightField { count, data }
+}
+
+/// The byte size of the occluder field's header: the occluder `count` (a
+/// u32) and 12 padding bytes.
+pub(crate) const OCCLUDER_FIELD_HEADER: usize = 16;
+
+/// The byte size of one occluder record: three `vec4<f32>`s — the inverse
+/// transform's linear part, column-major; the inverse transform's
+/// translation with the box's local center; and the box's local half-extents.
+pub(crate) const OCCLUDER_RECORD: usize = 48;
+
+/// The frame's occluder field, packed little-endian for the GPU's storage
+/// buffer.
+///
+/// The layout is a [`OCCLUDER_FIELD_HEADER`]-byte header — the occluder
+/// `count` at bytes `0..4`, 12 padding bytes — followed by one
+/// [`OCCLUDER_RECORD`]-byte record per occluder, in call order: a
+/// `(m00, m10, m01, m11)` `vec4`, the inverse of the occluder's world
+/// transform, column-major (pixel space to the occluder's local space), then
+/// a `(tx, ty, cx, cy)` `vec4`, the inverse transform's translation and the
+/// box's local center, then a `(hx, hy, 0, 0)` `vec4`, the box's local half-
+/// extents. The records line up with the unsized WGSL `array<vec4<f32>>`
+/// tail of the field's storage struct, so `data` can be bound as-is.
+pub(crate) struct OccluderField {
+    /// The number of occluders packed — the header's `count`.
+    pub count: u32,
+    /// The packed bytes: a 16-byte header plus `count * 48` bytes.
+    pub data: Vec<u8>,
+}
+
+/// Packs the frame's occluder field from its draws.
+///
+/// Only rectangle [`Draw::Shape`]s flagged `occludes` contribute, in call
+/// order; a shape whose world transform cannot be inverted is skipped (it
+/// collapses to a line or a point and occludes nothing). Every other draw is
+/// ignored.
+pub(crate) fn pack_occluder_field(draws: &[Draw]) -> OccluderField {
+    let mut count = 0u32;
+    let mut data = vec![0u8; OCCLUDER_FIELD_HEADER];
+    for draw in draws {
+        let Draw::Shape {
+            world,
+            center,
+            params,
+            kind,
+            occludes,
+            ..
+        } = draw
+        else {
+            continue;
+        };
+        if *kind != 1.0 || *occludes != 1.0 {
+            continue;
+        }
+        let Some(inverse) = world.invert() else {
+            continue;
+        };
+        let off = OCCLUDER_FIELD_HEADER + count as usize * OCCLUDER_RECORD;
+        data.resize(off + OCCLUDER_RECORD, 0);
+        // vec4 0: the inverse transform's linear part, column-major — the
+        // same layout the shape uniforms' `to_local` uses.
+        write_f32_at(&mut data, off, inverse.m[0][0]);
+        write_f32_at(&mut data, off + 4, inverse.m[1][0]);
+        write_f32_at(&mut data, off + 8, inverse.m[0][1]);
+        write_f32_at(&mut data, off + 12, inverse.m[1][1]);
+        // vec4 1: the inverse transform's translation, then the box's local
+        // center.
+        write_f32_at(&mut data, off + 16, inverse.t[0]);
+        write_f32_at(&mut data, off + 20, inverse.t[1]);
+        write_f32_at(&mut data, off + 24, center[0]);
+        write_f32_at(&mut data, off + 28, center[1]);
+        // vec4 2: the box's local half-extents; the rest of the vec4 stays
+        // zero from the resize.
+        write_f32_at(&mut data, off + 32, params[0]);
+        write_f32_at(&mut data, off + 36, params[1]);
+        count += 1;
+    }
+    data[0..4].copy_from_slice(&count.to_le_bytes());
+    OccluderField { count, data }
 }

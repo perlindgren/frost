@@ -650,8 +650,8 @@ pub trait Node {
 /// (`shape: None`) is a pure group or pivot node, and a node without
 /// children is a leaf. A node literal can leave any fields out by writing
 /// `..SceneNode::default()`: the omitted fields take the identity transform,
-/// no scale, a white modulate, order `0.0`, no lighting, no shape, and no
-/// children.
+/// no scale, a white modulate, order `0.0`, no lighting, no occlusion,
+/// no shape, and no children.
 ///
 /// A [`SceneNode`] is a [`Node`]: its [`Node::visit`] walks its children and
 /// then runs its (default, no-op) [`Node::process`], so a whole scene tree
@@ -687,6 +687,19 @@ pub struct SceneNode {
     /// and each child keeps its own. `false` (the default) draws the shape
     /// unlit, exactly as before.
     pub lit: bool,
+    /// Whether the node's own shape occludes the frame's lights: when true
+    /// and the shape is a rectangle, the rectangle's silhouette blocks the
+    /// light's path to every lit pixel behind it — a hard shadow, per pixel,
+    /// with no penumbra. The shadow is evaluated in the frame's pixel space
+    /// from the rectangle's full composed transform, so a rotated, scaled,
+    /// or translated node casts the shadow of wherever it actually sits.
+    ///
+    /// Like [`SceneNode::lit`], the flag does not propagate to the
+    /// children: it applies to this node's own shape only, and each child
+    /// keeps its own. `false` (the default) casts no shadow. A node can
+    /// carry both flags: a `lit: true, occludes: true` wall is lit on its
+    /// own surface and still blocks the light from what lies behind it.
+    pub occludes: bool,
     /// The shape this node draws, in its own local space, if any.
     pub shape: Option<Shape>,
     /// The child nodes, positioned in this node's coordinate space.
@@ -695,7 +708,7 @@ pub struct SceneNode {
 
 impl Default for SceneNode {
     /// An identity node: identity transform, no scale, a white modulate,
-    /// order `0.0`, no lighting, no shape, and no children.
+    /// order `0.0`, no lighting, no occlusion, no shape, and no children.
     fn default() -> Self {
         Self {
             transform: Transform::identity(),
@@ -703,6 +716,7 @@ impl Default for SceneNode {
             modulate: WHITE,
             order: 0.0,
             lit: false,
+            occludes: false,
             shape: None,
             children: Vec::new(),
         }

@@ -195,4 +195,53 @@ mod tests {
             ),
         }
     }
+
+    /// The member offsets WGSL assigns to `OccluderField` must match the
+    /// CPU-side packer in `pack_occluder_field`: u32 @0, array<u32, 3> @4 —
+    /// the 16-byte header — and the occluder array tail at 16. The tail must
+    /// be an unsized (dynamic) array: its length comes from the bound
+    /// buffer, so the CPU can hold any occluder count. This is the GPU-side
+    /// mirror of the packer's offset tests in backend/tests.rs.
+    #[test]
+    fn occluder_field_header_offsets_match_the_packer() {
+        let module = naga::front::wgsl::parse_str(SHAPE_SHADER)
+            .expect("shape.wgsl should parse (see all_shaders_parse_as_wgsl)");
+        let ty = module
+            .types
+            .iter()
+            .find_map(|(_, ty)| match &ty.inner {
+                naga::TypeInner::Struct { .. } if ty.name.as_deref() == Some("OccluderField") => {
+                    Some(ty)
+                }
+                _ => None,
+            })
+            .expect("shape.wgsl should declare the OccluderField struct");
+        let (offsets, span, last) = match &ty.inner {
+            naga::TypeInner::Struct { members, span } => (
+                members.iter().map(|m| m.offset).collect::<Vec<u32>>(),
+                *span,
+                members
+                    .last()
+                    .expect("OccluderField should declare its members"),
+            ),
+            _ => unreachable!("OccluderField must be a struct"),
+        };
+        assert_eq!(offsets, [0, 4, 16]);
+        // Naga books a dynamic array's footprint as one element (its
+        // creation-time minimum), so the span is the 16-byte header plus
+        // one 16-byte vec4 — the real buffer length comes from the bound
+        // buffer, sized by the CPU to fit the frame's occluders.
+        assert_eq!(span, 16 + 16);
+        // The tail must be a dynamic array, sized by the bound buffer.
+        let last_ty = &module.types[last.ty];
+        match &last_ty.inner {
+            naga::TypeInner::Array {
+                size: naga::ArraySize::Dynamic,
+                ..
+            } => {}
+            other => panic!(
+                "the OccluderField tail should be a dynamic array, got {other:?}"
+            ),
+        }
+    }
 }
