@@ -262,6 +262,9 @@ impl Canvas {
             aspect: 1.0,
             sprite_data: None,
             sprite_size: [0, 0],
+            // Immediate canvas draws are unlit: the `lit` flag is a
+            // scene-node property.
+            lit: 0.0,
             z,
         });
     }
@@ -518,6 +521,7 @@ fn draw_node(
                 kind: 0.0,
                 aa,
                 color: color.mul(modulate),
+                lit: f32::from(node.lit),
                 z: order,
             }),
             Shape::Rectangle {
@@ -531,6 +535,7 @@ fn draw_node(
                 kind: 1.0,
                 aa,
                 color: color.mul(modulate),
+                lit: f32::from(node.lit),
                 z: order,
             }),
             // The sprite's local space is centered on the origin, one
@@ -551,6 +556,7 @@ fn draw_node(
                 tint: color.mul(modulate),
                 alpha: *alpha,
                 uv_rect: [0.0, 0.0, 1.0, 1.0],
+                lit: f32::from(node.lit),
                 z: order,
             }),
             // Text is recorded in user space; `Canvas::expand_text` lays it
@@ -569,12 +575,24 @@ fn draw_node(
                 size: *size,
                 color: color.mul(modulate),
                 alpha: *alpha,
+                lit: f32::from(node.lit),
                 z: order,
             }),
             // The background ignores its transform: it is recorded in call
             // order and becomes the frame's clear color at render time.
             Shape::Background { color } => Some(Draw::Background {
                 color: color.mul(modulate),
+            }),
+            // A light is never drawn: its position is recorded in pixel
+            // space (the node's local origin through the composed
+            // transforms) and it is promoted to the frame's light field at
+            // render time.
+            Shape::Light { light } => Some(Draw::Light {
+                pos: world.compose(&user_to_pixel).apply([0.0, 0.0]),
+                radius: light.radius.max(0.0),
+                intensity: light.intensity,
+                color: light.color.mul(modulate),
+                z: order,
             }),
             // The particles ride the node's world transform and scale, are
             // tinted by `color` times the composed modulate (and each
@@ -645,6 +663,7 @@ fn draw_node(
                         aspect: shape.aspect(),
                         sprite_data,
                         sprite_size,
+                        lit: f32::from(node.lit),
                         z: order,
                     })
                 }
@@ -834,6 +853,8 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
         }
         // A background never draws; nothing to measure.
         Shape::Background { .. } => None,
+        // A light never draws; nothing to measure.
+        Shape::Light { .. } => None,
         // A particle batch has no fixed local box: its particles move,
         // spawn, and die every frame, so its extent is dynamic and cannot
         // be measured. A batch in a repeating layer therefore skips the
@@ -867,6 +888,7 @@ fn expand_text_list(
                 size,
                 color,
                 alpha,
+                lit,
                 z,
             } => {
                 // A broken font leaves the text undrawn; `Shape::text`
@@ -935,6 +957,9 @@ fn expand_text_list(
                         tint: color,
                         alpha,
                         uv_rect,
+                        // The glyphs are the text node's own pixels: the
+                        // block's `lit` flag passes on to every quad.
+                        lit,
                         z,
                     });
                 }
@@ -1563,5 +1588,113 @@ mod tests {
             Some(&[255u8, 255, 255, 255][..])
         );
         assert_eq!(*sprite_size, [2, 3]);
+    }
+
+    #[test]
+    fn light_node_lands_at_the_pixel_position_with_its_fields_intact() {
+        // A light node translated to (10, 20): the light sits at the node's
+        // local origin, which lands at user (10, 20), pixel (60, 30) on a
+        // 100x100 canvas; the radius, intensity, and color pass through
+        // untinted (the modulate is white), and the node's order becomes
+        // the draw's z.
+        let node = SceneNode {
+            transform: Transform::translate(10.0, 20.0),
+            order: 3.0,
+            shape: Some(Shape::Light {
+                light: Light {
+                    color: Color {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 1.0,
+                        a: 1.0,
+                    },
+                    intensity: 2.0,
+                    radius: 16.0,
+                },
+            }),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        let [Draw::Light {
+            pos,
+            radius,
+            intensity,
+            color,
+            z,
+        }] = &draws[..]
+        else {
+            panic!("expected one light draw, got {draws:?}")
+        };
+        assert_eq!(*pos, [60.0, 30.0]);
+        assert_eq!(*radius, 16.0);
+        assert_eq!(*intensity, 2.0);
+        assert_eq!(
+            *color,
+            Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0
+            }
+        );
+        assert_eq!(*z, 3.0);
+    }
+
+    #[test]
+    fn light_color_is_tinted_by_the_composed_modulate() {
+        // A red light under a half-strength green parent modulate: the
+        // light's color is multiplied channel by channel, and a negative
+        // radius is clamped to zero.
+        let node = SceneNode {
+            transform: Transform::identity(),
+            shape: Some(Shape::Light {
+                light: Light {
+                    color: Color {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 0.0,
+                        a: 1.0,
+                    },
+                    intensity: 1.0,
+                    radius: -4.0,
+                },
+            }),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_node(
+            pixel_map(),
+            &node,
+            &Transform::identity(),
+            5.0,
+            Color {
+                r: 1.0,
+                g: 0.5,
+                b: 0.0,
+                a: 1.0,
+            },
+            &mut draws,
+        );
+        let [Draw::Light {
+            radius,
+            color,
+            z,
+            ..
+        }] = &draws[..]
+        else {
+            panic!("expected one light draw, got {draws:?}")
+        };
+        assert_eq!(*radius, 0.0);
+        assert_eq!(
+            *color,
+            Color {
+                r: 1.0,
+                g: 0.5,
+                b: 0.0,
+                a: 1.0
+            }
+        );
+        assert_eq!(*z, 5.0);
     }
 }

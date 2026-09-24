@@ -1,5 +1,6 @@
-//! The scene objects: the [`Transform`], [`Color`], [`Shape`], [`SceneNode`]
-//! and [`Scene`] types that make up the scene tree drawn by frost.
+//! The scene objects: the [`Transform`], [`Color`], [`Light`], [`Shape`],
+//! [`SceneNode`], and [`Scene`] types that make up the scene tree drawn by
+//! frost.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -61,6 +62,15 @@ pub(crate) const WHITE: Color = Color {
     r: 1.0,
     g: 1.0,
     b: 1.0,
+    a: 1.0,
+};
+
+/// The default ambient color: a dim neutral gray, the floor of a scene's
+/// light field where no light reaches.
+pub(crate) const AMBIENT: Color = Color {
+    r: 0.3,
+    g: 0.3,
+    b: 0.3,
     a: 1.0,
 };
 
@@ -206,10 +216,12 @@ impl Transform {
 /// The geometry of each particle in a [`Shape::Particles`] batch: one shape
 /// for the whole batch, shared by every particle.
 ///
-/// The shape's extent is scaled by each particle's own [`Particle::size`]
-/// (its half-width), its orientation by each particle's own
-/// [`Particle::angle`], and its color by the particle's own
-/// [`Particle::color`] — the batch sets *what* each particle looks like,
+/// The shape's extent is scaled by each particle's own
+/// [`Particle::size`](crate::Particle::size) (its half-width), its
+/// orientation by each particle's own
+/// [`Particle::angle`](crate::Particle::angle), and its color by the
+/// particle's own [`Particle::color`](crate::Particle::color) — the batch
+/// sets *what* each particle looks like,
 /// while the particles keep their individual position, scale, rotation, and
 /// tint.
 #[derive(Clone, Debug, Default)]
@@ -296,7 +308,34 @@ impl ParticleShape {
     }
 }
 
-/// A filled geometric shape that a [`SceneNode`] can hold.
+/// A point light: the color, strength, and falloff extent of a light
+/// source, held by a [`Shape::Light`] node.
+///
+/// A light is never drawn: it contributes to the frame's light field, and
+/// every lit receiver ([`SceneNode::lit`]) evaluates it per pixel at render
+/// time. The node carrying the light provides the position: the light sits
+/// at the node's local origin, so the node's transform and its ancestors'
+/// place it in the scene, and the node's composed modulate tints its color,
+/// exactly as they would tint a shape's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Light {
+    /// The light's color, multiplied with its intensity and with the
+    /// falloff at each lit pixel.
+    pub color: Color,
+    /// The light's strength, multiplied with its color: `1.0` is full
+    /// strength, `0.0` is off.
+    pub intensity: f32,
+    /// The falloff extent, in user units (pixels): the light reaches
+    /// exactly `radius` pixels from its position, fading to zero at the
+    /// edge.
+    pub radius: f32,
+}
+
+/// A shape that a [`SceneNode`] can hold.
+///
+/// A shape is a filled geometric shape drawn in the node's local space — a
+/// circle, a rectangle, a sprite, text, or a particle batch — or a
+/// [`Shape::Light`], which is never drawn and only lights the scene.
 ///
 /// Coordinates and sizes are in the node's local space, in pixels; the
 /// composed transforms of every ancestor apply to the shape, except for
@@ -413,6 +452,19 @@ pub enum Shape {
         /// it. [`ParticleShape::Circle`] (the default) draws circles as
         /// before.
         shape: ParticleShape,
+    },
+    /// A point light: contributes the node's [`Light`] to the frame's light
+    /// field.
+    ///
+    /// The light is never drawn — it only lights the [`SceneNode::lit`]
+    /// receivers, evaluated per pixel at render time. It sits at the
+    /// node's local origin: the node's transform (and its ancestors')
+    /// position it in the scene, and the node's composed modulate tints its
+    /// color, exactly as they would tint a shape's. The radius is in user
+    /// units, mapped one to one to pixels.
+    Light {
+        /// The light's color, strength, and falloff extent.
+        light: Light,
     },
 }
 
@@ -595,7 +647,8 @@ pub trait Node {
 /// (`shape: None`) is a pure group or pivot node, and a node without
 /// children is a leaf. A node literal can leave any fields out by writing
 /// `..SceneNode::default()`: the omitted fields take the identity transform,
-/// no scale, a white modulate, order `0.0`, no shape, and no children.
+/// no scale, a white modulate, order `0.0`, no lighting, no shape, and no
+/// children.
 ///
 /// A [`SceneNode`] is a [`Node`]: its [`Node::visit`] walks its children and
 /// then runs its (default, no-op) [`Node::process`], so a whole scene tree
@@ -622,6 +675,15 @@ pub struct SceneNode {
     /// whole subtree, just like the scale and the transform. `0.0` (the
     /// default) keeps the subtree at its inherited draw order.
     pub order: f32,
+    /// Whether the node's own shape is lit by the frame's light field: when
+    /// true, the shape's color is multiplied, per pixel, by the scene's
+    /// ambient color plus the contribution of every light at that pixel.
+    ///
+    /// Unlike the transform, scale, modulate, and order, the flag does not
+    /// propagate to the children: it applies to this node's own shape only,
+    /// and each child keeps its own. `false` (the default) draws the shape
+    /// unlit, exactly as before.
+    pub lit: bool,
     /// The shape this node draws, in its own local space, if any.
     pub shape: Option<Shape>,
     /// The child nodes, positioned in this node's coordinate space.
@@ -630,13 +692,14 @@ pub struct SceneNode {
 
 impl Default for SceneNode {
     /// An identity node: identity transform, no scale, a white modulate,
-    /// order `0.0`, no shape, and no children.
+    /// order `0.0`, no lighting, no shape, and no children.
     fn default() -> Self {
         Self {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
             order: 0.0,
+            lit: false,
             shape: None,
             children: Vec::new(),
         }
@@ -774,15 +837,24 @@ pub struct Scene {
     /// rest of the scene moves around it. `None` (the default) draws the
     /// scene in the fixed window-centered user space.
     pub camera: Option<NodePath>,
+    /// The ambient color of the scene's light field: the floor every
+    /// [`SceneNode::lit`] receiver's color is multiplied by even where no
+    /// light reaches. A lit shape's pixel color becomes
+    /// `color * (ambient + light contributions)` — with a black ambient,
+    /// pixels no light reaches are fully dark; with the default dim gray,
+    /// they read as a darkened version of the shape's color.
+    pub ambient: Color,
 }
 
 impl Scene {
-    /// Creates a scene from its root node, with no layers and no camera.
+    /// Creates a scene from its root node, with no layers, no camera, and
+    /// the default dim-gray ambient.
     pub fn new(root: SceneNode) -> Self {
         Self {
             root,
             layers: Vec::new(),
             camera: None,
+            ambient: AMBIENT,
         }
     }
 
@@ -827,13 +899,40 @@ impl Scene {
 
 impl Default for Scene {
     /// An empty scene: an identity root node with no shape and no children,
-    /// no layers, and no camera, for apps that only use the immediate draw
-    /// methods.
+    /// no layers, no camera, and the default dim-gray ambient, for apps that
+    /// only use the immediate draw methods.
     fn default() -> Self {
         Self {
             root: SceneNode::default(),
             layers: Vec::new(),
             camera: None,
+            ambient: AMBIENT,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_is_unlit_by_default() {
+        assert!(!SceneNode::default().lit);
+    }
+
+    #[test]
+    fn scene_ambient_is_a_dim_gray_by_default() {
+        let ambient = Scene::default().ambient;
+        assert_eq!(
+            ambient,
+            Color {
+                r: 0.3,
+                g: 0.3,
+                b: 0.3,
+                a: 1.0
+            }
+        );
+        // `Scene::new` carries the same default.
+        assert_eq!(Scene::new(SceneNode::default()).ambient, ambient);
     }
 }

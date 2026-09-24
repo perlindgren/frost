@@ -1154,6 +1154,9 @@ impl<P: Process> Frost<P> {
                     // A background's scissor rect is `None`, so it continued
                     // above; this arm keeps the match exhaustive.
                     Draw::Background { .. } => {}
+                    // A light's scissor rect is `None`, so it continued
+                    // above; this arm keeps the match exhaustive.
+                    Draw::Light { .. } => {}
                     // Text is expanded into glyph sprites before the render
                     // loop, so it never reaches the match; this arm keeps it
                     // exhaustive.

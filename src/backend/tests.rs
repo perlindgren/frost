@@ -142,6 +142,7 @@ fn draw_scene_composes_transforms_down_the_tree() {
         transform: Transform::translate(10.0, 0.0),
         scale: [1.0, 1.0],
         modulate: WHITE,
+        lit: false,
         order: 0.0,
         shape: Some(Shape::Circle {
             center: [0.0, 0.0],
@@ -152,12 +153,14 @@ fn draw_scene_composes_transforms_down_the_tree() {
             transform: Transform::scale_uniform(2.0),
             scale: [1.0, 1.0],
             modulate: WHITE,
+            lit: false,
             order: 0.0,
             shape: None,
             children: vec![Box::new(SceneNode {
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
+                lit: false,
                 order: 0.0,
                 shape: Some(Shape::Circle {
                     center: [1.0, 1.0],
@@ -205,12 +208,14 @@ fn draw_scene_rotates_a_translated_child() {
         transform: Transform::rotate(std::f32::consts::FRAC_PI_2),
         scale: [1.0, 1.0],
         modulate: WHITE,
+        lit: false,
         order: 0.0,
         shape: None,
         children: vec![Box::new(SceneNode {
             transform: Transform::translate(10.0, 0.0),
             scale: [1.0, 1.0],
             modulate: WHITE,
+            lit: false,
             order: 0.0,
             shape: Some(Shape::Circle {
                 center: [0.0, 0.0],
@@ -238,6 +243,7 @@ fn scene_shape_at_user_origin_lands_at_window_center() {
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: WHITE,
+        lit: false,
         order: 0.0,
         shape: Some(Shape::Circle {
             center: [0.0, 0.0],
@@ -348,6 +354,7 @@ fn shape_scissor_under_non_uniform_scale() {
         kind: 0.0,
         aa: 0.75 / 2.0,
         color: black(),
+        lit: 0.0,
         z: 0.0,
     };
     // The local box (25 ± 10.375, 50 ± 10.375) stretches to
@@ -367,6 +374,7 @@ fn shape_scissor_under_rotation() {
         kind: 0.0,
         aa: 0.75,
         color: black(),
+        lit: 0.0,
         z: 0.0,
     };
     // The ±10.75 box rotated 45° has half-extent 10.75 * sqrt(2), so the
@@ -383,6 +391,7 @@ fn off_screen_shape_has_no_scissor() {
         kind: 0.0,
         aa: 0.75,
         color: black(),
+        lit: 0.0,
         z: 0.0,
     };
     assert_eq!(draw.scissor_rect([100, 100]), None);
@@ -398,6 +407,7 @@ fn particles_scissor_covers_the_whole_surface() {
         aspect: 1.0,
         sprite_data: None,
         sprite_size: [0, 0],
+        lit: 0.0,
         z: 0.0,
     };
     // The batch's particles can be anywhere, so the scissor is the whole
@@ -665,6 +675,109 @@ fn clear_color_is_the_last_background_in_call_order() {
     assert_eq!(clear_color(&draws), second);
 }
 
+/// Reads the little-endian f32 at byte `offset` in the packed light field.
+fn field_f32(data: &[u8], offset: usize) -> f32 {
+    f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
+}
+
+#[test]
+fn light_field_packs_an_empty_header_with_the_ambient() {
+    // No lights: just the 32-byte header — count 0, 12 padding bytes, the
+    // ambient channels at 16..32.
+    let ambient = Color {
+        r: 0.3,
+        g: 0.3,
+        b: 0.3,
+        a: 1.0,
+    };
+    let field = pack_light_field(&[], ambient);
+    assert_eq!(field.count, 0);
+    assert_eq!(field.data.len(), LIGHT_FIELD_HEADER);
+    assert_eq!(u32::from_le_bytes(field.data[0..4].try_into().unwrap()), 0);
+    assert_eq!(&field.data[4..16], &[0u8; 12]);
+    assert_eq!(field_f32(&field.data, 16), 0.3);
+    assert_eq!(field_f32(&field.data, 20), 0.3);
+    assert_eq!(field_f32(&field.data, 24), 0.3);
+    assert_eq!(field_f32(&field.data, 28), 1.0);
+}
+
+#[test]
+fn light_field_packs_the_header_ambient_and_each_light_record() {
+    // Two lights among non-light draws: count 2, the header, then one
+    // 32-byte record per light, in call order — a `(x, y, radius,
+    // intensity)` vec4, then a `(r, g, b, 1.0)` vec4.
+    let ambient = Color {
+        r: 0.1,
+        g: 0.2,
+        b: 0.4,
+        a: 1.0,
+    };
+    let amber = Color {
+        r: 1.0,
+        g: 0.5,
+        b: 0.0,
+        a: 1.0,
+    };
+    let cyan = Color {
+        r: 0.0,
+        g: 1.0,
+        b: 1.0,
+        a: 1.0,
+    };
+    let draws = [
+        Draw::Light {
+            pos: [60.0, 30.0],
+            radius: 16.0,
+            intensity: 2.0,
+            color: amber,
+            z: 0.0,
+        },
+        Draw::Circle {
+            center: [5.0, 5.0],
+            radius: 5.0,
+            color: black(),
+            z: 0.0,
+        },
+        Draw::Light {
+            pos: [-12.5, 8.25],
+            radius: 0.0,
+            intensity: 0.5,
+            color: cyan,
+            z: 1.0,
+        },
+    ];
+    let field = pack_light_field(&draws, ambient);
+    assert_eq!(field.count, 2);
+    assert_eq!(field.data.len(), LIGHT_FIELD_HEADER + 2 * LIGHT_RECORD);
+    // The header: count at 0, padding at 4..16, ambient at 16..32.
+    assert_eq!(u32::from_le_bytes(field.data[0..4].try_into().unwrap()), 2);
+    assert_eq!(&field.data[4..16], &[0u8; 12]);
+    assert_eq!(field_f32(&field.data, 16), 0.1);
+    assert_eq!(field_f32(&field.data, 20), 0.2);
+    assert_eq!(field_f32(&field.data, 24), 0.4);
+    assert_eq!(field_f32(&field.data, 28), 1.0);
+    // Record 0 @ 32: (60, 30, 16, 2), then (1, 0.5, 0, 1).
+    let r0 = LIGHT_FIELD_HEADER;
+    assert_eq!(field_f32(&field.data, r0), 60.0);
+    assert_eq!(field_f32(&field.data, r0 + 4), 30.0);
+    assert_eq!(field_f32(&field.data, r0 + 8), 16.0);
+    assert_eq!(field_f32(&field.data, r0 + 12), 2.0);
+    assert_eq!(field_f32(&field.data, r0 + 16), 1.0);
+    assert_eq!(field_f32(&field.data, r0 + 20), 0.5);
+    assert_eq!(field_f32(&field.data, r0 + 24), 0.0);
+    assert_eq!(field_f32(&field.data, r0 + 28), 1.0);
+    // Record 1 @ 64: (-12.5, 8.25, 0, 0.5), then (0, 1, 1, 1).
+    let r1 = LIGHT_FIELD_HEADER + LIGHT_RECORD;
+    assert_eq!(field_f32(&field.data, r1), -12.5);
+    assert_eq!(field_f32(&field.data, r1 + 4), 8.25);
+    assert_eq!(field_f32(&field.data, r1 + 8), 0.0);
+    assert_eq!(field_f32(&field.data, r1 + 12), 0.5);
+    assert_eq!(field_f32(&field.data, r1 + 16), 0.0);
+    assert_eq!(field_f32(&field.data, r1 + 20), 1.0);
+    assert_eq!(field_f32(&field.data, r1 + 24), 1.0);
+    assert_eq!(field_f32(&field.data, r1 + 28), 1.0);
+}
+
 #[test]
 fn background_node_sorts_to_the_back_and_keeps_its_color() {
     let mut canvas = Canvas::new((100, 100));
@@ -672,6 +785,7 @@ fn background_node_sorts_to_the_back_and_keeps_its_color() {
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: WHITE,
+        lit: false,
         order: 0.0,
         shape: Some(Shape::Rectangle {
             center: [0.0, 0.0],
@@ -683,6 +797,7 @@ fn background_node_sorts_to_the_back_and_keeps_its_color() {
             transform: Transform::translate(50.0, 50.0),
             scale: [1.0, 1.0],
             modulate: WHITE,
+            lit: false,
             order: 0.0,
             shape: Some(Shape::Background {
                 color: Color {
@@ -728,6 +843,7 @@ fn layers_are_hard_draw_partitions() {
                     transform: Transform::identity(),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
+                    lit: false,
                     order: 100.0,
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
@@ -747,6 +863,7 @@ fn layers_are_hard_draw_partitions() {
                     transform: Transform::identity(),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
+                    lit: false,
                     order: -100.0,
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
@@ -757,6 +874,7 @@ fn layers_are_hard_draw_partitions() {
                 },
             },
         ],
+        ambient: AMBIENT,
         camera: None,
     };
     canvas.draw_scene(&scene);
@@ -788,6 +906,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                     transform: Transform::identity(),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
+                    lit: false,
                     order: 0.0,
                     shape: None,
                     // Local ascending z: red (100) before green (200).
@@ -796,6 +915,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                             transform: Transform::identity(),
                             scale: [1.0, 1.0],
                             modulate: WHITE,
+                            lit: false,
                             order: 100.0,
                             shape: Some(Shape::Circle {
                                 center: [0.0, 0.0],
@@ -808,6 +928,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                             transform: Transform::identity(),
                             scale: [1.0, 1.0],
                             modulate: WHITE,
+                            lit: false,
                             order: 200.0,
                             shape: Some(Shape::Circle {
                                 center: [0.0, 0.0],
@@ -827,6 +948,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                     transform: Transform::identity(),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
+                    lit: false,
                     order: 0.0,
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
@@ -837,6 +959,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                 },
             },
         ],
+        ambient: AMBIENT,
         camera: None,
     };
     canvas.draw_scene(&scene);
@@ -876,6 +999,7 @@ fn the_base_group_paints_first_at_equal_order() {
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
+                lit: false,
                 order: -1.0,
                 shape: Some(Shape::Circle {
                     center: [0.0, 0.0],
@@ -885,6 +1009,7 @@ fn the_base_group_paints_first_at_equal_order() {
                 children: vec![],
             },
         }],
+    ambient: AMBIENT,
     camera: None,
     };
     canvas.draw_scene(&scene);
@@ -910,6 +1035,7 @@ fn a_background_in_a_higher_layer_sets_the_clear_color() {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
+            lit: false,
             order: 0.0,
             shape: Some(Shape::Background {
                 color: Color { r: 0.1, g: 0.0, b: 0.0, a: 1.0 },
@@ -924,6 +1050,7 @@ fn a_background_in_a_higher_layer_sets_the_clear_color() {
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
+                lit: false,
                 order: 0.0,
                 shape: Some(Shape::Background {
                     color: Color { r: 0.0, g: 0.1, b: 0.0, a: 1.0 },
@@ -931,6 +1058,7 @@ fn a_background_in_a_higher_layer_sets_the_clear_color() {
                 children: vec![],
             },
         }],
+    ambient: AMBIENT,
     camera: None,
     };
     canvas.draw_scene(&scene);
@@ -977,6 +1105,7 @@ fn a_camera_anchors_the_view_to_its_node() {
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
+                lit: false,
                 order: 0.0,
                 shape: None,
                 children: vec![
@@ -985,6 +1114,7 @@ fn a_camera_anchors_the_view_to_its_node() {
                         transform: Transform::translate(10.0, -4.0),
                         scale: [1.0, 1.0],
                         modulate: WHITE,
+                        lit: false,
                         order: 0.0,
                         shape: Some(Shape::Circle {
                             center: [0.0, 0.0],
@@ -999,6 +1129,7 @@ fn a_camera_anchors_the_view_to_its_node() {
                         transform: Transform::translate(10.0, -4.0),
                         scale: [1.0, 1.0],
                         modulate: WHITE,
+                        lit: false,
                         order: 0.0,
                         shape: None,
                         children: vec![],
@@ -1006,6 +1137,7 @@ fn a_camera_anchors_the_view_to_its_node() {
                 ],
             },
         }],
+        ambient: AMBIENT,
         camera: Some(NodePath {
             group: Some(0),
             children: vec![1],
@@ -1030,6 +1162,7 @@ fn layer_speed_scales_the_camera_motion() {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
+            lit: false,
             order: 0.0,
             shape: None,
             // The camera is a shapeless pivot under the scene's root.
@@ -1037,6 +1170,7 @@ fn layer_speed_scales_the_camera_motion() {
                 transform: Transform::translate(10.0, 0.0),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
+                lit: false,
                 order: 0.0,
                 shape: None,
                 children: vec![],
@@ -1053,6 +1187,7 @@ fn layer_speed_scales_the_camera_motion() {
                     transform: Transform::translate(10.0, 0.0),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
+                    lit: false,
                     order: 0.0,
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
@@ -1072,6 +1207,7 @@ fn layer_speed_scales_the_camera_motion() {
                     transform: Transform::translate(10.0, 0.0),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
+                    lit: false,
                     order: 0.0,
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
@@ -1082,6 +1218,7 @@ fn layer_speed_scales_the_camera_motion() {
                 },
             },
         ],
+        ambient: AMBIENT,
         camera: Some(NodePath {
             group: None,
             children: vec![0],
@@ -1120,6 +1257,7 @@ fn repeat_layer_scene(repeat: [f32; 2]) -> Scene {
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
+                lit: false,
                 order: 0.0,
                 shape: Some(Shape::Circle {
                     center: [-50.0, -50.0],
@@ -1129,6 +1267,7 @@ fn repeat_layer_scene(repeat: [f32; 2]) -> Scene {
                 children: vec![],
             },
         }],
+        ambient: AMBIENT,
         camera: None,
     }
 }
@@ -1186,6 +1325,7 @@ fn repeat_offsets_follow_the_camera() {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
+            lit: false,
             order: 0.0,
             shape: None,
             children: vec![Box::new(SceneNode {
@@ -1193,6 +1333,7 @@ fn repeat_offsets_follow_the_camera() {
                 ..Default::default()
             })],
         },
+        ambient: AMBIENT,
         camera: Some(NodePath {
             group: None,
             children: vec![0],
@@ -1235,6 +1376,7 @@ fn a_copy_from_a_tile_the_window_does_not_overlap_reaches_the_window() {
                 ..Default::default()
             },
         }],
+        ambient: AMBIENT,
         camera: None,
     };
     canvas.draw_scene(&scene);
@@ -1261,6 +1403,7 @@ fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
+            lit: false,
             order: 0.0,
             shape: None,
             // A camera at 145 puts the window at layer x in [95, 195],
@@ -1270,6 +1413,7 @@ fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
                 ..Default::default()
             })],
         },
+        ambient: AMBIENT,
         camera: Some(NodePath {
             group: None,
             children: vec![0],
@@ -1282,6 +1426,7 @@ fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
+                lit: false,
                 order: 0.0,
                 shape: Some(Shape::Rectangle {
                     center: [95.0, 0.0],
@@ -1335,6 +1480,7 @@ fn an_object_wider_than_its_repeat_aborts() {
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
+                lit: false,
                 order: 0.0,
                 shape: Some(Shape::Rectangle {
                     center: [0.0, 0.0],
@@ -1403,6 +1549,7 @@ fn a_camera_followed_object_in_a_repeating_layer_stays_at_the_window_center() {
                 ..Default::default()
             },
         }],
+        ambient: AMBIENT,
         camera: Some(NodePath {
             group: Some(0),
             children: vec![1],
@@ -1449,6 +1596,7 @@ fn the_camera_rotation_turns_the_view() {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
+            lit: false,
             order: 0.0,
             shape: None,
             children: vec![
@@ -1457,6 +1605,7 @@ fn the_camera_rotation_turns_the_view() {
                     transform: Transform::translate(10.0, 0.0),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
+                    lit: false,
                     order: 0.0,
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
@@ -1471,6 +1620,7 @@ fn the_camera_rotation_turns_the_view() {
                     transform: Transform::rotate(std::f32::consts::FRAC_PI_2),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
+                    lit: false,
                     order: 0.0,
                     shape: None,
                     children: vec![],
@@ -1478,6 +1628,7 @@ fn the_camera_rotation_turns_the_view() {
             ],
         },
         layers: vec![],
+        ambient: AMBIENT,
         camera: Some(NodePath {
             group: None,
             children: vec![1],
@@ -1504,12 +1655,14 @@ fn a_missing_camera_path_renders_without_a_camera() {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
+            lit: false,
             order: 0.0,
             shape: None,
             children: vec![Box::new(SceneNode {
                 transform: Transform::translate(10.0, 0.0),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
+                lit: false,
                 order: 0.0,
                 shape: Some(Shape::Circle {
                     center: [0.0, 0.0],
@@ -1521,6 +1674,7 @@ fn a_missing_camera_path_renders_without_a_camera() {
         },
         layers: vec![],
         // No such layer: the camera path names no node.
+        ambient: AMBIENT,
         camera: Some(NodePath {
             group: Some(5),
             children: vec![],
@@ -1545,6 +1699,7 @@ fn node_scale_applies_to_the_shape_and_its_subtree() {
         transform: Transform::translate(10.0, 0.0),
         scale: [2.0, 1.0],
         modulate: WHITE,
+        lit: false,
         order: 0.0,
         shape: Some(Shape::Circle {
             center: [1.0, 1.0],
@@ -1555,6 +1710,7 @@ fn node_scale_applies_to_the_shape_and_its_subtree() {
             transform: Transform::translate(1.0, 0.0),
             scale: [1.0, 1.0],
             modulate: WHITE,
+            lit: false,
             order: 0.0,
             shape: Some(Shape::Circle {
                 center: [0.0, 0.0],
@@ -1602,6 +1758,7 @@ fn node_order_accumulates_down_the_tree_like_the_transform() {
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: WHITE,
+        lit: false,
         order: 1.0,
         shape: Some(Shape::Circle {
             center: [0.0, 0.0],
@@ -1612,6 +1769,7 @@ fn node_order_accumulates_down_the_tree_like_the_transform() {
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
+            lit: false,
             order: 2.0,
             shape: Some(Shape::Circle {
                 center: [0.0, 0.0],
@@ -1622,6 +1780,7 @@ fn node_order_accumulates_down_the_tree_like_the_transform() {
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
+                lit: false,
                 order: 4.0,
                 shape: Some(Shape::Circle {
                     center: [0.0, 0.0],
@@ -1663,6 +1822,7 @@ fn node_modulate_multiplies_into_the_shape_and_its_subtree() {
             b: 0.0,
             a: 1.0,
         },
+        lit: false,
         order: 0.0,
         shape: Some(Shape::Circle {
             center: [0.0, 0.0],
@@ -1678,6 +1838,7 @@ fn node_modulate_multiplies_into_the_shape_and_its_subtree() {
                 b: 1.0,
                 a: 0.5,
             },
+            lit: false,
             order: 0.0,
             shape: Some(Shape::Circle {
                 center: [0.0, 0.0],
@@ -1718,6 +1879,7 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
             b: 1.0,
             a: 0.5,
         },
+        lit: false,
         order: 0.0,
         shape: Some(Shape::Sprite {
             data: Arc::new([0u8; 16]),
@@ -1742,6 +1904,7 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
             b: 1.0,
             a: 1.0,
         },
+        lit: false,
         order: 0.0,
         shape: Some(Shape::Text {
             text: "hi".to_string(),
@@ -1780,6 +1943,7 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: WHITE,
+        lit: false,
         order: 0.0,
         shape: Some(Shape::Sprite {
             data: Arc::new([0u8; 16]),
@@ -1800,6 +1964,7 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
         tint,
         alpha,
         uv_rect,
+        lit,
         z,
     }] = &canvas.draws[..]
     else {
@@ -1814,6 +1979,8 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
     assert_eq!(*tint, black());
     assert_eq!(*alpha, 1.0);
     assert_eq!(*uv_rect, [0.0, 0.0, 1.0, 1.0]);
+    // The node is unlit, so the flag packs as 0.0.
+    assert_eq!(*lit, 0.0);
     assert_eq!(*z, 0.0);
 }
 
@@ -1828,6 +1995,7 @@ fn sprite_scissor_is_the_texture_box_plus_aa_band() {
         tint: black(),
         alpha: 1.0,
         uv_rect: [0.0, 0.0, 1.0, 1.0],
+        lit: 0.0,
         z: 0.0,
     };
     // The box is (50 ± 20.75, 50 ± 10.75), i.e. [29.25, 70.75] on x and
@@ -1851,6 +2019,7 @@ fn sprite_scissor_under_rotation() {
         tint: black(),
         alpha: 1.0,
         uv_rect: [0.0, 0.0, 1.0, 1.0],
+        lit: 0.0,
         z: 0.0,
     };
     assert_eq!(draw.scissor_rect([100, 100]), Some([27, 27, 46, 46]));
@@ -1949,6 +2118,7 @@ fn expand_text_splices_glyph_sprites_in_place() {
             size,
             color: tint,
             alpha: 0.9,
+            lit: 1.0,
             z: 1.0,
         },
         Draw::Circle {
@@ -1974,12 +2144,14 @@ fn expand_text_splices_glyph_sprites_in_place() {
     assert_eq!(*z0, 0.0);
     assert_eq!(*z1, 2.0);
     for draw in canvas.draws.iter().skip(1).take(layout.glyphs.len()) {
-        let Draw::Sprite { size, texture_size, uv_rect, tint, alpha, z, .. } = draw
+        let Draw::Sprite { size, texture_size, uv_rect, tint, alpha, lit, z, .. } = draw
         else {
             panic!("every spliced draw must be a sprite");
         };
         assert_eq!(*tint, Color { r: 1.0, g: 0.5, b: 0.25, a: 1.0 });
         assert_eq!(*alpha, 0.9);
+        // The block's `lit` flag passes on to every glyph quad.
+        assert_eq!(*lit, 1.0);
         assert_eq!(*z, 1.0);
         // Glyph quads are a sub-rectangle of the 512x512 atlas.
         assert_eq!(*texture_size, [512, 512]);
@@ -2008,6 +2180,7 @@ fn expand_text_reuses_the_atlas_across_frames() {
             size,
             color: Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
             alpha: 1.0,
+            lit: 0.0,
             z: 0.0,
         }];
         canvas.expand_text(&mut atlases);

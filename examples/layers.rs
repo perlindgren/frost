@@ -196,6 +196,7 @@ fn main() {
             },
             layers,
             camera: None,
+            ambient: frost::Scene::default().ambient,
         },
         Demo {
             pos: [0.0, 0.0],

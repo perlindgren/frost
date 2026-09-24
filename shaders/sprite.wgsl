@@ -4,7 +4,20 @@ struct SpriteUniforms {
     size: vec2<f32>, // local extent of the quad in local units
     tint: vec4<f32>, // multiplied with every sampled pixel
     alpha: f32, // multiplied with the texture's own alpha
+    lit: f32, // 1.0 when the sprite is lit by the frame's light field
     uv_rect: vec4<f32>, // [min_x, min_y, max_x, max_y] sub-rect of the texture
+};
+
+// The frame's light field: one global storage buffer shared by every lit
+// pipeline. The 32-byte header holds the light count, 12 padding bytes,
+// and the scene's ambient color; the unsized array tail holds one 32-byte
+// record per light, in call order — (x, y, radius, intensity) followed by
+// (r, g, b, 1.0). The CPU sizes the bound buffer to fit the frame's lights.
+struct LightField {
+    count: u32,
+    pad: array<u32, 3>,
+    ambient: vec4<f32>,
+    lights: array<vec4<f32>>,
 };
 
 @group(0) @binding(0)
@@ -15,6 +28,25 @@ var tex: texture_2d<f32>;
 
 @group(0) @binding(2)
 var samp: sampler;
+
+@group(0) @binding(3)
+var<storage, read>
+field: LightField;
+
+// The light mix at a pixel: the scene's ambient plus every light's
+// contribution — the light's color times its intensity, scaled by the
+// quadratic falloff from the light's position out to its radius. The
+// result multiplies the unlit color: pixel = base * (ambient + lights).
+fn light_mix(p: vec2<f32>) -> vec3<f32> {
+    var c = field.ambient.rgb;
+    for (var i = 0u; i < field.count; i++) {
+        let l = field.lights[2 * i];
+        let lc = field.lights[2 * i + 1];
+        let f = max(0.0, 1.0 - distance(p, l.xy) / max(l.z, 1e-4));
+        c += lc.rgb * l.w * f * f;
+    }
+    return c;
+}
 
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -44,8 +76,14 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     // Sample the quad's [0, 1] uv remapped into the texture sub-rectangle it
     // covers; for a whole-texture sprite the remap is the identity.
     let t = textureSample(tex, samp, mix(u.uv_rect.xy, u.uv_rect.zw, uv));
-    // Emit the tinted texture color, scaled by the sprite's alpha and the
-    // tint's own alpha, and composited over the existing attachment via
-    // alpha blending.
-    return vec4<f32>(t.rgb * u.tint.rgb, t.a * u.alpha * u.tint.a);
+    // The tinted texture color, multiplied by the light mix when the
+    // sprite is lit; the lights never touch the alpha.
+    var rgb = t.rgb * u.tint.rgb;
+    if (u.lit > 0.5) {
+        rgb *= light_mix(frag_coord.xy);
+    }
+    // Emit the color, scaled by the sprite's alpha and the tint's own
+    // alpha, and composited over the existing attachment via alpha
+    // blending.
+    return vec4<f32>(rgb, t.a * u.alpha * u.tint.a);
 }

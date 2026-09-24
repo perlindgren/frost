@@ -54,6 +54,9 @@ pub(crate) enum Draw {
         /// by the transform's scale).
         aa: f32,
         color: Color,
+        /// Whether the shape is lit by the frame's light field: `1.0` when
+        /// the node's `lit` flag is set, `0.0` when unlit.
+        lit: f32,
         z: f32,
     },
     /// A sprite: a texture sampled in the sprite's local space, which is
@@ -84,6 +87,10 @@ pub(crate) enum Draw {
         /// (top-left origin). `[0.0, 0.0, 1.0, 1.0]` covers the whole
         /// texture.
         uv_rect: [f32; 4],
+        /// Whether the sprite is lit by the frame's light field: `1.0` when
+        /// the node's `lit` flag is set, `0.0` when unlit. Glyph quads
+        /// expanded from a lit text block are lit too.
+        lit: f32,
         z: f32,
     },
     /// A batch of particles drawn in one instanced draw call.
@@ -113,6 +120,9 @@ pub(crate) enum Draw {
         /// The sprite's `(width, height)` in pixels, valid when `kind` is
         /// `2.0`.
         sprite_size: [u32; 2],
+        /// Whether the batch is lit by the frame's light field: `1.0` when
+        /// the node's `lit` flag is set, `0.0` when unlit.
+        lit: f32,
         z: f32,
     },
     /// A block of text: expanded into one [`Draw::Sprite`] per glyph by
@@ -132,12 +142,33 @@ pub(crate) enum Draw {
         color: Color,
         /// The text's opacity.
         alpha: f32,
+        /// Whether the text is lit by the frame's light field: `1.0` when
+        /// the node's `lit` flag is set, `0.0` when unlit; the flag is
+        /// passed on to every glyph quad the block expands into.
+        lit: f32,
         z: f32,
     },
     /// A [`Shape::Background`]: never drawn; it is promoted to the frame's
     /// clear color at render time.
     Background {
         color: Color,
+    },
+    /// A [`Shape::Light`]: never drawn; it is promoted to the frame's light
+    /// field at render time, where every lit receiver evaluates it per
+    /// pixel.
+    Light {
+        /// The light's position, in pixel space (already through the node's
+        /// composed transform).
+        pos: [f32; 2],
+        /// The falloff extent, in pixels: zero contribution beyond this
+        /// distance from `pos`.
+        radius: f32,
+        /// The light's strength, multiplied with its color per pixel.
+        intensity: f32,
+        /// The light's color, already multiplied with the node's composed
+        /// modulate.
+        color: Color,
+        z: f32,
     },
 }
 
@@ -153,6 +184,7 @@ impl Draw {
             Draw::Text { z, .. } => *z,
             // The background is always at the very back.
             Draw::Background { .. } => f32::MIN,
+            Draw::Light { z, .. } => *z,
         }
     }
 
@@ -160,10 +192,11 @@ impl Draw {
     /// anti-alias band the shaders render beyond each geometric edge.
     ///
     /// `area` is the render area in pixels; the result is clamped to it, or
-    /// `None` if the draw is fully outside the surface or is a background
-    /// (which is never drawn — it becomes the frame's clear color).
+    /// `None` if the draw is fully outside the surface or is a background or
+    /// a light (which are never drawn — they become the frame's clear color
+    /// and light field).
     pub(crate) fn scissor_rect(&self, area: [u32; 2]) -> Option<[u32; 4]> {
-        if let Draw::Background { .. } = self {
+        if matches!(self, Draw::Background { .. } | Draw::Light { .. }) {
             return None;
         }
         let (min, max) = match self {
@@ -232,6 +265,8 @@ impl Draw {
             }
             // A background never draws; the early return above covers it.
             Draw::Background { .. } => unreachable!(),
+            // A light never draws; the early return above covers it.
+            Draw::Light { .. } => unreachable!(),
             // Text is expanded into glyph sprites by `Canvas::expand_text`
             // before the render loop, so it never reaches the scissor.
             Draw::Text { .. } => unreachable!(),
@@ -482,4 +517,72 @@ pub(crate) fn particle_instance(
     out[24..28].copy_from_slice(&p.color.g.to_le_bytes());
     out[28..32].copy_from_slice(&p.color.b.to_le_bytes());
     out
+}
+
+/// The byte size of the light field's header: the light `count` (a u32),
+/// 12 padding bytes, and the scene's ambient color (a `vec4`).
+pub(crate) const LIGHT_FIELD_HEADER: usize = 32;
+
+/// The byte size of one light record: two `vec4<f32>`s —
+/// `(x, y, radius, intensity)` and `(r, g, b, 1.0)`.
+pub(crate) const LIGHT_RECORD: usize = 32;
+
+/// The frame's light field, packed little-endian for the GPU's storage
+/// buffer.
+///
+/// The layout is a [`LIGHT_FIELD_HEADER`]-byte header — the light `count`
+/// at bytes `0..4`, 12 padding bytes, the scene's ambient color channels at
+/// bytes `16..32` — followed by one [`LIGHT_RECORD`]-byte record per light,
+/// in call order: a `(x, y, radius, intensity)` `vec4`, then an
+/// `(r, g, b, 1.0)` `vec4`. The records line up with the unsized WGSL
+/// `array<vec4<f32>>` tail of the field's storage struct, so `data` can be
+/// bound as-is.
+pub(crate) struct LightField {
+    /// The number of lights packed — the header's `count`.
+    pub count: u32,
+    /// The packed bytes: a 32-byte header plus `count * 32` bytes.
+    pub data: Vec<u8>,
+}
+
+/// Packs the frame's light field from its draws and the scene's ambient
+/// color.
+///
+/// Only [`Draw::Light`]s contribute, in call order; every other draw is
+/// ignored. The ambient color comes from the scene, not the draws.
+pub(crate) fn pack_light_field(draws: &[Draw], ambient: Color) -> LightField {
+    let count = draws
+        .iter()
+        .filter(|draw| matches!(draw, Draw::Light { .. }))
+        .count() as u32;
+    let mut data = vec![0u8; LIGHT_FIELD_HEADER + count as usize * LIGHT_RECORD];
+    data[0..4].copy_from_slice(&count.to_le_bytes());
+    write_f32_at(&mut data, 16, ambient.r);
+    write_f32_at(&mut data, 20, ambient.g);
+    write_f32_at(&mut data, 24, ambient.b);
+    write_f32_at(&mut data, 28, ambient.a);
+    let mut record = 0usize;
+    for draw in draws {
+        if let Draw::Light {
+            pos,
+            radius,
+            intensity,
+            color,
+            ..
+        } = draw
+        {
+            let off = LIGHT_FIELD_HEADER + record * LIGHT_RECORD;
+            write_f32_at(&mut data, off, pos[0]);
+            write_f32_at(&mut data, off + 4, pos[1]);
+            write_f32_at(&mut data, off + 8, *radius);
+            write_f32_at(&mut data, off + 12, *intensity);
+            write_f32_at(&mut data, off + 16, color.r);
+            write_f32_at(&mut data, off + 20, color.g);
+            write_f32_at(&mut data, off + 24, color.b);
+            // The color vec4's w component is unused by the shader; keep it
+            // at 1.0.
+            write_f32_at(&mut data, off + 28, 1.0);
+            record += 1;
+        }
+    }
+    LightField { count, data }
 }
