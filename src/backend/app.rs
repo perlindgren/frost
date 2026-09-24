@@ -83,6 +83,14 @@ pub(crate) struct Frost<P: Process> {
     /// carries a texture (binding 2) and a sampler (binding 3), but the SDF
     /// kinds — circles and rectangles — never sample it.
     particle_placeholder: (TextureView, Sampler),
+    /// The frame's light field storage buffer: a 32-byte header plus one
+    /// 32-byte record per light at the peak count so far. It starts at the
+    /// header's size (a lightless frame still binds it — the shaders read
+    /// the field for the ambient) and only ever grows: the WGSL field's
+    /// tail is an unsized array sized by the bound buffer, so a bigger
+    /// buffer simply holds more records, and a lighter frame writes a
+    /// shorter slice into the same buffer.
+    field_buffer: Buffer,
     /// The GPU resources for each distinct sprite image, keyed by the
     /// pointer of its pixel-data `Arc`. Sprites sharing one file share one
     /// texture, so the map stays bounded by the number of distinct images.
@@ -150,6 +158,16 @@ impl<P: Process> Frost<P> {
             index_bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
         }
         queue.write_buffer(&particle_index_buffer, 0, &index_bytes);
+
+        // The light field buffer starts at the header's size: even a frame
+        // with no lights binds it (the shaders read the field to fetch the
+        // ambient), and it only grows when the light count peaks higher.
+        let field_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("light field buffer"),
+            size: LIGHT_FIELD_HEADER as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         // The particle pipeline's bind group always carries a texture and a
         // sampler: a sprite batch binds its image, and the SDF kinds —
@@ -227,6 +245,7 @@ impl<P: Process> Frost<P> {
             particle_pipeline: None,
             particle_index_buffer: Some(particle_index_buffer),
             particle_placeholder,
+            field_buffer,
             sprite_resources: HashMap::new(),
             text_atlases: HashMap::new(),
             format: None,
@@ -744,9 +763,9 @@ impl<P: Process> Frost<P> {
         (view, sampler)
     }
 
-    /// Creates the uniform buffer and three-entry bind group (uniform,
-    /// texture view, sampler) for one sprite draw call. Same per-draw
-    /// buffer rationale as [`Frost::primitive_uniform`].
+    /// Creates the uniform buffer and four-entry bind group (uniform,
+    /// texture view, sampler, light field) for one sprite draw call. Same
+    /// per-draw buffer rationale as [`Frost::primitive_uniform`].
     fn sprite_uniform(
         &self,
         pipeline: &RenderPipeline,
@@ -754,6 +773,7 @@ impl<P: Process> Frost<P> {
         view: &TextureView,
         sampler: &Sampler,
         data: &[u8],
+        field_buffer: &Buffer,
     ) -> (Buffer, BindGroup) {
         let device = &self.device;
         let buffer = device.create_buffer(&BufferDescriptor {
@@ -784,6 +804,14 @@ impl<P: Process> Frost<P> {
                     binding: 2,
                     resource: BindingResource::Sampler(sampler),
                 },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: field_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
             ],
         });
         (buffer, bind_group)
@@ -792,10 +820,11 @@ impl<P: Process> Frost<P> {
     /// Creates the per-draw buffers and bind group for one particle batch:
     /// the batch's uniform (the surface size, the base color, and the shape
     /// kind and aspect) at binding 0, the packed per-particle instance data
-    /// as a storage buffer read by the vertex stage at binding 1, and the
+    /// as a storage buffer read by the vertex stage at binding 1, the
     /// sampled texture and sampler — the batch's image for a sprite batch,
-    /// the 1x1 placeholder for the SDF kinds — at bindings 2 and 3. Same
-    /// per-draw buffer rationale as [`Frost::primitive_uniform`].
+    /// the 1x1 placeholder for the SDF kinds — at bindings 2 and 3, and the
+    /// frame's light field at binding 4. Same per-draw buffer rationale as
+    /// [`Frost::primitive_uniform`].
     fn particle_uniform(
         &self,
         pipeline: &RenderPipeline,
@@ -803,6 +832,7 @@ impl<P: Process> Frost<P> {
         uniform_data: &[u8],
         view: &TextureView,
         sampler: &Sampler,
+        field_buffer: &Buffer,
     ) -> (Buffer, Buffer, BindGroup) {
         let device = &self.device;
         let uniform_buffer = device.create_buffer(&BufferDescriptor {
@@ -848,9 +878,78 @@ impl<P: Process> Frost<P> {
                     binding: 3,
                     resource: BindingResource::Sampler(sampler),
                 },
+                BindGroupEntry {
+                    binding: 4,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: field_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
             ],
         });
         (uniform_buffer, instance_buffer, bind_group)
+    }
+
+    /// The shape draw's per-draw uniform buffer and bind group: the uniform
+    /// at binding 0 plus the frame's light field at binding 1. Shapes are
+    /// light receivers, so the field is bound even for an unlit shape — the
+    /// shader's `lit` guard lives in the uniform, not the binding.
+    fn shape_uniform(
+        &self,
+        pipeline: &RenderPipeline,
+        label: &str,
+        data: &[u8],
+        field_buffer: &Buffer,
+    ) -> (Buffer, BindGroup) {
+        let uniform_buffer = self.device.create_buffer(&BufferDescriptor {
+            label: Some(label),
+            size: data.len() as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&uniform_buffer, 0, data);
+        let bind_group = self.device.create_bind_group(&BindGroupDescriptor {
+            label: Some(label),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &uniform_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: field_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+            ],
+        });
+        (uniform_buffer, bind_group)
+    }
+
+    /// The frame's light field buffer, grown to hold the header plus
+    /// `count` light records when the buffer is still too small. The
+    /// buffer only ever grows: its size is the peak light count so far,
+    /// and lighter frames reuse the bigger buffer, writing a shorter
+    /// slice.
+    fn field_buffer_for(&mut self, count: u32) -> Buffer {
+        let size = (LIGHT_FIELD_HEADER + count as usize * LIGHT_RECORD) as u64;
+        if size > self.field_buffer.size() {
+            self.field_buffer = self.device.create_buffer(&BufferDescriptor {
+                label: Some("light field buffer"),
+                size,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        self.field_buffer.clone()
     }
 
     fn render(&mut self) {
@@ -911,6 +1010,14 @@ impl<P: Process> Frost<P> {
         // draws with equal keys keep call order and the last drawn is on
         // top.
         let draws = canvas.paint_order();
+
+        // The frame's light field: the scene's lights packed in call order
+        // with the scene's ambient. The field buffer is grow-only — it is
+        // re-created only when this frame's light count beats the peak it
+        // was last sized for.
+        let field = pack_light_field(&draws, self.scene.ambient);
+        let field_buffer = self.field_buffer_for(field.count);
+        self.queue.write_buffer(&field_buffer, 0, &field.data);
 
         let (
             Some(line_pipeline),
@@ -1031,6 +1138,7 @@ impl<P: Process> Frost<P> {
                         kind,
                         aa,
                         color,
+                        lit,
                         ..
                     } => {
                         let Some(inv) = world.invert() else {
@@ -1038,10 +1146,11 @@ impl<P: Process> Frost<P> {
                             // line or a point and its inverse does not exist.
                             continue;
                         };
-                        let (_buffer, bind_group) = self.primitive_uniform(
+                        let (_buffer, bind_group) = self.shape_uniform(
                             shape_pipeline,
                             "shape uniforms",
-                            &shape_uniform_data(inv, center, params, kind, aa, color),
+                            &shape_uniform_data(inv, center, params, kind, aa, color, lit),
+                            &field_buffer,
                         );
                         pass.set_pipeline(shape_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
@@ -1054,6 +1163,7 @@ impl<P: Process> Frost<P> {
                         texture_size,
                         tint,
                         alpha,
+                        lit,
                         uv_rect,
                         ..
                     } => {
@@ -1083,7 +1193,8 @@ impl<P: Process> Frost<P> {
                             "sprite uniforms",
                             &view,
                             &sampler,
-                            &sprite_uniform_data(inv, size, tint, alpha, uv_rect),
+                            &sprite_uniform_data(inv, size, tint, alpha, lit, uv_rect),
+                            &field_buffer,
                         );
                         pass.set_pipeline(sprite_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
@@ -1097,6 +1208,7 @@ impl<P: Process> Frost<P> {
                         aspect,
                         sprite_data,
                         sprite_size,
+                        lit,
                         ..
                     } => {
                         if count == 0 {
@@ -1140,9 +1252,16 @@ impl<P: Process> Frost<P> {
                             color,
                             kind,
                             aspect,
+                            lit,
                         );
-                        let (_uniform, _instances, bind_group) =
-                            self.particle_uniform(particle_pipeline, &data, &uniform_data, &view, &sampler);
+                        let (_uniform, _instances, bind_group) = self.particle_uniform(
+                            particle_pipeline,
+                            &data,
+                            &uniform_data,
+                            &view,
+                            &sampler,
+                            &field_buffer,
+                        );
                         pass.set_pipeline(particle_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         pass.set_index_buffer(
