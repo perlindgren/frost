@@ -194,14 +194,14 @@
 //! demo plays the bug death clip, `assets/audio/bugsDeath.wav`, through
 //! [`frost::Audio`].
 //!
-//! While no plant is living on the bench — at start, and whenever the
-//! last survivor withers away — a game-over overlay covers the window: a
-//! dim veil over the whole window, "Game Over" in large letters above the
-//! center, and a Play button below it, the label `assets/fonts/
-//! Leofont-Regular.ttf` set in. Pressing the button — a left click on it —
-//! restarts the game: the bench goes bare again, the basket back to its
-//! starting tomato, the swarms empty, and the tools back in their slots,
-//! and the overlay goes down.
+//! While no plant is living on the bench — at start, and, once the player
+//! has planted, whenever the last survivor withers away — a game-over
+//! overlay covers the window: a dim veil over the whole window, "Game
+//! Over" in large letters above the center, and a Play button below it,
+//! the label `assets/fonts/Leofont-Regular.ttf` set in. Pressing the
+//! button — a left click on it — restarts the game: the bench goes bare
+//! again, the basket back to its starting tomato, the swarms empty, and
+//! the tools back in their slots, and the overlay goes down.
 //!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
@@ -317,6 +317,15 @@ fn on_play_button(p: [f32; 2]) -> bool {
 /// survivor has withered away.
 fn bench_is_bare(plants: &[WateredPlant]) -> bool {
     !plants.iter().any(|p| p.planted)
+}
+
+/// Whether the game-over overlay is due over a bench the player has been
+/// playing: the bench is bare again — the last survivor withered away —
+/// after at least one plant has been planted since the last restart. A
+/// bench that never had a plant planted — the launch state and the state
+/// right after a Play press — is not a game over.
+fn game_over_due(plants: &[WateredPlant], ever_planted: bool) -> bool {
+    ever_planted && bench_is_bare(plants)
 }
 
 /// The plant's fit scale: the full plant spans about 1797 px around the
@@ -1102,12 +1111,18 @@ struct Demo {
     /// as the fruits drop and never removed — landed fruits stay where
     /// they fell.
     falls: Vec<Fall>,
-    /// Whether the game-over overlay is up: it opens with the demo, stays
-    /// up as long as no plant is planted — the bench bare — and comes down
-    /// when the player presses the Play button, which also restarts the
-    /// game. While up, the input answers only the button, and the process
-    /// lays the overlay out over the whole window every frame.
+    /// Whether the game-over overlay is up: it opens with the demo, comes
+    /// back up whenever the bench goes bare after the player has planted
+    /// — the last survivor withered away — and comes down when the player
+    /// presses the Play button, which also restarts the game. While up,
+    /// the input answers only the button, and the process lays the overlay
+    /// out over the whole window every frame.
     over: bool,
+    /// Whether at least one plant has been planted since the last
+    /// restart: the game can only be over after the player has actually
+    /// planted, so the bare bench at launch and right after a Play press
+    /// never triggers the game-over overlay on its own.
+    ever_planted: bool,
     /// The overlay's "Game Over" title, built once from the embedded font;
     /// laid onto the overlay's title child while the overlay is up.
     game_over: frost::Shape,
@@ -1146,13 +1161,18 @@ impl frost::Process for Demo {
             self.seed_basket_tomato(ctx);
         }
 
-        let (active_plants, grown_layers, started) = self.grow_plants(dt);
+        // The bugs step on the planted table itself, not the count, so a
+        // withered plant's bugs retarget and a replanted slot's plant gets
+        // its own batch; the count is only kept for the tests.
+        let (_active_plants, grown_layers, started) = self.grow_plants(dt);
 
-        // The bench is bare — no plant is planted at all: at start, or
-        // the last survivor just withered away: the game-over overlay
-        // rises until the player presses Play, and a pour that was
-        // running when the last plant withered stops with the game over.
-        if !self.over && bench_is_bare(&self.plants) {
+        // The bench went bare after the last survivor withered away —
+        // the player has planted, so this is a game over: the overlay
+        // rises until the player presses Play, and a pour that was running
+        // when the last plant withered stops with the game over. A bench
+        // that never had a plant planted — at start and right after a
+        // Play press — never game-overs.
+        if !self.over && game_over_due(&self.plants, self.ever_planted) {
             self.over = true;
             if self.pouring {
                 self.sounds.device.stop_loop();
@@ -1162,7 +1182,7 @@ impl frost::Process for Demo {
 
         self.step_vipers(ctx, dt, &anchors, grown_layers);
 
-        let events = self.step_bugs(ctx, dt, &anchors, active_plants);
+        let events = self.step_bugs(ctx, dt, &anchors, &started);
         self.play_bug_events(&events);
         self.handle_input(ctx);
 
@@ -1303,8 +1323,10 @@ impl Demo {
             vipers: vipers::Vipers::new(VIPER_IMAGE),
             // The game-over overlay opens with the demo: the bench is
             // bare, so the player sees it over the whole window until the
-            // first Play press.
+            // first Play press. The bench never had a plant planted, so
+            // its bareness is the start state, not a game over.
             over: true,
+            ever_planted: false,
             game_over,
             play_button,
             play_label,
@@ -1441,10 +1463,11 @@ impl Demo {
     /// a fresh, invisible seed — un-planted, full-watered and white — so
     /// a new seed can land in the slot.
     ///
-    /// Returns the counts the swarms step on — `active_plants` for the
-    /// bugs and `grown_layers` for the vipers — and the `started` table
-    /// the watering and the water bars read, which is the planted table:
-    /// a plant that withered away this frame is not in it.
+    /// Returns the `grown_layers` count the vipers step on, the
+    /// `active_plants` count of plants that are growing, and the `started`
+    /// table the watering, the water bars and the bugs read — the planted
+    /// table, which is the bugs' liveness table: a plant that withered
+    /// away this frame is not in it.
     fn grow_plants(&mut self, dt: f32) -> (usize, usize, [bool; PLANT_POS.len()]) {
         let mut active_plants = 0usize;
         let mut grown_layers = 0usize;
@@ -1492,7 +1515,7 @@ impl Demo {
                 }
             }
             // Counted after the reset, so a plant that withered away this
-            // frame is not in the count the bugs step on.
+            // frame is not in the count or the liveness table.
             if self.plants[i].planted {
                 active_plants += 1;
             }
@@ -1533,18 +1556,19 @@ impl Demo {
     }
 
     /// Waddles the bugs to the plants, in parallel with everything else:
-    /// three spawn each time a plant starts growing — `active_plants` is
-    /// how many have started — and returns the step's arrival events,
-    /// which [Demo::play_bug_events] plays.
+    /// `alive` is the bench's planted table — which plants are growing —
+    /// and the bugs retarget away from a plant that withers and batch in
+    /// for each plant that starts growing. Returns the step's arrival
+    /// events, which [Demo::play_bug_events] plays.
     fn step_bugs(
         &mut self,
         ctx: &mut frost::Context,
         dt: f32,
         anchors: &[[f32; 2]; PLANT_POS.len()],
-        active_plants: usize,
+        alive: &[bool],
     ) -> bugs::StepEvents {
         let bugs_node = &mut ctx.scene().root.children[CHILD_BUGS];
-        let events = self.bugs.step(dt, anchors, active_plants);
+        let events = self.bugs.step(dt, anchors, alive);
         self.bugs
             .layout(bugs_node, [&self.bug1, &self.bug2, &self.bug3]);
         events
@@ -2228,7 +2252,9 @@ impl Demo {
             self.pouring = false;
         }
         // The bench goes bare again: every slot a fresh, invisible seed,
-        // full-watered and white, un-planted.
+        // full-watered and white, un-planted — and never having been
+        // planted, so its bareness is the start state, not a game over.
+        self.ever_planted = false;
         self.plants = std::array::from_fn(|_| WateredPlant {
             planted: false,
             plant: plant::Plant::new([
@@ -2569,10 +2595,13 @@ impl Demo {
         match landing {
             Landing::Slot(i) => {
                 // The seed is consumed: the slot's plant starts growing
-                // from a fresh seed, full-watered and white.
+                // from a fresh seed, full-watered and white. The player
+                // has planted: the bench is a living game now, and the
+                // game-over overlay may come up when it goes bare again.
                 self.plants[i].planted = true;
                 self.plants[i].water = 1.0;
                 self.plants[i].dryness = 0.0;
+                self.ever_planted = true;
             }
             Landing::Basket(origin) => {
                 // Back into the basket, at the fruit's original spot.
@@ -2968,6 +2997,19 @@ mod tests {
         let mut planted = demo.plants;
         planted[0].planted = true;
         assert!(!bench_is_bare(&planted));
+    }
+
+    /// The game over is due only after the player has actually planted:
+    /// the bare bench at start and right after a Play press is not a game
+    /// over, and a planted bench never is one.
+    #[test]
+    fn the_game_over_is_due_only_after_a_planting() {
+        let demo = Demo::new(Assets::load());
+        assert!(!game_over_due(&demo.plants, false));
+        assert!(game_over_due(&demo.plants, true));
+        let mut planted = demo.plants;
+        planted[0].planted = true;
+        assert!(!game_over_due(&planted, true));
     }
 
     /// A full reserve, drained at the growth's slowed pace — a 60 fps
