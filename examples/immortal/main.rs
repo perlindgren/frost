@@ -194,6 +194,15 @@
 //! demo plays the bug death clip, `assets/audio/bugsDeath.wav`, through
 //! [`frost::Audio`].
 //!
+//! While no plant is living on the bench — at start, and whenever the
+//! last survivor withers away — a game-over overlay covers the window: a
+//! dim veil over the whole window, "Game Over" in large letters above the
+//! center, and a Play button below it, the label `assets/fonts/
+//! Leofont-Regular.ttf` set in. Pressing the button — a left click on it —
+//! restarts the game: the bench goes bare again, the basket back to its
+//! starting tomato, the swarms empty, and the tools back in their slots,
+//! and the overlay goes down.
+//!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
 //!
@@ -239,8 +248,8 @@ const BUG_N: usize = bugs::BUGS_PER_PLANT * PLANT_POS.len();
 /// builds them in the scene: the grass underlay, the items panel, the
 /// plants group, the fallen-fruit container, the held-items panel, the
 /// vipers group, the bugs group, the active tool, the basket, the
-/// immortality badge, and the carried fruit. The root node itself is the
-/// dark ground background.
+/// immortality badge, the carried fruit, and the game-over overlay. The
+/// root node itself is the dark ground background.
 const CHILD_GRASS: usize = 0;
 const CHILD_ITEMS: usize = 1;
 const CHILD_PLANTS: usize = 2;
@@ -252,6 +261,63 @@ const CHILD_TOOL: usize = 7;
 const CHILD_BASKET: usize = 8;
 const CHILD_BADGE: usize = 9;
 const CHILD_HELD_FRUIT: usize = 10;
+const CHILD_OVERLAY: usize = 11;
+
+/// The game-over overlay node's children, in draw order: the "Game Over"
+/// title text, the Play button's rectangle, and the button's label. The
+/// dimming veil is the overlay node's own shape, not a child.
+const OVERLAY_TITLE: usize = 0;
+const OVERLAY_BUTTON: usize = 1;
+const OVERLAY_LABEL: usize = 2;
+
+/// The overlay's dimming veil's color: a dark, semi-transparent wash over
+/// the whole window.
+const OVERLAY_DIM: frost::Color = frost::Color {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.55,
+};
+
+/// The overlay's "Game Over" title's size, in pixels.
+const OVERLAY_TITLE_SIZE: f32 = 120.0;
+
+/// The overlay's title's center's height, in window pixels above the
+/// window's center.
+const OVERLAY_TITLE_Y: f32 = 80.0;
+
+/// The Play button's rectangle's half extents, in window pixels: a
+/// 360 by 110 button.
+const PLAY_HALF: [f32; 2] = [180.0, 55.0];
+
+/// The Play button's rectangle's color: a tomato red under the label.
+const PLAY_COLOR: frost::Color = frost::Color {
+    r: 0.62,
+    g: 0.13,
+    b: 0.1,
+    a: 1.0,
+};
+
+/// The Play button's center's height, in window pixels below the window's
+/// center.
+const PLAY_Y: f32 = -60.0;
+
+/// The Play button's "Play" label's size, in pixels.
+const PLAY_LABEL_SIZE: f32 = 54.0;
+
+/// Whether the user-space point `p` is inside the Play button's
+/// rectangle: the button's half extents, centered on
+/// `[0.0, PLAY_Y]`.
+fn on_play_button(p: [f32; 2]) -> bool {
+    p[0].abs() <= PLAY_HALF[0] && (p[1] - PLAY_Y).abs() <= PLAY_HALF[1]
+}
+
+/// Whether the game-over overlay should be up over the bench: no plant is
+/// planted at all — the bench bare, at start and right after the last
+/// survivor has withered away.
+fn bench_is_bare(plants: &[WateredPlant]) -> bool {
+    !plants.iter().any(|p| p.planted)
+}
 
 /// The plant's fit scale: the full plant spans about 1797 px around the
 /// root joint — its top edge 1614 px above it, its bottom edge 183 px
@@ -1036,6 +1102,21 @@ struct Demo {
     /// as the fruits drop and never removed — landed fruits stay where
     /// they fell.
     falls: Vec<Fall>,
+    /// Whether the game-over overlay is up: it opens with the demo, stays
+    /// up as long as no plant is planted — the bench bare — and comes down
+    /// when the player presses the Play button, which also restarts the
+    /// game. While up, the input answers only the button, and the process
+    /// lays the overlay out over the whole window every frame.
+    over: bool,
+    /// The overlay's "Game Over" title, built once from the embedded font;
+    /// laid onto the overlay's title child while the overlay is up.
+    game_over: frost::Shape,
+    /// The Play button's rectangle, built once; laid onto the overlay's
+    /// button child while the overlay is up.
+    play_button: frost::Shape,
+    /// The overlay's "Play" label, built once from the embedded font; laid
+    /// onto the overlay's label child while the overlay is up.
+    play_label: frost::Shape,
 }
 
 impl frost::Process for Demo {
@@ -1050,7 +1131,8 @@ impl frost::Process for Demo {
     /// and the fallen fruit steps; the tool ticks, emits, and takes its
     /// live pose; the particles advance; the drops water the roots —
     /// after the particles have stepped — and the mist wounds the bugs;
-    /// and the live overlay is drawn.
+    /// the live overlay is drawn; and the game-over overlay lays out over
+    /// the window.
     fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
         let (w, h) = ctx.size();
         self.time += dt;
@@ -1065,6 +1147,19 @@ impl frost::Process for Demo {
         }
 
         let (active_plants, grown_layers, started) = self.grow_plants(dt);
+
+        // The bench is bare — no plant is planted at all: at start, or
+        // the last survivor just withered away: the game-over overlay
+        // rises until the player presses Play, and a pour that was
+        // running when the last plant withered stops with the game over.
+        if !self.over && bench_is_bare(&self.plants) {
+            self.over = true;
+            if self.pouring {
+                self.sounds.device.stop_loop();
+                self.pouring = false;
+            }
+        }
+
         self.step_vipers(ctx, dt, &anchors, grown_layers);
 
         let events = self.step_bugs(ctx, dt, &anchors, active_plants);
@@ -1095,6 +1190,11 @@ impl frost::Process for Demo {
         self.water_roots(&anchors, &started);
         self.spray_hits();
         self.draw_live(ctx, &anchors, &started);
+
+        // Lay the game-over overlay out last: its flag may have risen on
+        // this frame, above, or fallen in the input's Play press, and the
+        // veil must track the window's current size.
+        self.layout_overlay(ctx, w, h);
     }
 }
 
@@ -1130,6 +1230,23 @@ impl Demo {
             &slices[3],
             &slices[4],
         ]);
+
+        // The game-over overlay's shapes, built once: the title and the
+        // Play label from the embedded font — each an `Arc`-shared copy of
+        // the font's bytes — and the button's rectangle.
+        let game_over = frost::Shape::text_bytes(
+            assets.font,
+            "Game Over",
+            OVERLAY_TITLE_SIZE,
+        )
+        .expect("the embedded overlay font decodes");
+        let play_label = frost::Shape::text_bytes(assets.font, "Play", PLAY_LABEL_SIZE)
+            .expect("the embedded overlay font decodes");
+        let play_button = frost::Shape::Rectangle {
+            center: [0.0, 0.0],
+            extent: PLAY_HALF,
+            color: PLAY_COLOR,
+        };
 
         Demo {
             mouse: [0.0, 0.0],
@@ -1184,6 +1301,13 @@ impl Demo {
             slices,
             basket_seed: true,
             vipers: vipers::Vipers::new(VIPER_IMAGE),
+            // The game-over overlay opens with the demo: the bench is
+            // bare, so the player sees it over the whole window until the
+            // first Play press.
+            over: true,
+            game_over,
+            play_button,
+            play_label,
         }
     }
 
@@ -1249,6 +1373,43 @@ impl Demo {
                 h / 2.0 - pos[1] * h / GRASS_SIZE[1],
             ]
         })
+    }
+
+    /// Lays the game-over overlay out on the overlay node (root's
+    /// [`CHILD_OVERLAY`] child), for a `w` by `h` window: while the
+    /// overlay is up — the bench bare — the node's own shape is a dim
+    /// rectangle over the whole window, and its children carry the
+    /// "Game Over" title above the center, the Play button's rectangle
+    /// below it, and the button's label on the button's center; while the
+    /// overlay is down, the node and its children carry no shapes at all.
+    fn layout_overlay(&mut self, ctx: &mut frost::Context, w: f32, h: f32) {
+        let overlay = &mut ctx.scene().root.children[CHILD_OVERLAY];
+        // The children's poses hold while the overlay is up and down
+        // alike: the title above the window's center, the button and its
+        // label on the button's center below it.
+        overlay.children[OVERLAY_TITLE].transform =
+            frost::Transform::translate(0.0, OVERLAY_TITLE_Y);
+        let button = frost::Transform::translate(0.0, PLAY_Y);
+        overlay.children[OVERLAY_BUTTON].transform = button;
+        overlay.children[OVERLAY_LABEL].transform = button;
+        if self.over {
+            // The dim veil: a rectangle over the whole window, a pixel
+            // past each edge so no border shows, centered on the node's
+            // origin.
+            overlay.shape = Some(frost::Shape::Rectangle {
+                center: [0.0, 0.0],
+                extent: [w / 2.0 + 1.0, h / 2.0 + 1.0],
+                color: OVERLAY_DIM,
+            });
+            overlay.children[OVERLAY_TITLE].shape = Some(self.game_over.clone());
+            overlay.children[OVERLAY_BUTTON].shape = Some(self.play_button.clone());
+            overlay.children[OVERLAY_LABEL].shape = Some(self.play_label.clone());
+        } else {
+            overlay.shape = None;
+            overlay.children[OVERLAY_TITLE].shape = None;
+            overlay.children[OVERLAY_BUTTON].shape = None;
+            overlay.children[OVERLAY_LABEL].shape = None;
+        }
     }
 
     /// Grows the planted plants in parallel, in parallel with the tool
@@ -1411,7 +1572,10 @@ impl Demo {
     /// spray can's fresh burst — or a tomato pick — ripe fruit off a
     /// plant, or a tomato out of the basket — when no tool is held at all
     /// and no seed is flying; and a release of the right button switches
-    /// the two tools the mouse holds.
+    /// the two tools the mouse holds. While the game-over overlay is up,
+    /// the input answers only the Play button — a press on it restarts
+    /// the game and takes the overlay down — and the game's own input
+    /// goes untouched.
     fn handle_input(&mut self, ctx: &mut frost::Context) {
         // Follow the pointer, keeping the last known position while the
         // cursor is outside the window.
@@ -1421,6 +1585,18 @@ impl Demo {
 
         let left = ctx.mouse_button_down(frost::MouseButton::Left);
         let right = ctx.mouse_button_down(frost::MouseButton::Right);
+
+        // The game-over overlay is up: the input answers only the Play
+        // button — a press on it restarts the game and takes the overlay
+        // down — and the game's own input goes untouched this frame.
+        if self.over {
+            if left && !self.pressed && on_play_button(self.mouse) {
+                self.over = false;
+                self.restart(ctx);
+            }
+            self.pressed = left;
+            return;
+        }
 
         // The slot the pointer is over, if any: a left click swaps the
         // active tool with a slot's tool, and the click is recognized by
@@ -2038,6 +2214,69 @@ impl Demo {
         }
     }
 
+    /// Restarts the game from scratch, called when the player presses Play
+    /// on the game-over overlay: the bench goes bare again — every slot a
+    /// fresh, invisible, full-watered seed — the basket back to its
+    /// starting tomato, seeded on the next frame once the basket's fit is
+    /// known, the carried and the fallen fruit off the scene, the swarms
+    /// empty again, the tools back in their slots, the mouse holding no
+    /// tool, no pour loop running, and the demo's clock back at zero.
+    fn restart(&mut self, ctx: &mut frost::Context) {
+        // The pour loop stops, if it plays.
+        if self.pouring {
+            self.sounds.device.stop_loop();
+            self.pouring = false;
+        }
+        // The bench goes bare again: every slot a fresh, invisible seed,
+        // full-watered and white, un-planted.
+        self.plants = std::array::from_fn(|_| WateredPlant {
+            planted: false,
+            plant: plant::Plant::new([
+                &self.slices[0],
+                &self.slices[1],
+                &self.slices[2],
+                &self.slices[3],
+                &self.slices[4],
+            ]),
+            water: 1.0,
+            dryness: 0.0,
+        });
+        // The swarms start empty again: both their layouts leave their
+        // stale children frozen, so the swarms are rebuilt, not just
+        // re-stepped.
+        self.vipers = vipers::Vipers::new(VIPER_IMAGE);
+        self.bugs = bugs::Bugs::new([&self.bug1, &self.bug2, &self.bug3]);
+        // The fruit goes back to the basket: the carried and the fallen
+        // fruit come off the scene, the basket empties, and the starting
+        // tomato re-seeds on the next frame, once the basket's fit is
+        // known.
+        let root = &mut ctx.scene().root;
+        root.children[CHILD_HELD_FRUIT].children.clear();
+        root.children[CHILD_FALLEN_FRUIT].children.clear();
+        root.children[CHILD_BASKET].children[basket::BASKET_FRUIT].children.clear();
+        self.falls.clear();
+        self.basket_seed = true;
+        // The mouse holds no tool again: the tools rest in their slots,
+        // the held panel's cells go empty, and the in-flight states clear.
+        let mut slots = [None; SLOTS];
+        slots[SPRAY_SLOT] = Some(Tool::SprayCan);
+        slots[CAN_SLOT] = Some(Tool::WaterCan);
+        self.slots = slots;
+        self.held = None;
+        self.set_active(ctx, None);
+        let items = &mut ctx.scene().root.children[CHILD_ITEMS];
+        for (slot, node) in items.children.iter_mut().enumerate() {
+            self.slot_set(node, self.slots[slot]);
+        }
+        self.picking = None;
+        self.flying = None;
+        self.press_slot = None;
+        self.right_pressed = false;
+        self.acc = 0.0;
+        self.time = 0.0;
+        self.rng = frost::Rng::new();
+    }
+
     /// Shows the pressed spray frame (`spray2`) if `on` and the at-rest
     /// frame (`spray1`) otherwise, but only when the tool node currently
     /// shows the other one, so the swap — a cheap `Arc` clone — happens at
@@ -2633,6 +2872,29 @@ fn main() {
                 // window-centered user space.
                 ..Default::default()
             }),
+            Box::new(frost::SceneNode {
+                // The game-over overlay, above everything: the process
+                // gives the node its dim veil over the whole window — and
+                // clears it again — every frame, and its three children
+                // carry, in draw order, the "Game Over" title above the
+                // window's center, the Play button's rectangle below it,
+                // and the button's label on the button's center.
+                children: vec![
+                    Box::new(frost::SceneNode {
+                        // The "Game Over" title.
+                        ..Default::default()
+                    }),
+                    Box::new(frost::SceneNode {
+                        // The Play button's rectangle.
+                        ..Default::default()
+                    }),
+                    Box::new(frost::SceneNode {
+                        // The button's label.
+                        ..Default::default()
+                    }),
+                ],
+                ..Default::default()
+            }),
         ],
         ..Default::default()
     });
@@ -2677,6 +2939,35 @@ mod tests {
         assert!(demo.plants.iter().all(|p| p.water == 1.0));
         assert!(demo.falls.is_empty());
         assert!(!demo.pouring);
+        assert!(demo.over);
+    }
+
+    /// The Play button is the rectangle `PLAY_HALF` around its center at
+    /// `[0.0, PLAY_Y]`: the center and the edges are inside, a point just
+    /// past an edge is not.
+    #[test]
+    fn the_play_button_hits_its_rectangle() {
+        let center = [0.0, PLAY_Y];
+        assert!(on_play_button(center));
+        assert!(on_play_button([PLAY_HALF[0], PLAY_Y]));
+        assert!(on_play_button([-PLAY_HALF[0], PLAY_Y]));
+        assert!(on_play_button([0.0, PLAY_Y + PLAY_HALF[1]]));
+        assert!(on_play_button([0.0, PLAY_Y - PLAY_HALF[1]]));
+        assert!(!on_play_button([PLAY_HALF[0] + 1.0, PLAY_Y]));
+        assert!(!on_play_button([-PLAY_HALF[0] - 1.0, PLAY_Y]));
+        assert!(!on_play_button([0.0, PLAY_Y + PLAY_HALF[1] + 1.0]));
+        assert!(!on_play_button([0.0, PLAY_Y - PLAY_HALF[1] - 1.0]));
+    }
+
+    /// The bench is bare when no plant is planted — a fresh demo's bench —
+    /// and not bare as soon as one plant is planted.
+    #[test]
+    fn the_bench_is_bare_only_when_nothing_is_planted() {
+        let demo = Demo::new(Assets::load());
+        assert!(bench_is_bare(&demo.plants));
+        let mut planted = demo.plants;
+        planted[0].planted = true;
+        assert!(!bench_is_bare(&planted));
     }
 
     /// A full reserve, drained at the growth's slowed pace — a 60 fps

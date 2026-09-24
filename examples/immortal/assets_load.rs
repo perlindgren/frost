@@ -77,6 +77,10 @@ const BASKET_FRONT: &[u8] = include_bytes!("../../assets/sprites/BasketFront.png
 const SUSTAINABLE_IMMORTALITY: &[u8] =
     include_bytes!("../../assets/sprites/sustainable_immortality.png");
 
+/// The game-over overlay's font, `assets/fonts/Leofont-Regular.ttf`: the
+/// "Game Over" title and the Play button's label are built from it.
+const OVERLAY_FONT: &[u8] = include_bytes!("../../assets/fonts/Leofont-Regular.ttf");
+
 /// The low tjatter clip, `assets/audio/TjatterLow.wav`.
 const TJATTER_LOW: &[u8] = include_bytes!("../../assets/audio/TjatterLow.wav");
 
@@ -159,9 +163,10 @@ pub struct Sounds {
     pub tomato_drop: frost::Sound,
 }
 
-/// Everything the example loads at startup: the sprite shapes and the
-/// audio — the output and every clip — embedded at compile time with
-/// `include_bytes!` and decoded by [`Assets::load`].
+/// Everything the example loads at startup: the sprite shapes, the
+/// game-over overlay's font, and the audio — the output and every clip —
+/// embedded at compile time with `include_bytes!` and decoded by
+/// [`Assets::load`].
 pub struct Assets {
     /// The grass photo, exactly the window size: stretched to fill the
     /// window by the process.
@@ -208,6 +213,9 @@ pub struct Assets {
     pub basket_front: frost::Shape,
     /// The immortality badge, tinted down to a faint watermark.
     pub immortality: frost::Shape,
+    /// The game-over overlay's font bytes, embedded at compile time: the
+    /// "Game Over" title and the Play button's label are built from them.
+    pub font: &'static [u8],
     /// The audio output and every clip the example plays, decoded once at
     /// startup.
     pub sounds: Sounds,
@@ -246,6 +254,7 @@ impl Assets {
             basket_back: sprite("BasketBack.png", BASKET_BACK),
             basket_front: sprite("BasketFront.png", BASKET_FRONT),
             immortality,
+            font: OVERLAY_FONT,
             sounds: Sounds {
                 device: audio,
                 tjatters: [
