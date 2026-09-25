@@ -279,6 +279,7 @@ fn context_reports_held_keys() {
             expected_fps: None,
             mouse: None,
             mouse_buttons: &mouse_buttons,
+            gilrs: None,
         };
         assert!(!ctx.key_down(KeyCode::KeyW));
     }
@@ -290,6 +291,7 @@ fn context_reports_held_keys() {
         expected_fps: None,
         mouse: None,
         mouse_buttons: &mouse_buttons,
+        gilrs: None,
     };
     assert!(ctx.key_down(KeyCode::KeyW));
     assert!(!ctx.key_down(KeyCode::KeyA));
@@ -308,6 +310,7 @@ fn context_reports_mouse_position() {
         expected_fps: None,
         mouse: None,
         mouse_buttons: &mouse_buttons,
+        gilrs: None,
     };
     assert_eq!(ctx.mouse_position(), None);
     let ctx = Context {
@@ -317,6 +320,7 @@ fn context_reports_mouse_position() {
         expected_fps: None,
         mouse: Some([12.0, -34.0]),
         mouse_buttons: &mouse_buttons,
+        gilrs: None,
     };
     assert_eq!(ctx.mouse_position(), Some([12.0, -34.0]));
 }
@@ -335,6 +339,7 @@ fn context_reports_held_mouse_button() {
             expected_fps: None,
             mouse: None,
             mouse_buttons: &mouse_buttons,
+            gilrs: None,
         };
         assert!(!ctx.mouse_button_down(MouseButton::Left));
     }
@@ -346,9 +351,31 @@ fn context_reports_held_mouse_button() {
         expected_fps: None,
         mouse: None,
         mouse_buttons: &mouse_buttons,
+        gilrs: None,
     };
     assert!(ctx.mouse_button_down(MouseButton::Left));
     assert!(!ctx.mouse_button_down(MouseButton::Right));
+}
+
+#[test]
+fn context_reports_no_gamepads_without_gilrs() {
+    let mut canvas = Canvas::new((100, 100));
+    let mut scene = Scene::default();
+    let keys = HashSet::new();
+    let mouse_buttons = HashSet::new();
+    let ctx = Context {
+        canvas: &mut canvas,
+        scene: &mut scene,
+        keys: &keys,
+        expected_fps: None,
+        mouse: None,
+        mouse_buttons: &mouse_buttons,
+        gilrs: None,
+    };
+    // Without a gamepad controller (gilrs could not open the platform's
+    // input devices, or none is connected) the list is empty, not an
+    // error.
+    assert_eq!(ctx.gamepads().count(), 0);
 }
 
 #[test]

@@ -7,6 +7,7 @@ use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
 use std::task::{Context as TaskContext, Poll, Waker};
 
+use gilrs::{EventType, Gilrs};
 use wgpu::{
     Adapter, AddressMode, BindGroup, BindGroupDescriptor, BindGroupEntry, BindingResource, Buffer,
     BufferBinding, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
@@ -133,6 +134,11 @@ pub(crate) struct Frost<P: Process> {
     /// The mouse buttons currently held down, updated as mouse input
     /// events arrive.
     mouse_buttons: HashSet<MouseButton>,
+    /// The gamepad controller, or `None` when gilrs could not open the
+    /// platform's input devices (then `Context::gamepads` is empty). The
+    /// buttons and axes of every connected gamepad are tracked by gilrs
+    /// itself and refreshed as its events are drained in `about_to_wait`.
+    gilrs: Option<Gilrs>,
     process: P,
 }
 
@@ -245,6 +251,21 @@ impl<P: Process> Frost<P> {
             }),
         );
 
+        // The gamepad controller: gilrs opens the platform's input devices
+        // and connects every gamepad already present. When it cannot open
+        // them (no access to the devices), the app runs without gamepad
+        // support rather than failing to start.
+        let gilrs = match Gilrs::new() {
+            Ok(gilrs) => {
+                log::info!("gamepads: {} connected at startup", gilrs.gamepads().count());
+                Some(gilrs)
+            }
+            Err(err) => {
+                log::warn!("gamepad support unavailable: {err}");
+                None
+            }
+        };
+
         Self {
             instance,
             adapter,
@@ -276,6 +297,7 @@ impl<P: Process> Frost<P> {
             keys: HashSet::new(),
             mouse: None,
             mouse_buttons: HashSet::new(),
+            gilrs,
             process,
         }
     }
@@ -355,6 +377,25 @@ impl<P: Process> ApplicationHandler for Frost<P> {
             return;
         }
         self.attach_window(create_window(event_loop, self.window_size));
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // Drain the gamepad events accumulated since the last poll, so the
+        // state gilrs keeps for its connected gamepads is current before
+        // the loop waits for new events. gilrs applies every input event
+        // to that state itself; only the connect and disconnect
+        // transitions need a log line here.
+        if let Some(gilrs) = &mut self.gilrs {
+            while let Some(event) = gilrs.next_event() {
+                match event.event {
+                    EventType::Connected => log::info!("gamepad {:?} connected", event.id),
+                    EventType::Disconnected => {
+                        log::info!("gamepad {:?} disconnected", event.id)
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     fn window_event(
@@ -1059,6 +1100,7 @@ impl<P: Process> Frost<P> {
         let scene = &mut self.scene;
         let keys = &self.keys;
         let mouse_buttons = &self.mouse_buttons;
+        let gilrs = self.gilrs.as_ref();
         {
             let mut ctx = Context {
                 canvas: &mut canvas,
@@ -1067,6 +1109,7 @@ impl<P: Process> Frost<P> {
                 expected_fps: self.expected_fps,
                 mouse,
                 mouse_buttons,
+                gilrs,
             };
             process.process(&mut ctx, dt);
         }

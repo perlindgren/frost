@@ -16,8 +16,10 @@
 //!   the room.
 //!
 //! The room is a huge lit backdrop (the "floor and walls" the beams play
-//! over), four colored lit panels near its edges, and a few lit occluder
-//! walls. Only rectangles occlude, and a wall flagged `occludes: true` cuts
+//! over), four colored lit panels near its edges, and a few occluder walls.
+//! The walls are deliberately *unlit*: they draw in their own color no
+//! matter where the lights are, so you can always see where they are even
+//! in the dark. Only rectangles occlude, and a wall flagged `occludes: true` cuts
 //! a hard shadow out of every light behind it — so the torch beam stops
 //! dead at a wall, and a panel or the backdrop behind a wall drops to the
 //! ambient floor while the beam sweeps past. The middle wall is leaned
@@ -186,8 +188,8 @@ impl frost::Process for Demo {
         // beam's axis ride this one transform write; nothing is emitted
         // per frame anymore.
         let player = &mut ctx.scene().root.children[0];
-        player.transform = frost::Transform::rotate(self.rot)
-            .compose(&frost::Transform::translate(self.pos));
+        player.transform =
+            frost::Transform::rotate(self.rot).compose(&frost::Transform::translate(self.pos));
 
         log::trace!(
             "process: dt {:?} pos {:?} rot {:?} vel {:?}",
@@ -216,19 +218,20 @@ fn panel(pos: [f32; 2], color: frost::Color) -> Box<frost::SceneNode> {
     })
 }
 
-/// An occluder wall node: lit on its own face, and the rectangle whose
-/// silhouette cuts hard shadows out of every light behind it.
+/// An occluder wall node: left `lit: false` so it draws in its own full
+/// color regardless of the lights (a lit wall would vanish into the dark
+/// between light hits, which reads oddly for an obstacle), while its
+/// rectangle still cuts hard shadows out of every light behind it.
 fn wall(center: [f32; 2], extent: [f32; 2], tilt: f32) -> Box<frost::SceneNode> {
     Box::new(frost::SceneNode {
         // Lean by `tilt` about the wall's own center, then place it.
-        transform: frost::Transform::rotate(tilt)
-            .compose(&frost::Transform::translate(center)),
+        transform: frost::Transform::rotate(tilt).compose(&frost::Transform::translate(center)),
         shape: Some(frost::Shape::Rectangle {
             center: [0.0, 0.0],
             extent,
             color: WALL,
         }),
-        lit: true,
+        lit: false,
         occludes: true,
         ..Default::default()
     })

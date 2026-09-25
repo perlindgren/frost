@@ -10,6 +10,7 @@
         "journalctl",
         "msvc",
         "nvtop",
+        "occluder",
         "qwen",
         "rustflags",
         "unsloth",

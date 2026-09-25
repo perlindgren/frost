@@ -94,7 +94,8 @@
 //! Key presses are logged, the currently held keys are reported by
 //! [`Context::key_down`], the mouse cursor's position by
 //! [`Context::mouse_position`], the held mouse buttons by
-//! [`Context::mouse_button_down`], and Escape closes the window.
+//! [`Context::mouse_button_down`], and the connected gamepads by
+//! [`Context::gamepads`]; Escape closes the window.
 //!
 //! On native targets, [`Sound`]s decoded at load time play through an
 //! [`Audio`]: one-shots mix in parallel, and one sound loops at a time.
@@ -126,6 +127,11 @@ pub use winit::keyboard::KeyCode;
 /// The mouse buttons used by [`Context::mouse_button_down`], such as
 /// `MouseButton::Left`.
 pub use winit::event::MouseButton;
+
+/// The gamepad buttons and axes used to query the gamepads reported by
+/// [`Context::gamepads`], such as `Axis::LeftStickY` and `Button::South`,
+/// as gilrs names them.
+pub use gilrs::{Axis, Button, Gamepad};
 
 mod particles;
 pub use particles::*;
@@ -1097,6 +1103,9 @@ pub struct Context<'c> {
     mouse: Option<[f32; 2]>,
     /// The mouse buttons currently held down.
     mouse_buttons: &'c HashSet<MouseButton>,
+    /// The gamepad controller, or `None` when gilrs could not open the
+    /// platform's input devices at startup (then no gamepad state exists).
+    gilrs: Option<&'c gilrs::Gilrs>,
 }
 
 impl Context<'_> {
@@ -1146,6 +1155,22 @@ impl Context<'_> {
     /// dropped, so a button can never appear stuck down.
     pub fn mouse_button_down(&self, button: MouseButton) -> bool {
         self.mouse_buttons.contains(&button)
+    }
+
+    /// The gamepads currently connected, in the order they connected.
+    ///
+    /// Each gamepad reports the buttons it has pressed and the values its
+    /// axes rest at, updated as gamepad input events arrive, so the state
+    /// reflects every event since the previous frame. Empty when no
+    /// gamepad is connected, or when the platform's input devices could
+    /// not be opened at startup.
+    pub fn gamepads(&self) -> impl Iterator<Item = gilrs::Gamepad<'_>> {
+        // `Option::iter` yields the controller once when it is present
+        // and not at all when it is not, so one concrete iterator type
+        // covers both cases: the connected gamepads, or nothing. The
+        // iterator's ids are dropped here; the pads themselves are all
+        // the user needs.
+        self.gilrs.iter().flat_map(|g| g.gamepads().map(|(_, g)| g))
     }
 }
 
