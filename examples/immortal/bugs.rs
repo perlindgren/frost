@@ -9,6 +9,16 @@
 //! animated over three walk frames and is flipped about its center when it
 //! is clearly moving left; the sprite tint comes from the node's `modulate`.
 //!
+//! A bug walks to the plant it was born for — its home — for as long as
+//! that plant keeps living. When the home withers all the way away, the
+//! bug retargets: it walks on to the next plant that is still growing —
+//! the next living one in plant order, wrapping around from the end — and
+//! re-parks around its root. The batches follow the plants' life, not a
+//! count: each plant receives its batch of [BUGS_PER_PLANT] bugs the
+//! first time it starts growing while the scene's slot pool still has
+//! room, so a withered plant's bugs move on and a new seed that starts
+//! growing gets its own batch.
+//!
 //! A bug that reaches its destination while another bug is on the grass
 //! within [TJATTER_RANGE] of it chatters: [Bugs::step] reports the index
 //! of one of the three tjatter clips (low, mid, high) for that frame, and
@@ -210,10 +220,13 @@ impl Bug {
 pub struct Bugs {
     /// The spawned bugs, in spawn order.
     bugs: Vec<Bug>,
-    /// How many plants have received their batch of bugs; the population
-    /// cap follows from it (BUGS_PER_PLANT times the plant count, the
-    /// scene's slot count).
-    plants_done: usize,
+    /// Which plants have received their batch of bugs, by plant index:
+    /// each plant gets its [BUGS_PER_PLANT] bugs exactly once — the first
+    /// time it starts growing while the scene's slot pool (BUGS_PER_PLANT
+    /// times the plant count) still has room — and a plant that withers
+    /// away is not batched again, its bugs retargeting to the living
+    /// plants instead. Sized to the plant count on the first step.
+    batched: Vec<bool>,
     /// Swarm clock in seconds (wobble phase source).
     t: f32,
     /// Final uniform sprite scale (BUG_SIZE over the widest frame).
@@ -273,7 +286,7 @@ impl Bugs {
         let scale = BUG_SIZE / w;
         Self {
             bugs: Vec::new(),
-            plants_done: 0,
+            batched: Vec::new(),
             t: 0.0,
             scale,
             ground: (scale * h) / 2.0,
@@ -284,12 +297,15 @@ impl Bugs {
     /// Advance the swarm by `dt` seconds.
     ///
     /// `anchors` are the plant root positions in user space (in plant
-    /// order) and `active` is how many of those plants have started
-    /// growing; each newly active plant receives its batch of
-    /// [BUGS_PER_PLANT] bugs at points inside the hull of all the roots
-    /// ([spawn_batches]). Batches are counted per plant rather than by
-    /// population, so a spray-killed bug never triggers a replacement
-    /// batch. Then every bug steps its frame in pool order
+    /// order) and `alive` is which of those plants are growing — the
+    /// bench's planted table, in the same order. First, every bug whose
+    /// home is no longer living retargets to the next living plant
+    /// ([retarget]); then each living plant that has not yet been batched
+    /// gets its [BUGS_PER_PLANT] bugs at points inside the hull of all the
+    /// roots ([spawn_batches]) — the batches follow the plants' life, so a
+    /// withered plant's bugs move on and a new seed's plant gets its own
+    /// batch, and a spray-killed bug never triggers a replacement. Then
+    /// every bug steps its frame in pool order
     /// ([step_bug]): its hit cooldown runs down, and it counts down its
     /// respawn delay, ticks its death clock, grows out of the grass, or
     /// walks and parks ([step_move]); the arrivals are checked against
@@ -303,16 +319,22 @@ impl Bugs {
     /// to play (one per bug that popped up out of the grass this frame —
     /// a batch spawn or a respawn: index 0, 1 or 2), each picked at
     /// random by the swarm.
-    pub fn step(&mut self, dt: f32, anchors: &[[f32; 2]], active: usize) -> StepEvents {
+    pub fn step(&mut self, dt: f32, anchors: &[[f32; 2]], alive: &[bool]) -> StepEvents {
         if dt < 0.0 {
             return StepEvents::default();
         }
+        debug_assert_eq!(alive.len(), anchors.len());
         self.t += dt;
 
         // The plopp clip index for every bug that pops up out of the
         // grass this frame, batch spawns and respawns alike.
         let mut plops = Vec::new();
-        self.spawn_batches(anchors, active, &mut plops);
+
+        // A bug whose home withered away walks on to the next living
+        // plant before it moves this frame.
+        self.retarget(alive);
+
+        self.spawn_batches(anchors, alive, &mut plops);
 
         // The bugs that reach their destination this frame, with their
         // destinations: the arrival tjatter check runs after the loop,
@@ -326,13 +348,28 @@ impl Bugs {
         StepEvents { tjatters, plops }
     }
 
-    /// Deliver each newly active plant its batch of [BUGS_PER_PLANT]
-    /// bugs, at random points inside the hull of all the roots, one
-    /// random plopp clip into `plops` per pop-up.
-    fn spawn_batches(&mut self, anchors: &[[f32; 2]], active: usize, plops: &mut Vec<usize>) {
-        while self.plants_done < active.min(anchors.len()) {
-            let home = self.plants_done;
-            self.plants_done += 1;
+    /// Deliver each newly living plant that has not yet been batched its
+    /// batch of [BUGS_PER_PLANT] bugs, at random points inside the hull
+    /// of all the roots, one random plopp clip into `plops` per pop-up.
+    /// Batches are per plant, not per population, and the scene's slot
+    /// pool (BUGS_PER_PLANT times the plant count) is the hard cap: a
+    /// batch lands only while the pool has room for its three bugs.
+    fn spawn_batches(&mut self, anchors: &[[f32; 2]], alive: &[bool], plops: &mut Vec<usize>) {
+        // The per-plant batch table is sized to the plant count on the
+        // first step.
+        if self.batched.len() != anchors.len() {
+            self.batched.resize(anchors.len(), false);
+        }
+        // The scene's slot pool is the population cap.
+        let cap = BUGS_PER_PLANT * anchors.len();
+        for i in 0..anchors.len() {
+            // A plant receives its batch the first time it is living and
+            // un-batched, while the pool has room for its three bugs.
+            if !alive[i] || self.batched[i] || self.bugs.len() + BUGS_PER_PLANT > cap {
+                continue;
+            }
+            self.batched[i] = true;
+            let home = i;
             let hull = convex_hull(anchors);
             for j in 0..BUGS_PER_PLANT {
                 let pos = sample_polygon(&hull, &mut self.rng);
@@ -368,6 +405,23 @@ impl Bugs {
                 // The bug pops up out of the grass: one random plopp
                 // clip.
                 plops.push((self.rng.next_f32() * 3.0) as usize);
+            }
+        }
+    }
+
+    /// Retarget every bug whose home plant is no longer living: it walks
+    /// on to the next living plant instead, since the plant it was born
+    /// for withered away. A bug that retargets starts its walk to the new
+    /// spot fresh — its arrival is unmarked (so it chatters again when it
+    /// parks at the new root) and its health-recovery clock restarts.
+    /// While no plant is living there is nowhere to retarget to, so the
+    /// bugs hold their home.
+    fn retarget(&mut self, alive: &[bool]) {
+        for bug in &mut self.bugs {
+            if let Some(new_home) = pick_home(bug.home, alive) {
+                bug.home = new_home;
+                bug.arrived = false;
+                bug.parked = 0.0;
             }
         }
     }
@@ -669,6 +723,31 @@ impl Bugs {
     }
 }
 
+/// The plant a bug whose home is no longer living should walk to: the
+/// next living plant in plant order, wrapping around from the end back to
+/// the start.
+///
+/// `None` while the home itself is still living (no retarget is needed)
+/// or no plant is living anywhere (nowhere to go). Deterministic, not
+/// random, so the swarm's retargeting is reproducible frame to frame.
+fn pick_home(home: usize, alive: &[bool]) -> Option<usize> {
+    let n = alive.len();
+    if n == 0 {
+        return None;
+    }
+    if alive.get(home).copied().unwrap_or(false) {
+        return None;
+    }
+    let mut i = (home + 1) % n;
+    for _ in 0..n {
+        if alive[i] {
+            return Some(i);
+        }
+        i = (i + 1) % n;
+    }
+    None
+}
+
 /// The death-bounce lift: how far above the death spot the bug's center
 /// rides at death-clock `t`, in px.
 ///
@@ -786,6 +865,11 @@ mod tests {
         [1463.0, 719.0],
     ];
 
+    /// The bench's planted table for the single-plant tests: only plant
+    /// 0 is growing — the liveness equivalent of the old `active = 1`
+    /// count every test used to pass.
+    const ALIVE: [bool; 6] = [true, false, false, false, false, false];
+
     /// Whether `p` lies on the inside (or on the boundary) of the convex
     /// ring `hull`, in whatever orientation the ring happens to have.
     ///
@@ -898,7 +982,7 @@ mod tests {
         };
         let dt = 0.05;
         let mut bugs = Bugs::new([&frame; 3]);
-        bugs.step(dt, &ANCHORS, 1);
+        bugs.step(dt, &ANCHORS, &ALIVE);
         let spawn = bugs.bugs.iter().map(|b| b.pos).collect::<Vec<_>>();
         // While the growth clock runs: every bug holds its exact spawn
         // spot. The state is checked before each step — the step that
@@ -910,11 +994,11 @@ mod tests {
                 assert_eq!(b.walk, 0.0);
                 assert!(!b.placed);
             }
-            bugs.step(dt, &ANCHORS, 1);
+            bugs.step(dt, &ANCHORS, &ALIVE);
         }
         // Past GROW_TIME: the movement logic must have taken over.
         for _ in 0..20 {
-            bugs.step(dt, &ANCHORS, 1);
+            bugs.step(dt, &ANCHORS, &ALIVE);
         }
         assert!(bugs.bugs.iter().all(|b| b.placed));
     }
@@ -957,9 +1041,9 @@ mod tests {
 
         // Spawn the batch and grow it fully, so the bugs are free to move
         // when the spray touches them.
-        bugs.step(dt, &ANCHORS, 1);
+        bugs.step(dt, &ANCHORS, &ALIVE);
         for _ in 0..80 {
-            bugs.step(dt, &ANCHORS, 1);
+            bugs.step(dt, &ANCHORS, &ALIVE);
         }
         bugs.layout(&mut node, [&frame; 3]);
         assert!(bugs.bugs.iter().all(|b| b.grow >= GROW_TIME - 1e-6));
@@ -1001,7 +1085,7 @@ mod tests {
             );
             // Wait the hit cooldown out before the next round.
             for _ in 0..5 {
-                bugs.step(dt, &ANCHORS, 1);
+                bugs.step(dt, &ANCHORS, &ALIVE);
             }
         }
 
@@ -1039,7 +1123,7 @@ mod tests {
         let mut last_y = f32::MAX;
         let mut last_abs_scale = f32::MAX;
         for _ in 0..40 {
-            bugs.step(dt, &ANCHORS, 1);
+            bugs.step(dt, &ANCHORS, &ALIVE);
             bugs.layout(&mut node, [&frame; 3]);
             for (k, &i) in marked_idx.iter().enumerate() {
                 let b = &bugs.bugs[i];
@@ -1148,7 +1232,7 @@ mod tests {
         // the grass.
         let mut came_back = vec![false; marked_idx.len()];
         for _ in 0..((RESPAWN_MAX + 2.0) / dt) as usize {
-            bugs.step(dt, &ANCHORS, 1);
+            bugs.step(dt, &ANCHORS, &ALIVE);
             bugs.layout(&mut node, [&frame; 3]);
             for (k, &i) in marked_idx.iter().enumerate() {
                 if !came_back[k] && bugs.bugs[i].respawn.is_none() {
@@ -1220,12 +1304,12 @@ mod tests {
         let dt = 0.05;
         let scale = BUG_SIZE / 10.0;
         let mut bugs = Bugs::new([&frame; 3]);
-        bugs.step(dt, &ANCHORS, 1);
+        bugs.step(dt, &ANCHORS, &ALIVE);
         // A few steps into the growth: the bugs hold their exact spawn
         // spots, so the positions below are stable, and the rounds below
         // land the killing blow before the growth clock runs out.
         for _ in 0..2 {
-            bugs.step(dt, &ANCHORS, 1);
+            bugs.step(dt, &ANCHORS, &ALIVE);
         }
         assert!(bugs.bugs.iter().all(|b| b.grow < GROW_TIME));
         let pos: Vec<[f32; 2]> = bugs.bugs.iter().map(|b| b.pos).collect();
@@ -1240,7 +1324,7 @@ mod tests {
                 );
             }
             for _ in 0..5 {
-                bugs.step(dt, &ANCHORS, 1);
+                bugs.step(dt, &ANCHORS, &ALIVE);
             }
         }
         assert!(bugs.bugs.iter().all(|b| b.dying.is_some()));
@@ -1253,7 +1337,7 @@ mod tests {
             ..Default::default()
         };
         for _ in 0..40 {
-            bugs.step(dt, &ANCHORS, 1);
+            bugs.step(dt, &ANCHORS, &ALIVE);
             bugs.layout(&mut node, [&frame; 3]);
             for (i, b) in bugs.bugs.iter().enumerate() {
                 if b.dying.is_some() {
@@ -1305,7 +1389,7 @@ mod tests {
         // counter climb one hit per full interval, capping at
         // [MAX_HEALTH].
         let mut parked = Bugs::new([&frame; 3]);
-        parked.step(dt, &ANCHORS, 1);
+        parked.step(dt, &ANCHORS, &ALIVE);
         let b = &mut parked.bugs[0];
         b.grow = GROW_TIME;
         b.pos = [
@@ -1314,7 +1398,7 @@ mod tests {
         ];
         // Just under one interval: the counter has not moved.
         for _ in 0..99 {
-            parked.step(dt, &ANCHORS, 1);
+            parked.step(dt, &ANCHORS, &ALIVE);
         }
         assert_eq!(
             parked.bugs[0].hits,
@@ -1328,7 +1412,7 @@ mod tests {
             (100, MAX_HEALTH),
         ] {
             for _ in 0..extra {
-                parked.step(dt, &ANCHORS, 1);
+                parked.step(dt, &ANCHORS, &ALIVE);
             }
             assert_eq!(
                 parked.bugs[0].hits, hits,
@@ -1337,7 +1421,7 @@ mod tests {
         }
         // Well past the cap: the counter holds at [MAX_HEALTH].
         for _ in 0..100 {
-            parked.step(dt, &ANCHORS, 1);
+            parked.step(dt, &ANCHORS, &ALIVE);
         }
         assert_eq!(
             parked.bugs[0].hits, MAX_HEALTH,
@@ -1348,12 +1432,12 @@ mod tests {
         // top walking speed (30 px/s) is 30 s of walking, so it cannot
         // reach its destination within the 20 s window below.
         let mut walking = Bugs::new([&frame; 3]);
-        walking.step(dt, &ANCHORS, 1);
+        walking.step(dt, &ANCHORS, &ALIVE);
         let b = &mut walking.bugs[0];
         b.grow = GROW_TIME;
         b.pos = [ANCHORS[b.home][0] + 900.0, ANCHORS[b.home][1] + ground];
         for _ in 0..400 {
-            walking.step(dt, &ANCHORS, 1);
+            walking.step(dt, &ANCHORS, &ALIVE);
         }
         let b = &walking.bugs[0];
         assert!(
@@ -1402,14 +1486,14 @@ mod tests {
         };
 
         let mut bugs = Bugs::new([&frame; 3]);
-        bugs.step(dt, &ANCHORS, 1);
+        bugs.step(dt, &ANCHORS, &ALIVE);
         // Bug 1 parks on its spot; bugs 0 and 2 sit 900 px out, so
         // neither can arrive within this test's window.
         pin(&mut bugs, 1, 0.0);
         pin(&mut bugs, 0, 900.0);
         pin(&mut bugs, 2, -900.0);
         // Bug 1's own arrival finds no one within range: silent.
-        let events = bugs.step(dt, &ANCHORS, 1);
+        let events = bugs.step(dt, &ANCHORS, &ALIVE);
         assert!(
             bugs.bugs[1].arrived,
             "bug 1 never reached its destination"
@@ -1428,7 +1512,7 @@ mod tests {
             ANCHORS[b0.home][0] + b0.idle[0],
             ANCHORS[b0.home][1] + b0.idle[1] + ground,
         ];
-        let events = bugs.step(dt, &ANCHORS, 1);
+        let events = bugs.step(dt, &ANCHORS, &ALIVE);
         assert!(
             bugs.bugs[0].arrived,
             "bug 0 never reached its destination"
@@ -1446,7 +1530,7 @@ mod tests {
         );
 
         // The next frame nobody arrives: nothing plays.
-        let events = bugs.step(dt, &ANCHORS, 1);
+        let events = bugs.step(dt, &ANCHORS, &ALIVE);
         assert!(
             events.tjatters.is_empty(),
             "a parked bug chattered again: {:?}",
@@ -1455,11 +1539,11 @@ mod tests {
 
         // And a bug that parks with no company chatters nothing.
         let mut alone = Bugs::new([&frame; 3]);
-        alone.step(dt, &ANCHORS, 1);
+        alone.step(dt, &ANCHORS, &ALIVE);
         pin(&mut alone, 0, 0.0);
         pin(&mut alone, 1, 900.0);
         pin(&mut alone, 2, -900.0);
-        let events = alone.step(dt, &ANCHORS, 1);
+        let events = alone.step(dt, &ANCHORS, &ALIVE);
         assert!(
             alone.bugs[0].arrived,
             "the lone bug never reached its destination"
@@ -1495,7 +1579,7 @@ mod tests {
         // The first step spawns plant one's batch: three bugs pop up,
         // each with its own in-range plopp clip, and none of them has
         // arrived anywhere yet.
-        let events = bugs.step(dt, &ANCHORS, 1);
+        let events = bugs.step(dt, &ANCHORS, &ALIVE);
         assert_eq!(
             events.plops.len(),
             BUGS_PER_PLANT,
@@ -1510,7 +1594,7 @@ mod tests {
         assert!(events.tjatters.is_empty(), "growing bugs chattered");
 
         // The next step pops up nothing: no plopp.
-        let events = bugs.step(dt, &ANCHORS, 1);
+        let events = bugs.step(dt, &ANCHORS, &ALIVE);
         assert!(
             events.plops.is_empty(),
             "a frame without pop-ups plops: {:?}",
@@ -1520,7 +1604,7 @@ mod tests {
         // A bug that finishes its respawn delay pops back up: exactly
         // one plopp, in range.
         bugs.bugs[0].respawn = Some(dt);
-        let events = bugs.step(dt, &ANCHORS, 1);
+        let events = bugs.step(dt, &ANCHORS, &ALIVE);
         assert_eq!(
             events.plops.len(),
             1,
@@ -1531,5 +1615,202 @@ mod tests {
             "the respawn plopp index {:?} left its range",
             events.plops[0]
         );
+    }
+
+    /// [pick_home] walks to the next living plant in order, bails while
+    /// the home is still living, and gives up when nothing is living.
+    #[test]
+    fn pick_home_walks_to_the_next_living_plant() {
+        let alive = [true, false, true, false, false, true];
+        // A living home needs no retarget.
+        assert_eq!(pick_home(0, &alive), None);
+        assert_eq!(pick_home(2, &alive), None);
+        assert_eq!(pick_home(5, &alive), None);
+        // A dead home walks to the next living plant in order.
+        assert_eq!(pick_home(1, &alive), Some(2));
+        assert_eq!(pick_home(3, &alive), Some(5));
+        assert_eq!(pick_home(4, &alive), Some(5));
+    }
+
+    /// [pick_home] wraps around from the end back to the first living
+    /// plant, and still finds the living plants from a home index past the
+    /// end of the bench.
+    #[test]
+    fn pick_home_wraps_around_to_the_first_living_plant() {
+        let alive = [false, false, false, false, false, true];
+        // Only plant 5 is living: every dead home wraps around to it.
+        assert_eq!(pick_home(0, &alive), Some(5));
+        assert_eq!(pick_home(4, &alive), Some(5));
+        assert_eq!(pick_home(5, &alive), None);
+        // A home index past the end is treated as dead and still finds
+        // the living plants.
+        let alive2 = [false, true, false, false, false, false];
+        assert_eq!(pick_home(99, &alive2), Some(1));
+    }
+
+    /// [pick_home] reports no destination while no plant is living — and
+    /// an empty bench has no home at all.
+    #[test]
+    fn pick_home_gives_up_when_nothing_is_living() {
+        let alive = [false; 6];
+        for home in 0..6 {
+            assert_eq!(pick_home(home, &alive), None, "home {home}");
+        }
+        let none: [bool; 0] = [];
+        assert_eq!(pick_home(0, &none), None);
+    }
+
+    /// When a plant withers away its bugs walk on to the next living
+    /// plant: their home retargets to the next living one in order and
+    /// their arrival is unmarked so they re-walk to the new root. A plant
+    /// whose batch has already landed is not re-batched.
+    #[test]
+    fn bugs_retarget_when_their_home_withers() {
+        let frame = frost::Shape::Sprite {
+            data: std::sync::Arc::new([0u8; 1]),
+            width: 10,
+            height: 10,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+        };
+        let dt = 0.05;
+        let mut bugs = Bugs::new([&frame; 3]);
+        // Plant 0's batch spawns and grows to its parking spot.
+        bugs.step(dt, &ANCHORS, &ALIVE);
+        for _ in 0..200 {
+            bugs.step(dt, &ANCHORS, &ALIVE);
+        }
+        assert!(bugs.bugs.iter().all(|b| b.home == 0));
+
+        // Plant 0 withers and plant 1 — already batched, so no fresh
+        // batch lands on top — takes over.
+        let alive = [false, true, false, false, false, false];
+        bugs.batched[1] = true;
+        bugs.step(dt, &ANCHORS, &alive);
+
+        // Every bug now walks for plant 1, and the retarget reset their
+        // arrival so they re-walk to the new root.
+        assert_eq!(bugs.bugs.len(), BUGS_PER_PLANT);
+        assert!(
+            bugs.bugs.iter().all(|b| b.home == 1),
+            "a bug kept its dead home"
+        );
+        assert!(
+            bugs.bugs.iter().all(|b| !b.arrived),
+            "a retargeted bug kept its arrival"
+        );
+    }
+
+    /// When one plant withers and a new seed starts growing in its place,
+    /// the withered plant's bugs retarget to the new plant and the new
+    /// plant gets its own fresh batch — so the new plant is the one every
+    /// bug aims at.
+    #[test]
+    fn a_replaced_plant_gets_the_retargeted_bugs_and_a_fresh_batch() {
+        let frame = frost::Shape::Sprite {
+            data: std::sync::Arc::new([0u8; 1]),
+            width: 10,
+            height: 10,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+        };
+        let dt = 0.05;
+        let mut bugs = Bugs::new([&frame; 3]);
+        // Plant 0 grows: its batch of three lands and grows.
+        bugs.step(dt, &ANCHORS, &ALIVE);
+        for _ in 0..200 {
+            bugs.step(dt, &ANCHORS, &ALIVE);
+        }
+        assert_eq!(bugs.bugs.len(), BUGS_PER_PLANT);
+
+        // Plant 0 withers and plant 1 starts growing: the three bugs
+        // retarget to plant 1, and plant 1's own batch lands on top.
+        let alive = [false, true, false, false, false, false];
+        bugs.step(dt, &ANCHORS, &alive);
+        assert_eq!(bugs.bugs.len(), BUGS_PER_PLANT * 2);
+        assert!(
+            bugs.bugs.iter().all(|b| b.home == 1),
+            "a bug is not aiming at the new plant"
+        );
+    }
+
+    /// A plant that starts growing after another one has already been
+    /// batched gets its own batch — the batches follow the plants' life,
+    /// not a count — each batch of three landing at the right home.
+    #[test]
+    fn a_newly_growing_plant_gets_its_own_batch() {
+        let frame = frost::Shape::Sprite {
+            data: std::sync::Arc::new([0u8; 1]),
+            width: 10,
+            height: 10,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+        };
+        let dt = 0.05;
+        let mut bugs = Bugs::new([&frame; 3]);
+        // Plant 0 grows first: its batch of three lands.
+        bugs.step(dt, &ANCHORS, &ALIVE);
+        assert_eq!(bugs.bugs.len(), BUGS_PER_PLANT);
+
+        // Plant 1 starts growing too (plant 0 still living): its own
+        // batch of three lands on top of the first.
+        let alive = [true, true, false, false, false, false];
+        bugs.step(dt, &ANCHORS, &alive);
+        assert_eq!(bugs.bugs.len(), BUGS_PER_PLANT * 2);
+        assert!(
+            bugs.bugs.iter().take(BUGS_PER_PLANT).all(|b| b.home == 0),
+            "the first batch left plant 0"
+        );
+        assert!(
+            bugs.bugs
+                .iter()
+                .skip(BUGS_PER_PLANT)
+                .all(|b| b.home == 1),
+            "the second batch is not at plant 1"
+        );
+    }
+
+    /// All six plants growing at once fills the scene's slot pool exactly
+    /// — BUGS_PER_PLANT times the plant count — and no batch lands beyond
+    /// it.
+    #[test]
+    fn the_batch_pool_caps_at_the_scene_slot_count() {
+        let frame = frost::Shape::Sprite {
+            data: std::sync::Arc::new([0u8; 1]),
+            width: 10,
+            height: 10,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+        };
+        let dt = 0.05;
+        let mut bugs = Bugs::new([&frame; 3]);
+        let alive = [true; 6];
+        // Every plant is living and un-batched: all six batches land in
+        // the first step, filling the pool.
+        bugs.step(dt, &ANCHORS, &alive);
+        assert_eq!(bugs.bugs.len(), BUGS_PER_PLANT * 6);
+        // A further step spawns nothing new: the pool is full.
+        bugs.step(dt, &ANCHORS, &alive);
+        assert_eq!(bugs.bugs.len(), BUGS_PER_PLANT * 6);
     }
 }

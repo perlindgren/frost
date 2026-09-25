@@ -110,15 +110,15 @@
 //! `GROW_SLOWDOWN * DRAIN_TIME` real seconds — and growth proceeds only
 //! while the reserve holds; a plant whose reserve runs dry withers
 //! instead: its growth clock runs backward at half the growth's pace,
-//! the slices, the flowers, and the green fruit shrinking back together,
-//! and the plant's node modulates from white to yellow over
-//! `DRY_YELLOW_TIME` real seconds, until the point of full ripening —
-//! the moment every fruit it still bears is fully ripe — where the clock
-//! holds, while its ripe fruits keep waiting and staling on the aging
-//! clock; the withering stops the moment the reserve holds water again,
-//! the clock runs forward, and the node rewhitens over `DRY_WHITE_TIME`
-//! — a plant dry for 3 seconds is green again 1.5 seconds after it is
-//! watered.
+//! the slices, the flowers, and the fruit shrinking back together, and
+//! the plant's node modulates from white to yellow over
+//! `DRY_YELLOW_TIME` real seconds, all the way to a bare seed — the
+//! clock runs freely past any ripe fruit, which keeps waiting and staling
+//! on the aging clock and overgrows and drops as usual — until the plant
+//! is gone and its slot frees up; the withering stops the moment the
+//! reserve holds water again, the clock runs forward, and the node
+//! rewhitens over `DRY_WHITE_TIME` — a plant dry for 3 seconds is green
+//! again 1.5 seconds after it is watered.
 //! `DRAIN_TIME` is chosen so a freshly planted, fully watered seed runs
 //! dry just before its base slice is fully grown — the base grows over 3
 //! growth-clock seconds, the shortest of the five — so every planted plant
@@ -194,6 +194,15 @@
 //! demo plays the bug death clip, `assets/audio/bugsDeath.wav`, through
 //! [`frost::Audio`].
 //!
+//! While no plant is living on the bench — at start, and, once the player
+//! has planted, whenever the last survivor withers away — a game-over
+//! overlay covers the window: a dim veil over the whole window, "Game
+//! Over" in large letters above the center, and a Play button below it,
+//! the label `assets/fonts/Leofont-Regular.ttf` set in. Pressing the
+//! button — a left click on it — restarts the game: the bench goes bare
+//! again, the basket back to its starting tomato, the swarms empty, and
+//! the tools back in their slots, and the overlay goes down.
+//!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
 //!
@@ -239,8 +248,8 @@ const BUG_N: usize = bugs::BUGS_PER_PLANT * PLANT_POS.len();
 /// builds them in the scene: the grass underlay, the items panel, the
 /// plants group, the fallen-fruit container, the held-items panel, the
 /// vipers group, the bugs group, the active tool, the basket, the
-/// immortality badge, and the carried fruit. The root node itself is the
-/// dark ground background.
+/// immortality badge, the carried fruit, and the game-over overlay. The
+/// root node itself is the dark ground background.
 const CHILD_GRASS: usize = 0;
 const CHILD_ITEMS: usize = 1;
 const CHILD_PLANTS: usize = 2;
@@ -252,6 +261,72 @@ const CHILD_TOOL: usize = 7;
 const CHILD_BASKET: usize = 8;
 const CHILD_BADGE: usize = 9;
 const CHILD_HELD_FRUIT: usize = 10;
+const CHILD_OVERLAY: usize = 11;
+
+/// The game-over overlay node's children, in draw order: the "Game Over"
+/// title text, the Play button's rectangle, and the button's label. The
+/// dimming veil is the overlay node's own shape, not a child.
+const OVERLAY_TITLE: usize = 0;
+const OVERLAY_BUTTON: usize = 1;
+const OVERLAY_LABEL: usize = 2;
+
+/// The overlay's dimming veil's color: a dark, semi-transparent wash over
+/// the whole window.
+const OVERLAY_DIM: frost::Color = frost::Color {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.55,
+};
+
+/// The overlay's "Game Over" title's size, in pixels.
+const OVERLAY_TITLE_SIZE: f32 = 120.0;
+
+/// The overlay's title's center's height, in window pixels above the
+/// window's center.
+const OVERLAY_TITLE_Y: f32 = 80.0;
+
+/// The Play button's rectangle's half extents, in window pixels: a
+/// 360 by 110 button.
+const PLAY_HALF: [f32; 2] = [180.0, 55.0];
+
+/// The Play button's rectangle's color: a tomato red under the label.
+const PLAY_COLOR: frost::Color = frost::Color {
+    r: 0.62,
+    g: 0.13,
+    b: 0.1,
+    a: 1.0,
+};
+
+/// The Play button's center's height, in window pixels below the window's
+/// center.
+const PLAY_Y: f32 = -60.0;
+
+/// The Play button's "Play" label's size, in pixels.
+const PLAY_LABEL_SIZE: f32 = 54.0;
+
+/// Whether the user-space point `p` is inside the Play button's
+/// rectangle: the button's half extents, centered on
+/// `[0.0, PLAY_Y]`.
+fn on_play_button(p: [f32; 2]) -> bool {
+    p[0].abs() <= PLAY_HALF[0] && (p[1] - PLAY_Y).abs() <= PLAY_HALF[1]
+}
+
+/// Whether the game-over overlay should be up over the bench: no plant is
+/// planted at all — the bench bare, at start and right after the last
+/// survivor has withered away.
+fn bench_is_bare(plants: &[WateredPlant]) -> bool {
+    !plants.iter().any(|p| p.planted)
+}
+
+/// Whether the game-over overlay is due over a bench the player has been
+/// playing: the bench is bare again — the last survivor withered away —
+/// after at least one plant has been planted since the last restart. A
+/// bench that never had a plant planted — the launch state and the state
+/// right after a Play press — is not a game over.
+fn game_over_due(plants: &[WateredPlant], ever_planted: bool) -> bool {
+    ever_planted && bench_is_bare(plants)
+}
 
 /// The plant's fit scale: the full plant spans about 1797 px around the
 /// root joint — its top edge 1614 px above it, its bottom edge 183 px
@@ -260,11 +335,50 @@ const CHILD_HELD_FRUIT: usize = 10;
 const PLANT_SCALE: f32 = 0.45;
 
 /// The fall speed of a dropped, overgrown tomato, in user pixels per
-/// second: it falls straight down from the point it let go, at this
-/// constant speed, until its body center reaches its destination — its
-/// spawn lowered by the plant's cumulative segment height, scaled into
-/// user space.
+/// second: it drops from the point it let go, at this constant speed, along
+/// the straight line to its plant's root anchor — the bottom joint of its
+/// root segment, where it hits the ground — closing in on it in both x and
+/// y until its body center sits on the anchor.
 const FALL_SPEED: f32 = 400.0;
+
+/// The roll speed of a landed, overgrown tomato, in user pixels per
+/// second: once the fall reaches the ground, the fruit picks one of the six
+/// plant anchors and rolls there, along the straight line between, at this
+/// constant pace.
+const ROLL_SPEED: f32 = 150.0;
+
+/// The range, in seconds, for the wait between two of a rolling tomato's
+/// bumps: after each bump — and after the roll starts — the next one is
+/// armed a random interval in `[BUMP_IN.0, BUMP_IN.1)` later, so the hops
+/// come at an uneven, off-cadence, fairly rapid rattle.
+const BUMP_IN: (f32, f32) = (0.08, 0.3);
+
+/// The duration of a single bump, in seconds: the hop lifts the fruit off
+/// its rolling line and sets it back down over this many seconds, shaped
+/// as a half-sine.
+const BUMP_TIME: f32 = 0.1;
+
+/// The height of a bump's hop, in user pixels: the peak of the half-sine,
+/// the farthest the fruit lifts above its rolling line.
+const BUMP_HEIGHT: f32 = 3.0;
+
+/// The sentinel for [`Fall::bump`]: no bump is running, so the next one is
+/// being counted down by [`Fall::bump_in`] instead.
+const BUMP_NONE: f32 = f32::NEG_INFINITY;
+
+/// The range, in seconds, for how long a tomato that has reached its
+/// target rests there, catching its breath with a squash-and-stretch,
+/// before it picks its next plant anchor to roll to.
+const REST: (f32, f32) = (1.5, 3.0);
+
+/// The period of a resting tomato's breathing, in seconds: one full cycle
+/// — a squash out and a stretch back in — takes this long.
+const BREATH_PERIOD: f32 = 2.0;
+
+/// The amplitude of a resting tomato's breathing: the y-scale factor
+/// swings between `1.0 + BREATH_AMP` (stretched in) and `1.0 - BREATH_AMP`
+/// (squashed out), the x-scale compensating to hold the area.
+const BREATH_AMP: f32 = 0.12;
 
 /// `water_can_outline.png`'s texture size in pixels: the can's content,
 /// cropped to the image.
@@ -766,39 +880,243 @@ enum Tool {
     SprayCan,
 }
 
-/// One overgrown tomato currently falling to the ground: its pivot — a
-/// child of the fallen-fruit container, the same order as its
-/// [Demo::falls] entry — carries the current position in its own
-/// transform; this entry carries the destination it falls toward.
+/// The phase a fallen overgrown tomato is in.
+///
+/// A tomato falls straight down to the ground ([`FallPhase::Falling`]),
+/// then rolls to one of the six plant anchors ([`FallPhase::Rolling`]),
+/// rests there catching its breath with a squash-and-stretch
+/// ([`FallPhase::Resting`]), and then picks another anchor to roll to —
+/// looping, until the game restarts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FallPhase {
+    /// The tomato is falling straight down to the ground.
+    Falling,
+    /// The tomato has landed and is rolling to a target plant anchor.
+    Rolling,
+    /// The tomato has reached its target and is resting (breathing) there.
+    Resting,
+}
+
+/// One overgrown tomato on the ground: its pivot — a child of the
+/// fallen-fruit container, in the same order as its [Demo::falls] entry —
+/// is laid out from this entry's body position and scale factors every
+/// frame by [`Demo::step_falls`].
+///
+/// The tomato's *body center* — the fruit's visual center, which hangs
+/// below its stem (the pivot's origin) — is what is tracked here and what
+/// the roll, the bumps, and the rest are measured from. The pivot's
+/// transform is derived from it, so the breathing squash pivots on the
+/// body's center, not the stem.
 struct Fall {
-    /// The destination y, in user space: the spawn y lowered by the
-    /// plant's cumulative segment height, scaled into user space.
-    dest_y: f32,
-    /// Whether the fruit has reached its destination: its transform is
-    /// then kept, and the drop clip plays exactly once, on this flip.
+    /// The phase the tomato is in.
+    phase: FallPhase,
+    /// The body center's position, in user space, where the fall stops:
+    /// the bottom anchor of the plant's root segment, the root joint, where
+    /// the fruit hits the ground — targeted in both x and y.
+    land_pos: [f32; 2],
+    /// Whether the drop clip has played for this fruit; it plays exactly
+    /// once, on the frame the fall reaches the ground.
     landed: bool,
+    /// The body center's position, in user space: the base position,
+    /// without the bump's hop.
+    body: [f32; 2],
+    /// The target plant anchor, in user space, the fruit is rolling to.
+    target: [f32; 2],
+    /// The body position the tomato started its current roll from.
+    start: [f32; 2],
+    /// The roll progress, 0.0 (at `start`) to 1.0 (at `target`).
+    progress: f32,
+    /// The straight-line distance from `start` to `target`, in user
+    /// pixels: the roll's progress is advanced by `ROLL_SPEED * dt` over
+    /// it.
+    distance: f32,
+    /// The running bump's progress, 0.0 (take-off) to 1.0 (back on the
+    /// line), or [`BUMP_NONE`] while no bump is running.
+    bump: f32,
+    /// The seconds left before the next bump arms, while one is not
+    /// running.
+    bump_in: f32,
+    /// The tomato's wheel rotation, in radians, accumulated as it rolls:
+    /// the fruit turns like a wheel, the angle advancing with the distance
+    /// it travels, so it reads as rolling rather than sliding. It is
+    /// zeroed whenever the fruit is not rolling, so it stands upright
+    /// while it falls and rests.
+    spin: f32,
+    /// The seconds the tomato has spent resting at its target.
+    rest: f32,
+    /// How long this rest lasts, in seconds, before the next roll starts.
+    rest_for: f32,
 }
 
-/// The slice — 0 to 3, from the root up — that bears the flattened bloom
-/// `slot`: the slots are laid out slice by slice in [plant::FLOWER_SPAWNS]
-/// order, one, three, five, six, so the slot's slice is the first whose
-/// running count passes it; the top slice bears no flowers.
-fn slice_of_slot(slot: usize) -> usize {
-    let mut rest = slot;
-    for (slice, spawns) in plant::FLOWER_SPAWNS.iter().enumerate() {
-        if rest < spawns.len() {
-            return slice;
+impl Fall {
+    /// A freshly dropped tomato: it starts in the falling phase, with the
+    /// body at the spawn position, heading for the root anchor, no roll
+    /// running, no bump armed, and standing upright (no wheel rotation).
+    fn new(land_pos: [f32; 2], body: [f32; 2]) -> Self {
+        Self {
+            phase: FallPhase::Falling,
+            land_pos,
+            landed: false,
+            body,
+            target: [0.0, 0.0],
+            start: [0.0, 0.0],
+            progress: 0.0,
+            distance: 0.0,
+            bump: BUMP_NONE,
+            bump_in: 0.0,
+            spin: 0.0,
+            rest: 0.0,
+            rest_for: 0.0,
         }
-        rest -= spawns.len();
     }
-    unreachable!("every slot belongs to one of the four lower slices")
+
+    /// Picks a random plant anchor — one that is not the tomato's current
+    /// spot, so the roll always has somewhere to go — and starts rolling
+    /// there: the roll restarts from the current body position, with a
+    /// fresh bump countdown.
+    fn start_roll(&mut self, rng: &mut frost::Rng, anchors: &[[f32; 2]; PLANT_POS.len()]) {
+        let from = self.body;
+        // Walk the anchor ring until one is far enough away; the ring is
+        // only six, so a full pass always finds a distinct one.
+        let mut i = rng.next_u64() as usize % anchors.len();
+        let mut pass = 0;
+        while dist2(anchors[i], from) < 1.0 && pass < anchors.len() {
+            i = (i + 1) % anchors.len();
+            pass += 1;
+        }
+        self.target = anchors[i];
+        self.start = from;
+        self.progress = 0.0;
+        self.distance = dist2(self.start, self.target).sqrt();
+        self.bump_in = rng.in_range(BUMP_IN.0, BUMP_IN.1);
+        self.bump = BUMP_NONE;
+    }
+
+    /// Advances the tomato one frame by `dt` seconds, driving the phase
+    /// forward: the fall closes in on the root anchor in both x and y and
+    /// the first roll starts on landing, the roll runs its bumps, turns
+    /// like a wheel, and reaches its target, and the rest breathes out and
+    /// the next roll starts. `radius` is the fruit's rolling radius, in
+    /// user pixels — the wheel's spin turns up by the distance traveled
+    /// over it.
+    fn step(
+        &mut self,
+        dt: f32,
+        rng: &mut frost::Rng,
+        anchors: &[[f32; 2]; PLANT_POS.len()],
+        radius: f32,
+    ) {
+        match self.phase {
+            // The body closes in on the root anchor at the fall speed,
+            // along the straight line between, in both x and y; on the
+            // landing frame the first roll starts.
+            FallPhase::Falling => {
+                let dx = self.land_pos[0] - self.body[0];
+                let dy = self.land_pos[1] - self.body[1];
+                let dist = (dx * dx + dy * dy).sqrt();
+                let step_len = FALL_SPEED * dt;
+                if dist <= step_len || dist < 1e-6 {
+                    self.body = self.land_pos;
+                    self.landed = true;
+                    self.phase = FallPhase::Rolling;
+                    self.start_roll(rng, anchors);
+                } else {
+                    self.body[0] += dx / dist * step_len;
+                    self.body[1] += dy / dist * step_len;
+                }
+            }
+            // The body rolls along the straight line from `start` to
+            // `target` at the roll speed, hopping on its bumps and turning
+            // like a wheel; on the arrival frame the rest begins and the
+            // fruit stands back upright.
+            FallPhase::Rolling => {
+                if self.distance > 0.0 {
+                    self.progress = (self.progress + ROLL_SPEED * dt / self.distance).min(1.0);
+                } else {
+                    self.progress = 1.0;
+                }
+                let from = self.body;
+                self.body = [
+                    self.start[0] + (self.target[0] - self.start[0]) * self.progress,
+                    self.start[1] + (self.target[1] - self.start[1]) * self.progress,
+                ];
+                // The wheel turns up with the distance it travels: a
+                // no-slip roll, the angle advancing by the travel over the
+                // radius.
+                if radius > 0.0 {
+                    self.spin += dist2(from, self.body).sqrt() / radius;
+                }
+                // The bump's half-sine hop runs for `BUMP_TIME`, then the
+                // next one is counted down from a fresh random interval.
+                if self.bump != BUMP_NONE {
+                    self.bump = (self.bump + dt / BUMP_TIME).min(1.0);
+                    if self.bump >= 1.0 {
+                        self.bump = BUMP_NONE;
+                    }
+                } else {
+                    self.bump_in -= dt;
+                    if self.bump_in <= 0.0 {
+                        self.bump = 0.0;
+                        self.bump_in = rng.in_range(BUMP_IN.0, BUMP_IN.1);
+                    }
+                }
+                if self.progress >= 1.0 {
+                    self.phase = FallPhase::Resting;
+                    self.body = self.target;
+                    self.spin = 0.0;
+                    self.rest = 0.0;
+                    self.rest_for = rng.in_range(REST.0, REST.1);
+                }
+            }
+            // The body holds at the target, breathing upright, until the
+            // rest runs out; then the next roll starts.
+            FallPhase::Resting => {
+                self.rest += dt;
+                if self.rest >= self.rest_for {
+                    self.phase = FallPhase::Rolling;
+                    self.start_roll(rng, anchors);
+                }
+            }
+        }
+    }
+
+    /// The body center's position, with the bump's hop added while a bump
+    /// is running: the half-sine lifts the fruit off its rolling line and
+    /// sets it back down.
+    fn body_position(&self) -> [f32; 2] {
+        if self.phase == FallPhase::Rolling && self.bump != BUMP_NONE {
+            [
+                self.body[0],
+                self.body[1] + BUMP_HEIGHT * (std::f32::consts::PI * self.bump).sin(),
+            ]
+        } else {
+            self.body
+        }
+    }
+
+    /// The pivot's scale factors for this frame: neutral (no squash) while
+    /// the fruit falls or rolls, and the breathing squash-and-stretch
+    /// while it rests — the y-scale swings in and out, the x-scale
+    /// compensating to hold the fruit's area.
+    fn scale_factors(&self) -> [f32; 2] {
+        if self.phase == FallPhase::Resting {
+            let sy =
+                1.0 + BREATH_AMP * (2.0 * std::f32::consts::PI * self.rest / BREATH_PERIOD).sin();
+            [1.0 / sy, sy]
+        } else {
+            [1.0, 1.0]
+        }
+    }
 }
 
-/// The destination y, in user space, of a fall that let go at `spawn_y`:
-/// the spawn lowered by the plant's cumulative segment height, scaled
-/// into user space by the plant's fit scale.
-fn fall_destination(spawn_y: f32, segment_height: f32) -> f32 {
-    spawn_y - PLANT_SCALE * segment_height
+/// The full destination of a falling overgrown tomato, in user space: the
+/// bottom anchor of its plant's root segment — the plant's root joint, the
+/// plant node's own origin — the point the fruit's body center drops to, in
+/// both x and y. The base rock pivots around that joint, so the sway leaves
+/// it fixed and the anchor is the node's origin mapped through its
+/// transform.
+fn root_anchor(plant: &frost::SceneNode) -> [f32; 2] {
+    plant.transform.apply([0.0, 0.0])
 }
 
 /// A tomato plant and its water reserve, kept together: the growth clock
@@ -1036,6 +1354,27 @@ struct Demo {
     /// as the fruits drop and never removed — landed fruits stay where
     /// they fell.
     falls: Vec<Fall>,
+    /// Whether the game-over overlay is up: it opens with the demo, comes
+    /// back up whenever the bench goes bare after the player has planted
+    /// — the last survivor withered away — and comes down when the player
+    /// presses the Play button, which also restarts the game. While up,
+    /// the input answers only the button, and the process lays the overlay
+    /// out over the whole window every frame.
+    over: bool,
+    /// Whether at least one plant has been planted since the last
+    /// restart: the game can only be over after the player has actually
+    /// planted, so the bare bench at launch and right after a Play press
+    /// never triggers the game-over overlay on its own.
+    ever_planted: bool,
+    /// The overlay's "Game Over" title, built once from the embedded font;
+    /// laid onto the overlay's title child while the overlay is up.
+    game_over: frost::Shape,
+    /// The Play button's rectangle, built once; laid onto the overlay's
+    /// button child while the overlay is up.
+    play_button: frost::Shape,
+    /// The overlay's "Play" label, built once from the embedded font; laid
+    /// onto the overlay's label child while the overlay is up.
+    play_label: frost::Shape,
 }
 
 impl frost::Process for Demo {
@@ -1050,7 +1389,8 @@ impl frost::Process for Demo {
     /// and the fallen fruit steps; the tool ticks, emits, and takes its
     /// live pose; the particles advance; the drops water the roots —
     /// after the particles have stepped — and the mist wounds the bugs;
-    /// and the live overlay is drawn.
+    /// the live overlay is drawn; and the game-over overlay lays out over
+    /// the window.
     fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
         let (w, h) = ctx.size();
         self.time += dt;
@@ -1064,10 +1404,28 @@ impl frost::Process for Demo {
             self.seed_basket_tomato(ctx);
         }
 
-        let (active_plants, grown_layers, started) = self.grow_plants(dt);
+        // The bugs step on the planted table itself, not the count, so a
+        // withered plant's bugs retarget and a replanted slot's plant gets
+        // its own batch; the count is only kept for the tests.
+        let (_active_plants, grown_layers, started) = self.grow_plants(dt);
+
+        // The bench went bare after the last survivor withered away —
+        // the player has planted, so this is a game over: the overlay
+        // rises until the player presses Play, and a pour that was running
+        // when the last plant withered stops with the game over. A bench
+        // that never had a plant planted — at start and right after a
+        // Play press — never game-overs.
+        if !self.over && game_over_due(&self.plants, self.ever_planted) {
+            self.over = true;
+            if self.pouring {
+                self.sounds.device.stop_loop();
+                self.pouring = false;
+            }
+        }
+
         self.step_vipers(ctx, dt, &anchors, grown_layers);
 
-        let events = self.step_bugs(ctx, dt, &anchors, active_plants);
+        let events = self.step_bugs(ctx, dt, &anchors, &started);
         self.play_bug_events(&events);
         self.handle_input(ctx);
 
@@ -1084,7 +1442,7 @@ impl frost::Process for Demo {
         self.layout_plants(ctx, &anchors);
 
         self.fall_overgrown_tomatoes(ctx);
-        self.step_falls(ctx, dt);
+        self.step_falls(ctx, dt, &anchors);
 
         self.tick_tool(ctx, dt);
         self.update_particles(dt);
@@ -1095,6 +1453,11 @@ impl frost::Process for Demo {
         self.water_roots(&anchors, &started);
         self.spray_hits();
         self.draw_live(ctx, &anchors, &started);
+
+        // Lay the game-over overlay out last: its flag may have risen on
+        // this frame, above, or fallen in the input's Play press, and the
+        // veil must track the window's current size.
+        self.layout_overlay(ctx, w, h);
     }
 }
 
@@ -1130,6 +1493,23 @@ impl Demo {
             &slices[3],
             &slices[4],
         ]);
+
+        // The game-over overlay's shapes, built once: the title and the
+        // Play label from the embedded font — each an `Arc`-shared copy of
+        // the font's bytes — and the button's rectangle.
+        let game_over = frost::Shape::text_bytes(
+            assets.font,
+            "Game Over",
+            OVERLAY_TITLE_SIZE,
+        )
+        .expect("the embedded overlay font decodes");
+        let play_label = frost::Shape::text_bytes(assets.font, "Play", PLAY_LABEL_SIZE)
+            .expect("the embedded overlay font decodes");
+        let play_button = frost::Shape::Rectangle {
+            center: [0.0, 0.0],
+            extent: PLAY_HALF,
+            color: PLAY_COLOR,
+        };
 
         Demo {
             mouse: [0.0, 0.0],
@@ -1184,6 +1564,15 @@ impl Demo {
             slices,
             basket_seed: true,
             vipers: vipers::Vipers::new(VIPER_IMAGE),
+            // The game-over overlay opens with the demo: the bench is
+            // bare, so the player sees it over the whole window until the
+            // first Play press. The bench never had a plant planted, so
+            // its bareness is the start state, not a game over.
+            over: true,
+            ever_planted: false,
+            game_over,
+            play_button,
+            play_label,
         }
     }
 
@@ -1251,6 +1640,43 @@ impl Demo {
         })
     }
 
+    /// Lays the game-over overlay out on the overlay node (root's
+    /// [`CHILD_OVERLAY`] child), for a `w` by `h` window: while the
+    /// overlay is up — the bench bare — the node's own shape is a dim
+    /// rectangle over the whole window, and its children carry the
+    /// "Game Over" title above the center, the Play button's rectangle
+    /// below it, and the button's label on the button's center; while the
+    /// overlay is down, the node and its children carry no shapes at all.
+    fn layout_overlay(&mut self, ctx: &mut frost::Context, w: f32, h: f32) {
+        let overlay = &mut ctx.scene().root.children[CHILD_OVERLAY];
+        // The children's poses hold while the overlay is up and down
+        // alike: the title above the window's center, the button and its
+        // label on the button's center below it.
+        overlay.children[OVERLAY_TITLE].transform =
+            frost::Transform::translate(0.0, OVERLAY_TITLE_Y);
+        let button = frost::Transform::translate(0.0, PLAY_Y);
+        overlay.children[OVERLAY_BUTTON].transform = button;
+        overlay.children[OVERLAY_LABEL].transform = button;
+        if self.over {
+            // The dim veil: a rectangle over the whole window, a pixel
+            // past each edge so no border shows, centered on the node's
+            // origin.
+            overlay.shape = Some(frost::Shape::Rectangle {
+                center: [0.0, 0.0],
+                extent: [w / 2.0 + 1.0, h / 2.0 + 1.0],
+                color: OVERLAY_DIM,
+            });
+            overlay.children[OVERLAY_TITLE].shape = Some(self.game_over.clone());
+            overlay.children[OVERLAY_BUTTON].shape = Some(self.play_button.clone());
+            overlay.children[OVERLAY_LABEL].shape = Some(self.play_label.clone());
+        } else {
+            overlay.shape = None;
+            overlay.children[OVERLAY_TITLE].shape = None;
+            overlay.children[OVERLAY_BUTTON].shape = None;
+            overlay.children[OVERLAY_LABEL].shape = None;
+        }
+    }
+
     /// Grows the planted plants in parallel, in parallel with the tool
     /// system: every planted slot grows at once, and a slot without a
     /// planted seed sits untouched — its fresh plant's clocks and its
@@ -1264,10 +1690,10 @@ impl Demo {
     /// while the water holds; a plant whose reserve runs dry withers
     /// instead — its growth clock runs backward at half the growth's
     /// pace, `dt / (GROW_SLOWDOWN * 2)`, the slices, the flowers, and the
-    /// green fruit shrinking back together, until the point of full
-    /// ripening, the moment every fruit it still bears is fully ripe,
-    /// where the clock holds — while its ripe fruits keep waiting and
-    /// staling on the aging clock, and its node yellows over
+    /// green fruit shrinking back together, all the way to a bare seed —
+    /// the clock runs freely past any ripe fruit, which keeps waiting and
+    /// staling on the aging clock and overgrows and drops as usual —
+    /// while its node yellows over
     /// `DRY_YELLOW_TIME` real seconds, until the player pours water on
     /// its root: the withering stops, the clock runs forward again, and
     /// the node rewhitens over `DRY_WHITE_TIME`; the falling drops are
@@ -1280,10 +1706,11 @@ impl Demo {
     /// a fresh, invisible seed — un-planted, full-watered and white — so
     /// a new seed can land in the slot.
     ///
-    /// Returns the counts the swarms step on — `active_plants` for the
-    /// bugs and `grown_layers` for the vipers — and the `started` table
-    /// the watering and the water bars read, which is the planted table:
-    /// a plant that withered away this frame is not in it.
+    /// Returns the `grown_layers` count the vipers step on, the
+    /// `active_plants` count of plants that are growing, and the `started`
+    /// table the watering, the water bars and the bugs read — the planted
+    /// table, which is the bugs' liveness table: a plant that withered
+    /// away this frame is not in it.
     fn grow_plants(&mut self, dt: f32) -> (usize, usize, [bool; PLANT_POS.len()]) {
         let mut active_plants = 0usize;
         let mut grown_layers = 0usize;
@@ -1296,9 +1723,9 @@ impl Demo {
                 // The growth clock runs slow: forward while the reserve
                 // is wet, and backward — the withering, at half the
                 // growth's pace — while it is dry, the plant shrinking
-                // toward the point of full ripening, where the clock
-                // holds. A dry plant yellows over DRY_YELLOW_TIME real
-                // seconds, and a watered one rewhitens over
+                // back toward a bare seed, the clock running freely past
+                // any ripe fruit. A dry plant yellows over DRY_YELLOW_TIME
+                // real seconds, and a watered one rewhitens over
                 // DRY_WHITE_TIME; the layout lerps the node's modulate
                 // from white to DRY_YELLOW over the dryness.
                 if self.plants[i].water > 0.0 {
@@ -1331,7 +1758,7 @@ impl Demo {
                 }
             }
             // Counted after the reset, so a plant that withered away this
-            // frame is not in the count the bugs step on.
+            // frame is not in the count or the liveness table.
             if self.plants[i].planted {
                 active_plants += 1;
             }
@@ -1372,18 +1799,19 @@ impl Demo {
     }
 
     /// Waddles the bugs to the plants, in parallel with everything else:
-    /// three spawn each time a plant starts growing — `active_plants` is
-    /// how many have started — and returns the step's arrival events,
-    /// which [Demo::play_bug_events] plays.
+    /// `alive` is the bench's planted table — which plants are growing —
+    /// and the bugs retarget away from a plant that withers and batch in
+    /// for each plant that starts growing. Returns the step's arrival
+    /// events, which [Demo::play_bug_events] plays.
     fn step_bugs(
         &mut self,
         ctx: &mut frost::Context,
         dt: f32,
         anchors: &[[f32; 2]; PLANT_POS.len()],
-        active_plants: usize,
+        alive: &[bool],
     ) -> bugs::StepEvents {
         let bugs_node = &mut ctx.scene().root.children[CHILD_BUGS];
-        let events = self.bugs.step(dt, anchors, active_plants);
+        let events = self.bugs.step(dt, anchors, alive);
         self.bugs
             .layout(bugs_node, [&self.bug1, &self.bug2, &self.bug3]);
         events
@@ -1411,7 +1839,10 @@ impl Demo {
     /// spray can's fresh burst — or a tomato pick — ripe fruit off a
     /// plant, or a tomato out of the basket — when no tool is held at all
     /// and no seed is flying; and a release of the right button switches
-    /// the two tools the mouse holds.
+    /// the two tools the mouse holds. While the game-over overlay is up,
+    /// the input answers only the Play button — a press on it restarts
+    /// the game and takes the overlay down — and the game's own input
+    /// goes untouched.
     fn handle_input(&mut self, ctx: &mut frost::Context) {
         // Follow the pointer, keeping the last known position while the
         // cursor is outside the window.
@@ -1421,6 +1852,18 @@ impl Demo {
 
         let left = ctx.mouse_button_down(frost::MouseButton::Left);
         let right = ctx.mouse_button_down(frost::MouseButton::Right);
+
+        // The game-over overlay is up: the input answers only the Play
+        // button — a press on it restarts the game and takes the overlay
+        // down — and the game's own input goes untouched this frame.
+        if self.over {
+            if left && !self.pressed && on_play_button(self.mouse) {
+                self.over = false;
+                self.restart(ctx);
+            }
+            self.pressed = left;
+            return;
+        }
 
         // The slot the pointer is over, if any: a left click swaps the
         // active tool with a slot's tool, and the click is recognized by
@@ -1656,17 +2099,23 @@ impl Demo {
                         let world = frost::Transform::scale(PLANT_SCALE, PLANT_SCALE)
                             .compose(&plant_nodes[pi].transform);
                         let spawn = world.apply(center);
-                        let dest_y =
-                            fall_destination(spawn[1], p.plant.fall_height(slice_of_slot(si)));
-                        Some((pi, si, spawn, dest_y))
+                        // The tomato drops to the ground: the bottom anchor
+                        // of its plant's root segment, the root joint — not
+                        // a height measured from the spawn, which would miss
+                        // the sway and the flower's offset above the joint.
+                        // It is targeted in both x and y, so the body's
+                        // center lands on the anchor itself.
+                        let dest = root_anchor(plant_node);
+                        Some((pi, si, spawn, dest))
                     })
                 })
                 .collect::<Vec<_>>()
         };
         if !drops.is_empty() {
-            let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
+            let [ox, oy] =
+                tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
             let root = &mut ctx.scene().root;
-            for (pi, si, spawn, dest_y) in drops {
+            for (pi, si, spawn, dest) in drops {
                 self.plants[pi].plant.regrow(si);
                 // Rehome the pivot — the slot itself stays in the plant's
                 // children, as the picked-fruit paths leave it — out of
@@ -1693,34 +2142,59 @@ impl Demo {
                 root.children[CHILD_FALLEN_FRUIT]
                     .children
                     .push(Box::new(pivot));
-                self.falls.push(Fall {
-                    dest_y,
-                    landed: false,
-                });
+                // The body's center is tracked and drops to the root anchor
+                // in both x and y; the pivot's transform is re-derived from
+                // it every frame, so the initial transform (pinned to the
+                // spawn) is only the first layout.
+                self.falls.push(Fall::new(dest, spawn));
             }
         }
     }
 
-    /// Steps the fallen fruit: each dropped tomato falls straight down
-    /// from where it let go, at the fall speed, until its body center
-    /// reaches its destination — the spawn lowered by the plant's
-    /// cumulative segment height, scaled into user space — where it
-    /// stops; the drop clip plays exactly once, on the landing frame.
-    fn step_falls(&mut self, ctx: &mut frost::Context, dt: f32) {
+    /// Steps the fallen fruit: each dropped tomato drops from where it let
+    /// go, at the fall speed, toward its plant's root anchor — closing in
+    /// in both x and y — until its body center sits on it; then it rolls to
+    /// one of the six plant anchors, turning like a wheel and hopping on
+    /// its bumps, rests there catching its breath with a squash-and-stretch,
+    /// and picks its next anchor to roll to — looping. The drop clip plays
+    /// exactly once, on the landing frame; every pivot is re-laid out from
+    /// its body position, scale factors, and wheel rotation each frame, so
+    /// the breathing pivots on the body's center and the roll reads as a
+    /// turning wheel.
+    fn step_falls(
+        &mut self,
+        ctx: &mut frost::Context,
+        dt: f32,
+        anchors: &[[f32; 2]; PLANT_POS.len()],
+    ) {
+        let sprite = self.tomato.sprite_size().unwrap_or([0.0, 0.0]);
+        let [ox, oy] = tomato::tomato_leaf_offset(sprite);
+        // The wheel's rolling radius, in user pixels: half the fruit's
+        // scaled height, so the spin turns up with the distance it travels.
+        let radius = TOMATO_PICK_SCALE * sprite[1] / 2.0;
         let fallen = &mut ctx.scene().root.children[CHILD_FALLEN_FRUIT];
         for (fall, node) in self.falls.iter_mut().zip(fallen.children.iter_mut()) {
-            if fall.landed {
-                continue;
+            let was_falling = fall.phase == FallPhase::Falling;
+            fall.step(dt, &mut self.rng, anchors, radius);
+            if was_falling && fall.phase != FallPhase::Falling {
+                // The fall reached the ground this frame: the drop clip
+                // plays exactly once, on this flip.
+                self.sounds.device.play_once(&self.sounds.tomato_drop, None);
             }
-            let [x, y] = node.transform.apply([0.0, 0.0]);
-            if y > fall.dest_y {
-                let ny = (y - FALL_SPEED * dt).max(fall.dest_y);
-                node.transform = frost::Transform::translate(x, ny);
-                if ny <= fall.dest_y {
-                    fall.landed = true;
-                    self.sounds.device.play_once(&self.sounds.tomato_drop, None);
-                }
-            }
+            // Lay the pivot out from the body position, the scale factors,
+            // and the wheel rotation: the body's center sits at the body
+            // position, and the fruit turns about it — so the breathing
+            // pivots on the body's center and the roll reads as a turning
+            // wheel.
+            let [sx, sy] = fall.scale_factors();
+            let [bx, by] = fall.body_position();
+            node.transform = frost::Transform::translate(
+                -TOMATO_PICK_SCALE * sx * ox,
+                -TOMATO_PICK_SCALE * sy * oy,
+            )
+            .compose(&frost::Transform::rotate(fall.spin))
+            .compose(&frost::Transform::translate(bx, by));
+            node.scale = [TOMATO_PICK_SCALE * sx, TOMATO_PICK_SCALE * sy];
         }
     }
 
@@ -2038,6 +2512,71 @@ impl Demo {
         }
     }
 
+    /// Restarts the game from scratch, called when the player presses Play
+    /// on the game-over overlay: the bench goes bare again — every slot a
+    /// fresh, invisible, full-watered seed — the basket back to its
+    /// starting tomato, seeded on the next frame once the basket's fit is
+    /// known, the carried and the fallen fruit off the scene, the swarms
+    /// empty again, the tools back in their slots, the mouse holding no
+    /// tool, no pour loop running, and the demo's clock back at zero.
+    fn restart(&mut self, ctx: &mut frost::Context) {
+        // The pour loop stops, if it plays.
+        if self.pouring {
+            self.sounds.device.stop_loop();
+            self.pouring = false;
+        }
+        // The bench goes bare again: every slot a fresh, invisible seed,
+        // full-watered and white, un-planted — and never having been
+        // planted, so its bareness is the start state, not a game over.
+        self.ever_planted = false;
+        self.plants = std::array::from_fn(|_| WateredPlant {
+            planted: false,
+            plant: plant::Plant::new([
+                &self.slices[0],
+                &self.slices[1],
+                &self.slices[2],
+                &self.slices[3],
+                &self.slices[4],
+            ]),
+            water: 1.0,
+            dryness: 0.0,
+        });
+        // The swarms start empty again: both their layouts leave their
+        // stale children frozen, so the swarms are rebuilt, not just
+        // re-stepped.
+        self.vipers = vipers::Vipers::new(VIPER_IMAGE);
+        self.bugs = bugs::Bugs::new([&self.bug1, &self.bug2, &self.bug3]);
+        // The fruit goes back to the basket: the carried and the fallen
+        // fruit come off the scene, the basket empties, and the starting
+        // tomato re-seeds on the next frame, once the basket's fit is
+        // known.
+        let root = &mut ctx.scene().root;
+        root.children[CHILD_HELD_FRUIT].children.clear();
+        root.children[CHILD_FALLEN_FRUIT].children.clear();
+        root.children[CHILD_BASKET].children[basket::BASKET_FRUIT].children.clear();
+        self.falls.clear();
+        self.basket_seed = true;
+        // The mouse holds no tool again: the tools rest in their slots,
+        // the held panel's cells go empty, and the in-flight states clear.
+        let mut slots = [None; SLOTS];
+        slots[SPRAY_SLOT] = Some(Tool::SprayCan);
+        slots[CAN_SLOT] = Some(Tool::WaterCan);
+        self.slots = slots;
+        self.held = None;
+        self.set_active(ctx, None);
+        let items = &mut ctx.scene().root.children[CHILD_ITEMS];
+        for (slot, node) in items.children.iter_mut().enumerate() {
+            self.slot_set(node, self.slots[slot]);
+        }
+        self.picking = None;
+        self.flying = None;
+        self.press_slot = None;
+        self.right_pressed = false;
+        self.acc = 0.0;
+        self.time = 0.0;
+        self.rng = frost::Rng::new();
+    }
+
     /// Shows the pressed spray frame (`spray2`) if `on` and the at-rest
     /// frame (`spray1`) otherwise, but only when the tool node currently
     /// shows the other one, so the swap — a cheap `Arc` clone — happens at
@@ -2330,10 +2869,13 @@ impl Demo {
         match landing {
             Landing::Slot(i) => {
                 // The seed is consumed: the slot's plant starts growing
-                // from a fresh seed, full-watered and white.
+                // from a fresh seed, full-watered and white. The player
+                // has planted: the bench is a living game now, and the
+                // game-over overlay may come up when it goes bare again.
                 self.plants[i].planted = true;
                 self.plants[i].water = 1.0;
                 self.plants[i].dryness = 0.0;
+                self.ever_planted = true;
             }
             Landing::Basket(origin) => {
                 // Back into the basket, at the fruit's original spot.
@@ -2633,6 +3175,29 @@ fn main() {
                 // window-centered user space.
                 ..Default::default()
             }),
+            Box::new(frost::SceneNode {
+                // The game-over overlay, above everything: the process
+                // gives the node its dim veil over the whole window — and
+                // clears it again — every frame, and its three children
+                // carry, in draw order, the "Game Over" title above the
+                // window's center, the Play button's rectangle below it,
+                // and the button's label on the button's center.
+                children: vec![
+                    Box::new(frost::SceneNode {
+                        // The "Game Over" title.
+                        ..Default::default()
+                    }),
+                    Box::new(frost::SceneNode {
+                        // The Play button's rectangle.
+                        ..Default::default()
+                    }),
+                    Box::new(frost::SceneNode {
+                        // The button's label.
+                        ..Default::default()
+                    }),
+                ],
+                ..Default::default()
+            }),
         ],
         ..Default::default()
     });
@@ -2677,6 +3242,48 @@ mod tests {
         assert!(demo.plants.iter().all(|p| p.water == 1.0));
         assert!(demo.falls.is_empty());
         assert!(!demo.pouring);
+        assert!(demo.over);
+    }
+
+    /// The Play button is the rectangle `PLAY_HALF` around its center at
+    /// `[0.0, PLAY_Y]`: the center and the edges are inside, a point just
+    /// past an edge is not.
+    #[test]
+    fn the_play_button_hits_its_rectangle() {
+        let center = [0.0, PLAY_Y];
+        assert!(on_play_button(center));
+        assert!(on_play_button([PLAY_HALF[0], PLAY_Y]));
+        assert!(on_play_button([-PLAY_HALF[0], PLAY_Y]));
+        assert!(on_play_button([0.0, PLAY_Y + PLAY_HALF[1]]));
+        assert!(on_play_button([0.0, PLAY_Y - PLAY_HALF[1]]));
+        assert!(!on_play_button([PLAY_HALF[0] + 1.0, PLAY_Y]));
+        assert!(!on_play_button([-PLAY_HALF[0] - 1.0, PLAY_Y]));
+        assert!(!on_play_button([0.0, PLAY_Y + PLAY_HALF[1] + 1.0]));
+        assert!(!on_play_button([0.0, PLAY_Y - PLAY_HALF[1] - 1.0]));
+    }
+
+    /// The bench is bare when no plant is planted — a fresh demo's bench —
+    /// and not bare as soon as one plant is planted.
+    #[test]
+    fn the_bench_is_bare_only_when_nothing_is_planted() {
+        let demo = Demo::new(Assets::load());
+        assert!(bench_is_bare(&demo.plants));
+        let mut planted = demo.plants;
+        planted[0].planted = true;
+        assert!(!bench_is_bare(&planted));
+    }
+
+    /// The game over is due only after the player has actually planted:
+    /// the bare bench at start and right after a Play press is not a game
+    /// over, and a planted bench never is one.
+    #[test]
+    fn the_game_over_is_due_only_after_a_planting() {
+        let demo = Demo::new(Assets::load());
+        assert!(!game_over_due(&demo.plants, false));
+        assert!(game_over_due(&demo.plants, true));
+        let mut planted = demo.plants;
+        planted[0].planted = true;
+        assert!(!game_over_due(&planted, true));
     }
 
     /// A full reserve, drained at the growth's slowed pace — a 60 fps
@@ -2739,35 +3346,19 @@ mod tests {
         ));
     }
 
-    /// [slice_of_slot] gives the slice that bears a flattened bloom slot:
-    /// the slots are laid out slice by slice in [plant::FLOWER_SPAWNS]
-    /// order, one, three, five, six, so slot 0 sits on the root segment,
-    /// slots 1 through 3 on the next, 4 through 8 on the third, and 9
-    /// through 14 on the fourth — the top slice bears no flowers.
+    /// [root_anchor] is the bottom anchor of the plant's root segment — the
+    /// root joint, the plant node's own origin: the base rock pivots around
+    /// that joint, so the sway leaves it fixed and the anchor is the node's
+    /// origin mapped through its transform, whatever the sway angle — the
+    /// point the fruit's body center drops to, in both x and y.
     #[test]
-    fn the_slice_of_a_slot_counts_its_flowers_in_slice_order() {
-        assert_eq!(slice_of_slot(0), 0);
-        for slot in 1..=3 {
-            assert_eq!(slice_of_slot(slot), 1, "slot {slot}");
-        }
-        for slot in 4..=8 {
-            assert_eq!(slice_of_slot(slot), 2, "slot {slot}");
-        }
-        for slot in 9..15 {
-            assert_eq!(slice_of_slot(slot), 3, "slot {slot}");
-        }
-    }
-
-    /// [fall_destination] lowers the spawn by the segment height scaled
-    /// into user space: a tomato on the second segment — the sum of the
-    /// first two, 93 + 230 node-local px — that let go at y 500 stops at
-    /// 500 − 0.45 × 323 ≈ 354.65.
-    #[test]
-    fn the_fall_destination_lowes_the_spawn_by_the_scaled_segment_height() {
-        let dest = fall_destination(500.0, 93.0 + 230.0);
-        assert!((dest - (500.0 - PLANT_SCALE * 323.0)).abs() < 1e-6);
-        assert!((dest - 354.65).abs() < 1e-2);
-        assert!(dest < 500.0, "the destination is below the spawn");
+    fn the_fall_destination_is_the_root_anchor() {
+        let node = frost::SceneNode {
+            transform: frost::Transform::rotate(0.4)
+                .compose(&frost::Transform::translate(100.0, 200.0)),
+            ..Default::default()
+        };
+        assert_eq!(root_anchor(&node), [100.0, 200.0], "the anchor is the root joint, in x and y");
     }
 
     /// The bench starts bare: no plant grows, and no reserve drains,
@@ -2984,6 +3575,221 @@ mod tests {
         assert!(
             !dry_blink_on(1.0 + DRY_BLINK * 0.75),
             "dark in a later period's second half"
+        );
+    }
+
+    /// Six simple plant anchors for the fall phase-machine tests: a 3×2
+    /// grid, 100 px apart horizontally and 50 px apart vertically.
+    fn test_anchors() -> [[f32; 2]; 6] {
+        [
+            [0.0, 0.0],
+            [100.0, 0.0],
+            [200.0, 0.0],
+            [0.0, 50.0],
+            [100.0, 50.0],
+            [200.0, 50.0],
+        ]
+    }
+
+    /// A simple wheel radius, in user pixels, for the fall phase-machine
+    /// tests: any positive value drives the spin; its exact size only sets
+    /// how fast the wheel turns.
+    const TEST_RADIUS: f32 = 20.0;
+
+    /// A fresh fall drops toward the root anchor at the fall speed, in both
+    /// x and y, until its body center sits on it, where it lands, plays the
+    /// drop clip, and starts rolling to a random anchor.
+    #[test]
+    fn the_fall_lands_at_the_root_anchor_and_starts_rolling() {
+        let mut rng = frost::Rng::with_seed(42);
+        let anchors = test_anchors();
+        let mut fall = Fall::new([0.0, 0.0], [50.0, 100.0]);
+        assert_eq!(fall.phase, FallPhase::Falling);
+        let dt = 1.0 / 60.0;
+        for _ in 0..600 {
+            fall.step(dt, &mut rng, &anchors, TEST_RADIUS);
+            if fall.phase != FallPhase::Falling {
+                break;
+            }
+        }
+        assert_eq!(fall.phase, FallPhase::Rolling, "the fall should land and start rolling");
+        assert_eq!(fall.body, [0.0, 0.0], "the body should sit on the root anchor");
+        assert!(fall.landed, "the drop clip should have played");
+        assert!(anchors.contains(&fall.target), "the target should be a plant anchor");
+    }
+
+    /// A landed tomato rolls along the straight line from its start to its
+    /// target at the roll speed, and begins its rest the frame it reaches
+    /// the target, sitting exactly on it.
+    #[test]
+    fn the_roll_reaches_its_target_and_starts_resting() {
+        let mut rng = frost::Rng::with_seed(7);
+        let anchors = test_anchors();
+        let mut fall = Fall::new([0.0, 0.0], [0.0, 0.0]);
+        // One long frame drops it to the ground and starts the first roll.
+        fall.step(1.0, &mut rng, &anchors, TEST_RADIUS);
+        assert_eq!(fall.phase, FallPhase::Rolling);
+        let target = fall.target;
+        let dt = 1.0 / 60.0;
+        for _ in 0..6000 {
+            fall.step(dt, &mut rng, &anchors, TEST_RADIUS);
+            if fall.phase != FallPhase::Rolling {
+                break;
+            }
+        }
+        assert_eq!(fall.phase, FallPhase::Resting, "the roll should reach its target");
+        assert_eq!(fall.body, target, "the body should sit on the target");
+    }
+
+    /// A resting tomato breathes — its y-scale squashes below and stretches
+    /// above 1.0, its x-scale compensating — and after its random rest it
+    /// picks a new, different anchor to roll to.
+    #[test]
+    fn the_rest_breathes_and_picks_a_new_anchor() {
+        let mut rng = frost::Rng::with_seed(99);
+        let anchors = test_anchors();
+        let mut fall = Fall::new([0.0, 0.0], [0.0, 0.0]);
+        fall.step(1.0, &mut rng, &anchors, TEST_RADIUS);
+        let dt = 1.0 / 60.0;
+        // Roll to the first target and into the rest.
+        for _ in 0..6000 {
+            fall.step(dt, &mut rng, &anchors, TEST_RADIUS);
+            if fall.phase != FallPhase::Rolling {
+                break;
+            }
+        }
+        assert_eq!(fall.phase, FallPhase::Resting);
+        let first_target = fall.target;
+        let mut saw_squash = false;
+        let mut saw_stretch = false;
+        // Run well past the longest rest (3 s) and a full breath (2 s).
+        for _ in 0..400 {
+            fall.step(dt, &mut rng, &anchors, TEST_RADIUS);
+            if fall.phase != FallPhase::Resting {
+                break;
+            }
+            let [sx, sy] = fall.scale_factors();
+            if sy < 1.0 - 1e-3 {
+                saw_squash = true;
+            }
+            if sy > 1.0 + 1e-3 {
+                saw_stretch = true;
+            }
+            // The area is held: the x-scale is the reciprocal of the y.
+            assert!((sx * sy - 1.0).abs() < 1e-4, "the breathing holds the area");
+        }
+        assert!(saw_squash, "the rest should squash out (sy < 1)");
+        assert!(saw_stretch, "the rest should stretch in (sy > 1)");
+        assert_eq!(fall.phase, FallPhase::Rolling, "the rest should end into a new roll");
+        assert_ne!(fall.target, first_target, "the new anchor should differ from the old");
+    }
+
+    /// A running bump lifts the body off its rolling line by the half-sine
+    /// hop, peaking at `BUMP_HEIGHT`, without touching the x position.
+    #[test]
+    fn the_bump_lifts_the_body_off_its_line() {
+        let mut fall = Fall::new([0.0, 0.0], [0.0, 0.0]);
+        fall.phase = FallPhase::Rolling;
+        fall.start = [0.0, 0.0];
+        fall.target = [100.0, 0.0];
+        fall.body = [50.0, 0.0];
+        // Mid-hop: the half-sine is at its peak, sin(π/2) = 1.
+        fall.bump = 0.5;
+        let base = fall.body;
+        let pos = fall.body_position();
+        assert_eq!(pos[0], base[0], "the bump should not move the x");
+        assert!(
+            (pos[1] - (base[1] + BUMP_HEIGHT)).abs() < 1e-4,
+            "the mid-hop should peak at BUMP_HEIGHT"
+        );
+        // Take-off and landing: the half-sine is (within float noise) zero,
+        // the body is on the line.
+        fall.bump = 0.0;
+        let take_off = fall.body_position();
+        assert!(
+            (take_off[1] - base[1]).abs() < 1e-6,
+            "at take-off the body is on the line"
+        );
+        fall.bump = 1.0;
+        let landing = fall.body_position();
+        assert!(
+            (landing[1] - base[1]).abs() < 1e-6,
+            "at landing the body is on the line"
+        );
+    }
+
+    /// A rolling tomato turns like a wheel: its spin advances by the
+    /// distance it travels over the radius each frame (a no-slip roll), and
+    /// it stands back upright (spin zeroed) the frame it reaches its target
+    /// and rests.
+    #[test]
+    fn the_roll_turns_the_tomato_like_a_wheel() {
+        let mut rng = frost::Rng::with_seed(5);
+        let anchors = test_anchors();
+        let mut fall = Fall::new([0.0, 0.0], [0.0, 0.0]);
+        // One long frame drops it to the ground and starts the first roll.
+        fall.step(1.0, &mut rng, &anchors, TEST_RADIUS);
+        assert_eq!(fall.phase, FallPhase::Rolling);
+        let dt = 1.0 / 60.0;
+        let mut saw_growth = false;
+        let mut prev_spin = fall.spin;
+        let mut prev_body = fall.body;
+        // Step the roll until it reaches its target; each frame the spin
+        // should advance by the distance traveled over the radius.
+        for _ in 0..6000 {
+            fall.step(dt, &mut rng, &anchors, TEST_RADIUS);
+            if fall.phase == FallPhase::Rolling {
+                let traveled = dist2(prev_body, fall.body).sqrt();
+                if traveled > 1e-6 {
+                    let expected = prev_spin + traveled / TEST_RADIUS;
+                    assert!(
+                        (fall.spin - expected).abs() < 1e-3,
+                        "the spin should advance by the travel over the radius"
+                    );
+                    if fall.spin > prev_spin {
+                        saw_growth = true;
+                    }
+                }
+                prev_spin = fall.spin;
+                prev_body = fall.body;
+            } else {
+                break;
+            }
+        }
+        assert!(saw_growth, "the spin should grow while the tomato rolls");
+        assert_eq!(fall.phase, FallPhase::Resting, "the roll should reach its target");
+        assert_eq!(fall.spin, 0.0, "the rest should stand the tomato upright");
+    }
+
+    /// The pivot's scale factors are neutral (no squash) while the tomato
+    /// falls or rolls, and only the rest breathes.
+    #[test]
+    fn the_scale_factors_are_neutral_outside_the_rest() {
+        let mut rng = frost::Rng::with_seed(1);
+        let anchors = test_anchors();
+        let mut fall = Fall::new([0.0, 0.0], [50.0, 100.0]);
+        assert_eq!(fall.phase, FallPhase::Falling);
+        assert_eq!(fall.scale_factors(), [1.0, 1.0], "the fall is neutral");
+        fall.step(1.0, &mut rng, &anchors, TEST_RADIUS);
+        assert_eq!(fall.phase, FallPhase::Rolling);
+        assert_eq!(fall.scale_factors(), [1.0, 1.0], "the roll is neutral");
+    }
+
+    /// A new roll always targets an anchor that is not the tomato's current
+    /// spot, restarts from there, and arms a fresh bump countdown.
+    #[test]
+    fn the_start_roll_picks_a_distinct_anchor() {
+        let mut rng = frost::Rng::with_seed(3);
+        let anchors = test_anchors();
+        let mut fall = Fall::new([0.0, 0.0], [100.0, 0.0]);
+        fall.start_roll(&mut rng, &anchors);
+        assert_ne!(fall.target, [100.0, 0.0], "the target should not be the current spot");
+        assert!(anchors.contains(&fall.target), "the target should be a plant anchor");
+        assert_eq!(fall.start, [100.0, 0.0], "the roll should start at the current spot");
+        assert_eq!(fall.progress, 0.0, "the roll should start at zero progress");
+        assert!(
+            (BUMP_IN.0..BUMP_IN.1).contains(&fall.bump_in),
+            "a bump countdown should be armed"
         );
     }
 }
