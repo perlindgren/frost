@@ -729,7 +729,15 @@ fn draw_node(
                 let tip = to_pixel.apply([light.direction.cos(), light.direction.sin()]);
                 Some(Draw::Light {
                     pos: origin,
-                    radius: light.radius.max(0.0),
+                    // A negative radius is the directional sentinel
+                    // (`Light::directional`): clamping it to zero would
+                    // silently turn a sun into a degenerate point light,
+                    // so only real radii get clamped.
+                    radius: if light.radius < 0.0 {
+                        -1.0
+                    } else {
+                        light.radius.max(0.0)
+                    },
                     intensity: light.intensity,
                     color: light.color.mul(modulate),
                     penumbra: light.penumbra.max(0.0),
@@ -2022,6 +2030,63 @@ mod tests {
         assert!((dir[0] - k).abs() < 1e-6);
         assert!((dir[1] + k).abs() < 1e-6);
         assert!((cos_half - (std::f32::consts::FRAC_PI_6).cos()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_directional_light_records_the_sentinel_and_its_travel() {
+        // A `Light::directional` aimed at user PI — travelling toward
+        // -x: the record keeps the negative radius sentinel exactly (the
+        // zero-clamp that tames stray point radii must not demote a sun
+        // to a zero-size point), the travel direction folds through the
+        // canvas transform into the pixel-space vector (-1, 0), and the
+        // gate opens fully like an omni light's, so nothing but the
+        // shader's directional branch distinguishes it downstream.
+        let node = SceneNode {
+            shape: Some(Shape::Light {
+                light: Light::directional(
+                    Color {
+                        r: 1.0,
+                        g: 0.5,
+                        b: 0.2,
+                        a: 1.0,
+                    },
+                    1.25,
+                    std::f32::consts::PI,
+                ),
+            }),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_node(
+            pixel_map(),
+            &node,
+            &Transform::identity(),
+            0.0,
+            Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            &mut draws,
+        );
+        let [Draw::Light {
+            radius,
+            intensity,
+            dir,
+            cos_half,
+            feather,
+            ..
+        }] = &draws[..]
+        else {
+            panic!("expected one light draw, got {draws:?}")
+        };
+        assert_eq!(*radius, -1.0);
+        assert_eq!(*intensity, 1.25);
+        assert!((dir[0] + 1.0).abs() < 1e-6);
+        assert!(dir[1].abs() < 1e-6);
+        assert!((cos_half + 1.0).abs() < 1e-6);
+        assert_eq!(*feather, 0.0);
     }
 
     #[test]

@@ -817,12 +817,25 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
             feather: 0.0,
             z: 1.0,
         },
+        // A directional light: its negative radius is the sentinel the
+        // shader reads, so the packer must write it through untouched.
+        Draw::Light {
+            pos: [0.0, 0.0],
+            radius: -1.0,
+            intensity: 1.25,
+            color: amber,
+            penumbra: 20.0,
+            dir: [-0.8, 0.6],
+            cos_half: -1.0,
+            feather: 0.0,
+            z: 2.0,
+        },
     ];
     let field = pack_light_field(&draws, ambient);
-    assert_eq!(field.count, 2);
-    assert_eq!(field.data.len(), LIGHT_FIELD_HEADER + 2 * LIGHT_RECORD);
+    assert_eq!(field.count, 3);
+    assert_eq!(field.data.len(), LIGHT_FIELD_HEADER + 3 * LIGHT_RECORD);
     // The header: count at 0, padding at 4..16, ambient at 16..32.
-    assert_eq!(u32::from_le_bytes(field.data[0..4].try_into().unwrap()), 2);
+    assert_eq!(u32::from_le_bytes(field.data[0..4].try_into().unwrap()), 3);
     assert_eq!(&field.data[4..16], &[0u8; 12]);
     assert_eq!(field_f32(&field.data, 16), 0.1);
     assert_eq!(field_f32(&field.data, 20), 0.2);
@@ -859,6 +872,23 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
     assert_eq!(field_f32(&field.data, r1 + 36), -1.0);
     assert_eq!(field_f32(&field.data, r1 + 40), -1.0);
     assert_eq!(field_f32(&field.data, r1 + 44), 0.0);
+    // Record 2 @ 128: the directional light — the sentinel radius (-1)
+    // rides through the packer exactly, the position stays whatever the
+    // node carried (the shader ignores it for this kind), and the penumbra
+    // disk radius reaches the shader in the color vec4's w as usual.
+    let r2 = LIGHT_FIELD_HEADER + 2 * LIGHT_RECORD;
+    assert_eq!(field_f32(&field.data, r2), 0.0);
+    assert_eq!(field_f32(&field.data, r2 + 4), 0.0);
+    assert_eq!(field_f32(&field.data, r2 + 8), -1.0);
+    assert_eq!(field_f32(&field.data, r2 + 12), 1.25);
+    assert_eq!(field_f32(&field.data, r2 + 16), 1.0);
+    assert_eq!(field_f32(&field.data, r2 + 20), 0.5);
+    assert_eq!(field_f32(&field.data, r2 + 24), 0.0);
+    assert_eq!(field_f32(&field.data, r2 + 28), 20.0);
+    assert_eq!(field_f32(&field.data, r2 + 32), -0.8);
+    assert_eq!(field_f32(&field.data, r2 + 36), 0.6);
+    assert_eq!(field_f32(&field.data, r2 + 40), -1.0);
+    assert_eq!(field_f32(&field.data, r2 + 44), 0.0);
 }
 
 #[test]

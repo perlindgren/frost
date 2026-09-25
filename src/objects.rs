@@ -325,6 +325,12 @@ impl ParticleShape {
 /// `radius`. Setting a narrower [`spread`](Self::spread) turns it into a
 /// cone: only pixels inside the cone receive its light, feathered out at
 /// the edges by [`softness`](Self::softness).
+///
+/// [`Light::directional`] is the third kind: light from a source so far
+/// away — a sun, a distant star — that its rays are parallel. It has no
+/// position and its light never fades with distance, so the node carrying
+/// it only aims it (and tints it); a scene may hold any number, like a
+/// planet lit by two stars at once.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Light {
     /// The light's color, multiplied with its intensity and with the
@@ -336,6 +342,10 @@ pub struct Light {
     /// The falloff extent, in user units (pixels): the light reaches
     /// exactly `radius` pixels from its position, fading to zero at the
     /// edge.
+    ///
+    /// A negative radius is the sentinel that marks a directional light:
+    /// [`Light::directional`] sets it, and the light then ignores its
+    /// position and this value entirely.
     pub radius: f32,
     /// The direction the light points, in radians, counterclockwise from
     /// the local +x axis, measured in the node's local (y-up) space: like
@@ -371,6 +381,12 @@ pub struct Light {
     /// This applies to every light, cone or omni, and only to shadows:
     /// an occluder-free light looks exactly as it did. The light's own
     /// [`radius`](Self::radius) falloff is unrelated.
+    ///
+    /// A [`directional`](Light::directional) light's shadow softness is
+    /// geometric: its source is distant, so a disk of `penumbra` pixels
+    /// at that distance fades shadows by proportionally less the closer
+    /// the occluder sits to the shadow — values around 20 and up give
+    /// suns and stars shadows worth calling soft.
     pub penumbra: f32,
 }
 
@@ -381,7 +397,11 @@ impl Light {
         Self {
             color,
             intensity,
-            radius,
+            // Clamped here, not at draw: a point light must never carry
+            // the negative radius that marks a directional one, so a
+            // stray negative degrades to a degenerate zero-radius light
+            // rather than accidentally becoming a sun.
+            radius: radius.max(0.0),
             // The direction is irrelevant for a full circle; +x keeps the
             // recorded cone axis defined.
             direction: 0.0,
@@ -412,10 +432,46 @@ impl Light {
         Self {
             color,
             intensity,
-            radius,
+            radius: radius.max(0.0),
             direction,
             spread,
             softness,
+            penumbra: 0.0,
+        }
+    }
+
+    /// A directional light: light from a source so far away that its
+    /// rays are parallel — a sun, a distant star. It has no position and
+    /// its strength does not fall off with distance: every pixel the
+    /// occluders leave uncovered receives it at full `intensity`.
+    ///
+    /// `direction` is the direction the light *travels*, in radians
+    /// counterclockwise from the local +x axis: a dawn sun rising in the
+    /// east (screen right) travels toward `-x` and downward over the
+    /// ground, so its direction points left and down, near `PI`. The
+    /// node carrying the light only aims it — rotating the node turns
+    /// the daylight along with it — and its position and scale do not
+    /// matter at all.
+    ///
+    /// A scene may hold any number: two [`Shape::Light`] nodes, each a
+    /// star, light a planet from both sides at once, each casting its
+    /// own parallel shadows. Directional lights still cast shadows and
+    /// take a [`penumbra`](Self::penumbra); see [`Light::with_penumbra`]
+    /// for how its radius reads on a distant source.
+    pub fn directional(color: Color, intensity: f32, direction: f32) -> Self {
+        Self {
+            color,
+            intensity,
+            // The negative radius is the sentinel: a point or cone light
+            // with no radius is degenerate anyway, so no finite value
+            // here could mean anything else, and the shader swaps the
+            // falloff and shadow rays for the parallel treatment.
+            radius: -1.0,
+            direction,
+            // The cone gate has no meaning for parallel rays: full
+            // circle, so every uncovered pixel receives the light.
+            spread: std::f32::consts::TAU,
+            softness: 0.0,
             penumbra: 0.0,
         }
     }

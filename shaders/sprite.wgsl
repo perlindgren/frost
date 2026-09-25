@@ -131,18 +131,40 @@ const SHADOW_TAPS = array<vec2<f32>, 9>(
     vec2<f32>(0.0, 1.0),
     vec2<f32>(1.0, 1.0),
 );
+
+// How far back along a directional light's travel axis its virtual
+// source sits (in pixels): shadow rays run from there to the pixel, so
+// they are near-parallel across a window and the light reads as distant.
+// A larger range makes shadows more parallel and the penumbra harder, as
+// a source nearer the horizon's infinity would be.
+const SHADOW_RANGE: f32 = 1500.0;
 fn light_mix(p: vec2<f32>) -> vec3<f32> {
     var c = field.ambient.rgb;
     for (var i = 0u; i < field.count; i++) {
         let l = field.lights[3 * i];
         let lc = field.lights[3 * i + 1];
         let cone = field.lights[3 * i + 2];
-        let f = max(0.0, 1.0 - distance(p, l.xy) / max(l.z, 1e-4));
+        // A directional light is packed with a negative radius (see
+        // `Light::directional`): it has no position and no falloff, so
+        // every shadow ray runs parallel to the travel axis `cone.xy`
+        // from a virtual source `src` placed `SHADOW_RANGE` back along
+        // that axis through `p`. Everything downstream — the gate, the
+        // penumbra taps, the occlusion ray — then treats `src` as if it
+        // were an ordinary point light's position, so the parallel case
+        // costs nothing new. A point or cone light (radius >= 0) keeps
+        // `src` as its own position and the distance falloff unchanged.
+        let directional = l.z < 0.0;
+        let src = select(l.xy, p - cone.xy * SHADOW_RANGE, directional);
+        let f = select(
+            max(0.0, 1.0 - distance(p, l.xy) / max(l.z, 1e-4)),
+            1.0,
+            directional,
+        );
         // The cone gate, as a 0..1 factor: omni and unfeathered cones
         // keep the hard test, without normalizing d so the pixel at the
         // light's own position stays inside the cone. An omni light's
         // cos_half is -1.0, which every pixel passes.
-        let d = p - l.xy;
+        let d = p - src;
         let len = length(d);
         let ad = dot(d, cone.xy);
         var gate = select(0.0, 1.0, ad >= cone.z * len);
@@ -175,7 +197,7 @@ fn light_mix(p: vec2<f32>) -> vec3<f32> {
                 var lit = 0.0;
                 for (var t = 0u; t < 9u; t = t + 1u) {
                     let o = SHADOW_TAPS[t] * lc.w;
-                    let q = l.xy + vec2<f32>(ca * o.x - sa * o.y, sa * o.x + ca * o.y);
+                    let q = src + vec2<f32>(ca * o.x - sa * o.y, sa * o.x + ca * o.y);
                     lit += select(0.0, 1.0, !occluded(q, p));
                 }
                 v = lit / 9.0;
@@ -184,7 +206,7 @@ fn light_mix(p: vec2<f32>) -> vec3<f32> {
                 // the original hard shadow. Without this branch the
                 // default above would stand and the light would ignore
                 // every occluder.
-                v = select(0.0, 1.0, !occluded(l.xy, p));
+                v = select(0.0, 1.0, !occluded(src, p));
             }
             c += lc.rgb * l.w * f * f * v * gate;
         }
