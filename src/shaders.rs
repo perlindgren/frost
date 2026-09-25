@@ -48,7 +48,7 @@ mod tests {
     /// The member offsets WGSL assigns to `ShapeUniforms` must match the
     /// CPU-side uniform writer in `shape_uniform_data` (mat2x2 @0, vec2 @16,
     /// vec2 @24, vec2 @32, vec4 @48 — 16 bytes, 16-byte aligned — vec2 @64,
-    /// f32 @72, 80 bytes total). This is the GPU-side mirror of
+    /// f32 @72, vec4 @80; 96 bytes total). This is the GPU-side mirror of
     /// `shape_uniform_bytes_follow_the_wgsl_layout` in backend.rs, so a layout
     /// drift on either side fails a test.
     #[test]
@@ -72,17 +72,18 @@ mod tests {
             ),
             _ => unreachable!("ShapeUniforms must be a struct"),
         };
-        // `lit` rides in the 4 bytes the struct already padded after `misc`.
-        assert_eq!(offsets, [0, 16, 24, 32, 48, 64, 72]);
+        // `lit` rides in the 4 bytes the struct already padded after `misc`;
+        // the 16-byte-aligned `glow` vec4 follows at 80.
+        assert_eq!(offsets, [0, 16, 24, 32, 48, 64, 72, 80]);
         // The struct's total size must equal the CPU-side buffer length,
         // otherwise the buffer would be too short or carry dead bytes.
-        assert_eq!(total_size, 80);
+        assert_eq!(total_size, 96);
     }
 
     /// The member offsets WGSL assigns to `SpriteUniforms` must match the
     /// CPU-side uniform writer in `sprite_uniform_data` (mat2x2 @0, vec2 @16,
     /// vec2 @24, vec4 @32 — 16 bytes, 16-byte aligned — f32 @48, f32 @52,
-    /// and vec4 @64; 80 bytes total). This is the GPU-side mirror of
+    /// and vec4 @64, vec4 @80; 96 bytes total). This is the GPU-side mirror of
     /// `sprite_uniform_bytes_follow_the_wgsl_layout` in backend.rs, so a
     /// layout drift on either side fails a test.
     #[test]
@@ -107,11 +108,12 @@ mod tests {
             _ => unreachable!("SpriteUniforms must be a struct"),
         };
         // `lit` rides in the padding the struct already kept between
-        // `alpha` and the 16-byte-aligned `uv_rect`.
-        assert_eq!(offsets, [0, 16, 24, 32, 48, 52, 64]);
+        // `alpha` and the 16-byte-aligned `uv_rect`; `glow` follows the
+        // uv_rect at 80.
+        assert_eq!(offsets, [0, 16, 24, 32, 48, 52, 64, 80]);
         // The struct's total size must equal the CPU-side buffer length,
         // otherwise the buffer would be too short or carry dead bytes.
-        assert_eq!(total_size, 80);
+        assert_eq!(total_size, 96);
     }
 
     /// The member offsets WGSL assigns to `ParticlesUniforms` must match the

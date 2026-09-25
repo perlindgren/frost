@@ -1262,6 +1262,7 @@ impl<P: Process> Frost<P> {
                         kind,
                         aa,
                         color,
+                        glow,
                         lit,
                         ..
                     } => {
@@ -1273,7 +1274,7 @@ impl<P: Process> Frost<P> {
                         let (_buffer, bind_group) = self.shape_uniform(
                             shape_pipeline,
                             "shape uniforms",
-                            &shape_uniform_data(inv, center, params, kind, aa, color, lit),
+                            &shape_uniform_data(inv, center, params, kind, aa, color, glow, lit),
                             &field_buffer,
                             &occluder_buffer,
                         );
@@ -1288,6 +1289,7 @@ impl<P: Process> Frost<P> {
                         texture_size,
                         tint,
                         alpha,
+                        glow,
                         lit,
                         uv_rect,
                         ..
@@ -1318,7 +1320,7 @@ impl<P: Process> Frost<P> {
                             "sprite uniforms",
                             &view,
                             &sampler,
-                            &sprite_uniform_data(inv, size, tint, alpha, lit, uv_rect),
+                            &sprite_uniform_data(inv, size, tint, alpha, glow, lit, uv_rect),
                             &field_buffer,
                             &occluder_buffer,
                         );

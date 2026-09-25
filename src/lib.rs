@@ -645,6 +645,7 @@ fn draw_node(
                 kind: 0.0,
                 aa,
                 color: color.mul(modulate),
+                glow: node.glow.mul(modulate),
                 lit: f32::from(node.lit),
                 occludes: f32::from(node.occludes),
                 z: order,
@@ -660,6 +661,7 @@ fn draw_node(
                 kind: 1.0,
                 aa,
                 color: color.mul(modulate),
+                glow: node.glow.mul(modulate),
                 lit: f32::from(node.lit),
                 occludes: f32::from(node.occludes),
                 z: order,
@@ -681,6 +683,7 @@ fn draw_node(
                 aa,
                 tint: color.mul(modulate),
                 alpha: *alpha,
+                glow: node.glow.mul(modulate),
                 uv_rect: [0.0, 0.0, 1.0, 1.0],
                 lit: f32::from(node.lit),
                 z: order,
@@ -701,6 +704,7 @@ fn draw_node(
                 size: *size,
                 color: color.mul(modulate),
                 alpha: *alpha,
+                glow: node.glow.mul(modulate),
                 lit: f32::from(node.lit),
                 z: order,
             }),
@@ -1029,6 +1033,7 @@ fn expand_text_list(
                 size,
                 color,
                 alpha,
+                glow,
                 lit,
                 z,
             } => {
@@ -1098,8 +1103,9 @@ fn expand_text_list(
                         tint: color,
                         alpha,
                         uv_rect,
-                        // The glyphs are the text node's own pixels: the
-                        // block's `lit` flag passes on to every quad.
+                        // The glyphs are the text node's own pixels: its
+                        // `lit` flag and `glow` pass on to every quad.
+                        glow,
                         lit,
                         z,
                     });
@@ -2104,6 +2110,58 @@ mod tests {
         // Omni lights never feather, whatever the softness says.
         assert_eq!(feather_band(std::f32::consts::TAU, 1.0), 0.0);
         assert_eq!(feather_band(std::f32::consts::TAU * 2.0, 1.0), 0.0);
+    }
+
+    #[test]
+    fn a_nodes_glow_reaches_its_shape_draw() {
+        // The node's glow rides to the draw multiplied by the composed
+        // modulate, exactly like the shape's own color.
+        let node = SceneNode {
+            lit: true,
+            glow: Color {
+                r: 0.5,
+                g: 0.2,
+                b: 0.0,
+                a: 1.0,
+            },
+            shape: Some(Shape::Circle {
+                center: [0.0, 0.0],
+                radius: 4.0,
+                color: Color {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
+            }),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_node(
+            pixel_map(),
+            &node,
+            &Transform::identity(),
+            0.0,
+            Color {
+                r: 0.5,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            &mut draws,
+        );
+        let [Draw::Shape { glow, .. }] = &draws[..] else {
+            panic!("expected one shape draw, got {draws:?}")
+        };
+        assert_eq!(
+            *glow,
+            Color {
+                r: 0.25,
+                g: 0.2,
+                b: 0.0,
+                a: 1.0,
+            }
+        );
     }
 
     #[test]

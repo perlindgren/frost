@@ -779,7 +779,8 @@ pub struct SceneNode {
     pub order: f32,
     /// Whether the node's own shape is lit by the frame's light field: when
     /// true, the shape's color is multiplied, per pixel, by the scene's
-    /// ambient color plus the contribution of every light at that pixel.
+    /// ambient color plus the contribution of every light at that pixel,
+    /// plus the node's own [`glow`](Self::glow).
     ///
     /// Unlike the transform, scale, modulate, and order, the flag does not
     /// propagate to the children: it applies to this node's own shape only,
@@ -803,6 +804,22 @@ pub struct SceneNode {
     /// carry both flags: a `lit: true, occludes: true` wall is lit on its
     /// own surface and still blocks the light from what lies behind it.
     pub occludes: bool,
+    /// The node's own emission: a floor of self-light added to the light
+    /// mix that multiplies the shape's color, so the surface stays visible
+    /// in the dark while lights still add on top of it:
+    /// `pixel = color * (ambient + lights + glow)`.
+    ///
+    /// Like [`SceneNode::lit`] (which it requires — an unlit shape draws
+    /// its color in full already), the glow applies to this node's own
+    /// shape only, does not propagate to children, and is multiplied by
+    /// the composed modulate. It lights only the surface itself: glowing
+    /// never spills onto neighbors, and a glow is never shadowed — to
+    /// light the surroundings too, attach a [`Shape::Light`] child node.
+    ///
+    /// The default — black — is off. The color's `a` scales the emission
+    /// (rgb times `a`), so fading a glow in and out only needs an alpha
+    /// ramp.
+    pub glow: Color,
     /// The shape this node draws, in its own local space, if any.
     pub shape: Option<Shape>,
     /// The child nodes, positioned in this node's coordinate space.
@@ -811,7 +828,8 @@ pub struct SceneNode {
 
 impl Default for SceneNode {
     /// An identity node: identity transform, no scale, a white modulate,
-    /// order `0.0`, no lighting, no occlusion, no shape, and no children.
+    /// order `0.0`, no lighting, no occlusion, no glow, no shape, and no
+    /// children.
     fn default() -> Self {
         Self {
             transform: Transform::identity(),
@@ -820,6 +838,12 @@ impl Default for SceneNode {
             order: 0.0,
             lit: false,
             occludes: false,
+            glow: Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            },
             shape: None,
             children: Vec::new(),
         }

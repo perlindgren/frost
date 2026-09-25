@@ -6,6 +6,7 @@ struct SpriteUniforms {
     alpha: f32, // multiplied with the texture's own alpha
     lit: f32, // 1.0 when the sprite is lit by the frame's light field
     uv_rect: vec4<f32>, // [min_x, min_y, max_x, max_y] sub-rect of the texture
+    glow: vec4<f32>, // self-emission: rgb, scaled by a, added to the light mix
 };
 
 // The frame's light field: one global storage buffer shared by every lit
@@ -220,10 +221,13 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     // covers; for a whole-texture sprite the remap is the identity.
     let t = textureSample(tex, samp, mix(u.uv_rect.xy, u.uv_rect.zw, uv));
     // The tinted texture color, multiplied by the light mix when the
-    // sprite is lit; the lights never touch the alpha.
+    // sprite is lit; the lights never touch the alpha. The sprite's own
+    // glow joins the mix as a floor of self-light: rgb scaled by its
+    // alpha, added even where the light field is black — a glowing sprite
+    // is visible in the dark, and lights still add on top.
     var rgb = t.rgb * u.tint.rgb;
     if (u.lit > 0.5) {
-        rgb *= light_mix(frag_coord.xy);
+        rgb *= light_mix(frag_coord.xy) + u.glow.rgb * u.glow.a;
     }
     // Emit the color, scaled by the sprite's alpha and the tint's own
     // alpha, and composited over the existing attachment via alpha

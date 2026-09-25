@@ -54,6 +54,10 @@ pub(crate) enum Draw {
         /// by the transform's scale).
         aa: f32,
         color: Color,
+        /// The node's self-emission, already multiplied with the composed
+        /// modulate: added to the light mix that multiplies the color, so
+        /// the shape keeps a floor of light in the dark. Black = off.
+        glow: Color,
         /// Whether the shape is lit by the frame's light field: `1.0` when
         /// the node's `lit` flag is set, `0.0` when unlit.
         lit: f32,
@@ -91,6 +95,11 @@ pub(crate) enum Draw {
         /// (top-left origin). `[0.0, 0.0, 1.0, 1.0]` covers the whole
         /// texture.
         uv_rect: [f32; 4],
+        /// The node's self-emission, already multiplied with the composed
+        /// modulate: added to the light mix that multiplies the sampled
+        /// color, so the sprite keeps a floor of light in the dark.
+        /// Black = off.
+        glow: Color,
         /// Whether the sprite is lit by the frame's light field: `1.0` when
         /// the node's `lit` flag is set, `0.0` when unlit. Glyph quads
         /// expanded from a lit text block are lit too.
@@ -146,6 +155,9 @@ pub(crate) enum Draw {
         color: Color,
         /// The text's opacity.
         alpha: f32,
+        /// The node's self-emission, already multiplied with the composed
+        /// modulate; passed on to every glyph quad the block expands into.
+        glow: Color,
         /// Whether the text is lit by the frame's light field: `1.0` when
         /// the node's `lit` flag is set, `0.0` when unlit; the flag is
         /// passed on to every glyph quad the block expands into.
@@ -405,7 +417,7 @@ pub(crate) fn rect_uniform_data(center: [f32; 2], extent: [f32; 2], color: Color
     data
 }
 
-/// Shape uniform data, 80 bytes, matching the WGSL uniform-space layout of
+/// Shape uniform data, 96 bytes, matching the WGSL uniform-space layout of
 /// the `ShapeUniforms` Wgsl struct. Per the WGSL memory layout rules (and
 /// naga's `Layouter`), in the uniform address space a mat2x2<f32> is 16
 /// bytes total with 8-byte alignment, so its two vec2 columns are packed at
@@ -416,7 +428,9 @@ pub(crate) fn rect_uniform_data(center: [f32; 2], extent: [f32; 2], color: Color
 /// the Rust matrix element-for-element and `m * p + t` in the shader
 /// reproduces `Transform::apply`), `translation` @ 16, `center` @ 24,
 /// `params` @ 32, `color` @ 48 (a vec4<f32>, spanning 48..64), `misc` @ 64
-/// (aa @ 64, kind @ 68), and `lit` @ 72; the struct size rounds up to 80.
+/// (aa @ 64, kind @ 68), `lit` @ 72, and `glow` @ 80 (a vec4<f32>, spanning
+/// 80..96); the struct size is 96.
+#[allow(clippy::too_many_arguments)] // uniform writer: one argument per WGSL member
 pub(crate) fn shape_uniform_data(
     to_local: Transform,
     center: [f32; 2],
@@ -424,9 +438,10 @@ pub(crate) fn shape_uniform_data(
     kind: f32,
     aa: f32,
     color: Color,
+    glow: Color,
     lit: f32,
 ) -> Vec<u8> {
-    let mut data = vec![0u8; 80];
+    let mut data = vec![0u8; 96];
     let m = to_local.m;
     // mat2x2: 16 bytes total, vec2 columns with an 8-byte stride.
     write_f32_at(&mut data, 0, m[0][0]);
@@ -448,6 +463,12 @@ pub(crate) fn shape_uniform_data(
     write_f32_at(&mut data, 64, aa);
     write_f32_at(&mut data, 68, kind);
     write_f32_at(&mut data, 72, lit);
+    // The glow vec4: 16-byte aligned, so it starts at 80 and spans 80..96,
+    // growing the struct to 96 bytes.
+    write_f32_at(&mut data, 80, glow.r);
+    write_f32_at(&mut data, 84, glow.g);
+    write_f32_at(&mut data, 88, glow.b);
+    write_f32_at(&mut data, 92, glow.a);
     data
 }
 
@@ -456,17 +477,19 @@ pub(crate) fn shape_uniform_data(
 /// as in [`shape_uniform_data`]; `translation` sits at @ 16, `size` (a
 /// vec2) at @ 24, the tint `vec4` at @ 32 (16 bytes, 16-byte aligned,
 /// spanning 32..48), the scalar `alpha` (4-byte aligned) at @ 48, the
-/// scalar `lit` (4-byte aligned) at @ 52, and the `uv_rect` `vec4`
-/// (16-byte aligned) at @ 64; the struct size is 80.
+/// scalar `lit` (4-byte aligned) at @ 52, the `uv_rect` `vec4` (16-byte
+/// aligned) at @ 64, and the glow `vec4` at @ 80 (spanning 80..96); the
+/// struct size is 96.
 pub(crate) fn sprite_uniform_data(
     to_local: Transform,
     size: [f32; 2],
     tint: Color,
     alpha: f32,
+    glow: Color,
     lit: f32,
     uv_rect: [f32; 4],
 ) -> Vec<u8> {
-    let mut data = vec![0u8; 80];
+    let mut data = vec![0u8; 96];
     let m = to_local.m;
     // mat2x2: 16 bytes total, vec2 columns with an 8-byte stride.
     write_f32_at(&mut data, 0, m[0][0]);
@@ -490,6 +513,12 @@ pub(crate) fn sprite_uniform_data(
     write_f32_at(&mut data, 68, uv_rect[1]);
     write_f32_at(&mut data, 72, uv_rect[2]);
     write_f32_at(&mut data, 76, uv_rect[3]);
+    // The glow vec4: 16-byte aligned, so it follows the uv_rect at 80 and
+    // spans 80..96, growing the struct to 96 bytes.
+    write_f32_at(&mut data, 80, glow.r);
+    write_f32_at(&mut data, 84, glow.g);
+    write_f32_at(&mut data, 88, glow.b);
+    write_f32_at(&mut data, 92, glow.a);
     data
 }
 

@@ -139,6 +139,7 @@ fn transform_scales_are_the_column_norms() {
 fn draw_scene_composes_transforms_down_the_tree() {
     let mut canvas = Canvas::new((100, 100));
     let scene = Scene::new(SceneNode {
+        glow: black(),
         transform: Transform::translate([10.0, 0.0]),
         scale: [1.0, 1.0],
         modulate: WHITE,
@@ -151,6 +152,7 @@ fn draw_scene_composes_transforms_down_the_tree() {
             color: black(),
         }),
         children: vec![Box::new(SceneNode {
+            glow: black(),
             transform: Transform::scale_uniform(2.0),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -159,6 +161,7 @@ fn draw_scene_composes_transforms_down_the_tree() {
             order: 0.0,
             shape: None,
             children: vec![Box::new(SceneNode {
+                glow: black(),
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -208,6 +211,7 @@ fn draw_scene_rotates_a_translated_child() {
     // other way around.
     let mut canvas = Canvas::new((100, 100));
     let scene = Scene::new(SceneNode {
+        glow: black(),
         transform: Transform::rotate(std::f32::consts::FRAC_PI_2),
         scale: [1.0, 1.0],
         modulate: WHITE,
@@ -216,6 +220,7 @@ fn draw_scene_rotates_a_translated_child() {
         order: 0.0,
         shape: None,
         children: vec![Box::new(SceneNode {
+            glow: black(),
             transform: Transform::translate([10.0, 0.0]),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -245,6 +250,7 @@ fn scene_shape_at_user_origin_lands_at_window_center() {
     // the window center, not the top-left pixel corner.
     let mut canvas = Canvas::new((100, 100));
     let scene = Scene::new(SceneNode {
+        glow: black(),
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: WHITE,
@@ -381,6 +387,7 @@ fn context_reports_no_gamepads_without_gilrs() {
 #[test]
 fn shape_scissor_under_non_uniform_scale() {
     let draw = Draw::Shape {
+        glow: black(),
         world: Transform::scale([2.0, 1.0]),
         center: [25.0, 50.0],
         params: [10.0, 0.0],
@@ -402,6 +409,7 @@ fn shape_scissor_under_rotation() {
     // maps it onto (50, 50).
     let center = [50.0 * std::f32::consts::SQRT_2, 0.0];
     let draw = Draw::Shape {
+        glow: black(),
         world: Transform::rotate(std::f32::consts::FRAC_PI_4),
         center,
         params: [10.0, 0.0],
@@ -420,6 +428,7 @@ fn shape_scissor_under_rotation() {
 #[test]
 fn off_screen_shape_has_no_scissor() {
     let draw = Draw::Shape {
+        glow: black(),
         world: Transform::identity(),
         center: [-200.0, -200.0],
         params: [10.0, 0.0],
@@ -618,19 +627,30 @@ fn shape_uniform_bytes_follow_the_wgsl_layout() {
     // (vec2 columns, stride 8), so `to_local` spans 0..16 with column 0
     // at 0 and column 1 at 8; `translation` @ 16; `center` @ 24;
     // `params` @ 32; vec4<f32> (16 bytes, 16-byte aligned) `color` @ 48
-    // (spanning 48..64); `misc` vec2 @ 64; struct span rounds up to 80.
+    // (spanning 48..64); `misc` vec2 @ 64; `glow` vec4 @ 80; struct size 96.
     let inv = Transform::translate([1.5, -2.5]).invert().unwrap();
-    let data = shape_uniform_data(inv, [7.0, 8.0], [9.0, 10.0], 1.0, 0.25, Color {
-        r: 0.1,
-        g: 0.2,
-        b: 0.3,
-        a: 0.4,
-    }, 1.0);
-    assert_eq!(data.len(), 80);
+    let data = shape_uniform_data(
+        inv,
+        [7.0, 8.0],
+        [9.0, 10.0],
+        1.0,
+        0.25,
+        Color {
+            r: 0.1,
+            g: 0.2,
+            b: 0.3,
+            a: 0.4,
+        },
+        Color {
+            r: 0.5,
+            g: 0.6,
+            b: 0.7,
+            a: 0.8,
+        },
+        1.0,
+    );
 
-    let f32_at = |off: usize| {
-        f32::from_le_bytes(data[off..off + 4].try_into().unwrap())
-    };
+    let f32_at = |off: usize| f32::from_le_bytes(data[off..off + 4].try_into().unwrap());
     // to_local is the identity matrix (inverting a pure translation keeps
     // the matrix identity), stored column-major: column 0 = (1, 0) at @ 0,
     // column 1 = (0, 1) at @ 8.
@@ -653,12 +673,17 @@ fn shape_uniform_bytes_follow_the_wgsl_layout() {
     assert_eq!(f32_at(56), 0.3);
     // The vec4's alpha channel follows its RGB channels at byte 60, and
     // the `misc` vec2 begins at byte 64: `aa` at 64, `kind` at 68; the lit
-    // flag takes the struct's final slot at 72.
+    // flag takes the slot at 72; the 16-byte-aligned glow vec4 follows at
+    // 80 (spanning 80..96, so the struct is 96 bytes).
     assert_eq!(f32_at(60), 0.4);
     assert_eq!(f32_at(64), 0.25);
     assert_eq!(f32_at(68), 1.0);
     assert_eq!(f32_at(72), 1.0);
-    assert_eq!(data.len(), 80);
+    assert_eq!(f32_at(80), 0.5);
+    assert_eq!(f32_at(84), 0.6);
+    assert_eq!(f32_at(88), 0.7);
+    assert_eq!(f32_at(92), 0.8);
+    assert_eq!(data.len(), 96);
 }
 
 #[test]
@@ -863,6 +888,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     // draws: count 2, the header, then one 48-byte record per occluder, in
     // call order.
     let translated = Draw::Shape {
+        glow: black(),
         world: Transform::translate([10.0, 20.0]),
         center: [3.0, -4.0],
         params: [5.0, 2.0],
@@ -874,6 +900,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
         z: 0.0,
     };
     let rotated = Draw::Shape {
+        glow: black(),
         world: Transform::rotate(std::f32::consts::FRAC_PI_2),
         center: [1.0, 2.0],
         params: [4.0, 6.0],
@@ -885,6 +912,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
         z: 0.0,
     };
     let unflagged = Draw::Shape {
+        glow: black(),
         world: Transform::identity(),
         center: [0.0, 0.0],
         params: [1.0, 1.0],
@@ -897,6 +925,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     };
     // Flagged, but a circle: only rectangles occlude.
     let circle = Draw::Shape {
+        glow: black(),
         world: Transform::identity(),
         center: [0.0, 0.0],
         params: [1.0, 0.0],
@@ -910,6 +939,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     // Flagged, but collapsed to a line: the inverse does not exist, so the
     // shape occludes nothing.
     let degenerate = Draw::Shape {
+        glow: black(),
         world: Transform::scale([0.0, 1.0]),
         center: [0.0, 0.0],
         params: [1.0, 1.0],
@@ -991,6 +1021,7 @@ fn field_buffer_sizes_floor_at_the_wgsl_minimum_binding_size() {
 fn background_node_sorts_to_the_back_and_keeps_its_color() {
     let mut canvas = Canvas::new((100, 100));
     canvas.draw_scene(&Scene::new(SceneNode {
+        glow: black(),
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: WHITE,
@@ -1003,6 +1034,7 @@ fn background_node_sorts_to_the_back_and_keeps_its_color() {
             color: black(),
         }),
         children: vec![Box::new(SceneNode {
+            glow: black(),
             // Transformed on purpose: the background must ignore it.
             transform: Transform::translate([50.0, 50.0]),
             scale: [1.0, 1.0],
@@ -1049,6 +1081,7 @@ fn layers_are_hard_draw_partitions() {
                 speed: 1.0,
                 repeat: [0.0, 0.0],
                 root: SceneNode {
+                    glow: black(),
                     // High local z, but the layer's low order still puts
                     // it behind every group with a higher order.
                     transform: Transform::identity(),
@@ -1070,6 +1103,7 @@ fn layers_are_hard_draw_partitions() {
                 speed: 1.0,
                 repeat: [0.0, 0.0],
                 root: SceneNode {
+                    glow: black(),
                     // Low local z, but the layer's high order still puts
                     // it on top.
                     transform: Transform::identity(),
@@ -1116,6 +1150,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                 speed: 1.0,
                 repeat: [0.0, 0.0],
                 root: SceneNode {
+                    glow: black(),
                     transform: Transform::identity(),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
@@ -1126,6 +1161,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                     // Local ascending z: red (100) before green (200).
                     children: vec![
                         Box::new(SceneNode {
+                            glow: black(),
                             transform: Transform::identity(),
                             scale: [1.0, 1.0],
                             modulate: WHITE,
@@ -1140,6 +1176,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                             children: vec![],
                         }),
                         Box::new(SceneNode {
+                            glow: black(),
                             transform: Transform::identity(),
                             scale: [1.0, 1.0],
                             modulate: WHITE,
@@ -1161,6 +1198,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                 speed: 1.0,
                 repeat: [0.0, 0.0],
                 root: SceneNode {
+                    glow: black(),
                     transform: Transform::identity(),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
@@ -1210,6 +1248,7 @@ fn the_base_group_paints_first_at_equal_order() {
             speed: 1.0,
             repeat: [0.0, 0.0],
             root: SceneNode {
+                glow: black(),
                 // Negative local z, but the base group is declared
                 // before the layer, so at the equal order 0.0 it still
                 // paints first.
@@ -1250,6 +1289,7 @@ fn a_background_in_a_higher_layer_sets_the_clear_color() {
     let mut canvas = Canvas::new((100, 100));
     let scene = Scene {
         root: SceneNode {
+            glow: black(),
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -1266,6 +1306,7 @@ fn a_background_in_a_higher_layer_sets_the_clear_color() {
             speed: 1.0,
             repeat: [0.0, 0.0],
             root: SceneNode {
+                glow: black(),
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -1322,6 +1363,7 @@ fn a_camera_anchors_the_view_to_its_node() {
             speed: 1.0,
             repeat: [0.0, 0.0],
             root: SceneNode {
+                glow: black(),
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -1331,6 +1373,7 @@ fn a_camera_anchors_the_view_to_its_node() {
                 shape: None,
                 children: vec![
                     Box::new(SceneNode {
+                        glow: black(),
                         // A circle at the camera's position.
                         transform: Transform::translate([10.0, -4.0]),
                         scale: [1.0, 1.0],
@@ -1346,6 +1389,7 @@ fn a_camera_anchors_the_view_to_its_node() {
                         children: vec![],
                     }),
                     Box::new(SceneNode {
+                        glow: black(),
                         // The camera: a shapeless pivot at the circle's
                         // position.
                         transform: Transform::translate([10.0, -4.0]),
@@ -1382,6 +1426,7 @@ fn layer_speed_scales_the_camera_motion() {
     let mut canvas = Canvas::new((100, 100));
     let scene = Scene {
         root: SceneNode {
+            glow: black(),
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -1391,6 +1436,7 @@ fn layer_speed_scales_the_camera_motion() {
             shape: None,
             // The camera is a shapeless pivot under the scene's root.
             children: vec![Box::new(SceneNode {
+                glow: black(),
                 transform: Transform::translate([10.0, 0.0]),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -1409,6 +1455,7 @@ fn layer_speed_scales_the_camera_motion() {
                 speed: 2.0,
                 repeat: [0.0, 0.0],
                 root: SceneNode {
+                    glow: black(),
                     transform: Transform::translate([10.0, 0.0]),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
@@ -1430,6 +1477,7 @@ fn layer_speed_scales_the_camera_motion() {
                 speed: 0.5,
                 repeat: [0.0, 0.0],
                 root: SceneNode {
+                    glow: black(),
                     transform: Transform::translate([10.0, 0.0]),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
@@ -1481,6 +1529,7 @@ fn repeat_layer_scene(repeat: [f32; 2]) -> Scene {
             speed: 1.0,
             repeat,
             root: SceneNode {
+                glow: black(),
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -1550,6 +1599,7 @@ fn repeat_offsets_follow_the_camera() {
     // reaches it — at the window's bottom edge.
     let scene = Scene {
         root: SceneNode {
+            glow: black(),
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -1629,6 +1679,7 @@ fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
     // at each edge.
     let scene = Scene {
         root: SceneNode {
+            glow: black(),
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -1653,6 +1704,7 @@ fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
             speed: 1.0,
             repeat: [100.0, 0.0],
             root: SceneNode {
+                glow: black(),
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -1708,6 +1760,7 @@ fn an_object_wider_than_its_repeat_aborts() {
             speed: 1.0,
             repeat: [100.0, 0.0],
             root: SceneNode {
+                glow: black(),
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -1825,6 +1878,7 @@ fn the_camera_rotation_turns_the_view() {
     let mut canvas = Canvas::new((100, 100));
     let scene = Scene {
         root: SceneNode {
+            glow: black(),
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -1834,6 +1888,7 @@ fn the_camera_rotation_turns_the_view() {
             shape: None,
             children: vec![
                 Box::new(SceneNode {
+                    glow: black(),
                     // A circle ten units to the camera's right.
                     transform: Transform::translate([10.0, 0.0]),
                     scale: [1.0, 1.0],
@@ -1849,6 +1904,7 @@ fn the_camera_rotation_turns_the_view() {
                     children: vec![],
                 }),
                 Box::new(SceneNode {
+                    glow: black(),
                     // The camera, rotated a quarter turn: it turns the
                     // view rather than moving it.
                     transform: Transform::rotate(std::f32::consts::FRAC_PI_2),
@@ -1887,6 +1943,7 @@ fn a_missing_camera_path_renders_without_a_camera() {
     let mut canvas = Canvas::new((100, 100));
     let scene = Scene {
         root: SceneNode {
+            glow: black(),
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -1895,6 +1952,7 @@ fn a_missing_camera_path_renders_without_a_camera() {
             order: 0.0,
             shape: None,
             children: vec![Box::new(SceneNode {
+                glow: black(),
                 transform: Transform::translate([10.0, 0.0]),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -1932,6 +1990,7 @@ fn a_missing_camera_path_renders_without_a_camera() {
 fn node_scale_applies_to_the_shape_and_its_subtree() {
     let mut canvas = Canvas::new((100, 100));
     let scene = Scene::new(SceneNode {
+        glow: black(),
         // Scale 2x in x only; the transform still positions the node.
         transform: Transform::translate([10.0, 0.0]),
         scale: [2.0, 1.0],
@@ -1945,6 +2004,7 @@ fn node_scale_applies_to_the_shape_and_its_subtree() {
             color: black(),
         }),
         children: vec![Box::new(SceneNode {
+            glow: black(),
             transform: Transform::translate([1.0, 0.0]),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -1994,6 +2054,7 @@ fn node_order_accumulates_down_the_tree_like_the_transform() {
     // children inherit that total, so the z's are 1, 3, 7.
     let mut canvas = Canvas::new((100, 100));
     let scene = Scene::new(SceneNode {
+        glow: black(),
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: WHITE,
@@ -2006,6 +2067,7 @@ fn node_order_accumulates_down_the_tree_like_the_transform() {
             color: black(),
         }),
         children: vec![Box::new(SceneNode {
+            glow: black(),
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -2018,6 +2080,7 @@ fn node_order_accumulates_down_the_tree_like_the_transform() {
                 color: black(),
             }),
             children: vec![Box::new(SceneNode {
+                glow: black(),
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -2056,6 +2119,7 @@ fn node_modulate_multiplies_into_the_shape_and_its_subtree() {
     };
     let mut canvas = Canvas::new((100, 100));
     let scene = Scene::new(SceneNode {
+        glow: black(),
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: Color {
@@ -2073,6 +2137,7 @@ fn node_modulate_multiplies_into_the_shape_and_its_subtree() {
             color: white,
         }),
         children: vec![Box::new(SceneNode {
+            glow: black(),
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: Color {
@@ -2115,6 +2180,7 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
     // untouched: the opacity is not a color.
     let mut canvas = Canvas::new((100, 100));
     canvas.draw_scene(&Scene::new(SceneNode {
+        glow: black(),
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: Color {
@@ -2141,6 +2207,7 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
         children: vec![],
     }));
     canvas.draw_scene(&Scene::new(SceneNode {
+        glow: black(),
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: Color {
@@ -2186,6 +2253,7 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
     // and z must travel onto the draw untouched.
     let mut canvas = Canvas::new((100, 100));
     let scene = Scene::new(SceneNode {
+        glow: black(),
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: WHITE,
@@ -2210,6 +2278,7 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
         aa,
         tint,
         alpha,
+        glow,
         uv_rect,
         lit,
         z,
@@ -2225,6 +2294,8 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
     assert!((*aa - AA_BAND).abs() < 1e-6);
     assert_eq!(*tint, black());
     assert_eq!(*alpha, 1.0);
+    // The node carries no glow: it packs as black.
+    assert_eq!(*glow, black());
     assert_eq!(*uv_rect, [0.0, 0.0, 1.0, 1.0]);
     // The node is unlit, so the flag packs as 0.0.
     assert_eq!(*lit, 0.0);
@@ -2234,6 +2305,7 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
 #[test]
 fn sprite_scissor_is_the_texture_box_plus_aa_band() {
     let draw = Draw::Sprite {
+        glow: black(),
         world: Transform::translate([50.0, 50.0]),
         data: Arc::new([0u8; 16]),
         size: [40.0, 20.0],
@@ -2257,6 +2329,7 @@ fn sprite_scissor_under_rotation() {
     // (20.75 + 10.75) / sqrt(2) = 22.274 on both axes, centered on
     // (50, 50).
     let draw = Draw::Sprite {
+        glow: black(),
         world: Transform::rotate(std::f32::consts::FRAC_PI_4)
             .compose(&Transform::translate([50.0, 50.0])),
         data: Arc::new([0u8; 16]),
@@ -2279,8 +2352,9 @@ fn sprite_uniform_bytes_follow_the_wgsl_layout() {
     // test does: the mat2x2 `<f32>` spans 0..16 (column 0 @ 0, column 1
     // @ 8), `translation` @ 16, `size` @ 24, the tint vec4 (16 bytes,
     // 16-byte aligned) @ 32 spanning 32..48, the scalar alpha @ 48, the
-    // scalar lit @ 52, and the `uv_rect` vec4 (16-byte aligned) @ 64
-    // spanning 64..80; the struct size is 80.
+    // scalar lit @ 52, the `uv_rect` vec4 (16-byte aligned) @ 64 spanning
+    // 64..80, and the glow vec4 (16-byte aligned) @ 80 spanning 80..96;
+    // the struct size is 96.
     let inv = Transform::translate([1.5, -2.5]).invert().unwrap();
     let data = sprite_uniform_data(
         inv,
@@ -2292,10 +2366,16 @@ fn sprite_uniform_bytes_follow_the_wgsl_layout() {
             a: 0.3,
         },
         0.75,
+        Color {
+            r: 0.6,
+            g: 0.7,
+            b: 0.8,
+            a: 0.9,
+        },
         1.0,
         [0.25, 0.5, 0.75, 1.0],
     );
-    assert_eq!(data.len(), 80);
+    assert_eq!(data.len(), 96);
 
     let f32_at = |off: usize| {
         f32::from_le_bytes(data[off..off + 4].try_into().unwrap())
@@ -2321,13 +2401,18 @@ fn sprite_uniform_bytes_follow_the_wgsl_layout() {
     assert_eq!(f32_at(48), 0.75);
     assert_eq!(f32_at(52), 1.0);
     // Bytes 56..64 are the struct's alignment padding (zeroed by the
-    // `vec![0u8; 80]` init), so the 16-byte-aligned uv_rect starts at 64;
+    // `vec![0u8; 96]` init), so the 16-byte-aligned uv_rect starts at 64;
     // a whole-texture sprite passes the identity rect.
     assert_eq!(f32_at(56), 0.0);
     assert_eq!(f32_at(64), 0.25);
     assert_eq!(f32_at(68), 0.5);
     assert_eq!(f32_at(72), 0.75);
     assert_eq!(f32_at(76), 1.0);
+    // The glow vec4 follows the uv_rect, 16-byte aligned at 80 (80..96).
+    assert_eq!(f32_at(80), 0.6);
+    assert_eq!(f32_at(84), 0.7);
+    assert_eq!(f32_at(88), 0.8);
+    assert_eq!(f32_at(92), 0.9);
 }
 
 /// The font file used by the expand_text tests, loaded from the crate's
@@ -2360,6 +2445,7 @@ fn expand_text_splices_glyph_sprites_in_place() {
             z: 0.0,
         },
         Draw::Text {
+            glow: black(),
             world: Transform::identity(),
             font: font.clone(),
             text: "hi".to_string(),
@@ -2422,6 +2508,7 @@ fn expand_text_reuses_the_atlas_across_frames() {
     let mut frame = || {
         let mut canvas = Canvas::new((800, 600));
         canvas.draws = vec![Draw::Text {
+            glow: black(),
             world: Transform::identity(),
             font: font.clone(),
             text: "hello world".to_string(),
