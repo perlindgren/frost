@@ -72,9 +72,9 @@ const SPOUT_LOCAL: [f32; 2] =
 /// rotation is the identity, so this is exactly the unrotated
 /// pointer-follow position.
 fn can_transform(mx: f32, my: f32, angle: f32) -> frost::Transform {
-    frost::Transform::translate(-CAN_LOCAL[0] * CAN_SCALE, -CAN_LOCAL[1] * CAN_SCALE)
+    frost::Transform::translate([-CAN_LOCAL[0] * CAN_SCALE, -CAN_LOCAL[1] * CAN_SCALE])
         .compose(&frost::Transform::rotate(angle))
-        .compose(&frost::Transform::translate(mx, my))
+        .compose(&frost::Transform::translate([mx, my]))
 }
 
 /// The drops' emission rate, in drops per second, while the can is

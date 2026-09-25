@@ -51,7 +51,7 @@ impl frost::Process for Demo {
         // The whole circle (and the text riding on it) drifts up and down
         // around the screen center, like any other node in the tree.
         let circle = &mut ctx.scene().root.children[0];
-        circle.transform = frost::Transform::translate(0.0, (self.t * 0.5).sin() * 20.0);
+        circle.transform = frost::Transform::translate([0.0, (self.t * 0.5).sin() * 20.0]);
     }
 }
 

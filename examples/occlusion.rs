@@ -249,7 +249,7 @@ fn main() {
                 // center: the shadow follows the composed transform, so
                 // this is the tilted-silhouette case.
                 transform: frost::Transform::rotate(WALL_TILT)
-                    .compose(&frost::Transform::translate(260.0, 10.0)),
+                    .compose(&frost::Transform::translate([260.0, 10.0])),
                 shape: Some(frost::Shape::Rectangle {
                     center: [0.0, 0.0],
                     extent: [26.0, 150.0],

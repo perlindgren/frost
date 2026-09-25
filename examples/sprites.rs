@@ -27,10 +27,7 @@ impl frost::Process for Demo {
         // back in over a 1s cycle.
         let brick = &mut ctx.scene().root.children[0];
         brick.transform = frost::Transform::rotate(0.6 * self.t)
-            .compose(&frost::Transform::translate(
-                -160.0,
-                (self.t * 2.0).sin() * 20.0,
-            ));
+            .compose(&frost::Transform::translate([-160.0, (self.t * 2.0).sin() * 20.0]));
         if let Some(frost::Shape::Sprite { alpha, .. }) = &mut brick.shape {
             *alpha = self.brick_alpha.tick(dt);
         }
@@ -38,10 +35,7 @@ impl frost::Process for Demo {
         // The button sways side to side while it breathes in scale around
         // its center.
         let button = &mut ctx.scene().root.children[1];
-        button.transform = frost::Transform::translate(
-            160.0,
-            (self.t * 0.5).sin() * 30.0,
-        );
+        button.transform = frost::Transform::translate([160.0, (self.t * 0.5).sin() * 30.0]);
         let breath = 1.0 + 0.1 * (self.t * 2.0).sin();
         button.scale = [breath, breath];
         // The per-pixel tint warms and cools, showing the tint channel
@@ -59,7 +53,7 @@ impl frost::Process for Demo {
         // button's space, so it wobbles as the button sways and breathes.
         let rider = &mut button.children[0];
         rider.transform = frost::Transform::rotate(-1.5 * self.t)
-            .compose(&frost::Transform::translate(0.0, 120.0));
+            .compose(&frost::Transform::translate([0.0, 120.0]));
         log::trace!("process: dt {:?}", dt);
     }
 }
@@ -92,15 +86,15 @@ fn main() {
         }),
         children: vec![
             Box::new(frost::SceneNode {
-                transform: frost::Transform::translate(-160.0, 0.0),
+                transform: frost::Transform::translate([-160.0, 0.0]),
                 shape: Some(brick),
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
-                transform: frost::Transform::translate(160.0, 0.0),
+                transform: frost::Transform::translate([160.0, 0.0]),
                 shape: Some(button),
                 children: vec![Box::new(frost::SceneNode {
-                    transform: frost::Transform::translate(0.0, 120.0),
+                    transform: frost::Transform::translate([0.0, 120.0]),
                     scale: [0.5, 0.5],
                     shape: Some(rider),
                     ..Default::default()

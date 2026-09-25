@@ -150,7 +150,7 @@ impl frost::Process for Demo {
         // handle, the coal, and, crucially, the ember batch.
         let torch = &mut ctx.scene().root.children[0];
         torch.transform = frost::Transform::rotate(self.angle)
-            .compose(&frost::Transform::translate(self.pos[0], self.pos[1]));
+            .compose(&frost::Transform::translate(self.pos));
         // The pulse: the torch's scale oscillates about 1, and the ember
         // radii — and the whole torch — scale with the node.
         let s = 1.0 + 0.12 * (2.0 * self.t).sin();

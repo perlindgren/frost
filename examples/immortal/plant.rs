@@ -711,7 +711,7 @@ impl Plant {
         // never moves. The fit scale is constant — the growth is applied
         // to each slice individually below.
         node.transform = frost::Transform::rotate(base)
-            .compose(&frost::Transform::translate(anchor[0], anchor[1]));
+            .compose(&frost::Transform::translate(anchor));
 
         // Lay the chain out in the plant's own (unscaled) space: the first
         // slice's lower joint sits at the plant's origin, and each next
@@ -730,10 +730,10 @@ impl Plant {
             };
             let rot = frost::Transform::rotate(bend);
             let g = grown[i];
-            node.transform = frost::Transform::translate(-link.from[0], -link.from[1])
+            node.transform = frost::Transform::translate([-link.from[0], -link.from[1]])
                 .compose(&frost::Transform::scale_uniform(g))
                 .compose(&rot)
-                .compose(&frost::Transform::translate(anchor[0], anchor[1]));
+                .compose(&frost::Transform::translate(anchor));
             slice_tf[i] = node.transform;
             // The next anchor: this slice's upper joint, measured from its
             // own lower joint, scaled by the slice's growth, and rotated
@@ -764,7 +764,7 @@ impl Plant {
         let fg = flower_growth(self.t, start);
         if fg > 0.0 {
             let p = slice_tf.apply(pt);
-            child.transform = frost::Transform::translate(p[0], p[1]);
+            child.transform = frost::Transform::translate(p);
         }
         // The flower leaf, under the tomato: grows about the
         // spawn point, tinted light green to yellow.
@@ -1186,7 +1186,7 @@ mod tests {
         assert!((oy + 144.5).abs() < 1e-6, "stem y offset");
 
         let p = plant_complete();
-        let slot_tf = frost::Transform::translate(10.0, -20.0);
+        let slot_tf = frost::Transform::translate([10.0, -20.0]);
         let slot_node = frost::SceneNode {
             transform: slot_tf,
             ..Default::default()
@@ -1243,7 +1243,7 @@ mod tests {
         // back, and clear the harvested mark — the failed-drop path.
         p.harvest(0);
         let mut pivot = *node.children[slot_index(0)].children.remove(SLOT_TOMATO);
-        pivot.transform = frost::Transform::translate(123.0, -45.0);
+        pivot.transform = frost::Transform::translate([123.0, -45.0]);
         pivot.scale = [0.15, 0.15];
         node.children[slot_index(0)].children.push(Box::new(pivot));
         p.unharvest(0);

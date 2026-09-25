@@ -78,7 +78,7 @@ impl frost::Process for Demo {
             )
             .expect("failed to load assets/fonts/JameGem08_2026-Regular.ttf");
             ctx.scene().root.children.push(Box::new(frost::SceneNode {
-                transform: frost::Transform::translate(-w / 2.0 + 40.0, h / 2.0 - 40.0),
+                transform: frost::Transform::translate([-w / 2.0 + 40.0, h / 2.0 - 40.0]),
                 shape: Some(help),
                 ..Default::default()
             }));

@@ -708,7 +708,7 @@ impl Bugs {
                 }
                 None => (bug.facing * self.scale, self.scale * g, 0.0),
             };
-            child.transform = frost::Transform::translate(bug.pos[0], bug.pos[1] + lift);
+            child.transform = frost::Transform::translate([bug.pos[0], bug.pos[1] + lift]);
             child.scale = [sx, sy];
             child.modulate = TINT;
             let frame = frames[bug.frame as usize];

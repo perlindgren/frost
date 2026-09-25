@@ -439,7 +439,7 @@ impl Canvas {
                 draw_node(
                     pixel,
                     &layer.root,
-                    &Transform::translate(ox, oy).compose(&view),
+                    &Transform::translate([ox, oy]).compose(&view),
                     0.0,
                     WHITE,
                     &mut self.layer_draws[index],
@@ -594,7 +594,7 @@ fn draw_node(
     // then the parent's world transform. Through `world` the scale
     // therefore applies to the node's shape and to its whole subtree, just
     // like the transform.
-    let local = Transform::scale(node.scale[0], node.scale[1]).compose(&node.transform);
+    let local = Transform::scale(node.scale).compose(&node.transform);
     let world = local.compose(parent);
     if let Some(shape) = &node.shape {
         // Scale the anti-alias band with the transform's scale so it stays a
@@ -895,7 +895,7 @@ fn layer_repeat_offsets(layer: &Layer, view: &Transform, size: (f32, f32)) -> Ve
 /// need not sit inside the tile `[0, period)`, so a copy displaced by
 /// `k * period` can reach the box even when that tile does not.
 fn check_layer_repeat_extent(node: &SceneNode, parent: &Transform, repeat: [f32; 2]) -> Option<([f32; 2], [f32; 2])> {
-    let local = Transform::scale(node.scale[0], node.scale[1]).compose(&node.transform);
+    let local = Transform::scale(node.scale).compose(&node.transform);
     let world = local.compose(parent);
     let mut extent = None;
     if let Some((kind, center, half)) = node.shape.as_ref().and_then(shape_local_box) {
@@ -1047,7 +1047,7 @@ fn expand_text_list(
                         origin[0] + glyph.x + cell.left as f32 + gw / 2.0,
                         origin[1] + glyph.y + cell.top as f32 - gh / 2.0,
                     ];
-                    let glyph_world = Transform::translate(ink[0], ink[1])
+                    let glyph_world = Transform::translate(ink)
                         .compose(&world)
                         .compose(&user_to_pixel);
                     // Inset the cell by half a texel so the quad's edges
@@ -1303,7 +1303,7 @@ mod tests {
     /// The user-to-pixel transform of a `(100, 100)` canvas:
     /// `(x, y) -> (x + 50, 50 - y)`.
     fn pixel_map() -> Transform {
-        Transform::scale(1.0, -1.0).compose(&Transform::translate(50.0, 50.0))
+        Transform::scale([1.0, -1.0]).compose(&Transform::translate([50.0, 50.0]))
     }
 
     /// A particle at `pos` with a full lifetime of `life` seconds (its
@@ -1367,7 +1367,7 @@ mod tests {
         // A node translated to (10, 20) with a particle at local (5, 5):
         // the particle lands at user (15, 25), pixel (65, 25).
         let node = SceneNode {
-            transform: Transform::translate(10.0, 20.0),
+            transform: Transform::translate([10.0, 20.0]),
             shape: Some(Shape::Particles {
                 system: ParticleSystem {
                     particles: vec![particle([5.0, 5.0], 4.0, 2.0)],
@@ -1762,7 +1762,7 @@ mod tests {
             10.0,
         );
         let scene = Scene::new(SceneNode {
-            transform: Transform::translate(-10.0, 0.0),
+            transform: Transform::translate([-10.0, 0.0]),
             shape: Some(Shape::Light {
                 light: Light::point(
                     Color {
@@ -1824,7 +1824,7 @@ mod tests {
         // untinted (the modulate is white), the point light's cone is wide
         // open, and the node's order becomes the draw's z.
         let node = SceneNode {
-            transform: Transform::translate(10.0, 20.0),
+            transform: Transform::translate([10.0, 20.0]),
             order: 3.0,
             shape: Some(Shape::Light {
                 light: Light::point(

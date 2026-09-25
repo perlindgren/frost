@@ -35,19 +35,13 @@ impl frost::Process for Demo {
 
         // Move the center circle according to the clamped spin angle.
         let circle = &mut ctx.scene().root.children[0];
-        circle.transform = frost::Transform::translate(
-            (self.spin % TAU).sin() * 140.0,
-            (self.spin % TAU).cos() * 100.0,
-        );
+        circle.transform = frost::Transform::translate([(self.spin % TAU).sin() * 140.0, (self.spin % TAU).cos() * 100.0]);
 
         // Rotate around the parent, then push out to the orbit radius: the
         // rectangle orbits while the rotation tumbles its own shape.
         let orbit = &mut ctx.scene().root.children[0].children[0];
         orbit.transform =
-            frost::Transform::rotate(self.spin).compose(&frost::Transform::translate(
-                (self.spin * 3.0 % TAU).sin() * 200.0,
-                (self.spin * 3.0 % TAU).cos() * 200.0,
-            ));
+            frost::Transform::rotate(self.spin).compose(&frost::Transform::translate([(self.spin * 3.0 % TAU).sin() * 200.0, (self.spin * 3.0 % TAU).cos() * 200.0]));
         // The small circle counter-rotates in the rectangle's space, so it
         // wobbles as it rides the orbit.
         orbit.children[0].transform = frost::Transform::rotate(-5.0 * self.spin);

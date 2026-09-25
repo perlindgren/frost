@@ -250,7 +250,7 @@ impl Tomato {
             g * TOMATO_MAX_SCALE,
         ];
         let bg = &mut pivot.children[TOMATO_BG];
-        bg.transform = frost::Transform::translate(ox, oy);
+        bg.transform = frost::Transform::translate([ox, oy]);
         if g > 0.0 {
             if bg.shape.is_none() {
                 bg.shape = Some(body.clone());
@@ -262,7 +262,7 @@ impl Tomato {
         // The foreground: the dark calyx and stem, drawn on top,
         // unmodulated.
         let fg_leaf = &mut pivot.children[TOMATO_FG];
-        fg_leaf.transform = frost::Transform::translate(ox, oy);
+        fg_leaf.transform = frost::Transform::translate([ox, oy]);
         if g > 0.0 {
             if fg_leaf.shape.is_none() {
                 fg_leaf.shape = Some(fg.clone());

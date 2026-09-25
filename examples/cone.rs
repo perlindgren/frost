@@ -187,7 +187,7 @@ impl frost::Process for Demo {
         // per frame anymore.
         let player = &mut ctx.scene().root.children[0];
         player.transform = frost::Transform::rotate(self.rot)
-            .compose(&frost::Transform::translate(self.pos[0], self.pos[1]));
+            .compose(&frost::Transform::translate(self.pos));
 
         log::trace!(
             "process: dt {:?} pos {:?} rot {:?} vel {:?}",
@@ -210,7 +210,7 @@ fn panel(pos: [f32; 2], color: frost::Color) -> Box<frost::SceneNode> {
             extent: [110.0, 26.0],
             color,
         }),
-        transform: frost::Transform::translate(pos[0], pos[1]),
+        transform: frost::Transform::translate(pos),
         lit: true,
         ..Default::default()
     })
@@ -222,7 +222,7 @@ fn wall(center: [f32; 2], extent: [f32; 2], tilt: f32) -> Box<frost::SceneNode> 
     Box::new(frost::SceneNode {
         // Lean by `tilt` about the wall's own center, then place it.
         transform: frost::Transform::rotate(tilt)
-            .compose(&frost::Transform::translate(center[0], center[1])),
+            .compose(&frost::Transform::translate(center)),
         shape: Some(frost::Shape::Rectangle {
             center: [0.0, 0.0],
             extent,
@@ -275,7 +275,7 @@ fn main() {
                 // the square's local space — along its +x, the facing —
                 // and the square's rotation, folded in by parenting, is
                 // what aims the beam. No per-frame angle bookkeeping.
-                transform: frost::Transform::translate(28.0, 0.0),
+                transform: frost::Transform::translate([28.0, 0.0]),
                 shape: Some(frost::Shape::Light {
                     light: frost::Light::cone(
                         TORCH,

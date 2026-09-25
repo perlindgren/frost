@@ -106,10 +106,7 @@ impl frost::Process for Demo {
         // around the ball by its transform.
         let orbit = &mut ctx.scene().root.children[3];
         let angle = self.t * ORBIT_SPEED;
-        orbit.transform = frost::Transform::translate(
-            ORBIT_CENTER[0] + ORBIT_AXES[0] * angle.cos(),
-            ORBIT_CENTER[1] + ORBIT_AXES[1] * angle.sin(),
-        );
+        orbit.transform = frost::Transform::translate([ORBIT_CENTER[0] + ORBIT_AXES[0] * angle.cos(), ORBIT_CENTER[1] + ORBIT_AXES[1] * angle.sin()]);
 
         // The chasing light: an immediate draw in the window's user space,
         // eased toward its target with frame-rate-independent smoothing.
@@ -217,10 +214,7 @@ fn main() {
             Box::new(frost::SceneNode {
                 // The orbiting light: a node that is never drawn; its
                 // transform is updated each frame to carry the light around.
-                transform: frost::Transform::translate(
-                    ORBIT_CENTER[0] + ORBIT_AXES[0],
-                    ORBIT_CENTER[1],
-                ),
+                transform: frost::Transform::translate([ORBIT_CENTER[0] + ORBIT_AXES[0], ORBIT_CENTER[1]]),
                 shape: Some(frost::Shape::Light {
                     light: frost::Light::point(ORBIT_LIGHT, 1.3, 190.0),
                 }),

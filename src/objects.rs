@@ -98,11 +98,11 @@ impl Transform {
         }
     }
 
-    /// A translation by `(x, y)`.
-    pub const fn translate(x: f32, y: f32) -> Self {
+    /// A translation by `offset`, `[x, y]` in y-up user units.
+    pub const fn translate(offset: [f32; 2]) -> Self {
         Self {
             m: [[1.0, 0.0], [0.0, 1.0]],
-            t: [x, y],
+            t: offset,
         }
     }
 
@@ -115,17 +115,17 @@ impl Transform {
         }
     }
 
-    /// A scale by `x` horizontally and `y` vertically.
-    pub const fn scale(x: f32, y: f32) -> Self {
+    /// A scale by `scale[0]` horizontally and `scale[1]` vertically.
+    pub const fn scale(scale: [f32; 2]) -> Self {
         Self {
-            m: [[x, 0.0], [0.0, y]],
+            m: [[scale[0], 0.0], [0.0, scale[1]]],
             t: [0.0, 0.0],
         }
     }
 
     /// A uniform scale by `s`.
     pub const fn scale_uniform(s: f32) -> Self {
-        Self::scale(s, s)
+        Self::scale([s, s])
     }
 
     /// The node-local coordinates of an image anchor: the offset from a
@@ -948,11 +948,11 @@ impl Scene {
         let mut parent = Transform::identity();
         for &index in &path.children {
             let local =
-                Transform::scale(node.scale[0], node.scale[1]).compose(&node.transform);
+                Transform::scale(node.scale).compose(&node.transform);
             parent = local.compose(&parent);
             node = node.children.get(index)?;
         }
-        let local = Transform::scale(node.scale[0], node.scale[1]).compose(&node.transform);
+        let local = Transform::scale(node.scale).compose(&node.transform);
         Some(local.compose(&parent))
     }
 

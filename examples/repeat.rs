@@ -94,7 +94,7 @@ impl frost::Process for Demo {
         self.cam[1] += vel[1] * dt;
         // The pivot under the scene's root carries the camera.
         ctx.scene().root.children[0]
-            .transform = frost::Transform::translate(self.cam[0], self.cam[1]);
+            .transform = frost::Transform::translate(self.cam);
     }
 }
 
@@ -125,7 +125,7 @@ impl Demo {
             let mut row = 0;
             while y < y1 - SIZE / 2.0 {
                 layer.children.push(Box::new(frost::SceneNode {
-                    transform: frost::Transform::translate(x, y),
+                    transform: frost::Transform::translate([x, y]),
                     shape: Some(frost::Shape::Rectangle {
                         center: [0.0, 0.0],
                         extent: [SIZE / 2.0, SIZE / 2.0],
@@ -145,7 +145,7 @@ impl Demo {
         if rx > 0.0 {
             let cy = (y0 + y1) / 2.0;
             layer.children.push(Box::new(frost::SceneNode {
-                transform: frost::Transform::translate(x1 - HERO / 2.0, cy),
+                transform: frost::Transform::translate([x1 - HERO / 2.0, cy]),
                 shape: Some(frost::Shape::Circle {
                     center: [0.0, 0.0],
                     radius: HERO,
@@ -172,7 +172,7 @@ impl Demo {
     ) {
         let hud = &mut ctx.scene().layers[HUD_LAYER].root;
         hud.children.push(Box::new(frost::SceneNode {
-            transform: frost::Transform::translate(0.0, h / 2.0 - 40.0),
+            transform: frost::Transform::translate([0.0, h / 2.0 - 40.0]),
             shape: Some(
                 frost::Shape::text(
                     &self.font,
@@ -184,7 +184,7 @@ impl Demo {
             ..Default::default()
         }));
         hud.children.push(Box::new(frost::SceneNode {
-            transform: frost::Transform::translate(0.0, h / 2.0 - 70.0),
+            transform: frost::Transform::translate([0.0, h / 2.0 - 70.0]),
             shape: Some(
                 frost::Shape::text(
                     &self.font,

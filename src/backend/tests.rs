@@ -78,7 +78,7 @@ fn scissor_is_clamped_to_the_render_area() {
 #[test]
 fn transform_compose_applies_self_then_other() {
     let rot = Transform::rotate(std::f32::consts::FRAC_PI_2);
-    let tr = Transform::translate(10.0, 0.0);
+    let tr = Transform::translate([10.0, 0.0]);
     let world = rot.compose(&tr);
     // (1, 0) rotates to (0, 1), then translates to (10, 1).
     let p = world.apply([1.0, 0.0]);
@@ -91,7 +91,7 @@ fn transform_compose_respects_order() {
     // Rotation and translation do not commute, so this pins down which
     // order the composition applies them in.
     let rot = Transform::rotate(std::f32::consts::FRAC_PI_2);
-    let tr = Transform::translate(10.0, 0.0);
+    let tr = Transform::translate([10.0, 0.0]);
     // Translate first, then rotate: (1, 0) -> (11, 0) -> (0, 11).
     let world = tr.compose(&rot);
     let p = world.apply([1.0, 0.0]);
@@ -106,9 +106,9 @@ fn transform_compose_respects_order() {
 
 #[test]
 fn transform_inverse_round_trips() {
-    let world = Transform::translate(3.0, -4.0)
+    let world = Transform::translate([3.0, -4.0])
         .compose(&Transform::rotate(0.7))
-        .compose(&Transform::scale(2.0, 0.5));
+        .compose(&Transform::scale([2.0, 0.5]));
     let Some(inv) = world.invert() else {
         panic!("expected an inverse");
     };
@@ -121,7 +121,7 @@ fn transform_inverse_round_trips() {
 
 #[test]
 fn degenerate_transform_has_no_inverse() {
-    assert!(Transform::scale(0.0, 1.0).invert().is_none());
+    assert!(Transform::scale([0.0, 1.0]).invert().is_none());
     assert!(Transform::identity().invert().is_some());
 }
 
@@ -129,7 +129,7 @@ fn degenerate_transform_has_no_inverse() {
 fn transform_scales_are_the_column_norms() {
     // Scale first, then rotate: the stretch along each axis is exactly
     // the scale factors, no matter the rotation.
-    let world = Transform::scale(2.0, 3.0).compose(&Transform::rotate(0.5));
+    let world = Transform::scale([2.0, 3.0]).compose(&Transform::rotate(0.5));
     let [sx, sy] = world.scales();
     assert!((sx - 2.0).abs() < 1e-4);
     assert!((sy - 3.0).abs() < 1e-4);
@@ -139,7 +139,7 @@ fn transform_scales_are_the_column_norms() {
 fn draw_scene_composes_transforms_down_the_tree() {
     let mut canvas = Canvas::new((100, 100));
     let scene = Scene::new(SceneNode {
-        transform: Transform::translate(10.0, 0.0),
+        transform: Transform::translate([10.0, 0.0]),
         scale: [1.0, 1.0],
         modulate: WHITE,
         lit: false,
@@ -216,7 +216,7 @@ fn draw_scene_rotates_a_translated_child() {
         order: 0.0,
         shape: None,
         children: vec![Box::new(SceneNode {
-            transform: Transform::translate(10.0, 0.0),
+            transform: Transform::translate([10.0, 0.0]),
             scale: [1.0, 1.0],
             modulate: WHITE,
             lit: false,
@@ -354,7 +354,7 @@ fn context_reports_held_mouse_button() {
 #[test]
 fn shape_scissor_under_non_uniform_scale() {
     let draw = Draw::Shape {
-        world: Transform::scale(2.0, 1.0),
+        world: Transform::scale([2.0, 1.0]),
         center: [25.0, 50.0],
         params: [10.0, 0.0],
         kind: 0.0,
@@ -592,7 +592,7 @@ fn shape_uniform_bytes_follow_the_wgsl_layout() {
     // at 0 and column 1 at 8; `translation` @ 16; `center` @ 24;
     // `params` @ 32; vec4<f32> (16 bytes, 16-byte aligned) `color` @ 48
     // (spanning 48..64); `misc` vec2 @ 64; struct span rounds up to 80.
-    let inv = Transform::translate(1.5, -2.5).invert().unwrap();
+    let inv = Transform::translate([1.5, -2.5]).invert().unwrap();
     let data = shape_uniform_data(inv, [7.0, 8.0], [9.0, 10.0], 1.0, 0.25, Color {
         r: 0.1,
         g: 0.2,
@@ -829,7 +829,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     // draws: count 2, the header, then one 48-byte record per occluder, in
     // call order.
     let translated = Draw::Shape {
-        world: Transform::translate(10.0, 20.0),
+        world: Transform::translate([10.0, 20.0]),
         center: [3.0, -4.0],
         params: [5.0, 2.0],
         kind: 1.0,
@@ -876,7 +876,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     // Flagged, but collapsed to a line: the inverse does not exist, so the
     // shape occludes nothing.
     let degenerate = Draw::Shape {
-        world: Transform::scale(0.0, 1.0),
+        world: Transform::scale([0.0, 1.0]),
         center: [0.0, 0.0],
         params: [1.0, 1.0],
         kind: 1.0,
@@ -970,7 +970,7 @@ fn background_node_sorts_to_the_back_and_keeps_its_color() {
         }),
         children: vec![Box::new(SceneNode {
             // Transformed on purpose: the background must ignore it.
-            transform: Transform::translate(50.0, 50.0),
+            transform: Transform::translate([50.0, 50.0]),
             scale: [1.0, 1.0],
             modulate: WHITE,
             lit: false,
@@ -1298,7 +1298,7 @@ fn a_camera_anchors_the_view_to_its_node() {
                 children: vec![
                     Box::new(SceneNode {
                         // A circle at the camera's position.
-                        transform: Transform::translate(10.0, -4.0),
+                        transform: Transform::translate([10.0, -4.0]),
                         scale: [1.0, 1.0],
                         modulate: WHITE,
                         lit: false,
@@ -1314,7 +1314,7 @@ fn a_camera_anchors_the_view_to_its_node() {
                     Box::new(SceneNode {
                         // The camera: a shapeless pivot at the circle's
                         // position.
-                        transform: Transform::translate(10.0, -4.0),
+                        transform: Transform::translate([10.0, -4.0]),
                         scale: [1.0, 1.0],
                         modulate: WHITE,
                         lit: false,
@@ -1357,7 +1357,7 @@ fn layer_speed_scales_the_camera_motion() {
             shape: None,
             // The camera is a shapeless pivot under the scene's root.
             children: vec![Box::new(SceneNode {
-                transform: Transform::translate(10.0, 0.0),
+                transform: Transform::translate([10.0, 0.0]),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
                 lit: false,
@@ -1375,7 +1375,7 @@ fn layer_speed_scales_the_camera_motion() {
                 speed: 2.0,
                 repeat: [0.0, 0.0],
                 root: SceneNode {
-                    transform: Transform::translate(10.0, 0.0),
+                    transform: Transform::translate([10.0, 0.0]),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
                     lit: false,
@@ -1396,7 +1396,7 @@ fn layer_speed_scales_the_camera_motion() {
                 speed: 0.5,
                 repeat: [0.0, 0.0],
                 root: SceneNode {
-                    transform: Transform::translate(10.0, 0.0),
+                    transform: Transform::translate([10.0, 0.0]),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
                     lit: false,
@@ -1524,7 +1524,7 @@ fn repeat_offsets_follow_the_camera() {
             order: 0.0,
             shape: None,
             children: vec![Box::new(SceneNode {
-                transform: Transform::translate(60.0, 0.0),
+                transform: Transform::translate([60.0, 0.0]),
                 ..Default::default()
             })],
         },
@@ -1605,7 +1605,7 @@ fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
             // A camera at 145 puts the window at layer x in [95, 195],
             // straddling the boundary.
             children: vec![Box::new(SceneNode {
-                transform: Transform::translate(145.0, 0.0),
+                transform: Transform::translate([145.0, 0.0]),
                 ..Default::default()
             })],
         },
@@ -1730,7 +1730,7 @@ fn a_camera_followed_object_in_a_repeating_layer_stays_at_the_window_center() {
                 children: vec![
                     // The moving object, at layer x = pos.
                     Box::new(SceneNode {
-                        transform: Transform::translate(pos, 0.0),
+                        transform: Transform::translate([pos, 0.0]),
                         shape: Some(Shape::Circle {
                             center: [0.0, 0.0],
                             radius: 1.0,
@@ -1740,7 +1740,7 @@ fn a_camera_followed_object_in_a_repeating_layer_stays_at_the_window_center() {
                     }),
                     // The shapeless camera pivot, following the object.
                     Box::new(SceneNode {
-                        transform: Transform::translate(pos, 0.0),
+                        transform: Transform::translate([pos, 0.0]),
                         ..Default::default()
                     }),
                 ],
@@ -1801,7 +1801,7 @@ fn the_camera_rotation_turns_the_view() {
             children: vec![
                 Box::new(SceneNode {
                     // A circle ten units to the camera's right.
-                    transform: Transform::translate(10.0, 0.0),
+                    transform: Transform::translate([10.0, 0.0]),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
                     lit: false,
@@ -1861,7 +1861,7 @@ fn a_missing_camera_path_renders_without_a_camera() {
             order: 0.0,
             shape: None,
             children: vec![Box::new(SceneNode {
-                transform: Transform::translate(10.0, 0.0),
+                transform: Transform::translate([10.0, 0.0]),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
                 lit: false,
@@ -1899,7 +1899,7 @@ fn node_scale_applies_to_the_shape_and_its_subtree() {
     let mut canvas = Canvas::new((100, 100));
     let scene = Scene::new(SceneNode {
         // Scale 2x in x only; the transform still positions the node.
-        transform: Transform::translate(10.0, 0.0),
+        transform: Transform::translate([10.0, 0.0]),
         scale: [2.0, 1.0],
         modulate: WHITE,
         lit: false,
@@ -1911,7 +1911,7 @@ fn node_scale_applies_to_the_shape_and_its_subtree() {
             color: black(),
         }),
         children: vec![Box::new(SceneNode {
-            transform: Transform::translate(1.0, 0.0),
+            transform: Transform::translate([1.0, 0.0]),
             scale: [1.0, 1.0],
             modulate: WHITE,
             lit: false,
@@ -2200,7 +2200,7 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
 #[test]
 fn sprite_scissor_is_the_texture_box_plus_aa_band() {
     let draw = Draw::Sprite {
-        world: Transform::translate(50.0, 50.0),
+        world: Transform::translate([50.0, 50.0]),
         data: Arc::new([0u8; 16]),
         size: [40.0, 20.0],
         texture_size: [40, 20],
@@ -2224,7 +2224,7 @@ fn sprite_scissor_under_rotation() {
     // (50, 50).
     let draw = Draw::Sprite {
         world: Transform::rotate(std::f32::consts::FRAC_PI_4)
-            .compose(&Transform::translate(50.0, 50.0)),
+            .compose(&Transform::translate([50.0, 50.0])),
         data: Arc::new([0u8; 16]),
         size: [40.0, 20.0],
         texture_size: [40, 20],
@@ -2247,7 +2247,7 @@ fn sprite_uniform_bytes_follow_the_wgsl_layout() {
     // 16-byte aligned) @ 32 spanning 32..48, the scalar alpha @ 48, the
     // scalar lit @ 52, and the `uv_rect` vec4 (16-byte aligned) @ 64
     // spanning 64..80; the struct size is 80.
-    let inv = Transform::translate(1.5, -2.5).invert().unwrap();
+    let inv = Transform::translate([1.5, -2.5]).invert().unwrap();
     let data = sprite_uniform_data(
         inv,
         [12.0, 34.0],

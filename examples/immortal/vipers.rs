@@ -234,7 +234,7 @@ impl Vipers {
                 child.shape = None;
                 continue;
             }
-            child.transform = frost::Transform::translate(bee.pos[0], bee.pos[1]);
+            child.transform = frost::Transform::translate(bee.pos);
             child.scale = [bee.facing * self.scale, self.scale];
             if bee.shown != bee.frame {
                 child.shape = Some(frames[bee.frame as usize].clone());

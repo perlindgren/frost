@@ -24,7 +24,7 @@ impl frost::Process for Demo {
         // any other node in the tree.
         let line = &mut ctx.scene().root.children[0];
         line.transform =
-            frost::Transform::translate(0.0, (self.t % std::f32::consts::TAU).sin() * 40.0);
+            frost::Transform::translate([0.0, (self.t % std::f32::consts::TAU).sin() * 40.0]);
 
         // The S, U, and B letters — the first three children; the zero
         // keeps its default white modulate — are three channels, 120
@@ -115,7 +115,7 @@ fn main() {
 
             children: vec![
                 Box::new(frost::SceneNode {
-                    transform: frost::Transform::translate(0.0, 50.0),
+                    transform: frost::Transform::translate([0.0, 50.0]),
                     shape: Some(s),
                     ..Default::default()
                 }),
@@ -124,12 +124,12 @@ fn main() {
                     ..Default::default()
                 }),
                 Box::new(frost::SceneNode {
-                    transform: frost::Transform::translate(0.0, -50.0),
+                    transform: frost::Transform::translate([0.0, -50.0]),
                     shape: Some(b),
                     ..Default::default()
                 }),
                 Box::new(frost::SceneNode {
-                    transform: frost::Transform::translate(-10.0, -90.0),
+                    transform: frost::Transform::translate([-10.0, -90.0]),
                     shape: Some(zero),
                     ..Default::default()
                 }),

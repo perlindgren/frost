@@ -434,9 +434,9 @@ const SPOUT_LOCAL: [f32; 2] = [SPOUT[0] - CAN_IMAGE[0] / 2.0, CAN_IMAGE[1] / 2.0
 /// rotation is the identity, so this is exactly the unrotated
 /// pointer-follow position.
 fn can_transform(mx: f32, my: f32, angle: f32) -> frost::Transform {
-    frost::Transform::translate(-CAN_LOCAL[0] * CAN_SCALE, -CAN_LOCAL[1] * CAN_SCALE)
+    frost::Transform::translate([-CAN_LOCAL[0] * CAN_SCALE, -CAN_LOCAL[1] * CAN_SCALE])
         .compose(&frost::Transform::rotate(angle))
-        .compose(&frost::Transform::translate(mx, my))
+        .compose(&frost::Transform::translate([mx, my]))
 }
 
 /// The drops' emission rate, in drops per second, while the can is
@@ -755,7 +755,7 @@ fn nearest_free_slot(p: [f32; 2], w: f32, h: f32, planted: &[bool; PLANT_POS.len
 /// mapped through the panel's world transform, the same scale-then-
 /// transform composition the renderer draws it with.
 fn slot_hovered(items: &frost::SceneNode, i: usize, p: [f32; 2]) -> bool {
-    let world = frost::Transform::scale(items.scale[0], items.scale[1]).compose(&items.transform);
+    let world = frost::Transform::scale(items.scale).compose(&items.transform);
     let [cx, cy] = world.apply(slot_local(i));
     (p[0] - cx).abs() <= ITEMS_SIZE[0] * items.scale[0] / 2.0
         && (p[1] - cy).abs()
@@ -838,9 +838,9 @@ const SPRAY: frost::Color = frost::Color {
 /// shifts back to the pointer. At `angle = 0` the rotation is the
 /// identity, so this is exactly the unrotated pointer-follow position.
 fn spray_transform(mx: f32, my: f32, angle: f32) -> frost::Transform {
-    frost::Transform::translate(-SPRAY_PIVOT_LOCAL[0], -SPRAY_PIVOT_LOCAL[1])
+    frost::Transform::translate([-SPRAY_PIVOT_LOCAL[0], -SPRAY_PIVOT_LOCAL[1]])
         .compose(&frost::Transform::rotate(angle))
-        .compose(&frost::Transform::translate(mx, my))
+        .compose(&frost::Transform::translate([mx, my]))
 }
 
 /// The nozzle tip's world (user) position and the direction the spray
@@ -1601,15 +1601,12 @@ impl Demo {
         items.scale = [s, s];
         // Mid left: `MARGIN` clear of the left border, centered vertically.
         items.transform =
-            frost::Transform::translate(-(w / 2.0) + MARGIN + ITEMS_SIZE[0] * s / 2.0, 0.0);
+            frost::Transform::translate([-(w / 2.0) + MARGIN + ITEMS_SIZE[0] * s / 2.0, 0.0]);
 
         // Bottom right: `MARGIN` clear of the right and bottom borders, at
         // the panel's natural size.
         let held_panel = &mut ctx.scene().root.children[CHILD_HELD];
-        held_panel.transform = frost::Transform::translate(
-            w / 2.0 - MARGIN - HELD_SIZE[0] * held_panel.scale[0] / 2.0,
-            -h / 2.0 + MARGIN + HELD_SIZE[1] * held_panel.scale[1] / 2.0,
-        );
+        held_panel.transform = frost::Transform::translate([w / 2.0 - MARGIN - HELD_SIZE[0] * held_panel.scale[0] / 2.0, -h / 2.0 + MARGIN + HELD_SIZE[1] * held_panel.scale[1] / 2.0]);
 
         // Bottom left: just right of the items panel — `BASKET_GAP` clear
         // of its right edge — and `MARGIN` clear of the bottom border,
@@ -1618,16 +1615,13 @@ impl Demo {
         let bs = basket::basket_scale(h);
         let bc = basket::basket_center(w, h);
         basket.scale = [bs, bs];
-        basket.transform = frost::Transform::translate(bc[0], bc[1]);
+        basket.transform = frost::Transform::translate(bc);
 
         // Top right: `MARGIN` clear of the top and right borders, at
         // `IMMORTALITY_SCALE` of the badge's natural size.
         let badge = &mut ctx.scene().root.children[CHILD_BADGE];
         badge.scale = [IMMORTALITY_SCALE, IMMORTALITY_SCALE];
-        badge.transform = frost::Transform::translate(
-            w / 2.0 - MARGIN - IMMORTALITY_SIZE[0] * IMMORTALITY_SCALE / 2.0,
-            h / 2.0 - MARGIN - IMMORTALITY_SIZE[1] * IMMORTALITY_SCALE / 2.0,
-        );
+        badge.transform = frost::Transform::translate([w / 2.0 - MARGIN - IMMORTALITY_SIZE[0] * IMMORTALITY_SCALE / 2.0, h / 2.0 - MARGIN - IMMORTALITY_SIZE[1] * IMMORTALITY_SCALE / 2.0]);
 
         // The plants' root joints in user space, where the grass stretch
         // maps each `PLANT_POS` pixel: the plants stay glued to them, and
@@ -1653,8 +1647,8 @@ impl Demo {
         // alike: the title above the window's center, the button and its
         // label on the button's center below it.
         overlay.children[OVERLAY_TITLE].transform =
-            frost::Transform::translate(0.0, OVERLAY_TITLE_Y);
-        let button = frost::Transform::translate(0.0, PLAY_Y);
+            frost::Transform::translate([0.0, OVERLAY_TITLE_Y]);
+        let button = frost::Transform::translate([0.0, PLAY_Y]);
         overlay.children[OVERLAY_BUTTON].transform = button;
         overlay.children[OVERLAY_LABEL].transform = button;
         if self.over {
@@ -1994,10 +1988,7 @@ impl Demo {
                 }
             }
             ctx.scene().root.children[CHILD_HELD_FRUIT].children[0].transform =
-                frost::Transform::translate(
-                    body[0] - TOMATO_PICK_SCALE * ox,
-                    body[1] - TOMATO_PICK_SCALE * oy,
-                );
+                frost::Transform::translate([body[0] - TOMATO_PICK_SCALE * ox, body[1] - TOMATO_PICK_SCALE * oy]);
         }
 
         // The fruit that has been dropped into the basket: each one stays
@@ -2032,10 +2023,7 @@ impl Demo {
                         ];
                     }
                 }
-                fruit.transform = frost::Transform::translate(
-                    (body[0] - bx - TOMATO_PICK_SCALE * ox) / s,
-                    (body[1] - by - TOMATO_PICK_SCALE * oy) / s,
-                );
+                fruit.transform = frost::Transform::translate([(body[0] - bx - TOMATO_PICK_SCALE * ox) / s, (body[1] - by - TOMATO_PICK_SCALE * oy) / s]);
             }
         }
     }
@@ -2096,7 +2084,7 @@ impl Demo {
                             &plant_node.children[plant::slot_index(si)],
                             tomato,
                         );
-                        let world = frost::Transform::scale(PLANT_SCALE, PLANT_SCALE)
+                        let world = frost::Transform::scale([PLANT_SCALE, PLANT_SCALE])
                             .compose(&plant_nodes[pi].transform);
                         let spawn = world.apply(center);
                         // The tomato drops to the ground: the bottom anchor
@@ -2126,10 +2114,7 @@ impl Demo {
                     &mut root.children[CHILD_PLANTS].children[pi].children[plant::slot_index(si)];
                 let mut pivot = *slot.children.remove(1);
                 pivot.scale = [TOMATO_PICK_SCALE, TOMATO_PICK_SCALE];
-                pivot.transform = frost::Transform::translate(
-                    spawn[0] - TOMATO_PICK_SCALE * ox,
-                    spawn[1] - TOMATO_PICK_SCALE * oy,
-                );
+                pivot.transform = frost::Transform::translate([spawn[0] - TOMATO_PICK_SCALE * ox, spawn[1] - TOMATO_PICK_SCALE * oy]);
                 // The slot takes a fresh, shapeless tomato pivot; the next
                 // layout regrows the flower and the tomato from zero.
                 slot.children.push(Box::new(frost::SceneNode {
@@ -2188,12 +2173,9 @@ impl Demo {
             // wheel.
             let [sx, sy] = fall.scale_factors();
             let [bx, by] = fall.body_position();
-            node.transform = frost::Transform::translate(
-                -TOMATO_PICK_SCALE * sx * ox,
-                -TOMATO_PICK_SCALE * sy * oy,
-            )
+            node.transform = frost::Transform::translate([-TOMATO_PICK_SCALE * sx * ox, -TOMATO_PICK_SCALE * sy * oy])
             .compose(&frost::Transform::rotate(fall.spin))
-            .compose(&frost::Transform::translate(bx, by));
+            .compose(&frost::Transform::translate([bx, by]));
             node.scale = [TOMATO_PICK_SCALE * sx, TOMATO_PICK_SCALE * sy];
         }
     }
@@ -2648,7 +2630,7 @@ impl Demo {
                             &plant_nodes[pi].children[plant::slot_index(si)],
                             &self.tomato,
                         );
-                        let world = frost::Transform::scale(PLANT_SCALE, PLANT_SCALE)
+                        let world = frost::Transform::scale([PLANT_SCALE, PLANT_SCALE])
                             .compose(&plant_nodes[pi].transform);
                         let [cx, cy] = world.apply(center);
                         (cx - self.mouse[0]).abs() <= hx && (cy - self.mouse[1]).abs() <= hy
@@ -2666,7 +2648,7 @@ impl Demo {
             .remove(plant::SLOT_TOMATO);
         let mut pivot = *pivot;
         pivot.scale = [TOMATO_PICK_SCALE, TOMATO_PICK_SCALE];
-        pivot.transform = frost::Transform::translate(self.mouse[0], self.mouse[1]);
+        pivot.transform = frost::Transform::translate(self.mouse);
         root.children[CHILD_HELD_FRUIT]
             .children
             .push(Box::new(pivot));
@@ -2710,7 +2692,7 @@ impl Demo {
             // the body's center maps back to the release point.
             pivot.scale = [TOMATO_PICK_SCALE / s, TOMATO_PICK_SCALE / s];
             pivot.transform =
-                frost::Transform::translate((body[0] - center[0]) / s, (body[1] - center[1]) / s);
+                frost::Transform::translate([(body[0] - center[0]) / s, (body[1] - center[1]) / s]);
             root.children[CHILD_BASKET].children[basket::BASKET_FRUIT]
                 .children
                 .push(Box::new(pivot));
@@ -2774,7 +2756,7 @@ impl Demo {
         let origin = basket_fruit.children[i].transform;
         let mut pivot = *basket_fruit.children.remove(i);
         pivot.scale = [TOMATO_PICK_SCALE, TOMATO_PICK_SCALE];
-        pivot.transform = frost::Transform::translate(self.mouse[0], self.mouse[1]);
+        pivot.transform = frost::Transform::translate(self.mouse);
         root.children[CHILD_HELD_FRUIT].children.insert(0, Box::new(pivot));
         Some(Pick::Basket(origin))
     }
@@ -2807,7 +2789,7 @@ impl Demo {
             let root = &mut ctx.scene().root;
             let mut pivot = *root.children[CHILD_HELD_FRUIT].children.remove(0);
             pivot.scale = [TOMATO_PICK_SCALE / s, TOMATO_PICK_SCALE / s];
-            pivot.transform = frost::Transform::translate(lx, ly);
+            pivot.transform = frost::Transform::translate([lx, ly]);
             root.children[CHILD_BASKET].children[basket::BASKET_FRUIT]
                 .children
                 .push(Box::new(pivot));
@@ -2855,10 +2837,7 @@ impl Demo {
         let center = fly.tween.tick(dt);
         let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
         ctx.scene().root.children[CHILD_HELD_FRUIT].children[0].transform =
-            frost::Transform::translate(
-                center[0] - TOMATO_PICK_SCALE * ox,
-                center[1] - TOMATO_PICK_SCALE * oy,
-            );
+            frost::Transform::translate([center[0] - TOMATO_PICK_SCALE * ox, center[1] - TOMATO_PICK_SCALE * oy]);
         if fly.time < FLY_TIME {
             self.flying = Some(fly);
             return;
@@ -2905,18 +2884,18 @@ impl Demo {
         ctx.scene().root.children[CHILD_BASKET].children[basket::BASKET_FRUIT]
             .children
             .push(Box::new(frost::SceneNode {
-                transform: frost::Transform::translate(cx - k * ox, cy - k * oy),
+                transform: frost::Transform::translate([cx - k * ox, cy - k * oy]),
                 scale: [k, k],
                 children: vec![
                     Box::new(frost::SceneNode {
                         shape: Some(self.tomato.clone()),
-                        transform: frost::Transform::translate(ox, oy),
+                        transform: frost::Transform::translate([ox, oy]),
                         modulate: tomato::TOMATO_RED,
                         ..Default::default()
                     }),
                     Box::new(frost::SceneNode {
                         shape: Some(self.tomato_fg.clone()),
-                        transform: frost::Transform::translate(ox, oy),
+                        transform: frost::Transform::translate([ox, oy]),
                         ..Default::default()
                     }),
                 ],
@@ -3027,30 +3006,24 @@ fn main() {
                 children: vec![
                     Box::new(frost::SceneNode {
                         // Slot 0: empty at start.
-                        transform: frost::Transform::translate(slot_local(0)[0], slot_local(0)[1]),
+                        transform: frost::Transform::translate([slot_local(0)[0], slot_local(0)[1]]),
                         ..Default::default()
                     }),
                     Box::new(frost::SceneNode {
                         // Slot 1: empty at start.
-                        transform: frost::Transform::translate(slot_local(1)[0], slot_local(1)[1]),
+                        transform: frost::Transform::translate([slot_local(1)[0], slot_local(1)[1]]),
                         ..Default::default()
                     }),
                     Box::new(frost::SceneNode {
                         // The spray can at rest, centered in slot 2.
-                        transform: frost::Transform::translate(
-                            slot_local(SPRAY_SLOT)[0],
-                            slot_local(SPRAY_SLOT)[1],
-                        ),
+                        transform: frost::Transform::translate([slot_local(SPRAY_SLOT)[0], slot_local(SPRAY_SLOT)[1]]),
                         scale: [slot_scale(SPRAY_IMAGE), slot_scale(SPRAY_IMAGE)],
                         shape: Some(assets.spray1.clone()),
                         ..Default::default()
                     }),
                     Box::new(frost::SceneNode {
                         // The watering can at rest, centered in slot 3.
-                        transform: frost::Transform::translate(
-                            slot_local(CAN_SLOT)[0],
-                            slot_local(CAN_SLOT)[1],
-                        ),
+                        transform: frost::Transform::translate([slot_local(CAN_SLOT)[0], slot_local(CAN_SLOT)[1]]),
                         scale: [slot_scale(CAN_IMAGE), slot_scale(CAN_IMAGE)],
                         shape: Some(assets.can.clone()),
                         ..Default::default()
@@ -3093,12 +3066,12 @@ fn main() {
                 children: vec![
                     Box::new(frost::SceneNode {
                         // The left cell: the active tool, empty at start.
-                        transform: frost::Transform::translate(held_local(0)[0], held_local(0)[1]),
+                        transform: frost::Transform::translate([held_local(0)[0], held_local(0)[1]]),
                         ..Default::default()
                     }),
                     Box::new(frost::SceneNode {
                         // The right cell: the stored tool, empty at start.
-                        transform: frost::Transform::translate(held_local(1)[0], held_local(1)[1]),
+                        transform: frost::Transform::translate([held_local(1)[0], held_local(1)[1]]),
                         ..Default::default()
                     }),
                 ],
@@ -3355,7 +3328,7 @@ mod tests {
     fn the_fall_destination_is_the_root_anchor() {
         let node = frost::SceneNode {
             transform: frost::Transform::rotate(0.4)
-                .compose(&frost::Transform::translate(100.0, 200.0)),
+                .compose(&frost::Transform::translate([100.0, 200.0])),
             ..Default::default()
         };
         assert_eq!(root_anchor(&node), [100.0, 200.0], "the anchor is the root joint, in x and y");

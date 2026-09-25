@@ -102,10 +102,7 @@ impl frost::Node for Satellite {
         // Rotate around the parent, then push out to the orbit radius: the
         // rectangle orbits while the rotation tumbles its own shape.
         self.scene.root.transform =
-            frost::Transform::rotate(self.spin).compose(&frost::Transform::translate(
-                (self.spin * 3.0 % TAU).sin() * 200.0,
-                (self.spin * 3.0 % TAU).cos() * 200.0,
-            ));
+            frost::Transform::rotate(self.spin).compose(&frost::Transform::translate([(self.spin * 3.0 % TAU).sin() * 200.0, (self.spin * 3.0 % TAU).cos() * 200.0]));
         // The small circle counter-rotates in the rectangle's space, so it
         // wobbles as it rides the orbit.
         self.scene.root.children[0].transform = frost::Transform::rotate(-5.0 * self.spin);
@@ -129,10 +126,7 @@ impl frost::Process for Demo {
         let progress = (self.satellite.spin / (PI / 3.0)).clamp(0.0, 1.0);
         let s = progress * progress * (3.0 - 2.0 * progress);
         ctx.scene().root.scale = [s, s];
-        ctx.scene().root.children[0].transform = frost::Transform::translate(
-            (self.satellite.spin % TAU).sin() * 140.0,
-            (self.satellite.spin % TAU).cos() * 100.0,
-        );
+        ctx.scene().root.children[0].transform = frost::Transform::translate([(self.satellite.spin % TAU).sin() * 140.0, (self.satellite.spin % TAU).cos() * 100.0]);
 
         // Draw the satellite's own scene into this frame; its rectangle
         // sorts in front of the center circle via `order: 1.0`.

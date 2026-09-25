@@ -190,7 +190,7 @@ impl frost::Process for Demo {
         let button = &mut ctx.scene().root.children[0];
         // Rotate about the button's center, then place it at `pos`.
         button.transform = frost::Transform::rotate(self.rot)
-            .compose(&frost::Transform::translate(self.pos[0], self.pos[1]));
+            .compose(&frost::Transform::translate(self.pos));
 
         // The obstacles: generated once, at random positions with the whole
         // square inside the visible area, in random colors.

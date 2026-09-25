@@ -82,7 +82,7 @@ impl frost::Process for Demo {
         // everything around that joint.
         let plant = &mut ctx.scene().root.children[0];
         plant.transform = frost::Transform::rotate(base)
-            .compose(&frost::Transform::translate(ANCHOR[0], ANCHOR[1]));
+            .compose(&frost::Transform::translate(ANCHOR));
 
         // Lay the chain out in the plant's own (unscaled) space: the first
         // slice's lower joint sits at the plant's origin, and each next
@@ -96,9 +96,9 @@ impl frost::Process for Demo {
                 _ => bend1 + bend2,
             };
             let rot = frost::Transform::rotate(bend);
-            node.transform = frost::Transform::translate(-link.from[0], -link.from[1])
+            node.transform = frost::Transform::translate([-link.from[0], -link.from[1]])
                 .compose(&rot)
-                .compose(&frost::Transform::translate(anchor[0], anchor[1]));
+                .compose(&frost::Transform::translate(anchor));
             // The next anchor: this slice's upper joint, measured from its
             // own lower joint and rotated by the slice's bend.
             let d = [link.to[0] - link.from[0], link.to[1] - link.from[1]];

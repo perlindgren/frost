@@ -99,7 +99,7 @@ impl frost::Process for Demo {
         let button = &mut ctx.scene().layers[PLAYER_LAYER].root.children[0];
         // Rotate about the button's center, then place it at `pos`.
         button.transform = frost::Transform::rotate(self.rot)
-            .compose(&frost::Transform::translate(self.pos[0], self.pos[1]));
+            .compose(&frost::Transform::translate(self.pos));
 
         // The rectangles: generated once, at random positions with the whole
         // square inside the visible area, in random colors, one set per
@@ -132,7 +132,7 @@ impl frost::Process for Demo {
                     // Local position: the square's extent is centered on the
                     // node's origin, so only the node's transform places it.
                     layer.root.children.push(Box::new(frost::SceneNode {
-                        transform: frost::Transform::translate(r.pos[0], r.pos[1]),
+                        transform: frost::Transform::translate(r.pos),
                         shape: Some(frost::Shape::Rectangle {
                             center: [0.0, 0.0],
                             extent: [SIZE / 2.0, SIZE / 2.0],

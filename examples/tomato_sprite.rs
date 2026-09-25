@@ -64,12 +64,12 @@ fn main() {
             // The dummy parent: no shape of its own, it only holds the
             // two sprite siblings, shifted so the image's center sits on
             // the window's center.
-            transform: frost::Transform::translate(base[0], base[1]),
+            transform: frost::Transform::translate(base),
             children: vec![
                 Box::new(frost::SceneNode {
                     // The negated anchor offset puts the anchor on the
                     // parent's origin.
-                    transform: frost::Transform::translate(-base[0], -base[1]),
+                    transform: frost::Transform::translate([-base[0], -base[1]]),
                     // The same draw order as the foreground sibling: with
                     // equal order the tie resolves in tree order, so the
                     // base draws first...
@@ -78,7 +78,7 @@ fn main() {
                     ..Default::default()
                 }),
                 Box::new(frost::SceneNode {
-                    transform: frost::Transform::translate(-foreground[0], -foreground[1]),
+                    transform: frost::Transform::translate([-foreground[0], -foreground[1]]),
                     // ...and the later sibling, the overlay, draws on top.
                     order: 0.0,
                     shape: Some(tomato_fg),
