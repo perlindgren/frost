@@ -3,14 +3,17 @@
 //! The player is the lit square, steered with `W`/`A`/`S`/`D` (relative to
 //! its facing, so `W` always walks toward where the torch points) and turned
 //! with `Q` (counter-clockwise) and `E` (clockwise). It carries two lights,
-//! both emitted from its center every frame:
+//! both *child nodes* of the player's scene node, so they ride its position
+//! and turn with it for free:
 //!
-//! * a small omni point light (radius [`GLOW_RADIUS`]) — the dim pool that
-//!   always surrounds the player, so it never fully vanishes, and
+//! * a small omni point light (radius [`GLOW_RADIUS`]) at the square's
+//!   center — the dim pool that always surrounds the player, so it never
+//!   fully vanishes, and
 //! * a torch: a cone light (radius [`TORCH_RADIUS`], full opening angle
-//!   [`TORCH_SPREAD`] — 20 degrees, 10 to each side of the axis) aimed
-//!   along the square's facing angle, so turning the square sweeps the
-//!   beam across the room.
+//!   [`TORCH_SPREAD`] — 20 degrees, 10 to each side of the axis) mounted at
+//!   the grip and aimed along the square's local +x — its facing — so the
+//!   square's rotation, carried down by parenting, sweeps the beam across
+//!   the room.
 //!
 //! The room is a huge lit backdrop (the "floor and walls" the beams play
 //! over), four colored lit panels near its edges, and a few lit occluder
@@ -177,24 +180,14 @@ impl frost::Process for Demo {
             self.vel[1] = 0.0;
         }
 
-        // Carry the square (and its grip child) along: rotate about its
-        // center, then place it at `pos`.
+        // Carry the square and everything it carries — the grip, the pool
+        // light and the torch — along: rotate about its center, then place
+        // it at `pos`. The lights are child nodes, so their spots and the
+        // beam's axis ride this one transform write; nothing is emitted
+        // per frame anymore.
         let player = &mut ctx.scene().root.children[0];
         player.transform = frost::Transform::rotate(self.rot)
             .compose(&frost::Transform::translate(self.pos[0], self.pos[1]));
-
-        // The two lights, re-emitted at the player's spot every frame: the
-        // small omni pool, and the torch cone aimed along the facing.
-        ctx.light(self.pos[0], self.pos[1], GLOW, GLOW_INTENSITY, GLOW_RADIUS);
-        ctx.light_cone(
-            self.pos[0],
-            self.pos[1],
-            TORCH,
-            TORCH_INTENSITY,
-            TORCH_RADIUS,
-            self.rot,
-            TORCH_SPREAD,
-        );
 
         log::trace!(
             "process: dt {:?} pos {:?} rot {:?} vel {:?}",
@@ -245,8 +238,9 @@ fn main() {
     env_logger::init();
     log::info!("frost started");
 
-    // The player node first: the square and its torch grip, drawn above
-    // the room's scenery by its `order`, and moved by the process below.
+    // The player node first: the square, its torch grip, and the two
+    // lights it carries, drawn above the room's scenery by its `order`,
+    // and moved by the process below.
     let player = Box::new(frost::SceneNode {
         order: 1.0,
         shape: Some(frost::Shape::Rectangle {
@@ -255,17 +249,45 @@ fn main() {
             color: PLAYER,
         }),
         lit: true,
-        children: vec![Box::new(frost::SceneNode {
-            // The grip stub, sticking out of the square's facing side (+x
-            // in the square's local space), riding every turn with it.
-            shape: Some(frost::Shape::Rectangle {
-                center: [28.0, 0.0],
-                extent: [12.0, 4.0],
-                color: GRIP,
+        children: vec![
+            Box::new(frost::SceneNode {
+                // The grip stub, sticking out of the square's facing side
+                // (+x in the square's local space), riding every turn.
+                shape: Some(frost::Shape::Rectangle {
+                    center: [28.0, 0.0],
+                    extent: [12.0, 4.0],
+                    color: GRIP,
+                }),
+                lit: true,
+                ..Default::default()
             }),
-            lit: true,
-            ..Default::default()
-        })],
+            Box::new(frost::SceneNode {
+                // The pool light at the square's own center: a light node,
+                // so it is never drawn — it just rides the parent, keeping
+                // its omni glow pinned to the player.
+                shape: Some(frost::Shape::Light {
+                    light: frost::Light::point(GLOW, GLOW_INTENSITY, GLOW_RADIUS),
+                }),
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
+                // The torch, mounted at the grip: its `direction` is 0 in
+                // the square's local space — along its +x, the facing —
+                // and the square's rotation, folded in by parenting, is
+                // what aims the beam. No per-frame angle bookkeeping.
+                transform: frost::Transform::translate(28.0, 0.0),
+                shape: Some(frost::Shape::Light {
+                    light: frost::Light::cone(
+                        TORCH,
+                        TORCH_INTENSITY,
+                        TORCH_RADIUS,
+                        0.0,
+                        TORCH_SPREAD,
+                    ),
+                }),
+                ..Default::default()
+            }),
+        ],
         ..Default::default()
     });
 
