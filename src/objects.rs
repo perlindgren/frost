@@ -323,7 +323,8 @@ impl ParticleShape {
 ///
 /// By default a light is omni-directional — it lights every pixel within
 /// `radius`. Setting a narrower [`spread`](Self::spread) turns it into a
-/// cone: only pixels inside the cone receive its light.
+/// cone: only pixels inside the cone receive its light, feathered out at
+/// the edges by [`softness`](Self::softness).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Light {
     /// The light's color, multiplied with its intensity and with the
@@ -350,6 +351,27 @@ pub struct Light {
     /// is a half-plane; smaller angles narrow the beam; `0.0` degenerates
     /// to the axis alone.
     pub spread: f32,
+    /// How wide the cone's edge feather is, in radians: the band just
+    /// inside each cone edge across which the light ramps smoothly from
+    /// full strength to none, instead of stopping dead at the edge — the
+    /// cheap stand-in for a real penumbra. `0.0` keeps the hard edge;
+    /// more than [`spread`](Self::spread) / 2 feathers the whole cone
+    /// (clamped, so the axis stays fully lit). Ignored when the light is
+    /// omni-directional.
+    pub softness: f32,
+    /// The light's penumbra — the soft edge of the shadows it casts — as
+    /// the radius, in user units (pixels), of the light's own disk.
+    ///
+    /// The shadow rays sample that disk (nine taps, rotated per pixel)
+    /// and the light passes in proportion to how much of it an occluder
+    /// leaves uncovered, so a shadow fades across an edge as wide as the
+    /// disk instead of dropping from full light to full dark in one
+    /// pixel. `0.0` keeps the hard shadow of a mathematical point light.
+    ///
+    /// This applies to every light, cone or omni, and only to shadows:
+    /// an occluder-free light looks exactly as it did. The light's own
+    /// [`radius`](Self::radius) falloff is unrelated.
+    pub penumbra: f32,
 }
 
 impl Light {
@@ -364,6 +386,8 @@ impl Light {
             // recorded cone axis defined.
             direction: 0.0,
             spread: std::f32::consts::TAU,
+            softness: 0.0,
+            penumbra: 0.0,
         }
     }
 
@@ -371,14 +395,40 @@ impl Light {
     /// radians, pointing `direction` radians counterclockwise from the
     /// local +x axis in the node's local space. See the
     /// [`direction`](Self::direction) and [`spread`](Self::spread) fields.
-    pub fn cone(color: Color, intensity: f32, radius: f32, direction: f32, spread: f32) -> Self {
+    ///
+    /// `softness` feathers the cone's two edges: the light fades out over
+    /// this many radians of angle just inside each edge instead of
+    /// stopping dead there — `0.0` is a hard edge, and values beyond
+    /// `spread / 2` clamp to feathering the whole cone. See
+    /// [`Light::softness`].
+    pub fn cone(
+        color: Color,
+        intensity: f32,
+        radius: f32,
+        direction: f32,
+        spread: f32,
+        softness: f32,
+    ) -> Self {
         Self {
             color,
             intensity,
             radius,
             direction,
             spread,
+            softness,
+            penumbra: 0.0,
         }
+    }
+
+    /// The same light with a shadow penumbra: the light is treated as a
+    /// disk of `radius` user units (pixels) when occluders cut its
+    /// light, so its shadows fade across edges as wide as the disk
+    /// instead of ending on a hard silhouette. See
+    /// [`Light::penumbra`]; a `radius` of `0` — the constructor default —
+    /// is the hard point-light shadow.
+    pub fn with_penumbra(mut self, radius: f32) -> Self {
+        self.penumbra = radius.max(0.0);
+        self
     }
 }
 
@@ -738,10 +788,14 @@ pub struct SceneNode {
     pub lit: bool,
     /// Whether the node's own shape occludes the frame's lights: when true
     /// and the shape is a rectangle, the rectangle's silhouette blocks the
-    /// light's path to every lit pixel behind it — a hard shadow, per pixel,
-    /// with no penumbra. The shadow is evaluated in the frame's pixel space
-    /// from the rectangle's full composed transform, so a rotated, scaled,
-    /// or translated node casts the shadow of wherever it actually sits.
+    /// light's path to every lit pixel behind it, casting a shadow. How
+    /// sharp that shadow's edge is belongs to the light, not the occluder:
+    /// a point-sized light ([`Light::penumbra`] `0.0`) is cut off on a hard
+    /// per-pixel silhouette, while a light with a penumbra fades across an
+    /// edge as wide as its disk. The shadow is evaluated in the frame's
+    /// pixel space from the rectangle's full composed transform, so a
+    /// rotated, scaled, or translated node casts the shadow of wherever it
+    /// actually sits.
     ///
     /// Like [`SceneNode::lit`], the flag does not propagate to the
     /// children: it applies to this node's own shape only, and each child

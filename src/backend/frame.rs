@@ -172,6 +172,11 @@ pub(crate) enum Draw {
         /// The light's color, already multiplied with the node's composed
         /// modulate.
         color: Color,
+        /// The shadow penumbra radius in pixels — the light's own disk as
+        /// shadow rays see it: nine taps over this disk, the unoccluded
+        /// fraction lights the pixel. `0.0` is the hard point-light
+        /// shadow.
+        penumbra: f32,
         /// The cone's axis, a unit vector in pixel space (the light's
         /// local-space direction already through the composed
         /// transforms' linear part), or `[1.0, 0.0]` when the direction
@@ -182,6 +187,11 @@ pub(crate) enum Draw {
         /// light. `-1.0` is omni-directional (every pixel passes), `1.0`
         /// degenerates the cone to its axis.
         cos_half: f32,
+        /// The edge feather's width in cosine units: the shader ramps the
+        /// light from zero at the cone edge to full once `softness`
+        /// radians inside it. `0.0` — and every omni light — keeps the
+        /// hard gate above.
+        feather: f32,
         z: f32,
     },
 }
@@ -545,9 +555,9 @@ pub(crate) fn particle_instance(
 pub(crate) const LIGHT_FIELD_HEADER: usize = 32;
 
 /// The byte size of one light record: three `vec4<f32>`s —
-/// `(x, y, radius, intensity)`, `(r, g, b, 1.0)`, and
-/// `(dir_x, dir_y, cos_half, 0.0)`, the last carrying the cone (see
-/// [`Draw::Light`]).
+/// `(x, y, radius, intensity)`, `(r, g, b, penumbra)`, and
+/// `(dir_x, dir_y, cos_half, feather)`, the last two vec4s carrying the
+/// light's shadow disk and cone (see [`Draw::Light`]).
 pub(crate) const LIGHT_RECORD: usize = 48;
 
 /// The minimum size of the light field buffer in bytes: the header plus
@@ -572,8 +582,9 @@ pub(crate) fn light_field_buffer_size(count: u32) -> u64 {
 /// The layout is a [`LIGHT_FIELD_HEADER`]-byte header — the light `count`
 /// at bytes `0..4`, 12 padding bytes, the scene's ambient color channels at
 /// bytes `16..32` — followed by one [`LIGHT_RECORD`]-byte record per light,
-/// in call order: a `(x, y, radius, intensity)` `vec4`, an `(r, g, b, 1.0)`
-/// `vec4`, and a `(dir_x, dir_y, cos_half, 0.0)` `vec4` carrying the cone.
+/// in call order: a `(x, y, radius, intensity)` `vec4`, an
+/// `(r, g, b, penumbra)` `vec4`, and a `(dir_x, dir_y, cos_half, feather)`
+/// `vec4` carrying the cone.
 /// The records line up with the unsized WGSL
 /// `array<vec4<f32>>` tail of the field's storage struct, so `data` can be
 /// bound as-is.
@@ -607,8 +618,10 @@ pub(crate) fn pack_light_field(draws: &[Draw], ambient: Color) -> LightField {
             radius,
             intensity,
             color,
+            penumbra,
             dir,
             cos_half,
+            feather,
             ..
         } = draw
         {
@@ -620,14 +633,13 @@ pub(crate) fn pack_light_field(draws: &[Draw], ambient: Color) -> LightField {
             write_f32_at(&mut data, off + 16, color.r);
             write_f32_at(&mut data, off + 20, color.g);
             write_f32_at(&mut data, off + 24, color.b);
-            // The color vec4's w component is unused by the shader; keep it
-            // at 1.0.
-            write_f32_at(&mut data, off + 28, 1.0);
+            // The color vec4's w carries the shadow penumbra radius; the
+            // shader never reads the color's alpha from here.
+            write_f32_at(&mut data, off + 28, *penumbra);
             write_f32_at(&mut data, off + 32, dir[0]);
             write_f32_at(&mut data, off + 36, dir[1]);
             write_f32_at(&mut data, off + 40, *cos_half);
-            // The cone vec4's w component is unused padding; keep it at 0.
-            write_f32_at(&mut data, off + 44, 0.0);
+            write_f32_at(&mut data, off + 44, *feather);
             record += 1;
         }
     }

@@ -353,8 +353,12 @@ impl Canvas {
             radius: radius.max(0.0),
             intensity,
             color,
+            // Immediate-mode lights are point-sized: hard shadows.
+            penumbra: 0.0,
             dir: normalized_axis([tip[0] - origin[0], tip[1] - origin[1]]),
             cos_half: half_angle_cosine(spread),
+            // The immediate-mode cone has no softness knob: hard edge.
+            feather: 0.0,
             // The light is never drawn, so its draw order is irrelevant.
             z: 0.0,
         });
@@ -569,6 +573,24 @@ fn half_angle_cosine(spread: f32) -> f32 {
     (spread * 0.5).clamp(0.0, std::f32::consts::PI).cos()
 }
 
+/// The cone's edge feather, in cosine units, from its full `spread` and
+/// its `softness` in radians: the width of the band just inside each cone
+/// edge across which the shader ramps the light from zero to full, as the
+/// cosine difference between the band's outer and inner angles — the
+/// shader gates on cosines, so the feather ships in the same units. The
+/// softness is clamped to the half angle, so the feather spans at most
+/// the whole cone and the axis stays fully lit. An omni light
+/// (`spread` at or beyond `2 * PI`) and a `0` or negative softness both
+/// yield `0.0`: the hard edge, and never a feather on an omni light,
+/// whose gate must stay the all-pass it has always been.
+fn feather_band(spread: f32, softness: f32) -> f32 {
+    if softness <= 0.0 || spread >= std::f32::consts::TAU {
+        return 0.0;
+    }
+    let half = (spread * 0.5).clamp(0.0, std::f32::consts::PI);
+    (half - softness.clamp(0.0, half)).cos() - half.cos()
+}
+
 /// Draws one [`SceneNode`] and its subtree into `draws`, depth-first: the
 /// node's shape (if any — which may itself be a [`Shape::Particles`] batch)
 /// before its children, so parents paint under their descendants.
@@ -706,8 +728,10 @@ fn draw_node(
                     radius: light.radius.max(0.0),
                     intensity: light.intensity,
                     color: light.color.mul(modulate),
+                    penumbra: light.penumbra.max(0.0),
                     dir: normalized_axis([tip[0] - origin[0], tip[1] - origin[1]]),
                     cos_half: half_angle_cosine(light.spread),
+                    feather: feather_band(light.spread, light.softness),
                     z: order,
                 })
             }
@@ -1751,8 +1775,10 @@ mod tests {
             radius,
             intensity,
             color,
+            penumbra,
             dir,
             cos_half,
+            feather,
             z,
         }] = &canvas.draws[..]
         else {
@@ -1762,8 +1788,10 @@ mod tests {
         assert_eq!(*radius, 0.0);
         assert_eq!(*intensity, 2.0);
         assert_eq!(*color, Color { r: 1.0, g: 0.5, b: 0.0, a: 1.0 });
+        assert_eq!(*penumbra, 0.0);
         assert_eq!(*dir, [1.0, 0.0]);
         assert_eq!(*cos_half, -1.0);
+        assert_eq!(*feather, 0.0);
         assert_eq!(*z, 0.0);
     }
 
@@ -1815,14 +1843,16 @@ mod tests {
         assert_eq!(f32_at(&field.data, 16), AMBIENT.r);
         // The immediate light first: user (0, 0) -> pixel (50, 50), radius
         // 10, intensity 1, red. Both lights are omni, so the cone vec4 is
-        // the fallback axis, the always-passing -1.0, and zero padding.
+        // the fallback axis, the always-passing -1.0, and zero padding;
+        // the color vec4's w is the penumbra, zero for point-sized
+        // immediate lights.
         let off = LIGHT_FIELD_HEADER;
         assert_eq!(f32_at(&field.data, off), 50.0);
         assert_eq!(f32_at(&field.data, off + 4), 50.0);
         assert_eq!(f32_at(&field.data, off + 8), 10.0);
         assert_eq!(f32_at(&field.data, off + 12), 1.0);
         assert_eq!(f32_at(&field.data, off + 16), 1.0);
-        assert_eq!(f32_at(&field.data, off + 28), 1.0);
+        assert_eq!(f32_at(&field.data, off + 28), 0.0);
         assert_eq!(f32_at(&field.data, off + 32), 1.0);
         assert_eq!(f32_at(&field.data, off + 36), 0.0);
         assert_eq!(f32_at(&field.data, off + 40), -1.0);
@@ -1872,8 +1902,10 @@ mod tests {
             radius,
             intensity,
             color,
+            penumbra,
             dir,
             cos_half,
+            feather,
             z,
         }] = &draws[..]
         else {
@@ -1891,8 +1923,10 @@ mod tests {
                 a: 1.0
             }
         );
+        assert_eq!(*penumbra, 0.0);
         assert_eq!(*dir, [1.0, 0.0]);
         assert_eq!(*cos_half, -1.0);
+        assert_eq!(*feather, 0.0);
         assert_eq!(*z, 3.0);
     }
 
@@ -2005,6 +2039,7 @@ mod tests {
                     10.0,
                     0.0,
                     std::f32::consts::FRAC_PI_2,
+                    0.0,
                 ),
             }),
             ..Default::default()
@@ -2045,5 +2080,81 @@ mod tests {
         };
         assert_eq!(*dir, [1.0, 0.0]);
         assert_eq!(*cos_half, -1.0);
+    }
+
+    #[test]
+    fn feather_band_measures_the_soft_cone_edge() {
+        // The feather is the cosine difference between the band's inner
+        // and outer angles: full softness (the half angle) feathers the
+        // whole cone, half softness feathers half the cosine range, and
+        // zero — or a clamped negative — keeps the hard edge.
+        let half = std::f32::consts::FRAC_PI_4; // spread = PI/2.
+        let spread = 2.0 * half;
+        assert_eq!(feather_band(spread, 0.0), 0.0);
+        assert_eq!(feather_band(spread, -1.0), 0.0);
+        let full = feather_band(spread, half);
+        assert!((full - (1.0 - half.cos())).abs() < 1e-6);
+        // Softness beyond the half angle clamps to the whole cone.
+        assert_eq!(feather_band(spread, half * 10.0), full);
+        // Half the cone feathered: cos(PI/8) - cos(PI/4), strictly
+        // between zero and the full feather.
+        let soft = feather_band(spread, half * 0.5);
+        assert!((soft - (std::f32::consts::PI / 8.0).cos() + half.cos()).abs() < 1e-6);
+        assert!(soft > 0.0 && soft < full);
+        // Omni lights never feather, whatever the softness says.
+        assert_eq!(feather_band(std::f32::consts::TAU, 1.0), 0.0);
+        assert_eq!(feather_band(std::f32::consts::TAU * 2.0, 1.0), 0.0);
+    }
+
+    #[test]
+    fn a_soft_cone_carries_its_feather_and_penumbra_into_the_draw() {
+        // The scene path feeds the light's softness into the draw's
+        // feather band and its penumbra through untouched (negatives
+        // clamp to zero); a hard cone (and the immediate-mode API, which
+        // has no knobs) stay at zero.
+        let half = std::f32::consts::FRAC_PI_4;
+        let node = SceneNode {
+            shape: Some(Shape::Light {
+                light: Light::cone(
+                    Color {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 1.0,
+                        a: 1.0,
+                    },
+                    1.0,
+                    10.0,
+                    0.0,
+                    2.0 * half,
+                    half * 0.5,
+                )
+                .with_penumbra(4.0),
+            }),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        let [Draw::Light {
+            feather, penumbra, ..
+        }] = &draws[..]
+        else {
+            panic!("expected one light draw, got {draws:?}")
+        };
+        assert_eq!(*feather, feather_band(2.0 * half, half * 0.5));
+        assert!(*feather > 0.0);
+        assert_eq!(*penumbra, 4.0);
+        // The builder clamps a negative radius to the hard shadow.
+        let light = Light::point(
+            Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            1.0,
+            10.0,
+        )
+        .with_penumbra(-3.0);
+        assert_eq!(light.penumbra, 0.0);
     }
 }

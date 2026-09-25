@@ -12,8 +12,11 @@ struct SpriteUniforms {
 // pipeline. The 32-byte header holds the light count, 12 padding bytes,
 // and the scene's ambient color; the unsized array tail holds one 48-byte
 // record per light, in call order — (x, y, radius, intensity), then
-// (r, g, b, 1.0), then (dir_x, dir_y, cos_half, 0): the cone's unit axis
-// and the cosine of its half opening angle. The CPU sizes the bound buffer
+// (r, g, b, penumbra), then (dir_x, dir_y, cos_half, feather): the
+// light's color with its shadow penumbra radius in pixels, then the
+// cone's unit axis, the cosine of its half opening angle, and the width
+// of its edge feather in cosine units (0.0 for a hard edge; omni lights
+// pass every gate). The CPU sizes the bound buffer
 // to fit the frame's lights.
 struct LightField {
     count: u32,
@@ -106,10 +109,27 @@ fn occluded(l: vec2<f32>, p: vec2<f32>) -> bool {
 
 // The light mix at a pixel: the scene's ambient plus every light's
 // contribution — the light's color times its intensity, scaled by the
-// quadratic falloff from the light's position out to its radius, and zero
-// outside the light's cone and where an occluder blocks the light's path
-// to the pixel. The result multiplies the unlit color:
+// quadratic falloff from the light's position out to its radius, zero
+// outside the light's cone — feathered to zero across its soft edges —
+// and ramped to zero across its penumbra where an occluder blocks the
+// light's path to the pixel. The result multiplies the unlit color:
 // pixel = base * (ambient + lights).
+
+// The shadow-ray taps on the light's penumbra disk: a 3x3 grid in unit
+// space, scaled per pixel by the light's penumbra radius (the record's
+// `lc.w`). A light of physical size is a disk, not a mathematical point,
+// so every tap is its own shadow ray from a point of that disk.
+const SHADOW_TAPS = array<vec2<f32>, 9>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>(0.0, -1.0),
+    vec2<f32>(1.0, -1.0),
+    vec2<f32>(-1.0, 0.0),
+    vec2<f32>(0.0, 0.0),
+    vec2<f32>(1.0, 0.0),
+    vec2<f32>(-1.0, 1.0),
+    vec2<f32>(0.0, 1.0),
+    vec2<f32>(1.0, 1.0),
+);
 fn light_mix(p: vec2<f32>) -> vec3<f32> {
     var c = field.ambient.rgb;
     for (var i = 0u; i < field.count; i++) {
@@ -117,16 +137,55 @@ fn light_mix(p: vec2<f32>) -> vec3<f32> {
         let lc = field.lights[3 * i + 1];
         let cone = field.lights[3 * i + 2];
         let f = max(0.0, 1.0 - distance(p, l.xy) / max(l.z, 1e-4));
-        // The cone gate, without normalizing d so the pixel at the
+        // The cone gate, as a 0..1 factor: omni and unfeathered cones
+        // keep the hard test, without normalizing d so the pixel at the
         // light's own position stays inside the cone. An omni light's
         // cos_half is -1.0, which every pixel passes.
         let d = p - l.xy;
-        if (dot(d, cone.xy) >= cone.z * length(d)) {
-            // A light contributes only when no occluder blocks the light from
-            // this pixel — a hard shadow, with no penumbra. Outside the cone
-            // the light contributes nothing anyway, so skip the raycast.
-            let v = select(0.0, 1.0, !occluded(l.xy, p));
-            c += lc.rgb * l.w * f * f * v;
+        let len = length(d);
+        let ad = dot(d, cone.xy);
+        var gate = select(0.0, 1.0, ad >= cone.z * len);
+        // A feathered cone (feather > 0) instead ramps the gate smoothly
+        // from 0 at the cone edge up to 1 once the direction is `cone.w`
+        // of cosine inside it — a soft edge in place of the hard cut.
+        // The ramp needs d normalized; the light's own pixel keeps the
+        // hard gate's answer above.
+        if (cone.w > 0.0 && len > 1e-4) {
+            gate = smoothstep(cone.z, cone.z + cone.w, ad / len);
+        }
+        if (gate > 0.0) {
+            // How much of the light reaches this pixel past the
+            // occluders. Outside the cone nothing contributes anyway, so
+            // the raycasts are skipped entirely there. A penumbra radius
+            // of 0 (a point-sized light) keeps the single hard ray;
+            // otherwise nine rays issue from the light's disk and the
+            // unoccluded fraction lights the pixel — the shadow's edge
+            // ramps across the disk's width and widens the farther it
+            // falls behind the occluder, like a real light patch. The
+            // tap grid rotates per pixel (interleaved-gradient angle) so
+            // the ten sample levels scatter into fine dither instead of
+            // stacking into bands.
+            var v = 1.0;
+            if (lc.w > 0.0) {
+                let ang = 6.2831853
+                    * fract(52.9829 * fract(0.06711 * p.x + 0.005837 * p.y));
+                let sa = sin(ang);
+                let ca = cos(ang);
+                var lit = 0.0;
+                for (var t = 0u; t < 9u; t = t + 1u) {
+                    let o = SHADOW_TAPS[t] * lc.w;
+                    let q = l.xy + vec2<f32>(ca * o.x - sa * o.y, sa * o.x + ca * o.y);
+                    lit += select(0.0, 1.0, !occluded(q, p));
+                }
+                v = lit / 9.0;
+            } else {
+                // A point-sized light: the single ray from its position,
+                // the original hard shadow. Without this branch the
+                // default above would stand and the light would ignore
+                // every occluder.
+                v = select(0.0, 1.0, !occluded(l.xy, p));
+            }
+            c += lc.rgb * l.w * f * f * v * gate;
         }
     }
     return c;

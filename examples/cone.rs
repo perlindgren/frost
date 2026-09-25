@@ -10,17 +10,19 @@
 //!   center — the dim pool that always surrounds the player, so it never
 //!   fully vanishes, and
 //! * a torch: a cone light (radius [`TORCH_RADIUS`], full opening angle
-//!   [`TORCH_SPREAD`] — 20 degrees, 10 to each side of the axis) mounted at
-//!   the grip and aimed along the square's local +x — its facing — so the
-//!   square's rotation, carried down by parenting, sweeps the beam across
-//!   the room.
+//!   [`TORCH_SPREAD`] — 20 degrees, 10 to each side of the axis) mounted on
+//!   the square's front face and aimed along its local +x — the facing — so
+//!   the square's rotation, carried down by parenting, sweeps the beam
+//!   across the room. Its two edges feather out across [`TORCH_SOFT`] of
+//!   angle, so the beam fades away instead of ending on a hard line.
 //!
 //! The room is a huge lit backdrop (the "floor and walls" the beams play
 //! over), four colored lit panels near its edges, and a few occluder walls.
 //! The walls are deliberately *unlit*: they draw in their own color no
 //! matter where the lights are, so you can always see where they are even
 //! in the dark. Only rectangles occlude, and a wall flagged `occludes: true` cuts
-//! a hard shadow out of every light behind it — so the torch beam stops
+//! every light behind it — the shadow's edge ramped by the lights'
+//! [`SHADOW_PENUMBRA`] — so the torch beam stops
 //! dead at a wall, and a panel or the backdrop behind a wall drops to the
 //! ambient floor while the beam sweeps past. The middle wall is leaned
 //! over: its shadow leans with it. The player itself never occludes, so
@@ -55,6 +57,17 @@ const TORCH_INTENSITY: f32 = 2.2;
 /// spans 10 degrees to each side of the facing axis.
 const TORCH_SPREAD: f32 = 20.0_f32.to_radians();
 
+/// The torch beam's edge feather, in radians of angle (~3.5 degrees):
+/// how wide a band just inside each cone edge the beam fades across,
+/// softening the beam's two flanks instead of ending them on a hard line.
+const TORCH_SOFT: f32 = 0.06;
+
+/// The lights' shadow penumbra, in pixels: how large a light patch the
+/// torch and pool are treated as when a wall cuts their light, so the
+/// shadows they cast behind a wall fade across this width instead of
+/// dropping to the ambient floor on a hard silhouette.
+const SHADOW_PENUMBRA: f32 = 6.0;
+
 /// The top walking speed, in pixels per second.
 const SPEED: f32 = 180.0;
 
@@ -74,15 +87,6 @@ const PLAYER: frost::Color = frost::Color {
     r: 0.85,
     g: 0.60,
     b: 0.30,
-    a: 1.0,
-};
-
-/// The torch grip's color: a dark wooden stub sticking out of the square's
-/// +x side, so the facing is legible even outside the beam.
-const GRIP: frost::Color = frost::Color {
-    r: 0.40,
-    g: 0.28,
-    b: 0.16,
     a: 1.0,
 };
 
@@ -145,7 +149,7 @@ impl frost::Process for Demo {
         self.rot += drot * ROT_SPEED * dt;
 
         // The WASD direction in the square's own frame: the facing is the
-        // square's local +x (where its grip and the torch point), so `W`/`S`
+        // square's local +x (where the torch points), so `W`/`S`
         // drive along that axis and `A`/`D` strafe across it — right is the
         // facing turned clockwise, the square's local -y. The body-frame
         // vector (forward, -strafe) is rotated into the world by the facing
@@ -182,7 +186,7 @@ impl frost::Process for Demo {
             self.vel[1] = 0.0;
         }
 
-        // Carry the square and everything it carries — the grip, the pool
+        // Carry the square and everything it carries — the pool
         // light and the torch — along: rotate about its center, then place
         // it at `pos`. The lights are child nodes, so their spots and the
         // beam's axis ride this one transform write; nothing is emitted
@@ -221,7 +225,8 @@ fn panel(pos: [f32; 2], color: frost::Color) -> Box<frost::SceneNode> {
 /// An occluder wall node: left `lit: false` so it draws in its own full
 /// color regardless of the lights (a lit wall would vanish into the dark
 /// between light hits, which reads oddly for an obstacle), while its
-/// rectangle still cuts hard shadows out of every light behind it.
+/// rectangle still cuts every light behind it — the lights' penumbra
+/// ramps the cut edge of the shadow.
 fn wall(center: [f32; 2], extent: [f32; 2], tilt: f32) -> Box<frost::SceneNode> {
     Box::new(frost::SceneNode {
         // Lean by `tilt` about the wall's own center, then place it.
@@ -241,7 +246,7 @@ fn main() {
     env_logger::init();
     log::info!("frost started");
 
-    // The player node first: the square, its torch grip, and the two
+    // The player node first: the square and the two
     // lights it carries, drawn above the room's scenery by its `order`,
     // and moved by the process below.
     let player = Box::new(frost::SceneNode {
@@ -254,31 +259,24 @@ fn main() {
         lit: true,
         children: vec![
             Box::new(frost::SceneNode {
-                // The grip stub, sticking out of the square's facing side
-                // (+x in the square's local space), riding every turn.
-                shape: Some(frost::Shape::Rectangle {
-                    center: [28.0, 0.0],
-                    extent: [12.0, 4.0],
-                    color: GRIP,
-                }),
-                lit: true,
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
                 // The pool light at the square's own center: a light node,
                 // so it is never drawn — it just rides the parent, keeping
                 // its omni glow pinned to the player.
                 shape: Some(frost::Shape::Light {
-                    light: frost::Light::point(GLOW, GLOW_INTENSITY, GLOW_RADIUS),
+                    light: frost::Light::point(GLOW, GLOW_INTENSITY, GLOW_RADIUS)
+                        .with_penumbra(SHADOW_PENUMBRA),
                 }),
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
-                // The torch, mounted at the grip: its `direction` is 0 in
-                // the square's local space — along its +x, the facing —
-                // and the square's rotation, folded in by parenting, is
-                // what aims the beam. No per-frame angle bookkeeping.
-                transform: frost::Transform::translate([28.0, 0.0]),
+                // The torch, mounted directly on the square at its front
+                // face: local +x at the surface itself (x = PLAYER_HALF[0]),
+                // so the beam starts at the square's edge, never beyond it.
+                // Its `direction` is 0 in the square's local space — along
+                // that +x, the facing — and the square's rotation, folded
+                // in by parenting, is what aims the beam. No per-frame
+                // angle bookkeeping.
+                transform: frost::Transform::translate([PLAYER_HALF[0], 0.0]),
                 shape: Some(frost::Shape::Light {
                     light: frost::Light::cone(
                         TORCH,
@@ -286,7 +284,9 @@ fn main() {
                         TORCH_RADIUS,
                         0.0,
                         TORCH_SPREAD,
-                    ),
+                        TORCH_SOFT,
+                    )
+                    .with_penumbra(SHADOW_PENUMBRA),
                 }),
                 ..Default::default()
             }),

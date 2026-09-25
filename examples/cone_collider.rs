@@ -12,7 +12,7 @@
 //! center, and a torch — a cone light (radius [`TORCH_RADIUS`], full
 //! opening angle [`TORCH_SPREAD`]) mounted on the square's front face and
 //! aimed along its local +x, so its rotation sweeps the beam across the
-//! room.
+//! room, its edges feathering out across [`TORCH_SOFT`] of angle.
 //!
 //! The new part: everything the beam stops dead at, the player also stops
 //! dead at. In `cone.rs` the walls are drawn by a `wall()` call each; here
@@ -63,6 +63,17 @@ const TORCH_INTENSITY: f32 = 2.2;
 /// The torch's full opening angle, in radians: 20 degrees, so the beam
 /// spans 10 degrees to each side of the facing axis.
 const TORCH_SPREAD: f32 = 20.0_f32.to_radians();
+
+/// The torch beam's edge feather, in radians of angle (~3.5 degrees):
+/// how wide a band just inside each cone edge the beam fades across,
+/// softening the beam's two flanks instead of ending them on a hard line.
+const TORCH_SOFT: f32 = 1.0;
+
+/// The lights' shadow penumbra, in pixels: how large a light patch the
+/// torch and pool are treated as when a wall cuts their light, so the
+/// shadows they cast behind a wall fade across this width instead of
+/// dropping to the ambient floor on a hard silhouette.
+const SHADOW_PENUMBRA: f32 = 1.0;
 
 /// The top walking speed, in pixels per second.
 const SPEED: f32 = 180.0;
@@ -149,7 +160,8 @@ impl Wall {
     /// The wall's scene node: left `lit: false` so it draws in its own full
     /// color regardless of the lights (a lit wall would vanish into the
     /// dark between light hits, which reads oddly for an obstacle), while
-    /// its rectangle still cuts hard shadows out of every light behind it.
+    /// its rectangle still cuts every light behind it — the lights'
+    /// penumbra ramps the cut edge of the shadow.
     fn node(&self) -> Box<frost::SceneNode> {
         Box::new(frost::SceneNode {
             // Lean by `tilt` about the wall's own center, then place it.
@@ -229,11 +241,7 @@ impl frost::Process for Demo {
         let pad = ctx.gamepads().next();
         let stick = |a: frost::Axis| -> f32 {
             let value = pad.map(|pad| pad.value(a)).unwrap_or(0.0);
-            if value.abs() < DEADZONE {
-                0.0
-            } else {
-                value
-            }
+            if value.abs() < DEADZONE { 0.0 } else { value }
         };
 
         // `Q` turns counter-clockwise (a positive angle), `E` clockwise;
@@ -393,7 +401,8 @@ fn main() {
                 // so it is never drawn — it just rides the parent, keeping
                 // its omni glow pinned to the player.
                 shape: Some(frost::Shape::Light {
-                    light: frost::Light::point(GLOW, GLOW_INTENSITY, GLOW_RADIUS),
+                    light: frost::Light::point(GLOW, GLOW_INTENSITY, GLOW_RADIUS)
+                        .with_penumbra(SHADOW_PENUMBRA),
                 }),
                 ..Default::default()
             }),
@@ -413,7 +422,9 @@ fn main() {
                         TORCH_RADIUS,
                         0.0,
                         TORCH_SPREAD,
-                    ),
+                        TORCH_SOFT,
+                    )
+                    .with_penumbra(SHADOW_PENUMBRA),
                 }),
                 ..Default::default()
             }),
