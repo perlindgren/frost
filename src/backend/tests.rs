@@ -715,8 +715,9 @@ fn light_field_packs_an_empty_header_with_the_ambient() {
 #[test]
 fn light_field_packs_the_header_ambient_and_each_light_record() {
     // Two lights among non-light draws: count 2, the header, then one
-    // 32-byte record per light, in call order — a `(x, y, radius,
-    // intensity)` vec4, then a `(r, g, b, 1.0)` vec4.
+    // 48-byte record per light, in call order — a `(x, y, radius,
+    // intensity)` vec4, a `(r, g, b, 1.0)` vec4, and the cone vec4
+    // `(dir_x, dir_y, cos_half, 0.0)`.
     let ambient = Color {
         r: 0.1,
         g: 0.2,
@@ -741,6 +742,8 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
             radius: 16.0,
             intensity: 2.0,
             color: amber,
+            dir: [0.6, 0.8],
+            cos_half: 0.0,
             z: 0.0,
         },
         Draw::Circle {
@@ -754,6 +757,8 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
             radius: 0.0,
             intensity: 0.5,
             color: cyan,
+            dir: [0.0, -1.0],
+            cos_half: -1.0,
             z: 1.0,
         },
     ];
@@ -767,7 +772,8 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
     assert_eq!(field_f32(&field.data, 20), 0.2);
     assert_eq!(field_f32(&field.data, 24), 0.4);
     assert_eq!(field_f32(&field.data, 28), 1.0);
-    // Record 0 @ 32: (60, 30, 16, 2), then (1, 0.5, 0, 1).
+    // Record 0 @ 32: (60, 30, 16, 2), then (1, 0.5, 0, 1), then the cone
+    // (0.6, 0.8, 0, 0).
     let r0 = LIGHT_FIELD_HEADER;
     assert_eq!(field_f32(&field.data, r0), 60.0);
     assert_eq!(field_f32(&field.data, r0 + 4), 30.0);
@@ -777,7 +783,12 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
     assert_eq!(field_f32(&field.data, r0 + 20), 0.5);
     assert_eq!(field_f32(&field.data, r0 + 24), 0.0);
     assert_eq!(field_f32(&field.data, r0 + 28), 1.0);
-    // Record 1 @ 64: (-12.5, 8.25, 0, 0.5), then (0, 1, 1, 1).
+    assert_eq!(field_f32(&field.data, r0 + 32), 0.6);
+    assert_eq!(field_f32(&field.data, r0 + 36), 0.8);
+    assert_eq!(field_f32(&field.data, r0 + 40), 0.0);
+    assert_eq!(field_f32(&field.data, r0 + 44), 0.0);
+    // Record 1 @ 80: (-12.5, 8.25, 0, 0.5), then (0, 1, 1, 1), then the
+    // omni cone (0, -1, -1, 0).
     let r1 = LIGHT_FIELD_HEADER + LIGHT_RECORD;
     assert_eq!(field_f32(&field.data, r1), -12.5);
     assert_eq!(field_f32(&field.data, r1 + 4), 8.25);
@@ -787,6 +798,10 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
     assert_eq!(field_f32(&field.data, r1 + 20), 1.0);
     assert_eq!(field_f32(&field.data, r1 + 24), 1.0);
     assert_eq!(field_f32(&field.data, r1 + 28), 1.0);
+    assert_eq!(field_f32(&field.data, r1 + 32), 0.0);
+    assert_eq!(field_f32(&field.data, r1 + 36), -1.0);
+    assert_eq!(field_f32(&field.data, r1 + 40), -1.0);
+    assert_eq!(field_f32(&field.data, r1 + 44), 0.0);
 }
 
 #[test]
@@ -798,6 +813,8 @@ fn occluder_field_packs_an_empty_header() {
         radius: 5.0,
         intensity: 1.0,
         color: black(),
+        dir: [1.0, 0.0],
+        cos_half: -1.0,
         z: 0.0,
     }]);
     assert_eq!(field.count, 0);

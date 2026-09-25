@@ -311,8 +311,8 @@ impl ParticleShape {
     }
 }
 
-/// A point light: the color, strength, and falloff extent of a light
-/// source, held by a [`Shape::Light`] node.
+/// A light source: the color, strength, falloff extent, and cone of a
+/// light, held by a [`Shape::Light`] node.
 ///
 /// A light is never drawn: it contributes to the frame's light field, and
 /// every lit receiver ([`SceneNode::lit`]) evaluates it per pixel at render
@@ -320,6 +320,10 @@ impl ParticleShape {
 /// at the node's local origin, so the node's transform and its ancestors'
 /// place it in the scene, and the node's composed modulate tints its color,
 /// exactly as they would tint a shape's.
+///
+/// By default a light is omni-directional — it lights every pixel within
+/// `radius`. Setting a narrower [`spread`](Self::spread) turns it into a
+/// cone: only pixels inside the cone receive its light.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Light {
     /// The light's color, multiplied with its intensity and with the
@@ -332,6 +336,50 @@ pub struct Light {
     /// exactly `radius` pixels from its position, fading to zero at the
     /// edge.
     pub radius: f32,
+    /// The direction the light points, in radians, counterclockwise from
+    /// the local +x axis, measured in the node's local (y-up) space: like
+    /// every other direction on a node, the node's transform and its
+    /// ancestors' rotate it along with the position, so rotating the node
+    /// turns the beam. Ignored when the light is omni-directional
+    /// ([`spread`](Self::spread) at or beyond [`TAU`](std::f32::consts::TAU)).
+    pub direction: f32,
+    /// The cone's full opening angle, in radians: the angle between the
+    /// cone's two edges, measured around [`direction`](Self::direction).
+    /// `TAU` (or more) is omni-directional — the light reaches every
+    /// direction, as if there were no cone at all; [`PI`](std::f32::consts::PI)
+    /// is a half-plane; smaller angles narrow the beam; `0.0` degenerates
+    /// to the axis alone.
+    pub spread: f32,
+}
+
+impl Light {
+    /// An omni-directional point light: full-circle coverage, lighting
+    /// every direction equally.
+    pub fn point(color: Color, intensity: f32, radius: f32) -> Self {
+        Self {
+            color,
+            intensity,
+            radius,
+            // The direction is irrelevant for a full circle; +x keeps the
+            // recorded cone axis defined.
+            direction: 0.0,
+            spread: std::f32::consts::TAU,
+        }
+    }
+
+    /// A cone (spot) light: a beam of total opening angle `spread`
+    /// radians, pointing `direction` radians counterclockwise from the
+    /// local +x axis in the node's local space. See the
+    /// [`direction`](Self::direction) and [`spread`](Self::spread) fields.
+    pub fn cone(color: Color, intensity: f32, radius: f32, direction: f32, spread: f32) -> Self {
+        Self {
+            color,
+            intensity,
+            radius,
+            direction,
+            spread,
+        }
+    }
 }
 
 /// A shape that a [`SceneNode`] can hold.
@@ -456,17 +504,18 @@ pub enum Shape {
         /// before.
         shape: ParticleShape,
     },
-    /// A point light: contributes the node's [`Light`] to the frame's light
+    /// A light: contributes the node's [`Light`] to the frame's light
     /// field.
     ///
     /// The light is never drawn — it only lights the [`SceneNode::lit`]
     /// receivers, evaluated per pixel at render time. It sits at the
     /// node's local origin: the node's transform (and its ancestors')
-    /// position it in the scene, and the node's composed modulate tints its
-    /// color, exactly as they would tint a shape's. The radius is in user
-    /// units, mapped one to one to pixels.
+    /// position it in the scene, rotates its cone (if it has one), and
+    /// tints its color through the composed modulate, exactly as they
+    /// would a shape's. The radius is in user units, mapped one to one to
+    /// pixels.
     Light {
-        /// The light's color, strength, and falloff extent.
+        /// The light's color, strength, falloff extent, and cone.
         light: Light,
     },
 }

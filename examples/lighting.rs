@@ -222,11 +222,7 @@ fn main() {
                     ORBIT_CENTER[1],
                 ),
                 shape: Some(frost::Shape::Light {
-                    light: frost::Light {
-                        color: ORBIT_LIGHT,
-                        intensity: 1.3,
-                        radius: 190.0,
-                    },
+                    light: frost::Light::point(ORBIT_LIGHT, 1.3, 190.0),
                 }),
                 ..Default::default()
             }),

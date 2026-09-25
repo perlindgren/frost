@@ -84,7 +84,7 @@ pub(crate) struct Frost<P: Process> {
     /// kinds — circles and rectangles — never sample it.
     particle_placeholder: (TextureView, Sampler),
     /// The frame's light field storage buffer: a 32-byte header plus one
-    /// 32-byte record per light at the peak count so far. It starts at
+    /// 48-byte record per light at the peak count so far. It starts at
     /// the buffer's minimum size — the header plus one vec4, the WGSL
     /// layout's minimum binding size — because a lightless frame still
     /// binds it (the shaders read the field for the ambient), and it only

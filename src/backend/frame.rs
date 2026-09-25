@@ -172,6 +172,16 @@ pub(crate) enum Draw {
         /// The light's color, already multiplied with the node's composed
         /// modulate.
         color: Color,
+        /// The cone's axis, a unit vector in pixel space (the light's
+        /// local-space direction already through the composed
+        /// transforms' linear part), or `[1.0, 0.0]` when the direction
+        /// is not usable.
+        dir: [f32; 2],
+        /// The cosine of the cone's half opening angle: pixels `p` with
+        /// `dot(p - pos, dir) >= cos_half * length(p - pos)` receive the
+        /// light. `-1.0` is omni-directional (every pixel passes), `1.0`
+        /// degenerates the cone to its axis.
+        cos_half: f32,
         z: f32,
     },
 }
@@ -534,9 +544,11 @@ pub(crate) fn particle_instance(
 /// 12 padding bytes, and the scene's ambient color (a `vec4`).
 pub(crate) const LIGHT_FIELD_HEADER: usize = 32;
 
-/// The byte size of one light record: two `vec4<f32>`s —
-/// `(x, y, radius, intensity)` and `(r, g, b, 1.0)`.
-pub(crate) const LIGHT_RECORD: usize = 32;
+/// The byte size of one light record: three `vec4<f32>`s —
+/// `(x, y, radius, intensity)`, `(r, g, b, 1.0)`, and
+/// `(dir_x, dir_y, cos_half, 0.0)`, the last carrying the cone (see
+/// [`Draw::Light`]).
+pub(crate) const LIGHT_RECORD: usize = 48;
 
 /// The minimum size of the light field buffer in bytes: the header plus
 /// one `vec4`. The WGSL field ends in an unsized `array<vec4<f32>>`, and
@@ -560,14 +572,15 @@ pub(crate) fn light_field_buffer_size(count: u32) -> u64 {
 /// The layout is a [`LIGHT_FIELD_HEADER`]-byte header — the light `count`
 /// at bytes `0..4`, 12 padding bytes, the scene's ambient color channels at
 /// bytes `16..32` — followed by one [`LIGHT_RECORD`]-byte record per light,
-/// in call order: a `(x, y, radius, intensity)` `vec4`, then an
-/// `(r, g, b, 1.0)` `vec4`. The records line up with the unsized WGSL
+/// in call order: a `(x, y, radius, intensity)` `vec4`, an `(r, g, b, 1.0)`
+/// `vec4`, and a `(dir_x, dir_y, cos_half, 0.0)` `vec4` carrying the cone.
+/// The records line up with the unsized WGSL
 /// `array<vec4<f32>>` tail of the field's storage struct, so `data` can be
 /// bound as-is.
 pub(crate) struct LightField {
     /// The number of lights packed — the header's `count`.
     pub count: u32,
-    /// The packed bytes: a 32-byte header plus `count * 32` bytes.
+    /// The packed bytes: a 32-byte header plus `count * 48` bytes.
     pub data: Vec<u8>,
 }
 
@@ -594,6 +607,8 @@ pub(crate) fn pack_light_field(draws: &[Draw], ambient: Color) -> LightField {
             radius,
             intensity,
             color,
+            dir,
+            cos_half,
             ..
         } = draw
         {
@@ -608,6 +623,11 @@ pub(crate) fn pack_light_field(draws: &[Draw], ambient: Color) -> LightField {
             // The color vec4's w component is unused by the shader; keep it
             // at 1.0.
             write_f32_at(&mut data, off + 28, 1.0);
+            write_f32_at(&mut data, off + 32, dir[0]);
+            write_f32_at(&mut data, off + 36, dir[1]);
+            write_f32_at(&mut data, off + 40, *cos_half);
+            // The cone vec4's w component is unused padding; keep it at 0.
+            write_f32_at(&mut data, off + 44, 0.0);
             record += 1;
         }
     }

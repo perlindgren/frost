@@ -284,7 +284,7 @@ impl Canvas {
         });
     }
 
-    /// Registers a point light at `(x, y)` in the window's user space.
+    /// Registers an omni light at `(x, y)` in the window's user space.
     ///
     /// Lights are never drawn: they join the frame's light field, which
     /// every lit receiver ([`SceneNode::lit`]) evaluates per pixel. `color`
@@ -292,6 +292,9 @@ impl Canvas {
     /// strength, `0.0` is off), and `radius` its falloff extent in pixels:
     /// the light reaches exactly `radius` pixels from `(x, y)`, fading to
     /// zero at the edge.
+    ///
+    /// An omni light shines in every direction; use [`Canvas::light_cone`]
+    /// for one that shines only into a cone.
     ///
     /// The light lives in the window's user space — not any scene node's:
     /// no node's transform, scale, or modulate applies to it. For a light
@@ -303,11 +306,49 @@ impl Canvas {
     /// the field's ambient floor comes from the scene's
     /// [`ambient`](Scene::ambient).
     pub fn light(&mut self, x: f32, y: f32, color: Color, intensity: f32, radius: f32) {
+        self.light_cone(x, y, color, intensity, radius, 0.0, std::f32::consts::TAU);
+    }
+
+    /// Registers a cone light whose apex is at `(x, y)` in the window's
+    /// user space.
+    ///
+    /// Like [`Canvas::light`], but the light shines only into a cone:
+    /// `direction` is the cone's axis in radians (counter-clockwise from
+    /// the window's +x axis, y-up), and `spread` is the cone's full
+    /// opening angle in radians (`PI` is a half-plane, `>= 2 * PI` shines
+    /// in every direction like [`Canvas::light`]). Outside the cone the
+    /// light contributes nothing.
+    ///
+    /// This light lives in the window's user space like
+    /// [`Canvas::light`]'s, so `direction` is also the axis as seen on
+    /// screen; a light riding a [`SceneNode`] picks up the node's
+    /// rotation — see [`Shape::Light`].
+    #[allow(clippy::too_many_arguments)] // immediate-mode draw call
+    pub fn light_cone(
+        &mut self,
+        x: f32,
+        y: f32,
+        color: Color,
+        intensity: f32,
+        radius: f32,
+        direction: f32,
+        spread: f32,
+    ) {
+        // Fold the direction through the user transform as a vector, not
+        // an angle: subtracting the image of the origin from the image of
+        // the unit vector's tip cancels the translation and survives the
+        // y flip (user space is y-up, pixel space y-down) without special
+        // casing it. Normalizing guards against a future scaled user
+        // space; the fallback keeps a degenerate direction usable.
+        let tip = self.user_to_pixels(direction.cos(), direction.sin());
+        let origin = self.user_to_pixels(0.0, 0.0);
         self.draws.push(Draw::Light {
             pos: self.user_to_pixels(x, y),
             radius: radius.max(0.0),
             intensity,
             color,
+            dir: normalized_axis([tip[0] - origin[0], tip[1] - origin[1]]),
+            cos_half: half_angle_cosine(spread),
             // The light is never drawn, so its draw order is irrelevant.
             z: 0.0,
         });
@@ -496,6 +537,32 @@ impl Canvas {
     }
 }
 
+/// Normalizes a pixel-space delta into a light cone's unit axis.
+///
+/// A delta with no usable length (zero, or a NaN from a NaN direction)
+/// has no direction to speak of, so it falls back to the +x axis; the
+/// cone gate then behaves normally around that axis.
+fn normalized_axis(delta: [f32; 2]) -> [f32; 2] {
+    let len = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
+    if len > 0.0 && len.is_finite() {
+        [delta[0] / len, delta[1] / len]
+    } else {
+        [1.0, 0.0]
+    }
+}
+
+/// The cosine of a light cone's half opening angle, from its full
+/// `spread` in radians. The half angle is clamped to `0..=PI` first so
+/// the cosine covers the cone's whole meaningful range: a `spread` of
+/// `2 * PI` or more yields `-1.0`, which every pixel passes (an omni
+/// light), while a negative `spread` yields the degenerate axis-only
+/// `1.0` like `0` does. A NaN `spread` yields NaN, which fails the cone
+/// gate everywhere: the light simply contributes nothing instead of
+/// corrupting the frame.
+fn half_angle_cosine(spread: f32) -> f32 {
+    (spread * 0.5).clamp(0.0, std::f32::consts::PI).cos()
+}
+
 /// Draws one [`SceneNode`] and its subtree into `draws`, depth-first: the
 /// node's shape (if any — which may itself be a [`Shape::Particles`] batch)
 /// before its children, so parents paint under their descendants.
@@ -614,17 +681,30 @@ fn draw_node(
             Shape::Background { color } => Some(Draw::Background {
                 color: color.mul(modulate),
             }),
-            // A light is never drawn: its position is recorded in pixel
-            // space (the node's local origin through the composed
-            // transforms) and it is promoted to the frame's light field at
-            // render time.
-            Shape::Light { light } => Some(Draw::Light {
-                pos: world.compose(&user_to_pixel).apply([0.0, 0.0]),
-                radius: light.radius.max(0.0),
-                intensity: light.intensity,
-                color: light.color.mul(modulate),
-                z: order,
-            }),
+            // A light is never drawn: its position and cone axis are
+            // recorded in pixel space (the node's local origin, and its
+            // local cone direction, both through the composed transforms)
+            // and it is promoted to the frame's light field at render time.
+            Shape::Light { light } => {
+                // The direction is a local-space angle, so it is folded
+                // through the transform as a vector, not an angle: applying
+                // the transform to the origin and to the unit vector's tip
+                // and subtracting cancels the translation, carries the
+                // rotation (and any mirror) into the axis, and needs no
+                // atan2 that the pixel space's y flip would confuse.
+                let to_pixel = world.compose(&user_to_pixel);
+                let origin = to_pixel.apply([0.0, 0.0]);
+                let tip = to_pixel.apply([light.direction.cos(), light.direction.sin()]);
+                Some(Draw::Light {
+                    pos: origin,
+                    radius: light.radius.max(0.0),
+                    intensity: light.intensity,
+                    color: light.color.mul(modulate),
+                    dir: normalized_axis([tip[0] - origin[0], tip[1] - origin[1]]),
+                    cos_half: half_angle_cosine(light.spread),
+                    z: order,
+                })
+            }
             // The particles ride the node's world transform and scale, are
             // tinted by `color` times the composed modulate (and each
             // particle's own color), and draw at the node's composed order —
@@ -1626,7 +1706,8 @@ mod tests {
         // A light registered at user (10, 20) on a 100x100 canvas lands at
         // pixel (60, 30); a negative radius clamps to zero, the intensity
         // and color pass through, and the draw order is irrelevant, so it
-        // stays 0.0.
+        // stays 0.0. The light is omni, so its cone is wide open: the
+        // cosine of the half angle is -1.0 and the axis is the fallback.
         let mut canvas = Canvas::new((100, 100));
         canvas.light(
             10.0,
@@ -1645,6 +1726,8 @@ mod tests {
             radius,
             intensity,
             color,
+            dir,
+            cos_half,
             z,
         }] = &canvas.draws[..]
         else {
@@ -1654,6 +1737,8 @@ mod tests {
         assert_eq!(*radius, 0.0);
         assert_eq!(*intensity, 2.0);
         assert_eq!(*color, Color { r: 1.0, g: 0.5, b: 0.0, a: 1.0 });
+        assert_eq!(*dir, [1.0, 0.0]);
+        assert_eq!(*cos_half, -1.0);
         assert_eq!(*z, 0.0);
     }
 
@@ -1679,16 +1764,16 @@ mod tests {
         let scene = Scene::new(SceneNode {
             transform: Transform::translate(-10.0, 0.0),
             shape: Some(Shape::Light {
-                light: Light {
-                    color: Color {
+                light: Light::point(
+                    Color {
                         r: 0.0,
                         g: 0.0,
                         b: 1.0,
                         a: 1.0,
                     },
-                    intensity: 0.5,
-                    radius: 20.0,
-                },
+                    0.5,
+                    20.0,
+                ),
             }),
             ..Default::default()
         });
@@ -1704,7 +1789,8 @@ mod tests {
         assert_eq!(count, 2);
         assert_eq!(f32_at(&field.data, 16), AMBIENT.r);
         // The immediate light first: user (0, 0) -> pixel (50, 50), radius
-        // 10, intensity 1, red.
+        // 10, intensity 1, red. Both lights are omni, so the cone vec4 is
+        // the fallback axis, the always-passing -1.0, and zero padding.
         let off = LIGHT_FIELD_HEADER;
         assert_eq!(f32_at(&field.data, off), 50.0);
         assert_eq!(f32_at(&field.data, off + 4), 50.0);
@@ -1712,6 +1798,10 @@ mod tests {
         assert_eq!(f32_at(&field.data, off + 12), 1.0);
         assert_eq!(f32_at(&field.data, off + 16), 1.0);
         assert_eq!(f32_at(&field.data, off + 28), 1.0);
+        assert_eq!(f32_at(&field.data, off + 32), 1.0);
+        assert_eq!(f32_at(&field.data, off + 36), 0.0);
+        assert_eq!(f32_at(&field.data, off + 40), -1.0);
+        assert_eq!(f32_at(&field.data, off + 44), 0.0);
         // The scene's light second: user (-10, 0) -> pixel (40, 50), radius
         // 20, intensity 0.5, blue.
         let off = LIGHT_FIELD_HEADER + LIGHT_RECORD;
@@ -1720,6 +1810,10 @@ mod tests {
         assert_eq!(f32_at(&field.data, off + 8), 20.0);
         assert_eq!(f32_at(&field.data, off + 12), 0.5);
         assert_eq!(f32_at(&field.data, off + 24), 1.0);
+        assert_eq!(f32_at(&field.data, off + 32), 1.0);
+        assert_eq!(f32_at(&field.data, off + 36), 0.0);
+        assert_eq!(f32_at(&field.data, off + 40), -1.0);
+        assert_eq!(f32_at(&field.data, off + 44), 0.0);
     }
 
     #[test]
@@ -1727,22 +1821,22 @@ mod tests {
         // A light node translated to (10, 20): the light sits at the node's
         // local origin, which lands at user (10, 20), pixel (60, 30) on a
         // 100x100 canvas; the radius, intensity, and color pass through
-        // untinted (the modulate is white), and the node's order becomes
-        // the draw's z.
+        // untinted (the modulate is white), the point light's cone is wide
+        // open, and the node's order becomes the draw's z.
         let node = SceneNode {
             transform: Transform::translate(10.0, 20.0),
             order: 3.0,
             shape: Some(Shape::Light {
-                light: Light {
-                    color: Color {
+                light: Light::point(
+                    Color {
                         r: 1.0,
                         g: 1.0,
                         b: 1.0,
                         a: 1.0,
                     },
-                    intensity: 2.0,
-                    radius: 16.0,
-                },
+                    2.0,
+                    16.0,
+                ),
             }),
             ..Default::default()
         };
@@ -1753,6 +1847,8 @@ mod tests {
             radius,
             intensity,
             color,
+            dir,
+            cos_half,
             z,
         }] = &draws[..]
         else {
@@ -1770,6 +1866,8 @@ mod tests {
                 a: 1.0
             }
         );
+        assert_eq!(*dir, [1.0, 0.0]);
+        assert_eq!(*cos_half, -1.0);
         assert_eq!(*z, 3.0);
     }
 
@@ -1781,16 +1879,16 @@ mod tests {
         let node = SceneNode {
             transform: Transform::identity(),
             shape: Some(Shape::Light {
-                light: Light {
-                    color: Color {
+                light: Light::point(
+                    Color {
                         r: 1.0,
                         g: 1.0,
                         b: 0.0,
                         a: 1.0,
                     },
-                    intensity: 1.0,
-                    radius: -4.0,
-                },
+                    1.0,
+                    -4.0,
+                ),
             }),
             ..Default::default()
         };
@@ -1828,5 +1926,99 @@ mod tests {
             }
         );
         assert_eq!(*z, 5.0);
+    }
+
+    #[test]
+    fn a_cone_light_records_its_axis_and_half_angle() {
+        // An immediate cone aimed at user 45 degrees with a 60-degree
+        // opening: the axis is folded through the canvas transform, so the
+        // y-up user vector (cos 45, sin 45) becomes the y-down pixel vector
+        // (0.707, -0.707), and the gate carries the cosine of the half
+        // opening, cos(30 degrees).
+        let mut canvas = Canvas::new((100, 100));
+        canvas.light_cone(
+            0.0,
+            0.0,
+            Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            1.0,
+            10.0,
+            std::f32::consts::FRAC_PI_4,
+            std::f32::consts::FRAC_PI_3,
+        );
+        let [Draw::Light { dir, cos_half, .. }] = &canvas.draws[..] else {
+            panic!("expected one light draw, got {:?}", canvas.draws);
+        };
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((dir[0] - k).abs() < 1e-6);
+        assert!((dir[1] + k).abs() < 1e-6);
+        assert!((cos_half - (std::f32::consts::FRAC_PI_6).cos()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_parent_rotation_turns_a_cone_axis_like_any_other_shape() {
+        // A cone node aimed at local 0 degrees under a parent rotated 90
+        // degrees: the axis is carried by the composed transform, so the
+        // world-space direction is the node transform applied to (1, 0),
+        // rotated into the canvas's y-down pixel space. With a quarter turn
+        // this is exactly what a point's displacement would do.
+        let node = SceneNode {
+            transform: Transform::rotate(std::f32::consts::FRAC_PI_2),
+            shape: Some(Shape::Light {
+                light: Light::cone(
+                    Color {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 1.0,
+                        a: 1.0,
+                    },
+                    1.0,
+                    10.0,
+                    0.0,
+                    std::f32::consts::FRAC_PI_2,
+                ),
+            }),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        let [Draw::Light { dir, cos_half, .. }] = &draws[..] else {
+            panic!("expected one light draw, got {draws:?}")
+        };
+        assert!(dir[0].abs() < 1e-5);
+        assert!((dir[1] + 1.0).abs() < 1e-5);
+        assert!((cos_half - (std::f32::consts::FRAC_PI_4).cos()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_degenerate_cone_falls_back_to_a_usable_axis() {
+        // A degenerate axis - the delta the fold produces is zero-length -
+        // must not reach the shader as NaN, which would poison the angular
+        // gate for every pixel. The axis falls back to +x; the wide-open
+        // spread passes everywhere regardless.
+        let mut canvas = Canvas::new((100, 100));
+        canvas.light_cone(
+            0.0,
+            0.0,
+            Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            1.0,
+            10.0,
+            f32::NAN,
+            std::f32::consts::TAU,
+        );
+        let [Draw::Light { dir, cos_half, .. }] = &canvas.draws[..] else {
+            panic!("expected one light draw, got {:?}", canvas.draws);
+        };
+        assert_eq!(*dir, [1.0, 0.0]);
+        assert_eq!(*cos_half, -1.0);
     }
 }

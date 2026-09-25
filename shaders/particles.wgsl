@@ -50,9 +50,11 @@ var samp: sampler;
 
 // The frame's light field: one global storage buffer shared by every lit
 // pipeline. The 32-byte header holds the light count, 12 padding bytes,
-// and the scene's ambient color; the unsized array tail holds one 32-byte
-// record per light, in call order — (x, y, radius, intensity) followed by
-// (r, g, b, 1.0). The CPU sizes the bound buffer to fit the frame's lights.
+// and the scene's ambient color; the unsized array tail holds one 48-byte
+// record per light, in call order — (x, y, radius, intensity), then
+// (r, g, b, 1.0), then (dir_x, dir_y, cos_half, 0): the cone's unit axis
+// and the cosine of its half opening angle. The CPU sizes the bound buffer
+// to fit the frame's lights.
 struct LightField {
     count: u32,
     pad: array<u32, 3>,
@@ -138,18 +140,27 @@ fn occluded(l: vec2<f32>, p: vec2<f32>) -> bool {
 // The light mix at a pixel: the scene's ambient plus every light's
 // contribution — the light's color times its intensity, scaled by the
 // quadratic falloff from the light's position out to its radius, and zero
-// when an occluder blocks the light's path to the pixel. The result
-// multiplies the unlit color: pixel = base * (ambient + lights).
+// outside the light's cone and where an occluder blocks the light's path
+// to the pixel. The result multiplies the unlit color:
+// pixel = base * (ambient + lights).
 fn light_mix(p: vec2<f32>) -> vec3<f32> {
     var c = field.ambient.rgb;
     for (var i = 0u; i < field.count; i++) {
-        let l = field.lights[2 * i];
-        let lc = field.lights[2 * i + 1];
+        let l = field.lights[3 * i];
+        let lc = field.lights[3 * i + 1];
+        let cone = field.lights[3 * i + 2];
         let f = max(0.0, 1.0 - distance(p, l.xy) / max(l.z, 1e-4));
-        // A light contributes only when no occluder blocks the light from
-        // this pixel — a hard shadow, with no penumbra.
-        let v = select(0.0, 1.0, !occluded(l.xy, p));
-        c += lc.rgb * l.w * f * f * v;
+        // The cone gate, without normalizing d so the pixel at the
+        // light's own position stays inside the cone. An omni light's
+        // cos_half is -1.0, which every pixel passes.
+        let d = p - l.xy;
+        if (dot(d, cone.xy) >= cone.z * length(d)) {
+            // A light contributes only when no occluder blocks the light from
+            // this pixel — a hard shadow, with no penumbra. Outside the cone
+            // the light contributes nothing anyway, so skip the raycast.
+            let v = select(0.0, 1.0, !occluded(l.xy, p));
+            c += lc.rgb * l.w * f * f * v;
+        }
     }
     return c;
 }
