@@ -336,10 +336,49 @@ const PLANT_SCALE: f32 = 0.45;
 
 /// The fall speed of a dropped, overgrown tomato, in user pixels per
 /// second: it falls straight down from the point it let go, at this
-/// constant speed, until its body center reaches its destination — its
-/// spawn lowered by the plant's cumulative segment height, scaled into
-/// user space.
+/// constant speed, until its body center reaches the ground — the bottom
+/// anchor of its plant's root segment, the root joint, lowered by the
+/// body's hang below the stem.
 const FALL_SPEED: f32 = 400.0;
+
+/// The roll speed of a landed, overgrown tomato, in user pixels per
+/// second: once the fall reaches the ground, the fruit picks one of the six
+/// plant anchors and rolls there, along the straight line between, at this
+/// constant pace.
+const ROLL_SPEED: f32 = 150.0;
+
+/// The range, in seconds, for the wait between two of a rolling tomato's
+/// bumps: after each bump — and after the roll starts — the next one is
+/// armed a random interval in `[BUMP_IN.0, BUMP_IN.1)` later, so the hops
+/// come at an uneven, off-cadence rhythm.
+const BUMP_IN: (f32, f32) = (0.6, 1.4);
+
+/// The duration of a single bump, in seconds: the hop lifts the fruit off
+/// its rolling line and sets it back down over this many seconds, shaped
+/// as a half-sine.
+const BUMP_TIME: f32 = 0.25;
+
+/// The height of a bump's hop, in user pixels: the peak of the half-sine,
+/// the farthest the fruit lifts above its rolling line.
+const BUMP_HEIGHT: f32 = 10.0;
+
+/// The sentinel for [`Fall::bump`]: no bump is running, so the next one is
+/// being counted down by [`Fall::bump_in`] instead.
+const BUMP_NONE: f32 = f32::NEG_INFINITY;
+
+/// The range, in seconds, for how long a tomato that has reached its
+/// target rests there, catching its breath with a squash-and-stretch,
+/// before it picks its next plant anchor to roll to.
+const REST: (f32, f32) = (1.5, 3.0);
+
+/// The period of a resting tomato's breathing, in seconds: one full cycle
+/// — a squash out and a stretch back in — takes this long.
+const BREATH_PERIOD: f32 = 2.0;
+
+/// The amplitude of a resting tomato's breathing: the y-scale factor
+/// swings between `1.0 + BREATH_AMP` (stretched in) and `1.0 - BREATH_AMP`
+/// (squashed out), the x-scale compensating to hold the area.
+const BREATH_AMP: f32 = 0.12;
 
 /// `water_can_outline.png`'s texture size in pixels: the can's content,
 /// cropped to the image.
@@ -841,17 +880,199 @@ enum Tool {
     SprayCan,
 }
 
-/// One overgrown tomato currently falling to the ground: its pivot — a
-/// child of the fallen-fruit container, the same order as its
-/// [Demo::falls] entry — carries the current position in its own
-/// transform; this entry carries the destination it falls toward.
+/// The phase a fallen overgrown tomato is in.
+///
+/// A tomato falls straight down to the ground ([`FallPhase::Falling`]),
+/// then rolls to one of the six plant anchors ([`FallPhase::Rolling`]),
+/// rests there catching its breath with a squash-and-stretch
+/// ([`FallPhase::Resting`]), and then picks another anchor to roll to —
+/// looping, until the game restarts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FallPhase {
+    /// The tomato is falling straight down to the ground.
+    Falling,
+    /// The tomato has landed and is rolling to a target plant anchor.
+    Rolling,
+    /// The tomato has reached its target and is resting (breathing) there.
+    Resting,
+}
+
+/// One overgrown tomato on the ground: its pivot — a child of the
+/// fallen-fruit container, in the same order as its [Demo::falls] entry —
+/// is laid out from this entry's body position and scale factors every
+/// frame by [`Demo::step_falls`].
+///
+/// The tomato's *body center* — the fruit's visual center, which hangs
+/// below its stem (the pivot's origin) — is what is tracked here and what
+/// the roll, the bumps, and the rest are measured from. The pivot's
+/// transform is derived from it, so the breathing squash pivots on the
+/// body's center, not the stem.
 struct Fall {
-    /// The destination y, in user space: the bottom anchor of the plant's
-    /// root segment, the root joint, where the fruit drops to the ground.
-    dest_y: f32,
-    /// Whether the fruit has reached its destination: its transform is
-    /// then kept, and the drop clip plays exactly once, on this flip.
+    /// The phase the tomato is in.
+    phase: FallPhase,
+    /// The body center's y, in user space, where the fall stops: the
+    /// bottom anchor of the plant's root segment, the root joint, lowered
+    /// by the body's hang below the stem.
+    land_y: f32,
+    /// Whether the drop clip has played for this fruit; it plays exactly
+    /// once, on the frame the fall reaches the ground.
     landed: bool,
+    /// The body center's position, in user space: the base position,
+    /// without the bump's hop.
+    body: [f32; 2],
+    /// The target plant anchor, in user space, the fruit is rolling to.
+    target: [f32; 2],
+    /// The body position the tomato started its current roll from.
+    start: [f32; 2],
+    /// The roll progress, 0.0 (at `start`) to 1.0 (at `target`).
+    progress: f32,
+    /// The straight-line distance from `start` to `target`, in user
+    /// pixels: the roll's progress is advanced by `ROLL_SPEED * dt` over
+    /// it.
+    distance: f32,
+    /// The seconds left before the next bump arms, while one is not
+    /// running.
+    bump_in: f32,
+    /// The running bump's progress, 0.0 (take-off) to 1.0 (back on the
+    /// line), or [`BUMP_NONE`] while no bump is running.
+    bump: f32,
+    /// The seconds the tomato has spent resting at its target.
+    rest: f32,
+    /// How long this rest lasts, in seconds, before the next roll starts.
+    rest_for: f32,
+}
+
+impl Fall {
+    /// A freshly dropped tomato: it starts in the falling phase, with the
+    /// body at the spawn position, no roll running, and no bump armed.
+    fn new(land_y: f32, body: [f32; 2]) -> Self {
+        Self {
+            phase: FallPhase::Falling,
+            land_y,
+            landed: false,
+            body,
+            target: [0.0, 0.0],
+            start: [0.0, 0.0],
+            progress: 0.0,
+            distance: 0.0,
+            bump_in: 0.0,
+            bump: BUMP_NONE,
+            rest: 0.0,
+            rest_for: 0.0,
+        }
+    }
+
+    /// Picks a random plant anchor — one that is not the tomato's current
+    /// spot, so the roll always has somewhere to go — and starts rolling
+    /// there: the roll restarts from the current body position, with a
+    /// fresh bump countdown.
+    fn start_roll(&mut self, rng: &mut frost::Rng, anchors: &[[f32; 2]; PLANT_POS.len()]) {
+        let from = self.body;
+        // Walk the anchor ring until one is far enough away; the ring is
+        // only six, so a full pass always finds a distinct one.
+        let mut i = rng.next_u64() as usize % anchors.len();
+        let mut pass = 0;
+        while dist2(anchors[i], from) < 1.0 && pass < anchors.len() {
+            i = (i + 1) % anchors.len();
+            pass += 1;
+        }
+        self.target = anchors[i];
+        self.start = from;
+        self.progress = 0.0;
+        self.distance = dist2(self.start, self.target).sqrt();
+        self.bump_in = rng.in_range(BUMP_IN.0, BUMP_IN.1);
+        self.bump = BUMP_NONE;
+    }
+
+    /// Advances the tomato one frame by `dt` seconds, driving the phase
+    /// forward: the fall reaches the ground and the first roll starts, the
+    /// roll runs its bumps and reaches its target, and the rest breathes
+    /// out and the next roll starts.
+    fn step(&mut self, dt: f32, rng: &mut frost::Rng, anchors: &[[f32; 2]; PLANT_POS.len()]) {
+        match self.phase {
+            // The body drops straight down at the fall speed, clamped to
+            // the ground; on the landing frame the first roll starts.
+            FallPhase::Falling => {
+                self.body[1] = (self.body[1] - FALL_SPEED * dt).max(self.land_y);
+                if !self.landed && self.body[1] <= self.land_y {
+                    self.landed = true;
+                    self.phase = FallPhase::Rolling;
+                    self.start_roll(rng, anchors);
+                }
+            }
+            // The body rolls along the straight line from `start` to
+            // `target` at the roll speed, hopping on its bumps; on the
+            // arrival frame the rest begins.
+            FallPhase::Rolling => {
+                if self.distance > 0.0 {
+                    self.progress = (self.progress + ROLL_SPEED * dt / self.distance).min(1.0);
+                } else {
+                    self.progress = 1.0;
+                }
+                self.body = [
+                    self.start[0] + (self.target[0] - self.start[0]) * self.progress,
+                    self.start[1] + (self.target[1] - self.start[1]) * self.progress,
+                ];
+                // The bump's half-sine hop runs for `BUMP_TIME`, then the
+                // next one is counted down from a fresh random interval.
+                if self.bump != BUMP_NONE {
+                    self.bump = (self.bump + dt / BUMP_TIME).min(1.0);
+                    if self.bump >= 1.0 {
+                        self.bump = BUMP_NONE;
+                    }
+                } else {
+                    self.bump_in -= dt;
+                    if self.bump_in <= 0.0 {
+                        self.bump = 0.0;
+                        self.bump_in = rng.in_range(BUMP_IN.0, BUMP_IN.1);
+                    }
+                }
+                if self.progress >= 1.0 {
+                    self.phase = FallPhase::Resting;
+                    self.body = self.target;
+                    self.rest = 0.0;
+                    self.rest_for = rng.in_range(REST.0, REST.1);
+                }
+            }
+            // The body holds at the target, breathing, until the rest runs
+            // out; then the next roll starts.
+            FallPhase::Resting => {
+                self.rest += dt;
+                if self.rest >= self.rest_for {
+                    self.phase = FallPhase::Rolling;
+                    self.start_roll(rng, anchors);
+                }
+            }
+        }
+    }
+
+    /// The body center's position, with the bump's hop added while a bump
+    /// is running: the half-sine lifts the fruit off its rolling line and
+    /// sets it back down.
+    fn body_position(&self) -> [f32; 2] {
+        if self.phase == FallPhase::Rolling && self.bump != BUMP_NONE {
+            [
+                self.body[0],
+                self.body[1] + BUMP_HEIGHT * (std::f32::consts::PI * self.bump).sin(),
+            ]
+        } else {
+            self.body
+        }
+    }
+
+    /// The pivot's scale factors for this frame: neutral (no squash) while
+    /// the fruit falls or rolls, and the breathing squash-and-stretch
+    /// while it rests — the y-scale swings in and out, the x-scale
+    /// compensating to hold the fruit's area.
+    fn scale_factors(&self) -> [f32; 2] {
+        if self.phase == FallPhase::Resting {
+            let sy =
+                1.0 + BREATH_AMP * (2.0 * std::f32::consts::PI * self.rest / BREATH_PERIOD).sin();
+            [1.0 / sy, sy]
+        } else {
+            [1.0, 1.0]
+        }
+    }
 }
 
 /// The destination y, in user space, of a falling overgrown tomato: the
@@ -1187,7 +1408,7 @@ impl frost::Process for Demo {
         self.layout_plants(ctx, &anchors);
 
         self.fall_overgrown_tomatoes(ctx);
-        self.step_falls(ctx, dt);
+        self.step_falls(ctx, dt, &anchors);
 
         self.tick_tool(ctx, dt);
         self.update_particles(dt);
@@ -1884,34 +2105,51 @@ impl Demo {
                 root.children[CHILD_FALLEN_FRUIT]
                     .children
                     .push(Box::new(pivot));
-                self.falls.push(Fall {
-                    dest_y,
-                    landed: false,
-                });
+                // The body's center hangs below the stem (the pivot's
+                // origin), so the ground the fall stops at is the root
+                // joint lowered by the body's hang: the pivot lands at the
+                // joint, the body's center at the joint plus its offset.
+                self.falls.push(Fall::new(dest_y + TOMATO_PICK_SCALE * oy, spawn));
             }
         }
     }
 
     /// Steps the fallen fruit: each dropped tomato falls straight down
     /// from where it let go, at the fall speed, until its body center
-    /// reaches its destination — the bottom anchor of its plant's root
-    /// segment, the root joint, where the ground is — where it stops;
-    /// the drop clip plays exactly once, on the landing frame.
-    fn step_falls(&mut self, ctx: &mut frost::Context, dt: f32) {
+    /// reaches the ground; then it rolls to one of the six plant anchors,
+    /// hopping on its bumps, rests there catching its breath with a
+    /// squash-and-stretch, and picks its next anchor to roll to — looping.
+    /// The drop clip plays exactly once, on the landing frame; every pivot
+    /// is re-laid out from its body position and scale factors each frame,
+    /// so the breathing pivots on the body's center.
+    fn step_falls(
+        &mut self,
+        ctx: &mut frost::Context,
+        dt: f32,
+        anchors: &[[f32; 2]; PLANT_POS.len()],
+    ) {
+        let [ox, oy] =
+            tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
         let fallen = &mut ctx.scene().root.children[CHILD_FALLEN_FRUIT];
         for (fall, node) in self.falls.iter_mut().zip(fallen.children.iter_mut()) {
-            if fall.landed {
-                continue;
+            let was_falling = fall.phase == FallPhase::Falling;
+            fall.step(dt, &mut self.rng, anchors);
+            if was_falling && fall.phase != FallPhase::Falling {
+                // The fall reached the ground this frame: the drop clip
+                // plays exactly once, on this flip.
+                self.sounds.device.play_once(&self.sounds.tomato_drop, None);
             }
-            let [x, y] = node.transform.apply([0.0, 0.0]);
-            if y > fall.dest_y {
-                let ny = (y - FALL_SPEED * dt).max(fall.dest_y);
-                node.transform = frost::Transform::translate(x, ny);
-                if ny <= fall.dest_y {
-                    fall.landed = true;
-                    self.sounds.device.play_once(&self.sounds.tomato_drop, None);
-                }
-            }
+            // Lay the pivot out from the body position and the scale
+            // factors: the origin is the body center minus the (scaled)
+            // body hang, so a squash-and-stretch pivots on the body's
+            // center, not the stem.
+            let [sx, sy] = fall.scale_factors();
+            let [bx, by] = fall.body_position();
+            node.transform = frost::Transform::translate(
+                bx - TOMATO_PICK_SCALE * sx * ox,
+                by - TOMATO_PICK_SCALE * sy * oy,
+            );
+            node.scale = [TOMATO_PICK_SCALE * sx, TOMATO_PICK_SCALE * sy];
         }
     }
 
@@ -3291,6 +3529,173 @@ mod tests {
         assert!(
             !dry_blink_on(1.0 + DRY_BLINK * 0.75),
             "dark in a later period's second half"
+        );
+    }
+
+    /// Six simple plant anchors for the fall phase-machine tests: a 3×2
+    /// grid, 100 px apart horizontally and 50 px apart vertically.
+    fn test_anchors() -> [[f32; 2]; 6] {
+        [
+            [0.0, 0.0],
+            [100.0, 0.0],
+            [200.0, 0.0],
+            [0.0, 50.0],
+            [100.0, 50.0],
+            [200.0, 50.0],
+        ]
+    }
+
+    /// A fresh fall drops straight down at the fall speed until its body
+    /// center reaches the ground (`land_y`), where it lands, plays the drop
+    /// clip, and starts rolling to a random anchor.
+    #[test]
+    fn the_fall_lands_at_the_body_ground_and_starts_rolling() {
+        let mut rng = frost::Rng::with_seed(42);
+        let anchors = test_anchors();
+        let mut fall = Fall::new(0.0, [50.0, 100.0]);
+        assert_eq!(fall.phase, FallPhase::Falling);
+        let dt = 1.0 / 60.0;
+        for _ in 0..600 {
+            fall.step(dt, &mut rng, &anchors);
+            if fall.phase != FallPhase::Falling {
+                break;
+            }
+        }
+        assert_eq!(fall.phase, FallPhase::Rolling, "the fall should land and start rolling");
+        assert_eq!(fall.body[1], 0.0, "the body should sit on the ground");
+        assert!(fall.landed, "the drop clip should have played");
+        assert!(anchors.contains(&fall.target), "the target should be a plant anchor");
+    }
+
+    /// A landed tomato rolls along the straight line from its start to its
+    /// target at the roll speed, and begins its rest the frame it reaches
+    /// the target, sitting exactly on it.
+    #[test]
+    fn the_roll_reaches_its_target_and_starts_resting() {
+        let mut rng = frost::Rng::with_seed(7);
+        let anchors = test_anchors();
+        let mut fall = Fall::new(0.0, [0.0, 0.0]);
+        // One long frame drops it to the ground and starts the first roll.
+        fall.step(1.0, &mut rng, &anchors);
+        assert_eq!(fall.phase, FallPhase::Rolling);
+        let target = fall.target;
+        let dt = 1.0 / 60.0;
+        for _ in 0..6000 {
+            fall.step(dt, &mut rng, &anchors);
+            if fall.phase != FallPhase::Rolling {
+                break;
+            }
+        }
+        assert_eq!(fall.phase, FallPhase::Resting, "the roll should reach its target");
+        assert_eq!(fall.body, target, "the body should sit on the target");
+    }
+
+    /// A resting tomato breathes — its y-scale squashes below and stretches
+    /// above 1.0, its x-scale compensating — and after its random rest it
+    /// picks a new, different anchor to roll to.
+    #[test]
+    fn the_rest_breathes_and_picks_a_new_anchor() {
+        let mut rng = frost::Rng::with_seed(99);
+        let anchors = test_anchors();
+        let mut fall = Fall::new(0.0, [0.0, 0.0]);
+        fall.step(1.0, &mut rng, &anchors);
+        let dt = 1.0 / 60.0;
+        // Roll to the first target and into the rest.
+        for _ in 0..6000 {
+            fall.step(dt, &mut rng, &anchors);
+            if fall.phase != FallPhase::Rolling {
+                break;
+            }
+        }
+        assert_eq!(fall.phase, FallPhase::Resting);
+        let first_target = fall.target;
+        let mut saw_squash = false;
+        let mut saw_stretch = false;
+        // Run well past the longest rest (3 s) and a full breath (2 s).
+        for _ in 0..400 {
+            fall.step(dt, &mut rng, &anchors);
+            if fall.phase != FallPhase::Resting {
+                break;
+            }
+            let [sx, sy] = fall.scale_factors();
+            if sy < 1.0 - 1e-3 {
+                saw_squash = true;
+            }
+            if sy > 1.0 + 1e-3 {
+                saw_stretch = true;
+            }
+            // The area is held: the x-scale is the reciprocal of the y.
+            assert!((sx * sy - 1.0).abs() < 1e-4, "the breathing holds the area");
+        }
+        assert!(saw_squash, "the rest should squash out (sy < 1)");
+        assert!(saw_stretch, "the rest should stretch in (sy > 1)");
+        assert_eq!(fall.phase, FallPhase::Rolling, "the rest should end into a new roll");
+        assert_ne!(fall.target, first_target, "the new anchor should differ from the old");
+    }
+
+    /// A running bump lifts the body off its rolling line by the half-sine
+    /// hop, peaking at `BUMP_HEIGHT`, without touching the x position.
+    #[test]
+    fn the_bump_lifts_the_body_off_its_line() {
+        let mut fall = Fall::new(0.0, [0.0, 0.0]);
+        fall.phase = FallPhase::Rolling;
+        fall.start = [0.0, 0.0];
+        fall.target = [100.0, 0.0];
+        fall.body = [50.0, 0.0];
+        // Mid-hop: the half-sine is at its peak, sin(π/2) = 1.
+        fall.bump = 0.5;
+        let base = fall.body;
+        let pos = fall.body_position();
+        assert_eq!(pos[0], base[0], "the bump should not move the x");
+        assert!(
+            (pos[1] - (base[1] + BUMP_HEIGHT)).abs() < 1e-4,
+            "the mid-hop should peak at BUMP_HEIGHT"
+        );
+        // Take-off and landing: the half-sine is (within float noise) zero,
+        // the body is on the line.
+        fall.bump = 0.0;
+        let take_off = fall.body_position();
+        assert!(
+            (take_off[1] - base[1]).abs() < 1e-6,
+            "at take-off the body is on the line"
+        );
+        fall.bump = 1.0;
+        let landing = fall.body_position();
+        assert!(
+            (landing[1] - base[1]).abs() < 1e-6,
+            "at landing the body is on the line"
+        );
+    }
+
+    /// The pivot's scale factors are neutral (no squash) while the tomato
+    /// falls or rolls, and only the rest breathes.
+    #[test]
+    fn the_scale_factors_are_neutral_outside_the_rest() {
+        let mut rng = frost::Rng::with_seed(1);
+        let anchors = test_anchors();
+        let mut fall = Fall::new(0.0, [50.0, 100.0]);
+        assert_eq!(fall.phase, FallPhase::Falling);
+        assert_eq!(fall.scale_factors(), [1.0, 1.0], "the fall is neutral");
+        fall.step(1.0, &mut rng, &anchors);
+        assert_eq!(fall.phase, FallPhase::Rolling);
+        assert_eq!(fall.scale_factors(), [1.0, 1.0], "the roll is neutral");
+    }
+
+    /// A new roll always targets an anchor that is not the tomato's current
+    /// spot, restarts from there, and arms a fresh bump countdown.
+    #[test]
+    fn the_start_roll_picks_a_distinct_anchor() {
+        let mut rng = frost::Rng::with_seed(3);
+        let anchors = test_anchors();
+        let mut fall = Fall::new(0.0, [100.0, 0.0]);
+        fall.start_roll(&mut rng, &anchors);
+        assert_ne!(fall.target, [100.0, 0.0], "the target should not be the current spot");
+        assert!(anchors.contains(&fall.target), "the target should be a plant anchor");
+        assert_eq!(fall.start, [100.0, 0.0], "the roll should start at the current spot");
+        assert_eq!(fall.progress, 0.0, "the roll should start at zero progress");
+        assert!(
+            (BUMP_IN.0..BUMP_IN.1).contains(&fall.bump_in),
+            "a bump countdown should be armed"
         );
     }
 }
