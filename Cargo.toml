@@ -135,6 +135,34 @@ path = "examples/text/text_web.rs"
 name = "sub_zero"
 path = "examples/text/sub_zero.rs"
 
+# The input/output examples live in the `examples/inout/` folder. Cargo
+# only auto-discovers `examples/*.rs` and `examples/*/main.rs`, so each
+# file in the folder is named here explicitly; the example names stay the
+# same, so `cargo run --example cursor` (and friends) keeps working.
+[[example]]
+name = "player"
+path = "examples/inout/player.rs"
+
+[[example]]
+name = "cursor"
+path = "examples/inout/cursor.rs"
+
+[[example]]
+name = "cone_collider"
+path = "examples/inout/cone_collider.rs"
+
+[[example]]
+name = "sound"
+path = "examples/inout/sound.rs"
+
+[[example]]
+name = "audio_test"
+path = "examples/inout/audio_test.rs"
+
+[[example]]
+name = "torch"
+path = "examples/inout/torch.rs"
+
 [dev-dependencies]
 # Command line parsing for the `repeat` example (`--repeat_x`, `--repeat_y`).
 clap = { version = "4", features = ["derive"] }

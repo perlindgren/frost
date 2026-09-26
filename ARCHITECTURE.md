@@ -259,7 +259,8 @@ CPU-only, built on **swash** (pure-Rust Fontation shaping/rasterization):
 `Tween<T: Tweenable>` for `f32` and `[f32;2]`: `new(from, to, duration)`
 (default `Repeat::PingPong`), `repeat(Repeat::{Once, Loop, PingPong})`,
 `tick(dt) -> T`. Durations are floored at 1e-6. **There is no re-target API** —
-the established pattern (e.g. `examples/cursor.rs`) is to **rebuild the tween**
+the established pattern (e.g. `examples/inout/cursor.rs`) is to **rebuild the
+tween**
 on the press/release edge with the current value as the new `from`.
 
 ## Particles (src/particles.rs)
