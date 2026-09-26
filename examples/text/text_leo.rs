@@ -1,13 +1,14 @@
-//! Text shapes: TTF glyphs drawn through the scene tree. "Sub" is set in
-//! `assets/fonts/JameGem08_2026-Regular.ttf` at 48 pixels on top of a
-//! circle at the window center: the text node is a child of the circle
-//! node and carries the identity transform, so the text sits at the screen
-//! center. The circle, with the text riding on it, sways gently up and down
-//! to show the text moving like any other shape.
+//! Text shapes: TTF glyphs drawn through the scene tree. "immortal tomato
+//! 0123456789" is set in `assets/fonts/Leofont-Regular.ttf` at 48 pixels on
+//! top of a circle at the window center — the same swaying scene as the
+//! `text` example, with a different font. The text node is a child of the
+//! circle node and carries the identity transform, so the text sits at the
+//! screen center. The circle, with the text riding on it, sways gently up
+//! and down to show the text moving like any other shape.
 //! Run with:
 //!
 //! ```text
-//! cargo run --example text
+//! cargo run --example text_leo
 //! ```
 
 struct Demo {

@@ -35,7 +35,8 @@
 
 /// The same font the native example loads from disk, embedded instead.
 #[cfg(target_arch = "wasm32")]
-const FONT: &[u8] = include_bytes!("../assets/fonts/JameGem08_2026-Regular.ttf");
+const FONT: &[u8] =
+    include_bytes!("../../assets/fonts/JameGem08_2026-Regular.ttf");
 
 #[cfg(target_arch = "wasm32")]
 struct Demo {

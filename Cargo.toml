@@ -115,6 +115,26 @@ path = "examples/layers/parallax.rs"
 name = "repeat"
 path = "examples/layers/repeat.rs"
 
+# The text examples live in the `examples/text/` folder. Cargo
+# only auto-discovers `examples/*.rs` and `examples/*/main.rs`, so each
+# file in the folder is named here explicitly; the example names stay the
+# same, so `cargo run --example text` (and friends) keeps working.
+[[example]]
+name = "text"
+path = "examples/text/text.rs"
+
+[[example]]
+name = "text_leo"
+path = "examples/text/text_leo.rs"
+
+[[example]]
+name = "text_web"
+path = "examples/text/text_web.rs"
+
+[[example]]
+name = "sub_zero"
+path = "examples/text/sub_zero.rs"
+
 [dev-dependencies]
 # Command line parsing for the `repeat` example (`--repeat_x`, `--repeat_y`).
 clap = { version = "4", features = ["derive"] }
