@@ -15,7 +15,7 @@ The particle system has two halves, and the cost is not where it looks:
 particles integrate in well under a millisecond in Rust. It is *not* the
 bottleneck.
 
-**Rendering** — the example (`examples/particles.rs`) draws every particle
+**Rendering** — the example (`examples/particles/particles.rs`) draws every particle
 with `ctx.circle`, and in this crate each circle costs:
 
 - one `queue.create_buffer` + `write_buffer` (48-byte uniform),
@@ -204,7 +204,7 @@ Notes:
 | `src/backend/frame.rs` | `Draw::Particles` variant, `z()`, `scissor_rect()` → whole surface, `particles_uniform_data` |
 | `src/lib.rs` | `Canvas::particles` |
 | `src/backend/app.rs` | pipeline, buffers, render-loop arm |
-| `examples/particles.rs` | replace the per-particle `ctx.circle` loop with one `ctx.particles(...)` call |
+| `examples/particles/particles.rs` | replace the per-particle `ctx.circle` loop with one `ctx.particles(...)` call |
 | `src/particles.rs` | **unchanged** — the pure-CPU system remains the reference |
 
 **Expected effect:** the example looks identical; frame CPU cost becomes
@@ -396,7 +396,7 @@ CPU/GPU parity test (§5) pins the GPU behavior.
   sequences, read the pool back, and compare with a small tolerance —
   allowing the one-step swap-remove discrepancy per death. Runs in
   `cargo test` on native.
-- **Example + stress**: update `examples/particles.rs` to the batched path;
+- **Example + stress**: update `examples/particles/particles.rs` to the batched path;
   make the emission rate settable (e.g. env var `PARTICLE_RATE`) and run at
   10k / 50k / 200k; log per-frame CPU time (an `Instant` around the
   process+render in the example, at `trace`) before and after to show the

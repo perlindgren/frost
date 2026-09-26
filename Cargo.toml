@@ -39,6 +39,22 @@ web-sys = { version = "0.3", features = [
     "Window",
 ] }
 
+# The particle examples live in the `examples/particles/` folder. Cargo
+# only auto-discovers `examples/*.rs` and `examples/*/main.rs`, so each
+# file in the folder is named here explicitly; the example names stay the
+# same, so `cargo run --example fountains` (and friends) keeps working.
+[[example]]
+name = "particles"
+path = "examples/particles/particles.rs"
+
+[[example]]
+name = "fountains"
+path = "examples/particles/fountains.rs"
+
+[[example]]
+name = "square_fountains"
+path = "examples/particles/square_fountains.rs"
+
 [dev-dependencies]
 # Command line parsing for the `repeat` example (`--repeat_x`, `--repeat_y`).
 clap = { version = "4", features = ["derive"] }
