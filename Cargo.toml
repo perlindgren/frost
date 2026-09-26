@@ -55,6 +55,46 @@ path = "examples/particles/fountains.rs"
 name = "square_fountains"
 path = "examples/particles/square_fountains.rs"
 
+# The lighting examples live in the `examples/lighting/` folder. Cargo
+# only auto-discovers `examples/*.rs` and `examples/*/main.rs`, so each
+# file in the folder is named here explicitly; the example names stay the
+# same, so `cargo run --example lighting` (and friends) keeps working.
+[[example]]
+name = "lighting"
+path = "examples/lighting/lighting.rs"
+
+[[example]]
+name = "lit_unlit"
+path = "examples/lighting/lit_unlit.rs"
+
+[[example]]
+name = "bouncing_lights"
+path = "examples/lighting/bouncing_lights.rs"
+
+[[example]]
+name = "cone"
+path = "examples/lighting/cone.rs"
+
+[[example]]
+name = "dawn"
+path = "examples/lighting/dawn.rs"
+
+[[example]]
+name = "near_sun"
+path = "examples/lighting/near_sun.rs"
+
+[[example]]
+name = "twostars"
+path = "examples/lighting/twostars.rs"
+
+[[example]]
+name = "eyes"
+path = "examples/lighting/eyes.rs"
+
+[[example]]
+name = "eyes_light"
+path = "examples/lighting/eyes_light.rs"
+
 [dev-dependencies]
 # Command line parsing for the `repeat` example (`--repeat_x`, `--repeat_y`).
 clap = { version = "4", features = ["derive"] }
