@@ -10,16 +10,17 @@
 //! The swarm is not all in the air at once: each fully grown plant layer
 //! spawns one viper, so the swarm grows layer by layer as the bench
 //! grows. Viper `i` is the `(i % LAYERS)`-th layer's viper of plant
-//! `i / LAYERS` — the plants grow one at a time, each layer in turn, so
-//! the layers' completion order is the swarm order — and only the
-//! spawned prefix of the swarm steps and draws.
+//! `i / LAYERS`, and it exists only once its own plant's layer has fully
+//! grown — the plants grow concurrently, each on its own clock, so each
+//! plant's vipers come up independently, each circling its own segment,
+//! rather than as one global prefix in swarm order.
 //!
 //! The sprites are `Getingeye1.png` and `Getingeye2.png`, two frames of a
 //! viper flying to the right. The swarm is driven by a [`Vipers`] value:
 //! `new` builds the thirty bees from a deterministic schedule of the bee
 //! index, so each run looks the same and no random crate is needed,
 //! `step` advances the swarm by `dt` seconds around the plants' root
-//! joints given how many layers have fully grown, and `layout` lays the
+//! joints given the grown-layer count per plant, and `layout` lays the
 //! bees out in a node whose children — in swarm order — are the thirty
 //! bee nodes.
 //!
@@ -170,12 +171,14 @@ impl Vipers {
     /// [LAYERS] midpoints of its layer segments along the static, fully
     /// grown chain — the sway left out.
     ///
-    /// `spawned` is how many of the swarm's vipers exist: the number of
-    /// fully grown plant layers on the bench. The swarm is not all in the
-    /// air at once — each fully grown layer spawns one viper, and viper
-    /// `i` orbits the midpoint of the segment that spawned it,
-    /// `centers[i / LAYERS][i % LAYERS]` — so only the spawned prefix
-    /// steps; the rest keeps waiting in the grass.
+    /// `grown` is the count of fully grown layers per plant, in bench
+    /// order. The swarm is not all in the air at once — each fully grown
+    /// layer spawns one viper, and viper `i` orbits the midpoint of the
+    /// segment that spawned it, `centers[i / LAYERS][i % LAYERS]`. A viper
+    /// exists only when its own plant's layer has fully grown —
+    /// `grown[i / LAYERS] > i % LAYERS` — so the plants' vipers come up
+    /// independently, each circling its own segment, rather than as one
+    /// global prefix in swarm order.
     ///
     /// Each bee's orbit is an ellipse around the midpoint of the segment
     /// that spawned it, lifted by its `hover` height: the orbit angle
@@ -185,16 +188,23 @@ impl Vipers {
     /// last position, and the facing follows its x with a dead band, so
     /// the sprite flips only when the bee is clearly flying one way or
     /// the other.
-    pub fn step(&mut self, dt: f32, centers: &[[[f32; 2]; LAYERS]], spawned: usize) {
+    pub fn step(&mut self, dt: f32, centers: &[[[f32; 2]; LAYERS]], grown: &[usize]) {
         self.t += dt;
         let t = self.t;
-        for (i, bee) in self.bees.iter_mut().enumerate().take(spawned) {
+        for (i, bee) in self.bees.iter_mut().enumerate() {
+            let home = (i / LAYERS) % centers.len();
+            let layer = i % LAYERS;
+            // The viper exists only once its own plant's layer has fully
+            // grown — not on the swarm's global prefix.
+            if grown.get(home).copied().unwrap_or(0) <= layer {
+                continue;
+            }
             if !bee.placed {
-                bee.home = (i / LAYERS) % centers.len();
+                bee.home = home;
             }
             let a = bee.phase + t * bee.omega;
             let r = bee.radius * (0.85 + 0.15 * (t * bee.wob + 2.0 * bee.phase).sin());
-            let [cx, cy] = centers[bee.home][i % LAYERS];
+            let [cx, cy] = centers[home][layer];
             let pos = [
                 cx + a.cos() * r,
                 cy + bee.hover
@@ -288,27 +298,28 @@ mod tests {
     }
 
     /// The swarm is not all in the air at once: a viper exists only once
-    /// its plant layer has fully grown, so stepping with `spawned` places
-    /// exactly the first `spawned` bees, and bee `i` homes to the plant
-    /// whose layer spawned it — `i / LAYERS`.
+    /// its own plant's layer has fully grown, so stepping with `grown`
+    /// places exactly the bees whose plant's layer count passes their
+    /// layer index, and bee `i` homes to the plant whose layer spawned it
+    /// — `i / LAYERS`.
     #[test]
     fn a_grown_layer_spawns_its_own_viper() {
         let c = centers();
         let mut v = Vipers::new([100.0, 90.0]);
 
         // No layer is grown yet: nothing steps, nothing is placed.
-        v.step(0.05, &c, 0);
+        v.step(0.05, &c, &[0, 0, 0, 0, 0, 0]);
         assert!(v.bees.iter().all(|b| !b.placed));
 
         // Plant 0's first layer finishes: viper 0 spawns on plant 0.
-        v.step(0.05, &c, 1);
+        v.step(0.05, &c, &[1, 0, 0, 0, 0, 0]);
         assert!(v.bees[0].placed);
         assert_eq!(v.bees[0].home, 0);
         assert!(!v.bees[1].placed);
 
         // All of plant 0's layers, then plant 1's first: the homes
         // follow the layer order, five per plant.
-        v.step(0.05, &c, 6);
+        v.step(0.05, &c, &[5, 1, 0, 0, 0, 0]);
         for i in 0..6 {
             assert!(v.bees[i].placed, "bee {i} was not spawned");
             assert_eq!(v.bees[i].home, i / LAYERS, "bee {i} homes wrong");
@@ -317,11 +328,33 @@ mod tests {
 
         // The bench is fully grown: all thirty are in the air, and an
         // over-supplied count cannot place a ghost.
-        v.step(0.05, &c, N + 1);
+        v.step(0.05, &c, &[5, 5, 5, 5, 5, 5]);
         for (i, bee) in v.bees.iter().enumerate() {
             assert!(bee.placed, "bee {i} never spawned");
             assert_eq!(bee.home, i / LAYERS, "bee {i} homes wrong");
         }
+    }
+
+    /// A viper exists on its own plant's schedule, not the swarm's global
+    /// prefix: a later plant's grown layers spawn its own vipers even when
+    /// an earlier plant has none, and each viper circles its own segment.
+    #[test]
+    fn vipers_spawn_on_their_own_plants() {
+        let c = centers();
+        let mut v = Vipers::new([100.0, 90.0]);
+
+        // Plant 2 has two layers grown, but plant 0 and 1 have none:
+        // only plant 2's vipers exist — the global prefix (vipers 0-1)
+        // must NOT spawn.
+        v.step(0.05, &c, &[0, 0, 2, 0, 0, 0]);
+        assert!(!v.bees[0].placed, "viper 0 (plant 0) spawned on a global prefix");
+        assert!(!v.bees[1].placed, "viper 1 (plant 0) spawned on a global prefix");
+        assert!(!v.bees[5].placed, "viper 5 (plant 1) spawned on a global prefix");
+        assert!(v.bees[10].placed, "viper 10 (plant 2 layer 0) missing");
+        assert_eq!(v.bees[10].home, 2, "viper 10 homes to plant 2");
+        assert!(v.bees[11].placed, "viper 11 (plant 2 layer 1) missing");
+        assert_eq!(v.bees[11].home, 2, "viper 11 homes to plant 2");
+        assert!(!v.bees[12].placed, "viper 12 (plant 2 layer 2) spawned early");
     }
 
     /// A spawned viper circles the segment that spawned it: its position
@@ -332,7 +365,7 @@ mod tests {
     fn a_viper_orbits_its_own_segment() {
         let c = centers();
         let mut v = Vipers::new([100.0, 90.0]);
-        v.step(0.05, &c, N);
+        v.step(0.05, &c, &[5, 5, 5, 5, 5, 5]);
         for (i, bee) in v.bees.iter().enumerate() {
             let [cx, cy] = c[i / LAYERS][i % LAYERS];
             // The radius breathes by ±15 %, so the horizontal distance
@@ -365,7 +398,7 @@ mod tests {
             ..Default::default()
         };
 
-        v.step(0.05, &centers(), 3);
+        v.step(0.05, &centers(), &[3, 0, 0, 0, 0, 0]);
         v.layout(&mut node, [&f, &f]);
         for i in 0..3 {
             assert!(node.children[i].shape.is_some(), "bee {i} is invisible");

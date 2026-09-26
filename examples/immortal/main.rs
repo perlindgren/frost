@@ -344,8 +344,15 @@ const FALL_SPEED: f32 = 400.0;
 /// The roll speed of a landed, overgrown tomato, in user pixels per
 /// second: once the fall reaches the ground, the fruit picks one of the six
 /// plant anchors and rolls there, along the straight line between, at this
-/// constant pace.
+/// base pace.
 const ROLL_SPEED: f32 = 150.0;
+
+/// The range, as a fraction of the base roll speed, for the roll's actual
+/// pace: each time the fruit lands back on its line from a bump, its speed
+/// toward the target is re-rolled from this range, so the roll stumbles and
+/// surges — now a little faster, now a little slower — reading as a loose,
+/// unpredictable rattle rather than a metronome.
+const ROLL_SPEED_RANGE: (f32, f32) = (0.6, 1.4);
 
 /// The range, in seconds, for the wait between two of a rolling tomato's
 /// bumps: after each bump — and after the roll starts — the next one is
@@ -360,7 +367,7 @@ const BUMP_TIME: f32 = 0.1;
 
 /// The height of a bump's hop, in user pixels: the peak of the half-sine,
 /// the farthest the fruit lifts above its rolling line.
-const BUMP_HEIGHT: f32 = 3.0;
+const BUMP_HEIGHT: f32 = 9.0;
 
 /// The sentinel for [`Fall::bump`]: no bump is running, so the next one is
 /// being counted down by [`Fall::bump_in`] instead.
@@ -938,10 +945,16 @@ struct Fall {
     bump_in: f32,
     /// The tomato's wheel rotation, in radians, accumulated as it rolls:
     /// the fruit turns like a wheel, the angle advancing with the distance
-    /// it travels, so it reads as rolling rather than sliding. It is
-    /// zeroed whenever the fruit is not rolling, so it stands upright
-    /// while it falls and rests.
+    /// it travels, so it reads as rolling rather than sliding. Rolling to
+    /// the right turns it clockwise (negative, the y-up frame), rolling to
+    /// the left counter-clockwise (positive). It is zeroed whenever the
+    /// fruit is not rolling, so it stands upright while it falls and rests.
     spin: f32,
+    /// The tomato's current roll speed, in user pixels per second: the
+    /// base roll pace re-rolled from [`ROLL_SPEED_RANGE`] each time the
+    /// fruit lands back on its line from a bump, so the roll stumbles and
+    /// surges toward the target.
+    speed: f32,
     /// The seconds the tomato has spent resting at its target.
     rest: f32,
     /// How long this rest lasts, in seconds, before the next roll starts.
@@ -965,6 +978,7 @@ impl Fall {
             bump: BUMP_NONE,
             bump_in: 0.0,
             spin: 0.0,
+            speed: ROLL_SPEED,
             rest: 0.0,
             rest_for: 0.0,
         }
@@ -988,6 +1002,7 @@ impl Fall {
         self.start = from;
         self.progress = 0.0;
         self.distance = dist2(self.start, self.target).sqrt();
+        self.speed = ROLL_SPEED;
         self.bump_in = rng.in_range(BUMP_IN.0, BUMP_IN.1);
         self.bump = BUMP_NONE;
     }
@@ -997,8 +1012,8 @@ impl Fall {
     /// the first roll starts on landing, the roll runs its bumps, turns
     /// like a wheel, and reaches its target, and the rest breathes out and
     /// the next roll starts. `radius` is the fruit's rolling radius, in
-    /// user pixels — the wheel's spin turns up by the distance traveled
-    /// over it.
+    /// user pixels — the wheel's spin turns by the distance traveled over
+    /// it, clockwise rolling right and counter-clockwise rolling left.
     fn step(
         &mut self,
         dt: f32,
@@ -1031,7 +1046,7 @@ impl Fall {
             // fruit stands back upright.
             FallPhase::Rolling => {
                 if self.distance > 0.0 {
-                    self.progress = (self.progress + ROLL_SPEED * dt / self.distance).min(1.0);
+                    self.progress = (self.progress + self.speed * dt / self.distance).min(1.0);
                 } else {
                     self.progress = 1.0;
                 }
@@ -1040,18 +1055,33 @@ impl Fall {
                     self.start[0] + (self.target[0] - self.start[0]) * self.progress,
                     self.start[1] + (self.target[1] - self.start[1]) * self.progress,
                 ];
-                // The wheel turns up with the distance it travels: a
-                // no-slip roll, the angle advancing by the travel over the
-                // radius.
+                // The wheel turns with the distance it travels: a no-slip
+                // roll, the angle advancing by the travel over the radius.
+                // Rolling to the right turns it clockwise (a negative
+                // angle in the y-up frame), rolling to the left turns it
+                // counter-clockwise (a positive one).
                 if radius > 0.0 {
-                    self.spin += dist2(from, self.body).sqrt() / radius;
+                    let dx = self.body[0] - from[0];
+                    let dir = if dx > 0.0 {
+                        -1.0
+                    } else if dx < 0.0 {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    self.spin += dir * dist2(from, self.body).sqrt() / radius;
                 }
                 // The bump's half-sine hop runs for `BUMP_TIME`, then the
-                // next one is counted down from a fresh random interval.
+                // next one is counted down from a fresh random interval. On
+                // the landing frame — the hop back on the line — the roll's
+                // pace toward the target is re-rolled, so it stumbles and
+                // surges.
                 if self.bump != BUMP_NONE {
                     self.bump = (self.bump + dt / BUMP_TIME).min(1.0);
                     if self.bump >= 1.0 {
                         self.bump = BUMP_NONE;
+                        self.speed =
+                            ROLL_SPEED * rng.in_range(ROLL_SPEED_RANGE.0, ROLL_SPEED_RANGE.1);
                     }
                 } else {
                     self.bump_in -= dt;
@@ -1407,7 +1437,7 @@ impl frost::Process for Demo {
         // The bugs step on the planted table itself, not the count, so a
         // withered plant's bugs retarget and a replanted slot's plant gets
         // its own batch; the count is only kept for the tests.
-        let (_active_plants, grown_layers, started) = self.grow_plants(dt);
+        let (_active_plants, started) = self.grow_plants(dt);
 
         // The bench went bare after the last survivor withered away —
         // the player has planted, so this is a game over: the overlay
@@ -1423,7 +1453,7 @@ impl frost::Process for Demo {
             }
         }
 
-        self.step_vipers(ctx, dt, &anchors, grown_layers);
+        self.step_vipers(ctx, dt, &anchors);
 
         let events = self.step_bugs(ctx, dt, &anchors, &started);
         self.play_bug_events(&events);
@@ -1700,14 +1730,12 @@ impl Demo {
     /// a fresh, invisible seed — un-planted, full-watered and white — so
     /// a new seed can land in the slot.
     ///
-    /// Returns the `grown_layers` count the vipers step on, the
-    /// `active_plants` count of plants that are growing, and the `started`
-    /// table the watering, the water bars and the bugs read — the planted
-    /// table, which is the bugs' liveness table: a plant that withered
-    /// away this frame is not in it.
-    fn grow_plants(&mut self, dt: f32) -> (usize, usize, [bool; PLANT_POS.len()]) {
+    /// Returns the `active_plants` count of plants that are growing and
+    /// the `started` table the watering, the water bars and the bugs read
+    /// — the planted table, which is the bugs' liveness table: a plant
+    /// that withered away this frame is not in it.
+    fn grow_plants(&mut self, dt: f32) -> (usize, [bool; PLANT_POS.len()]) {
         let mut active_plants = 0usize;
-        let mut grown_layers = 0usize;
         for i in 0..PLANT_POS.len() {
             if self.plants[i].planted {
                 if !self.plants[i].plant.complete() {
@@ -1756,28 +1784,21 @@ impl Demo {
             if self.plants[i].planted {
                 active_plants += 1;
             }
-            grown_layers += self.plants[i].plant.grown_layers();
         }
         (
             active_plants,
-            grown_layers,
             std::array::from_fn(|i| self.plants[i].planted),
         )
     }
 
     /// Buzzes the vipers around the flower bench, in parallel with
     /// everything else: one viper per fully grown layer, so the swarm
-    /// grows as the bench does — `grown_layers` is how many exist — and
-    /// each viper circles the segment its layer spawned it, at that
-    /// segment's midpoint along the static, fully grown chain, the sway
-    /// left out, lifted to its plant's anchor at the fit scale.
-    fn step_vipers(
-        &mut self,
-        ctx: &mut frost::Context,
-        dt: f32,
-        anchors: &[[f32; 2]; PLANT_POS.len()],
-        grown_layers: usize,
-    ) {
+    /// grows as the bench does — each viper exists only once its own
+    /// plant's layer has fully grown — and each viper circles the segment
+    /// its layer spawned it, at that segment's midpoint along the static,
+    /// fully grown chain, the sway left out, lifted to its plant's anchor
+    /// at the fit scale.
+    fn step_vipers(&mut self, ctx: &mut frost::Context, dt: f32, anchors: &[[f32; 2]]) {
         let vipers_node = &mut ctx.scene().root.children[CHILD_VIPERS];
         let centers: [[[f32; 2]; vipers::LAYERS]; PLANT_POS.len()] = std::array::from_fn(|i| {
             self.plants[i].plant.layer_midpoints().map(|m| {
@@ -1787,7 +1808,11 @@ impl Demo {
                 ]
             })
         });
-        self.vipers.step(dt, &centers, grown_layers);
+        // The grown-layer count per plant, in bench order: each viper
+        // exists on its own plant's schedule, not a global swarm prefix.
+        let grown: [usize; PLANT_POS.len()] =
+            std::array::from_fn(|i| self.plants[i].plant.grown_layers());
+        self.vipers.step(dt, &centers, &grown);
         self.vipers
             .layout(vipers_node, [&self.viper1, &self.viper2]);
     }
@@ -2155,8 +2180,9 @@ impl Demo {
         let sprite = self.tomato.sprite_size().unwrap_or([0.0, 0.0]);
         let [ox, oy] = tomato::tomato_leaf_offset(sprite);
         // The wheel's rolling radius, in user pixels: half the fruit's
-        // scaled height, so the spin turns up with the distance it travels.
-        let radius = TOMATO_PICK_SCALE * sprite[1] / 2.0;
+        // scaled width, the wheel's diameter, so the spin turns by the
+        // distance it travels over it (the wheel equation).
+        let radius = TOMATO_PICK_SCALE * sprite[0] / 2.0;
         let fallen = &mut ctx.scene().root.children[CHILD_FALLEN_FRUIT];
         for (fall, node) in self.falls.iter_mut().zip(fallen.children.iter_mut()) {
             let was_falling = fall.phase == FallPhase::Falling;
@@ -3342,9 +3368,8 @@ mod tests {
         // A long frame with the bench bare: nothing would grow or drain
         // even if the clocks ran.
         let mut demo = Demo::new(Assets::load());
-        let (active, layers, started) = demo.grow_plants(9.0);
+        let (active, started) = demo.grow_plants(9.0);
         assert_eq!(active, 0);
-        assert_eq!(layers, 0);
         assert_eq!(started, [false; PLANT_POS.len()]);
         for i in 0..PLANT_POS.len() {
             assert_eq!(demo.plants[i].plant.grown_layers(), 0, "plant {i}");
@@ -3359,7 +3384,7 @@ mod tests {
             demo.plants[3].water = 1.0;
             demo.grow_plants(dt);
         }
-        let (active, _layers, started) = demo.grow_plants(dt);
+        let (active, started) = demo.grow_plants(dt);
         assert_eq!(active, 1);
         assert_eq!(started, [false, false, false, true, false, false]);
         assert_eq!(demo.plants[3].plant.grown_layers(), 1);
@@ -3386,7 +3411,7 @@ mod tests {
             demo.plants[2].water = 1.0;
             demo.grow_plants(dt);
         }
-        let (active, _layers, started) = demo.grow_plants(dt);
+        let (active, started) = demo.grow_plants(dt);
         assert_eq!(active, 2);
         assert!(started[0] && started[2]);
         assert!(!started[1] && !started[3] && !started[4] && !started[5]);
@@ -3692,9 +3717,10 @@ mod tests {
     }
 
     /// A rolling tomato turns like a wheel: its spin advances by the
-    /// distance it travels over the radius each frame (a no-slip roll), and
-    /// it stands back upright (spin zeroed) the frame it reaches its target
-    /// and rests.
+    /// distance it travels over the radius each frame (a no-slip roll),
+    /// clockwise (negative) when it rolls right and counter-clockwise
+    /// (positive) when it rolls left, and it stands back upright (spin
+    /// zeroed) the frame it reaches its target and rests.
     #[test]
     fn the_roll_turns_the_tomato_like_a_wheel() {
         let mut rng = frost::Rng::with_seed(5);
@@ -3704,23 +3730,45 @@ mod tests {
         fall.step(1.0, &mut rng, &anchors, TEST_RADIUS);
         assert_eq!(fall.phase, FallPhase::Rolling);
         let dt = 1.0 / 60.0;
-        let mut saw_growth = false;
+        let mut saw_change = false;
         let mut prev_spin = fall.spin;
         let mut prev_body = fall.body;
         // Step the roll until it reaches its target; each frame the spin
-        // should advance by the distance traveled over the radius.
+        // should advance by the distance traveled over the radius, signed
+        // by the roll's horizontal direction.
         for _ in 0..6000 {
             fall.step(dt, &mut rng, &anchors, TEST_RADIUS);
             if fall.phase == FallPhase::Rolling {
                 let traveled = dist2(prev_body, fall.body).sqrt();
                 if traveled > 1e-6 {
-                    let expected = prev_spin + traveled / TEST_RADIUS;
+                    let dx = fall.body[0] - prev_body[0];
+                    let dir = if dx > 0.0 {
+                        -1.0
+                    } else if dx < 0.0 {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    let expected = prev_spin + dir * traveled / TEST_RADIUS;
                     assert!(
                         (fall.spin - expected).abs() < 1e-3,
                         "the spin should advance by the travel over the radius"
                     );
-                    if fall.spin > prev_spin {
-                        saw_growth = true;
+                    if fall.spin != prev_spin {
+                        saw_change = true;
+                    }
+                    // Rolling right turns clockwise (spin falls), rolling
+                    // left counter-clockwise (spin rises).
+                    if dx > 0.0 {
+                        assert!(
+                            fall.spin < prev_spin,
+                            "rolling right should turn the wheel clockwise"
+                        );
+                    } else if dx < 0.0 {
+                        assert!(
+                            fall.spin > prev_spin,
+                            "rolling left should turn the wheel counter-clockwise"
+                        );
                     }
                 }
                 prev_spin = fall.spin;
@@ -3729,7 +3777,7 @@ mod tests {
                 break;
             }
         }
-        assert!(saw_growth, "the spin should grow while the tomato rolls");
+        assert!(saw_change, "the spin should turn while the tomato rolls");
         assert_eq!(fall.phase, FallPhase::Resting, "the roll should reach its target");
         assert_eq!(fall.spin, 0.0, "the rest should stand the tomato upright");
     }
@@ -3764,5 +3812,45 @@ mod tests {
             (BUMP_IN.0..BUMP_IN.1).contains(&fall.bump_in),
             "a bump countdown should be armed"
         );
+    }
+
+    /// Each time the tomato lands back on its line from a bump, its roll
+    /// speed is re-rolled from the speed range — the pace stumbles and
+    /// surges — but always stays within the range's bounds.
+    #[test]
+    fn the_roll_speed_rerolls_on_each_bump_landing() {
+        let mut rng = frost::Rng::with_seed(11);
+        let anchors = test_anchors();
+        let mut fall = Fall::new([0.0, 0.0], [0.0, 0.0]);
+        // One long frame drops it to the ground and starts the first roll.
+        fall.step(1.0, &mut rng, &anchors, TEST_RADIUS);
+        assert_eq!(fall.phase, FallPhase::Rolling);
+        assert_eq!(fall.speed, ROLL_SPEED, "the roll starts at the base pace");
+        // Force the first bump to land early, so a re-roll is guaranteed to
+        // happen during the roll.
+        fall.bump_in = 0.0;
+        let dt = 1.0 / 60.0;
+        let lo = ROLL_SPEED * ROLL_SPEED_RANGE.0;
+        let hi = ROLL_SPEED * ROLL_SPEED_RANGE.1;
+        let mut saw_change = false;
+        let mut prev_speed = fall.speed;
+        // Step the roll until it reaches its target; each bump landing
+        // re-rolls the speed, and it must always stay within the range.
+        for _ in 0..6000 {
+            fall.step(dt, &mut rng, &anchors, TEST_RADIUS);
+            if fall.phase == FallPhase::Rolling {
+                assert!(
+                    fall.speed >= lo - 1e-3 && fall.speed <= hi + 1e-3,
+                    "the roll speed should stay within the speed range"
+                );
+                if fall.speed != prev_speed {
+                    saw_change = true;
+                }
+                prev_speed = fall.speed;
+            } else {
+                break;
+            }
+        }
+        assert!(saw_change, "a bump landing should re-roll the roll speed");
     }
 }
