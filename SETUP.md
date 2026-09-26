@@ -84,6 +84,23 @@
   - `-c` context size
   - `-ctv` ...not sure
 
+Alternative settings for speculation:
+
+```shell
+.\llama-server.exe serve -hf unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M `
+  --ctx-size 98304 `
+  --ngl 99 `
+  --flash-attn on `
+  -ctk q8_0 `
+  -ctv q4_0 `
+  --kv-unified `
+  --batch-size 4096 `
+  --ubatch-size 1024 `
+  --cache-prompt true `
+  --parallel 1 `
+  --ngram-mod 1 `
+  --spec-draft-n-max 2
+```
 - Run in another terminal:
 
 ```shell

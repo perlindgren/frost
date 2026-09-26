@@ -116,7 +116,10 @@
 //! line: the frame rate and the frame time in one series each, and the
 //! processing time and the draw-call count folded into one chart each —
 //! the total, the app's share, and the overlay's own share. Hold one in
-//! the demo state and call its [`Process::process`] each frame.
+//! the demo state and call its [`Process::process`] each frame; its parts
+//! can be toggled at runtime — Alt-0 the overlay as a whole, Alt-1..Alt-4
+//! the charts, Alt-T the readout lines — with the layout reflowing around
+//! whatever is hidden.
 //!
 //! Presentation is vsync'd by default: frames are presented once per
 //! vertical blank, at the display's refresh rate — the rate

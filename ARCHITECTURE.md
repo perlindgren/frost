@@ -502,8 +502,25 @@ itself is a `Process`.
   Placement uses crate-internal `text::layout` for each line's width and the
   glyphs' raster ink for their ink bounds, because a font's vertical metrics
   can be degenerate (Leofont's ascent plus descent is about a pixel at 32
-  px) — so the top line's ink sits 20 px in from the window's top-left
-  corner.
+  px) — so the topmost *visible* line's ink sits 20 px in from the window's
+  top-left corner, and the visible parts reflow into that corner whenever
+  one of them is hidden.
+- Keyboard shortcuts: the overlay reads six key combinations from the
+  engine's key state on every `process`, acting on press edges only (a
+  held combination toggles once): Alt-0 is the master switch — while off,
+  every node draws nothing and the per-part toggles are remembered as-is —
+  Alt-1..Alt-4 toggle the charts by position among the enabled charts (top
+  chart first; the extra keys are no-ops when fewer than four charts are
+  enabled), and Alt-T toggles all the readout lines, the window-size line
+  included. The charts are independent of the text toggle. The layout
+  reflows around whatever is hidden — the visible lines and charts re-pack
+  into the corner — while the node indices stay fixed to the construction
+  slot order; a hidden node keeps its place as a bare pivot (`shape:
+  None`). While the text is hidden, the lines are not rebuilt, and a
+  re-shown line re-lays out its last text the next visible frame. The
+  shortcuts are read, not consumed: a demo that wants the same
+  combinations still sees them. They are also available as the methods
+  `toggle_all()`, `toggle_chart(index)`, and `toggle_text()`.
 - Pure CPU work (no device I/O), so it compiles on `wasm32` too — no cfg
   gate, unlike `audio`.
 
@@ -512,7 +529,7 @@ itself is a `Process`.
 
 ## Testing
 
-Baseline: **157 tests + 4 doctests** passing, `cargo build --examples`
+Baseline: **161 tests + 4 doctests** passing, `cargo build --examples`
 clean. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the

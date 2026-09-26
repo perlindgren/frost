@@ -58,6 +58,14 @@
 //! so the demo's scene needs no other change: just leave the root's
 //! children un-reordered, the overlay remembers where it put its nodes.
 //!
+//! The overlay also answers to keyboard shortcuts, read from the engine's
+//! key state every frame: Alt-0 toggles the overlay as a whole, Alt-1..
+//! Alt-4 toggle the charts by position among the enabled ones (top chart
+//! first), and Alt-T toggles the readout lines. A hidden part draws
+//! nothing, and the layout reflows around it — the remaining lines and
+//! charts pack back into the top-left corner. The shortcuts are read, not
+//! consumed: a demo that wants the same combinations still sees them.
+//!
 //! The font is read once, at construction, and shared behind an `Arc`. Each
 //! readout line is re-laid out only when the digits it shows change (the
 //! frame-time line shows the raw last frame's gap, so it usually changes
@@ -73,7 +81,7 @@ use std::sync::Arc;
 
 use crate::backend::now_millis;
 use crate::objects::TextError;
-use crate::{Color, Context, Process, Scene, SceneNode, Shape, Transform};
+use crate::{Color, Context, KeyCode, Process, Scene, SceneNode, Shape, Transform};
 
 /// The readout's font size in pixels per em.
 const SIZE: f32 = 32.0;
@@ -268,6 +276,12 @@ impl std::ops::BitOrAssign for DiagnosticsFlags {
 /// frame. The first call appends its nodes to the scene's root; each later
 /// call updates them in place — the font is read once, and each line is
 /// re-laid out only when the digits it shows change.
+///
+/// The parts can be hidden at runtime — Alt-0 the overlay as a whole,
+/// Alt-1..Alt-4 the charts by position among the enabled ones, Alt-T the
+/// readout lines, or the [`Self::toggle_all`], [`Self::toggle_chart`], and
+/// [`Self::toggle_text`] methods — and the layout reflows around whatever
+/// is hidden.
 #[derive(Debug)]
 pub struct Diagnostics {
     /// Which statistics the overlay displays: the window-size line is
@@ -339,6 +353,22 @@ pub struct Diagnostics {
     /// once appended (in slot order: the lines, the panels, the reference
     /// lines, the chart polylines).
     nodes: Vec<Option<usize>>,
+    /// Whether the overlay is shown at all — Alt-0 toggles this, or
+    /// [`Diagnostics::toggle_all`] does. While it is off, every node draws
+    /// nothing, and the per-part toggles below are remembered as-is.
+    all_on: bool,
+    /// Whether the readout lines (the text, the window-size line included)
+    /// are shown — Alt-T toggles this, or [`Diagnostics::toggle_text`]
+    /// does. The charts are independent of the lines.
+    text_on: bool,
+    /// Whether each chart is shown, parallel to `chart_slots` — Alt-1..
+    /// Alt-4 toggle them by position among the enabled charts, top chart
+    /// first, or [`Diagnostics::toggle_chart`] does.
+    chart_on: Vec<bool>,
+    /// The previous frame's toggle combinations — Alt-0, Alt-1, Alt-2,
+    /// Alt-3, Alt-4, Alt-T, in that order — for the press edge detection
+    /// in `process`.
+    prev_combos: [bool; 6],
 }
 
 /// The readout's line slots, in append order: the window-size line first,
@@ -654,6 +684,7 @@ impl Diagnostics {
             .count();
         let n_polys: usize = chart_slots.iter().map(|c| series_count(*c)).sum();
         let n_nodes = line_slots.len() + chart_slots.len() + n_refs + n_polys;
+        let chart_on = vec![true; chart_slots.len()];
         Ok(Self {
             flags,
             font: Arc::from(font),
@@ -677,6 +708,10 @@ impl Diagnostics {
             t: 0.0,
             samples: VecDeque::new(),
             nodes: vec![None; n_nodes],
+            all_on: true,
+            text_on: true,
+            chart_on,
+            prev_combos: [false; 6],
         })
     }
 
@@ -741,6 +776,71 @@ impl Diagnostics {
         node.shape = Some(shape);
         node.transform = Transform::translate(pos);
     }
+
+    /// Toggles the overlay as a whole — the Alt-0 shortcut. While the
+    /// overlay is off, every one of its nodes draws nothing; the per-part
+    /// toggles below are remembered and apply when it comes back.
+    pub fn toggle_all(&mut self) {
+        self.all_on = !self.all_on;
+    }
+
+    /// Toggles the readout lines (the text, the window-size line included)
+    /// — the Alt-T shortcut. The charts are independent of the lines.
+    pub fn toggle_text(&mut self) {
+        self.text_on = !self.text_on;
+    }
+
+    /// Toggles the `index`-th enabled chart, top chart first — the
+    /// Alt-1..Alt-4 shortcuts. An index past the last enabled chart is a
+    /// no-op.
+    pub fn toggle_chart(&mut self, index: usize) {
+        if let Some(on) = self.chart_on.get_mut(index) {
+            *on = !*on;
+        }
+    }
+
+    /// Whether the readout lines are shown: the overlay as a whole on and
+    /// the text on.
+    fn lines_on(&self) -> bool {
+        self.all_on && self.text_on
+    }
+
+    /// Whether the `index`-th enabled chart is shown: the overlay as a
+    /// whole on and that chart's own toggle on.
+    fn chart_on_at(&self, index: usize) -> bool {
+        self.all_on && self.chart_on.get(index).copied().unwrap_or(false)
+    }
+
+    /// Applies the press edges of the six toggle combinations — Alt-0,
+    /// Alt-1, Alt-2, Alt-3, Alt-4, Alt-T, in the order of `combos` — to the
+    /// toggle state: a combination toggles its part once when it goes from
+    /// released to held, and holding or releasing it does nothing. Called
+    /// from `process` with the current key states.
+    fn apply_key_edges(&mut self, combos: [bool; 6]) {
+        for (i, &combo) in combos.iter().enumerate() {
+            if combo && !self.prev_combos[i] {
+                match i {
+                    0 => self.toggle_all(),
+                    1..=4 => self.toggle_chart(i - 1),
+                    _ => self.toggle_text(),
+                }
+            }
+        }
+        self.prev_combos = combos;
+    }
+
+    /// Hides the node for overlay slot `slot`: its shape is cleared,
+    /// leaving a bare pivot that draws nothing, until the matching toggle
+    /// shows it again and `place` restores the shape. A node the demo
+    /// removed is left removed — `place` re-appends it on the way back.
+    fn hide(&mut self, slot: usize, scene: &mut Scene) {
+        let Some(&idx) = self.nodes[slot].as_ref() else {
+            return;
+        };
+        if idx < scene.root.children.len() {
+            scene.root.children[idx].shape = None;
+        }
+    }
 }
 
 impl Process for Diagnostics {
@@ -750,6 +850,21 @@ impl Process for Diagnostics {
         // from the engine's total probe — one frame behind, so both
         // numbers describe the same completed frame.
         let t0 = now_millis();
+        // The keyboard shortcuts, on press edges only so a held key
+        // toggles once: Alt-0 the overlay as a whole, Alt-1..Alt-4 the
+        // charts by position among the enabled ones (top chart first), and
+        // Alt-T the readout lines. The layout reflows around whatever is
+        // hidden. The demo still sees the same keys — they are read here,
+        // not consumed.
+        let alt = ctx.key_down(KeyCode::AltLeft) || ctx.key_down(KeyCode::AltRight);
+        self.apply_key_edges([
+            alt && ctx.key_down(KeyCode::Digit0),
+            alt && ctx.key_down(KeyCode::Digit1),
+            alt && ctx.key_down(KeyCode::Digit2),
+            alt && ctx.key_down(KeyCode::Digit3),
+            alt && ctx.key_down(KeyCode::Digit4),
+            alt && ctx.key_down(KeyCode::KeyT),
+        ]);
         // The engine's own probes of the last completed frame: its CPU
         // work, its total GPU draw calls, and the draw calls this overlay's
         // own nodes produced. This frame's own probes are still running, so
@@ -802,67 +917,102 @@ impl Process for Diagnostics {
             }
         }
         let (w, h) = ctx.size();
+        // Whether the readout lines show: the overlay as a whole on and the
+        // text on (Alt-T).
+        let lines_on = self.lines_on();
         // Rebuild each line's shape only when its text actually changes —
-        // the size line always, a statistic line only when its flag is on.
-        self.refresh_line(LineSlot::Size, format!("{}x{}", w as u32, h as u32));
-        if self.flags.contains(DiagnosticsFlags::FPS) {
-            self.refresh_line(LineSlot::Fps, format!("FPS {:.0}", self.fps.round()));
+        // the size line always, a statistic line only when its flag is on;
+        // while the text is hidden the lines are not rebuilt at all.
+        if lines_on {
+            self.refresh_line(LineSlot::Size, format!("{}x{}", w as u32, h as u32));
+            if self.flags.contains(DiagnosticsFlags::FPS) {
+                self.refresh_line(LineSlot::Fps, format!("FPS {:.0}", self.fps.round()));
+            }
+            if self.flags.contains(DiagnosticsFlags::FT) {
+                self.refresh_line(LineSlot::Ft, format!("FT {:.1}ms", self.frame_ms));
+            }
+            if self.flags.contains(DiagnosticsFlags::PROC) {
+                self.refresh_line(LineSlot::Proc, format!("PROC {:.2}ms", self.proc_ms));
+                self.refresh_line(LineSlot::App, format!("APP {:.2}ms", self.app_ms));
+            }
+            if self.flags.contains(DiagnosticsFlags::DRAW) {
+                self.refresh_line(LineSlot::Draw, format!("DRAW {}", self.draw_calls));
+            }
         }
-        if self.flags.contains(DiagnosticsFlags::FT) {
-            self.refresh_line(LineSlot::Ft, format!("FT {:.1}ms", self.frame_ms));
-        }
-        if self.flags.contains(DiagnosticsFlags::PROC) {
-            self.refresh_line(LineSlot::Proc, format!("PROC {:.2}ms", self.proc_ms));
-            self.refresh_line(LineSlot::App, format!("APP {:.2}ms", self.app_ms));
-        }
-        if self.flags.contains(DiagnosticsFlags::DRAW) {
-            self.refresh_line(LineSlot::Draw, format!("DRAW {}", self.draw_calls));
-        }
-        // Lay the lines out top to bottom: the size line's ink top sits
-        // MARGIN in from the window's top edge; each line hangs LINE_GAP
-        // under the previous line's ink bottom; all lines' ink left edges
-        // sit MARGIN in from the window's left edge. The slot lists are
-        // tiny — at most six lines and four charts — so clone them, letting
-        // the loops below borrow the struct freely while placing nodes.
+        // Lay the visible parts out top to bottom, so hiding a line or a
+        // chart reflows the rest into the corner: the topmost visible line's
+        // ink top sits MARGIN in from the window's top edge; each visible
+        // line hangs LINE_GAP under the previous visible line's ink bottom;
+        // the first visible panel's top sits MARGIN from the top edge when
+        // no line is visible, otherwise LINE_GAP + GRAPH_GAP under the last
+        // visible line's ink bottom; each visible panel hangs one panel
+        // height plus GRAPH_GAP under the previous; all visible lines' ink
+        // left edges sit MARGIN in from the window's left edge. The slot
+        // lists are tiny — at most six lines and four charts — so clone
+        // them, letting the loops below borrow the struct freely while
+        // placing nodes.
         let line_slots = self.line_slots.clone();
         let chart_slots = self.chart_slots.clone();
+        // The visible slots' positions in the full slot lists — the node
+        // indices were assigned by the full order at first append, so the
+        // visibility never changes the slot arithmetic.
+        let visible_lines: Vec<usize> = if lines_on {
+            (0..line_slots.len()).collect()
+        } else {
+            Vec::new()
+        };
+        let visible_charts: Vec<usize> = (0..chart_slots.len())
+            .filter(|j| self.chart_on_at(*j))
+            .collect();
         let mut ink_top = h / 2.0 - MARGIN;
-        let mut line_ink_tops = Vec::with_capacity(line_slots.len());
-        for &slot in &line_slots {
-            line_ink_tops.push(ink_top);
-            let line = self.line(slot);
+        let mut line_ink_tops = vec![0.0f32; line_slots.len()];
+        for &i in &visible_lines {
+            line_ink_tops[i] = ink_top;
+            let line = self.line(line_slots[i]);
             ink_top -= (line.ink_top - line.ink_bottom) + LINE_GAP;
         }
-        // The first panel's top sits LINE_GAP + GRAPH_GAP under the last
-        // line's ink bottom; each panel hangs one panel height plus
-        // GRAPH_GAP under the previous.
-        let mut panel_tops = Vec::with_capacity(chart_slots.len());
-        for _ in &chart_slots {
-            panel_tops.push(ink_top - GRAPH_GAP);
-            ink_top -= GRAPH_H + GRAPH_GAP;
+        let mut panel_tops = vec![0.0f32; chart_slots.len()];
+        let mut panel_ink = if visible_lines.is_empty() {
+            h / 2.0 - MARGIN
+        } else {
+            ink_top - GRAPH_GAP
+        };
+        for &j in &visible_charts {
+            panel_tops[j] = panel_ink;
+            panel_ink -= GRAPH_H + GRAPH_GAP;
         }
         let x0 = -w / 2.0 + MARGIN;
 
         let scene = ctx.scene();
-        // The readout lines.
-        for (i, (&slot, &top)) in line_slots.iter().zip(&line_ink_tops).enumerate() {
-            let Some(draw) = line_draw(self.line(slot), top, w) else {
+        // The readout lines: place the visible ones, hide the rest.
+        for (i, &slot) in line_slots.iter().enumerate() {
+            if !lines_on {
+                self.hide(i, scene);
+                continue;
+            }
+            let Some(draw) = line_draw(self.line(slot), line_ink_tops[i], w) else {
                 continue;
             };
             self.place(i, draw.pos, draw.shape, scene);
         }
-        // The panels: one per enabled chart, in slot order.
-        for (j, (_, &top)) in chart_slots.iter().zip(&panel_tops).enumerate() {
-            self.place(
-                line_slots.len() + j,
-                [x0 + GRAPH_W / 2.0, top - GRAPH_H / 2.0],
-                Shape::Rectangle {
-                    center: [0.0, 0.0],
-                    extent: [GRAPH_W / 2.0, GRAPH_H / 2.0],
-                    color: PANEL,
-                },
-                scene,
-            );
+        // The panels: one per visible chart, in slot order; a hidden
+        // chart's panel is cleared.
+        for (j, _) in chart_slots.iter().enumerate() {
+            if self.chart_on_at(j) {
+                let top = panel_tops[j];
+                self.place(
+                    line_slots.len() + j,
+                    [x0 + GRAPH_W / 2.0, top - GRAPH_H / 2.0],
+                    Shape::Rectangle {
+                        center: [0.0, 0.0],
+                        extent: [GRAPH_W / 2.0, GRAPH_H / 2.0],
+                        color: PANEL,
+                    },
+                    scene,
+                );
+            } else {
+                self.hide(line_slots.len() + j, scene);
+            }
         }
         // The 60 fps / 16.7 ms reference lines, 1 px tall across the panel
         // — the draw-call chart has no budget, so no reference.
@@ -877,37 +1027,50 @@ impl Process for Diagnostics {
             )
         };
         let mut ref_slot = line_slots.len() + chart_slots.len();
-        for (&chart, &top) in chart_slots.iter().zip(&panel_tops) {
-            let level = match chart {
-                ChartSlot::Fps => 60.0 / FPS_TOP,
-                ChartSlot::Ft => (1000.0 / 60.0) / FT_TOP,
-                ChartSlot::Proc => (1000.0 / 60.0) / PROC_TOP,
-                ChartSlot::Draw => continue,
-            };
-            let (y, shape) = ref_line(top, level);
-            self.place(ref_slot, [x0, y], shape, scene);
+        for (j, &chart) in chart_slots.iter().enumerate() {
+            if matches!(chart, ChartSlot::Draw) {
+                continue;
+            }
+            if self.chart_on_at(j) {
+                let level = match chart {
+                    ChartSlot::Fps => 60.0 / FPS_TOP,
+                    ChartSlot::Ft => (1000.0 / 60.0) / FT_TOP,
+                    ChartSlot::Proc => (1000.0 / 60.0) / PROC_TOP,
+                    ChartSlot::Draw => unreachable!(),
+                };
+                let (y, shape) = ref_line(panel_tops[j], level);
+                self.place(ref_slot, [x0, y], shape, scene);
+            } else {
+                self.hide(ref_slot, scene);
+            }
             ref_slot += 1;
         }
         // The charts' polylines: one per series, through the max of each
-        // 0.1 s column — one draw call per series, three per folded chart.
+        // 0.1 s column — one draw call per series, three per folded chart;
+        // a hidden chart's polylines are cleared without computing their
+        // columns.
         let mut poly_slot = ref_slot;
-        for (&chart, &top) in chart_slots.iter().zip(&panel_tops) {
+        for (j, &chart) in chart_slots.iter().enumerate() {
             for k in 0..series_count(chart) {
-                let cols = slice_max(
-                    self.samples.iter().copied(),
-                    self.t,
-                    |s| series_value(chart, k, s),
-                );
-                self.place(
-                    poly_slot,
-                    [0.0, 0.0],
-                    Shape::Polyline {
-                        points: chart_points(&cols, x0, top, chart_top(chart)),
-                        width: LINE_WIDTH,
-                        color: series_color(chart, k),
-                    },
-                    scene,
-                );
+                if self.chart_on_at(j) {
+                    let cols = slice_max(
+                        self.samples.iter().copied(),
+                        self.t,
+                        |s| series_value(chart, k, s),
+                    );
+                    self.place(
+                        poly_slot,
+                        [0.0, 0.0],
+                        Shape::Polyline {
+                            points: chart_points(&cols, x0, panel_tops[j], chart_top(chart)),
+                            width: LINE_WIDTH,
+                            color: series_color(chart, k),
+                        },
+                        scene,
+                    );
+                } else {
+                    self.hide(poly_slot, scene);
+                }
                 poly_slot += 1;
             }
         }
@@ -1075,5 +1238,78 @@ mod tests {
         assert_eq!(cols[99], 8.0);
         let cols = slice_max(samples, 10.0, |s| s.diag_draws);
         assert_eq!(cols[99], 4.0);
+    }
+
+    /// A real TrueType font, embedded so the toggle tests can construct an
+    /// overlay without a file system.
+    const FONT: &[u8] = include_bytes!("../assets/fonts/Leofont-Regular.ttf");
+
+    /// A diagnostics overlay with every flag, for the toggle tests.
+    fn overlay() -> Diagnostics {
+        Diagnostics::from_bytes(FONT, DiagnosticsFlags::all()).unwrap()
+    }
+
+    #[test]
+    fn toggles_start_everything_on() {
+        let d = overlay();
+        assert!(d.all_on && d.text_on);
+        assert_eq!(d.chart_on, [true, true, true, true]);
+    }
+
+    #[test]
+    fn key_edges_fire_once_per_press() {
+        let mut d = overlay();
+        // Nothing pressed: no change.
+        d.apply_key_edges([false; 6]);
+        assert!(d.all_on && d.text_on && d.chart_on.iter().all(|&b| b));
+        // Alt-1 (slot 1): the top chart toggles off.
+        d.apply_key_edges([false, true, false, false, false, false]);
+        assert_eq!(d.chart_on, [false, true, true, true]);
+        // Holding the combination: no further change.
+        d.apply_key_edges([false, true, false, false, false, false]);
+        assert_eq!(d.chart_on, [false, true, true, true]);
+        // Release, then Alt-4: the bottom chart toggles off.
+        d.apply_key_edges([false, false, false, false, true, false]);
+        assert_eq!(d.chart_on, [false, true, true, false]);
+        // Alt-T: the lines toggle off, the charts untouched.
+        d.apply_key_edges([false, false, false, false, false, true]);
+        assert!(!d.text_on);
+        assert_eq!(d.chart_on, [false, true, true, false]);
+        // Alt-0: the overlay as a whole toggles off.
+        d.apply_key_edges([true, false, false, false, false, false]);
+        assert!(!d.all_on);
+    }
+
+    #[test]
+    fn visibility_composes_the_toggles() {
+        let mut d = overlay();
+        assert!(d.lines_on());
+        assert!(d.chart_on_at(0));
+        // A chart toggle hides only that chart.
+        d.toggle_chart(0);
+        assert!(d.lines_on());
+        assert!(!d.chart_on_at(0));
+        assert!(d.chart_on_at(1));
+        // A text toggle hides the lines, not the charts.
+        d.toggle_text();
+        assert!(!d.lines_on());
+        assert!(d.chart_on_at(1));
+        // The global toggle hides everything, remembering the per-part
+        // state.
+        d.toggle_all();
+        assert!(!d.lines_on());
+        assert!(!d.chart_on_at(1));
+        d.toggle_all();
+        assert!(!d.lines_on());
+        assert!(!d.chart_on_at(0));
+        assert!(d.chart_on_at(1));
+    }
+
+    #[test]
+    fn toggle_chart_is_a_noop_past_the_last_chart() {
+        let mut d = overlay();
+        d.toggle_chart(4);
+        d.toggle_chart(usize::MAX);
+        assert!(d.chart_on.iter().all(|&b| b));
     }
 }
