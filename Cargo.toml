@@ -95,6 +95,22 @@ path = "examples/lighting/eyes.rs"
 name = "eyes_light"
 path = "examples/lighting/eyes_light.rs"
 
+# The layer examples live in the `examples/layers/` folder. Cargo
+# only auto-discovers `examples/*.rs` and `examples/*/main.rs`, so each
+# file in the folder is named here explicitly; the example names stay the
+# same, so `cargo run --example parallax` (and friends) keeps working.
+[[example]]
+name = "layers"
+path = "examples/layers/layers.rs"
+
+[[example]]
+name = "parallax"
+path = "examples/layers/parallax.rs"
+
+[[example]]
+name = "repeat"
+path = "examples/layers/repeat.rs"
+
 [dev-dependencies]
 # Command line parsing for the `repeat` example (`--repeat_x`, `--repeat_y`).
 clap = { version = "4", features = ["derive"] }
