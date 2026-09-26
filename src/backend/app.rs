@@ -131,6 +131,13 @@ pub(crate) struct Frost<P: Process> {
     /// completes. Reported to the next frame's `Context` (see
     /// `Context::frame_processing_ms`).
     frame_processing_ms: f64,
+    /// The GPU draw calls the engine issued for the last completed frame:
+    /// one per `pass.draw` / `pass.draw_indexed` that actually executed —
+    /// draws skipped as off-screen, background, light, or empty (a
+    /// degenerate transform, an empty particle batch) are not counted.
+    /// `0` before the first frame completes. Reported to the next frame's
+    /// `Context` (see `Context::frame_draw_calls`).
+    frame_draw_calls: u32,
     /// The expected frame rate in Hz: the refresh rate of the monitor the
     /// window sits on, as winit reports it. `None` when vsync is off
     /// (presentation is uncapped) or the rate is unknown; see
@@ -308,6 +315,7 @@ impl<P: Process> Frost<P> {
             format: None,
             last_millis: None,
             frame_processing_ms: 0.0,
+            frame_draw_calls: 0,
             expected_fps: None,
             scene,
             keys: HashSet::new(),
@@ -507,8 +515,10 @@ impl<P: Process> ApplicationHandler for Frost<P> {
 /// `std::time::Instant` on native, and the browser's `performance.now()`
 /// on wasm — `Instant::now()` panics on wasm32-unknown-unknown, where the
 /// clock has to come from the page. Only differences between two calls
-/// matter (see `Frost::last_millis`), so the epochs may differ.
-fn now_millis() -> f64 {
+/// matter (see `Frost::last_millis`), so the epochs may differ. Shared
+/// with the diagnostics overlay, which times its own per-frame update
+/// cost with the same clock (see `Diagnostics`).
+pub(crate) fn now_millis() -> f64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
         // `Instant` has no absolute epoch, so pin one at the first call;
@@ -1143,6 +1153,7 @@ impl<P: Process> Frost<P> {
                 mouse_buttons,
                 gilrs,
                 frame_processing_ms: self.frame_processing_ms,
+                frame_draw_calls: self.frame_draw_calls,
             };
             process.process(&mut ctx, dt);
         }
@@ -1218,6 +1229,10 @@ impl<P: Process> Frost<P> {
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor { label: None });
+        // The frame's GPU draw-call count: incremented once per
+        // `pass.draw` / `pass.draw_indexed` below, so draws that are skipped
+        // (off-screen, background, light, empty) never count.
+        let mut draw_calls: u32 = 0;
         {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: None,
@@ -1267,6 +1282,7 @@ impl<P: Process> Frost<P> {
                         );
                         pass.set_pipeline(line_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
+                        draw_calls += 1;
                         pass.draw(0..3, 0..1);
                     }
                     Draw::Polyline {
@@ -1282,6 +1298,7 @@ impl<P: Process> Frost<P> {
                         );
                         pass.set_pipeline(polyline_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
+                        draw_calls += 1;
                         pass.draw(0..3, 0..1);
                     }
                     Draw::Circle {
@@ -1297,6 +1314,7 @@ impl<P: Process> Frost<P> {
                         );
                         pass.set_pipeline(circle_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
+                        draw_calls += 1;
                         pass.draw(0..3, 0..1);
                     }
                     Draw::Rectangle {
@@ -1312,6 +1330,7 @@ impl<P: Process> Frost<P> {
                         );
                         pass.set_pipeline(rect_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
+                        draw_calls += 1;
                         pass.draw(0..3, 0..1);
                     }
                     Draw::Shape {
@@ -1339,6 +1358,7 @@ impl<P: Process> Frost<P> {
                         );
                         pass.set_pipeline(shape_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
+                        draw_calls += 1;
                         pass.draw(0..3, 0..1);
                     }
                     Draw::Sprite {
@@ -1386,6 +1406,7 @@ impl<P: Process> Frost<P> {
                         );
                         pass.set_pipeline(sprite_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
+                        draw_calls += 1;
                         pass.draw(0..3, 0..1);
                     }
                     Draw::Particles {
@@ -1459,6 +1480,7 @@ impl<P: Process> Frost<P> {
                             particle_index_buffer.slice(..),
                             wgpu::IndexFormat::Uint32,
                         );
+                        draw_calls += 1;
                         pass.draw_indexed(0..6, 0, 0..count);
                     }
                     // A background's scissor rect is `None`, so it continued
@@ -1475,10 +1497,12 @@ impl<P: Process> Frost<P> {
             }
         }
         self.queue.submit([encoder.finish()]);
-        // Record this frame's processing time before the present: the
-        // frame's own `Context` already went out without it, so this value
-        // reaches the next frame's, where it is the "last frame's" time.
+        // Record this frame's processing time and draw-call count before the
+        // present: the frame's own `Context` already went out without them,
+        // so these values reach the next frame's, where they are the "last
+        // frame's" values.
         self.frame_processing_ms = now_millis() - t0;
+        self.frame_draw_calls = draw_calls;
         self.queue.present(output);
         log::trace!("render: frame presented");
     }

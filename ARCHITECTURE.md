@@ -32,7 +32,8 @@ src/objects.rs        Color, Transform, Shape, Node, SceneNode, Layer, Scene,
 src/tween.rs          Tween<T> (f32 / [f32;2]) with Repeat modes
 src/particles.rs      Particle, ParticleSystem (pure simulation)
 src/collision.rs      OrientedBox, Circle, Collider, push_out, reflect (pure math)
-src/diagnostics.rs    Diagnostics (FPS/FT/PROC HUD overlay with strip charts)
+src/diagnostics.rs    Diagnostics (FPS/FT/PROC/APP/DRAW HUD overlay with
+                      strip charts)
 src/audio.rs          Audio (device + loop player), Sound (decoded buffer),
                       AudioError — native-only, rodio-based
 src/text.rs           CPU text shaping/rasterization on swash, glyph shelf atlas
@@ -73,6 +74,8 @@ numbers use a hand-rolled splitmix64 `Rng(u64)`.
   - `mouse_button_down(MouseButton) -> bool`
   - `expected_fps() -> Option<f32>` — monitor refresh rate when vsync is on.
   - `frame_processing_ms() -> f64` — the engine's CPU time for the last
+    completed frame (its own probe; see "Diagnostics" below).
+  - `frame_draw_calls() -> u32` — the engine's GPU draw calls for the last
     completed frame (its own probe; see "Diagnostics" below).
   - `size() -> (f32, f32)` — window size in pixels.
 - Re-exports: `KeyCode`, `MouseButton`, `Tween`/`Repeat`,
@@ -386,17 +389,22 @@ that decodes an in-code WAV.
 
 ## Diagnostics (src/diagnostics.rs)
 
-`Diagnostics` is a HUD overlay: four left-aligned lines in the window's
+`Diagnostics` is a HUD overlay: six left-aligned lines in the window's
 top-left corner — the window size (`"{w}x{h}"`) on top, the smoothed frame
 rate (`"FPS {fps}"`) below it, the current frame time (`"FT {ms}ms"`) below
-that, and the last frame's processing time (`"PROC {ms}ms"`) below that, at
-32 px — with three scrolling ten-second strip charts under the lines: frame
-rate (orange) on top, frame time (green) in the middle, processing time
-(blue) below, each stroked as a single `Shape::Polyline` through the max of
-every 0.1 s column (one draw call per chart), each with a reference line at
-60 fps / 16.7 ms. The processing time is the engine's own probe, not a
-measurement the overlay makes — see the probe bullet below. The whole
-integration is one struct in the demo state plus one
+that, the last frame's total processing time (`"PROC {ms}ms"`) below that,
+that time excluding the overlay's own update cost (`"APP {ms}ms"`) below
+that, and the last frame's GPU draw-call count (`"DRAW {n}"`) below that,
+all at 32 px — with five scrolling ten-second strip charts under the lines:
+frame rate (orange) on top, frame time (green) second, total processing time
+(blue) third, app time (violet) fourth, draw calls (magenta) below, each
+stroked as a single `Shape::Polyline` through the max of every 0.1 s column
+(one draw call per chart), with a reference line at 60 fps / 16.7 ms on the
+first four (the draw-call chart has no reference — draw counts have no
+universal budget). The processing times and the draw-call count are the
+engine's own probes, and the APP value is the overlay subtracting its own
+measured update cost from the total probe — see the probe bullet below. The
+whole integration is one struct in the demo state plus one
 `self.diag.process(ctx, dt)` call per frame — the overlay itself is a
 `Process`.
 
@@ -409,10 +417,13 @@ integration is one struct in the demo state plus one
   measurement so the first frame does not flash a zero; `dt` 0.0 on the first
   frame is skipped; `dt` past a 0.25 s stall is skipped by the smoothing),
   records the raw frame time for the third line, reads the engine's
-  processing-time probe for the fourth, and appends the (elapsed time, frame
-  time, processing time) sample to a history trimmed to the last 10 s. Each
-  line's shape is rebuilt only when its text changes — the frame-time line
-  shows the raw last gap, so it usually changes every frame.
+  processing-time and draw-call probes for the fourth and sixth lines,
+  computes the fifth line as total minus its own update cost from the
+  previous call (see the probe bullet), and appends a `Sample` (elapsed time,
+  frame time, total and app processing times, draw-call count) to a history
+  trimmed to the last 10 s. Each line's shape is rebuilt only when its text
+  changes — the frame-time line shows the raw last gap, so it usually changes
+  every frame.
 - The processing-time probe lives in the backend, because the demo's
   `process` callback runs *inside* the frame — a demo cannot time its own
   frame from inside it. `Frost` measures `now_millis()` around its frame
@@ -421,23 +432,43 @@ integration is one struct in the demo state plus one
   the `queue.submit` of the frame's command buffer; the present handoff and
   the wait for the next frame are excluded) and stores the result as
   `frame_processing_ms`, which the next frame's `Context` reports as
-  `Context::frame_processing_ms()`. The overlay therefore always shows the
-  last *completed* frame's time — a one-frame lag, one 0.1 s column at
-  60 fps, invisible in the graph. `0.0` until the first frame completes
-  (one `PROC 0.00ms` flash, same as the `FT 0.0ms` flash).
+  `Context::frame_processing_ms()`. The draw-call probe counts in the same
+  pass: one increment per `pass.draw` / `pass.draw_indexed` that actually
+  executes (seven sites in the render loop — line, polyline, circle,
+  rectangle, shape, sprite, particle batch), so draws skipped as off-screen,
+  background, light, or empty (a degenerate transform, an empty particle
+  batch) never count; it is stored as `frame_draw_calls` right after the
+  timing result and reported as `Context::frame_draw_calls()`. The overlay
+  therefore always shows the last *completed* frame's numbers — a one-frame
+  lag, one 0.1 s column at 60 fps, invisible in the graphs. `0.0` / `0`
+  until the first frame completes (one `PROC 0.00ms` / `DRAW 0` flash, same
+  as the `FT 0.0ms` flash).
+- The APP value is the one probe the overlay makes itself, and it must be
+  one frame behind for the same reason: it times its own `process` call
+  with the engine's `now_millis` (crate-internal, shared with the backend)
+  and stores the duration as `prev_self_ms`; the next call subtracts it from
+  the engine's total probe of the *same* completed frame, clamped at zero
+  against timer jitter, so PROC and APP always describe the same frame. It
+  removes the overlay's per-frame *update* work (readout layout, sample
+  binning, node placement); the overlay's own shape draws still count —
+  they go through the engine's per-draw path like everything else.
 - The strip charts are the history binned by time: `slice_max` takes the max
   of a per-sample projection over each 0.1 s column across the last 10 s
   (the fps column is the max of `1000 / frame_time`, i.e. the frame's
-  fastest rate; the frame-time and processing-time columns project their own
-  field), so a spike is visible
+  fastest rate; the frame-time, total/app processing-time, and draw-call
+  columns project their own field), so a spike is visible
   as a high point, and the newest frame lands in the newest column. Each
   chart's 100 column maxima become one `Shape::Polyline` (a point per column
   center, the value scaled to the panel height with a 1 px inset) — one draw
   call per chart instead of 200 per-frame rectangle draws, because the cost
   of a draw in this engine is on the CPU side (a fresh uniform buffer + bind
-  group + scissor/pipeline state per draw), not in the fragment work.
-- Node management: the first `process` appends the 12 nodes (four text lines,
-  three panel rectangles, three reference lines, three chart polylines) to
+  group + scissor/pipeline state per draw), not in the fragment work. The
+  two processing-time charts share a 0–20 ms scale (the reference line at
+  16.7 ms), so the overlay's own share is readable as the vertical gap
+  between the blue and violet lines; the draw-call chart uses a fixed 0–128
+  scale and clips above it (the readout always shows the true count).
+- Node management: the first `process` appends the 20 nodes (six text lines,
+  five panel rectangles, four reference lines, five chart polylines) to
   `ctx.scene().root.children` and remembers their indices; later calls update
   each node's shape and transform in place (re-appending one if the demo
   removed it). The demo must not reorder the root's children. Placement uses
@@ -453,7 +484,7 @@ integration is one struct in the demo state plus one
 
 ## Testing
 
-Baseline: **153 tests + 3 doctests** passing, `cargo build --examples`
+Baseline: **155 tests + 3 doctests** passing, `cargo build --examples`
 clean. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
@@ -575,7 +606,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 
 ```
 cargo build --examples   # expect EXIT 0
-cargo test               # expect 153 passed + 3 doctests
+cargo test               # expect 155 passed + 3 doctests
 cargo test --examples    # expect 17 passed (the immortal example tests)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0

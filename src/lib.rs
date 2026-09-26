@@ -106,11 +106,15 @@
 //! [`Audio`]: one-shots mix in parallel, and one sound loops at a time.
 //!
 //! A [`Diagnostics`] overlay reports the window size, the smoothed frame
-//! rate, the current frame time, and the last frame's processing time (the
-//! engine's own probe of its per-frame CPU work) as left-aligned lines in
-//! the window's top-left corner, with scrolling ten-second graphs of the
-//! frame rate, the frame time, and the processing time beneath: hold one in
-//! the demo state and call its [`Process::process`] each frame.
+//! rate, the current frame time, the last frame's total processing time
+//! (the engine's own probe of its per-frame CPU work), that time excluding
+//! the overlay's own update cost (the overlay times itself and subtracts),
+//! and the last frame's draw-call count (the engine's own probe of how
+//! many GPU draw calls it issued) as left-aligned lines in the window's
+//! top-left corner, with scrolling ten-second graphs of the frame rate,
+//! the frame time, the two processing times, and the draw-call count
+//! beneath: hold one in the demo state and call its
+//! [`Process::process`] each frame.
 //!
 //! Presentation is vsync'd by default: frames are presented once per
 //! vertical blank, at the display's refresh rate — the rate
@@ -1219,6 +1223,9 @@ pub struct Context<'c> {
     /// The CPU time in milliseconds the engine spent processing the last
     /// completed frame (see [`Context::frame_processing_ms`]).
     frame_processing_ms: f64,
+    /// The GPU draw calls the engine issued for the last completed frame
+    /// (see [`Context::frame_draw_calls`]).
+    frame_draw_calls: u32,
 }
 
 impl Context<'_> {
@@ -1265,6 +1272,24 @@ impl Context<'_> {
     /// [`Diagnostics`] overlay's processing-time chart shows.
     pub fn frame_processing_ms(&self) -> f64 {
         self.frame_processing_ms
+    }
+
+    /// The GPU draw calls the engine issued for the last completed frame.
+    ///
+    /// The backend counts one draw call per `pass.draw` / `pass.draw_indexed`
+    /// it actually submits into the frame's render pass — a shape, a line, a
+    /// sprite, a glyph quad, a chart polyline, a particle batch, and so on.
+    /// Draws the engine skips are not counted: a shape fully outside the
+    /// window, a background (which became the clear color), a light (which
+    /// became part of the light field), or a particle batch with no live
+    /// particles. Before the first frame completes it is `0`.
+    ///
+    /// This is the per-frame draw-call load of the app. In this engine each
+    /// draw call also costs CPU work (a fresh uniform buffer, bind group,
+    /// and scissor/pipeline state per draw), so a rising count shows up in
+    /// the [`Diagnostics`] overlay's processing-time chart as well.
+    pub fn frame_draw_calls(&self) -> u32 {
+        self.frame_draw_calls
     }
 
     /// The mouse cursor's position in user coordinates (origin at the

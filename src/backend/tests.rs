@@ -318,6 +318,7 @@ fn context_reports_held_keys() {
             mouse_buttons: &mouse_buttons,
             gilrs: None,
             frame_processing_ms: 0.0,
+            frame_draw_calls: 0,
         };
         assert!(!ctx.key_down(KeyCode::KeyW));
     }
@@ -331,6 +332,7 @@ fn context_reports_held_keys() {
         mouse_buttons: &mouse_buttons,
         gilrs: None,
         frame_processing_ms: 0.0,
+        frame_draw_calls: 0,
     };
     assert!(ctx.key_down(KeyCode::KeyW));
     assert!(!ctx.key_down(KeyCode::KeyA));
@@ -351,6 +353,7 @@ fn context_reports_mouse_position() {
         mouse_buttons: &mouse_buttons,
         gilrs: None,
         frame_processing_ms: 0.0,
+        frame_draw_calls: 0,
     };
     assert_eq!(ctx.mouse_position(), None);
     let ctx = Context {
@@ -362,6 +365,7 @@ fn context_reports_mouse_position() {
         mouse_buttons: &mouse_buttons,
         gilrs: None,
         frame_processing_ms: 0.0,
+        frame_draw_calls: 0,
     };
     assert_eq!(ctx.mouse_position(), Some([12.0, -34.0]));
 }
@@ -382,6 +386,7 @@ fn context_reports_held_mouse_button() {
             mouse_buttons: &mouse_buttons,
             gilrs: None,
             frame_processing_ms: 0.0,
+            frame_draw_calls: 0,
         };
         assert!(!ctx.mouse_button_down(MouseButton::Left));
     }
@@ -395,6 +400,7 @@ fn context_reports_held_mouse_button() {
         mouse_buttons: &mouse_buttons,
         gilrs: None,
         frame_processing_ms: 0.0,
+        frame_draw_calls: 0,
     };
     assert!(ctx.mouse_button_down(MouseButton::Left));
     assert!(!ctx.mouse_button_down(MouseButton::Right));
@@ -415,6 +421,7 @@ fn context_reports_no_gamepads_without_gilrs() {
         mouse_buttons: &mouse_buttons,
         gilrs: None,
         frame_processing_ms: 0.0,
+        frame_draw_calls: 0,
     };
     // Without a gamepad controller (gilrs could not open the platform's
     // input devices, or none is connected) the list is empty, not an

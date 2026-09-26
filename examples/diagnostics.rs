@@ -1,13 +1,14 @@
 //! A diagnostics overlay: the `frost::Diagnostics` utility reports the
-//! window size, the frame rate, the frame time, and the last frame's
-//! processing time as text lines in the window's top-left corner, with
-//! three scrolling ten-second strip charts of the frame rate, frame time,
-//! and processing time beneath, set in
-//! `assets/fonts/Leofont-Regular.ttf`. The integration is one struct in the
-//! demo state and one `process` call per frame — the overlay appends its
-//! own nodes to the scene's root on the first frame, so the scene itself
-//! only carries a swaying circle under them. See the module docs of
-//! `frost::Diagnostics` for the whole utility.
+//! window size, the frame rate, the frame time, the last frame's total
+//! processing time, that time excluding the overlay's own update cost, and
+//! the last frame's GPU draw-call count as text lines in the window's
+//! top-left corner, with five scrolling ten-second strip charts of the
+//! frame rate, frame time, both processing times, and draw-call count
+//! beneath, set in `assets/fonts/Leofont-Regular.ttf`. The integration is
+//! one struct in the demo state and one `process` call per frame — the
+//! overlay appends its own nodes to the scene's root on the first frame,
+//! so the scene itself only carries a swaying circle under them. See the
+//! module docs of `frost::Diagnostics` for the whole utility.
 //! Run with:
 //!
 //! ```text
@@ -15,8 +16,8 @@
 //! ```
 
 struct Demo {
-    /// The diagnostics overlay, reporting the frame rate, frame time, and
-    /// window size.
+    /// The diagnostics overlay, reporting the window size, frame rate,
+    /// frame time, processing times, and draw-call count.
     diag: frost::Diagnostics,
     /// Elapsed time in seconds.
     t: f32,
