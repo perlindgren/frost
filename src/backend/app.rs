@@ -100,16 +100,20 @@ pub(crate) struct Frost<P: Process> {
     /// the WGSL field's tail is an unsized array sized by the bound buffer.
     occluder_buffer: Buffer,
     /// The GPU resources for each distinct sprite image, keyed by the
-    /// pointer of its pixel-data `Arc`. Sprites sharing one file share one
-    /// texture, so the map stays bounded by the number of distinct images.
-    /// A `TextureView` keeps its texture alive, so only the view and the
-    /// sampler are stored.
-    sprite_resources: HashMap<*const (), (TextureView, Sampler)>,
+    /// `(pointer, generation)` of its pixel-data `Arc`: the pointer alone
+    /// is not enough, because a freed buffer's address can be reused for a
+    /// different buffer (an atlas repack). Sprites sharing one file share
+    /// one texture, so the map stays bounded by the number of distinct
+    /// images. A `TextureView` keeps its texture alive, so only the view
+    /// and the sampler are stored.
+    sprite_resources: HashMap<(u64, u64), (TextureView, Sampler)>,
     /// The rasterized glyph atlas for each distinct `(font, size)` pair,
     /// keyed by the font buffer's pointer and the size's bits. Kept between
     /// frames so unchanged text never re-rasterizes and its pixel buffer —
     /// and therefore the GPU texture in `sprite_resources` — keeps a stable
-    /// identity.
+    /// identity. A repack (a newly packed glyph) replaces the buffer and
+    /// bumps its generation; the stale texture is evicted from
+    /// `sprite_resources` right after the text is expanded.
     text_atlases: HashMap<(u64, u32), text::Atlas>,
     /// The surface format the current pipelines were built for; they are only
     /// rebuilt when this changes.
@@ -1121,6 +1125,15 @@ impl<P: Process> Frost<P> {
         // Expand the text into per-glyph sprite quads before the sort, so
         // each glyph keeps its node's position in the paint order.
         canvas.expand_text(&mut self.text_atlases);
+        // An atlas that packed new glyphs this frame replaced its pixel
+        // buffer, so the texture keyed to the old buffer is stale: drop it
+        // before the sprite draws, so the fresh buffer uploads and a
+        // recycled address can never serve the old texture.
+        for atlas in self.text_atlases.values_mut() {
+            if let Some(stale) = atlas.take_stale_key() {
+                self.sprite_resources.remove(&stale);
+            }
+        }
 
         // Paint order: the draw groups (the base group and the scene's
         // layers) by ascending layer order, higher order on top; within each
@@ -1292,6 +1305,7 @@ impl<P: Process> Frost<P> {
                         glow,
                         lit,
                         uv_rect,
+                        generation,
                         ..
                     } => {
                         let Some(inv) = world.invert() else {
@@ -1304,7 +1318,7 @@ impl<P: Process> Frost<P> {
                         // share one texture, so the image is uploaded once
                         // per file; glyph quads from the same atlas share
                         // one atlas texture the same way.
-                        let key = Arc::as_ptr(&data) as *const ();
+                        let key = (Arc::as_ptr(&data) as *const () as u64, generation);
                         let (view, sampler) = match self.sprite_resources.get(&key) {
                             Some((view, sampler)) => (view.clone(), sampler.clone()),
                             None => {
@@ -1350,7 +1364,9 @@ impl<P: Process> Frost<P> {
                         let (view, sampler) =
                             match sprite_data.filter(|_| kind >= 1.5) {
                                 Some(image) => {
-                                    let key = Arc::as_ptr(&image) as *const ();
+                                    // A particle's image is a static file,
+                                    // never repacked: generation 0.
+                                    let key = (Arc::as_ptr(&image) as *const () as u64, 0);
                                     match self.sprite_resources.get(&key) {
                                         Some((view, sampler)) => {
                                             (view.clone(), sampler.clone())

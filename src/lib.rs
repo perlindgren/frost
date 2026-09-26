@@ -100,6 +100,10 @@
 //! On native targets, [`Sound`]s decoded at load time play through an
 //! [`Audio`]: one-shots mix in parallel, and one sound loops at a time.
 //!
+//! A [`Diagnostics`] overlay reports the frame rate and the window size as
+//! two left-aligned lines in the window's top-left corner: hold one in the
+//! demo state and call its [`Process::process`] each frame.
+//!
 //! Presentation is vsync'd by default: frames are presented once per
 //! vertical blank, at the display's refresh rate — the rate
 //! [`Context::expected_fps`] reports. [`run_configured`] takes a [`Config`]
@@ -145,6 +149,9 @@ pub use tween::*;
 
 mod collision;
 pub use collision::*;
+
+mod diagnostics;
+pub use diagnostics::Diagnostics;
 
 mod rng;
 pub use rng::*;
@@ -678,6 +685,9 @@ fn draw_node(
             } => Some(Draw::Sprite {
                 world: world.compose(&user_to_pixel),
                 data: data.clone(),
+                // A file's pixels are never replaced, so a static image's
+                // buffer identity is the constant 0.
+                generation: 0,
                 size: [(*width as f32).max(0.0), (*height as f32).max(0.0)],
                 texture_size: [*width, *height],
                 aa,
@@ -1052,7 +1062,14 @@ fn expand_text_list(
                     continue;
                 };
                 let key = (Arc::as_ptr(&font) as *const () as u64, size.to_bits());
-                let mut atlas = atlases.get(&key).cloned().unwrap_or_default();
+                // Pack the missing glyphs into the map's own atlas, not a
+                // clone: a clone's new cells would be dropped, because the
+                // key is already registered by the time the first new glyph
+                // appears (an earlier draw or frame), and the glyphs would
+                // never draw. `or_default` also keeps an atlas in the map
+                // even when nothing was packed (e.g. all-space text) so
+                // later frames hit it.
+                let atlas = atlases.entry(key).or_default();
                 // Rasterize the glyphs the atlas does not have yet.
                 let mut missing = Vec::new();
                 for glyph in &layout.glyphs {
@@ -1066,9 +1083,6 @@ fn expand_text_list(
                 if !missing.is_empty() {
                     atlas.insert_many(&missing);
                 }
-                // Keep the atlas in the map even when nothing was packed
-                // (e.g. all-space text) so later frames hit it.
-                let atlas = atlases.entry(key).or_insert(atlas);
                 let [sx, sy] = world.scales();
                 let aa = AA_BAND / sx.max(sy).max(1e-9);
                 // Center the text block (width by ascent + descent, baseline
@@ -1105,6 +1119,7 @@ fn expand_text_list(
                     expanded.push(Draw::Sprite {
                         world: glyph_world,
                         data: atlas.data.clone(),
+                        generation: atlas.generation(),
                         size: [gw, gh],
                         texture_size: [atlas.width, atlas.height],
                         aa,

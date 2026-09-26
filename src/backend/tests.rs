@@ -2312,6 +2312,7 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
         uv_rect,
         lit,
         z,
+        ..
     }] = &canvas.draws[..]
     else {
         panic!("expected one sprite draw");
@@ -2345,6 +2346,7 @@ fn sprite_scissor_is_the_texture_box_plus_aa_band() {
         alpha: 1.0,
         uv_rect: [0.0, 0.0, 1.0, 1.0],
         lit: 0.0,
+        generation: 0,
         z: 0.0,
     };
     // The box is (50 ± 20.75, 50 ± 10.75), i.e. [29.25, 70.75] on x and
@@ -2370,6 +2372,7 @@ fn sprite_scissor_under_rotation() {
         alpha: 1.0,
         uv_rect: [0.0, 0.0, 1.0, 1.0],
         lit: 0.0,
+        generation: 0,
         z: 0.0,
     };
     assert_eq!(draw.scissor_rect([100, 100]), Some([27, 27, 46, 46]));
@@ -2559,6 +2562,46 @@ fn expand_text_reuses_the_atlas_across_frames() {
     assert_eq!(first, second, "frame two must reuse the atlas buffer");
     // The atlas was actually registered under its font key.
     assert!(atlases.contains_key(&key));
+}
+
+#[test]
+fn expand_text_packs_glyphs_first_seen_on_a_later_frame() {
+    // The atlas key (font, size) is registered on the first frame; a later
+    // frame whose text introduces new glyphs must rasterize them into the
+    // same persistent atlas and draw them. The diagnostics readout relies
+    // on this: its "FPS" line's glyphs never appear in its "size" line's
+    // first-frame text.
+    let font = test_font();
+    let size = 48.0;
+    let mut atlases: HashMap<(u64, u32), text::Atlas> = HashMap::new();
+
+    let mut frame = |text: &str| -> usize {
+        let mut canvas = Canvas::new((800, 600));
+        canvas.draws = vec![Draw::Text {
+            glow: black(),
+            world: Transform::identity(),
+            font: font.clone(),
+            text: text.to_string(),
+            size,
+            color: Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+            alpha: 1.0,
+            lit: 0.0,
+            z: 0.0,
+        }];
+        canvas.expand_text(&mut atlases);
+        canvas.draws.len()
+    };
+
+    // The first frame seeds the atlas with its seven inked glyphs.
+    assert_eq!(frame("800x600"), 7);
+    // The second frame's "F", "P", "S" and "5" have never been packed
+    // before: all five inked glyphs must be drawn ("8" was packed by the
+    // first text; the space has no ink and gets no quad).
+    assert_eq!(
+        frame("FPS 58"),
+        5,
+        "glyphs first seen on a later frame must be packed and drawn"
+    );
 }
 
 #[test]

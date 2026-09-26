@@ -76,6 +76,12 @@ pub(crate) enum Draw {
         /// created from the same file share this buffer; glyph quads
         /// expanded by [`Canvas::expand_text`] share the same atlas buffer.
         data: Arc<[u8]>,
+        /// The identity of the buffer `data` points at: `0` for static
+        /// images (a file's bytes are never replaced), and for glyph quads
+        /// the [`crate::text::Atlas`] generation, which bumps whenever the
+        /// atlas repacks a new glyph and replaces its buffer — so a
+        /// freed-and-recycled buffer address can never hit a stale texture.
+        generation: u64,
         /// The local extent of the quad in local units; the sampled region
         /// spans `uv_rect` of the texture.
         size: [f32; 2],

@@ -12,6 +12,7 @@
 //! origin — the left end of the baseline.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use swash::scale::{Render, ScaleContext, Source};
@@ -20,6 +21,11 @@ use swash::FontRef;
 
 /// The fixed atlas size in pixels; a glyph that does not fit is skipped.
 const ATLAS_SIZE: u32 = 512;
+
+/// The next atlas buffer generation. It starts at 1 (never 0) so an atlas
+/// generation can never be confused with the constant `0` that static
+/// images use for their buffer identity.
+static NEXT_ATLAS_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// A text laid out at a size in pixels: the pen positions of every glyph
 /// plus the block's overall metrics.
@@ -165,6 +171,15 @@ pub(crate) struct Atlas {
     pub width: u32,
     /// The atlas's height in pixels.
     pub height: u32,
+    /// The identity of the current pixel buffer: unique per buffer, bumped
+    /// every time the atlas repacks a new glyph and replaces `data`. The
+    /// backend keys its GPU texture cache on `(pointer, generation)`, so a
+    /// freed-and-recycled buffer address can never hit a stale texture.
+    generation: u64,
+    /// The `(pointer, generation)` of the buffer the most recent repack
+    /// replaced, for the backend to evict its now-stale texture — taken
+    /// once, or `None` until the atlas is repacked.
+    stale_key: Option<(u64, u64)>,
     cells: HashMap<u16, Cell>,
     /// The x cursor along the current shelf.
     x: u32,
@@ -180,6 +195,8 @@ impl Default for Atlas {
             data: Arc::from(vec![0u8; (ATLAS_SIZE * ATLAS_SIZE * 4) as usize]),
             width: ATLAS_SIZE,
             height: ATLAS_SIZE,
+            generation: NEXT_ATLAS_GENERATION.fetch_add(1, Ordering::Relaxed),
+            stale_key: None,
             cells: HashMap::new(),
             x: 0,
             y: 0,
@@ -199,10 +216,23 @@ impl Atlas {
         self.cells.get(&id)
     }
 
+    /// The identity of the current pixel buffer, for the backend's GPU
+    /// texture cache key.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The `(pointer, generation)` of the buffer the most recent repack
+    /// replaced, so the backend can evict its stale texture — taken once.
+    pub fn take_stale_key(&mut self) -> Option<(u64, u64)> {
+        self.stale_key.take()
+    }
+
     /// Packs `glyphs` into the atlas, starting a new shelf when needed.
     /// Glyphs that are already packed, or too big for the atlas, are
     /// skipped; the buffer is only rebuilt when at least one new glyph
-    /// lands.
+    /// lands, and each rebuild bumps the buffer's generation and records
+    /// the replaced buffer's identity for eviction.
     pub fn insert_many(&mut self, glyphs: &[(u16, RasterGlyph)]) {
         let mut data = self.data.to_vec();
         // The buffer is only re-Arc'd when a glyph actually lands, so an
@@ -243,7 +273,12 @@ impl Atlas {
             changed = true;
         }
         if changed {
+            self.stale_key = Some((
+                Arc::as_ptr(&self.data) as *const () as u64,
+                self.generation,
+            ));
             self.data = Arc::from(data);
+            self.generation = NEXT_ATLAS_GENERATION.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -392,5 +427,44 @@ mod tests {
         assert!(atlas.has(2), "the following glyph should still pack");
         let c2 = atlas.cell(2).expect("glyph 2 should be packed");
         assert_eq!((c2.x, c2.y), (0, 0));
+    }
+
+    /// The diagnostics overlay's readout lines (the window size and the
+    /// frame rate) shape in Leofont (the bundled display font) without
+    /// overlapping glyph inks, even though the font's vertical metrics are
+    /// degenerate: its ascent plus descent is about a pixel at 32 px while
+    /// the ink is tens of pixels tall, so placement code must not trust the
+    /// metrics.
+    #[test]
+    fn leofont_shapes_the_diagnostics_lines_without_overlapping_inks() {
+        let font = include_bytes!("../assets/fonts/Leofont-Regular.ttf");
+        let mut any_layout = false;
+        for text in ["1920x1080", "FPS 60"] {
+            let layout = layout(font, text, 32.0).expect("font should shape");
+            any_layout = true;
+            let mut prev_end = f32::NEG_INFINITY;
+            for g in &layout.glyphs {
+                let Some(r) = rasterize(font, g.id, 32.0) else {
+                    continue; // spaces have no ink; only the pen advances
+                };
+                let start = g.x + r.left as f32;
+                let end = start + r.width as f32;
+                assert!(
+                    start >= prev_end,
+                    "{text}: the glyph at pen_x {} overlaps the previous ink (ends at {prev_end})",
+                    g.x
+                );
+                prev_end = end;
+            }
+            // The metrics are the degenerate ones the overlay has to work
+            // around.
+            assert!(
+                layout.ascent + layout.descent < 5.0,
+                "{text}: Leofont's metrics are expected to be degenerate, got ascent {} descent {}",
+                layout.ascent,
+                layout.descent
+            );
+        }
+        assert!(any_layout);
     }
 }

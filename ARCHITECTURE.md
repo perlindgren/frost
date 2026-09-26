@@ -32,6 +32,7 @@ src/objects.rs        Color, Transform, Shape, Node, SceneNode, Layer, Scene,
 src/tween.rs          Tween<T> (f32 / [f32;2]) with Repeat modes
 src/particles.rs      Particle, ParticleSystem (pure simulation)
 src/collision.rs      OrientedBox, Circle, Collider, push_out, reflect (pure math)
+src/diagnostics.rs    Diagnostics (FPS + window-size HUD overlay, one struct)
 src/audio.rs          Audio (device + loop player), Sound (decoded buffer),
                       AudioError — native-only, rodio-based
 src/text.rs           CPU text shaping/rasterization on swash, glyph shelf atlas
@@ -198,9 +199,11 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
   `window_size` (the `Config` values), the window (`Arc<Window>`), logical
   size + scale factor, the surface, the five pipelines
   (line/circle/rect/shape/sprite), `sprite_resources` (a
-  `HashMap<*const (), (TextureView, Sampler)>` keyed by the sprite pixel-data
-  `Arc`'s pointer — sprites from the same file, and glyph quads from the same
-  atlas, **share one uploaded texture**), `text_atlases`
+  `HashMap<(u64, u64), (TextureView, Sampler)>` keyed by the sprite pixel-data
+  `Arc`'s pointer plus its generation — `0` for static images, bumped by the
+  glyph atlas on every repack — so a freed-and-recycled buffer address can
+  never hit a stale texture; sprites from the same file, and glyph quads from
+  the same atlas, **share one uploaded texture**), `text_atlases`
   (`HashMap<(font ptr, size bits), text::Atlas>`, kept between frames so
   unchanged text never re-rasterizes), held keys/mouse, and the user's
   `process` + `scene`.
@@ -355,6 +358,38 @@ right channel/rate/length, the bundled `swoof.wav` decodes, a missing path is
 `clamp01`/f32-bits helpers round-trip. `Sound::load_bytes` carries a doctest
 that decodes an in-code WAV.
 
+## Diagnostics (src/diagnostics.rs)
+
+`Diagnostics` is a HUD overlay: two left-aligned lines in the window's
+top-left corner — the window size (`"{w}x{h}"`) on top and the smoothed
+frame rate (`"FPS {fps}"`) below, at 32 px. The whole integration is one
+struct in the demo state plus one `self.diag.process(ctx, dt)` call per frame
+— the overlay itself is a `Process`.
+
+- `Diagnostics::new(path)` reads the font file up front (checked with swash,
+  so a bad path or file is a `TextError` at construction); `from_bytes(&[u8])`
+  is the no-filesystem twin (embedded `include_bytes!`, the wasm path). The
+  bytes live behind an `Arc` shared with the readout's `Shape::Text`.
+- `Process::process` smooths the frame rate as an exponential moving average
+  of `1.0 / dt` (time constant 0.25 s, snapping to the first real
+  measurement so the first frame does not flash a zero; `dt` 0.0 on the first
+  frame is skipped), and rebuilds each line's shape only when its text
+  changes — the steady-state per-frame cost is two string
+  comparisons.
+- Node management: the first `process` appends the two text `SceneNode`s to
+  `ctx.scene().root.children` and remembers their indices; later calls update
+  each node's shape and transform in place (re-appending one if the demo
+  removed it). The demo must not reorder the root's children. Placement uses
+  crate-internal `text::layout` for each line's width and the glyphs' raster
+  ink for their ink bounds, because a font's vertical metrics can be
+  degenerate (Leofont's ascent plus descent is about a pixel at 32 px) — so
+  the top line's ink sits 20 px in from the window's top-left corner.
+- Pure CPU work (no device I/O), so it compiles on `wasm32` too — no cfg
+  gate, unlike `audio`.
+
+`examples/diagnostics.rs` shows it over a swaying circle, set in
+`assets/fonts/Leofont-Regular.ttf`.
+
 ## Testing
 
 Baseline: **102 tests + 2 doctests** passing, `cargo build --examples`
@@ -454,9 +489,12 @@ spread/life/size randomization.
    the shaders can write.
 4. **`Tween` has no re-target** — rebuild on edges.
 5. **Per-draw uniform buffers** are mandatory (write_buffer batch semantics).
-6. **Sprite/atlas texture sharing** is keyed by the `Arc<[u8]>` pointer — the
-   pixel buffer must be the same allocation (clone the `Arc`, don't copy bytes)
-   for the sharing to work.
+6. **Sprite/atlas texture sharing** is keyed by the `Arc<[u8]>` pointer plus
+   the buffer's generation (0 for static images, bumped by `text::Atlas` on
+   every repack) — the pixel buffer must be the same allocation (clone the
+   `Arc`, don't copy bytes) for the sharing to work. When an atlas repacks,
+   its stale texture is evicted from `sprite_resources` right after
+   `expand_text`, so the fresh buffer uploads in the same frame.
 7. **Text expansion happens before sorting**, so glyphs inherit the node's
    paint position.
 8. The **last** `Background` in call order wins as the clear color.
