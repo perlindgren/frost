@@ -12,7 +12,10 @@
 //! [`Audio::play_once`] adds its copy to the device's mixer, so the same
 //! sound can be retriggered as fast as you like and the copies overlap
 //! freely. The loop is a single sequential player: [`Audio::play_loop`]
-//! starts or replaces the one loop, and [`Audio::stop_loop`] silences it.
+//! starts or replaces the one loop, and [`Audio::stop_loop`] silences it,
+//! both without blocking the caller — the loop's player is dropped rather
+//! than cleared, since rodio's `Player::clear` waits for the audio thread
+//! to finish the sound.
 //! The master volume, in `0.0..=1.0`, applies to one-shots when they are
 //! triggered and to the loop live, so [`Audio::set_volume`] can be called
 //! at any time. Dropping the `Audio` stops everything it started.
@@ -41,7 +44,14 @@ pub struct Audio {
     /// Owns the output device and its mixer; dropping it stops playback.
     sink: rodio::MixerDeviceSink,
     /// The single loop: a sequential player, never mixed with one-shots.
-    loop_player: rodio::Player,
+    ///
+    /// Disposable on purpose: rodio's `Player::clear` blocks the caller
+    /// until the audio thread ends the source (up to one of the source's
+    /// 5 ms periodic-access ticks, plus a device callback), so starting
+    /// or stopping the loop drops the player — its `Drop` sets the stop
+    /// flag without waiting — and [`Audio::play_loop`] connects a fresh
+    /// one.
+    loop_player: Option<rodio::Player>,
     /// The master volume, the bit representation of an f32 in `0.0..=1.0`.
     volume: AtomicU32,
 }
@@ -58,10 +68,9 @@ impl Audio {
         let mut sink = rodio::DeviceSinkBuilder::open_default_sink()
             .map_err(|err| AudioError::Device(Box::new(err)))?;
         sink.log_on_drop(false);
-        let loop_player = rodio::Player::connect_new(sink.mixer());
         Ok(Self {
             sink,
-            loop_player,
+            loop_player: None,
             volume: AtomicU32::new(1.0f32.to_bits()),
         })
     }
@@ -87,19 +96,27 @@ impl Audio {
     /// looping stops the old loop and starts the new one from the
     /// beginning. The master volume applies to the loop live, so later
     /// [`Audio::set_volume`] calls are heard on it.
-    pub fn play_loop(&self, sound: &Sound) {
-        self.loop_player.clear();
-        self.loop_player
-            .append(sound.buffer.clone().repeat_infinite());
-        self.loop_player.play();
-        self.loop_player.set_volume(self.volume());
+    ///
+    /// The call does not block: the old loop, if any, is stopped by
+    /// dropping its player, and the audio thread ends that sound within a
+    /// few milliseconds on its own.
+    pub fn play_loop(&mut self, sound: &Sound) {
+        self.loop_player = None;
+        let player = rodio::Player::connect_new(self.sink.mixer());
+        player.append(sound.buffer.clone().repeat_infinite());
+        player.set_volume(self.volume());
+        self.loop_player = Some(player);
     }
 
     /// Stops the current loop, if any.
     ///
     /// One-shots already in the mixer are not touched; they run out.
-    pub fn stop_loop(&self) {
-        self.loop_player.clear();
+    ///
+    /// The call does not block: the loop's player is dropped, which sets
+    /// its stop flag — the audio thread ends the sound within a few
+    /// milliseconds on its own.
+    pub fn stop_loop(&mut self) {
+        self.loop_player = None;
     }
 
     /// Sets the master volume, clamped to `0.0..=1.0`.
@@ -109,7 +126,9 @@ impl Audio {
     pub fn set_volume(&self, volume: f32) {
         let volume = clamp01(volume);
         self.volume.store(volume.to_bits(), Ordering::SeqCst);
-        self.loop_player.set_volume(volume);
+        if let Some(player) = self.loop_player.as_ref() {
+            player.set_volume(volume);
+        }
     }
 
     /// The current master volume, in `0.0..=1.0`.

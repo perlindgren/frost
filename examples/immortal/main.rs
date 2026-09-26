@@ -203,6 +203,17 @@
 //! again, the basket back to its starting tomato, the swarms empty, and
 //! the tools back in their slots, and the overlay goes down.
 //!
+//! A `frost::Diagnostics` overlay rides on the scene's root, reporting
+//! the window size, the frame rate, the frame time, the last frame's
+//! total processing time, and the last frame's GPU draw-call count, with
+//! four scrolling ten-second strip charts — the integration is the
+//! overlay's field in the demo state and one `process` call per frame;
+//! its first call appends its own nodes to the root, after the demo's
+//! own children, so the demo's scene needs no other change. The overlay's
+//! parts can be toggled while it runs — Alt-0 the whole overlay,
+//! Alt-1..Alt-4 the charts (top chart first), Alt-T the text — and the
+//! layout reflows around whatever is hidden.
+//!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
 //!
@@ -1405,10 +1416,19 @@ struct Demo {
     /// The overlay's "Play" label, built once from the embedded font; laid
     /// onto the overlay's label child while the overlay is up.
     play_label: frost::Shape,
+    /// The diagnostics overlay: the window size, the frame rate, the
+    /// frame time, the last frame's processing time, and the last
+    /// frame's GPU draw-call count, with four scrolling ten-second strip
+    /// charts. Its first `process` call appends its own nodes to the
+    /// scene's root, after the demo's own children, and every later call
+    /// updates those same nodes in place.
+    diag: frost::Diagnostics,
 }
 
 impl frost::Process for Demo {
     /// Steps the whole frame, in the order the game's invariants require:
+    /// the diagnostics overlay updates its nodes — first, so its first
+    /// call appends them to the scene's root before anything else runs;
     /// the demo's clock ticks; the chrome fits the window and the
     /// plants' anchors lift off the grass stretch; the basket takes its
     /// starting tomato on the first frame; the planted plants grow on
@@ -1422,6 +1442,11 @@ impl frost::Process for Demo {
     /// the live overlay is drawn; and the game-over overlay lays out over
     /// the window.
     fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
+        // The diagnostics overlay steps first, before the demo's own clock:
+        // its first call appends its own nodes to the scene's root, and
+        // every later call updates those same nodes in place.
+        self.diag.process(ctx, dt);
+
         let (w, h) = ctx.size();
         self.time += dt;
         let anchors = self.layout_chrome(ctx, w, h);
@@ -1541,6 +1566,16 @@ impl Demo {
             color: PLAY_COLOR,
         };
 
+        // The diagnostics overlay, from the same embedded font the
+        // overlay's text is set in, with every statistic enabled: the
+        // window size, the frame rate, the frame time, the processing
+        // time, the draw-call count, and the four strip charts.
+        let diag = frost::Diagnostics::from_bytes(
+            assets.font,
+            frost::DiagnosticsFlags::all(),
+        )
+        .expect("the embedded overlay font decodes");
+
         Demo {
             mouse: [0.0, 0.0],
             active: None,
@@ -1603,6 +1638,7 @@ impl Demo {
             game_over,
             play_button,
             play_label,
+            diag,
         }
     }
 
