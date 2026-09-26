@@ -1,11 +1,18 @@
 //! Diagnostics overlay: a small HUD pinned to the window's top-left corner,
-//! reporting the frame state as three left-aligned lines and two scrolling
+//! reporting the frame state as four left-aligned lines and three scrolling
 //! graphs — the window size on top (`800x600`), the smoothed frame rate
-//! below it (`FPS 58`), the current frame time below that (`FT 16.7ms`), and
-//! under the lines two strip charts covering the last ten seconds: frame
-//! rate (orange) on top, frame time (green) below — one polyline through
-//! the max of each 0.1 s column, drawn in a single draw call per chart,
-//! with a reference line at 60 fps / 16.7 ms on each.
+//! below it (`FPS 58`), the current frame time below that (`FT 16.7ms`),
+//! the last frame's processing time below that (`PROC 0.52ms`), and under
+//! the lines three strip charts covering the last ten seconds: frame rate
+//! (orange) on top, frame time (green) in the middle, processing time
+//! (blue) below — one polyline through the max of each 0.1 s column, drawn
+//! in a single draw call per chart, with a reference line at 60 fps /
+//! 16.7 ms on each.
+//!
+//! The processing time is not a measurement this overlay makes: it is the
+//! engine's own probe of its per-frame CPU work, reported as
+//! [`Context::frame_processing_ms`] — the time the backend spent producing
+//! the last completed frame, the wait for the next frame excluded.
 //!
 //! The [`Diagnostics`] struct is the whole integration: create one before
 //! [`crate::run`], hold it in the demo state, and call its
@@ -26,9 +33,10 @@
 //! }
 //! ```
 //!
-//! The first call appends the overlay's nine nodes — three text lines, two
-//! graph panels, two reference lines, and two chart polylines — to the
-//! scene's root, and every later call updates those same nodes in place, so
+//! The first call appends the overlay's twelve nodes — four text lines,
+//! three graph panels, three reference lines, and three chart polylines —
+//! to the scene's root, and every later call updates those same nodes in
+//! place, so
 //! the demo's scene needs no other change: just leave the root's children
 //! un-reordered, the overlay remembers where it put its nodes.
 //!
@@ -36,7 +44,8 @@
 //! readout line is re-laid out only when the digits it shows change (the
 //! frame-time line shows the raw last frame's gap, so it usually changes
 //! every frame); each chart's polyline is re-placed every frame from a
-//! history of (time, frame time) samples trimmed to the last ten seconds,
+//! history of (time, frame time, processing time) samples trimmed to the
+//! last ten seconds,
 //! binned into 100 slices of 0.1 s — the chart shows the max of each slice,
 //! a worst-case 0.1 s envelope, so a stall is never hidden behind the
 //! frames around it.
@@ -89,6 +98,11 @@ const FT_TOP: f32 = 50.0;
 /// rates clip at the top.
 const FPS_TOP: f32 = 120.0;
 
+/// The processing time, in ms, at the top of the processing-time graph —
+/// just past the 16.7 ms 60 fps frame budget, so the reference line stays
+/// inside the panel; longer processing clips at the top.
+const PROC_TOP: f32 = 20.0;
+
 /// The graph panels' fill.
 const PANEL: Color = Color { r: 0.03, g: 0.04, b: 0.07, a: 1.0 };
 
@@ -98,25 +112,30 @@ const FPS_COLOR: Color = Color { r: 0.95, g: 0.62, b: 0.25, a: 1.0 };
 /// The frame-time chart's polyline.
 const FT_COLOR: Color = Color { r: 0.35, g: 0.78, b: 0.55, a: 1.0 };
 
+/// The processing-time chart's polyline.
+const PROC_COLOR: Color = Color { r: 0.45, g: 0.7, b: 0.95, a: 1.0 };
+
 /// The 60 fps / 16.7 ms reference lines.
 const REF_COLOR: Color = Color { r: 0.4, g: 0.4, b: 0.45, a: 1.0 };
 
-/// The overlay's node slots, in append order: the three text lines, the two
-/// graph panels, the two reference lines, and the two chart polylines.
-const N_TEXT: usize = 3;
-const N_PANELS: usize = 2;
-const N_REFS: usize = 2;
-const N_LINES: usize = 2;
+/// The overlay's node slots, in append order: the four text lines, the
+/// three graph panels, the three reference lines, and the three chart
+/// polylines.
+const N_TEXT: usize = 4;
+const N_PANELS: usize = 3;
+const N_REFS: usize = 3;
+const N_LINES: usize = 3;
 const N_NODES: usize = N_TEXT + N_PANELS + N_REFS + N_LINES;
 
 /// The chart polylines' stroke width, in pixels.
 const LINE_WIDTH: f32 = 1.5;
 
-/// A diagnostics overlay: three left-aligned lines in the window's top-left
+/// A diagnostics overlay: four left-aligned lines in the window's top-left
 /// corner — the window size on top (`800x600`), the smoothed frame rate
-/// (`FPS 58`), and the current frame time (`FT 16.7ms`) — with two
-/// scrolling ten-second strip charts beneath: frame rate (orange) on top,
-/// frame time (green) below.
+/// (`FPS 58`), the current frame time (`FT 16.7ms`), and the last frame's
+/// processing time (`PROC 0.52ms`) — with three scrolling ten-second strip
+/// charts beneath: frame rate (orange) on top, frame time (green) in the
+/// middle, processing time (blue) below.
 ///
 /// Create one with [`Diagnostics::new`] (from a font file on disk) or
 /// [`Diagnostics::from_bytes`] (from font data already in memory — the path
@@ -135,17 +154,24 @@ pub struct Diagnostics {
     fps_line: Line,
     /// The frame-time line, drawn below the frame-rate line.
     ft_line: Line,
+    /// The processing-time line, drawn below the frame-time line.
+    proc_line: Line,
     /// The smoothed frame rate in frames per second.
     fps: f32,
     /// The current frame time in ms — the last real `dt`, unsmoothed, so a
     /// spike is visible in the readout as well as in the graphs.
     frame_ms: f32,
+    /// The last completed frame's processing time in ms — the engine's own
+    /// probe (`Context::frame_processing_ms`), unsmoothed, so a spike is
+    /// visible in the readout as well as in the graph.
+    proc_ms: f32,
     /// Elapsed time in seconds: the graphs' time axis, advanced by every
     /// real `dt` (stalls included — the graphs show real time).
     t: f32,
-    /// The graphs' history: (elapsed time in seconds, frame time in ms)
-    /// samples, oldest first, trimmed to the last SPAN seconds.
-    samples: VecDeque<(f32, f32)>,
+    /// The graphs' history: (elapsed time in seconds, frame time in ms,
+    /// processing time in ms) samples, oldest first, trimmed to the last
+    /// SPAN seconds.
+    samples: VecDeque<(f32, f32, f32)>,
     /// The indices of the overlay's N_NODES nodes among the scene root's
     /// children, once appended (in slot order).
     nodes: Vec<Option<usize>>,
@@ -260,8 +286,8 @@ fn chart_points(
 }
 
 /// Trims the history to the last SPAN seconds of real time ending at `now`.
-fn trim_samples(samples: &mut VecDeque<(f32, f32)>, now: f32) {
-    while let Some(&(t0, _)) = samples.front() {
+fn trim_samples(samples: &mut VecDeque<(f32, f32, f32)>, now: f32) {
+    while let Some(&(t0, _, _)) = samples.front() {
         if t0 < now - SPAN {
             samples.pop_front();
         } else {
@@ -270,18 +296,19 @@ fn trim_samples(samples: &mut VecDeque<(f32, f32)>, now: f32) {
     }
 }
 
-/// The maximum of `value(frame_ms)` over the samples falling in each of the
-/// COLUMNS time slices of the last SPAN seconds ending at `now`, index 0 =
-/// the oldest slice. `samples` are (time in seconds, frame time in ms)
-/// pairs, and a sample at exactly `now` lands in the newest slice.
+/// The maximum of `value(frame_ms, proc_ms)` over the samples falling in
+/// each of the COLUMNS time slices of the last SPAN seconds ending at
+/// `now`, index 0 = the oldest slice. `samples` are (time in seconds, frame
+/// time in ms, processing time in ms) triples, and a sample at exactly
+/// `now` lands in the newest slice.
 fn slice_max(
-    samples: impl IntoIterator<Item = (f32, f32)>,
+    samples: impl IntoIterator<Item = (f32, f32, f32)>,
     now: f32,
-    mut value: impl FnMut(f32) -> f32,
+    mut value: impl FnMut(f32, f32) -> f32,
 ) -> [f32; COLUMNS] {
     let mut cols = [0.0f32; COLUMNS];
     let start = now - SPAN;
-    for (t, ms) in samples {
+    for (t, frame_ms, proc_ms) in samples {
         let rel = (t - start) / SPAN;
         // rel > 1.0 is beyond the window; the epsilon absorbs the f32
         // rounding of `now - (now - SPAN)`, which can land just past SPAN.
@@ -291,7 +318,7 @@ fn slice_max(
         let rel = rel.min(1.0);
         let c = (rel * COLUMNS as f32) as usize;
         let c = c.min(COLUMNS - 1);
-        let v = value(ms);
+        let v = value(frame_ms, proc_ms);
         if v > cols[c] {
             cols[c] = v;
         }
@@ -324,8 +351,10 @@ impl Diagnostics {
             size_line: Line::new(),
             fps_line: Line::new(),
             ft_line: Line::new(),
+            proc_line: Line::new(),
             fps: 0.0,
             frame_ms: 0.0,
+            proc_ms: 0.0,
             t: 0.0,
             samples: VecDeque::new(),
             nodes: vec![None; N_NODES],
@@ -355,6 +384,11 @@ impl Diagnostics {
 
 impl Process for Diagnostics {
     fn process(&mut self, ctx: &mut Context, dt: f32) {
+        // The engine's own probe of the last completed frame's CPU work.
+        // This frame's own probe is still running, so the value is the
+        // previous frame's by construction — a one-frame lag, one 0.1 s
+        // column at 60 fps, invisible in the graphs.
+        self.proc_ms = ctx.frame_processing_ms() as f32;
         // Record the frame in the graphs' history: the frame time is the
         // raw gap (a spike must be visible in the readout and the graphs),
         // and the time axis is real time — stalls included. The first
@@ -362,7 +396,7 @@ impl Process for Diagnostics {
         if dt > 0.0 {
             self.frame_ms = dt * 1000.0;
             self.t += dt;
-            self.samples.push_back((self.t, self.frame_ms));
+            self.samples.push_back((self.t, self.frame_ms, self.proc_ms));
             trim_samples(&mut self.samples, self.t);
         }
         // Smooth the frame rate: an exponential moving average of the
@@ -398,6 +432,11 @@ impl Process for Diagnostics {
             self.ft_line.text = ft_text;
             self.ft_line.refresh(&self.font);
         }
+        let proc_text = format!("PROC {:.2}ms", self.proc_ms);
+        if proc_text != self.proc_line.text {
+            self.proc_line.text = proc_text;
+            self.proc_line.refresh(&self.font);
+        }
         // The size line's ink top sits MARGIN in from the window's top
         // edge; each line hangs below the previous, LINE_GAP under its ink
         // bottom. All lines' ink left edges sit MARGIN in from the window's
@@ -406,23 +445,30 @@ impl Process for Diagnostics {
         let fps_ink_top =
             size_ink_top - (self.size_line.ink_top - self.size_line.ink_bottom) - LINE_GAP;
         let ft_ink_top = fps_ink_top - (self.fps_line.ink_top - self.fps_line.ink_bottom) - LINE_GAP;
-        // The fps panel hangs LINE_GAP + GRAPH_GAP under the ft line's ink
-        // bottom; the ft panel one panel height plus GRAPH_GAP under it.
-        let ft_ink_bottom = ft_ink_top - (self.ft_line.ink_top - self.ft_line.ink_bottom);
-        let fps_panel_top = ft_ink_bottom - LINE_GAP - GRAPH_GAP;
+        let proc_ink_top =
+            ft_ink_top - (self.ft_line.ink_top - self.ft_line.ink_bottom) - LINE_GAP;
+        // The fps panel hangs LINE_GAP + GRAPH_GAP under the proc line's
+        // ink bottom; the ft and proc panels one panel height plus
+        // GRAPH_GAP under it.
+        let proc_ink_bottom =
+            proc_ink_top - (self.proc_line.ink_top - self.proc_line.ink_bottom);
+        let fps_panel_top = proc_ink_bottom - LINE_GAP - GRAPH_GAP;
         let ft_panel_top = fps_panel_top - GRAPH_H - GRAPH_GAP;
+        let proc_panel_top = ft_panel_top - GRAPH_H - GRAPH_GAP;
         let x0 = -w / 2.0 + MARGIN;
         // The newest sample (t == now) must land in the newest slice, so the
         // graphs show the frame just finished, not the one before.
-        let fps_cols = slice_max(self.samples.iter().copied(), self.t, |ms| 1000.0 / ms);
-        let ft_cols = slice_max(self.samples.iter().copied(), self.t, |ms| ms);
+        let fps_cols = slice_max(self.samples.iter().copied(), self.t, |ft, _| 1000.0 / ft);
+        let ft_cols = slice_max(self.samples.iter().copied(), self.t, |ft, _| ft);
+        let proc_cols = slice_max(self.samples.iter().copied(), self.t, |_, proc| proc);
 
         let scene = ctx.scene();
-        // The three readout lines.
+        // The four readout lines.
         let line_draws = [
             line_draw(&self.size_line, size_ink_top, w),
             line_draw(&self.fps_line, fps_ink_top, w),
             line_draw(&self.ft_line, ft_ink_top, w),
+            line_draw(&self.proc_line, proc_ink_top, w),
         ];
         for (i, draw) in line_draws.into_iter().enumerate() {
             let Some(draw) = draw else {
@@ -444,6 +490,16 @@ impl Process for Diagnostics {
         self.place(
             N_TEXT + 1,
             [x0 + GRAPH_W / 2.0, ft_panel_top - GRAPH_H / 2.0],
+            Shape::Rectangle {
+                center: [0.0, 0.0],
+                extent: [GRAPH_W / 2.0, GRAPH_H / 2.0],
+                color: PANEL,
+            },
+            scene,
+        );
+        self.place(
+            N_TEXT + 2,
+            [x0 + GRAPH_W / 2.0, proc_panel_top - GRAPH_H / 2.0],
             Shape::Rectangle {
                 center: [0.0, 0.0],
                 extent: [GRAPH_W / 2.0, GRAPH_H / 2.0],
@@ -475,6 +531,12 @@ impl Process for Diagnostics {
             chart_line(chart_points(&ft_cols, x0, ft_panel_top, FT_TOP), FT_COLOR),
             scene,
         );
+        self.place(
+            N_TEXT + N_PANELS + N_REFS + 2,
+            [0.0, 0.0],
+            chart_line(chart_points(&proc_cols, x0, proc_panel_top, PROC_TOP), PROC_COLOR),
+            scene,
+        );
         // The 60 fps / 16.7 ms reference lines, 1 px tall across the panel.
         let ref_line = |panel_top: f32, level: f32| {
             (
@@ -490,6 +552,8 @@ impl Process for Diagnostics {
         self.place(N_TEXT + N_PANELS, [x0, y], shape, scene);
         let (y, shape) = ref_line(ft_panel_top, (1000.0 / 60.0) / FT_TOP);
         self.place(N_TEXT + N_PANELS + 1, [x0, y], shape, scene);
+        let (y, shape) = ref_line(proc_panel_top, (1000.0 / 60.0) / PROC_TOP);
+        self.place(N_TEXT + N_PANELS + 2, [x0, y], shape, scene);
     }
 }
 
@@ -501,7 +565,7 @@ mod tests {
     fn trim_keeps_only_the_last_span_seconds() {
         let mut samples = VecDeque::new();
         for t in 0..11 {
-            samples.push_back((t as f32, 16.0));
+            samples.push_back((t as f32, 16.0, 1.0));
         }
         trim_samples(&mut samples, 11.0);
         // t < 11 - 10 = 1 is gone; t = 1..=11 remain.
@@ -513,11 +577,11 @@ mod tests {
     fn slice_max_buckets_by_time_not_by_count() {
         // now = 10: the window is t = 0..10, 100 slices of 0.1 s.
         let samples = [
-            (0.05, 100.0), // oldest slice (c = 0)
-            (5.00, 200.0), // middle of the window (c = 50)
-            (9.95, 100.0), // newest slice (c = 99)
+            (0.05, 100.0, 0.0), // oldest slice (c = 0)
+            (5.00, 200.0, 0.0), // middle of the window (c = 50)
+            (9.95, 100.0, 0.0), // newest slice (c = 99)
         ];
-        let cols = slice_max(samples, 10.0, |ms| ms);
+        let cols = slice_max(samples, 10.0, |ft, _| ft);
         assert_eq!(cols[0], 100.0);
         assert_eq!(cols[50], 200.0);
         assert_eq!(cols[99], 100.0);
@@ -528,15 +592,15 @@ mod tests {
     #[test]
     fn slice_max_counts_the_newest_sample_at_now() {
         // t == now: the sample belongs to the newest slice, not beyond it.
-        let samples = [(10.0, 300.0)];
-        let cols = slice_max(samples, 10.0, |ms| ms);
+        let samples = [(10.0, 300.0, 0.0)];
+        let cols = slice_max(samples, 10.0, |ft, _| ft);
         assert_eq!(cols[99], 300.0);
     }
 
     #[test]
     fn slice_max_ignores_samples_outside_the_window() {
-        let samples = [(15.0, 100.0), (20.0, 100.0)];
-        let cols = slice_max(samples, 10.0, |ms| ms);
+        let samples = [(15.0, 100.0, 0.0), (20.0, 100.0, 0.0)];
+        let cols = slice_max(samples, 10.0, |ft, _| ft);
         assert!(cols.iter().all(|&v| v == 0.0));
     }
 
@@ -544,8 +608,18 @@ mod tests {
     fn slice_max_fps_is_the_inverse_of_the_frame_time() {
         // Two frames in one slice: 10 ms and 40 ms → the slice's best rate
         // is 100 fps.
-        let samples = [(9.95, 10.0), (9.98, 40.0)];
-        let cols = slice_max(samples, 10.0, |ms| 1000.0 / ms);
+        let samples = [(9.95, 10.0, 0.0), (9.98, 40.0, 0.0)];
+        let cols = slice_max(samples, 10.0, |ft, _| 1000.0 / ft);
         assert_eq!(cols[99], 100.0);
+    }
+
+    #[test]
+    fn slice_max_proc_ignores_the_frame_time() {
+        // Two frames in one slice: 10 ms and 40 ms of frame time, 2.5 ms
+        // and 1.0 ms of processing — the proc column is the max of the
+        // processing times, not the frame times.
+        let samples = [(9.95, 10.0, 2.5), (9.98, 40.0, 1.0)];
+        let cols = slice_max(samples, 10.0, |_, proc| proc);
+        assert_eq!(cols[99], 2.5);
     }
 }

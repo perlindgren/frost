@@ -106,10 +106,11 @@
 //! [`Audio`]: one-shots mix in parallel, and one sound loops at a time.
 //!
 //! A [`Diagnostics`] overlay reports the window size, the smoothed frame
-//! rate, and the current frame time as left-aligned lines in the window's
-//! top-left corner, with scrolling ten-second graphs of the frame rate and
-//! frame time beneath: hold one in the demo state and call its
-//! [`Process::process`] each frame.
+//! rate, the current frame time, and the last frame's processing time (the
+//! engine's own probe of its per-frame CPU work) as left-aligned lines in
+//! the window's top-left corner, with scrolling ten-second graphs of the
+//! frame rate, the frame time, and the processing time beneath: hold one in
+//! the demo state and call its [`Process::process`] each frame.
 //!
 //! Presentation is vsync'd by default: frames are presented once per
 //! vertical blank, at the display's refresh rate — the rate
@@ -1215,6 +1216,9 @@ pub struct Context<'c> {
     /// The gamepad controller, or `None` when gilrs could not open the
     /// platform's input devices at startup (then no gamepad state exists).
     gilrs: Option<&'c gilrs::Gilrs>,
+    /// The CPU time in milliseconds the engine spent processing the last
+    /// completed frame (see [`Context::frame_processing_ms`]).
+    frame_processing_ms: f64,
 }
 
 impl Context<'_> {
@@ -1241,6 +1245,26 @@ impl Context<'_> {
     /// on some displays and in the browser.
     pub fn expected_fps(&self) -> Option<f32> {
         self.expected_fps
+    }
+
+    /// The CPU time, in milliseconds, the engine spent processing the last
+    /// completed frame.
+    ///
+    /// The backend probes its own frame pipeline: the measurement starts
+    /// just after the frame's surface acquire — so it includes this frame's
+    /// [`Process::process`] call, the scene update, the draw list, and the
+    /// command encoding — and stops when the frame's command buffer is
+    /// submitted to the queue. The surface acquire, the present handoff to
+    /// the display, and the wait for the next frame are excluded, so the
+    /// value measures the CPU work of a frame rather than its on-screen
+    /// duration — that is the `dt` [`Process::process`] receives. Before
+    /// the first frame completes it is `0.0`.
+    ///
+    /// Compare it with `1000.0 / fps`: as the two approach each other the
+    /// app becomes CPU-bound, and the gap between them is the headroom the
+    /// [`Diagnostics`] overlay's processing-time chart shows.
+    pub fn frame_processing_ms(&self) -> f64 {
+        self.frame_processing_ms
     }
 
     /// The mouse cursor's position in user coordinates (origin at the

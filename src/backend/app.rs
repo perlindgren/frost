@@ -122,6 +122,15 @@ pub(crate) struct Frost<P: Process> {
     /// Millisecond timestamp of the previous rendered frame, used to
     /// compute `dt` (see `now_millis`).
     last_millis: Option<f64>,
+    /// The CPU time in milliseconds the engine spent processing the last
+    /// completed frame: from just after the frame's surface acquire (the
+    /// demo's `process` callback, the scene update, the draw list, and the
+    /// command encoding included) to the submission of the frame's command
+    /// buffer to the queue — the surface acquire, the present handoff, and
+    /// the wait for the next frame excluded. `0.0` before the first frame
+    /// completes. Reported to the next frame's `Context` (see
+    /// `Context::frame_processing_ms`).
+    frame_processing_ms: f64,
     /// The expected frame rate in Hz: the refresh rate of the monitor the
     /// window sits on, as winit reports it. `None` when vsync is off
     /// (presentation is uncapped) or the rate is unknown; see
@@ -298,6 +307,7 @@ impl<P: Process> Frost<P> {
             text_atlases: HashMap::new(),
             format: None,
             last_millis: None,
+            frame_processing_ms: 0.0,
             expected_fps: None,
             scene,
             keys: HashSet::new(),
@@ -1094,6 +1104,11 @@ impl<P: Process> Frost<P> {
             return;
         };
         log::trace!("render: acquired surface texture, submitting frame");
+        // The frame's processing probe: the engine's CPU time for this
+        // frame, from here (the acquire is done — it may have waited on the
+        // display's back buffer, and that wait is not processing) to the
+        // queue submission below. The present handoff is display time.
+        let t0 = now_millis();
 
         // Let the user update the scene and draw this frame, in their
         // coordinate system.
@@ -1127,6 +1142,7 @@ impl<P: Process> Frost<P> {
                 mouse,
                 mouse_buttons,
                 gilrs,
+                frame_processing_ms: self.frame_processing_ms,
             };
             process.process(&mut ctx, dt);
         }
@@ -1459,6 +1475,10 @@ impl<P: Process> Frost<P> {
             }
         }
         self.queue.submit([encoder.finish()]);
+        // Record this frame's processing time before the present: the
+        // frame's own `Context` already went out without it, so this value
+        // reaches the next frame's, where it is the "last frame's" time.
+        self.frame_processing_ms = now_millis() - t0;
         self.queue.present(output);
         log::trace!("render: frame presented");
     }

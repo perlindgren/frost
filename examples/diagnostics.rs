@@ -1,7 +1,8 @@
 //! A diagnostics overlay: the `frost::Diagnostics` utility reports the
-//! window size, the frame rate, and the frame time as text lines in the
-//! window's top-left corner, with two scrolling ten-second strip charts of
-//! the frame rate and frame time beneath, set in
+//! window size, the frame rate, the frame time, and the last frame's
+//! processing time as text lines in the window's top-left corner, with
+//! three scrolling ten-second strip charts of the frame rate, frame time,
+//! and processing time beneath, set in
 //! `assets/fonts/Leofont-Regular.ttf`. The integration is one struct in the
 //! demo state and one `process` call per frame — the overlay appends its
 //! own nodes to the scene's root on the first frame, so the scene itself
