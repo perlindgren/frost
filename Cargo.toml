@@ -95,6 +95,10 @@ path = "examples/lighting/eyes.rs"
 name = "eyes_light"
 path = "examples/lighting/eyes_light.rs"
 
+[[example]]
+name = "occlusion"
+path = "examples/lighting/occlusion.rs"
+
 # The layer examples live in the `examples/layers/` folder. Cargo
 # only auto-discovers `examples/*.rs` and `examples/*/main.rs`, so each
 # file in the folder is named here explicitly; the example names stay the

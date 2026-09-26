@@ -1,6 +1,6 @@
 # Lighting examples
 
-Nine demos of frost's lighting system: the `frost::Light` record, the
+Ten demos of frost's lighting system: the `frost::Light` record, the
 `Shape::Light` scene node, the immediate `ctx.light` / `ctx.light_cone`
 calls, and the three node flags that make a surface take part in it —
 `lit`, `occludes`, and `glow`.
@@ -10,6 +10,7 @@ calls, and the three node flags that make a surface take part in it —
 | `lighting` | the basic demo: a lit floor, a lit ball, and a lit particle plume under one node light (orbiting) and two immediate lights (cursor-chasing, static); shows that a particle batch can be a lit receiver | `cargo run --example lighting` |
 | `lit_unlit` | the minimal contrast: two rectangles in the same color, one with `lit: true`, and a light stuck to the mouse with an immediate `ctx.light` call | `cargo run --example lit_unlit` |
 | `bouncing_lights` | three point lights (amber, azure, mint) bouncing DVD-style off the window edges over lit receivers, with the rectangular receivers flagged `occludes` so they cut hard shadows into the light | `cargo run --example bouncing_lights` |
+| `occlusion` | the shadow-geometry tour: one orbiting lamp, three lit panels each behind a `lit: true, occludes: true` wall (one leaned, so its shadow leans with the composed transform), and lit circles in the gaps that never occlude | `cargo run --example occlusion` |
 | `cone` | a square explorer carrying a torch: a small omni point light and a narrow cone light as **child nodes** of the player, so they ride its position and turn with it; a dark hall of unlit occluder walls | `cargo run --example cone` |
 | `dawn` | a full day (64-second loop) under one `Light::directional`: the sun's color, strength, direction of travel, the sky, and the scene's ambient all slide together; parallel shadows sweep from dawn spears to noon stubs | `cargo run --example dawn` |
 | `near_sun` | the same day told by a *near* sun — a point light translated to the visible disk every frame — so shadows fan out from the disk like spokes on a wheel instead of lying parallel | `cargo run --example near_sun` |
@@ -17,7 +18,7 @@ calls, and the three node flags that make a surface take part in it —
 | `eyes` | a tour of node-level `glow` — a surface's own emission: glowing eyes that burn inside a wall's shadow, because glow is never shadowed | `cargo run --example eyes` |
 | `eyes_light` | `eyes`' companion: the larger eyes carry a `Shape::Light` child node, so their light spills onto the room — and gets cut off at the walls — while their glow keeps burning | `cargo run --example eyes_light` |
 
-The nine files sit in this folder rather than at the examples' top level,
+The ten files sit in this folder rather than at the examples' top level,
 so each one is declared explicitly in `Cargo.toml` (cargo only
 auto-discovers `examples/*.rs` and `examples/*/main.rs`); the example names
 are unchanged. `cone_collider` — the physics version of `cone`'s hall —
@@ -49,7 +50,7 @@ emission. The three node flags opt a surface in:
   full composed transform, so a rotated, scaled, or translated node casts
   the shadow of wherever it actually sits. A wall can be `lit: true,
   occludes: true` at once — lit on its own surface and still blocking
-  what lies behind it.
+  what lies behind it (`occlusion`'s walls).
 - **`glow: Color`** — the node's self-emission, added to the mix, so the
   surface stays visible in the dark while lights still add on top. It
   requires `lit` (an unlit shape is already drawn in full), lights only
@@ -115,8 +116,8 @@ does with the cursor, and what `lighting` does with its chasing light.
 
 - **A light is never drawn, so stage a face for it.** A point light is a
   position — `bouncing_lights` marks each one with two unlit immediate
-  circles (a tinted halo and a white core) so you can see where the
-  pools come from. A directional light has *no* position, so where its
+  circles (a tinted halo and a white core), as `occlusion` does for its
+  orbiting lamp, so you can see where the pools come from. A directional light has *no* position, so where its
   source "is" is yours to place: `dawn` and `twostars` walk an unlit
   disk with halo rings around the sky — in `twostars` riding the very
   angle the shadows fall along, so the light and the visible face are
