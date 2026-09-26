@@ -163,6 +163,14 @@ path = "examples/inout/audio_test.rs"
 name = "torch"
 path = "examples/inout/torch.rs"
 
+# The physics examples live in the `examples/physics/` folder. Cargo only
+# auto-discovers `examples/*.rs` and `examples/*/main.rs`, so each file in
+# the folder is named here explicitly; the example names stay the same, so
+# `cargo run --example collision` (and friends) keeps working.
+[[example]]
+name = "collision"
+path = "examples/physics/collision.rs"
+
 [dev-dependencies]
 # Command line parsing for the `repeat` example (`--repeat_x`, `--repeat_y`).
 clap = { version = "4", features = ["derive"] }
