@@ -28,6 +28,12 @@ pub(crate) enum Draw {
         width: f32,
         color: Color,
         z: f32,
+        /// Whether the draw was produced by a [`crate::Diagnostics`]
+        /// overlay node: the overlay tags the nodes it appends to the
+        /// scene, and the tag rides on every draw the node produces, so the
+        /// render loop can count the overlay's share of the frame's draw
+        /// calls.
+        diagnostic: bool,
     },
     /// A polyline: consecutive pairs of `points` connected by straight
     /// segments of `width`, all in pixel space, drawn in one draw call
@@ -42,18 +48,36 @@ pub(crate) enum Draw {
         width: f32,
         color: Color,
         z: f32,
+        /// Whether the draw was produced by a [`crate::Diagnostics`]
+        /// overlay node: the overlay tags the nodes it appends to the
+        /// scene, and the tag rides on every draw the node produces, so the
+        /// render loop can count the overlay's share of the frame's draw
+        /// calls.
+        diagnostic: bool,
     },
     Circle {
         center: [f32; 2],
         radius: f32,
         color: Color,
         z: f32,
+        /// Whether the draw was produced by a [`crate::Diagnostics`]
+        /// overlay node: the overlay tags the nodes it appends to the
+        /// scene, and the tag rides on every draw the node produces, so the
+        /// render loop can count the overlay's share of the frame's draw
+        /// calls.
+        diagnostic: bool,
     },
     Rectangle {
         center: [f32; 2],
         extent: [f32; 2],
         color: Color,
         z: f32,
+        /// Whether the draw was produced by a [`crate::Diagnostics`]
+        /// overlay node: the overlay tags the nodes it appends to the
+        /// scene, and the tag rides on every draw the node produces, so the
+        /// render loop can count the overlay's share of the frame's draw
+        /// calls.
+        diagnostic: bool,
     },
     Shape {
         /// The transform from the shape's local space to pixel space.
@@ -80,6 +104,12 @@ pub(crate) enum Draw {
         /// Only rectangles (kind `1.0`) are packed into the occluder field.
         occludes: f32,
         z: f32,
+        /// Whether the draw was produced by a [`crate::Diagnostics`]
+        /// overlay node: the overlay tags the nodes it appends to the
+        /// scene, and the tag rides on every draw the node produces, so the
+        /// render loop can count the overlay's share of the frame's draw
+        /// calls.
+        diagnostic: bool,
     },
     /// A sprite: a texture sampled in the sprite's local space, which is
     /// centered on the origin and extends by `size / 2` along each axis.
@@ -125,6 +155,13 @@ pub(crate) enum Draw {
         /// expanded from a lit text block are lit too.
         lit: f32,
         z: f32,
+        /// Whether the draw was produced by a [`crate::Diagnostics`]
+        /// overlay node: the overlay tags the nodes it appends to the
+        /// scene, and the tag rides on every draw the node produces —
+        /// glyph quads expanded from the overlay's text carry it too — so
+        /// the render loop can count the overlay's share of the frame's
+        /// draw calls.
+        diagnostic: bool,
     },
     /// A batch of particles drawn in one instanced draw call.
     ///
@@ -157,6 +194,12 @@ pub(crate) enum Draw {
         /// the node's `lit` flag is set, `0.0` when unlit.
         lit: f32,
         z: f32,
+        /// Whether the draw was produced by a [`crate::Diagnostics`]
+        /// overlay node: the overlay tags the nodes it appends to the
+        /// scene, and the tag rides on every draw the node produces, so the
+        /// render loop can count the overlay's share of the frame's draw
+        /// calls.
+        diagnostic: bool,
     },
     /// A block of text: expanded into one [`Draw::Sprite`] per glyph by
     /// [`Canvas::expand_text`] before the frame is rendered, so this
@@ -183,6 +226,12 @@ pub(crate) enum Draw {
         /// passed on to every glyph quad the block expands into.
         lit: f32,
         z: f32,
+        /// Whether the text was laid out by a [`crate::Diagnostics`]
+        /// overlay node: the overlay tags the nodes it appends to the
+        /// scene, and the tag is passed on to every glyph quad the block
+        /// expands into, so the render loop can count the overlay's share
+        /// of the frame's draw calls.
+        diagnostic: bool,
     },
     /// A [`Shape::Background`]: never drawn; it is promoted to the frame's
     /// clear color at render time.

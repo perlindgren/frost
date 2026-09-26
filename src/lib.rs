@@ -105,16 +105,18 @@
 //! On native targets, [`Sound`]s decoded at load time play through an
 //! [`Audio`]: one-shots mix in parallel, and one sound loops at a time.
 //!
-//! A [`Diagnostics`] overlay reports the window size, the smoothed frame
-//! rate, the current frame time, the last frame's total processing time
-//! (the engine's own probe of its per-frame CPU work), that time excluding
-//! the overlay's own update cost (the overlay times itself and subtracts),
-//! and the last frame's draw-call count (the engine's own probe of how
-//! many GPU draw calls it issued) as left-aligned lines in the window's
-//! top-left corner, with scrolling ten-second graphs of the frame rate,
-//! the frame time, the two processing times, and the draw-call count
-//! beneath: hold one in the demo state and call its
-//! [`Process::process`] each frame.
+//! A [`Diagnostics`] overlay reports the window size and, for each
+//! statistic enabled in its [`DiagnosticsFlags`], a left-aligned line in
+//! the window's top-left corner: the smoothed frame rate, the current
+//! frame time, the last frame's total processing time (the engine's own
+//! probe of its per-frame CPU work), that time excluding the overlay's own
+//! update cost (the overlay times itself and subtracts), and the last
+//! frame's draw-call count (the engine's own probe of how many GPU draw
+//! calls it issued) — with a scrolling ten-second strip chart beneath each
+//! line: the frame rate and the frame time in one series each, and the
+//! processing time and the draw-call count folded into one chart each —
+//! the total, the app's share, and the overlay's own share. Hold one in
+//! the demo state and call its [`Process::process`] each frame.
 //!
 //! Presentation is vsync'd by default: frames are presented once per
 //! vertical blank, at the display's refresh rate — the rate
@@ -163,7 +165,7 @@ mod collision;
 pub use collision::*;
 
 mod diagnostics;
-pub use diagnostics::Diagnostics;
+pub use diagnostics::{Diagnostics, DiagnosticsFlags};
 
 mod rng;
 pub use rng::*;
@@ -229,6 +231,8 @@ impl Canvas {
             width: width.max(0.0),
             color,
             z,
+            // An immediate canvas draw is not owned by any scene node.
+            diagnostic: false,
         });
     }
 
@@ -244,6 +248,8 @@ impl Canvas {
             radius: radius.max(0.0),
             color,
             z,
+            // An immediate canvas draw is not owned by any scene node.
+            diagnostic: false,
         });
     }
 
@@ -288,9 +294,11 @@ impl Canvas {
             sprite_data: None,
             sprite_size: [0, 0],
             // Immediate canvas draws are unlit: the `lit` flag is a
-            // scene-node property.
+            // scene-node property, and the diagnostic marker is — no
+            // scene node owns this batch.
             lit: 0.0,
             z,
+            diagnostic: false,
         });
     }
 
@@ -306,6 +314,8 @@ impl Canvas {
             extent: [dx.max(0.0), dy.max(0.0)],
             color,
             z,
+            // An immediate canvas draw is not owned by any scene node.
+            diagnostic: false,
         });
     }
 
@@ -668,6 +678,7 @@ fn draw_node(
                 lit: f32::from(node.lit),
                 occludes: f32::from(node.occludes),
                 z: order,
+                diagnostic: node.diagnostic,
             }),
             Shape::Rectangle {
                 center,
@@ -684,6 +695,7 @@ fn draw_node(
                 lit: f32::from(node.lit),
                 occludes: f32::from(node.occludes),
                 z: order,
+                diagnostic: node.diagnostic,
             }),
             // A polyline: its points go through the composed
             // world-to-pixel transform and its width scales with the
@@ -708,6 +720,7 @@ fn draw_node(
                         width: (*width).max(0.0) * (sx * sy).sqrt(),
                         color: color.mul(modulate),
                         z: order,
+                        diagnostic: node.diagnostic,
                     })
                 }
             },
@@ -735,6 +748,7 @@ fn draw_node(
                 uv_rect: [0.0, 0.0, 1.0, 1.0],
                 lit: f32::from(node.lit),
                 z: order,
+                diagnostic: node.diagnostic,
             }),
             // Text is recorded in user space; `Canvas::expand_text` lays it
             // out and turns each glyph into a sprite quad before the frame
@@ -755,6 +769,7 @@ fn draw_node(
                 glow: node.glow.mul(modulate),
                 lit: f32::from(node.lit),
                 z: order,
+                diagnostic: node.diagnostic,
             }),
             // The background ignores its transform: it is recorded in call
             // order and becomes the frame's clear color at render time.
@@ -866,6 +881,7 @@ fn draw_node(
                         sprite_size,
                         lit: f32::from(node.lit),
                         z: order,
+                        diagnostic: node.diagnostic,
                     })
                 }
             }
@@ -1115,6 +1131,7 @@ fn expand_text_list(
                 glow,
                 lit,
                 z,
+                diagnostic,
             } => {
                 // A broken font leaves the text undrawn; `Shape::text`
                 // validates the font up front, so this only guards a buffer
@@ -1188,10 +1205,12 @@ fn expand_text_list(
                         alpha,
                         uv_rect,
                         // The glyphs are the text node's own pixels: its
-                        // `lit` flag and `glow` pass on to every quad.
+                        // `lit` flag, `glow`, and diagnostic marker pass on
+                        // to every quad.
                         glow,
                         lit,
                         z,
+                        diagnostic,
                     });
                 }
             }
@@ -1226,6 +1245,10 @@ pub struct Context<'c> {
     /// The GPU draw calls the engine issued for the last completed frame
     /// (see [`Context::frame_draw_calls`]).
     frame_draw_calls: u32,
+    /// The GPU draw calls the last completed frame spent on the
+    /// [`Diagnostics`] overlay's own nodes (see
+    /// [`Context::frame_diagnostic_draw_calls`]).
+    frame_diagnostic_draw_calls: u32,
 }
 
 impl Context<'_> {
@@ -1290,6 +1313,23 @@ impl Context<'_> {
     /// the [`Diagnostics`] overlay's processing-time chart as well.
     pub fn frame_draw_calls(&self) -> u32 {
         self.frame_draw_calls
+    }
+
+    /// The GPU draw calls the last completed frame spent on the
+    /// [`Diagnostics`] overlay's own nodes: the subset of
+    /// [`frame_draw_calls`](Self::frame_draw_calls) whose draws the overlay
+    /// produced — the text lines, the graph panels, the reference lines,
+    /// and the chart polylines, one per glyph quad in the text.
+    ///
+    /// The overlay tags the scene nodes it creates with the
+    /// [`SceneNode::diagnostic`] engine-managed marker, the marker rides
+    /// onto every draw the nodes produce (the glyphs included), and the
+    /// backend counts a tagged draw wherever it
+    /// would count the total: the same skips (off-screen, background,
+    /// light, empty) apply, so the value is a true subset of the total.
+    /// Before the first frame completes it is `0`, like the total.
+    pub fn frame_diagnostic_draw_calls(&self) -> u32 {
+        self.frame_diagnostic_draw_calls
     }
 
     /// The mouse cursor's position in user coordinates (origin at the

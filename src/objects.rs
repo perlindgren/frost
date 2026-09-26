@@ -904,6 +904,16 @@ pub struct SceneNode {
     pub shape: Option<Shape>,
     /// The child nodes, positioned in this node's coordinate space.
     pub children: Vec<Box<SceneNode>>,
+    /// Engine-managed owner marker: the [`crate::Diagnostics`] overlay sets
+    /// this to `true` on the nodes it appends to the scene, and the marker
+    /// rides onto every draw those nodes produce — glyph quads included —
+    /// so the render loop can count the overlay's share of the frame's draw
+    /// calls behind [`crate::Context::frame_diagnostic_draw_calls`].
+    ///
+    /// The field is public so that node literals keep working with
+    /// `..Default::default()` from outside the crate; demo code should
+    /// leave it at the default `false` and never set it itself.
+    pub diagnostic: bool,
 }
 
 impl Default for SceneNode {
@@ -926,6 +936,7 @@ impl Default for SceneNode {
             },
             shape: None,
             children: Vec::new(),
+            diagnostic: false,
         }
     }
 }

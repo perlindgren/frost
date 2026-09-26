@@ -138,6 +138,10 @@ pub(crate) struct Frost<P: Process> {
     /// `0` before the first frame completes. Reported to the next frame's
     /// `Context` (see `Context::frame_draw_calls`).
     frame_draw_calls: u32,
+    /// The GPU draw calls the last completed frame spent on the
+    /// `Diagnostics` overlay's own nodes: the tagged subset of
+    /// `frame_draw_calls` (see `Context::frame_diagnostic_draw_calls`).
+    frame_diagnostic_draw_calls: u32,
     /// The expected frame rate in Hz: the refresh rate of the monitor the
     /// window sits on, as winit reports it. `None` when vsync is off
     /// (presentation is uncapped) or the rate is unknown; see
@@ -316,6 +320,7 @@ impl<P: Process> Frost<P> {
             last_millis: None,
             frame_processing_ms: 0.0,
             frame_draw_calls: 0,
+            frame_diagnostic_draw_calls: 0,
             expected_fps: None,
             scene,
             keys: HashSet::new(),
@@ -1154,6 +1159,7 @@ impl<P: Process> Frost<P> {
                 gilrs,
                 frame_processing_ms: self.frame_processing_ms,
                 frame_draw_calls: self.frame_draw_calls,
+                frame_diagnostic_draw_calls: self.frame_diagnostic_draw_calls,
             };
             process.process(&mut ctx, dt);
         }
@@ -1231,8 +1237,11 @@ impl<P: Process> Frost<P> {
             .create_command_encoder(&CommandEncoderDescriptor { label: None });
         // The frame's GPU draw-call count: incremented once per
         // `pass.draw` / `pass.draw_indexed` below, so draws that are skipped
-        // (off-screen, background, light, empty) never count.
+        // (off-screen, background, light, empty) never count. The second
+        // counter keeps the same increments for the draws tagged by the
+        // `Diagnostics` overlay — its share of the frame's draw calls.
         let mut draw_calls: u32 = 0;
+        let mut diagnostic_draws: u32 = 0;
         {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: None,
@@ -1273,7 +1282,7 @@ impl<P: Process> Frost<P> {
                 // all write_buffer copies complete before any draw executes.
                 match draw {
                     Draw::Line {
-                        a, b, width, color, ..
+                        a, b, width, color, diagnostic, ..
                     } => {
                         let (_buffer, bind_group) = self.primitive_uniform(
                             line_pipeline,
@@ -1283,12 +1292,16 @@ impl<P: Process> Frost<P> {
                         pass.set_pipeline(line_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         draw_calls += 1;
+                        if diagnostic {
+                            diagnostic_draws += 1;
+                        }
                         pass.draw(0..3, 0..1);
                     }
                     Draw::Polyline {
                         points,
                         width,
                         color,
+                        diagnostic,
                         ..
                     } => {
                         let (_buffer, bind_group) = self.primitive_uniform(
@@ -1299,12 +1312,16 @@ impl<P: Process> Frost<P> {
                         pass.set_pipeline(polyline_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         draw_calls += 1;
+                        if diagnostic {
+                            diagnostic_draws += 1;
+                        }
                         pass.draw(0..3, 0..1);
                     }
                     Draw::Circle {
                         center,
                         radius,
                         color,
+                        diagnostic,
                         ..
                     } => {
                         let (_buffer, bind_group) = self.primitive_uniform(
@@ -1315,12 +1332,16 @@ impl<P: Process> Frost<P> {
                         pass.set_pipeline(circle_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         draw_calls += 1;
+                        if diagnostic {
+                            diagnostic_draws += 1;
+                        }
                         pass.draw(0..3, 0..1);
                     }
                     Draw::Rectangle {
                         center,
                         extent,
                         color,
+                        diagnostic,
                         ..
                     } => {
                         let (_buffer, bind_group) = self.primitive_uniform(
@@ -1331,6 +1352,9 @@ impl<P: Process> Frost<P> {
                         pass.set_pipeline(rect_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         draw_calls += 1;
+                        if diagnostic {
+                            diagnostic_draws += 1;
+                        }
                         pass.draw(0..3, 0..1);
                     }
                     Draw::Shape {
@@ -1342,6 +1366,7 @@ impl<P: Process> Frost<P> {
                         color,
                         glow,
                         lit,
+                        diagnostic,
                         ..
                     } => {
                         let Some(inv) = world.invert() else {
@@ -1359,6 +1384,9 @@ impl<P: Process> Frost<P> {
                         pass.set_pipeline(shape_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         draw_calls += 1;
+                        if diagnostic {
+                            diagnostic_draws += 1;
+                        }
                         pass.draw(0..3, 0..1);
                     }
                     Draw::Sprite {
@@ -1372,6 +1400,7 @@ impl<P: Process> Frost<P> {
                         lit,
                         uv_rect,
                         generation,
+                        diagnostic,
                         ..
                     } => {
                         let Some(inv) = world.invert() else {
@@ -1407,6 +1436,9 @@ impl<P: Process> Frost<P> {
                         pass.set_pipeline(sprite_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         draw_calls += 1;
+                        if diagnostic {
+                            diagnostic_draws += 1;
+                        }
                         pass.draw(0..3, 0..1);
                     }
                     Draw::Particles {
@@ -1418,6 +1450,7 @@ impl<P: Process> Frost<P> {
                         sprite_data,
                         sprite_size,
                         lit,
+                        diagnostic,
                         ..
                     } => {
                         if count == 0 {
@@ -1481,6 +1514,9 @@ impl<P: Process> Frost<P> {
                             wgpu::IndexFormat::Uint32,
                         );
                         draw_calls += 1;
+                        if diagnostic {
+                            diagnostic_draws += 1;
+                        }
                         pass.draw_indexed(0..6, 0, 0..count);
                     }
                     // A background's scissor rect is `None`, so it continued
@@ -1503,6 +1539,7 @@ impl<P: Process> Frost<P> {
         // frame's" values.
         self.frame_processing_ms = now_millis() - t0;
         self.frame_draw_calls = draw_calls;
+        self.frame_diagnostic_draw_calls = diagnostic_draws;
         self.queue.present(output);
         log::trace!("render: frame presented");
     }
