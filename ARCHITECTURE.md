@@ -360,11 +360,15 @@ that decodes an in-code WAV.
 
 ## Diagnostics (src/diagnostics.rs)
 
-`Diagnostics` is a HUD overlay: two left-aligned lines in the window's
-top-left corner — the window size (`"{w}x{h}"`) on top and the smoothed
-frame rate (`"FPS {fps}"`) below, at 32 px. The whole integration is one
-struct in the demo state plus one `self.diag.process(ctx, dt)` call per frame
-— the overlay itself is a `Process`.
+`Diagnostics` is a HUD overlay: three left-aligned lines in the window's
+top-left corner — the window size (`"{w}x{h}"`) on top, the smoothed frame
+rate (`"FPS {fps}"`) below it, and the current frame time (`"FT {ms}ms"`)
+below that, at 32 px — with two scrolling ten-second strip charts under the
+lines: frame rate (orange) on top, frame time (green) below, one bar per
+0.1 s column, each with a reference line at 60 fps / 16.7 ms. The whole
+integration is one struct in the demo state plus one
+`self.diag.process(ctx, dt)` call per frame — the overlay itself is a
+`Process`.
 
 - `Diagnostics::new(path)` reads the font file up front (checked with swash,
   so a bad path or file is a `TextError` at construction); `from_bytes(&[u8])`
@@ -373,10 +377,17 @@ struct in the demo state plus one `self.diag.process(ctx, dt)` call per frame
 - `Process::process` smooths the frame rate as an exponential moving average
   of `1.0 / dt` (time constant 0.25 s, snapping to the first real
   measurement so the first frame does not flash a zero; `dt` 0.0 on the first
-  frame is skipped), and rebuilds each line's shape only when its text
-  changes — the steady-state per-frame cost is two string
-  comparisons.
-- Node management: the first `process` appends the two text `SceneNode`s to
+  frame is skipped; `dt` past a 0.25 s stall is skipped by the smoothing),
+  records the raw frame time for the third line, and appends the (elapsed
+  time, frame time) sample to a history trimmed to the last 10 s. Each line's
+  shape is rebuilt only when its text changes — the frame-time line shows the
+  raw last gap, so it usually changes every frame.
+- The strip charts are the history binned by time: `slice_max` takes the max
+  of each 0.1 s column across the last 10 s (the fps column is the max of
+  `1000 / frame_time`, i.e. the frame's fastest rate), so a spike is visible
+  as a tall bar, and the newest frame lands in the newest column.
+- Node management: the first `process` appends the 207 nodes (three text
+  lines, two panel rectangles, 200 one-pixel bars, two reference lines) to
   `ctx.scene().root.children` and remembers their indices; later calls update
   each node's shape and transform in place (re-appending one if the demo
   removed it). The demo must not reorder the root's children. Placement uses
@@ -511,7 +522,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 
 ```
 cargo build --examples   # expect EXIT 0
-cargo test               # expect 102 passed + 2 doctests
+cargo test               # expect 147 passed + 3 doctests
 cargo test --examples    # expect 17 passed (the immortal example tests)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0

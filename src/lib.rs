@@ -100,9 +100,11 @@
 //! On native targets, [`Sound`]s decoded at load time play through an
 //! [`Audio`]: one-shots mix in parallel, and one sound loops at a time.
 //!
-//! A [`Diagnostics`] overlay reports the frame rate and the window size as
-//! two left-aligned lines in the window's top-left corner: hold one in the
-//! demo state and call its [`Process::process`] each frame.
+//! A [`Diagnostics`] overlay reports the window size, the smoothed frame
+//! rate, and the current frame time as left-aligned lines in the window's
+//! top-left corner, with scrolling ten-second graphs of the frame rate and
+//! frame time beneath: hold one in the demo state and call its
+//! [`Process::process`] each frame.
 //!
 //! Presentation is vsync'd by default: frames are presented once per
 //! vertical blank, at the display's refresh rate — the rate

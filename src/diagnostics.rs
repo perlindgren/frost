@@ -1,7 +1,10 @@
-//! Diagnostics overlay: a small HUD that reports the window size and the
-//! frame rate as two left-aligned text lines pinned to the window's
-//! top-left corner — the size on top (`800x600`), the frame rate below
-//! (`FPS 58`).
+//! Diagnostics overlay: a small HUD pinned to the window's top-left corner,
+//! reporting the frame state as three left-aligned lines and two scrolling
+//! graphs — the window size on top (`800x600`), the smoothed frame rate
+//! below it (`FPS 58`), the current frame time below that (`FT 16.7ms`), and
+//! under the lines two strip charts covering the last ten seconds: frame
+//! rate (orange) on top, frame time (green) below — one bar per 0.1 s
+//! column, with a reference line at 60 fps / 16.7 ms on each.
 //!
 //! The [`Diagnostics`] struct is the whole integration: create one before
 //! [`crate::run`], hold it in the demo state, and call its
@@ -22,19 +25,23 @@
 //! }
 //! ```
 //!
-//! The first call appends the overlay's two text nodes to the scene's root,
+//! The first call appends the overlay's nodes — three text lines, two graph
+//! panels, two hundred bars, and two reference lines — to the scene's root,
 //! and every later call updates those same nodes in place, so the demo's
-//! scene needs no other change — just leave the root's children un-reordered:
+//! scene needs no other change: just leave the root's children un-reordered,
 //! the overlay remembers where it put its nodes.
 //!
-//! The font is read once, at construction, and shared behind an `Arc`; each
-//! readout line is re-laid out only when the digits it shows change, so the
-//! overlay's steady-state cost per frame is two string comparisons.
+//! The font is read once, at construction, and shared behind an `Arc`. Each
+//! readout line is re-laid out only when the digits it shows change (the
+//! frame-time line shows the raw last frame's gap, so it usually changes
+//! every frame); every graph bar is re-placed every frame from a history of
+//! (time, frame time) samples trimmed to the last ten seconds.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::objects::TextError;
-use crate::{Context, Process, SceneNode, Shape, Transform};
+use crate::{Color, Context, Process, Scene, SceneNode, Shape, Transform};
 
 /// The readout's font size in pixels per em.
 const SIZE: f32 = 32.0;
@@ -42,7 +49,7 @@ const SIZE: f32 = 32.0;
 /// The inset of the readout's top-left corner from the window's, in pixels.
 const MARGIN: f32 = 20.0;
 
-/// The gap between the two readout lines' inks, in pixels.
+/// The gap between the readout lines' inks, in pixels.
 const LINE_GAP: f32 = 6.0;
 
 /// The smoothing time constant, in seconds: how quickly the displayed frame
@@ -54,17 +61,64 @@ const SMOOTH: f32 = 0.25;
 /// pause, a window drag) and is skipped by the frame-rate smoothing.
 const STALL: f32 = 0.25;
 
-/// A diagnostics overlay: two left-aligned lines in the window's top-left
-/// corner — the window size on top (`800x600`) and the smoothed frame rate
-/// below (`FPS 58`).
+/// The width of each strip chart, in pixels.
+const GRAPH_W: f32 = 200.0;
+
+/// The height of each strip chart, in pixels.
+const GRAPH_H: f32 = 40.0;
+
+/// The gap between the last readout line and the first graph, and between
+/// the two graphs, in pixels.
+const GRAPH_GAP: f32 = 8.0;
+
+/// The time columns per graph: one bar per column, 0.1 s each.
+const COLUMNS: usize = 100;
+
+/// The time span each graph covers, in seconds.
+const SPAN: f32 = 10.0;
+
+/// The frame time, in ms, at the top of the frame-time graph; longer frames
+/// clip at the top.
+const FT_TOP: f32 = 50.0;
+
+/// The frame rate, in frames per second, at the top of the fps graph; faster
+/// rates clip at the top.
+const FPS_TOP: f32 = 120.0;
+
+/// The graph panels' fill.
+const PANEL: Color = Color { r: 0.03, g: 0.04, b: 0.07, a: 1.0 };
+
+/// The fps graph's bars.
+const FPS_COLOR: Color = Color { r: 0.95, g: 0.62, b: 0.25, a: 1.0 };
+
+/// The frame-time graph's bars.
+const FT_COLOR: Color = Color { r: 0.35, g: 0.78, b: 0.55, a: 1.0 };
+
+/// The 60 fps / 16.7 ms reference lines.
+const REF_COLOR: Color = Color { r: 0.4, g: 0.4, b: 0.45, a: 1.0 };
+
+/// The overlay's node slots, in append order: the three text lines, the two
+/// graph panels, the two hundred bars (fps graph first), and the two
+/// reference lines.
+const N_TEXT: usize = 3;
+const N_PANELS: usize = 2;
+const N_BARS: usize = 2 * COLUMNS;
+const N_REFS: usize = 2;
+const N_NODES: usize = N_TEXT + N_PANELS + N_BARS + N_REFS;
+
+/// A diagnostics overlay: three left-aligned lines in the window's top-left
+/// corner — the window size on top (`800x600`), the smoothed frame rate
+/// (`FPS 58`), and the current frame time (`FT 16.7ms`) — with two
+/// scrolling ten-second strip charts beneath: frame rate (orange) on top,
+/// frame time (green) below.
 ///
 /// Create one with [`Diagnostics::new`] (from a font file on disk) or
 /// [`Diagnostics::from_bytes`] (from font data already in memory — the path
 /// for environments without a file system), hold it in the demo state, and
 /// call [`Process::process`] on it every frame. The first call appends its
-/// two text nodes to the scene's root; each later call updates those nodes —
-/// the font is read once, and each line is re-laid out only when the digits
-/// it shows change.
+/// nodes to the scene's root; each later call updates them in place — the
+/// font is read once, and each line is re-laid out only when the digits it
+/// shows change.
 #[derive(Debug)]
 pub struct Diagnostics {
     /// The font's bytes, shared with the readout's text shapes.
@@ -73,11 +127,22 @@ pub struct Diagnostics {
     size_line: Line,
     /// The frame-rate line, drawn below the window-size line.
     fps_line: Line,
+    /// The frame-time line, drawn below the frame-rate line.
+    ft_line: Line,
     /// The smoothed frame rate in frames per second.
     fps: f32,
-    /// The indices of the overlay's two nodes among the scene root's
-    /// children, once appended (size line first).
-    nodes: [Option<usize>; 2],
+    /// The current frame time in ms — the last real `dt`, unsmoothed, so a
+    /// spike is visible in the readout as well as in the graphs.
+    frame_ms: f32,
+    /// Elapsed time in seconds: the graphs' time axis, advanced by every
+    /// real `dt` (stalls included — the graphs show real time).
+    t: f32,
+    /// The graphs' history: (elapsed time in seconds, frame time in ms)
+    /// samples, oldest first, trimmed to the last SPAN seconds.
+    samples: VecDeque<(f32, f32)>,
+    /// The indices of the overlay's N_NODES nodes among the scene root's
+    /// children, once appended (in slot order).
+    nodes: Vec<Option<usize>>,
 }
 
 /// One line of the readout: its text and the laid-out measurements the
@@ -140,6 +205,82 @@ impl Line {
     }
 }
 
+/// A text line's drawn state: its shape and the node origin that puts its
+/// ink top at `ink_top` in user space.
+struct LineDraw {
+    /// The line's shape.
+    shape: Shape,
+    /// The node origin in user space (window centered on the origin, y up).
+    pos: [f32; 2],
+}
+
+/// Copies `line`'s shape and computes its node origin for an ink top of
+/// `ink_top`.
+fn line_draw(line: &Line, ink_top: f32, w: f32) -> Option<LineDraw> {
+    let shape = line.shape.clone()?;
+    // The renderer centers a text block on the node's origin with the
+    // baseline `baseline_offset` above it, so a line's node origin sits its
+    // ink's top (plus the baseline offset) below the line's ink-top y, and
+    // its ink's width (plus the margin) in from the left edge.
+    Some(LineDraw {
+        shape,
+        pos: [
+            -w / 2.0 + MARGIN + line.width / 2.0,
+            ink_top - line.ink_top - line.baseline_offset,
+        ],
+    })
+}
+
+/// A graph bar: a 1 px-wide rectangle rising `h` from its node's origin,
+/// which the caller puts on the panel's bottom edge (plus the inset).
+fn bar(h: f32, color: Color) -> Shape {
+    Shape::Rectangle {
+        center: [0.0, h / 2.0],
+        extent: [0.5, h / 2.0],
+        color,
+    }
+}
+
+/// Trims the history to the last SPAN seconds of real time ending at `now`.
+fn trim_samples(samples: &mut VecDeque<(f32, f32)>, now: f32) {
+    while let Some(&(t0, _)) = samples.front() {
+        if t0 < now - SPAN {
+            samples.pop_front();
+        } else {
+            break;
+        }
+    }
+}
+
+/// The maximum of `value(frame_ms)` over the samples falling in each of the
+/// COLUMNS time slices of the last SPAN seconds ending at `now`, index 0 =
+/// the oldest slice. `samples` are (time in seconds, frame time in ms)
+/// pairs, and a sample at exactly `now` lands in the newest slice.
+fn slice_max(
+    samples: impl IntoIterator<Item = (f32, f32)>,
+    now: f32,
+    mut value: impl FnMut(f32) -> f32,
+) -> [f32; COLUMNS] {
+    let mut cols = [0.0f32; COLUMNS];
+    let start = now - SPAN;
+    for (t, ms) in samples {
+        let rel = (t - start) / SPAN;
+        // rel > 1.0 is beyond the window; the epsilon absorbs the f32
+        // rounding of `now - (now - SPAN)`, which can land just past SPAN.
+        if rel <= 0.0 || rel > 1.0 + 1e-6 {
+            continue;
+        }
+        let rel = rel.min(1.0);
+        let c = (rel * COLUMNS as f32) as usize;
+        let c = c.min(COLUMNS - 1);
+        let v = value(ms);
+        if v > cols[c] {
+            cols[c] = v;
+        }
+    }
+    cols
+}
+
 impl Diagnostics {
     /// Creates an overlay reading its font from the file at `path`.
     ///
@@ -164,21 +305,55 @@ impl Diagnostics {
             font: Arc::from(font),
             size_line: Line::new(),
             fps_line: Line::new(),
+            ft_line: Line::new(),
             fps: 0.0,
-            nodes: [None, None],
+            frame_ms: 0.0,
+            t: 0.0,
+            samples: VecDeque::new(),
+            nodes: vec![None; N_NODES],
         })
+    }
+
+    /// Finds the node for overlay slot `slot` (re-appending it if the demo
+    /// removed it) and updates its shape and transform in place.
+    fn place(&mut self, slot: usize, pos: [f32; 2], shape: Shape, scene: &mut Scene) {
+        let index = match self.nodes[slot] {
+            Some(idx) if idx < scene.root.children.len() => idx,
+            _ => {
+                scene.root.children.push(Box::new(SceneNode {
+                    transform: Transform::translate(pos),
+                    shape: Some(shape.clone()),
+                    ..Default::default()
+                }));
+                scene.root.children.len() - 1
+            }
+        };
+        self.nodes[slot] = Some(index);
+        let node = &mut scene.root.children[index];
+        node.shape = Some(shape);
+        node.transform = Transform::translate(pos);
     }
 }
 
 impl Process for Diagnostics {
     fn process(&mut self, ctx: &mut Context, dt: f32) {
+        // Record the frame in the graphs' history: the frame time is the
+        // raw gap (a spike must be visible in the readout and the graphs),
+        // and the time axis is real time — stalls included. The first
+        // frame's dt is 0.0; nothing to record.
+        if dt > 0.0 {
+            self.frame_ms = dt * 1000.0;
+            self.t += dt;
+            self.samples.push_back((self.t, self.frame_ms));
+            trim_samples(&mut self.samples, self.t);
+        }
         // Smooth the frame rate: an exponential moving average of the
         // instantaneous rate, with a time constant of SMOOTH seconds — and
         // a snap to the first real measurement, so the first frame does not
-        // flash a zero. The first frame's dt is 0.0; skip it. A dt past
-        // STALL is a gap — a focus loss, a debugger pause — not a
-        // measurement of rendering speed; letting it through would drag the
-        // readout down to a few frames per second for a frame or two.
+        // flash a zero. A dt past STALL is a gap — a focus loss, a debugger
+        // pause — not a measurement of rendering speed; letting it through
+        // would drag the readout down to a few frames per second for a
+        // frame or two.
         if dt > 0.0 && dt <= STALL {
             let inst = 1.0 / dt;
             if self.fps == 0.0 {
@@ -200,53 +375,156 @@ impl Process for Diagnostics {
             self.fps_line.text = fps_text;
             self.fps_line.refresh(&self.font);
         }
+        let ft_text = format!("FT {:.1}ms", self.frame_ms);
+        if ft_text != self.ft_line.text {
+            self.ft_line.text = ft_text;
+            self.ft_line.refresh(&self.font);
+        }
         // The size line's ink top sits MARGIN in from the window's top
-        // edge; the fps line hangs below it, LINE_GAP under the size line's
-        // ink bottom. Both lines' ink left edges sit MARGIN in from the
-        // window's left edge.
+        // edge; each line hangs below the previous, LINE_GAP under its ink
+        // bottom. All lines' ink left edges sit MARGIN in from the window's
+        // left edge.
         let size_ink_top = h / 2.0 - MARGIN;
         let fps_ink_top =
             size_ink_top - (self.size_line.ink_top - self.size_line.ink_bottom) - LINE_GAP;
-        // The renderer centers a text block on the node's origin with the
-        // baseline `baseline_offset` above it, so a line's node origin sits
-        // its ink's top (plus the baseline offset) below the line's ink-top
-        // y, and its ink's width (plus the margin) in from the left edge.
-        let origin = |line: &Line, ink_top: f32| [
-            -w / 2.0 + MARGIN + line.width / 2.0,
-            ink_top - line.ink_top - line.baseline_offset,
-        ];
-        let lines = [
-            (
-                &self.size_line,
-                origin(&self.size_line, size_ink_top),
-            ),
-            (
-                &self.fps_line,
-                origin(&self.fps_line, fps_ink_top),
-            ),
-        ];
-        // Find each line's node (re-appending it if the demo removed it),
-        // and update it in place.
+        let ft_ink_top = fps_ink_top - (self.fps_line.ink_top - self.fps_line.ink_bottom) - LINE_GAP;
+        // The fps panel hangs LINE_GAP + GRAPH_GAP under the ft line's ink
+        // bottom; the ft panel one panel height plus GRAPH_GAP under it.
+        let ft_ink_bottom = ft_ink_top - (self.ft_line.ink_top - self.ft_line.ink_bottom);
+        let fps_panel_top = ft_ink_bottom - LINE_GAP - GRAPH_GAP;
+        let ft_panel_top = fps_panel_top - GRAPH_H - GRAPH_GAP;
+        let x0 = -w / 2.0 + MARGIN;
+        // The newest sample (t == now) must land in the newest slice, so the
+        // graphs show the frame just finished, not the one before.
+        let fps_cols = slice_max(self.samples.iter().copied(), self.t, |ms| 1000.0 / ms);
+        let ft_cols = slice_max(self.samples.iter().copied(), self.t, |ms| ms);
+
         let scene = ctx.scene();
-        for (i, (line, pos)) in lines.into_iter().enumerate() {
-            let Some(shape) = line.shape.clone() else {
+        // The three readout lines.
+        let line_draws = [
+            line_draw(&self.size_line, size_ink_top, w),
+            line_draw(&self.fps_line, fps_ink_top, w),
+            line_draw(&self.ft_line, ft_ink_top, w),
+        ];
+        for (i, draw) in line_draws.into_iter().enumerate() {
+            let Some(draw) = draw else {
                 continue;
             };
-            let index = match self.nodes[i] {
-                Some(idx) if idx < scene.root.children.len() => idx,
-                _ => {
-                    scene.root.children.push(Box::new(SceneNode {
-                        transform: Transform::translate(pos),
-                        shape: Some(shape.clone()),
-                        ..Default::default()
-                    }));
-                    scene.root.children.len() - 1
-                }
-            };
-            self.nodes[i] = Some(index);
-            let node = &mut scene.root.children[index];
-            node.shape = Some(shape);
-            node.transform = Transform::translate(pos);
+            self.place(i, draw.pos, draw.shape, scene);
         }
+        // The panels.
+        self.place(
+            N_TEXT,
+            [x0 + GRAPH_W / 2.0, fps_panel_top - GRAPH_H / 2.0],
+            Shape::Rectangle {
+                center: [0.0, 0.0],
+                extent: [GRAPH_W / 2.0, GRAPH_H / 2.0],
+                color: PANEL,
+            },
+            scene,
+        );
+        self.place(
+            N_TEXT + 1,
+            [x0 + GRAPH_W / 2.0, ft_panel_top - GRAPH_H / 2.0],
+            Shape::Rectangle {
+                center: [0.0, 0.0],
+                extent: [GRAPH_W / 2.0, GRAPH_H / 2.0],
+                color: PANEL,
+            },
+            scene,
+        );
+        // The bars: one per 0.1 s column, rising from one pixel above the
+        // panel's bottom edge, the value scaled to the panel height minus
+        // the two 1 px insets.
+        let pitch = GRAPH_W / COLUMNS as f32;
+        for c in 0..COLUMNS {
+            let x = x0 + (c as f32 + 0.5) * pitch;
+            let h_fps = (fps_cols[c] / FPS_TOP).min(1.0) * (GRAPH_H - 2.0);
+            self.place(
+                N_TEXT + N_PANELS + c,
+                [x, fps_panel_top - GRAPH_H + 1.0],
+                bar(h_fps, FPS_COLOR),
+                scene,
+            );
+            let h_ft = (ft_cols[c] / FT_TOP).min(1.0) * (GRAPH_H - 2.0);
+            self.place(
+                N_TEXT + N_PANELS + COLUMNS + c,
+                [x, ft_panel_top - GRAPH_H + 1.0],
+                bar(h_ft, FT_COLOR),
+                scene,
+            );
+        }
+        // The 60 fps / 16.7 ms reference lines, 1 px tall across the panel.
+        let ref_line = |panel_top: f32, level: f32| {
+            (
+                panel_top - GRAPH_H + 1.0 + level * (GRAPH_H - 2.0),
+                Shape::Rectangle {
+                    center: [GRAPH_W / 2.0, 0.0],
+                    extent: [GRAPH_W / 2.0, 0.5],
+                    color: REF_COLOR,
+                },
+            )
+        };
+        let (y, shape) = ref_line(fps_panel_top, 60.0 / FPS_TOP);
+        self.place(N_TEXT + N_PANELS + N_BARS, [x0, y], shape, scene);
+        let (y, shape) = ref_line(ft_panel_top, (1000.0 / 60.0) / FT_TOP);
+        self.place(N_TEXT + N_PANELS + N_BARS + 1, [x0, y], shape, scene);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trim_keeps_only_the_last_span_seconds() {
+        let mut samples = VecDeque::new();
+        for t in 0..11 {
+            samples.push_back((t as f32, 16.0));
+        }
+        trim_samples(&mut samples, 11.0);
+        // t < 11 - 10 = 1 is gone; t = 1..=11 remain.
+        assert_eq!(samples.front().unwrap().0, 1.0);
+        assert_eq!(samples.len(), 10);
+    }
+
+    #[test]
+    fn slice_max_buckets_by_time_not_by_count() {
+        // now = 10: the window is t = 0..10, 100 slices of 0.1 s.
+        let samples = [
+            (0.05, 100.0), // oldest slice (c = 0)
+            (5.00, 200.0), // middle of the window (c = 50)
+            (9.95, 100.0), // newest slice (c = 99)
+        ];
+        let cols = slice_max(samples, 10.0, |ms| ms);
+        assert_eq!(cols[0], 100.0);
+        assert_eq!(cols[50], 200.0);
+        assert_eq!(cols[99], 100.0);
+        assert_eq!(cols[49], 0.0);
+        assert_eq!(cols[98], 0.0);
+    }
+
+    #[test]
+    fn slice_max_counts_the_newest_sample_at_now() {
+        // t == now: the sample belongs to the newest slice, not beyond it.
+        let samples = [(10.0, 300.0)];
+        let cols = slice_max(samples, 10.0, |ms| ms);
+        assert_eq!(cols[99], 300.0);
+    }
+
+    #[test]
+    fn slice_max_ignores_samples_outside_the_window() {
+        let samples = [(15.0, 100.0), (20.0, 100.0)];
+        let cols = slice_max(samples, 10.0, |ms| ms);
+        assert!(cols.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn slice_max_fps_is_the_inverse_of_the_frame_time() {
+        // Two frames in one slice: 10 ms and 40 ms → the slice's best rate
+        // is 100 fps.
+        let samples = [(9.95, 10.0), (9.98, 40.0)];
+        let cols = slice_max(samples, 10.0, |ms| 1000.0 / ms);
+        assert_eq!(cols[99], 100.0);
     }
 }
