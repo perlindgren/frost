@@ -148,6 +148,12 @@ building the `Context` (physical y-down → user y-up).
   children, so parents paint under descendants):
   - `Circle { center, radius, color }`, `Rectangle { center, extent (half
     widths), color }` — the node's world transform applies.
+  - `Polyline { points, width, color }` — straight segments through the
+    points (local space), stroked at `width`, one draw call for the whole
+    chain (max 128 points; fewer than two draws nothing). Width scales with
+    the node's geometric-mean scale axis.
+  - `Particles { system, color, shape }` — an instanced particle batch
+    (one draw per batch; the game updates `system` each frame).
   - `Background { color }` — fills the window, **ignores all transforms**,
     drawn at the very back: at render time it becomes the frame's clear color
     (the last one in depth-first call order wins; default is a dark blue-gray
@@ -172,7 +178,13 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
 
 - Immediate methods: `line`, `circle`, `rectangle` (pixel args converted to
   pixel space via `user_to_pixels`), and `draw_scene`.
-- `Draw` enum: `Line`, `Circle`, `Rectangle`, `Shape` (transformed SDF
+- `Draw` enum: `Line`, `Polyline` (the batched line: `points: Vec<[f32; 2]>`
+  in pixel space, `width`, `color` — consecutive pairs joined by straight
+  segments, stroked by one full-screen-triangle draw against a fixed
+  128-point uniform array — the points are packed as vec4s (x, y, 0, 0)
+  because the uniform address space requires an array stride that is a
+  multiple of 16 bytes; fewer than two points draws nothing, more than 128
+  draw the first 128), `Circle`, `Rectangle`, `Shape` (transformed SDF
   circle/rectangle: `world`, `center`, `params` (circle `[r,0]`, rect `[hx,hy]`),
   `kind` 0/1, `aa`, `color`), `Sprite` (`world`, `data: Arc<[u8]>`, `size`,
   `texture_size`, `aa`, `tint`, `alpha`, `uv_rect`, `z`), `Text` (expanded
@@ -185,20 +197,23 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
 - **Anti-aliasing**: `AA_BAND = 0.75` px on the CPU; the same constant appears
   as `aa` in the shader sources — keep them in sync. Under node scaling the
   band is divided by the transform's scale so it stays a constant screen width.
-- **Uniform writers** (`line_uniform_data`, `circle_uniform_data`,
-  `rect_uniform_data`, `shape_uniform_data`, `sprite_uniform_data`) hand-write
+- **Uniform writers** (`line_uniform_data`, `polyline_uniform_data`,
+  `circle_uniform_data`, `rect_uniform_data`, `shape_uniform_data`,
+  `sprite_uniform_data`) hand-write
   little-endian bytes at explicit offsets matching the WGSL **uniform-space**
   layout (e.g. ShapeUniforms: `to_local` mat2x2 @0 (16B, 8-aligned columns),
   `translation` @16, `center` @24, `params` @32, `color` vec4 @48, `misc` @64;
   total 80. Sprite the same with `size`/tint/`alpha`/`uv_rect`). Line/circle
-  are 48 bytes, rectangle 32.
+  are 48 bytes, rectangle 32. The polyline writer packs 2080 bytes:
+  `points` @0 (128 × vec4 — 2048 bytes), `color` @2048, `count` @2064 (u32),
+  `width` @2068.
 
 ## The GPU side (src/backend/app.rs, shaders/)
 
 - `Frost<P>` holds the wgpu instance/adapter/device/queue, `vsync` and
   `window_size` (the `Config` values), the window (`Arc<Window>`), logical
-  size + scale factor, the surface, the five pipelines
-  (line/circle/rect/shape/sprite), `sprite_resources` (a
+  size + scale factor, the surface, the seven pipelines
+  (line/polyline/circle/rect/shape/sprite/particles), `sprite_resources` (a
   `HashMap<(u64, u64), (TextureView, Sampler)>` keyed by the sprite pixel-data
   `Arc`'s pointer plus its generation — `0` for static images, bumped by the
   glyph atlas on every repack — so a freed-and-recycled buffer address can
@@ -207,10 +222,10 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
   (`HashMap<(font ptr, size bits), text::Atlas>`, kept between frames so
   unchanged text never re-rasterizes), held keys/mouse, and the user's
   `process` + `scene`.
-- All five pipelines are the same shape: a **full-screen triangle** vertex
+- All seven pipelines are the same shape: a **full-screen triangle** vertex
   shader (no vertex buffer), one `@binding(0)` uniform (plus texture + sampler
-  for sprites), alpha blending, no depth. `present_mode_for(vsync)` maps to
-  `AutoVsync`/`AutoNoVsync`.
+  for sprites, plus an instance buffer for particles), alpha blending, no
+  depth. `present_mode_for(vsync)` maps to `AutoVsync`/`AutoNoVsync`.
 - **One fresh uniform buffer per draw call** — required because
   `queue.write_buffer` copies are flushed as a batch *before any draw
   executes*, so a shared buffer would make every draw read the last parameters.
@@ -296,21 +311,30 @@ Pure math — no winit/wgpu, identical on wasm, no dependencies. Intentionally
 
 ## Shaders (shaders/*.wgsl, src/shaders.rs)
 
-Five small WGSL files, all full-screen-triangle + SDF/sampling:
+Seven small WGSL files, all full-screen-triangle + SDF/sampling:
 
 | file        | pipeline   | uniforms (byte layout)                                              |
 |-------------|------------|---------------------------------------------------------------------|
 | line.wgsl   | line       | `a`@0 `b`@8 `color`@16 `width`@32 → 48                             |
+| polyline.wgsl | polyline | `points`@0 (128 × vec4, 2048B) `color`@2048 `count`@2064 (u32) `width`@2068 → 2080 |
 | circle.wgsl | circle     | `center`@0 `color`@16 `radius`@32 → 48                             |
 | rectangle.wgsl | rectangle | `center`@0 `extent`@8 `color`@16 → 32                            |
 | shape.wgsl  | shape      | `to_local`@0 `translation`@16 `center`@24 `params`@32 `color`@48 `misc`@64 → 80 |
 | sprite.wgsl | sprite     | `to_local`@0 `translation`@16 `size`@24 `tint`@32 `alpha`@48 `uv_rect`@64 → 80 |
+| particles.wgsl | particles | `size`@0 `color`@16 `misc`@32 `lit`@40 → 48 (one instanced draw per batch) |
 
-`src/shaders.rs` includes them and has tests that **parse all five with
+The polyline's fragment shader walks its 128-point uniform array and takes the
+minimum point-to-segment distance — a stroke of any length is still one draw
+call; its scissor is the point bounding box plus half the stroke width and the
+AA band, so the fragment loop only runs over the pixels the stroke can write.
+
+`src/shaders.rs` includes them and has tests that **parse all seven with
 `naga::front::wgsl::parse_str`** (the same frontend wgpu uses, so validity is
 pinned without a GPU) and assert the `ShapeUniforms`/`SpriteUniforms` member
-offsets are `[0,16,24,32,48,64]` spanning 80 bytes — the **CPU uniform writers
-must mirror these layouts**; the GPU-side mirror tests live in
+offsets are `[0,16,24,32,48,64]` spanning 80 bytes, the `ParticlesUniforms`
+offsets are `[0,16,32,40]` spanning 48, and the `PolylineUniforms` offsets are
+`[0,2048,2064,2068]` spanning 2080 with a fixed 128-point vec4 array — the **CPU
+uniform writers must mirror these layouts**; the GPU-side mirror tests live in
 `src/backend/tests.rs`. If you change a shader uniform struct, update the
 writer and both test sides together.
 
@@ -364,8 +388,9 @@ that decodes an in-code WAV.
 top-left corner — the window size (`"{w}x{h}"`) on top, the smoothed frame
 rate (`"FPS {fps}"`) below it, and the current frame time (`"FT {ms}ms"`)
 below that, at 32 px — with two scrolling ten-second strip charts under the
-lines: frame rate (orange) on top, frame time (green) below, one bar per
-0.1 s column, each with a reference line at 60 fps / 16.7 ms. The whole
+lines: frame rate (orange) on top, frame time (green) below, each stroked as
+a single `Shape::Polyline` through the max of every 0.1 s column (one draw
+call per chart), each with a reference line at 60 fps / 16.7 ms. The whole
 integration is one struct in the demo state plus one
 `self.diag.process(ctx, dt)` call per frame — the overlay itself is a
 `Process`.
@@ -385,9 +410,14 @@ integration is one struct in the demo state plus one
 - The strip charts are the history binned by time: `slice_max` takes the max
   of each 0.1 s column across the last 10 s (the fps column is the max of
   `1000 / frame_time`, i.e. the frame's fastest rate), so a spike is visible
-  as a tall bar, and the newest frame lands in the newest column.
-- Node management: the first `process` appends the 207 nodes (three text
-  lines, two panel rectangles, 200 one-pixel bars, two reference lines) to
+  as a high point, and the newest frame lands in the newest column. Each
+  chart's 100 column maxima become one `Shape::Polyline` (a point per column
+  center, the value scaled to the panel height with a 1 px inset) — one draw
+  call per chart instead of 200 per-frame rectangle draws, because the cost
+  of a draw in this engine is on the CPU side (a fresh uniform buffer + bind
+  group + scissor/pipeline state per draw), not in the fragment work.
+- Node management: the first `process` appends the 9 nodes (three text lines,
+  two panel rectangles, two reference lines, two chart polylines) to
   `ctx.scene().root.children` and remembers their indices; later calls update
   each node's shape and transform in place (re-appending one if the demo
   removed it). The demo must not reorder the root's children. Placement uses
@@ -403,10 +433,13 @@ integration is one struct in the demo state plus one
 
 ## Testing
 
-Baseline: **102 tests + 2 doctests** passing, `cargo build --examples`
+Baseline: **152 tests + 3 doctests** passing, `cargo build --examples`
 clean. Notable test areas:
 
-- `src/shaders.rs` — naga parse + uniform-offset assertions (above).
+- `src/shaders.rs` — naga parse + device-side validation (the
+  `Validator` stage wgpu runs in `create_shader_module` — this is what
+  catches uniform-address-space layout rules the parser never checks) +
+  uniform-offset assertions (above).
 - `src/backend/tests.rs` — GPU-free: uniform-layout mirrors, scissor math,
   `paint_order`, `expand_text` (splicing + atlas reuse across frames),
   `context_reports_held_mouse_button`.
@@ -522,7 +555,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 
 ```
 cargo build --examples   # expect EXIT 0
-cargo test               # expect 147 passed + 3 doctests
+cargo test               # expect 152 passed + 3 doctests
 cargo test --examples    # expect 17 passed (the immortal example tests)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0

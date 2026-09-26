@@ -3,8 +3,9 @@
 //! graphs — the window size on top (`800x600`), the smoothed frame rate
 //! below it (`FPS 58`), the current frame time below that (`FT 16.7ms`), and
 //! under the lines two strip charts covering the last ten seconds: frame
-//! rate (orange) on top, frame time (green) below — one bar per 0.1 s
-//! column, with a reference line at 60 fps / 16.7 ms on each.
+//! rate (orange) on top, frame time (green) below — one polyline through
+//! the max of each 0.1 s column, drawn in a single draw call per chart,
+//! with a reference line at 60 fps / 16.7 ms on each.
 //!
 //! The [`Diagnostics`] struct is the whole integration: create one before
 //! [`crate::run`], hold it in the demo state, and call its
@@ -25,17 +26,20 @@
 //! }
 //! ```
 //!
-//! The first call appends the overlay's nodes — three text lines, two graph
-//! panels, two hundred bars, and two reference lines — to the scene's root,
-//! and every later call updates those same nodes in place, so the demo's
-//! scene needs no other change: just leave the root's children un-reordered,
-//! the overlay remembers where it put its nodes.
+//! The first call appends the overlay's nine nodes — three text lines, two
+//! graph panels, two reference lines, and two chart polylines — to the
+//! scene's root, and every later call updates those same nodes in place, so
+//! the demo's scene needs no other change: just leave the root's children
+//! un-reordered, the overlay remembers where it put its nodes.
 //!
 //! The font is read once, at construction, and shared behind an `Arc`. Each
 //! readout line is re-laid out only when the digits it shows change (the
 //! frame-time line shows the raw last frame's gap, so it usually changes
-//! every frame); every graph bar is re-placed every frame from a history of
-//! (time, frame time) samples trimmed to the last ten seconds.
+//! every frame); each chart's polyline is re-placed every frame from a
+//! history of (time, frame time) samples trimmed to the last ten seconds,
+//! binned into 100 slices of 0.1 s — the chart shows the max of each slice,
+//! a worst-case 0.1 s envelope, so a stall is never hidden behind the
+//! frames around it.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -71,7 +75,7 @@ const GRAPH_H: f32 = 40.0;
 /// the two graphs, in pixels.
 const GRAPH_GAP: f32 = 8.0;
 
-/// The time columns per graph: one bar per column, 0.1 s each.
+/// The time columns per graph: one polyline point per column, 0.1 s each.
 const COLUMNS: usize = 100;
 
 /// The time span each graph covers, in seconds.
@@ -88,23 +92,25 @@ const FPS_TOP: f32 = 120.0;
 /// The graph panels' fill.
 const PANEL: Color = Color { r: 0.03, g: 0.04, b: 0.07, a: 1.0 };
 
-/// The fps graph's bars.
+/// The fps chart's polyline.
 const FPS_COLOR: Color = Color { r: 0.95, g: 0.62, b: 0.25, a: 1.0 };
 
-/// The frame-time graph's bars.
+/// The frame-time chart's polyline.
 const FT_COLOR: Color = Color { r: 0.35, g: 0.78, b: 0.55, a: 1.0 };
 
 /// The 60 fps / 16.7 ms reference lines.
 const REF_COLOR: Color = Color { r: 0.4, g: 0.4, b: 0.45, a: 1.0 };
 
 /// The overlay's node slots, in append order: the three text lines, the two
-/// graph panels, the two hundred bars (fps graph first), and the two
-/// reference lines.
+/// graph panels, the two reference lines, and the two chart polylines.
 const N_TEXT: usize = 3;
 const N_PANELS: usize = 2;
-const N_BARS: usize = 2 * COLUMNS;
 const N_REFS: usize = 2;
-const N_NODES: usize = N_TEXT + N_PANELS + N_BARS + N_REFS;
+const N_LINES: usize = 2;
+const N_NODES: usize = N_TEXT + N_PANELS + N_REFS + N_LINES;
+
+/// The chart polylines' stroke width, in pixels.
+const LINE_WIDTH: f32 = 1.5;
 
 /// A diagnostics overlay: three left-aligned lines in the window's top-left
 /// corner — the window size on top (`800x600`), the smoothed frame rate
@@ -231,14 +237,26 @@ fn line_draw(line: &Line, ink_top: f32, w: f32) -> Option<LineDraw> {
     })
 }
 
-/// A graph bar: a 1 px-wide rectangle rising `h` from its node's origin,
-/// which the caller puts on the panel's bottom edge (plus the inset).
-fn bar(h: f32, color: Color) -> Shape {
-    Shape::Rectangle {
-        center: [0.0, h / 2.0],
-        extent: [0.5, h / 2.0],
-        color,
-    }
+/// A chart's polyline points, in window user space: one per 0.1 s column,
+/// at the column's center, rising from one pixel above the panel's bottom
+/// edge, the value scaled to the panel height minus the two 1 px insets —
+/// the stroke the chart's [`Shape::Polyline`] draws in one draw call.
+fn chart_points(
+    cols: &[f32; COLUMNS],
+    x0: f32,
+    panel_top: f32,
+    top_value: f32,
+) -> Vec<[f32; 2]> {
+    let pitch = GRAPH_W / COLUMNS as f32;
+    cols.iter()
+        .enumerate()
+        .map(|(c, &v)| {
+            [
+                x0 + (c as f32 + 0.5) * pitch,
+                panel_top - GRAPH_H + 1.0 + (v / top_value).min(1.0) * (GRAPH_H - 2.0),
+            ]
+        })
+        .collect()
 }
 
 /// Trims the history to the last SPAN seconds of real time ending at `now`.
@@ -433,27 +451,30 @@ impl Process for Diagnostics {
             },
             scene,
         );
-        // The bars: one per 0.1 s column, rising from one pixel above the
-        // panel's bottom edge, the value scaled to the panel height minus
-        // the two 1 px insets.
-        let pitch = GRAPH_W / COLUMNS as f32;
-        for c in 0..COLUMNS {
-            let x = x0 + (c as f32 + 0.5) * pitch;
-            let h_fps = (fps_cols[c] / FPS_TOP).min(1.0) * (GRAPH_H - 2.0);
-            self.place(
-                N_TEXT + N_PANELS + c,
-                [x, fps_panel_top - GRAPH_H + 1.0],
-                bar(h_fps, FPS_COLOR),
-                scene,
-            );
-            let h_ft = (ft_cols[c] / FT_TOP).min(1.0) * (GRAPH_H - 2.0);
-            self.place(
-                N_TEXT + N_PANELS + COLUMNS + c,
-                [x, ft_panel_top - GRAPH_H + 1.0],
-                bar(h_ft, FT_COLOR),
-                scene,
-            );
-        }
+        // The charts: one polyline each, through the max of each 0.1 s
+        // column — one draw call per chart instead of one per column.
+        let chart_line = |points: Vec<[f32; 2]>, color: Color| {
+            Shape::Polyline {
+                points,
+                width: LINE_WIDTH,
+                color,
+            }
+        };
+        self.place(
+            N_TEXT + N_PANELS + N_REFS,
+            [0.0, 0.0],
+            chart_line(
+                chart_points(&fps_cols, x0, fps_panel_top, FPS_TOP),
+                FPS_COLOR,
+            ),
+            scene,
+        );
+        self.place(
+            N_TEXT + N_PANELS + N_REFS + 1,
+            [0.0, 0.0],
+            chart_line(chart_points(&ft_cols, x0, ft_panel_top, FT_TOP), FT_COLOR),
+            scene,
+        );
         // The 60 fps / 16.7 ms reference lines, 1 px tall across the panel.
         let ref_line = |panel_top: f32, level: f32| {
             (
@@ -466,9 +487,9 @@ impl Process for Diagnostics {
             )
         };
         let (y, shape) = ref_line(fps_panel_top, 60.0 / FPS_TOP);
-        self.place(N_TEXT + N_PANELS + N_BARS, [x0, y], shape, scene);
+        self.place(N_TEXT + N_PANELS, [x0, y], shape, scene);
         let (y, shape) = ref_line(ft_panel_top, (1000.0 / 60.0) / FT_TOP);
-        self.place(N_TEXT + N_PANELS + N_BARS + 1, [x0, y], shape, scene);
+        self.place(N_TEXT + N_PANELS + 1, [x0, y], shape, scene);
     }
 }
 

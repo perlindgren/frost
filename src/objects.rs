@@ -512,6 +512,30 @@ pub enum Shape {
         extent: [f32; 2],
         color: Color,
     },
+    /// A polyline: `points` connected in order by straight segments, stroked
+    /// with `width`, drawn in **one draw call** no matter how many points it
+    /// has — the batched alternative to a run of thin rectangles or a
+    /// chain of lines.
+    ///
+    /// The points and the width are in the node's local space, in pixels,
+    /// and the node's transform and scale apply to the stroke exactly as
+    /// they do to the other shapes (the width scales with the geometric
+    /// mean of the scale's two axes, like a particle's size, so a uniform
+    /// scale is exact). At most 128 points are drawn — the shader packs a
+    /// fixed 128-point array — and a polyline with fewer than two points
+    /// draws nothing.
+    ///
+    /// Replacing a node's `points` in place is the cheap way to animate a
+    /// stroke: the shape is cloned once per node per frame like any other,
+    /// and the draw list still records one draw for the whole chain.
+    Polyline {
+        /// The vertices in the node's local space, connected in order.
+        points: Vec<[f32; 2]>,
+        /// The stroke's width, in pixels.
+        width: f32,
+        /// The stroke's color.
+        color: Color,
+    },
     /// Fills the whole window with `color`.
     ///
     /// The node's transform (and its ancestors') is ignored, and the

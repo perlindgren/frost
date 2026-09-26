@@ -70,6 +70,7 @@ pub(crate) struct Frost<P: Process> {
     scale: f32,
     surface: Option<Surface<'static>>,
     line_pipeline: Option<RenderPipeline>,
+    polyline_pipeline: Option<RenderPipeline>,
     circle_pipeline: Option<RenderPipeline>,
     rect_pipeline: Option<RenderPipeline>,
     shape_pipeline: Option<RenderPipeline>,
@@ -283,6 +284,7 @@ impl<P: Process> Frost<P> {
             scale: 1.0,
             surface: None,
             line_pipeline: None,
+            polyline_pipeline: None,
             circle_pipeline: None,
             rect_pipeline: None,
             shape_pipeline: None,
@@ -633,6 +635,17 @@ impl<P: Process> Frost<P> {
             &line_module,
             format,
             "line pipeline",
+        ));
+
+        let polyline_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("polyline shaders"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(POLYLINE_SHADER)),
+        });
+        self.polyline_pipeline = Some(Self::create_pipeline(
+            device,
+            &polyline_module,
+            format,
+            "polyline pipeline",
         ));
 
         let circle_module = device.create_shader_module(ShaderModuleDescriptor {
@@ -1158,6 +1171,7 @@ impl<P: Process> Frost<P> {
 
         let (
             Some(line_pipeline),
+            Some(polyline_pipeline),
             Some(circle_pipeline),
             Some(rect_pipeline),
             Some(shape_pipeline),
@@ -1165,6 +1179,7 @@ impl<P: Process> Frost<P> {
             Some(particle_pipeline),
         ) = (
             self.line_pipeline.as_ref(),
+            self.polyline_pipeline.as_ref(),
             self.circle_pipeline.as_ref(),
             self.rect_pipeline.as_ref(),
             self.shape_pipeline.as_ref(),
@@ -1235,6 +1250,21 @@ impl<P: Process> Frost<P> {
                             &line_uniform_data(a, b, color, width),
                         );
                         pass.set_pipeline(line_pipeline);
+                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.draw(0..3, 0..1);
+                    }
+                    Draw::Polyline {
+                        points,
+                        width,
+                        color,
+                        ..
+                    } => {
+                        let (_buffer, bind_group) = self.primitive_uniform(
+                            polyline_pipeline,
+                            "polyline uniforms",
+                            &polyline_uniform_data(&points, color, width),
+                        );
+                        pass.set_pipeline(polyline_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         pass.draw(0..3, 0..1);
                     }

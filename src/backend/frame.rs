@@ -29,6 +29,20 @@ pub(crate) enum Draw {
         color: Color,
         z: f32,
     },
+    /// A polyline: consecutive pairs of `points` connected by straight
+    /// segments of `width`, all in pixel space, drawn in one draw call
+    /// regardless of its length. Points beyond the first
+    /// [`POLYLINE_MAX_POINTS`] are not drawn, and a polyline with fewer
+    /// than two points draws nothing.
+    Polyline {
+        /// The vertices in pixel space (top-left origin, y down),
+        /// connected in order.
+        points: Vec<[f32; 2]>,
+        /// The stroke's width, in pixels.
+        width: f32,
+        color: Color,
+        z: f32,
+    },
     Circle {
         center: [f32; 2],
         radius: f32,
@@ -218,6 +232,7 @@ impl Draw {
     pub(crate) fn z(&self) -> f32 {
         match self {
             Draw::Line { z, .. } => *z,
+            Draw::Polyline { z, .. } => *z,
             Draw::Circle { z, .. } => *z,
             Draw::Rectangle { z, .. } => *z,
             Draw::Shape { z, .. } => *z,
@@ -241,12 +256,35 @@ impl Draw {
         if matches!(self, Draw::Background { .. } | Draw::Light { .. }) {
             return None;
         }
+        // A polyline with fewer than two points has no segments to draw.
+        if let Draw::Polyline { points, .. } = self {
+            if points.len() < 2 {
+                return None;
+            }
+        }
         let (min, max) = match self {
             Draw::Line { a, b, width, .. } => {
                 let pad = width * 0.5 + AA_BAND;
                 (
                     [a[0].min(b[0]) - pad, a[1].min(b[1]) - pad],
                     [a[0].max(b[0]) + pad, a[1].max(b[1]) + pad],
+                )
+            }
+            Draw::Polyline {
+                points, width, ..
+            } => {
+                // The box over all the points, plus half the stroke width
+                // and the anti-alias band.
+                let mut min = points[0];
+                let mut max = points[0];
+                for p in &points[1..] {
+                    min = [min[0].min(p[0]), min[1].min(p[1])];
+                    max = [max[0].max(p[0]), max[1].max(p[1])];
+                }
+                let pad = width * 0.5 + AA_BAND;
+                (
+                    [min[0] - pad, min[1] - pad],
+                    [max[0] + pad, max[1] + pad],
                 )
             }
             Draw::Circle {
@@ -389,6 +427,40 @@ pub(crate) fn line_uniform_data(a: [f32; 2], b: [f32; 2], color: Color, width: f
     write_f32_at(&mut data, 24, color.b);
     write_f32_at(&mut data, 28, color.a);
     write_f32_at(&mut data, 32, width);
+    data
+}
+
+/// The most points a polyline draw carries: the shader's
+/// `array<vec4<f32>, 128>` is fixed at this size, so a longer polyline
+/// draws its first 128 points. The points are packed as vec4s (x, y, 0, 0)
+/// because the uniform address space requires an array member's stride to
+/// be a multiple of 16 bytes (a vec2's stride is only 8).
+pub(crate) const POLYLINE_MAX_POINTS: usize = 128;
+
+/// Polyline uniform data, 2080 bytes, matching the WGSL uniform-space layout
+/// of the `PolylineUniforms` WGSL struct: `points` @ 0 (128 vec4<f32>s, 16
+/// bytes each — 2048 bytes; each point is (x, y, 0, 0)), `color` @ 2048 (a
+/// vec4<f32> is 16-byte aligned in uniform space, and 2048 already is),
+/// `count` @ 2064 (a u32 follows the vec4 without a gap), `width` @ 2068;
+/// the struct size rounds up to 2080. Points beyond the first
+/// [`POLYLINE_MAX_POINTS`] are not packed.
+pub(crate) fn polyline_uniform_data(
+    points: &[[f32; 2]],
+    color: Color,
+    width: f32,
+) -> Vec<u8> {
+    let mut data = vec![0u8; 2080];
+    let count = points.len().min(POLYLINE_MAX_POINTS);
+    for (i, p) in points.iter().take(count).enumerate() {
+        write_f32_at(&mut data, i * 16, p[0]);
+        write_f32_at(&mut data, i * 16 + 4, p[1]);
+    }
+    write_f32_at(&mut data, 2048, color.r);
+    write_f32_at(&mut data, 2052, color.g);
+    write_f32_at(&mut data, 2056, color.b);
+    write_f32_at(&mut data, 2060, color.a);
+    data[2064..2068].copy_from_slice(&(count as u32).to_le_bytes());
+    write_f32_at(&mut data, 2068, width);
     data
 }
 

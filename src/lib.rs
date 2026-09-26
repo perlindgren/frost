@@ -85,6 +85,11 @@
 //! [`Canvas::particles`] draw; either way each particle fades by its
 //! remaining lifetime.
 //!
+//! A [`Shape::Polyline`] connects a list of points with straight segments
+//! of a fixed width and draws the whole chain in one draw call, whatever
+//! its length — the batched alternative to a run of thin rectangles or a
+//! chain of [`Canvas::line`] draws.
+//!
 //! Randomness comes from [`Rng`], a small seeded splitmix64 generator:
 //! seed it from the clock for a different stream on each run, or fix the
 //! seed for a reproducible one. It is pure integer arithmetic, so it runs
@@ -675,6 +680,32 @@ fn draw_node(
                 occludes: f32::from(node.occludes),
                 z: order,
             }),
+            // A polyline: its points go through the composed
+            // world-to-pixel transform and its width scales with the
+            // geometric mean of the world's axis scales, like a particle's
+            // size — the whole stroke becomes one draw, whatever its
+            // length.
+            Shape::Polyline {
+                points,
+                width,
+                color,
+            } => {
+                if points.len() < 2 {
+                    // Like an empty particle batch: nothing to draw.
+                    None
+                } else {
+                    let to_pixel = world.compose(&user_to_pixel);
+                    Some(Draw::Polyline {
+                        points: points
+                            .iter()
+                            .map(|p| to_pixel.apply(*p))
+                            .collect(),
+                        width: (*width).max(0.0) * (sx * sy).sqrt(),
+                        color: color.mul(modulate),
+                        z: order,
+                    })
+                }
+            },
             // The sprite's local space is centered on the origin, one
             // texture pixel per scene pixel, so its extent is the texture
             // size.
@@ -1014,6 +1045,29 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
                 "text",
                 [0.0, 0.0],
                 [layout.width / 2.0, (layout.ascent + layout.descent) / 2.0],
+            ))
+        }
+        // A polyline's local box is the box over its points, grown by half
+        // the stroke's width. Fewer than two points draw nothing, so there
+        // is nothing to measure.
+        Shape::Polyline { points, width, .. } => {
+            let Some(&first) = points.first() else {
+                return None;
+            };
+            let mut min = first;
+            let mut max = first;
+            for &p in &points[1..] {
+                min = [min[0].min(p[0]), min[1].min(p[1])];
+                max = [max[0].max(p[0]), max[1].max(p[1])];
+            }
+            let half = (*width).max(0.0) * 0.5;
+            Some((
+                "polyline",
+                [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0],
+                [
+                    (max[0] - min[0]) / 2.0 + half,
+                    (max[1] - min[1]) / 2.0 + half,
+                ],
             ))
         }
         // A background never draws; nothing to measure.

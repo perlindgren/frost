@@ -31,6 +31,37 @@ fn line_scissor_includes_width_and_aa_band() {
 }
 
 #[test]
+fn polyline_scissor_covers_all_points_plus_width_and_aa_band() {
+    let draw = Draw::Polyline {
+        points: vec![[10.0, 20.0], [50.0, 40.0], [20.0, 35.0]],
+        width: 2.0,
+        color: black(),
+        z: 0.0,
+    };
+    // The box over the points is (10, 20)..(50, 40); pad = width/2 +
+    // AA_BAND = 1.75, so (8.25, 18.25)..(51.75, 41.75).
+    assert_eq!(draw.scissor_rect([100, 100]), Some([8, 18, 44, 24]));
+}
+
+#[test]
+fn polyline_with_fewer_than_two_points_has_no_scissor() {
+    let one = Draw::Polyline {
+        points: vec![[10.0, 20.0]],
+        width: 2.0,
+        color: black(),
+        z: 0.0,
+    };
+    assert_eq!(one.scissor_rect([100, 100]), None);
+    let none = Draw::Polyline {
+        points: vec![],
+        width: 2.0,
+        color: black(),
+        z: 0.0,
+    };
+    assert_eq!(none.scissor_rect([100, 100]), None);
+}
+
+#[test]
 fn circle_scissor_includes_aa_band() {
     let draw = Draw::Circle {
         center: [50.0, 50.0],
