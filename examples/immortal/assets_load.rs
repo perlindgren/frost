@@ -81,6 +81,12 @@ const SUSTAINABLE_IMMORTALITY: &[u8] =
 /// "Game Over" title and the Play button's label are built from it.
 const OVERLAY_FONT: &[u8] = include_bytes!("../../assets/fonts/Leofont-Regular.ttf");
 
+/// The diagnostics overlay's font,
+/// `assets/fonts/FiraCode-VariableFont_wght.ttf`: the monospaced coding
+/// font the overlay's readout lines and strip charts are set in.
+const DIAG_FONT: &[u8] =
+    include_bytes!("../../assets/fonts/FiraCode-VariableFont_wght.ttf");
+
 /// The low tjatter clip, `assets/audio/TjatterLow.wav`.
 const TJATTER_LOW: &[u8] = include_bytes!("../../assets/audio/TjatterLow.wav");
 
@@ -164,9 +170,9 @@ pub struct Sounds {
 }
 
 /// Everything the example loads at startup: the sprite shapes, the
-/// game-over overlay's font, and the audio — the output and every clip —
-/// embedded at compile time with `include_bytes!` and decoded by
-/// [`Assets::load`].
+/// game-over overlay's font, the diagnostics overlay's font, and the audio
+/// — the output and every clip — embedded at compile time with
+/// `include_bytes!` and decoded by [`Assets::load`].
 pub struct Assets {
     /// The grass photo, exactly the window size: stretched to fill the
     /// window by the process.
@@ -216,6 +222,9 @@ pub struct Assets {
     /// The game-over overlay's font bytes, embedded at compile time: the
     /// "Game Over" title and the Play button's label are built from them.
     pub font: &'static [u8],
+    /// The diagnostics overlay's font bytes, embedded at compile time: the
+    /// readout lines and the strip charts are built from them.
+    pub diag_font: &'static [u8],
     /// The audio output and every clip the example plays, decoded once at
     /// startup.
     pub sounds: Sounds,
@@ -255,6 +264,7 @@ impl Assets {
             basket_front: sprite("BasketFront.png", BASKET_FRONT),
             immortality,
             font: OVERLAY_FONT,
+            diag_font: DIAG_FONT,
             sounds: Sounds {
                 device: audio,
                 tjatters: [

@@ -499,12 +499,15 @@ itself is a `Process`.
   `ctx.scene().root.children` and remembers their indices; later calls
   update each node's shape and transform in place (re-appending one if the
   demo removed it). The demo must not reorder the root's children.
-  Placement uses crate-internal `text::layout` for each line's width and the
-  glyphs' raster ink for their ink bounds, because a font's vertical metrics
-  can be degenerate (Leofont's ascent plus descent is about a pixel at 32
-  px) — so the topmost *visible* line's ink sits 20 px in from the window's
-  top-left corner, and the visible parts reflow into that corner whenever
-  one of them is hidden.
+  Placement uses crate-internal `text::layout` for each line's width; the
+  lines' vertical extent is measured once, at construction, over every
+  character a readout line can display, because neither the current text's
+  ink (Fira Code's "8" and "9" carry a pixel of antialiasing below the
+  baseline where the "4" does not) nor the font's metrics (both bundled
+  fonts report degenerate ones — Leofont's ascent plus descent is about a
+  pixel at 32 px) is a stable extent — so the topmost *visible* line's ink
+  sits 20 px in from the window's top-left corner, and the visible parts
+  reflow into that corner whenever one of them is hidden.
 - Keyboard shortcuts: the overlay reads six key combinations from the
   engine's key state on every `process`, acting on press edges only (a
   held combination toggles once): Alt-0 is the master switch — while off,
@@ -525,7 +528,7 @@ itself is a `Process`.
   gate, unlike `audio`.
 
 `examples/diagnostics.rs` shows it over a swaying circle, set in
-`assets/fonts/Leofont-Regular.ttf`, with `DiagnosticsFlags::all()`.
+`assets/fonts/FiraCode-VariableFont_wght.ttf`, with `DiagnosticsFlags::all()`.
 
 ## Testing
 

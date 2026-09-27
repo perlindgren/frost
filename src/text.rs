@@ -429,9 +429,9 @@ mod tests {
         assert_eq!((c2.x, c2.y), (0, 0));
     }
 
-    /// The diagnostics overlay's readout lines (the window size and the
-    /// frame rate) shape in Leofont (the bundled display font) without
-    /// overlapping glyph inks, even though the font's vertical metrics are
+    /// The diagnostics readout lines (the window size and the frame rate)
+    /// shape in Leofont (the bundled display font) without overlapping
+    /// glyph inks, even though the font's vertical metrics are
     /// degenerate: its ascent plus descent is about a pixel at 32 px while
     /// the ink is tens of pixels tall, so placement code must not trust the
     /// metrics.
@@ -466,5 +466,37 @@ mod tests {
             );
         }
         assert!(any_layout);
+    }
+
+    /// Fira Code's digit ink is not uniform below the baseline: the "8"
+    /// and the "9" carry a pixel of antialiasing under it, where the "4"
+    /// and the "2" do not — so the digits' ink is not a stable vertical
+    /// extent, which is why the diagnostics overlay measures its line
+    /// extent once over the readout's alphabet instead.
+    #[test]
+    fn firacode_digit_ink_is_not_uniform_below_the_baseline() {
+        let font = include_bytes!("../assets/fonts/FiraCode-VariableFont_wght.ttf");
+        let ink_bottom = |text: &str| {
+            let layout = layout(font, text, 32.0).expect("font should shape");
+            let mut bottom = f32::INFINITY;
+            for g in &layout.glyphs {
+                let Some(r) = rasterize(font, g.id, 32.0) else {
+                    continue; // spaces have no ink; only the pen advances
+                };
+                bottom = bottom.min(g.y + r.top as f32 - r.height as f32);
+            }
+            bottom
+        };
+        let flat = ink_bottom("42");
+        assert!(
+            flat >= -0.5,
+            "the 4 and the 2 should sit on the baseline, ink bottom {flat}"
+        );
+        for dipped in [ink_bottom("8"), ink_bottom("9")] {
+            assert!(
+                dipped < flat - 0.5,
+                "a digit should carry ink below the baseline: {dipped} vs {flat}"
+            );
+        }
     }
 }

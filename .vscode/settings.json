@@ -1,6 +1,7 @@
 {
     "editor.formatOnSave": true,
     "cSpell.ignoreWords": [
+        "Fira",
         "GGUF",
         "LOCALAPPDATA",
         "Multisample",
@@ -18,6 +19,7 @@
         "rustflags",
         "ubatch",
         "unsloth",
+        "wght",
         "wgpu",
         "wgsl",
         "winit"

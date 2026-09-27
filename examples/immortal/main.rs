@@ -1301,12 +1301,12 @@ impl Demo {
             color: PLAY_COLOR,
         };
 
-        // The diagnostics overlay, from the same embedded font the
-        // overlay's text is set in, with every statistic enabled: the
-        // window size, the frame rate, the frame time, the processing
-        // time, the draw-call count, and the four strip charts.
+        // The diagnostics overlay, set in the embedded Fira Code font,
+        // with every statistic enabled: the window size, the frame rate,
+        // the frame time, the processing time, the draw-call count, and
+        // the four strip charts.
         let diag = frost::Diagnostics::from_bytes(
-            assets.font,
+            assets.diag_font,
             frost::DiagnosticsFlags::all(),
         )
         .expect("the embedded overlay font decodes");

@@ -89,8 +89,18 @@ const SIZE: f32 = 32.0;
 /// The inset of the readout's top-left corner from the window's, in pixels.
 const MARGIN: f32 = 20.0;
 
-/// The gap between the readout lines' inks, in pixels.
+/// The gap between consecutive readout lines, in pixels.
 const LINE_GAP: f32 = 6.0;
+
+/// The readout's probe text: every character a readout line can display —
+/// the digits, the "x", the ".", the "ms", and the fixed labels. The
+/// lines' vertical extent is measured over it once, at construction,
+/// because neither the current text's ink (Fira Code's "8" and "9" carry a
+/// pixel of antialiasing below the baseline where the "4" does not) nor
+/// the font's metrics (both bundled fonts report degenerate ones —
+/// Leofont's ascent plus descent is about a pixel at 32 px, Fira Code's
+/// about two) is a stable extent for the lines.
+const PROBE: &str = "0123456789.x FPS FT PROC APP DRAW ms";
 
 /// The smoothing time constant, in seconds: how quickly the displayed frame
 /// rate follows the real one.
@@ -289,6 +299,10 @@ pub struct Diagnostics {
     flags: DiagnosticsFlags,
     /// The font's bytes, shared with the readout's text shapes.
     font: Arc<[u8]>,
+    /// The readout lines' vertical extent, in pixels: the highest ink top
+    /// minus the lowest ink bottom over [`PROBE`], measured once at
+    /// construction, so the digits' ink differences never change it.
+    line_extent: f32,
     /// The window-size line, drawn above the frame-rate line.
     size_line: Line,
     /// The frame-rate line, drawn below the window-size line.
@@ -412,13 +426,12 @@ struct Line {
     shape: Option<Shape>,
     /// The laid-out width of `text`, in pixels.
     width: f32,
-    /// The y of the highest ink pixel of `text` above its baseline, in
-    /// pixels (measured from the glyphs' ink, because a font's vertical
-    /// metrics can be degenerate).
+    /// The line's ink top, in pixels above its baseline: the highest ink
+    /// pixel, over every glyph that has one. It anchors the line's ink in
+    /// its box; the stacking advances by the font-level extent
+    /// (`Diagnostics::line_extent`) instead, so a line's own ink never
+    /// moves the lines below it.
     ink_top: f32,
-    /// The y of the lowest ink pixel of `text` above its baseline, in
-    /// pixels (negative when the text has descenders).
-    ink_bottom: f32,
     /// The renderer's baseline offset from the node's origin — half the
     /// font's ascent minus descent — in pixels.
     baseline_offset: f32,
@@ -432,7 +445,6 @@ impl Line {
             shape: None,
             width: 0.0,
             ink_top: 0.0,
-            ink_bottom: 0.0,
             baseline_offset: 0.0,
         }
     }
@@ -445,25 +457,24 @@ impl Line {
         self.shape = Shape::text_bytes(font, &self.text, SIZE).ok();
         self.width = layout.width;
         self.baseline_offset = (layout.ascent - layout.descent) / 2.0;
-        // A font's vertical metrics can be degenerate (the bundled Leofont's
-        // ascent plus descent is about a pixel at 32 px), so place the line
-        // by the glyphs' real ink: the highest and lowest ink pixels, over
-        // every glyph that has one.
-        let (mut ink_top, mut ink_bottom) = (layout.ascent, -layout.descent);
+        // The line's ink top, the highest ink pixel over every glyph that
+        // has one — initialized at the font's ascent so an all-space text
+        // still gets a finite value. It anchors this line's ink in its
+        // box; the stacking's advance is the font-level extent
+        // (`Diagnostics::line_extent`), so the digits' ink differences
+        // never move the lines below.
+        let mut ink_top = layout.ascent;
         for glyph in &layout.glyphs {
             if let Some(raster) = crate::text::rasterize(font, glyph.id, SIZE) {
-                let top = glyph.y + raster.top as f32;
-                ink_top = ink_top.max(top);
-                ink_bottom = ink_bottom.min(top - raster.height as f32);
+                ink_top = ink_top.max(glyph.y + raster.top as f32);
             }
         }
         self.ink_top = ink_top;
-        self.ink_bottom = ink_bottom;
     }
 }
 
 /// A text line's drawn state: its shape and the node origin that puts its
-/// ink top at `ink_top` in user space.
+/// ink top at `line_top` in user space.
 struct LineDraw {
     /// The line's shape.
     shape: Shape,
@@ -471,19 +482,19 @@ struct LineDraw {
     pos: [f32; 2],
 }
 
-/// Copies `line`'s shape and computes its node origin for an ink top of
-/// `ink_top`.
-fn line_draw(line: &Line, ink_top: f32, w: f32) -> Option<LineDraw> {
+/// Copies `line`'s shape and computes its node origin for a line top of
+/// `line_top`.
+fn line_draw(line: &Line, line_top: f32, w: f32) -> Option<LineDraw> {
     let shape = line.shape.clone()?;
     // The renderer centers a text block on the node's origin with the
     // baseline `baseline_offset` above it, so a line's node origin sits its
-    // ink's top (plus the baseline offset) below the line's ink-top y, and
-    // its ink's width (plus the margin) in from the left edge.
+    // top (plus the baseline offset) below the line's top y, and its width
+    // (plus the margin) in from the left edge.
     Some(LineDraw {
         shape,
         pos: [
             -w / 2.0 + MARGIN + line.width / 2.0,
-            ink_top - line.ink_top - line.baseline_offset,
+            line_top - line.ink_top - line.baseline_offset,
         ],
     })
 }
@@ -685,9 +696,31 @@ impl Diagnostics {
         let n_polys: usize = chart_slots.iter().map(|c| series_count(*c)).sum();
         let n_nodes = line_slots.len() + chart_slots.len() + n_refs + n_polys;
         let chart_on = vec![true; chart_slots.len()];
+        // The readout lines' vertical extent, measured once over the probe —
+        // see `PROBE`. The font just validated, so the probe shapes; a
+        // missing ink (an all-space probe) falls back to the font's
+        // ascent-plus-descent.
+        let line_extent = if let Some(probe) = crate::text::layout(font, PROBE, SIZE) {
+            let (mut top, mut bottom) = (f32::NEG_INFINITY, f32::INFINITY);
+            for glyph in &probe.glyphs {
+                if let Some(raster) = crate::text::rasterize(font, glyph.id, SIZE) {
+                    let ink_top = glyph.y + raster.top as f32;
+                    top = top.max(ink_top);
+                    bottom = bottom.min(ink_top - raster.height as f32);
+                }
+            }
+            if top.is_finite() {
+                top - bottom
+            } else {
+                probe.ascent + probe.descent
+            }
+        } else {
+            SIZE
+        };
         Ok(Self {
             flags,
             font: Arc::from(font),
+            line_extent,
             size_line: Line::new(),
             fps_line: Line::new(),
             ft_line: Line::new(),
@@ -942,10 +975,12 @@ impl Process for Diagnostics {
         // Lay the visible parts out top to bottom, so hiding a line or a
         // chart reflows the rest into the corner: the topmost visible line's
         // ink top sits MARGIN in from the window's top edge; each visible
-        // line hangs LINE_GAP under the previous visible line's ink bottom;
+        // line hangs LINE_GAP under the previous, the advance being the
+        // font-level line extent (measured over the readout's alphabet, so
+        // the digits' ink differences never move the lines or the charts);
         // the first visible panel's top sits MARGIN from the top edge when
         // no line is visible, otherwise LINE_GAP + GRAPH_GAP under the last
-        // visible line's ink bottom; each visible panel hangs one panel
+        // visible line's bottom; each visible panel hangs one panel
         // height plus GRAPH_GAP under the previous; all visible lines' ink
         // left edges sit MARGIN in from the window's left edge. The slot
         // lists are tiny — at most six lines and four charts — so clone
@@ -964,22 +999,21 @@ impl Process for Diagnostics {
         let visible_charts: Vec<usize> = (0..chart_slots.len())
             .filter(|j| self.chart_on_at(*j))
             .collect();
-        let mut ink_top = h / 2.0 - MARGIN;
-        let mut line_ink_tops = vec![0.0f32; line_slots.len()];
+        let mut next_line_top = h / 2.0 - MARGIN;
+        let mut line_tops = vec![0.0f32; line_slots.len()];
         for &i in &visible_lines {
-            line_ink_tops[i] = ink_top;
-            let line = self.line(line_slots[i]);
-            ink_top -= (line.ink_top - line.ink_bottom) + LINE_GAP;
+            line_tops[i] = next_line_top;
+            next_line_top -= self.line_extent + LINE_GAP;
         }
         let mut panel_tops = vec![0.0f32; chart_slots.len()];
-        let mut panel_ink = if visible_lines.is_empty() {
+        let mut next_panel_top = if visible_lines.is_empty() {
             h / 2.0 - MARGIN
         } else {
-            ink_top - GRAPH_GAP
+            next_line_top - GRAPH_GAP
         };
         for &j in &visible_charts {
-            panel_tops[j] = panel_ink;
-            panel_ink -= GRAPH_H + GRAPH_GAP;
+            panel_tops[j] = next_panel_top;
+            next_panel_top -= GRAPH_H + GRAPH_GAP;
         }
         let x0 = -w / 2.0 + MARGIN;
 
@@ -990,7 +1024,7 @@ impl Process for Diagnostics {
                 self.hide(i, scene);
                 continue;
             }
-            let Some(draw) = line_draw(self.line(slot), line_ink_tops[i], w) else {
+            let Some(draw) = line_draw(self.line(slot), line_tops[i], w) else {
                 continue;
             };
             self.place(i, draw.pos, draw.shape, scene);
@@ -1311,5 +1345,42 @@ mod tests {
         d.toggle_chart(4);
         d.toggle_chart(usize::MAX);
         assert!(d.chart_on.iter().all(|&b| b));
+    }
+
+    /// A real monospaced TrueType font, embedded so the line tests can
+    /// shape text without a file system.
+    const FIRA: &[u8] =
+        include_bytes!("../assets/fonts/FiraCode-VariableFont_wght.ttf");
+
+    /// The readout's ink is not uniform below the baseline — Fira Code's
+    /// "8" and "9" carry a pixel of antialiasing under it, where the "4"
+    /// does not — and a font's vertical metrics can be degenerate, so the
+    /// overlay measures its line extent once, at construction, over the
+    /// whole readout alphabet (see `PROBE`): the stacking's advance is a
+    /// constant, and no digits change can ever move a line or the charts
+    /// below it.
+    #[test]
+    fn line_extent_covers_every_readouts_ink() {
+        let d = Diagnostics::from_bytes(FIRA, DiagnosticsFlags::all()).unwrap();
+        for text in [
+            "8", "9", "18", "19", "59", "61", "1920x1080", "FPS 60",
+            "FT 16.7ms", "PROC 12.34ms", "APP 12.12ms", "DRAW 42",
+        ] {
+            let layout = crate::text::layout(FIRA, text, SIZE).unwrap();
+            let (mut top, mut bottom) = (f32::NEG_INFINITY, f32::INFINITY);
+            for glyph in &layout.glyphs {
+                if let Some(raster) = crate::text::rasterize(FIRA, glyph.id, SIZE) {
+                    let ink_top = glyph.y + raster.top as f32;
+                    top = top.max(ink_top);
+                    bottom = bottom.min(ink_top - raster.height as f32);
+                }
+            }
+            assert!(
+                top - bottom <= d.line_extent + 1e-3,
+                "{text}: the ink extent {} must fit the line extent {}",
+                top - bottom,
+                d.line_extent
+            );
+        }
     }
 }

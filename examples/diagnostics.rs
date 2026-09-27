@@ -7,7 +7,8 @@
 //! scrolling ten-second strip charts beneath: the frame rate, the frame
 //! time, the folded processing-time chart (total, app, and the overlay's
 //! own cost as three series), and the folded draw-call chart the same way,
-//! set in `assets/fonts/Leofont-Regular.ttf`. The integration is one
+//! set in `assets/fonts/FiraCode-VariableFont_wght.ttf`. The integration is
+//! one
 //! struct in the demo state and one `process` call per frame — the overlay
 //! appends its own nodes to the scene's root on the first frame, so the
 //! scene itself only carries a swaying circle under them. The overlay's
@@ -54,7 +55,7 @@ fn main() {
     // example works no matter where it is run from.
     let root = std::env!("CARGO_MANIFEST_DIR");
     let diag = match frost::Diagnostics::new(
-        format!("{root}/assets/fonts/Leofont-Regular.ttf"),
+        format!("{root}/assets/fonts/FiraCode-VariableFont_wght.ttf"),
         frost::DiagnosticsFlags::all(),
     ) {
         Ok(diagnostics) => diagnostics,
