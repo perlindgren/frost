@@ -153,6 +153,14 @@ impl Tomato {
         self.harvested = false;
     }
 
+    /// Overwrites the fruit's state from a snapshot: its picked mark and
+    /// its ripe stamp — the scene's pivots, which the mark governs, are
+    /// re-homed by the caller to match.
+    pub fn restore(&mut self, harvested: bool, ripened_at: Option<f32>) {
+        self.harvested = harvested;
+        self.ripened_at = ripened_at;
+    }
+
     /// The growth-clock moment the fruit ripens, for a bloom that starts
     /// at `bloom_start`: the flower's [plant::FLOWER_GROW_TIME] plus this
     /// [TOMATO_GROW_TIME] after it.

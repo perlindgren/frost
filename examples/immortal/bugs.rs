@@ -214,6 +214,36 @@ impl Bug {
         self.arrived = false;
         self.hit_cooldown = 0.0;
     }
+
+    /// Rebuilds the bug from its snapshot state: the shape-swap cache
+    /// starts stale, so [Bugs::layout] re-syncs the bug's node on the
+    /// next frame.
+    fn from_state(s: &BugState) -> Bug {
+        Bug {
+            pos: s.pos,
+            vel: s.vel,
+            facing: s.facing,
+            placed: s.placed,
+            home: s.home,
+            idle: s.idle,
+            walk: s.walk,
+            frame: s.frame,
+            shown: u8::MAX,
+            grow: s.grow,
+            speed: s.speed,
+            wob_amp: s.wob_amp,
+            wob_freq: s.wob_freq,
+            wob_phase: s.wob_phase,
+            step_rate: s.step_rate,
+            dying: s.dying,
+            hits: s.hits,
+            parked: s.parked,
+            arrived: s.arrived,
+            hit_cooldown: s.hit_cooldown,
+            respawn: s.respawn,
+            spawn: s.spawn,
+        }
+    }
 }
 
 /// The whole swarm: the spawned prefix of the scene's bug slot pool.
@@ -235,6 +265,110 @@ pub struct Bugs {
     ground: f32,
     /// Spawn/wander randomizer.
     rng: Rng,
+}
+
+/// One bug's snapshot state: every field of the [Bug] except the shape-
+/// swap cache — the frame its node last showed, which [Bugs::layout]
+/// re-derives from the bug's own frame.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct BugState {
+    /// The sprite center, in user space.
+    pub pos: [f32; 2],
+    /// The last movement, in user space per second.
+    pub vel: [f32; 2],
+    /// The facing: +1 walking right, -1 walking left.
+    pub facing: f32,
+    /// Whether the position has been used as a movement baseline.
+    pub placed: bool,
+    /// The plant the bug walks to.
+    pub home: usize,
+    /// The fixed park offset from the home root.
+    pub idle: [f32; 2],
+    /// The walk clock, in steps.
+    pub walk: f32,
+    /// The frame the walk clock lands on.
+    pub frame: u8,
+    /// The seconds since the spawn.
+    pub grow: f32,
+    /// The walking speed, in px/s.
+    pub speed: f32,
+    /// The wobble amplitude, in px.
+    pub wob_amp: f32,
+    /// The wobble frequency, in rad/s.
+    pub wob_freq: f32,
+    /// The wobble phase, in rad.
+    pub wob_phase: f32,
+    /// The walk-frame rate, in steps/s.
+    pub step_rate: f32,
+    /// The death clock, in seconds, while dying.
+    pub dying: Option<f32>,
+    /// The hits still standing between the bug and death.
+    pub hits: u8,
+    /// The seconds parked at the destination.
+    pub parked: f32,
+    /// Whether the bug has reached its destination this life.
+    pub arrived: bool,
+    /// The hit cooldown left, in seconds.
+    pub hit_cooldown: f32,
+    /// The seconds left before the bug pops back up, while gone.
+    pub respawn: Option<f32>,
+    /// The spot the bug popped up from.
+    pub spawn: [f32; 2],
+}
+
+/// The swarm's snapshot state: its bugs, its per-plant batch table, its
+/// clock, and its spawn/wander randomizer's state — the stream resumes
+/// exactly where it left off. The sprite fit (the scale and the grass
+/// line) is left out: it is derived from the frames.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct BugsState {
+    /// The spawned bugs, in spawn order.
+    pub bugs: Vec<BugState>,
+    /// Which plants have received their batch of bugs, by plant index.
+    pub batched: Vec<bool>,
+    /// The swarm clock, in seconds.
+    pub t: f32,
+    /// The spawn/wander randomizer's state.
+    pub seed: u64,
+}
+
+impl From<&Bugs> for BugsState {
+    fn from(swarm: &Bugs) -> Self {
+        BugsState {
+            bugs: swarm.bugs.iter().map(BugState::from).collect(),
+            batched: swarm.batched.clone(),
+            t: swarm.t,
+            seed: swarm.rng.state(),
+        }
+    }
+}
+
+impl From<&Bug> for BugState {
+    fn from(bug: &Bug) -> Self {
+        BugState {
+            pos: bug.pos,
+            vel: bug.vel,
+            facing: bug.facing,
+            placed: bug.placed,
+            home: bug.home,
+            idle: bug.idle,
+            walk: bug.walk,
+            frame: bug.frame,
+            grow: bug.grow,
+            speed: bug.speed,
+            wob_amp: bug.wob_amp,
+            wob_freq: bug.wob_freq,
+            wob_phase: bug.wob_phase,
+            step_rate: bug.step_rate,
+            dying: bug.dying,
+            hits: bug.hits,
+            parked: bug.parked,
+            arrived: bug.arrived,
+            hit_cooldown: bug.hit_cooldown,
+            respawn: bug.respawn,
+            spawn: bug.spawn,
+        }
+    }
 }
 
 /// What [Bugs::step] reports for one frame: the clip indices the demo
@@ -292,6 +426,32 @@ impl Bugs {
             ground: (scale * h) / 2.0,
             rng: Rng::new(),
         }
+    }
+
+    /// The swarm's snapshot state (see [BugsState]).
+    pub fn state(&self) -> BugsState {
+        BugsState::from(self)
+    }
+
+    /// The swarm's spawn/wander randomizer's state, for the snapshot.
+    pub fn rng_state(&self) -> u64 {
+        self.rng.state()
+    }
+
+    /// Seeds the swarm's spawn/wander randomizer from `seed`, so the run
+    /// is reproducible from start up.
+    pub fn set_seed(&mut self, seed: u64) {
+        self.rng.set_state(seed);
+    }
+
+    /// Restores the swarm from a snapshot: the bugs, the batch table, the
+    /// clock, and the randomizer's state — the frame-derived fit (the
+    /// scale and the grass line) is kept.
+    pub fn restore(&mut self, state: &BugsState) {
+        self.bugs = state.bugs.iter().map(Bug::from_state).collect();
+        self.batched = state.batched.clone();
+        self.t = state.t;
+        self.rng.set_state(state.seed);
     }
 
     /// Advance the swarm by `dt` seconds.

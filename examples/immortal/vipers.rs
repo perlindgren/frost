@@ -130,6 +130,126 @@ pub struct Vipers {
     scale: f32,
 }
 
+/// One bee's snapshot state: every field of the [Bee] except the shape-
+/// swap cache — the frame its node last showed, which [Vipers::layout]
+/// re-derives from the bee's own frame.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct BeeState {
+    /// The bee's position, in user space, y up.
+    pub pos: [f32; 2],
+    /// The bee's velocity, in user-space pixels per second.
+    pub vel: [f32; 2],
+    /// The facing: 1.0 flying right, -1.0 flying left.
+    pub facing: f32,
+    /// Whether the bee has been placed at least once.
+    pub placed: bool,
+    /// The wingbeat clock, in beats.
+    pub flap: f32,
+    /// The frame the bee currently shows: 0 or 1.
+    pub frame: u8,
+    /// The plant the bee orbits, in bench order.
+    pub home: usize,
+    /// The orbit phase, in radians.
+    pub phase: f32,
+    /// The orbit's angular speed, in radians per second.
+    pub omega: f32,
+    /// The orbit's radius, in pixels, before the wobble.
+    pub radius: f32,
+    /// The orbit center's height above its segment's midpoint.
+    pub hover: f32,
+    /// The wobble's frequency, in radians per second.
+    pub wob: f32,
+    /// The bob's amplitude, in pixels.
+    pub bob_amp: f32,
+    /// The bob's frequency, in radians per second.
+    pub bob_freq: f32,
+    /// The wingbeat rate, in beats per second.
+    pub flap_speed: f32,
+}
+
+/// The swarm's snapshot state: its bees and its clock. The sprite's fit
+/// scale is left out: it is derived from the sprite.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct VipersState {
+    /// The thirty bees, in swarm order.
+    pub bees: Vec<BeeState>,
+    /// The swarm's clock, in seconds.
+    pub t: f32,
+}
+
+impl From<&Vipers> for VipersState {
+    fn from(swarm: &Vipers) -> Self {
+        VipersState {
+            bees: swarm.bees.iter().map(BeeState::from).collect(),
+            t: swarm.t,
+        }
+    }
+}
+
+impl From<&Bee> for BeeState {
+    fn from(bee: &Bee) -> Self {
+        BeeState {
+            pos: bee.pos,
+            vel: bee.vel,
+            facing: bee.facing,
+            placed: bee.placed,
+            flap: bee.flap,
+            frame: bee.frame,
+            home: bee.home,
+            phase: bee.phase,
+            omega: bee.omega,
+            radius: bee.radius,
+            hover: bee.hover,
+            wob: bee.wob,
+            bob_amp: bee.bob_amp,
+            bob_freq: bee.bob_freq,
+            flap_speed: bee.flap_speed,
+        }
+    }
+}
+
+impl Bee {
+    /// Rebuilds the bee from its snapshot state: the shape-swap cache
+    /// starts stale, so [Vipers::layout] re-syncs the bee's node on the
+    /// next frame.
+    fn from_state(s: &BeeState) -> Bee {
+        Bee {
+            pos: s.pos,
+            vel: s.vel,
+            facing: s.facing,
+            placed: s.placed,
+            flap: s.flap,
+            frame: s.frame,
+            shown: u8::MAX,
+            home: s.home,
+            phase: s.phase,
+            omega: s.omega,
+            radius: s.radius,
+            hover: s.hover,
+            wob: s.wob,
+            bob_amp: s.bob_amp,
+            bob_freq: s.bob_freq,
+            flap_speed: s.flap_speed,
+        }
+    }
+}
+
+impl Vipers {
+    /// The swarm's snapshot state (see [VipersState]).
+    pub fn state(&self) -> VipersState {
+        VipersState::from(self)
+    }
+
+    /// Restores the swarm from a snapshot: the bees and the clock — the
+    /// sprite's fit scale is kept.
+    pub fn restore(&mut self, state: &VipersState) {
+        for (bee, s) in self.bees.iter_mut().zip(state.bees.iter()) {
+            *bee = Bee::from_state(s);
+        }
+        self.t = state.t;
+    }
+}
+
 impl Vipers {
     /// Builds the swarm from the sprite's texture size, with the swarm
     /// clock at zero: the bees' parameters are a deterministic schedule

@@ -38,6 +38,19 @@ impl Rng {
         Self(seed)
     }
 
+    /// The stream's current state — the value the next draw advances from.
+    /// Storing it, and restoring it with [`set_state`], resumes the stream
+    /// exactly where it left off, which is what a save file needs.
+    pub fn state(&self) -> u64 {
+        self.0
+    }
+
+    /// Restores the stream to `state`: the next draw continues exactly
+    /// where a stream that reached `state` would have.
+    pub fn set_state(&mut self, state: u64) {
+        self.0 = state;
+    }
+
     /// The next pseudo-random `u64`.
     pub fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);

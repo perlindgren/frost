@@ -417,6 +417,54 @@ pub struct Plant {
     blooms: [Bloom; FLOWER_N],
 }
 
+/// One bloom slot's snapshot state: its staggered first-bloom start, its
+/// [Plant::regrow] stamp, and its tomato's picked mark and ripe stamp.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct BloomState {
+    /// The staggered first-bloom start, on the plant clock.
+    pub first_bloom_start: f32,
+    /// The [Plant::regrow] restart stamp, if the bloom was regrown.
+    pub regrow_at: Option<f32>,
+    /// Whether the tomato is picked: its pivot rides outside the plant's
+    /// tree.
+    pub harvested: bool,
+    /// The aging-clock moment the fruit first reached full growth, if it
+    /// has ripened.
+    pub ripened_at: Option<f32>,
+}
+
+/// A plant's snapshot state: its growth and aging clocks and its blooms.
+/// The slice links and the tomato spawn points are left out — they are
+/// derived from the slice shapes and rebuild identically from them, so
+/// [Plant::restore] overwrites the state on the live plant instead.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct PlantState {
+    /// The growth clock, in seconds.
+    pub t: f32,
+    /// The aging clock, in seconds.
+    pub age: f32,
+    /// Each bloom slot's state, in slot order.
+    pub blooms: [BloomState; FLOWER_N],
+}
+
+impl From<&Plant> for PlantState {
+    fn from(plant: &Plant) -> Self {
+        PlantState {
+            t: plant.t,
+            age: plant.age,
+            blooms: std::array::from_fn(|i| {
+                let bloom = &plant.blooms[i];
+                BloomState {
+                    first_bloom_start: bloom.first_bloom_start,
+                    regrow_at: bloom.regrow_at,
+                    harvested: bloom.tomato.is_harvested(),
+                    ripened_at: bloom.tomato.ripened_at(),
+                }
+            }),
+        }
+    }
+}
+
 impl Plant {
     /// Builds the plant from the five slice shapes in chain order
     /// (`plant1`, `plant2`, `plant3`, `plant4`, `plant5`), with each
@@ -594,6 +642,20 @@ impl Plant {
     /// removes the flower and starts the regrowth.
     pub fn regrow(&mut self, slot: usize) {
         self.blooms[slot].regrow(self.t);
+    }
+
+    /// Overwrites the plant's state from a snapshot: the growth and
+    /// aging clocks and every bloom's schedule and tomato — the slice
+    /// links and the spawn points, derived from the slice shapes, are
+    /// untouched.
+    pub fn restore(&mut self, state: &PlantState) {
+        self.t = state.t;
+        self.age = state.age;
+        for (bloom, s) in self.blooms.iter_mut().zip(state.blooms) {
+            bloom.first_bloom_start = s.first_bloom_start;
+            bloom.regrow_at = s.regrow_at;
+            bloom.tomato.restore(s.harvested, s.ripened_at);
+        }
     }
 
     /// The body center of the bloom `slot`'s tomato, in the plant node's

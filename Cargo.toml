@@ -181,3 +181,8 @@ env_logger = "0.11.11"
 # validates the .wgsl files with the exact frontend
 # `Device::create_shader_module` runs — no GPU or window required.
 naga = { version = "30.0.0", features = ["wgsl-in"] }
+# Serialization for the `immortal` example's save/reload: `serde`
+# derives the snapshot's data model, and `ron` encodes it as human-
+# readable, comment-friendly text on disk.
+serde = { version = "1", features = ["derive"] }
+ron = "0.8"

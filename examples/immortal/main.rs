@@ -214,6 +214,23 @@
 //! Alt-1..Alt-4 the charts (top chart first), Alt-T the text — and the
 //! layout reflows around whatever is hidden.
 //!
+//! The game state can be saved and reloaded: F5 writes a snapshot — the
+//! demo's state, every plant's clocks, the swarms, the carried and the
+//! fallen fruit, and both random streams' states, in the [save] module's
+//! versioned RON format — to the home directory's
+//! `.frost/immortal/snapshot.ron` (falling back to a `snapshot.ron` in the
+//! working directory if the home directory cannot be written), and F9
+//! reloads the last snapshot: the state is restored in place, the scene's
+//! stateful pivots re-homed to match it, and the random streams resumed
+//! exactly where they left off. The CLI can load the last snapshot at
+//! startup and seed the run — both random streams start from one seed, so
+//! a run is fully reproducible:
+//!
+//! ```text
+//! cargo run --example immortal -- --load
+//! cargo run --example immortal -- --seed 42
+//! ```
+//!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
 //!
@@ -225,6 +242,7 @@ mod assets_load;
 mod basket;
 mod bugs;
 mod plant;
+mod save;
 mod tomato;
 mod vipers;
 
@@ -890,7 +908,7 @@ const VIPER_IMAGE: [f32; 2] = [198.0, 179.0];
 /// cursor, and one stored tool, mirrored in the held-items panel: the
 /// right-button switch swaps the two, and a left click on a slot swaps the
 /// active tool with the slot's.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Tool {
     /// The watering can: hold the left button to tilt it and pour water.
     WaterCan,
@@ -905,7 +923,7 @@ enum Tool {
 /// rests there catching its breath with a squash-and-stretch
 /// ([`FallPhase::Resting`]), and then picks another anchor to roll to —
 /// looping, until the game restarts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum FallPhase {
     /// The tomato is falling straight down to the ground.
     Falling,
@@ -1166,6 +1184,7 @@ fn root_anchor(plant: &frost::SceneNode) -> [f32; 2] {
 /// of full ripening while it is dry — the reserve refills from the drops
 /// that fall into the plant's root hitbox, and the dryness yellows the
 /// plant's node while the reserve is dry.
+#[derive(Clone)]
 struct WateredPlant {
     /// Whether a seed has landed in this slot and its plant is growing —
     /// or, once planted, has not withered completely: until a seed lands,
@@ -1193,6 +1212,7 @@ struct WateredPlant {
 
 /// The tomato the mouse is carrying: ripe fruit picked off a plant's slot,
 /// or a tomato picked up out of the basket.
+#[derive(Clone, Copy)]
 enum Pick {
     /// Ripe fruit picked off plant `0`'s bloom slot `1`: the slot is
     /// marked harvested while the fruit rides the cursor; the release
@@ -1423,6 +1443,16 @@ struct Demo {
     /// scene's root, after the demo's own children, and every later call
     /// updates those same nodes in place.
     diag: frost::Diagnostics,
+    /// Whether F5 was down on the previous frame; the save fires on its
+    /// press edge (see [`Demo::save_snapshot`]).
+    save_key: bool,
+    /// Whether F9 was down on the previous frame; the reload fires on its
+    /// press edge (see [`Demo::reload_snapshot`]).
+    reload_key: bool,
+    /// The snapshot loaded at start up (`--load`), waiting for the first
+    /// frame to apply: the scene's stateful pivots need the basket's fit,
+    /// which the chrome layout sets on that frame.
+    loaded: Option<save::Snapshot>,
 }
 
 impl frost::Process for Demo {
@@ -1450,6 +1480,14 @@ impl frost::Process for Demo {
         let (w, h) = ctx.size();
         self.time += dt;
         let anchors = self.layout_chrome(ctx, w, h);
+
+        // A snapshot loaded at start up (`--load`) applies on the first
+        // frame, once the chrome has laid the basket out — the re-homed
+        // fruit needs the basket's fit — and before the basket seed below,
+        // so the snapshot's own basket-seed flag decides the seeding.
+        if let Some(snapshot) = self.loaded.take() {
+            self.apply(&snapshot, ctx);
+        }
 
         // The first frame seeds the basket with its starting tomato: the
         // seed's scale depends on the basket's fit, which the chrome
@@ -1639,6 +1677,9 @@ impl Demo {
             play_button,
             play_label,
             diag,
+            save_key: false,
+            reload_key: false,
+            loaded: None,
         }
     }
 
@@ -1907,6 +1948,20 @@ impl Demo {
 
         let left = ctx.mouse_button_down(frost::MouseButton::Left);
         let right = ctx.mouse_button_down(frost::MouseButton::Right);
+
+        // Save and reload: F5 writes the last snapshot, F9 reads the last
+        // one back — both on their press edges, and both answered even
+        // with the game-over overlay up, before the game's own input is.
+        let save_key = ctx.key_down(frost::KeyCode::F5);
+        if save_key && !self.save_key {
+            self.save_snapshot(ctx);
+        }
+        self.save_key = save_key;
+        let reload_key = ctx.key_down(frost::KeyCode::F9);
+        if reload_key && !self.reload_key {
+            self.reload_snapshot(ctx);
+        }
+        self.reload_key = reload_key;
 
         // The game-over overlay is up: the input answers only the Play
         // button — a press on it restarts the game and takes the overlay
@@ -2621,6 +2676,314 @@ impl Demo {
         self.rng = frost::Rng::new();
     }
 
+    /// Seeds both random streams from `seed` — the demo's particle-jitter
+    /// source and the bug swarm's spawn randomizer — so the whole run is
+    /// reproducible (`--seed`).
+    fn set_seed(&mut self, seed: u64) {
+        self.rng.set_state(seed);
+        self.bugs.set_seed(seed);
+    }
+
+    /// Loads the last snapshot at start up (`--load`), pending for the
+    /// first frame's [Demo::apply] — the scene's stateful pivots need the
+    /// basket's fit, which the chrome layout sets on that frame — and
+    /// starts the game fresh when no snapshot exists or it cannot be read.
+    fn load_last_snapshot(&mut self) {
+        match save::load() {
+            Ok(snapshot) => {
+                log::info!("snapshot loaded from {}", save::snapshot_path().display());
+                self.loaded = Some(snapshot);
+            }
+            Err(err) => log::warn!("{err}"),
+        }
+    }
+
+    /// F5: captures the whole game state and writes it to the snapshot
+    /// file ([save::save]); a failed write logs and the game keeps
+    /// running.
+    fn save_snapshot(&mut self, ctx: &mut frost::Context) {
+        let snapshot = self.capture(ctx);
+        match save::save(&snapshot) {
+            Ok(()) => log::info!("snapshot saved to {}", save::snapshot_path().display()),
+            Err(err) => log::warn!("cannot save the snapshot: {err}"),
+        }
+    }
+
+    /// F9: reads the last snapshot ([save::load]) and restores the whole
+    /// game state from it; a missing or unreadable snapshot logs and the
+    /// game keeps running as it is.
+    fn reload_snapshot(&mut self, ctx: &mut frost::Context) {
+        match save::load() {
+            Ok(snapshot) => {
+                self.apply(&snapshot, ctx);
+                log::info!("snapshot reloaded from {}", save::snapshot_path().display());
+            }
+            Err(err) => log::warn!("{err}"),
+        }
+    }
+
+    /// Captures the game's state into a snapshot: the demo's scalars, both
+    /// random streams' states, the plants, the falls, the swarms, and the
+    /// two parts only the scene can give — the basket's fruit, each
+    /// fruit's body center read off its pivot in the basket's local space
+    /// so a window resize moves none of it, and the carried fruit's
+    /// frozen tint, read off its body leaf.
+    fn capture(&self, ctx: &mut frost::Context) -> save::Snapshot {
+        let mut snapshot = self.capture_state();
+        // The basket's fruit: each pivot's body center, in the basket's
+        // local space — the pivot's origin plus its scale times the
+        // tomato's leaf offset.
+        let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
+        snapshot.basket_fruit = ctx
+            .scene()
+            .root
+            .children[CHILD_BASKET]
+            .children[basket::BASKET_FRUIT]
+            .children
+            .iter()
+            .map(|pivot| {
+                let [px, py] = pivot.transform.apply([0.0, 0.0]);
+                [px + pivot.scale[0] * ox, py + pivot.scale[0] * oy]
+            })
+            .collect();
+        // The carried fruit's body tint, frozen since the pick: the held
+        // fruit's body leaf holds it.
+        snapshot.held_tint = (self.picking.is_some() || self.flying.is_some()).then(|| {
+            let tint = ctx
+                .scene()
+                .root
+                .children[CHILD_HELD_FRUIT]
+                .children[0]
+                .children[tomato::TOMATO_BG]
+                .modulate;
+            [tint.r, tint.g, tint.b, tint.a]
+        });
+        snapshot
+    }
+
+    /// The snapshot's state that the scene holds none of: everything
+    /// [Demo::capture] writes except the basket's fruit and the carried
+    /// fruit's tint, which it leaves for the scene's read.
+    fn capture_state(&self) -> save::Snapshot {
+        save::Snapshot {
+            version: save::VERSION,
+            seed: self.rng.state(),
+            bug_seed: self.bugs.rng_state(),
+            time: self.time,
+            acc: self.acc,
+            over: self.over,
+            ever_planted: self.ever_planted,
+            slots: self.slots,
+            active: self.active,
+            held: self.held,
+            picking: self.picking.map(save::PickState::from),
+            flying: self.flying.as_ref().map(save::FlyState::from),
+            held_tint: None,
+            angle: self.angle,
+            turn: save::TurnState::from(&self.rotation),
+            burst: self.burst,
+            showing_spray2: self.showing_spray2,
+            pouring: self.pouring,
+            basket_seed: self.basket_seed,
+            basket_fruit: Vec::new(),
+            plants: std::array::from_fn(|i| save::WateredPlantState::from(&self.plants[i])),
+            falls: self.falls.iter().map(save::FallState::from).collect(),
+            bugs: self.bugs.state(),
+            vipers: self.vipers.state(),
+        }
+    }
+
+    /// Restores the demo's state from a snapshot — the scalars, the tools,
+    /// the plants, the falls, the swarms, and both random streams —
+    /// without touching the scene: the scene's stateful pivots are re-homed
+    /// by [Demo::apply], which needs the basket's fit.
+    fn restore(&mut self, snapshot: &save::Snapshot) {
+        // The pour loop stops, if it plays: tick_tool re-arms it the frame
+        // the restored can is fully tilted, if it is.
+        if self.pouring {
+            self.sounds.device.stop_loop();
+            self.pouring = false;
+        }
+        self.time = snapshot.time;
+        self.acc = snapshot.acc;
+        self.over = snapshot.over;
+        self.ever_planted = snapshot.ever_planted;
+        self.slots = snapshot.slots;
+        self.active = snapshot.active;
+        self.held = snapshot.held;
+        self.picking = snapshot.picking.map(Pick::from);
+        self.flying = snapshot.flying.map(Fly::from);
+        self.angle = snapshot.angle;
+        self.rotation = snapshot.turn.into_tween();
+        self.burst = snapshot.burst;
+        self.showing_spray2 = snapshot.showing_spray2;
+        self.basket_seed = snapshot.basket_seed;
+        // The plants: each plant's state overwrites its live one — the
+        // growth and aging clocks, and every bloom's schedule and tomato.
+        for (wp, s) in self.plants.iter_mut().zip(snapshot.plants) {
+            wp.planted = s.planted;
+            wp.water = s.water;
+            wp.dryness = s.dryness;
+            wp.plant.restore(&s.plant);
+        }
+        self.falls = snapshot.falls.iter().copied().map(Fall::from).collect();
+        self.bugs.restore(&snapshot.bugs);
+        self.vipers.restore(&snapshot.vipers);
+        // Both random streams resume from the snapshot's states.
+        self.rng.set_state(snapshot.seed);
+        self.bugs.set_seed(snapshot.bug_seed);
+        // The particles are short-lived: their streams start over.
+        self.water = frost::ParticleSystem::new();
+        self.spray = frost::ParticleSystem::new();
+    }
+
+    /// Restores the whole game state from a snapshot: the demo's state via
+    /// [Demo::restore], and the scene's stateful pivots re-homed to match
+    /// it — the plant slots' picked pivots, the carried and the fallen
+    /// fruit, and the basket's fruit — with the active tool's pose and
+    /// frame restored on top, and the items panel's slots re-synced.
+    fn apply(&mut self, snapshot: &save::Snapshot, ctx: &mut frost::Context) {
+        self.restore(snapshot);
+        self.rehome_scene(ctx, snapshot);
+        // The active tool's pose: set_active resets it to the upright,
+        // at-rest pose and re-syncs the held panel — the snapshot's tilt,
+        // burst, and frame come back on top.
+        self.set_active(ctx, self.active);
+        self.angle = snapshot.angle;
+        self.rotation = snapshot.turn.into_tween();
+        self.burst = snapshot.burst;
+        self.showing_spray2 = snapshot.showing_spray2;
+        if self.active == Some(Tool::SprayCan) {
+            self.set_spray_frame(ctx, self.showing_spray2);
+        }
+        // The items panel's slots mirror the restored tools.
+        let items = &mut ctx.scene().root.children[CHILD_ITEMS];
+        for (slot, node) in items.children.iter_mut().enumerate() {
+            self.slot_set(node, self.slots[slot]);
+        }
+    }
+
+    /// Re-homes the scene's stateful pivots to the restored state: the
+    /// plant slots' tomato pivots — a harvested slot keeps only its flower
+    /// leaf, its picked pivot having ridden out of the tree, and an
+    /// unharvested slot gets a fresh, shapeless default pivot its bloom's
+    /// layout fills in — the carried and the fallen fruit's containers
+    /// emptied and rebuilt, the basket's fruit emptied and rebuilt at the
+    /// snapshot's body centers, in the basket's local space, at the
+    /// basket's current fit, and the carried fruit's body tinted from the
+    /// snapshot.
+    fn rehome_scene(&mut self, ctx: &mut frost::Context, snapshot: &save::Snapshot) {
+        let root = &mut ctx.scene().root;
+        // The plant slots: the pivot's presence mirrors the harvested
+        // mark — a live pivot, if any, carries the old game's state.
+        let plants = &mut root.children[CHILD_PLANTS];
+        for (pi, wp) in self.plants.iter().enumerate() {
+            for si in 0..plant::FLOWER_N {
+                let slot = &mut plants.children[pi].children[plant::slot_index(si)];
+                match (wp.plant.is_harvested(si), slot.children.len()) {
+                    (true, 2) => {
+                        slot.children.remove(plant::SLOT_TOMATO);
+                    }
+                    (false, 1) => {
+                        slot.children.push(Box::new(frost::SceneNode {
+                            children: vec![
+                                Box::new(frost::SceneNode::default()),
+                                Box::new(frost::SceneNode::default()),
+                            ],
+                            ..Default::default()
+                        }));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // The fruit: the carried and the fallen containers, and the
+        // basket, all empty — the restored state re-fills them.
+        root.children[CHILD_HELD_FRUIT].children.clear();
+        root.children[CHILD_FALLEN_FRUIT].children.clear();
+        root.children[CHILD_BASKET].children[basket::BASKET_FRUIT].children.clear();
+        // The fallen fruit: one fresh, shaped pivot per restored fall, in
+        // order — the overgrown fruit, dark red — step_falls lays each
+        // out from its entry every frame.
+        for _ in &self.falls {
+            root
+                .children[CHILD_FALLEN_FRUIT]
+                .children
+                .push(self.fruit_pivot(tomato::TOMATO_STALE));
+        }
+        // The basket's fruit: fresh pivots at the restored body centers,
+        // at the basket's current fit.
+        let s = root.children[CHILD_BASKET].scale[0];
+        for &body in &snapshot.basket_fruit {
+            root.children[CHILD_BASKET].children[basket::BASKET_FRUIT]
+                .children
+                .push(Box::new(self.basket_fruit_pivot(body, s)));
+        }
+        // The carried fruit: a picked or a flying tomato rides the
+        // held-fruit container, posed by the ride every frame, tinted
+        // from the snapshot — the tint frozen since the pick.
+        if let Some([r, g, b, a]) = snapshot.held_tint {
+            let tint = frost::Color { r, g, b, a };
+            let pivot = self.fruit_pivot(tint);
+            // A basket fruit rides at the pick scale under the pointer; a
+            // plant fruit the same — the rides pose the transform, the
+            // scale stands.
+            root.children[CHILD_HELD_FRUIT].children.push(pivot);
+        }
+    }
+
+    /// A fresh, shaped tomato pivot at the pick scale — the ripe fruit's
+    /// body leaf, tinted `tint`, under its calyx-and-stem leaf — for the
+    /// re-home's containers: the rides lay the pivot's transform from
+    /// their state every frame.
+    fn fruit_pivot(&self, tint: frost::Color) -> Box<frost::SceneNode> {
+        let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
+        Box::new(frost::SceneNode {
+            scale: [TOMATO_PICK_SCALE, TOMATO_PICK_SCALE],
+            children: vec![
+                Box::new(frost::SceneNode {
+                    shape: Some(self.tomato.clone()),
+                    transform: frost::Transform::translate([ox, oy]),
+                    modulate: tint,
+                    ..Default::default()
+                }),
+                Box::new(frost::SceneNode {
+                    shape: Some(self.tomato_fg.clone()),
+                    transform: frost::Transform::translate([ox, oy]),
+                    ..Default::default()
+                }),
+            ],
+            ..Default::default()
+        })
+    }
+
+    /// A fresh basket fruit pivot at `center`, a body center in the
+    /// basket's local space, at the basket's current fit `s`: the ripe
+    /// fruit's body leaf, tinted red, under its calyx-and-stem leaf, at
+    /// the pick scale over the basket's.
+    fn basket_fruit_pivot(&self, center: [f32; 2], s: f32) -> frost::SceneNode {
+        let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
+        let k = TOMATO_PICK_SCALE / s;
+        frost::SceneNode {
+            transform: frost::Transform::translate([center[0] - k * ox, center[1] - k * oy]),
+            scale: [k, k],
+            children: vec![
+                Box::new(frost::SceneNode {
+                    shape: Some(self.tomato.clone()),
+                    transform: frost::Transform::translate([ox, oy]),
+                    modulate: tomato::TOMATO_RED,
+                    ..Default::default()
+                }),
+                Box::new(frost::SceneNode {
+                    shape: Some(self.tomato_fg.clone()),
+                    transform: frost::Transform::translate([ox, oy]),
+                    ..Default::default()
+                }),
+            ],
+            ..Default::default()
+        }
+    }
+
     /// Shows the pressed spray frame (`spray2`) if `on` and the at-rest
     /// frame (`spray1`) otherwise, but only when the tool node currently
     /// shows the other one, so the swap — a cheap `Arc` clone — happens at
@@ -2940,35 +3303,30 @@ impl Demo {
     /// laid the basket out.
     fn seed_basket_tomato(&mut self, ctx: &mut frost::Context) {
         let s = ctx.scene().root.children[CHILD_BASKET].scale[0];
-        let [ox, oy] = tomato::tomato_leaf_offset(self.tomato.sprite_size().unwrap_or([0.0, 0.0]));
-        let k = TOMATO_PICK_SCALE / s;
-        let [cx, cy] = BASKET_SEED;
         ctx.scene().root.children[CHILD_BASKET].children[basket::BASKET_FRUIT]
             .children
-            .push(Box::new(frost::SceneNode {
-                transform: frost::Transform::translate([cx - k * ox, cy - k * oy]),
-                scale: [k, k],
-                children: vec![
-                    Box::new(frost::SceneNode {
-                        shape: Some(self.tomato.clone()),
-                        transform: frost::Transform::translate([ox, oy]),
-                        modulate: tomato::TOMATO_RED,
-                        ..Default::default()
-                    }),
-                    Box::new(frost::SceneNode {
-                        shape: Some(self.tomato_fg.clone()),
-                        transform: frost::Transform::translate([ox, oy]),
-                        ..Default::default()
-                    }),
-                ],
-                ..Default::default()
-            }));
+            .push(Box::new(self.basket_fruit_pivot(BASKET_SEED, s)));
     }
+}
+
+/// The command line's arguments.
+#[derive(clap::Parser)]
+struct Cli {
+    /// Load the last snapshot — the one F5 wrote to
+    /// `~/.frost/immortal/snapshot.ron` — at start up.
+    #[arg(long)]
+    load: bool,
+    /// Seed both random streams — the demo's particle-jitter source and
+    /// the bug swarm's spawn randomizer — from this value, so the whole
+    /// run is reproducible.
+    #[arg(long)]
+    seed: Option<u64>,
 }
 
 fn main() {
     env_logger::init();
     log::info!("frost started");
+    let cli: Cli = clap::Parser::parse();
 
     let assets = Assets::load();
 
@@ -3237,9 +3595,20 @@ fn main() {
         ..Default::default()
     });
 
+    let mut demo = Demo::new(assets);
+    // The command line's arguments: `--seed` makes the whole run
+    // reproducible, and `--load` restores the last snapshot on the first
+    // frame — the scene's stateful pivots need the basket's fit, which
+    // the chrome layout sets on that frame.
+    if let Some(seed) = cli.seed {
+        demo.set_seed(seed);
+    }
+    if cli.load {
+        demo.load_last_snapshot();
+    }
     if let Err(err) = frost::run_configured(
         scene,
-        Demo::new(assets),
+        demo,
         frost::Config {
             window_size: Some(WINDOW),
             ..Default::default()
@@ -3888,5 +4257,135 @@ mod tests {
             }
         }
         assert!(saw_change, "a bump landing should re-roll the roll speed");
+    }
+
+    /// The snapshot's round trip: capture the demo's state, perturb every
+    /// part the snapshot carries — the scalars, the tools, a plant's water
+    /// and clocks, a carried fruit, a seed's flight, a fall, and both
+    /// random streams — and restore: the perturbations are fully reverted,
+    /// the random streams included, so a reloaded game continues the exact
+    /// same streams.
+    #[test]
+    fn a_snapshot_round_trips_the_demo_state() {
+        let mut demo = Demo::new(Assets::load());
+        demo.picking = Some(Pick::Plant(0, 2));
+        demo.flying = Some(Fly {
+            tween: frost::Tween::new([10.0, 20.0], [30.0, 40.0], FLY_TIME)
+                .repeat(frost::Repeat::Once),
+            time: 0.5,
+            landing: Landing::Slot(1),
+        });
+        demo.falls.push(Fall::new([5.0, 6.0], [7.0, 8.0]));
+        let snapshot = demo.capture_state();
+
+        // Perturb everything the snapshot carries.
+        demo.time += 10.0;
+        demo.acc += 0.5;
+        demo.over = false;
+        demo.ever_planted = true;
+        demo.slots[0] = Some(Tool::SprayCan);
+        demo.active = Some(Tool::WaterCan);
+        demo.held = Some(Tool::SprayCan);
+        demo.angle = 0.7;
+        demo.rotation = frost::Tween::new(0.7, 0.0, 1.0).repeat(frost::Repeat::Once);
+        demo.burst = Some(0.3);
+        demo.showing_spray2 = true;
+        demo.basket_seed = false;
+        demo.picking = None;
+        demo.flying = None;
+        demo.falls.clear();
+        demo.plants[0].planted = true;
+        demo.plants[0].water = 0.25;
+        demo.plants[0].dryness = 0.5;
+        demo.plants[0].plant.step(5.0);
+        demo.plants[0].plant.age(2.0);
+        demo.vipers.step(1.0, &[[[0.0, 0.0]; vipers::LAYERS]; 1], &[]);
+        let seed_before = demo.rng.state();
+        demo.rng.in_range(0.0, 1.0);
+        assert_ne!(demo.rng.state(), seed_before);
+        demo.bugs.set_seed(snapshot.bug_seed.wrapping_add(1));
+
+        // The restore reverts every perturbation.
+        demo.restore(&snapshot);
+        assert_eq!(demo.time, snapshot.time);
+        assert_eq!(demo.acc, snapshot.acc);
+        assert!(demo.over);
+        assert!(!demo.ever_planted);
+        assert_eq!(demo.slots, snapshot.slots);
+        assert_eq!(demo.active, snapshot.active);
+        assert_eq!(demo.held, snapshot.held);
+        assert_eq!(demo.angle, snapshot.angle);
+        assert_eq!(save::TurnState::from(&demo.rotation), snapshot.turn);
+        assert_eq!(demo.burst, snapshot.burst);
+        assert_eq!(demo.showing_spray2, snapshot.showing_spray2);
+        assert!(demo.basket_seed);
+        assert!(!demo.pouring);
+        // The carried fruit and the seed's flight come back, whole.
+        match demo.picking {
+            Some(Pick::Plant(pi, si)) => assert_eq!((pi, si), (0, 2)),
+            _ => panic!("the picked plant fruit should come back"),
+        }
+        match demo.flying {
+            Some(fly) => {
+                assert_eq!(fly.time, 0.5);
+                assert_eq!(fly.tween.from(), [10.0, 20.0]);
+                assert_eq!(fly.tween.to(), [30.0, 40.0]);
+                match fly.landing {
+                    Landing::Slot(i) => assert_eq!(i, 1),
+                    _ => panic!("the flight's landing should come back"),
+                }
+            }
+            None => panic!("the seed's flight should come back"),
+        }
+        assert_eq!(
+            demo.falls.iter().map(save::FallState::from).collect::<Vec<_>>(),
+            snapshot.falls
+        );
+        // The plant's water and clocks come back.
+        assert!(!demo.plants[0].planted);
+        assert_eq!(demo.plants[0].water, 1.0);
+        assert_eq!(demo.plants[0].dryness, 0.0);
+        assert_eq!(
+            plant::PlantState::from(&demo.plants[0].plant),
+            snapshot.plants[0].plant
+        );
+        // The swarms and both random streams resume exactly where they were.
+        assert_eq!(demo.vipers.state(), snapshot.vipers);
+        assert_eq!(demo.bugs.state(), snapshot.bugs);
+        assert_eq!(demo.rng.state(), snapshot.seed);
+    }
+
+    /// The version gate: a snapshot written by another format version is
+    /// rejected, and one written by this version parses.
+    #[test]
+    fn a_snapshot_from_another_version_is_rejected() {
+        let demo = Demo::new(Assets::load());
+        let mut snapshot = demo.capture_state();
+        let text = ron::to_string(&snapshot).unwrap();
+        assert_eq!(save::parse(&text).unwrap().version, save::VERSION);
+        snapshot.version = save::VERSION + 1;
+        let text = ron::to_string(&snapshot).unwrap();
+        assert!(save::parse(&text).is_err());
+    }
+
+    /// The turn state's round trip: the captured tween's ends, elapsed
+    /// time, leg duration, and repeat mode rebuild a tween that ticks to
+    /// the same value at the same moment.
+    #[test]
+    fn the_turn_state_round_trips_the_tween() {
+        let mut original =
+            frost::Tween::new(0.0, 1.0, 2.0).repeat(frost::Repeat::PingPong);
+        original.set_time(0.5);
+        let state = save::TurnState::from(&original);
+        let mut restored = state.into_tween();
+        assert_eq!(restored.from(), 0.0);
+        assert_eq!(restored.to(), 1.0);
+        assert_eq!(restored.duration(), 2.0);
+        assert_eq!(restored.time(), 0.5);
+        assert_eq!(restored.repeat_mode(), frost::Repeat::PingPong);
+        assert_eq!(restored.tick(0.0), original.tick(0.0));
+        // A mid-travel capture resumes mid-travel: after the same tick,
+        // both tweens agree.
+        assert_eq!(restored.tick(0.25), original.tick(0.25));
     }
 }

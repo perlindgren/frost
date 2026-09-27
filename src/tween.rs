@@ -74,6 +74,38 @@ impl<T: Tweenable> Tween<T> {
         self
     }
 
+    /// The value the tween starts from.
+    pub fn from(&self) -> T {
+        self.from
+    }
+
+    /// The value the tween travels to.
+    pub fn to(&self) -> T {
+        self.to
+    }
+
+    /// The elapsed time, in seconds, since the tween was created.
+    pub fn time(&self) -> f32 {
+        self.time
+    }
+
+    /// Seconds for one leg (the `from -> to` travel).
+    pub fn duration(&self) -> f32 {
+        self.duration
+    }
+
+    /// The repeat mode.
+    pub fn repeat_mode(&self) -> Repeat {
+        self.repeat
+    }
+
+    /// Restores the elapsed time to `time` seconds: the next [`tick`]
+    /// continues from the value the tween had at that moment, so an
+    /// in-flight tween can be saved and resumed mid-travel.
+    pub fn set_time(&mut self, time: f32) {
+        self.time = time;
+    }
+
     /// Advances by `dt` seconds and returns the current interpolated value.
     pub fn tick(&mut self, dt: f32) -> T {
         self.time += dt;
