@@ -193,7 +193,10 @@ impl frost::Process for Demo {
             let life = self.rng.in_range(FALL_LIFE.0, FALL_LIFE.1);
             self.fall.spawn(frost::Particle {
                 pos: [self.rng.in_range(-w / 2.0, w / 2.0), h / 2.0 - TOP_MARGIN],
-                vel: [self.rng.in_range(-15.0, 15.0), -self.rng.in_range(30.0, 120.0)],
+                vel: [
+                    self.rng.in_range(-15.0, 15.0),
+                    -self.rng.in_range(30.0, 120.0),
+                ],
                 life,
                 max_life: life,
                 size: self.rng.in_range(FALL_SIZE.0, FALL_SIZE.1),
@@ -230,8 +233,8 @@ impl frost::Process for Demo {
             ctx.circle(OFFSETS[i] * w, -h / 2.0 + RISE, 6.0, colors[i], -0.5);
         }
 
-        let n: usize = self.fountains.iter().map(|f| f.system.len()).sum::<usize>()
-            + self.fall.len();
+        let n: usize =
+            self.fountains.iter().map(|f| f.system.len()).sum::<usize>() + self.fall.len();
         log::trace!("process: dt {:?} particles {:?}", dt, n);
     }
 }

@@ -253,10 +253,7 @@ impl Tomato {
         let g = self.growth(t, bloom_start);
         let [ox, oy] = tomato_leaf_offset(body.sprite_size().expect("the tomato is a sprite"));
         pivot.transform = frost::Transform::identity();
-        pivot.scale = [
-            g * TOMATO_MAX_SCALE,
-            g * TOMATO_MAX_SCALE,
-        ];
+        pivot.scale = [g * TOMATO_MAX_SCALE, g * TOMATO_MAX_SCALE];
         let bg = &mut pivot.children[TOMATO_BG];
         bg.transform = frost::Transform::translate([ox, oy]);
         if g > 0.0 {
@@ -339,9 +336,7 @@ mod tests {
         // One frame crosses the ripe moment: the stamp is the ripe
         // moment, not the frame's end.
         t.stamp_ripe(ripe_time + 4.0, ripe_time + 4.0, start);
-        assert!(
-            (t.ripened_at().expect("the fruit ripened this frame") - ripe_time).abs() < 1e-6,
-        );
+        assert!((t.ripened_at().expect("the fruit ripened this frame") - ripe_time).abs() < 1e-6,);
 
         // The stamp sticks: a later frame does not restamp.
         t.stamp_ripe(ripe_time + 9.0, ripe_time + 9.0, start);
@@ -386,7 +381,10 @@ mod tests {
         assert_eq!(t.growth(start + FLOWER_GROW_TIME, start), 0.0);
         let mid = start + FLOWER_GROW_TIME + TOMATO_GROW_TIME / 2.0;
         assert!((t.growth(mid, start) - 0.5).abs() < 1e-6);
-        assert_eq!(t.growth(start + FLOWER_GROW_TIME + TOMATO_GROW_TIME, start), 1.0);
+        assert_eq!(
+            t.growth(start + FLOWER_GROW_TIME + TOMATO_GROW_TIME, start),
+            1.0
+        );
         assert_eq!(
             t.growth(start + FLOWER_GROW_TIME + TOMATO_GROW_TIME + 100.0, start),
             1.0,

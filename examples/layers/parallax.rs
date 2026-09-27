@@ -129,8 +129,8 @@ impl frost::Process for Demo {
         let player = &mut ctx.scene().layers[PLAYER_LAYER].root.children[0];
         // Rotate about the player's center, then place it at `pos`. The
         // camera hangs under the player, so it follows with no work here.
-        player.transform = frost::Transform::rotate(self.rot)
-            .compose(&frost::Transform::translate(self.pos));
+        player.transform =
+            frost::Transform::rotate(self.rot).compose(&frost::Transform::translate(self.pos));
 
         // The rectangles: generated once, at random positions with the whole
         // square inside the visible area, in random colors, one set per

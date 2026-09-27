@@ -235,9 +235,7 @@ pub(crate) enum Draw {
     },
     /// A [`Shape::Background`]: never drawn; it is promoted to the frame's
     /// clear color at render time.
-    Background {
-        color: Color,
-    },
+    Background { color: Color },
     /// A [`Shape::Light`]: never drawn; it is promoted to the frame's light
     /// field at render time, where every lit receiver evaluates it per
     /// pixel.
@@ -319,9 +317,7 @@ impl Draw {
                     [a[0].max(b[0]) + pad, a[1].max(b[1]) + pad],
                 )
             }
-            Draw::Polyline {
-                points, width, ..
-            } => {
+            Draw::Polyline { points, width, .. } => {
                 // The box over all the points, plus half the stroke width
                 // and the anti-alias band.
                 let mut min = points[0];
@@ -331,23 +327,16 @@ impl Draw {
                     max = [max[0].max(p[0]), max[1].max(p[1])];
                 }
                 let pad = width * 0.5 + AA_BAND;
-                (
-                    [min[0] - pad, min[1] - pad],
-                    [max[0] + pad, max[1] + pad],
-                )
+                ([min[0] - pad, min[1] - pad], [max[0] + pad, max[1] + pad])
             }
-            Draw::Circle {
-                center, radius, ..
-            } => {
+            Draw::Circle { center, radius, .. } => {
                 let pad = *radius + AA_BAND;
                 (
                     [center[0] - pad, center[1] - pad],
                     [center[0] + pad, center[1] + pad],
                 )
             }
-            Draw::Rectangle {
-                center, extent, ..
-            } => (
+            Draw::Rectangle { center, extent, .. } => (
                 [
                     center[0] - extent[0] - AA_BAND,
                     center[1] - extent[1] - AA_BAND,
@@ -372,10 +361,7 @@ impl Draw {
                     let r = params[0].max(0.0) + *aa;
                     (r, r)
                 } else {
-                    (
-                        params[0].max(0.0) + *aa,
-                        params[1].max(0.0) + *aa,
-                    )
+                    (params[0].max(0.0) + *aa, params[1].max(0.0) + *aa)
                 };
                 aabb_of_box(world, *center, hx, hy)
             }
@@ -389,9 +375,7 @@ impl Draw {
             // The batch's particles can be anywhere, so the scissor is the
             // whole surface: the per-particle quads are already tight, and
             // the rasterizer discards everything else for free.
-            Draw::Particles { .. } => {
-                ([0.0, 0.0], [area[0] as f32, area[1] as f32])
-            }
+            Draw::Particles { .. } => ([0.0, 0.0], [area[0] as f32, area[1] as f32]),
             // A background never draws; the early return above covers it.
             Draw::Background { .. } => unreachable!(),
             // A light never draws; the early return above covers it.
@@ -408,7 +392,12 @@ impl Draw {
 /// local space centered at `center` with half extents `(hx, hy)`. The box may
 /// be rotated or skewed by `world`, so the corners are transformed first and
 /// the axis-aligned box of the result is taken.
-pub(crate) fn aabb_of_box(world: &Transform, center: [f32; 2], hx: f32, hy: f32) -> ([f32; 2], [f32; 2]) {
+pub(crate) fn aabb_of_box(
+    world: &Transform,
+    center: [f32; 2],
+    hx: f32,
+    hy: f32,
+) -> ([f32; 2], [f32; 2]) {
     let corners = [
         world.apply([center[0] - hx, center[1] - hy]),
         world.apply([center[0] + hx, center[1] - hy]),
@@ -493,11 +482,7 @@ pub(crate) const POLYLINE_MAX_POINTS: usize = 128;
 /// `count` @ 2064 (a u32 follows the vec4 without a gap), `width` @ 2068;
 /// the struct size rounds up to 2080. Points beyond the first
 /// [`POLYLINE_MAX_POINTS`] are not packed.
-pub(crate) fn polyline_uniform_data(
-    points: &[[f32; 2]],
-    color: Color,
-    width: f32,
-) -> Vec<u8> {
+pub(crate) fn polyline_uniform_data(points: &[[f32; 2]], color: Color, width: f32) -> Vec<u8> {
     let mut data = vec![0u8; 2080];
     let count = points.len().min(POLYLINE_MAX_POINTS);
     for (i, p) in points.iter().take(count).enumerate() {
@@ -682,13 +667,7 @@ pub(crate) fn particles_uniform_data(
 ///
 /// The life fraction is clamped to `0.0..=1.0` (and `0.0` for a
 /// `max_life <= 0`), and a negative size is clamped to `0.0`.
-pub(crate) fn particle_instance(
-    p: &Particle,
-    px: f32,
-    py: f32,
-    size: f32,
-    angle: f32,
-) -> [u8; 32] {
+pub(crate) fn particle_instance(p: &Particle, px: f32, py: f32, size: f32, angle: f32) -> [u8; 32] {
     let life = if p.max_life > 0.0 {
         (p.life / p.max_life).clamp(0.0, 1.0)
     } else {
@@ -728,8 +707,7 @@ pub(crate) const LIGHT_FIELD_BUFFER_MIN: usize = LIGHT_FIELD_HEADER + 16;
 /// header plus one record per light, never below
 /// [`LIGHT_FIELD_BUFFER_MIN`].
 pub(crate) fn light_field_buffer_size(count: u32) -> u64 {
-    (LIGHT_FIELD_HEADER + count as usize * LIGHT_RECORD)
-        .max(LIGHT_FIELD_BUFFER_MIN) as u64
+    (LIGHT_FIELD_HEADER + count as usize * LIGHT_RECORD).max(LIGHT_FIELD_BUFFER_MIN) as u64
 }
 
 /// The frame's light field, packed little-endian for the GPU's storage
@@ -815,8 +793,7 @@ pub(crate) const OCCLUDER_FIELD_BUFFER_MIN: usize = OCCLUDER_FIELD_HEADER + 16;
 /// the header plus one record per occluder, never below
 /// [`OCCLUDER_FIELD_BUFFER_MIN`].
 pub(crate) fn occluder_field_buffer_size(count: u32) -> u64 {
-    (OCCLUDER_FIELD_HEADER + count as usize * OCCLUDER_RECORD)
-        .max(OCCLUDER_FIELD_BUFFER_MIN) as u64
+    (OCCLUDER_FIELD_HEADER + count as usize * OCCLUDER_RECORD).max(OCCLUDER_FIELD_BUFFER_MIN) as u64
 }
 
 /// The byte size of one occluder record: three `vec4<f32>`s — the inverse

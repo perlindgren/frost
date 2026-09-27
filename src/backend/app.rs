@@ -1,9 +1,9 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
-use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::future::Future;
+use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::task::{Context as TaskContext, Poll, Waker};
 
@@ -29,12 +29,12 @@ use winit::keyboard::{NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::backend::frame::*;
+#[cfg(target_arch = "wasm32")]
+use crate::backend::wasm::hide_fallback;
 use crate::objects::*;
 use crate::shaders::*;
 use crate::text;
 use crate::{Canvas, Context, KeyCode, Process};
-#[cfg(target_arch = "wasm32")]
-use crate::backend::wasm::hide_fallback;
 
 /// The surface presentation mode for the user's vsync request: `AutoVsync`
 /// presents once per vertical blank (capped at the display's refresh rate),
@@ -282,7 +282,10 @@ impl<P: Process> Frost<P> {
         // support rather than failing to start.
         let gilrs = match Gilrs::new() {
             Ok(gilrs) => {
-                log::info!("gamepads: {} connected at startup", gilrs.gamepads().count());
+                log::info!(
+                    "gamepads: {} connected at startup",
+                    gilrs.gamepads().count()
+                );
                 Some(gilrs)
             }
             Err(err) => {
@@ -459,16 +462,14 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                 // when building the `Context`.
                 self.mouse = Some([position.x as f32, position.y as f32]);
             }
-            WindowEvent::MouseInput { state, button, .. } => {
-                match state {
-                    ElementState::Pressed => {
-                        self.mouse_buttons.insert(button);
-                    }
-                    ElementState::Released => {
-                        self.mouse_buttons.remove(&button);
-                    }
+            WindowEvent::MouseInput { state, button, .. } => match state {
+                ElementState::Pressed => {
+                    self.mouse_buttons.insert(button);
                 }
-            }
+                ElementState::Released => {
+                    self.mouse_buttons.remove(&button);
+                }
+            },
             WindowEvent::CursorLeft { .. } => {
                 self.mouse = None;
                 // A release outside the window may never arrive, so drop
@@ -1200,7 +1201,8 @@ impl<P: Process> Frost<P> {
         // in call order. Same grow-only buffer as the light field.
         let occluders = pack_occluder_field(&draws);
         let occluder_buffer = self.occluder_buffer_for(occluders.count);
-        self.queue.write_buffer(&occluder_buffer, 0, &occluders.data);
+        self.queue
+            .write_buffer(&occluder_buffer, 0, &occluders.data);
 
         let (
             Some(line_pipeline),
@@ -1218,7 +1220,8 @@ impl<P: Process> Frost<P> {
             self.shape_pipeline.as_ref(),
             self.sprite_pipeline.as_ref(),
             self.particle_pipeline.as_ref(),
-        ) else {
+        )
+        else {
             return;
         };
         let Some(particle_index_buffer) = &self.particle_index_buffer else {
@@ -1282,7 +1285,12 @@ impl<P: Process> Frost<P> {
                 // all write_buffer copies complete before any draw executes.
                 match draw {
                     Draw::Line {
-                        a, b, width, color, diagnostic, ..
+                        a,
+                        b,
+                        width,
+                        color,
+                        diagnostic,
+                        ..
                     } => {
                         let (_buffer, bind_group) = self.primitive_uniform(
                             line_pipeline,
@@ -1417,8 +1425,10 @@ impl<P: Process> Frost<P> {
                         let (view, sampler) = match self.sprite_resources.get(&key) {
                             Some((view, sampler)) => (view.clone(), sampler.clone()),
                             None => {
-                                let (view, sampler) =
-                                    self.sprite_texture(&data, [texture_size[0] as f32, texture_size[1] as f32]);
+                                let (view, sampler) = self.sprite_texture(
+                                    &data,
+                                    [texture_size[0] as f32, texture_size[1] as f32],
+                                );
                                 self.sprite_resources
                                     .insert(key, (view.clone(), sampler.clone()));
                                 (view, sampler)
@@ -1461,30 +1471,26 @@ impl<P: Process> Frost<P> {
                         // cache, so a particle image and a sprite from the
                         // same file upload once — and for the SDF kinds,
                         // which never sample, the 1x1 placeholder.
-                        let (view, sampler) =
-                            match sprite_data.filter(|_| kind >= 1.5) {
-                                Some(image) => {
-                                    // A particle's image is a static file,
-                                    // never repacked: generation 0.
-                                    let key = (Arc::as_ptr(&image) as *const () as u64, 0);
-                                    match self.sprite_resources.get(&key) {
-                                        Some((view, sampler)) => {
-                                            (view.clone(), sampler.clone())
-                                        }
-                                        None => {
-                                            let (view, sampler) =
-                                                self.sprite_texture(&image, [
-                                                    sprite_size[0] as f32,
-                                                    sprite_size[1] as f32,
-                                                ]);
-                                            self.sprite_resources
-                                                .insert(key, (view.clone(), sampler.clone()));
-                                            (view, sampler)
-                                        }
+                        let (view, sampler) = match sprite_data.filter(|_| kind >= 1.5) {
+                            Some(image) => {
+                                // A particle's image is a static file,
+                                // never repacked: generation 0.
+                                let key = (Arc::as_ptr(&image) as *const () as u64, 0);
+                                match self.sprite_resources.get(&key) {
+                                    Some((view, sampler)) => (view.clone(), sampler.clone()),
+                                    None => {
+                                        let (view, sampler) = self.sprite_texture(
+                                            &image,
+                                            [sprite_size[0] as f32, sprite_size[1] as f32],
+                                        );
+                                        self.sprite_resources
+                                            .insert(key, (view.clone(), sampler.clone()));
+                                        (view, sampler)
                                     }
                                 }
-                                None => self.particle_placeholder.clone(),
-                            };
+                            }
+                            None => self.particle_placeholder.clone(),
+                        };
                         // The whole batch is one instanced draw: the shared
                         // index buffer expands every instance into a tight
                         // quad, and the fragment stage evaluates the batch's

@@ -98,8 +98,8 @@ impl frost::Process for Demo {
         // root.
         let button = &mut ctx.scene().layers[PLAYER_LAYER].root.children[0];
         // Rotate about the button's center, then place it at `pos`.
-        button.transform = frost::Transform::rotate(self.rot)
-            .compose(&frost::Transform::translate(self.pos));
+        button.transform =
+            frost::Transform::rotate(self.rot).compose(&frost::Transform::translate(self.pos));
 
         // The rectangles: generated once, at random positions with the whole
         // square inside the visible area, in random colors, one set per
@@ -170,13 +170,16 @@ fn main() {
             root: frost::SceneNode::default(),
         })
         .collect();
-    layers[PLAYER_LAYER].root.children.push(Box::new(frost::SceneNode {
-        // The button starts at the window center, facing +x; order 1.0 puts
-        // it on top of its layer's squares, which all default to 0.0.
-        order: 1.0,
-        shape: Some(button),
-        ..Default::default()
-    }));
+    layers[PLAYER_LAYER]
+        .root
+        .children
+        .push(Box::new(frost::SceneNode {
+            // The button starts at the window center, facing +x; order 1.0 puts
+            // it on top of its layer's squares, which all default to 0.0.
+            order: 1.0,
+            shape: Some(button),
+            ..Default::default()
+        }));
 
     if let Err(err) = frost::run(
         frost::Scene {

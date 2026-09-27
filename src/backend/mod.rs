@@ -8,7 +8,6 @@
 //! expands text into glyph quads, sorts the frame's [`Draw`]ings by z, and
 //! renders them one scissored draw call at a time to the window's surface.
 
-
 mod app;
 pub(crate) use app::*;
 

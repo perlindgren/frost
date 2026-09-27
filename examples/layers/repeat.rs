@@ -93,8 +93,7 @@ impl frost::Process for Demo {
         self.cam[0] += vel[0] * dt;
         self.cam[1] += vel[1] * dt;
         // The pivot under the scene's root carries the camera.
-        ctx.scene().root.children[0]
-            .transform = frost::Transform::translate(self.cam);
+        ctx.scene().root.children[0].transform = frost::Transform::translate(self.cam);
     }
 }
 
@@ -103,14 +102,7 @@ impl Demo {
     /// evenly spaced squares inside the content region, plus a "hero" circle
     /// straddling the right boundary of a tile, so its wrapping slice is
     /// visible. The grid's even spacing makes the tile seam invisible.
-    fn build_content(
-        &mut self,
-        ctx: &mut frost::Context,
-        w: f32,
-        h: f32,
-        rx: f32,
-        ry: f32,
-    ) {
+    fn build_content(&mut self, ctx: &mut frost::Context, w: f32, h: f32, rx: f32, ry: f32) {
         // The content region per axis: one tile when the axis repeats, a
         // fixed area covering twice the window (centered on the origin) when
         // it does not.
@@ -162,14 +154,7 @@ impl Demo {
     }
 
     /// The screen-fixed HUD's text, for the first frame.
-    fn build_hud(
-        &mut self,
-        ctx: &mut frost::Context,
-        w: f32,
-        h: f32,
-        rx: f32,
-        ry: f32,
-    ) {
+    fn build_hud(&mut self, ctx: &mut frost::Context, w: f32, h: f32, rx: f32, ry: f32) {
         let hud = &mut ctx.scene().layers[HUD_LAYER].root;
         hud.children.push(Box::new(frost::SceneNode {
             transform: frost::Transform::translate([0.0, h / 2.0 - 40.0]),
@@ -201,11 +186,36 @@ impl Demo {
     fn color(column: usize, row: usize) -> frost::Color {
         let n = (column + row) % 5;
         match n {
-            0 => frost::Color { r: 0.25, g: 0.45, b: 0.85, a: 1.0 },
-            1 => frost::Color { r: 0.85, g: 0.35, b: 0.45, a: 1.0 },
-            2 => frost::Color { r: 0.4, g: 0.75, b: 0.5, a: 1.0 },
-            3 => frost::Color { r: 0.8, g: 0.7, b: 0.3, a: 1.0 },
-            _ => frost::Color { r: 0.6, g: 0.45, b: 0.85, a: 1.0 },
+            0 => frost::Color {
+                r: 0.25,
+                g: 0.45,
+                b: 0.85,
+                a: 1.0,
+            },
+            1 => frost::Color {
+                r: 0.85,
+                g: 0.35,
+                b: 0.45,
+                a: 1.0,
+            },
+            2 => frost::Color {
+                r: 0.4,
+                g: 0.75,
+                b: 0.5,
+                a: 1.0,
+            },
+            3 => frost::Color {
+                r: 0.8,
+                g: 0.7,
+                b: 0.3,
+                a: 1.0,
+            },
+            _ => frost::Color {
+                r: 0.6,
+                g: 0.45,
+                b: 0.85,
+                a: 1.0,
+            },
         }
     }
 }

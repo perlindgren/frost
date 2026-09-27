@@ -318,13 +318,7 @@ fn main() {
         a: 1.0,
     };
 
-    if let Err(err) = frost::run(
-        scene,
-        Demo {
-            t: 0.0,
-            lights,
-        },
-    ) {
+    if let Err(err) = frost::run(scene, Demo { t: 0.0, lights }) {
         log::error!("frost failed: {err}");
         std::process::exit(1);
     }

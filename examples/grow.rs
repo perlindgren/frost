@@ -102,8 +102,8 @@ impl frost::Process for Demo {
         // never moves. The fit scale is constant — the growth is applied
         // to each slice individually below.
         let plant = &mut ctx.scene().root.children[0];
-        plant.transform = frost::Transform::rotate(base)
-            .compose(&frost::Transform::translate(ANCHOR));
+        plant.transform =
+            frost::Transform::rotate(base).compose(&frost::Transform::translate(ANCHOR));
 
         // Lay the chain out in the plant's own (unscaled) space: the first
         // slice's lower joint sits at the plant's origin, and each next
@@ -192,13 +192,7 @@ fn main() {
         ..Default::default()
     });
 
-    if let Err(err) = frost::run(
-        scene,
-        Demo {
-            t: 0.0,
-            links,
-        },
-    ) {
+    if let Err(err) = frost::run(scene, Demo { t: 0.0, links }) {
         log::error!("frost failed: {err}");
         std::process::exit(1);
     }

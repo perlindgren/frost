@@ -149,8 +149,8 @@ impl frost::Process for Demo {
         // The torch node: its transform carries the whole subtree — the
         // handle, the coal, and, crucially, the ember batch.
         let torch = &mut ctx.scene().root.children[0];
-        torch.transform = frost::Transform::rotate(self.angle)
-            .compose(&frost::Transform::translate(self.pos));
+        torch.transform =
+            frost::Transform::rotate(self.angle).compose(&frost::Transform::translate(self.pos));
         // The pulse: the torch's scale oscillates about 1, and the ember
         // radii — and the whole torch — scale with the node.
         let s = 1.0 + 0.12 * (2.0 * self.t).sin();
@@ -167,10 +167,7 @@ impl frost::Process for Demo {
                 self.ember_acc -= 1.0;
                 let life = self.rng.in_range(EMBER_LIFE.0, EMBER_LIFE.1);
                 system.spawn(frost::Particle {
-                    pos: [
-                        self.rng.in_range(-4.0, 4.0),
-                        self.rng.in_range(2.0, 8.0),
-                    ],
+                    pos: [self.rng.in_range(-4.0, 4.0), self.rng.in_range(2.0, 8.0)],
                     vel: [
                         self.rng.in_range(-14.0, 14.0),
                         self.rng.in_range(20.0, 44.0),
@@ -196,8 +193,7 @@ impl frost::Process for Demo {
         // rate; each spark leaves with half the torch's velocity in reverse,
         // plus a scatter, and is then on its own under gravity.
         if speed > SPARK_THRESHOLD {
-            self.spray_acc +=
-                SPARK_RATE * (speed / SPARK_THRESHOLD).min(4.0) * dt;
+            self.spray_acc += SPARK_RATE * (speed / SPARK_THRESHOLD).min(4.0) * dt;
         }
         while self.spray_acc >= 1.0 {
             self.spray_acc -= 1.0;
@@ -233,7 +229,12 @@ impl frost::Process for Demo {
             ctx.particles(&self.spray.particles, SPARK, 2.0);
         }
 
-        log::trace!("process: dt {:?} embers {} sparks {:?}", dt, embers, self.spray.len());
+        log::trace!(
+            "process: dt {:?} embers {} sparks {:?}",
+            dt,
+            embers,
+            self.spray.len()
+        );
     }
 }
 

@@ -12,12 +12,12 @@
 //! origin — the left end of the baseline.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use swash::FontRef;
 use swash::scale::{Render, ScaleContext, Source};
 use swash::shape::ShapeContext;
-use swash::FontRef;
 
 /// The fixed atlas size in pixels; a glyph that does not fit is skipped.
 const ATLAS_SIZE: u32 = 512;
@@ -273,10 +273,7 @@ impl Atlas {
             changed = true;
         }
         if changed {
-            self.stale_key = Some((
-                Arc::as_ptr(&self.data) as *const () as u64,
-                self.generation,
-            ));
+            self.stale_key = Some((Arc::as_ptr(&self.data) as *const () as u64, self.generation));
             self.data = Arc::from(data);
             self.generation = NEXT_ATLAS_GENERATION.fetch_add(1, Ordering::Relaxed);
         }
@@ -289,7 +286,10 @@ mod tests {
 
     /// The repo's example font, used by the layout and raster tests.
     fn example_font() -> Vec<u8> {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/JameGem08_2026-Regular.ttf");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/fonts/JameGem08_2026-Regular.ttf"
+        );
         std::fs::read(path).expect("the example font should ship with the repo")
     }
 
@@ -298,8 +298,8 @@ mod tests {
     #[test]
     fn layout_shapes_the_example_text() {
         let font = example_font();
-        let layout = layout(&font, "hello world", 48.0)
-            .expect("the example font should shape the text");
+        let layout =
+            layout(&font, "hello world", 48.0).expect("the example font should shape the text");
         assert!(layout.ascent > 0.0, "the ascent should be positive");
         assert!(layout.descent >= 0.0, "the descent cannot be negative");
         // "hello world" is eleven characters; allow for a ligature or two.
@@ -340,7 +340,10 @@ mod tests {
         assert!(glyph.width > 0 && glyph.height > 0);
         assert_eq!(glyph.data.len(), (glyph.width * glyph.height * 4) as usize);
         // The mask must contain actual ink.
-        assert!(glyph.data.iter().any(|&a| a > 0), "the mask should be inked");
+        assert!(
+            glyph.data.iter().any(|&a| a > 0),
+            "the mask should be inked"
+        );
         // A glyph id that does not exist in the font rasterizes to nothing.
         assert!(rasterize(&font, 9999, 48.0).is_none());
     }
@@ -352,8 +355,7 @@ mod tests {
     fn rasterize_produces_a_top_first_mask() {
         let font = example_font();
         let layout = layout(&font, "h", 48.0).expect("the font should shape 'h'");
-        let glyph =
-            rasterize(&font, layout.glyphs[0].id, 48.0).expect("'h' should have outlines");
+        let glyph = rasterize(&font, layout.glyphs[0].id, 48.0).expect("'h' should have outlines");
         let w = glyph.width as usize;
         let h = glyph.height as usize;
         let row_ink = |row: usize| -> u32 {

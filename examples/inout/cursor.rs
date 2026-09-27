@@ -25,7 +25,7 @@ const CAN_IMAGE: [f32; 2] = [331.0, 247.0];
 /// the upper-left corner, `x` grows to the right, `y` grows down. The
 /// crop fills the image, so the content box is the whole texture.
 const CAN_BOX: [[f32; 2]; 2] = [
-    [0.0, 0.0], // content upper-left
+    [0.0, 0.0],     // content upper-left
     [331.0, 247.0], // content lower-right
 ];
 
@@ -60,8 +60,7 @@ const SPOUT: [f32; 2] = [0.0, 25.0];
 
 /// The spout tip in node-local space, with the same y flip as
 /// `CAN_LOCAL`; the water is emitted from here, rotated with the can.
-const SPOUT_LOCAL: [f32; 2] =
-    [SPOUT[0] - CAN_IMAGE[0] / 2.0, CAN_IMAGE[1] / 2.0 - SPOUT[1]];
+const SPOUT_LOCAL: [f32; 2] = [SPOUT[0] - CAN_IMAGE[0] / 2.0, CAN_IMAGE[1] / 2.0 - SPOUT[1]];
 
 /// The node transform that puts the can's content center exactly on
 /// `(mx, my)` and rotates the can by `angle` radians around that center.

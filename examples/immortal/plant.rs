@@ -68,7 +68,7 @@
 //! along the static, fully grown chain — the sway left out — for the
 //! vipers' orbit centers.
 
-use super::tomato::{tomato_leaf_offset, Tomato, TOMATO_GROW_TIME, TOMATO_MAX_SCALE};
+use super::tomato::{TOMATO_GROW_TIME, TOMATO_MAX_SCALE, Tomato, tomato_leaf_offset};
 
 #[cfg(test)]
 use super::tomato::{STALE_DELAY, STALE_TIME, TOMATO_BG, TOMATO_FG, TOMATO_RED, TOMATO_STALE};
@@ -103,7 +103,7 @@ pub const FULL_GROW_TIME: f32 = *GROW_TIMES.last().expect("GROW_TIMES is non-emp
 /// converts them to node-local space against each texture's real size, and
 /// `layout` opens them on the frame their slice reaches full size.
 pub const FLOWER_SPAWNS: [&[(f32, f32)]; 4] = [
-    &[(308.0, 615.0)], // plant1, the base
+    &[(308.0, 615.0)],                                 // plant1, the base
     &[(306.0, 496.0), (638.0, 428.0), (304.0, 392.0)], // plant2, the low middle
     &[
         (315.0, 392.0),
@@ -125,11 +125,10 @@ pub const FLOWER_SPAWNS: [&[(f32, f32)]; 4] = [
 /// The flower slots per plant: one shapeless slot per [FLOWER_SPAWNS]
 /// point, in flattened slice order — the plant node's children after the
 /// [SLICE_N] slice nodes.
-pub const FLOWER_N: usize =
-    FLOWER_SPAWNS[0].len()
-        + FLOWER_SPAWNS[1].len()
-        + FLOWER_SPAWNS[2].len()
-        + FLOWER_SPAWNS[3].len();
+pub const FLOWER_N: usize = FLOWER_SPAWNS[0].len()
+    + FLOWER_SPAWNS[1].len()
+    + FLOWER_SPAWNS[2].len()
+    + FLOWER_SPAWNS[3].len();
 
 /// The slices per plant: the plant node's children are the [SLICE_N] slice
 /// nodes first, in chain order, and the [FLOWER_N] flower slots after them.
@@ -216,7 +215,9 @@ fn link(shape: &frost::Shape, joints: [(f32, f32); 2]) -> Link {
 /// picked pixel coordinates and the texture's real size.
 fn flower_points(shape: &frost::Shape, pts: &[(f32, f32)]) -> Vec<[f32; 2]> {
     let size = shape.sprite_size().expect("the slice is a sprite");
-    pts.iter().map(|&(jx, jy)| frost::Transform::anchor([jx, jy], size)).collect()
+    pts.iter()
+        .map(|&(jx, jy)| frost::Transform::anchor([jx, jy], size))
+        .collect()
 }
 
 /// The flower's growth, 0..1, at plant-clock `t` for a slice that finishes
@@ -543,12 +544,13 @@ impl Plant {
     /// after a harvest into the basket holds the completion back to its
     /// own stamp plus both growth times.
     fn bloom_time(&self) -> f32 {
-        self
-            .blooms
+        self.blooms
             .iter()
             .map(|b| b.first_bloom_start)
             .max_by(f32::total_cmp)
-            .expect("FLOWER_N is non-empty") + FLOWER_GROW_TIME + TOMATO_GROW_TIME
+            .expect("FLOWER_N is non-empty")
+            + FLOWER_GROW_TIME
+            + TOMATO_GROW_TIME
     }
 
     /// Whether the plant is complete: every slice is fully grown and every
@@ -560,12 +562,10 @@ impl Plant {
     /// keep opening blooms as the clock advances.
     pub fn complete(&self) -> bool {
         self.t >= self.bloom_time()
-            && self
-                .blooms
-                .iter()
-                .all(|b| {
-                    b.regrow_at.is_none_or(|r| self.t >= r + FLOWER_GROW_TIME + TOMATO_GROW_TIME)
-                })
+            && self.blooms.iter().all(|b| {
+                b.regrow_at
+                    .is_none_or(|r| self.t >= r + FLOWER_GROW_TIME + TOMATO_GROW_TIME)
+            })
     }
 
     /// The layers the plant has fully grown: how many of [GROW_TIMES] the
@@ -714,7 +714,11 @@ impl Plant {
         let slice_tf = self.layout_chain(node, anchor);
         // The three bloom leaves travel together from here down, bundled
         // so [layout_bloom] stays a short-signature helper.
-        let shapes = BloomShapes { flower, tomato, tomato_fg };
+        let shapes = BloomShapes {
+            flower,
+            tomato,
+            tomato_fg,
+        };
 
         // The four lower slices' blooms, on the flower slots that follow
         // the five slice children, in flattened spawn order. A slot's
@@ -748,7 +752,11 @@ impl Plant {
     /// composed with a translation to `anchor`, so the root joint never
     /// moves, and each slice is bent by its share of the traveling wind
     /// and scaled by its growth factor around its own lower joint.
-    fn layout_chain(&self, node: &mut frost::SceneNode, anchor: [f32; 2]) -> [frost::Transform; SLICE_N] {
+    fn layout_chain(
+        &self,
+        node: &mut frost::SceneNode,
+        anchor: [f32; 2],
+    ) -> [frost::Transform; SLICE_N] {
         // A gentle traveling wind: the base rock and the two joint bends
         // lag each other, and each bend is a little stronger than the last,
         // so the tip of the plant moves the most.
@@ -772,8 +780,8 @@ impl Plant {
         // origin maps to itself under the rotation, so the root joint
         // never moves. The fit scale is constant — the growth is applied
         // to each slice individually below.
-        node.transform = frost::Transform::rotate(base)
-            .compose(&frost::Transform::translate(anchor));
+        node.transform =
+            frost::Transform::rotate(base).compose(&frost::Transform::translate(anchor));
 
         // Lay the chain out in the plant's own (unscaled) space: the first
         // slice's lower joint sits at the plant's origin, and each next
@@ -821,7 +829,11 @@ impl Plant {
         child: &mut frost::SceneNode,
         shapes: BloomShapes<'_>,
     ) {
-        let BloomShapes { flower, tomato, tomato_fg } = shapes;
+        let BloomShapes {
+            flower,
+            tomato,
+            tomato_fg,
+        } = shapes;
         let start = self.blooms[slot].start();
         let fg = flower_growth(self.t, start);
         if fg > 0.0 {
@@ -999,7 +1011,10 @@ mod tests {
             );
         }
         assert_eq!(plant_at(FULL_GROW_TIME).grown_layers(), GROW_TIMES.len());
-        assert_eq!(plant_at(FULL_GROW_TIME + 100.0).grown_layers(), GROW_TIMES.len());
+        assert_eq!(
+            plant_at(FULL_GROW_TIME + 100.0).grown_layers(),
+            GROW_TIMES.len()
+        );
     }
 
     /// [Plant::new] staggers each slice's first blooms: exactly one flower
@@ -1020,8 +1035,7 @@ mod tests {
                 .collect();
             starts.sort_by(f32::total_cmp);
             assert_eq!(
-                starts[0],
-                GROW_TIMES[i],
+                starts[0], GROW_TIMES[i],
                 "no flower on slice {i} starts the frame it finishes"
             );
             for w in starts.windows(2) {
@@ -1077,13 +1091,7 @@ mod tests {
         }
         assert_eq!(
             p.layer_midpoints(),
-            [
-                [0.5, 0.0],
-                [1.5, 0.0],
-                [2.5, 0.0],
-                [3.5, 0.0],
-                [4.5, 0.0],
-            ]
+            [[0.5, 0.0], [1.5, 0.0], [2.5, 0.0], [3.5, 0.0], [4.5, 0.0],]
         );
     }
 
@@ -1158,8 +1166,7 @@ mod tests {
         let t = &node.children[slot_index(0)].children[SLOT_TOMATO];
         assert_eq!(t.scale, [TOMATO_MAX_SCALE, TOMATO_MAX_SCALE]);
         assert_eq!(
-            t.children[TOMATO_BG].modulate,
-            TOMATO_RED,
+            t.children[TOMATO_BG].modulate, TOMATO_RED,
             "tomato color at full growth"
         );
         assert_eq!(
@@ -1193,7 +1200,9 @@ mod tests {
         let mut offset = 0usize;
         for (i, spawns) in p.tomato_spawn.iter().enumerate() {
             for &pt in spawns {
-                let flower = node.children[slot_index(offset)].transform.apply([0.0, 0.0]);
+                let flower = node.children[slot_index(offset)]
+                    .transform
+                    .apply([0.0, 0.0]);
                 let on_slice = node.children[i].transform.apply(pt);
                 assert!(
                     (flower[0] - on_slice[0]).abs() <= 1e-4
@@ -1212,7 +1221,8 @@ mod tests {
         let mut node2 = plant_node();
         p.layout(&mut node2, [0.0, 0.0], &s, &s, &s);
         let composed = |node: &frost::SceneNode| {
-            node.transform.apply(node.children[slot_index(0)].transform.apply([0.0, 0.0]))
+            node.transform
+                .apply(node.children[slot_index(0)].transform.apply([0.0, 0.0]))
         };
         let a = composed(&node);
         let b = composed(&node2);
@@ -1254,10 +1264,7 @@ mod tests {
             ..Default::default()
         };
         let c = p.tomato_center(0, &slot_node, &tomato);
-        let want = slot_tf.apply([
-            ox * TOMATO_MAX_SCALE,
-            oy * TOMATO_MAX_SCALE,
-        ]);
+        let want = slot_tf.apply([ox * TOMATO_MAX_SCALE, oy * TOMATO_MAX_SCALE]);
         assert!(
             (c[0] - want[0]).abs() < 1e-6 && (c[1] - want[1]).abs() < 1e-6,
             "body center off the offset: got {c:?}, want {want:?}"
@@ -1323,8 +1330,10 @@ mod tests {
             "the carry translation survived: {o:?}"
         );
         assert!(
-            (ex[0] - 1.0).abs() < 1e-6 && ex[1].abs() < 1e-6
-                && (ey[0]).abs() < 1e-6 && (ey[1] - 1.0).abs() < 1e-6,
+            (ex[0] - 1.0).abs() < 1e-6
+                && ex[1].abs() < 1e-6
+                && (ey[0]).abs() < 1e-6
+                && (ey[1] - 1.0).abs() < 1e-6,
             "the carry rotation or scale survived: {ex:?} {ey:?}"
         );
         assert_eq!(
@@ -1389,13 +1398,15 @@ mod tests {
         p.harvest(0);
         let _pivot = *node.children[slot_index(0)].children.remove(SLOT_TOMATO);
         p.regrow(0);
-        node.children[slot_index(0)].children.push(Box::new(frost::SceneNode {
-            children: vec![
-                Box::new(frost::SceneNode::default()),
-                Box::new(frost::SceneNode::default()),
-            ],
-            ..Default::default()
-        }));
+        node.children[slot_index(0)]
+            .children
+            .push(Box::new(frost::SceneNode {
+                children: vec![
+                    Box::new(frost::SceneNode::default()),
+                    Box::new(frost::SceneNode::default()),
+                ],
+                ..Default::default()
+            }));
 
         // At the reset moment the flower is gone and the tomato has not
         // started — the bloom is removed.
@@ -1421,7 +1432,10 @@ mod tests {
         p.layout(&mut node, [0.0, 0.0], &s, &s, &s);
         let f = &node.children[slot_index(0)].children[SLOT_FLOWER];
         assert!(f.shape.is_some(), "the flower did not come back");
-        assert!((f.scale[0] - 0.5).abs() < 1e-6, "the flower is not half grown");
+        assert!(
+            (f.scale[0] - 0.5).abs() < 1e-6,
+            "the flower is not half grown"
+        );
         assert_eq!(
             node.children[slot_index(0)].children[SLOT_TOMATO].scale,
             [0.0, 0.0],
@@ -1517,11 +1531,7 @@ mod tests {
             p.age = ripe_at + dt;
             p.wither(5.0);
             assert!(p.t < ripe_at, "the clock withers past the ripe moment");
-            assert_eq!(
-                p.overgrown(0),
-                want_overgrown,
-                "overgrown at dt = {dt}"
-            );
+            assert_eq!(p.overgrown(0), want_overgrown, "overgrown at dt = {dt}");
         }
     }
 
@@ -1531,7 +1541,10 @@ mod tests {
     #[test]
     fn wither_runs_the_clock_backward() {
         let mut p = plant_at(20.0);
-        assert!(!p.blooms.iter().any(|b| b.is_ripe(p.t)), "no ripe fruit yet");
+        assert!(
+            !p.blooms.iter().any(|b| b.is_ripe(p.t)),
+            "no ripe fruit yet"
+        );
         p.wither(5.0);
         assert_eq!(p.t, 15.0, "the clock runs back by dt");
         p.wither(100.0);
@@ -1547,7 +1560,10 @@ mod tests {
         // Fully grown and fully ripe: the latest first bloom has ripened,
         // so the plant bears ripe fruit at full size.
         let mut p = aged_at(aged_at(0.0).bloom_time());
-        assert!(p.blooms.iter().any(|b| b.is_ripe(p.t)), "the plant bears ripe fruit");
+        assert!(
+            p.blooms.iter().any(|b| b.is_ripe(p.t)),
+            "the plant bears ripe fruit"
+        );
         p.wither(5.0);
         assert_eq!(
             p.t,
@@ -1571,8 +1587,14 @@ mod tests {
         // aging clock both advance by five.
         p.step(5.0);
         p.age(5.0);
-        let ripe = p.blooms[0].tomato.ripened_at().expect("the fruit ripened this frame");
-        assert!((ripe - ripe_at).abs() < 1e-6, "the stamp is the ripe moment, not the frame's end");
+        let ripe = p.blooms[0]
+            .tomato
+            .ripened_at()
+            .expect("the fruit ripened this frame");
+        assert!(
+            (ripe - ripe_at).abs() < 1e-6,
+            "the stamp is the ripe moment, not the frame's end"
+        );
     }
 
     /// [Plant::overgrown] turns on the frame the fruit passes the full
@@ -1582,11 +1604,16 @@ mod tests {
     #[test]
     fn overgrown_is_the_end_of_the_stale_period() {
         let start = plant_at(0.0).blooms[0].start();
-        let over_at =
-            start + FLOWER_GROW_TIME + TOMATO_GROW_TIME + STALE_DELAY + STALE_TIME;
-        assert!(!aged_at(over_at - 0.001).overgrown(0), "not yet fully stale");
+        let over_at = start + FLOWER_GROW_TIME + TOMATO_GROW_TIME + STALE_DELAY + STALE_TIME;
+        assert!(
+            !aged_at(over_at - 0.001).overgrown(0),
+            "not yet fully stale"
+        );
         assert!(aged_at(over_at).overgrown(0));
-        assert!(aged_at(over_at + 100.0).overgrown(0), "holds past the period");
+        assert!(
+            aged_at(over_at + 100.0).overgrown(0),
+            "holds past the period"
+        );
     }
 
     /// [Plant::overgrown] follows the [Plant::regrow]-restarted schedule:
@@ -1596,8 +1623,7 @@ mod tests {
     /// the regrow, and the new fruit overgrows from its own ripe moment.
     #[test]
     fn overgrown_follows_the_regrown_schedule() {
-        let cycle =
-            FLOWER_GROW_TIME + TOMATO_GROW_TIME + STALE_DELAY + STALE_TIME;
+        let cycle = FLOWER_GROW_TIME + TOMATO_GROW_TIME + STALE_DELAY + STALE_TIME;
         let over_at = plant_at(0.0).blooms[0].start() + cycle;
         let mut p = aged_at(over_at);
         assert!(p.overgrown(0), "the first bloom is fully overgrown");
@@ -1606,6 +1632,9 @@ mod tests {
         p.t = over_at + cycle;
         p.age = p.t;
         p.blooms[0].stamp_ripe(p.t, p.age);
-        assert!(p.overgrown(0), "the new bloom overgrows on its own schedule");
+        assert!(
+            p.overgrown(0),
+            "the new bloom overgrows on its own schedule"
+        );
     }
 }

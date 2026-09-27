@@ -20,8 +20,6 @@
 /// sits on the parent node's origin.
 const ANCHOR: (f32, f32) = (308.0, 411.0);
 
-
-
 fn main() {
     env_logger::init();
     log::info!("frost started");
@@ -40,10 +38,8 @@ fn main() {
     // offset itself, so the image's center lands on the window's center
     // and the whole 638×469 image fits the window.
     let anchor = [ANCHOR.0, ANCHOR.1];
-    let base = frost::Transform::anchor(
-        anchor,
-        tomato.sprite_size().expect("the child is a sprite"),
-    );
+    let base =
+        frost::Transform::anchor(anchor, tomato.sprite_size().expect("the child is a sprite"));
     let foreground = frost::Transform::anchor(
         anchor,
         tomato_fg.sprite_size().expect("the child is a sprite"),

@@ -135,11 +135,8 @@ impl Demo {
         // One collider at a time, rebuilt from the current position after
         // each push-out, so each test sees the correction from the last.
         for c in &colliders {
-            let player = frost::Collider::Box(frost::OrientedBox::rotated(
-                self.pos,
-                BUTTON_HALF,
-                self.rot,
-            ));
+            let player =
+                frost::Collider::Box(frost::OrientedBox::rotated(self.pos, BUTTON_HALF, self.rot));
             if let Some(po) = player.push_out(c) {
                 self.pos[0] += po.dir[0] * po.depth;
                 self.pos[1] += po.dir[1] * po.depth;
@@ -189,8 +186,8 @@ impl frost::Process for Demo {
 
         let button = &mut ctx.scene().root.children[0];
         // Rotate about the button's center, then place it at `pos`.
-        button.transform = frost::Transform::rotate(self.rot)
-            .compose(&frost::Transform::translate(self.pos));
+        button.transform =
+            frost::Transform::rotate(self.rot).compose(&frost::Transform::translate(self.pos));
 
         // The obstacles: generated once, at random positions with the whole
         // square inside the visible area, in random colors.

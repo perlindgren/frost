@@ -84,8 +84,7 @@ const OVERLAY_FONT: &[u8] = include_bytes!("../../assets/fonts/Leofont-Regular.t
 /// The diagnostics overlay's font,
 /// `assets/fonts/FiraCode-VariableFont_wght.ttf`: the monospaced coding
 /// font the overlay's readout lines and strip charts are set in.
-const DIAG_FONT: &[u8] =
-    include_bytes!("../../assets/fonts/FiraCode-VariableFont_wght.ttf");
+const DIAG_FONT: &[u8] = include_bytes!("../../assets/fonts/FiraCode-VariableFont_wght.ttf");
 
 /// The low tjatter clip, `assets/audio/TjatterLow.wav`.
 const TJATTER_LOW: &[u8] = include_bytes!("../../assets/audio/TjatterLow.wav");

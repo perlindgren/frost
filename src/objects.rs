@@ -544,9 +544,7 @@ pub enum Shape {
     /// the scene root or anywhere else in the tree — position does not matter.
     /// When several nodes hold backgrounds, the last one in depth-first call
     /// order is the one that shows.
-    Background {
-        color: Color,
-    },
+    Background { color: Color },
     /// A sprite: the RGBA pixels of a PNG image, created by
     /// [`Shape::sprite`].
     ///
@@ -713,11 +711,7 @@ impl Shape {
     /// TrueType/OpenType font up front and live behind an [`Arc`], but no
     /// file is read — this is how text shapes are created in environments
     /// without a file system, such as a web browser.
-    pub fn text_bytes(
-        font: &[u8],
-        text: impl Into<String>,
-        size: f32,
-    ) -> Result<Self, TextError> {
+    pub fn text_bytes(font: &[u8], text: impl Into<String>, size: f32) -> Result<Self, TextError> {
         swash::FontRef::from_index(font, 0).ok_or(TextError::InvalidFont)?;
         Ok(Self::Text {
             text: text.into(),
@@ -1116,8 +1110,7 @@ impl Scene {
         let mut node = root;
         let mut parent = Transform::identity();
         for &index in &path.children {
-            let local =
-                Transform::scale(node.scale).compose(&node.transform);
+            let local = Transform::scale(node.scale).compose(&node.transform);
             parent = local.compose(&parent);
             node = node.children.get(index)?;
         }

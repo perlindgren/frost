@@ -26,8 +26,11 @@ impl frost::Process for Demo {
         // The brick bobs up and down, slowly tumbles, and fades out and
         // back in over a 1s cycle.
         let brick = &mut ctx.scene().root.children[0];
-        brick.transform = frost::Transform::rotate(0.6 * self.t)
-            .compose(&frost::Transform::translate([-160.0, (self.t * 2.0).sin() * 20.0]));
+        brick.transform =
+            frost::Transform::rotate(0.6 * self.t).compose(&frost::Transform::translate([
+                -160.0,
+                (self.t * 2.0).sin() * 20.0,
+            ]));
         if let Some(frost::Shape::Sprite { alpha, .. }) = &mut brick.shape {
             *alpha = self.brick_alpha.tick(dt);
         }

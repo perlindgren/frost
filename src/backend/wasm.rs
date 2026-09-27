@@ -11,9 +11,9 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::NamedKey;
 use winit::window::{Window, WindowId};
 
-use super::{create_window, Frost};
-use crate::objects::Scene;
+use super::{Frost, create_window};
 use crate::Process;
+use crate::objects::Scene;
 
 // ==================== web startup (wasm32 only) ====================
 //

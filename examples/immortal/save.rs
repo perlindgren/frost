@@ -17,7 +17,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{bugs, fall::{Fall, FallPhase}, plant, vipers, Fly, Pick, Tool, WateredPlant};
+use crate::{
+    Fly, Pick, Tool, WateredPlant, bugs,
+    fall::{Fall, FallPhase},
+    plant, vipers,
+};
 
 /// The snapshot format's version: the layout this build reads and writes.
 /// [load] rejects files whose version differs.
@@ -188,7 +192,9 @@ impl From<LandingState> for crate::Landing {
     fn from(state: LandingState) -> Self {
         match state {
             LandingState::Slot(i) => crate::Landing::Slot(i),
-            LandingState::Basket(origin) => crate::Landing::Basket(frost::Transform::translate(origin)),
+            LandingState::Basket(origin) => {
+                crate::Landing::Basket(frost::Transform::translate(origin))
+            }
         }
     }
 }
@@ -357,8 +363,8 @@ impl TurnState {
     /// The tween this state restores: built fresh, then clocked back to
     /// its captured moment.
     pub fn into_tween(self) -> frost::Tween<f32> {
-        let mut tween = frost::Tween::new(self.from, self.to, self.duration)
-            .repeat(self.repeat.into());
+        let mut tween =
+            frost::Tween::new(self.from, self.to, self.duration).repeat(self.repeat.into());
         tween.set_time(self.time);
         tween
     }
@@ -391,7 +397,10 @@ pub fn save(snapshot: &Snapshot) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let text = ron::to_string(snapshot).map_err(|err| {
-        std::io::Error::new(std::io::ErrorKind::Other, format!("encoding the snapshot: {err}"))
+        std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("encoding the snapshot: {err}"),
+        )
     })?;
     std::fs::write(&path, text)
 }
@@ -415,12 +424,8 @@ pub fn parse(text: &str) -> Result<Snapshot, LoadError> {
 /// version check).
 pub fn load() -> Result<Snapshot, LoadError> {
     let path = snapshot_path();
-    let text = std::fs::read_to_string(&path).map_err(|err| {
-        LoadError(format!(
-            "no snapshot to load at {}: {err}",
-            path.display()
-        ))
-    })?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|err| LoadError(format!("no snapshot to load at {}: {err}", path.display())))?;
     parse(&text).map_err(|err| {
         LoadError(format!(
             "the snapshot at {} cannot be loaded: {err}",

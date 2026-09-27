@@ -654,8 +654,7 @@ impl Bugs {
             // Still growing out of the grass: hold the spawn spot.
             return;
         }
-        let (next, dist) =
-            Self::step_move(bug, self.t, self.ground, dt, anchors, i, arrivals);
+        let (next, dist) = Self::step_move(bug, self.t, self.ground, dt, anchors, i, arrivals);
         if dt > 0.0 && bug.placed {
             bug.vel = [(next[0] - bug.pos[0]) / dt, (next[1] - bug.pos[1]) / dt];
         } else {
@@ -750,14 +749,11 @@ impl Bugs {
         let mut tjatters = Vec::new();
         for &(i, dest) in arrivals {
             let company = self.bugs.iter().enumerate().any(|(j, b)| {
-                j != i
-                    && b.dying.is_none()
-                    && b.respawn.is_none()
-                    && {
-                        let dx = b.pos[0] - dest[0];
-                        let dy = b.pos[1] - dest[1];
-                        dx * dx + dy * dy <= TJATTER_RANGE * TJATTER_RANGE
-                    }
+                j != i && b.dying.is_none() && b.respawn.is_none() && {
+                    let dx = b.pos[0] - dest[0];
+                    let dy = b.pos[1] - dest[1];
+                    dx * dx + dy * dy <= TJATTER_RANGE * TJATTER_RANGE
+                }
             });
             if company {
                 tjatters.push((self.rng.next_f32() * 3.0) as usize);
@@ -860,11 +856,7 @@ impl Bugs {
                     // nothing while [Bugs::step] sinks it through the
                     // grass.
                     let s = 1.0 - (t - BOUNCE_TIME) / SINK_TIME;
-                    (
-                        bug.facing * self.scale * g * s,
-                        -self.scale * g * s,
-                        0.0,
-                    )
+                    (bug.facing * self.scale * g * s, -self.scale * g * s, 0.0)
                 }
                 None => (bug.facing * self.scale, self.scale * g, 0.0),
             };
@@ -926,10 +918,9 @@ fn bounce_lift(t: f32) -> f32 {
 /// truly the bug's frame, and force a swap when it is not.
 fn same_sprite(shape: &Option<frost::Shape>, frame: &frost::Shape) -> bool {
     match (shape, frame) {
-        (
-            Some(frost::Shape::Sprite { data: a, .. }),
-            frost::Shape::Sprite { data: b, .. },
-        ) => std::sync::Arc::ptr_eq(a, b),
+        (Some(frost::Shape::Sprite { data: a, .. }), frost::Shape::Sprite { data: b, .. }) => {
+            std::sync::Arc::ptr_eq(a, b)
+        }
         _ => false,
     }
 }
@@ -1213,27 +1204,30 @@ mod tests {
         // times in the same frame (the hit cooldown makes that one hit),
         // then waits the cooldown out before the next round.
         let pos: Vec<[f32; 2]> = bugs.bugs.iter().map(|b| b.pos).collect();
-        let farthest = (0..pos.len()).max_by(|&a, &b| {
-            let da = pos.iter().enumerate().filter(|(i, _)| *i != a)
-                .map(|(_, q)| (q[0] - pos[a][0]).powi(2) + (q[1] - pos[a][1]).powi(2))
-                .fold(f32::MAX, f32::min);
-            let db = pos.iter().enumerate().filter(|(i, _)| *i != b)
-                .map(|(_, q)| (q[0] - pos[b][0]).powi(2) + (q[1] - pos[b][1]).powi(2))
-                .fold(f32::MAX, f32::min);
-            da.partial_cmp(&db).unwrap()
-        })
-        .unwrap();
+        let farthest = (0..pos.len())
+            .max_by(|&a, &b| {
+                let da = pos
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != a)
+                    .map(|(_, q)| (q[0] - pos[a][0]).powi(2) + (q[1] - pos[a][1]).powi(2))
+                    .fold(f32::MAX, f32::min);
+                let db = pos
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != b)
+                    .map(|(_, q)| (q[0] - pos[b][0]).powi(2) + (q[1] - pos[b][1]).powi(2))
+                    .fold(f32::MAX, f32::min);
+                da.partial_cmp(&db).unwrap()
+            })
+            .unwrap();
         for round in 1..HITS_TO_KILL {
             let p = bugs.bugs[farthest].pos;
             let hits = bugs.hit_at(p).ajs.len();
             bugs.hit_at(p);
             bugs.hit_at(p);
             assert!(hits >= 1, "the mist found no bug");
-            assert_eq!(
-                bugs.hit_at(p).ajs.len(),
-                0,
-                "the hit cooldown did not hold"
-            );
+            assert_eq!(bugs.hit_at(p).ajs.len(), 0, "the hit cooldown did not hold");
             assert_eq!(
                 bugs.bugs[farthest].hits,
                 HITS_TO_KILL - round,
@@ -1272,8 +1266,7 @@ mod tests {
                 (b.pos, b.frame, b.facing, b.grow)
             })
             .collect();
-        let spawn: Vec<[f32; 2]> =
-            marked_idx.iter().map(|&i| bugs.bugs[i].spawn).collect();
+        let spawn: Vec<[f32; 2]> = marked_idx.iter().map(|&i| bugs.bugs[i].spawn).collect();
 
         let mut saw_upright = false;
         let mut min_y_scale = f32::MAX;
@@ -1294,16 +1287,10 @@ mod tests {
                     assert_eq!(b.facing, facing0, "bug {i} turned while dying");
                     assert_eq!(b.grow, grow0, "bug {i} kept growing while dying");
                     if b.dying.unwrap() < BOUNCE_TIME {
-                        assert_eq!(
-                            b.pos[1],
-                            x0[1],
-                            "bug {i} sank during the bounce"
-                        );
+                        assert_eq!(b.pos[1], x0[1], "bug {i} sank during the bounce");
                         // Mid-bounce, the laid-out center rides the arc
                         // strictly above the death spot.
-                        let laid_out_y = node.children[i]
-                            .transform
-                            .apply([0.0, 0.0])[1];
+                        let laid_out_y = node.children[i].transform.apply([0.0, 0.0])[1];
                         assert!(
                             laid_out_y > b.pos[1],
                             "bug {i}'s bounce never left the grass"
@@ -1322,8 +1309,9 @@ mod tests {
                 } else {
                     // The first frame the bug waits out its respawn: the
                     // delay must be the one its death drew.
-                    let r =
-                        b.respawn.expect("a marked bug is neither dying nor waiting");
+                    let r = b
+                        .respawn
+                        .expect("a marked bug is neither dying nor waiting");
                     assert!(
                         r > RESPAWN_MIN && r < RESPAWN_MAX,
                         "the respawn delay {r}s left the window"
@@ -1338,9 +1326,7 @@ mod tests {
         // The death completed: every marked bug is in its respawn delay,
         // and the pool itself never shrank.
         assert!(
-            marked_idx
-                .iter()
-                .all(|&i| bugs.bugs[i].respawn.is_some()),
+            marked_idx.iter().all(|&i| bugs.bugs[i].respawn.is_some()),
             "a marked bug never entered its respawn delay"
         );
         assert_eq!(bugs.bugs.len(), initial, "a bug left the pool");
@@ -1401,14 +1387,8 @@ mod tests {
                         bugs.bugs[i].pos, spawn[k],
                         "bug {i} popped up away from its spawn spot"
                     );
-                    assert_eq!(
-                        bugs.bugs[i].grow, 0.0,
-                        "bug {i} popped up pre-grown"
-                    );
-                    assert_eq!(
-                        bugs.bugs[i].hits, HITS_TO_KILL,
-                        "bug {i} popped up wounded"
-                    );
+                    assert_eq!(bugs.bugs[i].grow, 0.0, "bug {i} popped up pre-grown");
+                    assert_eq!(bugs.bugs[i].hits, HITS_TO_KILL, "bug {i} popped up wounded");
                     assert!(
                         node.children[i].shape.is_some(),
                         "bug {i} popped back invisible"
@@ -1478,10 +1458,7 @@ mod tests {
         // last round is the killing blow.
         for _ in 0..HITS_TO_KILL {
             for p in &pos {
-                assert!(
-                    bugs.hit_at(*p).ajs.len() >= 1,
-                    "a drop found no bug"
-                );
+                assert!(bugs.hit_at(*p).ajs.len() >= 1, "a drop found no bug");
             }
             for _ in 0..5 {
                 bugs.step(dt, &ANCHORS, &ALIVE);
@@ -1561,8 +1538,7 @@ mod tests {
             parked.step(dt, &ANCHORS, &ALIVE);
         }
         assert_eq!(
-            parked.bugs[0].hits,
-            HITS_TO_KILL,
+            parked.bugs[0].hits, HITS_TO_KILL,
             "the counter climbed before the interval ran"
         );
         // Cross the 5 s, 10 s and 15 s marks: one hit per full interval.
@@ -1654,10 +1630,7 @@ mod tests {
         pin(&mut bugs, 2, -900.0);
         // Bug 1's own arrival finds no one within range: silent.
         let events = bugs.step(dt, &ANCHORS, &ALIVE);
-        assert!(
-            bugs.bugs[1].arrived,
-            "bug 1 never reached its destination"
-        );
+        assert!(bugs.bugs[1].arrived, "bug 1 never reached its destination");
         assert!(
             events.tjatters.is_empty(),
             "a lone arrival chattered: {:?}",
@@ -1673,10 +1646,7 @@ mod tests {
             ANCHORS[b0.home][1] + b0.idle[1] + ground,
         ];
         let events = bugs.step(dt, &ANCHORS, &ALIVE);
-        assert!(
-            bugs.bugs[0].arrived,
-            "bug 0 never reached its destination"
-        );
+        assert!(bugs.bugs[0].arrived, "bug 0 never reached its destination");
         assert_eq!(
             events.tjatters.len(),
             1,
@@ -1765,11 +1735,7 @@ mod tests {
         // one plopp, in range.
         bugs.bugs[0].respawn = Some(dt);
         let events = bugs.step(dt, &ANCHORS, &ALIVE);
-        assert_eq!(
-            events.plops.len(),
-            1,
-            "the respawn plops more than once"
-        );
+        assert_eq!(events.plops.len(), 1, "the respawn plops more than once");
         assert!(
             (0..3).contains(&events.plops[0]),
             "the respawn plopp index {:?} left its range",
@@ -1937,10 +1903,7 @@ mod tests {
             "the first batch left plant 0"
         );
         assert!(
-            bugs.bugs
-                .iter()
-                .skip(BUGS_PER_PLANT)
-                .all(|b| b.home == 1),
+            bugs.bugs.iter().skip(BUGS_PER_PLANT).all(|b| b.home == 1),
             "the second batch is not at plant 1"
         );
     }

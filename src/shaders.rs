@@ -30,7 +30,7 @@ mod tests {
     //! that fails either stage here fails at runtime there.
 
     use super::*;
-    use crate::backend::{OCCLUDER_FIELD_BUFFER_MIN, LIGHT_FIELD_BUFFER_MIN};
+    use crate::backend::{LIGHT_FIELD_BUFFER_MIN, OCCLUDER_FIELD_BUFFER_MIN};
 
     /// The seven shader sources with their file names.
     fn all_shaders() -> [(&'static str, &'static str); 7] {
@@ -160,7 +160,9 @@ mod tests {
             .types
             .iter()
             .find_map(|(_, ty)| match &ty.inner {
-                naga::TypeInner::Struct { .. } if ty.name.as_deref() == Some("ParticlesUniforms") => {
+                naga::TypeInner::Struct { .. }
+                    if ty.name.as_deref() == Some("ParticlesUniforms") =>
+                {
                     Some(ty)
                 }
                 _ => None,
@@ -248,9 +250,7 @@ mod tests {
                     base_ty.inner,
                 );
             }
-            other => panic!(
-                "the points array should be fixed at 128 elements, got {other:?}"
-            ),
+            other => panic!("the points array should be fixed at 128 elements, got {other:?}"),
         }
     }
 
@@ -299,9 +299,7 @@ mod tests {
                 size: naga::ArraySize::Dynamic,
                 ..
             } => {}
-            other => panic!(
-                "the LightField tail should be a dynamic array, got {other:?}"
-            ),
+            other => panic!("the LightField tail should be a dynamic array, got {other:?}"),
         }
     }
 
@@ -349,9 +347,7 @@ mod tests {
                 size: naga::ArraySize::Dynamic,
                 ..
             } => {}
-            other => panic!(
-                "the OccluderField tail should be a dynamic array, got {other:?}"
-            ),
+            other => panic!("the OccluderField tail should be a dynamic array, got {other:?}"),
         }
     }
 }

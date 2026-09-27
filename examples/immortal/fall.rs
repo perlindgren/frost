@@ -8,7 +8,7 @@
 //! pivots — and [super::Demo::step_falls] re-lays each pivot out from its
 //! entry's body position, scale factors, and wheel rotation every frame.
 
-use super::{dist2, PLANT_POS};
+use super::{PLANT_POS, dist2};
 
 /// The fall speed of a dropped, overgrown tomato, in user pixels per
 /// second: it drops from the point it let go, at this constant speed, along
@@ -353,10 +353,21 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(fall.phase, FallPhase::Rolling, "the fall should land and start rolling");
-        assert_eq!(fall.body, [0.0, 0.0], "the body should sit on the root anchor");
+        assert_eq!(
+            fall.phase,
+            FallPhase::Rolling,
+            "the fall should land and start rolling"
+        );
+        assert_eq!(
+            fall.body,
+            [0.0, 0.0],
+            "the body should sit on the root anchor"
+        );
         assert!(fall.landed, "the drop clip should have played");
-        assert!(anchors.contains(&fall.target), "the target should be a plant anchor");
+        assert!(
+            anchors.contains(&fall.target),
+            "the target should be a plant anchor"
+        );
     }
 
     /// A landed tomato rolls along the straight line from its start to its
@@ -378,7 +389,11 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(fall.phase, FallPhase::Resting, "the roll should reach its target");
+        assert_eq!(
+            fall.phase,
+            FallPhase::Resting,
+            "the roll should reach its target"
+        );
         assert_eq!(fall.body, target, "the body should sit on the target");
     }
 
@@ -421,8 +436,15 @@ mod tests {
         }
         assert!(saw_squash, "the rest should squash out (sy < 1)");
         assert!(saw_stretch, "the rest should stretch in (sy > 1)");
-        assert_eq!(fall.phase, FallPhase::Rolling, "the rest should end into a new roll");
-        assert_ne!(fall.target, first_target, "the new anchor should differ from the old");
+        assert_eq!(
+            fall.phase,
+            FallPhase::Rolling,
+            "the rest should end into a new roll"
+        );
+        assert_ne!(
+            fall.target, first_target,
+            "the new anchor should differ from the old"
+        );
     }
 
     /// A running bump lifts the body off its rolling line by the half-sine
@@ -521,7 +543,11 @@ mod tests {
             }
         }
         assert!(saw_change, "the spin should turn while the tomato rolls");
-        assert_eq!(fall.phase, FallPhase::Resting, "the roll should reach its target");
+        assert_eq!(
+            fall.phase,
+            FallPhase::Resting,
+            "the roll should reach its target"
+        );
         assert_eq!(fall.spin, 0.0, "the rest should stand the tomato upright");
     }
 
@@ -547,9 +573,20 @@ mod tests {
         let anchors = test_anchors();
         let mut fall = Fall::new([0.0, 0.0], [100.0, 0.0]);
         fall.start_roll(&mut rng, &anchors);
-        assert_ne!(fall.target, [100.0, 0.0], "the target should not be the current spot");
-        assert!(anchors.contains(&fall.target), "the target should be a plant anchor");
-        assert_eq!(fall.start, [100.0, 0.0], "the roll should start at the current spot");
+        assert_ne!(
+            fall.target,
+            [100.0, 0.0],
+            "the target should not be the current spot"
+        );
+        assert!(
+            anchors.contains(&fall.target),
+            "the target should be a plant anchor"
+        );
+        assert_eq!(
+            fall.start,
+            [100.0, 0.0],
+            "the roll should start at the current spot"
+        );
         assert_eq!(fall.progress, 0.0, "the roll should start at zero progress");
         assert!(
             (BUMP_IN.0..BUMP_IN.1).contains(&fall.bump_in),

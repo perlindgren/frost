@@ -43,8 +43,8 @@ impl frost::Process for Demo {
 
         let button = &mut ctx.scene().root.children[0];
         // Rotate about the button's center, then place it at `pos`.
-        button.transform = frost::Transform::rotate(self.rot)
-            .compose(&frost::Transform::translate(self.pos));
+        button.transform =
+            frost::Transform::rotate(self.rot).compose(&frost::Transform::translate(self.pos));
         log::trace!("process: dt {:?} pos {:?} rot {:?}", dt, self.pos, self.rot);
     }
 }

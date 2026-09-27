@@ -149,36 +149,86 @@ const PROC_TOP: f32 = 20.0;
 const DRAW_TOP: f32 = 128.0;
 
 /// The graph panels' fill.
-const PANEL: Color = Color { r: 0.03, g: 0.04, b: 0.07, a: 1.0 };
+const PANEL: Color = Color {
+    r: 0.03,
+    g: 0.04,
+    b: 0.07,
+    a: 1.0,
+};
 
 /// The fps chart's polyline.
-const FPS_COLOR: Color = Color { r: 0.95, g: 0.62, b: 0.25, a: 1.0 };
+const FPS_COLOR: Color = Color {
+    r: 0.95,
+    g: 0.62,
+    b: 0.25,
+    a: 1.0,
+};
 
 /// The frame-time chart's polyline.
-const FT_COLOR: Color = Color { r: 0.35, g: 0.78, b: 0.55, a: 1.0 };
+const FT_COLOR: Color = Color {
+    r: 0.35,
+    g: 0.78,
+    b: 0.55,
+    a: 1.0,
+};
 
 /// The processing-time chart's total series.
-const PROC_COLOR: Color = Color { r: 0.45, g: 0.7, b: 0.95, a: 1.0 };
+const PROC_COLOR: Color = Color {
+    r: 0.45,
+    g: 0.7,
+    b: 0.95,
+    a: 1.0,
+};
 
 /// The processing-time chart's app series.
-const APP_COLOR: Color = Color { r: 0.7, g: 0.55, b: 0.95, a: 1.0 };
+const APP_COLOR: Color = Color {
+    r: 0.7,
+    g: 0.55,
+    b: 0.95,
+    a: 1.0,
+};
 
 /// The processing-time chart's diagnostic series: this overlay's own
 /// update cost, the gap between the total and the app series.
-const DIAG_PROC_COLOR: Color = Color { r: 0.35, g: 0.85, b: 0.95, a: 1.0 };
+const DIAG_PROC_COLOR: Color = Color {
+    r: 0.35,
+    g: 0.85,
+    b: 0.95,
+    a: 1.0,
+};
 
 /// The draw-call chart's total series.
-const DRAW_COLOR: Color = Color { r: 0.9, g: 0.4, b: 0.75, a: 1.0 };
+const DRAW_COLOR: Color = Color {
+    r: 0.9,
+    g: 0.4,
+    b: 0.75,
+    a: 1.0,
+};
 
 /// The draw-call chart's app series.
-const APP_DRAW_COLOR: Color = Color { r: 1.0, g: 0.7, b: 0.9, a: 1.0 };
+const APP_DRAW_COLOR: Color = Color {
+    r: 1.0,
+    g: 0.7,
+    b: 0.9,
+    a: 1.0,
+};
 
 /// The draw-call chart's diagnostic series: this overlay's own draw calls,
 /// the gap between the total and the app series.
-const DIAG_DRAW_COLOR: Color = Color { r: 0.55, g: 0.15, b: 0.4, a: 1.0 };
+const DIAG_DRAW_COLOR: Color = Color {
+    r: 0.55,
+    g: 0.15,
+    b: 0.4,
+    a: 1.0,
+};
 
 /// The 60 fps / 16.7 ms reference lines.
-const REF_COLOR: Color = Color { r: 0.4, g: 0.4, b: 0.45, a: 1.0 };
+const REF_COLOR: Color = Color {
+    r: 0.4,
+    g: 0.4,
+    b: 0.45,
+    a: 1.0,
+};
 
 /// The chart polylines' stroke width, in pixels.
 const LINE_WIDTH: f32 = 1.5;
@@ -503,12 +553,7 @@ fn line_draw(line: &Line, line_top: f32, w: f32) -> Option<LineDraw> {
 /// at the column's center, rising from one pixel above the panel's bottom
 /// edge, the value scaled to the panel height minus the two 1 px insets —
 /// the stroke the chart's [`Shape::Polyline`] draws in one draw call.
-fn chart_points(
-    cols: &[f32; COLUMNS],
-    x0: f32,
-    panel_top: f32,
-    top_value: f32,
-) -> Vec<[f32; 2]> {
+fn chart_points(cols: &[f32; COLUMNS], x0: f32, panel_top: f32, top_value: f32) -> Vec<[f32; 2]> {
     let pitch = GRAPH_W / COLUMNS as f32;
     cols.iter()
         .enumerate()
@@ -1087,11 +1132,9 @@ impl Process for Diagnostics {
         for (j, &chart) in chart_slots.iter().enumerate() {
             for k in 0..series_count(chart) {
                 if self.chart_on_at(j) {
-                    let cols = slice_max(
-                        self.samples.iter().copied(),
-                        self.t,
-                        |s| series_value(chart, k, s),
-                    );
+                    let cols = slice_max(self.samples.iter().copied(), self.t, |s| {
+                        series_value(chart, k, s)
+                    });
                     self.place(
                         poly_slot,
                         [0.0, 0.0],
@@ -1151,12 +1194,16 @@ mod tests {
         assert!(flags.contains(DiagnosticsFlags::DRAW));
         assert!(!flags.contains(DiagnosticsFlags::FT));
         assert!(!flags.contains(DiagnosticsFlags::PROC));
-        assert!(flags
-            .insert(DiagnosticsFlags::FT)
-            .contains(DiagnosticsFlags::FT));
-        assert!(!flags
-            .remove(DiagnosticsFlags::FPS)
-            .contains(DiagnosticsFlags::FPS));
+        assert!(
+            flags
+                .insert(DiagnosticsFlags::FT)
+                .contains(DiagnosticsFlags::FT)
+        );
+        assert!(
+            !flags
+                .remove(DiagnosticsFlags::FPS)
+                .contains(DiagnosticsFlags::FPS)
+        );
         let all = DiagnosticsFlags::all();
         assert!(all.contains(flags));
         assert!(!flags.contains(all));
@@ -1349,8 +1396,7 @@ mod tests {
 
     /// A real monospaced TrueType font, embedded so the line tests can
     /// shape text without a file system.
-    const FIRA: &[u8] =
-        include_bytes!("../assets/fonts/FiraCode-VariableFont_wght.ttf");
+    const FIRA: &[u8] = include_bytes!("../assets/fonts/FiraCode-VariableFont_wght.ttf");
 
     /// The readout's ink is not uniform below the baseline — Fira Code's
     /// "8" and "9" carry a pixel of antialiasing under it, where the "4"
@@ -1363,8 +1409,18 @@ mod tests {
     fn line_extent_covers_every_readouts_ink() {
         let d = Diagnostics::from_bytes(FIRA, DiagnosticsFlags::all()).unwrap();
         for text in [
-            "8", "9", "18", "19", "59", "61", "1920x1080", "FPS 60",
-            "FT 16.7ms", "PROC 12.34ms", "APP 12.12ms", "DRAW 42",
+            "8",
+            "9",
+            "18",
+            "19",
+            "59",
+            "61",
+            "1920x1080",
+            "FPS 60",
+            "FT 16.7ms",
+            "PROC 12.34ms",
+            "APP 12.12ms",
+            "DRAW 42",
         ] {
             let layout = crate::text::layout(FIRA, text, SIZE).unwrap();
             let (mut top, mut bottom) = (f32::NEG_INFINITY, f32::INFINITY);

@@ -49,23 +49,27 @@ pub struct OrientedBox {
 impl OrientedBox {
     /// An axis-aligned box.
     pub fn new(center: [f32; 2], half: [f32; 2]) -> Self {
-        Self { center, half, angle: 0.0 }
+        Self {
+            center,
+            half,
+            angle: 0.0,
+        }
     }
 
     /// A box rotated counter-clockwise by `angle` radians.
     pub fn rotated(center: [f32; 2], half: [f32; 2], angle: f32) -> Self {
-        Self { center, half, angle }
+        Self {
+            center,
+            half,
+            angle,
+        }
     }
 
     /// The box's unit axes in world coordinates: `axis(0)` along the box's
     /// own x (the `half[0]` extent) and `axis(1)` along its own y.
     pub fn axis(&self, i: usize) -> [f32; 2] {
         let (sin, cos) = self.angle.sin_cos();
-        if i == 0 {
-            [cos, sin]
-        } else {
-            [-sin, cos]
-        }
+        if i == 0 { [cos, sin] } else { [-sin, cos] }
     }
 
     /// The box's four corners in world coordinates, counter-clockwise from
@@ -165,11 +169,7 @@ fn box_push_out(a: &OrientedBox, b: &OrientedBox) -> Option<PushOut> {
     // Orient the axis so it points from `b` toward `a`: when `b` lies on
     // the + side of `a` along the axis, `a` must be pushed along −.
     let s = dot([b.center[0] - a.center[0], b.center[1] - a.center[1]], axis);
-    let dir = if s > 0.0 {
-        [-axis[0], -axis[1]]
-    } else {
-        axis
-    };
+    let dir = if s > 0.0 { [-axis[0], -axis[1]] } else { axis };
     Some(PushOut { dir, depth: pen })
 }
 
@@ -341,11 +341,7 @@ mod tests {
     #[test]
     fn rotated_bar_overlaps_horizontal_bar() {
         let a = Collider::Box(OrientedBox::rotated([0.0, 0.0], [40.0, 10.0], 0.0));
-        let b = Collider::Box(OrientedBox::rotated(
-            [20.0, 0.0],
-            [10.0, 40.0],
-            FRAC_PI_4,
-        ));
+        let b = Collider::Box(OrientedBox::rotated([20.0, 0.0], [10.0, 40.0], FRAC_PI_4));
         assert!(a.intersects(&b));
     }
 
@@ -380,11 +376,7 @@ mod tests {
         // A diamond nudged half a pixel above a horizontal bar: the bar's
         // own y axis is the least-penetrated one, so that is the MTV.
         let a = Collider::Box(OrientedBox::rotated([0.0, 0.0], [40.0, 10.0], 0.0));
-        let b = Collider::Box(OrientedBox::rotated(
-            [30.0, 1.0],
-            [10.0, 10.0],
-            FRAC_PI_4,
-        ));
+        let b = Collider::Box(OrientedBox::rotated([30.0, 1.0], [10.0, 10.0], FRAC_PI_4));
         let po = a.push_out(&b).unwrap();
         assert!(close(po.dir, [0.0, -1.0], 1e-4));
         assert!((po.depth - (9.0 + 10.0 * SQRT_2)).abs() < 1e-4);
@@ -400,7 +392,10 @@ mod tests {
 
         let po = a.push_out(&b).unwrap();
         let moved = OrientedBox::rotated(
-            [ab.center[0] + po.dir[0] * po.depth, ab.center[1] + po.dir[1] * po.depth],
+            [
+                ab.center[0] + po.dir[0] * po.depth,
+                ab.center[1] + po.dir[1] * po.depth,
+            ],
             ab.half,
             ab.angle,
         );
@@ -411,21 +406,36 @@ mod tests {
 
     #[test]
     fn circle_overlap_touch_miss() {
-        let a = Collider::Circle(Circle { center: [0.0, 0.0], radius: 30.0 });
-        let b = Collider::Circle(Circle { center: [40.0, 0.0], radius: 30.0 });
+        let a = Collider::Circle(Circle {
+            center: [0.0, 0.0],
+            radius: 30.0,
+        });
+        let b = Collider::Circle(Circle {
+            center: [40.0, 0.0],
+            radius: 30.0,
+        });
         assert!(a.intersects(&b));
         let po = a.push_out(&b).unwrap();
         assert!(close(po.dir, [-1.0, 0.0], 1e-5));
         assert!((po.depth - 20.0).abs() < 1e-4);
 
-        let c = Collider::Circle(Circle { center: [60.0, 0.0], radius: 30.0 });
+        let c = Collider::Circle(Circle {
+            center: [60.0, 0.0],
+            radius: 30.0,
+        });
         assert!(!a.intersects(&c)); // Exactly touching.
     }
 
     #[test]
     fn concentric_circles_push_out_is_deterministic() {
-        let a = Collider::Circle(Circle { center: [0.0, 0.0], radius: 10.0 });
-        let b = Collider::Circle(Circle { center: [0.0, 0.0], radius: 10.0 });
+        let a = Collider::Circle(Circle {
+            center: [0.0, 0.0],
+            radius: 10.0,
+        });
+        let b = Collider::Circle(Circle {
+            center: [0.0, 0.0],
+            radius: 10.0,
+        });
         let po = a.push_out(&b).unwrap();
         assert!(close(po.dir, [1.0, 0.0], 1e-6));
         assert!((po.depth - 20.0).abs() < 1e-5);
@@ -436,7 +446,10 @@ mod tests {
     #[test]
     fn circle_aabb_edge_push_out() {
         let sq = Collider::Box(OrientedBox::new([0.0, 0.0], [50.0, 50.0]));
-        let c = Collider::Circle(Circle { center: [55.0, 0.0], radius: 20.0 });
+        let c = Collider::Circle(Circle {
+            center: [55.0, 0.0],
+            radius: 20.0,
+        });
         assert!(c.intersects(&sq));
         let po = c.push_out(&sq).unwrap();
         assert!(close(po.dir, [1.0, 0.0], 1e-5));
@@ -446,7 +459,10 @@ mod tests {
     #[test]
     fn circle_aabb_corner_push_out() {
         let sq = Collider::Box(OrientedBox::new([0.0, 0.0], [50.0, 50.0]));
-        let c = Collider::Circle(Circle { center: [60.0, 60.0], radius: 15.0 });
+        let c = Collider::Circle(Circle {
+            center: [60.0, 60.0],
+            radius: 15.0,
+        });
         let po = c.push_out(&sq).unwrap();
         assert!(close(po.dir, [SQRT_2 / 2.0, SQRT_2 / 2.0], 1e-4));
         let depth = 15.0 - (200.0_f32).sqrt();
@@ -456,14 +472,20 @@ mod tests {
     #[test]
     fn circle_aabb_touching_is_not_overlap() {
         let sq = Collider::Box(OrientedBox::new([0.0, 0.0], [50.0, 50.0]));
-        let c = Collider::Circle(Circle { center: [70.0, 0.0], radius: 20.0 });
+        let c = Collider::Circle(Circle {
+            center: [70.0, 0.0],
+            radius: 20.0,
+        });
         assert!(!c.intersects(&sq)); // Closest point at distance 20 = radius.
     }
 
     #[test]
     fn circle_center_inside_box_pushes_out_past_nearest_face() {
         let sq = Collider::Box(OrientedBox::new([0.0, 0.0], [50.0, 30.0]));
-        let c = Collider::Circle(Circle { center: [10.0, 0.0], radius: 20.0 });
+        let c = Collider::Circle(Circle {
+            center: [10.0, 0.0],
+            radius: 20.0,
+        });
         let po = c.push_out(&sq).unwrap();
         // The nearest face is the top one (30 away, not 40): the circle
         // clears once it has moved radius + face distance along +y.
@@ -474,7 +496,10 @@ mod tests {
     #[test]
     fn circle_fully_inside_box_pushes_out_full_clearance() {
         let sq = Collider::Box(OrientedBox::new([0.0, 0.0], [50.0, 50.0]));
-        let c = Collider::Circle(Circle { center: [0.0, 0.0], radius: 10.0 });
+        let c = Collider::Circle(Circle {
+            center: [0.0, 0.0],
+            radius: 10.0,
+        });
         let po = c.push_out(&sq).unwrap();
         assert!(close(po.dir, [1.0, 0.0], 1e-6));
         assert!((po.depth - 60.0).abs() < 1e-4); // radius + face distance.
@@ -484,12 +509,11 @@ mod tests {
     fn circle_rotated_box_push_out() {
         // A horizontal bar turned a quarter turn is a vertical bar with the
         // half-extents swapped.
-        let bar = Collider::Box(OrientedBox::rotated(
-            [0.0, 0.0],
-            [40.0, 10.0],
-            FRAC_PI_2,
-        ));
-        let c = Collider::Circle(Circle { center: [0.0, 45.0], radius: 20.0 });
+        let bar = Collider::Box(OrientedBox::rotated([0.0, 0.0], [40.0, 10.0], FRAC_PI_2));
+        let c = Collider::Circle(Circle {
+            center: [0.0, 45.0],
+            radius: 20.0,
+        });
         let po = c.push_out(&bar).unwrap();
         assert!(close(po.dir, [0.0, 1.0], 1e-4));
         assert!((po.depth - 15.0).abs() < 1e-4);
@@ -500,7 +524,10 @@ mod tests {
     #[test]
     fn box_push_out_of_circle_is_inverse_of_circle() {
         let a = Collider::Box(OrientedBox::new([0.0, 0.0], [30.0, 20.0]));
-        let c = Collider::Circle(Circle { center: [40.0, 0.0], radius: 25.0 });
+        let c = Collider::Circle(Circle {
+            center: [40.0, 0.0],
+            radius: 25.0,
+        });
         let ba = a.push_out(&c).unwrap();
         let cb = c.push_out(&a).unwrap();
         assert!(close(ba.dir, [-cb.dir[0], -cb.dir[1]], 1e-6));

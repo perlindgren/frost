@@ -252,11 +252,7 @@ impl frost::Process for Demo {
                 });
                 self.spins.push(
                     self.rng.in_range(SPIN.0, SPIN.1)
-                        * if self.rng.next_f32() < 0.5 {
-                            1.0
-                        } else {
-                            -1.0
-                        },
+                        * if self.rng.next_f32() < 0.5 { 1.0 } else { -1.0 },
                 );
             }
         }
@@ -269,7 +265,10 @@ impl frost::Process for Demo {
             let life = self.rng.in_range(FALL_LIFE.0, FALL_LIFE.1);
             self.fall.spawn(frost::Particle {
                 pos: [self.rng.in_range(-w / 2.0, w / 2.0), h / 2.0 - TOP_MARGIN],
-                vel: [self.rng.in_range(-15.0, 15.0), -self.rng.in_range(30.0, 120.0)],
+                vel: [
+                    self.rng.in_range(-15.0, 15.0),
+                    -self.rng.in_range(30.0, 120.0),
+                ],
                 life,
                 max_life: life,
                 size: self.rng.in_range(FALL_SIZE.0, FALL_SIZE.1),

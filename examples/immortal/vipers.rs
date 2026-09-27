@@ -396,7 +396,10 @@ mod tests {
     fn centers() -> [[[f32; 2]; LAYERS]; 6] {
         std::array::from_fn(|p| {
             std::array::from_fn(|k| {
-                [ANCHORS[p][0] + k as f32 * 20.0, ANCHORS[p][1] + k as f32 * 20.0]
+                [
+                    ANCHORS[p][0] + k as f32 * 20.0,
+                    ANCHORS[p][1] + k as f32 * 20.0,
+                ]
             })
         })
     }
@@ -467,14 +470,26 @@ mod tests {
         // only plant 2's vipers exist — the global prefix (vipers 0-1)
         // must NOT spawn.
         v.step(0.05, &c, &[0, 0, 2, 0, 0, 0]);
-        assert!(!v.bees[0].placed, "viper 0 (plant 0) spawned on a global prefix");
-        assert!(!v.bees[1].placed, "viper 1 (plant 0) spawned on a global prefix");
-        assert!(!v.bees[5].placed, "viper 5 (plant 1) spawned on a global prefix");
+        assert!(
+            !v.bees[0].placed,
+            "viper 0 (plant 0) spawned on a global prefix"
+        );
+        assert!(
+            !v.bees[1].placed,
+            "viper 1 (plant 0) spawned on a global prefix"
+        );
+        assert!(
+            !v.bees[5].placed,
+            "viper 5 (plant 1) spawned on a global prefix"
+        );
         assert!(v.bees[10].placed, "viper 10 (plant 2 layer 0) missing");
         assert_eq!(v.bees[10].home, 2, "viper 10 homes to plant 2");
         assert!(v.bees[11].placed, "viper 11 (plant 2 layer 1) missing");
         assert_eq!(v.bees[11].home, 2, "viper 11 homes to plant 2");
-        assert!(!v.bees[12].placed, "viper 12 (plant 2 layer 2) spawned early");
+        assert!(
+            !v.bees[12].placed,
+            "viper 12 (plant 2 layer 2) spawned early"
+        );
     }
 
     /// A spawned viper circles the segment that spawned it: its position

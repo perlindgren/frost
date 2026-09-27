@@ -218,16 +218,7 @@ impl Canvas {
     /// with the same `z` are drawn in call order, so the last one drawn is on
     /// top.
     #[allow(clippy::too_many_arguments)] // immediate-mode draw call
-    pub fn line(
-        &mut self,
-        x0: f32,
-        y0: f32,
-        x1: f32,
-        y1: f32,
-        color: Color,
-        width: f32,
-        z: f32,
-    ) {
+    pub fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, color: Color, width: f32, z: f32) {
         self.draws.push(Draw::Line {
             a: self.user_to_pixels(x0, y0),
             b: self.user_to_pixels(x1, y1),
@@ -716,17 +707,14 @@ fn draw_node(
                 } else {
                     let to_pixel = world.compose(&user_to_pixel);
                     Some(Draw::Polyline {
-                        points: points
-                            .iter()
-                            .map(|p| to_pixel.apply(*p))
-                            .collect(),
+                        points: points.iter().map(|p| to_pixel.apply(*p)).collect(),
                         width: (*width).max(0.0) * (sx * sy).sqrt(),
                         color: color.mul(modulate),
                         z: order,
                         diagnostic: node.diagnostic,
                     })
                 }
-            },
+            }
             // The sprite's local space is centered on the origin, one
             // texture pixel per scene pixel, so its extent is the texture
             // size.
@@ -946,34 +934,35 @@ fn layer_repeat_offsets(layer: &Layer, view: &Transform, size: (f32, f32)) -> Ve
     // the window itself, at most one period wide, so this is only a few
     // copies; a rotated camera widens the box, and the extra copies cover
     // it.
-    let offsets = |component: f32, min_edge: f32, max_edge: f32, window: f32, axis: u8| -> Vec<f32> {
-        if component == 0.0 {
-            return vec![0.0];
-        }
-        let period = component.abs();
-        if period < window {
-            let (name, what) = match axis {
-                0 => ("repeat_x", "the window width"),
-                _ => ("repeat_y", "the window height"),
-            };
-            panic!(
-                "frost: the layer's {name} {component} is smaller than {what} \
+    let offsets =
+        |component: f32, min_edge: f32, max_edge: f32, window: f32, axis: u8| -> Vec<f32> {
+            if component == 0.0 {
+                return vec![0.0];
+            }
+            let period = component.abs();
+            if period < window {
+                let (name, what) = match axis {
+                    0 => ("repeat_x", "the window width"),
+                    _ => ("repeat_y", "the window height"),
+                };
+                panic!(
+                    "frost: the layer's {name} {component} is smaller than {what} \
                  ({window}px); the minimum repeat offset is the window size"
-            );
-        }
-        let (content_min, content_max) = match (content, axis) {
-            (Some((cmin, cmax)), 0) => (cmin[0], cmax[0]),
-            (Some((cmin, cmax)), _) => (cmin[1], cmax[1]),
-            (None, _) => (0.0, 0.0),
+                );
+            }
+            let (content_min, content_max) = match (content, axis) {
+                (Some((cmin, cmax)), 0) => (cmin[0], cmax[0]),
+                (Some((cmin, cmax)), _) => (cmin[1], cmax[1]),
+                (None, _) => (0.0, 0.0),
+            };
+            // The copies [k * period] whose displaced content overlaps the box:
+            // content_min + k * period < max_edge and content_max + k * period
+            // > min_edge, a copy just touching the box (zero visible width) is
+            // not drawn, matching the window-edge convention elsewhere.
+            let k0 = ((min_edge - content_max) / period).floor() as i64 + 1;
+            let k1 = ((max_edge - content_min) / period).ceil() as i64 - 1;
+            (k0..=k1).map(|k| k as f32 * period).collect()
         };
-        // The copies [k * period] whose displaced content overlaps the box:
-        // content_min + k * period < max_edge and content_max + k * period
-        // > min_edge, a copy just touching the box (zero visible width) is
-        // not drawn, matching the window-edge convention elsewhere.
-        let k0 = ((min_edge - content_max) / period).floor() as i64 + 1;
-        let k1 = ((max_edge - content_min) / period).ceil() as i64 - 1;
-        (k0..=k1).map(|k| k as f32 * period).collect()
-    };
     let xs = offsets(layer.repeat[0], min[0], max[0], w, 0);
     let ys = offsets(layer.repeat[1], min[1], max[1], h, 1);
     let mut tile_offsets = xs
@@ -1003,7 +992,11 @@ fn layer_repeat_offsets(layer: &Layer, view: &Transform, size: (f32, f32)) -> Ve
 /// copies of the content that can overlap the window's box: the content
 /// need not sit inside the tile `[0, period)`, so a copy displaced by
 /// `k * period` can reach the box even when that tile does not.
-fn check_layer_repeat_extent(node: &SceneNode, parent: &Transform, repeat: [f32; 2]) -> Option<([f32; 2], [f32; 2])> {
+fn check_layer_repeat_extent(
+    node: &SceneNode,
+    parent: &Transform,
+    repeat: [f32; 2],
+) -> Option<([f32; 2], [f32; 2])> {
     let local = Transform::scale(node.scale).compose(&node.transform);
     let world = local.compose(parent);
     let mut extent = None;
@@ -1052,18 +1045,20 @@ fn check_layer_repeat_extent(node: &SceneNode, parent: &Transform, repeat: [f32;
 /// on the node's origin like its glyphs (see `expand_text_list`).
 fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> {
     match shape {
-        Shape::Circle { center, radius, .. } => {
-            Some(("circle", *center, [*radius, *radius]))
-        }
+        Shape::Circle { center, radius, .. } => Some(("circle", *center, [*radius, *radius])),
         Shape::Rectangle { center, extent, .. } => {
             Some(("rectangle", *center, [extent[0], extent[1]]))
         }
         // A sprite's local space is centered on the origin, one texture
         // pixel per scene pixel.
-        Shape::Sprite { width, height, .. } => {
-            Some(("sprite", [0.0, 0.0], [*width as f32 / 2.0, *height as f32 / 2.0]))
-        }
-        Shape::Text { font, text, size, .. } => {
+        Shape::Sprite { width, height, .. } => Some((
+            "sprite",
+            [0.0, 0.0],
+            [*width as f32 / 2.0, *height as f32 / 2.0],
+        )),
+        Shape::Text {
+            font, text, size, ..
+        } => {
             let layout = text::layout(font, text, *size)?;
             Some((
                 "text",
@@ -1168,10 +1163,7 @@ fn expand_text_list(
                 let aa = AA_BAND / sx.max(sy).max(1e-9);
                 // Center the text block (width by ascent + descent, baseline
                 // at the pen-space origin, y up) on the node's origin.
-                let origin = [
-                    -layout.width / 2.0,
-                    (layout.ascent - layout.descent) / 2.0,
-                ];
+                let origin = [-layout.width / 2.0, (layout.ascent - layout.descent) / 2.0];
                 let (atlas_w, atlas_h) = (atlas.width as f32, atlas.height as f32);
                 for glyph in &layout.glyphs {
                     let Some(cell) = atlas.cell(glyph.id) else {
@@ -1558,13 +1550,15 @@ mod tests {
     /// exactly one particle batch.
     fn the_batch<'a>(draws: &'a [Draw]) -> Batch<'a> {
         match draws {
-            [Draw::Particles {
-                data,
-                count,
-                color,
-                z,
-                ..
-            }] => Batch {
+            [
+                Draw::Particles {
+                    data,
+                    count,
+                    color,
+                    z,
+                    ..
+                },
+            ] => Batch {
                 data,
                 count: *count,
                 color: *color,
@@ -1878,20 +1872,18 @@ mod tests {
         // The batch's uniform carries the shape's kind and aspect, and a
         // sprite shape hands its image and size to the draw so the pipeline
         // can bind (or cache) the texture.
-        let node = particle_node(
-            0.0,
-            WHITE,
-            ParticleShape::Rectangle { aspect: 2.0 },
-        );
+        let node = particle_node(0.0, WHITE, ParticleShape::Rectangle { aspect: 2.0 });
         let mut draws = Vec::new();
         draw_one(&node, &mut draws);
-        let [Draw::Particles {
-            kind,
-            aspect,
-            sprite_data,
-            sprite_size,
-            ..
-        }] = &draws[..]
+        let [
+            Draw::Particles {
+                kind,
+                aspect,
+                sprite_data,
+                sprite_size,
+                ..
+            },
+        ] = &draws[..]
         else {
             panic!("expected one particle draw, got {draws:?}")
         };
@@ -1908,22 +1900,21 @@ mod tests {
         let node = particle_node(0.0, WHITE, sprite);
         let mut draws = Vec::new();
         draw_one(&node, &mut draws);
-        let [Draw::Particles {
-            kind,
-            aspect,
-            sprite_data,
-            sprite_size,
-            ..
-        }] = &draws[..]
+        let [
+            Draw::Particles {
+                kind,
+                aspect,
+                sprite_data,
+                sprite_size,
+                ..
+            },
+        ] = &draws[..]
         else {
             panic!("expected one particle draw, got {draws:?}")
         };
         assert_eq!(*kind, 2.0);
         assert_eq!(*aspect, 1.5);
-        assert_eq!(
-            sprite_data.as_deref(),
-            Some(&[255u8, 255, 255, 255][..])
-        );
+        assert_eq!(sprite_data.as_deref(), Some(&[255u8, 255, 255, 255][..]));
         assert_eq!(*sprite_size, [2, 3]);
     }
 
@@ -1947,24 +1938,34 @@ mod tests {
             2.0,
             -16.0,
         );
-        let [Draw::Light {
-            pos,
-            radius,
-            intensity,
-            color,
-            penumbra,
-            dir,
-            cos_half,
-            feather,
-            z,
-        }] = &canvas.draws[..]
+        let [
+            Draw::Light {
+                pos,
+                radius,
+                intensity,
+                color,
+                penumbra,
+                dir,
+                cos_half,
+                feather,
+                z,
+            },
+        ] = &canvas.draws[..]
         else {
             panic!("expected one light draw, got {:?}", canvas.draws);
         };
         assert_eq!(*pos, [60.0, 30.0]);
         assert_eq!(*radius, 0.0);
         assert_eq!(*intensity, 2.0);
-        assert_eq!(*color, Color { r: 1.0, g: 0.5, b: 0.0, a: 1.0 });
+        assert_eq!(
+            *color,
+            Color {
+                r: 1.0,
+                g: 0.5,
+                b: 0.0,
+                a: 1.0
+            }
+        );
         assert_eq!(*penumbra, 0.0);
         assert_eq!(*dir, [1.0, 0.0]);
         assert_eq!(*cos_half, -1.0);
@@ -2009,9 +2010,8 @@ mod tests {
         });
         canvas.draw_scene(&scene);
         let field = pack_light_field(&canvas.paint_order(), AMBIENT);
-        let f32_at = |data: &[u8], off: usize| {
-            f32::from_le_bytes(data[off..off + 4].try_into().unwrap())
-        };
+        let f32_at =
+            |data: &[u8], off: usize| f32::from_le_bytes(data[off..off + 4].try_into().unwrap());
         assert_eq!(field.count, 2);
         assert_eq!(field.data.len(), LIGHT_FIELD_HEADER + 2 * LIGHT_RECORD);
         // The header carries the light count and the scene's ambient.
@@ -2074,17 +2074,19 @@ mod tests {
         };
         let mut draws = Vec::new();
         draw_one(&node, &mut draws);
-        let [Draw::Light {
-            pos,
-            radius,
-            intensity,
-            color,
-            penumbra,
-            dir,
-            cos_half,
-            feather,
-            z,
-        }] = &draws[..]
+        let [
+            Draw::Light {
+                pos,
+                radius,
+                intensity,
+                color,
+                penumbra,
+                dir,
+                cos_half,
+                feather,
+                z,
+            },
+        ] = &draws[..]
         else {
             panic!("expected one light draw, got {draws:?}")
         };
@@ -2142,12 +2144,11 @@ mod tests {
             },
             &mut draws,
         );
-        let [Draw::Light {
-            radius,
-            color,
-            z,
-            ..
-        }] = &draws[..]
+        let [
+            Draw::Light {
+                radius, color, z, ..
+            },
+        ] = &draws[..]
         else {
             panic!("expected one light draw, got {draws:?}")
         };
@@ -2233,14 +2234,16 @@ mod tests {
             },
             &mut draws,
         );
-        let [Draw::Light {
-            radius,
-            intensity,
-            dir,
-            cos_half,
-            feather,
-            ..
-        }] = &draws[..]
+        let [
+            Draw::Light {
+                radius,
+                intensity,
+                dir,
+                cos_half,
+                feather,
+                ..
+            },
+        ] = &draws[..]
         else {
             panic!("expected one light draw, got {draws:?}")
         };
@@ -2420,9 +2423,11 @@ mod tests {
         };
         let mut draws = Vec::new();
         draw_one(&node, &mut draws);
-        let [Draw::Light {
-            feather, penumbra, ..
-        }] = &draws[..]
+        let [
+            Draw::Light {
+                feather, penumbra, ..
+            },
+        ] = &draws[..]
         else {
             panic!("expected one light draw, got {draws:?}")
         };

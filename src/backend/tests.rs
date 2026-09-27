@@ -220,17 +220,20 @@ fn draw_scene_composes_transforms_down_the_tree() {
         })],
     });
     canvas.draw_scene(&scene);
-    let [Draw::Shape {
-        world: w0,
-        center: c0,
-        aa: aa0,
-        ..
-    }, Draw::Shape {
-        world: w1,
-        center: c1,
-        aa: aa1,
-        ..
-    }] = &canvas.draws[..]
+    let [
+        Draw::Shape {
+            world: w0,
+            center: c0,
+            aa: aa0,
+            ..
+        },
+        Draw::Shape {
+            world: w1,
+            center: c1,
+            aa: aa1,
+            ..
+        },
+    ] = &canvas.draws[..]
     else {
         panic!("expected two shape draws");
     };
@@ -280,7 +283,14 @@ fn draw_scene_rotates_a_translated_child() {
         })],
     });
     canvas.draw_scene(&scene);
-    let [Draw::Shape { world: w, center: c, .. }] = &canvas.draws[..] else {
+    let [
+        Draw::Shape {
+            world: w,
+            center: c,
+            ..
+        },
+    ] = &canvas.draws[..]
+    else {
         panic!("expected one shape draw");
     };
     // (0, 0) translates to (10, 0) and rotates to (0, 10) in user space,
@@ -310,7 +320,14 @@ fn scene_shape_at_user_origin_lands_at_window_center() {
         children: vec![],
     });
     canvas.draw_scene(&scene);
-    let [Draw::Shape { world: w, center: c, .. }] = &canvas.draws[..] else {
+    let [
+        Draw::Shape {
+            world: w,
+            center: c,
+            ..
+        },
+    ] = &canvas.draws[..]
+    else {
         panic!("expected one shape draw");
     };
     assert_eq!(w.apply(*c), [50.0, 50.0]);
@@ -552,9 +569,7 @@ fn particles_uniform_bytes_follow_the_wgsl_layout() {
     );
     assert_eq!(data.len(), 48);
 
-    let f32_at = |off: usize| {
-        f32::from_le_bytes(data[off..off + 4].try_into().unwrap())
-    };
+    let f32_at = |off: usize| f32::from_le_bytes(data[off..off + 4].try_into().unwrap());
     assert_eq!(f32_at(0), 1280.0);
     assert_eq!(f32_at(4), 720.0);
     // The padding between `size` and the 16-byte-aligned `color` is
@@ -628,13 +643,15 @@ fn canvas_particles_packs_instances_in_pixel_space() {
         },
     ];
     canvas.particles(&particles, tint, 2.5);
-    let [Draw::Particles {
-        data,
-        count,
-        color,
-        z,
-        ..
-    }] = &canvas.draws[..]
+    let [
+        Draw::Particles {
+            data,
+            count,
+            color,
+            z,
+            ..
+        },
+    ] = &canvas.draws[..]
     else {
         panic!("expected one particle draw");
     };
@@ -1058,10 +1075,12 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
         occludes: 1.0,
         z: 0.0,
     };
-    let field =
-        pack_occluder_field(&[translated, unflagged, rotated, circle, degenerate]);
+    let field = pack_occluder_field(&[translated, unflagged, rotated, circle, degenerate]);
     assert_eq!(field.count, 2);
-    assert_eq!(field.data.len(), OCCLUDER_FIELD_HEADER + 2 * OCCLUDER_RECORD);
+    assert_eq!(
+        field.data.len(),
+        OCCLUDER_FIELD_HEADER + 2 * OCCLUDER_RECORD
+    );
     // The header: count at 0, padding at 4..16.
     assert_eq!(u32::from_le_bytes(field.data[0..4].try_into().unwrap()), 2);
     assert_eq!(&field.data[4..16], &[0u8; 12]);
@@ -1163,11 +1182,16 @@ fn background_node_sorts_to_the_back_and_keeps_its_color() {
             children: vec![],
         })],
     }));
-    canvas
-        .draws
-        .sort_by(|a, b| a.z().partial_cmp(&b.z()).unwrap_or(std::cmp::Ordering::Equal));
+    canvas.draws.sort_by(|a, b| {
+        a.z()
+            .partial_cmp(&b.z())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let [Draw::Background { color }, Draw::Shape { .. }] = &canvas.draws[..] else {
-        panic!("expected one background and one shape, got {:?}", canvas.draws);
+        panic!(
+            "expected one background and one shape, got {:?}",
+            canvas.draws
+        );
     };
     assert_eq!(
         *color,
@@ -1204,7 +1228,12 @@ fn layers_are_hard_draw_partitions() {
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
                         radius: 1.0,
-                        color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                        color: Color {
+                            r: 1.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        },
                     }),
                     children: vec![],
                 },
@@ -1227,7 +1256,12 @@ fn layers_are_hard_draw_partitions() {
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
                         radius: 1.0,
-                        color: Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 },
+                        color: Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 1.0,
+                            a: 1.0,
+                        },
                     }),
                     children: vec![],
                 },
@@ -1285,7 +1319,12 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                             shape: Some(Shape::Circle {
                                 center: [0.0, 0.0],
                                 radius: 1.0,
-                                color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                                color: Color {
+                                    r: 1.0,
+                                    g: 0.0,
+                                    b: 0.0,
+                                    a: 1.0,
+                                },
                             }),
                             children: vec![],
                         }),
@@ -1301,7 +1340,12 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                             shape: Some(Shape::Circle {
                                 center: [0.0, 0.0],
                                 radius: 1.0,
-                                color: Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 },
+                                color: Color {
+                                    r: 0.0,
+                                    g: 1.0,
+                                    b: 0.0,
+                                    a: 1.0,
+                                },
                             }),
                             children: vec![],
                         }),
@@ -1324,7 +1368,12 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
                         radius: 1.0,
-                        color: Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 },
+                        color: Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 1.0,
+                            a: 1.0,
+                        },
                     }),
                     children: vec![],
                 },
@@ -1356,7 +1405,18 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
 #[test]
 fn the_base_group_paints_first_at_equal_order() {
     let mut canvas = Canvas::new((100, 100));
-    canvas.circle(0.0, 0.0, 1.0, Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }, 0.0);
+    canvas.circle(
+        0.0,
+        0.0,
+        1.0,
+        Color {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        },
+        0.0,
+    );
     let scene = Scene {
         root: SceneNode::default(),
         layers: vec![Layer {
@@ -1378,13 +1438,18 @@ fn the_base_group_paints_first_at_equal_order() {
                 shape: Some(Shape::Circle {
                     center: [0.0, 0.0],
                     radius: 1.0,
-                    color: Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 },
+                    color: Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 1.0,
+                        a: 1.0,
+                    },
                 }),
                 children: vec![],
             },
         }],
-    ambient: AMBIENT,
-    camera: None,
+        ambient: AMBIENT,
+        camera: None,
     };
     canvas.draw_scene(&scene);
     let painted = canvas.paint_order();
@@ -1415,7 +1480,12 @@ fn a_background_in_a_higher_layer_sets_the_clear_color() {
             occludes: false,
             order: 0.0,
             shape: Some(Shape::Background {
-                color: Color { r: 0.1, g: 0.0, b: 0.0, a: 1.0 },
+                color: Color {
+                    r: 0.1,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0,
+                },
             }),
             children: vec![],
         },
@@ -1433,13 +1503,18 @@ fn a_background_in_a_higher_layer_sets_the_clear_color() {
                 occludes: false,
                 order: 0.0,
                 shape: Some(Shape::Background {
-                    color: Color { r: 0.0, g: 0.1, b: 0.0, a: 1.0 },
+                    color: Color {
+                        r: 0.0,
+                        g: 0.1,
+                        b: 0.0,
+                        a: 1.0,
+                    },
                 }),
                 children: vec![],
             },
         }],
-    ambient: AMBIENT,
-    camera: None,
+        ambient: AMBIENT,
+        camera: None,
     };
     canvas.draw_scene(&scene);
     let painted = canvas.paint_order();
@@ -1447,15 +1522,42 @@ fn a_background_in_a_higher_layer_sets_the_clear_color() {
     // the frame's clear color; the base group's background is not.
     assert_eq!(
         clear_color(&painted),
-        Color { r: 0.0, g: 0.1, b: 0.0, a: 1.0 }
+        Color {
+            r: 0.0,
+            g: 0.1,
+            b: 0.0,
+            a: 1.0
+        }
     );
 }
 
 #[test]
 fn without_layers_the_paint_order_is_the_global_z_sort() {
     let mut canvas = Canvas::new((100, 100));
-    canvas.circle(0.0, 0.0, 1.0, Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }, 1.0);
-    canvas.circle(0.0, 0.0, 1.0, Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 }, -1.0);
+    canvas.circle(
+        0.0,
+        0.0,
+        1.0,
+        Color {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        },
+        1.0,
+    );
+    canvas.circle(
+        0.0,
+        0.0,
+        1.0,
+        Color {
+            r: 0.0,
+            g: 1.0,
+            b: 0.0,
+            a: 1.0,
+        },
+        -1.0,
+    );
     let scene = Scene::new(SceneNode::default());
     canvas.draw_scene(&scene);
     let painted = canvas.paint_order();
@@ -1505,7 +1607,12 @@ fn a_camera_anchors_the_view_to_its_node() {
                         shape: Some(Shape::Circle {
                             center: [0.0, 0.0],
                             radius: 1.0,
-                            color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                            color: Color {
+                                r: 1.0,
+                                g: 0.0,
+                                b: 0.0,
+                                a: 1.0,
+                            },
                         }),
                         children: vec![],
                     }),
@@ -1590,7 +1697,12 @@ fn layer_speed_scales_the_camera_motion() {
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
                         radius: 1.0,
-                        color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                        color: Color {
+                            r: 1.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        },
                     }),
                     children: vec![],
                 },
@@ -1613,7 +1725,12 @@ fn layer_speed_scales_the_camera_motion() {
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
                         radius: 1.0,
-                        color: Color { r: 0.0, g: 0.0, b: 1.0, a: 1.0 },
+                        color: Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 1.0,
+                            a: 1.0,
+                        },
                     }),
                     children: vec![],
                 },
@@ -1666,7 +1783,12 @@ fn repeat_layer_scene(repeat: [f32; 2]) -> Scene {
                 shape: Some(Shape::Circle {
                     center: [-50.0, -50.0],
                     radius: 1.0,
-                    color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                    color: Color {
+                        r: 1.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 1.0,
+                    },
                 }),
                 children: vec![],
             },
@@ -1778,7 +1900,12 @@ fn a_copy_from_a_tile_the_window_does_not_overlap_reaches_the_window() {
                 shape: Some(Shape::Circle {
                     center: [-60.0, 0.0],
                     radius: 1.0,
-                    color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                    color: Color {
+                        r: 1.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 1.0,
+                    },
                 }),
                 ..Default::default()
             },
@@ -1844,7 +1971,12 @@ fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
                 shape: Some(Shape::Rectangle {
                     center: [95.0, 0.0],
                     extent: [10.0, 5.0],
-                    color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                    color: Color {
+                        r: 1.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 1.0,
+                    },
                 }),
                 children: vec![],
             },
@@ -1901,7 +2033,12 @@ fn an_object_wider_than_its_repeat_aborts() {
                 shape: Some(Shape::Rectangle {
                     center: [0.0, 0.0],
                     extent: [60.0, 5.0],
-                    color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                    color: Color {
+                        r: 1.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 1.0,
+                    },
                 }),
                 children: vec![],
             },
@@ -1952,7 +2089,12 @@ fn a_camera_followed_object_in_a_repeating_layer_stays_at_the_window_center() {
                         shape: Some(Shape::Circle {
                             center: [0.0, 0.0],
                             radius: 1.0,
-                            color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                            color: Color {
+                                r: 1.0,
+                                g: 0.0,
+                                b: 0.0,
+                                a: 1.0,
+                            },
                         }),
                         ..Default::default()
                     }),
@@ -2032,7 +2174,12 @@ fn the_camera_rotation_turns_the_view() {
                     shape: Some(Shape::Circle {
                         center: [0.0, 0.0],
                         radius: 1.0,
-                        color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                        color: Color {
+                            r: 1.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        },
                     }),
                     children: vec![],
                 }),
@@ -2098,7 +2245,12 @@ fn a_missing_camera_path_renders_without_a_camera() {
                 shape: Some(Shape::Circle {
                     center: [0.0, 0.0],
                     radius: 1.0,
-                    color: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+                    color: Color {
+                        r: 1.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 1.0,
+                    },
                 }),
                 children: vec![],
             })],
@@ -2238,11 +2390,7 @@ fn node_order_accumulates_down_the_tree_like_the_transform() {
         })],
     });
     canvas.draw_scene(&scene);
-    let zs = canvas
-        .draws
-        .iter()
-        .map(|draw| draw.z())
-        .collect::<Vec<_>>();
+    let zs = canvas.draws.iter().map(|draw| draw.z()).collect::<Vec<_>>();
     assert_eq!(zs, vec![1.0, 3.0, 7.0]);
 }
 
@@ -2301,19 +2449,31 @@ fn node_modulate_multiplies_into_the_shape_and_its_subtree() {
         })],
     });
     canvas.draw_scene(&scene);
-    let [
-        Draw::Shape { color: c0, .. },
-        Draw::Shape { color: c1, .. },
-    ] = &canvas.draws[..]
-    else {
+    let [Draw::Shape { color: c0, .. }, Draw::Shape { color: c1, .. }] = &canvas.draws[..] else {
         panic!("expected two shape draws");
     };
     // The root's own shape is white times its own modulate.
-    assert_eq!(*c0, Color { r: 0.5, g: 1.0, b: 0.0, a: 1.0 });
+    assert_eq!(
+        *c0,
+        Color {
+            r: 0.5,
+            g: 1.0,
+            b: 0.0,
+            a: 1.0
+        }
+    );
     // The child inherits the root's modulate multiplied by its own:
     // blue stays zeroed by the root, and the child's half opacity
     // multiplies into the alpha channel.
-    assert_eq!(*c1, Color { r: 0.5, g: 0.5, b: 0.0, a: 0.5 });
+    assert_eq!(
+        *c1,
+        Color {
+            r: 0.5,
+            g: 0.5,
+            b: 0.0,
+            a: 0.5
+        }
+    );
 }
 
 #[test]
@@ -2380,14 +2540,34 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
     }));
     let [
         Draw::Sprite { tint, alpha, .. },
-        Draw::Text { color, alpha: t_alpha, .. },
+        Draw::Text {
+            color,
+            alpha: t_alpha,
+            ..
+        },
     ] = &canvas.draws[..]
     else {
         panic!("expected a sprite and a text draw");
     };
-    assert_eq!(*tint, Color { r: 0.5, g: 1.0, b: 1.0, a: 0.5 });
+    assert_eq!(
+        *tint,
+        Color {
+            r: 0.5,
+            g: 1.0,
+            b: 1.0,
+            a: 0.5
+        }
+    );
     assert_eq!(*alpha, 0.25);
-    assert_eq!(*color, Color { r: 0.25, g: 0.5, b: 1.0, a: 1.0 });
+    assert_eq!(
+        *color,
+        Color {
+            r: 0.25,
+            g: 0.5,
+            b: 1.0,
+            a: 1.0
+        }
+    );
     assert_eq!(*t_alpha, 0.75);
 }
 
@@ -2416,20 +2596,22 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
         children: vec![],
     });
     canvas.draw_scene(&scene);
-    let [Draw::Sprite {
-        world,
-        data,
-        size,
-        texture_size,
-        aa,
-        tint,
-        alpha,
-        glow,
-        uv_rect,
-        lit,
-        z,
-        ..
-    }] = &canvas.draws[..]
+    let [
+        Draw::Sprite {
+            world,
+            data,
+            size,
+            texture_size,
+            aa,
+            tint,
+            alpha,
+            glow,
+            uv_rect,
+            lit,
+            z,
+            ..
+        },
+    ] = &canvas.draws[..]
     else {
         panic!("expected one sprite draw");
     };
@@ -2528,9 +2710,7 @@ fn sprite_uniform_bytes_follow_the_wgsl_layout() {
     );
     assert_eq!(data.len(), 96);
 
-    let f32_at = |off: usize| {
-        f32::from_le_bytes(data[off..off + 4].try_into().unwrap())
-    };
+    let f32_at = |off: usize| f32::from_le_bytes(data[off..off + 4].try_into().unwrap());
     // `to_local` is the identity matrix (inverting a pure translation
     // leaves the matrix identity), stored column-major.
     assert_eq!(f32_at(0), 1.0);
@@ -2587,7 +2767,12 @@ fn expand_text_splices_glyph_sprites_in_place() {
     let font = test_font();
     let size = 48.0;
     let mut canvas = Canvas::new((800, 600));
-    let tint = Color { r: 1.0, g: 0.5, b: 0.25, a: 1.0 };
+    let tint = Color {
+        r: 1.0,
+        g: 0.5,
+        b: 0.25,
+        a: 1.0,
+    };
     canvas.draws = vec![
         Draw::Circle {
             diagnostic: false,
@@ -2621,22 +2806,36 @@ fn expand_text_splices_glyph_sprites_in_place() {
 
     // The layout's glyph count is the source of truth for how many
     // sprites the text should produce (every glyph of "hi" has ink).
-    let layout =
-        text::layout(&font, "hi", size).expect("the test font should shape 'hi'");
+    let layout = text::layout(&font, "hi", size).expect("the test font should shape 'hi'");
     assert_eq!(canvas.draws.len(), 2 + layout.glyphs.len());
-    let [Draw::Circle { z: z0, .. }, .., Draw::Circle { z: z1, .. }] =
-        &canvas.draws[..]
-    else {
+    let [Draw::Circle { z: z0, .. }, .., Draw::Circle { z: z1, .. }] = &canvas.draws[..] else {
         panic!("the circles must keep their slots");
     };
     assert_eq!(*z0, 0.0);
     assert_eq!(*z1, 2.0);
     for draw in canvas.draws.iter().skip(1).take(layout.glyphs.len()) {
-        let Draw::Sprite { size, texture_size, uv_rect, tint, alpha, lit, z, .. } = draw
+        let Draw::Sprite {
+            size,
+            texture_size,
+            uv_rect,
+            tint,
+            alpha,
+            lit,
+            z,
+            ..
+        } = draw
         else {
             panic!("every spliced draw must be a sprite");
         };
-        assert_eq!(*tint, Color { r: 1.0, g: 0.5, b: 0.25, a: 1.0 });
+        assert_eq!(
+            *tint,
+            Color {
+                r: 1.0,
+                g: 0.5,
+                b: 0.25,
+                a: 1.0
+            }
+        );
         assert_eq!(*alpha, 0.9);
         // The block's `lit` flag passes on to every glyph quad.
         assert_eq!(*lit, 1.0);
@@ -2668,7 +2867,12 @@ fn expand_text_reuses_the_atlas_across_frames() {
             font: font.clone(),
             text: "hello world".to_string(),
             size,
-            color: Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+            color: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
             alpha: 1.0,
             lit: 0.0,
             z: 0.0,
@@ -2706,7 +2910,12 @@ fn expand_text_packs_glyphs_first_seen_on_a_later_frame() {
             font: font.clone(),
             text: text.to_string(),
             size,
-            color: Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+            color: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
             alpha: 1.0,
             lit: 0.0,
             z: 0.0,
@@ -2729,10 +2938,7 @@ fn expand_text_packs_glyphs_first_seen_on_a_later_frame() {
 
 #[test]
 fn sprite_loader_round_trips_a_png_file() {
-    let path = std::env::temp_dir().join(format!(
-        "frost-sprite-test-{}.png",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("frost-sprite-test-{}.png", std::process::id()));
     let buf: Vec<u8> = [
         [255u8, 0, 0, 255],
         [0, 255, 0, 128],
@@ -2742,8 +2948,7 @@ fn sprite_loader_round_trips_a_png_file() {
     .iter()
     .flat_map(|pixel| pixel.iter().copied())
     .collect();
-    image::save_buffer(&path, &buf, 2, 2, image::ColorType::Rgba8)
-        .expect("writing the test png");
+    image::save_buffer(&path, &buf, 2, 2, image::ColorType::Rgba8).expect("writing the test png");
     let shape = match Shape::sprite(&path) {
         Ok(shape) => shape,
         Err(err) => panic!("failed to load the test png: {err}"),
@@ -2754,7 +2959,8 @@ fn sprite_loader_round_trips_a_png_file() {
         height,
         color,
         alpha,
-    } = shape else {
+    } = shape
+    else {
         panic!("expected a sprite shape");
     };
     assert_eq!((width, height), (2, 2));
@@ -2778,13 +2984,9 @@ fn sprite_loader_round_trips_a_png_file() {
 fn cloned_sprites_share_their_pixel_buffer() {
     // The pixels live behind an `Arc`: cloning a sprite shape must not
     // copy the buffer.
-    let path = std::env::temp_dir().join(format!(
-        "frost-sprite-share-{}.png",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("frost-sprite-share-{}.png", std::process::id()));
     let buf = [255u8, 0, 0, 255, 0, 255, 0, 255];
-    image::save_buffer(&path, &buf, 2, 1, image::ColorType::Rgba8)
-        .expect("writing the test png");
+    image::save_buffer(&path, &buf, 2, 1, image::ColorType::Rgba8).expect("writing the test png");
     let shape = Shape::sprite(&path).unwrap();
     let Shape::Sprite { data: a, .. } = &shape else {
         panic!("expected a sprite shape");
