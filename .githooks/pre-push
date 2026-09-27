@@ -1,0 +1,30 @@
+#!/bin/sh
+# pre-push hook: run the full test suite before allowing a push.
+# Aborts the push if cargo test or cargo test --examples fails.
+# Pushes that include the main branch force-pass (tests are skipped).
+
+fail() {
+    printf 'pre-push: %s failed - push aborted.\n' "$*" >&2
+    exit 1
+}
+
+# git feeds one line per ref: <local ref> <local sha> <remote ref> <remote sha>
+pushing_main=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+    if [ "$remote_ref" = "refs/heads/main" ]; then
+        pushing_main=1
+    fi
+done
+
+if [ "$pushing_main" = "1" ]; then
+    printf 'pre-push: pushing to main - skipping tests (force pass).\n'
+    exit 0
+fi
+
+printf 'pre-push: running `cargo test`...\n'
+cargo test || fail 'cargo test'
+
+printf 'pre-push: running `cargo test --examples`...\n'
+cargo test --examples || fail 'cargo test --examples'
+
+exit 0
