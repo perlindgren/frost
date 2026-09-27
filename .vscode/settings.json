@@ -19,6 +19,7 @@
         "rustflags",
         "ubatch",
         "unsloth",
+        "vsync",
         "wght",
         "wgpu",
         "wgsl",
