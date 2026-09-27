@@ -17,7 +17,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{bugs, plant, vipers, Fall, Fly, Pick, Tool, WateredPlant};
+use crate::{bugs, fall::{Fall, FallPhase}, plant, vipers, Fly, Pick, Tool, WateredPlant};
 
 /// The snapshot format's version: the layout this build reads and writes.
 /// [load] rejects files whose version differs.
@@ -197,7 +197,7 @@ impl From<LandingState> for crate::Landing {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct FallState {
     /// The phase the tomato is in.
-    pub phase: crate::FallPhase,
+    pub phase: FallPhase,
     /// Where the fall stops, in user space.
     pub land_pos: [f32; 2],
     /// Whether the drop clip has played for this fruit.
@@ -212,7 +212,7 @@ pub struct FallState {
     pub progress: f32,
     /// The straight-line distance from `start` to `target`.
     pub distance: f32,
-    /// The running bump's progress, or [`crate::BUMP_NONE`] while none runs.
+    /// The running bump's progress, or [`crate::fall::BUMP_NONE`] while none runs.
     pub bump: f32,
     /// The seconds left before the next bump arms.
     pub bump_in: f32,
