@@ -1,0 +1,11 @@
+#!/bin/sh
+# Format all Rust code before the commit lands: run cargo fmt over the
+# whole workspace, then re-stage only the .rs files that were already
+# staged, so unstaged working-tree changes stay out of the commit.
+staged=$(git diff --name-only --cached)
+cargo fmt --all || exit 1
+for f in $staged; do
+    case $f in
+        *.rs) git add "$f" ;;
+    esac
+done
