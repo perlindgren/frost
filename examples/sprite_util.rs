@@ -1,17 +1,21 @@
 //! A little sprite utility: pick any PNG out of `assets/sprites` with a
-//! native file dialog (rfd), display it centered in the window, zoom it
-//! with a slider, and log the clicked position in the sprite's own pixel
+//! native file dialog (rfd), display it in the window, zoom it with a
+//! slider or the mouse wheel, pan it by grabbing the canvas with a
+//! right-drag, and log the clicked position in the sprite's own pixel
 //! space through the `log` facade.
 //!
 //! The engine has no widget toolkit, so the slider is built from scene
 //! primitives — a thin rectangle track with a circle handle, repositioned
 //! every frame from the window size. Pointer state comes from
-//! [`frost::Context::mouse_position`] and
-//! [`frost::Context::mouse_button_down`]: pressing the track or handle and
-//! dragging scrubs the zoom, and a click anywhere else is a sprite click —
-//! its window position is converted to the texture's pixel space
-//! (`(0, 0)` upper-left, `x` right, `y` down, divided by the current zoom)
-//! and printed with `log::info!`, with a marker dot left at the spot.
+//! [`frost::Context::mouse_position`], [`frost::Context::mouse_button_down`]
+//! and [`frost::Context::mouse_wheel`]: pressing the track or handle and
+//! dragging scrubs the zoom, the wheel zooms about the cursor (the point
+//! under it stays put), a right-drag grabs the canvas and moves the sprite
+//! with the cursor, and a left click anywhere else is a sprite click — its
+//! window position is converted to the texture's pixel space (`(0, 0)`
+//! upper-left, `x` right, `y` down, shifted by the pan and divided by the
+//! current zoom) and printed with `log::info!`, with a marker dot left at
+//! the spot.
 //!
 //! Run with:
 //!
@@ -49,6 +53,11 @@ const ZOOM_MIN: f32 = 0.25;
 
 /// The highest zoom: the sprite four times its texture size.
 const ZOOM_MAX: f32 = 4.0;
+
+/// The wheel's zoom factor per line of movement: the zoom is multiplied by
+/// it, so scrolling up (positive delta) zooms in and scrolling down zooms
+/// out.
+const WHEEL_ZOOM: f32 = 1.15;
 
 /// The slider track's half-width, in pixels.
 const TRACK_HALF: f32 = 150.0;
@@ -91,6 +100,9 @@ const MARKER: frost::Color = frost::Color {
 struct Demo {
     /// The current zoom: the sprite's scale factor (1.0 is texture size).
     zoom: f32,
+    /// The sprite's pan offset from the window's center, in window pixels;
+    /// set by right-dragging and by the wheel's anchor.
+    offset: [f32; 2],
     /// The picked sprite's texture size, in pixels.
     size: [f32; 2],
     /// The picked file's name, for the HUD and the log lines.
@@ -100,6 +112,9 @@ struct Demo {
     /// Whether the left mouse button was held on the previous frame: the
     /// rising edge of the two is the click.
     was_down: bool,
+    /// The cursor's position on the previous frame, for the right-drag's
+    /// frame-to-frame pan delta.
+    last_mouse: Option<[f32; 2]>,
     /// The last reported click: its position in the texture's pixel space,
     /// and whether the spot was inside the texture.
     last_click: Option<([f32; 2], bool)>,
@@ -111,10 +126,41 @@ impl frost::Process for Demo {
         let sy = -h / 2.0 + SLIDER_MARGIN;
 
         let down = ctx.mouse_button_down(frost::MouseButton::Left);
+        let rdown = ctx.mouse_button_down(frost::MouseButton::Right);
         let clicked = down && !self.was_down;
         self.was_down = down;
+        let pos = ctx.mouse_position();
 
-        if let Some([mx, my]) = ctx.mouse_position() {
+        // The wheel zooms: multiplicative per line (up zooms in), clamped
+        // to the slider's range, anchored so the texture point under the
+        // cursor stays put — the offset absorbs the scale change the cursor
+        // itself would have drifted. With the cursor outside the window the
+        // anchor is the center, so only the zoom changes.
+        let wheel = ctx.mouse_wheel();
+        if wheel != 0.0 {
+            let z1 = (self.zoom * WHEEL_ZOOM.powf(wheel)).clamp(ZOOM_MIN, ZOOM_MAX);
+            if z1 != self.zoom {
+                if let Some([mx, my]) = pos {
+                    let k = z1 / self.zoom;
+                    self.offset = [
+                        mx - (mx - self.offset[0]) * k,
+                        my - (my - self.offset[1]) * k,
+                    ];
+                }
+                self.zoom = z1;
+            }
+        }
+
+        // A right-drag grabs the canvas: the sprite follows the cursor's
+        // frame-to-frame movement, so it always lands under the pointer.
+        if rdown
+            && let (Some([lx, ly]), Some([mx, my])) = (self.last_mouse, pos)
+        {
+            self.offset[0] += mx - lx;
+            self.offset[1] += my - ly;
+        }
+
+        if let Some([mx, my]) = pos {
             // The slider's hit region: a generous box around the track,
             // wide enough to grab the handle from either side.
             let over = mx.abs() <= TRACK_HALF + HANDLE_RADIUS && (my - sy).abs() <= SLIDER_GRAB;
@@ -133,15 +179,15 @@ impl frost::Process for Demo {
             }
 
             // A click that is not on the slider: report the position
-            // relative to the sprite. The sprite is centered on the
-            // window's center at scale `zoom`, so window coordinates map
-            // to texture pixels with `px = x / zoom + w/2` and
-            // `py = h/2 - y / zoom` — the y flip included, since the
+            // relative to the sprite. The sprite sits at the window's
+            // center plus `offset`, at scale `zoom`, so window coordinates
+            // map to texture pixels with `px = (x - ox) / zoom + w/2` and
+            // `py = h/2 - (y - oy) / zoom` — the y flip included, since the
             // texture's y grows down.
             if clicked && !over && !self.dragging {
                 let [tw, th] = self.size;
-                let px = mx / self.zoom + tw / 2.0;
-                let py = th / 2.0 - my / self.zoom;
+                let px = (mx - self.offset[0]) / self.zoom + tw / 2.0;
+                let py = th / 2.0 - (my - self.offset[1]) / self.zoom;
                 let inside = px >= 0.0 && px <= tw && py >= 0.0 && py <= th;
                 log::info!(
                     "click at sprite pixel ({px:.1}, {py:.1}) of {tw:.0}x{th:.0} '{name}' — {where}",
@@ -156,10 +202,10 @@ impl frost::Process for Demo {
             }
         }
 
-        // The sprite's node carries the zoom: a uniform scale about its
-        // center, which the sprite (centered on the node's origin) picks up
-        // directly.
+        // The sprite's node carries the pan and the zoom: a uniform scale
+        // about its center, then the pan offset from the window's center.
         let sprite = &mut ctx.scene().root.children[0];
+        sprite.transform = frost::Transform::translate(self.offset);
         sprite.scale = [self.zoom, self.zoom];
 
         // Lay out the slider and its labels from the current window size,
@@ -193,8 +239,8 @@ impl frost::Process for Demo {
         if let Some(([px, py], _)) = self.last_click {
             let [tw, th] = self.size;
             marker.transform = frost::Transform::translate([
-                (px - tw / 2.0) * self.zoom,
-                (th / 2.0 - py) * self.zoom,
+                (px - tw / 2.0) * self.zoom + self.offset[0],
+                (th / 2.0 - py) * self.zoom + self.offset[1],
             ]);
             if let Some(frost::Shape::Circle { radius, .. }) = &mut marker.shape {
                 *radius = 4.0;
@@ -202,6 +248,10 @@ impl frost::Process for Demo {
         } else if let Some(frost::Shape::Circle { radius, .. }) = &mut marker.shape {
             *radius = 0.0;
         }
+
+        // The cursor's position for next frame's right-drag delta; `None`
+        // (outside the window) clears it, so re-entering never jumps.
+        self.last_mouse = pos;
     }
 }
 
@@ -247,7 +297,7 @@ fn main() {
         let dir = dialog_dir.expect("a dialog directory was set");
         let picked = rfd::FileDialog::new()
             .set_title("sprite_util: choose a sprite")
-            .set_directory(&dir)
+            .set_directory(dir)
             .add_filter("PNG images", &["png"])
             .pick_file();
 
@@ -333,7 +383,7 @@ fn main() {
             Box::new(frost::SceneNode {
                 // The usage line, pinned near the top.
                 shape: text(
-                    "drag the slider to zoom   click the sprite to log its pixel",
+                    "slider or wheel to zoom   right-drag to pan   click to log the pixel",
                     20.0,
                 ),
                 order: 1.0,
@@ -357,10 +407,12 @@ fn main() {
         scene,
         Demo {
             zoom: 1.0,
+            offset: [0.0, 0.0],
             size,
             name,
             dragging: false,
             was_down: false,
+            last_mouse: None,
             last_click: None,
         },
     ) {

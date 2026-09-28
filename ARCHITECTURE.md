@@ -44,7 +44,7 @@ src/backend/frame.rs  Draw list model: Draw enum, scissor rects, uniform writers
 src/backend/wasm.rs   WebFrost: deferred async GPU setup + fallback DOM helpers
 src/backend/tests.rs  GPU-free backend tests (uniform layout, canvas behavior)
 shaders/*.wgsl        line, circle, rectangle, shape (SDF circle+rect), sprite
-examples/             25 runnable demos (see table below)
+examples/             26 runnable demos (see table below)
 assets/               sprites/*.png (+ .pxo sidecars for brick, water_can),
                       fonts/JameGem08_2026-Regular.ttf, audio/swoof.wav
 src/TODO.md           next planned feature (Body / rigid bodies)
@@ -72,6 +72,10 @@ numbers use a hand-rolled splitmix64 `Rng(u64)`.
   - `mouse_position() -> Option<[f32;2]>` — user coords, `None` when the cursor
     is outside the window (last known position is deliberately dropped).
   - `mouse_button_down(MouseButton) -> bool`
+  - `mouse_wheel() -> f32` — vertical wheel movement since the previous
+    frame, in lines (positive = up). It sums every wheel event of the frame
+    (`LineDelta` as-is, `PixelDelta` at 120 px/line) and is reset after the
+    frame's `process`, so an unread frame discards its delta.
   - `expected_fps() -> Option<f32>` — monitor refresh rate when vsync is on.
   - `frame_processing_ms() -> f64` — the engine's CPU time for the last
     completed frame (its own probe; see "Diagnostics" below).
@@ -246,9 +250,11 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
   `smoothstep(-aa, aa, d)` gives the coverage. Rotation and scaling "apply for
   free".
 - Events (native): keyboard held-set (Escape exits), cursor position, mouse
-  buttons, `CursorLeft`/`Focused(false)` **clear** the held state (no stuck
-  controls), resize/scale-factor reconfigure the surface (pipelines rebuild
-  only if the format changed), `RedrawRequested` → `render()` + re-request.
+  buttons, mouse wheel (accumulated in lines per frame, reset after the
+  frame's `process`), `CursorLeft`/`Focused(false)` **clear** the held state
+  (no stuck controls), resize/scale-factor reconfigure the surface (pipelines
+  rebuild only if the format changed), `RedrawRequested` → `render()` +
+  re-request.
   The window opens at the `Config`'s `window_size` (or the platform default),
   centered on the monitor, and requests its first redraw explicitly (Wayland
   won't deliver one otherwise).
@@ -532,7 +538,7 @@ itself is a `Process`.
 
 ## Testing
 
-Baseline: **161 tests + 4 doctests** passing, `cargo build --examples`
+Baseline: **164 tests + 4 doctests** passing, `cargo build --examples`
 clean. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
@@ -541,7 +547,7 @@ clean. Notable test areas:
   uniform-offset assertions (above).
 - `src/backend/tests.rs` — GPU-free: uniform-layout mirrors, scissor math,
   `paint_order`, `expand_text` (splicing + atlas reuse across frames),
-  `context_reports_held_mouse_button`.
+  `context_reports_held_mouse_button`, `context_reports_mouse_wheel_delta`.
 - `src/collision.rs` — push-out separation, reflect restitution semantics.
 - `src/tween.rs`, `src/particles.rs`, `src/text.rs` — behavior unit tests.
 - `src/audio.rs` — device-free decode tests (synthetic WAV, bundled
@@ -612,6 +618,10 @@ disk. Run with `cargo run --example <name>`
 |              | then over 0.5 s the inverted sprite evaporates, shrinking to nothing|
 |              | while its center sinks through the grass; after a random 5-10 s    |
 |              | delay the bug pops back up at its spawn spot, fully healed          |
+| sprite_util  | a picked PNG (rfd file dialog) shown in the window: the slider or   |
+|              | the wheel zooms (wheel anchored under the cursor, 1.15x per line),  |
+|              | a right-drag pans, and a left click logs the spot in the texture's  |
+|              | pixel space and leaves a marker dot there                           |
 
 `cursor.rs` is the most complete reference demo: `CAN_IMAGE [331,247]` scaled
 to 100 px, a 90° CCW tilt tween (0.5 s, rebuilt on press/release edges),
@@ -654,7 +664,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 
 ```
 cargo build --examples   # expect EXIT 0
-cargo test               # expect 155 passed + 3 doctests
+cargo test               # expect 164 passed + 4 doctests
 cargo test --examples    # expect 17 passed (the immortal example tests)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0

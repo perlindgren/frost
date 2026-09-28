@@ -23,7 +23,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
@@ -159,6 +159,10 @@ pub(crate) struct Frost<P: Process> {
     /// The mouse buttons currently held down, updated as mouse input
     /// events arrive.
     mouse_buttons: HashSet<MouseButton>,
+    /// The mouse wheel's vertical movement in lines, accumulated as wheel
+    /// events arrive since the previous frame and reset after the frame's
+    /// `Context` reports it (see `Context::mouse_wheel`).
+    mouse_wheel: f32,
     /// The gamepad controller, or `None` when gilrs could not open the
     /// platform's input devices (then `Context::gamepads` is empty). The
     /// buttons and axes of every connected gamepad are tracked by gilrs
@@ -329,6 +333,7 @@ impl<P: Process> Frost<P> {
             keys: HashSet::new(),
             mouse: None,
             mouse_buttons: HashSet::new(),
+            mouse_wheel: 0.0,
             gilrs,
             process,
         }
@@ -470,6 +475,20 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                     self.mouse_buttons.remove(&button);
                 }
             },
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Accumulate the vertical movement in wheel lines:
+                // `LineDelta` is already in lines, and `PixelDelta` is
+                // converted at the nominal 120 pixels per line. The frame's
+                // `Context` reports the accumulated delta and resets it, so
+                // several notches in one frame add up and an unread frame
+                // discards them.
+                match delta {
+                    MouseScrollDelta::LineDelta(_, y) => self.mouse_wheel += y,
+                    MouseScrollDelta::PixelDelta(position) => {
+                        self.mouse_wheel += position.y as f32 / 120.0
+                    }
+                }
+            }
             WindowEvent::CursorLeft { .. } => {
                 self.mouse = None;
                 // A release outside the window may never arrive, so drop
@@ -1161,9 +1180,14 @@ impl<P: Process> Frost<P> {
                 frame_processing_ms: self.frame_processing_ms,
                 frame_draw_calls: self.frame_draw_calls,
                 frame_diagnostic_draw_calls: self.frame_diagnostic_draw_calls,
+                mouse_wheel: self.mouse_wheel,
             };
             process.process(&mut ctx, dt);
         }
+        // The wheel delta belongs to this frame only: reset the accumulator
+        // so a frame that never reads it discards the delta rather than
+        // leaking it into the next.
+        self.mouse_wheel = 0.0;
         // The user's process ran; now update the scene tree itself: every
         // node's `Node::process`, children before their parent.
         self.scene.visit();

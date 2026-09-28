@@ -99,8 +99,9 @@
 //! Key presses are logged, the currently held keys are reported by
 //! [`Context::key_down`], the mouse cursor's position by
 //! [`Context::mouse_position`], the held mouse buttons by
-//! [`Context::mouse_button_down`], and the connected gamepads by
-//! [`Context::gamepads`]; Escape closes the window.
+//! [`Context::mouse_button_down`], the mouse wheel's movement since the
+//! previous frame by [`Context::mouse_wheel`], and the connected gamepads
+//! by [`Context::gamepads`]; Escape closes the window.
 //!
 //! On native targets, [`Sound`]s decoded at load time play through an
 //! [`Audio`]: one-shots mix in parallel, and one sound loops at a time.
@@ -1231,6 +1232,9 @@ pub struct Context<'c> {
     mouse: Option<[f32; 2]>,
     /// The mouse buttons currently held down.
     mouse_buttons: &'c HashSet<MouseButton>,
+    /// The mouse wheel's vertical movement since the previous frame, in
+    /// lines (see [`Context::mouse_wheel`]).
+    mouse_wheel: f32,
     /// The gamepad controller, or `None` when gilrs could not open the
     /// platform's input devices at startup (then no gamepad state exists).
     gilrs: Option<&'c gilrs::Gilrs>,
@@ -1348,6 +1352,18 @@ impl Context<'_> {
     /// dropped, so a button can never appear stuck down.
     pub fn mouse_button_down(&self, button: MouseButton) -> bool {
         self.mouse_buttons.contains(&button)
+    }
+
+    /// The mouse wheel's vertical movement since the previous frame, in
+    /// lines: positive when the wheel moves up (away from the user),
+    /// negative when it moves down.
+    ///
+    /// The delta sums every wheel event that arrived since the previous
+    /// frame — several notches may accumulate in one frame — and is consumed
+    /// per frame: a frame that never reads it discards the delta. `0.0`
+    /// when the wheel did not move.
+    pub fn mouse_wheel(&self) -> f32 {
+        self.mouse_wheel
     }
 
     /// The gamepads currently connected, in the order they connected.
