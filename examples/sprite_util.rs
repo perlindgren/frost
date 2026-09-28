@@ -20,6 +20,29 @@
 //! ```
 //!
 //! (Set `RUST_LOG=info` to see the click lines.)
+//!
+//! The sprite's source can be given on the command line with
+//! `-i`/`--input`: a PNG file is opened immediately, without any file
+//! dialog, and a folder is where the file dialog opens. Without the
+//! argument, the dialog opens in `assets/sprites`:
+//!
+//! ```text
+//! cargo run --example sprite_util -- -i assets/sprites/bird1.png
+//! cargo run --example sprite_util -- -i assets/sprites
+//! ```
+
+use clap::Parser;
+
+/// The command line arguments.
+#[derive(Parser, Debug)]
+#[command(name = "sprite_util")]
+struct Args {
+    /// A PNG file to open immediately, skipping the file dialog — or a
+    /// folder, in which case the file dialog opens there. Without the
+    /// argument, the dialog opens in `assets/sprites`.
+    #[arg(short = 'i', long = "input", value_name = "PATH")]
+    input: Option<std::path::PathBuf>,
+}
 
 /// The lowest zoom: the sprite at a quarter of its texture size.
 const ZOOM_MIN: f32 = 0.25;
@@ -197,21 +220,42 @@ fn main() {
     // `CARGO_MANIFEST_DIR` pins the asset paths to the crate root, so the
     // example works no matter where it is run from.
     let root = std::env!("CARGO_MANIFEST_DIR");
-    let sprites = format!("{root}/assets/sprites");
 
-    // Pick a PNG out of assets/sprites in a native file dialog. The dialog
-    // opens in the sprites folder, filters to PNG files, and blocks until
-    // the user picks a file or cancels — so it runs before the window
-    // exists.
-    let picked = rfd::FileDialog::new()
-        .set_title("sprite_util: choose a sprite (assets/sprites)")
-        .set_directory(&sprites)
-        .add_filter("PNG images", &["png"])
-        .pick_file();
+    // The sprite's source: a `-i`/`--input` file is opened immediately,
+    // without any file dialog; a `-i`/`--input` folder is where the file
+    // dialog opens; and without the argument the dialog opens in the
+    // bundled assets/sprites folder.
+    let Args { input } = Args::parse();
+    let default_dir = std::path::Path::new(root).join("assets/sprites");
+    let (immediate, dialog_dir) = match &input {
+        Some(path) if path.is_file() => (Some(path.as_path()), None),
+        Some(path) if path.is_dir() => (None, Some(path.as_path())),
+        Some(path) => {
+            log::error!("'{}' is neither a file nor a folder", path.display());
+            std::process::exit(1);
+        }
+        None => (None, Some(default_dir.as_path())),
+    };
 
-    let Some(path) = picked else {
-        log::warn!("no file selected — quitting");
-        return;
+    // When no file was given on the command line, pick one in a native
+    // file dialog. The dialog opens in the input folder (or
+    // assets/sprites), filters to PNG files, and blocks until the user
+    // picks a file or cancels — so it runs before the window exists.
+    let path = if let Some(file) = immediate {
+        file.to_path_buf()
+    } else {
+        let dir = dialog_dir.expect("a dialog directory was set");
+        let picked = rfd::FileDialog::new()
+            .set_title("sprite_util: choose a sprite")
+            .set_directory(&dir)
+            .add_filter("PNG images", &["png"])
+            .pick_file();
+
+        let Some(path) = picked else {
+            log::warn!("no file selected — quitting");
+            return;
+        };
+        path
     };
     let name = path
         .file_name()
