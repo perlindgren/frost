@@ -1,8 +1,7 @@
-//! A little sprite utility: pick any PNG out of `assets/sprites` with a
-//! native file dialog (rfd), display it in the window, zoom it with a
-//! slider or the mouse wheel, pan it by grabbing the canvas with a
-//! right-drag, and log the clicked position in the sprite's own pixel
-//! space through the `log` facade.
+//! A little sprite utility: pick any PNG with a native file dialog (rfd),
+//! display it in the window, zoom it with a slider or the mouse wheel,
+//! pan it by grabbing the canvas with a right-drag, and log the clicked
+//! position in the sprite's own pixel space through the `log` facade.
 //!
 //! The engine has no widget toolkit, so the slider is built from scene
 //! primitives — a thin rectangle track with a circle handle, repositioned
@@ -27,8 +26,11 @@
 //!
 //! The sprite's source can be given on the command line with
 //! `-i`/`--input`: a PNG file is opened immediately, without any file
-//! dialog, and a folder is where the file dialog opens. Without the
-//! argument, the dialog opens in `assets/sprites`:
+//! dialog, and a folder is where the file dialog opens — a relative path
+//! is expanded against the working directory and resolved to an absolute
+//! one, because the native dialog (notably on Windows) ignores anything
+//! else and opens in its default spot. Without the argument, the dialog
+//! opens in the folder the example was launched from:
 //!
 //! ```text
 //! cargo run --example sprite_util -- -i assets/sprites/bird1.png
@@ -42,8 +44,9 @@ use clap::Parser;
 #[command(name = "sprite_util")]
 struct Args {
     /// A PNG file to open immediately, skipping the file dialog — or a
-    /// folder, in which case the file dialog opens there. Without the
-    /// argument, the dialog opens in `assets/sprites`.
+    /// folder, in which case the file dialog opens there (a relative
+    /// path is expanded against the working directory). Without the
+    /// argument, the dialog opens in the working directory.
     #[arg(short = 'i', long = "input", value_name = "PATH")]
     input: Option<std::path::PathBuf>,
 }
@@ -271,26 +274,45 @@ fn main() {
     // example works no matter where it is run from.
     let root = std::env!("CARGO_MANIFEST_DIR");
 
+    // The folder the dialog opens in when no input folder is given:
+    // where the example was launched from, not where its binary lives.
+    let cwd = match std::env::current_dir() {
+        Ok(dir) => dir,
+        Err(err) => {
+            log::error!("failed to read the working directory: {err}");
+            std::process::exit(1);
+        }
+    };
+
     // The sprite's source: a `-i`/`--input` file is opened immediately,
     // without any file dialog; a `-i`/`--input` folder is where the file
     // dialog opens; and without the argument the dialog opens in the
-    // bundled assets/sprites folder.
+    // working directory. The dialog folder is resolved to an absolute
+    // path first — the native dialog (on Windows at least) ignores
+    // relative paths and falls back to its default location, so the path
+    // is joined onto the working directory (an absolute input replaces
+    // it) and canonicalized.
     let Args { input } = Args::parse();
-    let default_dir = std::path::Path::new(root).join("assets/sprites");
     let (immediate, dialog_dir) = match &input {
         Some(path) if path.is_file() => (Some(path.as_path()), None),
-        Some(path) if path.is_dir() => (None, Some(path.as_path())),
+        Some(path) if path.is_dir() => {
+            let dir = cwd.join(path).canonicalize().unwrap_or_else(|err| {
+                log::error!("failed to resolve the folder '{}': {err}", path.display());
+                std::process::exit(1);
+            });
+            (None, Some(dir))
+        }
         Some(path) => {
             log::error!("'{}' is neither a file nor a folder", path.display());
             std::process::exit(1);
         }
-        None => (None, Some(default_dir.as_path())),
+        None => (None, Some(cwd)),
     };
 
     // When no file was given on the command line, pick one in a native
-    // file dialog. The dialog opens in the input folder (or
-    // assets/sprites), filters to PNG files, and blocks until the user
-    // picks a file or cancels — so it runs before the window exists.
+    // file dialog. The dialog opens in the input folder (or the working
+    // directory), filters to PNG files, and blocks until the user picks
+    // a file or cancels — so it runs before the window exists.
     let path = if let Some(file) = immediate {
         file.to_path_buf()
     } else {
