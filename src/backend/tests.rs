@@ -576,6 +576,7 @@ fn particles_scissor_covers_the_whole_surface() {
         aspect: 1.0,
         sprite_data: None,
         sprite_size: [0, 0],
+        sprite_generation: 0,
         lit: 0.0,
         z: 0.0,
     };
@@ -2545,6 +2546,7 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
             },
             alpha: 0.25,
             filter: SpriteFilter::Linear,
+            generation: 0,
         }),
         children: vec![],
     }));
@@ -2631,6 +2633,7 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
             color: black(),
             alpha: 1.0,
             filter: SpriteFilter::Linear,
+            generation: 0,
         }),
         children: vec![],
     });
@@ -3001,11 +3004,16 @@ fn sprite_loader_round_trips_a_png_file() {
         color,
         alpha,
         filter,
+        generation,
     } = shape
     else {
         panic!("expected a sprite shape");
     };
     assert_eq!((width, height), (2, 2));
+    // Every construction stamps a buffer generation (never 0): the
+    // backend's texture cache keys on `(pointer, generation)`, so a
+    // freed-and-recycled buffer address can never hit a stale texture.
+    assert_ne!(generation, 0);
     // The decoded RGBA8 buffer matches the file's pixels byte for byte.
     assert_eq!(&data[..], &buf[..]);
     // The default tint is white and the default opacity is 1.0.
@@ -3041,6 +3049,40 @@ fn sprite_constructors_set_their_sampling_filter() {
         panic!("expected a sprite shape");
     };
     assert_eq!(*filter, SpriteFilter::Nearest);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn sprite_buffers_get_unique_generations() {
+    // The backend's texture cache keys on `(pointer, generation)`, and a
+    // rebuilt, same-sized buffer is likely to be allocated at a freed
+    // buffer's old address: without a fresh generation per construction
+    // the cache would hand out the stale texture. So every construction
+    // must stamp its own, and a clone (which shares the buffer) must keep
+    // it.
+    let buf = [10u8, 20, 30, 40];
+    let path = std::env::temp_dir().join(format!("frost-sprite-gen-{}.png", std::process::id()));
+    image::save_buffer(&path, &buf, 1, 1, image::ColorType::Rgba8).expect("writing the test png");
+    let a = Shape::sprite(&path).expect("a valid png loads");
+    let b = Shape::sprite(&path).expect("a valid png loads");
+    let Shape::Sprite { generation: ga, .. } = &a else {
+        panic!("expected a sprite shape");
+    };
+    let Shape::Sprite { generation: gb, .. } = &b else {
+        panic!("expected a sprite shape");
+    };
+    assert_ne!(*ga, *gb, "two constructions need distinct generations");
+    assert!(*ga >= 1, "a stamped generation is never 0");
+    let Shape::Sprite { generation: gc, .. } = &a.clone() else {
+        panic!("expected a sprite shape");
+    };
+    assert_eq!(*ga, *gc, "a clone shares its buffer and its generation");
+    // Particle sprite buffers are stamped the same way.
+    let p = ParticleShape::sprite(&path).expect("a valid png loads");
+    let ParticleShape::Sprite { generation: pg, .. } = &p else {
+        panic!("expected a sprite particle shape");
+    };
+    assert!(*pg >= 1, "a stamped generation is never 0");
     let _ = std::fs::remove_file(&path);
 }
 

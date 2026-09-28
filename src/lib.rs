@@ -295,6 +295,7 @@ impl Canvas {
             aspect: 1.0,
             sprite_data: None,
             sprite_size: [0, 0],
+            sprite_generation: 0,
             // Immediate canvas draws are unlit: the `lit` flag is a
             // scene-node property, and the diagnostic marker is — no
             // scene node owns this batch.
@@ -733,12 +734,14 @@ fn draw_node(
                 color,
                 alpha,
                 filter,
+                generation,
             } => Some(Draw::Sprite {
                 world: world.compose(&user_to_pixel),
                 data: data.clone(),
-                // A file's pixels are never replaced, so a static image's
-                // buffer identity is the constant 0.
-                generation: 0,
+                // The buffer's stamped generation: an in-memory image may
+                // be rebuilt with new pixels at any time, so its identity
+                // is the constructor's stamp, not a constant.
+                generation: *generation,
                 size: [(*width as f32).max(0.0), (*height as f32).max(0.0)],
                 texture_size: [*width, *height],
                 filter: *filter,
@@ -848,13 +851,14 @@ fn draw_node(
                     let m = to_pixel.m;
                     let base = m[1][0].atan2(m[0][0]);
                     let flipped = (m[0][0] * m[1][1] - m[0][1] * m[1][0]) < 0.0;
-                    let (sprite_data, sprite_size) = match shape {
+                    let (sprite_data, sprite_size, sprite_generation) = match shape {
                         ParticleShape::Sprite {
                             data,
                             width,
                             height,
-                        } => (Some(data.clone()), [*width, *height]),
-                        _ => (None, [0, 0]),
+                            generation,
+                        } => (Some(data.clone()), [*width, *height], *generation),
+                        _ => (None, [0, 0], 0),
                     };
                     let mut data = Vec::with_capacity(system.len() * 32);
                     for p in &system.particles {
@@ -880,6 +884,7 @@ fn draw_node(
                         aspect: shape.aspect(),
                         sprite_data,
                         sprite_size,
+                        sprite_generation,
                         lit: f32::from(node.lit),
                         z: order,
                         diagnostic: node.diagnostic,
@@ -1939,6 +1944,7 @@ mod tests {
             data: std::sync::Arc::from([255u8, 255, 255, 255]),
             width: 2,
             height: 3,
+            generation: 0,
         };
         let node = particle_node(0.0, WHITE, sprite);
         let mut draws = Vec::new();

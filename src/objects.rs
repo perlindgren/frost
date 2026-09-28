@@ -4,6 +4,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::particles::ParticleSystem;
 
@@ -252,6 +253,9 @@ pub enum ParticleShape {
         width: u32,
         /// The texture height in pixels.
         height: u32,
+        /// The buffer's generation, identifying `data` to the backend's
+        /// texture cache.
+        generation: u64,
     },
 }
 
@@ -284,6 +288,7 @@ impl ParticleShape {
             data,
             width,
             height,
+            generation: NEXT_SPRITE_GENERATION.fetch_add(1, Ordering::Relaxed),
         })
     }
 
@@ -571,6 +576,9 @@ pub enum Shape {
         /// The texture's sampling filter, applied whenever the quad is not
         /// the texture's own size: [`SpriteFilter::Linear`] by default.
         filter: SpriteFilter,
+        /// The buffer's generation, identifying `data` to the backend's
+        /// texture cache.
+        generation: u64,
     },
     /// A text: `text` laid out with the font loaded by [`Shape::text`] at
     /// `size` pixels per em.
@@ -666,6 +674,15 @@ pub enum SpriteFilter {
     Nearest,
 }
 
+/// The next sprite buffer generation. It starts at 1 (never 0) so a buffer
+/// generation can never be confused with the constant `0` that static,
+/// never-repacked buffers carry. Every sprite buffer created by the
+/// `Shape::sprite*` and `ParticleShape::sprite*` constructors gets its own
+/// generation, so the backend's `(pointer, generation)` texture cache can
+/// never hit a stale texture when a freed buffer's address is recycled by a
+/// new, same-sized one.
+static NEXT_SPRITE_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 impl Shape {
     /// Creates a sprite shape from the PNG file at `path`.
     ///
@@ -735,6 +752,7 @@ impl Shape {
             },
             alpha: 1.0,
             filter,
+            generation: NEXT_SPRITE_GENERATION.fetch_add(1, Ordering::Relaxed),
         })
     }
 

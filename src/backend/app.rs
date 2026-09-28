@@ -103,10 +103,15 @@ pub(crate) struct Frost<P: Process> {
     /// The GPU resources for each distinct sprite image, keyed by the
     /// `(pointer, generation)` of its pixel-data `Arc`: the pointer alone
     /// is not enough, because a freed buffer's address can be reused for a
-    /// different buffer (an atlas repack). Sprites sharing one file share
-    /// one texture, so the map stays bounded by the number of distinct
-    /// images. A `TextureView` keeps its texture alive, so only the view
-    /// and the sampler are stored.
+    /// different buffer (an atlas repack, a rebuilt in-memory image).
+    /// Sprite constructors stamp a new generation on every construction,
+    /// and atlases bump theirs on a repack, so a stale texture is never
+    /// served for new pixels. Sprites sharing one file share one texture,
+    /// so the map stays bounded by the number of distinct images. A
+    /// `TextureView` keeps its texture alive, so only the view and the
+    /// sampler are stored. When an atlas repacks, its stale entry is
+    /// evicted right after the text is expanded; a sprite buffer's stale
+    /// entry is evicted lazily, when a new buffer recycles its address.
     sprite_resources: HashMap<(u64, u64), (TextureView, Sampler)>,
     /// The rasterized glyph atlas for each distinct `(font, size)` pair,
     /// keyed by the font buffer's pointer and the size's bits. Kept between
@@ -898,6 +903,25 @@ impl<P: Process> Frost<P> {
         (view, sampler)
     }
 
+    /// Evicts a stale entry from the sprite texture cache: two live
+    /// buffers can never share an address, so a cache entry at the same
+    /// pointer with a different generation belongs to a freed buffer whose
+    /// address the new one has recycled, and its texture is dead weight.
+    /// An associated function (not a method) so the render loop can call
+    /// it while it still holds the immutable pipeline borrows.
+    fn evict_recycled_buffer(
+        resources: &mut HashMap<(u64, u64), (TextureView, Sampler)>,
+        key: (u64, u64),
+    ) {
+        if let Some(stale) = resources
+            .iter()
+            .find(|(k, _)| k.0 == key.0)
+            .map(|(k, _)| *k)
+        {
+            resources.remove(&stale);
+        }
+    }
+
     /// Creates the uniform buffer and five-entry bind group (uniform,
     /// texture view, sampler, light field, occluder field) for one sprite
     /// draw call. Same per-draw buffer rationale as
@@ -1465,6 +1489,11 @@ impl<P: Process> Frost<P> {
                         let (view, sampler) = match self.sprite_resources.get(&key) {
                             Some((view, sampler)) => (view.clone(), sampler.clone()),
                             None => {
+                                // This buffer may have recycled a freed
+                                // buffer's address: evict the stale entry
+                                // before inserting, so it can never serve
+                                // pixels to a live buffer.
+                                Self::evict_recycled_buffer(&mut self.sprite_resources, key);
                                 let (view, sampler) = self.sprite_texture(
                                     &data,
                                     [texture_size[0] as f32, texture_size[1] as f32],
@@ -1500,6 +1529,7 @@ impl<P: Process> Frost<P> {
                         aspect,
                         sprite_data,
                         sprite_size,
+                        sprite_generation,
                         lit,
                         diagnostic,
                         ..
@@ -1514,12 +1544,19 @@ impl<P: Process> Frost<P> {
                         // which never sample, the 1x1 placeholder.
                         let (view, sampler) = match sprite_data.filter(|_| kind >= 1.5) {
                             Some(image) => {
-                                // A particle's image is a static file,
-                                // never repacked: generation 0.
-                                let key = (Arc::as_ptr(&image) as *const () as u64, 0);
+                                // The image's stamped generation identifies
+                                // the buffer: a rebuilt in-memory image
+                                // gets a fresh one, so a recycled address
+                                // can never hit a stale texture.
+                                let key =
+                                    (Arc::as_ptr(&image) as *const () as u64, sprite_generation);
                                 match self.sprite_resources.get(&key) {
                                     Some((view, sampler)) => (view.clone(), sampler.clone()),
                                     None => {
+                                        Self::evict_recycled_buffer(
+                                            &mut self.sprite_resources,
+                                            key,
+                                        );
                                         // Particle images keep bilinear
                                         // sampling: `ParticleShape` carries
                                         // no filter.
