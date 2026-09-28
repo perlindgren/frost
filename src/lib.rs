@@ -150,6 +150,13 @@ pub use winit::keyboard::KeyCode;
 /// `MouseButton::Left`.
 pub use winit::event::MouseButton;
 
+/// The window the frames are drawn into, reachable through
+/// [`Context::window`]: the engine's `winit` window, to parent native
+/// dialogs to (such as `rfd`'s file picker, through its `set_parent`) so
+/// they open on top of the window, and for any window state the platform
+/// exposes.
+pub use winit::window::Window;
+
 /// The gamepad buttons and axes used to query the gamepads reported by
 /// [`Context::gamepads`], such as `Axis::LeftStickY` and `Button::South`,
 /// as gilrs names them.
@@ -1226,6 +1233,9 @@ pub struct Context<'c> {
     canvas: &'c mut Canvas,
     scene: &'c mut Scene,
     keys: &'c HashSet<KeyCode>,
+    /// The window this frame is drawn into, or `None` before the window
+    /// exists.
+    window: Option<&'c Window>,
     expected_fps: Option<f32>,
     /// The cursor's position in user coordinates, or `None` when the cursor
     /// is outside the window (or has never moved into it).
@@ -1262,6 +1272,17 @@ impl Context<'_> {
     /// press and release since the previous frame.
     pub fn key_down(&self, key: KeyCode) -> bool {
         self.keys.contains(&key)
+    }
+
+    /// The window this frame is drawn into, or `None` before the window
+    /// exists (it is created before the first frame, so it is `Some` for
+    /// every frame that is actually drawn).
+    ///
+    /// It is the engine's [`Window`]: parent native dialogs to it (for
+    /// example with `rfd::FileDialog::set_parent`) so they open on top of
+    /// the window, and use it for any window state the platform exposes.
+    pub fn window(&self) -> Option<&Window> {
+        self.window
     }
 
     /// The frame rate this app is expected to run at, in frames per second.

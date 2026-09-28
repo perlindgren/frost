@@ -3,6 +3,12 @@
 //! pan it by grabbing the canvas with a right-drag, and log the clicked
 //! position in the sprite's own pixel space through the `log` facade.
 //!
+//! The dialog is a child of the window, so it opens on top of it: the
+//! window is created first and the dialog is parented to it on the first
+//! frame (a dialog without a parent opens at the screen's default spot,
+//! far from the window). It is modal, so the frame loop blocks until a
+//! file is picked; canceling quits.
+//!
 //! The engine has no widget toolkit, so the slider is built from scene
 //! primitives — a thin rectangle track with a circle handle, repositioned
 //! every frame from the window size. Pointer state comes from
@@ -121,10 +127,62 @@ struct Demo {
     /// The last reported click: its position in the texture's pixel space,
     /// and whether the spot was inside the texture.
     last_click: Option<([f32; 2], bool)>,
+    /// The folder the file dialog opens in, still to pick: `Some` until
+    /// the first frame has shown the dialog. A picked file installs the
+    /// sprite and clears it; canceling quits the program.
+    pending: Option<std::path::PathBuf>,
 }
 
 impl frost::Process for Demo {
     fn process(&mut self, ctx: &mut frost::Context, _dt: f32) {
+        // When no file was given on the command line, pick one in a
+        // native file dialog — on the first frame, now that the window
+        // exists. The dialog is a child of the window, so it opens on top
+        // of it (a parentless dialog would open at the screen's default
+        // spot), and it is modal: the loop blocks here until the user
+        // picks a file or cancels.
+        if let Some(dir) = &self.pending {
+            let mut dialog = rfd::FileDialog::new()
+                .set_title("sprite_util: choose a sprite")
+                .set_directory(dir)
+                .add_filter("PNG images", &["png"]);
+            if let Some(window) = ctx.window() {
+                dialog = dialog.set_parent(window);
+            }
+            let Some(path) = dialog.pick_file() else {
+                log::warn!("no file selected — quitting");
+                std::process::exit(0);
+            };
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            if path.extension().and_then(|e| e.to_str()) != Some("png") {
+                log::error!("'{name}' is not a PNG file");
+                std::process::exit(1);
+            }
+            let sprite = match frost::Shape::sprite(&path) {
+                Ok(sprite) => sprite,
+                Err(err) => {
+                    log::error!("failed to load '{name}': {err}");
+                    std::process::exit(1);
+                }
+            };
+            let size = sprite.sprite_size().expect("the shape is a sprite");
+            let (sw, sh) = (size[0], size[1]);
+            log::info!("loaded '{name}': {sw:.0}x{sh:.0} pixels");
+            // Install the sprite in the scene and remember it for the HUD
+            // and the click math; the rest of this frame's layout needs
+            // the sprite's size, so the first interactive frame is the
+            // next one.
+            ctx.scene().root.children[0].shape = Some(sprite);
+            self.size = size;
+            self.name = name;
+            self.pending = None;
+            return;
+        }
+
         let (_w, h) = ctx.size();
         let sy = -h / 2.0 + SLIDER_MARGIN;
 
@@ -156,9 +214,7 @@ impl frost::Process for Demo {
 
         // A right-drag grabs the canvas: the sprite follows the cursor's
         // frame-to-frame movement, so it always lands under the pointer.
-        if rdown
-            && let (Some([lx, ly]), Some([mx, my])) = (self.last_mouse, pos)
-        {
+        if rdown && let (Some([lx, ly]), Some([mx, my])) = (self.last_mouse, pos) {
             self.offset[0] += mx - lx;
             self.offset[1] += my - ly;
         }
@@ -309,45 +365,36 @@ fn main() {
         None => (None, Some(cwd)),
     };
 
-    // When no file was given on the command line, pick one in a native
-    // file dialog. The dialog opens in the input folder (or the working
-    // directory), filters to PNG files, and blocks until the user picks
-    // a file or cancels — so it runs before the window exists.
-    let path = if let Some(file) = immediate {
-        file.to_path_buf()
-    } else {
-        let dir = dialog_dir.expect("a dialog directory was set");
-        let picked = rfd::FileDialog::new()
-            .set_title("sprite_util: choose a sprite")
-            .set_directory(dir)
-            .add_filter("PNG images", &["png"])
-            .pick_file();
-
-        let Some(path) = picked else {
-            log::warn!("no file selected — quitting");
-            return;
-        };
-        path
-    };
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown")
-        .to_string();
-    if path.extension().and_then(|e| e.to_str()) != Some("png") {
-        log::error!("'{name}' is not a PNG file");
-        std::process::exit(1);
-    }
-    let sprite = match frost::Shape::sprite(&path) {
-        Ok(sprite) => sprite,
-        Err(err) => {
-            log::error!("failed to load '{name}': {err}");
-            std::process::exit(1);
+    // A file on the command line is loaded here, before the window
+    // exists; without the argument the scene's sprite node starts empty
+    // and the demo's first frame opens the file dialog — as a child of
+    // the window, so it lands on top of it — and installs the pick (see
+    // `Demo::process`).
+    let (sprite, size, name) = match immediate {
+        Some(file) => {
+            let name = file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            if file.extension().and_then(|e| e.to_str()) != Some("png") {
+                log::error!("'{name}' is not a PNG file");
+                std::process::exit(1);
+            }
+            let sprite = match frost::Shape::sprite(file) {
+                Ok(sprite) => sprite,
+                Err(err) => {
+                    log::error!("failed to load '{name}': {err}");
+                    std::process::exit(1);
+                }
+            };
+            let size = sprite.sprite_size().expect("the shape is a sprite");
+            let (sw, sh) = (size[0], size[1]);
+            log::info!("loaded '{name}': {sw:.0}x{sh:.0} pixels");
+            (Some(sprite), size, name)
         }
+        None => (None, [0.0, 0.0], String::new()),
     };
-    let size = sprite.sprite_size().expect("the shape is a sprite");
-    let (sw, sh) = (size[0], size[1]);
-    log::info!("loaded '{name}': {sw:.0}x{sh:.0} pixels");
 
     // The HUD's font, the same monospaced coding font the diagnostics
     // overlay uses.
@@ -365,8 +412,10 @@ fn main() {
         children: vec![
             Box::new(frost::SceneNode {
                 // The picked sprite, centered on the window's center; the
-                // process applies the zoom to it each frame.
-                shape: Some(sprite),
+                // process applies the zoom to it each frame. Empty until
+                // the first frame's picker installs a file (no
+                // `-i`/`--input` argument).
+                shape: sprite,
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
@@ -436,6 +485,7 @@ fn main() {
             was_down: false,
             last_mouse: None,
             last_click: None,
+            pending: dialog_dir,
         },
     ) {
         log::error!("frost failed: {err}");

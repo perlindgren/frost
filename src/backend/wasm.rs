@@ -69,7 +69,10 @@ impl<P: Process> ApplicationHandler for WebFrost<P> {
         // Create the canvas immediately so the page shows *something* while
         // the GPU setup is in flight.
         if self.window.is_none() {
-            let window_size = self.core.as_ref().map(|core| core.window_size);
+            // `and_then`, not `map`: `core.window_size` is itself an
+            // `Option`, so `map` would hand the window creator a doubled
+            // one.
+            let window_size = self.core.as_ref().and_then(|core| core.window_size);
             self.window = Some(create_window(event_loop, window_size));
         }
         if matches!(self.gpu, GpuInit::Idle) {

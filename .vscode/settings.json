@@ -8,6 +8,8 @@
         "OLLAMA",
         "Texel",
         "deepseek",
+        "gamepads",
+        "gilrs",
         "journalctl",
         "msvc",
         "ngram",

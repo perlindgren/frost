@@ -1173,6 +1173,10 @@ impl<P: Process> Frost<P> {
                 canvas: &mut canvas,
                 scene,
                 keys,
+                // The window is attached before the first frame renders, so
+                // this is `Some` for every frame the process sees; the
+                // `Option` is the type the field has before attach.
+                window: self.window.as_deref(),
                 expected_fps: self.expected_fps,
                 mouse,
                 mouse_buttons,
