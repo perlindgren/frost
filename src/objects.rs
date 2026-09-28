@@ -546,7 +546,7 @@ pub enum Shape {
     /// order is the one that shows.
     Background { color: Color },
     /// A sprite: the RGBA pixels of a PNG image, created by
-    /// [`Shape::sprite`].
+    /// [`Shape::sprite`] or [`Shape::sprite_nearest`].
     ///
     /// The sprite is centered on the node's origin, one texture pixel per
     /// scene pixel, and the node's transform and scale apply to it exactly as
@@ -568,6 +568,9 @@ pub enum Shape {
         /// channel. 1.0 (the default) leaves the texture's transparency
         /// unchanged; 0.0 makes the sprite fully transparent.
         alpha: f32,
+        /// The texture's sampling filter, applied whenever the quad is not
+        /// the texture's own size: [`SpriteFilter::Linear`] by default.
+        filter: SpriteFilter,
     },
     /// A text: `text` laid out with the font loaded by [`Shape::text`] at
     /// `size` pixels per em.
@@ -648,6 +651,21 @@ pub enum Shape {
     },
 }
 
+/// How a sprite's texture is sampled: the filter the GPU sampler applies
+/// whenever the quad that samples it is not the texture's own size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SpriteFilter {
+    /// Bilinear filtering: each output pixel is a weighted average of the
+    /// texture's four nearest texels, which smooths scaled edges. The right
+    /// choice for photographic images, and the default.
+    #[default]
+    Linear,
+    /// Nearest-neighbor filtering: each output pixel copies exactly one
+    /// texel, so scaled edges stay hard instead of blurring — the filter
+    /// for pixel-art-style output.
+    Nearest,
+}
+
 impl Shape {
     /// Creates a sprite shape from the PNG file at `path`.
     ///
@@ -670,6 +688,37 @@ impl Shape {
     /// are created in environments without a file system, such as a web
     /// browser.
     pub fn sprite_bytes(bytes: impl AsRef<[u8]>) -> Result<Self, SpriteError> {
+        Self::sprite_bytes_filtered(bytes, SpriteFilter::Linear)
+    }
+
+    /// Creates a sprite shape from the PNG file at `path`, sampling it with
+    /// nearest-neighbor filtering: each output pixel copies exactly one
+    /// texel, so the image keeps its hard, unblurred edges when it is
+    /// scaled — the filter for pixel-art-style output.
+    ///
+    /// Like [`Shape::sprite`], the file is read and decoded to RGBA8
+    /// immediately and the pixels live behind an [`Arc`]; the only
+    /// difference is the sampling filter.
+    pub fn sprite_nearest(path: impl AsRef<Path>) -> Result<Self, SpriteError> {
+        let bytes = std::fs::read(path.as_ref()).map_err(SpriteError::Io)?;
+        Self::sprite_bytes_filtered(&bytes, SpriteFilter::Nearest)
+    }
+
+    /// Creates a nearest-neighbor sprite shape from PNG data already in
+    /// memory, for example bytes embedded into the binary with
+    /// `include_bytes!`: the in-memory counterpart of
+    /// [`Shape::sprite_nearest`].
+    pub fn sprite_bytes_nearest(bytes: impl AsRef<[u8]>) -> Result<Self, SpriteError> {
+        Self::sprite_bytes_filtered(bytes, SpriteFilter::Nearest)
+    }
+
+    /// The shared implementation behind the sprite constructors: decodes
+    /// `bytes` to RGBA8 and wraps the pixels with the given sampling
+    /// `filter`.
+    fn sprite_bytes_filtered(
+        bytes: impl AsRef<[u8]>,
+        filter: SpriteFilter,
+    ) -> Result<Self, SpriteError> {
         let image = image::load_from_memory(bytes.as_ref()).map_err(SpriteError::Decode)?;
         let rgba = image.to_rgba8();
         let (width, height) = rgba.dimensions();
@@ -685,6 +734,7 @@ impl Shape {
                 a: 1.0,
             },
             alpha: 1.0,
+            filter,
         })
     }
 

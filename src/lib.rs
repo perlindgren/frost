@@ -732,6 +732,7 @@ fn draw_node(
                 height,
                 color,
                 alpha,
+                filter,
             } => Some(Draw::Sprite {
                 world: world.compose(&user_to_pixel),
                 data: data.clone(),
@@ -740,6 +741,7 @@ fn draw_node(
                 generation: 0,
                 size: [(*width as f32).max(0.0), (*height as f32).max(0.0)],
                 texture_size: [*width, *height],
+                filter: *filter,
                 aa,
                 tint: color.mul(modulate),
                 alpha: *alpha,
@@ -1203,6 +1205,10 @@ fn expand_text_list(
                         generation: atlas.generation(),
                         size: [gw, gh],
                         texture_size: [atlas.width, atlas.height],
+                        // Glyphs are sampled at their native size (or
+                        // scaled down for subpixel layout), so bilinear is
+                        // the right filter.
+                        filter: SpriteFilter::Linear,
                         aa,
                         tint: color,
                         alpha,

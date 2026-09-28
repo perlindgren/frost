@@ -1,6 +1,7 @@
 //! A little sprite utility: pick any PNG with a native file dialog (rfd),
-//! display it in the window, zoom it with a slider or the mouse wheel,
-//! pan it by grabbing the canvas with a right-drag, and log the clicked
+//! display it in the window over a transparency checkerboard with a
+//! bounding box around it, zoom it with a slider or the mouse wheel, pan
+//! it by grabbing the canvas with a right-drag, and log the clicked
 //! position in the sprite's own pixel space through the `log` facade.
 //!
 //! The dialog is a child of the window, so it opens on top of it: the
@@ -9,18 +10,29 @@
 //! far from the window). It is modal, so the frame loop blocks until a
 //! file is picked; canceling quits.
 //!
-//! The engine has no widget toolkit, so the slider is built from scene
+//! The engine has no widget toolkit, so the sliders are built from scene
 //! primitives — a thin rectangle track with a circle handle, repositioned
 //! every frame from the window size. Pointer state comes from
 //! [`frost::Context::mouse_position`], [`frost::Context::mouse_button_down`]
-//! and [`frost::Context::mouse_wheel`]: pressing the track or handle and
-//! dragging scrubs the zoom, the wheel zooms about the cursor (the point
-//! under it stays put), a right-drag grabs the canvas and moves the sprite
-//! with the cursor, and a left click anywhere else is a sprite click — its
-//! window position is converted to the texture's pixel space (`(0, 0)`
-//! upper-left, `x` right, `y` down, shifted by the pan and divided by the
-//! current zoom) and printed with `log::info!`, with a marker dot left at
-//! the spot.
+//! and [`frost::Context::mouse_wheel`]: pressing a track or handle and
+//! dragging scrubs that slider — the zoom, or one of the checker's grey
+//! levels — the wheel zooms about the cursor (the point under it stays
+//! put), a right-drag grabs the canvas and moves the sprite with the
+//! cursor, and a left click anywhere else is a sprite click — its window
+//! position is converted to the texture's pixel space (`(0, 0)` upper-left,
+//! `x` right, `y` down, shifted by the pan and divided by the current
+//! zoom) and printed with `log::info!`, with a marker dot left at the spot.
+//!
+//! The checkerboard is the sprite's on-screen bounding box, clipped to the
+//! window, filled with light/dark grey cells that never scale with the
+//! sprite, so it reveals the sprite's transparency at any zoom or pan.
+//! The fill is a tiny sprite — one texture pixel per cell, nearest-
+//! neighbor sampled through [`frost::Shape::sprite_bytes_nearest`] — so
+//! the cell edges stay hard at any window size, and the texture is
+//! rebuilt only when the visible cell count or a grey level changes. The
+//! bounding box itself is four [`frost::Canvas::line`] strokes around the
+//! sprite's full on-screen rectangle; the parts outside the window are
+//! clipped.
 //!
 //! Run with:
 //!
@@ -44,6 +56,7 @@
 //! ```
 
 use clap::Parser;
+use image::ImageEncoder;
 
 /// The command line arguments.
 #[derive(Parser, Debug)]
@@ -77,8 +90,21 @@ const SLIDER_MARGIN: f32 = 48.0;
 /// The slider handle's radius, in pixels.
 const HANDLE_RADIUS: f32 = 7.0;
 
-/// The vertical tolerance for grabbing the slider, in pixels.
+/// The vertical tolerance for grabbing a slider, in pixels.
 const SLIDER_GRAB: f32 = 16.0;
+
+/// The spacing between the sliders' rows, in pixels.
+const SLIDER_ROW: f32 = 46.0;
+
+/// The checker cell's edge, in window pixels: the pattern never scales
+/// with the sprite — one cell is always 16 pixels on screen.
+const CHECK_CELL: f32 = 16.0;
+
+/// The checker's default light grey level, 0.0-1.0.
+const GREY_LIGHT: f32 = 0.95;
+
+/// The checker's default dark grey level, 0.0-1.0.
+const GREY_DARK: f32 = 0.65;
 
 const BG: frost::Color = frost::Color {
     r: 0.09,
@@ -104,6 +130,33 @@ const MARKER: frost::Color = frost::Color {
     b: 0.4,
     a: 1.0,
 };
+/// The bounding box around the sprite.
+const BBOX: frost::Color = frost::Color {
+    r: 0.9,
+    g: 0.9,
+    b: 0.9,
+    a: 1.0,
+};
+
+/// The bounding box's line width, in pixels.
+const BBOX_WIDTH: f32 = 2.0;
+
+/// The bounding box's order: above the HUD, below the click marker.
+const BBOX_Z: f32 = 1.5;
+
+/// The checker backdrop's order: behind the sprite and the HUD.
+const CHECK_ORDER: f32 = -1.0;
+
+/// The window's three sliders, in their rows' bottom-to-top order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slider {
+    /// The zoom slider, the bottom row.
+    Zoom,
+    /// The checker's light grey level, the middle row.
+    Light,
+    /// The checker's dark grey level, the top row.
+    Dark,
+}
 
 /// The demo's state.
 struct Demo {
@@ -116,8 +169,16 @@ struct Demo {
     size: [f32; 2],
     /// The picked file's name, for the HUD and the log lines.
     name: String,
-    /// Whether the slider handle is being dragged.
-    dragging: bool,
+    /// The checker's light grey level, 0.0-1.0; the Light slider sets it.
+    light: f32,
+    /// The checker's dark grey level, 0.0-1.0; the Dark slider sets it.
+    dark: f32,
+    /// The checker texture's key: its cell count and the two grey levels,
+    /// 0-255 quantized — the texture is rebuilt only when one of them
+    /// changes.
+    checker_key: (u32, u32, u8, u8),
+    /// Which slider handle is being dragged, if one is.
+    dragging: Option<Slider>,
     /// Whether the left mouse button was held on the previous frame: the
     /// rising edge of the two is the click.
     was_down: bool,
@@ -183,8 +244,12 @@ impl frost::Process for Demo {
             return;
         }
 
-        let (_w, h) = ctx.size();
-        let sy = -h / 2.0 + SLIDER_MARGIN;
+        let (w, h) = ctx.size();
+        // The three slider rows, bottom to top: the zoom, then the
+        // checker's two grey levels.
+        let y_zoom = -h / 2.0 + SLIDER_MARGIN;
+        let y_light = y_zoom + SLIDER_ROW;
+        let y_dark = y_light + SLIDER_ROW;
 
         let down = ctx.mouse_button_down(frost::MouseButton::Left);
         let rdown = ctx.mouse_button_down(frost::MouseButton::Right);
@@ -220,30 +285,48 @@ impl frost::Process for Demo {
         }
 
         if let Some([mx, my]) = pos {
-            // The slider's hit region: a generous box around the track,
-            // wide enough to grab the handle from either side.
-            let over = mx.abs() <= TRACK_HALF + HANDLE_RADIUS && (my - sy).abs() <= SLIDER_GRAB;
+            // The slider row under the cursor, if any: each track has a
+            // generous hit box, wide enough to grab the handle from either
+            // side. The topmost matching row wins, so the rows never
+            // fight.
+            let over = [
+                (Slider::Zoom, y_zoom),
+                (Slider::Light, y_light),
+                (Slider::Dark, y_dark),
+            ]
+            .iter()
+            .find(|(_, y)| mx.abs() <= TRACK_HALF + HANDLE_RADIUS && (my - y).abs() <= SLIDER_GRAB)
+            .map(|(s, _)| *s);
 
             if down {
-                // A press on the slider — or a drag that wandered off it —
-                // scrubs the zoom: the pointer's x maps linearly onto the
-                // track.
-                if over || self.dragging {
-                    self.dragging = true;
+                // A press on a slider — or a drag that wandered off it —
+                // scrubs it: the pointer's x maps linearly onto the track.
+                if over.is_some() || self.dragging.is_some() {
+                    // `or` (not `unwrap_or`): the argument of `unwrap_or`
+                    // is evaluated eagerly, so it would panic on a plain
+                    // press while no drag is in progress.
+                    let s = over
+                        .or(self.dragging)
+                        .expect("a press or drag is in progress");
+                    self.dragging = Some(s);
                     let t = ((mx + TRACK_HALF) / (2.0 * TRACK_HALF)).clamp(0.0, 1.0);
-                    self.zoom = ZOOM_MIN + t * (ZOOM_MAX - ZOOM_MIN);
+                    match s {
+                        Slider::Zoom => self.zoom = ZOOM_MIN + t * (ZOOM_MAX - ZOOM_MIN),
+                        Slider::Light => self.light = t,
+                        Slider::Dark => self.dark = t,
+                    }
                 }
             } else {
-                self.dragging = false;
+                self.dragging = None;
             }
 
-            // A click that is not on the slider: report the position
+            // A click that is not on a slider: report the position
             // relative to the sprite. The sprite sits at the window's
             // center plus `offset`, at scale `zoom`, so window coordinates
             // map to texture pixels with `px = (x - ox) / zoom + w/2` and
             // `py = h/2 - (y - oy) / zoom` — the y flip included, since the
             // texture's y grows down.
-            if clicked && !over && !self.dragging {
+            if clicked && over.is_none() && self.dragging.is_none() {
                 let [tw, th] = self.size;
                 let px = (mx - self.offset[0]) / self.zoom + tw / 2.0;
                 let py = th / 2.0 - (my - self.offset[1]) / self.zoom;
@@ -267,18 +350,95 @@ impl frost::Process for Demo {
         sprite.transform = frost::Transform::translate(self.offset);
         sprite.scale = [self.zoom, self.zoom];
 
-        // Lay out the slider and its labels from the current window size,
-        // so resizing the window keeps everything pinned in place.
+        // The checker backdrop: the sprite's on-screen bounding box,
+        // clipped to the window, filled with cells that never scale with
+        // the sprite — so the pattern reveals the sprite's transparency
+        // no matter the zoom or the pan. The fill is a tiny sprite, one
+        // texture pixel per cell, sampled with nearest-neighbor filtering
+        // so the cell edges stay hard; the texture is rebuilt only when
+        // the cell count or a grey level changes, so smooth pans and zooms
+        // only reposition and rescale it.
+        let [tw, th] = self.size;
+        let (hw, hh) = ((tw * self.zoom) / 2.0, (th * self.zoom) / 2.0);
+        let (bx0, by0) = (self.offset[0] - hw, self.offset[1] - hh);
+        let (bx1, by1) = (self.offset[0] + hw, self.offset[1] + hh);
+        // The box's intersection with the window.
+        let (rx0, ry0, rx1, ry1) = (
+            bx0.max(-w / 2.0),
+            by0.max(-h / 2.0),
+            bx1.min(w / 2.0),
+            by1.min(h / 2.0),
+        );
+        let checker = &mut ctx.scene().root.children[7];
+        if rx1 > rx0 && ry1 > ry0 && tw > 0.0 {
+            let cw = ((rx1 - rx0) / CHECK_CELL).ceil() as u32;
+            let ch = ((ry1 - ry0) / CHECK_CELL).ceil() as u32;
+            let key = (
+                cw,
+                ch,
+                (self.light * 255.0).round() as u8,
+                (self.dark * 255.0).round() as u8,
+            );
+            if key != self.checker_key {
+                self.checker_key = key;
+                checker.shape = checker_shape(cw, ch, self.light, self.dark);
+            }
+            checker.transform = frost::Transform::translate([(rx0 + rx1) / 2.0, (ry0 + ry1) / 2.0]);
+            // One texture pixel per cell; the scale stretches the
+            // sub-pixel last row and column so the pattern covers the
+            // region exactly.
+            checker.scale = [(rx1 - rx0) / cw as f32, (ry1 - ry0) / ch as f32];
+        } else {
+            // No sprite (or its box off screen): hide the backdrop and
+            // force a rebuild when it comes back.
+            checker.shape = None;
+            self.checker_key = (0, 0, 0, 0);
+        }
+
+        // The bounding box: the sprite's full on-screen rectangle; the
+        // parts outside the window are clipped by the GPU.
+        if tw > 0.0 && th > 0.0 {
+            ctx.line(bx0, by0, bx1, by0, BBOX, BBOX_WIDTH, BBOX_Z);
+            ctx.line(bx1, by0, bx1, by1, BBOX, BBOX_WIDTH, BBOX_Z);
+            ctx.line(bx1, by1, bx0, by1, BBOX, BBOX_WIDTH, BBOX_Z);
+            ctx.line(bx0, by1, bx0, by0, BBOX, BBOX_WIDTH, BBOX_Z);
+        }
+
+        // Lay out the sliders and their labels from the current window
+        // size, so resizing the window keeps everything pinned in place.
         let track = &mut ctx.scene().root.children[1];
-        track.transform = frost::Transform::translate([0.0, sy]);
+        track.transform = frost::Transform::translate([0.0, y_zoom]);
         let t = (self.zoom - ZOOM_MIN) / (ZOOM_MAX - ZOOM_MIN);
         let handle = &mut ctx.scene().root.children[2];
-        handle.transform = frost::Transform::translate([-TRACK_HALF + t * 2.0 * TRACK_HALF, sy]);
+        handle.transform =
+            frost::Transform::translate([-TRACK_HALF + t * 2.0 * TRACK_HALF, y_zoom]);
         let zoom_label = &mut ctx.scene().root.children[3];
-        zoom_label.transform = frost::Transform::translate([0.0, sy - 26.0]);
+        zoom_label.transform = frost::Transform::translate([0.0, y_zoom + 22.0]);
         set_text(&mut zoom_label.shape, format!("zoom: {:.2}x", self.zoom));
+        let light_track = &mut ctx.scene().root.children[8];
+        light_track.transform = frost::Transform::translate([0.0, y_light]);
+        let light_handle = &mut ctx.scene().root.children[9];
+        light_handle.transform =
+            frost::Transform::translate([-TRACK_HALF + self.light * 2.0 * TRACK_HALF, y_light]);
+        let dark_track = &mut ctx.scene().root.children[10];
+        dark_track.transform = frost::Transform::translate([0.0, y_dark]);
+        let dark_handle = &mut ctx.scene().root.children[11];
+        dark_handle.transform =
+            frost::Transform::translate([-TRACK_HALF + self.dark * 2.0 * TRACK_HALF, y_dark]);
+        let light_label = &mut ctx.scene().root.children[12];
+        light_label.transform = frost::Transform::translate([0.0, y_light + 22.0]);
+        set_text(
+            &mut light_label.shape,
+            format!("light grey: {:.2}", self.light),
+        );
+        let dark_label = &mut ctx.scene().root.children[13];
+        dark_label.transform = frost::Transform::translate([0.0, y_dark + 22.0]);
+        set_text(
+            &mut dark_label.shape,
+            format!("dark grey: {:.2}", self.dark),
+        );
         let readout = &mut ctx.scene().root.children[4];
-        readout.transform = frost::Transform::translate([0.0, sy - 54.0]);
+        readout.transform = frost::Transform::translate([0.0, y_zoom - 22.0]);
         set_text(
             &mut readout.shape,
             match &self.last_click {
@@ -320,6 +480,28 @@ fn set_text(shape: &mut Option<frost::Shape>, text: String) {
     if let Some(frost::Shape::Text { text: t, .. }) = shape {
         *t = text;
     }
+}
+
+/// Builds the checker backdrop's sprite: one texture pixel per cell —
+/// `cw` by `ch` pixels, the light and dark greys alternating — encoded to
+/// PNG in memory. The nearest-neighbor sampler then keeps the cell edges
+/// hard when the sprite is scaled to cover the region.
+fn checker_shape(cw: u32, ch: u32, light: f32, dark: f32) -> Option<frost::Shape> {
+    let l = (light.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let d = (dark.clamp(0.0, 1.0) * 255.0).round() as u8;
+    // Row 0 is the top row, so the upper-left cell is light.
+    let mut pixels = Vec::with_capacity((cw * ch * 4) as usize);
+    for y in 0..ch {
+        for x in 0..cw {
+            let grey = if (x + y) % 2 == 0 { l } else { d };
+            pixels.extend_from_slice(&[grey, grey, grey, 255]);
+        }
+    }
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(&pixels, cw, ch, image::ExtendedColorType::Rgba8)
+        .ok()?;
+    Some(frost::Shape::sprite_bytes_nearest(&png).ok()?)
 }
 
 fn main() {
@@ -454,7 +636,7 @@ fn main() {
             Box::new(frost::SceneNode {
                 // The usage line, pinned near the top.
                 shape: text(
-                    "slider or wheel to zoom   right-drag to pan   click to log the pixel",
+                    "sliders or wheel to zoom   right-drag to pan   click to log the pixel",
                     20.0,
                 ),
                 order: 1.0,
@@ -470,6 +652,66 @@ fn main() {
                 order: 2.0,
                 ..Default::default()
             }),
+            Box::new(frost::SceneNode {
+                // The checker backdrop behind the sprite: the process
+                // builds its tiny one-texel-per-cell sprite and positions
+                // it each frame.
+                shape: None,
+                order: CHECK_ORDER,
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
+                // The light-grey slider's track.
+                shape: Some(frost::Shape::Rectangle {
+                    center: [0.0, 0.0],
+                    extent: [TRACK_HALF, 2.0],
+                    color: TRACK,
+                }),
+                order: 1.0,
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
+                // The light-grey slider's handle.
+                shape: Some(frost::Shape::Circle {
+                    center: [0.0, 0.0],
+                    radius: HANDLE_RADIUS,
+                    color: HANDLE,
+                }),
+                order: 1.0,
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
+                // The dark-grey slider's track.
+                shape: Some(frost::Shape::Rectangle {
+                    center: [0.0, 0.0],
+                    extent: [TRACK_HALF, 2.0],
+                    color: TRACK,
+                }),
+                order: 1.0,
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
+                // The dark-grey slider's handle.
+                shape: Some(frost::Shape::Circle {
+                    center: [0.0, 0.0],
+                    radius: HANDLE_RADIUS,
+                    color: HANDLE,
+                }),
+                order: 1.0,
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
+                // The light-grey readout, above its track.
+                shape: text("light grey: 0.95", 20.0),
+                order: 1.0,
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
+                // The dark-grey readout, above its track.
+                shape: text("dark grey: 0.65", 20.0),
+                order: 1.0,
+                ..Default::default()
+            }),
         ],
         ..Default::default()
     });
@@ -481,7 +723,10 @@ fn main() {
             offset: [0.0, 0.0],
             size,
             name,
-            dragging: false,
+            light: GREY_LIGHT,
+            dark: GREY_DARK,
+            checker_key: (0, 0, 0, 0),
+            dragging: None,
             was_down: false,
             last_mouse: None,
             last_click: None,

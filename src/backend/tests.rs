@@ -2544,6 +2544,7 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
                 a: 1.0,
             },
             alpha: 0.25,
+            filter: SpriteFilter::Linear,
         }),
         children: vec![],
     }));
@@ -2629,6 +2630,7 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
             height: 4,
             color: black(),
             alpha: 1.0,
+            filter: SpriteFilter::Linear,
         }),
         children: vec![],
     });
@@ -2677,6 +2679,7 @@ fn sprite_scissor_is_the_texture_box_plus_aa_band() {
         data: Arc::new([0u8; 16]),
         size: [40.0, 20.0],
         texture_size: [40, 20],
+        filter: SpriteFilter::Linear,
         aa: 0.75,
         tint: black(),
         alpha: 1.0,
@@ -2704,6 +2707,7 @@ fn sprite_scissor_under_rotation() {
         data: Arc::new([0u8; 16]),
         size: [40.0, 20.0],
         texture_size: [40, 20],
+        filter: SpriteFilter::Linear,
         aa: 0.75,
         tint: black(),
         alpha: 1.0,
@@ -2996,6 +3000,7 @@ fn sprite_loader_round_trips_a_png_file() {
         height,
         color,
         alpha,
+        filter,
     } = shape
     else {
         panic!("expected a sprite shape");
@@ -3014,6 +3019,28 @@ fn sprite_loader_round_trips_a_png_file() {
         }
     );
     assert_eq!(alpha, 1.0);
+    // The default constructor bilinear-samples the texture.
+    assert_eq!(filter, SpriteFilter::Linear);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn sprite_constructors_set_their_sampling_filter() {
+    // The default constructors bilinear-sample; the `*_nearest` ones
+    // nearest-sample.
+    let buf = [255u8, 0, 0, 255];
+    let path = std::env::temp_dir().join(format!("frost-sprite-filter-{}.png", std::process::id()));
+    image::save_buffer(&path, &buf, 1, 1, image::ColorType::Rgba8).expect("writing the test png");
+    let shape = Shape::sprite(&path).expect("a valid png loads");
+    let Shape::Sprite { filter, .. } = &shape else {
+        panic!("expected a sprite shape");
+    };
+    assert_eq!(*filter, SpriteFilter::Linear);
+    let shape = Shape::sprite_nearest(&path).expect("a valid png loads");
+    let Shape::Sprite { filter, .. } = &shape else {
+        panic!("expected a sprite shape");
+    };
+    assert_eq!(*filter, SpriteFilter::Nearest);
     let _ = std::fs::remove_file(&path);
 }
 

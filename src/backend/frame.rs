@@ -133,6 +133,10 @@ pub(crate) enum Draw {
         /// `size` (one unit per texture pixel); for glyph quads the texture
         /// is a shared atlas that is larger than the quad.
         texture_size: [u32; 2],
+        /// The texture's sampling filter: it is passed on to the sampler
+        /// the texture is bound with, so bilinear and nearest-neighbor
+        /// sprites from the same image keep distinct samplers.
+        filter: SpriteFilter,
         /// The anti-alias band in local units (the screen `AA_BAND` divided
         /// by the transform's scale).
         aa: f32,

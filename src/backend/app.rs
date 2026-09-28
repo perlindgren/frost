@@ -833,7 +833,12 @@ impl<P: Process> Frost<P> {
     /// in. The texture itself is kept alive by the view: `TextureView`
     /// holds a reference to its texture, so storing the view in
     /// `sprite_resources` is enough.
-    fn sprite_texture(&self, data: &[u8], size: [f32; 2]) -> (TextureView, Sampler) {
+    fn sprite_texture(
+        &self,
+        data: &[u8],
+        size: [f32; 2],
+        filter: SpriteFilter,
+    ) -> (TextureView, Sampler) {
         let width = (size[0] as u32).max(1);
         let height = (size[1] as u32).max(1);
         let texture = self.device.create_texture(&TextureDescriptor {
@@ -870,13 +875,19 @@ impl<P: Process> Frost<P> {
                 depth_or_array_layers: 1,
             },
         );
+        let filter_mode = match filter {
+            SpriteFilter::Linear => FilterMode::Linear,
+            SpriteFilter::Nearest => FilterMode::Nearest,
+        };
         let sampler = self.device.create_sampler(&SamplerDescriptor {
             label: Some("sprite sampler"),
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
             address_mode_w: AddressMode::ClampToEdge,
-            mag_filter: FilterMode::Linear,
-            min_filter: FilterMode::Linear,
+            // The texture's own sampling filter: bilinear for photographic
+            // sprites, nearest-neighbor for pixel-art-style ones.
+            mag_filter: filter_mode,
+            min_filter: filter_mode,
             mipmap_filter: MipmapFilterMode::Nearest,
             lod_min_clamp: 0.0,
             lod_max_clamp: f32::MAX,
@@ -1430,6 +1441,7 @@ impl<P: Process> Frost<P> {
                         data,
                         size,
                         texture_size,
+                        filter,
                         tint,
                         alpha,
                         glow,
@@ -1456,6 +1468,7 @@ impl<P: Process> Frost<P> {
                                 let (view, sampler) = self.sprite_texture(
                                     &data,
                                     [texture_size[0] as f32, texture_size[1] as f32],
+                                    filter,
                                 );
                                 self.sprite_resources
                                     .insert(key, (view.clone(), sampler.clone()));
@@ -1507,9 +1520,13 @@ impl<P: Process> Frost<P> {
                                 match self.sprite_resources.get(&key) {
                                     Some((view, sampler)) => (view.clone(), sampler.clone()),
                                     None => {
+                                        // Particle images keep bilinear
+                                        // sampling: `ParticleShape` carries
+                                        // no filter.
                                         let (view, sampler) = self.sprite_texture(
                                             &image,
                                             [sprite_size[0] as f32, sprite_size[1] as f32],
+                                            SpriteFilter::Linear,
                                         );
                                         self.sprite_resources
                                             .insert(key, (view.clone(), sampler.clone()));
