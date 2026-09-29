@@ -682,10 +682,12 @@ disk. Run with `cargo run --example <name>`
 |              | delay the bug pops back up at its spawn spot, fully healed          |
 | sprite_util  | a picked PNG (rfd file dialog) shown in the window: a `Ui` View    |
 |              | panel whose `table` lays three rows of label + stretch slider_track |
-|              | + centered readout (zoom and the two checker greys); the wheel      |
-|              | zooms (anchored under the cursor, 1.15x per line), a right-drag    |
-|              | pans, and a left click outside the UI logs the spot in the          |
-|              | texture's pixel space and leaves a marker dot there                |
+|              | + centered readout (zoom and the two checker greys), and an        |
+|              | Operations panel (Crop / Save / Save As); the wheel zooms           |
+|              | (anchored under the cursor, 1.15x per line), a right-drag pans, a   |
+|              | left-drag draws a crop selection (a still click logs the texture    |
+|              | pixel and leaves a marker), Ctrl-Z undoes crops, and Save/Save As   |
+|              | write PNG over a native confirm on overwrite                        |
 | widgets      | the `Ui` layer: a draggable Tomato panel (three color sliders, a    |
 |              | Spin checkbox, a Speed slider, a Reset button) and an About label   |
 |              | panel drive a spinning face's color and rotation                    |
@@ -732,7 +734,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 183 passed + 5 doctests
-cargo test --examples    # expect 77 passed (the immortal example tests)
+cargo test --examples    # expect 82 passed (the immortal example tests)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0
 cargo run --example button   # hover-scale + click-swoosh check; window exits 0
