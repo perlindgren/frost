@@ -680,14 +680,19 @@ disk. Run with `cargo run --example <name>`
 |              | then over 0.5 s the inverted sprite evaporates, shrinking to nothing|
 |              | while its center sinks through the grass; after a random 5-10 s    |
 |              | delay the bug pops back up at its spawn spot, fully healed          |
-| sprite_util  | a picked PNG (rfd file dialog) shown in the window: a `Ui` View    |
-|              | panel whose `table` lays three rows of label + stretch slider_track |
-|              | + centered readout (zoom and the two checker greys), and an        |
-|              | Operations panel (Crop / Save / Save As); the wheel zooms           |
-|              | (anchored under the cursor, 1.15x per line), a right-drag pans, a   |
-|              | left-drag draws a crop selection (a still click logs the texture    |
-|              | pixel and leaves a marker), Ctrl-Z undoes crops, and Save/Save As   |
-|              | write PNG over a native confirm on overwrite                        |
+| sprite_util  | up to seven picked PNGs (rfd dialogs): the window splits into a     |
+|              | work area and a bottom strip of 100x100 slots holding the           |
+|              | minimized originals (click a slot to activate, drag one onto        |
+|              | another to swap). The active sprite shows over a checkerboard with  |
+|              | `Ui` View and Operations panels (Open / Crop / Save / Save As /     |
+|              | Close): a left-drag draws a crop selection (a still click logs the  |
+|              | texture pixel), Ctrl-O opens into the next slot, Ctrl-Z undoes      |
+|              | crops, Save/Save As write PNG over a native confirm. An Animation   |
+|              | panel builds frames — each a set of layers with its own hold-time —  |
+|              | played on a clock that loops or ping-pongs (space plays); a Morph   |
+|              | panel pairs anchor points on two sprites (anchors a / b) and bakes  |
+|              | pure mesh-warp in-betweens — a's pixels through the sliding mesh,   |
+|              | no blending — spliced into the animation, which just plays them     |
 | widgets      | the `Ui` layer: a draggable Tomato panel (three color sliders, a    |
 |              | Spin checkbox, a Speed slider, a Reset button) and an About label   |
 |              | panel drive a spinning face's color and rotation                    |
@@ -734,7 +739,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 183 passed + 5 doctests
-cargo test --examples    # expect 82 passed (the immortal example tests)
+cargo test --examples    # expect 94 passed (the immortal example tests)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0
 cargo run --example button   # hover-scale + click-swoosh check; window exits 0

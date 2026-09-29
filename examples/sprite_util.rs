@@ -1,14 +1,21 @@
-//! A little sprite utility: pick any PNG with a native file dialog (rfd),
-//! display it in the window over a transparency checkerboard with a
-//! bounding box around it, zoom it with a slider or the mouse wheel, pan
-//! it by grabbing the canvas with a right-drag, and log the clicked
-//! position in the sprite's own pixel space through the `log` facade.
+//! A little sprite utility: pick PNGs with native file dialogs (rfd),
+//! keep up to seven of them side by side, and edit them in a work area
+//! above a strip of sprite slots.
 //!
-//! The dialog is a child of the window, so it opens on top of it: the
-//! window is created first and the dialog is parented to it on the first
-//! frame (a dialog without a parent opens at the screen's default spot,
-//! far from the window). It is modal, so the frame loop blocks until a
-//! file is picked; canceling quits.
+//! The window splits into two regions: the **work area** on top, where
+//! the active sprite is displayed over a transparency checkerboard with a
+//! bounding box around it, and a **slot strip** at the bottom — seven
+//! 100x100 px slots, each holding a minimized copy of one sprite as it
+//! was loaded. The leftmost slot takes the first sprite. Click a slot to
+//! make its sprite the active one (the work area and every operation
+//! follow it), and drag a slot onto another to swap the two sprites'
+//! positions.
+//!
+//! The first dialog is a child of the window, so it opens on top of it:
+//! the window is created first and the dialog is parented to it on the
+//! first frame (a dialog without a parent opens at the screen's default
+//! spot, far from the window). It is modal, so the frame loop blocks
+//! until a file is picked; canceling quits.
 //!
 //! The controls are two draggable [`frost::Ui`] panels (drag one by its
 //! title bar, click the bar to fold it away). The "View" panel is laid out
@@ -19,33 +26,56 @@
 //! the value readout hugs and centers — so the labels and values line up
 //! down the panel while the tracks soak up the slack.
 //!
-//! The "Operations" panel edits the sprite itself: **Crop** cuts the
-//! texture to the selection rectangle if one is dragged (a left-drag over
-//! the canvas draws it; a click that barely moves instead logs the pixel,
-//! as before) — and to the opaque content when there is no selection,
-//! trimming the fully transparent borders. Every crop is remembered, so
-//! **Ctrl-Z** undoes it, walking back step by step to the original.
-//! **Save** writes the texture over the file it came from, and **Save
-//! As** asks a native dialog for a new name, defaulted to the sprite's
-//! current file name; both ask for confirmation before overwriting an
-//! existing file.
+//! The "Operations" panel edits the active sprite: **Open** (**Ctrl-O**)
+//! adds another sprite to the next free slot — while the slots fill up,
+//! the newest sprite becomes the active one; **Crop** cuts the texture to
+//! the selection rectangle if one is dragged (a left-drag over the work
+//! area draws it; a click that barely moves instead logs the pixel and
+//! its slot) — and to the opaque content when there is no selection,
+//! trimming the fully transparent borders. Every crop is remembered per
+//! sprite, so **Ctrl-Z** undoes it, walking back step by step to that
+//! sprite's original. **Save** writes the texture over the file it came
+//! from, and **Save As** asks a native dialog for a new name, defaulted
+//! to the sprite's current file name; both ask for confirmation before
+//! overwriting an existing file. **Close** takes the active sprite out of
+//! its slot, and every later slot shifts left to fill the gap.
+//!
+//! The "Animation" panel turns the loaded sprites into an animation: a
+//! frame is a **set of layers** — snapshots of the active slot's shape,
+//! stacked in the work area — and each frame holds for its own time
+//! before the next one comes on. Playback either wraps at the ends
+//! (**loop**) or walks back through the frames (**ping-pong**), and the
+//! play button or space starts and stops the clock. The work area shows
+//! the animation's current frame while any frame exists — which is also
+//! the frame being edited, so the panel previews as it builds; the solo
+//! active sprite returns when the last frame is deleted.
+//!
+//! The Animation panel can also **morph** two sprites: "anchors a" and
+//! "anchors b" switch the work area into anchor-placement mode on the
+//! current slot — clicking puts down matched points (a in cyan, b in
+//! coral; order is what pairs them). "Morph" then triangulates the
+//! anchors together with the texture's four corners, warps a's pixels
+//! through the shared triangle mesh while the vertices slide from a's
+//! points to b's, and bakes the intermediates as real frames appended
+//! to the animation — a pure CPU mesh warp: every frame stays wholly
+//! a's texture, dragged through the moving mesh, with b contributing
+//! its shape through its anchors alone.
 //!
 //! The wheel zooms about the cursor (the point under it stays put), a
-//! right-drag grabs the canvas and moves the sprite with the cursor, and
-//! [`frost::Ui::hovering`] is what tells a click on the UI from one on
-//! the scene: a press the UI claims never draws a selection or logs a
-//! pixel.
+//! right-drag grabs the work area and moves the sprite with the cursor,
+//! and [`frost::Ui::hovering`] is what tells a click on the UI from one
+//! on the scene: a press the UI claims never draws a selection, touches
+//! a slot or logs a pixel.
 //!
-//! The checkerboard is the sprite's on-screen bounding box, clipped to the
-//! window, filled with light/dark grey cells that never scale with the
-//! sprite, so it reveals the sprite's transparency at any zoom or pan.
-//! The fill is a tiny sprite — one texture pixel per cell, nearest-
+//! The checkerboard is the sprite's on-screen bounding box, clipped to
+//! the work area, filled with light/dark grey cells that never scale with
+//! the sprite, so it reveals the sprite's transparency at any zoom or
+//! pan. The fill is a tiny sprite — one texture pixel per cell, nearest-
 //! neighbor sampled through [`frost::Shape::sprite_bytes_nearest`] — so
 //! the cell edges stay hard at any window size, and the texture is
 //! rebuilt only when the visible cell count or a grey level changes. The
 //! bounding box itself is four [`frost::Canvas::line`] strokes around the
-//! sprite's full on-screen rectangle; the parts outside the window are
-//! clipped.
+//! sprite's full on-screen rectangle; the parts outside are clipped.
 //!
 //! Run with:
 //!
@@ -55,7 +85,7 @@
 //!
 //! (Set `RUST_LOG=info` to see the click lines.)
 //!
-//! The sprite's source can be given on the command line with
+//! The first sprite's source can be given on the command line with
 //! `-i`/`--input`: a PNG file is opened immediately, without any file
 //! dialog, and a folder is where the file dialog opens — a relative path
 //! is expanded against the working directory and resolved to an absolute
@@ -108,8 +138,35 @@ const GREY_LIGHT: f32 = 0.95;
 const GREY_DARK: f32 = 0.65;
 
 /// How far the left button may travel between press and release and still
-/// count as a click (log the pixel) rather than a selection drag.
+/// count as a click (select a slot, or log a pixel) rather than a drag
+/// (a selection rectangle in the work area, or a slot swap).
 const CLICK_TOL: f32 = 4.0;
+
+/// The number of sprite slots along the bottom.
+const SLOTS: usize = 7;
+
+/// A slot's edge, in pixels.
+const SLOT: f32 = 100.0;
+
+/// The gap between neighboring slots.
+const SLOT_GAP: f32 = 8.0;
+
+/// The slots strip's height: a slot's edge plus the margin above and
+/// below it.
+const STRIP_H: f32 = 124.0;
+
+/// The distance from the window's left edge to the first slot's left edge.
+const SLOT_MARGIN: f32 = 14.0;
+
+/// The longest edge of a slot thumbnail's minimized copy, in pixels —
+/// a slot's edge minus its inner padding.
+const THUMB_MAX: f32 = 84.0;
+
+/// The work area's center height above the window's bottom-edge frame:
+/// the work area spans from the strip's top edge to the window's top, so
+/// its center sits half a strip above the bottom — whatever the height,
+/// since the strip's height is fixed.
+const WORK_Y: f32 = STRIP_H / 2.0;
 
 const BG: frost::Color = frost::Color {
     r: 0.09,
@@ -130,11 +187,32 @@ const BBOX: frost::Color = frost::Color {
     b: 0.9,
     a: 1.0,
 };
-/// The crop selection's rectangle.
+/// The crop selection's rectangle, and the active slot's frame.
 const SELECT: frost::Color = frost::Color {
     r: 0.35,
     g: 0.72,
     b: 1.0,
+    a: 1.0,
+};
+/// The slots strip's floor, darker than the window.
+const STRIP: frost::Color = frost::Color {
+    r: 0.055,
+    g: 0.055,
+    b: 0.07,
+    a: 1.0,
+};
+/// An occupied slot's plate.
+const PLATE: frost::Color = frost::Color {
+    r: 0.13,
+    g: 0.13,
+    b: 0.16,
+    a: 1.0,
+};
+/// A free slot's plate.
+const PLATE_EMPTY: frost::Color = frost::Color {
+    r: 0.075,
+    g: 0.075,
+    b: 0.095,
     a: 1.0,
 };
 
@@ -146,38 +224,204 @@ const BBOX_Z: f32 = 1.5;
 
 /// The selection's order: above the bounding box, below the click marker.
 const SELECT_Z: f32 = 1.8;
+/// The morph anchor dots: above the selection, below the HUD text.
+const ANCHOR_Z: f32 = 1.9;
 
 /// The checker backdrop's order: behind the sprite and the HUD.
 const CHECK_ORDER: f32 = -1.0;
+
+/// The slots strip's fill order: above the checker, below the HUD.
+const STRIP_Z: f32 = 0.2;
+
+/// A slot plate's order: above its strip, below the HUD.
+const PLATE_Z: f32 = 0.3;
+
+/// The active slot's frame order: above the thumbnails.
+const FRAME_Z: f32 = 0.9;
+
+/// The slot thumbnails' order: above the strip and its plates.
+const THUMB_ORDER: f32 = 0.6;
+
+/// The order of a thumbnail being dragged between slots: above the HUD.
+const DRAG_ORDER: f32 = 3.0;
+
+/// The scene's layer nodes — and the cap on layers per animation frame.
+/// The pool shows the animation's current frame, or the active sprite
+/// alone when there are no frames.
+const LAYER_NODES: usize = 8;
+
+/// The time a new frame holds before the next one, in seconds; the
+/// duration slider adjusts it per frame.
+const TIME_DEFAULT: f32 = 0.2;
+
+/// The frame duration slider's range, in seconds till the next frame.
+const TIME_MIN: f32 = 0.02;
+const TIME_MAX: f32 = 2.0;
+
+/// The scene's fixed child indices: the layer pool starts at 0, then
+/// the help line, the marker, the checker and the slot thumbnails.
+const HELP: usize = LAYER_NODES;
+const MARKER_NODE: usize = LAYER_NODES + 1;
+const CHECKER: usize = LAYER_NODES + 2;
+const THUMBS: usize = LAYER_NODES + 3;
+
+/// One sprite: its files, its textures and its slot's look.
+struct Sprite {
+    /// The file the sprite was loaded from — Save writes back to it.
+    path: std::path::PathBuf,
+    /// The file's name, for the HUD, the dialogs and the logs.
+    name: String,
+    /// The working texture: crops replace it, saves write it.
+    current: image::RgbaImage,
+    /// The texture snapshots each crop replaced: Ctrl-Z pops them back,
+    /// and the history bottom is the sprite's original.
+    history: Vec<image::RgbaImage>,
+    /// The working texture as a shape — the work area's sprite node.
+    shape: frost::Shape,
+    /// The original, minimized to a slot's width — the slot's picture.
+    /// It never changes: a slot shows the sprite as it was loaded.
+    thumb: frost::Shape,
+    /// The morph anchors placed on this sprite, in texture pixels: a
+    /// morph pairs two sprites' lists by order, point for point.
+    anchors: Vec<[f32; 2]>,
+}
+
+/// One picture within a frame: the active sprite's shape, snapshotted
+/// when the layer was added — later crops and closed slots leave the
+/// frame's layers untouched.
+struct Layer {
+    shape: frost::Shape,
+}
+
+/// One animation frame: a set of layers, stacked as added, and the time
+/// it holds before the next frame.
+struct Frame {
+    layers: Vec<Layer>,
+    next_time: f32,
+}
+
+/// What a work-area click does: the usual edit tool (crop selection,
+/// pixel logging) or placing morph anchors on a bound slot.
+#[derive(PartialEq, Clone, Copy)]
+enum Tool {
+    Edit,
+    AnchorsA,
+    AnchorsB,
+}
+
+/// The animation: an ordered set of frames kept by a clock. Looping
+/// playback wraps at the ends; ping-pong walks back through the frames
+/// instead, each end held once per sweep.
+struct Anim {
+    frames: Vec<Frame>,
+    /// The frame the clock is in — also the frame the panel edits.
+    frame: usize,
+    /// Whether playback wraps at the ends (loop) or walks back
+    /// (ping-pong).
+    looping: bool,
+    /// Whether the clock runs.
+    playing: bool,
+    /// The clock's direction: `1` forward, `-1` back (ping-pong only).
+    dir: i32,
+    /// Seconds spent in the current frame.
+    elapsed: f32,
+}
+
+impl Anim {
+    /// Jump to a frame and restart its hold: the panel's prev/next.
+    fn set_frame(&mut self, frame: usize) {
+        self.frame = frame;
+        self.elapsed = 0.0;
+    }
+
+    /// Run the clock for `dt` seconds; whether the shown frame changed.
+    fn tick(&mut self, dt: f32) -> bool {
+        if !self.playing || self.frames.len() < 2 {
+            return false;
+        }
+        self.elapsed += dt;
+        let mut moved = false;
+        // A slow frame can spend several holds at once: consume them one
+        // by one, with a guard against a zero-length run of frames.
+        let mut guard = 0;
+        while self.elapsed >= self.frames[self.frame].next_time && guard < 512 {
+            self.elapsed -= self.frames[self.frame].next_time.max(1e-4);
+            self.step();
+            moved = true;
+            guard += 1;
+        }
+        moved
+    }
+
+    /// One step along the play direction: looping always wraps forward;
+    /// ping-pong walks back and forth, each end held once per sweep.
+    fn step(&mut self) {
+        let n = self.frames.len();
+        if self.looping {
+            self.dir = 1;
+            self.frame = (self.frame + 1) % n;
+            return;
+        }
+        if self.dir > 0 {
+            if self.frame + 1 < n {
+                self.frame += 1;
+            } else {
+                self.dir = -1;
+                self.frame = n - 2; // `n >= 2`: bounce off the last frame
+            }
+        } else if self.frame > 0 {
+            self.frame -= 1;
+        } else {
+            self.dir = 1;
+            self.frame = 1.min(n - 1); // bounce off the first frame
+        }
+    }
+}
 
 /// The demo's state.
 struct Demo {
     /// The widget layer: the View and Operations panels.
     ui: frost::Ui,
+    /// The loaded sprites — a sprite's slot is its index.
+    sprites: Vec<Sprite>,
+    /// The slot whose sprite fills the work area and takes the
+    /// operations. Meaningless while `sprites` is empty.
+    active: usize,
+    /// The animation built from the sprites: frames of layers, on a
+    /// clock, shown in the work area while any frame exists.
+    anim: Anim,
     /// The current zoom: the sprite's scale factor (1.0 is texture size).
     zoom: f32,
-    /// The sprite's pan offset from the window's center, in window pixels;
-    /// set by right-dragging and by the wheel's anchor.
+    /// The sprite's pan offset from the work area's center, in window
+    /// pixels; set by right-dragging and by the wheel's anchor.
     offset: [f32; 2],
-    /// The sprite's current texture size, in pixels.
-    size: [f32; 2],
-    /// The file the sprite was loaded from — Save writes back to it.
-    path: std::path::PathBuf,
-    /// The picked file's name, for the HUD, the dialogs and the logs.
-    name: String,
-    /// The working texture: crops replace it, saves write it.
-    current: image::RgbaImage,
-    /// The texture snapshots each crop replaced: Ctrl-Z pops them back,
-    /// and the history bottom is the original.
-    history: Vec<image::RgbaImage>,
     /// The crop selection in texture pixels, `[x0, y0, x1, y1]` (y down):
     /// dragged with the left button, consumed by Crop.
     selection: Option<[f32; 4]>,
-    /// Where the current left-button press began, in window pixels — only
-    /// set when the press was the canvas's, not the UI's.
+    /// Where the current work-area press began, in window pixels — only
+    /// set when the press was the work area's, not the UI's or a slot's.
     drag_from: Option<[f32; 2]>,
+    /// The slot being dragged between slots, and where its press began.
+    slot_drag: Option<(usize, [f32; 2])>,
     /// Whether Ctrl-Z was held last frame: its rising edge is the undo.
     was_undo: bool,
+    /// Whether Ctrl-O was held last frame: its rising edge is the open.
+    was_open: bool,
+    /// Whether space was held last frame: its rising edge toggles play.
+    was_space: bool,
+    /// The work area's click tool: editing, or placing a's or b's anchors.
+    tool: Tool,
+    /// The slot the anchor tool is bound to, chosen when the tool was.
+    anchor_slot: Option<usize>,
+    /// Where the current anchor-placement press began, window pixels.
+    anchor_press: Option<[f32; 2]>,
+    /// The slots a and b are anchored on, for the morph to pair up.
+    morph_a: Option<usize>,
+    morph_b: Option<usize>,
+    /// The frames a morph bakes, endpoints included.
+    morph_frames: usize,
+    /// The time each baked morph frame holds, in seconds.
+    morph_time: f32,
     /// The checker's light grey level, 0.0-1.0; the Light slider sets it.
     light: f32,
     /// The checker's dark grey level, 0.0-1.0; the Dark slider sets it.
@@ -192,20 +436,389 @@ struct Demo {
     /// The cursor's position on the previous frame, for the right-drag's
     /// frame-to-frame pan delta.
     last_mouse: Option<[f32; 2]>,
-    /// The last reported click: its position in the texture's pixel space,
-    /// and whether the spot was inside the texture.
+    /// The last reported click: its position in the active texture's
+    /// pixel space, and whether the spot was inside the texture.
     last_click: Option<([f32; 2], bool)>,
-    /// The folder the file dialog opens in, still to pick: `Some` until
-    /// the first frame has shown the dialog. A picked file installs the
-    /// sprite and clears it; canceling quits the program.
+    /// The folder the first file dialog opens in, still to pick: `Some`
+    /// until the first frame has shown the dialog. A picked file loads
+    /// into the first slot; canceling quits the program.
     pending: Option<std::path::PathBuf>,
+    /// The folder the next dialog opens in: where the last file was
+    /// read from or written to.
+    dir: Option<std::path::PathBuf>,
     /// The Operations panel's status line: the selection's size, or the
     /// outcome of the last operation.
     status: String,
 }
 
+impl Demo {
+    /// The active sprite, or `None` while all slots are empty.
+    fn active(&self) -> Option<&Sprite> {
+        self.sprites.get(self.active)
+    }
+
+    /// The active sprite's texture size, or zero while there is none.
+    fn work_size(&self) -> [f32; 2] {
+        match self.active() {
+            Some(sp) => [sp.current.width() as f32, sp.current.height() as f32],
+            None => [0.0, 0.0],
+        }
+    }
+
+    /// Repaint the work area's layer pool: the animation's current frame
+    /// when any frame exists (so the panel previews what it edits), else
+    /// the active sprite alone in the first node.
+    fn sync_work(&self, ctx: &mut frost::Context) {
+        let frame = if self.anim.frames.is_empty() {
+            None
+        } else {
+            Some(&self.anim.frames[self.anim.frame.min(self.anim.frames.len() - 1)])
+        };
+        for i in 0..LAYER_NODES {
+            let node = &mut ctx.scene().root.children[i];
+            node.shape = match &frame {
+                Some(f) => f.layers.get(i).map(|l| l.shape.clone()),
+                None if i == 0 => self.active().map(|sp| sp.shape.clone()),
+                None => None,
+            };
+        }
+    }
+
+    /// Re-point every slot node at its slot's thumbnail (or hide empty
+    /// slots). Only needed when slots change: opens, closes, swaps.
+    fn refresh_slots(&self, ctx: &mut frost::Context) {
+        for i in 0..SLOTS {
+            let node = &mut ctx.scene().root.children[THUMBS + i];
+            node.shape = self.sprites.get(i).map(|sp| sp.thumb.clone());
+        }
+    }
+
+    /// Replace the active sprite's texture: re-encode it to PNG bytes,
+    /// rebuild its shape, and put it on screen — the selection and the
+    /// marker referred to the old texture, so both clear.
+    fn apply(
+        &mut self,
+        ctx: &mut frost::Context,
+        img: image::RgbaImage,
+        status: String,
+    ) -> Option<()> {
+        let png = png_bytes(&img).ok()?;
+        let shape = frost::Shape::sprite_bytes(&png).ok()?;
+        let sp = self.sprites.get_mut(self.active)?;
+        sp.current = img;
+        sp.shape = shape;
+        self.selection = None;
+        self.last_click = None;
+        self.status = status;
+        self.sync_work(ctx);
+        Some(())
+    }
+
+    /// Open a sprite from `path`: load its texture, minimize the original
+    /// to a slot thumbnail, and add it to the next free slot — which
+    /// becomes the active one. A full house or an unloadable file is
+    /// reported on the status line, not fatal.
+    fn load_sprite(&mut self, ctx: &mut frost::Context, path: std::path::PathBuf) {
+        if self.sprites.len() >= SLOTS {
+            self.status = format!("open: all {SLOTS} slots are full");
+            return;
+        }
+        match read_sprite(&path) {
+            Err(err) => {
+                log::warn!("open failed: {err}");
+                self.status = format!("open: {err}");
+            }
+            Ok(sp) => {
+                self.dir = path
+                    .parent()
+                    .filter(|d| !d.as_os_str().is_empty())
+                    .map(std::path::PathBuf::from);
+                self.status = format!("opened '{}' in slot {}", sp.name, self.sprites.len() + 1);
+                self.sprites.push(sp);
+                self.active = self.sprites.len() - 1;
+                self.selection = None;
+                self.last_click = None;
+                self.sync_work(ctx);
+                self.refresh_slots(ctx);
+            }
+        }
+    }
+
+    /// Open: a native dialog for another sprite, into the next free slot.
+    fn open_dialog(&mut self, ctx: &mut frost::Context) {
+        if self.sprites.len() >= SLOTS {
+            self.status = format!("open: all {SLOTS} slots are full");
+            return;
+        }
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("sprite_util: open a sprite")
+            .add_filter("PNG images", &["png"]);
+        if let Some(dir) = &self.dir {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(window) = ctx.window() {
+            dialog = dialog.set_parent(window);
+        }
+        match dialog.pick_file() {
+            Some(path) => self.load_sprite(ctx, path),
+            None => self.status = String::from("open: canceled"),
+        }
+    }
+
+    /// Crop: to the selection when one is dragged, else to the opaque
+    /// content — trimming the fully transparent borders. The replaced
+    /// texture goes on the sprite's history, so undo can walk it back.
+    fn crop(&mut self, ctx: &mut frost::Context) {
+        let Some(sp) = self.active() else { return };
+        if sp.current.width() == 0 {
+            return;
+        }
+        let (w, h) = (sp.current.width(), sp.current.height());
+        let sel = self.selection;
+        let mut err = None;
+        let rect = match sel {
+            Some(sel) => sel_int_rect(sel, w, h),
+            None => match alpha_bbox(&sp.current) {
+                None => {
+                    err = Some(String::from("crop: the sprite is fully transparent"));
+                    None
+                }
+                Some(r) if r == (0, 0, w, h) => {
+                    err = Some(String::from("crop: nothing to trim — drag to select"));
+                    None
+                }
+                Some(r) => Some(r),
+            },
+        };
+        let cut = match rect {
+            Some((x, y, cw, ch)) => image::imageops::crop_imm(&sp.current, x, y, cw, ch).to_image(),
+            None => {
+                if let Some(err) = err {
+                    self.status = err;
+                }
+                return;
+            }
+        };
+        let (nx, ny) = (cut.width(), cut.height());
+        let sp = &mut self.sprites[self.active];
+        sp.history.push(sp.current.clone());
+        if self
+            .apply(ctx, cut, format!("cropped to {nx} x {ny} px"))
+            .is_none()
+        {
+            self.sprites[self.active].history.pop();
+            self.status = String::from("crop: could not rebuild the sprite");
+        }
+    }
+
+    /// One step back through the active sprite's crops; the history ends
+    /// at its original.
+    fn undo(&mut self, ctx: &mut frost::Context) {
+        let prev = self
+            .sprites
+            .get_mut(self.active)
+            .and_then(|sp| sp.history.pop());
+        match prev {
+            Some(prev) => {
+                let (w, h) = (prev.width(), prev.height());
+                if self
+                    .apply(ctx, prev, format!("undo: back to {w} x {h} px"))
+                    .is_none()
+                {
+                    self.status = String::from("undo: could not rebuild the sprite");
+                }
+            }
+            None => self.status = String::from("undo: already at the original"),
+        }
+    }
+
+    /// Close: take the active sprite out of its slot; every later sprite
+    /// shifts one slot left, and the slot the active one leaves (or the
+    /// new last one, if it was last) becomes active.
+    fn close_active(&mut self, ctx: &mut frost::Context) {
+        if self.sprites.is_empty() {
+            return;
+        }
+        let idx = self.active;
+        let name = self.sprites.remove(idx).name;
+        self.active = self.active.min(self.sprites.len().saturating_sub(1));
+        self.selection = None;
+        self.last_click = None;
+        // The closed slot's reference is gone; later slots shift left.
+        let retarget = |slot: &mut Option<usize>| {
+            *slot = slot.and_then(|v| {
+                if v == idx {
+                    None
+                } else if v > idx {
+                    Some(v - 1)
+                } else {
+                    Some(v)
+                }
+            });
+        };
+        retarget(&mut self.morph_a);
+        retarget(&mut self.morph_b);
+        retarget(&mut self.anchor_slot);
+        if self.anchor_slot.is_none() {
+            self.tool = Tool::Edit;
+        }
+        self.status = format!("closed '{name}'");
+        self.sync_work(ctx);
+        self.refresh_slots(ctx);
+    }
+
+    /// Morph: bake the frames between the two anchored sprites — warp
+    /// a's pixels through the mesh as it slides into b's anchors — and
+    /// splice them into the animation right after the frame being edited.
+    fn morph_run(&mut self, ctx: &mut frost::Context) {
+        let (ai, bi) = match (self.morph_a, self.morph_b) {
+            (Some(a), Some(b)) => (a, b),
+            _ => {
+                self.status = String::from("morph: anchor both a and b first");
+                return;
+            }
+        };
+        let (Some(a), Some(b)) = (self.sprites.get(ai), self.sprites.get(bi)) else {
+            self.status = String::from("morph: an anchored slot is gone");
+            return;
+        };
+        if a.anchors.len() != b.anchors.len() {
+            self.status = format!(
+                "morph: '{}' has {} anchors, '{}' has {}",
+                a.name,
+                a.anchors.len(),
+                b.name,
+                b.anchors.len()
+            );
+            return;
+        }
+        let (ta, aa, ab) = (a.current.clone(), a.anchors.clone(), b.anchors.clone());
+        let b_size = (b.current.width(), b.current.height());
+        let started = std::time::Instant::now();
+        let m = Morph::new(&ta, b_size, &aa, &ab);
+        let n = self.morph_frames.clamp(2, 32);
+        let at = (self.anim.frame + 1).min(self.anim.frames.len());
+        for k in 0..n {
+            let img = m.frame(k as f32 / (n - 1) as f32);
+            let shape = match png_bytes(&img)
+                .ok()
+                .and_then(|png| frost::Shape::sprite_bytes(&png).ok())
+            {
+                Some(shape) => shape,
+                None => {
+                    self.status = String::from("morph: could not bake a frame");
+                    return;
+                }
+            };
+            self.anim.frames.insert(
+                at + k,
+                Frame {
+                    layers: vec![Layer { shape }],
+                    next_time: self.morph_time,
+                },
+            );
+        }
+        self.anim.set_frame(at);
+        self.tool = Tool::Edit;
+        self.sync_work(ctx);
+        self.status = format!("morphed {n} frames in {} ms", started.elapsed().as_millis());
+    }
+
+    /// Save: write the active texture over the file it was loaded from,
+    /// asking first — that file exists, by definition of overwriting it.
+    fn save(&mut self, ctx: &mut frost::Context) {
+        let Some(sp) = self.active() else { return };
+        if sp.current.width() == 0 {
+            return;
+        }
+        if sp.path.as_os_str().is_empty() {
+            self.status = String::from("save: no file to overwrite — use save as");
+            return;
+        }
+        let (path, name) = (sp.path.clone(), file_name_of(&sp.path));
+        if path.exists() && !confirm_overwrite(ctx, &name) {
+            self.status = String::from("save: canceled");
+            return;
+        }
+        self.write_png(&path, name);
+    }
+
+    /// Save As: a native save dialog defaulted to the active sprite's
+    /// current file name; an existing target asks the same overwrite
+    /// confirmation.
+    fn save_as(&mut self, ctx: &mut frost::Context) {
+        let Some(sp) = self.active() else { return };
+        if sp.current.width() == 0 {
+            return;
+        }
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("sprite_util: save as")
+            .set_file_name(&sp.name)
+            .add_filter("PNG images", &["png"]);
+        let dir = sp
+            .path
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .or(self.dir.as_deref())
+            .map(std::path::Path::to_path_buf);
+        if let Some(dir) = &dir {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(window) = ctx.window() {
+            dialog = dialog.set_parent(window);
+        }
+        let Some(mut target) = dialog.save_file() else {
+            self.status = String::from("save as: canceled");
+            return;
+        };
+        match target.extension() {
+            None => {
+                target.set_extension("png");
+            }
+            Some(ext) if ext.eq_ignore_ascii_case("png") => {}
+            Some(_) => {
+                self.status = String::from("save as: only PNG files");
+                return;
+            }
+        }
+        let name = file_name_of(&target);
+        if target.exists() && !confirm_overwrite(ctx, &name) {
+            self.status = String::from("save as: canceled");
+            return;
+        }
+        self.write_png(&target, name);
+    }
+
+    /// Write the active texture to `path` as PNG and make it the sprite's
+    /// file — the name and the Save target both follow. The slot keeps
+    /// showing the original: a slot is a sprite's identity, not its edit.
+    fn write_png(&mut self, path: &std::path::Path, name: String) {
+        let current = match self.active() {
+            Some(sp) => sp.current.clone(),
+            None => return,
+        };
+        let done = png_bytes(&current)
+            .and_then(|png| std::fs::write(path, png).map_err(|e| e.to_string()));
+        match done {
+            Ok(()) => {
+                log::info!("saved '{name}'");
+                if let Some(sp) = self.sprites.get_mut(self.active) {
+                    sp.path = path.to_path_buf();
+                    sp.name = name.clone();
+                }
+                self.dir = path
+                    .parent()
+                    .filter(|d| !d.as_os_str().is_empty())
+                    .map(std::path::PathBuf::from);
+                self.status = format!("saved '{name}'");
+            }
+            Err(err) => self.status = format!("save failed: {err}"),
+        }
+    }
+}
+
 impl frost::Process for Demo {
-    fn process(&mut self, ctx: &mut frost::Context, _dt: f32) {
+    fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
         // When no file was given on the command line, pick one in a
         // native file dialog — on the first frame, now that the window
         // exists. The dialog is a child of the window, so it opens on top
@@ -220,14 +833,22 @@ impl frost::Process for Demo {
             if let Some(window) = ctx.window() {
                 dialog = dialog.set_parent(window);
             }
-            let Some(path) = dialog.pick_file() else {
+            let picked = dialog.pick_file();
+            self.pending = None;
+            let Some(path) = picked else {
                 log::warn!("no file selected — quitting");
                 std::process::exit(0);
             };
-            // Install the pick (or exit on an unloadable file); the first
-            // interactive frame is the next one.
-            install_file(self, ctx, path);
+            // Load the pick into the first slot; the first interactive
+            // frame is the next one.
+            self.load_sprite(ctx, path);
             return;
+        }
+
+        // The animation clock runs on wall time; when it rolls to a new
+        // frame, the work area repaints its layer pool to that frame.
+        if self.anim.tick(dt) {
+            self.sync_work(ctx);
         }
 
         let (w, h) = ctx.size();
@@ -237,29 +858,33 @@ impl frost::Process for Demo {
         let released = !down && self.was_down;
         self.was_down = down;
         let pos = ctx.mouse_position();
+        let size = self.work_size();
+        // The active sprite's center in window coordinates: the work
+        // area's center plus the pan offset.
+        let view = [self.offset[0], self.offset[1] + WORK_Y];
 
         // The wheel zooms: multiplicative per line (up zooms in), clamped
         // to the slider's range, anchored so the texture point under the
         // cursor stays put — the offset absorbs the scale change the cursor
         // itself would have drifted. With the cursor outside the window the
-        // anchor is the center, so only the zoom changes.
+        // anchor is the work area's center, so only the zoom changes.
         let wheel = ctx.mouse_wheel();
         if wheel != 0.0 {
             let z1 = (self.zoom * WHEEL_ZOOM.powf(wheel)).clamp(ZOOM_MIN, ZOOM_MAX);
             if z1 != self.zoom {
-                if let Some([mx, my]) = pos {
-                    let k = z1 / self.zoom;
-                    self.offset = [
-                        mx - (mx - self.offset[0]) * k,
-                        my - (my - self.offset[1]) * k,
-                    ];
-                }
+                let k = z1 / self.zoom;
+                let [ax, ay] = pos.unwrap_or([0.0, WORK_Y]);
+                self.offset = [
+                    ax - (ax - self.offset[0]) * k,
+                    (ay - WORK_Y) - ((ay - WORK_Y) - self.offset[1]) * k,
+                ];
                 self.zoom = z1;
             }
         }
 
-        // A right-drag grabs the canvas: the sprite follows the cursor's
-        // frame-to-frame movement, so it always lands under the pointer.
+        // A right-drag grabs the work area: the sprite follows the
+        // cursor's frame-to-frame movement, so it always lands under the
+        // pointer.
         if rdown && let (Some([lx, ly]), Some([mx, my])) = (self.last_mouse, pos) {
             self.offset[0] += mx - lx;
             self.offset[1] += my - ly;
@@ -267,7 +892,8 @@ impl frost::Process for Demo {
 
         // The UI frame: the View panel's sliders read and write the demo's
         // values, and both panels' bodies claim the mouse over them — a
-        // press the UI holds is never a selection drag or a sprite click.
+        // press the UI holds is never a selection drag, a slot touch or a
+        // sprite click.
         self.ui.begin(ctx);
         let click_label = match &self.last_click {
             Some(([px, py], inside)) => format!(
@@ -312,11 +938,18 @@ impl frost::Process for Demo {
         // The Operations panel: which buttons were pressed is collected
         // here and acted on after the panels, so the modal dialogs and the
         // texture edits never run inside a panel's layout closure.
+        let mut want_open = false;
         let mut want_crop = false;
         let mut want_save = false;
         let mut want_save_as = false;
-        let edited = !self.history.is_empty();
-        let title = format!("{}{}", self.name, if edited { " *" } else { "" });
+        let mut want_close = false;
+        let title = match self.active() {
+            Some(sp) if !sp.history.is_empty() => {
+                format!("{} *  ·  slot {}/{}", sp.name, self.active + 1, SLOTS)
+            }
+            Some(sp) => format!("{}  ·  slot {}/{}", sp.name, self.active + 1, SLOTS),
+            None => format!("no sprite  ·  0/{SLOTS}"),
+        };
         let ops_line = if self.status.is_empty() {
             match self.selection {
                 Some([x0, y0, x1, y1]) => {
@@ -334,6 +967,9 @@ impl frost::Process for Demo {
             PANEL_W,
             |ui, ctx| {
                 ui.label(ctx, &title);
+                if ui.button(ctx, "open") {
+                    want_open = true;
+                }
                 if ui.button(ctx, "crop") {
                     want_crop = true;
                 }
@@ -343,65 +979,197 @@ impl frost::Process for Demo {
                 if ui.button(ctx, "save as") {
                     want_save_as = true;
                 }
+                if ui.button(ctx, "close") {
+                    want_close = true;
+                }
                 ui.space(6.0);
                 ui.label(ctx, &ops_line);
-                ui.label(ctx, "ctrl-z undoes the last crop");
+                ui.label(ctx, "ctrl-o open  ·  ctrl-z undo");
             },
         );
 
-        // Ctrl-Z's rising edge walks one step back through the crops.
+        // The Animation panel: a frame is a set of layers holding for
+        // its own time; playback wraps (loop) or bounces (ping-pong).
+        // Buttons set flags acted on after the panels.
+        let mut want_prev_frame = false;
+        let mut want_next_frame = false;
+        let mut want_add_frame = false;
+        let mut want_del_frame = false;
+        let mut want_add_layer = false;
+        let mut want_del_layer = false;
+        let mut want_play = false;
+        let mut looping = self.anim.looping;
+        let mut next_time = self
+            .anim
+            .frames
+            .get(self.anim.frame)
+            .map_or(TIME_DEFAULT, |f| f.next_time);
+        let anim_line = if self.anim.frames.is_empty() {
+            String::from("no frames yet")
+        } else {
+            let f = &self.anim.frames[self.anim.frame];
+            format!(
+                "frame {}/{} · {} layer(s) · {}",
+                self.anim.frame + 1,
+                self.anim.frames.len(),
+                f.layers.len(),
+                if self.anim.playing {
+                    "playing"
+                } else {
+                    "paused"
+                }
+            )
+        };
+        let play_label = if self.anim.playing { "stop" } else { "play" };
+        // The Morph panel's state, read for the closure and written after.
+        let mut want_anchor_a = false;
+        let mut want_anchor_b = false;
+        let mut want_clear = false;
+        let mut want_morph = false;
+        let mut frames_f = self.morph_frames as f32;
+        let mut morph_t = self.morph_time;
+        let anchor_desc = |slot: Option<usize>| {
+            slot.and_then(|i| self.sprites.get(i))
+                .map(|sp| format!("{} · {} pt", sp.name, sp.anchors.len()))
+                .unwrap_or_else(|| "—".to_string())
+        };
+        let morph_line = format!(
+            "a: {}   b: {}",
+            anchor_desc(self.morph_a),
+            anchor_desc(self.morph_b)
+        );
+        self.ui.panel(
+            ctx,
+            "Animation",
+            [w / 2.0 - PANEL_W / 2.0 - 20.0, h / 2.0 - 120.0],
+            PANEL_W,
+            |ui, ctx| {
+                ui.label(ctx, &anim_line);
+                ui.table(
+                    ctx,
+                    "anim",
+                    &[
+                        frost::Col::auto(frost::Align::Center),
+                        frost::Col::auto(frost::Align::Center),
+                        frost::Col::auto(frost::Align::Center),
+                    ],
+                    |ui, ctx| {
+                        if ui.button(ctx, "prev") {
+                            want_prev_frame = true;
+                        }
+                        if ui.button(ctx, "add frame") {
+                            want_add_frame = true;
+                        }
+                        if ui.button(ctx, "del frame") {
+                            want_del_frame = true;
+                        }
+                        if ui.button(ctx, "next") {
+                            want_next_frame = true;
+                        }
+                        if ui.button(ctx, "add layer") {
+                            want_add_layer = true;
+                        }
+                        if ui.button(ctx, "del layer") {
+                            want_del_layer = true;
+                        }
+                        ui.label(ctx, "till next");
+                        ui.slider_track(ctx, "frame time", &mut next_time, TIME_MIN, TIME_MAX);
+                        ui.readout(ctx, &format!("{next_time:.2}s"));
+                    },
+                );
+                ui.space(6.0);
+                ui.checkbox(ctx, "loop  (off = ping-pong)", &mut looping);
+                if ui.button(ctx, play_label) {
+                    want_play = true;
+                }
+            },
+        );
+
+        // The Morph panel: pair two sprites anchor by anchor, bake the
+        // in-betweens, and splice them into the animation.
+        let lbl_a = if self.tool == Tool::AnchorsA {
+            "*anchors a"
+        } else {
+            "anchors a"
+        };
+        let lbl_b = if self.tool == Tool::AnchorsB {
+            "*anchors b"
+        } else {
+            "anchors b"
+        };
+        self.ui.panel(
+            ctx,
+            "Morph",
+            // Bottom-right, but clear of the slot strip — the morph
+            // workflow needs the slots clickable.
+            [w / 2.0 - PANEL_W / 2.0 - 20.0, -h / 2.0 + STRIP_H + 100.0],
+            PANEL_W,
+            |ui, ctx| {
+                ui.label(ctx, &morph_line);
+                ui.table(
+                    ctx,
+                    "morph",
+                    &[
+                        frost::Col::auto(frost::Align::Center),
+                        frost::Col::stretch(1.0, frost::Align::Center),
+                        frost::Col::auto(frost::Align::Center),
+                    ],
+                    |ui, ctx| {
+                        if ui.button(ctx, lbl_a) {
+                            want_anchor_a = true;
+                        }
+                        if ui.button(ctx, lbl_b) {
+                            want_anchor_b = true;
+                        }
+                        if ui.button(ctx, "clear") {
+                            want_clear = true;
+                        }
+                        if ui.button(ctx, "morph") {
+                            want_morph = true;
+                        }
+                        ui.slider_track(ctx, "morph frames", &mut frames_f, 2.0, 24.0);
+                        ui.readout(ctx, &format!("{frames_f:.0}"));
+                        ui.label(ctx, "each");
+                        ui.slider_track(ctx, "morph time", &mut morph_t, TIME_MIN, 0.5);
+                        ui.readout(ctx, &format!("{morph_t:.2}s"));
+                    },
+                );
+                ui.label(ctx, "click the sprite to place anchors");
+            },
+        );
+
+        // Ctrl-O's and Ctrl-Z's rising edges: the open dialog, and one
+        // step back through the active sprite's crops.
         let ctrl =
             ctx.key_down(frost::KeyCode::ControlLeft) || ctx.key_down(frost::KeyCode::ControlRight);
-        let undo = ctrl && ctx.key_down(frost::KeyCode::KeyZ);
-        if undo && !self.was_undo {
+        let open_key = ctrl && ctx.key_down(frost::KeyCode::KeyO);
+        let undo_key = ctrl && ctx.key_down(frost::KeyCode::KeyZ);
+        if open_key && !self.was_open {
+            self.open_dialog(ctx);
+        }
+        if undo_key && !self.was_undo {
             self.undo(ctx);
         }
-        self.was_undo = undo;
+        self.was_open = open_key;
+        self.was_undo = undo_key;
 
-        // A left-drag the UI did not claim draws the crop selection in the
-        // texture's pixel space; a release that barely moved is a click —
-        // it logs the sprite pixel, as before, and clears the selection.
-        if pressed
-            && !self.ui.hovering()
-            && let Some(p) = pos
-        {
-            self.drag_from = Some(p);
+        // Space's rising edge starts and stops the animation clock.
+        let space = ctx.key_down(frost::KeyCode::Space);
+        if space && !self.was_space {
+            self.anim.playing = !self.anim.playing;
+            self.anim.dir = 1;
         }
-        if down && let (Some(from), Some(p)) = (self.drag_from, pos) {
-            self.selection = sel_rect_from(from, p, self.size, self.offset, self.zoom);
-        }
-        if released
-            && let Some(from) = self.drag_from.take()
-            && let Some([mx, my]) = pos
-        {
-            let moved = ((mx - from[0]).powi(2) + (my - from[1]).powi(2)).sqrt();
-            if moved < CLICK_TOL {
-                // The click's position relative to the sprite. The sprite
-                // sits at the window's center plus `offset`, at scale
-                // `zoom`, so window coordinates map to texture pixels with
-                // `px = (x - ox) / zoom + w/2` and
-                // `py = h/2 - (y - oy) / zoom` — the y flip included,
-                // since the texture's y grows down.
-                let [tw, th] = self.size;
-                let [px, py] = tex_point([mx, my], self.size, self.offset, self.zoom);
-                let inside = px >= 0.0 && px <= tw && py >= 0.0 && py <= th;
-                log::info!(
-                    "click at sprite pixel ({px:.1}, {py:.1}) of {tw:.0}x{th:.0} '{}' — {where}",
-                    self.name,
-                    where = if inside {
-                        "inside the texture"
-                    } else {
-                        "outside the texture"
-                    }
-                );
-                self.last_click = Some(([px, py], inside));
-                self.selection = None;
-            }
-        }
+        self.was_space = space;
 
         // The collected button presses, now outside every panel closure.
+        if want_open {
+            self.open_dialog(ctx);
+        }
         if want_crop {
             self.crop(ctx);
+        }
+        if want_close {
+            self.close_active(ctx);
         }
         if want_save {
             self.save(ctx);
@@ -410,32 +1178,247 @@ impl frost::Process for Demo {
             self.save_as(ctx);
         }
 
-        // The sprite's node carries the pan and the zoom: a uniform scale
-        // about its center, then the pan offset from the window's center.
-        let sprite = &mut ctx.scene().root.children[0];
-        sprite.transform = frost::Transform::translate(self.offset);
-        sprite.scale = [self.zoom, self.zoom];
+        // The animation edits. The duration slider and loop checkbox
+        // wrote their locals; commit them, then act on the buttons.
+        if let Some(f) = self.anim.frames.get_mut(self.anim.frame) {
+            f.next_time = next_time;
+        }
+        self.anim.looping = looping;
+        if want_add_frame {
+            // A new frame, inserted after the one being edited, opens
+            // with the active sprite as its first layer.
+            let at = (self.anim.frame + 1).min(self.anim.frames.len());
+            let shape = self.active().map(|sp| sp.shape.clone());
+            self.anim.frames.insert(
+                at,
+                Frame {
+                    layers: shape.map(|s| vec![Layer { shape: s }]).unwrap_or_default(),
+                    next_time: TIME_DEFAULT,
+                },
+            );
+            self.anim.set_frame(at);
+            self.sync_work(ctx);
+        }
+        if want_add_layer {
+            let shape = self.active().map(|sp| sp.shape.clone());
+            if let Some(shape) = shape
+                && let Some(f) = self.anim.frames.get_mut(self.anim.frame)
+                && f.layers.len() < LAYER_NODES
+            {
+                f.layers.push(Layer { shape });
+            }
+            self.sync_work(ctx);
+        }
+        if want_del_layer {
+            if let Some(f) = self.anim.frames.get_mut(self.anim.frame) {
+                f.layers.pop();
+            }
+            self.sync_work(ctx);
+        }
+        if want_del_frame {
+            if self.anim.frame < self.anim.frames.len() {
+                self.anim.frames.remove(self.anim.frame);
+                self.anim.set_frame(
+                    self.anim
+                        .frame
+                        .min(self.anim.frames.len().saturating_sub(1)),
+                );
+            }
+            self.sync_work(ctx);
+        }
+        if want_prev_frame || want_next_frame {
+            let n = self.anim.frames.len();
+            if n > 0 {
+                let delta = if want_next_frame { 1 } else { -1 };
+                let nf = (self.anim.frame as isize + delta).rem_euclid(n as isize) as usize;
+                self.anim.set_frame(nf);
+                self.sync_work(ctx);
+            }
+        }
+        if want_play {
+            self.anim.playing = !self.anim.playing;
+            self.anim.dir = 1;
+        }
+
+        // The morph tool: pressing a live anchor button again exits;
+        // entering one binds it to the active slot and pauses playback.
+        self.morph_frames = frames_f.round() as usize;
+        self.morph_time = morph_t;
+        if want_anchor_a || want_anchor_b {
+            let role = if want_anchor_a {
+                Tool::AnchorsA
+            } else {
+                Tool::AnchorsB
+            };
+            if self.tool == role {
+                self.tool = Tool::Edit;
+            } else if !self.sprites.is_empty() {
+                self.tool = role;
+                self.anchor_slot = Some(self.active);
+                self.anim.playing = false;
+                if want_anchor_a {
+                    self.morph_a = Some(self.active);
+                } else {
+                    self.morph_b = Some(self.active);
+                }
+            }
+        }
+        if want_clear
+            && let Some(i) = self.anchor_slot
+            && let Some(sp) = self.sprites.get_mut(i)
+        {
+            sp.anchors.clear();
+        }
+        if want_morph {
+            self.morph_run(ctx);
+        }
+
+        // The left button's work: press lands on a slot, on the work area
+        // or nowhere the demo owns; release decides — click or drag.
+        if pressed
+            && !self.ui.hovering()
+            && let Some(p) = pos
+        {
+            match slot_at(p, w, h) {
+                Some(i) => self.slot_drag = Some((i, p)),
+                None if in_work_area(p, w, h) => {
+                    if self.tool == Tool::Edit {
+                        self.drag_from = Some(p);
+                    } else {
+                        self.anchor_press = Some(p);
+                    }
+                }
+                None => {}
+            }
+        }
+        // A work-area drag draws the crop selection in the texture's
+        // pixel space.
+        if down && let (Some(from), Some(p)) = (self.drag_from, pos) {
+            self.selection = sel_rect_from(from, p, size, view, self.zoom);
+        }
+        if released {
+            if let Some(from) = self.drag_from.take()
+                && let Some([mx, my]) = pos
+            {
+                let moved = ((mx - from[0]).powi(2) + (my - from[1]).powi(2)).sqrt();
+                if moved < CLICK_TOL {
+                    // A click on the work area: log the sprite pixel and
+                    // clear the selection. The active sprite sits at the
+                    // work area's center plus `offset`, at scale `zoom`,
+                    // so window coordinates map to texture pixels with
+                    // `px = (x - vx) / zoom + w/2` and
+                    // `py = h/2 - (y - vy) / zoom` — the y flip included,
+                    // since the texture's y grows down.
+                    if !self.sprites.is_empty() {
+                        let [tw, th] = size;
+                        let [px, py] = tex_point([mx, my], size, view, self.zoom);
+                        let inside = px >= 0.0 && px <= tw && py >= 0.0 && py <= th;
+                        let name = self.active().map_or("", |sp| sp.name.as_str());
+                        log::info!(
+                            "click at sprite pixel ({px:.1}, {py:.1}) of {tw:.0}x{th:.0} '{name}' — {where}",
+                            where = if inside {
+                                "inside the texture"
+                            } else {
+                                "outside the texture"
+                            }
+                        );
+                        self.last_click = Some(([px, py], inside));
+                    }
+                    self.selection = None;
+                }
+            }
+            // An anchor click drops a point on the bound sprite — at
+            // its texture pixel, deduplicated and kept inside.
+            if let Some(from) = self.anchor_press.take()
+                && let Some(p) = pos
+                && ((p[0] - from[0]).powi(2) + (p[1] - from[1]).powi(2)).sqrt() < CLICK_TOL
+                && let Some(i) = self.anchor_slot
+            {
+                let sz = self.sprites.get(i).map_or([0.0; 2], |sp| {
+                    [sp.current.width() as f32, sp.current.height() as f32]
+                });
+                let [px, py] = tex_point(p, sz, view, self.zoom);
+                if px >= 0.0 && px <= sz[0] && py >= 0.0 && py <= sz[1] {
+                    let list = &mut self.sprites[i].anchors;
+                    if !list.iter().any(|q| (q[0] - px).hypot(q[1] - py) < 1.0) {
+                        list.push([px, py]);
+                    }
+                }
+            }
+            // A slot press: a click activates its sprite; a drag that
+            // ends on another slot swaps the two sprites' places.
+            if let Some((from_slot, from)) = self.slot_drag.take()
+                && let Some(p) = pos
+            {
+                let moved = ((p[0] - from[0]).powi(2) + (p[1] - from[1]).powi(2)).sqrt();
+                if moved < CLICK_TOL {
+                    self.active = from_slot;
+                    self.selection = None;
+                    self.last_click = None;
+                    self.sync_work(ctx);
+                } else if let Some(to) = slot_at(p, w, h)
+                    && to != from_slot
+                {
+                    self.sprites.swap(from_slot, to);
+                    self.active = swapped_active(self.active, from_slot, to);
+                    // The swapped sprites carry their anchors and roles.
+                    for slot in [&mut self.morph_a, &mut self.morph_b, &mut self.anchor_slot] {
+                        *slot = match *slot {
+                            Some(x) if x == from_slot => Some(to),
+                            Some(x) if x == to => Some(from_slot),
+                            other => other,
+                        };
+                    }
+                    self.refresh_slots(ctx);
+                }
+            }
+        }
+
+        // While an anchor tool is up, the work area shows the bound
+        // sprite alone — anchors land on a known image, not on a frame
+        // mid-play.
+        if self.tool != Tool::Edit {
+            let shape = self
+                .anchor_slot
+                .and_then(|i| self.sprites.get(i))
+                .map(|sp| sp.shape.clone());
+            for (i, node) in ctx.scene().root.children[..LAYER_NODES]
+                .iter_mut()
+                .enumerate()
+            {
+                node.shape = if i == 0 { shape.clone() } else { None };
+            }
+        }
+
+        // The work area's layer pool: every node carries the pan and the
+        // zoom — a uniform scale about its center, then the pan offset
+        // from the work area's center. The shapes come from the sync.
+        for node in &mut ctx.scene().root.children[..LAYER_NODES] {
+            node.transform = frost::Transform::translate(view);
+            node.scale = [self.zoom, self.zoom];
+        }
 
         // The checker backdrop: the sprite's on-screen bounding box,
-        // clipped to the window, filled with cells that never scale with
-        // the sprite — so the pattern reveals the sprite's transparency
-        // no matter the zoom or the pan. The fill is a tiny sprite, one
-        // texture pixel per cell, sampled with nearest-neighbor filtering
-        // so the cell edges stay hard; the texture is rebuilt only when
-        // the cell count or a grey level changes, so smooth pans and zooms
-        // only reposition and rescale it.
-        let [tw, th] = self.size;
+        // clipped to the work area, filled with cells that never scale
+        // with the sprite — so the pattern reveals the sprite's
+        // transparency no matter the zoom or the pan. The fill is a tiny
+        // sprite, one texture pixel per cell, sampled with
+        // nearest-neighbor filtering so the cell edges stay hard; the
+        // texture is rebuilt only when the cell count or a grey level
+        // changes, so smooth pans and zooms only reposition and rescale
+        // it.
+        let [tw, th] = size;
         let (hw, hh) = ((tw * self.zoom) / 2.0, (th * self.zoom) / 2.0);
-        let (bx0, by0) = (self.offset[0] - hw, self.offset[1] - hh);
-        let (bx1, by1) = (self.offset[0] + hw, self.offset[1] + hh);
-        // The box's intersection with the window.
+        let (bx0, by0) = (view[0] - hw, view[1] - hh);
+        let (bx1, by1) = (view[0] + hw, view[1] + hh);
+        // The box's intersection with the work area.
         let (rx0, ry0, rx1, ry1) = (
             bx0.max(-w / 2.0),
-            by0.max(-h / 2.0),
+            by0.max(-h / 2.0 + STRIP_H),
             bx1.min(w / 2.0),
             by1.min(h / 2.0),
         );
-        let checker = &mut ctx.scene().root.children[3];
+        let checker = &mut ctx.scene().root.children[CHECKER];
         if rx1 > rx0 && ry1 > ry0 && tw > 0.0 {
             let cw = ((rx1 - rx0) / CHECK_CELL).ceil() as u32;
             let ch = ((ry1 - ry0) / CHECK_CELL).ceil() as u32;
@@ -455,8 +1438,8 @@ impl frost::Process for Demo {
             // region exactly.
             checker.scale = [(rx1 - rx0) / cw as f32, (ry1 - ry0) / ch as f32];
         } else {
-            // No sprite (or its box off screen): hide the backdrop and
-            // force a rebuild when it comes back.
+            // No sprite (or its box off the work area): hide the backdrop
+            // and force a rebuild when it comes back.
             checker.shape = None;
             self.checker_key = (0, 0, 0, 0);
         }
@@ -473,8 +1456,8 @@ impl frost::Process for Demo {
         // The crop selection: the texture-space rectangle mapped back to
         // the window — the same transform the marker dot uses.
         if let Some([x0, y0, x1, y1]) = self.selection {
-            let wx = |px: f32| (px - tw / 2.0) * self.zoom + self.offset[0];
-            let wy = |py: f32| (th / 2.0 - py) * self.zoom + self.offset[1];
+            let wx = |px: f32| (px - tw / 2.0) * self.zoom + view[0];
+            let wy = |py: f32| (th / 2.0 - py) * self.zoom + view[1];
             let (sx0, sx1) = (wx(x0), wx(x1));
             let (sy0, sy1) = (wy(y0), wy(y1));
             ctx.line(sx0, sy0, sx1, sy0, SELECT, BBOX_WIDTH, SELECT_Z);
@@ -483,19 +1466,60 @@ impl frost::Process for Demo {
             ctx.line(sx0, sy1, sx0, sy0, SELECT, BBOX_WIDTH, SELECT_Z);
         }
 
+        // The slots strip: its floor, each slot's plate, and the active
+        // slot's frame. The thumbnails are scene nodes, positioned below.
+        ctx.rectangle(
+            0.0,
+            -h / 2.0 + STRIP_H / 2.0,
+            w / 2.0,
+            STRIP_H / 2.0,
+            STRIP,
+            STRIP_Z,
+        );
+        for i in 0..SLOTS {
+            let [cx, cy] = slot_center(i, w, h);
+            let plate = if i < self.sprites.len() {
+                PLATE
+            } else {
+                PLATE_EMPTY
+            };
+            ctx.rectangle(cx, cy, SLOT / 2.0, SLOT / 2.0, plate, PLATE_Z);
+            if i == self.active && i < self.sprites.len() {
+                let r = SLOT / 2.0;
+                ctx.line(cx - r, cy - r, cx + r, cy - r, SELECT, BBOX_WIDTH, FRAME_Z);
+                ctx.line(cx + r, cy - r, cx + r, cy + r, SELECT, BBOX_WIDTH, FRAME_Z);
+                ctx.line(cx + r, cy + r, cx - r, cy + r, SELECT, BBOX_WIDTH, FRAME_Z);
+                ctx.line(cx - r, cy + r, cx - r, cy - r, SELECT, BBOX_WIDTH, FRAME_Z);
+            }
+        }
+
+        // The slot thumbnails: minimized originals, centered on their
+        // plates. A dragged thumbnail rides the cursor, above everything
+        // until it lands.
+        for i in 0..SLOTS {
+            let node = &mut ctx.scene().root.children[THUMBS + i];
+            let dragging = self.slot_drag.is_some_and(|(slot, _)| slot == i);
+            node.order = if dragging { DRAG_ORDER } else { THUMB_ORDER };
+            node.transform = match (dragging, pos) {
+                (true, Some(p)) => frost::Transform::translate(p),
+                _ => frost::Transform::translate(slot_center(i, w, h)),
+            };
+        }
+
         // The usage line, pinned near the top edge, so resizing keeps it
         // in place.
-        let help = &mut ctx.scene().root.children[1];
+        let help = &mut ctx.scene().root.children[HELP];
         help.transform = frost::Transform::translate([0.0, h / 2.0 - 28.0]);
 
-        // The marker dot rides the last click in window space — the inverse
-        // of the conversion above — and shrinks away when there is none.
-        let marker = &mut ctx.scene().root.children[2];
+        // The marker dot rides the last click in window space — the
+        // inverse of the conversion above — and shrinks away when there
+        // is none.
+        let marker = &mut ctx.scene().root.children[MARKER_NODE];
         if let Some(([px, py], _)) = self.last_click {
-            let [tw, th] = self.size;
+            let [tw, th] = size;
             marker.transform = frost::Transform::translate([
-                (px - tw / 2.0) * self.zoom + self.offset[0],
-                (th / 2.0 - py) * self.zoom + self.offset[1],
+                (px - tw / 2.0) * self.zoom + view[0],
+                (th / 2.0 - py) * self.zoom + view[1],
             ]);
             if let Some(frost::Shape::Circle { radius, .. }) = &mut marker.shape {
                 *radius = 4.0;
@@ -504,204 +1528,394 @@ impl frost::Process for Demo {
             *radius = 0.0;
         }
 
+        // The anchor points of the bound sprite, mapped from its texture
+        // to the work area the same way the marker dot maps.
+        if self.tool != Tool::Edit
+            && let Some(sp) = self.anchor_slot.and_then(|i| self.sprites.get(i))
+        {
+            let [tw, th] = [sp.current.width() as f32, sp.current.height() as f32];
+            let col = if self.tool == Tool::AnchorsA {
+                SELECT
+            } else {
+                MARKER
+            };
+            for [px, py] in &sp.anchors {
+                ctx.rectangle(
+                    (px - tw / 2.0) * self.zoom + view[0],
+                    (th / 2.0 - py) * self.zoom + view[1],
+                    3.0,
+                    3.0,
+                    col,
+                    ANCHOR_Z,
+                );
+            }
+        }
+
         // The cursor's position for next frame's right-drag delta; `None`
         // (outside the window) clears it, so re-entering never jumps.
         self.last_mouse = pos;
     }
 }
 
-impl Demo {
-    /// Crop: to the selection when one is dragged, else to the opaque
-    /// content — trimming the fully transparent borders. The replaced
-    /// texture goes on the history stack, so undo can walk it back.
-    fn crop(&mut self, ctx: &mut frost::Context) {
-        if self.current.width() == 0 {
-            return;
-        }
-        let (w, h) = (self.current.width(), self.current.height());
-        let rect = match self.selection {
-            Some(sel) => sel_int_rect(sel, w, h),
-            None => match alpha_bbox(&self.current) {
-                None => {
-                    self.status = String::from("crop: the sprite is fully transparent");
-                    return;
-                }
-                Some(r) if r == (0, 0, w, h) => {
-                    self.status = String::from("crop: nothing to trim — drag to select");
-                    return;
-                }
-                Some(r) => Some(r),
-            },
-        };
-        match rect {
-            Some((x, y, cw, ch)) => {
-                let cut = image::imageops::crop_imm(&self.current, x, y, cw, ch).to_image();
-                let (nx, ny) = (cut.width(), cut.height());
-                self.history.push(self.current.clone());
-                self.install(ctx, cut, format!("cropped to {nx} x {ny} px"));
-            }
-            None => self.status = String::from("crop: the selection is empty"),
-        }
-    }
+/// The four corners of a texture, appended to the anchors so the mesh
+/// covers the whole image and its edges stay pinned.
+fn corners(w: f32, h: f32) -> [[f32; 2]; 4] {
+    [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]]
+}
 
-    /// One step back through the crops; the history ends at the original.
-    fn undo(&mut self, ctx: &mut frost::Context) {
-        match self.history.pop() {
-            Some(prev) => {
-                let (w, h) = (prev.width(), prev.height());
-                self.install(ctx, prev, format!("undo: back to {w} x {h} px"));
-            }
-            None => self.status = String::from("undo: already at the original"),
-        }
+/// A small Delaunay triangulation (Bowyer–Watson with a super-triangle):
+/// at anchor-point counts — a dozen or so — the naive version is instant
+/// and needs no dependency. Collinear and duplicate points yield no
+/// triangle that would cover anything.
+fn triangulate(pts: &[[f32; 2]]) -> Vec<[usize; 3]> {
+    let n = pts.len();
+    if n < 3 {
+        return Vec::new();
     }
-
-    /// Save: write the texture over the file it was loaded from, asking
-    /// first — that file exists, by definition of overwriting it.
-    fn save(&mut self, ctx: &mut frost::Context) {
-        if self.current.width() == 0 {
-            return;
-        }
-        if self.path.as_os_str().is_empty() {
-            self.status = String::from("save: no file to overwrite — use save as");
-            return;
-        }
-        let name = file_name_of(&self.path);
-        if self.path.exists() && !confirm_overwrite(ctx, &name) {
-            self.status = String::from("save: canceled");
-            return;
-        }
-        let target = self.path.clone();
-        self.write_png(&target, name);
+    let (mut lo, mut hi) = ([f32::MAX, f32::MAX], [f32::MIN, f32::MIN]);
+    for p in pts {
+        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
     }
-
-    /// Save As: a native save dialog defaulted to the sprite's current
-    /// file name; an existing target asks the same overwrite confirmation.
-    fn save_as(&mut self, ctx: &mut frost::Context) {
-        if self.current.width() == 0 {
-            return;
-        }
-        let mut dialog = rfd::FileDialog::new()
-            .set_title("sprite_util: save as")
-            .set_file_name(&self.name)
-            .add_filter("PNG images", &["png"]);
-        if let Some(dir) = self.path.parent().filter(|d| !d.as_os_str().is_empty()) {
-            dialog = dialog.set_directory(dir);
-        }
-        if let Some(window) = ctx.window() {
-            dialog = dialog.set_parent(window);
-        }
-        let Some(mut target) = dialog.save_file() else {
-            self.status = String::from("save as: canceled");
-            return;
-        };
-        match target.extension() {
-            None => {
-                target.set_extension("png");
-            }
-            Some(ext) if ext.eq_ignore_ascii_case("png") => {}
-            Some(_) => {
-                self.status = String::from("save as: only PNG files");
-                return;
-            }
-        }
-        let name = file_name_of(&target);
-        if target.exists() && !confirm_overwrite(ctx, &name) {
-            self.status = String::from("save as: canceled");
-            return;
-        }
-        self.write_png(&target, name);
+    let span = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(1.0);
+    let mid = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0];
+    // One super-triangle around everything, its vertices n, n+1, n+2.
+    let mut all: Vec<[f32; 2]> = pts.to_vec();
+    all.push([mid[0] - 20.0 * span, mid[1] - span]);
+    all.push([mid[0], mid[1] + 20.0 * span]);
+    all.push([mid[0] + 20.0 * span, mid[1] - span]);
+    let mut tris: Vec<[usize; 3]> = vec![[n, n + 1, n + 2]];
+    for (i, &p) in pts.iter().enumerate() {
+        // Every triangle whose circumcircle swallows the new point dies;
+        // the edges it shared with the living ones frame the hole.
+        let bad: Vec<usize> = (0..tris.len())
+            .filter(|&k| in_circumcircle(&all, tris[k], p))
+            .collect();
+        let hole: Vec<[usize; 2]> = bad
+            .iter()
+            .flat_map(|&k| {
+                let t = tris[k];
+                [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]]
+            })
+            // An edge bordering the hole belongs to exactly one dying
+            // triangle; shared ones lie inside it.
+            .filter(|e| bad.iter().filter(|&&j| tri_has_edge(tris[j], *e)).count() == 1)
+            .collect();
+        tris = tris
+            .into_iter()
+            .enumerate()
+            .filter(|(k, _)| !bad.contains(k))
+            .map(|(_, t)| t)
+            .collect();
+        tris.extend(hole.iter().map(|e| [e[0], e[1], i]));
     }
+    // Drop everything hanging off the super-triangle, then the slivers.
+    tris.retain(|t| {
+        t.iter().all(|&v| v < n) && area2([pts[t[0]], pts[t[1]], pts[t[2]]]).abs() > 1e-6
+    });
+    tris
+}
 
-    /// Write the working texture to `path` as PNG and make it the sprite's
-    /// file — the name and the Save target both follow.
-    fn write_png(&mut self, path: &std::path::Path, name: String) {
-        let done = png_bytes(&self.current)
-            .and_then(|png| std::fs::write(path, png).map_err(|e| e.to_string()));
-        match done {
-            Ok(()) => {
-                log::info!("saved '{name}'");
-                self.path = path.to_path_buf();
-                self.name = name.clone();
-                self.status = format!("saved '{name}'");
-            }
-            Err(err) => self.status = format!("save failed: {err}"),
-        }
+/// Whether `p` falls inside the triangle's circumcircle; degenerate
+/// triangles have none, and never die.
+fn in_circumcircle(all: &[[f32; 2]], t: [usize; 3], p: [f32; 2]) -> bool {
+    let (a, b, c) = (all[t[0]], all[t[1]], all[t[2]]);
+    let d = 2.0 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+    if d.abs() < 1e-9 {
+        return false;
     }
+    let (a2, b2, c2) = (
+        a[0] * a[0] + a[1] * a[1],
+        b[0] * b[0] + b[1] * b[1],
+        c[0] * c[0] + c[1] * c[1],
+    );
+    let ux = (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d;
+    let uy = (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d;
+    let r2 = (a[0] - ux).powi(2) + (a[1] - uy).powi(2);
+    (p[0] - ux).powi(2) + (p[1] - uy).powi(2) < r2
+}
 
-    /// Put a texture on screen: re-encode it to PNG bytes, rebuild the
-    /// sprite's shape, and follow the new size — the selection and the
-    /// marker referred to the old texture, so both clear.
-    fn install(&mut self, ctx: &mut frost::Context, img: image::RgbaImage, status: String) {
-        let png = match png_bytes(&img) {
-            Ok(png) => png,
-            Err(err) => {
-                self.status = format!("could not re-encode the image: {err}");
-                return;
+/// Twice the signed area of a triangle.
+fn area2(t: [[f32; 2]; 3]) -> f32 {
+    (t[1][0] - t[0][0]) * (t[2][1] - t[0][1]) - (t[2][0] - t[0][0]) * (t[1][1] - t[0][1])
+}
+
+/// Whether the triangle walks the (undirected) edge.
+fn tri_has_edge(t: [usize; 3], e: [usize; 2]) -> bool {
+    (0..3).any(|k| {
+        let (a, b) = (t[k], t[(k + 1) % 3]);
+        (a == e[0] && b == e[1]) || (a == e[1] && b == e[0])
+    })
+}
+
+/// A precomputed sprite-pair morph: one shared triangulation (from a's
+/// points), b's matching points in output space — the shape a slides
+/// into — and a's texture premultiplied. A pure mesh warp: b contributes
+/// its shape through its anchors, its pixels never enter the frames.
+/// After the setup, `frame(t)` is pure rasterization; output size is a's.
+struct Morph {
+    tris: Vec<[usize; 3]>,
+    /// a's points in output (= a's own) pixels: the sampling triangle.
+    pa: Vec<[f32; 2]>,
+    /// b's points in output pixels: the destination, when t reaches 1.
+    pb_out: Vec<[f32; 2]>,
+    a: Vec<f32>,
+    aw: usize,
+    ah: usize,
+}
+
+/// The texture as premultiplied floats — warping and sampling want
+/// premultiplied values so semi-transparent edges carry no color.
+fn premultiply(img: &image::RgbaImage) -> Vec<f32> {
+    img.pixels()
+        .flat_map(|p| {
+            let a = p[3] as f32 / 255.0;
+            [
+                p[0] as f32 / 255.0 * a,
+                p[1] as f32 / 255.0 * a,
+                p[2] as f32 / 255.0 * a,
+                a,
+            ]
+        })
+        .collect()
+}
+
+/// The premultiplied color at continuous texture coordinates, bilinearly
+/// sampled, edge-clamped; outside the texture is transparent black.
+fn sample(buf: &[f32], w: usize, h: usize, x: f32, y: f32) -> [f32; 4] {
+    if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 {
+        return [0.0; 4];
+    }
+    let u = (x - 0.5).clamp(0.0, w as f32 - 1.0);
+    let v = (y - 0.5).clamp(0.0, h as f32 - 1.0);
+    let i = u as usize;
+    let j = v as usize;
+    let (i1, j1) = ((i + 1).min(w - 1), (j + 1).min(h - 1));
+    let (fu, fv) = (u - i as f32, v - j as f32);
+    let at = |ii: usize, jj: usize, c: usize| buf[(jj * w + ii) * 4 + c];
+    let mut c = [0.0; 4];
+    for (k, out) in c.iter_mut().enumerate() {
+        let top = at(i, j, k) * (1.0 - fu) + at(i1, j, k) * fu;
+        let bot = at(i, j1, k) * (1.0 - fu) + at(i1, j1, k) * fu;
+        *out = top * (1.0 - fv) + bot * fv;
+    }
+    c
+}
+
+/// A premultiplied RGBA float image to sample from.
+struct Img<'a> {
+    px: &'a [f32],
+    w: usize,
+    h: usize,
+}
+
+/// The same, writable — the canvas a warp paints onto.
+struct Buf<'a> {
+    px: &'a mut [f32],
+    w: usize,
+    h: usize,
+}
+
+/// Rasterize one triangle pair: every destination pixel inside `d` takes
+/// the source's color at the same barycentric spot in `s` — the per-
+/// triangle affine warp every GPU texture-maps with.
+fn warp(src: &Img, s: &[[f32; 2]; 3], d: &[[f32; 2]; 3], out: &mut Buf) {
+    let (sw, sh) = (src.w, src.h);
+    let (ow, oh) = (out.w, out.h);
+    let den = area2(*d);
+    if den.abs() < 1e-6 {
+        return; // degenerate or folded: nothing to paint
+    }
+    let (mut mn, mut mx) = ([f32::MAX, f32::MAX], [f32::MIN, f32::MIN]);
+    for p in d {
+        mn = [mn[0].min(p[0]), mn[1].min(p[1])];
+        mx = [mx[0].max(p[0]), mx[1].max(p[1])];
+    }
+    let x0 = mn[0].floor().max(0.0) as usize;
+    let x1 = mx[0].ceil().min(ow as f32 - 1.0) as usize;
+    let y0 = mn[1].floor().max(0.0) as usize;
+    let y1 = mx[1].ceil().min(oh as f32 - 1.0) as usize;
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            // Barycentric weights of the destination pixel center.
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            let w0 = area2([d[1], d[2], [px, py]]) / den;
+            let w1 = area2([d[2], d[0], [px, py]]) / den;
+            let w2 = 1.0 - w0 - w1;
+            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                continue;
             }
-        };
-        match frost::Shape::sprite_bytes(&png) {
-            Ok(shape) => {
-                let (iw, ih) = (img.width(), img.height());
-                ctx.scene().root.children[0].shape = Some(shape);
-                self.current = img;
-                self.size = [iw as f32, ih as f32];
-                self.selection = None;
-                self.last_click = None;
-                self.status = status;
-            }
-            Err(err) => self.status = format!("could not rebuild the sprite: {err}"),
+            let sx = w0 * s[0][0] + w1 * s[1][0] + w2 * s[2][0];
+            let sy = w0 * s[0][1] + w1 * s[1][1] + w2 * s[2][1];
+            let c = sample(src.px, sw, sh, sx, sy);
+            let o = (y * ow + x) * 4;
+            out.px[o..o + 4].copy_from_slice(&c);
         }
     }
 }
 
-/// The file dialog's pick (and the `-i` file's load): install the sprite,
-/// its texture, its path and name into the demo. A file that is not a
-/// loadable PNG ends the program, as it does everywhere else.
-fn install_file(demo: &mut Demo, ctx: &mut frost::Context, path: std::path::PathBuf) {
-    let name = file_name_of(&path);
-    if path.extension().and_then(|e| e.to_str()) != Some("png") {
-        log::error!("'{name}' is not a PNG file");
-        std::process::exit(1);
+impl Morph {
+    /// Set up the morph: anchors (texture pixels, paired by order — b's
+    /// in b's own texture space) plus the four corners, triangulated
+    /// over a's points. Only b's size is needed: it normalizes anchors.
+    fn new(
+        a: &image::RgbaImage,
+        b_size: (u32, u32),
+        anchors_a: &[[f32; 2]],
+        anchors_b: &[[f32; 2]],
+    ) -> Self {
+        let (aw, ah) = (a.width() as f32, a.height() as f32);
+        let (bw, bh) = (b_size.0.max(1) as f32, b_size.1.max(1) as f32);
+        let (ow, oh) = (a.width(), a.height());
+        let mut pa: Vec<[f32; 2]> = Vec::new();
+        let mut pb_out: Vec<[f32; 2]> = Vec::new();
+        for (qa, qb) in anchors_a.iter().zip(anchors_b) {
+            pa.push(*qa);
+            // b's point in output space: normalized, then in a's pixels.
+            pb_out.push([qb[0] / bw * ow as f32, qb[1] / bh * oh as f32]);
+        }
+        // The corners close the mesh; one touching an anchor is dropped
+        // in both lists at once, so the indices stay aligned.
+        for (ca, cb) in corners(aw, ah).into_iter().zip(corners(bw, bh)) {
+            if pa.iter().any(|p| (p[0] - ca[0]).hypot(p[1] - ca[1]) < 1.0) {
+                continue;
+            }
+            pa.push(ca);
+            pb_out.push([cb[0] / bw * ow as f32, cb[1] / bh * oh as f32]);
+        }
+        let tris = triangulate(&pa);
+        Self {
+            tris,
+            pa,
+            pb_out,
+            a: premultiply(a),
+            aw: a.width() as usize,
+            ah: a.height() as usize,
+        }
     }
-    let sprite = match frost::Shape::sprite(&path) {
-        Ok(sprite) => sprite,
-        Err(err) => {
-            log::error!("failed to load '{name}': {err}");
-            std::process::exit(1);
+
+    /// Rasterize the morph at `t`: the mesh vertices slide from a's
+    /// points toward b's, and a's pixels are warped through the mesh —
+    /// no blending, every frame stays wholly a's texture.
+    fn frame(&self, t: f32) -> image::RgbaImage {
+        let (ow, oh) = (self.aw, self.ah);
+        let mid: Vec<[f32; 2]> = self
+            .pa
+            .iter()
+            .zip(&self.pb_out)
+            .map(|(a, b)| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
+            .collect();
+        let mut wa = vec![0f32; ow * oh * 4];
+        for tri in &self.tris {
+            let d = [mid[tri[0]], mid[tri[1]], mid[tri[2]]];
+            warp(
+                &Img {
+                    px: &self.a,
+                    w: self.aw,
+                    h: self.ah,
+                },
+                &[self.pa[tri[0]], self.pa[tri[1]], self.pa[tri[2]]],
+                &d,
+                &mut Buf {
+                    px: &mut wa,
+                    w: ow,
+                    h: oh,
+                },
+            );
         }
-    };
-    let tex = match image::open(&path) {
-        Ok(img) => img.to_rgba8(),
-        Err(err) => {
-            log::error!("failed to decode '{name}': {err}");
-            std::process::exit(1);
+        let mut out = image::RgbaImage::new(ow as u32, oh as u32);
+        for (i, px) in out.pixels_mut().enumerate() {
+            let o = i * 4;
+            if wa[o + 3] > 1.0 / 510.0 {
+                // Unpremultiply back to straight alpha.
+                let a = wa[o + 3];
+                px[0] = (wa[o] / a * 255.0).round().clamp(0.0, 255.0) as u8;
+                px[1] = (wa[o + 1] / a * 255.0).round().clamp(0.0, 255.0) as u8;
+                px[2] = (wa[o + 2] / a * 255.0).round().clamp(0.0, 255.0) as u8;
+                px[3] = (a * 255.0).round().clamp(0.0, 255.0) as u8;
+            }
         }
-    };
-    let size = sprite.sprite_size().expect("the shape is a sprite");
-    let (sw, sh) = (size[0], size[1]);
-    log::info!("loaded '{name}': {sw:.0}x{sh:.0} pixels");
-    // Install the sprite in the scene and remember everything the panels
-    // and the click math need; the first interactive frame is the next one.
-    ctx.scene().root.children[0].shape = Some(sprite);
-    demo.size = size;
-    demo.name = name;
-    demo.path = path;
-    demo.current = tex;
-    demo.history.clear();
-    demo.selection = None;
-    demo.last_click = None;
-    demo.status = String::new();
-    demo.pending = None;
+        out
+    }
+}
+
+/// Read a PNG from disk into a sprite: its working texture, its work-area
+/// shape and its slot thumbnail (the original, minimized once so the GPU
+/// never minifies the full texture on its own).
+fn read_sprite(path: &std::path::Path) -> Result<Sprite, String> {
+    let name = file_name_of(path);
+    if path.extension().and_then(|e| e.to_str()) != Some("png") {
+        return Err(format!("'{name}' is not a PNG file"));
+    }
+    let shape = frost::Shape::sprite(path).map_err(|e| format!("failed to load '{name}': {e}"))?;
+    let tex = image::open(path)
+        .map(|img| img.to_rgba8())
+        .map_err(|e| format!("failed to decode '{name}': {e}"))?;
+    let (iw, ih) = (tex.width(), tex.height());
+    log::info!("loaded '{name}': {iw}x{ih} pixels");
+    let k = THUMB_MAX / (iw.max(ih) as f32);
+    let (tw, th) = (
+        ((iw as f32) * k).round().max(1.0) as u32,
+        ((ih as f32) * k).round().max(1.0) as u32,
+    );
+    let small = image::imageops::resize(&tex, tw, th, image::imageops::FilterType::Lanczos3);
+    let thumb = frost::Shape::sprite_bytes(&png_bytes(&small)?)
+        .map_err(|e| format!("failed to build the thumbnail: {e}"))?;
+    Ok(Sprite {
+        path: path.to_path_buf(),
+        name,
+        current: tex,
+        history: Vec::new(),
+        shape,
+        thumb,
+        anchors: Vec::new(),
+    })
+}
+
+/// The active slot after swapping slots `i` and `j`: the marker follows
+/// the sprite it was on, which may have moved.
+fn swapped_active(active: usize, i: usize, j: usize) -> usize {
+    if active == i {
+        j
+    } else if active == j {
+        i
+    } else {
+        active
+    }
+}
+
+/// The `i`th slot's center, in window coordinates.
+fn slot_center(i: usize, w: f32, h: f32) -> [f32; 2] {
+    [
+        -w / 2.0 + SLOT_MARGIN + SLOT / 2.0 + i as f32 * (SLOT + SLOT_GAP),
+        -h / 2.0 + STRIP_H / 2.0,
+    ]
+}
+
+/// The slot under a window point, if any.
+fn slot_at(p: [f32; 2], w: f32, h: f32) -> Option<usize> {
+    if p[1] > -h / 2.0 + STRIP_H {
+        return None;
+    }
+    (0..SLOTS).find(|i| {
+        let [cx, cy] = slot_center(*i, w, h);
+        (p[0] - cx).abs() <= SLOT / 2.0 && (p[1] - cy).abs() <= SLOT / 2.0
+    })
+}
+
+/// Whether a window point is in the work area — above the slots strip.
+fn in_work_area(p: [f32; 2], _w: f32, h: f32) -> bool {
+    p[1] >= -h / 2.0 + STRIP_H
 }
 
 /// The window point's position in the texture's pixel space: `(0, 0)`
-/// upper-left, `x` right, `y` down — the sprite sits at the window's
-/// center plus `offset` and is drawn at scale `zoom`.
-fn tex_point(p: [f32; 2], size: [f32; 2], offset: [f32; 2], zoom: f32) -> [f32; 2] {
+/// upper-left, `x` right, `y` down — the sprite is centered at `view`
+/// (its window-space center) and drawn at scale `zoom`.
+fn tex_point(p: [f32; 2], size: [f32; 2], view: [f32; 2], zoom: f32) -> [f32; 2] {
     let [tw, th] = size;
     [
-        (p[0] - offset[0]) / zoom + tw / 2.0,
-        th / 2.0 - (p[1] - offset[1]) / zoom,
+        (p[0] - view[0]) / zoom + tw / 2.0,
+        th / 2.0 - (p[1] - view[1]) / zoom,
     ]
 }
 
@@ -712,12 +1926,12 @@ fn sel_rect_from(
     a: [f32; 2],
     b: [f32; 2],
     size: [f32; 2],
-    offset: [f32; 2],
+    view: [f32; 2],
     zoom: f32,
 ) -> Option<[f32; 4]> {
     let [tw, th] = size;
-    let ta = tex_point(a, size, offset, zoom);
-    let tb = tex_point(b, size, offset, zoom);
+    let ta = tex_point(a, size, view, zoom);
+    let tb = tex_point(b, size, view, zoom);
     let x0 = ta[0].min(tb[0]).clamp(0.0, tw);
     let x1 = ta[0].max(tb[0]).clamp(0.0, tw);
     let y0 = ta[1].min(tb[1]).clamp(0.0, th);
@@ -839,14 +2053,14 @@ fn main() {
         }
     };
 
-    // The sprite's source: a `-i`/`--input` file is opened immediately,
-    // without any file dialog; a `-i`/`--input` folder is where the file
-    // dialog opens; and without the argument the dialog opens in the
-    // working directory. The dialog folder is resolved to an absolute
-    // path first — the native dialog (on Windows at least) ignores
-    // relative paths and falls back to its default location, so the path
-    // is joined onto the working directory (an absolute input replaces
-    // it) and canonicalized.
+    // The first sprite's source: a `-i`/`--input` file is opened
+    // immediately, without any file dialog; a `-i`/`--input` folder is
+    // where the file dialog opens; and without the argument the dialog
+    // opens in the working directory. The dialog folder is resolved to an
+    // absolute path first — the native dialog (on Windows at least)
+    // ignores relative paths and falls back to its default location, so
+    // the path is joined onto the working directory (an absolute input
+    // replaces it) and canonicalized.
     let Args { input } = Args::parse();
     let (immediate, dialog_dir) = match &input {
         Some(path) if path.is_file() => (Some(path.as_path()), None),
@@ -865,48 +2079,23 @@ fn main() {
     };
 
     // A file on the command line is loaded here, before the window
-    // exists; without the argument the scene's sprite node starts empty
-    // and the demo's first frame opens the file dialog — as a child of
-    // the window, so it lands on top of it — and installs the pick (see
-    // `install_file`).
-    let (sprite, size, name, path, texture) = match immediate {
-        Some(file) => {
-            let name = file
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            if file.extension().and_then(|e| e.to_str()) != Some("png") {
-                log::error!("'{name}' is not a PNG file");
-                std::process::exit(1);
-            }
-            let sprite = match frost::Shape::sprite(file) {
-                Ok(sprite) => sprite,
-                Err(err) => {
-                    log::error!("failed to load '{name}': {err}");
-                    std::process::exit(1);
-                }
-            };
-            let texture = match image::open(file) {
-                Ok(img) => img.to_rgba8(),
-                Err(err) => {
-                    log::error!("failed to decode '{name}': {err}");
-                    std::process::exit(1);
-                }
-            };
-            let size = sprite.sprite_size().expect("the shape is a sprite");
-            let (sw, sh) = (size[0], size[1]);
-            log::info!("loaded '{name}': {sw:.0}x{sh:.0} pixels");
-            (Some(sprite), size, name, file.to_path_buf(), texture)
-        }
-        None => (
-            None,
-            [0.0, 0.0],
-            String::new(),
-            std::path::PathBuf::new(),
-            image::RgbaImage::new(0, 0),
-        ),
+    // exists, and takes the leftmost slot; without the argument all slots
+    // start empty and the demo's first frame opens the file dialog — as a
+    // child of the window, so it lands on top of it — and loads the pick
+    // into the first slot (see `load_sprite`).
+    let sprites: Vec<Sprite> = match immediate {
+        Some(file) => vec![read_sprite(file).unwrap_or_else(|err| {
+            log::error!("{err}");
+            std::process::exit(1);
+        })],
+        None => Vec::new(),
     };
+    let dir = sprites
+        .first()
+        .and_then(|sp| sp.path.parent())
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| dialog_dir.clone());
 
     // The HUD font, the same monospaced variable font the diagnostics
     // overlay uses — shared by the panel's labels and the usage line.
@@ -915,50 +2104,68 @@ fn main() {
     let help = Some(
         frost::Shape::text(
             &font,
-            "wheel zoom   right pan   drag select   ctrl-z undo",
+            "space play   ctrl-o open   ctrl-z undo   wheel zoom",
             20.0,
         )
         .expect("failed to load assets/fonts/FiraCode-VariableFont_wght.ttf")
         .with_weight(520.0),
     );
 
+    // The work area's layer pool comes first: the process points the
+    // nodes at the animation's current frame (or the active sprite
+    // alone, in the first node). Then the fixed nodes: help, marker and
+    // checker.
+    let work_shape = sprites.first().map(|sp| sp.shape.clone());
+    let mut children: Vec<Box<frost::SceneNode>> = (0..LAYER_NODES)
+        .map(|i| {
+            Box::new(frost::SceneNode {
+                // A command-line sprite is already in the first node.
+                shape: if i == 0 { work_shape.clone() } else { None },
+                order: i as f32 * 0.01, // layered, under the strip's 0.2
+                ..Default::default()
+            })
+        })
+        .collect();
+    children.extend(vec![
+        Box::new(frost::SceneNode {
+            // The usage line, pinned near the top by the process.
+            shape: help,
+            order: 1.0,
+            ..Default::default()
+        }),
+        Box::new(frost::SceneNode {
+            // The marker dot left at the last click; radius 0 hides it.
+            shape: Some(frost::Shape::Circle {
+                center: [0.0, 0.0],
+                radius: 0.0,
+                color: MARKER,
+            }),
+            order: 2.0,
+            ..Default::default()
+        }),
+        Box::new(frost::SceneNode {
+            // The checker backdrop behind the sprite: the process builds
+            // its tiny one-texel-per-cell sprite and positions it each
+            // frame.
+            shape: None,
+            order: CHECK_ORDER,
+            ..Default::default()
+        }),
+    ]);
+    // One node per slot; the process points them at the thumbnails. A
+    // command-line sprite shows in its slot from the first frame.
+    children.extend((0..SLOTS).map(|i| {
+        Box::new(frost::SceneNode {
+            shape: sprites.get(i).map(|sp| sp.thumb.clone()),
+            order: THUMB_ORDER,
+            ..Default::default()
+        })
+    }));
+
     let scene = frost::Scene::new(frost::SceneNode {
         // Dark background; the node's transform is ignored.
         shape: Some(frost::Shape::Background { color: BG }),
-        children: vec![
-            Box::new(frost::SceneNode {
-                // The picked sprite, centered on the window's center; the
-                // process applies the zoom to it each frame. Empty until
-                // the first frame's picker installs a file (no
-                // `-i`/`--input` argument).
-                shape: sprite,
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                // The usage line, pinned near the top by the process.
-                shape: help,
-                order: 1.0,
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                // The marker dot left at the last click; radius 0 hides it.
-                shape: Some(frost::Shape::Circle {
-                    center: [0.0, 0.0],
-                    radius: 0.0,
-                    color: MARKER,
-                }),
-                order: 2.0,
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                // The checker backdrop behind the sprite: the process
-                // builds its tiny one-texel-per-cell sprite and positions
-                // it each frame.
-                shape: None,
-                order: CHECK_ORDER,
-                ..Default::default()
-            }),
-        ],
+        children,
         ..Default::default()
     });
 
@@ -966,16 +2173,31 @@ fn main() {
         scene,
         Demo {
             ui,
+            sprites,
+            active: 0,
+            anim: Anim {
+                frames: Vec::new(),
+                frame: 0,
+                looping: true,
+                playing: false,
+                dir: 1,
+                elapsed: 0.0,
+            },
             zoom: 1.0,
             offset: [0.0, 0.0],
-            size,
-            path,
-            name,
-            current: texture,
-            history: Vec::new(),
             selection: None,
             drag_from: None,
+            slot_drag: None,
             was_undo: false,
+            was_open: false,
+            was_space: false,
+            tool: Tool::Edit,
+            anchor_slot: None,
+            anchor_press: None,
+            morph_a: None,
+            morph_b: None,
+            morph_frames: 9,
+            morph_time: 0.06,
             light: GREY_LIGHT,
             dark: GREY_DARK,
             checker_key: (0, 0, 0, 0),
@@ -983,6 +2205,7 @@ fn main() {
             last_mouse: None,
             last_click: None,
             pending: dialog_dir,
+            dir,
             status: String::new(),
         },
     ) {
@@ -998,12 +2221,12 @@ mod tests {
     #[test]
     fn window_and_texture_points_round_trip() {
         let size = [40.0, 20.0];
-        let offset = [7.0, -3.0];
+        let view = [7.0, -3.0];
         let zoom = 1.7;
-        let [px, py] = tex_point([12.0, 5.0], size, offset, zoom);
+        let [px, py] = tex_point([12.0, 5.0], size, view, zoom);
         // The inverse of `tex_point`, back to window pixels.
-        let wx = (px - size[0] / 2.0) * zoom + offset[0];
-        let wy = (size[1] / 2.0 - py) * zoom + offset[1];
+        let wx = (px - size[0] / 2.0) * zoom + view[0];
+        let wy = (size[1] / 2.0 - py) * zoom + view[1];
         assert!((wx - 12.0).abs() < 1e-3, "x came back at {wx}");
         assert!((wy - 5.0).abs() < 1e-3, "y came back at {wy}");
     }
@@ -1011,8 +2234,8 @@ mod tests {
     #[test]
     fn selection_is_texture_pixels_normalized_and_clamped() {
         let size = [100.0, 50.0];
-        // Window center is the texture middle (50, 25); at zoom 2 a 40 px
-        // drag covers 20 texture pixels.
+        // The sprite's center is the texture middle (50, 25); at zoom 2 a
+        // 40 px drag covers 20 texture pixels.
         let sel = sel_rect_from([0.0, 0.0], [40.0, 20.0], size, [0.0, 0.0], 2.0).expect("a rect");
         assert_eq!(sel, [50.0, 15.0, 70.0, 25.0]);
         // A drag far beyond the texture clamps to its bounds.
@@ -1059,5 +2282,189 @@ mod tests {
         assert_eq!(back.height(), 3);
         assert_eq!(back.get_pixel(2, 1), &image::Rgba([255, 0, 0, 255]));
         assert_eq!(back.get_pixel(0, 0), &image::Rgba([0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn slots_line_up_along_the_strip_and_are_hit_by_point() {
+        let (w, h) = (800.0, 600.0);
+        // The leftmost slot starts at the margin, flush with the strip.
+        let [cx, cy] = slot_center(0, w, h);
+        assert_eq!(cx, -w / 2.0 + SLOT_MARGIN + SLOT / 2.0);
+        assert_eq!(cy, -h / 2.0 + STRIP_H / 2.0);
+        // Neighbors sit one slot and one gap apart.
+        let [cx1, _] = slot_center(1, w, h);
+        assert_eq!(cx1 - cx, SLOT + SLOT_GAP);
+        // Each slot's center is its own; the gaps and the area above the
+        // strip belong to no slot.
+        for i in 0..SLOTS {
+            let [x, y] = slot_center(i, w, h);
+            assert_eq!(slot_at([x, y], w, h), Some(i));
+        }
+        let [cx0, cy0] = slot_center(0, w, h);
+        assert_eq!(
+            slot_at([cx0 + SLOT / 2.0 + SLOT_GAP / 2.0, cy0], w, h),
+            None
+        );
+        assert_eq!(slot_at([cx0, cy0 + STRIP_H / 2.0 + 1.0], w, h), None);
+    }
+
+    #[test]
+    fn the_strip_divides_the_work_area_from_the_slots() {
+        let h = 600.0;
+        let strip_top = -h / 2.0 + STRIP_H;
+        assert!(!in_work_area([0.0, strip_top - 1.0], 800.0, h));
+        assert!(in_work_area([0.0, strip_top + 1.0], 800.0, h));
+        // The work area's center is half a strip above the bottom edge,
+        // so a sprite panned to it floats clear of the slots.
+        assert_eq!(WORK_Y, STRIP_H / 2.0);
+    }
+
+    #[test]
+    fn swapping_slots_moves_the_active_marker_with_its_sprite() {
+        // The active sprite sits in slot 2; swapping 1 and 2 moves the
+        // marker, swapping 0 and 1 leaves it.
+        assert_eq!(swapped_active(2, 1, 2), 1);
+        assert_eq!(swapped_active(1, 1, 2), 2);
+        assert_eq!(swapped_active(0, 1, 2), 0);
+    }
+
+    // A layer-less frame with a chosen hold time, for the clock tests.
+    fn frame(next_time: f32) -> Frame {
+        Frame {
+            layers: Vec::new(),
+            next_time,
+        }
+    }
+
+    fn anim(times: &[f32], looping: bool) -> Anim {
+        Anim {
+            frames: times.iter().map(|&t| frame(t)).collect(),
+            frame: 0,
+            looping,
+            playing: true,
+            dir: 1,
+            elapsed: 0.0,
+        }
+    }
+
+    #[test]
+    fn the_clock_holds_each_frame_for_its_time() {
+        // Two frames: 0.1 s then 0.2 s. The clock steps only once the
+        // current frame's hold is spent, carrying the remainder over.
+        let mut a = anim(&[0.1, 0.2], true);
+        assert!(!a.tick(0.05)); // mid-frame 0
+        assert_eq!(a.frame, 0);
+        assert!(a.tick(0.07)); // 0.12 >= 0.1 -> frame 1, 0.02 over
+        assert_eq!(a.frame, 1);
+        assert!(!a.tick(0.1)); // 0.12 < 0.2 -> still frame 1
+        assert_eq!(a.frame, 1);
+        assert!(a.tick(0.12)); // 0.24 >= 0.2 -> step, looping back to 0
+        assert_eq!(a.frame, 0);
+    }
+
+    #[test]
+    fn loop_wraps_while_ping_pong_bounces() {
+        // Looping: 0 1 2, 0 1 2, …
+        let mut a = anim(&[1.0, 1.0, 1.0], true);
+        let mut seq = Vec::new();
+        for _ in 0..7 {
+            seq.push(a.frame);
+            a.step();
+        }
+        assert_eq!(seq, vec![0, 1, 2, 0, 1, 2, 0]);
+        // Ping-pong: 0 1 2 1, 0 1 2 1, … — each end held once per sweep.
+        let mut b = anim(&[1.0, 1.0, 1.0], false);
+        let mut seq = Vec::new();
+        for _ in 0..9 {
+            seq.push(b.frame);
+            b.step();
+        }
+        assert_eq!(seq, vec![0, 1, 2, 1, 0, 1, 2, 1, 0]);
+    }
+
+    /// A solid sprite of one color, for the morph tests.
+    fn solid(w: u32, h: u32, c: [u8; 4]) -> image::RgbaImage {
+        image::RgbaImage::from_pixel(w, h, image::Rgba(c))
+    }
+
+    #[test]
+    fn triangulation_tiles_a_square() {
+        let sq = [[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]];
+        let tris = triangulate(&sq);
+        assert_eq!(tris.len(), 2);
+        // The two triangles together cover the square's 64 px².
+        let area: f32 = tris
+            .iter()
+            .map(|t| area2([sq[t[0]], sq[t[1]], sq[t[2]]]).abs())
+            .sum();
+        // `area2` is, by its name, twice the area: the 64 px² square
+        // sums to 128.
+        assert!((area - 128.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn triangulation_fans_from_a_center_anchor() {
+        let pts = [[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0], [4.0, 4.0]];
+        let tris = triangulate(&pts);
+        assert_eq!(tris.len(), 4);
+        assert!(tris.iter().all(|t| t.contains(&4))); // every fan slice
+        let area: f32 = tris
+            .iter()
+            .map(|t| area2([pts[t[0]], pts[t[1]], pts[t[2]]]).abs())
+            .sum();
+        assert!((area - 128.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_morph_begins_exactly_with_the_first_sprite() {
+        let red = solid(8, 8, [255, 0, 0, 255]);
+        // One anchor pair, plus the corners the mesh closes itself with.
+        // At t = 0 the mesh is the identity, so a's pixels come back
+        // untouched wherever the mesh covers.
+        let m = Morph::new(&red, (8, 8), &[[3.0, 3.0]], &[[5.0, 5.0]]);
+        let at0 = m.frame(0.0);
+        for (x, y) in [(1, 1), (4, 4), (6, 5)] {
+            assert_eq!(at0.get_pixel(x, y).0, [255, 0, 0, 255], "t=0 at {x},{y}");
+        }
+    }
+
+    #[test]
+    fn the_morph_drags_pixels_with_the_mesh() {
+        let red = solid(8, 8, [255, 0, 0, 255]);
+        // The top-left anchor slides down four pixels by t = 1: the
+        // corner it shares is dragged away, leaving bare canvas there
+        // while the far corner never moves.
+        let m = Morph::new(&red, (8, 8), &[[0.0, 0.0]], &[[0.0, 4.0]]);
+        assert_eq!(m.frame(0.0).get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(m.frame(1.0).get_pixel(0, 0).0, [0, 0, 0, 0]);
+        assert_eq!(m.frame(1.0).get_pixel(7, 7).0, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn the_morph_never_blends_the_two_textures() {
+        // b's texture is not even read: mid-morph pixels are a's own,
+        // never a mixture toward b's colors.
+        let red = solid(8, 8, [255, 0, 0, 255]);
+        let m = Morph::new(&red, (8, 8), &[[3.0, 3.0]], &[[5.0, 5.0]]);
+        assert_eq!(m.frame(0.5).get_pixel(4, 4).0, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn morphing_a_sprite_into_itself_is_exact() {
+        let red = solid(8, 8, [255, 0, 0, 255]);
+        let m = Morph::new(&red, (8, 8), &[[2.0, 6.0]], &[[2.0, 6.0]]);
+        assert_eq!(m.frame(0.5).get_pixel(4, 4).0, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn a_single_frame_animation_never_steps() {
+        let mut a = anim(&[0.1], true);
+        assert!(!a.tick(1.0));
+        assert_eq!(a.frame, 0);
+        // Two frames a beat apart step cleanly.
+        let mut c = anim(&[0.5, 0.5], false);
+        assert!(!c.tick(0.4));
+        assert!(c.tick(0.2)); // 0.6 >= 0.5 -> frame 1, 0.1 over
+        assert_eq!(c.frame, 1);
     }
 }
