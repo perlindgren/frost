@@ -260,7 +260,7 @@ mod tests {
     /// tail must be an unsized (dynamic) array: its length comes from the
     /// bound buffer, so the CPU can hold any light count with no
     /// MAX_LIGHTS. This is the GPU-side mirror of the packer's offset tests
-    /// in backend/tests.rs.
+    /// in backend/tests/fields.rs.
     #[test]
     fn light_field_header_offsets_match_the_packer() {
         let module = naga::front::wgsl::parse_str(SHAPE_SHADER)
@@ -308,7 +308,7 @@ mod tests {
     /// the 16-byte header — and the occluder array tail at 16. The tail must
     /// be an unsized (dynamic) array: its length comes from the bound
     /// buffer, so the CPU can hold any occluder count. This is the GPU-side
-    /// mirror of the packer's offset tests in backend/tests.rs.
+    /// mirror of the packer's offset tests in backend/tests/fields.rs.
     #[test]
     fn occluder_field_header_offsets_match_the_packer() {
         let module = naga::front::wgsl::parse_str(SHAPE_SHADER)
