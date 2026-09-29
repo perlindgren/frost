@@ -81,15 +81,16 @@ pub struct UiStyle {
     /// The label and title text size in pixels per em.
     pub font_size: f32,
     /// The label and title text weight: the font's `wght` variation axis,
-    /// where 400.0 is Regular and 700.0 a full bold. The default 520.0 is
-    /// a Medium — a touch thicker than the plain Regular instance, which
-    /// reads well at small sizes on a dark panel. A font without a weight
-    /// axis (any static TTF) ignores it.
+    /// where 400.0 is Regular and 700.0 a full bold. The default 600.0 is
+    /// a SemiBold — clearly crisper than Regular at small sizes on a dark
+    /// panel. A font without a weight axis (any static TTF) ignores it.
     pub font_weight: f32,
     /// The height of a widget row, a button and a title bar.
     pub row_h: f32,
     /// The vertical gap between two rows.
     pub row_gap: f32,
+    /// The horizontal gap between two table columns.
+    pub col_gap: f32,
     /// The padding inside a panel, between body edge and rows.
     pub pad: f32,
     /// The side of a checkbox box.
@@ -170,9 +171,10 @@ impl Default for UiStyle {
                 a: 1.0,
             },
             font_size: 15.0,
-            font_weight: 520.0,
+            font_weight: 600.0,
             row_h: 28.0,
             row_gap: 6.0,
+            col_gap: 8.0,
             pad: 12.0,
             check_size: 20.0,
             track_h: 6.0,
@@ -180,6 +182,71 @@ impl Default for UiStyle {
             root_width: 240.0,
             root_margin: 16.0,
             base_z: 10_000.0,
+        }
+    }
+}
+
+/// Where a cell's content sits inside its table column, when the column
+/// is wider than the content: at the column's left edge, its middle, or
+/// its right edge. Filling widgets (a `slider_track`, a `button`) ignore
+/// it — they span the cell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+/// How a table column takes its share of the row's width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ColSize {
+    /// As wide as the column's widest cell. Like the rest of the UI this
+    /// is one frame behind: the width comes from what the column held
+    /// last frame (the frame a table first appears, auto columns start
+    /// at zero width).
+    Auto,
+    /// A fixed width in pixels.
+    Px(f32),
+    /// A share of what the other columns leave over, in proportion to
+    /// the weight (the weight only matters relative to the other stretch
+    /// columns).
+    Stretch(f32),
+}
+
+/// One column of a table: how wide it is, and how its cells align within
+/// that. Build with [`Col::auto`], [`Col::px`] and [`Col::stretch`];
+/// declare a row grid with [`Ui::table`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Col {
+    /// The width policy.
+    pub size: ColSize,
+    /// How cells align within the column.
+    pub align: Align,
+}
+
+impl Col {
+    /// A column as wide as its widest cell.
+    pub fn auto(align: Align) -> Self {
+        Self {
+            size: ColSize::Auto,
+            align,
+        }
+    }
+
+    /// A column of a fixed pixel width.
+    pub fn px(width: f32, align: Align) -> Self {
+        Self {
+            size: ColSize::Px(width),
+            align,
+        }
+    }
+
+    /// A column taking the leftover width, weighted against the table's
+    /// other stretch columns.
+    pub fn stretch(weight: f32, align: Align) -> Self {
+        Self {
+            size: ColSize::Stretch(weight),
+            align,
         }
     }
 }
@@ -241,6 +308,30 @@ struct Layout {
     cursor: f32,
     /// The id scope of the panel this layout belongs to (0 for the root).
     scope: u64,
+    /// When set, this frame is a table (see [`Ui::table`]): widgets take
+    /// the next cell across the row instead of a full-width row.
+    table: Option<TableFrame>,
+}
+
+/// The running state of an open table: the resolved column geometry, the
+/// cell cursor walking cells left to right and wrapping to a new row, and
+/// the widest content seen in each auto column this frame.
+struct TableFrame {
+    /// The size policy of each column (for the auto-width accounting).
+    sizes: Vec<ColSize>,
+    /// Each column's resolved pixel width, this frame.
+    widths: Vec<f32>,
+    /// Each column's alignment.
+    aligns: Vec<Align>,
+    /// Each column's left edge in user space.
+    x: Vec<f32>,
+    /// The index of the next cell to hand out (`widths.len()` apart cells
+    /// are the same column of successive rows).
+    next: usize,
+    /// The top edge of the table's first row.
+    top: f32,
+    /// The widest content measured this frame, per column.
+    auto: Vec<f32>,
 }
 
 /// What a panel keeps between frames: where it was dragged to and how much
@@ -288,6 +379,13 @@ pub struct Ui {
     candidates: Vec<(u64, Rect)>,
     /// Each panel's retained position and size, keyed by its title id.
     panels: HashMap<u64, PanelState>,
+    /// Each table's retained auto column widths, keyed by its id (scoped
+    /// to the enclosing panel), measured last frame.
+    tables: HashMap<u64, Vec<f32>>,
+    /// The alignment of the slot the last [`Ui::row`] call returned:
+    /// a table column's, or `Center` for a plain row. Text widgets honor
+    /// it.
+    align: Align,
     /// The layout stack: the root column, plus one frame per open panel.
     layout: Vec<Layout>,
     /// The next draw's `z`, counting up from `style.base_z`.
@@ -327,6 +425,8 @@ impl Ui {
             hover: None,
             candidates: Vec::new(),
             panels: HashMap::new(),
+            tables: HashMap::new(),
+            align: Align::Center,
             layout: Vec::new(),
             z: 0.0,
             text_w: HashMap::new(),
@@ -429,23 +529,176 @@ impl Ui {
             width,
             cursor: input.size.1 / 2.0 - margin,
             scope: 0,
+            table: None,
         });
     }
 
-    /// Takes a row `h` pixels tall from the current layout, moving the
-    /// cursor below it.
+    /// Takes the next slot from the current layout: a full-width row in a
+    /// column, or — inside a table (see [`Ui::table`]) — the next cell,
+    /// walking left to right and wrapping to a new row after the last
+    /// column. Sets `self.align` to the slot's alignment, which the text
+    /// widgets honor.
     fn row(&mut self, h: f32) -> Rect {
+        let style = self.style;
+        let cell = {
+            let layout = self
+                .layout
+                .last_mut()
+                .expect("Ui layout stack is never empty");
+            layout.table.as_mut().and_then(|t| {
+                let n = t.widths.len();
+                if n == 0 {
+                    return None;
+                }
+                let i = t.next;
+                t.next += 1;
+                let col = i % n;
+                // Cells are uniformly a row tall, so every widget in a
+                // row shares one centerline however tall its own draw.
+                let top = t.top - (i / n) as f32 * (style.row_h + style.row_gap);
+                Some((
+                    Rect {
+                        left: t.x[col],
+                        top,
+                        w: t.widths[col],
+                        h: style.row_h,
+                    },
+                    t.aligns[col],
+                ))
+            })
+        };
+        if let Some((rect, align)) = cell {
+            self.align = align;
+            return rect;
+        }
         let layout = self
             .layout
             .last_mut()
             .expect("Ui layout stack is never empty");
-        layout.cursor -= self.style.row_gap;
+        layout.cursor -= style.row_gap;
         layout.cursor -= h;
-        Rect {
+        let rect = Rect {
             left: layout.left,
             top: layout.cursor,
             w: layout.width,
             h,
+        };
+        self.align = Align::Center;
+        rect
+    }
+
+    /// Feeds an auto column the width of the content just laid out in it;
+    /// the column grows to it next frame, as everything else in the UI
+    /// does (see [`ColSize::Auto`]).
+    fn note_cell_width(&mut self, w: f32) {
+        if let Some(layout) = self.layout.last_mut()
+            && let Some(t) = &mut layout.table
+            && t.next > 0
+        {
+            let col = (t.next - 1) % t.widths.len();
+            if matches!(t.sizes[col], ColSize::Auto) {
+                t.auto[col] = t.auto[col].max(w);
+            }
+        }
+    }
+
+    /// A table: the widgets `content` declares fill cells left to right,
+    /// wrapping to a new row after every `cols.len()` of them. Each column
+    /// takes width per its [`ColSize`] — fixed, auto (as wide as its
+    /// widest cell, from last frame) or stretch (a weighted share of the
+    /// leftover) — and aligns its cells per its [`Align`]. `id` names the
+    /// table within its panel: the retained auto widths live under it, so
+    /// two tables in one panel keep their own column widths.
+    ///
+    /// ```text
+    /// ui.table(ctx, "view", &[
+    ///     Col::auto(Align::Left),           // the labels, hugging, left
+    ///     Col::stretch(1.0, Align::Left),   // the tracks, filling
+    ///     Col::auto(Align::Center),         // the readouts, centered
+    /// ], |ui, ctx| {
+    ///     ui.label(ctx, "zoom");
+    ///     ui.slider_track(ctx, "zoom", &mut zoom, 0.25, 4.0);
+    ///     ui.readout(ctx, &format!("{zoom:.2}"));
+    ///     // ... the next three widgets wrap onto the second row
+    /// });
+    /// ```
+    pub fn table(
+        &mut self,
+        ctx: &mut Context,
+        id: &str,
+        cols: &[Col],
+        content: impl FnOnce(&mut Ui, &mut Context),
+    ) {
+        if self.table_open(id, cols) {
+            content(self, ctx);
+            self.table_close(id);
+        }
+    }
+
+    /// The window-free heart of [`Ui::table`], split out so the column
+    /// geometry is testable without a `Context`: resolves the columns and
+    /// opens the table frame on the current layout. Returns `false` (and
+    /// opens nothing) for an empty column list.
+    fn table_open(&mut self, id: &str, cols: &[Col]) -> bool {
+        if cols.is_empty() {
+            return false;
+        }
+        let style = self.style;
+        let key = self.widget_id(id);
+        let stored = self.tables.get(&key).cloned().unwrap_or_default();
+        let (left, width, cursor) = {
+            let layout = self.layout.last().expect("Ui layout stack is never empty");
+            (layout.left, layout.width, layout.cursor)
+        };
+        let widths = resolve_cols(cols, width, style.col_gap, &stored);
+        let n = widths.len();
+        let mut x = Vec::with_capacity(n);
+        let mut edge = left;
+        for w in &widths {
+            x.push(edge);
+            edge += w + style.col_gap;
+        }
+        // The table's first row sits exactly where a plain row would.
+        let top = cursor - style.row_gap - style.row_h;
+        self.layout
+            .last_mut()
+            .expect("Ui layout stack is never empty")
+            .table = Some(TableFrame {
+            sizes: cols.iter().map(|c| c.size).collect(),
+            widths,
+            aligns: cols.iter().map(|c| c.align).collect(),
+            x,
+            next: 0,
+            top,
+            auto: vec![0.0; n],
+        });
+        true
+    }
+
+    /// Closes the frame [`Ui::table_open`] opened: retains the measured
+    /// auto widths and moves the layout cursor below the table's rows.
+    fn table_close(&mut self, id: &str) {
+        let key = self.widget_id(id);
+        let style = self.style;
+        let frame = self
+            .layout
+            .last_mut()
+            .expect("Ui layout stack is never empty")
+            .table
+            .take()
+            .expect("table_close pairs with table_open");
+        self.tables.insert(key, frame.auto);
+        if frame.next > 0 {
+            // The table leaves the cursor exactly where its rows of plain
+            // rows would have, so the next widget stacks below normally.
+            let n = frame.widths.len();
+            let rows = frame.next.div_ceil(n) as f32;
+            let cursor = frame.top + style.row_gap + style.row_h;
+            let layout = self
+                .layout
+                .last_mut()
+                .expect("Ui layout stack is never empty");
+            layout.cursor = cursor - rows * (style.row_h + style.row_gap);
         }
     }
 
@@ -532,13 +785,35 @@ impl Ui {
         widget_id(scope, label)
     }
 
-    /// A plain line of text, no interaction.
+    /// A plain line of text, no interaction, in the current slot's
+    /// alignment (centered outside any table column).
     pub fn label(&mut self, ctx: &mut Context, text: &str) {
-        let row = self.row(self.style.row_h);
-        let [cx, cy] = row.center();
-        let size = self.style.font_size;
         let color = self.style.text;
-        self.text(ctx, [cx, cy], size, color, text);
+        self.text_slot(ctx, text, color);
+    }
+
+    /// A right-aligned numeric readout — the value half of a table-driven
+    /// slider row — drawn in the muted colour and hugging its content for
+    /// an auto column.
+    pub fn readout(&mut self, ctx: &mut Context, text: &str) {
+        let color = self.style.text_muted;
+        self.text_slot(ctx, text, color);
+    }
+
+    /// The shared body of [`Ui::label`] and [`Ui::readout`]: take the next
+    /// slot, place `text` at `color` per the slot's alignment, and report
+    /// its width so an auto column can size to it.
+    fn text_slot(&mut self, ctx: &mut Context, text: &str, color: Color) {
+        let row = self.row(self.style.row_h);
+        let size = self.style.font_size;
+        let w = self.text_width(text, size);
+        self.note_cell_width(w);
+        let cx = match self.align {
+            Align::Left => row.left + w / 2.0,
+            Align::Center => row.left + row.w / 2.0,
+            Align::Right => row.left + row.w - w / 2.0,
+        };
+        self.text_at_x(ctx, cx, row.center()[1], size, color, text);
     }
 
     /// Spacing of `h` pixels, pushing the rows below it down.
@@ -651,6 +926,10 @@ impl Ui {
     /// into `min..=max` and shown at the row's right; returns `true` on the
     /// frames its value changed. Pressing the track jumps the value to the
     /// press point, dragging follows the pointer.
+    ///
+    /// This lays its own label and readout into one row. Inside a table,
+    /// where the label and value are their own aligned columns, use
+    /// [`Ui::slider_track`] for just the draggable track.
     pub fn slider(
         &mut self,
         ctx: &mut Context,
@@ -661,12 +940,12 @@ impl Ui {
     ) -> bool {
         let id = self.widget_id(label);
         let row = self.row(self.style.row_h);
-        let label_w = self.text_width(label, self.style.font_size);
-        let value_s = format!("{value:.2}");
-        let value_w = self.text_width(&value_s, self.style.font_size);
         let style = self.style;
         let pad = style.pad;
         let knob = style.knob_r;
+        let label_w = self.text_width(label, style.font_size);
+        let value_s = format!("{value:.2}");
+        let value_w = self.text_width(&value_s, style.font_size);
         // The track between the label column and the value readout.
         let x0 = row.left + label_w + pad;
         let x1 = row.left + row.w - value_w - pad;
@@ -680,6 +959,70 @@ impl Ui {
         } else {
             row
         };
+        let changed = self.drag_track(ctx, id, track, value, min, max);
+        // The readout shows the value as it now stands, after any drag.
+        let value_s = format!("{value:.2}");
+        let value_w = self.text_width(&value_s, style.font_size);
+        let size = style.font_size;
+        let text_color = style.text;
+        let muted = style.text_muted;
+        let label = label.to_owned();
+        let cy = row.center()[1];
+        self.text_at_x(ctx, row.left + label_w / 2.0, cy, size, text_color, &label);
+        self.text_at_x(
+            ctx,
+            row.left + row.w - value_w / 2.0,
+            cy,
+            size,
+            muted,
+            &value_s,
+        );
+        changed
+    }
+
+    /// The draggable track of a slider on its own, filling the current row
+    /// or table cell — no label, no readout (a table supplies those as
+    /// separate aligned columns). Same grab-and-drag behavior as
+    /// [`Ui::slider`]; returns `true` on the frames `value` changed.
+    pub fn slider_track(
+        &mut self,
+        ctx: &mut Context,
+        label: &str,
+        value: &mut f32,
+        min: f32,
+        max: f32,
+    ) -> bool {
+        let id = self.widget_id(label);
+        let row = self.row(self.style.row_h);
+        let style = self.style;
+        let knob = style.knob_r;
+        let track = Rect::from_center(
+            row.center()[0],
+            row.center()[1],
+            row.w,
+            style.track_h.max(2.0 * knob),
+        );
+        let changed = self.drag_track(ctx, id, track, value, min, max);
+        // A track in an auto column is unusual (it wants to stretch), but
+        // keep a sane minimum so it does not collapse to nothing.
+        self.note_cell_width(2.0 * knob + 40.0);
+        changed
+    }
+
+    /// The shared heart of [`Ui::slider`] and [`Ui::slider_track`]: draw
+    /// `track`, drive `value` from the pointer while it is held, and paint
+    /// the filled part and the knob. Returns whether `value` changed.
+    fn drag_track(
+        &mut self,
+        ctx: &mut Context,
+        id: u64,
+        track: Rect,
+        value: &mut f32,
+        min: f32,
+        max: f32,
+    ) -> bool {
+        let style = self.style;
+        let knob = style.knob_r;
         let it = self.interact(id, track);
         // A range (or a track) too small to travel has nothing to drive,
         // but still draws.
@@ -699,9 +1042,6 @@ impl Ui {
                 changed = true;
             }
         }
-        // The readout shows the value as it now stands, after any drag.
-        let value_s = format!("{value:.2}");
-        let value_w = self.text_width(&value_s, style.font_size);
         let t = if travel {
             ((*value - min) / (max - min)).clamp(0.0, 1.0)
         } else {
@@ -720,46 +1060,21 @@ impl Ui {
         }
         // The knob.
         let kc = [knob_x, track.center()[1]];
+        let white = Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        };
         let knob_color = if it.held {
-            style.accent.lerp(
-                Color {
-                    r: 1.0,
-                    g: 1.0,
-                    b: 1.0,
-                    a: 1.0,
-                },
-                0.35,
-            )
+            style.accent.lerp(white, 0.35)
         } else if it.hot {
-            style.accent.lerp(
-                Color {
-                    r: 1.0,
-                    g: 1.0,
-                    b: 1.0,
-                    a: 1.0,
-                },
-                0.15,
-            )
+            style.accent.lerp(white, 0.15)
         } else {
             style.accent
         };
         let z = self.z();
         ctx.circle(kc[0], kc[1], knob, knob_color, z);
-        // The label left-aligned, the value right-aligned.
-        let size = style.font_size;
-        let text_color = style.text;
-        let muted = style.text_muted;
-        let label = label.to_owned();
-        let cy = row.center()[1];
-        self.text_at_x(ctx, row.left + label_w / 2.0, cy, size, text_color, &label);
-        self.text_at_x(
-            ctx,
-            row.left + row.w - value_w / 2.0,
-            cy,
-            size,
-            muted,
-            &value_s,
-        );
         changed
     }
 
@@ -834,6 +1149,7 @@ impl Ui {
             width: (w - 2.0 * pad).max(0.0),
             cursor: top0,
             scope: id,
+            table: None,
         });
         content(self, ctx);
         let used = top0 - self.layout.pop().expect("just pushed").cursor;
@@ -847,6 +1163,40 @@ struct UiInput {
     pointer: Option<[f32; 2]>,
     down: bool,
     size: (f32, f32),
+}
+
+/// Resolve each column's pixel width across a row of `total_width`: fixed
+/// columns take their width, auto columns the `stored` width measured last
+/// frame (0 until first seen), and stretch columns then split what is left
+/// over the gaps, weighted. Pure — `Ui::table` wraps it, and the tests
+/// exercise it directly.
+fn resolve_cols(cols: &[Col], total_width: f32, col_gap: f32, stored: &[f32]) -> Vec<f32> {
+    let n = cols.len();
+    let gaps = (n as f32 - 1.0).max(0.0) * col_gap.max(0.0);
+    let mut widths = vec![0.0f32; n];
+    let mut used = 0.0f32;
+    let mut weight = 0.0f32;
+    for (i, c) in cols.iter().enumerate() {
+        let w = match c.size {
+            ColSize::Px(w) => w.max(0.0),
+            ColSize::Auto => stored.get(i).copied().unwrap_or(0.0).max(0.0),
+            ColSize::Stretch(s) => {
+                weight += s.max(0.0);
+                0.0
+            }
+        };
+        used += w;
+        widths[i] = w;
+    }
+    if weight > 0.0 {
+        let free = (total_width - gaps - used).max(0.0);
+        for (i, c) in cols.iter().enumerate() {
+            if let ColSize::Stretch(s) = c.size {
+                widths[i] = free * s.max(0.0) / weight;
+            }
+        }
+    }
+    widths
 }
 
 /// The id of an interactive widget: its label hashed into its panel's
@@ -1080,5 +1430,105 @@ mod tests {
             "the covered widget shows no hover through the panel"
         );
         assert!(!it.clicked);
+    }
+
+    #[test]
+    fn resolve_cols_splits_fixed_auto_and_stretch() {
+        let cols = [
+            Col::px(40.0, Align::Left),
+            Col::stretch(1.0, Align::Left),
+            Col::auto(Align::Center),
+        ];
+        // One gap (col_gap) between each of the three columns; a stored
+        // auto width of 25 for column 2 (index 2).
+        let stored = [0.0, 0.0, 25.0];
+        // total 200, col_gap 10 → 2 gaps = 20; fixed + auto = 40 + 25 =
+        // 65; the single stretch column takes the remaining 115.
+        let w = resolve_cols(&cols, 200.0, 10.0, &stored);
+        assert_eq!(w.len(), 3);
+        assert_eq!(w[0], 40.0);
+        assert_eq!(w[2], 25.0);
+        assert!((w[1] - 115.0).abs() < 1e-4, "stretch got {}", w[1]);
+    }
+
+    #[test]
+    fn resolve_cols_weights_stretch_and_clamps() {
+        let cols = [
+            Col::stretch(3.0, Align::Left),
+            Col::stretch(1.0, Align::Left),
+        ];
+        // No gaps counted here (col_gap 0), fixed 0 → the 100 px split 3:1.
+        let w = resolve_cols(&cols, 100.0, 0.0, &[]);
+        assert!((w[0] - 75.0).abs() < 1e-4, "3-weight got {}", w[0]);
+        assert!((w[1] - 25.0).abs() < 1e-4, "1-weight got {}", w[1]);
+        // When fixed columns already overflow the row, stretch collapses
+        // to nothing rather than going negative.
+        let over = [Col::px(300.0, Align::Left), Col::stretch(1.0, Align::Left)];
+        let w = resolve_cols(&over, 100.0, 0.0, &[]);
+        assert_eq!(w[0], 300.0);
+        assert_eq!(w[1], 0.0, "no negative stretch");
+    }
+
+    #[test]
+    fn table_cells_walk_right_then_wrap_and_advance_the_cursor() {
+        let mut ui = ui();
+        frame(&mut ui, None, false);
+        // Root layout: left = -800/2 + 16 = -384, width 240. Two equal
+        // stretch columns with the default 8 px gap.
+        let cols = [
+            Col::stretch(1.0, Align::Left),
+            Col::stretch(1.0, Align::Right),
+        ];
+        let before = ui.layout.last().unwrap().cursor;
+        assert!(ui.table_open("t", &cols));
+        let row_h = ui.style.row_h;
+        let gap = ui.style.row_gap;
+        let col_gap = ui.style.col_gap;
+        let col_w = (240.0 - col_gap) / 2.0;
+        // Cell 0: top-left column, left-aligned.
+        let c0 = ui.row(row_h);
+        assert_eq!(c0.left, -384.0);
+        assert!((c0.w - col_w).abs() < 1e-4);
+        assert_eq!(ui.align, Align::Left);
+        // Cell 1: to the right of column 0, right-aligned.
+        let c1 = ui.row(row_h);
+        assert!((c1.left - (-384.0 + col_w + col_gap)).abs() < 1e-4);
+        assert_eq!(ui.align, Align::Right);
+        // Cell 2: wraps to a fresh row one step below, back at column 0.
+        let c2 = ui.row(row_h);
+        assert_eq!(c2.left, -384.0);
+        assert!(
+            (c1.top - c2.top - (row_h + gap)).abs() < 1e-4,
+            "a row step separates the wrapped cells"
+        );
+        ui.table_close("t");
+        // Two rows consumed: the cursor sits two steps below where it was.
+        let after = ui.layout.last().unwrap().cursor;
+        assert!(
+            (before - after - 2.0 * (row_h + gap)).abs() < 1e-4,
+            "two rows advanced the cursor"
+        );
+    }
+
+    #[test]
+    fn auto_column_grows_to_its_content_next_frame() {
+        let mut ui = ui();
+        let cols = [Col::auto(Align::Left), Col::stretch(1.0, Align::Left)];
+        // Frame 1: the auto column starts at zero and a cell reports a
+        // width of 30 for it.
+        frame(&mut ui, None, false);
+        assert!(ui.table_open("t", &cols));
+        let first = ui.row(ui.style.row_h);
+        assert_eq!(first.w, 0.0, "unseen auto column is zero-wide");
+        ui.note_cell_width(30.0);
+        ui.row(ui.style.row_h); // the stretch cell, not measured
+        ui.table_close("t");
+        // Frame 2: the retained width sizes the auto column; the stretch
+        // column yields to it.
+        frame(&mut ui, None, false);
+        assert!(ui.table_open("t", &cols));
+        let grown = ui.row(ui.style.row_h);
+        assert!((grown.w - 30.0).abs() < 1e-4, "auto column grew to content");
+        ui.table_close("t");
     }
 }

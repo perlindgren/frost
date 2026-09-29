@@ -11,17 +11,22 @@
 //! file is picked; canceling quits.
 //!
 //! The controls are a [`frost::Ui`] panel — one draggable "View" box (drag
-//! it by its title bar) holding the three sliders (the zoom, and the
-//! checker's two grey levels) and the last-click readout. Panel and sliders
-//! own their interaction state; the example just declares them every frame
-//! and reads the values back. The wheel zooms about the cursor (the point
-//! under it stays put), a right-drag grabs the canvas and moves the sprite
-//! with the cursor, and a left click anywhere the UI does not cover is a
-//! sprite click — its window position is converted to the texture's pixel
-//! space (`(0, 0)` upper-left, `x` right, `y` down, shifted by the pan and
-//! divided by the current zoom) and printed with `log::info!`, with a
-//! marker dot left at the spot. [`frost::Ui::hovering`] is what tells the
-//! two apart: a press the UI claims never logs a pixel.
+//! it by its title bar) laid out as a [`frost::Ui::table`]: three rows of
+//! `[label | track | readout]` for the zoom and the checker's two grey
+//! levels, above the last-click line. The table gives each column a policy
+//! — the label column hugs its text and aligns left, the track column
+//! stretches to fill the row, and the value readout hugs and centers — so
+//! the labels and values line up down the panel while the tracks soak up
+//! the slack. Panel and widgets own their interaction state; the example
+//! just declares them every frame and reads the values back. The wheel
+//! zooms about the cursor (the point under it stays put), a right-drag
+//! grabs the canvas and moves the sprite with the cursor, and a left click
+//! anywhere the UI does not cover is a sprite click — its window position
+//! is converted to the texture's pixel space (`(0, 0)` upper-left, `x`
+//! right, `y` down, shifted by the pan and divided by the current zoom) and
+//! printed with `log::info!`, with a marker dot left at the spot.
+//! [`frost::Ui::hovering`] is what tells the two apart: a press the UI
+//! claims never logs a pixel.
 //!
 //! The checkerboard is the sprite's on-screen bounding box, clipped to the
 //! window, filled with light/dark grey cells that never scale with the
@@ -125,7 +130,7 @@ const CHECK_ORDER: f32 = -1.0;
 
 /// The demo's state.
 struct Demo {
-    /// The widget layer: the View panel and its sliders.
+    /// The widget layer: the View panel and its slider table.
     ui: frost::Ui,
     /// The current zoom: the sprite's scale factor (1.0 is texture size).
     zoom: f32,
@@ -260,9 +265,29 @@ impl frost::Process for Demo {
             [-w / 2.0 + PANEL_W / 2.0 + 20.0, h / 2.0 - 120.0],
             PANEL_W,
             |ui, ctx| {
-                ui.slider(ctx, "Zoom", &mut self.zoom, ZOOM_MIN, ZOOM_MAX);
-                ui.slider(ctx, "Light", &mut self.light, 0.0, 1.0);
-                ui.slider(ctx, "Dark", &mut self.dark, 0.0, 1.0);
+                // One table, three rows of [label | track | readout]: the
+                // label column hugs its text and sits left, the track
+                // column stretches to fill, the readout hugs and centers.
+                ui.table(
+                    ctx,
+                    "view",
+                    &[
+                        frost::Col::auto(frost::Align::Left),
+                        frost::Col::stretch(1.0, frost::Align::Left),
+                        frost::Col::auto(frost::Align::Center),
+                    ],
+                    |ui, ctx| {
+                        ui.label(ctx, "zoom");
+                        ui.slider_track(ctx, "zoom", &mut self.zoom, ZOOM_MIN, ZOOM_MAX);
+                        ui.readout(ctx, &format!("{:.2}", self.zoom));
+                        ui.label(ctx, "light");
+                        ui.slider_track(ctx, "light", &mut self.light, 0.0, 1.0);
+                        ui.readout(ctx, &format!("{:.2}", self.light));
+                        ui.label(ctx, "dark");
+                        ui.slider_track(ctx, "dark", &mut self.dark, 0.0, 1.0);
+                        ui.readout(ctx, &format!("{:.2}", self.dark));
+                    },
+                );
                 ui.space(6.0);
                 ui.label(ctx, &click_label);
             },

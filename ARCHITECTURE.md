@@ -567,13 +567,22 @@ button clicks, a checkbox toggles, a slider's value changes.
   (topmost) first — so overlapping panels route presses to the visible one,
   and a press that leaves a widget keeps its drag until release (sliders,
   panel drags). Hover, click and hold all read this resolved state.
+- **Tables** (`Ui::table(ctx, id, cols, content)`) lay the widgets declared
+  in `content` into a grid: each consumes the next cell, wrapping to a new
+  row after `cols.len()`. Each `Col` has a [`ColSize`] — `Px` (fixed),
+  `Auto` (as wide as its widest cell, from last frame, matching the UI's
+  one-frame model) or `Stretch(w)` (a weighted share of the leftover) — and
+  an [`Align`] (`Left`/`Center`/`Right`) honored by text. `slider_track` and
+  `readout` are the label-less pieces for a `[label | track | value]` row
+  (see `examples/sprite_util.rs`); `id` scopes the retained auto widths so
+  two tables in one panel keep their own columns.
 - **Identity**: widget ids are FNV-1a hashes of the label scoped by the
   containing panel's id, so the same label in two panels is two widgets.
 - **Text** goes through `Canvas::text` (see above) with one shared
   `Arc<[u8]>` font (`Ui::from_font` / `from_bytes`, validated at
   construction), so all UI text shares one cached glyph atlas; measured
   widths are cached per `(string, size, weight)`; the weight is
-  `UiStyle::font_weight` (default 520 — a Medium on a variable font like
+  `UiStyle::font_weight` (default 600 — a SemiBold on a variable font like
   FiraCode, inert on static fonts).
 - **Order**: every UI draw gets a `z` counting up from
   `UiStyle::base_z` (default 10 000) in declaration order — the UI paints
@@ -583,7 +592,7 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **177 tests + 5 doctests** passing, `cargo build --examples`
+Baseline: **181 tests + 5 doctests** passing, `cargo build --examples`
 clean. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
@@ -668,10 +677,11 @@ disk. Run with `cargo run --example <name>`
 |              | while its center sinks through the grass; after a random 5-10 s    |
 |              | delay the bug pops back up at its spawn spot, fully healed          |
 | sprite_util  | a picked PNG (rfd file dialog) shown in the window: a `Ui` View    |
-|              | panel (zoom + two checker-grey sliders, last-click readout) or the |
-|              | wheel zooms (wheel anchored under the cursor, 1.15x per line), a   |
-|              | right-drag pans, and a left click outside the UI logs the spot in  |
-|              | the texture's pixel space and leaves a marker dot there            |
+|              | panel whose `table` lays three rows of label + stretch slider_track |
+|              | + centered readout (zoom and the two checker greys); the wheel      |
+|              | zooms (anchored under the cursor, 1.15x per line), a right-drag    |
+|              | pans, and a left click outside the UI logs the spot in the          |
+|              | texture's pixel space and leaves a marker dot there                |
 | widgets      | the `Ui` layer: a draggable Tomato panel (three color sliders, a    |
 |              | Spin checkbox, a Speed slider, a Reset button) and an About label   |
 |              | panel drive a spinning face's color and rotation                    |
@@ -717,7 +727,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 
 ```
 cargo build --examples   # expect EXIT 0
-cargo test               # expect 177 passed + 5 doctests
+cargo test               # expect 181 passed + 5 doctests
 cargo test --examples    # expect 77 passed (the immortal example tests)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0

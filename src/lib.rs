@@ -179,7 +179,7 @@ mod diagnostics;
 pub use diagnostics::{Diagnostics, DiagnosticsFlags};
 
 mod ui;
-pub use ui::{Ui, UiStyle};
+pub use ui::{Align, Col, ColSize, Ui, UiStyle};
 
 mod rng;
 pub use rng::*;
