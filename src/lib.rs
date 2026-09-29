@@ -178,6 +178,9 @@ pub use collision::*;
 mod diagnostics;
 pub use diagnostics::{Diagnostics, DiagnosticsFlags};
 
+mod ui;
+pub use ui::{Ui, UiStyle};
+
 mod rng;
 pub use rng::*;
 
@@ -316,6 +319,54 @@ impl Canvas {
             center: self.user_to_pixels(cx, cy),
             extent: [dx.max(0.0), dy.max(0.0)],
             color,
+            z,
+            // An immediate canvas draw is not owned by any scene node.
+            diagnostic: false,
+        });
+    }
+
+    /// Draws `text` in `font` at `size` pixels per em, centered on
+    /// `(cx, cy)`, in `color`, at draw order `z`.
+    ///
+    /// This is the immediate sibling of [`Shape::text`]: the same text
+    /// pipeline (layout, glyph atlas, per-glyph quads) reached without a
+    /// scene node, which is what overlay UIs like [`Ui`](crate::Ui) need.
+    /// The text block is centered on `(cx, cy)` exactly as a text shape is
+    /// centered on its node's origin. Like a text shape, `font` is the font
+    /// file's bytes behind an [`Arc`]: pass the same `Arc` (or one cloned
+    /// from it) to keep every block sharing one cached glyph atlas.
+    ///
+    /// Immediate text is never lit and never glows: it always draws at full
+    /// `color`, so UI text stays readable over any scene.
+    #[allow(clippy::too_many_arguments)] // immediate-mode draw call
+    pub fn text(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        font: &Arc<[u8]>,
+        text: impl Into<String>,
+        size: f32,
+        color: Color,
+        z: f32,
+    ) {
+        self.draws.push(Draw::Text {
+            // User space, translated to the text's center: the expansion
+            // composes this with the user-to-pixel transform like a node's
+            // world transform.
+            world: Transform::translate([cx, cy]),
+            font: Arc::clone(font),
+            text: text.into(),
+            size,
+            color,
+            alpha: 1.0,
+            // UI text emits nothing and takes no light: full `color`.
+            glow: Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
+            lit: 0.0,
             z,
             // An immediate canvas draw is not owned by any scene node.
             diagnostic: false,

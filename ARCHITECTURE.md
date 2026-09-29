@@ -34,6 +34,8 @@ src/particles.rs      Particle, ParticleSystem (pure simulation)
 src/collision.rs      OrientedBox, Circle, Collider, push_out, reflect (pure math)
 src/diagnostics.rs    Diagnostics (flag-gated FPS/FT/PROC/DRAW HUD overlay
                       with folded strip charts), DiagnosticsFlags
+src/ui.rs             Ui immediate-mode widget layer (button, checkbox,
+                      slider, label, draggable panel), UiStyle
 src/audio.rs          Audio (device + loop player), Sound (decoded buffer),
                       AudioError — native-only, rodio-based
 src/text.rs           CPU text shaping/rasterization on swash, glyph shelf atlas
@@ -44,7 +46,7 @@ src/backend/frame.rs  Draw list model: Draw enum, scissor rects, uniform writers
 src/backend/wasm.rs   WebFrost: deferred async GPU setup + fallback DOM helpers
 src/backend/tests.rs  GPU-free backend tests (uniform layout, canvas behavior)
 shaders/*.wgsl        line, circle, rectangle, shape (SDF circle+rect), sprite
-examples/             26 runnable demos (see table below)
+examples/             27 runnable demos (see table below)
 assets/               sprites/*.png (+ .pxo sidecars for brick, water_can),
                       fonts/JameGem08_2026-Regular.ttf, audio/swoof.wav
 src/TODO.md           next planned feature (Body / rigid bodies)
@@ -86,8 +88,8 @@ numbers use a hand-rolled splitmix64 `Rng(u64)`.
     below).
   - `size() -> (f32, f32)` — window size in pixels.
 - Re-exports: `KeyCode`, `MouseButton`, `Tween`/`Repeat`,
-  `ParticleSystem`/`Particle`, and everything from `objects` (`Scene`,
-  `SceneNode`, `Node`, `Shape`, `Color`, `Transform`, `Layer`, `Canvas`).
+  `ParticleSystem`/`Particle`, `Ui`/`UiStyle`, and everything from `objects`
+  (`Scene`, `SceneNode`, `Node`, `Shape`, `Color`, `Transform`, `Layer`, `Canvas`).
 - Native only (no wasm32): `Audio`, `Sound`, `AudioError` (see
   "Audio (native only)" below).
 
@@ -189,7 +191,9 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
 `layer_orders`).
 
 - Immediate methods: `line`, `circle`, `rectangle` (pixel args converted to
-  pixel space via `user_to_pixels`), and `draw_scene`.
+  pixel space via `user_to_pixels`), `text` (records a `Draw::Text` with a
+  translate-only user-space transform, expanded by `expand_text` like a
+  node's text), and `draw_scene`.
 - `Draw` enum: `Line`, `Polyline` (the batched line: `points: Vec<[f32; 2]>`
   in pixel space, `width`, `color` — consecutive pairs joined by straight
   segments, stroked by one full-screen-triangle draw against a fixed
@@ -536,9 +540,42 @@ itself is a `Process`.
 `examples/diagnostics.rs` shows it over a swaying circle, set in
 `assets/fonts/FiraCode-VariableFont_wght.ttf`, with `DiagnosticsFlags::all()`.
 
+## UI (src/ui.rs)
+
+`Ui` is an **immediate-mode widget layer** over the frame's `Canvas`: the
+app owns one `Ui` in its `Process` struct, calls `Ui::begin(ctx)` at the top
+of `process` (snapshot the mouse, resolve last frame's press, move the
+dragged panel), then declares widgets each frame — `button` (armed-release
+click, as in `examples/button.rs`), `checkbox` (drives `&mut bool`),
+`slider` (label left, value readout right, drag-follows-pointer, drives
+`&mut f32`), `label`, `space`, and `panel`. Returns: `true` on the frame a
+button clicks, a checkbox toggles, a slider's value changes.
+
+- **Panels** are titled boxes anchored at a center `at` until the user
+  **drags them by the title bar**; the dragged position is retained per
+  title (hashed id). The body is as tall as the content asked for *last*
+  frame (first frame shows the title bar only, then it snaps open). Widgets
+  outside any panel stack in a root column at the window's top-left.
+- **The input model** is one frame delayed: a press is resolved at the next
+  `begin` against the rects the previous frame registered, last-declared
+  (topmost) first — so overlapping panels route presses to the visible one,
+  and a press that leaves a widget keeps its drag until release (sliders,
+  panel drags). Hover, click and hold all read this resolved state.
+- **Identity**: widget ids are FNV-1a hashes of the label scoped by the
+  containing panel's id, so the same label in two panels is two widgets.
+- **Text** goes through `Canvas::text` (see above) with one shared
+  `Arc<[u8]>` font (`Ui::from_font` / `from_bytes`, validated at
+  construction), so all UI text shares one cached glyph atlas; measured
+  widths are cached per `(string, size)`.
+- **Order**: every UI draw gets a `z` counting up from
+  `UiStyle::base_z` (default 10 000) in declaration order — the UI paints
+  over the scene, panels stack in declaration order.
+- `UiStyle` is one `Copy` struct of colors and metrics (dark default),
+  reachable through `ui.style`.
+
 ## Testing
 
-Baseline: **164 tests + 4 doctests** passing, `cargo build --examples`
+Baseline: **174 tests + 5 doctests** passing, `cargo build --examples`
 clean. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
@@ -552,6 +589,10 @@ clean. Notable test areas:
 - `src/tween.rs`, `src/particles.rs`, `src/text.rs` — behavior unit tests.
 - `src/audio.rs` — device-free decode tests (synthetic WAV, bundled
   `swoof.wav`, error variants) + the `load_bytes` doctest.
+- `src/ui.rs` — the interaction model driven frame by frame through
+  `begin_input` (press arming, armed release, hold past the rect, topmost
+  overlap wins, one-frame click, panel drag moves by the pointer delta and
+  retains), plus id hashing and rect math.
 
 ## Examples (examples/)
 
@@ -622,6 +663,9 @@ disk. Run with `cargo run --example <name>`
 |              | the wheel zooms (wheel anchored under the cursor, 1.15x per line),  |
 |              | a right-drag pans, and a left click logs the spot in the texture's  |
 |              | pixel space and leaves a marker dot there                           |
+| widgets      | the `Ui` layer: a draggable Tomato panel (three color sliders, a    |
+|              | Spin checkbox, a Speed slider, a Reset button) and an About label   |
+|              | panel drive a spinning face's color and rotation                    |
 
 `cursor.rs` is the most complete reference demo: `CAN_IMAGE [331,247]` scaled
 to 100 px, a 90° CCW tilt tween (0.5 s, rebuilt on press/release edges),
@@ -664,11 +708,12 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 
 ```
 cargo build --examples   # expect EXIT 0
-cargo test               # expect 164 passed + 4 doctests
+cargo test               # expect 174 passed + 5 doctests
 cargo test --examples    # expect 17 passed (the immortal example tests)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0
 cargo run --example button   # hover-scale + click-swoosh check; window exits 0
+cargo run --example widgets  # panels drag, widgets drive the face; exits 0
 cargo run --example tomato_sprite   # overlay check; window exits 0
 cargo run --example immortal   # 1920x1080 window: grass fills it 1:1; exits 0
 ```
