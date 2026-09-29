@@ -50,17 +50,6 @@
 //! the frame being edited, so the panel previews as it builds; the solo
 //! active sprite returns when the last frame is deleted.
 //!
-//! The Animation panel can also **morph** two sprites: "anchors a" and
-//! "anchors b" switch the work area into anchor-placement mode on the
-//! current slot — clicking puts down matched points (a in cyan, b in
-//! coral; order is what pairs them). "Morph" then triangulates the
-//! anchors together with the texture's four corners, warps a's pixels
-//! through the shared triangle mesh while the vertices slide from a's
-//! points to b's, and bakes the intermediates as real frames appended
-//! to the animation — a pure CPU mesh warp: every frame stays wholly
-//! a's texture, dragged through the moving mesh, with b contributing
-//! its shape through its anchors alone.
-//!
 //! The wheel zooms about the cursor (the point under it stays put), a
 //! right-drag grabs the work area and moves the sprite with the cursor,
 //! and [`frost::Ui::hovering`] is what tells a click on the UI from one
@@ -224,8 +213,6 @@ const BBOX_Z: f32 = 1.5;
 
 /// The selection's order: above the bounding box, below the click marker.
 const SELECT_Z: f32 = 1.8;
-/// The morph anchor dots: above the selection, below the HUD text.
-const ANCHOR_Z: f32 = 1.9;
 
 /// The checker backdrop's order: behind the sprite and the HUD.
 const CHECK_ORDER: f32 = -1.0;
@@ -281,9 +268,6 @@ struct Sprite {
     /// The original, minimized to a slot's width — the slot's picture.
     /// It never changes: a slot shows the sprite as it was loaded.
     thumb: frost::Shape,
-    /// The morph anchors placed on this sprite, in texture pixels: a
-    /// morph pairs two sprites' lists by order, point for point.
-    anchors: Vec<[f32; 2]>,
 }
 
 /// One picture within a frame: the active sprite's shape, snapshotted
@@ -298,15 +282,6 @@ struct Layer {
 struct Frame {
     layers: Vec<Layer>,
     next_time: f32,
-}
-
-/// What a work-area click does: the usual edit tool (crop selection,
-/// pixel logging) or placing morph anchors on a bound slot.
-#[derive(PartialEq, Clone, Copy)]
-enum Tool {
-    Edit,
-    AnchorsA,
-    AnchorsB,
 }
 
 /// The animation: an ordered set of frames kept by a clock. Looping
@@ -409,19 +384,6 @@ struct Demo {
     was_open: bool,
     /// Whether space was held last frame: its rising edge toggles play.
     was_space: bool,
-    /// The work area's click tool: editing, or placing a's or b's anchors.
-    tool: Tool,
-    /// The slot the anchor tool is bound to, chosen when the tool was.
-    anchor_slot: Option<usize>,
-    /// Where the current anchor-placement press began, window pixels.
-    anchor_press: Option<[f32; 2]>,
-    /// The slots a and b are anchored on, for the morph to pair up.
-    morph_a: Option<usize>,
-    morph_b: Option<usize>,
-    /// The frames a morph bakes, endpoints included.
-    morph_frames: usize,
-    /// The time each baked morph frame holds, in seconds.
-    morph_time: f32,
     /// The checker's light grey level, 0.0-1.0; the Light slider sets it.
     light: f32,
     /// The checker's dark grey level, 0.0-1.0; the Dark slider sets it.
@@ -639,89 +601,13 @@ impl Demo {
         if self.sprites.is_empty() {
             return;
         }
-        let idx = self.active;
-        let name = self.sprites.remove(idx).name;
+        let name = self.sprites.remove(self.active).name;
         self.active = self.active.min(self.sprites.len().saturating_sub(1));
         self.selection = None;
         self.last_click = None;
-        // The closed slot's reference is gone; later slots shift left.
-        let retarget = |slot: &mut Option<usize>| {
-            *slot = slot.and_then(|v| {
-                if v == idx {
-                    None
-                } else if v > idx {
-                    Some(v - 1)
-                } else {
-                    Some(v)
-                }
-            });
-        };
-        retarget(&mut self.morph_a);
-        retarget(&mut self.morph_b);
-        retarget(&mut self.anchor_slot);
-        if self.anchor_slot.is_none() {
-            self.tool = Tool::Edit;
-        }
         self.status = format!("closed '{name}'");
         self.sync_work(ctx);
         self.refresh_slots(ctx);
-    }
-
-    /// Morph: bake the frames between the two anchored sprites — warp
-    /// a's pixels through the mesh as it slides into b's anchors — and
-    /// splice them into the animation right after the frame being edited.
-    fn morph_run(&mut self, ctx: &mut frost::Context) {
-        let (ai, bi) = match (self.morph_a, self.morph_b) {
-            (Some(a), Some(b)) => (a, b),
-            _ => {
-                self.status = String::from("morph: anchor both a and b first");
-                return;
-            }
-        };
-        let (Some(a), Some(b)) = (self.sprites.get(ai), self.sprites.get(bi)) else {
-            self.status = String::from("morph: an anchored slot is gone");
-            return;
-        };
-        if a.anchors.len() != b.anchors.len() {
-            self.status = format!(
-                "morph: '{}' has {} anchors, '{}' has {}",
-                a.name,
-                a.anchors.len(),
-                b.name,
-                b.anchors.len()
-            );
-            return;
-        }
-        let (ta, aa, ab) = (a.current.clone(), a.anchors.clone(), b.anchors.clone());
-        let b_size = (b.current.width(), b.current.height());
-        let started = std::time::Instant::now();
-        let m = Morph::new(&ta, b_size, &aa, &ab);
-        let n = self.morph_frames.clamp(2, 32);
-        let at = (self.anim.frame + 1).min(self.anim.frames.len());
-        for k in 0..n {
-            let img = m.frame(k as f32 / (n - 1) as f32);
-            let shape = match png_bytes(&img)
-                .ok()
-                .and_then(|png| frost::Shape::sprite_bytes(&png).ok())
-            {
-                Some(shape) => shape,
-                None => {
-                    self.status = String::from("morph: could not bake a frame");
-                    return;
-                }
-            };
-            self.anim.frames.insert(
-                at + k,
-                Frame {
-                    layers: vec![Layer { shape }],
-                    next_time: self.morph_time,
-                },
-            );
-        }
-        self.anim.set_frame(at);
-        self.tool = Tool::Edit;
-        self.sync_work(ctx);
-        self.status = format!("morphed {n} frames in {} ms", started.elapsed().as_millis());
     }
 
     /// Save: write the active texture over the file it was loaded from,
@@ -1021,23 +907,6 @@ impl frost::Process for Demo {
             )
         };
         let play_label = if self.anim.playing { "stop" } else { "play" };
-        // The Morph panel's state, read for the closure and written after.
-        let mut want_anchor_a = false;
-        let mut want_anchor_b = false;
-        let mut want_clear = false;
-        let mut want_morph = false;
-        let mut frames_f = self.morph_frames as f32;
-        let mut morph_t = self.morph_time;
-        let anchor_desc = |slot: Option<usize>| {
-            slot.and_then(|i| self.sprites.get(i))
-                .map(|sp| format!("{} · {} pt", sp.name, sp.anchors.len()))
-                .unwrap_or_else(|| "—".to_string())
-        };
-        let morph_line = format!(
-            "a: {}   b: {}",
-            anchor_desc(self.morph_a),
-            anchor_desc(self.morph_b)
-        );
         self.ui.panel(
             ctx,
             "Animation",
@@ -1082,59 +951,6 @@ impl frost::Process for Demo {
                 if ui.button(ctx, play_label) {
                     want_play = true;
                 }
-            },
-        );
-
-        // The Morph panel: pair two sprites anchor by anchor, bake the
-        // in-betweens, and splice them into the animation.
-        let lbl_a = if self.tool == Tool::AnchorsA {
-            "*anchors a"
-        } else {
-            "anchors a"
-        };
-        let lbl_b = if self.tool == Tool::AnchorsB {
-            "*anchors b"
-        } else {
-            "anchors b"
-        };
-        self.ui.panel(
-            ctx,
-            "Morph",
-            // Bottom-right, but clear of the slot strip — the morph
-            // workflow needs the slots clickable.
-            [w / 2.0 - PANEL_W / 2.0 - 20.0, -h / 2.0 + STRIP_H + 100.0],
-            PANEL_W,
-            |ui, ctx| {
-                ui.label(ctx, &morph_line);
-                ui.table(
-                    ctx,
-                    "morph",
-                    &[
-                        frost::Col::auto(frost::Align::Center),
-                        frost::Col::stretch(1.0, frost::Align::Center),
-                        frost::Col::auto(frost::Align::Center),
-                    ],
-                    |ui, ctx| {
-                        if ui.button(ctx, lbl_a) {
-                            want_anchor_a = true;
-                        }
-                        if ui.button(ctx, lbl_b) {
-                            want_anchor_b = true;
-                        }
-                        if ui.button(ctx, "clear") {
-                            want_clear = true;
-                        }
-                        if ui.button(ctx, "morph") {
-                            want_morph = true;
-                        }
-                        ui.slider_track(ctx, "morph frames", &mut frames_f, 2.0, 24.0);
-                        ui.readout(ctx, &format!("{frames_f:.0}"));
-                        ui.label(ctx, "each");
-                        ui.slider_track(ctx, "morph time", &mut morph_t, TIME_MIN, 0.5);
-                        ui.readout(ctx, &format!("{morph_t:.2}s"));
-                    },
-                );
-                ui.label(ctx, "click the sprite to place anchors");
             },
         );
 
@@ -1240,39 +1056,6 @@ impl frost::Process for Demo {
             self.anim.dir = 1;
         }
 
-        // The morph tool: pressing a live anchor button again exits;
-        // entering one binds it to the active slot and pauses playback.
-        self.morph_frames = frames_f.round() as usize;
-        self.morph_time = morph_t;
-        if want_anchor_a || want_anchor_b {
-            let role = if want_anchor_a {
-                Tool::AnchorsA
-            } else {
-                Tool::AnchorsB
-            };
-            if self.tool == role {
-                self.tool = Tool::Edit;
-            } else if !self.sprites.is_empty() {
-                self.tool = role;
-                self.anchor_slot = Some(self.active);
-                self.anim.playing = false;
-                if want_anchor_a {
-                    self.morph_a = Some(self.active);
-                } else {
-                    self.morph_b = Some(self.active);
-                }
-            }
-        }
-        if want_clear
-            && let Some(i) = self.anchor_slot
-            && let Some(sp) = self.sprites.get_mut(i)
-        {
-            sp.anchors.clear();
-        }
-        if want_morph {
-            self.morph_run(ctx);
-        }
-
         // The left button's work: press lands on a slot, on the work area
         // or nowhere the demo owns; release decides — click or drag.
         if pressed
@@ -1281,13 +1064,7 @@ impl frost::Process for Demo {
         {
             match slot_at(p, w, h) {
                 Some(i) => self.slot_drag = Some((i, p)),
-                None if in_work_area(p, w, h) => {
-                    if self.tool == Tool::Edit {
-                        self.drag_from = Some(p);
-                    } else {
-                        self.anchor_press = Some(p);
-                    }
-                }
+                None if in_work_area(p, w, h) => self.drag_from = Some(p),
                 None => {}
             }
         }
@@ -1327,24 +1104,6 @@ impl frost::Process for Demo {
                     self.selection = None;
                 }
             }
-            // An anchor click drops a point on the bound sprite — at
-            // its texture pixel, deduplicated and kept inside.
-            if let Some(from) = self.anchor_press.take()
-                && let Some(p) = pos
-                && ((p[0] - from[0]).powi(2) + (p[1] - from[1]).powi(2)).sqrt() < CLICK_TOL
-                && let Some(i) = self.anchor_slot
-            {
-                let sz = self.sprites.get(i).map_or([0.0; 2], |sp| {
-                    [sp.current.width() as f32, sp.current.height() as f32]
-                });
-                let [px, py] = tex_point(p, sz, view, self.zoom);
-                if px >= 0.0 && px <= sz[0] && py >= 0.0 && py <= sz[1] {
-                    let list = &mut self.sprites[i].anchors;
-                    if !list.iter().any(|q| (q[0] - px).hypot(q[1] - py) < 1.0) {
-                        list.push([px, py]);
-                    }
-                }
-            }
             // A slot press: a click activates its sprite; a drag that
             // ends on another slot swaps the two sprites' places.
             if let Some((from_slot, from)) = self.slot_drag.take()
@@ -1361,32 +1120,8 @@ impl frost::Process for Demo {
                 {
                     self.sprites.swap(from_slot, to);
                     self.active = swapped_active(self.active, from_slot, to);
-                    // The swapped sprites carry their anchors and roles.
-                    for slot in [&mut self.morph_a, &mut self.morph_b, &mut self.anchor_slot] {
-                        *slot = match *slot {
-                            Some(x) if x == from_slot => Some(to),
-                            Some(x) if x == to => Some(from_slot),
-                            other => other,
-                        };
-                    }
                     self.refresh_slots(ctx);
                 }
-            }
-        }
-
-        // While an anchor tool is up, the work area shows the bound
-        // sprite alone — anchors land on a known image, not on a frame
-        // mid-play.
-        if self.tool != Tool::Edit {
-            let shape = self
-                .anchor_slot
-                .and_then(|i| self.sprites.get(i))
-                .map(|sp| sp.shape.clone());
-            for (i, node) in ctx.scene().root.children[..LAYER_NODES]
-                .iter_mut()
-                .enumerate()
-            {
-                node.shape = if i == 0 { shape.clone() } else { None };
             }
         }
 
@@ -1528,314 +1263,9 @@ impl frost::Process for Demo {
             *radius = 0.0;
         }
 
-        // The anchor points of the bound sprite, mapped from its texture
-        // to the work area the same way the marker dot maps.
-        if self.tool != Tool::Edit
-            && let Some(sp) = self.anchor_slot.and_then(|i| self.sprites.get(i))
-        {
-            let [tw, th] = [sp.current.width() as f32, sp.current.height() as f32];
-            let col = if self.tool == Tool::AnchorsA {
-                SELECT
-            } else {
-                MARKER
-            };
-            for [px, py] in &sp.anchors {
-                ctx.rectangle(
-                    (px - tw / 2.0) * self.zoom + view[0],
-                    (th / 2.0 - py) * self.zoom + view[1],
-                    3.0,
-                    3.0,
-                    col,
-                    ANCHOR_Z,
-                );
-            }
-        }
-
         // The cursor's position for next frame's right-drag delta; `None`
         // (outside the window) clears it, so re-entering never jumps.
         self.last_mouse = pos;
-    }
-}
-
-/// The four corners of a texture, appended to the anchors so the mesh
-/// covers the whole image and its edges stay pinned.
-fn corners(w: f32, h: f32) -> [[f32; 2]; 4] {
-    [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]]
-}
-
-/// A small Delaunay triangulation (Bowyer–Watson with a super-triangle):
-/// at anchor-point counts — a dozen or so — the naive version is instant
-/// and needs no dependency. Collinear and duplicate points yield no
-/// triangle that would cover anything.
-fn triangulate(pts: &[[f32; 2]]) -> Vec<[usize; 3]> {
-    let n = pts.len();
-    if n < 3 {
-        return Vec::new();
-    }
-    let (mut lo, mut hi) = ([f32::MAX, f32::MAX], [f32::MIN, f32::MIN]);
-    for p in pts {
-        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
-        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
-    }
-    let span = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(1.0);
-    let mid = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0];
-    // One super-triangle around everything, its vertices n, n+1, n+2.
-    let mut all: Vec<[f32; 2]> = pts.to_vec();
-    all.push([mid[0] - 20.0 * span, mid[1] - span]);
-    all.push([mid[0], mid[1] + 20.0 * span]);
-    all.push([mid[0] + 20.0 * span, mid[1] - span]);
-    let mut tris: Vec<[usize; 3]> = vec![[n, n + 1, n + 2]];
-    for (i, &p) in pts.iter().enumerate() {
-        // Every triangle whose circumcircle swallows the new point dies;
-        // the edges it shared with the living ones frame the hole.
-        let bad: Vec<usize> = (0..tris.len())
-            .filter(|&k| in_circumcircle(&all, tris[k], p))
-            .collect();
-        let hole: Vec<[usize; 2]> = bad
-            .iter()
-            .flat_map(|&k| {
-                let t = tris[k];
-                [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]]
-            })
-            // An edge bordering the hole belongs to exactly one dying
-            // triangle; shared ones lie inside it.
-            .filter(|e| bad.iter().filter(|&&j| tri_has_edge(tris[j], *e)).count() == 1)
-            .collect();
-        tris = tris
-            .into_iter()
-            .enumerate()
-            .filter(|(k, _)| !bad.contains(k))
-            .map(|(_, t)| t)
-            .collect();
-        tris.extend(hole.iter().map(|e| [e[0], e[1], i]));
-    }
-    // Drop everything hanging off the super-triangle, then the slivers.
-    tris.retain(|t| {
-        t.iter().all(|&v| v < n) && area2([pts[t[0]], pts[t[1]], pts[t[2]]]).abs() > 1e-6
-    });
-    tris
-}
-
-/// Whether `p` falls inside the triangle's circumcircle; degenerate
-/// triangles have none, and never die.
-fn in_circumcircle(all: &[[f32; 2]], t: [usize; 3], p: [f32; 2]) -> bool {
-    let (a, b, c) = (all[t[0]], all[t[1]], all[t[2]]);
-    let d = 2.0 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
-    if d.abs() < 1e-9 {
-        return false;
-    }
-    let (a2, b2, c2) = (
-        a[0] * a[0] + a[1] * a[1],
-        b[0] * b[0] + b[1] * b[1],
-        c[0] * c[0] + c[1] * c[1],
-    );
-    let ux = (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d;
-    let uy = (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d;
-    let r2 = (a[0] - ux).powi(2) + (a[1] - uy).powi(2);
-    (p[0] - ux).powi(2) + (p[1] - uy).powi(2) < r2
-}
-
-/// Twice the signed area of a triangle.
-fn area2(t: [[f32; 2]; 3]) -> f32 {
-    (t[1][0] - t[0][0]) * (t[2][1] - t[0][1]) - (t[2][0] - t[0][0]) * (t[1][1] - t[0][1])
-}
-
-/// Whether the triangle walks the (undirected) edge.
-fn tri_has_edge(t: [usize; 3], e: [usize; 2]) -> bool {
-    (0..3).any(|k| {
-        let (a, b) = (t[k], t[(k + 1) % 3]);
-        (a == e[0] && b == e[1]) || (a == e[1] && b == e[0])
-    })
-}
-
-/// A precomputed sprite-pair morph: one shared triangulation (from a's
-/// points), b's matching points in output space — the shape a slides
-/// into — and a's texture premultiplied. A pure mesh warp: b contributes
-/// its shape through its anchors, its pixels never enter the frames.
-/// After the setup, `frame(t)` is pure rasterization; output size is a's.
-struct Morph {
-    tris: Vec<[usize; 3]>,
-    /// a's points in output (= a's own) pixels: the sampling triangle.
-    pa: Vec<[f32; 2]>,
-    /// b's points in output pixels: the destination, when t reaches 1.
-    pb_out: Vec<[f32; 2]>,
-    a: Vec<f32>,
-    aw: usize,
-    ah: usize,
-}
-
-/// The texture as premultiplied floats — warping and sampling want
-/// premultiplied values so semi-transparent edges carry no color.
-fn premultiply(img: &image::RgbaImage) -> Vec<f32> {
-    img.pixels()
-        .flat_map(|p| {
-            let a = p[3] as f32 / 255.0;
-            [
-                p[0] as f32 / 255.0 * a,
-                p[1] as f32 / 255.0 * a,
-                p[2] as f32 / 255.0 * a,
-                a,
-            ]
-        })
-        .collect()
-}
-
-/// The premultiplied color at continuous texture coordinates, bilinearly
-/// sampled, edge-clamped; outside the texture is transparent black.
-fn sample(buf: &[f32], w: usize, h: usize, x: f32, y: f32) -> [f32; 4] {
-    if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 {
-        return [0.0; 4];
-    }
-    let u = (x - 0.5).clamp(0.0, w as f32 - 1.0);
-    let v = (y - 0.5).clamp(0.0, h as f32 - 1.0);
-    let i = u as usize;
-    let j = v as usize;
-    let (i1, j1) = ((i + 1).min(w - 1), (j + 1).min(h - 1));
-    let (fu, fv) = (u - i as f32, v - j as f32);
-    let at = |ii: usize, jj: usize, c: usize| buf[(jj * w + ii) * 4 + c];
-    let mut c = [0.0; 4];
-    for (k, out) in c.iter_mut().enumerate() {
-        let top = at(i, j, k) * (1.0 - fu) + at(i1, j, k) * fu;
-        let bot = at(i, j1, k) * (1.0 - fu) + at(i1, j1, k) * fu;
-        *out = top * (1.0 - fv) + bot * fv;
-    }
-    c
-}
-
-/// A premultiplied RGBA float image to sample from.
-struct Img<'a> {
-    px: &'a [f32],
-    w: usize,
-    h: usize,
-}
-
-/// The same, writable — the canvas a warp paints onto.
-struct Buf<'a> {
-    px: &'a mut [f32],
-    w: usize,
-    h: usize,
-}
-
-/// Rasterize one triangle pair: every destination pixel inside `d` takes
-/// the source's color at the same barycentric spot in `s` — the per-
-/// triangle affine warp every GPU texture-maps with.
-fn warp(src: &Img, s: &[[f32; 2]; 3], d: &[[f32; 2]; 3], out: &mut Buf) {
-    let (sw, sh) = (src.w, src.h);
-    let (ow, oh) = (out.w, out.h);
-    let den = area2(*d);
-    if den.abs() < 1e-6 {
-        return; // degenerate or folded: nothing to paint
-    }
-    let (mut mn, mut mx) = ([f32::MAX, f32::MAX], [f32::MIN, f32::MIN]);
-    for p in d {
-        mn = [mn[0].min(p[0]), mn[1].min(p[1])];
-        mx = [mx[0].max(p[0]), mx[1].max(p[1])];
-    }
-    let x0 = mn[0].floor().max(0.0) as usize;
-    let x1 = mx[0].ceil().min(ow as f32 - 1.0) as usize;
-    let y0 = mn[1].floor().max(0.0) as usize;
-    let y1 = mx[1].ceil().min(oh as f32 - 1.0) as usize;
-    for y in y0..=y1 {
-        for x in x0..=x1 {
-            // Barycentric weights of the destination pixel center.
-            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let w0 = area2([d[1], d[2], [px, py]]) / den;
-            let w1 = area2([d[2], d[0], [px, py]]) / den;
-            let w2 = 1.0 - w0 - w1;
-            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
-                continue;
-            }
-            let sx = w0 * s[0][0] + w1 * s[1][0] + w2 * s[2][0];
-            let sy = w0 * s[0][1] + w1 * s[1][1] + w2 * s[2][1];
-            let c = sample(src.px, sw, sh, sx, sy);
-            let o = (y * ow + x) * 4;
-            out.px[o..o + 4].copy_from_slice(&c);
-        }
-    }
-}
-
-impl Morph {
-    /// Set up the morph: anchors (texture pixels, paired by order — b's
-    /// in b's own texture space) plus the four corners, triangulated
-    /// over a's points. Only b's size is needed: it normalizes anchors.
-    fn new(
-        a: &image::RgbaImage,
-        b_size: (u32, u32),
-        anchors_a: &[[f32; 2]],
-        anchors_b: &[[f32; 2]],
-    ) -> Self {
-        let (aw, ah) = (a.width() as f32, a.height() as f32);
-        let (bw, bh) = (b_size.0.max(1) as f32, b_size.1.max(1) as f32);
-        let (ow, oh) = (a.width(), a.height());
-        let mut pa: Vec<[f32; 2]> = Vec::new();
-        let mut pb_out: Vec<[f32; 2]> = Vec::new();
-        for (qa, qb) in anchors_a.iter().zip(anchors_b) {
-            pa.push(*qa);
-            // b's point in output space: normalized, then in a's pixels.
-            pb_out.push([qb[0] / bw * ow as f32, qb[1] / bh * oh as f32]);
-        }
-        // The corners close the mesh; one touching an anchor is dropped
-        // in both lists at once, so the indices stay aligned.
-        for (ca, cb) in corners(aw, ah).into_iter().zip(corners(bw, bh)) {
-            if pa.iter().any(|p| (p[0] - ca[0]).hypot(p[1] - ca[1]) < 1.0) {
-                continue;
-            }
-            pa.push(ca);
-            pb_out.push([cb[0] / bw * ow as f32, cb[1] / bh * oh as f32]);
-        }
-        let tris = triangulate(&pa);
-        Self {
-            tris,
-            pa,
-            pb_out,
-            a: premultiply(a),
-            aw: a.width() as usize,
-            ah: a.height() as usize,
-        }
-    }
-
-    /// Rasterize the morph at `t`: the mesh vertices slide from a's
-    /// points toward b's, and a's pixels are warped through the mesh —
-    /// no blending, every frame stays wholly a's texture.
-    fn frame(&self, t: f32) -> image::RgbaImage {
-        let (ow, oh) = (self.aw, self.ah);
-        let mid: Vec<[f32; 2]> = self
-            .pa
-            .iter()
-            .zip(&self.pb_out)
-            .map(|(a, b)| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
-            .collect();
-        let mut wa = vec![0f32; ow * oh * 4];
-        for tri in &self.tris {
-            let d = [mid[tri[0]], mid[tri[1]], mid[tri[2]]];
-            warp(
-                &Img {
-                    px: &self.a,
-                    w: self.aw,
-                    h: self.ah,
-                },
-                &[self.pa[tri[0]], self.pa[tri[1]], self.pa[tri[2]]],
-                &d,
-                &mut Buf {
-                    px: &mut wa,
-                    w: ow,
-                    h: oh,
-                },
-            );
-        }
-        let mut out = image::RgbaImage::new(ow as u32, oh as u32);
-        for (i, px) in out.pixels_mut().enumerate() {
-            let o = i * 4;
-            if wa[o + 3] > 1.0 / 510.0 {
-                // Unpremultiply back to straight alpha.
-                let a = wa[o + 3];
-                px[0] = (wa[o] / a * 255.0).round().clamp(0.0, 255.0) as u8;
-                px[1] = (wa[o + 1] / a * 255.0).round().clamp(0.0, 255.0) as u8;
-                px[2] = (wa[o + 2] / a * 255.0).round().clamp(0.0, 255.0) as u8;
-                px[3] = (a * 255.0).round().clamp(0.0, 255.0) as u8;
-            }
-        }
-        out
     }
 }
 
@@ -1868,7 +1298,6 @@ fn read_sprite(path: &std::path::Path) -> Result<Sprite, String> {
         history: Vec::new(),
         shape,
         thumb,
-        anchors: Vec::new(),
     })
 }
 
@@ -2191,13 +1620,6 @@ fn main() {
             was_undo: false,
             was_open: false,
             was_space: false,
-            tool: Tool::Edit,
-            anchor_slot: None,
-            anchor_press: None,
-            morph_a: None,
-            morph_b: None,
-            morph_frames: 9,
-            morph_time: 0.06,
             light: GREY_LIGHT,
             dark: GREY_DARK,
             checker_key: (0, 0, 0, 0),
@@ -2380,80 +1802,6 @@ mod tests {
             b.step();
         }
         assert_eq!(seq, vec![0, 1, 2, 1, 0, 1, 2, 1, 0]);
-    }
-
-    /// A solid sprite of one color, for the morph tests.
-    fn solid(w: u32, h: u32, c: [u8; 4]) -> image::RgbaImage {
-        image::RgbaImage::from_pixel(w, h, image::Rgba(c))
-    }
-
-    #[test]
-    fn triangulation_tiles_a_square() {
-        let sq = [[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]];
-        let tris = triangulate(&sq);
-        assert_eq!(tris.len(), 2);
-        // The two triangles together cover the square's 64 px².
-        let area: f32 = tris
-            .iter()
-            .map(|t| area2([sq[t[0]], sq[t[1]], sq[t[2]]]).abs())
-            .sum();
-        // `area2` is, by its name, twice the area: the 64 px² square
-        // sums to 128.
-        assert!((area - 128.0).abs() < 1e-3);
-    }
-
-    #[test]
-    fn triangulation_fans_from_a_center_anchor() {
-        let pts = [[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0], [4.0, 4.0]];
-        let tris = triangulate(&pts);
-        assert_eq!(tris.len(), 4);
-        assert!(tris.iter().all(|t| t.contains(&4))); // every fan slice
-        let area: f32 = tris
-            .iter()
-            .map(|t| area2([pts[t[0]], pts[t[1]], pts[t[2]]]).abs())
-            .sum();
-        assert!((area - 128.0).abs() < 1e-3);
-    }
-
-    #[test]
-    fn a_morph_begins_exactly_with_the_first_sprite() {
-        let red = solid(8, 8, [255, 0, 0, 255]);
-        // One anchor pair, plus the corners the mesh closes itself with.
-        // At t = 0 the mesh is the identity, so a's pixels come back
-        // untouched wherever the mesh covers.
-        let m = Morph::new(&red, (8, 8), &[[3.0, 3.0]], &[[5.0, 5.0]]);
-        let at0 = m.frame(0.0);
-        for (x, y) in [(1, 1), (4, 4), (6, 5)] {
-            assert_eq!(at0.get_pixel(x, y).0, [255, 0, 0, 255], "t=0 at {x},{y}");
-        }
-    }
-
-    #[test]
-    fn the_morph_drags_pixels_with_the_mesh() {
-        let red = solid(8, 8, [255, 0, 0, 255]);
-        // The top-left anchor slides down four pixels by t = 1: the
-        // corner it shares is dragged away, leaving bare canvas there
-        // while the far corner never moves.
-        let m = Morph::new(&red, (8, 8), &[[0.0, 0.0]], &[[0.0, 4.0]]);
-        assert_eq!(m.frame(0.0).get_pixel(0, 0).0, [255, 0, 0, 255]);
-        assert_eq!(m.frame(1.0).get_pixel(0, 0).0, [0, 0, 0, 0]);
-        assert_eq!(m.frame(1.0).get_pixel(7, 7).0, [255, 0, 0, 255]);
-    }
-
-    #[test]
-    fn the_morph_never_blends_the_two_textures() {
-        // b's texture is not even read: mid-morph pixels are a's own,
-        // never a mixture toward b's colors.
-        let red = solid(8, 8, [255, 0, 0, 255]);
-        let m = Morph::new(&red, (8, 8), &[[3.0, 3.0]], &[[5.0, 5.0]]);
-        assert_eq!(m.frame(0.5).get_pixel(4, 4).0, [255, 0, 0, 255]);
-    }
-
-    #[test]
-    fn morphing_a_sprite_into_itself_is_exact() {
-        let red = solid(8, 8, [255, 0, 0, 255]);
-        let m = Morph::new(&red, (8, 8), &[[2.0, 6.0]], &[[2.0, 6.0]]);
-        assert_eq!(m.frame(0.5).get_pixel(4, 4).0, [255, 0, 0, 255]);
     }
 
     #[test]

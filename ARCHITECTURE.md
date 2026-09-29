@@ -689,10 +689,8 @@ disk. Run with `cargo run --example <name>`
 |              | texture pixel), Ctrl-O opens into the next slot, Ctrl-Z undoes      |
 |              | crops, Save/Save As write PNG over a native confirm. An Animation   |
 |              | panel builds frames — each a set of layers with its own hold-time —  |
-|              | played on a clock that loops or ping-pongs (space plays); a Morph   |
-|              | panel pairs anchor points on two sprites (anchors a / b) and bakes  |
-|              | pure mesh-warp in-betweens — a's pixels through the sliding mesh,   |
-|              | no blending — spliced into the animation, which just plays them     |
+|              | played on a clock that loops or ping-pongs (space plays), previewed |
+|              | live in the work area                                               |
 | widgets      | the `Ui` layer: a draggable Tomato panel (three color sliders, a    |
 |              | Spin checkbox, a Speed slider, a Reset button) and an About label   |
 |              | panel drive a spinning face's color and rotation                    |
@@ -739,7 +737,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 183 passed + 5 doctests
-cargo test --examples    # expect 94 passed (the immortal example tests)
+cargo test --examples    # expect 88 passed (the immortal example tests)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0
 cargo run --example button   # hover-scale + click-swoosh check; window exits 0
