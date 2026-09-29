@@ -246,6 +246,7 @@ mod plant;
 mod save;
 mod tomato;
 mod vipers;
+mod worms;
 
 use assets_load::{Assets, Sounds};
 use fall::{Fall, FallPhase};
@@ -278,9 +279,9 @@ const BUG_N: usize = bugs::BUGS_PER_PLANT * PLANT_POS.len();
 /// The scene root's children, in draw order — the order in which `main`
 /// builds them in the scene: the grass underlay, the items panel, the
 /// plants group, the fallen-fruit container, the held-items panel, the
-/// vipers group, the bugs group, the active tool, the basket, the
-/// immortality badge, the carried fruit, and the game-over overlay. The
-/// root node itself is the dark ground background.
+/// vipers group, the bugs group, the worms group, the active tool, the
+/// basket, the immortality badge, the carried fruit, and the game-over
+/// overlay. The root node itself is the dark ground background.
 const CHILD_GRASS: usize = 0;
 const CHILD_ITEMS: usize = 1;
 const CHILD_PLANTS: usize = 2;
@@ -288,11 +289,12 @@ const CHILD_FALLEN_FRUIT: usize = 3;
 const CHILD_HELD: usize = 4;
 const CHILD_VIPERS: usize = 5;
 const CHILD_BUGS: usize = 6;
-const CHILD_TOOL: usize = 7;
-const CHILD_BASKET: usize = 8;
-const CHILD_BADGE: usize = 9;
-const CHILD_HELD_FRUIT: usize = 10;
-const CHILD_OVERLAY: usize = 11;
+const CHILD_WORMS: usize = 7;
+const CHILD_TOOL: usize = 8;
+const CHILD_BASKET: usize = 9;
+const CHILD_BADGE: usize = 10;
+const CHILD_HELD_FRUIT: usize = 11;
+const CHILD_OVERLAY: usize = 12;
 
 /// The game-over overlay node's children, in draw order: the "Game Over"
 /// title text, the Play button's rectangle, and the button's label. The
@@ -1030,6 +1032,10 @@ struct Demo {
     bug1: frost::Shape,
     bug2: frost::Shape,
     bug3: frost::Shape,
+    /// The two worm peristaltic frames, loaded once; the swarm's worm
+    /// nodes swap between them as cheap `Arc` clones.
+    worm1: frost::Shape,
+    worm2: frost::Shape,
     /// The flower shape, grown on a plant slice's spawn points from the
     /// frame its slice reaches full size; the plant nodes' flower leaves
     /// swap it in as cheap `Arc` clones.
@@ -1101,6 +1107,12 @@ struct Demo {
     /// plant starts growing, and the swarm steps and lays them out on the
     /// matching child of the bugs node (root's [`CHILD_BUGS`] child).
     bugs: bugs::Bugs,
+    /// The swarm of peristaltic worms crossing the soil: the worms emerge
+    /// from the convex hull of the plants' root anchors, crawl to a random
+    /// point of the same hull, and burrow back in — at most ten above
+    /// ground at once — and the swarm steps and lays them out on the
+    /// matching child of the worms node (root's [`CHILD_WORMS`] child).
+    worms: worms::Worms,
     /// The audio output and every clip the demo plays, decoded once at
     /// startup: the swarm's tjatter, plopp, and Aj arrays, and the
     /// singles — the bug death, the watering loop, the spray hiss, and
@@ -1219,6 +1231,7 @@ impl frost::Process for Demo {
         }
 
         self.step_vipers(ctx, dt, &anchors);
+        self.step_worms(ctx, dt, &anchors);
 
         let events = self.step_bugs(ctx, dt, &anchors, &started);
         self.play_bug_events(&events);
@@ -1332,6 +1345,12 @@ impl Demo {
             bug1: assets.bug1,
             bug2: assets.bug2,
             bug3: assets.bug3,
+            // The worm pool: fourteen slots, at most ten above ground,
+            // each worm's first underground delay staggered across the
+            // pool so the first wave trickles out instead of popping.
+            worms: worms::Worms::new([&assets.worm1, &assets.worm2]),
+            worm1: assets.worm1,
+            worm2: assets.worm2,
             sounds: assets.sounds,
             pouring: false,
             falls: Vec::new(),
@@ -1606,6 +1625,17 @@ impl Demo {
         self.bugs
             .layout(bugs_node, [&self.bug1, &self.bug2, &self.bug3]);
         events
+    }
+
+    /// Steps the worms' swarm, in parallel with everything else: the
+    /// worms live in the convex hull of the plants' root anchors, so the
+    /// same `anchors` the bugs and vipers step from feeds them, and the
+    /// swarm lays itself out on the matching child of the worms node
+    /// (root's [`CHILD_WORMS`] child).
+    fn step_worms(&mut self, ctx: &mut frost::Context, dt: f32, anchors: &[[f32; 2]]) {
+        let worms_node = &mut ctx.scene().root.children[CHILD_WORMS];
+        self.worms.step(dt, anchors);
+        self.worms.layout(worms_node, [&self.worm1, &self.worm2]);
     }
 
     /// Plays the bugs' last step's arrival sounds: a bug that just
@@ -2351,11 +2381,12 @@ impl Demo {
             water: 1.0,
             dryness: 0.0,
         });
-        // The swarms start empty again: both their layouts leave their
+        // The swarms start empty again: all three layouts leave their
         // stale children frozen, so the swarms are rebuilt, not just
         // re-stepped.
         self.vipers = vipers::Vipers::new(VIPER_IMAGE);
         self.bugs = bugs::Bugs::new([&self.bug1, &self.bug2, &self.bug3]);
+        self.worms = worms::Worms::new([&self.worm1, &self.worm2]);
         // The fruit goes back to the basket: the carried and the fallen
         // fruit come off the scene, the basket empties, and the starting
         // tomato re-seeds on the next frame, once the basket's fit is
@@ -2389,12 +2420,14 @@ impl Demo {
         self.rng = frost::Rng::new();
     }
 
-    /// Seeds both random streams from `seed` — the demo's particle-jitter
-    /// source and the bug swarm's spawn randomizer — so the whole run is
-    /// reproducible (`--seed`).
+    /// Seeds all three random streams from `seed` — the demo's
+    /// particle-jitter source, the bug swarm's spawn randomizer, and the
+    /// worms' spawn randomizer — so the whole run is reproducible
+    /// (`--seed`).
     fn set_seed(&mut self, seed: u64) {
         self.rng.set_state(seed);
         self.bugs.set_seed(seed);
+        self.worms.set_seed(seed);
     }
 
     /// Loads the last snapshot at start up (`--load`), pending for the
@@ -2496,6 +2529,7 @@ impl Demo {
             falls: self.falls.iter().map(save::FallState::from).collect(),
             bugs: self.bugs.state(),
             vipers: self.vipers.state(),
+            worms: self.worms.state(),
         }
     }
 
@@ -2535,7 +2569,8 @@ impl Demo {
         self.falls = snapshot.falls.iter().copied().map(Fall::from).collect();
         self.bugs.restore(&snapshot.bugs);
         self.vipers.restore(&snapshot.vipers);
-        // Both random streams resume from the snapshot's states.
+        self.worms.restore(&snapshot.worms);
+        // All three random streams resume from the snapshot's states.
         self.rng.set_state(snapshot.seed);
         self.bugs.set_seed(snapshot.bug_seed);
         // The particles are short-lived: their streams start over.
@@ -3254,6 +3289,19 @@ fn main() {
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
+                // The worms' swarm under the bench: one shape-less child
+                // per slot, in pool order; the process lays each worm's
+                // pose, flip, scale, and peristaltic frame out on its
+                // child every frame, and the underground slots — the ones
+                // in the soil — never draw. The group carries no shape or
+                // scale of its own; it sits under the tool node, so the
+                // cursor paints above the worms.
+                children: (0..worms::N)
+                    .map(|_| Box::new(frost::SceneNode::default()))
+                    .collect(),
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
                 // The active tool, starting with no shape: the mouse starts
                 // holding no tool at all. Every switch — a slot swap or the
                 // right-button switch — changes the shape — and the scale,
@@ -3717,10 +3765,10 @@ mod tests {
 
     /// The snapshot's round trip: capture the demo's state, perturb every
     /// part the snapshot carries — the scalars, the tools, a plant's water
-    /// and clocks, a carried fruit, a seed's flight, a fall, and both
-    /// random streams — and restore: the perturbations are fully reverted,
-    /// the random streams included, so a reloaded game continues the exact
-    /// same streams.
+    /// and clocks, a carried fruit, a seed's flight, a fall, the worms,
+    /// and all three random streams — and restore: the perturbations are
+    /// fully reverted, the random streams included, so a reloaded game
+    /// continues the exact same streams.
     #[test]
     fn a_snapshot_round_trips_the_demo_state() {
         let mut demo = Demo::new(Assets::load());
@@ -3757,6 +3805,8 @@ mod tests {
         demo.plants[0].plant.age(2.0);
         demo.vipers
             .step(1.0, &[[[0.0, 0.0]; vipers::LAYERS]; 1], &[]);
+        demo.worms
+            .step(1.0, &[[100.0, 100.0], [200.0, 100.0], [150.0, 200.0]]);
         let seed_before = demo.rng.state();
         demo.rng.in_range(0.0, 1.0);
         assert_ne!(demo.rng.state(), seed_before);
@@ -3809,9 +3859,11 @@ mod tests {
             plant::PlantState::from(&demo.plants[0].plant),
             snapshot.plants[0].plant
         );
-        // The swarms and both random streams resume exactly where they were.
+        // The swarms and all three random streams resume exactly where
+        // they were.
         assert_eq!(demo.vipers.state(), snapshot.vipers);
         assert_eq!(demo.bugs.state(), snapshot.bugs);
+        assert_eq!(demo.worms.state(), snapshot.worms);
         assert_eq!(demo.rng.state(), snapshot.seed);
     }
 

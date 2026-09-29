@@ -930,7 +930,10 @@ fn same_sprite(shape: &Option<frost::Shape>, frame: &frost::Shape) -> bool {
 /// Monotone chain: sort by (x, y), then build the lower and upper hulls
 /// popping while the last turn is not counter-clockwise. The six plant
 /// roots are distinct, so the hull has at least three vertices.
-fn convex_hull(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
+///
+/// Shared with the worms module, whose worms live in the same soil — the
+/// hull of the plant root anchors.
+pub(crate) fn convex_hull(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
     let mut v: Vec<[f32; 2]> = pts.to_vec();
     v.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
 
@@ -968,7 +971,10 @@ fn convex_hull(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
 /// The polygon is fanned from `poly[0]`; a triangle is picked with
 /// probability proportional to its area and then sampled uniformly by
 /// barycentric coordinates.
-fn sample_polygon(poly: &[[f32; 2]], rng: &mut Rng) -> [f32; 2] {
+///
+/// Shared with the worms module, which samples the same soil hull for its
+/// spawn and target points.
+pub(crate) fn sample_polygon(poly: &[[f32; 2]], rng: &mut Rng) -> [f32; 2] {
     let n = poly.len();
     let mut areas = Vec::with_capacity(n - 2);
     let mut total = 0.0f32;

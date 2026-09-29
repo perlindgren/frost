@@ -37,6 +37,12 @@ const BUG2A: &[u8] = include_bytes!("../../assets/sprites/Bug2a.png");
 /// The third bug walk frame, `assets/sprites/Bug3a.png`.
 const BUG3A: &[u8] = include_bytes!("../../assets/sprites/Bug3a.png");
 
+/// The first worm peristaltic frame, `assets/sprites/Worm1_crop.png`.
+const WORM1: &[u8] = include_bytes!("../../assets/sprites/Worm1_crop.png");
+
+/// The second worm peristaltic frame, `assets/sprites/Worm2_crop.png`.
+const WORM2: &[u8] = include_bytes!("../../assets/sprites/Worm2_crop.png");
+
 /// The inventory panel, `assets/sprites/items.png`.
 const ITEMS: &[u8] = include_bytes!("../../assets/sprites/items.png");
 
@@ -194,6 +200,10 @@ pub struct Assets {
     pub bug1: frost::Shape,
     pub bug2: frost::Shape,
     pub bug3: frost::Shape,
+    /// The two worm peristaltic frames: a slot's shape swaps between them
+    /// as the worm's body beats.
+    pub worm1: frost::Shape,
+    pub worm2: frost::Shape,
     /// The inventory panel, mid left: four slots, 0 to 3 from the top,
     /// the spray can resting in slot 2 and the watering can in slot 3.
     pub items: frost::Shape,
@@ -249,6 +259,8 @@ impl Assets {
             bug1: sprite("Bug1a.png", BUG1A),
             bug2: sprite("Bug2a.png", BUG2A),
             bug3: sprite("Bug3a.png", BUG3A),
+            worm1: sprite("Worm1_crop.png", WORM1),
+            worm2: sprite("Worm2_crop.png", WORM2),
             items: sprite("items.png", ITEMS),
             held_items: sprite("held_items.png", HELD_ITEMS),
             plant1: sprite("plant1.png", PLANT1),

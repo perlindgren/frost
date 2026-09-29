@@ -4,10 +4,11 @@
 //! one, and the `--load` command line flag loads it at start up.
 //!
 //! The snapshot carries the random streams' states — the demo's jitter
-//! source and the bug swarm's spawn randomizer — so a reloaded game
-//! continues the exact same random streams, and the demo's clock, the
-//! tools and their poses, the plants and their water reserves, the
-//! fallen fruit, the basket's fruit, the bugs, and the vipers.
+//! source, the bug swarm's spawn randomizer, and the worms' spawn
+//! randomizer — so a reloaded game continues the exact same random
+//! streams, and the demo's clock, the tools and their poses, the plants
+//! and their water reserves, the fallen fruit, the basket's fruit, the
+//! bugs, the vipers, and the worms.
 //!
 //! The format is versioned: [VERSION] names the layout this build reads,
 //! and [load] rejects a file written by any other version, so a future
@@ -20,12 +21,12 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Fly, Pick, Tool, WateredPlant, bugs,
     fall::{Fall, FallPhase},
-    plant, vipers,
+    plant, vipers, worms,
 };
 
 /// The snapshot format's version: the layout this build reads and writes.
 /// [load] rejects files whose version differs.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// A snapshot load's failure: the file is missing or unreadable, it is
 /// not valid RON, or it was written by another format version.
@@ -97,6 +98,8 @@ pub struct Snapshot {
     pub bugs: bugs::BugsState,
     /// The vipers' swarm state.
     pub vipers: vipers::VipersState,
+    /// The worms' swarm state.
+    pub worms: worms::WormsState,
 }
 
 /// A picked tomato, as of a snapshot: a plant fruit, by its plant and
