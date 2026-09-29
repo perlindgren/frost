@@ -11,7 +11,8 @@
 //! file is picked; canceling quits.
 //!
 //! The controls are a [`frost::Ui`] panel — one draggable "View" box (drag
-//! it by its title bar) laid out as a [`frost::Ui::table`]: three rows of
+//! it by its title bar, click the bar to fold it away) laid out as a
+//! [`frost::Ui::table`]: three rows of
 //! `[label | track | readout]` for the zoom and the checker's two grey
 //! levels, above the last-click line. The table gives each column a policy
 //! — the label column hugs its text and aligns left, the track column

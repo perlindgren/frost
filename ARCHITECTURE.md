@@ -556,8 +556,12 @@ button clicks, a checkbox toggles, a slider's value changes.
 - **Panels** are titled boxes anchored at a center `at` until the user
   **drags them by the title bar**; the dragged position is retained per
   title (hashed id). The body is as tall as the content asked for *last*
-  frame (first frame shows the title bar only, then it snaps open). Widgets
-  outside any panel stack in a root column at the window's top-left. A
+  frame (first frame shows the title bar only, then it snaps open), and it
+  grows **downward from the anchored title bar**. A **click** on the title
+  bar (a release that barely moved — measured from where the press began,
+  so dragging never folds) **folds** the panel to just its bar and folds it
+  back; a chevron on the bar shows the state. Widgets outside any panel
+  stack in a root column at the window's top-left. A
   panel **claims its whole area** (body included): presses land on the
   panel, never on a widget or the game behind it, and `Ui::hovering()` —
   the pointer over any widget or panel — lets a raw-input game tell UI
@@ -592,7 +596,7 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **181 tests + 5 doctests** passing, `cargo build --examples`
+Baseline: **183 tests + 5 doctests** passing, `cargo build --examples`
 clean. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
@@ -727,7 +731,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 
 ```
 cargo build --examples   # expect EXIT 0
-cargo test               # expect 181 passed + 5 doctests
+cargo test               # expect 183 passed + 5 doctests
 cargo test --examples    # expect 77 passed (the immortal example tests)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0

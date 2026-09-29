@@ -53,6 +53,9 @@ use crate::{Color, Context, TextError};
 /// the same label must hash to the same id on every frame.
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+/// How far the pointer may drift during a title-bar press and still count
+/// as a click (fold toggle) rather than a drag.
+const FOLD_DRAG_TOL: f32 = 4.0;
 
 /// The look and metrics of a [`Ui`], all fields public: read [`Default`]
 /// for the stock dark theme and overwrite what you want.
@@ -334,8 +337,9 @@ struct TableFrame {
     auto: Vec<f32>,
 }
 
-/// What a panel keeps between frames: where it was dragged to and how much
-/// room its content asked for, which is the body size the next frame draws.
+/// What a panel keeps between frames: where it was dragged to, how much
+/// room its content asked for (the body size the next frame draws), and
+/// whether the user has folded it to just its title bar.
 #[derive(Clone, Copy, Debug)]
 struct PanelState {
     /// The panel's center in user space.
@@ -345,6 +349,8 @@ struct PanelState {
     /// The panel's height: title bar plus the content height it recorded
     /// last frame (the first frame shows the title bar only).
     h: f32,
+    /// Whether a title-bar click has folded the body away.
+    folded: bool,
 }
 
 /// The immediate-mode widget layer. Keep one per window, owned by your
@@ -368,6 +374,9 @@ pub struct Ui {
     was_pressed: bool,
     /// The pointer where that press happened.
     press_pointer: Option<[f32; 2]>,
+    /// Where the most recent press started, held for the press's whole
+    /// life: a widget release far from here was a drag, not a click.
+    hold_origin: Option<[f32; 2]>,
     /// The widget that captured the press and is being dragged.
     active: Option<u64>,
     /// The widget released this frame, if its press started on it.
@@ -420,6 +429,7 @@ impl Ui {
             released: false,
             was_pressed: false,
             press_pointer: None,
+            hold_origin: None,
             active: None,
             released_active: None,
             hover: None,
@@ -516,6 +526,11 @@ impl Ui {
         self.released = released;
         self.was_pressed = pressed;
         self.press_pointer = if pressed { input.pointer } else { None };
+        if pressed {
+            // Remember where this press began: at release the distance
+            // from here tells a click (barely moved) from a drag (moved).
+            self.hold_origin = input.pointer;
+        }
         // Per-frame scratch.
         self.candidates.clear();
         self.z = self.style.base_z;
@@ -575,14 +590,16 @@ impl Ui {
             .layout
             .last_mut()
             .expect("Ui layout stack is never empty");
+        // The row hangs `row_gap` below the cursor: the rect's top edge
+        // sits at the gapped cursor and the cursor moves on to its bottom.
         layout.cursor -= style.row_gap;
-        layout.cursor -= h;
         let rect = Rect {
             left: layout.left,
             top: layout.cursor,
             w: layout.width,
             h,
         };
+        layout.cursor -= h;
         self.align = Align::Center;
         rect
     }
@@ -658,8 +675,8 @@ impl Ui {
             x.push(edge);
             edge += w + style.col_gap;
         }
-        // The table's first row sits exactly where a plain row would.
-        let top = cursor - style.row_gap - style.row_h;
+        // The table's first row hangs exactly where a plain row would.
+        let top = cursor - style.row_gap;
         self.layout
             .last_mut()
             .expect("Ui layout stack is never empty")
@@ -693,7 +710,7 @@ impl Ui {
             // rows would have, so the next widget stacks below normally.
             let n = frame.widths.len();
             let rows = frame.next.div_ceil(n) as f32;
-            let cursor = frame.top + style.row_gap + style.row_h;
+            let cursor = frame.top + style.row_gap;
             let layout = self
                 .layout
                 .last_mut()
@@ -1084,9 +1101,12 @@ impl Ui {
     ///
     /// The body's height is what the content asked for *last* frame, so the
     /// first frame shows the title bar only and the body snaps open on the
-    /// second. Dragging the title bar moves the panel; its position then
-    /// survives every frame and `at` is ignored — see [`Ui::panel_position`]
-    /// to read it back.
+    /// second; a height change keeps the title bar where it is and grows
+    /// (or shrinks) the body downward. Dragging the title bar moves the
+    /// panel — its position then survives every frame and `at` is ignored
+    /// (see [`Ui::panel_position`] to read it back) — while a *click* on
+    /// the title bar (press and release without moving) folds the panel to
+    /// just its title bar, and another click unfolds it.
     ///
     /// The panel claims the space it covers: the body absorbs presses and
     /// counts as [`Ui::hovering`], so a game reading the mouse can tell a
@@ -1112,22 +1132,52 @@ impl Ui {
                 pos: at,
                 w: width,
                 h: title_h,
+                folded: false,
             });
         let w = state.w;
-        let h = state.h;
-        let body = Rect::from_center(state.pos[0], state.pos[1], w, h);
+        let pos = state.pos;
+        let prev_h = state.h;
+        let prev_folded = state.folded;
+        // The geometry the panel presented last frame, for the hit test.
+        let hit_h = if prev_folded {
+            title_h
+        } else {
+            prev_h.max(title_h)
+        };
+        let hit_body = Rect::from_center(pos[0], pos[1], w, hit_h);
         let title_bar = Rect {
-            left: body.left,
-            top: body.top,
+            left: hit_body.left,
+            top: hit_body.top,
             w,
             h: title_h,
         };
         // The body claims the panel's whole area first, so the title bar —
         // registered after it — wins the overlap, and neither a widget nor
         // the game behind this panel can be hit through it.
-        self.interact(panel_body_id(title), body);
+        self.interact(panel_body_id(title), hit_body);
         // The title bar is a widget too: it claims the press for the drag.
         let it = self.interact(id, title_bar);
+        // A release is a click only while the pointer barely moved —
+        // dragging the bar to move the panel must not fold it.
+        let folded = if it.clicked && self.click_travel() < FOLD_DRAG_TOL {
+            !prev_folded
+        } else {
+            prev_folded
+        };
+        self.panels
+            .get_mut(&id)
+            .expect("entry was made above")
+            .folded = folded;
+        // Draw from the title bar down: its top edge is anchored, so the
+        // body opens and closes downward and the bar never jumps. A folded
+        // panel is just the bar.
+        let draw_h = if folded { title_h } else { prev_h.max(title_h) };
+        let anchor_top = title_bar.top;
+        {
+            let state = self.panels.get_mut(&id).expect("entry was made above");
+            state.pos[1] = anchor_top - draw_h / 2.0;
+        }
+        let body = Rect::from_center(pos[0], anchor_top - draw_h / 2.0, w, draw_h);
         self.fill(ctx, body, style.panel_bg);
         let bar = if it.held {
             style.widget_press
@@ -1137,13 +1187,46 @@ impl Ui {
             style.title_bg
         };
         self.fill(ctx, title_bar, bar);
-        let size = style.font_size;
+        // The fold chevron: pointing down when open, right when folded.
+        let z = self.z();
+        let [cx, cy] = [title_bar.left + pad + 2.0, title_bar.center()[1]];
+        let s = 4.5;
         let title_color = style.title_text;
+        if folded {
+            ctx.line(cx - s / 2.0, cy + s, cx + s / 2.0, cy, title_color, 2.0, z);
+            ctx.line(
+                cx + s / 2.0,
+                cy,
+                cx - s / 2.0,
+                cy - s,
+                title_color,
+                2.0,
+                z + 0.5,
+            );
+        } else {
+            ctx.line(cx - s, cy + s / 2.0, cx, cy - s / 2.0, title_color, 2.0, z);
+            ctx.line(
+                cx,
+                cy - s / 2.0,
+                cx + s,
+                cy + s / 2.0,
+                title_color,
+                2.0,
+                z + 0.5,
+            );
+        }
+        let size = style.font_size;
         let [tcx, tcy] = title_bar.center();
         let title_string = title.to_owned();
         self.text(ctx, [tcx, tcy], size, title_color, &title_string);
+        if folded {
+            // Nothing below the bar: the body stays closed.
+            let state = self.panels.get_mut(&id).expect("entry was made above");
+            state.h = title_h;
+            return;
+        }
         // The content layout, and the height it uses.
-        let top0 = body.top - title_h - pad;
+        let top0 = anchor_top - title_h - pad;
         self.layout.push(Layout {
             left: body.left + pad,
             width: (w - 2.0 * pad).max(0.0),
@@ -1153,8 +1236,20 @@ impl Ui {
         });
         content(self, ctx);
         let used = top0 - self.layout.pop().expect("just pushed").cursor;
+        let new_h = (title_h + pad * 2.0 + used).max(title_h);
         let state = self.panels.get_mut(&id).expect("entry was made above");
-        state.h = title_h + pad * 2.0 + used;
+        state.h = new_h;
+        // Grow (or shrink) downward from the anchored title bar.
+        state.pos[1] = anchor_top - new_h / 2.0;
+    }
+
+    /// How far the pointer sits from where the current (or most recent)
+    /// press began — below [`FOLD_DRAG_TOL`], a release counts as a click.
+    fn click_travel(&self) -> f32 {
+        match (self.hold_origin, self.pointer) {
+            (Some(o), Some(p)) => ((p[0] - o[0]).powi(2) + (p[1] - o[1]).powi(2)).sqrt(),
+            _ => 0.0,
+        }
     }
 }
 
@@ -1354,6 +1449,7 @@ mod tests {
                 pos: [0.0, 0.0],
                 w: 200.0,
                 h: 60.0,
+                folded: false,
             },
         );
         let title = Rect::from_center(0.0, 30.0 - 14.0, 200.0, 28.0);
@@ -1530,5 +1626,31 @@ mod tests {
         let grown = ui.row(ui.style.row_h);
         assert!((grown.w - 30.0).abs() < 1e-4, "auto column grew to content");
         ui.table_close("t");
+    }
+
+    // A title-bar press resolves its fold toggle from `click_travel`: a
+    // release near the press point toggles (a click), one far away is a
+    // drag and must leave the fold alone.
+    #[test]
+    fn a_still_release_reads_as_a_click() {
+        let mut ui = ui();
+        frame(&mut ui, Some([5.0, 5.0]), true); // press
+        frame(&mut ui, Some([5.0, 5.0]), false); // release, unmoved
+        assert!(
+            ui.click_travel() < FOLD_DRAG_TOL,
+            "an unmoved press reads as a click (would fold)"
+        );
+    }
+
+    #[test]
+    fn a_moved_release_reads_as_a_drag() {
+        let mut ui = ui();
+        frame(&mut ui, Some([0.0, 0.0]), true); // press
+        frame(&mut ui, Some([30.0, 0.0]), true); // dragged far, still held
+        frame(&mut ui, Some([60.0, 0.0]), false); // release far away
+        assert!(
+            ui.click_travel() >= FOLD_DRAG_TOL,
+            "a moved press reads as a drag (must not fold)"
+        );
     }
 }
