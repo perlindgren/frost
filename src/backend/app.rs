@@ -113,14 +113,15 @@ pub(crate) struct Frost<P: Process> {
     /// evicted right after the text is expanded; a sprite buffer's stale
     /// entry is evicted lazily, when a new buffer recycles its address.
     sprite_resources: HashMap<(u64, u64), (TextureView, Sampler)>,
-    /// The rasterized glyph atlas for each distinct `(font, size)` pair,
-    /// keyed by the font buffer's pointer and the size's bits. Kept between
+    /// The rasterized glyph atlas for each distinct `(font, size, weight)`
+    /// triple, keyed by the font buffer's pointer, the size's bits and the
+    /// weight's bits. Kept between
     /// frames so unchanged text never re-rasterizes and its pixel buffer —
     /// and therefore the GPU texture in `sprite_resources` — keeps a stable
     /// identity. A repack (a newly packed glyph) replaces the buffer and
     /// bumps its generation; the stale texture is evicted from
     /// `sprite_resources` right after the text is expanded.
-    text_atlases: HashMap<(u64, u32), text::Atlas>,
+    text_atlases: HashMap<(u64, u32, u32), text::Atlas>,
     /// The surface format the current pipelines were built for; they are only
     /// rebuilt when this changes.
     format: Option<TextureFormat>,

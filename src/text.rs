@@ -2,7 +2,7 @@
 //!
 //! A [`Shape::Text`] node is drawn with texture quads: the text is shaped
 //! into positioned glyphs, every unique glyph is rasterized once per
-//! (font, size) pair and packed into a shared shelf [`Atlas`], and each
+//! (font, size, weight) triple and packed into a shared shelf [`Atlas`], and each
 //! placed glyph becomes a sprite quad sampling its cell in the atlas
 //! texture. This module is pure CPU code; the GPU side is the regular
 //! sprite pipeline.
@@ -56,10 +56,20 @@ pub(crate) struct PlacedGlyph {
 /// Shapes `text` with `font` at `size` pixels per em and returns the pen
 /// position of every glyph, or `None` if `font` is not a usable
 /// TrueType/OpenType font.
-pub(crate) fn layout(font: &[u8], text: &str, size: f32) -> Option<TextLayout> {
+///
+/// `weight` instantiates the font's `wght` variation axis: `400.0` is the
+/// standard Regular, larger values render thicker (a variable font like
+/// FiraCode Variable carries a real weight axis; a static font has none
+/// and ignores the setting). Keep it equal to the [`rasterize`] call for
+/// the same text, so the measured advances and the drawn glyphs agree.
+pub(crate) fn layout(font: &[u8], text: &str, size: f32, weight: f32) -> Option<TextLayout> {
     let font = FontRef::from_index(font, 0)?;
     let mut context = ShapeContext::new();
-    let mut shaper = context.builder(font).size(size).build();
+    let mut shaper = context
+        .builder(font)
+        .size(size)
+        .variations(&[("wght", weight)])
+        .build();
     shaper.add_str(text);
     let metrics = shaper.metrics().scale(size);
     let mut width = 0.0;
@@ -105,10 +115,17 @@ pub(crate) struct RasterGlyph {
 /// Rasterizes the font's glyph `id` at `size` pixels per em into an 8-bit
 /// alpha mask, or `None` if the font is unusable or the glyph has no
 /// outlines (a space, for example).
-pub(crate) fn rasterize(font: &[u8], id: u16, size: f32) -> Option<RasterGlyph> {
+///
+/// `weight` instantiates the font's `wght` variation axis, exactly as in
+/// [`layout`].
+pub(crate) fn rasterize(font: &[u8], id: u16, size: f32, weight: f32) -> Option<RasterGlyph> {
     let font = FontRef::from_index(font, 0)?;
     let mut context = ScaleContext::new();
-    let mut scaler = context.builder(font).size(size).build();
+    let mut scaler = context
+        .builder(font)
+        .size(size)
+        .variations(&[("wght", weight)])
+        .build();
     let render = Render::new(&[Source::Outline]);
     let image = render.render(&mut scaler, id)?;
     let width = image.placement.width;
@@ -298,8 +315,8 @@ mod tests {
     #[test]
     fn layout_shapes_the_example_text() {
         let font = example_font();
-        let layout =
-            layout(&font, "hello world", 48.0).expect("the example font should shape the text");
+        let layout = layout(&font, "hello world", 48.0, 400.0)
+            .expect("the example font should shape the text");
         assert!(layout.ascent > 0.0, "the ascent should be positive");
         assert!(layout.descent >= 0.0, "the descent cannot be negative");
         // "hello world" is eleven characters; allow for a ligature or two.
@@ -334,9 +351,9 @@ mod tests {
     #[test]
     fn rasterize_inks_a_real_glyph_and_skips_a_missing_one() {
         let font = example_font();
-        let layout = layout(&font, "h", 48.0).expect("the font should shape 'h'");
+        let layout = layout(&font, "h", 48.0, 400.0).expect("the font should shape 'h'");
         let id = layout.glyphs[0].id;
-        let glyph = rasterize(&font, id, 48.0).expect("'h' should have outlines");
+        let glyph = rasterize(&font, id, 48.0, 400.0).expect("'h' should have outlines");
         assert!(glyph.width > 0 && glyph.height > 0);
         assert_eq!(glyph.data.len(), (glyph.width * glyph.height * 4) as usize);
         // The mask must contain actual ink.
@@ -345,7 +362,7 @@ mod tests {
             "the mask should be inked"
         );
         // A glyph id that does not exist in the font rasterizes to nothing.
-        assert!(rasterize(&font, 9999, 48.0).is_none());
+        assert!(rasterize(&font, 9999, 48.0, 400.0).is_none());
     }
 
     /// The rasterized mask must be top first: for 'h', the top half of the
@@ -354,8 +371,9 @@ mod tests {
     #[test]
     fn rasterize_produces_a_top_first_mask() {
         let font = example_font();
-        let layout = layout(&font, "h", 48.0).expect("the font should shape 'h'");
-        let glyph = rasterize(&font, layout.glyphs[0].id, 48.0).expect("'h' should have outlines");
+        let layout = layout(&font, "h", 48.0, 400.0).expect("the font should shape 'h'");
+        let glyph =
+            rasterize(&font, layout.glyphs[0].id, 48.0, 400.0).expect("'h' should have outlines");
         let w = glyph.width as usize;
         let h = glyph.height as usize;
         let row_ink = |row: usize| -> u32 {
@@ -442,11 +460,11 @@ mod tests {
         let font = include_bytes!("../assets/fonts/Leofont-Regular.ttf");
         let mut any_layout = false;
         for text in ["1920x1080", "FPS 60"] {
-            let layout = layout(font, text, 32.0).expect("font should shape");
+            let layout = layout(font, text, 32.0, 400.0).expect("font should shape");
             any_layout = true;
             let mut prev_end = f32::NEG_INFINITY;
             for g in &layout.glyphs {
-                let Some(r) = rasterize(font, g.id, 32.0) else {
+                let Some(r) = rasterize(font, g.id, 32.0, 400.0) else {
                     continue; // spaces have no ink; only the pen advances
                 };
                 let start = g.x + r.left as f32;
@@ -479,10 +497,10 @@ mod tests {
     fn firacode_digit_ink_is_not_uniform_below_the_baseline() {
         let font = include_bytes!("../assets/fonts/FiraCode-VariableFont_wght.ttf");
         let ink_bottom = |text: &str| {
-            let layout = layout(font, text, 32.0).expect("font should shape");
+            let layout = layout(font, text, 32.0, 400.0).expect("font should shape");
             let mut bottom = f32::INFINITY;
             for g in &layout.glyphs {
-                let Some(r) = rasterize(font, g.id, 32.0) else {
+                let Some(r) = rasterize(font, g.id, 32.0, 400.0) else {
                     continue; // spaces have no ink; only the pen advances
                 };
                 bottom = bottom.min(g.y + r.top as f32 - r.height as f32);
@@ -500,5 +518,41 @@ mod tests {
                 "a digit should carry ink below the baseline: {dipped} vs {flat}"
             );
         }
+    }
+
+    /// A heavier `wght` instance lays more ink down: the same glyph at 700
+    /// (bold) carries strictly more ink than at 400 (regular), while a
+    /// static font ignores the setting entirely. This is what makes
+    /// [`Shape::with_weight`] and `UiStyle::font_weight` render genuinely
+    /// thicker text on a variable font.
+    #[test]
+    fn a_heavier_weight_inks_a_variable_font_more() {
+        let font = include_bytes!("../assets/fonts/FiraCode-VariableFont_wght.ttf");
+        let ink = |weight: f32| -> u32 {
+            let layout = layout(font, "8", 32.0, weight).expect("font should shape '8'");
+            let raster = rasterize(font, layout.glyphs[0].id, 32.0, weight)
+                .expect("'8' should have outlines");
+            raster.data.chunks(4).map(|p| p[3] as u32).sum()
+        };
+        assert!(
+            ink(700.0) > ink(400.0),
+            "wght 700 should ink more than wght 400: {} vs {}",
+            ink(700.0),
+            ink(400.0)
+        );
+        // A static font has no weight axis, so the two instances are the
+        // same ink — the setting is inert, not an error.
+        let static_font = example_font();
+        let static_ink = |weight: f32| -> u32 {
+            let layout = layout(&static_font, "8", 32.0, weight).expect("font should shape '8'");
+            let raster = rasterize(&static_font, layout.glyphs[0].id, 32.0, weight)
+                .expect("'8' should have outlines");
+            raster.data.chunks(4).map(|p| p[3] as u32).sum()
+        };
+        assert_eq!(
+            static_ink(400.0),
+            static_ink(700.0),
+            "a static font should ignore the weight axis"
+        );
     }
 }

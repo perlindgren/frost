@@ -86,6 +86,11 @@ use crate::{Color, Context, KeyCode, Process, Scene, SceneNode, Shape, Transform
 /// The readout's font size in pixels per em.
 const SIZE: f32 = 32.0;
 
+/// The readout's weight on the font's `wght` variation axis: the plain
+/// Regular instance. The overlay's measurements below pair with
+/// `Shape::text_bytes`, whose shapes carry this same default weight.
+const WEIGHT: f32 = 400.0;
+
 /// The inset of the readout's top-left corner from the window's, in pixels.
 const MARGIN: f32 = 20.0;
 
@@ -501,7 +506,7 @@ impl Line {
 
     /// Re-lays out `text`, which must have just changed.
     fn refresh(&mut self, font: &Arc<[u8]>) {
-        let Some(layout) = crate::text::layout(font, &self.text, SIZE) else {
+        let Some(layout) = crate::text::layout(font, &self.text, SIZE, WEIGHT) else {
             return;
         };
         self.shape = Shape::text_bytes(font, &self.text, SIZE).ok();
@@ -515,7 +520,7 @@ impl Line {
         // never move the lines below.
         let mut ink_top = layout.ascent;
         for glyph in &layout.glyphs {
-            if let Some(raster) = crate::text::rasterize(font, glyph.id, SIZE) {
+            if let Some(raster) = crate::text::rasterize(font, glyph.id, SIZE, WEIGHT) {
                 ink_top = ink_top.max(glyph.y + raster.top as f32);
             }
         }
@@ -745,10 +750,10 @@ impl Diagnostics {
         // see `PROBE`. The font just validated, so the probe shapes; a
         // missing ink (an all-space probe) falls back to the font's
         // ascent-plus-descent.
-        let line_extent = if let Some(probe) = crate::text::layout(font, PROBE, SIZE) {
+        let line_extent = if let Some(probe) = crate::text::layout(font, PROBE, SIZE, WEIGHT) {
             let (mut top, mut bottom) = (f32::NEG_INFINITY, f32::INFINITY);
             for glyph in &probe.glyphs {
-                if let Some(raster) = crate::text::rasterize(font, glyph.id, SIZE) {
+                if let Some(raster) = crate::text::rasterize(font, glyph.id, SIZE, WEIGHT) {
                     let ink_top = glyph.y + raster.top as f32;
                     top = top.max(ink_top);
                     bottom = bottom.min(ink_top - raster.height as f32);
@@ -1422,10 +1427,10 @@ mod tests {
             "APP 12.12ms",
             "DRAW 42",
         ] {
-            let layout = crate::text::layout(FIRA, text, SIZE).unwrap();
+            let layout = crate::text::layout(FIRA, text, SIZE, WEIGHT).unwrap();
             let (mut top, mut bottom) = (f32::NEG_INFINITY, f32::INFINITY);
             for glyph in &layout.glyphs {
-                if let Some(raster) = crate::text::rasterize(FIRA, glyph.id, SIZE) {
+                if let Some(raster) = crate::text::rasterize(FIRA, glyph.id, SIZE, WEIGHT) {
                     let ink_top = glyph.y + raster.top as f32;
                     top = top.max(ink_top);
                     bottom = bottom.min(ink_top - raster.height as f32);

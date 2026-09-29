@@ -262,6 +262,7 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
             text: "hi".to_string(),
             font: Arc::new([0u8]),
             size: 12.0,
+            weight: 400.0,
             color: Color {
                 r: 1.0,
                 g: 1.0,

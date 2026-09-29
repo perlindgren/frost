@@ -80,6 +80,12 @@ pub struct UiStyle {
     pub track: Color,
     /// The label and title text size in pixels per em.
     pub font_size: f32,
+    /// The label and title text weight: the font's `wght` variation axis,
+    /// where 400.0 is Regular and 700.0 a full bold. The default 520.0 is
+    /// a Medium — a touch thicker than the plain Regular instance, which
+    /// reads well at small sizes on a dark panel. A font without a weight
+    /// axis (any static TTF) ignores it.
+    pub font_weight: f32,
     /// The height of a widget row, a button and a title bar.
     pub row_h: f32,
     /// The vertical gap between two rows.
@@ -164,6 +170,7 @@ impl Default for UiStyle {
                 a: 1.0,
             },
             font_size: 15.0,
+            font_weight: 520.0,
             row_h: 28.0,
             row_gap: 6.0,
             pad: 12.0,
@@ -274,6 +281,9 @@ pub struct Ui {
     active: Option<u64>,
     /// The widget released this frame, if its press started on it.
     released_active: Option<u64>,
+    /// The widget under the pointer, topmost first, resolved at `begin`
+    /// from the rects the previous frame declared (see `hovering`).
+    hover: Option<u64>,
     /// Every interactive rect declared so far this frame, in order.
     candidates: Vec<(u64, Rect)>,
     /// Each panel's retained position and size, keyed by its title id.
@@ -282,8 +292,9 @@ pub struct Ui {
     layout: Vec<Layout>,
     /// The next draw's `z`, counting up from `style.base_z`.
     z: f32,
-    /// Measured text widths, keyed by the string and the size's bits.
-    text_w: HashMap<(String, u32), f32>,
+    /// Measured text widths, keyed by the string and the bits of the size
+    /// and weight.
+    text_w: HashMap<(String, u32, u32), f32>,
 }
 
 impl Ui {
@@ -313,6 +324,7 @@ impl Ui {
             press_pointer: None,
             active: None,
             released_active: None,
+            hover: None,
             candidates: Vec::new(),
             panels: HashMap::new(),
             layout: Vec::new(),
@@ -345,22 +357,28 @@ impl Ui {
         self.begin_input(input);
     }
 
+    /// Whether the pointer is over any widget of the UI: the same hit test
+    /// the widgets themselves use, so a game that reads the mouse directly
+    /// can tell a click on the UI from a click on its own scene. False
+    /// until the frame after a panel first appears — the hit test runs on
+    /// the previous frame's rects, as the press does.
+    pub fn hovering(&self) -> bool {
+        self.hover.is_some()
+    }
+
     /// The input-free heart of [`Ui::begin`], separate so the interaction
     /// model is testable without a window.
     fn begin_input(&mut self, input: UiInput) {
         // A press seen last frame now resolves over the rects that frame
         // registered, last declared (topmost) first.
         let won = if self.was_pressed {
-            self.press_pointer.and_then(|p| {
-                self.candidates
-                    .iter()
-                    .rev()
-                    .find(|(_, r)| r.contains(p))
-                    .map(|(id, _)| *id)
-            })
+            self.press_pointer.and_then(|p| self.topmost(p))
         } else {
             None
         };
+        // The hover resolves the same way, against the live pointer, and
+        // feeds both the widget hover states and `hovering`.
+        self.hover = input.pointer.and_then(|p| self.topmost(p));
         let pressed = input.down && !self.prev_down;
         let released = !input.down && self.prev_down;
         let drag = match (input.pointer, self.prev_pointer) {
@@ -431,18 +449,28 @@ impl Ui {
         }
     }
 
+    /// The last (topmost) rect of the previous frame that holds `p`, with
+    /// its id — the frame's single hit test, shared by the press
+    /// resolution and the hover.
+    fn topmost(&self, p: [f32; 2]) -> Option<u64> {
+        self.candidates
+            .iter()
+            .rev()
+            .find(|(_, r)| r.contains(p))
+            .map(|(id, _)| *id)
+    }
+
     /// Asks whether the press, hold and release belong to `id` and its
     /// rect, and registers the rect so next frame's press can find it.
     fn interact(&mut self, id: u64, rect: Rect) -> Interaction {
-        let hot_here = self.pointer.is_some_and(|p| rect.contains(p));
         let held = self.active == Some(id);
         self.candidates.push((id, rect));
         Interaction {
             // Hover shows only while no other widget holds the press.
-            hot: hot_here && (held || self.active.is_none()),
+            hot: self.hover == Some(id) && (held || self.active.is_none()),
             held,
             pressed: held && self.down,
-            clicked: self.released_active == Some(id) && hot_here,
+            clicked: self.released_active == Some(id) && self.hover == Some(id),
         }
     }
 
@@ -459,10 +487,11 @@ impl Ui {
         ctx.rectangle(cx, cy, rect.w / 2.0, rect.h / 2.0, color, self.z());
     }
 
-    /// Draws centered text at `p`.
+    /// Draws centered text at `p`, at the style's label weight.
     fn text(&mut self, ctx: &mut Context, p: [f32; 2], size: f32, color: Color, s: &str) {
         let z = self.z();
-        ctx.text(p[0], p[1], &self.font, s, size, color, z);
+        let weight = self.style.font_weight;
+        ctx.text(p[0], p[1], &self.font, s, size, weight, color, z);
     }
 
     /// Draws `s` centered on the x `center` of the line `y`.
@@ -478,14 +507,15 @@ impl Ui {
         self.text(ctx, [center, y], size, color, s);
     }
 
-    /// The advance width of `s` at the given size, measured once per string
-    /// and size and remembered.
+    /// The advance width of `s` at the given size and the style's label
+    /// weight, measured once per (string, size, weight) and remembered.
     fn text_width(&mut self, s: &str, size: f32) -> f32 {
-        let key = (s.to_owned(), size.to_bits());
+        let weight = self.style.font_weight;
+        let key = (s.to_owned(), size.to_bits(), weight.to_bits());
         if let Some(w) = self.text_w.get(&key) {
             return *w;
         }
-        let w = crate::text::layout(&self.font, s, size)
+        let w = crate::text::layout(&self.font, s, size, weight)
             .map(|l| l.width)
             .unwrap_or(0.0);
         self.text_w.insert(key, w);
@@ -742,6 +772,11 @@ impl Ui {
     /// second. Dragging the title bar moves the panel; its position then
     /// survives every frame and `at` is ignored — see [`Ui::panel_position`]
     /// to read it back.
+    ///
+    /// The panel claims the space it covers: the body absorbs presses and
+    /// counts as [`Ui::hovering`], so a game reading the mouse can tell a
+    /// click on the panel from one on its scene, and widgets behind the
+    /// panel are never hit through it.
     pub fn panel(
         &mut self,
         ctx: &mut Context,
@@ -772,6 +807,10 @@ impl Ui {
             w,
             h: title_h,
         };
+        // The body claims the panel's whole area first, so the title bar —
+        // registered after it — wins the overlap, and neither a widget nor
+        // the game behind this panel can be hit through it.
+        self.interact(panel_body_id(title), body);
         // The title bar is a widget too: it claims the press for the drag.
         let it = self.interact(id, title_bar);
         self.fill(ctx, body, style.panel_bg);
@@ -832,6 +871,17 @@ fn panel_id(title: &str) -> u64 {
     h
 }
 
+/// The id of a panel's non-interactive body claim: its own domain, so a
+/// press on the panel background captures nothing that the drag loop
+/// mistakes for a panel move.
+fn panel_body_id(title: &str) -> u64 {
+    let mut h = FNV_OFFSET;
+    for b in b"panel-body".iter().chain(title.as_bytes()) {
+        h = (h ^ *b as u64).wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -871,15 +921,19 @@ mod tests {
     fn press_arms_next_frame_and_click_needs_release_over() {
         let mut ui = ui();
         // Frame 1: the widget registers its rect; a press lands on it.
+        // Hover resolves from last frame's rects, so this frame it is not
+        // hot yet — one frame of latency is the documented model.
         frame(&mut ui, Some([0.0, 0.0]), true);
         let id = widget_id(0, "go");
         let rect = Rect::from_center(0.0, 0.0, 100.0, 30.0);
         let it = ui.interact(id, rect);
-        assert!(it.hot);
+        assert!(!it.hot, "the rect is only known next frame");
         assert!(!it.held, "a press arms with a frame of latency");
-        // Frame 2: still held, no release.
+        // Frame 2: still held, no release; now hover sees the rect.
         frame(&mut ui, Some([0.0, 0.0]), true);
         let it = ui.interact(id, rect);
+        assert!(it.hot);
+        assert!(ui.hovering(), "the same resolution backs `hovering`");
         assert!(it.held);
         assert!(it.pressed);
         assert!(!it.clicked);
@@ -984,5 +1038,47 @@ mod tests {
         assert!(r.contains([-50.0, -10.0]));
         assert!(!r.contains([50.01, 0.0]));
         assert!(!r.contains([0.0, 10.01]));
+    }
+
+    #[test]
+    fn hovering_follows_the_previous_frames_rects() {
+        let mut ui = ui();
+        frame(&mut ui, Some([0.0, 0.0]), false);
+        assert!(!ui.hovering());
+        let rect = Rect::from_center(0.0, 0.0, 100.0, 30.0);
+        ui.interact(widget_id(0, "go"), rect);
+        // Next frame, same spot: the rect registered last frame is hit.
+        frame(&mut ui, Some([0.0, 0.0]), false);
+        assert!(ui.hovering());
+        // A pointer outside every rect — and no pointer at all — hover
+        // nothing.
+        frame(&mut ui, Some([300.0, 100.0]), false);
+        assert!(!ui.hovering());
+        frame(&mut ui, None, false);
+        assert!(!ui.hovering());
+    }
+
+    #[test]
+    fn a_later_panel_blocks_the_earlier_one() {
+        let mut ui = ui();
+        let under = widget_id(0, "go");
+        let over = panel_body_id("Cover");
+        let r_under = Rect::from_center(0.0, 0.0, 100.0, 30.0);
+        let r_over = Rect::from_center(0.0, 0.0, 200.0, 60.0);
+        frame(&mut ui, Some([0.0, 0.0]), true);
+        // Declared order: the covered widget first, the covering panel body
+        // after it (panels draw over what came before).
+        ui.interact(under, r_under);
+        ui.interact(over, r_over);
+        // The press resolves to the topmost claim — the panel body, whose
+        // id is no panel's, so it captures the press and moves nothing.
+        frame(&mut ui, Some([0.0, 0.0]), true);
+        assert_eq!(ui.active, Some(over));
+        let it = ui.interact(under, r_under);
+        assert!(
+            !it.hot,
+            "the covered widget shows no hover through the panel"
+        );
+        assert!(!it.clicked);
     }
 }

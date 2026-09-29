@@ -50,6 +50,7 @@ fn expand_text_splices_glyph_sprites_in_place() {
             font: font.clone(),
             text: "hi".to_string(),
             size,
+            weight: 400.0,
             color: tint,
             alpha: 0.9,
             lit: 1.0,
@@ -63,12 +64,12 @@ fn expand_text_splices_glyph_sprites_in_place() {
             z: 2.0,
         },
     ];
-    let mut atlases: HashMap<(u64, u32), text::Atlas> = HashMap::new();
+    let mut atlases: HashMap<(u64, u32, u32), text::Atlas> = HashMap::new();
     canvas.expand_text(&mut atlases);
 
     // The layout's glyph count is the source of truth for how many
     // sprites the text should produce (every glyph of "hi" has ink).
-    let layout = text::layout(&font, "hi", size).expect("the test font should shape 'hi'");
+    let layout = text::layout(&font, "hi", size, 400.0).expect("the test font should shape 'hi'");
     assert_eq!(canvas.draws.len(), 2 + layout.glyphs.len());
     let [Draw::Circle { z: z0, .. }, .., Draw::Circle { z: z1, .. }] = &canvas.draws[..] else {
         panic!("the circles must keep their slots");
@@ -117,8 +118,12 @@ fn expand_text_reuses_the_atlas_across_frames() {
     // GPU texture is reused and no bytes are re-uploaded.
     let font = test_font();
     let size: f32 = 48.0;
-    let mut atlases: HashMap<(u64, u32), text::Atlas> = HashMap::new();
-    let key = (Arc::as_ptr(&font) as *const () as u64, size.to_bits());
+    let mut atlases: HashMap<(u64, u32, u32), text::Atlas> = HashMap::new();
+    let key = (
+        Arc::as_ptr(&font) as *const () as u64,
+        size.to_bits(),
+        400.0f32.to_bits(),
+    );
 
     let mut frame = || {
         let mut canvas = Canvas::new((800, 600));
@@ -129,6 +134,7 @@ fn expand_text_reuses_the_atlas_across_frames() {
             font: font.clone(),
             text: "hello world".to_string(),
             size,
+            weight: 400.0,
             color: Color {
                 r: 1.0,
                 g: 1.0,
@@ -154,14 +160,14 @@ fn expand_text_reuses_the_atlas_across_frames() {
 
 #[test]
 fn expand_text_packs_glyphs_first_seen_on_a_later_frame() {
-    // The atlas key (font, size) is registered on the first frame; a later
+    // The atlas key (font, size, weight) is registered on the first frame; a later
     // frame whose text introduces new glyphs must rasterize them into the
     // same persistent atlas and draw them. The diagnostics readout relies
     // on this: its "FPS" line's glyphs never appear in its "size" line's
     // first-frame text.
     let font = test_font();
     let size = 48.0;
-    let mut atlases: HashMap<(u64, u32), text::Atlas> = HashMap::new();
+    let mut atlases: HashMap<(u64, u32, u32), text::Atlas> = HashMap::new();
 
     let mut frame = |text: &str| -> usize {
         let mut canvas = Canvas::new((800, 600));
@@ -172,6 +178,7 @@ fn expand_text_packs_glyphs_first_seen_on_a_later_frame() {
             font: font.clone(),
             text: text.to_string(),
             size,
+            weight: 400.0,
             color: Color {
                 r: 1.0,
                 g: 1.0,

@@ -225,6 +225,10 @@ pub(crate) enum Draw {
         text: String,
         /// The font size in pixels per em.
         size: f32,
+        /// The `wght` variation axis value; 400.0 is Regular. Part of the
+        /// glyph atlas's key, so the same font and size at two weights get
+        /// two atlases.
+        weight: f32,
         /// The glyph color.
         color: Color,
         /// The text's opacity.

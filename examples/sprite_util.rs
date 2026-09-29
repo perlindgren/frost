@@ -10,18 +10,18 @@
 //! far from the window). It is modal, so the frame loop blocks until a
 //! file is picked; canceling quits.
 //!
-//! The engine has no widget toolkit, so the sliders are built from scene
-//! primitives — a thin rectangle track with a circle handle, repositioned
-//! every frame from the window size. Pointer state comes from
-//! [`frost::Context::mouse_position`], [`frost::Context::mouse_button_down`]
-//! and [`frost::Context::mouse_wheel`]: pressing a track or handle and
-//! dragging scrubs that slider — the zoom, or one of the checker's grey
-//! levels — the wheel zooms about the cursor (the point under it stays
-//! put), a right-drag grabs the canvas and moves the sprite with the
-//! cursor, and a left click anywhere else is a sprite click — its window
-//! position is converted to the texture's pixel space (`(0, 0)` upper-left,
-//! `x` right, `y` down, shifted by the pan and divided by the current
-//! zoom) and printed with `log::info!`, with a marker dot left at the spot.
+//! The controls are a [`frost::Ui`] panel — one draggable "View" box (drag
+//! it by its title bar) holding the three sliders (the zoom, and the
+//! checker's two grey levels) and the last-click readout. Panel and sliders
+//! own their interaction state; the example just declares them every frame
+//! and reads the values back. The wheel zooms about the cursor (the point
+//! under it stays put), a right-drag grabs the canvas and moves the sprite
+//! with the cursor, and a left click anywhere the UI does not cover is a
+//! sprite click — its window position is converted to the texture's pixel
+//! space (`(0, 0)` upper-left, `x` right, `y` down, shifted by the pan and
+//! divided by the current zoom) and printed with `log::info!`, with a
+//! marker dot left at the spot. [`frost::Ui::hovering`] is what tells the
+//! two apart: a press the UI claims never logs a pixel.
 //!
 //! The checkerboard is the sprite's on-screen bounding box, clipped to the
 //! window, filled with light/dark grey cells that never scale with the
@@ -81,20 +81,8 @@ const ZOOM_MAX: f32 = 4.0;
 /// out.
 const WHEEL_ZOOM: f32 = 1.15;
 
-/// The slider track's half-width, in pixels.
-const TRACK_HALF: f32 = 150.0;
-
-/// The slider's distance from the window's bottom edge, in pixels.
-const SLIDER_MARGIN: f32 = 48.0;
-
-/// The slider handle's radius, in pixels.
-const HANDLE_RADIUS: f32 = 7.0;
-
-/// The vertical tolerance for grabbing a slider, in pixels.
-const SLIDER_GRAB: f32 = 16.0;
-
-/// The spacing between the sliders' rows, in pixels.
-const SLIDER_ROW: f32 = 46.0;
+/// The controls panel's width, in pixels.
+const PANEL_W: f32 = 300.0;
 
 /// The checker cell's edge, in window pixels: the pattern never scales
 /// with the sprite — one cell is always 16 pixels on screen.
@@ -110,18 +98,6 @@ const BG: frost::Color = frost::Color {
     r: 0.09,
     g: 0.09,
     b: 0.11,
-    a: 1.0,
-};
-const TRACK: frost::Color = frost::Color {
-    r: 0.35,
-    g: 0.38,
-    b: 0.45,
-    a: 1.0,
-};
-const HANDLE: frost::Color = frost::Color {
-    r: 1.0,
-    g: 0.8,
-    b: 0.3,
     a: 1.0,
 };
 const MARKER: frost::Color = frost::Color {
@@ -147,19 +123,10 @@ const BBOX_Z: f32 = 1.5;
 /// The checker backdrop's order: behind the sprite and the HUD.
 const CHECK_ORDER: f32 = -1.0;
 
-/// The window's three sliders, in their rows' bottom-to-top order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Slider {
-    /// The zoom slider, the bottom row.
-    Zoom,
-    /// The checker's light grey level, the middle row.
-    Light,
-    /// The checker's dark grey level, the top row.
-    Dark,
-}
-
 /// The demo's state.
 struct Demo {
+    /// The widget layer: the View panel and its sliders.
+    ui: frost::Ui,
     /// The current zoom: the sprite's scale factor (1.0 is texture size).
     zoom: f32,
     /// The sprite's pan offset from the window's center, in window pixels;
@@ -177,8 +144,6 @@ struct Demo {
     /// 0-255 quantized — the texture is rebuilt only when one of them
     /// changes.
     checker_key: (u32, u32, u8, u8),
-    /// Which slider handle is being dragged, if one is.
-    dragging: Option<Slider>,
     /// Whether the left mouse button was held on the previous frame: the
     /// rising edge of the two is the click.
     was_down: bool,
@@ -245,12 +210,6 @@ impl frost::Process for Demo {
         }
 
         let (w, h) = ctx.size();
-        // The three slider rows, bottom to top: the zoom, then the
-        // checker's two grey levels.
-        let y_zoom = -h / 2.0 + SLIDER_MARGIN;
-        let y_light = y_zoom + SLIDER_ROW;
-        let y_dark = y_light + SLIDER_ROW;
-
         let down = ctx.mouse_button_down(frost::MouseButton::Left);
         let rdown = ctx.mouse_button_down(frost::MouseButton::Right);
         let clicked = down && !self.was_down;
@@ -284,64 +243,55 @@ impl frost::Process for Demo {
             self.offset[1] += my - ly;
         }
 
-        if let Some([mx, my]) = pos {
-            // The slider row under the cursor, if any: each track has a
-            // generous hit box, wide enough to grab the handle from either
-            // side. The topmost matching row wins, so the rows never
-            // fight.
-            let over = [
-                (Slider::Zoom, y_zoom),
-                (Slider::Light, y_light),
-                (Slider::Dark, y_dark),
-            ]
-            .iter()
-            .find(|(_, y)| mx.abs() <= TRACK_HALF + HANDLE_RADIUS && (my - y).abs() <= SLIDER_GRAB)
-            .map(|(s, _)| *s);
+        // The UI frame: the View panel's sliders read and write the demo's
+        // values, and its body claims the mouse over the panel — a press
+        // the UI holds is never a sprite click below.
+        self.ui.begin(ctx);
+        let click_label = match &self.last_click {
+            Some(([px, py], inside)) => format!(
+                "click: ({px:.1}, {py:.1}) {}",
+                if *inside { "inside" } else { "outside" }
+            ),
+            None => String::from("click: none"),
+        };
+        self.ui.panel(
+            ctx,
+            "View",
+            [-w / 2.0 + PANEL_W / 2.0 + 20.0, h / 2.0 - 120.0],
+            PANEL_W,
+            |ui, ctx| {
+                ui.slider(ctx, "Zoom", &mut self.zoom, ZOOM_MIN, ZOOM_MAX);
+                ui.slider(ctx, "Light", &mut self.light, 0.0, 1.0);
+                ui.slider(ctx, "Dark", &mut self.dark, 0.0, 1.0);
+                ui.space(6.0);
+                ui.label(ctx, &click_label);
+            },
+        );
 
-            if down {
-                // A press on a slider — or a drag that wandered off it —
-                // scrubs it: the pointer's x maps linearly onto the track.
-                if over.is_some() || self.dragging.is_some() {
-                    // `or` (not `unwrap_or`): the argument of `unwrap_or`
-                    // is evaluated eagerly, so it would panic on a plain
-                    // press while no drag is in progress.
-                    let s = over
-                        .or(self.dragging)
-                        .expect("a press or drag is in progress");
-                    self.dragging = Some(s);
-                    let t = ((mx + TRACK_HALF) / (2.0 * TRACK_HALF)).clamp(0.0, 1.0);
-                    match s {
-                        Slider::Zoom => self.zoom = ZOOM_MIN + t * (ZOOM_MAX - ZOOM_MIN),
-                        Slider::Light => self.light = t,
-                        Slider::Dark => self.dark = t,
-                    }
+        // A click the UI did not claim: report the position relative to
+        // the sprite. The sprite sits at the window's center plus
+        // `offset`, at scale `zoom`, so window coordinates map to texture
+        // pixels with `px = (x - ox) / zoom + w/2` and
+        // `py = h/2 - (y - oy) / zoom` — the y flip included, since the
+        // texture's y grows down.
+        if clicked
+            && !self.ui.hovering()
+            && let Some([mx, my]) = pos
+        {
+            let [tw, th] = self.size;
+            let px = (mx - self.offset[0]) / self.zoom + tw / 2.0;
+            let py = th / 2.0 - (my - self.offset[1]) / self.zoom;
+            let inside = px >= 0.0 && px <= tw && py >= 0.0 && py <= th;
+            log::info!(
+                "click at sprite pixel ({px:.1}, {py:.1}) of {tw:.0}x{th:.0} '{name}' — {where}",
+                name = self.name,
+                where = if inside {
+                    "inside the texture"
+                } else {
+                    "outside the texture"
                 }
-            } else {
-                self.dragging = None;
-            }
-
-            // A click that is not on a slider: report the position
-            // relative to the sprite. The sprite sits at the window's
-            // center plus `offset`, at scale `zoom`, so window coordinates
-            // map to texture pixels with `px = (x - ox) / zoom + w/2` and
-            // `py = h/2 - (y - oy) / zoom` — the y flip included, since the
-            // texture's y grows down.
-            if clicked && over.is_none() && self.dragging.is_none() {
-                let [tw, th] = self.size;
-                let px = (mx - self.offset[0]) / self.zoom + tw / 2.0;
-                let py = th / 2.0 - (my - self.offset[1]) / self.zoom;
-                let inside = px >= 0.0 && px <= tw && py >= 0.0 && py <= th;
-                log::info!(
-                    "click at sprite pixel ({px:.1}, {py:.1}) of {tw:.0}x{th:.0} '{name}' — {where}",
-                    name = self.name,
-                    where = if inside {
-                        "inside the texture"
-                    } else {
-                        "outside the texture"
-                    }
-                );
-                self.last_click = Some(([px, py], inside));
-            }
+            );
+            self.last_click = Some(([px, py], inside));
         }
 
         // The sprite's node carries the pan and the zoom: a uniform scale
@@ -369,7 +319,7 @@ impl frost::Process for Demo {
             bx1.min(w / 2.0),
             by1.min(h / 2.0),
         );
-        let checker = &mut ctx.scene().root.children[7];
+        let checker = &mut ctx.scene().root.children[3];
         if rx1 > rx0 && ry1 > ry0 && tw > 0.0 {
             let cw = ((rx1 - rx0) / CHECK_CELL).ceil() as u32;
             let ch = ((ry1 - ry0) / CHECK_CELL).ceil() as u32;
@@ -404,57 +354,14 @@ impl frost::Process for Demo {
             ctx.line(bx0, by1, bx0, by0, BBOX, BBOX_WIDTH, BBOX_Z);
         }
 
-        // Lay out the sliders and their labels from the current window
-        // size, so resizing the window keeps everything pinned in place.
-        let track = &mut ctx.scene().root.children[1];
-        track.transform = frost::Transform::translate([0.0, y_zoom]);
-        let t = (self.zoom - ZOOM_MIN) / (ZOOM_MAX - ZOOM_MIN);
-        let handle = &mut ctx.scene().root.children[2];
-        handle.transform =
-            frost::Transform::translate([-TRACK_HALF + t * 2.0 * TRACK_HALF, y_zoom]);
-        let zoom_label = &mut ctx.scene().root.children[3];
-        zoom_label.transform = frost::Transform::translate([0.0, y_zoom + 22.0]);
-        set_text(&mut zoom_label.shape, format!("zoom: {:.2}x", self.zoom));
-        let light_track = &mut ctx.scene().root.children[8];
-        light_track.transform = frost::Transform::translate([0.0, y_light]);
-        let light_handle = &mut ctx.scene().root.children[9];
-        light_handle.transform =
-            frost::Transform::translate([-TRACK_HALF + self.light * 2.0 * TRACK_HALF, y_light]);
-        let dark_track = &mut ctx.scene().root.children[10];
-        dark_track.transform = frost::Transform::translate([0.0, y_dark]);
-        let dark_handle = &mut ctx.scene().root.children[11];
-        dark_handle.transform =
-            frost::Transform::translate([-TRACK_HALF + self.dark * 2.0 * TRACK_HALF, y_dark]);
-        let light_label = &mut ctx.scene().root.children[12];
-        light_label.transform = frost::Transform::translate([0.0, y_light + 22.0]);
-        set_text(
-            &mut light_label.shape,
-            format!("light grey: {:.2}", self.light),
-        );
-        let dark_label = &mut ctx.scene().root.children[13];
-        dark_label.transform = frost::Transform::translate([0.0, y_dark + 22.0]);
-        set_text(
-            &mut dark_label.shape,
-            format!("dark grey: {:.2}", self.dark),
-        );
-        let readout = &mut ctx.scene().root.children[4];
-        readout.transform = frost::Transform::translate([0.0, y_zoom - 22.0]);
-        set_text(
-            &mut readout.shape,
-            match &self.last_click {
-                Some(([px, py], inside)) => format!(
-                    "last click: pixel ({px:.1}, {py:.1}) ({})",
-                    if *inside { "inside" } else { "outside" }
-                ),
-                None => String::from("last click: none"),
-            },
-        );
-        let help = &mut ctx.scene().root.children[5];
+        // The usage line, pinned near the top edge, so resizing keeps it
+        // in place.
+        let help = &mut ctx.scene().root.children[1];
         help.transform = frost::Transform::translate([0.0, h / 2.0 - 28.0]);
 
         // The marker dot rides the last click in window space — the inverse
         // of the conversion above — and shrinks away when there is none.
-        let marker = &mut ctx.scene().root.children[6];
+        let marker = &mut ctx.scene().root.children[2];
         if let Some(([px, py], _)) = self.last_click {
             let [tw, th] = self.size;
             marker.transform = frost::Transform::translate([
@@ -471,14 +378,6 @@ impl frost::Process for Demo {
         // The cursor's position for next frame's right-drag delta; `None`
         // (outside the window) clears it, so re-entering never jumps.
         self.last_mouse = pos;
-    }
-}
-
-/// Replaces the string of a node's text shape in place, leaving the rest
-/// of the node (its font, size, and transform) alone.
-fn set_text(shape: &mut Option<frost::Shape>, text: String) {
-    if let Some(frost::Shape::Text { text: t, .. }) = shape {
-        *t = text;
     }
 }
 
@@ -578,15 +477,19 @@ fn main() {
         None => (None, [0.0, 0.0], String::new()),
     };
 
-    // The HUD's font, the same monospaced coding font the diagnostics
-    // overlay uses.
+    // The HUD font, the same monospaced variable font the diagnostics
+    // overlay uses — shared by the panel's labels and the usage line.
     let font = format!("{root}/assets/fonts/FiraCode-VariableFont_wght.ttf");
-    let text = |s: &str, size: f32| -> Option<frost::Shape> {
-        Some(
-            frost::Shape::text(&font, s, size)
-                .expect("failed to load assets/fonts/FiraCode-VariableFont_wght.ttf"),
+    let ui = frost::Ui::from_font(&font).expect("failed to load the UI font");
+    let help = Some(
+        frost::Shape::text(
+            &font,
+            "wheel to zoom   right-drag to pan   click to log the pixel",
+            20.0,
         )
-    };
+        .expect("failed to load assets/fonts/FiraCode-VariableFont_wght.ttf")
+        .with_weight(520.0),
+    );
 
     let scene = frost::Scene::new(frost::SceneNode {
         // Dark background; the node's transform is ignored.
@@ -601,44 +504,8 @@ fn main() {
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
-                // The slider track: a thin bar pinned near the bottom;
-                // the process positions it each frame.
-                shape: Some(frost::Shape::Rectangle {
-                    center: [0.0, 0.0],
-                    extent: [TRACK_HALF, 2.0],
-                    color: TRACK,
-                }),
-                order: 1.0,
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                // The slider handle.
-                shape: Some(frost::Shape::Circle {
-                    center: [0.0, 0.0],
-                    radius: HANDLE_RADIUS,
-                    color: HANDLE,
-                }),
-                order: 1.0,
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                // The zoom readout, above the track.
-                shape: text("zoom: 1.00x", 22.0),
-                order: 1.0,
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                // The last click's position in texture pixels.
-                shape: text("last click: none", 20.0),
-                order: 1.0,
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                // The usage line, pinned near the top.
-                shape: text(
-                    "sliders or wheel to zoom   right-drag to pan   click to log the pixel",
-                    20.0,
-                ),
+                // The usage line, pinned near the top by the process.
+                shape: help,
                 order: 1.0,
                 ..Default::default()
             }),
@@ -660,58 +527,6 @@ fn main() {
                 order: CHECK_ORDER,
                 ..Default::default()
             }),
-            Box::new(frost::SceneNode {
-                // The light-grey slider's track.
-                shape: Some(frost::Shape::Rectangle {
-                    center: [0.0, 0.0],
-                    extent: [TRACK_HALF, 2.0],
-                    color: TRACK,
-                }),
-                order: 1.0,
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                // The light-grey slider's handle.
-                shape: Some(frost::Shape::Circle {
-                    center: [0.0, 0.0],
-                    radius: HANDLE_RADIUS,
-                    color: HANDLE,
-                }),
-                order: 1.0,
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                // The dark-grey slider's track.
-                shape: Some(frost::Shape::Rectangle {
-                    center: [0.0, 0.0],
-                    extent: [TRACK_HALF, 2.0],
-                    color: TRACK,
-                }),
-                order: 1.0,
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                // The dark-grey slider's handle.
-                shape: Some(frost::Shape::Circle {
-                    center: [0.0, 0.0],
-                    radius: HANDLE_RADIUS,
-                    color: HANDLE,
-                }),
-                order: 1.0,
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                // The light-grey readout, above its track.
-                shape: text("light grey: 0.95", 20.0),
-                order: 1.0,
-                ..Default::default()
-            }),
-            Box::new(frost::SceneNode {
-                // The dark-grey readout, above its track.
-                shape: text("dark grey: 0.65", 20.0),
-                order: 1.0,
-                ..Default::default()
-            }),
         ],
         ..Default::default()
     });
@@ -719,6 +534,7 @@ fn main() {
     if let Err(err) = frost::run(
         scene,
         Demo {
+            ui,
             zoom: 1.0,
             offset: [0.0, 0.0],
             size,
@@ -726,7 +542,6 @@ fn main() {
             light: GREY_LIGHT,
             dark: GREY_DARK,
             checker_key: (0, 0, 0, 0),
-            dragging: None,
             was_down: false,
             last_mouse: None,
             last_click: None,

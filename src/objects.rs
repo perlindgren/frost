@@ -585,10 +585,17 @@ pub enum Shape {
     ///
     /// The text block is centered on the node's origin, one font pixel per
     /// scene pixel, and the node's transform and scale apply to it exactly
-    /// as they do to the other shapes. Each glyph is drawn as a tinted
+    /// as they do with the other shapes. Each glyph is drawn as a tinted
     /// texture quad sampling a shared glyph atlas: `color` is the glyph
     /// color (white gives white text), and the text's overall opacity is the
     /// product of `alpha` and `color.a`.
+    ///
+    /// `weight` instantiates the font's `wght` variation axis: `400.0` is
+    /// the standard Regular, `700.0` a full bold — on a variable font (like
+    /// `assets/fonts/FiraCode-VariableFont_wght.ttf`, whose axis runs 300
+    /// to 700) any value in between renders genuinely thicker or thinner.
+    /// A static font has no axis to instantiate and draws at its own
+    /// weight, whatever this says. Set it through [`Shape::with_weight`].
     Text {
         /// The string to lay out.
         text: String,
@@ -597,6 +604,9 @@ pub enum Shape {
         font: Arc<[u8]>,
         /// The font size in pixels per em.
         size: f32,
+        /// The `wght` variation axis value; 400.0 (the default from
+        /// [`Shape::text`] and [`Shape::text_bytes`]) is Regular.
+        weight: f32,
         /// The glyph color, multiplied with every mask pixel.
         color: Color,
         /// The text's opacity, multiplied with the mask's own alpha
@@ -785,6 +795,7 @@ impl Shape {
             text: text.into(),
             font: Arc::from(font),
             size,
+            weight: 400.0,
             color: Color {
                 r: 1.0,
                 g: 1.0,
@@ -793,6 +804,19 @@ impl Shape {
             },
             alpha: 1.0,
         })
+    }
+
+    /// Sets the text's `wght` variation-axis value: `400.0` is the Regular
+    /// [`Shape::text`] and [`Shape::text_bytes`] default, `700.0` a full
+    /// bold, and anything in between renders proportionally thicker —
+    /// e.g. `520.0` reads as a Medium for a variable font like FiraCode
+    /// Variable. A font without a weight axis ignores this; the value only
+    /// changes how the glyphs are instantiated, not the layout size.
+    pub fn with_weight(mut self, weight: f32) -> Self {
+        if let Self::Text { weight: w, .. } = &mut self {
+            *w = weight;
+        }
+        self
     }
 
     /// The sprite's texture size in pixels, `[width, height]`, if the

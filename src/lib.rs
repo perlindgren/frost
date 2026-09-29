@@ -325,8 +325,9 @@ impl Canvas {
         });
     }
 
-    /// Draws `text` in `font` at `size` pixels per em, centered on
-    /// `(cx, cy)`, in `color`, at draw order `z`.
+    /// Draws `text` in `font` at `size` pixels per em and `weight` on the
+    /// font's `wght` axis (400.0 is Regular; see [`Shape::with_weight`]),
+    /// centered on `(cx, cy)`, in `color`, at draw order `z`.
     ///
     /// This is the immediate sibling of [`Shape::text`]: the same text
     /// pipeline (layout, glyph atlas, per-glyph quads) reached without a
@@ -334,7 +335,8 @@ impl Canvas {
     /// The text block is centered on `(cx, cy)` exactly as a text shape is
     /// centered on its node's origin. Like a text shape, `font` is the font
     /// file's bytes behind an [`Arc`]: pass the same `Arc` (or one cloned
-    /// from it) to keep every block sharing one cached glyph atlas.
+    /// from it) to keep every block sharing one cached glyph atlas — per
+    /// (font, size, weight): a font drawn at two weights caches two atlases.
     ///
     /// Immediate text is never lit and never glows: it always draws at full
     /// `color`, so UI text stays readable over any scene.
@@ -346,6 +348,7 @@ impl Canvas {
         font: &Arc<[u8]>,
         text: impl Into<String>,
         size: f32,
+        weight: f32,
         color: Color,
         z: f32,
     ) {
@@ -357,6 +360,7 @@ impl Canvas {
             font: Arc::clone(font),
             text: text.into(),
             size,
+            weight,
             color,
             alpha: 1.0,
             // UI text emits nothing and takes no light: full `color`.
@@ -560,12 +564,13 @@ impl Canvas {
     ///
     /// The glyphs are laid out with `text::layout` (pen positions, y up,
     /// from the text's left baseline origin) and rasterized with
-    /// `text::rasterize` into the per-`(font, size)` atlas in `atlases`,
+    /// `text::rasterize` into the per-`(font, size, weight)` atlas in
+    /// `atlases`,
     /// which the caller keeps between frames so unchanged text never
     /// re-rasterizes and its texture buffer keeps a stable identity.
     /// Each glyph's quad is centered on its ink box; the whole text block
     /// is centered on the text node's origin.
-    pub(crate) fn expand_text(&mut self, atlases: &mut HashMap<(u64, u32), text::Atlas>) {
+    pub(crate) fn expand_text(&mut self, atlases: &mut HashMap<(u64, u32, u32), text::Atlas>) {
         let pixel = self.user_to_pixel();
         let draws = std::mem::take(&mut self.draws);
         self.draws = expand_text_list(pixel, draws, atlases);
@@ -812,6 +817,7 @@ fn draw_node(
                 text,
                 font,
                 size,
+                weight,
                 color,
                 alpha,
             } => Some(Draw::Text {
@@ -819,6 +825,7 @@ fn draw_node(
                 font: font.clone(),
                 text: text.clone(),
                 size: *size,
+                weight: *weight,
                 color: color.mul(modulate),
                 alpha: *alpha,
                 glow: node.glow.mul(modulate),
@@ -1123,9 +1130,13 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
             [*width as f32 / 2.0, *height as f32 / 2.0],
         )),
         Shape::Text {
-            font, text, size, ..
+            font,
+            text,
+            size,
+            weight,
+            ..
         } => {
-            let layout = text::layout(font, text, *size)?;
+            let layout = text::layout(font, text, *size, *weight)?;
             Some((
                 "text",
                 [0.0, 0.0],
@@ -1171,14 +1182,14 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
 ///
 /// The glyphs are laid out with `text::layout` (pen positions, y up, from
 /// the text's left baseline origin) and rasterized with `text::rasterize`
-/// into the per-`(font, size)` atlas in `atlases`, which the caller keeps
+/// into the per-`(font, size, weight)` atlas in `atlases`, which the caller keeps
 /// between frames so unchanged text never re-rasterizes and its texture
 /// buffer keeps a stable identity. Each glyph's quad is centered on its ink
 /// box; the whole text block is centered on the text node's origin.
 fn expand_text_list(
     user_to_pixel: Transform,
     draws: Vec<Draw>,
-    atlases: &mut HashMap<(u64, u32), text::Atlas>,
+    atlases: &mut HashMap<(u64, u32, u32), text::Atlas>,
 ) -> Vec<Draw> {
     let mut expanded = Vec::with_capacity(draws.len());
     for draw in draws {
@@ -1188,6 +1199,7 @@ fn expand_text_list(
                 font,
                 text: string,
                 size,
+                weight,
                 color,
                 alpha,
                 glow,
@@ -1198,10 +1210,14 @@ fn expand_text_list(
                 // A broken font leaves the text undrawn; `Shape::text`
                 // validates the font up front, so this only guards a buffer
                 // that turned out unreadable.
-                let Some(layout) = text::layout(&font, &string, size) else {
+                let Some(layout) = text::layout(&font, &string, size, weight) else {
                     continue;
                 };
-                let key = (Arc::as_ptr(&font) as *const () as u64, size.to_bits());
+                let key = (
+                    Arc::as_ptr(&font) as *const () as u64,
+                    size.to_bits(),
+                    weight.to_bits(),
+                );
                 // Pack the missing glyphs into the map's own atlas, not a
                 // clone: a clone's new cells would be dropped, because the
                 // key is already registered by the time the first new glyph
@@ -1216,7 +1232,7 @@ fn expand_text_list(
                     if atlas.has(glyph.id) {
                         continue;
                     }
-                    if let Some(raster) = text::rasterize(&font, glyph.id, size) {
+                    if let Some(raster) = text::rasterize(&font, glyph.id, size, weight) {
                         missing.push((glyph.id, raster));
                     }
                 }

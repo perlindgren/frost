@@ -178,8 +178,10 @@ building the `Context` (physical y-down → user y-up).
     Centered on the node origin, 1 texture pixel per scene pixel. `color` tints
     every pixel (white = unchanged); overall opacity = texture alpha × `alpha`
     × `color.a`.
-  - `Text { text, font: Arc<[u8]>, size, color, alpha }` — from
-    `Shape::text`/`text_bytes` (swash, CPU-only). Centered on the node origin;
+  - `Text { text, font: Arc<[u8]>, size, weight, color, alpha }` — from
+    `Shape::text`/`text_bytes` (swash, CPU-only), thickened with
+    `Shape::with_weight` (the `wght` variation axis; 400 Regular, 700 bold —
+    inert on static fonts). Centered on the node origin;
     each glyph becomes a tinted quad over a shared atlas.
   - Color model: plain shapes emit `coverage * a`; sprites/text emit
     `texture_alpha * opacity * a` — all composited with `ALPHA_BLENDING`.
@@ -279,10 +281,10 @@ frost…" placeholder with the first frame or a red error message.
 
 CPU-only, built on **swash** (pure-Rust Fontation shaping/rasterization):
 
-- `layout(font: &[u8], text, size) -> Option<TextLayout>` shapes the string into
+- `layout(font: &[u8], text, size, weight) -> Option<TextLayout>` shapes the string into
   `PlacedGlyph { id, x, y }` (pen origin at baseline left, y up) and returns
   metrics `{ ascent, descent, width, glyphs }`.
-- Each unique glyph is rasterized **once per (font, size)** into a shared 512px
+- Each unique glyph is rasterized **once per (font, size, weight)** into a shared 512px
   shelf atlas (`ATLAS_SIZE: u32 = 512`) — first-fit row packing; oversize
   glyphs are skipped but the cursor still advances. Output is RGBA8 with alpha
   replicated across channels.
@@ -555,7 +557,11 @@ button clicks, a checkbox toggles, a slider's value changes.
   **drags them by the title bar**; the dragged position is retained per
   title (hashed id). The body is as tall as the content asked for *last*
   frame (first frame shows the title bar only, then it snaps open). Widgets
-  outside any panel stack in a root column at the window's top-left.
+  outside any panel stack in a root column at the window's top-left. A
+  panel **claims its whole area** (body included): presses land on the
+  panel, never on a widget or the game behind it, and `Ui::hovering()` —
+  the pointer over any widget or panel — lets a raw-input game tell UI
+  clicks from scene clicks (see `examples/sprite_util.rs`).
 - **The input model** is one frame delayed: a press is resolved at the next
   `begin` against the rects the previous frame registered, last-declared
   (topmost) first — so overlapping panels route presses to the visible one,
@@ -566,7 +572,9 @@ button clicks, a checkbox toggles, a slider's value changes.
 - **Text** goes through `Canvas::text` (see above) with one shared
   `Arc<[u8]>` font (`Ui::from_font` / `from_bytes`, validated at
   construction), so all UI text shares one cached glyph atlas; measured
-  widths are cached per `(string, size)`.
+  widths are cached per `(string, size, weight)`; the weight is
+  `UiStyle::font_weight` (default 520 — a Medium on a variable font like
+  FiraCode, inert on static fonts).
 - **Order**: every UI draw gets a `z` counting up from
   `UiStyle::base_z` (default 10 000) in declaration order — the UI paints
   over the scene, panels stack in declaration order.
@@ -575,7 +583,7 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **174 tests + 5 doctests** passing, `cargo build --examples`
+Baseline: **177 tests + 5 doctests** passing, `cargo build --examples`
 clean. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
@@ -659,10 +667,11 @@ disk. Run with `cargo run --example <name>`
 |              | then over 0.5 s the inverted sprite evaporates, shrinking to nothing|
 |              | while its center sinks through the grass; after a random 5-10 s    |
 |              | delay the bug pops back up at its spawn spot, fully healed          |
-| sprite_util  | a picked PNG (rfd file dialog) shown in the window: the slider or   |
-|              | the wheel zooms (wheel anchored under the cursor, 1.15x per line),  |
-|              | a right-drag pans, and a left click logs the spot in the texture's  |
-|              | pixel space and leaves a marker dot there                           |
+| sprite_util  | a picked PNG (rfd file dialog) shown in the window: a `Ui` View    |
+|              | panel (zoom + two checker-grey sliders, last-click readout) or the |
+|              | wheel zooms (wheel anchored under the cursor, 1.15x per line), a   |
+|              | right-drag pans, and a left click outside the UI logs the spot in  |
+|              | the texture's pixel space and leaves a marker dot there            |
 | widgets      | the `Ui` layer: a draggable Tomato panel (three color sliders, a    |
 |              | Spin checkbox, a Speed slider, a Reset button) and an About label   |
 |              | panel drive a spinning face's color and rotation                    |
@@ -708,7 +717,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 
 ```
 cargo build --examples   # expect EXIT 0
-cargo test               # expect 174 passed + 5 doctests
+cargo test               # expect 177 passed + 5 doctests
 cargo test --examples    # expect 77 passed (the immortal example tests)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0
