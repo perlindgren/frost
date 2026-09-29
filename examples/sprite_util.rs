@@ -501,7 +501,7 @@ fn checker_shape(cw: u32, ch: u32, light: f32, dark: f32) -> Option<frost::Shape
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(&pixels, cw, ch, image::ExtendedColorType::Rgba8)
         .ok()?;
-    Some(frost::Shape::sprite_bytes_nearest(&png).ok()?)
+    frost::Shape::sprite_bytes_nearest(&png).ok()
 }
 
 fn main() {

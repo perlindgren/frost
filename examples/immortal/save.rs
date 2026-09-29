@@ -396,12 +396,8 @@ pub fn save(snapshot: &Snapshot) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let text = ron::to_string(snapshot).map_err(|err| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("encoding the snapshot: {err}"),
-        )
-    })?;
+    let text = ron::to_string(snapshot)
+        .map_err(|err| std::io::Error::other(format!("encoding the snapshot: {err}")))?;
     std::fs::write(&path, text)
 }
 

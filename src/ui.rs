@@ -875,18 +875,18 @@ mod tests {
         let id = widget_id(0, "go");
         let rect = Rect::from_center(0.0, 0.0, 100.0, 30.0);
         let it = ui.interact(id, rect);
-        assert_eq!(it.hot, true);
-        assert_eq!(it.held, false, "a press arms with a frame of latency");
+        assert!(it.hot);
+        assert!(!it.held, "a press arms with a frame of latency");
         // Frame 2: still held, no release.
         frame(&mut ui, Some([0.0, 0.0]), true);
         let it = ui.interact(id, rect);
-        assert_eq!(it.held, true);
-        assert_eq!(it.pressed, true);
-        assert_eq!(it.clicked, false);
+        assert!(it.held);
+        assert!(it.pressed);
+        assert!(!it.clicked);
         // Frame 3: released over the widget — a click.
         frame(&mut ui, Some([0.0, 0.0]), false);
         let it = ui.interact(id, rect);
-        assert_eq!(it.clicked, true);
+        assert!(it.clicked);
     }
 
     #[test]
@@ -898,10 +898,10 @@ mod tests {
         ui.interact(id, rect);
         frame(&mut ui, Some([900.0, 0.0]), true);
         let it = ui.interact(id, rect);
-        assert_eq!(it.held, true, "the drag keeps holding off-widget");
+        assert!(it.held, "the drag keeps holding off-widget");
         frame(&mut ui, Some([900.0, 0.0]), false);
         let it = ui.interact(id, rect);
-        assert_eq!(it.clicked, false, "release happened outside");
+        assert!(!it.clicked, "release happened outside");
     }
 
     #[test]
@@ -936,7 +936,7 @@ mod tests {
         ui.interact(id, rect);
         frame(&mut ui, Some([0.0, 0.0]), false);
         let it = ui.interact(id, rect);
-        assert_eq!(it.clicked, true);
+        assert!(it.clicked);
         assert_eq!(ui.active, None, "a never-held capture does not linger");
     }
 
@@ -980,9 +980,9 @@ mod tests {
     #[test]
     fn rect_contains_edges() {
         let r = Rect::from_center(0.0, 0.0, 100.0, 20.0);
-        assert_eq!(r.contains([50.0, 10.0]), true);
-        assert_eq!(r.contains([-50.0, -10.0]), true);
-        assert_eq!(r.contains([50.01, 0.0]), false);
-        assert_eq!(r.contains([0.0, 10.01]), false);
+        assert!(r.contains([50.0, 10.0]));
+        assert!(r.contains([-50.0, -10.0]));
+        assert!(!r.contains([50.01, 0.0]));
+        assert!(!r.contains([0.0, 10.01]));
     }
 }

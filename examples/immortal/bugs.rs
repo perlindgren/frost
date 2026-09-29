@@ -522,10 +522,10 @@ impl Bugs {
         }
         // The scene's slot pool is the population cap.
         let cap = BUGS_PER_PLANT * anchors.len();
-        for i in 0..anchors.len() {
+        for (i, &is_alive) in alive.iter().enumerate().take(anchors.len()) {
             // A plant receives its batch the first time it is living and
             // un-batched, while the pool has room for its three bugs.
-            if !alive[i] || self.batched[i] || self.bugs.len() + BUGS_PER_PLANT > cap {
+            if !is_alive || self.batched[i] || self.bugs.len() + BUGS_PER_PLANT > cap {
                 continue;
             }
             self.batched[i] = true;
@@ -1130,6 +1130,8 @@ mod tests {
                 a: 1.0,
             },
             alpha: 1.0,
+            filter: frost::SpriteFilter::Linear,
+            generation: 0,
         };
         let dt = 0.05;
         let mut bugs = Bugs::new([&frame; 3]);
@@ -1178,6 +1180,8 @@ mod tests {
                 a: 1.0,
             },
             alpha: 1.0,
+            filter: frost::SpriteFilter::Linear,
+            generation: 0,
         };
         let dt = 0.05;
         let scale = BUG_SIZE / 10.0;
@@ -1440,6 +1444,8 @@ mod tests {
                 a: 1.0,
             },
             alpha: 1.0,
+            filter: frost::SpriteFilter::Linear,
+            generation: 0,
         };
         let dt = 0.05;
         let scale = BUG_SIZE / 10.0;
@@ -1517,6 +1523,8 @@ mod tests {
                 a: 1.0,
             },
             alpha: 1.0,
+            filter: frost::SpriteFilter::Linear,
+            generation: 0,
         };
         let dt = 0.05;
         let scale = BUG_SIZE / 10.0;
@@ -1604,6 +1612,8 @@ mod tests {
                 a: 1.0,
             },
             alpha: 1.0,
+            filter: frost::SpriteFilter::Linear,
+            generation: 0,
         };
         let dt = 0.05;
         let scale = BUG_SIZE / 10.0;
@@ -1702,6 +1712,8 @@ mod tests {
                 a: 1.0,
             },
             alpha: 1.0,
+            filter: frost::SpriteFilter::Linear,
+            generation: 0,
         };
         let dt = 0.05;
         let mut bugs = Bugs::new([&frame; 3]);
@@ -1803,6 +1815,8 @@ mod tests {
                 a: 1.0,
             },
             alpha: 1.0,
+            filter: frost::SpriteFilter::Linear,
+            generation: 0,
         };
         let dt = 0.05;
         let mut bugs = Bugs::new([&frame; 3]);
@@ -1849,6 +1863,8 @@ mod tests {
                 a: 1.0,
             },
             alpha: 1.0,
+            filter: frost::SpriteFilter::Linear,
+            generation: 0,
         };
         let dt = 0.05;
         let mut bugs = Bugs::new([&frame; 3]);
@@ -1886,6 +1902,8 @@ mod tests {
                 a: 1.0,
             },
             alpha: 1.0,
+            filter: frost::SpriteFilter::Linear,
+            generation: 0,
         };
         let dt = 0.05;
         let mut bugs = Bugs::new([&frame; 3]);
@@ -1924,6 +1942,8 @@ mod tests {
                 a: 1.0,
             },
             alpha: 1.0,
+            filter: frost::SpriteFilter::Linear,
+            generation: 0,
         };
         let dt = 0.05;
         let mut bugs = Bugs::new([&frame; 3]);

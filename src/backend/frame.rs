@@ -315,10 +315,10 @@ impl Draw {
             return None;
         }
         // A polyline with fewer than two points has no segments to draw.
-        if let Draw::Polyline { points, .. } = self {
-            if points.len() < 2 {
-                return None;
-            }
+        if let Draw::Polyline { points, .. } = self
+            && points.len() < 2
+        {
+            return None;
         }
         let (min, max) = match self {
             Draw::Line { a, b, width, .. } => {

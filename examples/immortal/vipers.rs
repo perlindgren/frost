@@ -417,6 +417,8 @@ mod tests {
                 a: 1.0,
             },
             alpha: 1.0,
+            filter: frost::SpriteFilter::Linear,
+            generation: 0,
         }
     }
 

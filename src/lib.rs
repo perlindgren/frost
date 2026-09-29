@@ -1136,9 +1136,7 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
         // the stroke's width. Fewer than two points draw nothing, so there
         // is nothing to measure.
         Shape::Polyline { points, width, .. } => {
-            let Some(&first) = points.first() else {
-                return None;
-            };
+            let &first = points.first()?;
             let mut min = first;
             let mut max = first;
             for &p in &points[1..] {

@@ -897,6 +897,8 @@ mod tests {
                 a: 1.0,
             },
             alpha: 1.0,
+            filter: frost::SpriteFilter::Linear,
+            generation: 0,
         }
     }
 
@@ -1252,6 +1254,8 @@ mod tests {
                 a: 1.0,
             },
             alpha: 1.0,
+            filter: frost::SpriteFilter::Linear,
+            generation: 0,
         };
         let [ox, oy] = tomato_leaf_offset([638.0, 469.0]);
         assert!((ox - 4.0).abs() < 1e-6, "stem x offset");
