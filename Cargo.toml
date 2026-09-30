@@ -185,8 +185,16 @@ name = "box_z"
 path = "examples/shapes/box_z.rs"
 
 [[example]]
+name = "circles"
+path = "examples/shapes/circles.rs"
+
+[[example]]
 name = "scene"
 path = "examples/shapes/scene.rs"
+
+[[example]]
+name = "satellite"
+path = "examples/shapes/satellite.rs"
 
 [[example]]
 name = "sprites"
