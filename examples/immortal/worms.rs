@@ -11,9 +11,13 @@
 //!   scale stretching from 0 to 1 over [EMERGE_TIME].
 //! - **Crawling** — walking in a straight line toward another random
 //!   point of the same hull, at least [MIN_TRAVEL] pixels from the spawn
-//!   spot, its body peristaltic-beating between the two frames; a worm
-//!   moving clearly left is flipped about its center — a negative x
-//!   scale — so the sprite faces its travel.
+//!   spot, its body peristaltic-beating between the two frames. The
+//!   sprite's axis aims at 0 degrees, so the node's transform rotates the
+//!   body onto the bearing drawn at emergence — the direction toward the
+//!   target — and the body's x scale pulses between [STRETCH_SHORT] and
+//!   [STRETCH_LONG] as the frames flip: the trailing end holds on the
+//!   worm's position while the leading end pumps forward and back — the
+//!   peristaltic crawl.
 //! - **Burrowing** — once the target is reached, sinking back into the
 //!   soil over [SINK_TIME], then starting the next underground delay.
 //!
@@ -22,10 +26,13 @@
 //! of the soil, and keeps waiting — rechecked every frame — until a slot
 //! frees up as its worms burrow.
 //!
-//! The two peristaltic frames (`Worm1_crop.png` and `Worm2_crop.png`) are
-//! different pixel sizes; each is scaled to the same rendered width,
-//! [WORM_SIZE], so the body length stays constant while the frames'
-//! different heights pulse the body — the peristaltic wave.
+//! The two peristaltic frames (`Worm1_crop.png`, the arched pose, and
+//! `Worm2_crop.png`, the stretched pose) are different pixel sizes; each
+//! is scaled to a rendered body length of [WORM_SIZE], and the beat then
+//! stretches the body's x scale — [STRETCH_SHORT] in the arched frame,
+//! [STRETCH_LONG] in the stretched frame — so the body shortens and
+//! lengthens with the wave, while the frames' different heights pulse its
+//! thickness.
 //!
 //! Spawn and target points come from the swarm's own
 //! [`frost::Rng`] stream (see [Worms::set_seed]), sampled uniformly in
@@ -44,8 +51,8 @@ pub const N: usize = 14;
 pub const MAX_ABOVE: usize = 10;
 
 /// The rendered worm width, in pixels: each frame is scaled to this
-/// width, so the two peristaltic poses — different pixel sizes — keep the
-/// same body length while their heights pulse.
+/// width, the body's neutral length, before the peristaltic beat's
+/// [STRETCH_SHORT]/[STRETCH_LONG] x stretch.
 const WORM_SIZE: f32 = 60.0;
 
 /// How long a worm takes to emerge out of the soil, in seconds.
@@ -55,14 +62,14 @@ const EMERGE_TIME: f32 = 0.6;
 const SINK_TIME: f32 = 0.6;
 
 /// The crawling speed range, in pixels per second.
-const SPEED_MIN: f32 = 24.0;
-const SPEED_MAX: f32 = 46.0;
+const SPEED_MIN: f32 = 8.0;
+const SPEED_MAX: f32 = 15.0;
 
 /// The peristaltic beat range, in frame flips per second: the body
 /// alternates its two frames at this rate while the worm is out of the
 /// soil.
-const BEAT_MIN: f32 = 3.0;
-const BEAT_MAX: f32 = 6.0;
+const BEAT_MIN: f32 = 1.0;
+const BEAT_MAX: f32 = 2.0;
 
 /// The underground delay range, in seconds: the wait between one
 /// burrowing and the next emergence, drawn per worm on each way in.
@@ -79,10 +86,15 @@ const MIN_TRAVEL: f32 = 120.0;
 /// the target lands exactly on it.
 const ARRIVE: f32 = 2.0;
 
-/// The facing dead band, in pixels per second: below this horizontal
-/// speed a worm keeps its current facing, so the sprite does not flip
-/// back and forth as the speed crosses zero on a diagonal crawl.
-const FACING_EPS: f32 = 4.0;
+/// The body's x scale in the arched frame (the first sprite, the short
+/// arched pose): the body shortens to this share of its neutral
+/// [WORM_SIZE] length.
+const STRETCH_SHORT: f32 = 0.85;
+
+/// The body's x scale in the stretched frame (the second sprite, the long
+/// stretched pose): the body lengthens to this share of its neutral
+/// [WORM_SIZE] length.
+const STRETCH_LONG: f32 = 1.15;
 
 /// The target-retry budget: on emergence the worm draws a target at least
 /// [MIN_TRAVEL] pixels from its spawn point, redrawing up to this many
@@ -119,12 +131,11 @@ struct Worm {
     pos: [f32; 2],
     /// The target position, in user space, `y` up, drawn on emergence.
     target: [f32; 2],
-    /// The last movement, in user-space pixels per second: the sign of
-    /// its `x` component sets the facing.
-    vel: [f32; 2],
-    /// The facing: 1.0 crawling right, -1.0 crawling left; the sprite is
-    /// flipped about its center — a negative x scale — while left.
-    facing: f32,
+    /// The crawling bearing, in radians, `y` up: the direction from the
+    /// spawn point to the target, drawn on emergence; the sprite's axis
+    /// — which aims at 0 degrees — rotates onto it, and the worm holds it
+    /// until it burrows.
+    heading: f32,
     /// The crawling speed, in pixels per second.
     speed: f32,
     /// The peristaltic beat clock, in frame flips: it advances by
@@ -151,8 +162,7 @@ impl Worm {
             delay: 0.0,
             pos: [0.0, 0.0],
             target: [0.0, 0.0],
-            vel: [0.0, 0.0],
-            facing: 1.0,
+            heading: 0.0,
             speed: 0.0,
             beat: 0.0,
             frame: 0,
@@ -162,9 +172,8 @@ impl Worm {
     }
 
     /// Crawls the worm toward its target for `dt` seconds: a straight
-    /// line at its speed, the facing from the horizontal component of
-    /// the motion, and the arrival — the burrow — when the target is
-    /// reached.
+    /// line at its speed, and the arrival — the burrow — when the target
+    /// is reached.
     fn crawl(&mut self, dt: f32) {
         let to = [self.target[0] - self.pos[0], self.target[1] - self.pos[1]];
         let d = to[0] * to[0] + to[1] * to[1];
@@ -175,20 +184,10 @@ impl Worm {
             self.pos = self.target;
             self.phase = Phase::Burrowing;
             self.phase_t = 0.0;
-            self.vel = [0.0, 0.0];
             return;
         }
         let k = self.speed * dt / dist;
         self.pos = [self.pos[0] + to[0] * k, self.pos[1] + to[1] * k];
-        self.vel = [to[0] * self.speed / dist, to[1] * self.speed / dist];
-        // The facing, with a dead band, so the sprite does not flip back
-        // and forth as the horizontal speed crosses zero on a diagonal
-        // crawl.
-        if self.vel[0] > FACING_EPS {
-            self.facing = 1.0;
-        } else if self.vel[0] < -FACING_EPS {
-            self.facing = -1.0;
-        }
     }
 }
 
@@ -201,7 +200,8 @@ pub struct Worms {
     /// The swarm clock, in seconds.
     t: f32,
     /// Each frame's uniform scale: [WORM_SIZE] over the frame's pixel
-    /// width, so the frames keep the same rendered body length.
+    /// width — the body's neutral length, the base the beat's stretch
+    /// scales from.
     scale: [f32; 2],
     /// The spawn and target randomizer.
     rng: Rng,
@@ -222,10 +222,9 @@ pub struct WormState {
     pub pos: [f32; 2],
     /// The target position, in user space.
     pub target: [f32; 2],
-    /// The last movement, in user-space pixels per second.
-    pub vel: [f32; 2],
-    /// The facing: 1.0 crawling right, -1.0 crawling left.
-    pub facing: f32,
+    /// The crawling bearing, in radians, `y` up: the direction from the
+    /// spawn point to the target, drawn on emergence.
+    pub heading: f32,
     /// The crawling speed, in pixels per second.
     pub speed: f32,
     /// The peristaltic beat clock, in frame flips.
@@ -257,8 +256,7 @@ impl From<&Worm> for WormState {
             delay: worm.delay,
             pos: worm.pos,
             target: worm.target,
-            vel: worm.vel,
-            facing: worm.facing,
+            heading: worm.heading,
             speed: worm.speed,
             beat: worm.beat,
             frame: worm.frame,
@@ -275,8 +273,7 @@ impl From<&WormState> for Worm {
             delay: s.delay,
             pos: s.pos,
             target: s.target,
-            vel: s.vel,
-            facing: s.facing,
+            heading: s.heading,
             speed: s.speed,
             beat: s.beat,
             frame: s.frame,
@@ -306,9 +303,9 @@ impl Worms {
     /// The constructor's shared body: the per-frame scales and the
     /// staggered first delays, from the given randomizer.
     fn build(rng: Rng, frames: [&frost::Shape; 2]) -> Self {
-        // Each frame is scaled to [WORM_SIZE] pixels wide, so the two
-        // peristaltic poses — different pixel sizes — keep the same
-        // rendered body length while their heights pulse.
+        // Each frame is scaled to [WORM_SIZE] pixels wide — the body's
+        // neutral length, the base the peristaltic beat's stretch scales
+        // from as the frames flip.
         let scale = [
             WORM_SIZE
                 / frames[0]
@@ -407,7 +404,6 @@ impl Worms {
                         w.phase = Phase::Underground;
                         w.phase_t = 0.0;
                         w.delay = self.rng.in_range(DELAY_MIN, DELAY_MAX);
-                        w.vel = [0.0, 0.0];
                         above -= 1;
                     }
                 }
@@ -424,12 +420,16 @@ impl Worms {
 
     /// Lays the swarm out on the worms node.
     ///
-    /// Each out-of-the-soil slot's transform is the worm's position and
-    /// its scale the current frame's uniform scale, with the x component
-    /// carrying the facing flip and the y component the emergence and
-    /// burrowing progress: 0 to 1 while the worm rises out of the soil,
-    /// 1 to 0 while it sinks back in. A worm above ground shows its
-    /// current peristaltic frame; a worm underground clears its slot.
+    /// Each out-of-the-soil slot's transform rotates the sprite — its
+    /// axis aims at 0 degrees — onto the worm's [Worm::heading] and
+    /// anchors the body's trailing end, the sprite's negative x end, on
+    /// the worm's position: the body spans its full length along the
+    /// heading, so the leading end pumps forward and back as the beat's
+    /// x scale — [STRETCH_SHORT] to [STRETCH_LONG] — flips the frames —
+    /// while both scales carry the emergence and burrowing progress, 0 to
+    /// 1 while the worm rises out of the soil, 1 to 0 while it sinks
+    /// back in. A worm above ground shows its current peristaltic frame;
+    /// a worm underground clears its slot.
     pub fn layout(&mut self, node: &mut frost::SceneNode, frames: [&frost::Shape; 2]) {
         for (w, child) in self.worms.iter_mut().zip(&mut node.children) {
             if w.phase == Phase::Underground {
@@ -445,9 +445,37 @@ impl Worms {
                 Phase::Crawling => 1.0,
                 Phase::Underground => unreachable!(),
             };
-            let frame_scale = self.scale[w.frame as usize] * s;
-            child.transform = frost::Transform::translate(w.pos);
-            child.scale = [w.facing * frame_scale, frame_scale];
+            // The peristaltic beat: the body's x scale pulses between the
+            // arched and stretched stretches as the frame flips, while
+            // the y scale is the frame's own — the body's thickness
+            // pulse; both shrink with the emergence and burrowing
+            // progress `s`.
+            let frame_scale = self.scale[w.frame as usize];
+            let stretch = if w.frame == 0 {
+                STRETCH_SHORT
+            } else {
+                STRETCH_LONG
+            };
+            child.scale = [frame_scale * s * stretch, frame_scale * s];
+            // The body's trailing end holds on the worm's position while
+            // its leading end pumps along the heading: the sprite's axis
+            // aims at 0 degrees, so the transform rotates the body onto
+            // the [Worm::heading] and shifts it so the sprite's negative
+            // x end — half the body's length behind its center — lands
+            // exactly on the position. In the left half-plane the body
+            // is additionally flipped about its axis, so the arch's back
+            // stays up; the flip leaves the x axis untouched, so the
+            // anchor holds in both branches.
+            let (sin, cos) = w.heading.sin_cos();
+            let half = WORM_SIZE * 0.5 * s * stretch;
+            let t = [w.pos[0] + half * cos, w.pos[1] + half * sin];
+            let rot = frost::Transform::rotate(w.heading);
+            let lin = if cos >= 0.0 {
+                rot
+            } else {
+                frost::Transform::scale([1.0, -1.0]).compose(&rot)
+            };
+            child.transform = lin.compose(&frost::Transform::translate(t));
             if w.shown != w.frame {
                 child.shape = Some(frames[w.frame as usize].clone());
                 w.shown = w.frame;
@@ -460,9 +488,9 @@ impl Worms {
     }
 }
 
-/// Emerges `worm` out of the soil: a random spawn point inside `hull`,
-/// a random target at least [MIN_TRAVEL] pixels away, and fresh speed
-/// and beat draws from `rng`.
+/// Emerges `worm` out of the soil: a random spawn point inside `hull`, a
+/// random target at least [MIN_TRAVEL] pixels away, the heading from the
+/// spawn to the target, and fresh speed and beat draws from `rng`.
 ///
 /// A free function — not a [Worms] method — so it can draw from the
 /// swarm's randomizer while the swarm's worm pool is borrowed by the
@@ -480,7 +508,9 @@ fn emerge(worm: &mut Worm, rng: &mut Rng, hull: &[[f32; 2]]) {
     }
     worm.pos = spawn;
     worm.target = target;
-    worm.vel = [0.0, 0.0];
+    // The bearing toward the target: the sprite's axis aims at 0
+    // degrees, so the layout rotates the body onto this direction.
+    worm.heading = (target[1] - spawn[1]).atan2(target[0] - spawn[0]);
     worm.speed = rng.in_range(SPEED_MIN, SPEED_MAX);
     worm.beat_speed = rng.in_range(BEAT_MIN, BEAT_MAX);
     worm.beat = 0.0;
@@ -664,16 +694,17 @@ mod tests {
         }
     }
 
-    /// A worm's facing follows its horizontal travel with a dead band:
-    /// crawling left flips the sprite about its center — the laid-out x
-    /// scale goes negative — and crawling right brings it back.
+    /// A worm's heading rotates its body onto its travel: the laid-out
+    /// transform aims the sprite's axis — which points at 0 degrees —
+    /// from the position at the target, the body's trailing end holds on
+    /// the position, and the x scale pulses with the beat's stretch.
     #[test]
-    fn the_facing_follows_the_horizontal_travel() {
+    fn the_heading_rotates_the_body_toward_the_target() {
         let f = frames();
         let mut worms = Worms::with_seed(7, [&f[0], &f[1]]);
         let dt = 0.05;
-        // Run the swarm until some worm is crawling leftward, then check
-        // its laid-out scale on a fresh node.
+        // Run the swarm until it has crawled both ways, checking every
+        // crawler's laid-out pose on a fresh node.
         let mut node = node();
         let mut saw_left = false;
         let mut saw_right = false;
@@ -681,17 +712,55 @@ mod tests {
             worms.step(dt, &ANCHORS);
             worms.layout(&mut node, [&f[0], &f[1]]);
             for (w, c) in worms.worms.iter().zip(&node.children) {
-                if w.phase == Phase::Crawling {
-                    if w.facing < 0.0 {
-                        let s = c.scale[0];
-                        assert!(s < 0.0, "a leftward worm flips: x scale {s}");
-                        saw_left = true;
-                    } else {
-                        let s = c.scale[0];
-                        assert!(s > 0.0, "a rightward worm does not flip: x scale {s}");
-                        saw_right = true;
-                    }
+                if w.phase != Phase::Crawling {
+                    continue;
                 }
+                // The body's axis: the transform's image of the sprite's
+                // x axis — from the origin's image to (1, 0)'s image.
+                let o = c.transform.apply([0.0, 0.0]);
+                let e = c.transform.apply([1.0, 0.0]);
+                let axis = [e[0] - o[0], e[1] - o[1]];
+                let to = [w.target[0] - w.pos[0], w.target[1] - w.pos[1]];
+                let d = (to[0] * to[0] + to[1] * to[1]).sqrt();
+                assert!(
+                    (axis[0] - to[0] / d).abs() < 1e-3 && (axis[1] - to[1] / d).abs() < 1e-3,
+                    "the body axis {axis:?} aims off the target: to {to:?}"
+                );
+                if to[0] < 0.0 {
+                    saw_left = true;
+                } else {
+                    saw_right = true;
+                }
+                // The peristaltic beat: the y scale is the frame's
+                // neutral scale — the full body while crawling — and the
+                // x scale the beat's stretch times it.
+                let base = worms.scale[w.frame as usize];
+                let stretch = if w.frame == 0 {
+                    STRETCH_SHORT
+                } else {
+                    STRETCH_LONG
+                };
+                assert!(
+                    (c.scale[0] - base * stretch).abs() < 1e-4,
+                    "the x scale {} is not the frame scale {base} times its stretch {stretch}",
+                    c.scale[0]
+                );
+                assert!(
+                    (c.scale[1] - base).abs() < 1e-4,
+                    "the y scale {} is not the frame scale {base}",
+                    c.scale[1]
+                );
+                // The body's trailing end — the sprite's negative x end,
+                // half the body's length behind its center — holds on
+                // the position.
+                let half = WORM_SIZE * 0.5 * stretch;
+                let tail = c.transform.apply([-half, 0.0]);
+                assert!(
+                    (tail[0] - w.pos[0]).abs() < 1e-3 && (tail[1] - w.pos[1]).abs() < 1e-3,
+                    "the trailing end {:?} holds off the position {:?}",
+                    tail,
+                    w.pos
+                );
             }
             if saw_left && saw_right {
                 break;

@@ -3291,7 +3291,7 @@ fn main() {
             Box::new(frost::SceneNode {
                 // The worms' swarm under the bench: one shape-less child
                 // per slot, in pool order; the process lays each worm's
-                // pose, flip, scale, and peristaltic frame out on its
+                // pose, rotation, scale, and peristaltic frame out on its
                 // child every frame, and the underground slots — the ones
                 // in the soil — never draw. The group carries no shape or
                 // scale of its own; it sits under the tool node, so the

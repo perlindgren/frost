@@ -26,7 +26,7 @@ use crate::{
 
 /// The snapshot format's version: the layout this build reads and writes.
 /// [load] rejects files whose version differs.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// A snapshot load's failure: the file is missing or unreadable, it is
 /// not valid RON, or it was written by another format version.
