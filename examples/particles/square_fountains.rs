@@ -13,6 +13,11 @@
 //! so the squares live in the window's user space just like the circles,
 //! and its order of 1.0 puts the plume in front of its two neighbors.
 //!
+//! A `frost::Diagnostics` overlay reports the window size, frame rate,
+//! frame time, processing times, and draw-call count in the top-left
+//! corner, with four scrolling ten-second strip charts beneath — Alt-0
+//! toggles the whole overlay, Alt-1..Alt-4 the charts, Alt-T the text.
+//!
 //! Run with:
 //!
 //! ```text
@@ -137,6 +142,9 @@ struct Fountain {
 }
 
 struct Demo {
+    /// The diagnostics overlay, reporting the window size, frame rate,
+    /// frame time, processing times, and draw-call count.
+    diag: frost::Diagnostics,
     /// The two circle fountains: green (left), circulating (right).
     fountains: [Fountain; 2],
     /// The square fountain's emission accumulator: its particles live in
@@ -160,6 +168,11 @@ impl frost::Process for Demo {
     fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
         let (w, h) = ctx.size();
         self.t += dt;
+
+        // The overlay takes the same context and dt the demo uses: its
+        // first call creates its own topmost layer, and every later call
+        // updates its nodes in place.
+        self.diag.process(ctx, dt);
 
         // The circle fountains: each beats at its own pace. The pulse sets
         // the launch speed, a slower clock sways the launch direction, and
@@ -311,6 +324,21 @@ fn main() {
     env_logger::init();
     log::info!("frost started");
 
+    // `CARGO_MANIFEST_DIR` pins the font path to the crate root, so the
+    // example works no matter where it is run from; a load failure is
+    // reported here, not at the first frame.
+    let root = std::env!("CARGO_MANIFEST_DIR");
+    let diag = match frost::Diagnostics::new(
+        format!("{root}/assets/fonts/FiraCode-VariableFont_wght.ttf"),
+        frost::DiagnosticsFlags::all(),
+    ) {
+        Ok(diagnostics) => diagnostics,
+        Err(err) => {
+            log::error!("failed to load the font: {err}");
+            std::process::exit(1);
+        }
+    };
+
     if let Err(err) = frost::run(
         frost::Scene::new(frost::SceneNode {
             // Deep indigo background; the node's transform is ignored.
@@ -338,6 +366,7 @@ fn main() {
             ..Default::default()
         }),
         Demo {
+            diag,
             fountains: [
                 Fountain {
                     system: frost::ParticleSystem::new(),

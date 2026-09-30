@@ -8,8 +8,9 @@
 //! the last frame's total processing time (`PROC 0.52ms`, blue) with its
 //! cost split folded into one chart — the total, the app's share (violet),
 //! and this overlay's own share (cyan); and the last frame's draw-call
-//! count (`DRAW 52`, magenta) with its count split folded the same way —
-//! the total, the app's share (pink), and this overlay's own count (rose).
+//! count (`DRAW 48/52`, magenta) — the app's share over the total — with
+//! its count split folded the same way: the total, the app's share (pink),
+//! and this overlay's own count (rose).
 //!
 //! The processing times and the draw-call counts are not measurements this
 //! overlay makes: they are the engine's own probes of the last completed
@@ -100,14 +101,14 @@ const MARGIN: f32 = 20.0;
 const LINE_GAP: f32 = 6.0;
 
 /// The readout's probe text: every character a readout line can display —
-/// the digits, the "x", the ".", the "ms", and the fixed labels. The
-/// lines' vertical extent is measured over it once, at construction,
+/// the digits, the "x", the "/", the ".", the "ms", and the fixed labels.
+/// The lines' vertical extent is measured over it once, at construction,
 /// because neither the current text's ink (Fira Code's "8" and "9" carry a
 /// pixel of antialiasing below the baseline where the "4" does not) nor
 /// the font's metrics (both bundled fonts report degenerate ones —
 /// Leofont's ascent plus descent is about a pixel at 32 px, Fira Code's
 /// about two) is a stable extent for the lines.
-const PROBE: &str = "0123456789.x FPS FT PROC APP DRAW ms";
+const PROBE: &str = "0123456789.x/ FPS FT PROC APP DRAW ms";
 
 /// The smoothing time constant, in seconds: how quickly the displayed frame
 /// rate follows the real one.
@@ -329,12 +330,13 @@ impl std::ops::BitOrAssign for DiagnosticsFlags {
 /// rate (`FPS 58`), the current frame time (`FT 16.7ms`), the last frame's
 /// total processing time (`PROC 0.52ms`), that time excluding this
 /// overlay's own update cost (`APP 0.41ms`), and the last frame's
-/// draw-call count (`DRAW 52`) — with up to four scrolling ten-second
-/// strip charts beneath: frame rate (orange) on top, frame time (green)
-/// second, the folded processing-time chart third — the total in blue, the
-/// app's share in violet, this overlay's own cost in cyan — and the folded
-/// draw-call chart below — the total in magenta, the app's share in pink,
-/// this overlay's own count in rose.
+/// draw-call count (`DRAW 48/52`, the app's share over the total) — with
+/// up to four scrolling ten-second strip charts beneath: frame rate
+/// (orange) on top, frame time (green) second, the folded
+/// processing-time chart third — the total in blue, the app's share in
+/// violet, this overlay's own cost in cyan — and the folded draw-call
+/// chart below — the total in magenta, the app's share in pink, this
+/// overlay's own count in rose.
 ///
 /// Create one with [`Diagnostics::new`] (from a font file on disk) or
 /// [`Diagnostics::from_bytes`] (from font data already in memory — the path
@@ -1064,7 +1066,10 @@ impl Process for Diagnostics {
                 self.refresh_line(LineSlot::App, format!("APP {:.2}ms", self.app_ms));
             }
             if self.flags.contains(DiagnosticsFlags::DRAW) {
-                self.refresh_line(LineSlot::Draw, format!("DRAW {}", self.draw_calls));
+                self.refresh_line(
+                    LineSlot::Draw,
+                    format!("DRAW {}/{}", self.app_draws, self.draw_calls),
+                );
             }
         }
         // Lay the visible parts out top to bottom, so hiding a line or a
@@ -1474,7 +1479,7 @@ mod tests {
             "FT 16.7ms",
             "PROC 12.34ms",
             "APP 12.12ms",
-            "DRAW 42",
+            "DRAW 38/42",
         ] {
             let layout = crate::text::layout(FIRA, text, SIZE, WEIGHT).unwrap();
             let (mut top, mut bottom) = (f32::NEG_INFINITY, f32::INFINITY);
