@@ -53,10 +53,12 @@
 //! The flags gate only what the overlay draws: the engine's probes run
 //! every frame either way. With every flag set the overlay owns up to
 //! twenty-one nodes — six text lines, four graph panels, three reference
-//! lines, and eight chart polylines; the first call appends them to the
-//! scene's root, and every later call updates those same nodes in place,
-//! so the demo's scene needs no other change: just leave the root's
-//! children un-reordered, the overlay remembers where it put its nodes.
+//! lines, and eight chart polylines; the first call creates a dedicated
+//! topmost layer in the scene and appends them to that layer's root, and
+//! every later call updates those same nodes in place, so the demo's scene
+//! needs no other change: the overlay's own layer is a hard draw partition
+//! above the root subtree, so the readout is always on top, and the overlay
+//! remembers where it put its nodes.
 //!
 //! The overlay also answers to keyboard shortcuts, read from the engine's
 //! key state every frame: Alt-0 toggles the overlay as a whole, Alt-1..
@@ -81,7 +83,7 @@ use std::sync::Arc;
 
 use crate::backend::now_millis;
 use crate::objects::TextError;
-use crate::{Color, Context, KeyCode, Process, Scene, SceneNode, Shape, Transform};
+use crate::{Color, Context, KeyCode, Layer, Process, Scene, SceneNode, Shape, Transform};
 
 /// The readout's font size in pixels per em.
 const SIZE: f32 = 32.0;
@@ -418,10 +420,16 @@ pub struct Diagnostics {
     /// The graphs' history: one [`Sample`] per completed frame, oldest
     /// first, trimmed to the last SPAN seconds.
     samples: VecDeque<Sample>,
-    /// The indices of the overlay's nodes among the scene root's children,
+    /// The indices of the overlay's nodes among its layer's root children,
     /// once appended (in slot order: the lines, the panels, the reference
     /// lines, the chart polylines).
     nodes: Vec<Option<usize>>,
+    /// The index of the overlay's own layer in `scene.layers`, once created:
+    /// the overlay draws in a dedicated topmost layer — a hard draw
+    /// partition above the scene's root subtree and any other layer — so its
+    /// lines and charts are always on top, never buried under the app's
+    /// highest-order node. `None` until the first `process` creates it.
+    layer: Option<usize>,
     /// Whether the overlay is shown at all — Alt-0 toggles this, or
     /// [`Diagnostics::toggle_all`] does. While it is off, every node draws
     /// nothing, and the per-part toggles below are remembered as-is.
@@ -791,6 +799,7 @@ impl Diagnostics {
             t: 0.0,
             samples: VecDeque::new(),
             nodes: vec![None; n_nodes],
+            layer: None,
             all_on: true,
             text_on: true,
             chart_on,
@@ -836,25 +845,60 @@ impl Diagnostics {
         line.refresh(&font);
     }
 
+    /// The index of the overlay's own layer in `scene.layers`, creating it on
+    /// first use. The overlay draws in a dedicated topmost layer — a hard
+    /// draw partition above the scene's root subtree and any other layer — so
+    /// its lines and charts are always on top, never buried under the app's
+    /// highest-order node. The layer's order is set above every layer already
+    /// in the scene (or `1.0`, above the root subtree, when there are none),
+    /// and a stale index (the scene lost or rebuilt its layers) recreates it,
+    /// re-appending the overlay's nodes into the fresh layer.
+    fn ensure_layer(&mut self, scene: &mut Scene) -> usize {
+        let valid = self.layer.map_or(false, |idx| idx < scene.layers.len());
+        if valid {
+            return self.layer.expect("checked above");
+        }
+        let order = scene
+            .layers
+            .iter()
+            .map(|l| l.order)
+            .max_by(|a, b| a.total_cmp(b))
+            .map(|m| m + 1.0)
+            .unwrap_or(1.0);
+        let mut layer = Layer::new(SceneNode::default());
+        layer.order = order;
+        let idx = scene.layers.len();
+        scene.layers.push(layer);
+        self.layer = Some(idx);
+        // The node indices were relative to the previous group's children;
+        // reset so every node is re-appended into the fresh layer.
+        for slot in &mut self.nodes {
+            *slot = None;
+        }
+        idx
+    }
+
     /// Finds the node for overlay slot `slot` (re-appending it if the demo
-    /// removed it) and updates its shape and transform in place. Every node
-    /// the overlay owns is flagged `diagnostic`, so the engine counts its
-    /// draws separately (`Context::frame_diagnostic_draw_calls`).
-    fn place(&mut self, slot: usize, pos: [f32; 2], shape: Shape, scene: &mut Scene) {
+    /// removed it) and updates its shape and transform in place, in the
+    /// overlay's own layer. Every node the overlay owns is flagged
+    /// `diagnostic`, so the engine counts its draws separately
+    /// (`Context::frame_diagnostic_draw_calls`).
+    fn place(&mut self, slot: usize, pos: [f32; 2], shape: Shape, scene: &mut Scene, layer: usize) {
+        let children = &mut scene.layers[layer].root.children;
         let index = match self.nodes[slot] {
-            Some(idx) if idx < scene.root.children.len() => idx,
+            Some(idx) if idx < children.len() => idx,
             _ => {
-                scene.root.children.push(Box::new(SceneNode {
+                children.push(Box::new(SceneNode {
                     transform: Transform::translate(pos),
                     shape: Some(shape.clone()),
                     diagnostic: true,
                     ..Default::default()
                 }));
-                scene.root.children.len() - 1
+                children.len() - 1
             }
         };
         self.nodes[slot] = Some(index);
-        let node = &mut scene.root.children[index];
+        let node = &mut children[index];
         node.diagnostic = true;
         node.shape = Some(shape);
         node.transform = Transform::translate(pos);
@@ -916,12 +960,13 @@ impl Diagnostics {
     /// leaving a bare pivot that draws nothing, until the matching toggle
     /// shows it again and `place` restores the shape. A node the demo
     /// removed is left removed — `place` re-appends it on the way back.
-    fn hide(&mut self, slot: usize, scene: &mut Scene) {
+    fn hide(&mut self, slot: usize, scene: &mut Scene, layer: usize) {
         let Some(&idx) = self.nodes[slot].as_ref() else {
             return;
         };
-        if idx < scene.root.children.len() {
-            scene.root.children[idx].shape = None;
+        let children = &mut scene.layers[layer].root.children;
+        if idx < children.len() {
+            children[idx].shape = None;
         }
     }
 }
@@ -1068,16 +1113,18 @@ impl Process for Diagnostics {
         let x0 = -w / 2.0 + MARGIN;
 
         let scene = ctx.scene();
+        // The overlay's own topmost layer, created on the first frame.
+        let layer = self.ensure_layer(scene);
         // The readout lines: place the visible ones, hide the rest.
         for (i, &slot) in line_slots.iter().enumerate() {
             if !lines_on {
-                self.hide(i, scene);
+                self.hide(i, scene, layer);
                 continue;
             }
             let Some(draw) = line_draw(self.line(slot), line_tops[i], w) else {
                 continue;
             };
-            self.place(i, draw.pos, draw.shape, scene);
+            self.place(i, draw.pos, draw.shape, scene, layer);
         }
         // The panels: one per visible chart, in slot order; a hidden
         // chart's panel is cleared.
@@ -1093,9 +1140,10 @@ impl Process for Diagnostics {
                         color: PANEL,
                     },
                     scene,
+                    layer,
                 );
             } else {
-                self.hide(line_slots.len() + j, scene);
+                self.hide(line_slots.len() + j, scene, layer);
             }
         }
         // The 60 fps / 16.7 ms reference lines, 1 px tall across the panel
@@ -1123,9 +1171,9 @@ impl Process for Diagnostics {
                     ChartSlot::Draw => unreachable!(),
                 };
                 let (y, shape) = ref_line(panel_tops[j], level);
-                self.place(ref_slot, [x0, y], shape, scene);
+                self.place(ref_slot, [x0, y], shape, scene, layer);
             } else {
-                self.hide(ref_slot, scene);
+                self.hide(ref_slot, scene, layer);
             }
             ref_slot += 1;
         }
@@ -1149,9 +1197,10 @@ impl Process for Diagnostics {
                             color: series_color(chart, k),
                         },
                         scene,
+                        layer,
                     );
                 } else {
-                    self.hide(poly_slot, scene);
+                    self.hide(poly_slot, scene, layer);
                 }
                 poly_slot += 1;
             }
