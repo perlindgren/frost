@@ -476,6 +476,10 @@ impl Worms {
                 frost::Transform::scale([1.0, -1.0]).compose(&rot)
             };
             child.transform = lin.compose(&frost::Transform::translate(t));
+            // The depth: the worm rides the ground band, interleaved with
+            // the bugs, the other worms, and the plants' root slices by its
+            // y — its trailing end, the anchor the body pumps from.
+            child.order = crate::zorder::ground(w.pos[1]);
             if w.shown != w.frame {
                 child.shape = Some(frames[w.frame as usize].clone());
                 w.shown = w.frame;

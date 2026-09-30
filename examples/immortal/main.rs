@@ -247,6 +247,7 @@ mod save;
 mod tomato;
 mod vipers;
 mod worms;
+mod zorder;
 
 use assets_load::{Assets, Sounds};
 use fall::{Fall, FallPhase};
@@ -1606,6 +1607,25 @@ impl Demo {
         self.vipers.step(dt, &centers, &grown);
         self.vipers
             .layout(vipers_node, [&self.viper1, &self.viper2]);
+        // The depth, per frame: each viper rides one unit above its
+        // segment's order on the near side of its orbit — flying right,
+        // the lower half, where it moves with the screen — and one below
+        // it on the far side, flying left. The segment's own order is the
+        // plant's root, in the ground band, for the ground layer, and the
+        // plant's upper band for the stalk layers — keyed to the bench
+        // slot, so the front plants' vipers ride the front band and never
+        // dip into the ground band.
+        let facings = self.vipers.facings();
+        for (i, child) in vipers_node.children.iter_mut().enumerate() {
+            let home = i / vipers::LAYERS;
+            let layer = i % vipers::LAYERS;
+            let seg_z = if layer == 0 {
+                zorder::ground(anchors[home][1])
+            } else {
+                zorder::upper(home, anchors[home][1])
+            };
+            child.order = seg_z + facings[i];
+        }
     }
 
     /// Waddles the bugs to the plants, in parallel with everything else:
@@ -1897,6 +1917,24 @@ impl Demo {
                 &self.tomato,
                 &self.tomato_fg,
             );
+            // The depth, per frame: the plant node itself stays at order
+            // zero so every child's order is absolute. The root slice — the
+            // part that meets the soil — takes the ground band, interleaved
+            // with the bugs and the worms by the anchor's y; the stalk
+            // slices above it and the flower and fruit slots take the upper
+            // band, keyed to the bench slot so slot 0's plant sits behind
+            // slot 5's, the whole band above the ground band. A picked or
+            // fallen tomato rides out of the slot (and takes the upper band
+            // with it until it rehomes), so only the slot and the slices
+            // need the order here.
+            let ay = anchor[1];
+            plant_node.children[0].order = zorder::ground(ay);
+            for slice in &mut plant_node.children[1..plant::SLICE_N] {
+                slice.order = zorder::upper(i, ay);
+            }
+            for slot in 0..plant::FLOWER_N {
+                plant_node.children[plant::slot_index(slot)].order = zorder::upper(i, ay);
+            }
             // The dryness tint: the modulate lerps from white to yellow
             // over the withering, and back over the watering, so the
             // slices, the flowers, and the fruit yellow with the plant.
@@ -2033,6 +2071,10 @@ impl Demo {
             .compose(&frost::Transform::rotate(fall.spin))
             .compose(&frost::Transform::translate([bx, by]));
             node.scale = [TOMATO_PICK_SCALE * sx, TOMATO_PICK_SCALE * sy];
+            // The depth: a fallen tomato is a ground object, so it rides
+            // the ground band, interleaved with the bugs, the worms, and
+            // the plants' root slices by the body's y.
+            node.order = zorder::ground(by);
         }
     }
 
@@ -3155,8 +3197,11 @@ fn main() {
         // the indices into this list.
         children: vec![
             Box::new(frost::SceneNode {
-                // Stretched to fill the window by the process, every frame.
+                // Stretched to fill the window by the process, every frame;
+                // pinned behind every ground-band object by the depth
+                // scheme.
                 shape: Some(assets.grass.clone()),
+                order: zorder::GRASS,
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
@@ -3170,6 +3215,7 @@ fn main() {
                 // start empty, and a left click can park either tool in any
                 // slot.
                 shape: Some(assets.items.clone()),
+                order: zorder::UI,
                 children: vec![
                     Box::new(frost::SceneNode {
                         // Slot 0: empty at start.
@@ -3242,6 +3288,7 @@ fn main() {
                 // node paints its shape before its children; the cells are
                 // synced by `set_active`.
                 shape: Some(assets.held_items.clone()),
+                order: zorder::UI,
                 children: vec![
                     Box::new(frost::SceneNode {
                         // The left cell: the active tool, empty at start.
@@ -3311,6 +3358,7 @@ fn main() {
                 // the badge, and the held-fruit node, so the cursor paints
                 // above the panel, the plants, the bees, and the bugs, and
                 // the carried fruit paints above the cursor.
+                order: zorder::UI,
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
@@ -3326,6 +3374,7 @@ fn main() {
                 .into_iter()
                 .map(Box::new)
                 .collect(),
+                order: zorder::UI,
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
@@ -3335,6 +3384,7 @@ fn main() {
                 // process every frame. It sits under the held-fruit node,
                 // so a carried tomato still paints above it.
                 shape: Some(assets.immortality.clone()),
+                order: zorder::UI,
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
@@ -3344,6 +3394,7 @@ fn main() {
                 // the basket, the badge, the cursor. The group carries no
                 // shape or scale of its own; the child rides the cursor in
                 // window-centered user space.
+                order: zorder::UI,
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
@@ -3367,6 +3418,7 @@ fn main() {
                         ..Default::default()
                     }),
                 ],
+                order: zorder::OVERLAY,
                 ..Default::default()
             }),
         ],

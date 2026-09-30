@@ -372,6 +372,23 @@ impl Vipers {
             }
         }
     }
+
+    /// Each bee's facing — +1.0 flying right (the near side of its orbit,
+    /// the lower half, where it moves with the screen) and −1.0 flying
+    /// left (the far side, the upper half) — for the scene's depth scheme:
+    /// a placed bee's order is its segment's order plus this facing, so the
+    /// near half of an orbit rides one unit above its segment and the far
+    /// half one below it. The unspawned slots read 0.0; they draw nothing,
+    /// so their order is moot.
+    pub fn facings(&self) -> [f32; N] {
+        std::array::from_fn(|i| {
+            if self.bees[i].placed {
+                self.bees[i].facing
+            } else {
+                0.0
+            }
+        })
+    }
 }
 
 #[cfg(test)]

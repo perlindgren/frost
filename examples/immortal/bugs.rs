@@ -862,6 +862,11 @@ impl Bugs {
             };
             child.transform = frost::Transform::translate([bug.pos[0], bug.pos[1] + lift]);
             child.scale = [sx, sy];
+            // The depth: the bug rides the ground band, interleaved with
+            // the other bugs, the worms, and the plants' root slices by its
+            // y — the lift is a death-bounce visual, not its position in the
+            // grass, so the order tracks `pos` alone.
+            child.order = crate::zorder::ground(bug.pos[1]);
             child.modulate = TINT;
             let frame = frames[bug.frame as usize];
             if bug.shown != bug.frame || !same_sprite(&child.shape, frame) {
