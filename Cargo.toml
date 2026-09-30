@@ -172,6 +172,34 @@ path = "examples/inout/torch.rs"
 name = "collision"
 path = "examples/physics/collision.rs"
 
+# The shape examples live in the `examples/shapes/` folder. Cargo only
+# auto-discovers `examples/*.rs` and `examples/*/main.rs`, so each file in
+# the folder is named here explicitly; the example names stay the same, so
+# `cargo run --example one_rect` (and friends) keeps working.
+[[example]]
+name = "one_rect"
+path = "examples/shapes/one_rect.rs"
+
+[[example]]
+name = "box_z"
+path = "examples/shapes/box_z.rs"
+
+[[example]]
+name = "scene"
+path = "examples/shapes/scene.rs"
+
+[[example]]
+name = "sprites"
+path = "examples/shapes/sprites.rs"
+
+[[example]]
+name = "tomato_sprite"
+path = "examples/shapes/tomato_sprite.rs"
+
+[[example]]
+name = "tomato"
+path = "examples/shapes/tomato.rs"
+
 [dev-dependencies]
 # Command line parsing for the `repeat` example (`--repeat_x`, `--repeat_y`).
 clap = { version = "4", features = ["derive"] }
