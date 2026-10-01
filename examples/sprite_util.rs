@@ -32,9 +32,11 @@
 //! the selection rectangle if one is dragged (a left-drag over the work
 //! area draws it; a click that barely moves instead logs the pixel and
 //! its slot) — and to the opaque content when there is no selection,
-//! trimming the fully transparent borders. Every crop is remembered per
-//! sprite, so **Ctrl-Z** undoes it, walking back step by step to that
-//! sprite's original. **Save** writes the texture over the file it came
+//! trimming the fully transparent borders. The sidecar's positions ride
+//! the cut: each shifts by the crop's origin, clamped to the new bounds,
+//! so it stays put relative to the pixels that survive. Every crop is
+//! remembered per sprite, so **Ctrl-Z** undoes it — texture and sidecar
+//! together — walking back step by step to that sprite's original. **Save** writes the texture over the file it came
 //! from, and **Save As** asks a native dialog for a new name, defaulted
 //! to the sprite's current file name; both ask for confirmation before
 //! overwriting an existing file — and, when the sprite has a sidecar
@@ -379,9 +381,10 @@ struct Sprite {
     name: String,
     /// The working texture: crops replace it, saves write it.
     current: image::RgbaImage,
-    /// The texture snapshots each crop replaced: Ctrl-Z pops them back,
-    /// and the history bottom is the sprite's original.
-    history: Vec<image::RgbaImage>,
+    /// Each crop's snapshot: the texture it replaced and the sidecar
+    /// positions it shifted — Ctrl-Z pops both back, and the history
+    /// bottom is the sprite's original.
+    history: Vec<(image::RgbaImage, Option<Vec<(f32, f32)>>)>,
     /// The working texture as a shape — the work area's sprite node.
     shape: frost::Shape,
     /// The original, minimized to a slot's width — the slot's picture.
@@ -738,8 +741,11 @@ impl Demo {
     }
 
     /// Crop: to the selection when one is dragged, else to the opaque
-    /// content — trimming the fully transparent borders. The replaced
-    /// texture goes on the sprite's history, so undo can walk it back.
+    /// content — trimming the fully transparent borders. The sidecar's
+    /// positions shift by the cut's origin, clamped to the new bounds, so
+    /// they stay put relative to the pixels that survive. The replaced
+    /// texture and the shifted positions go on the sprite's history, so
+    /// undo can walk both back.
     fn crop(&mut self, ctx: &mut frost::Context) {
         let Some(sp) = self.active() else { return };
         if sp.current.width() == 0 {
@@ -762,42 +768,63 @@ impl Demo {
                 Some(r) => Some(r),
             },
         };
-        let cut = match rect {
-            Some((x, y, cw, ch)) => image::imageops::crop_imm(&sp.current, x, y, cw, ch).to_image(),
-            None => {
-                if let Some(err) = err {
-                    self.status = err;
-                }
-                return;
+        let Some((x, y, cw, ch)) = rect else {
+            if let Some(err) = err {
+                self.status = err;
             }
+            return;
         };
+        let cut = image::imageops::crop_imm(&sp.current, x, y, cw, ch).to_image();
         let (nx, ny) = (cut.width(), cut.height());
         let sp = &mut self.sprites[self.active];
-        sp.history.push(sp.current.clone());
+        // The positions as the sidecar names them right now — undo puts
+        // them back, whatever the crop does to them.
+        let pre = sp.ron.as_ref().map(|doc| {
+            let mut spots = Vec::new();
+            scan_spots(&doc.root, &mut Vec::new(), "", &mut spots);
+            spots.iter().map(|s| (s.x, s.y)).collect::<Vec<_>>()
+        });
+        sp.history.push((sp.current.clone(), pre));
         if self
             .apply(ctx, cut, format!("cropped to {nx} x {ny} px"))
             .is_none()
         {
             self.sprites[self.active].history.pop();
             self.status = String::from("crop: could not rebuild the sprite");
+        } else if let Some(doc) = self.sprites[self.active].ron.as_mut() {
+            let n = shift_spots(&mut doc.root, x as f32, y as f32, (nx, ny));
+            doc.rows = ron_tree::layout(&doc.root);
+            if n > 0 {
+                self.status = format!("cropped to {nx} x {ny} px — {n} positions shifted");
+            }
         }
     }
 
-    /// One step back through the active sprite's crops; the history ends
-    /// at its original.
+    /// One step back through the active sprite's crops — texture and
+    /// sidecar positions together; the history ends at its original.
     fn undo(&mut self, ctx: &mut frost::Context) {
         let prev = self
             .sprites
             .get_mut(self.active)
             .and_then(|sp| sp.history.pop());
         match prev {
-            Some(prev) => {
-                let (w, h) = (prev.width(), prev.height());
+            Some((img, pre)) => {
+                let (w, h) = (img.width(), img.height());
                 if self
-                    .apply(ctx, prev, format!("undo: back to {w} x {h} px"))
+                    .apply(ctx, img, format!("undo: back to {w} x {h} px"))
                     .is_none()
                 {
                     self.status = String::from("undo: could not rebuild the sprite");
+                } else if let (Some(pre), Some(doc)) = (pre, self.sprites[self.active].ron.as_mut())
+                {
+                    if !restore_spots(&mut doc.root, &pre) {
+                        log::warn!(
+                            "undo: the sidecar's positions changed since the crop — \
+                            the texture is back, the positions are left as they are"
+                        );
+                    } else {
+                        doc.rows = ron_tree::layout(&doc.root);
+                    }
                 }
             }
             None => self.status = String::from("undo: already at the original"),
@@ -2543,6 +2570,55 @@ fn spot_of_row(spots: &[Spot], row: &[u16]) -> Option<usize> {
     })
 }
 
+/// A position's two numbers written back as one-decimal atoms, the way a
+/// click on the sprite writes them.
+fn write_spot(v: &mut ron_tree::Val, x: f32, y: f32) {
+    if let ron_tree::Val::Struct { fields, .. } = v {
+        for (n, f) in fields.iter_mut().enumerate().take(2) {
+            f.1.val = ron_tree::Val::Atom(format!("{:.1}", [x, y][n]), ron_tree::Kind::Num);
+        }
+    }
+}
+
+/// A crop's job for a sidecar: every position moves by the cut's origin
+/// `(dx, dy)`, clamped into the cropped texture's bounds — so a point
+/// keeps its place relative to the pixels that survive, and a point the
+/// cut eats lands on the new edge. The number of positions touched.
+fn shift_spots(root: &mut ron_tree::Val, dx: f32, dy: f32, bounds: (u32, u32)) -> usize {
+    let mut spots = Vec::new();
+    scan_spots(root, &mut Vec::new(), "", &mut spots);
+    let mut n = 0;
+    for spot in &spots {
+        let (cx, cy) = (
+            (spot.x - dx).clamp(0.0, bounds.0 as f32),
+            (spot.y - dy).clamp(0.0, bounds.1 as f32),
+        );
+        if let Some(v) = ron_tree::walk(root, &spot.path) {
+            write_spot(v, cx, cy);
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Undo's job for a sidecar: write the positions back to the values `pre`
+/// kept before the crop. The tree must carry exactly those positions
+/// still — list entries added or removed since the crop leave it
+/// untouched. Whether it wrote them.
+fn restore_spots(root: &mut ron_tree::Val, pre: &[(f32, f32)]) -> bool {
+    let mut spots = Vec::new();
+    scan_spots(root, &mut Vec::new(), "", &mut spots);
+    if spots.len() != pre.len() {
+        return false;
+    }
+    for (spot, (px, py)) in spots.iter().zip(pre.iter()) {
+        if let Some(v) = ron_tree::walk(root, &spot.path) {
+            write_spot(v, *px, *py);
+        }
+    }
+    true
+}
+
 /// The pan offset that puts texture point `(x, y)` at the work area's
 /// centre — the click map solved backwards for the offset (the strip's
 /// vertical shift cancels: the point lands at the work area's centre,
@@ -3435,6 +3511,60 @@ mod tests {
         coord.push(1);
         assert_eq!(spot_of_row(&spots, &coord), Some(1));
         assert_eq!(spot_of_row(&spots, &[9]), None);
+    }
+
+    #[test]
+    fn a_crop_shifts_every_position_by_the_cut_origin() {
+        let mut root = ron_tree::parse(
+            "(segment: 1, lower_anchor: (317.0, 600.0), \
+            upper_anchor: (317.0, 578.0), flower_anchors: [(308.0, 615.0)])",
+        )
+        .expect("a small sidecar");
+        // The cut's origin (100, 50) leaves a 630 x 620 texture: every
+        // point keeps its place relative to the pixels that survive.
+        let n = shift_spots(&mut root, 100.0, 50.0, (630, 620));
+        assert_eq!(n, 3);
+        let mut spots = Vec::new();
+        scan_spots(&root, &mut Vec::new(), "", &mut spots);
+        assert_eq!((spots[0].x, spots[0].y), (217.0, 550.0));
+        assert_eq!((spots[1].x, spots[1].y), (217.0, 528.0));
+        assert_eq!((spots[2].x, spots[2].y), (208.0, 565.0));
+    }
+
+    #[test]
+    fn the_cut_clamps_the_positions_it_eats_onto_the_new_edge() {
+        let mut root = ron_tree::parse("(a: (10.0, 700.0), b: (300.0, 660.0))").expect("parses");
+        // (10 - 100, 700 - 50) = (-90, 650) is outside the new 300 x 600
+        // bounds altogether; (300 - 100, 660 - 50) = (200, 610) is inside
+        // the width but past the new bottom.
+        let n = shift_spots(&mut root, 100.0, 50.0, (300, 600));
+        assert_eq!(n, 2);
+        let mut spots = Vec::new();
+        scan_spots(&root, &mut Vec::new(), "", &mut spots);
+        assert_eq!((spots[0].x, spots[0].y), (0.0, 600.0));
+        assert_eq!((spots[1].x, spots[1].y), (200.0, 600.0));
+    }
+
+    #[test]
+    fn undo_restores_the_positions_the_crop_kept() {
+        let mut root =
+            ron_tree::parse("(lower_anchor: (317.0, 671.0), flower_anchors: [(308.0, 615.0)])")
+                .expect("a small sidecar");
+        let mut spots = Vec::new();
+        scan_spots(&root, &mut Vec::new(), "", &mut spots);
+        let kept: Vec<(f32, f32)> = spots.iter().map(|s| (s.x, s.y)).collect();
+        shift_spots(&mut root, 100.0, 50.0, (520, 620));
+        assert!(restore_spots(&mut root, &kept), "the very same tree");
+        let mut spots = Vec::new();
+        scan_spots(&root, &mut Vec::new(), "", &mut spots);
+        assert_eq!((spots[0].x, spots[0].y), (317.0, 671.0));
+        assert_eq!((spots[1].x, spots[1].y), (308.0, 615.0));
+        // A position gone since the crop: the tree is left untouched.
+        let mut one = ron_tree::parse("(lower_anchor: (317.0, 671.0))").expect("parses");
+        assert!(!restore_spots(&mut one, &kept));
+        let mut spots = Vec::new();
+        scan_spots(&one, &mut Vec::new(), "", &mut spots);
+        assert_eq!((spots[0].x, spots[0].y), (317.0, 671.0));
     }
 
     #[test]
