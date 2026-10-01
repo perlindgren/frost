@@ -2,10 +2,13 @@
 //! drag them by their title bars — hold a color mixer, a spin toggle and
 //! speed, and an about box, all wired to a face that reacts every frame.
 //!
-//! - The `Tomato` panel's three sliders drive the body's red, green and
-//!   blue; the `Spin` checkbox and `Speed` slider drive its rotation;
-//!   `Reset` restores the defaults.
-//! - The `About` panel is two labels: it shows panels stacking (declare
+//! - The `Tomato` panel's sliders drive the body's red, green and blue and
+//!   its spin speed; they are declared as one `Ui::table` — a hugging
+//!   label column, a stretch track column and a hugging readout column —
+//!   so the tracks and values align across the rows. The `Spin` checkbox
+//!   and `Reset` button stay plain rows below the table, and `Reset`
+//!   restores the defaults.
+//! - The `About` panel is three labels: it shows panels stacking (declare
 //!   order is paint order) and holds their own dragged positions.
 //!
 //! Run with:
@@ -14,7 +17,7 @@
 //! cargo run --example widgets
 //! ```
 
-use frost::{Color, Context, Scene, SceneNode, Shape, Transform};
+use frost::{Align, Col, Color, Context, Scene, SceneNode, Shape, Transform};
 
 /// The radius of the face's body circle.
 const BODY_R: f32 = 130.0;
@@ -76,12 +79,34 @@ impl frost::Process for Demo {
             [-w / 2.0 + PANEL_W / 2.0 + 16.0, h / 2.0 - 150.0],
             PANEL_W,
             |ui, ctx| {
-                ui.slider(ctx, "Red", &mut self.r, 0.0, 1.0);
-                ui.slider(ctx, "Green", &mut self.g, 0.0, 1.0);
-                ui.slider(ctx, "Blue", &mut self.b, 0.0, 1.0);
+                // The four sliders as one table: each row declares its
+                // label, its track and its readout — one widget per
+                // column, wrapping to the next row after the last.
+                ui.table(
+                    ctx,
+                    "mix",
+                    &[
+                        Col::auto(Align::Left),         // the labels, hugging
+                        Col::stretch(1.0, Align::Left), // the tracks, filling
+                        Col::auto(Align::Right),        // the values, right
+                    ],
+                    |ui, ctx| {
+                        ui.label(ctx, "Red");
+                        ui.slider_track(ctx, "Red", &mut self.r, 0.0, 1.0);
+                        ui.readout(ctx, &format!("{:.2}", self.r));
+                        ui.label(ctx, "Green");
+                        ui.slider_track(ctx, "Green", &mut self.g, 0.0, 1.0);
+                        ui.readout(ctx, &format!("{:.2}", self.g));
+                        ui.label(ctx, "Blue");
+                        ui.slider_track(ctx, "Blue", &mut self.b, 0.0, 1.0);
+                        ui.readout(ctx, &format!("{:.2}", self.b));
+                        ui.label(ctx, "Speed");
+                        ui.slider_track(ctx, "Speed", &mut self.speed, 0.0, 6.0);
+                        ui.readout(ctx, &format!("{:.2}", self.speed));
+                    },
+                );
                 ui.space(6.0);
                 ui.checkbox(ctx, "Spin", &mut self.spin);
-                ui.slider(ctx, "Speed", &mut self.speed, 0.0, 6.0);
                 ui.space(6.0);
                 if ui.button(ctx, "Reset") {
                     self.r = 0.85;
