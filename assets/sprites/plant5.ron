@@ -12,16 +12,19 @@
 (
     segment: 5,
     image: "plant5.png",
-
     // The joint this segment attaches to the previous one through:
     // plant4's upper joint.
-    lower_anchor: (124.0, 196.0),
-
+    lower_anchor: (
+        123.6,
+        178.8,
+    ),
     // The top of the chain: no segment attaches here — the joint ends
     // the stem (it still caps the top segment's midpoint, which the
     // vipers orbit).
-    upper_anchor: (124.0, 100.0),
-
+    upper_anchor: (
+        124.0,
+        80.0,
+    ),
     // The top slice bears no flowers.
     flower_anchors: [],
 )
