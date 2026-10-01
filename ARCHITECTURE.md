@@ -711,7 +711,8 @@ tools (`sprite_util`, `worm`, …) at the top level. Cargo only auto-discovers
 with an explicit `[[example]]` entry in `Cargo.toml` — the short names keep
 working: `cargo run --example parallax`. `ron_view/` is the exception that
 proves the rule: a `main.rs` folder target needs no entry, and its
-`tree.rs` — the RON-subset parser, tree model and row flattener — is
+`tree.rs` — the RON-subset parser, tree model and row flattener (every
+value carries its source comments through parse, edit and save) — is
 path-included by `sprite_util` too (`#[path = "ron_view/tree.rs"]`), so
 both examples parse sidecars and samples with one shared, dependency-free
 parser. Most load their
@@ -840,8 +841,12 @@ disk. Run with `cargo run --example <name>`
 |              | UI actually painted, never a frame ahead of it                      |
 |              | Every `(x, y)` the file names is marked on the sprite in the colour |
 |              | its rows carry: click a row to pick the position, click the sprite  |
-|              | to move it, Escape lets go; other rows fold on click, and Save /    |
-|              | Save As write the tree back beside the PNG                          |
+|              | to move it, Escape lets go; other rows fold on click. Save /        |
+|              | Save As write the tree back beside the PNG with its comments —      |
+|              | the parser keeps leads, trails, tails and the header, the writer    |
+|              | puts them back. Sequences wear + / × row buttons and entries        |
+|              | reorder by press-drag; a list entry's marker shows its seat         |
+|              | number on the sprite                                              |
 | widgets      | the `Ui` layer: a draggable Tomato panel (three color sliders, a    |
 |              | Spin checkbox, a Speed slider, a Reset button) and an About label   |
 |              | panel drive a spinning face's color and rotation                    |
@@ -895,8 +900,8 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 183 passed + 5 doctests
-cargo test --examples    # expect 123 passed (unit tests inside the examples;
-                           # ron_view/tree.rs compiles into both targets, so its 7 parser tests run twice)
+cargo test --examples    # expect 130 passed (unit tests inside the examples;
+                           # ron_view/tree.rs compiles into both targets, so its 9 parser tests run twice)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example worm     # peristaltic crawl, edge wrap; exits 0
 cargo run --example ron_view # fold rows, drag both scroll handles; exits 0

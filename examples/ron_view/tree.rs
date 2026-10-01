@@ -29,25 +29,58 @@ pub enum Kind {
 
 /// A parsed RON value. Containers carry their fold state: the view
 /// mutates these flags in place, and flattens to rows from them.
-#[derive(Debug, PartialEq)]
+/// Container children are [`Item`]s, so every value travels with the
+/// comments that surrounded it in the source — reordering, deleting or
+/// editing a value carries its comments along, and saving writes them
+/// back. `tail` holds the comments that sat between the last entry and
+/// the container's closing bracket.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Val {
     /// Text, verbatim from the source (quotes and escapes included).
     Atom(String, Kind),
     /// `[..]`.
-    Seq { open: bool, items: Vec<Val> },
+    Seq {
+        open: bool,
+        items: Vec<Item>,
+        tail: String,
+    },
     /// `Name(..)`, `(..)`, `Name {..}` or `{..}` with named fields;
     /// field names are empty for positional (tuple) entries.
     Struct {
         open: bool,
         head: String,
         curly: bool,
-        fields: Vec<(String, Val)>,
+        fields: Vec<(String, Item)>,
+        tail: String,
     },
     /// `{ key: value, .. }` — keys rendered to display strings.
     Map {
         open: bool,
-        entries: Vec<(String, Val)>,
+        entries: Vec<(String, Item)>,
+        tail: String,
     },
+}
+
+/// One entry of a container: the value plus its comments, verbatim.
+/// `lead` is the run of whole-line comments above the entry (one per
+/// line, `\n` between); `trail` is the comment that followed it on
+/// the same line. Newly added entries carry neither.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Item {
+    pub lead: String,
+    pub trail: String,
+    pub val: Val,
+}
+
+impl Item {
+    /// A bare value, no comments — the shape `sprite_util` appends.
+    pub fn plain(val: Val) -> Self {
+        Self {
+            lead: String::new(),
+            trail: String::new(),
+            val,
+        }
+    }
 }
 
 impl Val {
@@ -76,7 +109,7 @@ impl Val {
                 "[{}]",
                 items
                     .iter()
-                    .map(|v| v.inline())
+                    .map(|it| it.val.inline())
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -97,11 +130,11 @@ impl Val {
                 };
                 let inner = fields
                     .iter()
-                    .map(|(k, v)| {
+                    .map(|(k, it)| {
                         if k.is_empty() {
-                            v.inline()
+                            it.val.inline()
                         } else {
-                            format!("{k}: {}", v.inline())
+                            format!("{k}: {}", it.val.inline())
                         }
                     })
                     .collect::<Vec<_>>()
@@ -112,7 +145,7 @@ impl Val {
                 "{{{}}}",
                 entries
                     .iter()
-                    .map(|(k, v)| format!("{k}: {}", v.inline()))
+                    .map(|(k, it)| format!("{k}: {}", it.val.inline()))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -140,9 +173,23 @@ impl Val {
     pub fn kids(&self) -> Vec<(String, &Val)> {
         match self {
             Val::Atom(..) => Vec::new(),
-            Val::Seq { items, .. } => items.iter().map(|v| (String::new(), v)).collect(),
-            Val::Struct { fields, .. } => fields.iter().map(|(k, v)| (k.clone(), v)).collect(),
-            Val::Map { entries, .. } => entries.iter().map(|(k, v)| (k.clone(), v)).collect(),
+            Val::Seq { items, .. } => items.iter().map(|it| (String::new(), &it.val)).collect(),
+            Val::Struct { fields, .. } => {
+                fields.iter().map(|(k, it)| (k.clone(), &it.val)).collect()
+            }
+            Val::Map { entries, .. } => {
+                entries.iter().map(|(k, it)| (k.clone(), &it.val)).collect()
+            }
+        }
+    }
+
+    /// The nth child value, read-only.
+    pub fn child(&self, n: usize) -> Option<&Val> {
+        match self {
+            Val::Atom(..) => None,
+            Val::Seq { items, .. } => items.get(n).map(|it| &it.val),
+            Val::Struct { fields, .. } => fields.get(n).map(|(_, it)| &it.val),
+            Val::Map { entries, .. } => entries.get(n).map(|(_, it)| &it.val),
         }
     }
 
@@ -150,9 +197,9 @@ impl Val {
     pub fn child_at(&mut self, n: usize) -> Option<&mut Val> {
         match self {
             Val::Atom(..) => None,
-            Val::Seq { items, .. } => items.get_mut(n),
-            Val::Struct { fields, .. } => fields.get_mut(n).map(|(_, v)| v),
-            Val::Map { entries, .. } => entries.get_mut(n).map(|(_, v)| v),
+            Val::Seq { items, .. } => items.get_mut(n).map(|it| &mut it.val),
+            Val::Struct { fields, .. } => fields.get_mut(n).map(|(_, it)| &mut it.val),
+            Val::Map { entries, .. } => entries.get_mut(n).map(|(_, it)| &mut it.val),
         }
     }
 
@@ -173,21 +220,30 @@ impl Val {
             Val::Atom(..) => return,
             Val::Seq { open, items, .. } => {
                 *open = depth <= max;
-                items.iter_mut().collect()
+                items.iter_mut().map(|it| &mut it.val).collect()
             }
             Val::Struct { open, fields, .. } => {
                 *open = depth <= max;
-                fields.iter_mut().map(|(_, v)| v).collect()
+                fields.iter_mut().map(|(_, it)| &mut it.val).collect()
             }
             Val::Map { open, entries, .. } => {
                 *open = depth <= max;
-                entries.iter_mut().map(|(_, v)| v).collect()
+                entries.iter_mut().map(|(_, it)| &mut it.val).collect()
             }
         };
         for c in children {
             c.open_to(depth + 1, max);
         }
     }
+}
+
+/// Follow a fold-path of child indices from the root, read-only.
+pub fn find<'v>(root: &'v Val, path: &[u16]) -> Option<&'v Val> {
+    let mut v = root;
+    for &i in path {
+        v = v.child(i as usize)?;
+    }
+    Some(v)
 }
 
 /// Follow a fold-path of child indices from the root.
@@ -264,6 +320,71 @@ impl<'a> Parser<'a> {
             } else {
                 return Ok(());
             }
+        }
+    }
+
+    /// Consume one comment — a `//` line or a nestable `/* */` block —
+    /// verbatim, and hand back its text.
+    fn comment(&mut self) -> Result<String, String> {
+        let start = self.i;
+        if self.s[self.i..].starts_with(b"//") {
+            while self.i < self.s.len() && self.s[self.i] != b'\n' {
+                self.i += 1;
+            }
+        } else {
+            let mut depth = 0;
+            while self.i < self.s.len() {
+                if self.s[self.i..].starts_with(b"/*") {
+                    depth += 1;
+                    self.i += 2;
+                } else if self.s[self.i..].starts_with(b"*/") {
+                    depth -= 1;
+                    self.i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    self.i += 1;
+                }
+            }
+            if depth > 0 {
+                return self.err("unterminated block comment");
+            }
+        }
+        Ok(String::from_utf8_lossy(&self.s[start..self.i]).into_owned())
+    }
+
+    /// Whitespace and comments up to the next value: the comments, in
+    /// order and verbatim, joined by newlines — an entry's lead.
+    fn ws_lead(&mut self) -> Result<String, String> {
+        let mut cs: Vec<String> = Vec::new();
+        loop {
+            while self.i < self.s.len() && self.s[self.i].is_ascii_whitespace() {
+                self.i += 1;
+            }
+            if self.s[self.i..].starts_with(b"//") || self.s[self.i..].starts_with(b"/*") {
+                cs.push(self.comment()?);
+            } else {
+                return Ok(cs.join("\n"));
+            }
+        }
+    }
+
+    /// A comment on the current line only: spaces (never a newline)
+    /// and one comment — an entry's trail. `Ok("")` when none starts
+    /// before the line ends.
+    fn trail(&mut self) -> Result<String, String> {
+        let save = self.i;
+        let mut j = self.i;
+        while j < self.s.len() && (self.s[j] == b' ' || self.s[j] == b'\t' || self.s[j] == b'\r') {
+            j += 1;
+        }
+        if self.s[j..].starts_with(b"//") || self.s[j..].starts_with(b"/*") {
+            self.i = j;
+            self.comment()
+        } else {
+            self.i = save;
+            Ok(String::new())
         }
     }
 
@@ -380,38 +501,56 @@ impl<'a> Parser<'a> {
             Some(b'[') => {
                 self.i += 1;
                 let mut items = Vec::new();
+                let tail: String;
                 loop {
-                    self.ws()?;
+                    let lead = self.ws_lead()?;
                     if self.eat(b']') {
+                        tail = lead;
                         break;
                     }
-                    items.push(self.value(depth + 1)?);
-                    self.ws()?;
-                    if self.eat(b']') {
-                        break;
+                    let val = self.value(depth + 1)?;
+                    let mut trail = self.ws_lead()?;
+                    let post = self.trail()?;
+                    if !post.is_empty() {
+                        if !trail.is_empty() {
+                            trail.push(' ');
+                        }
+                        trail.push_str(&post);
                     }
+                    items.push(Item { lead, trail, val });
                     if !self.eat(b',') {
+                        tail = self.ws_lead()?;
+                        if self.eat(b']') {
+                            break;
+                        }
                         return self.err("expected ',' or ']'");
                     }
                 }
-                Ok(Val::Seq { open: false, items })
+                Ok(Val::Seq {
+                    open: false,
+                    items,
+                    tail,
+                })
             }
             Some(b'(') => {
                 self.i += 1;
-                let fields = self.fields(b')', depth)?;
+                let (fields, tail) = self.fields(b')', depth)?;
                 Ok(Val::Struct {
                     open: false,
                     head: String::new(),
                     curly: false,
                     fields,
+                    tail,
                 })
             }
             Some(b'{') => {
                 self.i += 1;
                 let mut entries = Vec::new();
+                let tail: String;
                 loop {
-                    self.ws()?;
+                    let lead = self.ws_lead()?;
                     if self.eat(b'}') {
+                        tail = lead;
                         break;
                     }
                     let key = self.value(depth + 1)?;
@@ -419,19 +558,28 @@ impl<'a> Parser<'a> {
                     if !self.eat(b':') {
                         return self.err("expected ':' after a map key");
                     }
-                    let v = self.value(depth + 1)?;
-                    entries.push((key.display(), v));
-                    self.ws()?;
-                    if self.eat(b'}') {
-                        break;
+                    let val = self.value(depth + 1)?;
+                    let mut trail = self.ws_lead()?;
+                    let post = self.trail()?;
+                    if !post.is_empty() {
+                        if !trail.is_empty() {
+                            trail.push(' ');
+                        }
+                        trail.push_str(&post);
                     }
+                    entries.push((key.display(), Item { lead, trail, val }));
                     if !self.eat(b',') {
+                        tail = self.ws_lead()?;
+                        if self.eat(b'}') {
+                            break;
+                        }
                         return self.err("expected ',' or '}'");
                     }
                 }
                 Ok(Val::Map {
                     open: false,
                     entries,
+                    tail,
                 })
             }
             Some(b'"') => {
@@ -457,21 +605,23 @@ impl<'a> Parser<'a> {
                     return Ok(Val::Atom(p, Kind::Bool));
                 }
                 if self.eat(b'(') {
-                    let fields = self.fields(b')', depth)?;
+                    let (fields, tail) = self.fields(b')', depth)?;
                     return Ok(Val::Struct {
                         open: false,
                         head: p,
                         curly: false,
                         fields,
+                        tail,
                     });
                 }
                 if self.eat(b'{') {
-                    let fields = self.fields(b'}', depth)?;
+                    let (fields, tail) = self.fields(b'}', depth)?;
                     return Ok(Val::Struct {
                         open: false,
                         head: p,
                         curly: true,
                         fields,
+                        tail,
                     });
                 }
                 Ok(Val::Atom(p, Kind::Path))
@@ -480,12 +630,16 @@ impl<'a> Parser<'a> {
     }
 
     /// The comma-run of entries until `close`: named (`k: v`) or
-    /// positional (`v`), trailing comma allowed.
-    fn fields(&mut self, close: u8, depth: usize) -> Result<Vec<(String, Val)>, String> {
+    /// positional (`v`), trailing comma allowed; with each entry its
+    /// lead and trail comments, and the run's tail comments before the
+    /// closing bracket.
+    fn fields(&mut self, close: u8, depth: usize) -> Result<(Vec<(String, Item)>, String), String> {
         let mut fields = Vec::new();
+        let tail: String;
         loop {
-            self.ws()?;
+            let lead = self.ws_lead()?;
             if self.eat(close) {
+                tail = lead;
                 break;
             }
             // Named entry? An ident followed by a lone `:` — `::` is a
@@ -507,30 +661,64 @@ impl<'a> Parser<'a> {
                     None
                 }
             };
-            let value = self.value(depth + 1)?;
-            fields.push((named.unwrap_or_default(), value));
-            self.ws()?;
-            if self.eat(b',') {
-                continue;
+            let val = self.value(depth + 1)?;
+            let mut trail = self.ws_lead()?;
+            let post = self.trail()?;
+            if !post.is_empty() {
+                if !trail.is_empty() {
+                    trail.push(' ');
+                }
+                trail.push_str(&post);
             }
-            if self.eat(close) {
-                break;
+            fields.push((named.unwrap_or_default(), Item { lead, trail, val }));
+            if !self.eat(b',') {
+                tail = self.ws_lead()?;
+                if self.eat(close) {
+                    break;
+                }
+                return self.err("expected ',' or a closing bracket");
             }
-            return self.err("expected ',' or a closing bracket");
         }
-        Ok(fields)
+        Ok((fields, tail))
     }
 }
 
-/// Parse a RON document into the view's tree.
-pub fn parse(src: &str) -> Result<Val, String> {
+/// A whole document: the tree plus the comments outside the root —
+/// the header above it and the trailer that followed it.
+#[derive(Debug, PartialEq)]
+pub struct Doc {
+    pub header: String,
+    pub root: Val,
+    pub trailer: String,
+}
+
+/// Parse a RON document into the view's tree, keeping every comment.
+pub fn parse_doc(src: &str) -> Result<Doc, String> {
     let mut p = Parser::new(src);
-    let v = p.value(0)?;
-    p.ws()?;
-    if p.i < p.s.len() {
+    let header = p.ws_lead()?;
+    let root = p.value(0)?;
+    let post = p.trail()?;
+    let rest = p.ws_lead()?;
+    let trailer = if post.is_empty() {
+        rest
+    } else if rest.is_empty() {
+        post
+    } else {
+        format!("{post}\n{rest}")
+    };
+    if p.peek().is_some() {
         return p.err("unexpected text after the document");
     }
-    Ok(v)
+    Ok(Doc {
+        header,
+        root,
+        trailer,
+    })
+}
+
+/// Parse a RON document into the view's tree, comments and all.
+pub fn parse(src: &str) -> Result<Val, String> {
+    parse_doc(src).map(|d| d.root)
 }
 
 // ---------------------------------------------------------------------------
@@ -608,24 +796,25 @@ pub fn flatten(v: &Val, path: &mut Vec<u16>, depth: u16, key: &str, rows: &mut V
                 Val::Seq { items, .. } => items
                     .iter()
                     .enumerate()
-                    .map(|(n, v)| (format!("{n}: "), v))
+                    .map(|(n, it)| (format!("{n}: "), &it.val))
                     .collect(),
                 Val::Struct { fields, .. } => fields
                     .iter()
-                    .map(|(k, v)| {
+                    .map(|(k, it)| {
                         (
                             if k.is_empty() {
                                 String::new()
                             } else {
                                 format!("{k}: ")
                             },
-                            v,
+                            &it.val,
                         )
                     })
                     .collect(),
-                Val::Map { entries, .. } => {
-                    entries.iter().map(|(k, v)| (format!("{k}: "), v)).collect()
-                }
+                Val::Map { entries, .. } => entries
+                    .iter()
+                    .map(|(k, it)| (format!("{k}: "), &it.val))
+                    .collect(),
                 Val::Atom(..) => Vec::new(),
             };
             for (n, (k, child)) in kids.iter().enumerate() {
@@ -655,42 +844,76 @@ pub fn layout(root: &Val) -> Vec<Row> {
 // ---------------------------------------------------------------------------
 // The writer: the parser's counterpart, for anything that saves
 
-/// Full RON text for a value — [`to_text`'s] counterpart to [`parse`].
-/// The layout is canonical: one element per line whenever a container
-/// has children, trailing commas everywhere. Comments, the original
-/// line breaks and the fold state do not survive; re-parsing the text
-/// yields the same value.
-pub fn to_text(root: &Val) -> String {
+/// Full RON text for a document — the counterpart to [`parse_doc`].
+/// Comments survive: leads go above their entry, trails follow it on
+/// the same line, tails sit before the closing bracket, and the header
+/// and trailer bookend the root. Layout is otherwise canonical: one
+/// element per line whenever a container has children, trailing commas
+/// everywhere; the original line breaks and the fold state do not
+/// survive. Re-parsing the text yields the same document.
+pub fn to_text_doc(header: &str, root: &Val, trailer: &str) -> String {
     let mut out = String::new();
+    for line in comment_lines(header) {
+        out.push_str(line);
+        out.push('\n');
+    }
     write_val(root, 0, &mut out);
-    out.push('\n');
+    let one_line = !trailer.contains('\n');
+    if one_line {
+        if !trailer.trim().is_empty() {
+            out.push(' ');
+            out.push_str(trailer.trim());
+        }
+        out.push('\n');
+    } else {
+        out.push('\n');
+        for line in comment_lines(trailer) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
     out
 }
 
+/// Full RON text for a value, comments and all (no header or trailer).
+pub fn to_text(root: &Val) -> String {
+    to_text_doc("", root, "")
+}
+
+/// The non-blank lines of a comment run.
+fn comment_lines(run: &str) -> impl Iterator<Item = &str> {
+    run.lines().map(str::trim_end).filter(|l| !l.is_empty())
+}
+
+/// A child's written form: its lead's lines, its own line, its trail.
+type WrittenKid = (String, String, String);
+
 /// One value at `depth`, into `out`.
 fn write_val(v: &Val, depth: usize, out: &mut String) {
-    let (head, o, c, kids): (String, char, char, Vec<String>) = match v {
+    let (head, o, c, kids, tail): (String, char, char, Vec<WrittenKid>, String) = match v {
         Val::Atom(s, _) => {
             out.push_str(s);
             return;
         }
-        Val::Seq { items, .. } => (
+        Val::Seq { items, tail, .. } => (
             String::new(),
             '[',
             ']',
             items
                 .iter()
-                .map(|v| {
+                .map(|it| {
                     let mut t = String::new();
-                    write_val(v, depth + 1, &mut t);
-                    t
+                    write_val(&it.val, depth + 1, &mut t);
+                    (it.lead.clone(), t, it.trail.clone())
                 })
                 .collect(),
+            tail.clone(),
         ),
         Val::Struct {
             head,
             curly,
             fields,
+            tail,
             ..
         } => (
             head.clone(),
@@ -698,35 +921,37 @@ fn write_val(v: &Val, depth: usize, out: &mut String) {
             if *curly { '}' } else { ')' },
             fields
                 .iter()
-                .map(|(k, v)| {
+                .map(|(k, it)| {
                     let mut t = String::new();
                     if !k.is_empty() {
                         t.push_str(k);
                         t.push_str(": ");
                     }
-                    write_val(v, depth + 1, &mut t);
-                    t
+                    write_val(&it.val, depth + 1, &mut t);
+                    (it.lead.clone(), t, it.trail.clone())
                 })
                 .collect(),
+            tail.clone(),
         ),
-        Val::Map { entries, .. } => (
+        Val::Map { entries, tail, .. } => (
             String::new(),
             '{',
             '}',
             entries
                 .iter()
-                .map(|(k, v)| {
+                .map(|(k, it)| {
                     let mut t = String::new();
                     t.push_str(k);
                     t.push_str(": ");
-                    write_val(v, depth + 1, &mut t);
-                    t
+                    write_val(&it.val, depth + 1, &mut t);
+                    (it.lead.clone(), t, it.trail.clone())
                 })
                 .collect(),
+            tail.clone(),
         ),
     };
     out.push_str(&head);
-    if kids.is_empty() {
+    if kids.is_empty() && tail.trim().is_empty() {
         out.push(o);
         out.push(c);
         return;
@@ -734,10 +959,25 @@ fn write_val(v: &Val, depth: usize, out: &mut String) {
     out.push(o);
     out.push('\n');
     let pad = "    ".repeat(depth + 1);
-    for kid in &kids {
+    for (lead, text, trail) in &kids {
+        for line in comment_lines(lead) {
+            out.push_str(&pad);
+            out.push_str(line);
+            out.push('\n');
+        }
         out.push_str(&pad);
-        out.push_str(kid);
-        out.push_str(",\n");
+        out.push_str(text);
+        out.push(',');
+        if !trail.trim().is_empty() {
+            out.push(' ');
+            out.push_str(trail.trim());
+        }
+        out.push('\n');
+    }
+    for line in comment_lines(&tail) {
+        out.push_str(&pad);
+        out.push_str(line);
+        out.push('\n');
     }
     out.push_str(&"    ".repeat(depth));
     out.push(c);
@@ -770,22 +1010,22 @@ mod tests {
         let Val::Struct { fields, .. } = &root else {
             bug()
         };
-        let chores = &fields[3].1;
+        let chores = &fields[3].1.val;
         let Val::Map { entries, .. } = chores else {
             bug()
         };
         assert_eq!(entries[0].0, "\"mon\"");
-        let Val::Struct { head, fields, .. } = &entries[0].1 else {
+        let Val::Struct { head, fields, .. } = &entries[0].1.val else {
             bug()
         };
         assert_eq!(head, "Chores");
-        let weed = &fields[1].1;
+        let weed = &fields[1].1.val;
         let Val::Struct { head, fields, .. } = weed else {
             bug()
         };
         assert_eq!(head, "Kind::Bug");
         assert_eq!(fields.len(), 1);
-        let Val::Struct { head, .. } = &fields[0].1 else {
+        let Val::Struct { head, .. } = &fields[0].1.val else {
             bug()
         };
         assert_eq!(head, "Count");
@@ -798,7 +1038,7 @@ mod tests {
             curly,
             fields,
             ..
-        } = &fields[2].1
+        } = &fields[2].1.val
         else {
             bug()
         };
@@ -816,7 +1056,7 @@ mod tests {
         let Val::Struct { fields, .. } = &v else {
             bug()
         };
-        let atom = |i: usize| match &fields[i].1 {
+        let atom = |i: usize| match &fields[i].1.val {
             Val::Atom(s, k) => (s.clone(), *k),
             _ => bug(),
         };
@@ -836,7 +1076,7 @@ mod tests {
             bug()
         };
         assert_eq!(fields.len(), 2);
-        let Val::Seq { items, .. } = &fields[1].1 else {
+        let Val::Seq { items, .. } = &fields[1].1.val else {
             bug()
         };
         assert_eq!(items.len(), 2);
@@ -895,9 +1135,29 @@ mod tests {
 
     #[test]
     fn to_text_round_trips_the_garden() {
-        let one = parse(GARDEN).expect("the garden parses");
-        let text = to_text(&one);
-        let two = parse(&text).unwrap_or_else(|err| panic!("re-parse failed: {err}\n{text}"));
+        let one = parse_doc(GARDEN).expect("the garden parses");
+        let text = to_text_doc(&one.header, &one.root, &one.trailer);
+        let two = parse_doc(&text).unwrap_or_else(|err| panic!("re-parse failed: {err}\n{text}"));
         assert_eq!(one, two);
+    }
+
+    #[test]
+    fn comments_survive_the_round_trip() {
+        let src = "// header\n(\n    // lead a\n    a: [1, 2], // trail a\n    b: (3.0, 4.0),\n    // tail note\n)\n// trailer\n";
+        let d = parse_doc(src).expect("parses");
+        assert_eq!(d.header, "// header");
+        assert_eq!(d.trailer, "// trailer");
+        let text = to_text_doc(&d.header, &d.root, &d.trailer);
+        for wanted in [
+            "// header",
+            "// lead a",
+            "// trail a",
+            "// tail note",
+            "// trailer",
+        ] {
+            assert!(text.contains(wanted), "lost {wanted}:\n{text}");
+        }
+        let again = parse_doc(&text).unwrap_or_else(|err| panic!("re-parse: {err}\n{text}"));
+        assert_eq!(d, again);
     }
 }
