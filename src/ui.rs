@@ -351,6 +351,11 @@ struct PanelState {
     h: f32,
     /// Whether a title-bar click has folded the body away.
     folded: bool,
+    /// The plate actually painted by the last `panel` call, as
+    /// `[left, bottom, right, top]` — the geometry a caller can trust,
+    /// since the plate draws at last frame's measured height and a
+    /// same-frame request may not be it.
+    rect: [f32; 4],
 }
 
 /// The immediate-mode widget layer. Keep one per window, owned by your
@@ -452,6 +457,24 @@ impl Ui {
     /// has been declared at least once.
     pub fn panel_position(&self, title: &str) -> Option<[f32; 2]> {
         self.panels.get(&panel_id(title)).map(|p| p.pos)
+    }
+
+    /// The plate a panel PAINTED last frame, `[left, bottom, right, top]`
+    /// in user space. The height is the one the drawing used — last
+    /// frame's measured content, not this frame's request — so a caller
+    /// laying content over the plate matches the pixels, snap-open
+    /// frames included. `None` for a title never declared.
+    pub fn panel_rect(&self, title: &str) -> Option<[f32; 4]> {
+        self.panels.get(&panel_id(title)).map(|p| p.rect)
+    }
+
+    /// Fold a panel, or open it again: the program's hand on the
+    /// title bar's click, for code that closes or restores a panel
+    /// outside the UI — a no-op for a title not yet declared.
+    pub fn set_folded(&mut self, title: &str, folded: bool) {
+        if let Some(p) = self.panels.get_mut(&panel_id(title)) {
+            p.folded = folded;
+        }
     }
 
     /// Starts a UI frame: snapshots the pointer and buttons, resolves the
@@ -1133,6 +1156,12 @@ impl Ui {
                 w: width,
                 h: title_h,
                 folded: false,
+                rect: [
+                    at[0] - width / 2.0,
+                    at[1] - title_h / 2.0,
+                    at[0] + width / 2.0,
+                    at[1] + title_h / 2.0,
+                ],
             });
         let w = state.w;
         let pos = state.pos;
@@ -1179,6 +1208,8 @@ impl Ui {
         }
         let body = Rect::from_center(pos[0], anchor_top - draw_h / 2.0, w, draw_h);
         self.fill(ctx, body, style.panel_bg);
+        self.panels.get_mut(&id).expect("entry was made above").rect =
+            [body.left, body.top - body.h, body.left + body.w, body.top];
         let bar = if it.held {
             style.widget_press
         } else if it.hot {
@@ -1450,6 +1481,7 @@ mod tests {
                 w: 200.0,
                 h: 60.0,
                 folded: false,
+                rect: [-100.0, -30.0, 100.0, 30.0],
             },
         );
         let title = Rect::from_center(0.0, 30.0 - 14.0, 200.0, 28.0);

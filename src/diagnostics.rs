@@ -856,7 +856,7 @@ impl Diagnostics {
     /// and a stale index (the scene lost or rebuilt its layers) recreates it,
     /// re-appending the overlay's nodes into the fresh layer.
     fn ensure_layer(&mut self, scene: &mut Scene) -> usize {
-        let valid = self.layer.map_or(false, |idx| idx < scene.layers.len());
+        let valid = self.layer.is_some_and(|idx| idx < scene.layers.len());
         if valid {
             return self.layer.expect("checked above");
         }
@@ -874,9 +874,7 @@ impl Diagnostics {
         self.layer = Some(idx);
         // The node indices were relative to the previous group's children;
         // reset so every node is re-appended into the fresh layer.
-        for slot in &mut self.nodes {
-            *slot = None;
-        }
+        self.nodes.fill(None);
         idx
     }
 

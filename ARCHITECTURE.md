@@ -21,17 +21,24 @@ challenge for a local-hosted AI workflow, human learning of engine internals, an
 ## Crate layout
 
 ```
-Cargo.toml            deps: image 0.25 (png), log 0.4, swash 0.2 (text),
-                      wgpu 30.0.1, winit 0.30.13; wasm32-only: web-sys,
-                      console_error_panic_hook; dev-deps: clap, env_logger,
-                      naga 30.0.0 (shader validation, no GPU needed)
+Cargo.toml            deps: gilrs 0.11 (gamepads), image 0.25 (png),
+                      log 0.4 (release_max_level_off), rfd 0.17 (native
+                      file dialogs), swash 0.2 (text), wgpu 30.0.1,
+                      winit 0.30.13; native-only: rodio 0.22 (audio);
+                      wasm32-only: web-sys, console_error_panic_hook;
+                      dev-deps: clap, env_logger, naga 30.0.0 (shader
+                      validation, no GPU needed), serde + ron 0.8 (the
+                      immortal example's save file)
 src/lib.rs            crate docs + public API: Canvas, Context, Process, Config,
-                      run / run_configured, draw_scene, paint_order, expand_text
-src/objects.rs        Color, Transform, Shape, Node, SceneNode, Layer, Scene,
-                      NodePath, world_at / camera_world
+                      run / run_configured, draw_scene, paint_order, expand_text,
+                      gamepad re-exports (gilrs Axis / Button / Gamepad)
+src/objects.rs        Color, Transform, Shape, Light, ParticleShape,
+                      SpriteFilter, Node, SceneNode, Layer, Scene, NodePath,
+                      world_at / camera_world
 src/tween.rs          Tween<T> (f32 / [f32;2]) with Repeat modes
 src/particles.rs      Particle, ParticleSystem (pure simulation)
 src/collision.rs      OrientedBox, Circle, Collider, push_out, reflect (pure math)
+src/rng.rs            Rng — seedable splitmix64, state get/set for save games
 src/diagnostics.rs    Diagnostics (flag-gated FPS/FT/PROC/DRAW HUD overlay
                       with folded strip charts), DiagnosticsFlags
 src/ui.rs             Ui immediate-mode widget layer (button, checkbox,
@@ -39,22 +46,29 @@ src/ui.rs             Ui immediate-mode widget layer (button, checkbox,
 src/audio.rs          Audio (device + loop player), Sound (decoded buffer),
                       AudioError — native-only, rodio-based
 src/text.rs           CPU text shaping/rasterization on swash, glyph shelf atlas
-src/shaders.rs        include_str! of the 5 WGSL sources + naga layout tests
+src/shaders.rs        include_str! of the 7 WGSL sources + naga layout tests
 src/backend/mod.rs    `app`, `frame`, `wasm` (wasm32 only), `tests` (test only)
 src/backend/app.rs    Frost<P>: winit app handler + GPU state + render loop
 src/backend/frame.rs  Draw list model: Draw enum, scissor rects, uniform writers
 src/backend/wasm.rs   WebFrost: deferred async GPU setup + fallback DOM helpers
 src/backend/tests.rs  GPU-free backend tests (uniform layout, canvas behavior)
 shaders/*.wgsl        line, circle, rectangle, shape (SDF circle+rect), sprite
-examples/             27 runnable demos (see table below)
-assets/               sprites/*.png (+ .pxo sidecars for brick, water_can),
-                      fonts/JameGem08_2026-Regular.ttf, audio/swoof.wav
+examples/             45 runnable demos, filed into folders (see table below)
+assets/               sprites/*.png (+ .pxo sidecars; immortal art, worm
+                      crops, …), fonts/ (FiraCode Variable, JameGem08,
+                      Leofont + licenses), audio/*.wav (swoof, waterflow,
+                      bug/viper clips, …), sprites/plant1..5.ron (the
+                      immortal plant's anchor files), ron/garden.ron
+                      (ron_view)
 src/TODO.md           next planned feature (Body / rigid bodies)
 ```
 
 The library uses only the `log` facade; consumers wire up their own logger
-(`env_logger` in the examples). No randomness crate — examples that need random
-numbers use a hand-rolled splitmix64 `Rng(u64)`.
+(`env_logger` in the examples). No randomness crate either: `frost::Rng`
+(`src/rng.rs`) is a splitmix64 — pure 64-bit arithmetic, identical on every
+target; `Rng::new()` seeds from the clock, `Rng::with_seed(seed)` fixes the
+stream for reproducible runs and tests, and `state()` / `set_state()` let a
+save file carry the stream across (`immortal` does exactly that).
 
 ## The public API (src/lib.rs)
 
@@ -78,6 +92,17 @@ numbers use a hand-rolled splitmix64 `Rng(u64)`.
     frame, in lines (positive = up). It sums every wheel event of the frame
     (`LineDelta` as-is, `PixelDelta` at 120 px/line) and is reset after the
     frame's `process`, so an unread frame discards its delta.
+  - `window() -> Option<&Window>` — the engine's winit `Window` (`None` only
+    before the first frame exists): parent native dialogs to it (e.g.
+    `rfd::FileDialog::set_parent`, as `sprite_util` does) and read any window
+    state the platform exposes — `inner_size()` / `scale_factor()` for
+    pixel-exact math (the `worm` example wraps at the window's *physical*
+    edges converted through the scale factor).
+  - `gamepads() -> impl Iterator<Item = Gamepad>` — the connected
+    controllers (gilrs): each reports its pressed buttons and axis values,
+    updated with the frame's events; empty when none is connected or the
+    platform's input devices could not be opened at startup. `Axis`,
+    `Button`, and `Gamepad` are re-exported from gilrs.
   - `expected_fps() -> Option<f32>` — monitor refresh rate when vsync is on.
   - `frame_processing_ms() -> f64` — the engine's CPU time for the last
     completed frame (its own probe; see "Diagnostics" below).
@@ -87,9 +112,10 @@ numbers use a hand-rolled splitmix64 `Rng(u64)`.
     the `Diagnostics` overlay's own nodes (its own probe; see "Diagnostics"
     below).
   - `size() -> (f32, f32)` — window size in pixels.
-- Re-exports: `KeyCode`, `MouseButton`, `Tween`/`Repeat`,
-  `ParticleSystem`/`Particle`, `Ui`/`UiStyle`, and everything from `objects`
-  (`Scene`, `SceneNode`, `Node`, `Shape`, `Color`, `Transform`, `Layer`, `Canvas`).
+- Re-exports: `KeyCode`, `MouseButton`, `Axis`/`Button`/`Gamepad` (gilrs),
+  `Rng`, `Tween`/`Repeat`, `ParticleSystem`/`Particle`, `Ui`/`UiStyle`, and
+  everything from `objects` (`Scene`, `SceneNode`, `Node`, `Shape`, `Light`,
+  `Color`, `Transform`, `Layer`, `Canvas`).
 - Native only (no wasm32): `Audio`, `Sound`, `AudioError` (see
   "Audio (native only)" below).
 
@@ -127,10 +153,15 @@ building the `Context` (physical y-down → user y-up).
 
 ## The scene graph (src/objects.rs)
 
-- `Scene { root: SceneNode, layers: Vec<Layer>, camera: Option<NodePath> }`.
+- `Scene { root: SceneNode, layers: Vec<Layer>, camera: Option<NodePath>,
+  ambient: Color }` — `ambient` is the light floor every lit receiver adds
+  under itself (a dim neutral gray by default; see "Lighting" below).
   `Scene::visit()` updates the root subtree and every layer subtree.
 - `SceneNode` — a `transform` + `scale` + `modulate` + `order`, an optional
-  `shape`, and `children`. All four are **relative to the parent**:
+  `shape`, and `children`. All four are **relative to the parent**. Three
+  per-node lighting flags (`lit`, `occludes`, `glow`) join them; unlike these
+  four they apply to the node's own shape only and never propagate (see
+  "Lighting" below):
   - transform/scale: `local = scale(node.scale).compose(&node.transform)`,
     `world = local.compose(&parent)`. **Scale is innermost** — it applies to the
     node's own shape *and* composes onto descendants.
@@ -166,18 +197,28 @@ building the `Context` (physical y-down → user y-up).
     points (local space), stroked at `width`, one draw call for the whole
     chain (max 128 points; fewer than two draws nothing). Width scales with
     the node's geometric-mean scale axis.
-  - `Particles { system, color, shape }` — an instanced particle batch
-    (one draw per batch; the game updates `system` each frame).
+  - `Particles { system, color, shape: ParticleShape }` — an instanced
+    particle batch (one draw per batch; the game updates `system` each
+    frame). `ParticleShape` picks the primitive each instance draws:
+    `Circle` (radius = the particle's size), `Rectangle { aspect }`
+    (`size × 2` wide, `size × aspect × 2` tall), or a sprite. Each
+    `Particle` carries its own `angle`, so instances rotate individually —
+    spinning squares just advance it (see
+    `examples/particles/square_fountains.rs`).
   - `Background { color }` — fills the window, **ignores all transforms**,
     drawn at the very back: at render time it becomes the frame's clear color
     (the last one in depth-first call order wins; default is a dark blue-gray
     when none exists). It costs no draw call.
-  - `Sprite { data: Arc<[u8]>, width, height, color, alpha }` — RGBA8 PNG from
-    `Shape::sprite(path)` / `Shape::sprite_bytes(bytes)` (decoded eagerly;
-    `SpriteError` on failure).
+  - `Sprite { data, width, height, color, alpha, filter }` — RGBA8 PNG from
+    `Shape::sprite(path)` / `sprite_bytes(bytes)` / `sprite_nearest` /
+    `sprite_bytes_nearest` (decoded eagerly; `SpriteError` on failure).
+    `filter: SpriteFilter::{Linear, Nearest}` picks the GPU sampler —
+    Nearest keeps pixel art crisp when scaled.
     Centered on the node origin, 1 texture pixel per scene pixel. `color` tints
     every pixel (white = unchanged); overall opacity = texture alpha × `alpha`
     × `color.a`.
+  - `Light { light: Light }` — contributes the node's [`Light`] to the
+    frame's light field; never drawn itself (see "Lighting" below).
   - `Text { text, font: Arc<[u8]>, size, weight, color, alpha }` — from
     `Shape::text`/`text_bytes` (swash, CPU-only), thickened with
     `Shape::with_weight` (the `wght` variation axis; 400 Regular, 700 bold —
@@ -185,6 +226,37 @@ building the `Context` (physical y-down → user y-up).
     each glyph becomes a tinted quad over a shared atlas.
   - Color model: plain shapes emit `coverage * a`; sprites/text emit
     `texture_alpha * opacity * a` — all composited with `ALPHA_BLENDING`.
+
+## Lighting (src/objects.rs + the backend)
+
+A per-pixel light field, evaluated inside the *existing* shape/sprite/particle
+pipelines — no extra pass, pipeline, or draw call, and skipped light draws
+never count (`Diagnostics` excludes them like backgrounds).
+
+- A `Shape::Light` node contributes a `Light { color, intensity, radius,
+  direction, spread, softness, penumbra }` at the node's local origin: the
+  node's transform (and ancestors') places it, rotates its beam, and tints it
+  through the composed modulate. Three kinds: **omni** (`spread ≥ TAU`, the
+  default — lights every pixel within `radius`, fading to zero at the edge),
+  **cone** (narrower `spread` around `direction`, edges feathered by
+  `softness` — a torch), and **directional** (`Light::directional`, marked by
+  a negative `radius` sentinel: parallel rays, no falloff, position ignored —
+  a sun; a scene may carry any number). `penumbra` is the light disk's radius:
+  shadow rays sample it (nine taps, rotated per pixel), so shadows fade
+  across an edge instead of dropping hard.
+- Receivers opt in per node, flag applies to that shape only:
+  `SceneNode::lit` multiplies the shape's color by `ambient + Σ lights +
+  glow` per pixel; `SceneNode::glow` (a `Color`, alpha-scaled) is the shape's
+  own emission — visible in the dark, never shadowed, never spilling onto
+  neighbors (attach a `Shape::Light` child for that); `SceneNode::occludes`
+  makes a rectangle's transformed silhouette block every light's path to
+  pixels behind it — a shadow caster. A wall can be `lit + occludes` at once.
+- The backend packs the frame into two **storage buffers** bound to every
+  draw: the light field (32-byte header — count and the scene's ambient —
+  plus one 48-byte record per light) and the occluder field (16-byte header
+  plus 48 bytes per occluder). Both start at their binding minimum and grow
+  only to the peak count, so a lighter frame writes a shorter slice into the
+  same buffer; the shaders read ambient and the lists from these fields.
 
 ## The draw list (src/backend/frame.rs)
 
@@ -303,7 +375,7 @@ on the press/release edge with the current value as the new `from`.
 
 ## Particles (src/particles.rs)
 
-`Particle { pos, vel, life, max_life, size }`; `ParticleSystem { particles: Vec }`
+`Particle { pos, vel, life, max_life, size, angle }`; `ParticleSystem { particles: Vec }`
 with `spawn(p)` and `update(dt, gravity)` — semi-implicit Euler
 (`vel += g*dt`, then `pos += vel*dt`), `life -= dt`, `retain(|p| p.life > 0.0)`.
 Pure simulation, renderer-independent; **drawing is the caller's job**
@@ -507,10 +579,14 @@ itself is a `Process`.
   except the draw-call chart, one polyline per series (one for the FPS and
   FT charts, three for the folded ones) — so all four flags give at most 21
   nodes (six lines, four panels, three references, eight polylines), and
-  `none()` gives a single line. The first `process` appends them to
-  `ctx.scene().root.children` and remembers their indices; later calls
-  update each node's shape and transform in place (re-appending one if the
-  demo removed it). The demo must not reorder the root's children.
+  `none()` gives a single line. The first `process` creates a **dedicated
+  topmost `Layer`** — ordered one past the highest existing layer (or above
+  the root subtree when there are none) — and appends the nodes to that
+  layer's root, remembering the indices; later calls update each node's
+  shape and transform in place. A stale index (the demo rebuilt the scene's
+  layers) recreates the layer and re-appends the nodes. Because a `Layer` is
+  a hard draw partition, the overlay can never be buried under a
+  high-order app node, and the demo is free to reorder its root's children.
   Placement uses crate-internal `text::layout` for each line's width; the
   lines' vertical extent is measured once, at construction, over every
   character a readout line can display, because neither the current text's
@@ -540,7 +616,8 @@ itself is a `Process`.
   gate, unlike `audio`.
 
 `examples/diagnostics.rs` shows it over a swaying circle, set in
-`assets/fonts/FiraCode-VariableFont_wght.ttf`, with `DiagnosticsFlags::all()`.
+`assets/fonts/FiraCode-VariableFont_wght.ttf`, with `DiagnosticsFlags::all()`;
+`examples/particles/square_fountains.rs` runs it over a live particle scene.
 
 ## UI (src/ui.rs)
 
@@ -565,7 +642,15 @@ button clicks, a checkbox toggles, a slider's value changes.
   panel **claims its whole area** (body included): presses land on the
   panel, never on a widget or the game behind it, and `Ui::hovering()` —
   the pointer over any widget or panel — lets a raw-input game tell UI
-  clicks from scene clicks (see `examples/sprite_util.rs`).
+  clicks from scene clicks (see `examples/sprite_util.rs`). Two accessors
+  reach a panel from outside: `Ui::panel_position(title)` reads where it
+  sits, `Ui::panel_rect(title)` reports the plate as it was PAINTED last
+  call (the height the drawing used — content laid over a plate must
+  trust this, not its own same-frame request, or it floats a frame
+  ahead of the pixels; see `examples/sprite_util.rs`), and
+  `Ui::set_folded(title, folded)` is the program's hand on the title-bar
+  click — code that closes or restores a panel uses it so a reopened
+  title never greets you folded.
 - **The input model** is one frame delayed: a press is resolved at the next
   `begin` against the rects the previous frame registered, last-declared
   (topmost) first — so overlapping panels route presses to the visible one,
@@ -608,6 +693,8 @@ clean. Notable test areas:
   `context_reports_held_mouse_button`, `context_reports_mouse_wheel_delta`.
 - `src/collision.rs` — push-out separation, reflect restitution semantics.
 - `src/tween.rs`, `src/particles.rs`, `src/text.rs` — behavior unit tests.
+- `src/rng.rs` — a fixed seed replays its stream; `state()`/`set_state()`
+  round-trips continue it exactly.
 - `src/audio.rs` — device-free decode tests (synthetic WAV, bundled
   `swoof.wav`, error variants) + the `load_bytes` doctest.
 - `src/ui.rs` — the interaction model driven frame by frame through
@@ -617,7 +704,19 @@ clean. Notable test areas:
 
 ## Examples (examples/)
 
-Most load their assets from disk at runtime, pinned to the crate root via
+45 demos, filed into subject folders — `shapes/`, `lighting/`, `inout/`,
+`layers/`, `particles/`, `physics/`, `text/`, the `immortal/` game, and the
+tools (`sprite_util`, `worm`, …) at the top level. Cargo only auto-discovers
+`examples/*.rs` and `examples/*/main.rs`, so every folder member is named
+with an explicit `[[example]]` entry in `Cargo.toml` — the short names keep
+working: `cargo run --example parallax`. `ron_view/` is the exception that
+proves the rule: a `main.rs` folder target needs no entry, and its
+`tree.rs` — the RON-subset parser, tree model and row flattener (every
+value carries its source comments through parse, edit and save) — is
+path-included by `sprite_util` too (`#[path = "ron_view/tree.rs"]`), so
+both examples parse sidecars and samples with one shared, dependency-free
+parser. Most load their
+assets from disk at runtime, pinned to the crate root via
 `CARGO_MANIFEST_DIR`; `immortal` and `text_web` embed their assets into the
 binary with `include_bytes!` instead, so they run with no asset files on
 disk. Run with `cargo run --example <name>`
@@ -634,8 +733,9 @@ disk. Run with `cargo run --example <name>`
 | sub_zero     | text shapes ("SUB0") through the scene tree                        |
 | text         | text shapes ("Sub") through the scene tree                         |
 | text_web     | the `text` scene for the wasm target                               |
+| text_leo     | the same text set in `Leofont-Regular.ttf` — one of the three     |
+|              | bundled faces (with JameGem08 and FiraCode Variable)                  |
 | player       | WASD drives a Button sprite from `(0, 0)`                          |
-| obstacles    | player + four fixed obstacles                                      |
 | layers       | obstacles + rendering layers                                       |
 | parallax     | layers + camera: infinite parallax scrolling                       |
 | repeat       | a layer tiling itself (`Layer::repeat`)                            |
@@ -645,11 +745,43 @@ disk. Run with `cargo run --example <name>`
 | tomato       | a plant assembled from three sprite slices                         |
 | grow         | the tomato plant growing slice by slice                            |
 | collision    | the player with `push_out`/`reflect` collision                     |
+| cone_collider| the `cone` hall with physics added: the walls that cut shadows out  |
+|              | of the beam also push the player back (lighting × collision)        |
+| lighting     | a lit floor, a lit ball with an ember plume, three lights sweeping  |
+|              | across them — the feature tour                                      |
+| lit_unlit    | two same-color rectangles — one `lit: true` — and a light on the    |
+|              | mouse: the receiver flag in isolation                               |
+| bouncing_lights | three lights ricocheting around the window like billiard balls  |
+| cone         | a square explorer carries a torch (a cone `Light`) through a dark   |
+|              | hall of occluding walls                                             |
+| dawn         | one directional light as a day cycle: sunrise, climb, sunset, the   |
+|              | world warming and cooling with it                                   |
+| near_sun     | the same day told by a *near* sun — a point light on the visible    |
+|              | disk, so shadows fan out radially                                   |
+| occlusion    | lit panels behind tall occluder walls, one lamp orbiting through    |
+|              | them: hard vs. penumbra shadows                                     |
+| twostars     | a planet under two stars: two directional lights, both on stage     |
+| eyes         | glowing eyes drifting through the dark — a tour of `SceneNode::glow`|
+| eyes_light   | the companion: some eyes are real emitters (`Shape::Light` too)     |
 | particles    | a `ParticleSystem` fountain with life-fraction alpha               |
+| fountains    | three overlapping fountains + a full-screen waterfall, each one    |
+|              | CPU-simulated batch (one instanced draw per `Shape::Particles` node)  |
+| square_fountains | the middle fountain spits rotating squares, each in its own hue: |
+|              | per-particle `Particle.angle` advanced by a side `spins` vec kept in |
+|              | lockstep with the sim's dead-particle removal; runs the full        |
+|              | `Diagnostics` overlay over the scene                                |
 | cursor       | a watering-can cursor: mouse-following sprite, press-to-tilt tween, |
 |              | spout-emitted water particles over a full-screen grass field       |
+| torch        | two kinds of particles side by side: embers that ride the torch and |
+|              | sparks that keep flying once they leave it                          |
+| worm         | one sprite crawling by peristalsis — a stretch anchored at the rear |
+|              | and a contract anchored at the front (matched so the center glides  |
+|              | smoothly), a 2 px bob at twice the beat, wrapping at the window's   |
+|              | physical edges (scale-factor honest); 960×540 via `Config`          |
 | sound        | one-shot + looping playback of a decoded WAV: Space re-triggers     |
 |              | (pulsing circle), L toggles the loop (wobbling ring), +/- the bar   |
+| audio_test   | a raw rodio scratchpad: plays WAV/MP3 straight through rodio,      |
+|              | beside (not through) frost's `Audio` wrapper                        |
 | button       | a "play" button: hovering tweens the node's `scale` to 1.1 (rebuilt |
 |              | on every hover edge) so rect and label grow together; a press edge  |
 |              | over the button arms it, and an armed release over the button plays |
@@ -662,7 +794,7 @@ disk. Run with `cargo run --example <name>`
 |              | image's center sits on the window's center                          |
 | immortal     | 1920x1080 (Config window_size); right button toggles can / spray;  |
 |              | plants grow one at a time, each slice opening its flowers once    |
-|              | fully grown (the four lower slices' hand-picked spawn points, the |
+|              | fully grown (the four lower slices' spawn points, the |
 |              | top slice bearing none, populated with `flower.png`); one viper   |
 |              | per fully grown plant layer orbits the row; a bug swarm pops up   |
 |              | out of the grass in batches of three per plant, growing over     |
@@ -679,7 +811,17 @@ disk. Run with `cargo run --example <name>`
 |              | inverted, position/growth/facing/frame frozen), landing on its back;|
 |              | then over 0.5 s the inverted sprite evaporates, shrinking to nothing|
 |              | while its center sinks through the grass; after a random 5-10 s    |
-|              | delay the bug pops back up at its spawn spot, fully healed          |
+|              | delay the bug pops back up at its spawn spot, fully healed; the five
+|              | slices' joints and flower anchors load at startup from the embedded |
+|              | `assets/sprites/plant1..5.ron` files (serde + ron — the hand-picked |
+|              | constants are gone); a 14- |
+|              | slot worm swarm burrows up, peristalses along the bench (two poses, |
+|              | hull-picked spawn/target spots off a seedable `Rng`), and digs back |
+|              | in; every draw order composes through the `zorder` module's bands   |
+|              | (ground = −y, bench slots on top, grass/UI/overlay pinned outside); |
+|              | F5 / F9 save & reload the whole game as versioned RON under         |
+|              | `~/.frost/immortal/` — the snapshot carries the random streams, so |
+|              | a reload continues each stream exactly (`--load` loads at startup)  |
 | sprite_util  | up to seven picked PNGs (rfd dialogs): the window splits into a     |
 |              | work area and a bottom strip of 100x100 slots holding the           |
 |              | minimized originals (click a slot to activate, drag one onto        |
@@ -690,10 +832,33 @@ disk. Run with `cargo run --example <name>`
 |              | crops, Save/Save As write PNG over a native confirm. An Animation   |
 |              | panel builds frames — each a set of layers with its own hold-time —  |
 |              | played on a clock that loops or ping-pongs (space plays), previewed |
-|              | live in the work area                                               |
+|              | live in the work area. A sprite with a sidecar `<name>.ron` beside  |
+|              | its PNG gets its own `Ui` panel titled by the file — one view per   |
+|              | open file, cascading from the lower right, each dragging, folding,  |
+|              | scrolling by its own pair of handles (wheel too, Shift-wheel         |
+|              | sideways) and resizing by a corner grip; the boxed × in a view's    |
+|              | bar closes file and panel together — laid out on the plate the      |
+|              | UI actually painted, never a frame ahead of it                      |
+|              | Every `(x, y)` the file names is marked on the sprite in the colour |
+|              | its rows carry: pick a row and the sprite centres the point;        |
+|              | right-click a marker to pick it back — the tree unfolds to the      |
+|              | row and scrolls it to centre. Left-click the sprite to move the     |
+|              | position, Escape lets go; other rows fold on click. Save /          |
+|              | Save As write the tree back beside the PNG with its comments —      |
+|              | the parser keeps leads, trails, tails and the header, the writer    |
+|              | puts them back. Sequences wear + / × row buttons and entries        |
+|              | reorder by press-drag; a list entry's marker shows its seat         |
+|              | number on the sprite                                              |
 | widgets      | the `Ui` layer: a draggable Tomato panel (three color sliders, a    |
 |              | Spin checkbox, a Speed slider, a Reset button) and an About label   |
 |              | panel drive a spinning face's color and rotation                    |
+| ron_view     | a foldable, scrollable tree view of a `.ron` file (`tree.rs`,       |
+|              | shared with `sprite_util`'s sidecar panels): click `[-]/[+]`        |
+|              | rows to fold, drag the two scroll handles (or wheel / shift-wheel), |
+|              | text in FiraCode Variable — keys & heads at weight 700, values at   |
+|              | 500; ships with a dependency-free RON-subset parser (comments,      |
+|              | enums, maps, escapes; line-numbered errors) and `assets/ron/        |
+|              | garden.ron` as its sample; `-i` opens any .ron                      |
 
 `cursor.rs` is the most complete reference demo: `CAN_IMAGE [331,247]` scaled
 to 100 px, a 90° CCW tilt tween (0.5 s, rebuilt on press/release edges),
@@ -737,8 +902,11 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 183 passed + 5 doctests
-cargo test --examples    # expect 88 passed (the immortal example tests)
+cargo test --examples    # expect 133 passed (unit tests inside the examples;
+                           # ron_view/tree.rs compiles into both targets, so its 9 parser tests run twice)
 cargo run --example cursor   # visual check; closing the window exits 0
+cargo run --example worm     # peristaltic crawl, edge wrap; exits 0
+cargo run --example ron_view # fold rows, drag both scroll handles; exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0
 cargo run --example button   # hover-scale + click-swoosh check; window exits 0
 cargo run --example widgets  # panels drag, widgets drive the face; exits 0

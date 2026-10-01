@@ -2,7 +2,8 @@
 //! factored out of the `grow` example so the `immortal` example can grow one
 //! on its grass: five slices (`plant1.png` the base, `plant2.png` the low
 //! middle, `plant3.png` the middle, `plant4.png` the high middle,
-//! `plant5.png` the top, chained through hand-picked joint positions),
+//! `plant5.png` the top, chained through the joints its anchor file
+//! `assets/sprites/plant5.ron` names),
 //! where each slice grows from zero to its full size on its own timetable —
 //! the base over 3 seconds, the low middle over 6, the middle over 9, the
 //! high middle over 12, the top over 15 — all starting at the same time.
@@ -36,7 +37,7 @@
 //! order — are the five slice nodes, anchoring the root joint at a given
 //! parent-space point and applying the base rock and the joint bends.
 //! Once a slice is fully grown, its blooms open: the four lower slices'
-//! hand-picked spawn points — [FLOWER_SPAWNS]; the top slice bears none —
+//! flower anchors of the same anchor files; the top slice bears none —
 //! each get a flower slot, in the flower children that follow the slice
 //! nodes. The slice's flowers start one at a time — the first the frame
 //! the slice is fully grown, the next a random [BLOOM_GAP_MIN] to
@@ -73,16 +74,73 @@ use super::tomato::{TOMATO_GROW_TIME, TOMATO_MAX_SCALE, Tomato, tomato_leaf_offs
 #[cfg(test)]
 use super::tomato::{STALE_DELAY, STALE_TIME, TOMATO_BG, TOMATO_FG, TOMATO_RED, TOMATO_STALE};
 
-/// The hand-picked joints of the five slices, in each image's pixel space:
-/// `(0, 0)` at the upper-left, `x` right, `y` down. `[0]` is where the
-/// slice attaches to the previous one, `[1]` where the next slice attaches.
-pub const JOINTS: [[(f32, f32); 2]; 5] = [
-    [(317.0, 671.0), (317.0, 578.0)], // plant1, the base
-    [(319.0, 581.0), (318.0, 351.0)], // plant2, the low middle
-    [(318.0, 463.0), (309.0, 89.0)],  // plant3, the middle
-    [(306.0, 412.0), (301.0, 166.0)], // plant4, the high middle
-    [(124.0, 196.0), (124.0, 100.0)], // plant5, the top
+/// One segment's anchors, as its file `assets/sprites/plant<i>.ron`
+/// writes them: the chain's two joints and the flower attach points, all
+/// in the segment image's own pixel space — `(0, 0)` at the upper-left,
+/// `x` right, `y` down; `[0]` is where the slice attaches to the previous
+/// one, `[1]` where the next slice attaches.
+#[derive(serde::Deserialize)]
+pub struct SegmentAnchors {
+    /// The chain position, 1 (the base) to 5 (the top) — the file's own
+    /// claim, checked against the file's slot by [anchors].
+    pub segment: u32,
+    /// The sprite the pixel space belongs to, likewise checked.
+    pub image: String,
+    /// The joint this segment attaches to the previous one through —
+    /// the root joint of the first segment.
+    pub lower_anchor: (f32, f32),
+    /// The joint the next segment attaches to.
+    pub upper_anchor: (f32, f32),
+    /// The points flowers (and, once grown, fruit) attach to.
+    pub flower_anchors: Vec<(f32, f32)>,
+}
+
+impl SegmentAnchors {
+    /// The segment's two joints, in the chain's pair order.
+    pub fn joints(&self) -> [(f32, f32); 2] {
+        [self.lower_anchor, self.upper_anchor]
+    }
+}
+
+/// The five anchor files, embedded into the binary like every other
+/// immortal asset, so the example runs with no asset files on disk.
+const ANCHOR_FILES: [&str; 5] = [
+    include_str!("../../assets/sprites/plant1.ron"),
+    include_str!("../../assets/sprites/plant2.ron"),
+    include_str!("../../assets/sprites/plant3.ron"),
+    include_str!("../../assets/sprites/plant4.ron"),
+    include_str!("../../assets/sprites/plant5.ron"),
 ];
+
+/// The anchor files parsed once, in chain order, on first use — each
+/// checked against its slot as it parses: the `segment` counts must run
+/// `1..=5` and the `image` names `plant1.png..plant5.png` in order, so a
+/// shuffled, renamed, or mis-shapen file fails loudly at startup rather
+/// than silently re-posing the plant.
+pub fn anchors() -> &'static [SegmentAnchors; 5] {
+    static PARSED: std::sync::OnceLock<[SegmentAnchors; 5]> = std::sync::OnceLock::new();
+    PARSED.get_or_init(|| {
+        std::array::from_fn(|i| {
+            let a: SegmentAnchors = ron::from_str(ANCHOR_FILES[i])
+                .unwrap_or_else(|e| panic!("anchor file plant{}.ron: {e}", i + 1));
+            assert_eq!(
+                a.segment as usize,
+                i + 1,
+                "plant{}.ron claims slot {}",
+                i + 1,
+                a.segment
+            );
+            assert_eq!(
+                a.image,
+                format!("plant{}.png", i + 1),
+                "plant{}.ron names {}",
+                i + 1,
+                a.image
+            );
+            a
+        })
+    })
+}
 
 /// How long each slice takes to grow from zero to its full size, in
 /// seconds, in chain order: the base over 3 s, the next over 6, etc.
@@ -97,45 +155,22 @@ pub const GROW_TIMES: [f32; 5] = [3.0, 6.0, 9.0, 12.0, 15.0];
 #[cfg(test)]
 pub const FULL_GROW_TIME: f32 = *GROW_TIMES.last().expect("GROW_TIMES is non-empty");
 
-/// The flower spawn points of the four lower slices — the top slice bears
-/// none — in each slice image's pixel space: `(0, 0)` at the upper-left,
-/// `x` right, `y` down; `FLOWER_SPAWNS[i]` holds slice `i`'s points. `new`
-/// converts them to node-local space against each texture's real size, and
-/// `layout` opens them on the frame their slice reaches full size.
-pub const FLOWER_SPAWNS: [&[(f32, f32)]; 4] = [
-    &[(308.0, 615.0)],                                 // plant1, the base
-    &[(306.0, 496.0), (638.0, 428.0), (304.0, 392.0)], // plant2, the low middle
-    &[
-        (315.0, 392.0),
-        (326.0, 315.0),
-        (297.0, 258.0),
-        (320.0, 203.0),
-        (300.0, 128.0),
-    ], // plant3, the middle
-    &[
-        (339.0, 364.0),
-        (298.0, 318.0),
-        (356.0, 258.0),
-        (388.0, 228.0),
-        (334.0, 203.0),
-        (283.0, 182.0),
-    ], // plant4, the high middle
-];
+/// The flower slots per plant: one shapeless slot per `flower_anchors`
+/// point of the five anchor files — 1 + 3 + 5 + 6 + 0 — in flattened
+/// slice order, the plant node's children after the [SLICE_N] slice
+/// nodes. A compile-time count (the bloom states are a fixed array), it
+/// is pinned to the files by the `the_anchor_files_match_the_plant_shape`
+/// test.
+pub const FLOWER_N: usize = 15;
 
-/// The flower slots per plant: one shapeless slot per [FLOWER_SPAWNS]
-/// point, in flattened slice order — the plant node's children after the
-/// [SLICE_N] slice nodes.
-pub const FLOWER_N: usize = FLOWER_SPAWNS[0].len()
-    + FLOWER_SPAWNS[1].len()
-    + FLOWER_SPAWNS[2].len()
-    + FLOWER_SPAWNS[3].len();
-
-/// The slices per plant: the plant node's children are the [SLICE_N] slice
-/// nodes first, in chain order, and the [FLOWER_N] flower slots after them.
-pub const SLICE_N: usize = JOINTS.len();
+/// The slices per plant — one per anchor file: the plant node's children
+/// are the [SLICE_N] slice nodes first, in chain order, and the
+/// [FLOWER_N] flower slots after them.
+pub const SLICE_N: usize = ANCHOR_FILES.len();
 
 /// The plant node's child index of flower slot `slot`: the slots follow
-/// the slice children, in flattened [FLOWER_SPAWNS] order.
+/// the slice children, in the flattened anchor-file `flower_anchors`
+/// order.
 pub fn slot_index(slot: usize) -> usize {
     SLICE_N + slot
 }
@@ -201,7 +236,7 @@ struct Link {
     to: [f32; 2],
 }
 
-/// A slice's joints in node-local space, from the hand-picked pixel
+/// A slice's joints in node-local space, from the anchor file's pixel
 /// coordinates and the texture's real size.
 fn link(shape: &frost::Shape, joints: [(f32, f32); 2]) -> Link {
     let size = shape.sprite_size().expect("the slice is a sprite");
@@ -211,8 +246,8 @@ fn link(shape: &frost::Shape, joints: [(f32, f32); 2]) -> Link {
     }
 }
 
-/// A slice's flower spawn points in node-local space, from the hand-
-/// picked pixel coordinates and the texture's real size.
+/// A slice's flower spawn points in node-local space, from the anchor
+/// file's pixel coordinates and the texture's real size.
 fn flower_points(shape: &frost::Shape, pts: &[(f32, f32)]) -> Vec<[f32; 2]> {
     let size = shape.sprite_size().expect("the slice is a sprite");
     pts.iter()
@@ -232,7 +267,7 @@ fn flower_color(g: f32) -> frost::Color {
     FLOWER_BUD.lerp(FLOWER_BLOOM, g)
 }
 
-/// The staggered first-bloom starts in flattened [FLOWER_SPAWNS] order,
+/// The staggered first-bloom starts in the flattened anchor-file order,
 /// drawn from a fresh, clock-seeded [frost::Rng]: for each slice, a
 /// random permutation of its flower slots — the first starting on the
 /// slice's [GROW_TIMES] entry, each next a random [BLOOM_GAP_MIN,
@@ -242,7 +277,8 @@ fn staggered_starts() -> [f32; FLOWER_N] {
     let mut rng = frost::Rng::default();
     let mut starts = [0.0f32; FLOWER_N];
     let mut slot = 0usize;
-    for (i, spawns) in FLOWER_SPAWNS.iter().enumerate() {
+    for (i, seg) in anchors().iter().enumerate() {
+        let spawns = &seg.flower_anchors;
         // A random order for this slice's flowers: a Fisher-Yates shuffle.
         let mut order: Vec<usize> = (0..spawns.len()).collect();
         for k in (1..order.len()).rev() {
@@ -409,7 +445,7 @@ pub struct Plant {
     /// space.
     links: [Link; 5],
     /// The four lower slices' flower spawn points in node-local space, in
-    /// flattened slice order: `new` converts [FLOWER_SPAWNS] against each
+    /// flattened slice order: `new` converts the anchor files' points
     /// texture's real size.
     tomato_spawn: [Vec<[f32; 2]>; 4],
     /// Each bloom slot's [Bloom]: its staggered first-bloom start, the
@@ -468,26 +504,27 @@ impl From<&Plant> for PlantState {
 impl Plant {
     /// Builds the plant from the five slice shapes in chain order
     /// (`plant1`, `plant2`, `plant3`, `plant4`, `plant5`), with each
-    /// slice's joints converted from `JOINTS` and the flower spawn points
-    /// from `FLOWER_SPAWNS` to node-local space against the textures' real
+    /// slice's joints converted from its anchor file and the flower
+    /// points likewise, to node-local space against the textures' real
     /// sizes. The growth clock starts at zero.
     pub fn new(shapes: [&frost::Shape; 5]) -> Self {
         let starts = staggered_starts();
+        let a = anchors();
         Plant {
             t: 0.0,
             age: 0.0,
             links: [
-                link(shapes[0], JOINTS[0]),
-                link(shapes[1], JOINTS[1]),
-                link(shapes[2], JOINTS[2]),
-                link(shapes[3], JOINTS[3]),
-                link(shapes[4], JOINTS[4]),
+                link(shapes[0], a[0].joints()),
+                link(shapes[1], a[1].joints()),
+                link(shapes[2], a[2].joints()),
+                link(shapes[3], a[3].joints()),
+                link(shapes[4], a[4].joints()),
             ],
             tomato_spawn: [
-                flower_points(shapes[0], FLOWER_SPAWNS[0]),
-                flower_points(shapes[1], FLOWER_SPAWNS[1]),
-                flower_points(shapes[2], FLOWER_SPAWNS[2]),
-                flower_points(shapes[3], FLOWER_SPAWNS[3]),
+                flower_points(shapes[0], &a[0].flower_anchors),
+                flower_points(shapes[1], &a[1].flower_anchors),
+                flower_points(shapes[2], &a[2].flower_anchors),
+                flower_points(shapes[3], &a[3].flower_anchors),
             ],
             blooms: std::array::from_fn(|slot| Bloom::new(starts[slot])),
         }
@@ -677,7 +714,7 @@ impl Plant {
 
     /// Lays the plant out in `node`, whose children — in chain order — are
     /// the [SLICE_N] slice nodes followed by the [FLOWER_N] flower slots,
-    /// in flattened [FLOWER_SPAWNS] order — each slot at [slot_index].
+    /// in the flattened anchor-file order — each slot at [slot_index].
     /// Each flower slot is a pivot whose
     /// children, in draw order, are the `flower` leaf and a tomato pivot on
     /// top of it, which the slot's [tomato::Tomato] lays out. `layout` owns
@@ -901,6 +938,22 @@ mod tests {
         }
     }
 
+    /// The compile-time shape of the plant must match what the anchor
+    /// files hold: five slices and [FLOWER_N] flower points, so editing
+    /// a file's anchors cannot silently drift from the fixed arrays.
+    #[test]
+    fn the_anchor_files_match_the_plant_shape() {
+        let a = anchors();
+        assert_eq!(a.len(), SLICE_N);
+        let flowers: usize = a.iter().map(|s| s.flower_anchors.len()).sum();
+        assert_eq!(flowers, FLOWER_N, "the files and FLOWER_N drifted apart");
+        // The top slice bears none; the four below bear at least one each.
+        assert!(a[4].flower_anchors.is_empty());
+        for seg in &a[..4] {
+            assert!(!seg.flower_anchors.is_empty());
+        }
+    }
+
     /// The pinned first-bloom schedule of the test plants: each slice's
     /// flowers start in slot order, a fixed [BLOOM_GAP_MIN] apart, so
     /// every slot's start — and the plant's [Plant::bloom_time] — is a
@@ -908,7 +961,8 @@ mod tests {
     fn pinned_starts() -> [f32; FLOWER_N] {
         let mut starts = [0.0f32; FLOWER_N];
         let mut slot = 0usize;
-        for (i, spawns) in FLOWER_SPAWNS.iter().enumerate() {
+        for (i, seg) in anchors().iter().enumerate() {
+            let spawns = &seg.flower_anchors;
             for k in 0..spawns.len() {
                 starts[slot] = GROW_TIMES[i] + k as f32 * BLOOM_GAP_MIN;
                 slot += 1;
@@ -1030,7 +1084,11 @@ mod tests {
         let s = slice();
         let p = Plant::new([&s, &s, &s, &s, &s]);
         let mut slot = 0usize;
-        for (i, spawns) in FLOWER_SPAWNS.iter().enumerate() {
+        for (i, seg) in anchors().iter().enumerate() {
+            let spawns = &seg.flower_anchors;
+            if spawns.is_empty() {
+                continue; // the top slice bears none — nothing to stagger
+            }
             let mut starts: Vec<f32> = (slot..slot + spawns.len())
                 .map(|k| p.blooms[k].first_bloom_start)
                 .collect();
