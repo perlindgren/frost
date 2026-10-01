@@ -38,6 +38,10 @@
 
 use std::sync::Arc;
 
+/// The shared parser and tree module: `sprite_util` compiles the same
+/// file and uses its writer and child accessors, which this viewer
+/// itself never calls — hence the allow.
+#[allow(dead_code)]
 mod tree;
 use tree::{Kind, Row, VKind, Val, layout, parse, walk};
 

@@ -91,11 +91,15 @@
 //! beside it, the file — the RON subset `ron_view` speaks, parsed by the
 //! very same `tree.rs`, shared by path-include — opens as a foldable
 //! tree in a `Ui` panel titled by the file name, so it drags and folds
-//! like every other panel. Click a `[+]/[-]` row to fold or open its
-//! node, and the wheel scrolls the rows while the cursor is over the
-//! body (everywhere else it keeps zooming). No sidecar, an unparseable
-//! one, or a closed slot: the sprite simply loads, and closing a sprite
-//! takes its panel with it.
+//! like every other panel. Every position the file names — a two-number
+//! tuple — is marked on the sprite in its own colour, the very colour
+//! its tree rows carry: click a row to pick that position (its marker
+//! swells, the row bands), click the sprite to move the position to the
+//! clicked pixel, and a second click or Escape lets go. Rows without a
+//! position fold on click, the wheel scrolls the tree under the cursor,
+//! and Save / Save As write the tree back out beside the PNG. No
+//! sidecar, an unparseable one, or a closed slot: the sprite simply
+//! loads, and closing a sprite takes its panel with it.
 
 use clap::Parser;
 use image::ImageEncoder;
@@ -294,6 +298,26 @@ const RON: usize = THUMBS + SLOTS;
 const RON_NODES: usize = RON_ROWS * 2;
 const RON_ORDER: f32 = 15_000.0;
 
+/// The position markers' pool: two circles per position — the colour
+/// dot and its white centre — ordered above the sprite, its box and the
+/// click marker, and under the UI's panel plate.
+const SPOTS: usize = RON + RON_NODES;
+const SPOTS_MAX: usize = 24;
+const SPOT_ORDER: f32 = 2.9;
+
+/// The position palette: a marker and the tree rows describing it share
+/// a colour, cycling through these hues.
+const PALETTE: [(f32, f32, f32); 8] = [
+    (0.95, 0.45, 0.42),
+    (0.98, 0.72, 0.35),
+    (0.93, 0.87, 0.45),
+    (0.55, 0.85, 0.50),
+    (0.45, 0.85, 0.82),
+    (0.52, 0.66, 0.97),
+    (0.90, 0.58, 0.92),
+    (0.75, 0.90, 0.55),
+];
+
 /// One sprite: its files, its textures and its slot's look.
 struct Sprite {
     /// The file the sprite was loaded from — Save writes back to it.
@@ -327,6 +351,9 @@ struct RonDoc {
     rows: Vec<ron_tree::Row>,
     /// The scroll offset in pixels, 0 at the tree's top.
     scroll: f32,
+    /// The position picked for editing, as an index into a fresh
+    /// [`scan_spots`] of this tree: the next sprite click writes to it.
+    edit: Option<usize>,
 }
 
 impl RonDoc {
@@ -453,6 +480,9 @@ struct Demo {
     was_open: bool,
     /// Whether space was held last frame: its rising edge toggles play.
     was_space: bool,
+    /// Whether Escape was held last frame: its rising edge releases a
+    /// picked position.
+    was_esc: bool,
     /// The checker's light grey level, 0.0-1.0; the Light slider sets it.
     light: f32,
     /// The checker's dark grey level, 0.0-1.0; the Dark slider sets it.
@@ -792,11 +822,26 @@ impl Demo {
                     sp.path = path.to_path_buf();
                     sp.name = name.clone();
                 }
+                // The sidecar travels with its sprite: the tree is
+                // written back out — canonically re-laid, edits and
+                // folds faithfully — beside the saved PNG.
+                let mut both = String::new();
+                if let Some(doc) = self.active().and_then(|sp| sp.ron.as_ref()) {
+                    let side = path.with_extension("ron");
+                    let side_name = file_name_of(&side);
+                    match std::fs::write(&side, ron_tree::to_text(&doc.root)) {
+                        Ok(()) => {
+                            log::info!("saved '{side_name}'");
+                            both = format!(" and '{side_name}'");
+                        }
+                        Err(err) => log::warn!("failed to save '{side_name}': {err}"),
+                    }
+                }
                 self.dir = path
                     .parent()
                     .filter(|d| !d.as_os_str().is_empty())
                     .map(std::path::PathBuf::from);
-                self.status = format!("saved '{name}'");
+                self.status = format!("saved '{name}'{both}");
             }
             Err(err) => self.status = format!("save failed: {err}"),
         }
@@ -1101,6 +1146,19 @@ impl frost::Process for Demo {
         }
         self.was_space = space;
 
+        // Escape's rising edge lets go of a picked position.
+        let esc = ctx.key_down(frost::KeyCode::Escape);
+        if esc && !self.was_esc {
+            let mut was = false;
+            if let Some(doc) = self.ron_mut() {
+                was = doc.edit.take().is_some();
+            }
+            if was {
+                self.status = String::from("edit: released");
+            }
+        }
+        self.was_esc = esc;
+
         // The sidecar panel: a `Ui` panel titled by the sidecar's file
         // name, so its bar drags the panel around and folds it whole —
         // like the View and Animation panels. The body is one empty
@@ -1245,24 +1303,43 @@ impl frost::Process for Demo {
             self.selection = sel_rect_from(from, p, size, view, self.zoom);
         }
         if released {
-            // The sidecar tree's still-click: a row carrying a `[+]/[-]`
-            // marker folds its node, and the visible rows are
-            // re-flattened from the tree. Folding the panel whole is
-            // the UI's own title-bar click.
+            // The sidecar tree's still-click: a row describing a
+            // position picks it for editing (a second click on the same
+            // row lets go); any other `[+]/[-]` row folds its node and
+            // the rows re-flatten. Folding the panel whole is the UI's
+            // own title-bar click.
             if let Some(from) = self.ron_press.take()
                 && let Some(p) = pos
                 && ((p[0] - from[0]).powi(2) + (p[1] - from[1]).powi(2)).sqrt() < CLICK_TOL
                 && let Some(body) = self.ron_body
-                && let Some(doc) = self.ron_mut()
-                && let Some(i) = ron_row_at(p, body, doc.scroll, doc.rows.len())
-                && doc.rows[i].fold.is_some()
             {
-                let path = doc.rows[i].path.clone();
-                if let Some(v) = ron_tree::walk(&mut doc.root, &path) {
-                    v.toggle();
+                let mut say = None;
+                if let Some(doc) = self.ron_mut() {
+                    let mut spots = Vec::new();
+                    scan_spots(&doc.root, &mut Vec::new(), "", &mut spots);
+                    if let Some(i) = ron_row_at(p, body, doc.scroll, doc.rows.len()) {
+                        let path = doc.rows[i].path.clone();
+                        if let Some(pi) = spot_of_row(&spots, &path) {
+                            doc.edit = if doc.edit == Some(pi) { None } else { Some(pi) };
+                            say = Some(match doc.edit {
+                                Some(_) => format!(
+                                    "editing '{}' — click the sprite to move it",
+                                    spots[pi].label
+                                ),
+                                None => String::from("edit: released"),
+                            });
+                        } else if doc.rows[i].fold.is_some() {
+                            if let Some(v) = ron_tree::walk(&mut doc.root, &path) {
+                                v.toggle();
+                            }
+                            doc.rows = ron_tree::layout(&doc.root);
+                            doc.clamp_scroll(RON_VIEW_H);
+                        }
+                    }
                 }
-                doc.rows = ron_tree::layout(&doc.root);
-                doc.clamp_scroll(RON_VIEW_H);
+                if let Some(t) = say {
+                    self.status = t;
+                }
             }
             if let Some(from) = self.drag_from.take()
                 && let Some([mx, my]) = pos
@@ -1290,6 +1367,38 @@ impl frost::Process for Demo {
                             }
                         );
                         self.last_click = Some(([px, py], inside));
+
+                        // A position picked in the sidecar panel: this
+                        // click IS the edit — the tree's two numbers
+                        // become this pixel, and the rows re-flatten to
+                        // show them.
+                        let mut say = None;
+                        if inside
+                            && let Some(sp) = self.sprites.get_mut(self.active)
+                            && let Some(doc) = &mut sp.ron
+                            && let Some(pi) = doc.edit
+                        {
+                            let mut spots = Vec::new();
+                            scan_spots(&doc.root, &mut Vec::new(), "", &mut spots);
+                            if let Some(spot) = spots.get(pi) {
+                                let (path, label) = (spot.path.clone(), spot.label.clone());
+                                if let Some(v) = ron_tree::walk(&mut doc.root, &path)
+                                    && let ron_tree::Val::Struct { fields, .. } = v
+                                {
+                                    for (n, f) in fields.iter_mut().enumerate().take(2) {
+                                        f.1 = ron_tree::Val::Atom(
+                                            format!("{:.1}", [px, py][n]),
+                                            ron_tree::Kind::Num,
+                                        );
+                                    }
+                                    doc.rows = ron_tree::layout(&doc.root);
+                                    say = Some(format!("moved '{label}' to ({px:.1}, {py:.1})"));
+                                }
+                            }
+                        }
+                        if let Some(t) = say {
+                            self.status = t;
+                        }
                     }
                     self.selection = None;
                 }
@@ -1433,9 +1542,19 @@ impl frost::Process for Demo {
 
         // --- The sidecar tree ------------------------------------------
         // The visible rows of the open panel body: keys at weight 700,
-        // values at 500, the ron_view palette — drawn at 15 000, right
-        // over the UI's plate. A folded or absent panel draws nothing
-        // and the pool rests.
+        // values at 500 — and every row describing a position carries
+        // that position's palette colour, the very one its sprite
+        // marker wears. Drawn at 15 000, right over the UI's plate; a
+        // folded or absent panel draws nothing and the pool rests.
+        let mut spots: Vec<Spot> = Vec::new();
+        if let Some(doc) = self.ron() {
+            scan_spots(&doc.root, &mut Vec::new(), "", &mut spots);
+        }
+        let editing = self
+            .sprites
+            .get(self.active)
+            .and_then(|sp| sp.ron.as_ref())
+            .and_then(|d| d.edit);
         let mut drawn = 0usize;
         let adv = RON_SIZE * ADVANCE_EM;
         if let (Some(doc), Some(body)) = (self.ron(), self.ron_body) {
@@ -1444,14 +1563,31 @@ impl frost::Process for Demo {
             for (k, i) in (first..doc.rows.len()).take(RON_ROWS).enumerate() {
                 let row = &doc.rows[i];
                 let y = body[3] - RON_PAD - (i as f32 + 0.5) * RON_LINE + doc.scroll;
-                let nodes = &mut ctx.scene().root.children;
                 if y < body[1] || y > body[3] {
                     // Out of the viewport — half clipped at the bottom,
                     // scrolled past the top: not this frame's picture.
+                    let nodes = &mut ctx.scene().root.children;
                     nodes[RON + k * 2].shape = None;
                     nodes[RON + k * 2 + 1].shape = None;
                     drawn = k + 1;
                     continue;
+                }
+                let owner = spot_of_row(&spots, &row.path);
+                if owner == editing {
+                    // The picked row's band, under the text.
+                    ctx.rectangle(
+                        (body[0] + body[2]) / 2.0,
+                        y,
+                        (body[2] - body[0]) / 2.0 - 2.0,
+                        RON_LINE / 2.0,
+                        frost::Color {
+                            r: 0.30,
+                            g: 0.40,
+                            b: 0.62,
+                            a: 0.9,
+                        },
+                        RON_ORDER - 0.5,
+                    );
                 }
                 let key = fit(&row.key, (budget * 0.55).max(8.0) as usize);
                 let klen = key.chars().count();
@@ -1459,6 +1595,7 @@ impl frost::Process for Demo {
                 let vlen = val.chars().count();
                 let kx = body[0] + RON_INSET + klen as f32 * adv / 2.0;
                 let vx = kx + (klen + vlen) as f32 * adv / 2.0;
+                let nodes = &mut ctx.scene().root.children;
                 nodes[RON + k * 2].shape = if klen > 0 {
                     Some(self.ron_text(
                         key,
@@ -1476,7 +1613,14 @@ impl frost::Process for Demo {
                 nodes[RON + k * 2].transform = frost::Transform::translate([kx, y]);
                 nodes[RON + k * 2 + 1].shape = if vlen > 0 {
                     let head = matches!(row.vkind, ron_tree::VKind::Head);
-                    Some(self.ron_text(val, if head { 700.0 } else { 500.0 }, ron_color(row.vkind)))
+                    let color = match owner {
+                        Some(pi) => {
+                            let (r, g, b) = PALETTE[pi % PALETTE.len()];
+                            frost::Color { r, g, b, a: 1.0 }
+                        }
+                        None => ron_color(row.vkind),
+                    };
+                    Some(self.ron_text(val, if head { 700.0 } else { 500.0 }, color))
                 } else {
                     None
                 };
@@ -1487,6 +1631,61 @@ impl frost::Process for Demo {
         // Retire the rows the panel did not show this frame.
         let nodes = &mut ctx.scene().root.children;
         for node in &mut nodes[RON + drawn * 2..RON + RON_NODES] {
+            node.shape = None;
+        }
+
+        // --- The position markers ---------------------------------------
+        // Every spot the active sprite's sidecar names, drawn at its
+        // pixel coordinate in the row's palette colour; the picked one
+        // swells. Chrome: fixed size in window pixels, so the markers
+        // stay readable at any zoom.
+        let mut marks = 0usize;
+        if self
+            .sprites
+            .get(self.active)
+            .is_some_and(|sp| sp.ron.is_some())
+        {
+            let [tw, th] = size;
+            for (pi, s) in spots.iter().enumerate() {
+                let [wx, wy] = [
+                    (s.x - tw / 2.0) * self.zoom + view[0],
+                    (th / 2.0 - s.y) * self.zoom + view[1],
+                ];
+                let (r0, r1, a) = if editing == Some(pi) {
+                    (9.0, 3.4, 1.0)
+                } else {
+                    (5.0, 1.8, 0.85)
+                };
+                let (pr, pg, pb) = PALETTE[pi % PALETTE.len()];
+                let nodes = &mut ctx.scene().root.children;
+                nodes[SPOTS + marks].shape = Some(frost::Shape::Circle {
+                    center: [0.0, 0.0],
+                    radius: r0,
+                    color: frost::Color {
+                        r: pr,
+                        g: pg,
+                        b: pb,
+                        a,
+                    },
+                });
+                nodes[SPOTS + marks].transform = frost::Transform::translate([wx, wy]);
+                marks += 1;
+                nodes[SPOTS + marks].shape = Some(frost::Shape::Circle {
+                    center: [0.0, 0.0],
+                    radius: r1,
+                    color: frost::Color {
+                        r: 0.95,
+                        g: 0.95,
+                        b: 0.95,
+                        a,
+                    },
+                });
+                nodes[SPOTS + marks].transform = frost::Transform::translate([wx, wy]);
+                marks += 1;
+            }
+        }
+        let nodes = &mut ctx.scene().root.children;
+        for node in &mut nodes[SPOTS + marks..SPOTS + 2 * SPOTS_MAX] {
             node.shape = None;
         }
 
@@ -1576,6 +1775,7 @@ fn load_ron(png: &std::path::Path) -> Option<RonDoc> {
         root,
         rows,
         scroll: 0.0,
+        edit: None,
     })
 }
 
@@ -1635,6 +1835,79 @@ fn ron_color(k: ron_tree::VKind) -> frost::Color {
         ron_tree::VKind::Atom(ron_tree::Kind::Bool) => c(0.83, 0.68, 0.95),
         ron_tree::VKind::Atom(ron_tree::Kind::Path) => c(0.64, 0.86, 0.84),
     }
+}
+
+/// A position the sidecar names: its fold-path in the tree (the very
+/// paths `walk` speaks, so marker and rows share an address), its pixel
+/// coordinates, and the label the status line shows. The scan index is
+/// the palette slot.
+struct Spot {
+    path: Vec<u16>,
+    x: f32,
+    y: f32,
+    label: String,
+}
+
+/// Every position in the tree: a struct whose exactly two fields are
+/// both numeric atoms — the plant files' `(x, y)` anchors and flowers,
+/// in any nesting. Sequence children label as `parent[n]`, fields by
+/// name; positions never nest deeper (their tuples are leaves).
+fn scan_spots(v: &ron_tree::Val, path: &mut Vec<u16>, label: &str, out: &mut Vec<Spot>) {
+    if out.len() >= SPOTS_MAX {
+        return;
+    }
+    for (n, (key, kid)) in v.kids().iter().enumerate() {
+        path.push(n as u16);
+        let here = if key.is_empty() {
+            format!("{label}[{n}]")
+        } else {
+            key.trim_end_matches([':', ' ']).to_string()
+        };
+        if let Some((x, y)) = spot_coords(kid) {
+            out.push(Spot {
+                path: path.clone(),
+                x,
+                y,
+                label: here,
+            });
+        } else {
+            scan_spots(kid, path, &here, out);
+        }
+        path.pop();
+        if out.len() >= SPOTS_MAX {
+            return;
+        }
+    }
+}
+
+/// The coordinates when a value is a position: two fields, both numeric
+/// atoms that read back as floats.
+fn spot_coords(v: &ron_tree::Val) -> Option<(f32, f32)> {
+    let ron_tree::Val::Struct { fields, .. } = v else {
+        return None;
+    };
+    if fields.len() != 2 {
+        return None;
+    }
+    let nums: Vec<f32> = fields
+        .iter()
+        .filter_map(|(_, f)| match f {
+            ron_tree::Val::Atom(t, ron_tree::Kind::Num) => t.parse().ok(),
+            _ => None,
+        })
+        .collect();
+    (nums.len() == 2).then(|| (nums[0], nums[1]))
+}
+
+/// The spot a tree row describes: the row IS the position (its head or
+/// close row), or it is one of the position's two coordinate rows.
+fn spot_of_row(spots: &[Spot], row: &[u16]) -> Option<usize> {
+    spots.iter().position(|s| {
+        row == s.path.as_slice()
+            || (row.len() == s.path.len() + 1
+                && row[..s.path.len()] == s.path[..]
+                && row[s.path.len()] < 2)
+    })
 }
 
 /// The active slot after swapping slots `i` and `j`: the marker follows
@@ -1938,6 +2211,14 @@ fn main() {
             ..Default::default()
         })
     }));
+    // The position markers' pool: two circles per position — the colour
+    // dot and its white centre.
+    children.extend((0..2 * SPOTS_MAX).map(|_| {
+        Box::new(frost::SceneNode {
+            order: SPOT_ORDER,
+            ..Default::default()
+        })
+    }));
 
     let scene = frost::Scene::new(frost::SceneNode {
         // Dark background; the node's transform is ignored.
@@ -1968,6 +2249,7 @@ fn main() {
             was_undo: false,
             was_open: false,
             was_space: false,
+            was_esc: false,
             light: GREY_LIGHT,
             dark: GREY_DARK,
             checker_key: (0, 0, 0, 0),
@@ -2206,6 +2488,26 @@ mod tests {
         assert_eq!(ron_row_at([0.0, 105.0], body, 0.0, 10), None);
         assert_eq!(ron_row_at([0.0, -139.0], body, 0.0, 2), None);
     }
+    #[test]
+    fn spots_are_the_two_number_tuples_of_the_tree() {
+        let root = ron_tree::parse(
+            "(segment: 1, image: \"p.png\", lower: (317.0, 671.0), ups: [(1.0, 2.0), (3.5, 4.5)])",
+        )
+        .expect("a small sidecar");
+        let mut spots = Vec::new();
+        scan_spots(&root, &mut Vec::new(), "", &mut spots);
+        let labels: Vec<&str> = spots.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(labels, ["lower", "ups[0]", "ups[1]"]);
+        assert_eq!((spots[0].x, spots[0].y), (317.0, 671.0));
+        // The head row and either coordinate row belong to the spot;
+        // an unrelated path belongs to none.
+        assert_eq!(spot_of_row(&spots, &spots[0].path), Some(0));
+        let mut coord = spots[1].path.clone();
+        coord.push(1);
+        assert_eq!(spot_of_row(&spots, &coord), Some(1));
+        assert_eq!(spot_of_row(&spots, &[9]), None);
+    }
+
     #[test]
     fn sidecar_lines_fit_the_panel_with_an_ellipsis() {
         assert_eq!(fit("water", 10), "water");

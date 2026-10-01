@@ -29,7 +29,7 @@ pub enum Kind {
 
 /// A parsed RON value. Containers carry their fold state: the view
 /// mutates these flags in place, and flattens to rows from them.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Val {
     /// Text, verbatim from the source (quotes and escapes included).
     Atom(String, Kind),
@@ -66,6 +66,18 @@ impl Val {
                 )
             }
             Val::Map { .. } => "{…}".into(),
+        }
+    }
+
+    /// The children with their display keys — field names (empty for
+    /// positional tuple entries) and map keys; sequence items carry no
+    /// key. The read-only counterpart of [`Val::child_at`].
+    pub fn kids(&self) -> Vec<(String, &Val)> {
+        match self {
+            Val::Atom(..) => Vec::new(),
+            Val::Seq { items, .. } => items.iter().map(|v| (String::new(), v)).collect(),
+            Val::Struct { fields, .. } => fields.iter().map(|(k, v)| (k.clone(), v)).collect(),
+            Val::Map { entries, .. } => entries.iter().map(|(k, v)| (k.clone(), v)).collect(),
         }
     }
 
@@ -571,6 +583,97 @@ pub fn layout(root: &Val) -> Vec<Row> {
     rows
 }
 
+// ---------------------------------------------------------------------------
+// The writer: the parser's counterpart, for anything that saves
+
+/// Full RON text for a value — [`to_text`'s] counterpart to [`parse`].
+/// The layout is canonical: one element per line whenever a container
+/// has children, trailing commas everywhere. Comments, the original
+/// line breaks and the fold state do not survive; re-parsing the text
+/// yields the same value.
+pub fn to_text(root: &Val) -> String {
+    let mut out = String::new();
+    write_val(root, 0, &mut out);
+    out.push('\n');
+    out
+}
+
+/// One value at `depth`, into `out`.
+fn write_val(v: &Val, depth: usize, out: &mut String) {
+    let (head, o, c, kids): (String, char, char, Vec<String>) = match v {
+        Val::Atom(s, _) => {
+            out.push_str(s);
+            return;
+        }
+        Val::Seq { items, .. } => (
+            String::new(),
+            '[',
+            ']',
+            items
+                .iter()
+                .map(|v| {
+                    let mut t = String::new();
+                    write_val(v, depth + 1, &mut t);
+                    t
+                })
+                .collect(),
+        ),
+        Val::Struct {
+            head,
+            curly,
+            fields,
+            ..
+        } => (
+            head.clone(),
+            if *curly { '{' } else { '(' },
+            if *curly { '}' } else { ')' },
+            fields
+                .iter()
+                .map(|(k, v)| {
+                    let mut t = String::new();
+                    if !k.is_empty() {
+                        t.push_str(k);
+                        t.push_str(": ");
+                    }
+                    write_val(v, depth + 1, &mut t);
+                    t
+                })
+                .collect(),
+        ),
+        Val::Map { entries, .. } => (
+            String::new(),
+            '{',
+            '}',
+            entries
+                .iter()
+                .map(|(k, v)| {
+                    let mut t = String::new();
+                    t.push_str(k);
+                    t.push_str(": ");
+                    write_val(v, depth + 1, &mut t);
+                    t
+                })
+                .collect(),
+        ),
+    };
+    out.push_str(&head);
+    if kids.is_empty() {
+        out.push(o);
+        out.push(c);
+        return;
+    }
+    out.push(o);
+    out.push('\n');
+    let pad = "    ".repeat(depth + 1);
+    for kid in &kids {
+        out.push_str(&pad);
+        out.push_str(kid);
+        out.push_str(",\n");
+    }
+    out.push_str(&"    ".repeat(depth));
+    out.push(c);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -715,5 +818,13 @@ mod tests {
     /// Every test's panic door when the tree is not the expected shape.
     fn bug() -> ! {
         panic!("unexpected shape");
+    }
+
+    #[test]
+    fn to_text_round_trips_the_garden() {
+        let one = parse(GARDEN).expect("the garden parses");
+        let text = to_text(&one);
+        let two = parse(&text).unwrap_or_else(|err| panic!("re-parse failed: {err}\n{text}"));
+        assert_eq!(one, two);
     }
 }

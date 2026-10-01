@@ -825,10 +825,12 @@ disk. Run with `cargo run --example <name>`
 |              | played on a clock that loops or ping-pongs (space plays), previewed |
 |              | live in the work area. A sprite with a sidecar `<name>.ron` beside  |
 |              | its PNG gets a `Ui` panel titled by the file — it drags and folds   |
-|              | like every other panel — showing the parse tree (rows fold on       |
-|              | click, the wheel scrolls the tree under the cursor; closing the     |
-|              | sprite drops the panel); absent or unparseable sidecars just leave  |
-|              | the sprite alone                                                    |
+|              | like every other panel — showing the parse tree, and every `(x, y)` |
+|              | the file names marked on the sprite in the colour its rows carry:   |
+|              | click a row to pick the position, click the sprite to move it,      |
+|              | Escape lets go; rows fold on click, the wheel scrolls the tree,     |
+|              | Save / Save As write the tree back beside the PNG, and closing the  |
+|              | sprite drops the panel                                              |
 | widgets      | the `Ui` layer: a draggable Tomato panel (three color sliders, a    |
 |              | Spin checkbox, a Speed slider, a Reset button) and an About label   |
 |              | panel drive a spinning face's color and rotation                    |
