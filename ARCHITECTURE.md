@@ -57,7 +57,9 @@ examples/             45 runnable demos, filed into folders (see table below)
 assets/               sprites/*.png (+ .pxo sidecars; immortal art, worm
                       crops, …), fonts/ (FiraCode Variable, JameGem08,
                       Leofont + licenses), audio/*.wav (swoof, waterflow,
-                      bug/viper clips, …), ron/garden.ron (ron_view)
+                      bug/viper clips, …), sprites/plant1..5.ron (the
+                      immortal plant's anchor files), ron/garden.ron
+                      (ron_view)
 src/TODO.md           next planned feature (Body / rigid bodies)
 ```
 
@@ -778,7 +780,7 @@ disk. Run with `cargo run --example <name>`
 |              | image's center sits on the window's center                          |
 | immortal     | 1920x1080 (Config window_size); right button toggles can / spray;  |
 |              | plants grow one at a time, each slice opening its flowers once    |
-|              | fully grown (the four lower slices' hand-picked spawn points, the |
+|              | fully grown (the four lower slices' spawn points, the |
 |              | top slice bearing none, populated with `flower.png`); one viper   |
 |              | per fully grown plant layer orbits the row; a bug swarm pops up   |
 |              | out of the grass in batches of three per plant, growing over     |
@@ -795,7 +797,10 @@ disk. Run with `cargo run --example <name>`
 |              | inverted, position/growth/facing/frame frozen), landing on its back;|
 |              | then over 0.5 s the inverted sprite evaporates, shrinking to nothing|
 |              | while its center sinks through the grass; after a random 5-10 s    |
-|              | delay the bug pops back up at its spawn spot, fully healed; a 14- |
+|              | delay the bug pops back up at its spawn spot, fully healed; the five
+|              | slices' joints and flower anchors load at startup from the embedded |
+|              | `assets/sprites/plant1..5.ron` files (serde + ron — the hand-picked |
+|              | constants are gone); a 14- |
 |              | slot worm swarm burrows up, peristalses along the bench (two poses, |
 |              | hull-picked spawn/target spots off a seedable `Rng`), and digs back |
 |              | in; every draw order composes through the `zorder` module's bands   |
@@ -866,7 +871,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 183 passed + 5 doctests
-cargo test --examples    # expect 107 passed (unit tests inside the examples)
+cargo test --examples    # expect 108 passed (unit tests inside the examples)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example worm     # peristaltic crawl, edge wrap; exits 0
 cargo run --example ron_view # fold rows, drag both scroll handles; exits 0
