@@ -90,10 +90,10 @@
 //! A sprite may bring a sidecar: when `<name>.png` has a `<name>.ron`
 //! beside it, the file — the RON subset `ron_view` speaks, parsed by the
 //! very same `tree.rs`, shared by path-include — opens as a foldable
-//! tree in a panel docked at the work area's lower right. Click a
-//! `[+]/[-]` row to fold or open its node, the title bar folds the whole
-//! panel, and the wheel scrolls the rows while the cursor is over the
-//! panel (everywhere else it keeps zooming). No sidecar, an unparseable
+//! tree in a `Ui` panel titled by the file name, so it drags and folds
+//! like every other panel. Click a `[+]/[-]` row to fold or open its
+//! node, and the wheel scrolls the rows while the cursor is over the
+//! body (everywhere else it keeps zooming). No sidecar, an unparseable
 //! one, or a closed slot: the sprite simply loads, and closing a sprite
 //! takes its panel with it.
 
@@ -254,16 +254,18 @@ const DRAG_ORDER: f32 = 3.0;
 /// The scene's layer nodes — and the cap on layers per animation frame.
 /// The pool shows the animation's current frame, or the active sprite
 /// alone when there are no frames.
-/// The sidecar panel: width, text size, row pitch, title-bar height,
-/// inner padding, and its z band — above the work area's sprite and
-/// selection draws, far below the UI's 10 000.
-const RON_W: f32 = 260.0;
-const RON_SIZE: f32 = 13.0;
-const RON_LINE: f32 = 17.0;
-const RON_TITLE_H: f32 = 26.0;
-const RON_PAD: f32 = 8.0;
-const RON_ROWS: usize = 40;
-const RON_Z: f32 = 2.5;
+/// The sidecar panel: text size and row pitch, panel width, body
+/// viewport height, the viewport's top padding, the rows' text inset,
+/// and the row pool's capacity. The panel itself is a `Ui` panel — its
+/// title bar drags it around and folds it — and its body is one tall
+/// [`frost::Ui::space`] viewport these constants lay the tree out in.
+const RON_SIZE: f32 = 16.0;
+const RON_LINE: f32 = 20.0;
+const RON_W: f32 = 300.0;
+const RON_VIEW_H: f32 = 240.0;
+const RON_PAD: f32 = 6.0;
+const RON_INSET: f32 = 12.0;
+const RON_ROWS: usize = 16;
 
 /// FiraCode's advance: exactly 600/1000 em, identical at every weight —
 /// so row widths are pure character arithmetic.
@@ -285,10 +287,12 @@ const HELP: usize = LAYER_NODES;
 const MARKER_NODE: usize = LAYER_NODES + 1;
 const CHECKER: usize = LAYER_NODES + 2;
 const THUMBS: usize = LAYER_NODES + 3;
-/// The sidecar panel's pool: two text nodes per row, plus the title.
+/// The sidecar tree's pool: two text nodes per row. They draw at 15 000
+/// — the UI counts up from its 10 000 base, and the rows must sit on
+/// top of the panel's plate.
 const RON: usize = THUMBS + SLOTS;
-const RON_TITLE: usize = RON + RON_ROWS * 2;
-const RON_NODES: usize = RON_ROWS * 2 + 1;
+const RON_NODES: usize = RON_ROWS * 2;
+const RON_ORDER: f32 = 15_000.0;
 
 /// One sprite: its files, its textures and its slot's look.
 struct Sprite {
@@ -323,8 +327,6 @@ struct RonDoc {
     rows: Vec<ron_tree::Row>,
     /// The scroll offset in pixels, 0 at the tree's top.
     scroll: f32,
-    /// Whether the panel is collapsed to its title bar.
-    folded: bool,
 }
 
 impl RonDoc {
@@ -473,6 +475,10 @@ struct Demo {
     ron_font: Arc<[u8]>,
     /// The sidecar panel's in-progress press, for the click test.
     ron_press: Option<[f32; 2]>,
+    /// The open panel body's viewport rectangle — the rows' clip box,
+    /// the wheel's and row clicks' hit area — as the UI laid the panel
+    /// out; `None` while the panel is folded or there is no sidecar.
+    ron_body: Option<[f32; 4]>,
     /// The folder the first file dialog opens in, still to pick: `Some`
     /// until the first frame has shown the dialog. A picked file loads
     /// into the first slot; canceling quits the program.
@@ -843,15 +849,15 @@ impl frost::Process for Demo {
         // area's center plus the pan offset.
         let view = [self.offset[0], self.offset[1] + WORK_Y];
 
-        // The sidecar panel's rectangle, its content height, and the
-        // cursor's relation to it; the scroll is re-pinned every frame
-        // so a shrinking window can never strand it past the rows.
-        let rect = ron_rect(w, h);
-        let view_h = (rect[3] - RON_TITLE_H - RON_PAD - rect[1]).max(0.0);
-        let over_ron = pos.is_some_and(|p| in_rect(rect, p)) && self.ron().is_some();
+        // The sidecar tree re-pins its scroll every frame, so folding
+        // the panel, shrinking the window or folding away a node can
+        // never strand the view past the rows. The body rectangle the
+        // wheel and the pan guard read is the panel's from LAST frame;
+        // row clicks read the fresh one, laid out below.
         if let Some(doc) = self.ron_mut() {
-            doc.clamp_scroll(view_h);
+            doc.clamp_scroll(RON_VIEW_H);
         }
+        let over_ron = pos.is_some_and(|p| self.ron_body.is_some_and(|b| in_rect(b, p)));
 
         // The wheel zooms: multiplicative per line (up zooms in), clamped
         // to the slider's range, anchored so the texture point under the
@@ -859,16 +865,15 @@ impl frost::Process for Demo {
         // itself would have drifted. With the cursor outside the window the
         // anchor is the work area's center, so only the zoom changes.
         let wheel = ctx.mouse_wheel();
-        // The wheel scrolls the sidecar panel while the cursor rests on
-        // it and the panel is open; anywhere else it keeps zooming.
+        // The wheel scrolls the sidecar tree while the cursor rests on
+        // its body; anywhere else it keeps zooming.
         let mut scrolled = false;
         if wheel != 0.0
             && over_ron
             && let Some(doc) = self.ron_mut()
-            && !doc.folded
         {
             doc.scroll -= wheel * RON_LINE * 2.0;
-            doc.clamp_scroll(view_h);
+            doc.clamp_scroll(RON_VIEW_H);
             scrolled = true;
         }
         if wheel != 0.0 && !scrolled {
@@ -1096,6 +1101,45 @@ impl frost::Process for Demo {
         }
         self.was_space = space;
 
+        // The sidecar panel: a `Ui` panel titled by the sidecar's file
+        // name, so its bar drags the panel around and folds it whole —
+        // like the View and Animation panels. The body is one empty
+        // viewport; the tree's rows paint into it below.
+        if let Some(title) = self.ron().map(|doc| doc.name.clone()) {
+            let (row_h, pad) = {
+                let st = self.ui.style_mut();
+                (st.row_h, st.pad)
+            };
+            let mut open = false;
+            self.ui.panel(
+                ctx,
+                &title,
+                ron_default(w, h, row_h, pad),
+                RON_W,
+                |ui, _ctx| {
+                    ui.space(RON_VIEW_H);
+                    open = true;
+                },
+            );
+            // The body viewport's rectangle, from the panel's position
+            // as laid out this frame; a folded panel has none.
+            self.ron_body = if open {
+                self.ui.panel_position(&title).map(|pc| {
+                    let top = pc[1] + (row_h + 2.0 * pad + RON_VIEW_H) / 2.0 - row_h - pad;
+                    [
+                        pc[0] - RON_W / 2.0,
+                        top - RON_VIEW_H,
+                        pc[0] + RON_W / 2.0,
+                        top,
+                    ]
+                })
+            } else {
+                None
+            };
+        } else {
+            self.ron_body = None;
+        }
+
         // The collected button presses, now outside every panel closure.
         if want_open {
             self.open_dialog(ctx);
@@ -1183,10 +1227,17 @@ impl frost::Process for Demo {
         {
             match slot_at(p, w, h) {
                 Some(i) => self.slot_drag = Some((i, p)),
-                None if over_ron => self.ron_press = Some(p),
                 None if in_work_area(p, w, h) => self.drag_from = Some(p),
                 None => {}
             }
+        }
+        // The tree rows live over the panel body, which the UI claims —
+        // so their press rides the raw mouse, beside the widget layer.
+        if pressed
+            && let Some(p) = pos
+            && self.ron_body.is_some_and(|b| in_rect(b, p))
+        {
+            self.ron_press = Some(p);
         }
         // A work-area drag draws the crop selection in the texture's
         // pixel space.
@@ -1194,26 +1245,24 @@ impl frost::Process for Demo {
             self.selection = sel_rect_from(from, p, size, view, self.zoom);
         }
         if released {
-            // The sidecar panel's still-click: the title bar folds the
-            // panel whole; a row carrying a `[+]/[-]` marker folds its
-            // node, and the rows are re-flattened from the tree.
+            // The sidecar tree's still-click: a row carrying a `[+]/[-]`
+            // marker folds its node, and the visible rows are
+            // re-flattened from the tree. Folding the panel whole is
+            // the UI's own title-bar click.
             if let Some(from) = self.ron_press.take()
                 && let Some(p) = pos
                 && ((p[0] - from[0]).powi(2) + (p[1] - from[1]).powi(2)).sqrt() < CLICK_TOL
+                && let Some(body) = self.ron_body
                 && let Some(doc) = self.ron_mut()
+                && let Some(i) = ron_row_at(p, body, doc.scroll, doc.rows.len())
+                && doc.rows[i].fold.is_some()
             {
-                if p[1] > rect[3] - RON_TITLE_H {
-                    doc.folded = !doc.folded;
-                } else if let Some(i) = ron_row_at(p, rect, doc.scroll, doc.rows.len())
-                    && doc.rows[i].fold.is_some()
-                {
-                    let path = doc.rows[i].path.clone();
-                    if let Some(v) = ron_tree::walk(&mut doc.root, &path) {
-                        v.toggle();
-                    }
-                    doc.rows = ron_tree::layout(&doc.root);
-                    doc.clamp_scroll(view_h);
+                let path = doc.rows[i].path.clone();
+                if let Some(v) = ron_tree::walk(&mut doc.root, &path) {
+                    v.toggle();
                 }
+                doc.rows = ron_tree::layout(&doc.root);
+                doc.clamp_scroll(RON_VIEW_H);
             }
             if let Some(from) = self.drag_from.take()
                 && let Some([mx, my]) = pos
@@ -1382,101 +1431,63 @@ impl frost::Process for Demo {
             };
         }
 
-        // --- The sidecar panel ------------------------------------------
-        // The plate, the title bar and the tree's visible rows. Chrome,
-        // so it never pans or zooms with the sprite; its z band 2.5 sits
-        // above the work area's draws and far under the UI's widgets.
+        // --- The sidecar tree ------------------------------------------
+        // The visible rows of the open panel body: keys at weight 700,
+        // values at 500, the ron_view palette — drawn at 15 000, right
+        // over the UI's plate. A folded or absent panel draws nothing
+        // and the pool rests.
         let mut drawn = 0usize;
         let adv = RON_SIZE * ADVANCE_EM;
-        if let Some(doc) = self.ron() {
-            ctx.rectangle(
-                (rect[0] + rect[2]) / 2.0,
-                (rect[1] + rect[3]) / 2.0,
-                (rect[2] - rect[0]) / 2.0,
-                (rect[3] - rect[1]) / 2.0,
-                frost::Color {
-                    r: 0.16,
-                    g: 0.17,
-                    b: 0.21,
-                    a: 1.0,
-                },
-                RON_Z,
-            );
-            let title = format!("{} {}", if doc.folded { "[+]" } else { "[-]" }, doc.name);
-            let nodes = &mut ctx.scene().root.children;
-            nodes[RON_TITLE].shape = Some(self.ron_text(
-                title.clone(),
-                700.0,
-                frost::Color {
-                    r: 0.90,
-                    g: 0.90,
-                    b: 0.94,
-                    a: 1.0,
-                },
-            ));
-            nodes[RON_TITLE].transform = frost::Transform::translate([
-                rect[0] + RON_PAD + title.chars().count() as f32 * adv / 2.0,
-                rect[3] - RON_TITLE_H / 2.0,
-            ]);
-            if !doc.folded {
-                let content_t = rect[3] - RON_TITLE_H - RON_PAD;
-                let budget = (rect[2] - rect[0] - 2.0 * RON_PAD) / adv;
-                let first = (doc.scroll / RON_LINE).floor().max(0.0) as usize;
-                for (k, i) in (first..doc.rows.len()).take(RON_ROWS).enumerate() {
-                    let row = &doc.rows[i];
-                    let y = content_t - (i as f32 + 0.5) * RON_LINE + doc.scroll;
-                    let nodes = &mut ctx.scene().root.children;
-                    if y < rect[1] - RON_LINE || y > content_t {
-                        // Half-clipped at the bottom, scrolled past the
-                        // title: not this frame's picture.
-                        nodes[RON + k * 2].shape = None;
-                        nodes[RON + k * 2 + 1].shape = None;
-                        drawn = k + 1;
-                        continue;
-                    }
-                    let key = fit(&row.key, (budget * 0.55).max(8.0) as usize);
-                    let klen = key.chars().count();
-                    let val = fit(&row.val, (budget - klen as f32).max(0.0) as usize);
-                    let vlen = val.chars().count();
-                    let kx = rect[0] + RON_PAD + klen as f32 * adv / 2.0;
-                    let vx = kx + (klen + vlen) as f32 * adv / 2.0;
-                    nodes[RON + k * 2].shape = if klen > 0 {
-                        Some(self.ron_text(
-                            key,
-                            700.0,
-                            frost::Color {
-                                r: 0.87,
-                                g: 0.87,
-                                b: 0.90,
-                                a: 1.0,
-                            },
-                        ))
-                    } else {
-                        None
-                    };
-                    nodes[RON + k * 2].transform = frost::Transform::translate([kx, y]);
-                    nodes[RON + k * 2 + 1].shape = if vlen > 0 {
-                        let head = matches!(row.vkind, ron_tree::VKind::Head);
-                        Some(self.ron_text(
-                            val,
-                            if head { 700.0 } else { 500.0 },
-                            ron_color(row.vkind),
-                        ))
-                    } else {
-                        None
-                    };
-                    nodes[RON + k * 2 + 1].transform = frost::Transform::translate([vx, y]);
+        if let (Some(doc), Some(body)) = (self.ron(), self.ron_body) {
+            let budget = (RON_W - 2.0 * RON_INSET) / adv;
+            let first = (doc.scroll / RON_LINE).floor().max(0.0) as usize;
+            for (k, i) in (first..doc.rows.len()).take(RON_ROWS).enumerate() {
+                let row = &doc.rows[i];
+                let y = body[3] - RON_PAD - (i as f32 + 0.5) * RON_LINE + doc.scroll;
+                let nodes = &mut ctx.scene().root.children;
+                if y < body[1] || y > body[3] {
+                    // Out of the viewport — half clipped at the bottom,
+                    // scrolled past the top: not this frame's picture.
+                    nodes[RON + k * 2].shape = None;
+                    nodes[RON + k * 2 + 1].shape = None;
                     drawn = k + 1;
+                    continue;
                 }
+                let key = fit(&row.key, (budget * 0.55).max(8.0) as usize);
+                let klen = key.chars().count();
+                let val = fit(&row.val, (budget - klen as f32).max(0.0) as usize);
+                let vlen = val.chars().count();
+                let kx = body[0] + RON_INSET + klen as f32 * adv / 2.0;
+                let vx = kx + (klen + vlen) as f32 * adv / 2.0;
+                nodes[RON + k * 2].shape = if klen > 0 {
+                    Some(self.ron_text(
+                        key,
+                        700.0,
+                        frost::Color {
+                            r: 0.87,
+                            g: 0.87,
+                            b: 0.90,
+                            a: 1.0,
+                        },
+                    ))
+                } else {
+                    None
+                };
+                nodes[RON + k * 2].transform = frost::Transform::translate([kx, y]);
+                nodes[RON + k * 2 + 1].shape = if vlen > 0 {
+                    let head = matches!(row.vkind, ron_tree::VKind::Head);
+                    Some(self.ron_text(val, if head { 700.0 } else { 500.0 }, ron_color(row.vkind)))
+                } else {
+                    None
+                };
+                nodes[RON + k * 2 + 1].transform = frost::Transform::translate([vx, y]);
+                drawn = k + 1;
             }
         }
         // Retire the rows the panel did not show this frame.
         let nodes = &mut ctx.scene().root.children;
-        for node in &mut nodes[RON + drawn * 2..RON + RON_ROWS * 2] {
+        for node in &mut nodes[RON + drawn * 2..RON + RON_NODES] {
             node.shape = None;
-        }
-        if self.ron().is_none() {
-            nodes[RON_TITLE].shape = None;
         }
 
         // The usage line, pinned near the top edge, so resizing keeps it
@@ -1565,19 +1576,19 @@ fn load_ron(png: &std::path::Path) -> Option<RonDoc> {
         root,
         rows,
         scroll: 0.0,
-        folded: false,
     })
 }
 
-/// The sidecar panel's rectangle: docked at the work area's lower right
-/// — clear of the animation panel's row above and the slot strip below —
-/// at most 320 pixels tall, never thinner than its title bar.
-fn ron_rect(w: f32, h: f32) -> [f32; 4] {
-    let top = h / 2.0 - 340.0;
-    let floor_y = -h / 2.0 + STRIP_H + 12.0;
-    let bot = floor_y.max(top - 320.0).min(top - RON_TITLE_H);
-    let right = w / 2.0 - 20.0;
-    [right - RON_W, bot, right, top]
+/// Where a sidecar panel first opens: at the work area's lower right,
+/// clear of the slot strip — where the panel was docked before it learned
+/// to move. `row_h` and `pad` are the UI style's, and the panel's height
+/// is its title bar, twice the padding and the tree viewport.
+fn ron_default(w: f32, h: f32, row_h: f32, pad: f32) -> [f32; 2] {
+    let panel_h = row_h + 2.0 * pad + RON_VIEW_H;
+    [
+        w / 2.0 - 20.0 - RON_W / 2.0,
+        -h / 2.0 + STRIP_H + 12.0 + panel_h / 2.0,
+    ]
 }
 
 /// Whether a window point is inside a rectangle.
@@ -1585,15 +1596,18 @@ fn in_rect(r: [f32; 4], p: [f32; 2]) -> bool {
     p[0] >= r[0] && p[0] <= r[2] && p[1] >= r[1] && p[1] <= r[3]
 }
 
-/// The panel row under a window point, given the scroll and the row
-/// count; the title bar maps to no row. Row `i` draws centered at
-/// `content_top - PAD - (i + 0.5) * LINE + scroll`, so this inverts it.
-fn ron_row_at(p: [f32; 2], rect: [f32; 4], scroll: f32, n: usize) -> Option<usize> {
-    if p[1] > rect[3] - RON_TITLE_H || p[1] < rect[1] {
+/// The tree row under a window point inside the body viewport `body`,
+/// given the scroll and the row count. Row `i` draws centered at
+/// `body_top - PAD - (i + 0.5) * LINE + scroll`, so its band spans
+/// `body_top - PAD - (i + 1) * LINE + scroll` up to the same less one
+/// line — exactly what a plain `floor` of the inverted center formula
+/// selects: subtracting the row's half-line before flooring would shift
+/// every click in a row's upper half onto the row above.
+fn ron_row_at(p: [f32; 2], body: [f32; 4], scroll: f32, n: usize) -> Option<usize> {
+    if !in_rect(body, p) {
         return None;
     }
-    let content_t = rect[3] - RON_TITLE_H - RON_PAD;
-    let i = ((content_t - p[1] + scroll) / RON_LINE - 0.5).floor();
+    let i = ((body[3] - RON_PAD - p[1] + scroll) / RON_LINE).floor();
     (i >= 0.0 && (i as usize) < n).then_some(i as usize)
 }
 
@@ -1920,7 +1934,7 @@ fn main() {
     // hidden until a sprite with a sidecar is active.
     children.extend((0..RON_NODES).map(|_| {
         Box::new(frost::SceneNode {
-            order: RON_Z + 0.1,
+            order: RON_ORDER,
             ..Default::default()
         })
     }));
@@ -1965,6 +1979,7 @@ fn main() {
             status: String::new(),
             ron_font,
             ron_press: None,
+            ron_body: None,
         },
     ) {
         log::error!("frost failed: {err}");
@@ -2153,34 +2168,44 @@ mod tests {
     }
 
     #[test]
-    fn the_panel_clears_the_strip_and_the_animation_panel() {
-        for (w, h) in [(800.0, 600.0), (1400.0, 1000.0)] {
-            let r = ron_rect(w, h);
-            assert!(r[1] >= -h / 2.0 + STRIP_H, "the panel sits on the strip");
-            assert!(
-                r[3] <= h / 2.0 - 340.0,
-                "the panel crowds the animation panel"
-            );
-            assert!(r[3] - r[1] <= 320.0 + 1.0, "the panel towers");
-            assert!(r[2] <= w / 2.0, "the panel leaves the window");
-        }
+    fn a_new_sidecar_panel_opens_at_the_lower_right() {
+        let (w, h) = (800.0, 600.0);
+        let (row_h, pad) = (28.0, 12.0); // the UI style's defaults
+        let c = ron_default(w, h, row_h, pad);
+        let panel_h = row_h + 2.0 * pad + RON_VIEW_H;
+        assert!(
+            c[1] - panel_h / 2.0 >= -h / 2.0 + STRIP_H,
+            "a fresh panel should clear the slot strip"
+        );
+        assert!(
+            c[1] + panel_h / 2.0 < h / 2.0,
+            "a fresh panel should stay inside"
+        );
+        assert!((c[0] + RON_W / 2.0 - (w / 2.0 - 20.0)).abs() < 1e-3);
     }
-
     #[test]
     fn a_panel_click_maps_to_the_row_under_it() {
-        let r = ron_rect(800.0, 600.0);
-        let content_t = r[3] - RON_TITLE_H - RON_PAD;
-        // At scroll 0 the first row's center sits half a line below the
-        // title bar's padding.
-        let y0 = content_t - 0.5 * RON_LINE;
-        assert_eq!(ron_row_at([400.0, y0], r, 0.0, 10), Some(0));
-        // One line of scroll brings the second row to the same point.
-        assert_eq!(ron_row_at([400.0, y0], r, RON_LINE, 10), Some(1));
-        // The title bar maps to no row, nor does past-the-last.
-        assert_eq!(ron_row_at([400.0, r[3] - 5.0], r, 0.0, 10), None);
-        assert_eq!(ron_row_at([400.0, r[1] + 1.0], r, 0.0, 2), None);
+        // A synthetic body viewport: 300 wide, 240 tall, top edge at 100.
+        let body = [-150.0, -140.0, 150.0, 100.0];
+        // Row 0's center sits half a line under the viewport's padding.
+        let y0 = 100.0 - RON_PAD - 0.5 * RON_LINE;
+        assert_eq!(ron_row_at([0.0, y0], body, 0.0, 10), Some(0));
+        // The whole band belongs to the row: a half-line above or below
+        // its center — anywhere but the very borders — is still row 0.
+        assert_eq!(
+            ron_row_at([0.0, y0 + 0.45 * RON_LINE], body, 0.0, 10),
+            Some(0)
+        );
+        assert_eq!(
+            ron_row_at([0.0, y0 - 0.45 * RON_LINE], body, 0.0, 10),
+            Some(0)
+        );
+        // One line of scroll brings row 1 to the very same point.
+        assert_eq!(ron_row_at([0.0, y0], body, RON_LINE, 10), Some(1));
+        // Above the viewport is no row; past the last row is no row.
+        assert_eq!(ron_row_at([0.0, 105.0], body, 0.0, 10), None);
+        assert_eq!(ron_row_at([0.0, -139.0], body, 0.0, 2), None);
     }
-
     #[test]
     fn sidecar_lines_fit_the_panel_with_an_ellipsis() {
         assert_eq!(fit("water", 10), "water");
