@@ -2479,21 +2479,21 @@ impl Demo {
     /// starts the game fresh when no snapshot exists or it cannot be read.
     fn load_last_snapshot(&mut self) {
         match save::load() {
-            Ok(snapshot) => {
-                log::info!("snapshot loaded from {}", save::snapshot_path().display());
-                self.loaded = Some(snapshot);
+            Ok(loaded) => {
+                log::info!("snapshot loaded from {}", loaded.path.display());
+                self.loaded = Some(loaded.snapshot);
             }
             Err(err) => log::warn!("{err}"),
         }
     }
 
     /// F5: captures the whole game state and writes it to the snapshot
-    /// file ([save::save]); a failed write logs and the game keeps
-    /// running.
+    /// file ([save::save]) — the primary path, or its working-directory
+    /// fallback; a failed write logs and the game keeps running.
     fn save_snapshot(&mut self, ctx: &mut frost::Context) {
         let snapshot = self.capture(ctx);
         match save::save(&snapshot) {
-            Ok(()) => log::info!("snapshot saved to {}", save::snapshot_path().display()),
+            Ok(path) => log::info!("snapshot saved to {}", path.display()),
             Err(err) => log::warn!("cannot save the snapshot: {err}"),
         }
     }
@@ -2503,9 +2503,9 @@ impl Demo {
     /// game keeps running as it is.
     fn reload_snapshot(&mut self, ctx: &mut frost::Context) {
         match save::load() {
-            Ok(snapshot) => {
-                self.apply(&snapshot, ctx);
-                log::info!("snapshot reloaded from {}", save::snapshot_path().display());
+            Ok(loaded) => {
+                self.apply(&loaded.snapshot, ctx);
+                log::info!("snapshot reloaded from {}", loaded.path.display());
             }
             Err(err) => log::warn!("{err}"),
         }
@@ -3102,8 +3102,9 @@ impl Demo {
 /// The command line's arguments.
 #[derive(clap::Parser)]
 struct Cli {
-    /// Load the last snapshot — the one F5 wrote to
-    /// `~/.frost/immortal/snapshot.ron` — at start up.
+    /// Load the last snapshot at start up — the one F5 wrote, at
+    /// `~/.frost/immortal/snapshot.ron` or its working-directory
+    /// fallback.
     #[arg(long)]
     load: bool,
     /// Seed both random streams — the demo's particle-jitter source and
@@ -3931,6 +3932,59 @@ mod tests {
         snapshot.version = save::VERSION + 1;
         let text = ron::to_string(&snapshot).unwrap();
         assert!(save::parse(&text).is_err());
+    }
+
+    /// The working-directory fallback: a candidate whose parent is a file
+    /// cannot be written, so the write lands in the next candidate — and
+    /// the read skips both the missing first candidate and a stale one
+    /// whose version differs, reporting the stale file's version mismatch
+    /// when nothing else is usable.
+    #[test]
+    fn an_unusable_snapshot_candidate_falls_back_to_the_next_one() {
+        let dir = std::env::temp_dir().join(format!("frost-save-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let demo = Demo::new(Assets::load());
+        let snapshot = demo.capture_state();
+
+        // The first candidate's parent is a plain file: the folder cannot
+        // be created, so the write must land in the second candidate.
+        let blocked = dir.join("blocked");
+        std::fs::write(&blocked, "a file, not a folder").unwrap();
+        let first = blocked.join("snapshot.ron");
+        let second = dir.join("snapshot.ron");
+        let written = save::save_to(&[first.clone(), second.clone()], &snapshot).unwrap();
+        assert_eq!(written, second);
+        assert!(!first.exists());
+
+        // The read skips the missing first candidate and finds the
+        // snapshot in the second one.
+        let loaded = save::load_from(&[first.clone(), second.clone()]).unwrap();
+        assert_eq!(loaded.path, second);
+        assert_eq!(loaded.snapshot, snapshot);
+
+        // A first candidate that reads but whose version differs is
+        // skipped too: a stale file never shadows a readable snapshot.
+        let stale_dir = dir.join("stale");
+        std::fs::create_dir_all(&stale_dir).unwrap();
+        let stale_path = stale_dir.join("snapshot.ron");
+        let mut stale = snapshot.clone();
+        stale.version = save::VERSION + 1;
+        std::fs::write(&stale_path, ron::to_string(&stale).unwrap()).unwrap();
+        let loaded = save::load_from(&[stale_path.clone(), second.clone()]).unwrap();
+        assert_eq!(loaded.path, second);
+        assert_eq!(loaded.snapshot, snapshot);
+
+        // When no candidate is usable, the stale file's error wins: it
+        // names the version mismatch.
+        let err = save::load_from(&[stale_path.clone(), dir.join("missing.ron")]).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("version"),
+            "the error should name the mismatch: {message}"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The turn state's round trip: the captured tween's ends, elapsed

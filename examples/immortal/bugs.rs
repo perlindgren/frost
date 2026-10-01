@@ -1451,6 +1451,10 @@ mod tests {
         let dt = 0.05;
         let scale = BUG_SIZE / 10.0;
         let mut bugs = Bugs::new([&frame; 3]);
+        // Pin the swarm's randomizer: the spawn spots must stay more than
+        // half a bug width apart, so each drop lands on exactly one bug,
+        // and the clock-seeded default would occasionally cluster two.
+        bugs.set_seed(42);
         bugs.step(dt, &ANCHORS, &ALIVE);
         // A few steps into the growth: the bugs hold their exact spawn
         // spots, so the positions below are stable, and the rounds below

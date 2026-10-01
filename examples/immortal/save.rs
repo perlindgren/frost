@@ -3,6 +3,12 @@
 //! `~/.frost/immortal/snapshot.ron` — F5 writes it, F9 reloads the last
 //! one, and the `--load` command line flag loads it at start up.
 //!
+//! The home directory's file is the primary location, but when it is
+//! unusable — the home directory missing, or a sandbox that forbids the
+//! write — the snapshot falls back to a plain `snapshot.ron` in the
+//! working directory: [save] writes to the first candidate it can, and
+//! [load] reads the first candidate it can (see [candidates]).
+//!
 //! The snapshot carries the random streams' states — the demo's jitter
 //! source, the bug swarm's spawn randomizer, and the worms' spawn
 //! randomizer — so a reloaded game continues the exact same random
@@ -28,14 +34,26 @@ use crate::{
 /// [load] rejects files whose version differs.
 pub const VERSION: u32 = 3;
 
-/// A snapshot load's failure: the file is missing or unreadable, it is
-/// not valid RON, or it was written by another format version.
+/// A snapshot load's failure: no candidate's file could be read
+/// ([LoadError::Io]), or a file was read but cannot be used by this build
+/// — its text is not valid RON, or it was written by another format
+/// version ([LoadError::Unusable]). [load_from] reports the last
+/// `Unusable` failure over the last `Io` one, so a stale file's version
+/// mismatch is the error you see.
 #[derive(Debug)]
-pub struct LoadError(String);
+pub enum LoadError {
+    /// The file is missing or unreadable; the I/O failure's message.
+    Io(String),
+    /// The file was read but cannot be used — invalid RON, or a version
+    /// mismatch; the [parse] failure's message.
+    Unusable(String),
+}
 
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        match self {
+            LoadError::Io(message) | LoadError::Unusable(message) => f.write_str(message),
+        }
     }
 }
 
@@ -43,7 +61,7 @@ impl std::error::Error for LoadError {}
 
 /// The whole game's state, as of one moment: [crate::Demo] writes it on
 /// F5, and reads it back on F9 or at start up with `--load`.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Snapshot {
     /// The [VERSION] the file was written with; [load] rejects mismatches.
     pub version: u32,
@@ -373,11 +391,11 @@ impl TurnState {
     }
 }
 
-/// The snapshot's file: `~/.frost/immortal/snapshot.ron` — the user's
-/// home directory (`USERPROFILE` on Windows), one folder per game, so the
-/// snapshot survives the working directory changing. Without a home
-/// directory it falls back to a plain `snapshot.ron` in the working
-/// directory.
+/// The snapshot's primary file: `~/.frost/immortal/snapshot.ron` — the
+/// user's home directory (`USERPROFILE` on Windows), one folder per game,
+/// so the snapshot survives the working directory changing. Without a
+/// home directory it is a plain `snapshot.ron` in the working directory —
+/// the same file the on-failure fallback uses (see [candidates]).
 pub fn snapshot_path() -> std::path::PathBuf {
     let home = if cfg!(windows) {
         std::env::var("USERPROFILE")
@@ -393,15 +411,54 @@ pub fn snapshot_path() -> std::path::PathBuf {
     }
 }
 
-/// Writes `snapshot` to [snapshot_path], creating the folder if needed.
-pub fn save(snapshot: &Snapshot) -> std::io::Result<()> {
-    let path = snapshot_path();
+/// The snapshot's candidate files, in the order [save] writes and [load]
+/// reads them: the primary [snapshot_path] first, then a plain
+/// `snapshot.ron` in the working directory when it is a different file.
+/// The home directory's file is the one that survives the working
+/// directory changing; the fallback keeps the quick save and load working
+/// where the primary is unusable — the home directory missing, or a
+/// sandbox that forbids the write.
+fn candidates() -> Vec<std::path::PathBuf> {
+    let primary = snapshot_path();
+    let fallback = std::path::PathBuf::from("snapshot.ron");
+    if fallback == primary {
+        vec![primary]
+    } else {
+        vec![primary, fallback]
+    }
+}
+
+/// Writes `snapshot` to the first candidate in [candidates] it can write
+/// to, creating the folder if needed — a first save must work on a
+/// machine that has never run the game before — and returns the path it
+/// was written to.
+pub fn save(snapshot: &Snapshot) -> std::io::Result<std::path::PathBuf> {
+    save_to(&candidates(), snapshot)
+}
+
+/// The engine behind [save]: tries each path in `paths`, in order, until
+/// one accepts the write, and returns the path written.
+pub fn save_to(
+    paths: &[std::path::PathBuf],
+    snapshot: &Snapshot,
+) -> std::io::Result<std::path::PathBuf> {
+    let mut last = None;
+    for path in paths {
+        match write_to(path, snapshot) {
+            Ok(()) => return Ok(path.clone()),
+            Err(err) => last = Some(err),
+        }
+    }
+    Err(last.expect("save_to is never called with an empty list"))
+}
+
+fn write_to(path: &std::path::Path, snapshot: &Snapshot) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let text = ron::to_string(snapshot)
         .map_err(|err| std::io::Error::other(format!("encoding the snapshot: {err}")))?;
-    std::fs::write(&path, text)
+    std::fs::write(path, text)
 }
 
 /// Reads and parses the text of a snapshot file, checking its version:
@@ -409,9 +466,9 @@ pub fn save(snapshot: &Snapshot) -> std::io::Result<()> {
 /// can change without silently misreading an old file.
 pub fn parse(text: &str) -> Result<Snapshot, LoadError> {
     let snapshot: Snapshot = ron::from_str(text)
-        .map_err(|err| LoadError(format!("the snapshot is not valid RON: {err}")))?;
+        .map_err(|err| LoadError::Unusable(format!("the snapshot is not valid RON: {err}")))?;
     if snapshot.version != VERSION {
-        return Err(LoadError(format!(
+        return Err(LoadError::Unusable(format!(
             "the snapshot is version {} and this build reads version {VERSION}",
             snapshot.version
         )));
@@ -419,16 +476,56 @@ pub fn parse(text: &str) -> Result<Snapshot, LoadError> {
     Ok(snapshot)
 }
 
-/// Reads the last snapshot from [snapshot_path] (see [parse] for the
-/// version check).
-pub fn load() -> Result<Snapshot, LoadError> {
-    let path = snapshot_path();
-    let text = std::fs::read_to_string(&path)
-        .map_err(|err| LoadError(format!("no snapshot to load at {}: {err}", path.display())))?;
-    parse(&text).map_err(|err| {
-        LoadError(format!(
+/// A loaded snapshot and the file it came from — the primary
+/// [snapshot_path], or the working directory's fallback (see [load]).
+#[derive(Debug)]
+pub struct Loaded {
+    /// The snapshot's state.
+    pub snapshot: Snapshot,
+    /// The file the snapshot was read from.
+    pub path: std::path::PathBuf,
+}
+
+/// Reads the last snapshot: the first candidate in [candidates] that both
+/// reads and parses with this build's [VERSION] (see [parse] for the
+/// version check) — a candidate that is missing, unreadable, or whose
+/// version differs is skipped, so a stale file at the primary path never
+/// shadows a snapshot this build can read.
+pub fn load() -> Result<Loaded, LoadError> {
+    load_from(&candidates())
+}
+
+/// The engine behind [load]: reads each path in `paths`, in order, until
+/// one both reads and parses; when none is usable, the last
+/// [LoadError::Unusable] failure wins over the last [LoadError::Io] one,
+/// so a stale file's version mismatch is the error reported.
+pub fn load_from(paths: &[std::path::PathBuf]) -> Result<Loaded, LoadError> {
+    let mut stale = None;
+    let mut last = None;
+    for path in paths {
+        match read_from(path) {
+            Ok(loaded) => return Ok(loaded),
+            Err(err @ LoadError::Unusable(_)) => stale = Some(err),
+            Err(err) => last = Some(err),
+        }
+    }
+    Err(stale
+        .or(last)
+        .expect("load_from is never called with an empty list"))
+}
+
+fn read_from(path: &std::path::Path) -> Result<Loaded, LoadError> {
+    let text = std::fs::read_to_string(path).map_err(|err| {
+        LoadError::Io(format!("no snapshot to load at {}: {err}", path.display()))
+    })?;
+    let snapshot = parse(&text).map_err(|err| {
+        LoadError::Unusable(format!(
             "the snapshot at {} cannot be loaded: {err}",
             path.display()
         ))
+    })?;
+    Ok(Loaded {
+        snapshot,
+        path: path.to_path_buf(),
     })
 }
