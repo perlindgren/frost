@@ -152,7 +152,6 @@ fn face() -> SceneNode {
                         a: 1.0,
                     },
                 }),
-                children: vec![],
                 ..Default::default()
             })],
             ..Default::default()

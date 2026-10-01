@@ -55,6 +55,7 @@ const COLOR: frost::Color = frost::Color {
     a: 1.0,
 };
 
+#[derive(Default)]
 struct Demo {
     /// The particles: the simulation state, stepped once per frame.
     system: frost::ParticleSystem,
@@ -136,11 +137,7 @@ fn main() {
             }),
             ..Default::default()
         }),
-        Demo {
-            system: frost::ParticleSystem::new(),
-            rng: frost::Rng::new(),
-            acc: 0.0,
-        },
+        Demo::default(),
     ) {
         log::error!("frost failed: {err}");
         std::process::exit(1);

@@ -77,6 +77,7 @@ const STATIC_LIGHT: frost::Color = frost::Color {
     a: 1.0,
 };
 
+#[derive(Default)]
 struct Demo {
     /// The elapsed time, in seconds: the orbit angle and the wander path.
     t: f32,
@@ -201,7 +202,7 @@ fn main() {
                 // The plume: a lit particle fountain rising off the ball,
                 // drawn just above it.
                 shape: Some(frost::Shape::Particles {
-                    system: frost::ParticleSystem::new(),
+                    system: frost::ParticleSystem::default(),
                     color: frost::Color {
                         r: 1.0,
                         g: 0.62,
@@ -238,15 +239,7 @@ fn main() {
         a: 1.0,
     };
 
-    if let Err(err) = frost::run(
-        scene,
-        Demo {
-            t: 0.0,
-            chase: [0.0, 0.0],
-            acc: 0.0,
-            rng: frost::Rng::new(),
-        },
-    ) {
+    if let Err(err) = frost::run(scene, Demo::default()) {
         log::error!("frost failed: {err}");
         std::process::exit(1);
     }

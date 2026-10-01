@@ -137,6 +137,7 @@ impl Eye {
 }
 
 /// The demo: all the eyes, and the clock their wander and pulses run on.
+#[derive(Default)]
 struct Eyes {
     eyes: Vec<Eye>,
     t: f32,
@@ -236,7 +237,6 @@ fn main() {
                 a: 1.0,
             },
         }),
-        children: Vec::new(),
         ..Default::default()
     });
     scene.root.children = eye_nodes;
@@ -273,7 +273,13 @@ fn main() {
         a: 1.0,
     };
 
-    match frost::run(scene, Eyes { eyes, t: 0.0 }) {
+    match frost::run(
+        scene,
+        Eyes {
+            eyes,
+            ..Eyes::default()
+        },
+    ) {
         Ok(()) => {}
         Err(err) => {
             log::error!("frost exited with an error: {err}");

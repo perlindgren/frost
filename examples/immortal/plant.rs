@@ -239,7 +239,7 @@ fn flower_color(g: f32) -> frost::Color {
 /// BLOOM_GAP_MAX) seconds after the previous one — so a finished slice
 /// opens its blooms one flower at a time until all of them are growing.
 fn staggered_starts() -> [f32; FLOWER_N] {
-    let mut rng = frost::Rng::new();
+    let mut rng = frost::Rng::default();
     let mut starts = [0.0f32; FLOWER_N];
     let mut slot = 0usize;
     for (i, spawns) in FLOWER_SPAWNS.iter().enumerate() {
@@ -264,7 +264,7 @@ fn staggered_starts() -> [f32; FLOWER_N] {
 /// The state of one bloom slot: the staggered moment its flower starts
 /// growing on the first bloom, the restart stamp [Plant::regrow] stamps
 /// after a harvest into the basket, and the slot's [tomato::Tomato].
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Bloom {
     /// The plant-clock moment the slot's flower starts growing on the
     /// first bloom: [Plant::new] draws the starts slice by slice, one
@@ -295,8 +295,7 @@ impl Bloom {
     pub fn new(start: f32) -> Self {
         Bloom {
             first_bloom_start: start,
-            regrow_at: None,
-            tomato: Tomato::new(),
+            ..Bloom::default()
         }
     }
 

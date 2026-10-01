@@ -14,6 +14,7 @@
 
 use std::f32::consts::{PI, TAU};
 
+#[derive(Default)]
 struct Demo {
     /// Orbit and tumble angle in radians.
     spin: f32,
@@ -111,7 +112,7 @@ fn main() {
         ..Default::default()
     });
 
-    if let Err(err) = frost::run(scene, Demo { spin: 0.0 }) {
+    if let Err(err) = frost::run(scene, Demo::default()) {
         log::error!("frost failed: {err}");
         std::process::exit(1);
     }

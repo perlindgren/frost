@@ -131,6 +131,7 @@ const RESPAWN_MIN: f32 = 5.0;
 const RESPAWN_MAX: f32 = 10.0;
 
 /// One bug in the swarm.
+#[derive(Default)]
 struct Bug {
     /// Current position in user space (the sprite center).
     pos: [f32; 2],
@@ -247,6 +248,7 @@ impl Bug {
 }
 
 /// The whole swarm: the spawned prefix of the scene's bug slot pool.
+#[derive(Default)]
 pub struct Bugs {
     /// The spawned bugs, in spawn order.
     bugs: Vec<Bug>,
@@ -419,12 +421,9 @@ impl Bugs {
         }
         let scale = BUG_SIZE / w;
         Self {
-            bugs: Vec::new(),
-            batched: Vec::new(),
-            t: 0.0,
             scale,
             ground: (scale * h) / 2.0,
-            rng: Rng::new(),
+            ..Self::default()
         }
     }
 
@@ -540,26 +539,17 @@ impl Bugs {
                 let bug = Bug {
                     pos,
                     spawn: pos,
-                    vel: [0.0, 0.0],
                     facing: 1.0,
-                    placed: false,
                     home,
                     idle,
-                    walk: 0.0,
-                    frame: 0,
                     shown: u8::MAX,
-                    grow: 0.0,
                     speed: self.rng.in_range(10.0, 30.0),
                     wob_amp: self.rng.in_range(15.0, 30.0),
                     wob_freq: self.rng.in_range(1.5, 3.5),
                     wob_phase: self.rng.next_f32() * 2.0 * std::f32::consts::PI,
                     step_rate: self.rng.in_range(6.0, 10.0),
-                    dying: None,
                     hits: HITS_TO_KILL,
-                    parked: 0.0,
-                    arrived: false,
-                    hit_cooldown: 0.0,
-                    respawn: None,
+                    ..Bug::default()
                 };
                 self.bugs.push(bug);
                 // The bug pops up out of the grass: one random plopp
@@ -1082,7 +1072,7 @@ mod tests {
     #[test]
     fn samples_land_inside_the_hull() {
         let hull = convex_hull(&ANCHORS);
-        let mut rng = Rng::new();
+        let mut rng = Rng::default();
         for _ in 0..100_000 {
             let p = sample_polygon(&hull, &mut rng);
             assert!(inside(&hull, p), "sample {p:?} escaped the hull");
@@ -1095,7 +1085,7 @@ mod tests {
     #[test]
     fn samples_are_uniform() {
         let hull = convex_hull(&ANCHORS);
-        let mut rng = Rng::new();
+        let mut rng = Rng::default();
         const N: u32 = 100_000;
         let (mut sx, mut sy) = (0.0f32, 0.0f32);
         for _ in 0..N {

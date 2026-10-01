@@ -147,6 +147,7 @@ fn axis(ctx: &frost::Context, positive: frost::KeyCode, negative: frost::KeyCode
 /// what both views consume: the renderer draws them, the collider is built
 /// from them, so the shadow's silhouette and the obstacle's outline are
 /// the same rectangle by construction.
+#[derive(Default)]
 struct Wall {
     /// The wall's center in window-centered pixels.
     center: [f32; 2],
@@ -193,6 +194,7 @@ impl Wall {
 
 /// The demo state: the player's motion and the walls it shares the room
 /// with.
+#[derive(Default)]
 struct Demo {
     /// The player's position in window-centered pixels.
     pos: [f32; 2],
@@ -365,22 +367,23 @@ fn main() {
         Wall {
             center: [-330.0, 20.0],
             half: [24.0, 150.0],
-            tilt: 0.0,
+            ..Wall::default()
         },
         Wall {
             center: [60.0, 10.0],
             half: [24.0, 170.0],
             tilt: 0.35,
+            ..Wall::default()
         },
         Wall {
             center: [330.0, -30.0],
             half: [160.0, 24.0],
-            tilt: 0.0,
+            ..Wall::default()
         },
         Wall {
             center: [-70.0, -200.0],
             half: [36.0, 36.0],
-            tilt: 0.0,
+            ..Wall::default()
         },
     ];
 
@@ -525,10 +528,8 @@ fn main() {
     if let Err(err) = frost::run(
         scene,
         Demo {
-            pos: [0.0, 0.0],
-            rot: 0.0,
-            vel: [0.0, 0.0],
             walls,
+            ..Demo::default()
         },
     ) {
         log::error!("frost failed: {err}");

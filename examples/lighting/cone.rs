@@ -130,6 +130,7 @@ fn axis(ctx: &frost::Context, positive: frost::KeyCode, negative: frost::KeyCode
 }
 
 /// The demo state: the player's motion.
+#[derive(Default)]
 struct Demo {
     /// The player's position in window-centered pixels.
     pos: [f32; 2],
@@ -385,14 +386,7 @@ fn main() {
         a: 1.0,
     };
 
-    if let Err(err) = frost::run(
-        scene,
-        Demo {
-            pos: [0.0, 0.0],
-            rot: 0.0,
-            vel: [0.0, 0.0],
-        },
-    ) {
+    if let Err(err) = frost::run(scene, Demo::default()) {
         log::error!("frost failed: {err}");
         std::process::exit(1);
     }

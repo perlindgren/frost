@@ -129,6 +129,7 @@ const TAU: f32 = 2.0 * std::f32::consts::PI;
 
 /// One circle fountain: its particles, its emission accumulator, and its
 /// own pulse frequency and phase — so the two beat at different paces.
+#[derive(Default)]
 struct Fountain {
     /// The particles: the simulation state, stepped once per frame.
     system: frost::ParticleSystem,
@@ -356,7 +357,7 @@ fn main() {
                 // of the two circle fountains. The batch's color is white,
                 // so each square's own color shows through untouched.
                 shape: Some(frost::Shape::Particles {
-                    system: frost::ParticleSystem::new(),
+                    system: frost::ParticleSystem::default(),
                     color: WHITE,
                     shape: frost::ParticleShape::Rectangle { aspect: 1.0 },
                 }),
@@ -369,23 +370,20 @@ fn main() {
             diag,
             fountains: [
                 Fountain {
-                    system: frost::ParticleSystem::new(),
-                    acc: 0.0,
                     freq: 0.5,
-                    phase: 0.0,
+                    ..Fountain::default()
                 },
                 Fountain {
-                    system: frost::ParticleSystem::new(),
-                    acc: 0.0,
                     freq: 0.6,
                     phase: 4.2,
+                    ..Fountain::default()
                 },
             ],
             square_acc: 0.0,
             spins: Vec::new(),
-            fall: frost::ParticleSystem::new(),
+            fall: frost::ParticleSystem::default(),
             fall_acc: 0.0,
-            rng: frost::Rng::new(),
+            rng: frost::Rng::default(),
             t: 0.0,
         },
     ) {

@@ -71,6 +71,7 @@ fn frac(x: f32) -> f32 {
 }
 
 /// One bee of the swarm.
+#[derive(Default)]
 struct Bee {
     /// The bee's current position in user space, y up.
     pos: [f32; 2],
@@ -118,6 +119,7 @@ struct Bee {
 
 /// A swarm of thirty vipers — one per plant layer — buzzing around the
 /// flower bench.
+#[derive(Default)]
 pub struct Vipers {
     /// The thirty bees, in swarm order: bee `i` rides child `i` of the
     /// vipers node and is the `(i % LAYERS)`-th layer's viper of plant
@@ -262,15 +264,10 @@ impl Vipers {
                 let f2 = frac(f * 7.0 + 0.31);
                 let f3 = frac(f * 13.0 + 0.71);
                 Bee {
-                    pos: [0.0, 0.0],
-                    vel: [0.0, 0.0],
                     facing: 1.0,
-                    placed: false,
                     // Stagger the wingbeats across the swarm.
                     flap: f * 2.0,
-                    frame: 0,
                     shown: u8::MAX,
-                    home: 0,
                     phase: i as f32 * GOLDEN_ANGLE,
                     omega: 0.9 + 1.1 * f,
                     radius: 70.0 + 70.0 * f2,
@@ -279,10 +276,11 @@ impl Vipers {
                     bob_amp: 6.0 + 8.0 * f2,
                     bob_freq: 1.6 + 1.4 * f3,
                     flap_speed: 5.0 + 4.0 * f,
+                    ..Bee::default()
                 }
             }),
-            t: 0.0,
             scale: BEE_SIZE / size[0],
+            ..Vipers::default()
         }
     }
 

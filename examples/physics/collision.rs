@@ -82,6 +82,7 @@ fn axis(ctx: &frost::Context, positive: frost::KeyCode, negative: frost::KeyCode
 }
 
 /// The demo state: the button's motion and the obstacles it collides with.
+#[derive(Default)]
 struct Demo {
     /// The button's position in window-centered pixels.
     pos: [f32; 2],
@@ -193,7 +194,7 @@ impl frost::Process for Demo {
         // square inside the visible area, in random colors.
         let (w, h) = ctx.size();
         let obstacles = self.obstacles.get_or_insert_with(|| {
-            let mut rng = frost::Rng::new();
+            let mut rng = frost::Rng::default();
             (0..OBSTACLES)
                 .map(|_| {
                     let half = SIZE / 2.0;
@@ -266,12 +267,7 @@ fn main() {
             })],
             ..Default::default()
         }),
-        Demo {
-            pos: [0.0, 0.0],
-            rot: 0.0,
-            vel: [0.0, 0.0],
-            obstacles: None,
-        },
+        Demo::default(),
     ) {
         log::error!("frost failed: {err}");
         std::process::exit(1);

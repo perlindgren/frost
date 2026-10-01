@@ -56,7 +56,7 @@ caller draws. There are two ways to draw.
 
 ```rust
 frost::Shape::Particles {
-    system: frost::ParticleSystem::new(),
+    system: frost::ParticleSystem::default(),
     color: /* the batch's base tint; white leaves the particles uncolored by the batch */,
     shape: frost::ParticleShape::Circle, // or Rectangle { aspect }, or Sprite (see below)
 }

@@ -30,6 +30,7 @@ const SPIN_PER_FRAME: f32 = 0.25 / 60.0;
 /// into one node that animates itself: the orbit and tumble of the
 /// rectangle, and the counter-rotation of the small circle, are all
 /// computed here, not in the top-level process.
+#[derive(Default)]
 struct Satellite {
     /// The rectangle and its children, drawn as an additional scene every
     /// frame.
@@ -71,7 +72,10 @@ impl Satellite {
             })],
             ..Default::default()
         });
-        Self { scene, spin: 0.0 }
+        Self {
+            scene,
+            ..Self::default()
+        }
     }
 }
 

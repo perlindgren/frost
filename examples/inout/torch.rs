@@ -79,6 +79,7 @@ const SPARK: frost::Color = frost::Color {
     a: 1.0,
 };
 
+#[derive(Default)]
 struct Demo {
     /// The torch's position, in the window's user space (window-centered, y
     /// up): the tip of the torch, where the coal and the embers sit.
@@ -289,7 +290,7 @@ fn main() {
                         // The embers: a particle batch in the torch's local
                         // space, drawn above the coal.
                         shape: Some(frost::Shape::Particles {
-                            system: frost::ParticleSystem::new(),
+                            system: frost::ParticleSystem::default(),
                             color: EMBER,
                             shape: frost::ParticleShape::Circle,
                         }),
@@ -301,15 +302,7 @@ fn main() {
             })],
             ..Default::default()
         }),
-        Demo {
-            pos: [0.0, 0.0],
-            angle: 0.0,
-            t: 0.0,
-            spray: frost::ParticleSystem::new(),
-            ember_acc: 0.0,
-            spray_acc: 0.0,
-            rng: frost::Rng::new(),
-        },
+        Demo::default(),
     ) {
         log::error!("frost failed: {err}");
         std::process::exit(1);

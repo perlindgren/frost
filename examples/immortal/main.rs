@@ -1359,9 +1359,9 @@ impl Demo {
             flower: assets.flower,
             tomato: assets.tomato,
             tomato_fg: assets.tomato_fg,
-            water: frost::ParticleSystem::new(),
-            spray: frost::ParticleSystem::new(),
-            rng: frost::Rng::new(),
+            water: frost::ParticleSystem::default(),
+            spray: frost::ParticleSystem::default(),
+            rng: frost::Rng::default(),
             acc: 0.0,
             time: 0.0,
             // Six bare slots, one per root joint: every plant enters as a
@@ -2460,7 +2460,7 @@ impl Demo {
         self.right_pressed = false;
         self.acc = 0.0;
         self.time = 0.0;
-        self.rng = frost::Rng::new();
+        self.rng = frost::Rng::default();
     }
 
     /// Seeds all three random streams from `seed` — the demo's
@@ -2617,8 +2617,8 @@ impl Demo {
         self.rng.set_state(snapshot.seed);
         self.bugs.set_seed(snapshot.bug_seed);
         // The particles are short-lived: their streams start over.
-        self.water = frost::ParticleSystem::new();
-        self.spray = frost::ParticleSystem::new();
+        self.water = frost::ParticleSystem::default();
+        self.spray = frost::ParticleSystem::default();
     }
 
     /// Restores the whole game state from a snapshot: the demo's state via

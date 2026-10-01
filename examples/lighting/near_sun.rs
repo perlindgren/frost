@@ -223,6 +223,7 @@ fn sky_at(p: f32) -> Sky {
 }
 
 /// The demo: the clock the day runs on.
+#[derive(Default)]
 struct NearSun {
     t: f32,
 }
@@ -445,7 +446,7 @@ fn main() {
     });
     scene.ambient = SKY[0].ambient;
 
-    match frost::run(scene, NearSun { t: 0.0 }) {
+    match frost::run(scene, NearSun::default()) {
         Ok(()) => {}
         Err(err) => {
             log::error!("frost exited with an error: {err}");

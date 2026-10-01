@@ -84,6 +84,7 @@ const STARS: [Star; 2] = [
 ];
 
 /// The demo: the clock the two orbits run on.
+#[derive(Default)]
 struct TwoStars {
     t: f32,
 }
@@ -262,7 +263,7 @@ fn main() {
         a: 1.0,
     };
 
-    match frost::run(scene, TwoStars { t: 0.0 }) {
+    match frost::run(scene, TwoStars::default()) {
         Ok(()) => {}
         Err(err) => {
             log::error!("frost exited with an error: {err}");

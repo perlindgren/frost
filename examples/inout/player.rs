@@ -19,6 +19,7 @@ fn axis(ctx: &frost::Context, positive: frost::KeyCode, negative: frost::KeyCode
     (ctx.key_down(positive) as i32 - ctx.key_down(negative) as i32) as f32
 }
 
+#[derive(Default)]
 struct Demo {
     /// The button's position in window-centered pixels.
     pos: [f32; 2],
@@ -77,10 +78,7 @@ fn main() {
             })],
             ..Default::default()
         }),
-        Demo {
-            pos: [0.0, 0.0],
-            rot: 0.0,
-        },
+        Demo::default(),
     ) {
         log::error!("frost failed: {err}");
         std::process::exit(1);

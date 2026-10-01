@@ -77,6 +77,7 @@ const HALO_RADIUS: f32 = 18.0;
 /// The alpha of the halo marker: a soft tint around the core.
 const HALO_ALPHA: f32 = 0.3;
 
+#[derive(Default)]
 struct Demo {
     /// The elapsed time, in seconds: the clock of the orbit and the pulse.
     t: f32,
@@ -310,7 +311,7 @@ fn main() {
         a: 1.0,
     };
 
-    if let Err(err) = frost::run(scene, Demo { t: 0.0 }) {
+    if let Err(err) = frost::run(scene, Demo::default()) {
         log::error!("frost failed: {err}");
         std::process::exit(1);
     }

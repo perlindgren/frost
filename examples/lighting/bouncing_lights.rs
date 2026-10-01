@@ -201,7 +201,7 @@ fn main() {
     env_logger::init();
     log::info!("frost started");
 
-    let mut rng = frost::Rng::new();
+    let mut rng = frost::Rng::default();
     let lights = [
         Bouncer::spawn(&mut rng, AMBER, 0.0),
         Bouncer::spawn(&mut rng, AZURE, std::f32::consts::TAU / 3.0),

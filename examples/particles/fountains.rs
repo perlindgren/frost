@@ -105,6 +105,7 @@ fn cycle(t: f32) -> frost::Color {
 
 /// One fountain: its particles, its emission accumulator, and its own
 /// pulse frequency and phase — so the three beat at different paces.
+#[derive(Default)]
 struct Fountain {
     /// The particles: the simulation state, stepped once per frame.
     system: frost::ParticleSystem,
@@ -117,6 +118,7 @@ struct Fountain {
     phase: f32,
 }
 
+#[derive(Default)]
 struct Demo {
     /// The three fountains: green (left), blue (middle), circulating
     /// (right).
@@ -259,28 +261,21 @@ fn main() {
         Demo {
             fountains: [
                 Fountain {
-                    system: frost::ParticleSystem::new(),
-                    acc: 0.0,
                     freq: 0.5,
-                    phase: 0.0,
+                    ..Fountain::default()
                 },
                 Fountain {
-                    system: frost::ParticleSystem::new(),
-                    acc: 0.0,
                     freq: 0.75,
                     phase: 2.1,
+                    ..Fountain::default()
                 },
                 Fountain {
-                    system: frost::ParticleSystem::new(),
-                    acc: 0.0,
                     freq: 0.6,
                     phase: 4.2,
+                    ..Fountain::default()
                 },
             ],
-            fall: frost::ParticleSystem::new(),
-            fall_acc: 0.0,
-            rng: frost::Rng::new(),
-            t: 0.0,
+            ..Demo::default()
         },
     ) {
         log::error!("frost failed: {err}");

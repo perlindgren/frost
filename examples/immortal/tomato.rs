@@ -109,7 +109,7 @@ pub fn tomato_leaf_offset(size: [f32; 2]) -> [f32; 2] {
 
 /// One bloom slot's tomato: its picked state and, once it has ripened,
 /// the aging-clock moment of its ripe moment.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct Tomato {
     /// Whether the fruit is currently picked: its pivot has been
     /// reparented out of the plant's tree — out of the slot's children —
@@ -125,15 +125,6 @@ pub struct Tomato {
 }
 
 impl Tomato {
-    /// A fresh, unharvested fruit that has not ripened: staleness zero,
-    /// the ripe stamp unset.
-    pub const fn new() -> Self {
-        Tomato {
-            harvested: false,
-            ripened_at: None,
-        }
-    }
-
     /// Whether the fruit is currently picked: its pivot has been
     /// reparented out of the plant's tree, so the plant's layout must skip
     /// the slot's tomato pivot.
@@ -285,7 +276,7 @@ mod tests {
     /// A fruit stamped ripe at aging-clock moment `ripened`, for the
     /// staleness tests: they run the aging clock on from a ripe fruit.
     fn stamped(ripened: f32) -> Tomato {
-        let mut t = Tomato::new();
+        let mut t = Tomato::default();
         t.ripened_at = Some(ripened);
         t
     }
@@ -306,7 +297,7 @@ mod tests {
             let t = stamped(0.0);
             assert!((t.stale(dt) - st).abs() < 1e-6, "stale at dt = {dt}");
         }
-        assert_eq!(Tomato::new().stale(1000.0), 0.0);
+        assert_eq!(Tomato::default().stale(1000.0), 0.0);
     }
 
     /// [Tomato::is_overgrown] turns on at the end of the stale period —
@@ -329,7 +320,7 @@ mod tests {
         let ripe_time = Tomato::ripe_time(start);
 
         // Before the ripe moment, nothing is stamped.
-        let mut t = Tomato::new();
+        let mut t = Tomato::default();
         t.stamp_ripe(ripe_time - 1.0, ripe_time - 1.0, start);
         assert_eq!(t.ripened_at(), None, "an unripe fruit stays unstamped");
 
@@ -348,7 +339,7 @@ mod tests {
     /// restarted schedule.
     #[test]
     fn a_regrown_fruit_stamps_its_own_ripe_moment() {
-        let mut t = Tomato::new();
+        let mut t = Tomato::default();
         t.harvest();
         assert!(t.is_harvested());
 
@@ -376,7 +367,7 @@ mod tests {
     #[test]
     fn growth_starts_when_the_flower_is_full() {
         let start = 13.0;
-        let t = Tomato::new();
+        let t = Tomato::default();
         assert_eq!(t.growth(start + FLOWER_GROW_TIME - 0.001, start), 0.0);
         assert_eq!(t.growth(start + FLOWER_GROW_TIME, start), 0.0);
         let mid = start + FLOWER_GROW_TIME + TOMATO_GROW_TIME / 2.0;

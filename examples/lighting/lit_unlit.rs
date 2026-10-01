@@ -49,6 +49,7 @@ const LIGHT_INTENSITY: f32 = 2.5;
 /// around the cursor.
 const LIGHT_RADIUS: f32 = 160.0;
 
+#[derive(Default)]
 struct Demo {
     /// The light's position, in the window's user space: the cursor's
     /// position while it is inside the window, otherwise the last known
@@ -119,7 +120,7 @@ fn main() {
             ],
             ..Default::default()
         }),
-        Demo { pos: [0.0, 0.0] },
+        Demo::default(),
     ) {
         log::error!("frost failed: {err}");
         std::process::exit(1);

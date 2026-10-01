@@ -279,6 +279,7 @@ struct Layer {
 
 /// One animation frame: a set of layers, stacked as added, and the time
 /// it holds before the next frame.
+#[derive(Default)]
 struct Frame {
     layers: Vec<Layer>,
     next_time: f32,
@@ -287,6 +288,7 @@ struct Frame {
 /// The animation: an ordered set of frames kept by a clock. Looping
 /// playback wraps at the ends; ping-pong walks back through the frames
 /// instead, each end held once per sweep.
+#[derive(Default)]
 struct Anim {
     frames: Vec<Frame>,
     /// The frame the clock is in — also the frame the panel edits.
@@ -1605,12 +1607,9 @@ fn main() {
             sprites,
             active: 0,
             anim: Anim {
-                frames: Vec::new(),
-                frame: 0,
                 looping: true,
-                playing: false,
                 dir: 1,
-                elapsed: 0.0,
+                ..Anim::default()
             },
             zoom: 1.0,
             offset: [0.0, 0.0],
@@ -1753,19 +1752,18 @@ mod tests {
     // A layer-less frame with a chosen hold time, for the clock tests.
     fn frame(next_time: f32) -> Frame {
         Frame {
-            layers: Vec::new(),
             next_time,
+            ..Frame::default()
         }
     }
 
     fn anim(times: &[f32], looping: bool) -> Anim {
         Anim {
             frames: times.iter().map(|&t| frame(t)).collect(),
-            frame: 0,
             looping,
             playing: true,
             dir: 1,
-            elapsed: 0.0,
+            ..Anim::default()
         }
     }
 

@@ -122,7 +122,6 @@ fn main() {
                 // The button sits on the scene's origin, the window's
                 // center; its scale grows the rectangle and the label
                 // together around that center.
-                scale: [1.0, 1.0],
                 shape: Some(frost::Shape::Rectangle {
                     center: [0.0, 0.0],
                     extent: [BUTTON_W / 2.0, BUTTON_H / 2.0],

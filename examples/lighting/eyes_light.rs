@@ -101,6 +101,7 @@ const TURN: f32 = 1.3;
 
 /// One eye's state: where it is, where it is heading, the phases of
 /// its wander curve and glow pulse, and whether it carries a light.
+#[derive(Default)]
 struct Eye {
     pos: [f32; 2],
     heading: f32,
@@ -174,6 +175,7 @@ impl Eye {
 }
 
 /// The demo: all the eyes, and the clock their wander and pulses run on.
+#[derive(Default)]
 struct EyesLight {
     eyes: Vec<Eye>,
     t: f32,
@@ -265,12 +267,12 @@ fn main() {
             phase_b: hash(i, 8) * std::f32::consts::TAU,
             pulse_freq: 0.7 + 1.6 * hash(i, 9),
             pulse_phase: hash(i, 10) * std::f32::consts::TAU,
-            pulse: 0.0,
             // Lamp-eyes are the larger ones — half a hint, so the two
             // kinds read as the same species at a glance.
             scale: 0.22 + 0.2 * hash(i, 11) + if i % 2 == 0 { 0.08 } else { 0.0 },
             facing: 1.0,
             lamp: i % 2 == 0,
+            ..Eye::default()
         })
         .collect::<Vec<_>>();
 
@@ -311,7 +313,6 @@ fn main() {
                 a: 1.0,
             },
         }),
-        children: Vec::new(),
         ..Default::default()
     });
     scene.root.children = eye_nodes;
@@ -350,7 +351,13 @@ fn main() {
         a: 1.0,
     };
 
-    match frost::run(scene, EyesLight { eyes, t: 0.0 }) {
+    match frost::run(
+        scene,
+        EyesLight {
+            eyes,
+            ..EyesLight::default()
+        },
+    ) {
         Ok(()) => {}
         Err(err) => {
             log::error!("frost exited with an error: {err}");

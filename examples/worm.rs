@@ -70,6 +70,7 @@ const GROUND_Y: f32 = -160.0;
 const WORM_INDEX: usize = 1;
 
 /// The demo's per-frame state.
+#[derive(Default)]
 struct Demo {
     /// Elapsed time, in seconds.
     t: f32,
@@ -203,8 +204,8 @@ fn main() {
     if let Err(err) = frost::run_configured(
         scene,
         Demo {
-            t: 0.0,
             offset: START_OFFSET,
+            ..Demo::default()
         },
         frost::Config {
             window_size: Some([960, 540]),

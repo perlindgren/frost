@@ -289,8 +289,8 @@ fn main() {
             pressed: false,
             angle: 0.0,
             rotation: frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once),
-            water: frost::ParticleSystem::new(),
-            rng: frost::Rng::new(),
+            water: frost::ParticleSystem::default(),
+            rng: frost::Rng::default(),
             acc: 0.0,
         },
     ) {

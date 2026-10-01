@@ -102,9 +102,10 @@ const STRETCH_LONG: f32 = 1.15;
 const TARGET_RETRIES: usize = 8;
 
 /// A worm's phase in its life cycle.
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Phase {
     /// Waiting underground, counting down its delay.
+    #[default]
     Underground,
     /// Raising out of the soil at its spawn point.
     Emerging,
@@ -115,7 +116,7 @@ pub enum Phase {
 }
 
 /// One worm of the swarm.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Worm {
     /// The current life phase.
     phase: Phase,
@@ -157,17 +158,8 @@ impl Worm {
     /// down its delay — [Worms::new] draws the first one.
     fn fresh() -> Self {
         Worm {
-            phase: Phase::Underground,
-            phase_t: 0.0,
-            delay: 0.0,
-            pos: [0.0, 0.0],
-            target: [0.0, 0.0],
-            heading: 0.0,
-            speed: 0.0,
-            beat: 0.0,
-            frame: 0,
             shown: u8::MAX,
-            beat_speed: 0.0,
+            ..Worm::default()
         }
     }
 
@@ -290,7 +282,7 @@ impl Worms {
     /// the swarm's clock-seeded randomizer, staggered across the pool —
     /// no wave of ten worms at the first second.
     pub fn new(frames: [&frost::Shape; 2]) -> Self {
-        Self::build(Rng::new(), frames)
+        Self::build(Rng::default(), frames)
     }
 
     /// Builds the swarm like [Worms::new], but from a seeded randomizer —

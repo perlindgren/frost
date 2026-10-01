@@ -11,6 +11,7 @@
 //! cargo run --example text_leo
 //! ```
 
+#[derive(Default)]
 struct Demo {
     /// Elapsed time in seconds.
     t: f32,
@@ -80,7 +81,7 @@ fn main() {
         ..Default::default()
     });
 
-    if let Err(err) = frost::run(scene, Demo { t: 0.0 }) {
+    if let Err(err) = frost::run(scene, Demo::default()) {
         log::error!("frost failed: {err}");
         std::process::exit(1);
     }

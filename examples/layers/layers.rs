@@ -68,6 +68,7 @@ fn axis(ctx: &frost::Context, positive: frost::KeyCode, negative: frost::KeyCode
     (ctx.key_down(positive) as i32 - ctx.key_down(negative) as i32) as f32
 }
 
+#[derive(Default)]
 struct Demo {
     /// The button's position in window-centered pixels.
     pos: [f32; 2],
@@ -107,7 +108,7 @@ impl frost::Process for Demo {
         // layer's squares are drawn as that layer's own group.
         if self.rects.is_none() {
             let (w, h) = ctx.size();
-            let mut rng = frost::Rng::new();
+            let mut rng = frost::Rng::default();
             let rects: [Vec<Rect>; 3] = [0, 1, 2].map(|_| {
                 (0..RECTS)
                     .map(|_| {
@@ -201,11 +202,7 @@ fn main() {
             camera: None,
             ambient: frost::AMBIENT,
         },
-        Demo {
-            pos: [0.0, 0.0],
-            rot: 0.0,
-            rects: None,
-        },
+        Demo::default(),
     ) {
         log::error!("frost failed: {err}");
         std::process::exit(1);
