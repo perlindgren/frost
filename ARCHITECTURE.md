@@ -698,10 +698,15 @@ clean. Notable test areas:
 
 45 demos, filed into subject folders — `shapes/`, `lighting/`, `inout/`,
 `layers/`, `particles/`, `physics/`, `text/`, the `immortal/` game, and the
-tools (`sprite_util`, `ron_view`, `worm`, …) at the top level. Cargo only
-auto-discovers `examples/*.rs` and `examples/*/main.rs`, so every folder
-member is named with an explicit `[[example]]` entry in `Cargo.toml` — the
-short names keep working: `cargo run --example parallax`. Most load their
+tools (`sprite_util`, `worm`, …) at the top level. Cargo only auto-discovers
+`examples/*.rs` and `examples/*/main.rs`, so every folder member is named
+with an explicit `[[example]]` entry in `Cargo.toml` — the short names keep
+working: `cargo run --example parallax`. `ron_view/` is the exception that
+proves the rule: a `main.rs` folder target needs no entry, and its
+`tree.rs` — the RON-subset parser, tree model and row flattener — is
+path-included by `sprite_util` too (`#[path = "ron_view/tree.rs"]`), so
+both examples parse sidecars and samples with one shared, dependency-free
+parser. Most load their
 assets from disk at runtime, pinned to the crate root via
 `CARGO_MANIFEST_DIR`; `immortal` and `text_web` embed their assets into the
 binary with `include_bytes!` instead, so they run with no asset files on
@@ -818,11 +823,16 @@ disk. Run with `cargo run --example <name>`
 |              | crops, Save/Save As write PNG over a native confirm. An Animation   |
 |              | panel builds frames — each a set of layers with its own hold-time —  |
 |              | played on a clock that loops or ping-pongs (space plays), previewed |
-|              | live in the work area                                               |
+|              | live in the work area. A sprite with a sidecar `<name>.ron` beside  |
+|              | its PNG gets a foldable tree panel docked at the work area's lower  |
+|              | right (rows fold on click, the title bar folds the panel, the wheel |
+|              | scrolls it in place; closing the sprite drops the panel); absent or |
+|              | unparseable sidecars just load the sprite alone                     |
 | widgets      | the `Ui` layer: a draggable Tomato panel (three color sliders, a    |
 |              | Spin checkbox, a Speed slider, a Reset button) and an About label   |
 |              | panel drive a spinning face's color and rotation                    |
-| ron_view     | a foldable, scrollable tree view of a `.ron` file: click `[-]/[+]`  |
+| ron_view     | a foldable, scrollable tree view of a `.ron` file (`tree.rs`,       |
+|              | shared with `sprite_util`'s sidecar panels): click `[-]/[+]`        |
 |              | rows to fold, drag the two scroll handles (or wheel / shift-wheel), |
 |              | text in FiraCode Variable — keys & heads at weight 700, values at   |
 |              | 500; ships with a dependency-free RON-subset parser (comments,      |
@@ -871,7 +881,8 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 183 passed + 5 doctests
-cargo test --examples    # expect 108 passed (unit tests inside the examples)
+cargo test --examples    # expect 119 passed (unit tests inside the examples;
+                           # ron_view/tree.rs compiles into both targets, so its 7 parser tests run twice)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example worm     # peristaltic crawl, edge wrap; exits 0
 cargo run --example ron_view # fold rows, drag both scroll handles; exits 0
