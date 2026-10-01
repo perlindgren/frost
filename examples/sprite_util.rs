@@ -1789,7 +1789,7 @@ impl frost::Process for Demo {
                     continue;
                 }
                 let owner = spot_of_row(&spots, &row.path);
-                if owner == editing && v.slot == self.active {
+                if row_selected(owner, editing) && v.slot == self.active {
                     // The picked row's band, under the text.
                     ctx.rectangle(
                         (body[0] + body[2]) / 2.0,
@@ -2217,6 +2217,14 @@ fn spot_of_row(spots: &[Spot], row: &[u16]) -> Option<usize> {
                 && row[..s.path.len()] == s.path[..]
                 && row[s.path.len()] < 2)
     })
+}
+
+/// Whether a row wears the selection band: the row describes the very
+/// position picked for editing. Both-sides-`None` is NOT a match — no
+/// position picked means no band, or every key and bracket row in the
+/// tree would light up at once.
+fn row_selected(owner: Option<usize>, editing: Option<usize>) -> bool {
+    owner.is_some() && owner == editing
 }
 
 /// One open sidecar's panel as the UI laid it out this frame: whose
@@ -2957,6 +2965,19 @@ mod tests {
         coord.push(1);
         assert_eq!(spot_of_row(&spots, &coord), Some(1));
         assert_eq!(spot_of_row(&spots, &[9]), None);
+    }
+
+    #[test]
+    fn only_the_picked_positions_row_is_selected() {
+        // The bug this nails: an unpicked view (`None`) must match no
+        // row — and plain `owner == editing` matched every row that
+        // owns no position, banding the head and bracket rows at the
+        // tree's top and bottom the moment a file loaded.
+        assert!(!row_selected(None, None));
+        assert!(row_selected(Some(2), Some(2)));
+        assert!(!row_selected(Some(1), Some(2)));
+        assert!(!row_selected(None, Some(2)));
+        assert!(!row_selected(Some(1), None));
     }
 
     #[test]

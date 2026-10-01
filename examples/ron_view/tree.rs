@@ -54,6 +54,71 @@ impl Val {
     /// The value's one-line text: atoms verbatim, containers as a
     /// bracketed ellipsis — enough for map keys, which the view shows
     /// flat.
+    /// One line for a folded container: the whole subtree inline when
+    /// it fits `INLINE_MAX` characters — a flower anchor reads
+    /// `(317.0, 671.0)`, not `(…)` — and [`Val::display`]'s bracketed
+    /// ellipsis when it doesn't.
+    pub fn preview(&self) -> String {
+        let one = self.inline();
+        if one.chars().count() <= INLINE_MAX {
+            one
+        } else {
+            self.display()
+        }
+    }
+
+    /// The value as one full line of RON — every child, no breaks.
+    /// [`Val::preview`] is the caller that caps it.
+    pub fn inline(&self) -> String {
+        match self {
+            Val::Atom(s, _) => s.clone(),
+            Val::Seq { items, .. } => format!(
+                "[{}]",
+                items
+                    .iter()
+                    .map(|v| v.inline())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Val::Struct {
+                head,
+                curly,
+                fields,
+                ..
+            } => {
+                let (o, c) = if *curly {
+                    if head.is_empty() {
+                        ("{", "}")
+                    } else {
+                        (" { ", " }")
+                    }
+                } else {
+                    ("(", ")")
+                };
+                let inner = fields
+                    .iter()
+                    .map(|(k, v)| {
+                        if k.is_empty() {
+                            v.inline()
+                        } else {
+                            format!("{k}: {}", v.inline())
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{head}{o}{inner}{c}")
+            }
+            Val::Map { entries, .. } => format!(
+                "{{{}}}",
+                entries
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {}", v.inline()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+
     pub fn display(&self) -> String {
         match self {
             Val::Atom(s, _) => s.clone(),
@@ -142,6 +207,10 @@ struct Parser<'a> {
     s: &'a [u8],
     i: usize,
 }
+
+/// The longest one-line text a folded container may show before the
+/// bracketed ellipsis takes over.
+const INLINE_MAX: usize = 44;
 
 /// How deep the parser nests before it cries stack overflow.
 const MAX_DEPTH: usize = 96;
@@ -525,7 +594,7 @@ pub fn flatten(v: &Val, path: &mut Vec<u16>, depth: u16, key: &str, rows: &mut V
                 val: if open {
                     format!("{head}{o}")
                 } else {
-                    format!("{head}{o}…{c}")
+                    v.preview()
                 },
                 vkind: VKind::Head,
                 fold: Some(open),
@@ -790,28 +859,32 @@ mod tests {
         // root, Foo( open, its b row, Foo's ')' row, c: 2, and the
         // root's own ')' row — six.
         assert_eq!(rows.len(), 6);
-        // Fold the Foo container by its path [0]: its row stays as an
-        // ellipsis, its b and ')' rows vanish.
+        // Fold the Foo container by its path [0]: its row keeps the
+        // one-line preview, its b and ')' rows vanish.
         walk(&mut root, &[0]).unwrap().toggle();
         let folded = layout(&root);
-        assert_eq!(folded.len(), 4); // root, Foo(…), c: 2, ')'
-        assert!(folded[1].val.contains('…'));
+        assert_eq!(folded.len(), 4); // root, Foo(b: 1), c: 2, ')'
+        assert_eq!(folded[1].val, "Foo(b: 1)");
         // And unfolding brings them back.
         walk(&mut root, &[0]).unwrap().toggle();
         assert_eq!(layout(&root).len(), 6);
     }
 
     #[test]
-    fn a_folded_container_shows_its_ellipsis_and_marker() {
+    fn a_folded_container_previews_its_whole_line() {
         // open_to(0, 0) opens the root and folds everything deeper.
         let mut root = parse("(a: [1, 2])").unwrap();
         root.open_to(0, 0);
         let rows = layout(&root);
-        assert_eq!(rows.len(), 3); // root, a: […], ')'
+        assert_eq!(rows.len(), 3); // root, a: [1, 2], ')'
         assert_eq!(rows[0].key, "[-] ");
         assert_eq!(rows[0].val, "(");
         assert_eq!(rows[1].key, "    [+] a: ");
-        assert_eq!(rows[1].val, "[…]");
+        assert_eq!(rows[1].val, "[1, 2]");
+        // Too long to preview inline — the bracketed ellipsis returns.
+        let mut big = parse("(a: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])").unwrap();
+        big.open_to(0, 0);
+        assert_eq!(layout(&big)[1].val, "[…]");
         assert_eq!(rows[2].val, ")");
     }
 
