@@ -454,6 +454,15 @@ impl Ui {
         self.panels.get(&panel_id(title)).map(|p| p.pos)
     }
 
+    /// Fold a panel, or open it again: the program's hand on the
+    /// title bar's click, for code that closes or restores a panel
+    /// outside the UI — a no-op for a title not yet declared.
+    pub fn set_folded(&mut self, title: &str, folded: bool) {
+        if let Some(p) = self.panels.get_mut(&panel_id(title)) {
+            p.folded = folded;
+        }
+    }
+
     /// Starts a UI frame: snapshots the pointer and buttons, resolves the
     /// press that armed last frame onto its widget, drags the panel whose
     /// title bar holds the button, and resets the row cursor and the draw

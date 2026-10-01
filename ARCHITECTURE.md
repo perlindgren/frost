@@ -642,7 +642,12 @@ button clicks, a checkbox toggles, a slider's value changes.
   panel **claims its whole area** (body included): presses land on the
   panel, never on a widget or the game behind it, and `Ui::hovering()` —
   the pointer over any widget or panel — lets a raw-input game tell UI
-  clicks from scene clicks (see `examples/sprite_util.rs`).
+  clicks from scene clicks (see `examples/sprite_util.rs`). Two accessors
+  reach a panel from outside: `Ui::panel_position(title)` reads where it
+  sits (examples derive their content rects from it), and
+  `Ui::set_folded(title, folded)` is the program's hand on the title-bar
+  click — code that closes or restores a panel uses it so a reopened
+  title never greets you folded.
 - **The input model** is one frame delayed: a press is resolved at the next
   `begin` against the rects the previous frame registered, last-declared
   (topmost) first — so overlapping panels route presses to the visible one,
@@ -824,13 +829,14 @@ disk. Run with `cargo run --example <name>`
 |              | panel builds frames — each a set of layers with its own hold-time —  |
 |              | played on a clock that loops or ping-pongs (space plays), previewed |
 |              | live in the work area. A sprite with a sidecar `<name>.ron` beside  |
-|              | its PNG gets a `Ui` panel titled by the file — it drags and folds   |
-|              | like every other panel — showing the parse tree, and every `(x, y)` |
-|              | the file names marked on the sprite in the colour its rows carry:   |
-|              | click a row to pick the position, click the sprite to move it,      |
-|              | Escape lets go; rows fold on click, the wheel scrolls the tree,     |
-|              | Save / Save As write the tree back beside the PNG, and closing the  |
-|              | sprite drops the panel                                              |
+|              | its PNG gets its own `Ui` panel titled by the file — one view per   |
+|              | open file, cascading from the lower right, each dragging, folding   |
+|              | and scrolling by its own pair of handles (wheel too, Shift-wheel    |
+|              | sideways); the × in a view's bar closes file and panel together.    |
+|              | Every `(x, y)` the file names is marked on the sprite in the colour |
+|              | its rows carry: click a row to pick the position, click the sprite  |
+|              | to move it, Escape lets go; other rows fold on click, and Save /    |
+|              | Save As write the tree back beside the PNG                          |
 | widgets      | the `Ui` layer: a draggable Tomato panel (three color sliders, a    |
 |              | Spin checkbox, a Speed slider, a Reset button) and an About label   |
 |              | panel drive a spinning face's color and rotation                    |
@@ -884,7 +890,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 183 passed + 5 doctests
-cargo test --examples    # expect 119 passed (unit tests inside the examples;
+cargo test --examples    # expect 122 passed (unit tests inside the examples;
                            # ron_view/tree.rs compiles into both targets, so its 7 parser tests run twice)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example worm     # peristaltic crawl, edge wrap; exits 0
