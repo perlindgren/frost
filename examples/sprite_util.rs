@@ -855,6 +855,13 @@ impl Demo {
             self.ui.set_folded(&title, false);
         }
         let name = self.sprites.remove(i).name;
+        // The sidecar views were laid out this frame from the sprite
+        // list as it stood before the close, and the rest of the frame
+        // still draws from them — keep them honest for it. A grab or a
+        // reorder riding a view has lost the file it was on: let it go.
+        close_view_slot(&mut self.ron_views, i);
+        self.ron_grab = None;
+        self.ron_drag = None;
         self.active = self.active.min(self.sprites.len().saturating_sub(1));
         self.selection = None;
         self.last_click = None;
@@ -2801,6 +2808,20 @@ impl RonGrab {
     }
 }
 
+/// Close one slot's place in a set of views laid out before the close:
+/// the closed slot's view goes with the file, and every later view now
+/// speaks for the slot its sprite shifted into. The frames after the
+/// close rebuild the views from the sprite list; this keeps the one
+/// that still draws after the close honest.
+fn close_view_slot(views: &mut Vec<RonView>, slot: usize) {
+    views.retain(|v| v.slot != slot);
+    for v in views.iter_mut() {
+        if v.slot > slot {
+            v.slot -= 1;
+        }
+    }
+}
+
 /// How many characters a view `w` pixels wide shows side to side.
 fn ron_chars(w: f32) -> usize {
     ((w - 2.0 * RON_INSET) / RON_ADV).max(8.0) as usize
@@ -3747,5 +3768,47 @@ mod tests {
             "an unparseable sidecar is no panel"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn view(slot: usize) -> RonView {
+        RonView {
+            slot,
+            body: [0.0; 4],
+            panel: [0.0; 4],
+            close: [0.0; 2],
+            folded: false,
+        }
+    }
+
+    #[test]
+    fn closing_a_slot_shifts_the_views_behind_it() {
+        // The bug this nails: a close lands AFTER the frame's views
+        // were laid out, and the frame's draw still walks them — the
+        // closed file's view must go with it, and every later view must
+        // speak for the slot its sprite shifted into.
+        let mut views = vec![view(0), view(1), view(2)];
+        close_view_slot(&mut views, 1);
+        assert_eq!(views.len(), 2);
+        assert_eq!(views[0].slot, 0, "the front view keeps its seat");
+        assert_eq!(
+            views[1].slot, 1,
+            "the later view shifts into the freed seat"
+        );
+    }
+
+    #[test]
+    fn closing_the_last_view_leaves_no_dangling_slot() {
+        // Closing the last sprite used to leave its view behind,
+        // pointing one slot past the end of the shrunken list — the
+        // panic in the frame's draw.
+        let mut views = vec![view(0), view(1)];
+        close_view_slot(&mut views, 1);
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].slot, 0);
+        // A slot with no view of its own still shifts the later ones.
+        let mut views = vec![view(0), view(2)];
+        close_view_slot(&mut views, 1);
+        assert_eq!(views.len(), 2);
+        assert_eq!((views[0].slot, views[1].slot), (0, 1));
     }
 }
