@@ -840,8 +840,10 @@ disk. Run with `cargo run --example <name>`
 |              | bar closes file and panel together — laid out on the plate the      |
 |              | UI actually painted, never a frame ahead of it                      |
 |              | Every `(x, y)` the file names is marked on the sprite in the colour |
-|              | its rows carry: click a row to pick the position, click the sprite  |
-|              | to move it, Escape lets go; other rows fold on click. Save /        |
+|              | its rows carry: pick a row and the sprite centres the point;        |
+|              | right-click a marker to pick it back — the tree unfolds to the      |
+|              | row and scrolls it to centre. Left-click the sprite to move the     |
+|              | position, Escape lets go; other rows fold on click. Save /          |
 |              | Save As write the tree back beside the PNG with its comments —      |
 |              | the parser keeps leads, trails, tails and the header, the writer    |
 |              | puts them back. Sequences wear + / × row buttons and entries        |
@@ -900,7 +902,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 183 passed + 5 doctests
-cargo test --examples    # expect 130 passed (unit tests inside the examples;
+cargo test --examples    # expect 133 passed (unit tests inside the examples;
                            # ron_view/tree.rs compiles into both targets, so its 9 parser tests run twice)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example worm     # peristaltic crawl, edge wrap; exits 0

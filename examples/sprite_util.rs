@@ -53,7 +53,8 @@
 //! active sprite returns when the last frame is deleted.
 //!
 //! The wheel zooms about the cursor (the point under it stays put), a
-//! right-drag grabs the work area and moves the sprite with the cursor,
+//! middle-drag — the wheel button held — grabs the work area and moves
+//! the sprite with the cursor,
 //! and [`frost::Ui::hovering`] is what tells a click on the UI from one
 //! on the scene: a press the UI claims never draws a selection, touches
 //! a slot or logs a pixel.
@@ -282,6 +283,15 @@ const DRAG_ORDER: f32 = 3.0;
 /// title bar drags it around and folds it — and its body is one tall
 /// [`frost::Ui::space`] viewport these constants lay the tree out in.
 const RON_SIZE: f32 = 16.0;
+/// The amount every panel text origin drops below the y it should sit
+/// at, as a fraction of its size. This FiraCode reports degenerate
+/// vertical metrics to the shaper — under a quarter pixel of ascent
+/// plus descent at row size, exactly what `frost`'s diagnostics note
+/// about it — so the renderer's text centring collapses onto the
+/// baseline: text placed at a row's centre prints its ink a cap's
+/// worth ABOVE that centre, visibly riding its highlight band. Cap
+/// height is 1374 units per 2000 em; half of it centres the ink.
+const RON_LIFT: f32 = 0.344;
 const RON_LINE: f32 = 20.0;
 const RON_W: f32 = 300.0;
 const RON_VIEW_H: f32 = 240.0;
@@ -339,6 +349,14 @@ const SPOTS: usize = RONC + SLOTS;
 const SPOTT: usize = SPOTS + 2 * SPOTS_MAX;
 const SPOTS_MAX: usize = 24;
 const SPOT_ORDER: f32 = 2.9;
+/// The seat numbers beside list-entry markers: deliberately larger
+/// than the row text — they're read at a glance over the art, where
+/// the palette dot alone is not enough.
+const SEAT_SIZE: f32 = 20.0;
+/// How close a right-click must land to a marker (window pixels) for
+/// it to count as a click ON the position: a touch larger than even
+/// the swollen marker, so picking is forgiving.
+const SPOT_HIT_R: f32 = 16.0;
 
 /// The position palette: a marker and the tree rows describing it share
 /// a colour, cycling through these hues.
@@ -514,7 +532,7 @@ struct Demo {
     /// The current zoom: the sprite's scale factor (1.0 is texture size).
     zoom: f32,
     /// The sprite's pan offset from the work area's center, in window
-    /// pixels; set by right-dragging and by the wheel's anchor.
+    /// pixels; set by middle-dragging and by the wheel's anchor.
     offset: [f32; 2],
     /// The crop selection in texture pixels, `[x0, y0, x1, y1]` (y down):
     /// dragged with the left button, consumed by Crop.
@@ -544,7 +562,7 @@ struct Demo {
     /// Whether the left mouse button was held on the previous frame: the
     /// edges of the two are the press and the release.
     was_down: bool,
-    /// The cursor's position on the previous frame, for the right-drag's
+    /// The cursor's position on the previous frame, for the middle-drag's
     /// frame-to-frame pan delta.
     last_mouse: Option<[f32; 2]>,
     /// The last reported click: its position in the active texture's
@@ -555,6 +573,10 @@ struct Demo {
     ron_font: Arc<[u8]>,
     /// A sidecar view's in-progress body press, for the click test.
     ron_press: Option<[f32; 2]>,
+    /// Where the right button went down, for its still-click test.
+    r_press: Option<[f32; 2]>,
+    /// Whether the right button was held on the previous frame.
+    was_rdown: bool,
     /// An in-progress list reordering: which slot's sequence, at which
     /// path, and the entry's current seat.
     ron_drag: Option<(usize, Vec<u16>, usize)>,
@@ -958,6 +980,10 @@ impl frost::Process for Demo {
         let (w, h) = ctx.size();
         let down = ctx.mouse_button_down(frost::MouseButton::Left);
         let rdown = ctx.mouse_button_down(frost::MouseButton::Right);
+        let mdown = ctx.mouse_button_down(frost::MouseButton::Middle);
+        let rpressed = rdown && !self.was_rdown;
+        let rreleased = !rdown && self.was_rdown;
+        self.was_rdown = rdown;
         let pressed = down && !self.was_down;
         let released = !down && self.was_down;
         self.was_down = down;
@@ -1022,15 +1048,65 @@ impl frost::Process for Demo {
             }
         }
 
-        // A right-drag grabs the work area: the sprite follows the
-        // cursor's frame-to-frame movement, so it always lands under the
-        // pointer.
-        if rdown
+        // A middle-drag — the wheel button held — grabs the work area:
+        // the sprite follows the cursor's frame-to-frame movement, so it
+        // always lands under the pointer.
+        if mdown
             && !over_ron
             && let (Some([lx, ly]), Some([mx, my])) = (self.last_mouse, pos)
         {
             self.offset[0] += mx - lx;
             self.offset[1] += my - ly;
+        }
+
+        // The right button picks a position back from the sprite: the
+        // marker nearest the click lights up its row — the path unfolds
+        // and the view scrolls that row to its centre — and the
+        // position is picked, so the next LEFT click moves it. A press
+        // that travels is a pan attempt, not a pick.
+        if rpressed
+            && let Some(p) = pos
+            && !over_ron
+        {
+            self.r_press = Some(p);
+        }
+        if rreleased
+            && let (Some(from), Some(p)) = (self.r_press.take(), pos)
+            && ((p[0] - from[0]).powi(2) + (p[1] - from[1]).powi(2)).sqrt() < CLICK_TOL
+            && !self.sprites.is_empty()
+        {
+            let [px, py] = tex_point(p, size, view, self.zoom);
+            let inside = px >= 0.0 && px <= size[0] && py >= 0.0 && py <= size[1];
+            if inside && self.sprites[self.active].ron.is_some() {
+                let slot = self.active;
+                let mut spots: Vec<Spot> = Vec::new();
+                if let Some(d) = self.sprites[slot].ron.as_ref() {
+                    scan_spots(&d.root, &mut Vec::new(), "", &mut spots);
+                }
+                if let Some(pi) = spot_pick(&spots, p, size, view, self.zoom, SPOT_HIT_R) {
+                    let (path, label) = (spots[pi].path.clone(), spots[pi].label.clone());
+                    if let Some(doc) = self.sprites[slot].ron.as_mut() {
+                        doc.edit = Some(pi);
+                        unfold_path(&mut doc.root, &path);
+                        doc.rows = ron_tree::layout(&doc.root);
+                        if let Some(i) = doc.rows.iter().position(|r| r.path == path) {
+                            let track = self
+                                .ron_views
+                                .iter()
+                                .find(|v| v.slot == slot)
+                                .filter(|v| !v.folded && v.body != [0.0; 4])
+                                .map(|v| v.body[3] - v.body[1]);
+                            if let Some(track) = track {
+                                let total = doc.rows.len() as f32 * RON_LINE + RON_PAD;
+                                doc.scroll = ((i as f32 + 0.5) * RON_LINE + RON_PAD - track / 2.0)
+                                    .clamp(0.0, (total - track).max(0.0));
+                            }
+                        }
+                        doc.clamp_scroll();
+                        self.status = format!("editing '{label}' — click the sprite to move it");
+                    }
+                }
+            }
         }
 
         // The UI frame: the View panel's sliders read and write the demo's
@@ -1609,9 +1685,18 @@ impl frost::Process for Demo {
                         } else {
                             None
                         };
-                        Some((i, path, owner.map(|pi| (pi, spots[pi].label.clone())), act))
+                        Some((
+                            i,
+                            path,
+                            owner.map(|pi| (pi, spots[pi].label.clone(), spots[pi].x, spots[pi].y)),
+                            act,
+                        ))
                     });
                     if let Some((i, path, owner, act)) = pick {
+                        let wsz = [
+                            self.sprites[slot].current.width() as f32,
+                            self.sprites[slot].current.height() as f32,
+                        ];
                         if owner.is_some() && self.active != slot {
                             self.active = slot;
                             self.selection = None;
@@ -1653,8 +1738,14 @@ impl frost::Process for Demo {
                                         }
                                     }
                                 }
-                            } else if let Some((pi, label)) = owner {
+                            } else if let Some((pi, label, sx, sy)) = owner {
                                 doc.edit = if doc.edit == Some(pi) { None } else { Some(pi) };
+                                if doc.edit.is_some() {
+                                    // The sprite glides the picked
+                                    // position to its centre: the point
+                                    // being edited sits under the eye.
+                                    self.offset = center_offset((sx, sy), wsz, self.zoom);
+                                }
                                 say = Some(if doc.edit.is_some() {
                                     format!("editing '{label}' — click the sprite to move it")
                                 } else {
@@ -1911,6 +2002,7 @@ impl frost::Process for Demo {
             for (k, i) in (first..doc.rows.len()).take(RON_ROWS).enumerate() {
                 let row = &doc.rows[i];
                 let y = ron_row_y(i, body, doc.scroll);
+                let ty = y - RON_LIFT * RON_SIZE;
                 if y < body[1] || y > body[3] {
                     // Out of the viewport — half clipped at the bottom,
                     // scrolled past the top: not this frame's picture.
@@ -1981,7 +2073,7 @@ impl frost::Process for Demo {
                             a: 1.0,
                         },
                     ));
-                    nodes[base + k * 4].transform = frost::Transform::translate([left + dx, y]);
+                    nodes[base + k * 4].transform = frost::Transform::translate([left + dx, ty]);
                 }
                 if let Some((text, dx)) = vvis {
                     let head = matches!(row.vkind, ron_tree::VKind::Head);
@@ -1998,7 +2090,8 @@ impl frost::Process for Demo {
                         if head { 700.0 } else { 500.0 },
                         color,
                     ));
-                    nodes[base + k * 4 + 1].transform = frost::Transform::translate([left + dx, y]);
+                    nodes[base + k * 4 + 1].transform =
+                        frost::Transform::translate([left + dx, ty]);
                 }
                 if let Some(x) = ax {
                     nodes[base + k * 4 + 2].shape = Some(self.ron_text(
@@ -2012,7 +2105,8 @@ impl frost::Process for Demo {
                             a: 1.0,
                         },
                     ));
-                    nodes[base + k * 4 + 2].transform = frost::Transform::translate([x, y]);
+                    nodes[base + k * 4 + 2].transform =
+                        frost::Transform::translate([x, y - RON_LIFT * 15.0]);
                 }
                 if let Some(x) = dx {
                     nodes[base + k * 4 + 3].shape = Some(self.ron_text(
@@ -2026,7 +2120,8 @@ impl frost::Process for Demo {
                             a: 1.0,
                         },
                     ));
-                    nodes[base + k * 4 + 3].transform = frost::Transform::translate([x, y]);
+                    nodes[base + k * 4 + 3].transform =
+                        frost::Transform::translate([x, y - RON_LIFT * 15.0]);
                 }
             }
             // The scroll handles: a thin track and a thumb along the
@@ -2114,7 +2209,8 @@ impl frost::Process for Demo {
                     a: if hot { 1.0 } else { 0.9 },
                 },
             ));
-            nodes[RONC + vi].transform = frost::Transform::translate(v.close);
+            nodes[RONC + vi].transform =
+                frost::Transform::translate([v.close[0], v.close[1] - RON_LIFT * (RON_SIZE + 6.0)]);
         }
         // The corner grips: three ticks across the bottom-right corner
         // of every open view — drag one to resize that view.
@@ -2158,9 +2254,9 @@ impl frost::Process for Demo {
                     (th / 2.0 - s.y) * self.zoom + view[1],
                 ];
                 let (r0, r1, a) = if editing == Some(pi) {
-                    (9.0, 3.4, 1.0)
+                    (11.0, 4.2, 1.0)
                 } else {
-                    (5.0, 1.8, 0.85)
+                    (6.5, 2.4, 0.85)
                 };
                 let (pr, pg, pb) = PALETTE[pi % PALETTE.len()];
                 let nodes = &mut ctx.scene().root.children;
@@ -2194,7 +2290,8 @@ impl frost::Process for Demo {
                 if let Some(i) = s.idx {
                     nodes[SPOTT + numbered].shape = Some(self.ron_text(
                         format!("{i}"),
-                        13.0,
+                        SEAT_SIZE,
+                        // 700 is this FiraCode's weight axis ceiling.
                         700.0,
                         frost::Color {
                             r: 0.93,
@@ -2204,7 +2301,7 @@ impl frost::Process for Demo {
                         },
                     ));
                     nodes[SPOTT + numbered].transform =
-                        frost::Transform::translate([wx + 10.0, wy + 10.0]);
+                        frost::Transform::translate([wx + 13.0, wy + 13.0 - RON_LIFT * SEAT_SIZE]);
                     numbered += 1;
                 }
             }
@@ -2239,7 +2336,7 @@ impl frost::Process for Demo {
             *radius = 0.0;
         }
 
-        // The cursor's position for next frame's right-drag delta; `None`
+        // The cursor's position for next frame's middle-drag delta; `None`
         // (outside the window) clears it, so re-entering never jumps.
         self.last_mouse = pos;
     }
@@ -2442,6 +2539,57 @@ fn spot_of_row(spots: &[Spot], row: &[u16]) -> Option<usize> {
                 && row[..s.path.len()] == s.path[..]
                 && row[s.path.len()] < 2)
     })
+}
+
+/// The pan offset that puts texture point `(x, y)` at the work area's
+/// centre — the click map solved backwards for the offset (the strip's
+/// vertical shift cancels: the point lands at the work area's centre,
+/// wherever that sits, so the offset needs no term for it; the texture
+/// measures y down while the window measures it up, hence the second
+/// line's opposite sign).
+fn center_offset(spot: (f32, f32), size: [f32; 2], zoom: f32) -> [f32; 2] {
+    [
+        (size[0] / 2.0 - spot.0) * zoom,
+        (spot.1 - size[1] / 2.0) * zoom,
+    ]
+}
+
+/// The position whose marker sits nearest `at` (window pixels), within
+/// `r` of it — the sprite's way back into the tree.
+fn spot_pick(
+    spots: &[Spot],
+    at: [f32; 2],
+    size: [f32; 2],
+    view: [f32; 2],
+    zoom: f32,
+    r: f32,
+) -> Option<usize> {
+    let [tw, th] = size;
+    let mut best: Option<(f32, usize)> = None;
+    for (pi, s) in spots.iter().enumerate() {
+        let wx = (s.x - tw / 2.0) * zoom + view[0];
+        let wy = (th / 2.0 - s.y) * zoom + view[1];
+        let d = ((wx - at[0]).powi(2) + (wy - at[1]).powi(2)).sqrt();
+        if d <= r && best.is_none_or(|(b, _)| d < b) {
+            best = Some((d, pi));
+        }
+    }
+    best.map(|(_, pi)| pi)
+}
+
+/// Open every container along a fold-path, so a row found on the sprite
+/// can actually show itself in the tree.
+fn unfold_path(root: &mut ron_tree::Val, path: &[u16]) {
+    for k in 0..path.len() {
+        if let Some(v) = ron_tree::walk(root, &path[..k]) {
+            match v {
+                ron_tree::Val::Seq { open, .. }
+                | ron_tree::Val::Struct { open, .. }
+                | ron_tree::Val::Map { open, .. } => *open = true,
+                ron_tree::Val::Atom(..) => {}
+            }
+        }
+    }
 }
 
 /// The centre y of row `i` in a view body — the painting, the row hits
@@ -2995,7 +3143,7 @@ fn main() {
         ..Default::default()
     });
 
-    if let Err(err) = frost::run(
+    if let Err(err) = frost::run_configured(
         scene,
         Demo {
             ui,
@@ -3029,9 +3177,16 @@ fn main() {
             status: String::new(),
             ron_font,
             ron_press: None,
+            r_press: None,
+            was_rdown: false,
             ron_drag: None,
             ron_grab: None,
             ron_views: Vec::new(),
+        },
+        // 1080p: the room a sidecar tree and the art both want.
+        frost::Config {
+            window_size: Some([1920, 1080]),
+            ..Default::default()
         },
     ) {
         log::error!("frost failed: {err}");
@@ -3337,6 +3492,51 @@ mod tests {
         assert!(text.contains("// planted in spring"), "{text}");
         assert!(text.contains("// where it sits"), "{text}");
         assert_eq!(ron_tree::parse_doc(&text).expect("re-parses"), doc);
+    }
+
+    #[test]
+    fn the_nearest_marker_wins_the_pick() {
+        let mut root = ron_tree::parse("[(10.0, 20.0), (80.0, 70.0)]").expect("parses");
+        root.open_to(0, 9);
+        let mut spots = Vec::new();
+        scan_spots(&root, &mut Vec::new(), "", &mut spots);
+        let size = [100.0, 100.0];
+        // Centred view, zoom 1: texture (10, 20) sits at window
+        // (-40, 30) — the y flip puts y = 20 above the middle.
+        let hit =
+            |at: [f32; 2], view: [f32; 2], zoom: f32| spot_pick(&spots, at, size, view, zoom, 5.0);
+        assert_eq!(hit([-40.0, 30.0], [0.0, 0.0], 1.0), Some(0));
+        assert_eq!(hit([-41.0, 32.0], [0.0, 0.0], 1.0), Some(0));
+        assert_eq!(hit([0.0, 0.0], [0.0, 0.0], 1.0), None);
+        // Panning and zooming move the markers with the sprite.
+        assert_eq!(hit([-30.0, 40.0], [10.0, 10.0], 1.0), Some(0));
+        assert_eq!(hit([-80.0, 60.0], [0.0, 0.0], 2.0), Some(0));
+    }
+
+    #[test]
+    fn centering_puts_the_point_under_the_eye() {
+        let [x, y] = center_offset((30.0, 20.0), [100.0, 100.0], 2.0);
+        // The click map, run forward from the work centre, must land
+        // back on the very texture point that was centred.
+        let view = [x, y + WORK_Y];
+        let [px, py] = tex_point([0.0, WORK_Y], [100.0, 100.0], view, 2.0);
+        assert_eq!((px, py), (30.0, 20.0));
+    }
+
+    #[test]
+    fn a_path_unfolds_from_root_to_row() {
+        let mut root = ron_tree::parse("(a: [(1.0, 2.0), (3.0, 4.0)])").expect("parses");
+        root.open_to(0, 0);
+        let mut spots = Vec::new();
+        scan_spots(&root, &mut Vec::new(), "", &mut spots);
+        let deep = spots[1].path.clone();
+        unfold_path(&mut root, &deep);
+        let rows = ron_tree::layout(&root);
+        // The list opened; both entries show, and the path's own row
+        // (the tuple head, folded, previewing its numbers) is there to
+        // be centred.
+        assert!(rows.iter().any(|r| r.path == deep && r.val == "(3.0, 4.0)"));
+        assert!(rows.iter().any(|r| r.path == vec![0, 0]));
     }
 
     #[test]

@@ -55,6 +55,12 @@ const ADVANCE_EM: f32 = 0.6;
 
 /// The text size, in pixels per em.
 const SIZE: f32 = 18.0;
+/// Half FiraCode's cap height (1374 units per 2000 em): the shaper gets
+/// degenerate vertical metrics from this font, so the renderer prints a
+/// text node with its baseline AT the node origin and the ink above it.
+/// Row text drops by this much so its ink centres in its line — and in
+/// the hover stripe that highlights it.
+const LIFT: f32 = 0.344 * SIZE;
 
 /// One row's height.
 const LINE_H: f32 = 25.0;
@@ -371,14 +377,14 @@ impl frost::Process for Demo {
                 if visible {
                     nodes[i * 2].shape = (!r.key.is_empty())
                         .then(|| self.text(r.key.clone(), HEAVY, rgb(0.88, 0.88, 0.91)));
-                    nodes[i * 2].transform = frost::Transform::translate([kx, y]);
+                    nodes[i * 2].transform = frost::Transform::translate([kx, y - LIFT]);
                     let heavy = matches!(r.vkind, VKind::Head);
                     nodes[i * 2 + 1].shape = Some(self.text(
                         r.val.clone(),
                         if heavy { HEAVY } else { MEDIUM },
                         Self::vcolor(r.vkind),
                     ));
-                    nodes[i * 2 + 1].transform = frost::Transform::translate([vx, y]);
+                    nodes[i * 2 + 1].transform = frost::Transform::translate([vx, y - LIFT]);
                 } else {
                     nodes[i * 2].shape = None;
                     nodes[i * 2 + 1].shape = None;
