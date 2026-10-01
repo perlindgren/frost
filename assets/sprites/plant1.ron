@@ -8,17 +8,23 @@
 (
     segment: 1,
     image: "plant1.png",
-
     // The joint this segment attaches to the previous one through —
     // here there is no previous: this is the root joint. The plant is
     // placed by it, rocks around it, and it never moves.
-    lower_anchor: (317.0, 671.0),
-
+    lower_anchor: (
+        168.0,
+        130.0,
+    ),
     // The joint the next segment attaches to.
-    upper_anchor: (317.0, 578.0),
-
+    upper_anchor: (
+        168.0,
+        37.0,
+    ),
     // The points flowers (and, once grown, fruit) attach to.
     flower_anchors: [
-        (308.0, 615.0),
+        (
+            111.0,
+            36.0,
+        ),
     ],
 )
