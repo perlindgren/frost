@@ -644,7 +644,10 @@ button clicks, a checkbox toggles, a slider's value changes.
   the pointer over any widget or panel — lets a raw-input game tell UI
   clicks from scene clicks (see `examples/sprite_util.rs`). Two accessors
   reach a panel from outside: `Ui::panel_position(title)` reads where it
-  sits (examples derive their content rects from it), and
+  sits, `Ui::panel_rect(title)` reports the plate as it was PAINTED last
+  call (the height the drawing used — content laid over a plate must
+  trust this, not its own same-frame request, or it floats a frame
+  ahead of the pixels; see `examples/sprite_util.rs`), and
   `Ui::set_folded(title, folded)` is the program's hand on the title-bar
   click — code that closes or restores a panel uses it so a reopened
   title never greets you folded.
@@ -830,9 +833,11 @@ disk. Run with `cargo run --example <name>`
 |              | played on a clock that loops or ping-pongs (space plays), previewed |
 |              | live in the work area. A sprite with a sidecar `<name>.ron` beside  |
 |              | its PNG gets its own `Ui` panel titled by the file — one view per   |
-|              | open file, cascading from the lower right, each dragging, folding   |
-|              | and scrolling by its own pair of handles (wheel too, Shift-wheel    |
-|              | sideways); the × in a view's bar closes file and panel together.    |
+|              | open file, cascading from the lower right, each dragging, folding,  |
+|              | scrolling by its own pair of handles (wheel too, Shift-wheel         |
+|              | sideways) and resizing by a corner grip; the boxed × in a view's    |
+|              | bar closes file and panel together — laid out on the plate the      |
+|              | UI actually painted, never a frame ahead of it                      |
 |              | Every `(x, y)` the file names is marked on the sprite in the colour |
 |              | its rows carry: click a row to pick the position, click the sprite  |
 |              | to move it, Escape lets go; other rows fold on click, and Save /    |
@@ -890,7 +895,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 183 passed + 5 doctests
-cargo test --examples    # expect 122 passed (unit tests inside the examples;
+cargo test --examples    # expect 123 passed (unit tests inside the examples;
                            # ron_view/tree.rs compiles into both targets, so its 7 parser tests run twice)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example worm     # peristaltic crawl, edge wrap; exits 0
