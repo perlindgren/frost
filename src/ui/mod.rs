@@ -48,6 +48,19 @@ use std::sync::Arc;
 
 use crate::{Color, Context, TextError};
 
+mod panel;
+mod style;
+mod table;
+
+use panel::PanelState;
+#[cfg(test)]
+use panel::{panel_body_id, panel_id};
+pub use style::UiStyle;
+use table::TableFrame;
+#[cfg(test)]
+use table::resolve_cols;
+pub use table::{Align, Col, ColSize};
+
 /// The FNV-1a parameters: a cheap, deterministic byte hash. Determinism
 /// matters — widget ids key the drag capture and the panel positions, so
 /// the same label must hash to the same id on every frame.
@@ -56,203 +69,6 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// How far the pointer may drift during a title-bar press and still count
 /// as a click (fold toggle) rather than a drag.
 const FOLD_DRAG_TOL: f32 = 4.0;
-
-/// The look and metrics of a [`Ui`], all fields public: read [`Default`]
-/// for the stock dark theme and overwrite what you want.
-#[derive(Clone, Copy, Debug)]
-pub struct UiStyle {
-    /// The label text color.
-    pub text: Color,
-    /// The color of the dimmed value readout on the right of a slider.
-    pub text_muted: Color,
-    /// The panel body's background.
-    pub panel_bg: Color,
-    /// The panel title bar's background.
-    pub title_bg: Color,
-    /// The panel title text color.
-    pub title_text: Color,
-    /// The resting color of a button and a checkbox box.
-    pub widget_bg: Color,
-    /// The color of a hovered widget (and the title bar of a hovered panel).
-    pub widget_hover: Color,
-    /// The color of a widget held under the button.
-    pub widget_press: Color,
-    /// The accent: a checked box, a slider's filled track, its knob.
-    pub accent: Color,
-    /// A slider track's unfilled part.
-    pub track: Color,
-    /// The label and title text size in pixels per em.
-    pub font_size: f32,
-    /// The label and title text weight: the font's `wght` variation axis,
-    /// where 400.0 is Regular and 700.0 a full bold. The default 600.0 is
-    /// a SemiBold — clearly crisper than Regular at small sizes on a dark
-    /// panel. A font without a weight axis (any static TTF) ignores it.
-    pub font_weight: f32,
-    /// The height of a widget row, a button and a title bar.
-    pub row_h: f32,
-    /// The vertical gap between two rows.
-    pub row_gap: f32,
-    /// The horizontal gap between two table columns.
-    pub col_gap: f32,
-    /// The padding inside a panel, between body edge and rows.
-    pub pad: f32,
-    /// The side of a checkbox box.
-    pub check_size: f32,
-    /// The height of a slider's track.
-    pub track_h: f32,
-    /// The radius of a slider's knob.
-    pub knob_r: f32,
-    /// The width of the root column the widgets outside any panel stack in.
-    pub root_width: f32,
-    /// The root column's inset from the window's top-left corner.
-    pub root_margin: f32,
-    /// The `z` of the UI's first draw; every later draw counts up from it.
-    pub base_z: f32,
-}
-
-impl Default for UiStyle {
-    fn default() -> Self {
-        Self {
-            text: Color {
-                r: 0.92,
-                g: 0.94,
-                b: 0.98,
-                a: 1.0,
-            },
-            text_muted: Color {
-                r: 0.62,
-                g: 0.66,
-                b: 0.74,
-                a: 1.0,
-            },
-            panel_bg: Color {
-                r: 0.10,
-                g: 0.11,
-                b: 0.15,
-                a: 0.94,
-            },
-            title_bg: Color {
-                r: 0.17,
-                g: 0.20,
-                b: 0.28,
-                a: 1.0,
-            },
-            title_text: Color {
-                r: 0.95,
-                g: 0.96,
-                b: 1.0,
-                a: 1.0,
-            },
-            widget_bg: Color {
-                r: 0.21,
-                g: 0.24,
-                b: 0.32,
-                a: 1.0,
-            },
-            widget_hover: Color {
-                r: 0.30,
-                g: 0.35,
-                b: 0.47,
-                a: 1.0,
-            },
-            widget_press: Color {
-                r: 0.15,
-                g: 0.17,
-                b: 0.23,
-                a: 1.0,
-            },
-            accent: Color {
-                r: 0.25,
-                g: 0.45,
-                b: 0.85,
-                a: 1.0,
-            },
-            track: Color {
-                r: 0.14,
-                g: 0.15,
-                b: 0.20,
-                a: 1.0,
-            },
-            font_size: 15.0,
-            font_weight: 600.0,
-            row_h: 28.0,
-            row_gap: 6.0,
-            col_gap: 8.0,
-            pad: 12.0,
-            check_size: 20.0,
-            track_h: 6.0,
-            knob_r: 9.0,
-            root_width: 240.0,
-            root_margin: 16.0,
-            base_z: 10_000.0,
-        }
-    }
-}
-
-/// Where a cell's content sits inside its table column, when the column
-/// is wider than the content: at the column's left edge, its middle, or
-/// its right edge. Filling widgets (a `slider_track`, a `button`) ignore
-/// it — they span the cell.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Align {
-    Left,
-    Center,
-    Right,
-}
-
-/// How a table column takes its share of the row's width.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ColSize {
-    /// As wide as the column's widest cell. Like the rest of the UI this
-    /// is one frame behind: the width comes from what the column held
-    /// last frame (the frame a table first appears, auto columns start
-    /// at zero width).
-    Auto,
-    /// A fixed width in pixels.
-    Px(f32),
-    /// A share of what the other columns leave over, in proportion to
-    /// the weight (the weight only matters relative to the other stretch
-    /// columns).
-    Stretch(f32),
-}
-
-/// One column of a table: how wide it is, and how its cells align within
-/// that. Build with [`Col::auto`], [`Col::px`] and [`Col::stretch`];
-/// declare a row grid with [`Ui::table`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Col {
-    /// The width policy.
-    pub size: ColSize,
-    /// How cells align within the column.
-    pub align: Align,
-}
-
-impl Col {
-    /// A column as wide as its widest cell.
-    pub fn auto(align: Align) -> Self {
-        Self {
-            size: ColSize::Auto,
-            align,
-        }
-    }
-
-    /// A column of a fixed pixel width.
-    pub fn px(width: f32, align: Align) -> Self {
-        Self {
-            size: ColSize::Px(width),
-            align,
-        }
-    }
-
-    /// A column taking the leftover width, weighted against the table's
-    /// other stretch columns.
-    pub fn stretch(weight: f32, align: Align) -> Self {
-        Self {
-            size: ColSize::Stretch(weight),
-            align,
-        }
-    }
-}
 
 /// A rectangle in user space: `left` and `top` are the top-left corner
 /// (`top` being the *larger* y, user space being y-up), `w` and `h` its
@@ -314,48 +130,6 @@ struct Layout {
     /// When set, this frame is a table (see [`Ui::table`]): widgets take
     /// the next cell across the row instead of a full-width row.
     table: Option<TableFrame>,
-}
-
-/// The running state of an open table: the resolved column geometry, the
-/// cell cursor walking cells left to right and wrapping to a new row, and
-/// the widest content seen in each auto column this frame.
-struct TableFrame {
-    /// The size policy of each column (for the auto-width accounting).
-    sizes: Vec<ColSize>,
-    /// Each column's resolved pixel width, this frame.
-    widths: Vec<f32>,
-    /// Each column's alignment.
-    aligns: Vec<Align>,
-    /// Each column's left edge in user space.
-    x: Vec<f32>,
-    /// The index of the next cell to hand out (`widths.len()` apart cells
-    /// are the same column of successive rows).
-    next: usize,
-    /// The top edge of the table's first row.
-    top: f32,
-    /// The widest content measured this frame, per column.
-    auto: Vec<f32>,
-}
-
-/// What a panel keeps between frames: where it was dragged to, how much
-/// room its content asked for (the body size the next frame draws), and
-/// whether the user has folded it to just its title bar.
-#[derive(Clone, Copy, Debug)]
-struct PanelState {
-    /// The panel's center in user space.
-    pos: [f32; 2],
-    /// The panel's width as its `panel` call declared it.
-    w: f32,
-    /// The panel's height: title bar plus the content height it recorded
-    /// last frame (the first frame shows the title bar only).
-    h: f32,
-    /// Whether a title-bar click has folded the body away.
-    folded: bool,
-    /// The plate actually painted by the last `panel` call, as
-    /// `[left, bottom, right, top]` — the geometry a caller can trust,
-    /// since the plate draws at last frame's measured height and a
-    /// same-frame request may not be it.
-    rect: [f32; 4],
 }
 
 /// The immediate-mode widget layer. Keep one per window, owned by your
@@ -446,35 +220,6 @@ impl Ui {
             z: 0.0,
             text_w: HashMap::new(),
         })
-    }
-
-    /// The style, for tweaking: the colors and metrics are plain fields.
-    pub fn style_mut(&mut self) -> &mut UiStyle {
-        &mut self.style
-    }
-
-    /// The panel's current center, `[x, y]` in user space, once the panel
-    /// has been declared at least once.
-    pub fn panel_position(&self, title: &str) -> Option<[f32; 2]> {
-        self.panels.get(&panel_id(title)).map(|p| p.pos)
-    }
-
-    /// The plate a panel PAINTED last frame, `[left, bottom, right, top]`
-    /// in user space. The height is the one the drawing used — last
-    /// frame's measured content, not this frame's request — so a caller
-    /// laying content over the plate matches the pixels, snap-open
-    /// frames included. `None` for a title never declared.
-    pub fn panel_rect(&self, title: &str) -> Option<[f32; 4]> {
-        self.panels.get(&panel_id(title)).map(|p| p.rect)
-    }
-
-    /// Fold a panel, or open it again: the program's hand on the
-    /// title bar's click, for code that closes or restores a panel
-    /// outside the UI — a no-op for a title not yet declared.
-    pub fn set_folded(&mut self, title: &str, folded: bool) {
-        if let Some(p) = self.panels.get_mut(&panel_id(title)) {
-            p.folded = folded;
-        }
     }
 
     /// Starts a UI frame: snapshots the pointer and buttons, resolves the
@@ -625,121 +370,6 @@ impl Ui {
         layout.cursor -= h;
         self.align = Align::Center;
         rect
-    }
-
-    /// Feeds an auto column the width of the content just laid out in it;
-    /// the column grows to it next frame, as everything else in the UI
-    /// does (see [`ColSize::Auto`]).
-    fn note_cell_width(&mut self, w: f32) {
-        if let Some(layout) = self.layout.last_mut()
-            && let Some(t) = &mut layout.table
-            && t.next > 0
-        {
-            let col = (t.next - 1) % t.widths.len();
-            if matches!(t.sizes[col], ColSize::Auto) {
-                t.auto[col] = t.auto[col].max(w);
-            }
-        }
-    }
-
-    /// A table: the widgets `content` declares fill cells left to right,
-    /// wrapping to a new row after every `cols.len()` of them. Each column
-    /// takes width per its [`ColSize`] — fixed, auto (as wide as its
-    /// widest cell, from last frame) or stretch (a weighted share of the
-    /// leftover) — and aligns its cells per its [`Align`]. `id` names the
-    /// table within its panel: the retained auto widths live under it, so
-    /// two tables in one panel keep their own column widths.
-    ///
-    /// ```text
-    /// ui.table(ctx, "view", &[
-    ///     Col::auto(Align::Left),           // the labels, hugging, left
-    ///     Col::stretch(1.0, Align::Left),   // the tracks, filling
-    ///     Col::auto(Align::Center),         // the readouts, centered
-    /// ], |ui, ctx| {
-    ///     ui.label(ctx, "zoom");
-    ///     ui.slider_track(ctx, "zoom", &mut zoom, 0.25, 4.0);
-    ///     ui.readout(ctx, &format!("{zoom:.2}"));
-    ///     // ... the next three widgets wrap onto the second row
-    /// });
-    /// ```
-    pub fn table(
-        &mut self,
-        ctx: &mut Context,
-        id: &str,
-        cols: &[Col],
-        content: impl FnOnce(&mut Ui, &mut Context),
-    ) {
-        if self.table_open(id, cols) {
-            content(self, ctx);
-            self.table_close(id);
-        }
-    }
-
-    /// The window-free heart of [`Ui::table`], split out so the column
-    /// geometry is testable without a `Context`: resolves the columns and
-    /// opens the table frame on the current layout. Returns `false` (and
-    /// opens nothing) for an empty column list.
-    fn table_open(&mut self, id: &str, cols: &[Col]) -> bool {
-        if cols.is_empty() {
-            return false;
-        }
-        let style = self.style;
-        let key = self.widget_id(id);
-        let stored = self.tables.get(&key).cloned().unwrap_or_default();
-        let (left, width, cursor) = {
-            let layout = self.layout.last().expect("Ui layout stack is never empty");
-            (layout.left, layout.width, layout.cursor)
-        };
-        let widths = resolve_cols(cols, width, style.col_gap, &stored);
-        let n = widths.len();
-        let mut x = Vec::with_capacity(n);
-        let mut edge = left;
-        for w in &widths {
-            x.push(edge);
-            edge += w + style.col_gap;
-        }
-        // The table's first row hangs exactly where a plain row would.
-        let top = cursor - style.row_gap;
-        self.layout
-            .last_mut()
-            .expect("Ui layout stack is never empty")
-            .table = Some(TableFrame {
-            sizes: cols.iter().map(|c| c.size).collect(),
-            widths,
-            aligns: cols.iter().map(|c| c.align).collect(),
-            x,
-            next: 0,
-            top,
-            auto: vec![0.0; n],
-        });
-        true
-    }
-
-    /// Closes the frame [`Ui::table_open`] opened: retains the measured
-    /// auto widths and moves the layout cursor below the table's rows.
-    fn table_close(&mut self, id: &str) {
-        let key = self.widget_id(id);
-        let style = self.style;
-        let frame = self
-            .layout
-            .last_mut()
-            .expect("Ui layout stack is never empty")
-            .table
-            .take()
-            .expect("table_close pairs with table_open");
-        self.tables.insert(key, frame.auto);
-        if frame.next > 0 {
-            // The table leaves the cursor exactly where its rows of plain
-            // rows would have, so the next widget stacks below normally.
-            let n = frame.widths.len();
-            let rows = frame.next.div_ceil(n) as f32;
-            let cursor = frame.top + style.row_gap;
-            let layout = self
-                .layout
-                .last_mut()
-                .expect("Ui layout stack is never empty");
-            layout.cursor = cursor - rows * (style.row_h + style.row_gap);
-        }
     }
 
     /// The last (topmost) rect of the previous frame that holds `p`, with
@@ -1118,162 +748,6 @@ impl Ui {
         changed
     }
 
-    /// A panel: a titled, draggable box at center `at` (user-space pixels,
-    /// until the user drags it somewhere else) of the given `width`, running
-    /// `content` with its rows laid out in the body.
-    ///
-    /// The body's height is what the content asked for *last* frame, so the
-    /// first frame shows the title bar only and the body snaps open on the
-    /// second; a height change keeps the title bar where it is and grows
-    /// (or shrinks) the body downward. Dragging the title bar moves the
-    /// panel — its position then survives every frame and `at` is ignored
-    /// (see [`Ui::panel_position`] to read it back) — while a *click* on
-    /// the title bar (press and release without moving) folds the panel to
-    /// just its title bar, and another click unfolds it.
-    ///
-    /// The panel claims the space it covers: the body absorbs presses and
-    /// counts as [`Ui::hovering`], so a game reading the mouse can tell a
-    /// click on the panel from one on its scene, and widgets behind the
-    /// panel are never hit through it.
-    pub fn panel(
-        &mut self,
-        ctx: &mut Context,
-        title: &str,
-        at: [f32; 2],
-        width: f32,
-        content: impl FnOnce(&mut Ui, &mut Context),
-    ) {
-        let id = panel_id(title);
-        let style = self.style;
-        let title_h = style.row_h;
-        let pad = style.pad;
-        let state = self
-            .panels
-            .entry(id)
-            .and_modify(|p| p.w = width)
-            .or_insert(PanelState {
-                pos: at,
-                w: width,
-                h: title_h,
-                folded: false,
-                rect: [
-                    at[0] - width / 2.0,
-                    at[1] - title_h / 2.0,
-                    at[0] + width / 2.0,
-                    at[1] + title_h / 2.0,
-                ],
-            });
-        let w = state.w;
-        let pos = state.pos;
-        let prev_h = state.h;
-        let prev_folded = state.folded;
-        // The geometry the panel presented last frame, for the hit test.
-        let hit_h = if prev_folded {
-            title_h
-        } else {
-            prev_h.max(title_h)
-        };
-        let hit_body = Rect::from_center(pos[0], pos[1], w, hit_h);
-        let title_bar = Rect {
-            left: hit_body.left,
-            top: hit_body.top,
-            w,
-            h: title_h,
-        };
-        // The body claims the panel's whole area first, so the title bar —
-        // registered after it — wins the overlap, and neither a widget nor
-        // the game behind this panel can be hit through it.
-        self.interact(panel_body_id(title), hit_body);
-        // The title bar is a widget too: it claims the press for the drag.
-        let it = self.interact(id, title_bar);
-        // A release is a click only while the pointer barely moved —
-        // dragging the bar to move the panel must not fold it.
-        let folded = if it.clicked && self.click_travel() < FOLD_DRAG_TOL {
-            !prev_folded
-        } else {
-            prev_folded
-        };
-        self.panels
-            .get_mut(&id)
-            .expect("entry was made above")
-            .folded = folded;
-        // Draw from the title bar down: its top edge is anchored, so the
-        // body opens and closes downward and the bar never jumps. A folded
-        // panel is just the bar.
-        let draw_h = if folded { title_h } else { prev_h.max(title_h) };
-        let anchor_top = title_bar.top;
-        {
-            let state = self.panels.get_mut(&id).expect("entry was made above");
-            state.pos[1] = anchor_top - draw_h / 2.0;
-        }
-        let body = Rect::from_center(pos[0], anchor_top - draw_h / 2.0, w, draw_h);
-        self.fill(ctx, body, style.panel_bg);
-        self.panels.get_mut(&id).expect("entry was made above").rect =
-            [body.left, body.top - body.h, body.left + body.w, body.top];
-        let bar = if it.held {
-            style.widget_press
-        } else if it.hot {
-            style.widget_hover
-        } else {
-            style.title_bg
-        };
-        self.fill(ctx, title_bar, bar);
-        // The fold chevron: pointing down when open, right when folded.
-        let z = self.z();
-        let [cx, cy] = [title_bar.left + pad + 2.0, title_bar.center()[1]];
-        let s = 4.5;
-        let title_color = style.title_text;
-        if folded {
-            ctx.line(cx - s / 2.0, cy + s, cx + s / 2.0, cy, title_color, 2.0, z);
-            ctx.line(
-                cx + s / 2.0,
-                cy,
-                cx - s / 2.0,
-                cy - s,
-                title_color,
-                2.0,
-                z + 0.5,
-            );
-        } else {
-            ctx.line(cx - s, cy + s / 2.0, cx, cy - s / 2.0, title_color, 2.0, z);
-            ctx.line(
-                cx,
-                cy - s / 2.0,
-                cx + s,
-                cy + s / 2.0,
-                title_color,
-                2.0,
-                z + 0.5,
-            );
-        }
-        let size = style.font_size;
-        let [tcx, tcy] = title_bar.center();
-        let title_string = title.to_owned();
-        self.text(ctx, [tcx, tcy], size, title_color, &title_string);
-        if folded {
-            // Nothing below the bar: the body stays closed.
-            let state = self.panels.get_mut(&id).expect("entry was made above");
-            state.h = title_h;
-            return;
-        }
-        // The content layout, and the height it uses.
-        let top0 = anchor_top - title_h - pad;
-        self.layout.push(Layout {
-            left: body.left + pad,
-            width: (w - 2.0 * pad).max(0.0),
-            cursor: top0,
-            scope: id,
-            table: None,
-        });
-        content(self, ctx);
-        let used = top0 - self.layout.pop().expect("just pushed").cursor;
-        let new_h = (title_h + pad * 2.0 + used).max(title_h);
-        let state = self.panels.get_mut(&id).expect("entry was made above");
-        state.h = new_h;
-        // Grow (or shrink) downward from the anchored title bar.
-        state.pos[1] = anchor_top - new_h / 2.0;
-    }
-
     /// How far the pointer sits from where the current (or most recent)
     /// press began — below [`FOLD_DRAG_TOL`], a release counts as a click.
     fn click_travel(&self) -> f32 {
@@ -1291,40 +765,6 @@ struct UiInput {
     size: (f32, f32),
 }
 
-/// Resolve each column's pixel width across a row of `total_width`: fixed
-/// columns take their width, auto columns the `stored` width measured last
-/// frame (0 until first seen), and stretch columns then split what is left
-/// over the gaps, weighted. Pure — `Ui::table` wraps it, and the tests
-/// exercise it directly.
-fn resolve_cols(cols: &[Col], total_width: f32, col_gap: f32, stored: &[f32]) -> Vec<f32> {
-    let n = cols.len();
-    let gaps = (n as f32 - 1.0).max(0.0) * col_gap.max(0.0);
-    let mut widths = vec![0.0f32; n];
-    let mut used = 0.0f32;
-    let mut weight = 0.0f32;
-    for (i, c) in cols.iter().enumerate() {
-        let w = match c.size {
-            ColSize::Px(w) => w.max(0.0),
-            ColSize::Auto => stored.get(i).copied().unwrap_or(0.0).max(0.0),
-            ColSize::Stretch(s) => {
-                weight += s.max(0.0);
-                0.0
-            }
-        };
-        used += w;
-        widths[i] = w;
-    }
-    if weight > 0.0 {
-        let free = (total_width - gaps - used).max(0.0);
-        for (i, c) in cols.iter().enumerate() {
-            if let ColSize::Stretch(s) = c.size {
-                widths[i] = free * s.max(0.0) / weight;
-            }
-        }
-    }
-    widths
-}
-
 /// The id of an interactive widget: its label hashed into its panel's
 /// scope (0 for the root column).
 fn widget_id(scope: u64, label: &str) -> u64 {
@@ -1334,26 +774,6 @@ fn widget_id(scope: u64, label: &str) -> u64 {
     }
     for &b in label.as_bytes() {
         h = (h ^ b as u64).wrapping_mul(FNV_PRIME);
-    }
-    h
-}
-
-/// The id of a panel and of its draggable title bar, hashed from the title.
-fn panel_id(title: &str) -> u64 {
-    let mut h = FNV_OFFSET;
-    for b in b"panel".iter().chain(title.as_bytes()) {
-        h = (h ^ *b as u64).wrapping_mul(FNV_PRIME);
-    }
-    h
-}
-
-/// The id of a panel's non-interactive body claim: its own domain, so a
-/// press on the panel background captures nothing that the drag loop
-/// mistakes for a panel move.
-fn panel_body_id(title: &str) -> u64 {
-    let mut h = FNV_OFFSET;
-    for b in b"panel-body".iter().chain(title.as_bytes()) {
-        h = (h ^ *b as u64).wrapping_mul(FNV_PRIME);
     }
     h
 }
