@@ -205,7 +205,9 @@
 //! While no plant is living on the bench — at start, and, once the player
 //! has planted, whenever the last survivor withers away — a game-over
 //! overlay covers the window: a dim veil over the whole window, "Game
-//! Over" in large letters above the center, and a Play button below it,
+//! Over" in large letters above the center, and a Play button below it —
+//! the `assets/sprites/held_items.png` panel for a background, panel and
+//! label swelling while the cursor rests on them,
 //! the label `assets/fonts/Leofont-Regular.ttf` set in. Pressing the
 //! button — a left click on it — restarts the game: the bench goes bare
 //! again, the basket back to its starting tomato, the swarms empty, and
@@ -334,21 +336,19 @@ const OVERLAY_TITLE_SIZE: f32 = 120.0;
 /// window's center.
 const OVERLAY_TITLE_Y: f32 = 80.0;
 
-/// The Play button's rectangle's half extents, in window pixels: a
-/// 360 by 110 button.
-const PLAY_HALF: [f32; 2] = [180.0, 55.0];
-
-/// The Play button's rectangle's color: a tomato red under the label.
-const PLAY_COLOR: frost::Color = frost::Color {
-    r: 0.62,
-    g: 0.13,
-    b: 0.1,
-    a: 1.0,
-};
+/// The Play button's half extents, in window pixels: the 390 by 200
+/// button box that frames the `held_items.png` panel background — the
+/// panel's own 389 x 200 texture, rounded to even halves.
+const PLAY_HALF: [f32; 2] = [195.0, 100.0];
 
 /// The Play button's center's height, in window pixels below the window's
-/// center.
-const PLAY_Y: f32 = -60.0;
+/// center: low enough that the taller panel-button clears the "Game
+/// Over" title above it.
+const PLAY_Y: f32 = -90.0;
+
+/// How much larger the button panel and its label grow while the cursor
+/// rests on the button: a 12% swell, eased in and out.
+const PLAY_SWELL: f32 = 0.12;
 
 /// The Play button's "Play" label's size, in pixels.
 const PLAY_LABEL_SIZE: f32 = 54.0;
@@ -1168,9 +1168,15 @@ struct Demo {
     /// The overlay's "Game Over" title, built once from the embedded font;
     /// laid onto the overlay's title child while the overlay is up.
     game_over: frost::Shape,
-    /// The Play button's rectangle, built once; laid onto the overlay's
-    /// button child while the overlay is up.
+    /// The Play button's background: the `held_items.png` panel, built
+    /// once; laid onto the overlay's button child while the overlay is up.
     play_button: frost::Shape,
+    /// The uniform-per-axis scale that fits the `held_items` texture to
+    /// the button box, before the hover swell.
+    play_fit: [f32; 2],
+    /// The button's hover swell, eased 0 (at rest) to 1 (hovered) every
+    /// frame; the panel and its label scale with it.
+    play_hover: f32,
     /// The overlay's "Play" label, built once from the embedded font; laid
     /// onto the overlay's label child while the overlay is up.
     play_label: frost::Shape,
@@ -1287,6 +1293,16 @@ impl frost::Process for Demo {
         self.spray_hits();
         self.draw_live(ctx, &anchors, &started);
 
+        // The Play button's hover swell: ease toward the cursor's verdict
+        // — any exponential approach is frame-rate friendly — so the
+        // panel and label grow on approach and settle on leaving.
+        let swell_to = if self.over && on_play_button(self.mouse) {
+            1.0
+        } else {
+            0.0
+        };
+        self.play_hover += (swell_to - self.play_hover) * (dt * 10.0).min(1.0);
+
         // Lay the game-over overlay out last: its flag may have risen on
         // this frame, above, or fallen in the input's Play press, and the
         // veil must track the window's current size.
@@ -1328,11 +1344,11 @@ impl Demo {
             .expect("the embedded overlay font decodes");
         let play_label = frost::Shape::text_bytes(assets.font, "Play", PLAY_LABEL_SIZE)
             .expect("the embedded overlay font decodes");
-        let play_button = frost::Shape::Rectangle {
-            center: [0.0, 0.0],
-            extent: PLAY_HALF,
-            color: PLAY_COLOR,
-        };
+        // The button's background is the held-items panel; the fit scale
+        // maps its texture exactly onto the button box.
+        let play_button = assets.held_items.clone();
+        let [pw, ph] = play_button.sprite_size().expect("held_items is a sprite");
+        let play_fit = [2.0 * PLAY_HALF[0] / pw, 2.0 * PLAY_HALF[1] / ph];
 
         // The diagnostics overlay, set in the embedded Fira Code font,
         // with every statistic enabled: the window size, the frame rate,
@@ -1417,6 +1433,8 @@ impl Demo {
             ever_planted: false,
             game_over,
             play_button,
+            play_fit,
+            play_hover: 0.0,
             play_label,
             diag,
             save_key: false,
@@ -1493,9 +1511,10 @@ impl Demo {
     /// [`CHILD_OVERLAY`] child), for a `w` by `h` window: while the
     /// overlay is up — the bench bare — the node's own shape is a dim
     /// rectangle over the whole window, and its children carry the
-    /// "Game Over" title above the center, the Play button's rectangle
-    /// below it, and the button's label on the button's center; while the
-    /// overlay is down, the node and its children carry no shapes at all.
+    /// "Game Over" title above the center, the Play button — the
+    /// `held_items` panel with its label — below it; panel and label
+    /// swell while the cursor rests on the button; while the overlay is
+    /// down, the node and its children carry no shapes at all.
     fn layout_overlay(&mut self, ctx: &mut frost::Context, w: f32, h: f32) {
         let overlay = &mut ctx.scene().root.children[CHILD_OVERLAY];
         // The children's poses hold while the overlay is up and down
@@ -1506,6 +1525,13 @@ impl Demo {
         let button = frost::Transform::translate([0.0, PLAY_Y]);
         overlay.children[OVERLAY_BUTTON].transform = button;
         overlay.children[OVERLAY_LABEL].transform = button;
+        // The button's size: the fit that maps the panel texture onto the
+        // button box, times the eased hover swell; the label swells with
+        // it, uniformly.
+        let swell = 1.0 + PLAY_SWELL * self.play_hover;
+        let [fx, fy] = self.play_fit;
+        overlay.children[OVERLAY_BUTTON].scale = [fx * swell, fy * swell];
+        overlay.children[OVERLAY_LABEL].scale = [swell, swell];
         if self.over {
             // The dim veil: a rectangle over the whole window, a pixel
             // past each edge so no border shows, centered on the node's
