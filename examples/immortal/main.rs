@@ -157,6 +157,14 @@
 //! walking, flipped about its center while it moves left, tinted dark
 //! red by the node's `modulate`.
 //!
+//! A parallel swarm of lice runs the same life in smaller bodies: the
+//! [`bugs`] module is generic over a [`bugs::Species`], and the louse
+//! swarm — the two frames `assets/sprites/Lice1.png` and
+//! `assets/sprites/Lice2.png`, art that walks to the LEFT, so its facing
+//! flip mirrors the bug's — batches three per plant beside the bugs,
+//! starts at two hits of health, and heals two hits every ten seconds
+//! once it has reached its plant.
+//!
 //! A bug starts with three hits of health, loses one per mist hit — a
 //! wounded bug takes its next hit only after a 0.2 s cooldown, so the
 //! mist wears it down one hit at a time — and, once it has reached its
@@ -278,6 +286,10 @@ const PLANT_POS: [[f32; 2]; 6] = [
 /// start growing.
 const BUG_N: usize = bugs::BUGS_PER_PLANT * PLANT_POS.len();
 
+/// The louse swarm's pool: the same batch cadence as the bugs, three
+/// lice per plant.
+const LICE_N: usize = bugs::BUGS_PER_PLANT * PLANT_POS.len();
+
 /// The scene root's children, in draw order — the order in which `main`
 /// builds them in the scene: the grass underlay, the items panel, the
 /// plants group, the fallen-fruit container, the held-items panel, the
@@ -291,12 +303,13 @@ const CHILD_FALLEN_FRUIT: usize = 3;
 const CHILD_HELD: usize = 4;
 const CHILD_VIPERS: usize = 5;
 const CHILD_BUGS: usize = 6;
-const CHILD_WORMS: usize = 7;
-const CHILD_TOOL: usize = 8;
-const CHILD_BASKET: usize = 9;
-const CHILD_BADGE: usize = 10;
-const CHILD_HELD_FRUIT: usize = 11;
-const CHILD_OVERLAY: usize = 12;
+const CHILD_LICE: usize = 7;
+const CHILD_WORMS: usize = 8;
+const CHILD_TOOL: usize = 9;
+const CHILD_BASKET: usize = 10;
+const CHILD_BADGE: usize = 11;
+const CHILD_HELD_FRUIT: usize = 12;
+const CHILD_OVERLAY: usize = 13;
 
 /// The game-over overlay node's children, in draw order: the "Game Over"
 /// title text, the Play button's rectangle, and the button's label. The
@@ -1034,6 +1047,10 @@ struct Demo {
     bug1: frost::Shape,
     bug2: frost::Shape,
     bug3: frost::Shape,
+    /// The two louse walk frames — art that walks to the left; the
+    /// louse swarm's nodes swap between them as cheap `Arc` clones.
+    lice1: frost::Shape,
+    lice2: frost::Shape,
     /// The two worm peristaltic frames, loaded once; the swarm's worm
     /// nodes swap between them as cheap `Arc` clones.
     worm1: frost::Shape,
@@ -1109,6 +1126,11 @@ struct Demo {
     /// plant starts growing, and the swarm steps and lays them out on the
     /// matching child of the bugs node (root's [`CHILD_BUGS`] child).
     bugs: bugs::Bugs,
+    /// The swarm of lice running the bugs' life in smaller, untinted
+    /// bodies with left-facing art: two hits of health, two recovered
+    /// every ten seconds at the plant; the swarm steps and lays them
+    /// out on the lice node (root's [`CHILD_LICE`] child).
+    lice: bugs::Bugs,
     /// The swarm of peristaltic worms crossing the soil: the worms emerge
     /// from the convex hull of the plants' root anchors, crawl to a random
     /// point of the same hull, and burrow back in — at most ten above
@@ -1235,8 +1257,9 @@ impl frost::Process for Demo {
         self.step_vipers(ctx, dt, &anchors);
         self.step_worms(ctx, dt, &anchors);
 
-        let events = self.step_bugs(ctx, dt, &anchors, &started);
+        let (events, lice_events) = self.step_bugs(ctx, dt, &anchors, &started);
         self.play_bug_events(&events);
+        self.play_bug_events(&lice_events);
         self.handle_input(ctx);
 
         // A seed dropped this frame starts flying: the flight poses its
@@ -1343,10 +1366,19 @@ impl Demo {
             // population climbs 3, 6, …, 18 over the first 75 seconds; a
             // killed bug pops back up at its spawn spot after a random 5
             // to 10 second delay.
-            bugs: bugs::Bugs::new([&assets.bug1, &assets.bug2, &assets.bug3]),
+            bugs: bugs::Bugs::new(
+                &[&assets.bug1, &assets.bug2, &assets.bug3],
+                bugs::Species::bug(),
+            ),
             bug1: assets.bug1,
             bug2: assets.bug2,
             bug3: assets.bug3,
+            // The louse pool: the same batch cadence, the louse skin —
+            // smaller, untinted, left-facing art, two hits and a slower
+            // two-at-a-time heal.
+            lice: bugs::Bugs::new(&[&assets.lice1, &assets.lice2], bugs::Species::louse()),
+            lice1: assets.lice1,
+            lice2: assets.lice2,
             // The worm pool: fourteen slots, at most ten above ground,
             // each worm's first underground delay staggered across the
             // pool so the first wave trickles out instead of popping.
@@ -1629,10 +1661,11 @@ impl Demo {
         }
     }
 
-    /// Waddles the bugs to the plants, in parallel with everything else:
+    /// Waddles both swarms — the bugs and the lice, same life cycle in
+    /// different skins — to the plants, in parallel with everything else:
     /// `alive` is the bench's planted table — which plants are growing —
-    /// and the bugs retarget away from a plant that withers and batch in
-    /// for each plant that starts growing. Returns the step's arrival
+    /// and the swarms retarget away from a plant that withers and batch
+    /// in for each plant that starts growing. Returns both swarms' step
     /// events, which [Demo::play_bug_events] plays.
     fn step_bugs(
         &mut self,
@@ -1640,12 +1673,15 @@ impl Demo {
         dt: f32,
         anchors: &[[f32; 2]; PLANT_POS.len()],
         alive: &[bool],
-    ) -> bugs::StepEvents {
+    ) -> (bugs::StepEvents, bugs::StepEvents) {
         let bugs_node = &mut ctx.scene().root.children[CHILD_BUGS];
         let events = self.bugs.step(dt, anchors, alive);
         self.bugs
-            .layout(bugs_node, [&self.bug1, &self.bug2, &self.bug3]);
-        events
+            .layout(bugs_node, &[&self.bug1, &self.bug2, &self.bug3]);
+        let lice_node = &mut ctx.scene().root.children[CHILD_LICE];
+        let lice_events = self.lice.step(dt, anchors, alive);
+        self.lice.layout(lice_node, &[&self.lice1, &self.lice2]);
+        (events, lice_events)
     }
 
     /// Steps the worms' swarm, in parallel with everything else: the
@@ -2245,14 +2281,16 @@ impl Demo {
     /// bug death clip.
     fn spray_hits(&mut self) {
         for p in &self.spray.particles {
-            let hit = self.bugs.hit_at(p.pos);
-            for clip in hit.ajs {
-                self.sounds
-                    .device
-                    .play_once(&self.sounds.ajs[clip], Some(0.35));
-            }
-            for _ in 0..hit.deaths {
-                self.sounds.device.play_once(&self.sounds.death, None);
+            for swarm in [&mut self.bugs, &mut self.lice] {
+                let hit = swarm.hit_at(p.pos);
+                for clip in hit.ajs {
+                    self.sounds
+                        .device
+                        .play_once(&self.sounds.ajs[clip], Some(0.35));
+                }
+                for _ in 0..hit.deaths {
+                    self.sounds.device.play_once(&self.sounds.death, None);
+                }
             }
         }
     }
@@ -2270,15 +2308,17 @@ impl Demo {
         // Draw the bugs' health counters: one white pip per hit each
         // visible bug can still take, in a row above it — centered on
         // the bug's current count, three to six pips wide.
-        for ([cx, cy], hits) in self.bugs.health_pips() {
-            for i in 0..hits {
-                ctx.circle(
-                    cx - (hits as f32 - 1.0) * 3.0 + i as f32 * 6.0,
-                    cy,
-                    2.0,
-                    PIP,
-                    Z,
-                );
+        for swarm in [&self.bugs, &self.lice] {
+            for ([cx, cy], hits) in swarm.health_pips() {
+                for i in 0..hits {
+                    ctx.circle(
+                        cx - (hits as f32 - 1.0) * 3.0 + i as f32 * 6.0,
+                        cy,
+                        2.0,
+                        PIP,
+                        Z,
+                    );
+                }
             }
         }
 
@@ -2428,7 +2468,8 @@ impl Demo {
         // stale children frozen, so the swarms are rebuilt, not just
         // re-stepped.
         self.vipers = vipers::Vipers::new(VIPER_IMAGE);
-        self.bugs = bugs::Bugs::new([&self.bug1, &self.bug2, &self.bug3]);
+        self.bugs = bugs::Bugs::new(&[&self.bug1, &self.bug2, &self.bug3], bugs::Species::bug());
+        self.lice = bugs::Bugs::new(&[&self.lice1, &self.lice2], bugs::Species::louse());
         self.worms = worms::Worms::new([&self.worm1, &self.worm2]);
         // The fruit goes back to the basket: the carried and the fallen
         // fruit come off the scene, the basket empties, and the starting
@@ -2470,6 +2511,9 @@ impl Demo {
     fn set_seed(&mut self, seed: u64) {
         self.rng.set_state(seed);
         self.bugs.set_seed(seed);
+        // The louse stream runs on a scramble of the seed: the same run
+        // reproducibility, an independent draw order from the bugs'.
+        self.lice.set_seed(seed.rotate_left(23));
         self.worms.set_seed(seed);
     }
 
@@ -2551,6 +2595,7 @@ impl Demo {
             version: save::VERSION,
             seed: self.rng.state(),
             bug_seed: self.bugs.rng_state(),
+            lice_seed: self.lice.rng_state(),
             time: self.time,
             acc: self.acc,
             over: self.over,
@@ -2571,6 +2616,7 @@ impl Demo {
             plants: std::array::from_fn(|i| save::WateredPlantState::from(&self.plants[i])),
             falls: self.falls.iter().map(save::FallState::from).collect(),
             bugs: self.bugs.state(),
+            lice: self.lice.state(),
             vipers: self.vipers.state(),
             worms: self.worms.state(),
         }
@@ -2611,11 +2657,13 @@ impl Demo {
         }
         self.falls = snapshot.falls.iter().copied().map(Fall::from).collect();
         self.bugs.restore(&snapshot.bugs);
+        self.lice.restore(&snapshot.lice);
         self.vipers.restore(&snapshot.vipers);
         self.worms.restore(&snapshot.worms);
         // All three random streams resume from the snapshot's states.
         self.rng.set_state(snapshot.seed);
         self.bugs.set_seed(snapshot.bug_seed);
+        self.lice.set_seed(snapshot.lice_seed);
         // The particles are short-lived: their streams start over.
         self.water = frost::ParticleSystem::default();
         self.spray = frost::ParticleSystem::default();
@@ -3332,6 +3380,17 @@ fn main() {
                 // under the tool node, so the cursor paints above the
                 // bugs.
                 children: (0..BUG_N)
+                    .map(|_| Box::new(frost::SceneNode::default()))
+                    .collect(),
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
+                // The lice's swarm on the grass: the bugs' life in a
+                // different skin, one shape-less child per slot; the
+                // process lays each louse's pose, flip, growth, and walk
+                // frame out on its child every frame. The group sits
+                // under the tool node, so the cursor paints above.
+                children: (0..LICE_N)
                     .map(|_| Box::new(frost::SceneNode::default()))
                     .collect(),
                 ..Default::default()

@@ -43,6 +43,12 @@ const WORM1: &[u8] = include_bytes!("../../assets/sprites/Worm1_crop.png");
 /// The second worm peristaltic frame, `assets/sprites/Worm2_crop.png`.
 const WORM2: &[u8] = include_bytes!("../../assets/sprites/Worm2_crop.png");
 
+/// The first louse walk frame, `assets/sprites/Lice1.png`.
+const LICE1: &[u8] = include_bytes!("../../assets/sprites/Lice1.png");
+
+/// The second louse walk frame, `assets/sprites/Lice2.png`.
+const LICE2: &[u8] = include_bytes!("../../assets/sprites/Lice2.png");
+
 /// The inventory panel, `assets/sprites/items.png`.
 const ITEMS: &[u8] = include_bytes!("../../assets/sprites/items.png");
 
@@ -204,6 +210,10 @@ pub struct Assets {
     /// as the worm's body beats.
     pub worm1: frost::Shape,
     pub worm2: frost::Shape,
+    /// The two louse walk frames — art that walks to the left; the louse
+    /// swarm's slot shapes swap between them as cheap `Arc` clones.
+    pub lice1: frost::Shape,
+    pub lice2: frost::Shape,
     /// The inventory panel, mid left: four slots, 0 to 3 from the top,
     /// the spray can resting in slot 2 and the watering can in slot 3.
     pub items: frost::Shape,
@@ -261,6 +271,8 @@ impl Assets {
             bug3: sprite("Bug3a.png", BUG3A),
             worm1: sprite("Worm1_crop.png", WORM1),
             worm2: sprite("Worm2_crop.png", WORM2),
+            lice1: sprite("Lice1.png", LICE1),
+            lice2: sprite("Lice2.png", LICE2),
             items: sprite("items.png", ITEMS),
             held_items: sprite("held_items.png", HELD_ITEMS),
             plant1: sprite("plant1.png", PLANT1),

@@ -1,5 +1,16 @@
-//! Bugs: a swarm of small dark-red critters that pop up out of the grass
-//! and waddle to the plant they were born for.
+//! Bugs — and lice: a swarm of small critters that pops up out of the
+//! grass and waddles to the plant it was born for.
+//!
+//! The swarm is generic over a [`Species`], the per-kind description of
+//! how the same life cycle renders and heals: the rendered size, the
+//! direction the source art faces (the bug frames walk to the right, the
+//! lice frames to the left, so the facing flip carries the difference),
+//! the tint, and the health economy (a bug starts at [HITS_TO_KILL] hits
+//! and heals one every [REGEN_TIME] s parked; a louse starts at
+//! [LICE_START_HEALTH] and heals [LICE_REGEN_HITS] every [LICE_REGEN_TIME]
+//! s — both capped at [MAX_HEALTH]). Everything else — batching per
+//! plant, the swarm walk, the chatter, the hit cooldown, the death
+//! bounce and the respawn — is the same for every species.
 //!
 //! Every time a plant starts growing, three new bugs spawn at random points
 //! inside the convex hull of the six plant root positions, standing
@@ -77,6 +88,9 @@ pub const BUGS_PER_PLANT: usize = 3;
 
 /// Rendered bug width in user-space px (the bees are 25 px wide).
 const BUG_SIZE: f32 = 40.0;
+/// Rendered louse width in user-space px: a louse is a third smaller
+/// than a bug.
+const LICE_SIZE: f32 = 28.0;
 /// How long the y-scale spawn growth takes, in seconds.
 const GROW_TIME: f32 = 0.75;
 /// Distance from the park target at which a bug stops walking, in px.
@@ -93,6 +107,13 @@ const TJATTER_RANGE: f32 = 50.0;
 /// It is above the parked sway's top speed (≈5.2) and below the slowest
 /// walk (30), so parked bugs hold their facing while walking ones flip.
 const FACING_EPS: f32 = 6.0;
+/// A louse's starting health: the hits between a fresh louse and death.
+const LICE_START_HEALTH: u8 = 2;
+/// How many hits a parked louse recovers per [LICE_REGEN_TIME] seconds.
+const LICE_REGEN_HITS: u8 = 2;
+/// How often a parked louse recovers a health tick, in seconds.
+const LICE_REGEN_TIME: f32 = 10.0;
+
 /// The sprite tint: the node `modulate` multiplied over the walk frames.
 const TINT: frost::Color = frost::Color {
     r: 0.8,
@@ -129,6 +150,75 @@ const PIP_GAP: f32 = 6.0;
 const RESPAWN_MIN: f32 = 5.0;
 /// Upper end of the respawn window (see [RESPAWN_MIN]).
 const RESPAWN_MAX: f32 = 10.0;
+
+/// What tells one crawling species from another: the skin the same
+/// life cycle is rendered and healed in. Everything else — the batching
+/// to plants, the swarm walk, the arrival chatter, the hit cooldown, the
+/// death bounce and the respawn — is shared by the whole swarm kind.
+#[derive(Clone, Copy, Debug)]
+pub struct Species {
+    /// The rendered body width in user-space px, the neutral sprite
+    /// width the frames are scaled to.
+    pub size: f32,
+    /// The facing's x-scale multiplier: `1.0` when the source art walks
+    /// to the right (the bug frames), `-1.0` when it walks to the left
+    /// (the louse frames) — so [Bug::facing] keeps the same meaning,
+    /// `+1` walking right, for every species.
+    pub flip: f32,
+    /// The sprite tint: the node `modulate` multiplied over the frames.
+    pub tint: frost::Color,
+    /// The health a fresh life starts with.
+    pub start_health: u8,
+    /// The health cap recovery can climb back to.
+    pub max_health: u8,
+    /// The hits recovered per recovery tick while parked at the plant.
+    pub regen_hits: u8,
+    /// The recovery tick's period, in seconds, while parked.
+    pub regen_time: f32,
+}
+
+impl Species {
+    /// The bug: three right-facing frames, the dark-red tint,
+    /// [HITS_TO_KILL] hits to kill, one hit recovered every
+    /// [REGEN_TIME] seconds parked, up to [MAX_HEALTH].
+    pub fn bug() -> Self {
+        Species {
+            size: BUG_SIZE,
+            flip: 1.0,
+            tint: TINT,
+            start_health: HITS_TO_KILL,
+            max_health: MAX_HEALTH,
+            regen_hits: 1,
+            regen_time: REGEN_TIME,
+        }
+    }
+
+    /// The louse: two left-facing frames, untinted, [LICE_START_HEALTH]
+    /// hits to kill, [LICE_REGEN_HITS] hits recovered every
+    /// [LICE_REGEN_TIME] seconds parked, up to the same [MAX_HEALTH].
+    pub fn louse() -> Self {
+        Species {
+            size: LICE_SIZE,
+            flip: -1.0,
+            tint: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            start_health: LICE_START_HEALTH,
+            max_health: MAX_HEALTH,
+            regen_hits: LICE_REGEN_HITS,
+            regen_time: LICE_REGEN_TIME,
+        }
+    }
+}
+
+impl Default for Species {
+    fn default() -> Self {
+        Self::bug()
+    }
+}
 
 /// One bug in the swarm.
 #[derive(Default)]
@@ -199,9 +289,9 @@ struct Bug {
 impl Bug {
     /// Reset this bug to a fresh life at its spawn spot — the respawn
     /// after a death: position, growth, facing and walk frame start
-    /// over and its health returns to [HITS_TO_KILL], while its home,
-    /// park spot, spawn spot, speed and wobble are kept.
-    fn revive(&mut self) {
+    /// over and its health returns to the species' start, while its
+    /// home, park spot, spawn spot, speed and wobble are kept.
+    fn revive(&mut self, start_health: u8) {
         self.pos = self.spawn;
         self.grow = 0.0;
         self.vel = [0.0, 0.0];
@@ -210,7 +300,7 @@ impl Bug {
         self.walk = 0.0;
         self.frame = 0;
         self.shown = u8::MAX;
-        self.hits = HITS_TO_KILL;
+        self.hits = start_health;
         self.parked = 0.0;
         self.arrived = false;
         self.hit_cooldown = 0.0;
@@ -261,7 +351,13 @@ pub struct Bugs {
     batched: Vec<bool>,
     /// Swarm clock in seconds (wobble phase source).
     t: f32,
-    /// Final uniform sprite scale (BUG_SIZE over the widest frame).
+    /// The species this swarm renders and heals as.
+    species: Species,
+    /// The walk-frame count the walk clock wraps over: 3 for the bug,
+    /// 2 for the louse.
+    nframes: u8,
+    /// Final uniform sprite scale (the species' size over the widest
+    /// frame).
     scale: f32,
     /// Half the rendered sprite height, so parked feet rest on the grass.
     ground: f32,
@@ -404,7 +500,7 @@ pub struct HitEvents {
 }
 
 impl Bugs {
-    /// Build an empty swarm over the three walk frames.
+    /// Build an empty swarm over the species' walk frames.
     ///
     /// The swarm is batch-gated by the plants, not by a population cap:
     /// each plant receives its [BUGS_PER_PLANT] bugs exactly once (so the
@@ -412,15 +508,17 @@ impl Bugs {
     /// oversubscribed). A killed bug is not replaced by its plant's
     /// batch: it pops back up at its own spawn spot after its respawn
     /// delay.
-    pub fn new(frames: [&frost::Shape; 3]) -> Self {
+    pub fn new(frames: &[&frost::Shape], species: Species) -> Self {
         let (mut w, mut h) = (0.0f32, 0.0f32);
         for frame in frames {
             let [fw, fh] = frame.sprite_size().expect("the frames are sprites");
             w = w.max(fw);
             h = h.max(fh);
         }
-        let scale = BUG_SIZE / w;
+        let scale = species.size / w;
         Self {
+            species,
+            nframes: frames.len() as u8,
             scale,
             ground: (scale * h) / 2.0,
             ..Self::default()
@@ -533,7 +631,7 @@ impl Bugs {
             for j in 0..BUGS_PER_PLANT {
                 let pos = sample_polygon(&hull, &mut self.rng);
                 let idle = [
-                    (j as f32 - 1.0) * BUG_SIZE * 0.9 + (self.rng.next_f32() - 0.5) * 10.0,
+                    (j as f32 - 1.0) * self.species.size * 0.9 + (self.rng.next_f32() - 0.5) * 10.0,
                     self.rng.next_f32() * 6.0,
                 ];
                 let bug = Bug {
@@ -548,7 +646,7 @@ impl Bugs {
                     wob_freq: self.rng.in_range(1.5, 3.5),
                     wob_phase: self.rng.next_f32() * 2.0 * std::f32::consts::PI,
                     step_rate: self.rng.in_range(6.0, 10.0),
-                    hits: HITS_TO_KILL,
+                    hits: self.species.start_health,
                     ..Bug::default()
                 };
                 self.bugs.push(bug);
@@ -608,7 +706,7 @@ impl Bugs {
         if let Some(r) = bug.respawn {
             if r <= dt {
                 bug.respawn = None;
-                bug.revive();
+                bug.revive(self.species.start_health);
                 // The bug pops back up out of the grass: one random
                 // plopp clip.
                 plops.push((self.rng.next_f32() * 3.0) as usize);
@@ -644,7 +742,12 @@ impl Bugs {
             // Still growing out of the grass: hold the spawn spot.
             return;
         }
-        let (next, dist) = Self::step_move(bug, self.t, self.ground, dt, anchors, i, arrivals);
+        let env = StepEnv {
+            t: self.t,
+            ground: self.ground,
+            sp: self.species,
+        };
+        let (next, dist) = Self::step_move(bug, &env, dt, anchors, i, arrivals);
         if dt > 0.0 && bug.placed {
             bug.vel = [(next[0] - bug.pos[0]) / dt, (next[1] - bug.pos[1]) / dt];
         } else {
@@ -661,7 +764,7 @@ impl Bugs {
 
         if dist > ARRIVE {
             bug.walk += dt * bug.step_rate;
-            bug.frame = (bug.walk as u32 % 3) as u8;
+            bug.frame = (bug.walk as u32 % self.nframes as u32) as u8;
         }
     }
 
@@ -677,13 +780,13 @@ impl Bugs {
     /// distance from the bug to the target at the frame's start.
     fn step_move(
         bug: &mut Bug,
-        t: f32,
-        ground: f32,
+        env: &StepEnv,
         dt: f32,
         anchors: &[[f32; 2]],
         i: usize,
         arrivals: &mut Vec<(usize, [f32; 2])>,
     ) -> ([f32; 2], f32) {
+        let StepEnv { t, ground, sp } = *env;
         let target = [
             anchors[bug.home][0] + bug.idle[0],
             anchors[bug.home][1] + bug.idle[1] + ground,
@@ -707,15 +810,16 @@ impl Bugs {
                 target[0] + (t * bug.wob_freq + bug.wob_phase).sin() * 1.5,
                 target[1],
             ];
-            // A bug at its destination recovers one hit of health
-            // every [REGEN_TIME] seconds, up to [MAX_HEALTH]; the
-            // cycle is consumed whether or not it pays out, so the
-            // counter never runs up while capped.
+            // A bug at its destination recovers its species' health
+            // tick — the bug one hit every [REGEN_TIME] seconds, the
+            // louse [LICE_REGEN_HITS] every [LICE_REGEN_TIME] — up to
+            // its cap; the cycle is consumed whether or not it pays
+            // out, so the counter never runs up while capped.
             bug.parked += dt;
-            while bug.parked >= REGEN_TIME {
-                bug.parked -= REGEN_TIME;
-                if bug.hits < MAX_HEALTH {
-                    bug.hits += 1;
+            while bug.parked >= sp.regen_time {
+                bug.parked -= sp.regen_time;
+                if bug.hits < sp.max_health {
+                    bug.hits = (bug.hits + sp.regen_hits).min(sp.max_health);
                 }
             }
             // The first parked frame is the arrival: the bug has just
@@ -764,7 +868,7 @@ impl Bugs {
     /// its [HitEvents::ajs], and how many of those it killed is its
     /// [HitEvents::deaths].
     pub fn hit_at(&mut self, p: [f32; 2]) -> HitEvents {
-        let r2 = (BUG_SIZE / 2.0) * (BUG_SIZE / 2.0);
+        let r2 = (self.species.size / 2.0) * (self.species.size / 2.0);
         let mut ajs = Vec::new();
         let mut deaths = 0;
         for bug in &mut self.bugs {
@@ -799,7 +903,7 @@ impl Bugs {
             .iter()
             .filter(|b| b.grow > 0.0 && b.dying.is_none() && b.respawn.is_none())
             .map(|b| {
-                let half = b.grow / GROW_TIME * BUG_SIZE / 2.0;
+                let half = b.grow / GROW_TIME * self.species.size / 2.0;
                 ([b.pos[0], b.pos[1] + half + PIP_GAP], b.hits)
             })
             .collect()
@@ -819,7 +923,7 @@ impl Bugs {
     /// respawn delay is gone from the grass: its slot is cleared and its
     /// last pose left in place. Slots past the spawned prefix are
     /// cleared, so an unspawned slot never draws.
-    pub fn layout(&mut self, node: &mut SceneNode, frames: [&frost::Shape; 3]) {
+    pub fn layout(&mut self, node: &mut SceneNode, frames: &[&frost::Shape]) {
         for (bug, child) in self.bugs.iter_mut().zip(&mut node.children) {
             if bug.respawn.is_some() {
                 // Dead and waiting: clear the slot, keep the last pose.
@@ -836,7 +940,7 @@ impl Bugs {
                     // on its back.
                     let u = t / BOUNCE_TIME;
                     (
-                        bug.facing * self.scale,
+                        bug.facing * self.species.flip * self.scale,
                         self.scale * g * (1.0 - 2.0 * u),
                         bounce_lift(t),
                     )
@@ -846,9 +950,17 @@ impl Bugs {
                     // nothing while [Bugs::step] sinks it through the
                     // grass.
                     let s = 1.0 - (t - BOUNCE_TIME) / SINK_TIME;
-                    (bug.facing * self.scale * g * s, -self.scale * g * s, 0.0)
+                    (
+                        bug.facing * self.species.flip * self.scale * g * s,
+                        -self.scale * g * s,
+                        0.0,
+                    )
                 }
-                None => (bug.facing * self.scale, self.scale * g, 0.0),
+                None => (
+                    bug.facing * self.species.flip * self.scale,
+                    self.scale * g,
+                    0.0,
+                ),
             };
             child.transform = frost::Transform::translate([bug.pos[0], bug.pos[1] + lift]);
             child.scale = [sx, sy];
@@ -857,7 +969,7 @@ impl Bugs {
             // y — the lift is a death-bounce visual, not its position in the
             // grass, so the order tracks `pos` alone.
             child.order = crate::zorder::ground(bug.pos[1]);
-            child.modulate = TINT;
+            child.modulate = self.species.tint;
             let frame = frames[bug.frame as usize];
             if bug.shown != bug.frame || !same_sprite(&child.shape, frame) {
                 child.shape = Some(frame.clone());
@@ -868,6 +980,16 @@ impl Bugs {
             child.shape = None;
         }
     }
+}
+
+/// The one-frame environment every grown bug's move steps against:
+/// the swarm clock (the wobble's phase source), the grass line, and the
+/// species' rendering and healing economy.
+#[derive(Clone, Copy)]
+struct StepEnv {
+    t: f32,
+    ground: f32,
+    sp: Species,
 }
 
 /// The plant a bug whose home is no longer living should walk to: the
@@ -1135,7 +1257,7 @@ mod tests {
             generation: 0,
         };
         let dt = 0.05;
-        let mut bugs = Bugs::new([&frame; 3]);
+        let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
         bugs.step(dt, &ANCHORS, &ALIVE);
         let spawn = bugs.bugs.iter().map(|b| b.pos).collect::<Vec<_>>();
         // While the growth clock runs: every bug holds its exact spawn
@@ -1187,7 +1309,7 @@ mod tests {
         let dt = 0.05;
         let scale = BUG_SIZE / 10.0;
         let ground = scale * 10.0 / 2.0;
-        let mut bugs = Bugs::new([&frame; 3]);
+        let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
         let mut node = frost::SceneNode {
             children: (0..BUGS_PER_PLANT)
                 .map(|_| Box::new(frost::SceneNode::default()))
@@ -1201,7 +1323,7 @@ mod tests {
         for _ in 0..80 {
             bugs.step(dt, &ANCHORS, &ALIVE);
         }
-        bugs.layout(&mut node, [&frame; 3]);
+        bugs.layout(&mut node, &[&frame; 3]);
         assert!(bugs.bugs.iter().all(|b| b.grow >= GROW_TIME - 1e-6));
 
         // Wear the bug farthest from its two siblings down, one hit per
@@ -1282,7 +1404,7 @@ mod tests {
         let mut last_abs_scale = f32::MAX;
         for _ in 0..40 {
             bugs.step(dt, &ANCHORS, &ALIVE);
-            bugs.layout(&mut node, [&frame; 3]);
+            bugs.layout(&mut node, &[&frame; 3]);
             for (k, &i) in marked_idx.iter().enumerate() {
                 let b = &bugs.bugs[i];
                 if b.dying.is_some() {
@@ -1384,7 +1506,7 @@ mod tests {
         let mut came_back = vec![false; marked_idx.len()];
         for _ in 0..((RESPAWN_MAX + 2.0) / dt) as usize {
             bugs.step(dt, &ANCHORS, &ALIVE);
-            bugs.layout(&mut node, [&frame; 3]);
+            bugs.layout(&mut node, &[&frame; 3]);
             for (k, &i) in marked_idx.iter().enumerate() {
                 if !came_back[k] && bugs.bugs[i].respawn.is_none() {
                     came_back[k] = true;
@@ -1450,7 +1572,7 @@ mod tests {
         };
         let dt = 0.05;
         let scale = BUG_SIZE / 10.0;
-        let mut bugs = Bugs::new([&frame; 3]);
+        let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
         bugs.step(dt, &ANCHORS, &ALIVE);
         // A few steps into the growth: the bugs hold their exact spawn
         // spots, so the positions below are stable, and the rounds below
@@ -1482,7 +1604,7 @@ mod tests {
         };
         for _ in 0..40 {
             bugs.step(dt, &ANCHORS, &ALIVE);
-            bugs.layout(&mut node, [&frame; 3]);
+            bugs.layout(&mut node, &[&frame; 3]);
             for (i, b) in bugs.bugs.iter().enumerate() {
                 if b.dying.is_some() {
                     assert_eq!(b.grow, frozen_grow[i], "a dying bug kept growing");
@@ -1534,7 +1656,7 @@ mod tests {
         // Park a fully grown bug on its exact destination and watch its
         // counter climb one hit per full interval, capping at
         // [MAX_HEALTH].
-        let mut parked = Bugs::new([&frame; 3]);
+        let mut parked = Bugs::new(&[&frame; 3], Species::bug());
         parked.step(dt, &ANCHORS, &ALIVE);
         let b = &mut parked.bugs[0];
         b.grow = GROW_TIME;
@@ -1576,7 +1698,7 @@ mod tests {
         // A bug still on its walk recovers nothing: 900 px out at the
         // top walking speed (30 px/s) is 30 s of walking, so it cannot
         // reach its destination within the 20 s window below.
-        let mut walking = Bugs::new([&frame; 3]);
+        let mut walking = Bugs::new(&[&frame; 3], Species::bug());
         walking.step(dt, &ANCHORS, &ALIVE);
         let b = &mut walking.bugs[0];
         b.grow = GROW_TIME;
@@ -1632,7 +1754,7 @@ mod tests {
             ];
         };
 
-        let mut bugs = Bugs::new([&frame; 3]);
+        let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
         bugs.step(dt, &ANCHORS, &ALIVE);
         // Bug 1 parks on its spot; bugs 0 and 2 sit 900 px out, so
         // neither can arrive within this test's window.
@@ -1679,7 +1801,7 @@ mod tests {
         );
 
         // And a bug that parks with no company chatters nothing.
-        let mut alone = Bugs::new([&frame; 3]);
+        let mut alone = Bugs::new(&[&frame; 3], Species::bug());
         alone.step(dt, &ANCHORS, &ALIVE);
         pin(&mut alone, 0, 0.0);
         pin(&mut alone, 1, 900.0);
@@ -1717,7 +1839,7 @@ mod tests {
             generation: 0,
         };
         let dt = 0.05;
-        let mut bugs = Bugs::new([&frame; 3]);
+        let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
 
         // The first step spawns plant one's batch: three bugs pop up,
         // each with its own in-range plopp clip, and none of them has
@@ -1820,7 +1942,7 @@ mod tests {
             generation: 0,
         };
         let dt = 0.05;
-        let mut bugs = Bugs::new([&frame; 3]);
+        let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
         // Plant 0's batch spawns and grows to its parking spot.
         bugs.step(dt, &ANCHORS, &ALIVE);
         for _ in 0..200 {
@@ -1868,7 +1990,7 @@ mod tests {
             generation: 0,
         };
         let dt = 0.05;
-        let mut bugs = Bugs::new([&frame; 3]);
+        let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
         // Plant 0 grows: its batch of three lands and grows.
         bugs.step(dt, &ANCHORS, &ALIVE);
         for _ in 0..200 {
@@ -1907,7 +2029,7 @@ mod tests {
             generation: 0,
         };
         let dt = 0.05;
-        let mut bugs = Bugs::new([&frame; 3]);
+        let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
         // Plant 0 grows first: its batch of three lands.
         bugs.step(dt, &ANCHORS, &ALIVE);
         assert_eq!(bugs.bugs.len(), BUGS_PER_PLANT);
@@ -1947,7 +2069,7 @@ mod tests {
             generation: 0,
         };
         let dt = 0.05;
-        let mut bugs = Bugs::new([&frame; 3]);
+        let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
         let alive = [true; 6];
         // Every plant is living and un-batched: all six batches land in
         // the first step, filling the pool.
@@ -1956,5 +2078,129 @@ mod tests {
         // A further step spawns nothing new: the pool is full.
         bugs.step(dt, &ANCHORS, &alive);
         assert_eq!(bugs.bugs.len(), BUGS_PER_PLANT * 6);
+    }
+
+    /// A louse walk frame, the other tests' 10x10 stand-in sprite.
+    fn louse_frame() -> frost::Shape {
+        frost::Shape::Sprite {
+            data: std::sync::Arc::new([0u8; 1]),
+            width: 10,
+            height: 10,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+            filter: frost::SpriteFilter::Linear,
+            generation: 0,
+        }
+    }
+
+    /// The louse art walks to the left, so the species flip mirrors the
+    /// bug's facing rule: moving right renders a negative x scale (the
+    /// art, mirrored), moving left renders a positive one (the art's own
+    /// direction).
+    #[test]
+    fn a_louse_flips_the_opposite_way_from_a_bug() {
+        let f = louse_frame();
+        let mut lice = Bugs::new(&[&f; 2], Species::louse());
+        let dt = 0.05;
+        // Spawn the first batch and grow it out at once.
+        lice.step(dt, &ANCHORS, &ALIVE);
+        for b in &mut lice.bugs {
+            b.grow = GROW_TIME;
+            b.placed = true;
+        }
+        let mut node = SceneNode {
+            children: (0..BUGS_PER_PLANT)
+                .map(|_| Box::new(frost::SceneNode::default()))
+                .collect(),
+            ..Default::default()
+        };
+        let b = &lice.bugs[0];
+        let target = [
+            ANCHORS[b.home][0] + b.idle[0],
+            ANCHORS[b.home][1] + b.idle[1],
+        ];
+        // Walking right: the left-facing art must mirror.
+        lice.bugs[0].pos = [target[0] - 80.0, target[1]];
+        for _ in 0..4 {
+            lice.step(dt, &ANCHORS, &ALIVE);
+        }
+        lice.layout(&mut node, &[&f; 2]);
+        assert!(
+            lice.bugs[0].facing > 0.0,
+            "walking right, the facing reads rightward"
+        );
+        assert!(
+            node.children[0].scale[0] < 0.0,
+            "the left-facing art flips to walk right"
+        );
+        // Walking left: the art walks its own way, unflipped.
+        lice.bugs[0].pos = [target[0] + 80.0, target[1]];
+        for _ in 0..4 {
+            lice.step(dt, &ANCHORS, &ALIVE);
+        }
+        lice.layout(&mut node, &[&f; 2]);
+        assert!(
+            lice.bugs[0].facing < 0.0,
+            "walking left, the facing reads leftward"
+        );
+        assert!(
+            node.children[0].scale[0] > 0.0,
+            "the left-facing art walks its own direction unmirrored"
+        );
+        // A long walk never lands on a third frame.
+        for _ in 0..200 {
+            lice.step(dt, &ANCHORS, &ALIVE);
+        }
+        assert!(
+            lice.bugs.iter().all(|b| b.frame < 2),
+            "the walk clock wraps over the louse's two frames"
+        );
+    }
+
+    /// A louse starts with [LICE_START_HEALTH] hits and, once it has
+    /// reached its plant, recovers [LICE_REGEN_HITS] hits every
+    /// [LICE_REGEN_TIME] seconds — climbing all the way to [MAX_HEALTH],
+    /// where it stops.
+    #[test]
+    fn a_louse_heals_two_hits_every_ten_seconds_at_its_plant() {
+        let f = louse_frame();
+        let mut lice = Bugs::new(&[&f; 2], Species::louse());
+        let dt = 0.05;
+        lice.step(dt, &ANCHORS, &ALIVE);
+        assert!(
+            lice.bugs.iter().all(|b| b.hits == LICE_START_HEALTH),
+            "lice are born on {} hits",
+            LICE_START_HEALTH
+        );
+        let ground = lice.ground;
+        let b = &mut lice.bugs[0];
+        b.grow = GROW_TIME;
+        b.placed = true;
+        // Drop it exactly on its park spot: parked from the first step.
+        b.pos = [
+            ANCHORS[b.home][0] + b.idle[0],
+            ANCHORS[b.home][1] + b.idle[1] + ground,
+        ];
+        b.hits = 1;
+        b.parked = 0.0;
+        // One recovery tick pays two hits.
+        for _ in 0..(LICE_REGEN_TIME / dt) as u32 {
+            lice.step(dt, &ANCHORS, &ALIVE);
+        }
+        assert_eq!(
+            lice.bugs[0].hits,
+            1 + LICE_REGEN_HITS,
+            "one tick at the plant, two hits recovered"
+        );
+        // Another forty parked seconds climb it to the cap and no higher.
+        for _ in 0..(40.0 / dt) as u32 {
+            lice.step(dt, &ANCHORS, &ALIVE);
+        }
+        assert_eq!(lice.bugs[0].hits, MAX_HEALTH, "recovery stops at the cap");
     }
 }

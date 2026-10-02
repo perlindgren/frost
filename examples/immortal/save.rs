@@ -8,7 +8,7 @@
 //! randomizer — so a reloaded game continues the exact same random
 //! streams, and the demo's clock, the tools and their poses, the plants
 //! and their water reserves, the fallen fruit, the basket's fruit, the
-//! bugs, the vipers, and the worms.
+//! bugs, the lice, the vipers, and the worms.
 //!
 //! The format is versioned: [VERSION] names the layout this build reads,
 //! and [load] rejects a file written by any other version, so a future
@@ -26,7 +26,7 @@ use crate::{
 
 /// The snapshot format's version: the layout this build reads and writes.
 /// [load] rejects files whose version differs.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// A snapshot load's failure: the file is missing or unreadable, it is
 /// not valid RON, or it was written by another format version.
@@ -51,6 +51,9 @@ pub struct Snapshot {
     pub seed: u64,
     /// The bug swarm's random stream's state — the spawn and wander source.
     pub bug_seed: u64,
+    /// The louse swarm's random stream's state, its own scramble of the
+    /// seed — the same reproducibility, an independent draw order.
+    pub lice_seed: u64,
     /// The demo's running clock, in real seconds, from the game's start.
     pub time: f32,
     /// The particle emission accumulator.
@@ -96,6 +99,8 @@ pub struct Snapshot {
     pub falls: Vec<FallState>,
     /// The bug swarm's state.
     pub bugs: bugs::BugsState,
+    /// The louse swarm's state.
+    pub lice: bugs::BugsState,
     /// The vipers' swarm state.
     pub vipers: vipers::VipersState,
     /// The worms' swarm state.
