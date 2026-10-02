@@ -88,9 +88,11 @@ const TICK_IN: f32 = 3.0;
 ///
 /// The flags the application sets per row: `head` marks a container head
 /// (its value paints bold), `val_color` is the final value color — a type
-/// color, or the palette color of a spot this row owns — and `add`/`del`
-/// show the `+`/`×` buttons. A row showing `×` is the draggable kind: its
-/// entries can be reordered by dragging.
+/// color, or the palette color of a spot this row owns — `band` paints the
+/// row under the selection band — one per physical row of the selected
+/// logical row, which a spot can span — and `add`/`del` show the
+/// `+`/`×` buttons. A row showing `×` is the draggable kind: its entries
+/// can be reordered by dragging.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TreeLine<'a> {
     /// The row's key, painted in weight 700.
@@ -106,6 +108,8 @@ pub struct TreeLine<'a> {
     /// Whether the row shows the red `×` button, and may be reordered by
     /// dragging.
     pub del: bool,
+    /// Whether the selection band paints under this row.
+    pub band: bool,
 }
 
 /// The metrics and colors of a tree view.
@@ -140,7 +144,7 @@ pub struct TreeStyle {
     pub max_h: f32,
     /// The key text color.
     pub key: Color,
-    /// The selection band color, under the selected row.
+    /// The selection band color, under each row whose `band` is set.
     pub band: Color,
     /// The `+` plate color.
     pub add_bg: Color,
@@ -282,8 +286,6 @@ pub struct TreeSpec<'a> {
     /// Whether the view is folded: rows, body and grip are inert, only
     /// the close `×` answers.
     pub folded: bool,
-    /// The selected row, painted with the band color.
-    pub selected: Option<usize>,
     /// The vertical scroll, in pixels from the top of the row range.
     pub scroll: f32,
     /// The horizontal scroll, in pixels from the left of the row range.
@@ -647,7 +649,7 @@ impl Ui {
                         continue;
                     }
                     let ty = y - st.lift * st.size;
-                    if spec.selected == Some(i) {
+                    if row.band {
                         ctx.rectangle(
                             (body[0] + body[2]) / 2.0,
                             y,
@@ -972,6 +974,7 @@ mod tests {
             },
             add: false,
             del: false,
+            band: false,
         }
     }
 
@@ -988,6 +991,7 @@ mod tests {
             },
             add: false,
             del: false,
+            band: false,
         },
         TreeLine {
             key: "beta",
@@ -1001,6 +1005,7 @@ mod tests {
             },
             add: false,
             del: false,
+            band: false,
         },
         TreeLine {
             key: "gamma",
@@ -1014,6 +1019,7 @@ mod tests {
             },
             add: true,
             del: false,
+            band: false,
         },
         TreeLine {
             key: "delta",
@@ -1027,6 +1033,7 @@ mod tests {
             },
             add: true,
             del: true,
+            band: false,
         },
         TreeLine {
             key: "epsilon",
@@ -1040,6 +1047,7 @@ mod tests {
             },
             add: false,
             del: true,
+            band: false,
         },
         TreeLine {
             key: "zeta",
@@ -1053,6 +1061,7 @@ mod tests {
             },
             add: false,
             del: false,
+            band: false,
         },
         TreeLine {
             key: "eta",
@@ -1066,6 +1075,7 @@ mod tests {
             },
             add: false,
             del: false,
+            band: false,
         },
         TreeLine {
             key: "theta",
@@ -1079,6 +1089,7 @@ mod tests {
             },
             add: false,
             del: false,
+            band: false,
         },
         TreeLine {
             key: "iota",
@@ -1092,6 +1103,7 @@ mod tests {
             },
             add: false,
             del: false,
+            band: false,
         },
         TreeLine {
             key: "kappa",
@@ -1105,6 +1117,7 @@ mod tests {
             },
             add: false,
             del: false,
+            band: false,
         },
     ];
 
@@ -1124,7 +1137,6 @@ mod tests {
             body: Some(body),
             close: [body[2] - 17.0, body[3] + 28.0],
             folded: false,
-            selected: None,
             scroll: 0.0,
             sx: 0.0,
             size: [body[2] - body[0], body[3] - body[1]],
