@@ -9,7 +9,10 @@
 //! cursor's sprite, and a stored one, mirrored in the held-items panel. It
 //! starts with neither. Pressing and releasing the right mouse button (both through
 //! [`frost::Context::mouse_button_down`]) switches the two: the stored
-//! tool becomes the active one and the active one is stored. A left click
+//! tool becomes the active one and the active one is stored — while the
+//! dock's two cells trade their tools along mirrored arcs, one bending
+//! above and the other below the cells' line by half the distance
+//! between them. A left click
 //! on a slot — a press and a release on the same slot — swaps the active
 //! tool with the slot's: the tool in a populated slot moves to the mouse,
 //! and the active tool moves into an empty slot, in which case the mouse
@@ -352,6 +355,40 @@ const PLAY_SWELL: f32 = 0.12;
 
 /// The Play button's "Play" label's size, in pixels.
 const PLAY_LABEL_SIZE: f32 = 54.0;
+
+/// One dock cell's leg of a tool swap: the cell's tool rides an arch to
+/// the other cell, its pose written in the held panel's local space.
+#[derive(Clone, Copy)]
+struct CellFlight {
+    /// The cell's rest spot, where the flight starts — or, for a swap
+    /// pressed mid-flight, the cell's spot at the press.
+    from: [f32; 2],
+    /// The other cell's rest spot, where it lands.
+    to: [f32; 2],
+    /// The arch's height at its middle, in panel pixels: positive rises
+    /// above the cells' line, negative dips below. Half the distance
+    /// between the cells, by the swap's construction.
+    bump: f32,
+    /// Seconds flown so far.
+    t: f32,
+    /// The flight's total time, in seconds.
+    dur: f32,
+}
+
+/// One swap flight's time, in seconds.
+const SWAP_FLIGHT_TIME: f32 = 0.35;
+
+/// The flying cell's tool spot at flight fraction `u`: the chord is
+/// walked with a smoothstep — eased out of one cell, eased into the
+/// other — while a parabola bends it off the chord, [CellFlight::bump]
+/// high at `u` = half and back on the line at both ends.
+fn cell_flight_pos(fly: &CellFlight, u: f32) -> [f32; 2] {
+    let e = u * u * (3.0 - 2.0 * u);
+    [
+        fly.from[0] + (fly.to[0] - fly.from[0]) * e,
+        fly.from[1] + (fly.to[1] - fly.from[1]) * e + fly.bump * (4.0 * u * (1.0 - u)),
+    ]
+}
 
 /// Whether the user-space point `p` is inside the Play button's
 /// rectangle: the button's half extents, centered on
@@ -1153,6 +1190,9 @@ struct Demo {
     /// as the fruits drop and never removed — landed fruits stay where
     /// they fell.
     falls: Vec<Fall>,
+    /// The tool swap's flights, while they are in the air — one per
+    /// dock cell, riding [CellFlight] arcs in opposite bends.
+    cell_fly: Option<[CellFlight; 2]>,
     /// Whether the game-over overlay is up: it opens with the demo, comes
     /// back up whenever the bench goes bare after the player has planted
     /// — the last survivor withered away — and comes down when the player
@@ -1267,6 +1307,7 @@ impl frost::Process for Demo {
         self.play_bug_events(&events);
         self.play_bug_events(&lice_events);
         self.handle_input(ctx);
+        self.step_cell_flight(ctx, dt);
 
         // A seed dropped this frame starts flying: the flight poses its
         // pivot in the held-fruit node — before the basket walls push and
@@ -1425,6 +1466,7 @@ impl Demo {
             slices,
             basket_seed: true,
             vipers: vipers::Vipers::new(VIPER_IMAGE),
+            cell_fly: None,
             // The game-over overlay opens with the demo: the bench is
             // bare, so the player sees it over the whole window until the
             // first Play press. The bench never had a plant planted, so
@@ -1795,9 +1837,39 @@ impl Demo {
 
         // A press followed by a release of the right mouse button switches
         // the two tools the mouse holds: the stored one becomes the active
-        // one and the active one is stored, each in its upright, at-rest
-        // pose.
+        // one and the active one is stored, while the dock's cells arc
+        // their tools into each other's spots.
         if self.right_pressed && !right {
+            // The dock's two tools trade places at once, in mirrored
+            // arcs: the left cell's tool dips below the cells' line,
+            // the right cell's tool rises above it, each bending off
+            // the chord by half the distance between the cells at the
+            // middle. From the cells' current spots, so a swap pressed
+            // mid-flight bends on from where the tools actually are.
+            let (p0, p1) = {
+                let panel = &ctx.scene().root.children[CHILD_HELD];
+                (
+                    panel.children[0].transform.apply([0.0, 0.0]),
+                    panel.children[1].transform.apply([0.0, 0.0]),
+                )
+            };
+            let half = (held_local(1)[0] - held_local(0)[0]).abs() / 2.0;
+            self.cell_fly = Some([
+                CellFlight {
+                    from: p0,
+                    to: held_local(1),
+                    bump: -half,
+                    t: 0.0,
+                    dur: SWAP_FLIGHT_TIME,
+                },
+                CellFlight {
+                    from: p1,
+                    to: held_local(0),
+                    bump: half,
+                    t: 0.0,
+                    dur: SWAP_FLIGHT_TIME,
+                },
+            ]);
             std::mem::swap(&mut self.active, &mut self.held);
             self.set_active(ctx, self.active);
         }
@@ -2523,6 +2595,7 @@ impl Demo {
         }
         self.picking = None;
         self.flying = None;
+        self.cell_fly = None;
         self.press_slot = None;
         self.right_pressed = false;
         self.acc = 0.0;
@@ -2662,6 +2735,10 @@ impl Demo {
         self.time = snapshot.time;
         self.acc = snapshot.acc;
         self.over = snapshot.over;
+        // A swap flight is too short a moment to snapshot: it is simply
+        // dropped, and the cells' per-frame step settles them back onto
+        // their spots.
+        self.cell_fly = None;
         self.ever_planted = snapshot.ever_planted;
         self.slots = snapshot.slots;
         self.active = snapshot.active;
@@ -2859,13 +2936,57 @@ impl Demo {
         });
     }
 
+    /// Arcs the swap flights, one per dock cell, along their mirrored
+    /// arches; on landing the cells snap to their rest spots and show
+    /// the swapped tools. With no flight in the air the cells simply
+    /// hold their rest spots — a reload or restart mid-flight can never
+    /// strand a tool off its cell.
+    fn step_cell_flight(&mut self, ctx: &mut frost::Context, dt: f32) {
+        match &mut self.cell_fly {
+            Some(flies) => {
+                let mut done = true;
+                for (fly, cell) in flies
+                    .iter_mut()
+                    .zip(ctx.scene().root.children[CHILD_HELD].children.iter_mut())
+                {
+                    fly.t = (fly.t + dt).min(fly.dur);
+                    done &= fly.t >= fly.dur;
+                    let p = cell_flight_pos(fly, fly.t / fly.dur);
+                    cell.transform = frost::Transform::translate(p);
+                }
+                if done {
+                    self.cell_fly = None;
+                    let held = &mut ctx.scene().root.children[CHILD_HELD];
+                    for (i, cell) in held.children.iter_mut().take(2).enumerate() {
+                        cell.transform = frost::Transform::translate(held_local(i));
+                    }
+                    self.sync_held(ctx);
+                }
+            }
+            None => {
+                let held = &mut ctx.scene().root.children[CHILD_HELD];
+                for (i, cell) in held.children.iter_mut().take(2).enumerate() {
+                    cell.transform = frost::Transform::translate(held_local(i));
+                }
+            }
+        }
+    }
+
     /// Mirrors the mouse's two tools into the held-items panel: the active
     /// tool in the left cell, the stored one in the right, each at its
     /// at-rest frame in the held-fit scale — or an empty cell for `None`.
     fn sync_held(&mut self, ctx: &mut frost::Context) {
+        // While the swap flights are in the air each cell rides with —
+        // and shows — the tool leaving it; the swap only reads true in
+        // the cells once both have landed.
+        let (left, right) = if self.cell_fly.is_some() {
+            (self.held, self.active)
+        } else {
+            (self.active, self.held)
+        };
         let held = &mut ctx.scene().root.children[CHILD_HELD];
-        self.cell_set(&mut held.children[0], self.active);
-        self.cell_set(&mut held.children[1], self.held);
+        self.cell_set(&mut held.children[0], left);
+        self.cell_set(&mut held.children[1], right);
     }
 
     /// Puts `tool` — or nothing — in a held cell's node: the tool's shape
@@ -3563,6 +3684,57 @@ mod tests {
         assert!(demo.falls.is_empty());
         assert!(!demo.pouring);
         assert!(demo.over);
+    }
+
+    /// The swap's mirrored arcs: each tool leaves its cell, bends off
+    /// the cells' chord by half the slot distance — the left one below,
+    /// the right one above — and lands on the other cell's spot.
+    #[test]
+    fn the_swap_arcs_rise_and_dip_half_a_slot_apart() {
+        let d = held_local(1)[0] - held_local(0)[0];
+        let down = CellFlight {
+            from: held_local(0),
+            to: held_local(1),
+            bump: -d / 2.0,
+            t: 0.0,
+            dur: 1.0,
+        };
+        let up = CellFlight {
+            from: held_local(1),
+            to: held_local(0),
+            bump: d / 2.0,
+            t: 0.0,
+            dur: 1.0,
+        };
+        // Both legs start on their own cell and land on the other's.
+        for (fly, a, b) in [
+            (down, held_local(0), held_local(1)),
+            (up, held_local(1), held_local(0)),
+        ] {
+            let (start, end) = (cell_flight_pos(&fly, 0.0), cell_flight_pos(&fly, 1.0));
+            assert!(
+                (start[0] - a[0]).abs() < 1e-4
+                    && (start[1] - a[1]).abs() < 1e-4
+                    && (end[0] - b[0]).abs() < 1e-4
+                    && (end[1] - b[1]).abs() < 1e-4,
+                "the leg misses its cells: {start:?} -> {end:?}"
+            );
+        }
+        let low = cell_flight_pos(&down, 0.5);
+        let high = cell_flight_pos(&up, 0.5);
+        // The midpoints stand over the cells' chord — dead center, a
+        // half slot below and above it respectively.
+        assert!(low[0].abs() < 1e-4 && high[0].abs() < 1e-4, "centered");
+        assert!(
+            (low[1] + d / 2.0).abs() < 1e-4 && (high[1] - d / 2.0).abs() < 1e-4,
+            "the bends are off: {low:?} vs {high:?}"
+        );
+        // The dip is the dip and the rise is the rise: flanking points
+        // stay between the bend and the line.
+        let a = cell_flight_pos(&down, 0.35);
+        let b = cell_flight_pos(&down, 0.65);
+        assert!(a[1] > low[1] && b[1] > low[1] && a[1] < 0.0 && b[1] < 0.0);
+        assert!((a[1] - b[1]).abs() < 1e-3, "the arch is symmetric");
     }
 
     /// The Play button is the rectangle `PLAY_HALF` around its center at
