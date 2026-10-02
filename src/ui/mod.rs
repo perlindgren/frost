@@ -51,6 +51,7 @@ use crate::{Color, Context, TextError};
 mod panel;
 mod style;
 mod table;
+mod tree;
 
 use panel::PanelState;
 #[cfg(test)]
@@ -60,6 +61,7 @@ use table::TableFrame;
 #[cfg(test)]
 use table::resolve_cols;
 pub use table::{Align, Col, ColSize};
+pub use tree::{TreeEvent, TreeLine, TreeOut, TreeSpec, TreeState, TreeStyle};
 
 /// The FNV-1a parameters: a cheap, deterministic byte hash. Determinism
 /// matters — widget ids key the drag capture and the panel positions, so
@@ -784,7 +786,7 @@ mod tests {
 
     /// The repo's UI font, read once; the test binary runs from the crate
     /// root, so the asset path is stable.
-    fn font() -> Arc<[u8]> {
+    pub(super) fn font() -> Arc<[u8]> {
         static FONT: std::sync::OnceLock<Arc<[u8]>> = std::sync::OnceLock::new();
         FONT.get_or_init(|| {
             let path = format!(
@@ -800,12 +802,12 @@ mod tests {
         .clone()
     }
 
-    fn ui() -> Ui {
+    pub(super) fn ui() -> Ui {
         Ui::from_bytes(&font()).expect("test font")
     }
 
     /// Feeds one frame of input through `begin_input`.
-    fn frame(ui: &mut Ui, pointer: Option<[f32; 2]>, down: bool) {
+    pub(super) fn frame(ui: &mut Ui, pointer: Option<[f32; 2]>, down: bool) {
         ui.begin_input(UiInput {
             pointer,
             down,

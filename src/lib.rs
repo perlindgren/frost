@@ -179,7 +179,9 @@ mod diagnostics;
 pub use diagnostics::{Diagnostics, DiagnosticsFlags};
 
 mod ui;
-pub use ui::{Align, Col, ColSize, Ui, UiStyle};
+pub use ui::{
+    Align, Col, ColSize, TreeEvent, TreeLine, TreeOut, TreeSpec, TreeState, TreeStyle, Ui, UiStyle,
+};
 
 mod rng;
 pub use rng::*;
