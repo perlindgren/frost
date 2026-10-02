@@ -811,17 +811,19 @@ disk. Run with `cargo run --example <name>`
 |              | inverted, position/growth/facing/frame frozen), landing on its back;|
 |              | then over 0.5 s the inverted sprite evaporates, shrinking to nothing|
 |              | while its center sinks through the grass; after a random 5-10 s    |
-|              | delay the bug pops back up at its spawn spot, fully healed; the five
+|              | delay the bug pops back up at its spawn spot, fully healed; the five|
 |              | slices' joints and flower anchors load at startup from the embedded |
 |              | `assets/sprites/plant1..5.ron` files (serde + ron — the hand-picked |
-|              | constants are gone); a 14- |
-|              | slot worm swarm burrows up, peristalses along the bench (two poses, |
-|              | hull-picked spawn/target spots off a seedable `Rng`), and digs back |
-|              | in; every draw order composes through the `zorder` module's bands   |
-|              | (ground = −y, bench slots on top, grass/UI/overlay pinned outside); |
-|              | F5 / F9 save & reload the whole game as versioned RON under         |
-|              | `~/.frost/immortal/` — the snapshot carries the random streams, so |
-|              | a reload continues each stream exactly (`--load` loads at startup)  |
+|              | constants are gone); a 14-slot worm swarm burrows up and walks the  |
+|              | bench on the `worm` example's stride — the rear grips while the body|
+|              | reaches, the front holds while the contract slides it up — two poses|
+|              | riding the stride's halves, hull-picked spawn/target spots off a    |
+|              | seedable `Rng`, and digs back in; every draw order composes through |
+|              | the `zorder` module's bands (ground = −y, bench slots on top,       |
+|              | grass/UI/overlay pinned outside); F5 / F9 save & reload the whole   |
+|              | game as versioned RON under `~/.frost/immortal/` — the snapshot     |
+|              | carries the random streams, so a reload continues each stream exactly|
+|              | (`--load` loads at startup)                                         |
 | sprite_util  | up to seven picked PNGs (rfd dialogs): the window splits into a     |
 |              | work area and a bottom strip of 100x100 slots holding the           |
 |              | minimized originals (click a slot to activate, drag one onto        |
@@ -902,7 +904,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 183 passed + 5 doctests
-cargo test --examples    # expect 133 passed (unit tests inside the examples;
+cargo test --examples    # expect 135 passed (unit tests inside the examples;
                            # ron_view/tree.rs compiles into both targets, so its 9 parser tests run twice)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example worm     # peristaltic crawl, edge wrap; exits 0

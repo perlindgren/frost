@@ -11,13 +11,17 @@
 //!   scale stretching from 0 to 1 over [EMERGE_TIME].
 //! - **Crawling** — walking in a straight line toward another random
 //!   point of the same hull, at least [MIN_TRAVEL] pixels from the spawn
-//!   spot, its body peristaltic-beating between the two frames. The
-//!   sprite's axis aims at 0 degrees, so the node's transform rotates the
-//!   body onto the bearing drawn at emergence — the direction toward the
-//!   target — and the body's x scale pulses between [STRETCH_SHORT] and
-//!   [STRETCH_LONG] as the frames flip: the trailing end holds on the
-//!   worm's position while the leading end pumps forward and back — the
-//!   peristaltic crawl.
+//!   spot. The sprite's axis aims at 0 degrees, so the node's transform
+//!   rotates the body onto the bearing drawn at emergence — the direction
+//!   toward the target. The walk itself is the `worm` example's stride:
+//!   the body's x scale breathes on a cosine between [STRETCH_SHORT] and
+//!   [STRETCH_LONG] — gathered, reaching, gathered — and the worm gains
+//!   ground only while it contracts. The rear grips the soil through the
+//!   stretch half of each stride while the front reaches; through the
+//!   contract half the front holds and the rear slides up to it, exactly
+//!   [STRIDE_LEN] per stride, with a speed that is continuous and zero
+//!   at every grip — the worm surges and settles once per stride, at the
+//!   stride rate its [Worm::speed] divides out of [STRIDE_LEN].
 //! - **Burrowing** — once the target is reached, sinking back into the
 //!   soil over [SINK_TIME], then starting the next underground delay.
 //!
@@ -28,10 +32,12 @@
 //!
 //! The two peristaltic frames (`Worm1_crop.png`, the arched pose, and
 //! `Worm2_crop.png`, the stretched pose) are different pixel sizes; each
-//! is scaled to a rendered body length of [WORM_SIZE], and the beat then
-//! stretches the body's x scale — [STRETCH_SHORT] in the arched frame,
-//! [STRETCH_LONG] in the stretched frame — so the body shortens and
-//! lengthens with the wave, while the frames' different heights pulse its
+//! is scaled to a rendered body length of [WORM_SIZE], and the frame
+//! follows the stride's half: the stretched pose reaches through the
+//! stretch, the arched pose gathers through the contract. Since both
+//! frames normalize to the same neutral length, the cosine breath — not
+//! the frame swap — sets the body's actual length continuously, so
+//! neither pose flip pops it; the frames' different heights pulse its
 //! thickness.
 //!
 //! Spawn and target points come from the swarm's own
@@ -61,15 +67,10 @@ const EMERGE_TIME: f32 = 0.6;
 /// How long a worm takes to burrow back into the soil, in seconds.
 const SINK_TIME: f32 = 0.6;
 
-/// The crawling speed range, in pixels per second.
+/// The crawling speed range, in pixels per second, averaged over whole
+/// strides: the gait's stride rate falls out as speed / [STRIDE_LEN].
 const SPEED_MIN: f32 = 8.0;
 const SPEED_MAX: f32 = 15.0;
-
-/// The peristaltic beat range, in frame flips per second: the body
-/// alternates its two frames at this rate while the worm is out of the
-/// soil.
-const BEAT_MIN: f32 = 1.0;
-const BEAT_MAX: f32 = 2.0;
 
 /// The underground delay range, in seconds: the wait between one
 /// burrowing and the next emergence, drawn per worm on each way in.
@@ -86,15 +87,24 @@ const MIN_TRAVEL: f32 = 120.0;
 /// the target lands exactly on it.
 const ARRIVE: f32 = 2.0;
 
-/// The body's x scale in the arched frame (the first sprite, the short
-/// arched pose): the body shortens to this share of its neutral
-/// [WORM_SIZE] length.
+/// The breath's floor: how short the body hangs at each stride's start,
+/// gathered and gripping — the arched frame's pose.
 const STRETCH_SHORT: f32 = 0.85;
 
-/// The body's x scale in the stretched frame (the second sprite, the long
-/// stretched pose): the body lengthens to this share of its neutral
-/// [WORM_SIZE] length.
+/// The breath's ceiling: how far the body reaches at each stride's
+/// middle — the stretched frame's pose.
 const STRETCH_LONG: f32 = 1.15;
+
+/// The breath's amplitude: half the reach between [STRETCH_SHORT] and
+/// [STRETCH_LONG]. The x scale rides one cosine between these extremes
+/// per stride — contracted at the stride's start, stretched at its
+/// middle.
+const AMP: f32 = (STRETCH_LONG - STRETCH_SHORT) / 2.0;
+
+/// Ground gained per stride: the rear slides exactly the difference
+/// between the stretched and the contracted body length while the
+/// contract runs — the identity the `worm` example walks on.
+const STRIDE_LEN: f32 = WORM_SIZE * (STRETCH_LONG - STRETCH_SHORT);
 
 /// The target-retry budget: on emergence the worm draws a target at least
 /// [MIN_TRAVEL] pixels from its spawn point, redrawing up to this many
@@ -137,20 +147,20 @@ struct Worm {
     /// — which aims at 0 degrees — rotates onto it, and the worm holds it
     /// until it burrows.
     heading: f32,
-    /// The crawling speed, in pixels per second.
+    /// The crawling speed, in pixels per second, averaged over whole
+    /// strides: the gait's stride rate is speed / [STRIDE_LEN].
     speed: f32,
-    /// The peristaltic beat clock, in frame flips: it advances by
-    /// `beat_speed * dt` while the worm is out of the soil, and the frame
-    /// is its floor modulo 2.
+    /// The gait's phase, in strides — one per full stretch-contract
+    /// cycle. [`stride_advance`] turns it into ground gained, and the
+    /// body's breath and the frame both ride its half.
     beat: f32,
-    /// The frame the worm currently shows: 0 or 1.
+    /// The frame the worm currently shows: 0 or 1, derived from the
+    /// stride's half.
     frame: u8,
     /// The frame last laid out on the worm's node, so the shape swap — a
     /// cheap `Arc` clone — happens only on a flip: [u8::MAX] while the
     /// cache is stale — a fresh worm, a re-emergence, a restore.
     shown: u8,
-    /// The frame flip rate, in flips per second.
-    beat_speed: f32,
 }
 
 impl Worm {
@@ -163,24 +173,48 @@ impl Worm {
         }
     }
 
-    /// Crawls the worm toward its target for `dt` seconds: a straight
-    /// line at its speed, and the arrival — the burrow — when the target
-    /// is reached.
+    /// Crawls the worm toward its target for `dt` seconds with the
+    /// peristaltic gait: the stride phase advances at the rate the
+    /// worm's speed divides out of [STRIDE_LEN], and the ground gained is
+    /// exactly what [`stride_advance`] says the phase has bought — the
+    /// worm holds while it stretches and surges while it contracts,
+    /// averaging its speed over whole strides. Landing past the target
+    /// lands exactly on it and burrows.
     fn crawl(&mut self, dt: f32) {
+        let before = stride_advance(self.beat);
+        self.beat += (self.speed / STRIDE_LEN) * dt;
+        let step = stride_advance(self.beat) - before;
         let to = [self.target[0] - self.pos[0], self.target[1] - self.pos[1]];
-        let d = to[0] * to[0] + to[1] * to[1];
-        let dist = d.sqrt();
-        if dist <= ARRIVE.max(self.speed * dt) {
-            // The target is reached — or this step lands past it: the
+        let dist = (to[0] * to[0] + to[1] * to[1]).sqrt();
+        if dist <= ARRIVE.max(step) {
+            // The target is reached — or this surge lands past it: the
             // worm arrives exactly on the target and burrows.
             self.pos = self.target;
             self.phase = Phase::Burrowing;
             self.phase_t = 0.0;
             return;
         }
-        let k = self.speed * dt / dist;
-        self.pos = [self.pos[0] + to[0] * k, self.pos[1] + to[1] * k];
+        let (sin, cos) = self.heading.sin_cos();
+        self.pos = [self.pos[0] + step * cos, self.pos[1] + step * sin];
     }
+}
+
+/// The ground the gait has gained by phase `p`, in strides — the `worm`
+/// example's peristaltic stride: the rear grips the soil through each
+/// stretch half (nothing gained while the front reaches out) and slides
+/// up to the held front end through each contract half, exactly
+/// [STRIDE_LEN] per stride. The slide follows the breath's cosine, so
+/// the speed is continuous and zero at every grip.
+fn stride_advance(p: f32) -> f32 {
+    let k = p.floor();
+    let q = p - k;
+    let breath = 1.0 - AMP * (std::f32::consts::TAU * q).cos();
+    let slid = if q < 0.5 {
+        0.0
+    } else {
+        (STRETCH_LONG - breath) / (STRETCH_LONG - STRETCH_SHORT)
+    };
+    STRIDE_LEN * (k + slid)
 }
 
 /// The swarm: its [N] worms, its clock, its per-frame scales, and its
@@ -219,12 +253,10 @@ pub struct WormState {
     pub heading: f32,
     /// The crawling speed, in pixels per second.
     pub speed: f32,
-    /// The peristaltic beat clock, in frame flips.
+    /// The gait phase at save time, in strides.
     pub beat: f32,
     /// The frame the worm currently shows: 0 or 1.
     pub frame: u8,
-    /// The frame flip rate, in flips per second.
-    pub beat_speed: f32,
 }
 
 /// The swarm's snapshot state: its worms, its clock, and its randomizer's
@@ -252,7 +284,6 @@ impl From<&Worm> for WormState {
             speed: worm.speed,
             beat: worm.beat,
             frame: worm.frame,
-            beat_speed: worm.beat_speed,
         }
     }
 }
@@ -270,7 +301,6 @@ impl From<&WormState> for Worm {
             beat: s.beat,
             frame: s.frame,
             shown: u8::MAX,
-            beat_speed: s.beat_speed,
         }
     }
 }
@@ -400,12 +430,22 @@ impl Worms {
                     }
                 }
             }
-            // The peristaltic body beats while the worm is out of the
-            // soil — emerging, crawling, or burrowing — and rests
-            // underground.
+            // The gait's clock: the stride phase advances at the rate
+            // the speed divides out of [STRIDE_LEN] while the worm is
+            // out of the soil — emerging, crawling, or burrowing — and
+            // rests underground; the crawl has already advanced it (and
+            // moved the body with it). The frame rides the stride's
+            // half: the stretched pose reaches through the stretch, the
+            // arched pose gathers through the contract.
             if w.phase != Phase::Underground {
-                w.beat += w.beat_speed * dt;
-                w.frame = ((w.beat as u32) % 2) as u8;
+                if w.phase != Phase::Crawling {
+                    w.beat += (w.speed / STRIDE_LEN) * dt;
+                }
+                w.frame = if w.beat.fract() > 0.0 && w.beat.fract() < 0.5 {
+                    1
+                } else {
+                    0
+                };
             }
         }
     }
@@ -415,12 +455,12 @@ impl Worms {
     /// Each out-of-the-soil slot's transform rotates the sprite — its
     /// axis aims at 0 degrees — onto the worm's [Worm::heading] and
     /// anchors the body's trailing end, the sprite's negative x end, on
-    /// the worm's position: the body spans its full length along the
-    /// heading, so the leading end pumps forward and back as the beat's
-    /// x scale — [STRETCH_SHORT] to [STRETCH_LONG] — flips the frames —
-    /// while both scales carry the emergence and burrowing progress, 0 to
-    /// 1 while the worm rises out of the soil, 1 to 0 while it sinks
-    /// back in. A worm above ground shows its current peristaltic frame;
+    /// the worm's position — the grip the gait slides the body forward
+    /// from. The body spans its full length along the heading, its x
+    /// scale breathing between [STRETCH_SHORT] and [STRETCH_LONG] across
+    /// the stride, while both scales carry the emergence and burrowing
+    /// progress, 0 to 1 while the worm rises out of the soil, 1 to 0
+    /// while it sinks back in. A worm above ground shows its current peristaltic frame;
     /// a worm underground clears its slot.
     pub fn layout(&mut self, node: &mut frost::SceneNode, frames: [&frost::Shape; 2]) {
         for (w, child) in self.worms.iter_mut().zip(&mut node.children) {
@@ -437,18 +477,14 @@ impl Worms {
                 Phase::Crawling => 1.0,
                 Phase::Underground => unreachable!(),
             };
-            // The peristaltic beat: the body's x scale pulses between the
-            // arched and stretched stretches as the frame flips, while
-            // the y scale is the frame's own — the body's thickness
-            // pulse; both shrink with the emergence and burrowing
-            // progress `s`.
+            // The gait's breath: the body's x scale rides the stride's
+            // cosine between [STRETCH_SHORT] and [STRETCH_LONG] — the
+            // very curve [`stride_advance`] integrates — while the y
+            // scale is the frame's own: the body's thickness pulse; both
+            // shrink with the emergence and burrowing progress `s`.
             let frame_scale = self.scale[w.frame as usize];
-            let stretch = if w.frame == 0 {
-                STRETCH_SHORT
-            } else {
-                STRETCH_LONG
-            };
-            child.scale = [frame_scale * s * stretch, frame_scale * s];
+            let breath = 1.0 - AMP * (std::f32::consts::TAU * w.beat.fract()).cos();
+            child.scale = [frame_scale * s * breath, frame_scale * s];
             // The body's trailing end holds on the worm's position while
             // its leading end pumps along the heading: the sprite's axis
             // aims at 0 degrees, so the transform rotates the body onto
@@ -459,7 +495,7 @@ impl Worms {
             // stays up; the flip leaves the x axis untouched, so the
             // anchor holds in both branches.
             let (sin, cos) = w.heading.sin_cos();
-            let half = WORM_SIZE * 0.5 * s * stretch;
+            let half = WORM_SIZE * 0.5 * s * breath;
             let t = [w.pos[0] + half * cos, w.pos[1] + half * sin];
             let rot = frost::Transform::rotate(w.heading);
             let lin = if cos >= 0.0 {
@@ -486,7 +522,7 @@ impl Worms {
 
 /// Emerges `worm` out of the soil: a random spawn point inside `hull`, a
 /// random target at least [MIN_TRAVEL] pixels away, the heading from the
-/// spawn to the target, and fresh speed and beat draws from `rng`.
+/// spawn to the target, and a fresh speed draw from `rng`.
 ///
 /// A free function — not a [Worms] method — so it can draw from the
 /// swarm's randomizer while the swarm's worm pool is borrowed by the
@@ -508,7 +544,6 @@ fn emerge(worm: &mut Worm, rng: &mut Rng, hull: &[[f32; 2]]) {
     // degrees, so the layout rotates the body onto this direction.
     worm.heading = (target[1] - spawn[1]).atan2(target[0] - spawn[0]);
     worm.speed = rng.in_range(SPEED_MIN, SPEED_MAX);
-    worm.beat_speed = rng.in_range(BEAT_MIN, BEAT_MAX);
     worm.beat = 0.0;
     worm.frame = 0;
     // The slot was cleared while the worm was underground: the shape
@@ -693,7 +728,7 @@ mod tests {
     /// A worm's heading rotates its body onto its travel: the laid-out
     /// transform aims the sprite's axis — which points at 0 degrees —
     /// from the position at the target, the body's trailing end holds on
-    /// the position, and the x scale pulses with the beat's stretch.
+    /// the position, and the x scale rides the gait's breath.
     #[test]
     fn the_heading_rotates_the_body_toward_the_target() {
         let f = frames();
@@ -727,18 +762,14 @@ mod tests {
                 } else {
                     saw_right = true;
                 }
-                // The peristaltic beat: the y scale is the frame's
-                // neutral scale — the full body while crawling — and the
-                // x scale the beat's stretch times it.
+                // The gait's breath: the y scale is the frame's neutral
+                // scale — the full body while crawling — and the x scale
+                // the stride's breath times it.
                 let base = worms.scale[w.frame as usize];
-                let stretch = if w.frame == 0 {
-                    STRETCH_SHORT
-                } else {
-                    STRETCH_LONG
-                };
+                let breath = 1.0 - AMP * (std::f32::consts::TAU * w.beat.fract()).cos();
                 assert!(
-                    (c.scale[0] - base * stretch).abs() < 1e-4,
-                    "the x scale {} is not the frame scale {base} times its stretch {stretch}",
+                    (c.scale[0] - base * breath).abs() < 1e-4,
+                    "the x scale {} is not the frame scale {base} times its breath {breath}",
                     c.scale[0]
                 );
                 assert!(
@@ -749,7 +780,7 @@ mod tests {
                 // The body's trailing end — the sprite's negative x end,
                 // half the body's length behind its center — holds on
                 // the position.
-                let half = WORM_SIZE * 0.5 * stretch;
+                let half = WORM_SIZE * 0.5 * breath;
                 let tail = c.transform.apply([-half, 0.0]);
                 assert!(
                     (tail[0] - w.pos[0]).abs() < 1e-3 && (tail[1] - w.pos[1]).abs() < 1e-3,
@@ -846,5 +877,86 @@ mod tests {
             twin.step(dt, &ANCHORS);
         }
         assert_eq!(worms.state().seed, twin.state().seed, "the stream resumes");
+    }
+
+    /// The `worm` example's stride, as a curve: ground is gained only
+    /// while the body contracts, and the speed is continuous — zero at
+    /// every grip.
+    #[test]
+    fn the_gait_holds_while_reaching_and_surges_while_gathering() {
+        // The stretch half buys nothing: the rear grips.
+        assert_eq!(stride_advance(0.0), 0.0);
+        assert_eq!(stride_advance(0.25), 0.0);
+        assert!(
+            stride_advance(0.5).abs() < 1e-4,
+            "mid-stride, at full reach, the rear has not yet moved"
+        );
+        // The contract half slides the rear up to the held front end.
+        assert!(
+            (stride_advance(0.75) - 0.5 * STRIDE_LEN).abs() < 1e-3,
+            "the contract's mid-slide is half a stride"
+        );
+        assert!(
+            (stride_advance(1.0) - STRIDE_LEN).abs() < 1e-3,
+            "one stride gains one STRIDE_LEN"
+        );
+        // Monotone, and linear over whole strides.
+        let mut prev = 0.0;
+        let mut p = 0.0;
+        while p <= 6.0 {
+            let a = stride_advance(p);
+            assert!(a >= prev - 1e-4, "the gait never steps back");
+            prev = a;
+            p += 0.02;
+        }
+        assert!((stride_advance(6.0) - 6.0 * STRIDE_LEN).abs() < 1e-2);
+        // Zero speed at the grips: the slide follows the breath's sine,
+        // flat at the stride's ends.
+        let eps = 1e-3;
+        let eases_in = (stride_advance(0.5 + eps) - stride_advance(0.5)) / eps;
+        let eases_out = (stride_advance(1.0) - stride_advance(1.0 - eps)) / eps;
+        assert!(
+            eases_in < 0.05 * STRIDE_LEN && eases_out < 0.05 * STRIDE_LEN,
+            "the surge must begin and end at zero speed: {eases_in}, {eases_out}"
+        );
+    }
+
+    /// A crawling worm advances by the gait, not by the clock: nothing
+    /// while it stretches, the whole stride once the contract has run.
+    #[test]
+    fn a_crawling_worm_walks_the_gait_not_a_slide() {
+        let mut w = Worm {
+            phase: Phase::Crawling,
+            pos: [0.0, 0.0],
+            target: [400.0, 0.0],
+            heading: 0.0,
+            // Exactly one stride per second.
+            speed: STRIDE_LEN,
+            ..Worm::default()
+        };
+        // The stretch half, in four steps: no ground.
+        for _ in 0..4 {
+            w.crawl(0.125);
+        }
+        assert!(
+            w.pos[0].abs() < 1e-3 && w.pos[1].abs() < 1e-3,
+            "the rear held while the front reached: {:?}",
+            w.pos
+        );
+        assert_eq!(w.phase, Phase::Crawling);
+        // The contract half: the same wall clock now surges.
+        w.crawl(0.5);
+        assert!(
+            (w.pos[0] - STRIDE_LEN).abs() < 1e-2 && w.pos[1].abs() < 1e-2,
+            "the contract slid the rear up to the front: {:?}",
+            w.pos
+        );
+        // Over whole strides the gait averages to the worm's speed.
+        w.crawl(3.0);
+        assert!(
+            (w.pos[0] - 4.0 * STRIDE_LEN).abs() < 0.1,
+            "four strides at one a second: the speed averages out, got {}",
+            w.pos[0]
+        );
     }
 }

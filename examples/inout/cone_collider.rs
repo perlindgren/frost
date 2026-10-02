@@ -373,7 +373,6 @@ fn main() {
             center: [60.0, 10.0],
             half: [24.0, 170.0],
             tilt: 0.35,
-            ..Wall::default()
         },
         Wall {
             center: [330.0, -30.0],
