@@ -64,7 +64,13 @@
 //! The overlay also answers to keyboard shortcuts, read from the engine's
 //! key state every frame: Alt-0 toggles the overlay as a whole, Alt-1..
 //! Alt-4 toggle the charts by position among the enabled ones (top chart
-//! first), and Alt-T toggles the readout lines. A hidden part draws
+//! first), and Alt-T toggles the readout lines; Alt+'+' and Alt+'-' — the
+//! keys that type those signs wherever the user's layout puts them, the
+//! numpad pair included — grow
+//! or shrink the whole overlay — every dimension at once, the font,
+//! margins, gaps, and chart panels, stepped by a quarter of the current
+//! size and clamped between a quarter and four times the base, the
+//! readout lines re-laying out at the new font size. A hidden part draws
 //! nothing, and the layout reflows around it — the remaining lines and
 //! charts pack back into the top-left corner. The shortcuts are read, not
 //! consumed: a demo that wants the same combinations still sees them.
@@ -86,8 +92,22 @@ use crate::backend::now_millis;
 use crate::objects::TextError;
 use crate::{Color, Context, KeyCode, Layer, Process, Scene, SceneNode, Shape, Transform};
 
-/// The readout's font size in pixels per em.
+/// The readout's font size in pixels per em, at the overlay's base
+/// display scale.
 const SIZE: f32 = 32.0;
+
+/// The factor one Alt+'+' or Alt+'-' press changes the overlay's display
+/// scale by — a quarter of the current size, so presses compound smoothly
+/// in both directions.
+const SCALE_STEP: f32 = 1.25;
+
+/// The smallest display scale the overlay accepts: a quarter of the base
+/// size.
+const SCALE_MIN: f32 = 0.25;
+
+/// The largest display scale the overlay accepts: four times the base
+/// size.
+const SCALE_MAX: f32 = 4.0;
 
 /// The readout's weight on the font's `wght` variation axis: the plain
 /// Regular instance. The overlay's measurements below pair with
@@ -102,13 +122,39 @@ const LINE_GAP: f32 = 6.0;
 
 /// The readout's probe text: every character a readout line can display —
 /// the digits, the "x", the "/", the ".", the "ms", and the fixed labels.
-/// The lines' vertical extent is measured over it once, at construction,
+/// The lines' vertical extent is measured over it at construction, and
+/// again whenever the display scale changes,
 /// because neither the current text's ink (Fira Code's "8" and "9" carry a
 /// pixel of antialiasing below the baseline where the "4" does not) nor
 /// the font's metrics (both bundled fonts report degenerate ones —
 /// Leofont's ascent plus descent is about a pixel at 32 px, Fira Code's
 /// about two) is a stable extent for the lines.
 const PROBE: &str = "0123456789.x/ FPS FT PROC APP DRAW ms";
+
+/// The readout lines' vertical extent in pixels at a font size of `size`:
+/// the highest ink top minus the lowest ink bottom over [`PROBE`], so no
+/// digits change can ever move a line or the charts below it (see
+/// [`PROBE`]). A probe that carries no ink falls back to the font's
+/// ascent plus descent; a failed layout, to `size`.
+fn measure_extent(font: &[u8], size: f32) -> f32 {
+    if let Some(probe) = crate::text::layout(font, PROBE, size, WEIGHT) {
+        let (mut top, mut bottom) = (f32::NEG_INFINITY, f32::INFINITY);
+        for glyph in &probe.glyphs {
+            if let Some(raster) = crate::text::rasterize(font, glyph.id, size, WEIGHT) {
+                let ink_top = glyph.y + raster.top as f32;
+                top = top.max(ink_top);
+                bottom = bottom.min(ink_top - raster.height as f32);
+            }
+        }
+        if top.is_finite() {
+            top - bottom
+        } else {
+            probe.ascent + probe.descent
+        }
+    } else {
+        size
+    }
+}
 
 /// The smoothing time constant, in seconds: how quickly the displayed frame
 /// rate follows the real one.
@@ -350,7 +396,9 @@ impl std::ops::BitOrAssign for DiagnosticsFlags {
 /// Alt-1..Alt-4 the charts by position among the enabled ones, Alt-T the
 /// readout lines, or the [`Self::toggle_all`], [`Self::toggle_chart`], and
 /// [`Self::toggle_text`] methods — and the layout reflows around whatever
-/// is hidden.
+/// is hidden. The overlay also scales as a whole — Alt+'+' and Alt+'-'
+/// step it, [`Self::set_scale`] sets it — every dimension following, the
+/// font included.
 #[derive(Debug)]
 pub struct Diagnostics {
     /// Which statistics the overlay displays: the window-size line is
@@ -444,10 +492,15 @@ pub struct Diagnostics {
     /// Alt-4 toggle them by position among the enabled charts, top chart
     /// first, or [`Diagnostics::toggle_chart`] does.
     chart_on: Vec<bool>,
+    /// The overlay's display scale: every base dimension — [`SIZE`],
+    /// [`MARGIN`], [`LINE_GAP`], [`GRAPH_W`], [`GRAPH_H`], [`GRAPH_GAP`],
+    /// [`LINE_WIDTH`] — multiplied by it. Alt+'+' and Alt+'-' step it, or
+    /// [`Diagnostics::set_scale`] sets it.
+    scale: f32,
     /// The previous frame's toggle combinations — Alt-0, Alt-1, Alt-2,
-    /// Alt-3, Alt-4, Alt-T, in that order — for the press edge detection
-    /// in `process`.
-    prev_combos: [bool; 6],
+    /// Alt-3, Alt-4, Alt-T, Alt+'+', Alt+'-', in that order — for the
+    /// press edge detection in `process`.
+    prev_combos: [bool; 8],
 }
 
 /// The readout's line slots, in append order: the window-size line first,
@@ -487,6 +540,11 @@ enum ChartSlot {
 struct Line {
     /// The line's last text, guarding the per-frame rebuild.
     text: String,
+    /// The font size `shape` was laid out at — 0.0 before the first
+    /// layout. A display scale change makes it differ from the size the
+    /// overlay now asks for, which re-lays the line out on its next
+    /// refresh even when its text did not change.
+    size: f32,
     /// The laid-out shape of `text`, kept until `text` changes.
     shape: Option<Shape>,
     /// The laid-out width of `text`, in pixels.
@@ -507,6 +565,7 @@ impl Line {
     fn new() -> Self {
         Self {
             text: String::new(),
+            size: 0.0,
             shape: None,
             width: 0.0,
             ink_top: 0.0,
@@ -514,13 +573,15 @@ impl Line {
         }
     }
 
-    /// Re-lays out `text`, which must have just changed.
-    fn refresh(&mut self, font: &Arc<[u8]>) {
-        let Some(layout) = crate::text::layout(font, &self.text, SIZE, WEIGHT) else {
+    /// Re-lays out `text` at a font size of `size`, which must have just
+    /// changed — in text or in the overlay's display scale.
+    fn refresh(&mut self, font: &Arc<[u8]>, size: f32) {
+        let Some(layout) = crate::text::layout(font, &self.text, size, WEIGHT) else {
             return;
         };
-        self.shape = Shape::text_bytes(font, &self.text, SIZE).ok();
+        self.shape = Shape::text_bytes(font, &self.text, size).ok();
         self.width = layout.width;
+        self.size = size;
         self.baseline_offset = (layout.ascent - layout.descent) / 2.0;
         // The line's ink top, the highest ink pixel over every glyph that
         // has one — initialized at the font's ascent so an all-space text
@@ -530,7 +591,7 @@ impl Line {
         // never move the lines below.
         let mut ink_top = layout.ascent;
         for glyph in &layout.glyphs {
-            if let Some(raster) = crate::text::rasterize(font, glyph.id, SIZE, WEIGHT) {
+            if let Some(raster) = crate::text::rasterize(font, glyph.id, size, WEIGHT) {
                 ink_top = ink_top.max(glyph.y + raster.top as f32);
             }
         }
@@ -549,7 +610,7 @@ struct LineDraw {
 
 /// Copies `line`'s shape and computes its node origin for a line top of
 /// `line_top`.
-fn line_draw(line: &Line, line_top: f32, w: f32) -> Option<LineDraw> {
+fn line_draw(line: &Line, line_top: f32, w: f32, margin: f32) -> Option<LineDraw> {
     let shape = line.shape.clone()?;
     // The renderer centers a text block on the node's origin with the
     // baseline `baseline_offset` above it, so a line's node origin sits its
@@ -558,24 +619,34 @@ fn line_draw(line: &Line, line_top: f32, w: f32) -> Option<LineDraw> {
     Some(LineDraw {
         shape,
         pos: [
-            -w / 2.0 + MARGIN + line.width / 2.0,
+            -w / 2.0 + margin + line.width / 2.0,
             line_top - line.ink_top - line.baseline_offset,
         ],
     })
 }
 
 /// A chart's polyline points, in window user space: one per 0.1 s column,
-/// at the column's center, rising from one pixel above the panel's bottom
-/// edge, the value scaled to the panel height minus the two 1 px insets —
-/// the stroke the chart's [`Shape::Polyline`] draws in one draw call.
-fn chart_points(cols: &[f32; COLUMNS], x0: f32, panel_top: f32, top_value: f32) -> Vec<[f32; 2]> {
-    let pitch = GRAPH_W / COLUMNS as f32;
+/// at the column's center across a panel `graph_w` wide, rising from one
+/// inset above the bottom edge of a panel `graph_h` tall that starts at
+/// `panel_top`, the value scaled to the panel height minus the two
+/// insets — the stroke the chart's [`Shape::Polyline`] draws in one draw
+/// call. `inset` is the display-scaled pixel inset.
+fn chart_points(
+    cols: &[f32; COLUMNS],
+    x0: f32,
+    panel_top: f32,
+    top_value: f32,
+    graph_w: f32,
+    graph_h: f32,
+    inset: f32,
+) -> Vec<[f32; 2]> {
+    let pitch = graph_w / COLUMNS as f32;
     cols.iter()
         .enumerate()
         .map(|(c, &v)| {
             [
                 x0 + (c as f32 + 0.5) * pitch,
-                panel_top - GRAPH_H + 1.0 + (v / top_value).min(1.0) * (GRAPH_H - 2.0),
+                panel_top - graph_h + inset + (v / top_value).min(1.0) * (graph_h - 2.0 * inset),
             ]
         })
         .collect()
@@ -756,27 +827,10 @@ impl Diagnostics {
         let n_polys: usize = chart_slots.iter().map(|c| series_count(*c)).sum();
         let n_nodes = line_slots.len() + chart_slots.len() + n_refs + n_polys;
         let chart_on = vec![true; chart_slots.len()];
-        // The readout lines' vertical extent, measured once over the probe —
-        // see `PROBE`. The font just validated, so the probe shapes; a
-        // missing ink (an all-space probe) falls back to the font's
-        // ascent-plus-descent.
-        let line_extent = if let Some(probe) = crate::text::layout(font, PROBE, SIZE, WEIGHT) {
-            let (mut top, mut bottom) = (f32::NEG_INFINITY, f32::INFINITY);
-            for glyph in &probe.glyphs {
-                if let Some(raster) = crate::text::rasterize(font, glyph.id, SIZE, WEIGHT) {
-                    let ink_top = glyph.y + raster.top as f32;
-                    top = top.max(ink_top);
-                    bottom = bottom.min(ink_top - raster.height as f32);
-                }
-            }
-            if top.is_finite() {
-                top - bottom
-            } else {
-                probe.ascent + probe.descent
-            }
-        } else {
-            SIZE
-        };
+        // The readout lines' vertical extent over the probe — see `PROBE`
+        // and `measure_extent`. The font just validated, so the probe
+        // shapes.
+        let line_extent = measure_extent(font, SIZE);
         Ok(Self {
             flags,
             font: Arc::from(font),
@@ -805,7 +859,8 @@ impl Diagnostics {
             all_on: true,
             text_on: true,
             chart_on,
-            prev_combos: [false; 6],
+            scale: 1.0,
+            prev_combos: [false; 8],
         })
     }
 
@@ -834,9 +889,11 @@ impl Diagnostics {
     }
 
     /// Re-lays out the line for `slot` when `text` differs from its last
-    /// text — the per-frame rebuild guard.
+    /// text or the line was laid out at another display scale — the
+    /// per-frame rebuild guard.
     fn refresh_line(&mut self, slot: LineSlot, text: String) {
-        if self.line(slot).text == text {
+        let size = SIZE * self.scale;
+        if self.line(slot).text == text && self.line(slot).size == size {
             return;
         }
         // The font is a separate field, but `line_mut` borrows the whole
@@ -844,7 +901,7 @@ impl Diagnostics {
         let font = Arc::clone(&self.font);
         let line = self.line_mut(slot);
         line.text = text;
-        line.refresh(&font);
+        line.refresh(&font, size);
     }
 
     /// The index of the overlay's own layer in `scene.layers`, creating it on
@@ -926,6 +983,28 @@ impl Diagnostics {
         }
     }
 
+    /// The overlay's current display scale: every base dimension — the
+    /// font size, the margins, the gaps, the chart panels — multiplied
+    /// by it. Alt+'+' and Alt+'-' step it, [`Self::set_scale`] sets it.
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    /// Sets the overlay's display scale, clamped to 0.25 through 4.0 —
+    /// the Alt+'+' and Alt+'-' shortcuts step it by 1.25 per press. The
+    /// lines' line extent re-measures at the new font size right away,
+    /// and every laid-out line re-lays out on its next refresh, so a
+    /// scale change shows on the following frame without rebuilding the
+    /// lines eagerly here.
+    pub fn set_scale(&mut self, scale: f32) {
+        let scale = scale.clamp(SCALE_MIN, SCALE_MAX);
+        if scale == self.scale {
+            return;
+        }
+        self.scale = scale;
+        self.line_extent = measure_extent(&self.font, SIZE * scale);
+    }
+
     /// Whether the readout lines are shown: the overlay as a whole on and
     /// the text on.
     fn lines_on(&self) -> bool {
@@ -938,18 +1017,21 @@ impl Diagnostics {
         self.all_on && self.chart_on.get(index).copied().unwrap_or(false)
     }
 
-    /// Applies the press edges of the six toggle combinations — Alt-0,
-    /// Alt-1, Alt-2, Alt-3, Alt-4, Alt-T, in the order of `combos` — to the
-    /// toggle state: a combination toggles its part once when it goes from
-    /// released to held, and holding or releasing it does nothing. Called
-    /// from `process` with the current key states.
-    fn apply_key_edges(&mut self, combos: [bool; 6]) {
+    /// Applies the press edges of the eight toggle combinations — Alt-0,
+    /// Alt-1, Alt-2, Alt-3, Alt-4, Alt-T, Alt+'+', Alt+'-', in the order
+    /// of `combos` — to the toggle state: a combination toggles its part
+    /// once when it goes from released to held, and holding or releasing
+    /// it does nothing. Called from `process` with the current key
+    /// states.
+    fn apply_key_edges(&mut self, combos: [bool; 8]) {
         for (i, &combo) in combos.iter().enumerate() {
             if combo && !self.prev_combos[i] {
                 match i {
                     0 => self.toggle_all(),
                     1..=4 => self.toggle_chart(i - 1),
-                    _ => self.toggle_text(),
+                    5 => self.toggle_text(),
+                    6 => self.set_scale(self.scale * SCALE_STEP),
+                    _ => self.set_scale(self.scale / SCALE_STEP),
                 }
             }
         }
@@ -980,11 +1062,34 @@ impl Process for Diagnostics {
         let t0 = now_millis();
         // The keyboard shortcuts, on press edges only so a held key
         // toggles once: Alt-0 the overlay as a whole, Alt-1..Alt-4 the
-        // charts by position among the enabled ones (top chart first), and
-        // Alt-T the readout lines. The layout reflows around whatever is
+        // charts by position among the enabled ones (top chart first),
+        // Alt-T the readout lines, and Alt+'+' / Alt+'-' the overlay's
+        // display scale. The layout reflows around whatever is
         // hidden. The demo still sees the same keys — they are read here,
         // not consumed.
         let alt = ctx.key_down(KeyCode::AltLeft) || ctx.key_down(KeyCode::AltRight);
+        // The zoom pair matches typed characters, not physical key codes:
+        // a physical code names a US-ANSI position, so the very same code
+        // is the `+` key on a Swedish layout and the `-` key on a US one —
+        // only the character follows the user's layout. The set is every
+        // character the `+`/`-` key types with Alt held across platforms:
+        // the plain glyphs (Windows, Linux, numpad), the `=` the US `+`
+        // key carries, and the characters a macOS Option weaves from them
+        // (`±` and `−` from the plus key, `–` and `—` from the minus
+        // key). The numpad codes join in as a safety net — those keys
+        // type these signs on every layout.
+        let plus = alt
+            && (ctx.char_down('+')
+                || ctx.char_down('=')
+                || ctx.char_down('±')
+                || ctx.char_down('\u{2212}')
+                || ctx.key_down(KeyCode::NumpadAdd));
+        let minus = alt
+            && (ctx.char_down('-')
+                || ctx.char_down('_')
+                || ctx.char_down('\u{2013}')
+                || ctx.char_down('\u{2014}')
+                || ctx.key_down(KeyCode::NumpadSubtract));
         self.apply_key_edges([
             alt && ctx.key_down(KeyCode::Digit0),
             alt && ctx.key_down(KeyCode::Digit1),
@@ -992,6 +1097,8 @@ impl Process for Diagnostics {
             alt && ctx.key_down(KeyCode::Digit3),
             alt && ctx.key_down(KeyCode::Digit4),
             alt && ctx.key_down(KeyCode::KeyT),
+            plus,
+            minus,
         ]);
         // The engine's own probes of the last completed frame: its CPU
         // work, its total GPU draw calls, and the draw calls this overlay's
@@ -1045,6 +1152,18 @@ impl Process for Diagnostics {
             }
         }
         let (w, h) = ctx.size();
+        // The layout constants below are base-size values, each multiplied
+        // by the display scale (Alt+'+' / Alt+'-' step it, set_scale sets
+        // it), so the whole overlay grows and shrinks together, text
+        // included: `line_extent` was re-measured at the new font size
+        // when the scale changed, and every laid-out line re-lays out on
+        // its next refresh.
+        let scale = self.scale;
+        let margin = MARGIN * scale;
+        let line_gap = LINE_GAP * scale;
+        let graph_w = GRAPH_W * scale;
+        let graph_h = GRAPH_H * scale;
+        let graph_gap = GRAPH_GAP * scale;
         // Whether the readout lines show: the overlay as a whole on and the
         // text on (Alt-T).
         let lines_on = self.lines_on();
@@ -1097,23 +1216,23 @@ impl Process for Diagnostics {
         let visible_charts: Vec<usize> = (0..chart_slots.len())
             .filter(|j| self.chart_on_at(*j))
             .collect();
-        let mut next_line_top = h / 2.0 - MARGIN;
+        let mut next_line_top = h / 2.0 - margin;
         let mut line_tops = vec![0.0f32; line_slots.len()];
         for &i in &visible_lines {
             line_tops[i] = next_line_top;
-            next_line_top -= self.line_extent + LINE_GAP;
+            next_line_top -= self.line_extent + line_gap;
         }
         let mut panel_tops = vec![0.0f32; chart_slots.len()];
         let mut next_panel_top = if visible_lines.is_empty() {
-            h / 2.0 - MARGIN
+            h / 2.0 - margin
         } else {
-            next_line_top - GRAPH_GAP
+            next_line_top - graph_gap
         };
         for &j in &visible_charts {
             panel_tops[j] = next_panel_top;
-            next_panel_top -= GRAPH_H + GRAPH_GAP;
+            next_panel_top -= graph_h + graph_gap;
         }
-        let x0 = -w / 2.0 + MARGIN;
+        let x0 = -w / 2.0 + margin;
 
         let scene = ctx.scene();
         // The overlay's own topmost layer, created on the first frame.
@@ -1124,7 +1243,7 @@ impl Process for Diagnostics {
                 self.hide(i, scene, layer);
                 continue;
             }
-            let Some(draw) = line_draw(self.line(slot), line_tops[i], w) else {
+            let Some(draw) = line_draw(self.line(slot), line_tops[i], w, margin) else {
                 continue;
             };
             self.place(i, draw.pos, draw.shape, scene, layer);
@@ -1136,10 +1255,10 @@ impl Process for Diagnostics {
                 let top = panel_tops[j];
                 self.place(
                     line_slots.len() + j,
-                    [x0 + GRAPH_W / 2.0, top - GRAPH_H / 2.0],
+                    [x0 + graph_w / 2.0, top - graph_h / 2.0],
                     Shape::Rectangle {
                         center: [0.0, 0.0],
-                        extent: [GRAPH_W / 2.0, GRAPH_H / 2.0],
+                        extent: [graph_w / 2.0, graph_h / 2.0],
                         color: PANEL,
                     },
                     scene,
@@ -1153,10 +1272,10 @@ impl Process for Diagnostics {
         // — the draw-call chart has no budget, so no reference.
         let ref_line = |panel_top: f32, level: f32| {
             (
-                panel_top - GRAPH_H + 1.0 + level * (GRAPH_H - 2.0),
+                panel_top - graph_h + scale + level * (graph_h - 2.0 * scale),
                 Shape::Rectangle {
-                    center: [GRAPH_W / 2.0, 0.0],
-                    extent: [GRAPH_W / 2.0, 0.5],
+                    center: [graph_w / 2.0, 0.0],
+                    extent: [graph_w / 2.0, 0.5 * scale],
                     color: REF_COLOR,
                 },
             )
@@ -1195,8 +1314,16 @@ impl Process for Diagnostics {
                         poly_slot,
                         [0.0, 0.0],
                         Shape::Polyline {
-                            points: chart_points(&cols, x0, panel_tops[j], chart_top(chart)),
-                            width: LINE_WIDTH,
+                            points: chart_points(
+                                &cols,
+                                x0,
+                                panel_tops[j],
+                                chart_top(chart),
+                                graph_w,
+                                graph_h,
+                                scale,
+                            ),
+                            width: LINE_WIDTH * scale,
                             color: series_color(chart, k),
                         },
                         scene,
@@ -1398,24 +1525,54 @@ mod tests {
     fn key_edges_fire_once_per_press() {
         let mut d = overlay();
         // Nothing pressed: no change.
-        d.apply_key_edges([false; 6]);
+        d.apply_key_edges([false; 8]);
         assert!(d.all_on && d.text_on && d.chart_on.iter().all(|&b| b));
         // Alt-1 (slot 1): the top chart toggles off.
-        d.apply_key_edges([false, true, false, false, false, false]);
+        d.apply_key_edges([false, true, false, false, false, false, false, false]);
         assert_eq!(d.chart_on, [false, true, true, true]);
         // Holding the combination: no further change.
-        d.apply_key_edges([false, true, false, false, false, false]);
+        d.apply_key_edges([false, true, false, false, false, false, false, false]);
         assert_eq!(d.chart_on, [false, true, true, true]);
         // Release, then Alt-4: the bottom chart toggles off.
-        d.apply_key_edges([false, false, false, false, true, false]);
+        d.apply_key_edges([false, false, false, false, true, false, false, false]);
         assert_eq!(d.chart_on, [false, true, true, false]);
         // Alt-T: the lines toggle off, the charts untouched.
-        d.apply_key_edges([false, false, false, false, false, true]);
+        d.apply_key_edges([false, false, false, false, false, true, false, false]);
         assert!(!d.text_on);
         assert_eq!(d.chart_on, [false, true, true, false]);
         // Alt-0: the overlay as a whole toggles off.
-        d.apply_key_edges([true, false, false, false, false, false]);
+        d.apply_key_edges([true, false, false, false, false, false, false, false]);
         assert!(!d.all_on);
+    }
+
+    #[test]
+    fn scale_edges_grow_and_shrink_on_press() {
+        let mut d = overlay();
+        assert_eq!(d.scale(), 1.0);
+        // Alt+'+' (slot 6): grow one step on the press edge; holding does
+        // nothing further.
+        d.apply_key_edges([false, false, false, false, false, false, true, false]);
+        assert!((d.scale() - SCALE_STEP).abs() < 1e-6);
+        d.apply_key_edges([false, false, false, false, false, false, true, false]);
+        assert!((d.scale() - SCALE_STEP).abs() < 1e-6);
+        // Alt+'-' (slot 7): shrink one step, back to 1.0.
+        d.apply_key_edges([false, false, false, false, false, false, false, true]);
+        assert!(d.scale() < SCALE_STEP);
+    }
+
+    #[test]
+    fn set_scale_clamps_at_both_ends() {
+        let mut d = overlay();
+        d.set_scale(100.0);
+        assert_eq!(d.scale(), SCALE_MAX);
+        d.set_scale(0.01);
+        assert_eq!(d.scale(), SCALE_MIN);
+        // Repeated growth presses stop at the ceiling.
+        let mut d = overlay();
+        for _ in 0..20 {
+            d.set_scale(d.scale() * SCALE_STEP);
+        }
+        assert_eq!(d.scale(), SCALE_MAX);
     }
 
     #[test]

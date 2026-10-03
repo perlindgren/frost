@@ -16,7 +16,8 @@
 //! A `frost::Diagnostics` overlay reports the window size, frame rate,
 //! frame time, processing times, and draw-call count in the top-left
 //! corner, with four scrolling ten-second strip charts beneath — Alt-0
-//! toggles the whole overlay, Alt-1..Alt-4 the charts, Alt-T the text.
+//! toggles the whole overlay, Alt-1..Alt-4 the charts, Alt-T the text,
+//! and Alt+'+' / Alt+'-' grow and shrink it.
 //!
 //! Run with:
 //!

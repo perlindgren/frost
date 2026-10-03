@@ -792,36 +792,49 @@ disk. Run with `cargo run --example <name>`
 |              | draws on top; each child puts the image px `(308, 411)` on          |
 |              | the parent's origin; the parent carries the inverse, so the         |
 |              | image's center sits on the window's center                          |
-| immortal     | 1920x1080 (Config window_size); right button toggles can / spray;  |
-|              | plants grow one at a time, each slice opening its flowers once    |
-|              | fully grown (the four lower slices' spawn points, the |
-|              | top slice bearing none, populated with `flower.png`); one viper   |
-|              | per fully grown plant layer orbits the row; a bug swarm pops up   |
-|              | out of the grass in batches of three per plant, growing over     |
-|              | 0.75 s; each pop-up - a batch spawn or a respawn - plops on a   |
-|              | random plopp clip (bugs_plopp1/2/3.wav); spray mist touching a |
-|              | bug wounds it - three starting hits, one per 0.2 s              |
-|              | per bug, a bug at its park spot regaining one hit every 5 s     |
-|              | (capped at six), a white pip above the bug per hit it can still |
-|              | take; a bug reaching its park spot while another bug is within |
-|              | 50 px of it chatters - a random tjatter clip (TjatterLow/Mid/  |
-|              | High.wav) plays - and                                          |
-|              | the killing blow starts the two-phase death: over 0.5 s it bounces  |
-|              | up off the grass, flipping upside down in the air (y scale to fully|
-|              | inverted, position/growth/facing/frame frozen), landing on its back;|
-|              | then over 0.5 s the inverted sprite evaporates, shrinking to nothing|
-|              | while its center sinks through the grass; after a random 5-10 s    |
-|              | delay the bug pops back up at its spawn spot, fully healed; the five
-|              | slices' joints and flower anchors load at startup from the embedded |
-|              | `assets/sprites/plant1..5.ron` files (serde + ron — the hand-picked |
-|              | constants are gone); a 14- |
-|              | slot worm swarm burrows up, peristalses along the bench (two poses, |
-|              | hull-picked spawn/target spots off a seedable `Rng`), and digs back |
-|              | in; every draw order composes through the `zorder` module's bands   |
-|              | (ground = −y, bench slots on top, grass/UI/overlay pinned outside); |
-|              | F5 / F9 save & reload the whole game as versioned RON under         |
-|              | `~/.frost/immortal/` — the snapshot carries the random streams, so |
-|              | a reload continues each stream exactly (`--load` loads at startup)  |
+| immortal     | 1920x1080 (Config window_size); four tools ride the six-slot shelf: |
+|              | items.png split 0..5 top-down, the tweezers, spade, spray can, and  |
+|              | watering can resting in slots 2-5 and 0-1 left free to park one, a  |
+|              | left click on a slot swapping it with the held tool and the right   |
+|              | button trading held for stored; each sprite is fitted to its cell by|
+|              | its drawn alpha box, not its canvas; a fresh left click digs one    |
+|              | spade stroke - `dig_pose` twines a rotation about the handle's grip |
+|              | with a lunge along the blade's own line, starting from the angle the|
+|              | art is drawn at (point 34.9 deg under level, so the plunge that puts|
+|              | it straight down is 55.1 deg, not 90); the tweezers ride level by   |
+|              | their jaws and stay inert until there are pinch frames to pick with;|
+|              | plants grow one at a time, each slice opening its flowers once fully|
+|              | grown (the four lower slices' spawn points, the top slice bearing   |
+|              | none, populated with `flower.png`); one viper per fully grown plant |
+|              | layer orbits the row; bug and louse swarms pop up out of the grass in|
+|              | batches of three per plant each (the bugs module is generic over a  |
+|              | Species: the lice of Lice1/Lice2.png are smaller, untinted, left-   |
+|              | facing art whose facing flip mirrors the bugs'), growing over 0.75 s;|
+|              | each pop-up - a batch spawn or a respawn - plops on a random plopp  |
+|              | clip (bugs_plopp1/2/3.wav); spray mist touching a bug wounds it -   |
+|              | three starting hits, one per 0.2 s per bug, a bug at its park spot  |
+|              | regaining one hit every 5 s, a louse two hits every 10 s (lice start|
+|              | at two health), both capped at six, a white pip above the bug per hit|
+|              | it can still take; a bug reaching its park spot while another bug is|
+|              | within 50 px of it chatters - a random tjatter clip (TjatterLow/Mid/|
+|              | High.wav) plays - and the killing blow starts the two-phase death:  |
+|              | over 0.5 s it bounces up off the grass, flipping upside down in the |
+|              | air (y scale to fully inverted, position/growth/facing/frame frozen),|
+|              | landing on its back; then over 0.5 s the inverted sprite evaporates,|
+|              | shrinking to nothing while its center sinks through the grass; after|
+|              | a random 5-10 s delay the bug pops back up at its spawn spot, fully |
+|              | healed; the five slices' joints and flower anchors load at startup  |
+|              | from the embedded `assets/sprites/plant1..5.ron` files (serde + ron —|
+|              | the hand-picked constants are gone); a 14-slot worm swarm burrows up|
+|              | and walks the bench on the `worm` example's stride — the rear grips |
+|              | while the body reaches, the front holds while the contract slides it|
+|              | up — two poses riding the stride's halves, hull-picked spawn/target |
+|              | spots off a seedable `Rng`, and digs back in; every draw order      |
+|              | composes through the `zorder` module's bands (ground = −y, bench    |
+|              | slots on top, grass/UI/overlay pinned outside); F5 / F9 save & reload|
+|              | the whole game as versioned RON under `~/.frost/immortal/` — the    |
+|              | snapshot carries the random streams, so a reload continues each     |
+|              | stream exactly (`--load` loads at startup)                          |
 | sprite_util  | up to seven picked PNGs (rfd dialogs): the window splits into a     |
 |              | work area and a bottom strip of 100x100 slots holding the           |
 |              | minimized originals (click a slot to activate, drag one onto        |
@@ -902,7 +915,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ```
 cargo build --examples   # expect EXIT 0
 cargo test               # expect 183 passed + 5 doctests
-cargo test --examples    # expect 133 passed (unit tests inside the examples;
+cargo test --examples    # expect 137 passed (unit tests inside the examples;
                            # ron_view/tree.rs compiles into both targets, so its 9 parser tests run twice)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example worm     # peristaltic crawl, edge wrap; exits 0

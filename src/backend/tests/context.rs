@@ -2,13 +2,14 @@
 
 use crate::objects::*;
 use crate::{Canvas, Context, KeyCode, MouseButton};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[test]
 fn context_reports_held_keys() {
     let mut canvas = Canvas::new((100, 100));
     let mut scene = Scene::default();
     let mut keys = HashSet::new();
+    let typed = HashMap::new();
     let mouse_buttons = HashSet::new();
     {
         let ctx = Context {
@@ -16,6 +17,7 @@ fn context_reports_held_keys() {
             canvas: &mut canvas,
             scene: &mut scene,
             keys: &keys,
+            typed: &typed,
             window: None,
             expected_fps: None,
             mouse: None,
@@ -33,6 +35,7 @@ fn context_reports_held_keys() {
         canvas: &mut canvas,
         scene: &mut scene,
         keys: &keys,
+        typed: &typed,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -47,16 +50,47 @@ fn context_reports_held_keys() {
 }
 
 #[test]
-fn context_reports_mouse_position() {
+fn context_reports_typed_character_of_held_key() {
     let mut canvas = Canvas::new((100, 100));
     let mut scene = Scene::default();
     let keys = HashSet::new();
+    // The Swedish `+` key: the physical position US calls `Minus`, typed
+    // as '+'. char_down follows the character, key_down the position.
+    let mut typed = HashMap::new();
+    typed.insert(KeyCode::Minus, '+');
     let mouse_buttons = HashSet::new();
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
         scene: &mut scene,
         keys: &keys,
+        typed: &typed,
+        window: None,
+        expected_fps: None,
+        mouse: None,
+        mouse_buttons: &mouse_buttons,
+        mouse_wheel: 0.0,
+        gilrs: None,
+        frame_processing_ms: 0.0,
+        frame_draw_calls: 0,
+    };
+    assert!(ctx.char_down('+'));
+    assert!(!ctx.char_down('-'));
+}
+
+#[test]
+fn context_reports_mouse_position() {
+    let mut canvas = Canvas::new((100, 100));
+    let mut scene = Scene::default();
+    let keys = HashSet::new();
+    let typed = HashMap::new();
+    let mouse_buttons = HashSet::new();
+    let ctx = Context {
+        frame_diagnostic_draw_calls: 0,
+        canvas: &mut canvas,
+        scene: &mut scene,
+        keys: &keys,
+        typed: &typed,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -72,6 +106,7 @@ fn context_reports_mouse_position() {
         canvas: &mut canvas,
         scene: &mut scene,
         keys: &keys,
+        typed: &typed,
         window: None,
         expected_fps: None,
         mouse: Some([12.0, -34.0]),
@@ -89,6 +124,7 @@ fn context_reports_held_mouse_button() {
     let mut canvas = Canvas::new((100, 100));
     let mut scene = Scene::default();
     let keys = HashSet::new();
+    let typed = HashMap::new();
     let mut mouse_buttons = HashSet::new();
     {
         let ctx = Context {
@@ -96,6 +132,7 @@ fn context_reports_held_mouse_button() {
             canvas: &mut canvas,
             scene: &mut scene,
             keys: &keys,
+            typed: &typed,
             window: None,
             expected_fps: None,
             mouse: None,
@@ -113,6 +150,7 @@ fn context_reports_held_mouse_button() {
         canvas: &mut canvas,
         scene: &mut scene,
         keys: &keys,
+        typed: &typed,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -131,12 +169,14 @@ fn context_reports_mouse_wheel_delta() {
     let mut canvas = Canvas::new((100, 100));
     let mut scene = Scene::default();
     let keys = HashSet::new();
+    let typed = HashMap::new();
     let mouse_buttons = HashSet::new();
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
         scene: &mut scene,
         keys: &keys,
+        typed: &typed,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -154,12 +194,14 @@ fn context_reports_no_gamepads_without_gilrs() {
     let mut canvas = Canvas::new((100, 100));
     let mut scene = Scene::default();
     let keys = HashSet::new();
+    let typed = HashMap::new();
     let mouse_buttons = HashSet::new();
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
         scene: &mut scene,
         keys: &keys,
+        typed: &typed,
         window: None,
         expected_fps: None,
         mouse: None,

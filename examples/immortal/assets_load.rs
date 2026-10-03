@@ -22,6 +22,12 @@ const SPRAY1: &[u8] = include_bytes!("../../assets/sprites/Spray1.png");
 /// The spray can's pressed frame, `assets/sprites/Spray2.png`.
 const SPRAY2: &[u8] = include_bytes!("../../assets/sprites/Spray2.png");
 
+/// The garden spade, `assets/sprites/spade.png`.
+const SPADE: &[u8] = include_bytes!("../../assets/sprites/spade.png");
+
+/// The tweezers, `assets/sprites/Tweezers.png`.
+const TWEEZERS: &[u8] = include_bytes!("../../assets/sprites/Tweezers.png");
+
 /// The first viper frame, `assets/sprites/Getingeye1.png`.
 const GETINGEYE1: &[u8] = include_bytes!("../../assets/sprites/Getingeye1.png");
 
@@ -42,6 +48,12 @@ const WORM1: &[u8] = include_bytes!("../../assets/sprites/Worm1_crop.png");
 
 /// The second worm peristaltic frame, `assets/sprites/Worm2_crop.png`.
 const WORM2: &[u8] = include_bytes!("../../assets/sprites/Worm2_crop.png");
+
+/// The first louse walk frame, `assets/sprites/Lice1.png`.
+const LICE1: &[u8] = include_bytes!("../../assets/sprites/Lice1.png");
+
+/// The second louse walk frame, `assets/sprites/Lice2.png`.
+const LICE2: &[u8] = include_bytes!("../../assets/sprites/Lice2.png");
 
 /// The inventory panel, `assets/sprites/items.png`.
 const ITEMS: &[u8] = include_bytes!("../../assets/sprites/items.png");
@@ -191,6 +203,10 @@ pub struct Assets {
     /// The spray can's pressed frame, swapped into the tool node while the
     /// button is down.
     pub spray2: frost::Shape,
+    /// The garden spade, the active-tool sprite for `Tool::Spade`.
+    pub spade: frost::Shape,
+    /// The tweezers, the active-tool sprite for `Tool::Tweezers`.
+    pub tweezers: frost::Shape,
     /// The two viper frames: the swarm's shape swaps between them at most
     /// once per wingbeat change.
     pub viper1: frost::Shape,
@@ -204,8 +220,13 @@ pub struct Assets {
     /// as the worm's body beats.
     pub worm1: frost::Shape,
     pub worm2: frost::Shape,
-    /// The inventory panel, mid left: four slots, 0 to 3 from the top,
-    /// the spray can resting in slot 2 and the watering can in slot 3.
+    /// The two louse walk frames — art that walks to the left; the louse
+    /// swarm's slot shapes swap between them as cheap `Arc` clones.
+    pub lice1: frost::Shape,
+    pub lice2: frost::Shape,
+    /// The inventory panel, mid left: six slots, 0 to 5 from the top, the
+    /// tweezers resting in slot 2, the spade in slot 3, the spray can in
+    /// slot 4, and the watering can in slot 5.
     pub items: frost::Shape,
     /// The held-items panel in the bottom right: the active tool in the
     /// left half, the stored one in the right.
@@ -254,6 +275,8 @@ impl Assets {
             can: sprite("water_can_outline.png", WATER_CAN_OUTLINE),
             spray1: sprite("Spray1.png", SPRAY1),
             spray2: sprite("Spray2.png", SPRAY2),
+            spade: sprite("spade.png", SPADE),
+            tweezers: sprite("Tweezers.png", TWEEZERS),
             viper1: sprite("Getingeye1.png", GETINGEYE1),
             viper2: sprite("Getingeye2.png", GETINGEYE2),
             bug1: sprite("Bug1a.png", BUG1A),
@@ -261,6 +284,8 @@ impl Assets {
             bug3: sprite("Bug3a.png", BUG3A),
             worm1: sprite("Worm1_crop.png", WORM1),
             worm2: sprite("Worm2_crop.png", WORM2),
+            lice1: sprite("Lice1.png", LICE1),
+            lice2: sprite("Lice2.png", LICE2),
             items: sprite("items.png", ITEMS),
             held_items: sprite("held_items.png", HELD_ITEMS),
             plant1: sprite("plant1.png", PLANT1),

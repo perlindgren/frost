@@ -1,6 +1,8 @@
-//! A watering can and a spray can as mouse cursors over a full-screen
-//! grass field. The window opens at `WINDOW` pixels (1920x1080), set
-//! through `run_configured` and `Config::window_size`;
+//! Four garden tools — a watering can, a spray can, a spade, and a pair of
+//! tweezers — as mouse cursors over a grass field
+//! that fills the window. The window opens at `WINDOW` pixels (1920x1080)
+//! of true physical panel size, set through `run_configured` and
+//! `Config::window_size_px`;
 //! `assets/sprites/grass.png` is exactly that size, so it fills the window
 //! without being stretched, and is re-stretched every frame to keep it
 //! covered if the window is resized.
@@ -9,7 +11,10 @@
 //! cursor's sprite, and a stored one, mirrored in the held-items panel. It
 //! starts with neither. Pressing and releasing the right mouse button (both through
 //! [`frost::Context::mouse_button_down`]) switches the two: the stored
-//! tool becomes the active one and the active one is stored. A left click
+//! tool becomes the active one and the active one is stored — while the
+//! dock's two cells trade their tools along mirrored arcs, one bending
+//! above and the other below the cells' line by half the distance
+//! between them. A left click
 //! on a slot — a press and a release on the same slot — swaps the active
 //! tool with the slot's: the tool in a populated slot moves to the mouse,
 //! and the active tool moves into an empty slot, in which case the mouse
@@ -41,14 +46,43 @@
 //!   (`SPRAY_NOZZLE`, in image pixels). The audio output plays the spray
 //!   hiss, `assets/audio/Spray.wav`, at 0.5 volume on every burst.
 //!
+//! - The spade, `assets/sprites/spade.png`, is scaled `SPADE_SIZE` pixels
+//!   wide and rides the cursor by its grip — the middle of the wooden
+//!   handle, `SPADE_GRIP` in image pixels — the point a hand would hold it
+//!   by, and the pivot a dig swings around. A fresh press of the left mouse
+//!   button — one after a release; holding or re-pressing mid-stroke does
+//!   nothing — digs one stroke, and the stroke is one curve, [`dig_pose`],
+//!   that intertwines a rotation about the grip with a shift along the
+//!   blade's own line: over `DIG_WIND` of `DIG_TIME` the spade winds up
+//!   clockwise to `DIG_RAISE` while its grip draws back `DIG_PULL` pixels
+//!   up the handle, then it accelerates counter-clockwise to the full
+//!   plunge over `DIG_STRIKE` while the grip drives `DIG_LUNGE` pixels down
+//!   the point, and it eases back to the pose it is drawn in over the rest.
+//!   The angle the swing starts from is the sprite's own: the art is drawn
+//!   leaning into the dig, its point `SPADE_TIP` 188 px left and 131 px
+//!   below the grip, so the resting spade already aims 34.9° below the
+//!   horizontal and the plunge that buries it — `spade_plunge()`, 55.1° —
+//!   is a quarter turn less that lean, not a right angle.
+//!
+//! - The tweezers, `assets/sprites/Tweezers.png`, are scaled
+//!   `TWEEZERS_SIZE` pixels wide and ride the cursor by their jaws' points,
+//!   `TWEEZERS_TIP` in image pixels — the working end, held like a pen.
+//!   They do nothing yet: picking a louse out of a plant needs the pinch
+//!   frames this single sprite has no pair for. Until they exist the
+//!   tweezers are carried, switched, and parked like every other tool, and
+//!   a left click over the grass costs them nothing.
+//!
 //! `assets/sprites/items.png` is the inventory panel itself. It is scaled
 //! uniformly to fit the window's height, with a 20 pixel clearance to the
 //! top and bottom borders, and sits 20 pixels clear of the left border,
-//! centered vertically — mid left. Its space is split into four slots, 0 to
-//! 3 from the top, evenly along the y axis inside a 60 pixel margin at the
-//! top and bottom. The spray can rests in slot 2 and the watering can in
-//! slot 3, drawn on top of the panel; slots 0 and 1 start empty, and a
-//! left click can park either tool in any slot.
+//! centered vertically — mid left. Its space is split into six slots, 0 to
+//! 5 from the top, evenly along the y axis inside a 60 pixel margin at the
+//! top and bottom. The four tools rest on the shelf, drawn on top of the
+//! panel: the tweezers in slot 2, the spade in slot 3, the spray can in
+//! slot 4, and the watering can in slot 5 — each fitted to its own slot by
+//! its drawn content, so a sprite with a wide transparent margin around it
+//! still fills the shelf. Slots 0 and 1 start empty, and a left click can
+//! park any tool in any slot.
 //!
 //! `assets/sprites/held_items.png` is a small panel in the bottom right
 //! corner, `MARGIN` pixels clear of the window's right and bottom borders,
@@ -157,6 +191,14 @@
 //! walking, flipped about its center while it moves left, tinted dark
 //! red by the node's `modulate`.
 //!
+//! A parallel swarm of lice runs the same life in smaller bodies: the
+//! [`bugs`] module is generic over a [`bugs::Species`], and the louse
+//! swarm — the two frames `assets/sprites/Lice1.png` and
+//! `assets/sprites/Lice2.png`, art that walks to the LEFT, so its facing
+//! flip mirrors the bug's — batches three per plant beside the bugs,
+//! starts at two hits of health, and heals two hits every ten seconds
+//! once it has reached its plant.
+//!
 //! A bug starts with three hits of health, loses one per mist hit — a
 //! wounded bug takes its next hit only after a 0.2 s cooldown, so the
 //! mist wears it down one hit at a time — and, once it has reached its
@@ -197,7 +239,9 @@
 //! While no plant is living on the bench — at start, and, once the player
 //! has planted, whenever the last survivor withers away — a game-over
 //! overlay covers the window: a dim veil over the whole window, "Game
-//! Over" in large letters above the center, and a Play button below it,
+//! Over" in large letters above the center, and a Play button below it —
+//! the `assets/sprites/held_items.png` panel for a background, panel and
+//! label swelling while the cursor rests on them,
 //! the label `assets/fonts/Leofont-Regular.ttf` set in. Pressing the
 //! button — a left click on it — restarts the game: the bench goes bare
 //! again, the basket back to its starting tomato, the swarms empty, and
@@ -213,7 +257,8 @@
 //! demo's scene needs no other change. The overlay's parts can be toggled
 //! while it runs — Alt-0 the whole overlay, Alt-1..Alt-4 the charts (top
 //! chart first), Alt-T the text — and the layout reflows around whatever
-//! is hidden.
+//! is hidden; Alt+'+' and Alt+'-' grow and shrink the whole overlay, font
+//! included.
 //!
 //! The game state can be saved and reloaded: F5 writes a snapshot — the
 //! demo's state, every plant's clocks, the swarms, the carried and the
@@ -253,8 +298,10 @@ mod zorder;
 use assets_load::{Assets, Sounds};
 use fall::{Fall, FallPhase};
 
-/// The window's inner size in logical pixels, via `Config::window_size`.
-/// The grass photo is exactly this size, so it fills the window 1:1.
+/// The window's inner size in physical pixels, via
+/// `Config::window_size_px`: a true 1920x1080 panel window on every
+/// display — 960x540 points on a 2x Retina screen. The grass photo is
+/// exactly this size, so it fills the window 1:1.
 const WINDOW: [u32; 2] = [1920, 1080];
 
 /// `grass.png`'s texture size in pixels: a full-bleed 1920x1080 photo.
@@ -278,6 +325,10 @@ const PLANT_POS: [[f32; 2]; 6] = [
 /// start growing.
 const BUG_N: usize = bugs::BUGS_PER_PLANT * PLANT_POS.len();
 
+/// The louse swarm's pool: the same batch cadence as the bugs, three
+/// lice per plant.
+const LICE_N: usize = bugs::BUGS_PER_PLANT * PLANT_POS.len();
+
 /// The scene root's children, in draw order — the order in which `main`
 /// builds them in the scene: the grass underlay, the items panel, the
 /// plants group, the fallen-fruit container, the held-items panel, the
@@ -291,12 +342,13 @@ const CHILD_FALLEN_FRUIT: usize = 3;
 const CHILD_HELD: usize = 4;
 const CHILD_VIPERS: usize = 5;
 const CHILD_BUGS: usize = 6;
-const CHILD_WORMS: usize = 7;
-const CHILD_TOOL: usize = 8;
-const CHILD_BASKET: usize = 9;
-const CHILD_BADGE: usize = 10;
-const CHILD_HELD_FRUIT: usize = 11;
-const CHILD_OVERLAY: usize = 12;
+const CHILD_LICE: usize = 7;
+const CHILD_WORMS: usize = 8;
+const CHILD_TOOL: usize = 9;
+const CHILD_BASKET: usize = 10;
+const CHILD_BADGE: usize = 11;
+const CHILD_HELD_FRUIT: usize = 12;
+const CHILD_OVERLAY: usize = 13;
 
 /// The game-over overlay node's children, in draw order: the "Game Over"
 /// title text, the Play button's rectangle, and the button's label. The
@@ -321,24 +373,56 @@ const OVERLAY_TITLE_SIZE: f32 = 120.0;
 /// window's center.
 const OVERLAY_TITLE_Y: f32 = 80.0;
 
-/// The Play button's rectangle's half extents, in window pixels: a
-/// 360 by 110 button.
-const PLAY_HALF: [f32; 2] = [180.0, 55.0];
-
-/// The Play button's rectangle's color: a tomato red under the label.
-const PLAY_COLOR: frost::Color = frost::Color {
-    r: 0.62,
-    g: 0.13,
-    b: 0.1,
-    a: 1.0,
-};
+/// The Play button's half extents, in window pixels: the 390 by 200
+/// button box that frames the `held_items.png` panel background — the
+/// panel's own 389 x 200 texture, rounded to even halves.
+const PLAY_HALF: [f32; 2] = [195.0, 100.0];
 
 /// The Play button's center's height, in window pixels below the window's
-/// center.
-const PLAY_Y: f32 = -60.0;
+/// center: low enough that the taller panel-button clears the "Game
+/// Over" title above it.
+const PLAY_Y: f32 = -90.0;
+
+/// How much larger the button panel and its label grow while the cursor
+/// rests on the button: a 12% swell, eased in and out.
+const PLAY_SWELL: f32 = 0.12;
 
 /// The Play button's "Play" label's size, in pixels.
 const PLAY_LABEL_SIZE: f32 = 54.0;
+
+/// One dock cell's leg of a tool swap: the cell's tool rides an arch to
+/// the other cell, its pose written in the held panel's local space.
+#[derive(Clone, Copy)]
+struct CellFlight {
+    /// The cell's rest spot, where the flight starts — or, for a swap
+    /// pressed mid-flight, the cell's spot at the press.
+    from: [f32; 2],
+    /// The other cell's rest spot, where it lands.
+    to: [f32; 2],
+    /// The arch's height at its middle, in panel pixels: positive rises
+    /// above the cells' line, negative dips below. Half the distance
+    /// between the cells, by the swap's construction.
+    bump: f32,
+    /// Seconds flown so far.
+    t: f32,
+    /// The flight's total time, in seconds.
+    dur: f32,
+}
+
+/// One swap flight's time, in seconds.
+const SWAP_FLIGHT_TIME: f32 = 0.35;
+
+/// The flying cell's tool spot at flight fraction `u`: the chord is
+/// walked with a smoothstep — eased out of one cell, eased into the
+/// other — while a parabola bends it off the chord, [CellFlight::bump]
+/// high at `u` = half and back on the line at both ends.
+fn cell_flight_pos(fly: &CellFlight, u: f32) -> [f32; 2] {
+    let e = u * u * (3.0 - 2.0 * u);
+    [
+        fly.from[0] + (fly.to[0] - fly.from[0]) * e,
+        fly.from[1] + (fly.to[1] - fly.from[1]) * e + fly.bump * (4.0 * u * (1.0 - u)),
+    ]
+}
 
 /// Whether the user-space point `p` is inside the Play button's
 /// rectangle: the button's half extents, centered on
@@ -647,22 +731,46 @@ fn held_scale(size: [f32; 2]) -> f32 {
     (w / size[0]).min(h / size[1])
 }
 
-/// The panel's logical slots, 0 (top) to 3 (bottom), evenly distributed
+/// The panel's logical slots, 0 (top) to 5 (bottom), evenly distributed
 /// over the slot strip's height.
-const SLOTS: usize = 4;
+const SLOTS: usize = 6;
 
 /// The margin the slot strip keeps from the panel's top and bottom edges,
 /// in pixels.
 const SLOT_MARGIN: f32 = 60.0;
 
 /// The slot the resting watering can sits in.
-const CAN_SLOT: usize = 3;
+const CAN_SLOT: usize = 5;
 
 /// The slot the resting spray can sits in.
-const SPRAY_SLOT: usize = 2;
+const SPRAY_SLOT: usize = 4;
+
+/// The slot the resting spade sits in.
+const SPADE_SLOT: usize = 3;
+
+/// The slot the resting tweezers sit in.
+const TWEEZERS_SLOT: usize = 2;
 
 /// The padding each resting can keeps from its slot's edges, in pixels.
 const SLOT_INSET: f32 = 30.0;
+
+/// The tools the items panel starts with, in slot order: the four tools
+/// resting on the shelf — the tweezers, the spade, the spray can, and the
+/// watering can, top to bottom — with the two top slots left free to park
+/// a tool in. The scene's seeded slot sprites and [`Demo::new`] both come
+/// from here, so the shelf's picture and the demo's table can never part
+/// company.
+const fn seeded_slots() -> [Option<Tool>; SLOTS] {
+    let mut slots = [None; SLOTS];
+    slots[TWEEZERS_SLOT] = Some(Tool::Tweezers);
+    slots[SPADE_SLOT] = Some(Tool::Spade);
+    slots[SPRAY_SLOT] = Some(Tool::SprayCan);
+    slots[CAN_SLOT] = Some(Tool::WaterCan);
+    slots
+}
+
+/// [seeded_slots] as a value: the shelf's starting layout.
+const SEEDED_SLOTS: [Option<Tool>; SLOTS] = seeded_slots();
 
 /// The center of slot `i` (0 = top) in the items node's local space: the
 /// slot's image-pixel center inside the margin-inset strip, y-flipped
@@ -862,7 +970,187 @@ fn nozzle(mx: f32, my: f32, angle: f32) -> ([f32; 2], [f32; 2]) {
 /// rendered bee width inside the [`vipers`] module.
 const VIPER_IMAGE: [f32; 2] = [198.0, 179.0];
 
-/// The two cursor tools. The mouse holds one active tool, drawn as the
+/// `spade.png`'s texture size in pixels: the chalk spade sits inside a
+/// 337x256 canvas, with a transparent margin all round it.
+const SPADE_IMAGE: [f32; 2] = [337.0, 256.0];
+
+/// The spade's visible content in the image's own pixel space: `(0, 0)` is
+/// the upper-left corner, `x` grows to the right, `y` grows down. Measured
+/// off the texture's alpha: the handle's knob at the canvas's upper right,
+/// the blade's point at its lower left.
+const SPADE_BOX: [[f32; 2]; 2] = [
+    [49.0, 23.0],   // content upper-left
+    [293.0, 237.0], // content lower-right
+];
+
+/// The rendered spade's width in pixels; its height follows the content's
+/// 244:214 aspect ratio.
+const SPADE_SIZE: f32 = 210.0;
+
+/// Scales the whole texture so the spade's content is `SPADE_SIZE` wide.
+const SPADE_SCALE: f32 = SPADE_SIZE / (SPADE_BOX[1][0] - SPADE_BOX[0][0]);
+
+/// The grip in `spade.png`'s pixel space: the middle of the wooden handle,
+/// where the hand holds the spade. The dig swings the whole tool about
+/// this point, so the cursor rests here.
+const SPADE_GRIP: [f32; 2] = [237.0, 78.0];
+
+/// The grip in node-local space, with the same y flip as `CAN_LOCAL`; the
+/// spade's node transform keeps it on the cursor.
+const SPADE_GRIP_LOCAL: [f32; 2] = frost::Transform::anchor(SPADE_GRIP, SPADE_IMAGE);
+
+/// The blade's point in `spade.png`'s pixel space: the tip of the trowel,
+/// diagonally opposite the grip — the part that goes into the soil.
+const SPADE_TIP: [f32; 2] = [49.0, 209.0];
+
+/// The blade's point in node-local space, with the same y flip as
+/// `CAN_LOCAL`.
+const SPADE_TIP_LOCAL: [f32; 2] = frost::Transform::anchor(SPADE_TIP, SPADE_IMAGE);
+
+/// The spade's drawn tilt, in radians: the direction from the grip to the
+/// blade's point, read off the sprite's own pixels. The point lies 188 px
+/// left and 131 px below the grip, so the spade at rest — the sprite
+/// exactly as drawn — already aims 34.9° below the horizontal, point to
+/// the lower left. That lean is the dig's start angle: the drawn pose is
+/// the poised spade, and every dig rotation is counted from it.
+fn spade_blade() -> f32 {
+    (SPADE_TIP_LOCAL[1] - SPADE_GRIP_LOCAL[1]).atan2(SPADE_TIP_LOCAL[0] - SPADE_GRIP_LOCAL[0])
+}
+
+/// The dig's full plunge, in radians counter-clockwise: the rotation about
+/// the grip that turns the drawn blade until its point aims straight down
+/// at the soil, `-π/2` reached from `spade_blade()`. A quarter turn less
+/// the 34.9° lean the sprite is drawn with, so 55.1° — not a right angle,
+/// because the art already leans into the swing.
+fn spade_plunge() -> f32 {
+    -std::f32::consts::FRAC_PI_2 - spade_blade()
+}
+
+/// Seconds for one dig stroke: the wind-up, the strike, and the lift back
+/// to the pose the sprite is drawn in.
+const DIG_TIME: f32 = 0.6;
+
+/// The stroke's phases, as fractions of `DIG_TIME`: the spade winds up
+/// over the first `DIG_WIND`, drives through the air to the full plunge by
+/// `DIG_STRIKE`, and eases back to its drawn pose over the rest.
+const DIG_WIND: f32 = 0.4;
+const DIG_STRIKE: f32 = 0.62;
+
+/// The wind-up's swing, in radians clockwise: the rotation about the grip
+/// that lifts the drawn blade just past level — the point comes up from 35°
+/// below the horizontal to 5° above it — so the strike has a full right
+/// angle of arc to spend on the way down.
+const DIG_RAISE: f32 = 0.7;
+
+/// How far the grip leaves the cursor along the blade's own line, in
+/// pixels: `DIG_PULL` back up the handle through the wind-up, `DIG_LUNGE`
+/// down the point through the strike.
+const DIG_PULL: f32 = 22.0;
+const DIG_LUNGE: f32 = 40.0;
+
+/// The symmetric ease the gentle phases of a stroke are walked with: slow
+/// to leave, slow to arrive.
+fn smooth(u: f32) -> f32 {
+    u * u * (3.0 - 2.0 * u)
+}
+
+/// The dig's pose at fraction `u` of the stroke: the spade's rotation about
+/// its grip, in radians counter-clockwise, and the grip's offset from the
+/// cursor along the blade's own line. The two are one movement: the offset
+/// rides whichever way the blade currently aims, so the spade draws back up
+/// its handle as it winds up and drives down its point as it strikes. Both
+/// come back to nothing at `u` = 1, where the spade sits exactly as drawn.
+fn dig_pose(u: f32) -> (f32, [f32; 2]) {
+    let u = u.clamp(0.0, 1.0);
+    let (angle, along) = if u <= DIG_WIND {
+        let e = smooth(u / DIG_WIND);
+        (-DIG_RAISE * e, -DIG_PULL * e)
+    } else if u <= DIG_STRIKE {
+        // The strike accelerates into the soil — a squared ease, where the
+        // winding and the lifting ease symmetrically.
+        let v = (u - DIG_WIND) / (DIG_STRIKE - DIG_WIND);
+        let e = v * v;
+        (
+            -DIG_RAISE + (DIG_RAISE + spade_plunge()) * e,
+            -DIG_PULL + (DIG_PULL + DIG_LUNGE) * e,
+        )
+    } else {
+        let e = smooth((u - DIG_STRIKE) / (1.0 - DIG_STRIKE));
+        (spade_plunge() * (1.0 - e), DIG_LUNGE * (1.0 - e))
+    };
+    // The offset's direction: the unit vector from the grip to the blade's
+    // point, turned by the pose's own angle — the same rotation the spade
+    // itself undergoes about the grip.
+    let (c, s) = (angle.cos(), angle.sin());
+    let (ex, ey) = (
+        SPADE_TIP_LOCAL[0] - SPADE_GRIP_LOCAL[0],
+        SPADE_TIP_LOCAL[1] - SPADE_GRIP_LOCAL[1],
+    );
+    let l = (ex * ex + ey * ey).sqrt();
+    (
+        angle,
+        [(c * ex - s * ey) / l * along, (s * ex + c * ey) / l * along],
+    )
+}
+
+/// The node transform that puts the spade's grip on `(mx, my)`, shifted by
+/// the dig's offset `off`, and rotates the spade by `angle` radians around
+/// that grip.
+///
+/// The grip sits `SPADE_GRIP_LOCAL` (scaled by `SPADE_SCALE`) from the
+/// node's origin in node space, so the transform shifts the grip to the
+/// origin, rotates, then shifts back to the pointer. At `angle = 0` and no
+/// offset this is exactly the unrotated pointer-follow position, the spade
+/// riding the cursor as drawn.
+fn spade_transform(mx: f32, my: f32, angle: f32, off: [f32; 2]) -> frost::Transform {
+    frost::Transform::translate([
+        -SPADE_GRIP_LOCAL[0] * SPADE_SCALE,
+        -SPADE_GRIP_LOCAL[1] * SPADE_SCALE,
+    ])
+    .compose(&frost::Transform::rotate(angle))
+    .compose(&frost::Transform::translate([mx + off[0], my + off[1]]))
+}
+
+/// `Tweezers.png`'s texture size in pixels: the same 337x256 canvas as the
+/// spade, the chalk drawing inside it.
+const TWEEZERS_IMAGE: [f32; 2] = [337.0, 256.0];
+
+/// The tweezers' visible content in the image's own pixel space, with the
+/// same corners-as-pixels convention as `SPADE_BOX`: the joined end at the
+/// canvas's upper right, the two jaws' points at its lower left.
+const TWEEZERS_BOX: [[f32; 2]; 2] = [
+    [81.0, 49.0],   // content upper-left
+    [330.0, 218.0], // content lower-right
+];
+
+/// The rendered tweezers' width in pixels; their height follows the
+/// content's 249:169 aspect ratio.
+const TWEEZERS_SIZE: f32 = 190.0;
+
+/// Scales the whole texture so the tweezers' content is `TWEEZERS_SIZE`
+/// wide.
+const TWEEZERS_SCALE: f32 = TWEEZERS_SIZE / (TWEEZERS_BOX[1][0] - TWEEZERS_BOX[0][0]);
+
+/// The jaws' points in `Tweezers.png`'s pixel space: the working end,
+/// between the two prongs' tips — where a louse will sit once the pinch
+/// frames exist. The cursor rests here.
+const TWEEZERS_TIP: [f32; 2] = [95.0, 200.0];
+
+/// The jaws' points in node-local space, with the same y flip as
+/// `CAN_LOCAL`.
+const TWEEZERS_TIP_LOCAL: [f32; 2] = frost::Transform::anchor(TWEEZERS_TIP, TWEEZERS_IMAGE);
+
+/// The node transform that puts the tweezers' jaws' points on `(mx, my)`:
+/// the same shift-and-shift shape as `can_transform`, minus the rotation —
+/// the tweezers ride level until there is a pinch to animate.
+fn tweezers_transform(mx: f32, my: f32) -> frost::Transform {
+    frost::Transform::translate([
+        mx - TWEEZERS_TIP_LOCAL[0] * TWEEZERS_SCALE,
+        my - TWEEZERS_TIP_LOCAL[1] * TWEEZERS_SCALE,
+    ])
+}
+
+/// The four cursor tools. The mouse holds one active tool, drawn as the
 /// cursor, and one stored tool, mirrored in the held-items panel: the
 /// right-button switch swaps the two, and a left click on a slot swaps the
 /// active tool with the slot's.
@@ -872,6 +1160,59 @@ enum Tool {
     WaterCan,
     /// The spray can: a fresh left-button press triggers a green burst.
     SprayCan,
+    /// The garden spade: a fresh left-button press digs one stroke.
+    Spade,
+    /// The tweezers: carried and exchanged like the rest, but still
+    /// inert — picking needs the pinch frames this one sprite has no pair
+    /// for.
+    Tweezers,
+}
+
+impl Tool {
+    /// The tool's drawn content box in its texture's pixels, `[upper-left,
+    /// lower-right]`, measured off the sprite's alpha. The shelf's slots
+    /// and the held cells fit this rather than the whole texture, so a
+    /// drawing with a wide transparent margin around it — the spade and
+    /// the tweezers — still fills its cell.
+    fn drawn(self) -> [[f32; 2]; 2] {
+        match self {
+            // Both cans are cropped to their content: the texture is the
+            // drawing.
+            Tool::WaterCan => [[0.0, 0.0], [CAN_IMAGE[0], CAN_IMAGE[1]]],
+            Tool::SprayCan => [[0.0, 0.0], [SPRAY_IMAGE[0], SPRAY_IMAGE[1]]],
+            Tool::Spade => SPADE_BOX,
+            Tool::Tweezers => TWEEZERS_BOX,
+        }
+    }
+
+    /// The tool's drawn content size in its texture's pixels.
+    fn drawn_size(self) -> [f32; 2] {
+        let box_ = self.drawn();
+        [box_[1][0] - box_[0][0], box_[1][1] - box_[0][1]]
+    }
+
+    /// The scale the tool's sprite rides at as the cursor: the cans scaled
+    /// to their rendered widths, the spray can and its two frames at their
+    /// natural size.
+    fn cursor_scale(self) -> f32 {
+        match self {
+            Tool::WaterCan => CAN_SCALE,
+            Tool::SprayCan => 1.0,
+            Tool::Spade => SPADE_SCALE,
+            Tool::Tweezers => TWEEZERS_SCALE,
+        }
+    }
+
+    /// The tool's at-rest sprite out of the loaded `assets`: the at-rest
+    /// frame for the tools with more than one.
+    fn sprite(self, assets: &Assets) -> frost::Shape {
+        match self {
+            Tool::WaterCan => assets.can.clone(),
+            Tool::SprayCan => assets.spray1.clone(),
+            Tool::Spade => assets.spade.clone(),
+            Tool::Tweezers => assets.tweezers.clone(),
+        }
+    }
 }
 
 /// The full destination of a falling overgrown tomato, in user space: the
@@ -1005,7 +1346,8 @@ struct Demo {
     /// two held tools switch on its release.
     right_pressed: bool,
     /// The active can's current rotation, in radians counter-clockwise:
-    /// the watering can's tilt or the spray can's burst angle.
+    /// the watering can's tilt, the spray can's burst angle, or the spade's
+    /// place in its dig stroke.
     angle: f32,
     /// The rotation tween, restarted from `angle` on every press, release,
     /// or burst so a quick tap never jumps the can.
@@ -1016,6 +1358,10 @@ struct Demo {
     /// Whether the tool node currently shows `spray2`, the pressed frame;
     /// it flips at the start and end of each burst.
     showing_spray2: bool,
+    /// Elapsed seconds of the current dig stroke; `None` while the spade
+    /// rides the cursor in the pose it is drawn in. A fresh press starts
+    /// one, and `tick_tool` runs it to `DIG_TIME`.
+    dig: Option<f32>,
     /// The watering can's shape, restored to the tool node when the
     /// toggle switches back to it.
     can: frost::Shape,
@@ -1024,6 +1370,11 @@ struct Demo {
     /// them is a cheap `Arc` clone of the pixel buffer.
     spray1: frost::Shape,
     spray2: frost::Shape,
+    /// The spade's shape, the one frame the dig stroke rotates and shifts.
+    spade: frost::Shape,
+    /// The tweezers' shape, carried but still inert: no second frame to
+    /// pinch with yet.
+    tweezers: frost::Shape,
     /// The two viper frames, loaded once: `viper1` the first wingbeat
     /// frame and `viper2` the second; the swarm's bee nodes swap between
     /// them as cheap `Arc` clones.
@@ -1034,6 +1385,10 @@ struct Demo {
     bug1: frost::Shape,
     bug2: frost::Shape,
     bug3: frost::Shape,
+    /// The two louse walk frames — art that walks to the left; the
+    /// louse swarm's nodes swap between them as cheap `Arc` clones.
+    lice1: frost::Shape,
+    lice2: frost::Shape,
     /// The two worm peristaltic frames, loaded once; the swarm's worm
     /// nodes swap between them as cheap `Arc` clones.
     worm1: frost::Shape,
@@ -1109,6 +1464,11 @@ struct Demo {
     /// plant starts growing, and the swarm steps and lays them out on the
     /// matching child of the bugs node (root's [`CHILD_BUGS`] child).
     bugs: bugs::Bugs,
+    /// The swarm of lice running the bugs' life in smaller, untinted
+    /// bodies with left-facing art: two hits of health, two recovered
+    /// every ten seconds at the plant; the swarm steps and lays them
+    /// out on the lice node (root's [`CHILD_LICE`] child).
+    lice: bugs::Bugs,
     /// The swarm of peristaltic worms crossing the soil: the worms emerge
     /// from the convex hull of the plants' root anchors, crawl to a random
     /// point of the same hull, and burrow back in — at most ten above
@@ -1131,6 +1491,9 @@ struct Demo {
     /// as the fruits drop and never removed — landed fruits stay where
     /// they fell.
     falls: Vec<Fall>,
+    /// The tool swap's flights, while they are in the air — one per
+    /// dock cell, riding [CellFlight] arcs in opposite bends.
+    cell_fly: Option<[CellFlight; 2]>,
     /// Whether the game-over overlay is up: it opens with the demo, comes
     /// back up whenever the bench goes bare after the player has planted
     /// — the last survivor withered away — and comes down when the player
@@ -1146,9 +1509,15 @@ struct Demo {
     /// The overlay's "Game Over" title, built once from the embedded font;
     /// laid onto the overlay's title child while the overlay is up.
     game_over: frost::Shape,
-    /// The Play button's rectangle, built once; laid onto the overlay's
-    /// button child while the overlay is up.
+    /// The Play button's background: the `held_items.png` panel, built
+    /// once; laid onto the overlay's button child while the overlay is up.
     play_button: frost::Shape,
+    /// The uniform-per-axis scale that fits the `held_items` texture to
+    /// the button box, before the hover swell.
+    play_fit: [f32; 2],
+    /// The button's hover swell, eased 0 (at rest) to 1 (hovered) every
+    /// frame; the panel and its label scale with it.
+    play_hover: f32,
     /// The overlay's "Play" label, built once from the embedded font; laid
     /// onto the overlay's label child while the overlay is up.
     play_label: frost::Shape,
@@ -1235,9 +1604,11 @@ impl frost::Process for Demo {
         self.step_vipers(ctx, dt, &anchors);
         self.step_worms(ctx, dt, &anchors);
 
-        let events = self.step_bugs(ctx, dt, &anchors, &started);
+        let (events, lice_events) = self.step_bugs(ctx, dt, &anchors, &started);
         self.play_bug_events(&events);
+        self.play_bug_events(&lice_events);
         self.handle_input(ctx);
+        self.step_cell_flight(ctx, dt);
 
         // A seed dropped this frame starts flying: the flight poses its
         // pivot in the held-fruit node — before the basket walls push and
@@ -1264,6 +1635,16 @@ impl frost::Process for Demo {
         self.spray_hits();
         self.draw_live(ctx, &anchors, &started);
 
+        // The Play button's hover swell: ease toward the cursor's verdict
+        // — any exponential approach is frame-rate friendly — so the
+        // panel and label grow on approach and settle on leaving.
+        let swell_to = if self.over && on_play_button(self.mouse) {
+            1.0
+        } else {
+            0.0
+        };
+        self.play_hover += (swell_to - self.play_hover) * (dt * 10.0).min(1.0);
+
         // Lay the game-over overlay out last: its flag may have risen on
         // this frame, above, or fallen in the input's Play press, and the
         // veil must track the window's current size.
@@ -1274,18 +1655,17 @@ impl frost::Process for Demo {
 impl Demo {
     /// Builds the demo's initial state out of the loaded `assets`: the
     /// mouse holds no tool at all, the tools rest in the items panel's
-    /// slots — mirroring the panel's seeded sprites, the spray can in
-    /// `SPRAY_SLOT`, the watering can in `CAN_SLOT` — the bench starts
+    /// slots — mirroring the panel's seeded sprites, [SEEDED_SLOTS]: the
+    /// tweezers, the spade, the spray can, and the watering can, top to
+    /// bottom, the two top slots free — the bench starts
     /// bare: no plant planted, all six growth clocks at zero, all six
     /// water reserves full, and the basket still holding its starting
     /// tomato, seeded on the first frame once the basket's fit is known.
     fn new(assets: Assets) -> Demo {
         // The tools at rest in the items panel's slots, mirroring the
-        // panel's seeded sprites: the spray can in SPRAY_SLOT, the
-        // watering can in CAN_SLOT, the other two slots empty.
-        let mut slots = [None; SLOTS];
-        slots[SPRAY_SLOT] = Some(Tool::SprayCan);
-        slots[CAN_SLOT] = Some(Tool::WaterCan);
+        // panel's seeded sprites: [SEEDED_SLOTS], the one table the scene's
+        // slot children are built from too.
+        let slots = SEEDED_SLOTS;
 
         // The plant's five slice shapes, owned by the demo: the launch
         // plants and every withered-away plant's reset rebuild from them.
@@ -1305,11 +1685,11 @@ impl Demo {
             .expect("the embedded overlay font decodes");
         let play_label = frost::Shape::text_bytes(assets.font, "Play", PLAY_LABEL_SIZE)
             .expect("the embedded overlay font decodes");
-        let play_button = frost::Shape::Rectangle {
-            center: [0.0, 0.0],
-            extent: PLAY_HALF,
-            color: PLAY_COLOR,
-        };
+        // The button's background is the held-items panel; the fit scale
+        // maps its texture exactly onto the button box.
+        let play_button = assets.held_items.clone();
+        let [pw, ph] = play_button.sprite_size().expect("held_items is a sprite");
+        let play_fit = [2.0 * PLAY_HALF[0] / pw, 2.0 * PLAY_HALF[1] / ph];
 
         // The diagnostics overlay, set in the embedded Fira Code font,
         // with every statistic enabled: the window size, the frame rate,
@@ -1334,19 +1714,31 @@ impl Demo {
             rotation: frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once),
             burst: None,
             showing_spray2: false,
+            dig: None,
             can: assets.can,
             spray1: assets.spray1,
             spray2: assets.spray2,
+            spade: assets.spade,
+            tweezers: assets.tweezers,
             viper1: assets.viper1,
             viper2: assets.viper2,
             // Three bugs per plant, each plant's batch exactly once: the
             // population climbs 3, 6, …, 18 over the first 75 seconds; a
             // killed bug pops back up at its spawn spot after a random 5
             // to 10 second delay.
-            bugs: bugs::Bugs::new([&assets.bug1, &assets.bug2, &assets.bug3]),
+            bugs: bugs::Bugs::new(
+                &[&assets.bug1, &assets.bug2, &assets.bug3],
+                bugs::Species::bug(),
+            ),
             bug1: assets.bug1,
             bug2: assets.bug2,
             bug3: assets.bug3,
+            // The louse pool: the same batch cadence, the louse skin —
+            // smaller, untinted, left-facing art, two hits and a slower
+            // two-at-a-time heal.
+            lice: bugs::Bugs::new(&[&assets.lice1, &assets.lice2], bugs::Species::louse()),
+            lice1: assets.lice1,
+            lice2: assets.lice2,
             // The worm pool: fourteen slots, at most ten above ground,
             // each worm's first underground delay staggered across the
             // pool so the first wave trickles out instead of popping.
@@ -1377,6 +1769,7 @@ impl Demo {
             slices,
             basket_seed: true,
             vipers: vipers::Vipers::new(VIPER_IMAGE),
+            cell_fly: None,
             // The game-over overlay opens with the demo: the bench is
             // bare, so the player sees it over the whole window until the
             // first Play press. The bench never had a plant planted, so
@@ -1385,6 +1778,8 @@ impl Demo {
             ever_planted: false,
             game_over,
             play_button,
+            play_fit,
+            play_hover: 0.0,
             play_label,
             diag,
             save_key: false,
@@ -1461,9 +1856,10 @@ impl Demo {
     /// [`CHILD_OVERLAY`] child), for a `w` by `h` window: while the
     /// overlay is up — the bench bare — the node's own shape is a dim
     /// rectangle over the whole window, and its children carry the
-    /// "Game Over" title above the center, the Play button's rectangle
-    /// below it, and the button's label on the button's center; while the
-    /// overlay is down, the node and its children carry no shapes at all.
+    /// "Game Over" title above the center, the Play button — the
+    /// `held_items` panel with its label — below it; panel and label
+    /// swell while the cursor rests on the button; while the overlay is
+    /// down, the node and its children carry no shapes at all.
     fn layout_overlay(&mut self, ctx: &mut frost::Context, w: f32, h: f32) {
         let overlay = &mut ctx.scene().root.children[CHILD_OVERLAY];
         // The children's poses hold while the overlay is up and down
@@ -1474,6 +1870,13 @@ impl Demo {
         let button = frost::Transform::translate([0.0, PLAY_Y]);
         overlay.children[OVERLAY_BUTTON].transform = button;
         overlay.children[OVERLAY_LABEL].transform = button;
+        // The button's size: the fit that maps the panel texture onto the
+        // button box, times the eased hover swell; the label swells with
+        // it, uniformly.
+        let swell = 1.0 + PLAY_SWELL * self.play_hover;
+        let [fx, fy] = self.play_fit;
+        overlay.children[OVERLAY_BUTTON].scale = [fx * swell, fy * swell];
+        overlay.children[OVERLAY_LABEL].scale = [swell, swell];
         if self.over {
             // The dim veil: a rectangle over the whole window, a pixel
             // past each edge so no border shows, centered on the node's
@@ -1629,10 +2032,11 @@ impl Demo {
         }
     }
 
-    /// Waddles the bugs to the plants, in parallel with everything else:
+    /// Waddles both swarms — the bugs and the lice, same life cycle in
+    /// different skins — to the plants, in parallel with everything else:
     /// `alive` is the bench's planted table — which plants are growing —
-    /// and the bugs retarget away from a plant that withers and batch in
-    /// for each plant that starts growing. Returns the step's arrival
+    /// and the swarms retarget away from a plant that withers and batch
+    /// in for each plant that starts growing. Returns both swarms' step
     /// events, which [Demo::play_bug_events] plays.
     fn step_bugs(
         &mut self,
@@ -1640,12 +2044,15 @@ impl Demo {
         dt: f32,
         anchors: &[[f32; 2]; PLANT_POS.len()],
         alive: &[bool],
-    ) -> bugs::StepEvents {
+    ) -> (bugs::StepEvents, bugs::StepEvents) {
         let bugs_node = &mut ctx.scene().root.children[CHILD_BUGS];
         let events = self.bugs.step(dt, anchors, alive);
         self.bugs
-            .layout(bugs_node, [&self.bug1, &self.bug2, &self.bug3]);
-        events
+            .layout(bugs_node, &[&self.bug1, &self.bug2, &self.bug3]);
+        let lice_node = &mut ctx.scene().root.children[CHILD_LICE];
+        let lice_events = self.lice.step(dt, anchors, alive);
+        self.lice.layout(lice_node, &[&self.lice1, &self.lice2]);
+        (events, lice_events)
     }
 
     /// Steps the worms' swarm, in parallel with everything else: the
@@ -1733,9 +2140,39 @@ impl Demo {
 
         // A press followed by a release of the right mouse button switches
         // the two tools the mouse holds: the stored one becomes the active
-        // one and the active one is stored, each in its upright, at-rest
-        // pose.
+        // one and the active one is stored, while the dock's cells arc
+        // their tools into each other's spots.
         if self.right_pressed && !right {
+            // The dock's two tools trade places at once, in mirrored
+            // arcs: the left cell's tool dips below the cells' line,
+            // the right cell's tool rises above it, each bending off
+            // the chord by half the distance between the cells at the
+            // middle. From the cells' current spots, so a swap pressed
+            // mid-flight bends on from where the tools actually are.
+            let (p0, p1) = {
+                let panel = &ctx.scene().root.children[CHILD_HELD];
+                (
+                    panel.children[0].transform.apply([0.0, 0.0]),
+                    panel.children[1].transform.apply([0.0, 0.0]),
+                )
+            };
+            let half = (held_local(1)[0] - held_local(0)[0]).abs() / 2.0;
+            self.cell_fly = Some([
+                CellFlight {
+                    from: p0,
+                    to: held_local(1),
+                    bump: -half,
+                    t: 0.0,
+                    dur: SWAP_FLIGHT_TIME,
+                },
+                CellFlight {
+                    from: p1,
+                    to: held_local(0),
+                    bump: half,
+                    t: 0.0,
+                    dur: SWAP_FLIGHT_TIME,
+                },
+            ]);
             std::mem::swap(&mut self.active, &mut self.held);
             self.set_active(ctx, self.active);
         }
@@ -1786,6 +2223,16 @@ impl Demo {
                     // before the cycle could wrap.
                     self.rotation = frost::Tween::new(0.0, BURST_ANGLE, BURST_HALF);
                     self.set_spray_frame(ctx, true);
+                }
+            } else if on_slot.is_none() && self.active == Some(Tool::Spade) {
+                // A fresh press — one after a release, not a re-press
+                // mid-stroke — digs one stroke: the spade winds up, drives
+                // over to the full plunge, and lifts back to the pose it is
+                // drawn in, all over `DIG_TIME`. Holding the button, or
+                // pressing again before the stroke lands, does nothing: the
+                // spade digs once per click.
+                if self.dig.is_none() {
+                    self.dig = Some(0.0);
                 }
             }
         } else if !left && self.pressed {
@@ -2080,10 +2527,11 @@ impl Demo {
     }
 
     /// Ticks the active tool's live pose every frame so an ongoing
-    /// tilt, return, or burst keeps moving; no tool held is a no-op. The
-    /// watering can pours at the full tilt, the spray can runs its burst
-    /// to `BURST_TIME`, the pour sound starts and stops with the tilt,
-    /// and the tool node takes the live transform.
+    /// tilt, return, burst, or dig keeps moving; no tool held is a no-op.
+    /// The watering can pours at the full tilt, the spray can runs its
+    /// burst to `BURST_TIME`, the spade runs its stroke to `DIG_TIME`, the
+    /// tweezers have nothing to run yet, the pour sound starts and stops
+    /// with the tilt, and the tool node takes the live transform.
     fn tick_tool(&mut self, ctx: &mut frost::Context, dt: f32) {
         let [mx, my] = self.mouse;
 
@@ -2177,6 +2625,25 @@ impl Demo {
             }
             // No tool held: nothing to tilt, burst, or emit.
             None => {}
+            // The spade: the stroke, once a press started it, runs to
+            // `DIG_TIME`; its rotation and its lunge along the blade's line
+            // both come from `dig_pose`, and nothing is emitted.
+            Some(Tool::Spade) => {
+                if let Some(t) = self.dig {
+                    let nt = t + dt;
+                    if nt >= DIG_TIME {
+                        // The stroke is over: the spade sits in the pose it
+                        // is drawn in again.
+                        self.dig = None;
+                        self.angle = 0.0;
+                    } else {
+                        self.dig = Some(nt);
+                        self.angle = dig_pose(nt / DIG_TIME).0;
+                    }
+                }
+            }
+            // The tweezers: carried, but with no action to tick yet.
+            Some(Tool::Tweezers) => {}
         }
 
         // The pour sound follows the spout: it starts, looping, the frame
@@ -2200,8 +2667,17 @@ impl Demo {
             tool_node.transform = match tool {
                 Tool::WaterCan => can_transform(mx, my, self.angle),
                 Tool::SprayCan => spray_transform(mx, my, self.angle),
+                Tool::Spade => spade_transform(mx, my, self.angle, self.dig_offset()),
+                Tool::Tweezers => tweezers_transform(mx, my),
             };
         }
+    }
+
+    /// The dig stroke's grip offset from the cursor, in user pixels: the
+    /// offset of [`dig_pose`] at the stroke's live time, and nothing at all
+    /// while no stroke is running.
+    fn dig_offset(&self) -> [f32; 2] {
+        self.dig.map_or([0.0, 0.0], |t| dig_pose(t / DIG_TIME).1)
     }
 
     /// Advances the particles even while not emitting, so an ongoing
@@ -2245,14 +2721,16 @@ impl Demo {
     /// bug death clip.
     fn spray_hits(&mut self) {
         for p in &self.spray.particles {
-            let hit = self.bugs.hit_at(p.pos);
-            for clip in hit.ajs {
-                self.sounds
-                    .device
-                    .play_once(&self.sounds.ajs[clip], Some(0.35));
-            }
-            for _ in 0..hit.deaths {
-                self.sounds.device.play_once(&self.sounds.death, None);
+            for swarm in [&mut self.bugs, &mut self.lice] {
+                let hit = swarm.hit_at(p.pos);
+                for clip in hit.ajs {
+                    self.sounds
+                        .device
+                        .play_once(&self.sounds.ajs[clip], Some(0.35));
+                }
+                for _ in 0..hit.deaths {
+                    self.sounds.device.play_once(&self.sounds.death, None);
+                }
             }
         }
     }
@@ -2270,15 +2748,17 @@ impl Demo {
         // Draw the bugs' health counters: one white pip per hit each
         // visible bug can still take, in a row above it — centered on
         // the bug's current count, three to six pips wide.
-        for ([cx, cy], hits) in self.bugs.health_pips() {
-            for i in 0..hits {
-                ctx.circle(
-                    cx - (hits as f32 - 1.0) * 3.0 + i as f32 * 6.0,
-                    cy,
-                    2.0,
-                    PIP,
-                    Z,
-                );
+        for swarm in [&self.bugs, &self.lice] {
+            for ([cx, cy], hits) in swarm.health_pips() {
+                for i in 0..hits {
+                    ctx.circle(
+                        cx - (hits as f32 - 1.0) * 3.0 + i as f32 * 6.0,
+                        cy,
+                        2.0,
+                        PIP,
+                        Z,
+                    );
+                }
             }
         }
 
@@ -2334,24 +2814,23 @@ impl Demo {
     }
 
     /// Makes `tool` the active tool — `None` for no tool: it resets the
-    /// can to its upright, at-rest pose (angle, burst, rotation tween, and
-    /// frame) and puts the tool's shape and scale on the node, or clears
-    /// it, so no tool inherits another's tilt, burst, or sprite.
+    /// can to its upright, at-rest pose (angle, burst, dig, rotation tween,
+    /// and frame) and puts the tool's shape and scale on the node, or
+    /// clears it, so no tool inherits another's tilt, burst, stroke, or
+    /// sprite.
     fn set_active(&mut self, ctx: &mut frost::Context, tool: Option<Tool>) {
         self.active = tool;
         self.angle = 0.0;
         self.burst = None;
+        self.dig = None;
         self.rotation = frost::Tween::new(0.0, 0.0, 1.0).repeat(frost::Repeat::Once);
         self.showing_spray2 = false;
         let tool_node = &mut ctx.scene().root.children[CHILD_TOOL];
         match tool {
-            Some(Tool::WaterCan) => {
-                tool_node.shape = Some(self.can.clone());
-                tool_node.scale = [CAN_SCALE, CAN_SCALE];
-            }
-            Some(Tool::SprayCan) => {
-                tool_node.shape = Some(self.spray1.clone());
-                tool_node.scale = [1.0, 1.0];
+            Some(tool) => {
+                tool_node.shape = Some(self.tool_shape(tool));
+                let s = tool.cursor_scale();
+                tool_node.scale = [s, s];
             }
             None => {
                 tool_node.shape = None;
@@ -2362,6 +2841,18 @@ impl Demo {
         // the right-button switch and the slot swaps alike — goes through
         // this method, so this single sync keeps the panel current.
         self.sync_held(ctx);
+    }
+
+    /// The tool's at-rest shape, cloned out of the demo's own copies: the
+    /// at-rest frame for the tools with more than one, and a cheap `Arc`
+    /// clone of the pixel buffer.
+    fn tool_shape(&self, tool: Tool) -> frost::Shape {
+        match tool {
+            Tool::WaterCan => self.can.clone(),
+            Tool::SprayCan => self.spray1.clone(),
+            Tool::Spade => self.spade.clone(),
+            Tool::Tweezers => self.tweezers.clone(),
+        }
     }
 
     /// Swaps the active tool with whatever rests in slot `slot`: the
@@ -2383,13 +2874,10 @@ impl Demo {
     /// the slot-fit scale, or no shape at all.
     fn slot_set(&mut self, node: &mut frost::SceneNode, tool: Option<Tool>) {
         match tool {
-            Some(Tool::WaterCan) => {
-                node.shape = Some(self.can.clone());
-                node.scale = [slot_scale(CAN_IMAGE), slot_scale(CAN_IMAGE)];
-            }
-            Some(Tool::SprayCan) => {
-                node.shape = Some(self.spray1.clone());
-                node.scale = [slot_scale(SPRAY_IMAGE), slot_scale(SPRAY_IMAGE)];
+            Some(tool) => {
+                node.shape = Some(self.tool_shape(tool));
+                let s = slot_scale(tool.drawn_size());
+                node.scale = [s, s];
             }
             None => node.shape = None,
         }
@@ -2428,7 +2916,8 @@ impl Demo {
         // stale children frozen, so the swarms are rebuilt, not just
         // re-stepped.
         self.vipers = vipers::Vipers::new(VIPER_IMAGE);
-        self.bugs = bugs::Bugs::new([&self.bug1, &self.bug2, &self.bug3]);
+        self.bugs = bugs::Bugs::new(&[&self.bug1, &self.bug2, &self.bug3], bugs::Species::bug());
+        self.lice = bugs::Bugs::new(&[&self.lice1, &self.lice2], bugs::Species::louse());
         self.worms = worms::Worms::new([&self.worm1, &self.worm2]);
         // The fruit goes back to the basket: the carried and the fallen
         // fruit come off the scene, the basket empties, and the starting
@@ -2444,10 +2933,7 @@ impl Demo {
         self.basket_seed = true;
         // The mouse holds no tool again: the tools rest in their slots,
         // the held panel's cells go empty, and the in-flight states clear.
-        let mut slots = [None; SLOTS];
-        slots[SPRAY_SLOT] = Some(Tool::SprayCan);
-        slots[CAN_SLOT] = Some(Tool::WaterCan);
-        self.slots = slots;
+        self.slots = SEEDED_SLOTS;
         self.held = None;
         self.set_active(ctx, None);
         let items = &mut ctx.scene().root.children[CHILD_ITEMS];
@@ -2456,6 +2942,7 @@ impl Demo {
         }
         self.picking = None;
         self.flying = None;
+        self.cell_fly = None;
         self.press_slot = None;
         self.right_pressed = false;
         self.acc = 0.0;
@@ -2470,6 +2957,9 @@ impl Demo {
     fn set_seed(&mut self, seed: u64) {
         self.rng.set_state(seed);
         self.bugs.set_seed(seed);
+        // The louse stream runs on a scramble of the seed: the same run
+        // reproducibility, an independent draw order from the bugs'.
+        self.lice.set_seed(seed.rotate_left(23));
         self.worms.set_seed(seed);
     }
 
@@ -2551,6 +3041,7 @@ impl Demo {
             version: save::VERSION,
             seed: self.rng.state(),
             bug_seed: self.bugs.rng_state(),
+            lice_seed: self.lice.rng_state(),
             time: self.time,
             acc: self.acc,
             over: self.over,
@@ -2564,6 +3055,7 @@ impl Demo {
             angle: self.angle,
             turn: save::TurnState::from(&self.rotation),
             burst: self.burst,
+            dig: self.dig,
             showing_spray2: self.showing_spray2,
             pouring: self.pouring,
             basket_seed: self.basket_seed,
@@ -2571,6 +3063,7 @@ impl Demo {
             plants: std::array::from_fn(|i| save::WateredPlantState::from(&self.plants[i])),
             falls: self.falls.iter().map(save::FallState::from).collect(),
             bugs: self.bugs.state(),
+            lice: self.lice.state(),
             vipers: self.vipers.state(),
             worms: self.worms.state(),
         }
@@ -2590,6 +3083,10 @@ impl Demo {
         self.time = snapshot.time;
         self.acc = snapshot.acc;
         self.over = snapshot.over;
+        // A swap flight is too short a moment to snapshot: it is simply
+        // dropped, and the cells' per-frame step settles them back onto
+        // their spots.
+        self.cell_fly = None;
         self.ever_planted = snapshot.ever_planted;
         self.slots = snapshot.slots;
         self.active = snapshot.active;
@@ -2599,6 +3096,7 @@ impl Demo {
         self.angle = snapshot.angle;
         self.rotation = snapshot.turn.into_tween();
         self.burst = snapshot.burst;
+        self.dig = snapshot.dig;
         self.showing_spray2 = snapshot.showing_spray2;
         self.basket_seed = snapshot.basket_seed;
         // The plants: each plant's state overwrites its live one — the
@@ -2611,11 +3109,13 @@ impl Demo {
         }
         self.falls = snapshot.falls.iter().copied().map(Fall::from).collect();
         self.bugs.restore(&snapshot.bugs);
+        self.lice.restore(&snapshot.lice);
         self.vipers.restore(&snapshot.vipers);
         self.worms.restore(&snapshot.worms);
         // All three random streams resume from the snapshot's states.
         self.rng.set_state(snapshot.seed);
         self.bugs.set_seed(snapshot.bug_seed);
+        self.lice.set_seed(snapshot.lice_seed);
         // The particles are short-lived: their streams start over.
         self.water = frost::ParticleSystem::default();
         self.spray = frost::ParticleSystem::default();
@@ -2631,11 +3131,12 @@ impl Demo {
         self.rehome_scene(ctx, snapshot);
         // The active tool's pose: set_active resets it to the upright,
         // at-rest pose and re-syncs the held panel — the snapshot's tilt,
-        // burst, and frame come back on top.
+        // burst, dig, and frame come back on top.
         self.set_active(ctx, self.active);
         self.angle = snapshot.angle;
         self.rotation = snapshot.turn.into_tween();
         self.burst = snapshot.burst;
+        self.dig = snapshot.dig;
         self.showing_spray2 = snapshot.showing_spray2;
         if self.active == Some(Tool::SprayCan) {
             self.set_spray_frame(ctx, self.showing_spray2);
@@ -2785,13 +3286,57 @@ impl Demo {
         });
     }
 
+    /// Arcs the swap flights, one per dock cell, along their mirrored
+    /// arches; on landing the cells snap to their rest spots and show
+    /// the swapped tools. With no flight in the air the cells simply
+    /// hold their rest spots — a reload or restart mid-flight can never
+    /// strand a tool off its cell.
+    fn step_cell_flight(&mut self, ctx: &mut frost::Context, dt: f32) {
+        match &mut self.cell_fly {
+            Some(flies) => {
+                let mut done = true;
+                for (fly, cell) in flies
+                    .iter_mut()
+                    .zip(ctx.scene().root.children[CHILD_HELD].children.iter_mut())
+                {
+                    fly.t = (fly.t + dt).min(fly.dur);
+                    done &= fly.t >= fly.dur;
+                    let p = cell_flight_pos(fly, fly.t / fly.dur);
+                    cell.transform = frost::Transform::translate(p);
+                }
+                if done {
+                    self.cell_fly = None;
+                    let held = &mut ctx.scene().root.children[CHILD_HELD];
+                    for (i, cell) in held.children.iter_mut().take(2).enumerate() {
+                        cell.transform = frost::Transform::translate(held_local(i));
+                    }
+                    self.sync_held(ctx);
+                }
+            }
+            None => {
+                let held = &mut ctx.scene().root.children[CHILD_HELD];
+                for (i, cell) in held.children.iter_mut().take(2).enumerate() {
+                    cell.transform = frost::Transform::translate(held_local(i));
+                }
+            }
+        }
+    }
+
     /// Mirrors the mouse's two tools into the held-items panel: the active
     /// tool in the left cell, the stored one in the right, each at its
     /// at-rest frame in the held-fit scale — or an empty cell for `None`.
     fn sync_held(&mut self, ctx: &mut frost::Context) {
+        // While the swap flights are in the air each cell rides with —
+        // and shows — the tool leaving it; the swap only reads true in
+        // the cells once both have landed.
+        let (left, right) = if self.cell_fly.is_some() {
+            (self.held, self.active)
+        } else {
+            (self.active, self.held)
+        };
         let held = &mut ctx.scene().root.children[CHILD_HELD];
-        self.cell_set(&mut held.children[0], self.active);
-        self.cell_set(&mut held.children[1], self.held);
+        self.cell_set(&mut held.children[0], left);
+        self.cell_set(&mut held.children[1], right);
     }
 
     /// Puts `tool` — or nothing — in a held cell's node: the tool's shape
@@ -2799,13 +3344,10 @@ impl Demo {
     /// all.
     fn cell_set(&mut self, node: &mut frost::SceneNode, tool: Option<Tool>) {
         match tool {
-            Some(Tool::WaterCan) => {
-                node.shape = Some(self.can.clone());
-                node.scale = [held_scale(CAN_IMAGE), held_scale(CAN_IMAGE)];
-            }
-            Some(Tool::SprayCan) => {
-                node.shape = Some(self.spray1.clone());
-                node.scale = [held_scale(SPRAY_IMAGE), held_scale(SPRAY_IMAGE)];
+            Some(tool) => {
+                node.shape = Some(self.tool_shape(tool));
+                let s = held_scale(tool.drawn_size());
+                node.scale = [s, s];
             }
             None => node.shape = None,
         }
@@ -3209,53 +3751,36 @@ fn main() {
             Box::new(frost::SceneNode {
                 // The inventory panel, positioned and scaled by the process
                 // every frame: mid left, `MARGIN` clear of the top, bottom,
-                // and left borders. Its children are the four slots, one per
+                // and left borders. Its children are the six slots, one per
                 // slot in slot order — a node paints its shape before its
                 // children, so a resting tool renders on top of the panel —
-                // and they ride its fit on resize. The spray can rests in
-                // slot 2 and the watering can in slot 3; slots 0 and 1
-                // start empty, and a left click can park either tool in any
-                // slot.
+                // and they ride its fit on resize. The four tools rest on
+                // the shelf as [SEEDED_SLOTS] lays them out — the tweezers,
+                // the spade, the spray can, and the watering can, top to
+                // bottom — the two top slots start empty, and a left click
+                // can park any tool in any slot.
                 shape: Some(assets.items.clone()),
                 order: zorder::UI,
-                children: vec![
-                    Box::new(frost::SceneNode {
-                        // Slot 0: empty at start.
-                        transform: frost::Transform::translate([
-                            slot_local(0)[0],
-                            slot_local(0)[1],
-                        ]),
-                        ..Default::default()
-                    }),
-                    Box::new(frost::SceneNode {
-                        // Slot 1: empty at start.
-                        transform: frost::Transform::translate([
-                            slot_local(1)[0],
-                            slot_local(1)[1],
-                        ]),
-                        ..Default::default()
-                    }),
-                    Box::new(frost::SceneNode {
-                        // The spray can at rest, centered in slot 2.
-                        transform: frost::Transform::translate([
-                            slot_local(SPRAY_SLOT)[0],
-                            slot_local(SPRAY_SLOT)[1],
-                        ]),
-                        scale: [slot_scale(SPRAY_IMAGE), slot_scale(SPRAY_IMAGE)],
-                        shape: Some(assets.spray1.clone()),
-                        ..Default::default()
-                    }),
-                    Box::new(frost::SceneNode {
-                        // The watering can at rest, centered in slot 3.
-                        transform: frost::Transform::translate([
-                            slot_local(CAN_SLOT)[0],
-                            slot_local(CAN_SLOT)[1],
-                        ]),
-                        scale: [slot_scale(CAN_IMAGE), slot_scale(CAN_IMAGE)],
-                        shape: Some(assets.can.clone()),
-                        ..Default::default()
-                    }),
-                ],
+                children: (0..SLOTS)
+                    .map(|i| {
+                        let (shape, scale) = match SEEDED_SLOTS[i] {
+                            Some(tool) => {
+                                let s = slot_scale(tool.drawn_size());
+                                (Some(tool.sprite(&assets)), [s, s])
+                            }
+                            None => (None, [1.0, 1.0]),
+                        };
+                        Box::new(frost::SceneNode {
+                            // The tool at rest, centered in its slot — or an
+                            // empty slot, a shapeless node waiting for a
+                            // tool to be parked in it.
+                            transform: frost::Transform::translate(slot_local(i)),
+                            scale,
+                            shape,
+                            ..Default::default()
+                        })
+                    })
+                    .collect(),
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
@@ -3333,6 +3858,17 @@ fn main() {
                 // under the tool node, so the cursor paints above the
                 // bugs.
                 children: (0..BUG_N)
+                    .map(|_| Box::new(frost::SceneNode::default()))
+                    .collect(),
+                ..Default::default()
+            }),
+            Box::new(frost::SceneNode {
+                // The lice's swarm on the grass: the bugs' life in a
+                // different skin, one shape-less child per slot; the
+                // process lays each louse's pose, flip, growth, and walk
+                // frame out on its child every frame. The group sits
+                // under the tool node, so the cursor paints above.
+                children: (0..LICE_N)
                     .map(|_| Box::new(frost::SceneNode::default()))
                     .collect(),
                 ..Default::default()
@@ -3442,7 +3978,7 @@ fn main() {
         scene,
         demo,
         frost::Config {
-            window_size: Some(WINDOW),
+            window_size_px: Some(WINDOW),
             ..Default::default()
         },
     ) {
@@ -3456,9 +3992,10 @@ mod tests {
     use super::*;
 
     /// [Demo::new] starts the demo mirroring the scene's seeded sprites
-    /// and the plants' full reserves: no tool is active or held, the
-    /// spray can rests in `SPRAY_SLOT` and the watering can in
-    /// `CAN_SLOT` with the other slots empty, the bench is bare — no
+    /// and the plants' full reserves: no tool is active or held, the four
+    /// tools rest on the shelf as [SEEDED_SLOTS] lays them — the tweezers,
+    /// the spade, the spray can, and the watering can, top to bottom — with
+    /// the two top slots empty, the bench is bare — no
     /// slot planted, every reserve full, the basket seed waiting to be
     /// seeded — nothing is falling, and no pour loop is running.
     #[test]
@@ -3471,6 +4008,8 @@ mod tests {
         assert!(demo.basket_seed);
         assert_eq!(demo.slots[SPRAY_SLOT], Some(Tool::SprayCan));
         assert_eq!(demo.slots[CAN_SLOT], Some(Tool::WaterCan));
+        assert_eq!(demo.slots[SPADE_SLOT], Some(Tool::Spade));
+        assert_eq!(demo.slots[TWEEZERS_SLOT], Some(Tool::Tweezers));
         assert_eq!(demo.slots[0], None);
         assert_eq!(demo.slots[1], None);
         assert_eq!(demo.plants.len(), PLANT_POS.len());
@@ -3479,6 +4018,259 @@ mod tests {
         assert!(demo.falls.is_empty());
         assert!(!demo.pouring);
         assert!(demo.over);
+    }
+
+    /// The shelf holds every tool exactly once and still has somewhere to
+    /// park one: [SEEDED_SLOTS] places all four tools in their own slots,
+    /// in the order the panel reads them from the top — tweezers, spade,
+    /// spray can, watering can — and leaves the two top slots empty; every
+    /// tool fits its own slot cell, and the cells tile the strip without
+    /// overlapping.
+    #[test]
+    fn the_shelf_holds_all_four_tools_and_two_free_slots() {
+        for tool in [Tool::WaterCan, Tool::SprayCan, Tool::Spade, Tool::Tweezers] {
+            assert_eq!(
+                SEEDED_SLOTS.iter().filter(|s| **s == Some(tool)).count(),
+                1,
+                "each tool rests on the shelf exactly once"
+            );
+        }
+        assert_eq!(
+            SEEDED_SLOTS,
+            [
+                None,
+                None,
+                Some(Tool::Tweezers),
+                Some(Tool::Spade),
+                Some(Tool::SprayCan),
+                Some(Tool::WaterCan)
+            ]
+        );
+        // Every resting tool fits its cell with the inset clear, and the
+        // fit never flips a sprite inside out.
+        let cell_h = (ITEMS_SIZE[1] - 2.0 * SLOT_MARGIN) / SLOTS as f32;
+        for i in 0..SLOTS {
+            let Some(tool) = SEEDED_SLOTS[i] else {
+                continue;
+            };
+            let s = slot_scale(tool.drawn_size());
+            let [dw, dh] = tool.drawn_size();
+            assert!(s > 0.0);
+            assert!(dw * s <= ITEMS_SIZE[0] - 2.0 * SLOT_INSET);
+            assert!(dh * s <= cell_h - 2.0 * SLOT_INSET);
+        }
+        // The slot centers march down the strip, one full cell apart, and
+        // every cell stays inside the margins.
+        let step = (ITEMS_SIZE[1] - 2.0 * SLOT_MARGIN) / SLOTS as f32;
+        for i in 0..SLOTS {
+            let drop = slot_local(0)[1] - slot_local(i)[1];
+            assert!((drop - step * i as f32).abs() < 1e-3);
+            let top = ITEMS_SIZE[1] / 2.0 - slot_local(i)[1];
+            assert!(top - step / 2.0 >= SLOT_MARGIN - 1e-3);
+            assert!(top + step / 2.0 <= ITEMS_SIZE[1] - SLOT_MARGIN + 1e-3);
+        }
+    }
+
+    /// The dig stroke starts and ends on the pose the sprite is drawn in:
+    /// no rotation and no offset at either end of `DIG_TIME`, the angle
+    /// continuous across the three phases, and the stroke spending its
+    /// whole arc between the raised wind-up and the full plunge.
+    #[test]
+    fn a_dig_stroke_leaves_its_drawn_pose_and_returns_to_it() {
+        let (a0, o0) = dig_pose(0.0);
+        assert_eq!((a0, o0), (0.0, [0.0, 0.0]));
+        let (a1, o1) = dig_pose(1.0);
+        assert!((a1 - 0.0).abs() < 1e-6 && o1[0].abs() < 1e-4 && o1[1].abs() < 1e-4);
+
+        // The stroke is a walk, not a jump: no frame-to-frame step is
+        // bigger than the phases' own pace allows.
+        let mut prev = dig_pose(0.0).0;
+        let mut max_step = 0.0f32;
+        for i in 1..=1000 {
+            let a = dig_pose(i as f32 / 1000.0).0;
+            max_step = max_step.max((a - prev).abs());
+            prev = a;
+        }
+        // The whole swing is `DIG_RAISE + plunge` radians of arc, spent
+        // over the strike's `DIG_STRIKE - DIG_WIND` of the stroke — the
+        // fastest it may move per frame is that arc over that window.
+        let arc = DIG_RAISE + spade_plunge();
+        let fastest = arc / ((DIG_STRIKE - DIG_WIND) / 1000.0);
+        assert!(
+            max_step <= fastest + 1e-3,
+            "a jump of {max_step} rad per step, faster than the strike's {fastest}"
+        );
+
+        // The wind-up lifts the blade the other way, and the strike reaches
+        // the full plunge at its end.
+        assert!(dig_pose(DIG_WIND).0 < 0.0);
+        assert!((dig_pose(DIG_STRIKE).0 - spade_plunge()).abs() < 1e-6);
+    }
+
+    /// The plunge angle comes off the sprite, not a guess: rotating the
+    /// drawn spade by `spade_plunge()` about its grip turns the grip→point
+    /// direction — the 34.9° lean the art is drawn with — to point straight
+    /// down, and the wind-up lifts it just past level.
+    #[test]
+    fn the_plunge_points_the_blade_straight_down() {
+        // The blade's drawn tilt: point 188 px left, 131 px below the grip.
+        // The blade's drawn tilt: point 188 px left, 131 px below the grip.
+        let tilt = spade_blade();
+        assert!(tilt < -std::f32::consts::FRAC_PI_2);
+        assert!(tilt > -std::f32::consts::PI);
+        let (ex, ey) = (
+            SPADE_TIP_LOCAL[0] - SPADE_GRIP_LOCAL[0],
+            SPADE_TIP_LOCAL[1] - SPADE_GRIP_LOCAL[1],
+        );
+        // The grip→point direction after turning the spade by `a`.
+        let turned = |a: f32| {
+            let (c, s) = (a.cos(), a.sin());
+            [c * ex - s * ey, s * ex + c * ey]
+        };
+        // At the full plunge the point aims straight down: straight down is
+        // the one direction the drawn sprite does not already have.
+        let [px, py] = turned(spade_plunge());
+        assert!(
+            px.abs() < 1e-3 * ex.abs(),
+            "the plunge must aim the point down"
+        );
+        assert!(py < 0.0);
+        // The wind-up lifts the point level with the grip and past it, so
+        // the strike travels a full right angle on its way into the soil.
+        assert!(turned(-DIG_RAISE)[1] > 0.0, "the wind-up lifts the point");
+        assert!(spade_plunge() + DIG_RAISE > std::f32::consts::FRAC_PI_2);
+    }
+
+    /// The dig's offset rides the blade's own line: through the wind-up the
+    /// grip retreats up the handle, through the strike it drives down the
+    /// point, and the blade's point is lifted clear of its rest height
+    /// before it is buried under it — the stroke digs, it does not just
+    /// spin.
+    #[test]
+    fn the_dig_lunge_rides_the_blade_line() {
+        // The grip→point offset, in the sprite's own scaled pixels.
+        let (ex, ey) = (
+            (SPADE_TIP_LOCAL[0] - SPADE_GRIP_LOCAL[0]) * SPADE_SCALE,
+            (SPADE_TIP_LOCAL[1] - SPADE_GRIP_LOCAL[1]) * SPADE_SCALE,
+        );
+        // The blade's point with the grip parked at the origin, at pose
+        // `angle` and `off` — the same map the tool node's transform is.
+        let point = |angle: f32, off: [f32; 2]| {
+            spade_transform(0.0, 0.0, angle, off).apply([
+                SPADE_TIP_LOCAL[0] * SPADE_SCALE,
+                SPADE_TIP_LOCAL[1] * SPADE_SCALE,
+            ])
+        };
+        let rest = point(0.0, [0.0, 0.0]);
+        assert!(rest[1] < 0.0, "the drawn blade hangs below its grip");
+
+        // The offset's component along the blade line, positive driving down
+        // the point; the wind-up pulls back up the handle, and the strike's
+        // end has driven the whole lunge down the point, never a step
+        // sideways off the line.
+        let along = |angle: f32, off: [f32; 2]| {
+            let (c, s) = (angle.cos(), angle.sin());
+            let (ux, uy) = (c * ex - s * ey, s * ex + c * ey);
+            let l = (ux * ux + uy * uy).sqrt();
+            (
+                (off[0] * ux + off[1] * uy) / l,
+                (off[0] * -uy + off[1] * ux) / l,
+            )
+        };
+        let (a, o) = dig_pose(DIG_WIND * 0.5);
+        assert!(along(a, o).0 < 0.0, "the wind-up pulls back up the handle");
+        let (a, o) = dig_pose(DIG_STRIKE);
+        let (along, side) = along(a, o);
+        assert!((along - DIG_LUNGE).abs() < 1e-3);
+        assert!(side.abs() < 1e-3);
+
+        // The wind-up lifts the point clear above the height it rests at,
+        // the strike's end buries it well below it, and the deepest moment
+        // of the whole stroke — the bottom of the dig — comes at or after
+        // the plunge, deeper than the lunge alone.
+        let at = |u: f32| {
+            let (a, o) = dig_pose(u);
+            point(a, o)[1]
+        };
+        assert!(at(DIG_WIND) > rest[1], "the wind-up lifts the point");
+        assert!(
+            at(DIG_STRIKE) < rest[1] - DIG_LUNGE,
+            "the strike's end buries the point"
+        );
+        let mut lowest = rest[1];
+        let mut deepest = 0.0;
+        let mut u = 0.0;
+        while u <= 1.0 {
+            let y = at(u);
+            if y < lowest {
+                lowest = y;
+                deepest = u;
+            }
+            u += 0.01;
+        }
+        assert!(
+            rest[1] - lowest > DIG_LUNGE,
+            "the stroke must dig deeper than its own lunge"
+        );
+        assert!(
+            deepest >= DIG_STRIKE - 0.02,
+            "the dig bottoms out at the plunge, not before it (u = {deepest})"
+        );
+        assert!(
+            (lowest - at(DIG_STRIKE)).abs() < 1.0,
+            "the deepest point of the stroke is the plunge itself"
+        );
+    }
+
+    /// The swap's mirrored arcs: each tool leaves its cell, bends off
+    /// the cells' chord by half the slot distance — the left one below,
+    /// the right one above — and lands on the other cell's spot.
+    #[test]
+    fn the_swap_arcs_rise_and_dip_half_a_slot_apart() {
+        let d = held_local(1)[0] - held_local(0)[0];
+        let down = CellFlight {
+            from: held_local(0),
+            to: held_local(1),
+            bump: -d / 2.0,
+            t: 0.0,
+            dur: 1.0,
+        };
+        let up = CellFlight {
+            from: held_local(1),
+            to: held_local(0),
+            bump: d / 2.0,
+            t: 0.0,
+            dur: 1.0,
+        };
+        // Both legs start on their own cell and land on the other's.
+        for (fly, a, b) in [
+            (down, held_local(0), held_local(1)),
+            (up, held_local(1), held_local(0)),
+        ] {
+            let (start, end) = (cell_flight_pos(&fly, 0.0), cell_flight_pos(&fly, 1.0));
+            assert!(
+                (start[0] - a[0]).abs() < 1e-4
+                    && (start[1] - a[1]).abs() < 1e-4
+                    && (end[0] - b[0]).abs() < 1e-4
+                    && (end[1] - b[1]).abs() < 1e-4,
+                "the leg misses its cells: {start:?} -> {end:?}"
+            );
+        }
+        let low = cell_flight_pos(&down, 0.5);
+        let high = cell_flight_pos(&up, 0.5);
+        // The midpoints stand over the cells' chord — dead center, a
+        // half slot below and above it respectively.
+        assert!(low[0].abs() < 1e-4 && high[0].abs() < 1e-4, "centered");
+        assert!(
+            (low[1] + d / 2.0).abs() < 1e-4 && (high[1] - d / 2.0).abs() < 1e-4,
+            "the bends are off: {low:?} vs {high:?}"
+        );
+        // The dip is the dip and the rise is the rise: flanking points
+        // stay between the bend and the line.
+        let a = cell_flight_pos(&down, 0.35);
+        let b = cell_flight_pos(&down, 0.65);
+        assert!(a[1] > low[1] && b[1] > low[1] && a[1] < 0.0 && b[1] < 0.0);
+        assert!((a[1] - b[1]).abs() < 1e-3, "the arch is symmetric");
     }
 
     /// The Play button is the rectangle `PLAY_HALF` around its center at
@@ -3847,6 +4639,7 @@ mod tests {
         demo.angle = 0.7;
         demo.rotation = frost::Tween::new(0.7, 0.0, 1.0).repeat(frost::Repeat::Once);
         demo.burst = Some(0.3);
+        demo.dig = Some(0.3);
         demo.showing_spray2 = true;
         demo.basket_seed = false;
         demo.picking = None;
@@ -3878,6 +4671,7 @@ mod tests {
         assert_eq!(demo.angle, snapshot.angle);
         assert_eq!(save::TurnState::from(&demo.rotation), snapshot.turn);
         assert_eq!(demo.burst, snapshot.burst);
+        assert_eq!(demo.dig, snapshot.dig);
         assert_eq!(demo.showing_spray2, snapshot.showing_spray2);
         assert!(demo.basket_seed);
         assert!(!demo.pouring);

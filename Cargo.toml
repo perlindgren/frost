@@ -208,6 +208,16 @@ path = "examples/shapes/tomato_sprite.rs"
 name = "tomato"
 path = "examples/shapes/tomato.rs"
 
+[[example]]
+name = "dogs_name"
+path = "examples/dogs_name/dogs_name.rs"
+
+# The centipede lives in the same folder as the monster it is cut from, and
+# shares its `assets/sprites`; its gait module sits beside it as `rig.rs`.
+[[example]]
+name = "centipede"
+path = "examples/dogs_name/centipede.rs"
+
 [dev-dependencies]
 # Command line parsing for the `repeat` example (`--repeat_x`, `--repeat_y`).
 clap = { version = "4", features = ["derive"] }

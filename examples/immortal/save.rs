@@ -14,7 +14,7 @@
 //! randomizer — so a reloaded game continues the exact same random
 //! streams, and the demo's clock, the tools and their poses, the plants
 //! and their water reserves, the fallen fruit, the basket's fruit, the
-//! bugs, the vipers, and the worms.
+//! bugs, the lice, the vipers, and the worms.
 //!
 //! The format is versioned: [VERSION] names the layout this build reads,
 //! and [load] rejects a file written by any other version, so a future
@@ -31,8 +31,10 @@ use crate::{
 };
 
 /// The snapshot format's version: the layout this build reads and writes.
-/// [load] rejects files whose version differs.
-pub const VERSION: u32 = 3;
+/// [load] rejects files whose version differs. Version 5 is the spade and
+/// the tweezers: the items panel's slot table is six deep now, and a dig
+/// stroke's elapsed time rides along with the tool's tilt and burst.
+pub const VERSION: u32 = 5;
 
 /// A snapshot load's failure: no candidate's file could be read
 /// ([LoadError::Io]), or a file was read but cannot be used by this build
@@ -69,6 +71,9 @@ pub struct Snapshot {
     pub seed: u64,
     /// The bug swarm's random stream's state — the spawn and wander source.
     pub bug_seed: u64,
+    /// The louse swarm's random stream's state, its own scramble of the
+    /// seed — the same reproducibility, an independent draw order.
+    pub lice_seed: u64,
     /// The demo's running clock, in real seconds, from the game's start.
     pub time: f32,
     /// The particle emission accumulator.
@@ -99,6 +104,9 @@ pub struct Snapshot {
     /// The spray can's burst's elapsed time, in seconds, while one is in
     /// flight.
     pub burst: Option<f32>,
+    /// The spade's dig stroke's elapsed time, in seconds, while one is in
+    /// flight.
+    pub dig: Option<f32>,
     /// Whether the spray can shows its burst frame.
     pub showing_spray2: bool,
     /// Whether the pour loop plays.
@@ -114,6 +122,8 @@ pub struct Snapshot {
     pub falls: Vec<FallState>,
     /// The bug swarm's state.
     pub bugs: bugs::BugsState,
+    /// The louse swarm's state.
+    pub lice: bugs::BugsState,
     /// The vipers' swarm state.
     pub vipers: vipers::VipersState,
     /// The worms' swarm state.
