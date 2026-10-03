@@ -201,6 +201,10 @@ const THUMB_MAX: f32 = 84.0;
 /// since the strip's height is fixed.
 const WORK_Y: f32 = STRIP_H / 2.0;
 
+/// The atlas' slider ceiling: the most rows or columns one grid may
+/// have. 16 x 16 tiles any sensible sprite.
+const ATLAS_MAX: f32 = 16.0;
+
 const BG: frost::Color = frost::Color {
     r: 0.09,
     g: 0.09,
@@ -225,6 +229,13 @@ const SELECT: frost::Color = frost::Color {
     r: 0.35,
     g: 0.72,
     b: 1.0,
+    a: 1.0,
+};
+/// The atlas' tile grid: the sprite split into its rows and columns.
+const TILE: frost::Color = frost::Color {
+    r: 0.55,
+    g: 0.95,
+    b: 0.65,
     a: 1.0,
 };
 /// The slots strip's floor, darker than the window.
@@ -252,8 +263,16 @@ const PLATE_EMPTY: frost::Color = frost::Color {
 /// The bounding box's line width, in pixels.
 const BBOX_WIDTH: f32 = 2.0;
 
+/// The tile grid's line width, in pixels: thinner than the box, so the
+/// grid reads as divisions, not frames.
+const TILE_WIDTH: f32 = 1.0;
+
 /// The bounding box's order: above the HUD, below the click marker.
 const BBOX_Z: f32 = 1.5;
+
+/// The tile grid's order: above the bounding box, below the crop
+/// selection, so a selection still reads over the grid.
+const TILE_Z: f32 = 1.6;
 
 /// The selection's order: above the bounding box, below the click marker.
 const SELECT_Z: f32 = 1.8;
@@ -378,6 +397,10 @@ struct Sprite {
     /// or the file does not parse. It lives and dies with the sprite:
     /// closing the slot drops the panel with it.
     ron: Option<RonDoc>,
+    /// The tile grid the sprite splits into: the rows and columns the
+    /// Atlas panel sets, read back from the sidecar's `atlas` field when
+    /// the sprite loads. `None` is no grid.
+    atlas: Option<(usize, usize)>,
 }
 
 /// A sprite's parsed sidecar: the tree with its fold flags, the
@@ -1483,6 +1506,78 @@ impl frost::Process for Demo {
             },
         );
 
+        // The Atlas panel: how the active sprite splits into tiles. The
+        // sliders set the grid's rows and columns, the grid draws over
+        // the sprite, and the grid persists as the sidecar root's
+        // `atlas` field, which Save carries with the PNG. 1 x 1 is no
+        // grid.
+        let (mut atlas_rows, mut atlas_cols) = self
+            .active()
+            .and_then(|sp| sp.atlas)
+            .map_or((1.0, 1.0), |(rows, cols)| (rows as f32, cols as f32));
+        let mut want_clear_atlas = false;
+        let atlas_line = match self.active().and_then(|sp| sp.atlas) {
+            Some((rows, cols)) => format!("{rows} x {cols} · {} tiles", rows * cols),
+            None => String::from("no grid · 1 x 1 is none"),
+        };
+        self.ui.panel(
+            ctx,
+            "Atlas",
+            [w / 2.0 - PANEL_W / 2.0 - 20.0, h / 2.0 - 330.0],
+            PANEL_W,
+            |ui, ctx| {
+                ui.label(ctx, &atlas_line);
+                ui.table(
+                    ctx,
+                    "atlas",
+                    &[
+                        frost::Col::auto(frost::Align::Left),
+                        frost::Col::stretch(1.0, frost::Align::Left),
+                        frost::Col::auto(frost::Align::Center),
+                    ],
+                    |ui, ctx| {
+                        ui.label(ctx, "rows");
+                        ui.slider_track(ctx, "atlas rows", &mut atlas_rows, 1.0, ATLAS_MAX);
+                        ui.readout(ctx, &format!("{atlas_rows:.0}"));
+                        ui.label(ctx, "cols");
+                        ui.slider_track(ctx, "atlas cols", &mut atlas_cols, 1.0, ATLAS_MAX);
+                        ui.readout(ctx, &format!("{atlas_cols:.0}"));
+                    },
+                );
+                ui.space(6.0);
+                if ui.button(ctx, "clear") {
+                    want_clear_atlas = true;
+                }
+            },
+        );
+        // The sliders' read-back: when the grid moved, write it into the
+        // active sprite — and, beside its sidecar's root, so Save
+        // carries it with the PNG. The sidecar's rows rebuild from the
+        // tree, the way every other sidecar edit does.
+        if let Some(sp) = self.sprites.get_mut(self.active) {
+            let rows = atlas_rows.round().max(1.0) as usize;
+            let cols = atlas_cols.round().max(1.0) as usize;
+            let next = (rows > 1 || cols > 1).then_some((rows, cols));
+            if sp.atlas != next {
+                sp.atlas = next;
+                if let Some(doc) = sp.ron.as_mut() {
+                    if set_atlas(&mut doc.root, next) {
+                        doc.rows = ron_tree::layout(&doc.root);
+                        doc.clamp_scroll();
+                    }
+                }
+            }
+            if want_clear_atlas {
+                sp.atlas = None;
+                if let Some(doc) = sp.ron.as_mut() {
+                    if set_atlas(&mut doc.root, None) {
+                        doc.rows = ron_tree::layout(&doc.root);
+                        doc.clamp_scroll();
+                    }
+                }
+            }
+        }
+
         // Ctrl-O's and Ctrl-Z's rising edges: the open dialog, and one
         // step back through the active sprite's crops.
         let ctrl =
@@ -1871,6 +1966,24 @@ impl frost::Process for Demo {
             ctx.line(sx0, sy1, sx0, sy0, SELECT, BBOX_WIDTH, SELECT_Z);
         }
 
+        // The tile grid: the atlas' rows and columns mapped onto the
+        // sprite, the split drawn over the texture. The inner lines
+        // only — the outer ones are the bounding box.
+        if let Some((rows, cols)) = self.active().and_then(|sp| sp.atlas) {
+            if tw > 0.0 && th > 0.0 && (rows > 1 || cols > 1) {
+                let wx = |px: f32| (px - tw / 2.0) * self.zoom + view[0];
+                let wy = |py: f32| (th / 2.0 - py) * self.zoom + view[1];
+                for i in 1..cols {
+                    let x = wx(tw * i as f32 / cols as f32);
+                    ctx.line(x, by0, x, by1, TILE, TILE_WIDTH, TILE_Z);
+                }
+                for j in 1..rows {
+                    let y = wy(th * j as f32 / rows as f32);
+                    ctx.line(bx0, y, bx1, y, TILE, TILE_WIDTH, TILE_Z);
+                }
+            }
+        }
+
         // The slots strip: its floor, each slot's plate, and the active
         // slot's frame. The thumbnails are scene nodes, positioned below.
         ctx.rectangle(
@@ -2065,6 +2178,13 @@ fn read_sprite(path: &std::path::Path) -> Result<Sprite, String> {
     let small = image::imageops::resize(&tex, tw, th, image::imageops::FilterType::Lanczos3);
     let thumb = frost::Shape::sprite_bytes(&png_bytes(&small)?)
         .map_err(|e| format!("failed to build the thumbnail: {e}"))?;
+    let ron = load_ron(path);
+    // The grid the sidecar named, if it named one — the sprite reloads
+    // tiled the way it was saved.
+    let atlas = ron.as_ref().and_then(|doc| atlas_of(&doc.root));
+    if let Some((rows, cols)) = atlas {
+        log::info!("atlas for '{name}': {rows} x {cols}");
+    }
     Ok(Sprite {
         path: path.to_path_buf(),
         name,
@@ -2072,7 +2192,8 @@ fn read_sprite(path: &std::path::Path) -> Result<Sprite, String> {
         history: Vec::new(),
         shape,
         thumb,
-        ron: load_ron(path),
+        ron,
+        atlas,
     })
 }
 
@@ -2113,6 +2234,73 @@ fn load_ron(png: &std::path::Path) -> Option<RonDoc> {
         vw: RON_W,
         vh: RON_VIEW_H,
     })
+}
+
+/// The tile grid the sidecar's root names, if it names one: its
+/// `atlas` field's two entries, `[rows, cols]`. A field of the wrong
+/// shape — not a two-entry array, or a missing or zero count — reads
+/// as no grid, the way a missing field does.
+fn atlas_of(root: &ron_tree::Val) -> Option<(usize, usize)> {
+    let ron_tree::Val::Struct { fields, .. } = root else {
+        return None;
+    };
+    let (_, item) = fields.iter().find(|(key, _)| *key == "atlas")?;
+    let ron_tree::Val::Seq { items, .. } = &item.val else {
+        return None;
+    };
+    if items.len() != 2 {
+        return None;
+    }
+    let counts: Vec<usize> = items
+        .iter()
+        .filter_map(|it| match &it.val {
+            ron_tree::Val::Atom(text, ron_tree::Kind::Num) => text.parse().ok(),
+            _ => None,
+        })
+        .collect();
+    match counts.as_slice() {
+        [rows, cols] if *rows > 0 && *cols > 0 => Some((*rows, *cols)),
+        _ => None,
+    }
+}
+
+/// The tile grid written into the sidecar's root: its `atlas` field
+/// becomes `[rows, cols]`, or is dropped when the grid is off. An
+/// array, not a tuple — a two-number tuple would read as a position
+/// spot, and the grid's counts are not pixels. Whether the tree
+/// changed.
+fn set_atlas(root: &mut ron_tree::Val, atlas: Option<(usize, usize)>) -> bool {
+    let ron_tree::Val::Struct { fields, .. } = root else {
+        return false;
+    };
+    match atlas {
+        Some((rows, cols)) => {
+            let seq = ron_tree::Val::Seq {
+                open: true,
+                items: vec![
+                    ron_tree::Item::plain(ron_tree::Val::Atom(
+                        rows.to_string(),
+                        ron_tree::Kind::Num,
+                    )),
+                    ron_tree::Item::plain(ron_tree::Val::Atom(
+                        cols.to_string(),
+                        ron_tree::Kind::Num,
+                    )),
+                ],
+                tail: String::new(),
+            };
+            match fields.iter_mut().find(|(key, _)| *key == "atlas") {
+                Some((_, item)) => item.val = seq,
+                None => fields.push(("atlas".to_string(), ron_tree::Item::plain(seq))),
+            }
+            true
+        }
+        None => {
+            let before = fields.len();
+            fields.retain(|(key, _)| *key != "atlas");
+            fields.len() != before
+        }
+    }
 }
 
 /// Where a sidecar panel first opens: at the work area's lower right,
@@ -3304,5 +3492,91 @@ mod tests {
         close_view_slot(&mut views, 1);
         assert_eq!(views.len(), 2);
         assert_eq!((views[0].slot, views[1].slot), (0, 1));
+    }
+
+    #[test]
+    fn the_atlas_reads_the_root_s_two_entry_array() {
+        let root = ron_tree::parse("(segment: 1, atlas: [2, 3])").expect("a small sidecar");
+        assert_eq!(atlas_of(&root), Some((2, 3)));
+        // A field of the wrong shape reads as no grid, the way a
+        // missing field does: one entry, a zero count, a float, a
+        // tuple, a string.
+        assert_eq!(atlas_of(&ron_tree::parse("(atlas: [2])").unwrap()), None);
+        assert_eq!(atlas_of(&ron_tree::parse("(atlas: [0, 3])").unwrap()), None);
+        assert_eq!(
+            atlas_of(&ron_tree::parse("(atlas: [2.0, 3.0])").unwrap()),
+            None
+        );
+        assert_eq!(atlas_of(&ron_tree::parse("(atlas: (2, 3))").unwrap()), None);
+        assert_eq!(
+            atlas_of(&ron_tree::parse("(atlas: \"grid\")").unwrap()),
+            None
+        );
+        assert_eq!(atlas_of(&ron_tree::parse("(segment: 1)").unwrap()), None);
+    }
+
+    #[test]
+    fn the_atlas_writes_and_rewrites_the_root_s_field() {
+        let mut root = ron_tree::parse("(segment: 1, image: \"p.png\")").expect("a small sidecar");
+        assert!(set_atlas(&mut root, Some((2, 3))), "appends the field");
+        assert_eq!(atlas_of(&root), Some((2, 3)));
+        assert!(set_atlas(&mut root, Some((4, 5))), "rewrites it in place");
+        assert_eq!(atlas_of(&root), Some((4, 5)));
+        // One `atlas` field, not one per write.
+        let fields = match &root {
+            ron_tree::Val::Struct { fields, .. } => fields,
+            _ => panic!("a tuple-struct root"),
+        };
+        assert_eq!(fields.iter().filter(|(k, _)| *k == "atlas").count(), 1);
+        assert!(set_atlas(&mut root, None), "drops the field");
+        assert_eq!(atlas_of(&root), None);
+        assert!(!set_atlas(&mut root, None), "nothing left to drop");
+    }
+
+    #[test]
+    fn the_atlas_round_trips_through_text() {
+        // What Save writes is what Load reads back.
+        let mut root = ron_tree::parse("(segment: 1, image: \"p.png\")").expect("a small sidecar");
+        set_atlas(&mut root, Some((3, 4)));
+        let text = ron_tree::to_text_doc("", &root, "");
+        let doc = ron_tree::parse_doc(&text).expect("re-parses");
+        assert_eq!(atlas_of(&doc.root), Some((3, 4)));
+    }
+
+    #[test]
+    fn the_atlas_array_is_not_a_position_spot() {
+        // The grid's counts are not pixels: a two-entry array must not
+        // read as a pickable position, the way a two-number tuple does.
+        let root =
+            ron_tree::parse("(atlas: [2, 3], lower: (317.0, 671.0))").expect("a small sidecar");
+        let mut spots = Vec::new();
+        scan_spots(&root, &mut Vec::new(), "", &mut spots);
+        assert_eq!(
+            spots.iter().map(|s| s.label.as_str()).collect::<Vec<_>>(),
+            ["lower"],
+            "the array is invisible to the spot scan"
+        );
+    }
+
+    #[test]
+    fn the_atlas_restores_from_the_sidecar_on_load() {
+        // The sprite reloads tiled the way it was saved: the sidecar's
+        // `atlas` field reads into `Sprite.atlas` on the way in, and a
+        // missing or broken field reads as no grid.
+        let dir = std::env::temp_dir().join(format!("sprite_util_atlas_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("probe.png");
+        let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255]));
+        std::fs::write(&png, png_bytes(&img).unwrap()).unwrap();
+        assert_eq!(read_sprite(&png).unwrap().atlas, None, "no field, no grid");
+        std::fs::write(dir.join("probe.ron"), "(segment: 1, atlas: [2, 3])").unwrap();
+        assert_eq!(read_sprite(&png).unwrap().atlas, Some((2, 3)));
+        std::fs::write(dir.join("probe.ron"), "(segment: 1, atlas: [0, 3])").unwrap();
+        assert_eq!(
+            read_sprite(&png).unwrap().atlas,
+            None,
+            "a broken field reads as no grid"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
