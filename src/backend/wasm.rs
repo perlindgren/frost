@@ -32,6 +32,9 @@ struct Core<P: Process> {
     process: P,
     vsync: bool,
     window_size: Option<[u32; 2]>,
+    /// The physical-pixel size request, carried for symmetry with the
+    /// native config; `create_window` ignores it on the web.
+    window_size_px: Option<[u32; 2]>,
 }
 
 /// The in-flight async GPU setup on the web.
@@ -73,7 +76,8 @@ impl<P: Process> ApplicationHandler for WebFrost<P> {
             // `Option`, so `map` would hand the window creator a doubled
             // one.
             let window_size = self.core.as_ref().and_then(|core| core.window_size);
-            self.window = Some(create_window(event_loop, window_size));
+            let window_size_px = self.core.as_ref().and_then(|core| core.window_size_px);
+            self.window = Some(create_window(event_loop, window_size, window_size_px));
         }
         if matches!(self.gpu, GpuInit::Idle) {
             // The async block owns its own `Instance` clone (a cheap
@@ -157,6 +161,7 @@ impl<P: Process> WebFrost<P> {
         process: P,
         vsync: bool,
         window_size: Option<[u32; 2]>,
+        window_size_px: Option<[u32; 2]>,
     ) -> Self {
         Self {
             instance: Some(instance),
@@ -165,6 +170,7 @@ impl<P: Process> WebFrost<P> {
                 process,
                 vsync,
                 window_size,
+                window_size_px,
             }),
             window: None,
             gpu: GpuInit::Idle,
@@ -223,6 +229,7 @@ impl<P: Process> WebFrost<P> {
             queue,
             core.vsync,
             core.window_size,
+            core.window_size_px,
             core.scene,
             core.process,
         );

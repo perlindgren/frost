@@ -1528,10 +1528,26 @@ pub struct Config {
     pub vsync: bool,
     /// The window's initial inner size in logical pixels, `[width, height]`.
     ///
-    /// `None` keeps the platform default (winit's default window size, or
-    /// the web canvas's 900x600 default). The user can resize the window
-    /// afterwards; this only sets the size it opens at.
+    /// Logical pixels are OS pixels: they equal physical pixels at 100%
+    /// display scaling, but a scale factor of 2 doubles the panel pixels
+    /// behind them — see [`Config::window_size_px`] for the physical-pixel
+    /// request. `None` keeps the platform default (winit's default window
+    /// size, or the web canvas's 900x600 default). The user can resize the
+    /// window afterwards; this only sets the size it opens at.
     pub window_size: Option<[u32; 2]>,
+    /// The window's initial inner size in *physical* pixels,
+    /// `[width, height]`.
+    ///
+    /// winit converts the request through the monitor's scale factor, so
+    /// `Some([1920, 1080])` opens a 1920x1080 framebuffer on every
+    /// display: a 1920x1080-point window at 1.0 scale, and a
+    /// 960x540-point one on a Retina Mac — the same physical window
+    /// everywhere, the sane default when an app aims for a fixed render
+    /// size (say 1080p) across very different screens. Ignored on the
+    /// web, where the canvas lives in CSS pixels and [`Config::window_size`]
+    /// already says what it means. Wins over `window_size` when both are
+    /// set; if both are `None` the platform default stands.
+    pub window_size_px: Option<[u32; 2]>,
 }
 
 impl Default for Config {
@@ -1540,6 +1556,7 @@ impl Default for Config {
         Self {
             vsync: true,
             window_size: None,
+            window_size_px: None,
         }
     }
 }
@@ -1586,6 +1603,7 @@ pub fn run_configured<P: Process>(
         queue,
         config.vsync,
         config.window_size,
+        config.window_size_px,
         scene,
         process,
     );
@@ -1620,7 +1638,14 @@ pub fn run_configured<P: Process>(
 
     let instance = Instance::default();
     let event_loop = EventLoop::new()?;
-    let mut app = WebFrost::new(instance, scene, process, config.vsync, config.window_size);
+    let mut app = WebFrost::new(
+        instance,
+        scene,
+        process,
+        config.vsync,
+        config.window_size,
+        config.window_size_px,
+    );
     event_loop.run_app(&mut app)?;
 
     log::info!("event loop finished");

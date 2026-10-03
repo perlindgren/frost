@@ -1,6 +1,7 @@
-//! A watering can and a spray can as mouse cursors over a full-screen
-//! grass field. The window opens at `WINDOW` pixels (1920x1080), set
-//! through `run_configured` and `Config::window_size`;
+//! A watering can and a spray can as mouse cursors over a grass field
+//! that fills the window. The window opens at `WINDOW` pixels (1920x1080)
+//! of true physical panel size, set through `run_configured` and
+//! `Config::window_size_px`;
 //! `assets/sprites/grass.png` is exactly that size, so it fills the window
 //! without being stretched, and is re-stretched every frame to keep it
 //! covered if the window is resized.
@@ -266,8 +267,10 @@ mod zorder;
 use assets_load::{Assets, Sounds};
 use fall::{Fall, FallPhase};
 
-/// The window's inner size in logical pixels, via `Config::window_size`.
-/// The grass photo is exactly this size, so it fills the window 1:1.
+/// The window's inner size in physical pixels, via
+/// `Config::window_size_px`: a true 1920x1080 panel window on every
+/// display — 960x540 points on a 2x Retina screen. The grass photo is
+/// exactly this size, so it fills the window 1:1.
 const WINDOW: [u32; 2] = [1920, 1080];
 
 /// `grass.png`'s texture size in pixels: a full-bleed 1920x1080 photo.
@@ -3647,7 +3650,7 @@ fn main() {
         scene,
         demo,
         frost::Config {
-            window_size: Some(WINDOW),
+            window_size_px: Some(WINDOW),
             ..Default::default()
         },
     ) {

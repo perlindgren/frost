@@ -61,6 +61,9 @@ pub(crate) struct Frost<P: Process> {
     /// The `Config`'s initial window inner size in logical pixels, or
     /// `None` for the platform default; used once in `create_window`.
     window_size: Option<[u32; 2]>,
+    /// The `Config`'s initial inner size in physical pixels; used once in
+    /// `create_window`, and it wins over `window_size` there.
+    window_size_px: Option<[u32; 2]>,
     #[allow(dead_code)]
     window_id: Option<WindowId>,
     /// The winit window (shared), kept so we can call `request_redraw` for
@@ -188,6 +191,7 @@ impl<P: Process> Frost<P> {
         queue: Queue,
         vsync: bool,
         window_size: Option<[u32; 2]>,
+        window_size_px: Option<[u32; 2]>,
         scene: Scene,
         process: P,
     ) -> Self {
@@ -311,6 +315,7 @@ impl<P: Process> Frost<P> {
             queue,
             vsync,
             window_size,
+            window_size_px,
             window_id: None,
             window: None,
             logical_size: (0, 0),
@@ -348,24 +353,37 @@ impl<P: Process> Frost<P> {
 
 /// Creates the frost window and requests its first frame.
 ///
-/// `window_size` is the `Config`'s initial inner size in logical pixels;
-/// `None` keeps the platform default. On the web, winit's canvas is
-/// neither appended to the page nor sized by default: without the append
-/// it is invisible, and without a size it stays the browser's 300x150
-/// default — so an unset size falls back to 900x600 there.
+/// `window_size` is the `Config`'s initial inner size in logical pixels
+/// and `window_size_px` its size in physical pixels; a set physical size
+/// wins, and winit converts it through the monitor's scale factor, so the
+/// requested panel-pixel window opens at the same physical size on every
+/// display — including Retina Macs, where a logical request would double.
+/// `None` for both keeps the platform default. On the web, winit's canvas
+/// is neither appended to the page nor sized by default: without the
+/// append it is invisible, and without a size it stays the browser's
+/// 300x150 default — so an unset size falls back to 900x600 there, and
+/// the physical request is ignored (the canvas lives in CSS pixels).
 pub(crate) fn create_window(
     event_loop: &ActiveEventLoop,
     window_size: Option<[u32; 2]>,
+    window_size_px: Option<[u32; 2]>,
 ) -> Arc<Window> {
     let mut attributes = Window::default_attributes().with_title("frost");
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some([width, height]) = window_size {
-        attributes = attributes.with_inner_size(LogicalSize::new(width, height));
+    {
+        use winit::dpi::PhysicalSize;
+
+        if let Some([width, height]) = window_size_px {
+            attributes = attributes.with_inner_size(PhysicalSize::new(width, height));
+        } else if let Some([width, height]) = window_size {
+            attributes = attributes.with_inner_size(LogicalSize::new(width, height));
+        }
     }
     #[cfg(target_arch = "wasm32")]
     {
         use winit::platform::web::WindowAttributesExtWebSys;
 
+        let _ = window_size_px;
         let [width, height] = window_size.unwrap_or([900, 600]);
         attributes = attributes
             .with_append(true)
@@ -419,7 +437,11 @@ impl<P: Process> ApplicationHandler for Frost<P> {
         if self.surface.is_some() {
             return;
         }
-        self.attach_window(create_window(event_loop, self.window_size));
+        self.attach_window(create_window(
+            event_loop,
+            self.window_size,
+            self.window_size_px,
+        ));
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {

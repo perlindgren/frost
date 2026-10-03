@@ -208,6 +208,10 @@ path = "examples/shapes/tomato_sprite.rs"
 name = "tomato"
 path = "examples/shapes/tomato.rs"
 
+[[example]]
+name = "dogs_name"
+path = "examples/dogs_name/dogs_name.rs"
+
 [dev-dependencies]
 # Command line parsing for the `repeat` example (`--repeat_x`, `--repeat_y`).
 clap = { version = "4", features = ["derive"] }
