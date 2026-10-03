@@ -25,8 +25,10 @@ use crate::{
 };
 
 /// The snapshot format's version: the layout this build reads and writes.
-/// [load] rejects files whose version differs.
-pub const VERSION: u32 = 4;
+/// [load] rejects files whose version differs. Version 5 is the spade and
+/// the tweezers: the items panel's slot table is six deep now, and a dig
+/// stroke's elapsed time rides along with the tool's tilt and burst.
+pub const VERSION: u32 = 5;
 
 /// A snapshot load's failure: the file is missing or unreadable, it is
 /// not valid RON, or it was written by another format version.
@@ -84,6 +86,9 @@ pub struct Snapshot {
     /// The spray can's burst's elapsed time, in seconds, while one is in
     /// flight.
     pub burst: Option<f32>,
+    /// The spade's dig stroke's elapsed time, in seconds, while one is in
+    /// flight.
+    pub dig: Option<f32>,
     /// Whether the spray can shows its burst frame.
     pub showing_spray2: bool,
     /// Whether the pour loop plays.

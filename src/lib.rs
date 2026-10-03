@@ -120,7 +120,8 @@
 //! the demo state and call its [`Process::process`] each frame; its parts
 //! can be toggled at runtime — Alt-0 the overlay as a whole, Alt-1..Alt-4
 //! the charts, Alt-T the readout lines — with the layout reflowing around
-//! whatever is hidden.
+//! whatever is hidden, and Alt+'+' / Alt+'-' grow and shrink the whole
+//! overlay, font included.
 //!
 //! Presentation is vsync'd by default: frames are presented once per
 //! vertical blank, at the display's refresh rate — the rate
@@ -1309,6 +1310,9 @@ pub struct Context<'c> {
     canvas: &'c mut Canvas,
     scene: &'c mut Scene,
     keys: &'c HashSet<KeyCode>,
+    /// The character each held key typed as it went down, under the user's
+    /// keyboard layout (see [`Context::char_down`]).
+    typed: &'c HashMap<KeyCode, char>,
     /// The window this frame is drawn into, or `None` before the window
     /// exists.
     window: Option<&'c Window>,
@@ -1348,6 +1352,21 @@ impl Context<'_> {
     /// press and release since the previous frame.
     pub fn key_down(&self, key: KeyCode) -> bool {
         self.keys.contains(&key)
+    }
+
+    /// Whether a key held down right now typed the character `ch` as it
+    /// went down, under the user's current keyboard layout.
+    ///
+    /// This is the layout-following sibling of [`Context::key_down`]:
+    /// physical codes name US-ANSI key positions, so the key that types
+    /// `'+'` lives wherever the user's layout puts it — left of `= ¨ ´`
+    /// on a Swedish keyboard, say, where the US layout has its `-` key —
+    /// and `char_down('+')` finds that user's `+` key wherever it is. The
+    /// character is the one the press produced, so a modifier involved in
+    /// the press (a macOS Option, which rewrites characters) shows up in
+    /// it. Multi-character presses match on their first character.
+    pub fn char_down(&self, ch: char) -> bool {
+        self.typed.values().any(|&c| c == ch)
     }
 
     /// The window this frame is drawn into, or `None` before the window

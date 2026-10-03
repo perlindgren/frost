@@ -792,7 +792,17 @@ disk. Run with `cargo run --example <name>`
 |              | draws on top; each child puts the image px `(308, 411)` on          |
 |              | the parent's origin; the parent carries the inverse, so the         |
 |              | image's center sits on the window's center                          |
-| immortal     | 1920x1080 (Config window_size); right button toggles can / spray;   |
+| immortal     | 1920x1080 (Config window_size); four tools ride the six-slot shelf: |
+|              | items.png split 0..5 top-down, the tweezers, spade, spray can, and  |
+|              | watering can resting in slots 2-5 and 0-1 left free to park one, a  |
+|              | left click on a slot swapping it with the held tool and the right   |
+|              | button trading held for stored; each sprite is fitted to its cell by|
+|              | its drawn alpha box, not its canvas; a fresh left click digs one    |
+|              | spade stroke - `dig_pose` twines a rotation about the handle's grip |
+|              | with a lunge along the blade's own line, starting from the angle the|
+|              | art is drawn at (point 34.9 deg under level, so the plunge that puts|
+|              | it straight down is 55.1 deg, not 90); the tweezers ride level by   |
+|              | their jaws and stay inert until there are pinch frames to pick with;|
 |              | plants grow one at a time, each slice opening its flowers once fully|
 |              | grown (the four lower slices' spawn points, the top slice bearing   |
 |              | none, populated with `flower.png`); one viper per fully grown plant |

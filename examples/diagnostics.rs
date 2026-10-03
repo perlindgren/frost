@@ -13,7 +13,8 @@
 //! appends its own nodes to the scene's root on the first frame, so the
 //! scene itself only carries a swaying circle under them. The overlay's
 //! parts can be toggled while it runs — Alt-0 the whole overlay,
-//! Alt-1..Alt-4 the charts (top chart first), Alt-T the text — and the
+//! Alt-1..Alt-4 the charts (top chart first), Alt-T the text, and Alt+'+' /
+//! Alt+'-' grow and shrink the whole overlay — and the
 //! layout reflows around whatever is hidden. See the module docs of
 //! `frost::Diagnostics` for the whole utility.
 //! Run with:

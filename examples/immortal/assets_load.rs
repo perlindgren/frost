@@ -22,6 +22,12 @@ const SPRAY1: &[u8] = include_bytes!("../../assets/sprites/Spray1.png");
 /// The spray can's pressed frame, `assets/sprites/Spray2.png`.
 const SPRAY2: &[u8] = include_bytes!("../../assets/sprites/Spray2.png");
 
+/// The garden spade, `assets/sprites/spade.png`.
+const SPADE: &[u8] = include_bytes!("../../assets/sprites/spade.png");
+
+/// The tweezers, `assets/sprites/Tweezers.png`.
+const TWEEZERS: &[u8] = include_bytes!("../../assets/sprites/Tweezers.png");
+
 /// The first viper frame, `assets/sprites/Getingeye1.png`.
 const GETINGEYE1: &[u8] = include_bytes!("../../assets/sprites/Getingeye1.png");
 
@@ -197,6 +203,10 @@ pub struct Assets {
     /// The spray can's pressed frame, swapped into the tool node while the
     /// button is down.
     pub spray2: frost::Shape,
+    /// The garden spade, the active-tool sprite for `Tool::Spade`.
+    pub spade: frost::Shape,
+    /// The tweezers, the active-tool sprite for `Tool::Tweezers`.
+    pub tweezers: frost::Shape,
     /// The two viper frames: the swarm's shape swaps between them at most
     /// once per wingbeat change.
     pub viper1: frost::Shape,
@@ -214,8 +224,9 @@ pub struct Assets {
     /// swarm's slot shapes swap between them as cheap `Arc` clones.
     pub lice1: frost::Shape,
     pub lice2: frost::Shape,
-    /// The inventory panel, mid left: four slots, 0 to 3 from the top,
-    /// the spray can resting in slot 2 and the watering can in slot 3.
+    /// The inventory panel, mid left: six slots, 0 to 5 from the top, the
+    /// tweezers resting in slot 2, the spade in slot 3, the spray can in
+    /// slot 4, and the watering can in slot 5.
     pub items: frost::Shape,
     /// The held-items panel in the bottom right: the active tool in the
     /// left half, the stored one in the right.
@@ -264,6 +275,8 @@ impl Assets {
             can: sprite("water_can_outline.png", WATER_CAN_OUTLINE),
             spray1: sprite("Spray1.png", SPRAY1),
             spray2: sprite("Spray2.png", SPRAY2),
+            spade: sprite("spade.png", SPADE),
+            tweezers: sprite("Tweezers.png", TWEEZERS),
             viper1: sprite("Getingeye1.png", GETINGEYE1),
             viper2: sprite("Getingeye2.png", GETINGEYE2),
             bug1: sprite("Bug1a.png", BUG1A),

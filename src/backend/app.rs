@@ -160,6 +160,12 @@ pub(crate) struct Frost<P: Process> {
     scene: Scene,
     /// The physical keys currently held down, updated as keyboard events arrive.
     keys: HashSet<KeyCode>,
+    /// The character each held physical key typed as it went down, under
+    /// the user's current keyboard layout — `Context::char_down` reads it.
+    /// Keyed by the physical code, so a release removes exactly what its
+    /// press recorded no matter which modifiers moved in between, and the
+    /// character a shortcut matches never changes while the key is held.
+    typed: HashMap<KeyCode, char>,
     /// The mouse cursor's position in physical pixels, `(0, 0)` at the
     /// window's upper-left corner, or `None` when the cursor is outside the
     /// window. Updated as cursor events arrive; the frame's `Canvas` works
@@ -342,6 +348,7 @@ impl<P: Process> Frost<P> {
             expected_fps: None,
             scene,
             keys: HashSet::new(),
+            typed: HashMap::new(),
             mouse: None,
             mouse_buttons: HashSet::new(),
             mouse_wheel: 0.0,
@@ -481,7 +488,21 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                         }
                         ElementState::Released => {
                             self.keys.remove(&code);
+                            self.typed.remove(&code);
                         }
+                    }
+                    // Record what a press typed so shortcuts can follow the
+                    // character of the user's layout instead of the
+                    // US-anchored physical position: the Swedish `+` key,
+                    // for one, reports the physical code of the US `-` key.
+                    // Only the first character of the press is kept —
+                    // shortcuts are single characters, and dead-key or IME
+                    // sequences start with the one the keycap shows.
+                    if event.state == ElementState::Pressed
+                        && let winit::keyboard::Key::Character(text) = &event.logical_key
+                        && let Some(ch) = text.chars().next()
+                    {
+                        self.typed.insert(code, ch);
                     }
                 }
                 if event.state == ElementState::Pressed && event.logical_key == NamedKey::Escape {
@@ -528,6 +549,7 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                 // arrive, so drop the held state rather than stick the
                 // controls. The cursor position may likewise be stale.
                 self.keys.clear();
+                self.typed.clear();
                 self.mouse = None;
                 self.mouse_buttons.clear();
             }
@@ -1224,6 +1246,7 @@ impl<P: Process> Frost<P> {
         let process = &mut self.process;
         let scene = &mut self.scene;
         let keys = &self.keys;
+        let typed = &self.typed;
         let mouse_buttons = &self.mouse_buttons;
         let gilrs = self.gilrs.as_ref();
         {
@@ -1231,6 +1254,7 @@ impl<P: Process> Frost<P> {
                 canvas: &mut canvas,
                 scene,
                 keys,
+                typed,
                 // The window is attached before the first frame renders, so
                 // this is `Some` for every frame the process sees; the
                 // `Option` is the type the field has before attach.
