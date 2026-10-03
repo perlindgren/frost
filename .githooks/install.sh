@@ -14,6 +14,11 @@
 #     git clone --config core.hooksPath=.githooks <url>
 #
 # Idempotent: safe to re-run any time; it just re-asserts the same value.
+# On Windows: run it from Git Bash; from PowerShell or cmd (no `sh` on the
+# PATH), the equivalent is just `git config core.hooksPath .githooks` —
+# the chmods below are no-ops there, since Windows git executes hooks
+# through its bundled sh.exe whatever the file's mode says, and the
+# scripts themselves stay LF via the repo's .gitattributes.
 # Mind the honest limit: hooks are a gate you opt into, not a wall —
 # `git commit --no-verify` skips them by design. The wall, if you ever
 # want one, is server-side (a CI check or a pre-receive hook).

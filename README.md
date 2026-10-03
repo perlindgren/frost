@@ -37,8 +37,11 @@ sh .githooks/install.sh
 ```
 
 (or clone with `git clone --config core.hooksPath=.githooks <url>` and skip
-the step). They are a gate you opt into, not a wall: `--no-verify` skips
-them by design.
+the step). On Windows from PowerShell or cmd, where `sh` is usually not on
+the PATH, the script's whole job is the one command:
+`git config core.hooksPath .githooks` — run it from any shell (from Git
+Bash, `sh .githooks/install.sh` works as everywhere). They are a gate you
+opt into, not a wall: `--no-verify` skips them by design.
 
 ## License
 
