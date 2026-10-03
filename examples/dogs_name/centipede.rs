@@ -5,12 +5,14 @@
 //! [`Monster_head.png`](assets/sprites/Monster_head.png), the three
 //! [`Monster_body`](assets/sprites/Monster_body1.png) chevrons,
 //! [`Monster_tail.png`](assets/sprites/Monster_tail.png) and
-//! [`Monster_leg1.png`](assets/sprites/Monster_leg1.png) are loaded once and
+//! [`Monster_leg2.png`](assets/sprites/Monster_leg2.png) are loaded once and
 //! assembled by the [`rig`] module: the skull leads, the plates overlap down
-//! the back, the spike cluster trails, and one **whole** leg — hip bar, thigh,
-//! shin and clay foot in a single sprite — comes out of each segment on
-//! **both** sides, a row of legs along the top of the body and a row along the
-//! bottom, the far row the same sprite with a negative `y` scale.
+//! the back, the spike cluster lies over the last of them the way the skull
+//! lies over the first, and one sprite-leg comes out of each segment on **both**
+//! sides — a row of legs along the top of the body and a row along the bottom,
+//! the far row the same sprite with a negative `y` scale. A leg is one fragment
+//! of the sheet's leg, the piece that carries the clay foot, swung from its
+//! broken upper end; the art's other fragment, the thigh, is not drawn at all.
 //!
 //! Those legs are not decoration hung off a moving body: each is a rigid
 //! limb on one pivot, so its foot can only ever sit on a circle around its
@@ -24,14 +26,19 @@
 //! the clock.
 //!
 //! The animal starts as three segments drawn at random from the three chevron
-//! variants, crawls right to left at [`rig::CRAWL_SPEED`], and when the whole
-//! of it — tail last — has gone off the left edge it comes back in from the
-//! right with **one more segment**. The newcomer is grown, not pasted on: it
-//! is a smaller plate with a shorter leg that reaches full size over
-//! [`rig::GROW_SECONDS`], so the addition reads as an animal moulting and
-//! stretching rather than a longer list of sprites. One more segment every
-//! round trip, until [`MAX_SEGMENTS`] makes it longer than the screen is wide
-//! and the crawl simply continues at that length.
+//! variants and crawls right to left at [`rig::CRAWL_SPEED`], and it grows a
+//! segment **while it is on screen**: once the whole of it has come through the
+//! right edge, one more is put on at the rear. It starts on the slot of the
+//! segment in front, hidden under that plate, and slides back into a slot of its
+//! own over [`rig::GROW_SECONDS`] — swelling and lengthening the body as it
+//! goes. The tail does not stir until the newcomer's plate reaches further back
+//! than the one the tail was resting on: it is one organ on the back of the
+//! animal, not a part of whichever segment happens to be last, so it is pushed
+//! along rather than rebuilt. So the growth is one continuous stretch you can
+//! watch through the middle of a crossing, not a longer list of sprites
+//! arriving already made. Once the tail clears the left edge the animal
+//! starts again at the length it reached, and grows once more per crossing,
+//! until [`MAX_SEGMENTS`] and the crawl simply continues.
 //!
 //! The window opens at a physical 1920x1080 like `dogs_name`
 //! ([`frost::Config::window_size_px`]) and the animal is scaled to the live
@@ -107,6 +114,11 @@ struct Centipede {
     /// Whether the animal's nodes have to be rebuilt: set whenever its body
     /// changes, which is not only when it changes length.
     rebuild: bool,
+    /// Whether this crossing has already produced a segment. Growth is once a
+    /// trip rather than continuous, both so that the animal lengthens at a pace
+    /// a viewer can follow and so that the rear of the frame is not a permanent
+    /// sprouting.
+    grew: bool,
 }
 
 impl Centipede {
@@ -136,18 +148,30 @@ impl Centipede {
         BODY_SPAN * height / (2.0 * self.rig.half_span())
     }
 
-    /// Starts a fresh animal of `count` segments, entering from the right
-    /// edge with its nose just off screen. The last segment is the new one,
-    /// and starts at [`rig::GROW_START`]; the ones in front of it are full
-    /// size, as they were in the animal that just left.
+    /// Adds one segment at the rear, at the size and the slot a segment is
+    /// born with: [`rig::GROW_START`] of its final plate, and no slot at all —
+    /// on top of the segment in front of it, which hides it, since the plates
+    /// are drawn rear first. Everything after this is the growth ramp.
+    fn grow_a_segment(&mut self) {
+        let body = self.random_body();
+        self.segments.push(Segment {
+            body,
+            grow: rig::GROW_START,
+        });
+        self.grew = true;
+        self.rebuild = true;
+        log::info!("the centipede grew: {} segments", self.segments.len());
+    }
+
+    /// Starts a fresh animal of `count` segments, entering from the right edge
+    /// with its nose just off screen, every segment full size and in its own
+    /// slot. Nothing grows on the way in: the newcomer that a crossing produces
+    /// arrives later, in view, from [`Centipede::grow_a_segment`].
     fn respawn(&mut self, count: usize, width: f32, fit: f32) {
         self.segments.clear();
         for _ in 0..count {
             let body = self.random_body();
             self.segments.push(Segment { body, grow: 1.0 });
-        }
-        if let Some(newest) = self.segments.last_mut() {
-            newest.grow = rig::GROW_START;
         }
         // The nose at `width / 2 + MARGIN`, and the rest of the animal
         // trailing off the edge behind it.
@@ -155,6 +179,7 @@ impl Centipede {
         // Even at `MAX_SEGMENTS`, where the length stops changing, this is a
         // different animal: it picked a fresh set of chevron variants.
         self.rebuild = true;
+        self.grew = false;
     }
 }
 
@@ -171,10 +196,22 @@ impl frost::Process for Centipede {
             self.respawn(START_SEGMENTS, width, fit);
         }
 
-        // Every segment stretches toward full size; only a newborn is ever
+        // The growth, and it happens out in the open: only once the whole
+        // animal is inside the right edge with a pitch to spare behind it, so
+        // the segment it gains has room to come out on screen.
+        if !self.grew
+            && self.segments.len() < MAX_SEGMENTS
+            && self.x + self.rear() * fit < width / 2.0 - MARGIN - rig::PITCH * fit
+        {
+            self.grow_a_segment();
+        }
+
+        // Every segment stretches toward full size; only a newcomer is ever
         // short of it, and it gets there in `GROW_SECONDS`. Its legs go with
         // it, since a leg's whole stance — hip height included — is scaled
-        // by the same number.
+        // by the same number, and so does its slot: [`rig`] pulls a growing
+        // segment forward toward the one in front by how much it has left to
+        // grow, which is what turns the addition into one long stretch.
         for segment in &mut self.segments {
             segment.grow = (segment.grow + dt / rig::GROW_SECONDS).min(1.0);
         }
@@ -186,9 +223,9 @@ impl frost::Process for Centipede {
         // it to leave, so when the tail tip passes the left margin it is
         // time to come back with a new segment.
         if self.x + self.rear() * fit < -width / 2.0 - MARGIN {
-            let grown = (self.segments.len() + 1).min(MAX_SEGMENTS);
-            self.respawn(grown, width, fit);
-            log::info!("the centipede grew: {} segments", self.segments.len());
+            let length = self.segments.len();
+            self.respawn(length, width, fit);
+            log::info!("the centipede came back: {length} segments");
         }
 
         // The pose, in art units, back to front: both rows of legs, the
@@ -297,6 +334,7 @@ fn main() {
             placements: Vec::new(),
             rng: frost::Rng::new(),
             rebuild: true,
+            grew: false,
         },
         frost::Config {
             vsync: true,

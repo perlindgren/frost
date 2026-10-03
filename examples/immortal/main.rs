@@ -76,20 +76,18 @@
 //! centered vertically — mid left. The panel paints a shelf of four bays,
 //! and the shelf is what the slots are: `BAYS` carries each bay's opening
 //! centre and the front of its board's lit top — the line a tool's feet go
-//! on — both read off the sprite's own pixels. The bays are not evenly
-//! spaced, 200, 181, 205, and 144 pixels from board to ceiling, so each tool
-//! is fitted to its own bay and stands on that bay's board rather than
-//! floating at an even split's center. A bay's ceiling is the cut of the cell
-//! above it, see [`bay_ceiling`], so whatever a tool is drawn over is exactly
-//! what answers to its bay when clicked; the sizes are the shelf's own,
-//! [`Tool::shelf_width`] held down by what the bay can hold, which is how a
-//! watering can big enough to read at a glance lives in the shallowest bay of
-//! all. One tool per bay: the tweezers on top, then the spade, the spray can,
-//! and the watering can at the bottom, all drawn on top of the panel. A bay's
-//! click cell runs the panel's full width and is cut at the middle of each
-//! board, so the four cells tile the panel edge to edge and a press anywhere
-//! on the shelf trades with a bay instead of leaking through to the grass
-//! behind it.
+//! on — both read off the sprite's own pixels. The boards are evenly spaced,
+//! 214, 213.5, 214 and 207 pixels from board to ceiling, and a bay's ceiling
+//! is the cut of the cell above it, see [`bay_ceiling`], so whatever a tool
+//! is drawn over is exactly what answers to its bay when clicked. Every tool
+//! is drawn at one size, [`tool_scale`]: the largest scale at which it fits
+//! every bay, so a tool neither changes size as it moves along the shelf nor
+//! stands larger than the space it is in. One tool per bay: the tweezers on
+//! top, then the spade, the spray can, and the watering can at the bottom,
+//! all drawn on top of the panel. A bay's click cell runs the panel's full
+//! width and is cut at the middle of each board, so the four cells tile the
+//! panel edge to edge and a press anywhere on the shelf trades with a bay
+//! instead of leaking through to the grass behind it.
 //!
 //! `assets/sprites/held_items.png` is a small panel in the bottom right
 //! corner, `MARGIN` pixels clear of the window's right and bottom borders,
@@ -887,24 +885,28 @@ fn bay_scale(i: usize, size: [f32; 2]) -> f32 {
     (w / size[0]).min(h / size[1])
 }
 
-/// The scale a resting `tool` is drawn at in bay `i`: the width the tool
-/// asks for, see [`Tool::shelf_width`], no bigger than the bay can hold.
-fn shelf_scale(i: usize, tool: Tool) -> f32 {
-    let [dw, _] = tool.drawn_size();
-    bay_scale(i, tool.drawn_size()).min(tool.shelf_width() / dw)
+/// The scale a `tool` is drawn at on the shelf — the same in every bay.
+/// Each bay can hold a different height, so the scale that lets a tool stand
+/// anywhere without changing size is the tightest of them: fitting the
+/// shelf's shallowest bay, and the width of its jambs, is what a tool's size
+/// means here. A tool is therefore never resized by where it is parked, and
+/// never drawn larger than the space it is standing in.
+fn tool_scale(tool: Tool) -> f32 {
+    let size = tool.drawn_size();
+    (0..SLOTS)
+        .map(|i| bay_scale(i, size))
+        .fold(f32::MAX, f32::min)
 }
 
-/// Where a resting `tool` sits in bay `i`, at the scale [`shelf_scale`]
+/// Where a resting `tool` sits in bay `i`, at the one scale [`tool_scale`]
 /// gives it: the tool's drawn content centred on the bay's opening, standing
 /// on its board's rest line, not floated at the click cell's middle. The
 /// content box is off-centre in most textures, so the node — the texture's
 /// center — takes the correction that puts the drawing where the shelf says
-/// it should be. The feet are pinned to the board and the height is capped
-/// at [`bay_ceiling`], so the silhouette fills its bay without climbing the
-/// shelf above it.
+/// it should be. Only the bay's lines come from `i`; the size does not.
 fn slot_rest(i: usize, tool: Tool) -> ([f32; 2], f32) {
     let dy = tool.drawn_size()[1];
-    let s = shelf_scale(i, tool);
+    let s = tool_scale(tool);
     let c = drawn_centring(tool, s);
     let [opening, rest] = BAYS[i];
     (
@@ -1310,22 +1312,6 @@ impl Tool {
     fn drawn_size(self) -> [f32; 2] {
         let box_ = self.drawn();
         [box_[1][0] - box_[0][0], box_[1][1] - box_[0][1]]
-    }
-
-    /// The width this tool asks the shelf to draw it at, in panel pixels —
-    /// or [`f32::MAX`] to take everything its bay can hold, which is what
-    /// [`shelf_scale`] caps these at. The bays are the geometry and these are
-    /// the picture: the tweezers and the watering can are wide, low shapes
-    /// that want their bay's whole width, while the spray can is all height
-    /// and would be the tallest thing on the shelf at the size its bay
-    /// allows, and the spade's diagonal reads best with the air it has
-    /// always had at its sides rather than blade and handle at the uprights.
-    fn shelf_width(self) -> f32 {
-        match self {
-            Tool::Tweezers | Tool::WaterCan => f32::MAX,
-            Tool::SprayCan => 90.0,
-            Tool::Spade => 165.0,
-        }
     }
 
     /// The tool's texture size in pixels: what its sprite node spans, as
@@ -4169,6 +4155,12 @@ fn main() {
 mod tests {
     use super::*;
 
+    /// Every tool there is, for the tests that check what the shelf and the
+    /// dock promise whoever they are handed — the player can park any of them
+    /// anywhere, so a bay's guarantee cannot be proved on the four the panel
+    /// happens to start with.
+    const ALL_TOOLS: [Tool; 4] = [Tool::Tweezers, Tool::Spade, Tool::SprayCan, Tool::WaterCan];
+
     /// [Demo::new] starts the demo mirroring the scene's seeded sprites
     /// and the plants' full reserves: no tool is active or held, the four
     /// tools rest on the shelf as [SEEDED_SLOTS] lays them — the tweezers,
@@ -4238,11 +4230,12 @@ mod tests {
         }
         // The check runs on the drawing, not the node: a sprite's content box
         // sits off-centre in its texture, which is exactly what `slot_rest`
-        // exists to correct.
-        for i in 0..SLOTS {
-            let Some(tool) = SEEDED_SLOTS[i] else {
-                continue;
-            };
+        // exists to correct. And it runs on every tool in every bay, not just
+        // the seeded layout, because the player can park any of them
+        // anywhere: what a bay guarantees is the same whoever stands in it,
+        // even though the size a tool is drawn at — and so where its node
+        // goes — is computed for that tool in that bay.
+        for (i, tool) in (0..SLOTS).flat_map(|i| ALL_TOOLS.map(|tool| (i, tool))) {
             let [dw, dh] = tool.drawn_size();
             let (t, s) = slot_rest(i, tool);
             assert!(s > 0.0, "the fit must be a scale, not a mirror");
@@ -4256,15 +4249,15 @@ mod tests {
             let [opening, rest] = BAYS[i];
             assert!(
                 (cx - opening).abs() < 1e-2,
-                "the tool must sit on its bay's opening centre, not {cx}"
+                "{tool:?} in bay {i} must sit on the opening centre, not {cx}"
             );
             assert!(
                 (cy + s * dh / 2.0 - rest).abs() < 1e-2,
-                "the tool must stand on its bay's board"
+                "{tool:?} must stand on bay {i}'s board"
             );
             assert!(
                 cy - s * dh / 2.0 >= bay_ceiling(i) + BAY_INSET - 1e-2,
-                "the tool must keep its inset of air overhead"
+                "{tool:?} in bay {i} must keep its inset of air overhead"
             );
             assert!(
                 dw * s <= BAY_WIDTH - 2.0 * BAY_INSET + 1e-2,
@@ -4278,8 +4271,8 @@ mod tests {
                 "{tool:?} is drawn outside its own click cell"
             );
             assert!(
-                (s - shelf_scale(i, tool)).abs() < 1e-6,
-                "`slot_rest` must draw at the scale `shelf_scale` gives"
+                (s - tool_scale(tool)).abs() < 1e-6,
+                "`slot_rest` must draw at the scale `tool_scale` gives"
             );
         }
         // The click cells tile the panel: edge to edge, in order, each one
@@ -4322,38 +4315,63 @@ mod tests {
         }
     }
 
-    /// The sizes the shelf draws its tools at, checked against the bays that
-    /// hold them. The wide shapes take the room their bay gives them — the
-    /// watering can spans the opening from jamb to jamb, being the tool a
-    /// player has to recognise fastest — and the two the shelf holds back are
-    /// held back on purpose: the spray can stops short of the height its bay
-    /// would give it, and the spade keeps the air at its sides. The four bays
-    /// come out near enough the same height, which is the shelf's own
-    /// geometry rather than a fitted guess: the boards of `items.png` are
-    /// evenly spaced, so a bay that reads much shallower than its neighbours
-    /// means a rest line was taken off the wrong board.
+    /// A tool is one size, wherever it stands. The scale is the tightest fit
+    /// on the shelf — every tool fits every bay, and moving a tool along the
+    /// shelf never resizes it — so the picture stays a shelf of things at one
+    /// consistent scale rather than four sprites each fitted to its own
+    /// cubbyhole. That the tightest fit comes out nearly the same everywhere
+    /// is the shelf's own geometry, not a fitted guess: the boards of
+    /// `items.png` are evenly spaced, so a bay reading much shallower than
+    /// its neighbours means a rest line was taken off the wrong board.
     #[test]
-    fn the_shelf_draws_each_tool_at_its_bay_or_its_own_width() {
-        let height = |i: usize, tool: Tool| shelf_scale(i, tool) * tool.drawn_size()[1];
-        let wide = |i: usize, tool: Tool| shelf_scale(i, tool) * tool.drawn_size()[0];
-        let tallest = |i: usize, tool: Tool| bay_scale(i, tool.drawn_size()) * tool.drawn_size()[1];
+    fn a_tool_is_the_same_size_in_every_bay() {
+        let wide = |tool: Tool| tool_scale(tool) * tool.drawn_size()[0];
+        let high = |tool: Tool| tool_scale(tool) * tool.drawn_size()[1];
         // The picture itself, to the pixel, top bay to bottom. Nothing else
         // in this test is a magic number, so this is where a change to the
-        // bays, or to a tool's asked width, shows up — rather than on the
-        // panel, between two boards that were measured once and never looked
-        // at again.
+        // bays shows up — rather than on the panel, between two boards that
+        // were measured once and never looked at again.
         let seeded: Vec<[u32; 2]> = (0..SLOTS)
-            .map(|i| (i, SEEDED_SLOTS[i].unwrap()))
-            .map(|(i, tool)| [(wide(i, tool) + 0.5) as u32, (height(i, tool) + 0.5) as u32])
+            .map(|i| SEEDED_SLOTS[i].unwrap())
+            .map(|tool| [(wide(tool) + 0.5) as u32, (high(tool) + 0.5) as u32])
             .collect();
-        assert_eq!(seeded, vec![[196, 133], [165, 145], [90, 183], [196, 148]]);
+        assert_eq!(seeded, vec![[196, 133], [196, 172], [96, 195], [196, 148]]);
+        for tool in ALL_TOOLS {
+            for i in 0..SLOTS {
+                // One scale wherever it stands...
+                assert!(
+                    (slot_rest(i, tool).1 - tool_scale(tool)).abs() < 1e-9,
+                    "{tool:?} changed size between bays"
+                );
+                // ...and it fits every bay, so nothing is drawn larger than
+                // the space it stands in and no bay's click cell is outgrown.
+                assert!(
+                    tool_scale(tool) <= bay_scale(i, tool.drawn_size()) + 1e-9,
+                    "{tool:?} at scale {} does not fit bay {i}",
+                    tool_scale(tool)
+                );
+            }
+            // The scale is the largest with that property, dictated by some
+            // real bay rather than picked: a bigger one would not fit.
+            assert!(
+                (0..SLOTS)
+                    .any(|i| (tool_scale(tool) - bay_scale(i, tool.drawn_size())).abs() < 1e-9),
+                "{tool:?}'s size is dictated by no bay, so it is leaving room on the shelf"
+            );
+        }
+        // The three wide, low shapes take the opening from jamb to jamb; the
+        // spray can is the one tool the shelf's height, not its width, stops.
+        for tool in [Tool::Tweezers, Tool::Spade, Tool::WaterCan] {
+            assert!(
+                (wide(tool) - (BAY_WIDTH - 2.0 * BAY_INSET)).abs() < 1e-3,
+                "{tool:?} should span the opening from jamb to jamb"
+            );
+        }
         assert!(
-            (wide(CAN_SLOT, Tool::WaterCan) - (BAY_WIDTH - 2.0 * BAY_INSET)).abs() < 1e-3,
-            "the watering can must fill its bay from jamb to jamb"
-        );
-        assert!(
-            height(SPRAY_SLOT, Tool::SprayCan) < tallest(SPRAY_SLOT, Tool::SprayCan) - 1.0,
-            "the spray can is meant to stop short of its bay"
+            (high(Tool::SprayCan) - (BAYS[SLOTS - 1][1] - bay_ceiling(SLOTS - 1) - BAY_INSET))
+                .abs()
+                < 1e-3,
+            "the spray can should stand to the tightest headroom on the shelf"
         );
         // The boards are evenly spaced in the art, so the bays they carve are
         // near enough the same height. This is the check that each rest line
@@ -4366,29 +4384,6 @@ mod tests {
             assert!(
                 (h - first).abs() < 10.0,
                 "bay {i} stands {h} tall against bay 0's {first}, and the boards are evenly spaced"
-            );
-        }
-        assert!(
-            (shelf_scale(TWEEZERS_SLOT, Tool::Tweezers) * Tool::Tweezers.drawn_size()[0]
-                - (BAY_WIDTH - 2.0 * BAY_INSET))
-                .abs()
-                < 1e-3,
-            "the tweezers take the bay's whole width"
-        );
-        assert!(
-            (shelf_scale(SPADE_SLOT, Tool::Spade) * Tool::Spade.drawn_size()[0]
-                - Tool::Spade.shelf_width())
-            .abs()
-                < 1e-3,
-            "the spade is drawn at the width it asks for"
-        );
-        for i in 0..SLOTS {
-            let Some(tool) = SEEDED_SLOTS[i] else {
-                continue;
-            };
-            assert!(
-                shelf_scale(i, tool) <= bay_scale(i, tool.drawn_size()) + 1e-6,
-                "no tool may outgrow its bay"
             );
         }
     }
@@ -4512,7 +4507,7 @@ mod tests {
     /// hangs out of the dock it was parked in.
     #[test]
     fn a_docked_tool_sits_inside_its_cell() {
-        for tool in [Tool::WaterCan, Tool::SprayCan, Tool::Spade, Tool::Tweezers] {
+        for tool in ALL_TOOLS {
             let s = held_scale(tool.drawn_size());
             let [dw, dh] = tool.drawn_size();
             let box_ = tool.drawn();

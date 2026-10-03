@@ -1,5 +1,12 @@
 # GPU-accelerating the particle system
 
+> **Status.** Phase 1 — batching the rendering into one instanced draw —
+> **has shipped**: `Shape::Particles` + `shaders/particles.wgsl` draw a
+> whole batch in one call (see `examples/particles/fountains.rs`). The
+> `ctx.circle`-per-particle baseline described in §1 is the pre-shipping
+> state this plan started from. What remains is Phase 2: moving the
+> simulation itself into a compute pass.
+
 Plan for moving `frost`'s particle system from the current host-side
 implementation (pure CPU simulation + one draw call per particle) to a
 GPU-resident, batched system. Web/wasm32 compatibility is explicitly out of

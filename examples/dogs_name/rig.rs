@@ -19,11 +19,11 @@
 //!
 //! Seen this way the parts read differently from the sheet they were cut
 //! from. The chevrons are the plates of a back, the skull leads it, the spike
-//! cluster trails behind — and each leg is a whole leg, hip bar to clay foot
-//! in one sprite, turned about its hip like the hand of a clock. The row of
-//! legs along the bottom of the frame is one side of the animal and the row
-//! along the top the other, drawn from the same sprite with a negative `y`
-//! scale.
+//! cluster trails behind — and a leg is one sprite, one pivot, turned like the
+//! hand of a clock: the art's shin with its clay foot, swung from its broken
+//! upper end where the sheet's body used to cover it. The row of legs along
+//! the bottom of the frame is one side of the animal and the row along the top
+//! the other, drawn from the same sprite with a negative `y` scale.
 //!
 //! # The legs drive the walk
 //!
@@ -87,28 +87,25 @@ pub const HEAD: usize = 0;
 pub const BODIES: [usize; 3] = [1, 2, 3];
 /// The tail: the small rear spike cluster.
 pub const TAIL: usize = 4;
-/// A whole leg: hip bar, thigh, shin and clay foot in one sprite, turned
-/// about its hip.
+/// A leg: one sprite, turned about its upper end.
 pub const LEG: usize = 5;
 /// How many parts the rig knows, and how long the example's shape table is.
 pub const PART_COUNT: usize = 6;
 
 /// The part files, in the order of the indices above.
 ///
-/// `Monster_leg1.png` is not one of the sheet's crops. The art's leg was
-/// drawn in two pieces, thigh and shin, with a hundred rows of its middle
-/// hidden behind a body plate — and the two pieces were left in two
-/// byte-identical files. They are welded here tip to tip, on the row where
-/// each tapers to its broken end, into one complete leg: the same join the
-/// two-sprite rig used to make every frame by pivoting them at those tips,
-/// now baked into the texture.
+/// The art's leg is in two pieces, thigh in one file and shin with its clay
+/// foot in the other, the middle of the limb hidden behind a body plate in the
+/// sheet. The centipede draws one sprite per leg and takes the piece that
+/// carries the foot, because a gait is a thing a foot does: `Monster_leg1.png`
+/// is the thigh, and nothing in this example draws it.
 pub const PART_FILES: [&str; PART_COUNT] = [
     "Monster_head.png",
     "Monster_body1.png",
     "Monster_body2.png",
     "Monster_body3.png",
     "Monster_tail.png",
-    "Monster_leg1.png",
+    "Monster_leg2.png",
 ];
 
 // -------------------------------------------------------------- joints --
@@ -120,24 +117,34 @@ pub const PART_FILES: [&str; PART_COUNT] = [
 /// the first segment.
 const NECK: Px = [672.0, 470.0];
 
-/// The tail's root, at the middle of its left edge, where it tucks behind
-/// the last segment.
+/// The tail's root, at the middle of its left edge, where it is laid over the
+/// last segment — see [`TAIL_BACK`].
 const TAIL_ROOT: Px = [22.0, 122.0];
 
-/// Each body variant's spine point: the apex of its chevron, which is what
-/// rides the body's wave. Per variant, because the three chevrons are cut
-/// from the sheet at different heights.
-const SPINE_ANCHOR: [Px; 3] = [[247.0, 408.0], [225.0, 336.0], [198.0, 362.0]];
+/// Each body variant's spine point: the apex of its chevron for `x`, and the
+/// middle of the cut for `y`. Per variant, because the three chevrons are cut
+/// from the sheet at different heights and different sizes.
+///
+/// The `y` is the middle of the cut rather than the apex row, which is where
+/// the sheet draws the ridge. A plate hung on its ridge hangs by less than
+/// half: the largest chevron reaches 185 units above the spine and only 158
+/// below it, so the same legs would be buried 27 units deeper on one side than
+/// on the other, and the animal would crawl with one row of legs tucked under
+/// its flanks and the other row hanging off them. Hung by the middle instead,
+/// the three variants reach 170/173, 152/152 and 156/156 above and below, and
+/// both rows of hips sit the same depth under the same plate.
+const SPINE_ANCHOR: [Px; 3] = [[247.0, 386.5], [225.0, 347.5], [198.0, 358.5]];
 
-/// The hip: inside the leg's horizontal bar, where the bar meets the thigh.
-/// The one pivot a whole leg gets.
-const HIP: Px = [88.0, 86.0];
+/// The hip: the leg sprite's broken upper end, a few pixels inside the tip
+/// where the fragment tapers to four pixels across. It is the only pivot the
+/// leg has, and the sheet's body plate is what hides it.
+const HIP: Px = [22.0, 12.0];
 
 /// Where the foot works the ground: the middle of the flat clay pad at the
 /// leg's end. The leg is swung so that this point lands where the gait wants
 /// a foot, which is why the pad's own tilt comes out of the leg's angle
 /// instead of having to be posed.
-const TOE: Px = [223.0, 895.0];
+const TOE: Px = [201.0, 452.0];
 
 // --------------------------------------------------------------- layout --
 
@@ -160,27 +167,33 @@ pub const HEAD_SCALE: f32 = 0.86;
 /// the body is wide: at its drawn size a leg would throw a ring of limbs twice
 /// the animal's breadth, which reads as a wreath and not as a centipede.
 ///
-/// `0.3` is a leg barely long enough to clear the plates it grows out of — the
-/// feet land just outside the body's edge, the way a centipede's do, and the
-/// animal stays a body with a fringe of legs instead of a body standing on a
-/// paddling pool of them.
-pub const LEG_SCALE: f32 = 0.3;
+/// `0.46` is a leg barely long enough to clear the plates it grows out of —
+/// the feet land just outside the body's edge, the way a centipede's do, and
+/// the animal stays a body with a fringe of legs instead of a body standing on
+/// a paddling pool of them. The number looks larger than the leg is: this
+/// sprite is the shin and foot alone, some three-fifths of the limb the sheet
+/// shows, so it is drawn nearer its own size to reach as far as the whole limb
+/// did at `0.3`.
+pub const LEG_SCALE: f32 = 0.46;
 
 /// How far apart the segments sit along the body, in monster units — about
 /// half a chevron, so consecutive plates overlap by a head's width.
 pub const PITCH: f32 = 220.0;
 
-/// The hip sits this far behind the middle of its segment, matching where the
-/// clay legs were planted in the sheet. At that distance along the body the
-/// plate *ahead* of the hip is still near its widest, which is what covers the
-/// hip bar.
-pub const HIP_BACK: f32 = 25.0;
+/// The hip sits this far behind the middle of its segment. Not where the sheet
+/// planted the clay legs — 25 back is right behind the apex, where a chevron is
+/// still a wedge and a hip there pokes out of the plate's edge. At 55 the plate
+/// is roughly a fifth broader on both sides, and a hip buried under it stays
+/// under it while the body waves and the plate tilts.
+pub const HIP_BACK: f32 = 55.0;
 
-/// How far each side's hips sit out from the spine, in monster units: barely
-/// half the distance to the body's edge, so the hip bar and most of the thigh
-/// are buried under the overlapping plates and each leg seems to grow straight
-/// out of the animal's side.
-pub const HIP_OUT: f32 = 120.0;
+/// How far each side's hips sit out from the spine, in monster units: two
+/// thirds of the way to the plate's edge, so each leg's root is buried under
+/// the plate it grows from and the leg appears to start at the animal's flank
+/// rather than a hand's width below it. This distance is measured from the
+/// spine and never altered by the wave, which moves the spine and the legs
+/// along with it.
+pub const HIP_OUT: f32 = 100.0;
 
 /// The slack between where a foot stands and how far its clay pad overruns
 /// that: what the animal's lateral span is measured with.
@@ -193,10 +206,25 @@ pub const FOOT_PAD: f32 = 90.0;
 /// spikes to lie over it instead of butting up against the tip.
 pub const HEAD_AT: f32 = 0.3;
 
-/// The tail's root sits this far beyond the rear edge of the plate it tucks
-/// behind, so it trails the body without either gapping or burying the plate's
-/// own edge.
-pub const TAIL_BACK: f32 = 24.0;
+/// The tail's root sits this far *inside* the rear edge of the plate it lies
+/// over — negative, because a tail parked clear of the body it belongs to reads
+/// as a separate object trailing a fan of spikes. [`pose`] emits the tail after
+/// the plates, so the overlap is drawn rather than hidden: the stem lies across
+/// the last plate the way the skull's ruff lies across the first one, which is
+/// the only thing that makes the cluster look attached.
+///
+/// `60` is about the width of the tail's narrow stem — the first ~40 units of it
+/// — plus room for the join to stay closed while the tail rides the wave a
+/// fraction of a segment behind the plate it rests on. Less and the stem's break
+/// shows on top of the plate; more and the cluster starts climbing the body.
+///
+/// It is a fixed distance and the tail is a fixed size, unlike a segment's
+/// plate and legs, and that is the point: the tail is one organ attached to the
+/// rear of the body, not a part of whichever segment happens to be last. Were
+/// it scaled by that segment's growth, adding a segment would shrink the tail
+/// to [`GROW_START`] in one frame and move it forward with it — a pop at the
+/// worst possible moment, right where the growth is supposed to be read.
+pub const TAIL_BACK: f32 = -60.0;
 
 // ----------------------------------------------------------------- gait --
 
@@ -242,9 +270,12 @@ pub const LAG: f32 = 0.125;
 pub const SIDE_PHASE: f32 = 0.5;
 
 /// The body wave's amplitude, in monster units: how far a segment rides to one
-/// side or the other of the track's centre line. Kept well short of the
-/// distance from a hip to the body's edge, so a hip stays under its plate as
-/// the wave rolls, and the swing of a short leg is not lost in the sway.
+/// side or the other of the track's centre line, carrying its plate and both of
+/// its legs the same distance. Kept well short of the distance from a hip to
+/// the body's edge, so a hip stays under its plate as the wave rolls, and the
+/// swing of a short leg is not lost in the sway. Because the whole animal rides
+/// this far off the centre line at the crest of a wave, it is also what
+/// [`Rig::half_span`] measures the fit by.
 pub const WAVE_AMP: f32 = 32.0;
 
 /// The body wave's wavelength in segments — eight of them, the same span
@@ -262,14 +293,57 @@ pub const GROW_SECONDS: f32 = 1.2;
 // ---------------------------------------------------------------- types --
 
 /// One body segment of the animal: which of the three chevron variants it
-/// is (a [`BODIES`] index), and how far it has grown — `0.0` just born, `1.0`
-/// full size.
+/// is (a [`BODIES`] index), and how far it has grown, from [`GROW_START`] just
+/// born to `1.0` full size — which also decides how far out of the body it has
+/// come, through [`slide`].
 #[derive(Clone, Copy, Debug)]
 pub struct Segment {
     /// The part index of this segment's chevron, one of [`BODIES`].
     pub body: usize,
     /// The growth fraction, ramped from [`GROW_START`] to `1.0`.
     pub grow: f32,
+}
+
+/// How far a segment has come out from the one in front of it: `0.0` at its
+/// birth, when it sits on its predecessor's slot and is hidden under that
+/// plate, `1.0` when it has taken its own.
+///
+/// This is derived from [`Segment::grow`] rather than carried beside it, so the
+/// two cannot drift apart: a segment slides out of the body at exactly the rate
+/// it swells, which is what makes a new segment read as growing rather than as
+/// arriving.
+fn slide(seg: &Segment) -> f32 {
+    ((seg.grow - GROW_START) / (1.0 - GROW_START)).clamp(0.0, 1.0)
+}
+
+/// Where the middle of segment `i` sits along the body, in monster units, with
+/// the head-end segment at zero.
+///
+/// Every gap between two segments is a fraction of [`PITCH`]: the whole pitch
+/// once both have settled, less while the one behind is still arriving. Without
+/// this the body lengthens by a full pitch the instant a segment is added, the
+/// tail jumps back with it, and the growth is a hiccup; with it the animal
+/// stretches backwards, one smooth span, across the whole of [`GROW_SECONDS`].
+fn slot(segments: &[Segment], i: usize) -> f32 {
+    segments
+        .get(1..=i)
+        .map(|behind| behind.iter().map(|s| PITCH * slide(s)).sum())
+        .unwrap_or(0.0)
+}
+
+/// The rearmost edge of the body's plates — of whichever segment is currently
+/// the last one out, which during a growth is still the segment the newcomer
+/// was born behind, because a half-size plate does not reach as far back as a
+/// whole one. The tail hangs off this rather than off the last segment's slot,
+/// so adding a segment cannot move it: the newcomer has to grow far enough out
+/// to overtake the plate in front before the tail starts travelling at all.
+fn rear_edge(rig: &Rig, segments: &[Segment]) -> f32 {
+    let mut rear = 0.0f32;
+    for (i, seg) in segments.iter().enumerate() {
+        let edge = slot(segments, i) + rig.plate_back[seg.body - BODIES[0]] * seg.grow;
+        rear = rear.max(edge);
+    }
+    rear
 }
 
 /// One sprite to draw, in the order the list is built.
@@ -364,7 +438,11 @@ impl Rig {
     /// foot, pad included. The example maps this onto the window's height,
     /// because from above that is the dimension the animal cannot exceed.
     pub fn half_span(&self) -> f32 {
-        self.foot_out(LEG_SCALE) + FOOT_PAD * LEG_SCALE
+        // The feet, the clay pads that overrun them, and the whole ripple the
+        // legs ride on: the row is carried as far as [`WAVE_AMP`] off the track
+        // centre, so at the crest of a wave the outermost foot stands further
+        // out than it does on the level.
+        self.foot_out(LEG_SCALE) + FOOT_PAD * LEG_SCALE + WAVE_AMP
     }
 }
 
@@ -460,8 +538,10 @@ fn wrap(phase: f32) -> f32 {
 }
 
 /// Fills `out` with the whole animal at time `t`, back to front: both rows of
-/// legs first, then the tail, the segments from the rear in, and the head last
-/// so its spikes lap over the plate it leads.
+/// legs, then the plates from the rear in, then the tail, and the head last — so
+/// the two organs end up on top at their own ends of the body, the skull's ruff
+/// lapping over the plate it leads and the spike cluster over the plate it
+/// trails, while every plate laps the one behind it.
 ///
 /// The legs go under the plates because that is where the art puts them: the
 /// hip bar belongs to the animal, and the plate that crosses it belongs on
@@ -476,13 +556,23 @@ pub fn pose(rig: &Rig, segments: &[Segment], t: f32, out: &mut Vec<Placement>) {
         // its partner swings on the other.
         let offset = if side > 0.0 { 0.0 } else { SIDE_PHASE };
         for (i, seg) in segments.iter().enumerate().rev() {
-            let f = i as f32;
+            let x = slot(segments, i);
+            let f = x / PITCH;
             place_leg(
                 out,
                 rig,
                 [
-                    f * PITCH + HIP_BACK,
-                    side * (HIP_OUT * seg.grow + spine_off(f, t)),
+                    x + HIP_BACK,
+                    // The wave *carries* the leg row sideways, exactly as it
+                    // carries the plate the leg grows from: the hip sits out
+                    // `HIP_OUT` from a spine that has moved, and the same
+                    // `spine_off` is added to both sides. Written the other way
+                    // — `side * (HIP_OUT + spine_off)` — the ripple would push
+                    // each side's legs further out as it passed and the legs
+                    // would telescope in and out of the flanks, one side's
+                    // roots uncovering while the other's buried deeper, so the
+                    // animal would seem to have one good hip and one bad.
+                    side * HIP_OUT * seg.grow + spine_off(f, t),
                 ],
                 side,
                 wrap(t / CYCLE - f * LAG + offset),
@@ -491,31 +581,37 @@ pub fn pose(rig: &Rig, segments: &[Segment], t: f32, out: &mut Vec<Placement>) {
         }
     }
 
-    // The tail trails the last segment, tucked under it.
-    let last = segments.len().saturating_sub(1) as f32;
-    let grow = segments.last().map_or(1.0, |s| s.grow);
-    let back = segments
-        .last()
-        .map_or(0.0, |s| rig.plate_back[s.body - BODIES[0]] * s.grow);
-    out.push(Placement {
-        part: TAIL,
-        joint: [last * PITCH + back + TAIL_BACK, spine_off(last + 0.6, t)],
-        pivot: rig.pivots[TAIL],
-        angle: spine_angle(last + 0.6, t) + 0.05 * (TAU * t / CYCLE).sin(),
-        scale: [BODY_SCALE * grow, BODY_SCALE * grow],
-    });
-
     // The plates, rear first, each turning into the wave it rides.
     for (i, seg) in segments.iter().enumerate().rev() {
-        let f = i as f32;
+        let x = slot(segments, i);
+        let f = x / PITCH;
         out.push(Placement {
             part: seg.body,
-            joint: [f * PITCH, spine_off(f, t)],
+            joint: [x, spine_off(f, t)],
             pivot: rig.pivots[seg.body],
             angle: spine_angle(f, t),
             scale: [BODY_SCALE * seg.grow, BODY_SCALE * seg.grow],
         });
     }
+
+    // The tail last of the body, laid over the rear of it: the animal ends the
+    // way it begins, with the skull lying over the first plate at one end and
+    // the spike cluster over the last at the other. Emitted after the plates is
+    // what makes that so — the list is drawn in order, so order is the only
+    // thing standing between a tail attached to the body and one floating
+    // behind it.
+    let last = slot(segments, segments.len().saturating_sub(1));
+    let wave = last / PITCH;
+    out.push(Placement {
+        part: TAIL,
+        joint: [
+            rear_edge(rig, segments) + TAIL_BACK,
+            spine_off(wave + 0.6, t),
+        ],
+        pivot: rig.pivots[TAIL],
+        angle: spine_angle(wave + 0.6, t) + 0.05 * (TAU * t / CYCLE).sin(),
+        scale: [BODY_SCALE, BODY_SCALE],
+    });
 
     // The head leads, nodding on top of the wave it rides — and last of all,
     // so its ruff lies over the first plate instead of stopping at its tip.
@@ -533,9 +629,176 @@ pub fn pose(rig: &Rig, segments: &[Segment], t: f32, out: &mut Vec<Placement>) {
 /// monster units: the example needs it to know when the whole animal has left
 /// the window, and the tail is the last of it to go.
 pub fn rear(rig: &Rig, segments: &[Segment]) -> f32 {
-    let last = segments.len().saturating_sub(1) as f32;
-    let back = segments
-        .last()
-        .map_or(0.0, |s| rig.plate_back[s.body - BODIES[0]] * s.grow);
-    last * PITCH + back + TAIL_BACK + rig.tail_reach
+    rear_edge(rig, segments) + TAIL_BACK + rig.tail_reach
+}
+
+/// How far each body variant's plate reaches above and below the spine line at
+/// the one column its hip sits in, in monster units, measured off the cropped
+/// textures and used by nothing but the test below. It is the art's geometry,
+/// not the rig's: the three chevrons are cut from the sheet with their ridge
+/// above the middle of the cut, so hung by the ridge they hang deeper on one
+/// side than the other, and hung at the wrong depth they uncover a row of hips.
+#[cfg(test)]
+const PLATE_EDGES: [[f32; 2]; 3] = [[201.9, 199.1], [173.2, 178.1], [181.6, 186.5]];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A leg grows out of a plate, not out of the air next to one, so its hip
+    /// has to stay under the plate on the side of the flank the plate is
+    /// shallowest on — and both sides have to be shallow by about the same
+    /// amount, or one row of legs is tucked under the body while the other
+    /// hangs below it, which reads as an animal with a broken hip.
+    #[test]
+    fn the_hips_are_under_the_plates_they_grow_from() {
+        for (variant, [above, below]) in PLATE_EDGES.iter().enumerate() {
+            assert!(
+                HIP_OUT < above.min(*below) - 60.0,
+                "the hip sits {HIP_OUT} out and variant {} of the plate reaches only {} from the spine to its edge at the hip column: the root of the leg would sit in the open",
+                variant + 1,
+                above.min(*below),
+            );
+            assert!(
+                (above - below).abs() < 10.0,
+                "variant {} of the plate reaches {above} above the spine and {below} below it: hung by its middle it should be about as broad one way as the other, and at {HIP_OUT} a hip is buried {} deep on one flank and {} on the other",
+                variant + 1,
+                above - HIP_OUT,
+                below - HIP_OUT,
+            );
+        }
+    }
+
+    /// A rigid leg puts its foot on a circle it cannot stretch, and the stride
+    /// is written down in front of that: half a stride is how far a planted
+    /// foot travels from under its hip before it is lifted. Half way round the
+    /// circle is where a leg of this design stops being a leg and becomes a
+    /// line drawn along the ground, so the stride has to stay a fraction of it.
+    /// A new segment has to arrive, not appear. It is put on at the slot of the
+    /// segment in front of it — where the plate already there hides it, plates
+    /// being emitted rear first — and ends on a slot of its own, so the body
+    /// gives way by exactly one pitch across the growth instead of snapping out
+    /// by it in front of the viewer.
+    #[test]
+    fn a_new_segment_starts_hidden_and_slides_into_its_slot() {
+        let plate = || Segment {
+            body: BODIES[0],
+            grow: 1.0,
+        };
+        let settled = 4;
+        let mut body = (0..settled).map(|_| plate()).collect::<Vec<_>>();
+        let under = slot(&body, settled - 1);
+        assert_eq!(under, (settled as f32 - 1.0) * PITCH);
+
+        body.push(Segment {
+            body: BODIES[0],
+            grow: GROW_START,
+        });
+        assert!(
+            (slot(&body, settled) - under).abs() < 1e-3,
+            "a segment born at {GROW_START} sits {} along the body while the plate that is to hide it sits at {under}: they should coincide, or the newcomer shows up in the open behind the last plate",
+            slot(&body, settled),
+        );
+
+        body[settled].grow = 1.0;
+        let gained = slot(&body, settled) - under;
+        assert!(
+            (gained - PITCH).abs() < 1e-3,
+            "a newcomer that has finished growing should have opened exactly one pitch of body behind the last plate, and opened {gained}",
+        );
+    }
+
+    /// The tail is attached to the back of the animal, not to the last segment,
+    /// so putting a segment on must not disturb it: no shrink, no slide, no
+    /// twitch. It is allowed to start travelling only once the newcomer's plate
+    /// reaches further back than the plate the tail was resting on.
+    /// A rig with the real part sizes, for the tests that need a whole one.
+    fn rig() -> Rig {
+        Rig::new([
+            [702.0, 955.0], // the skull
+            [495.0, 773.0], // the three chevrons
+            [450.0, 695.0],
+            [397.0, 717.0],
+            [322.0, 268.0], // the tail
+            [320.0, 474.0], // a leg
+        ])
+    }
+
+    /// There is no depth buffer here: what is drawn later is what is on top. The
+    /// tail is an organ laid over the rear of the body, not a piece of the rear
+    /// edge, so it has to come after every plate — the same relation the skull
+    /// has at the front, its ruff lying over the first plate rather than
+    /// stopping at its tip.
+    #[test]
+    fn the_tail_is_laid_over_the_body_and_not_behind_it() {
+        let rig = rig();
+        let body = (0..4)
+            .map(|_| Segment {
+                body: BODIES[0],
+                grow: 1.0,
+            })
+            .collect::<Vec<_>>();
+        let mut out = Vec::new();
+        pose(&rig, &body, 0.37, &mut out);
+
+        let backmost_plate = out
+            .iter()
+            .rposition(|p| BODIES.contains(&p.part))
+            .expect("a pose with four segments should emit plates");
+        let tail = out
+            .iter()
+            .rposition(|p| p.part == TAIL)
+            .expect("a pose with segments should emit a tail");
+        assert!(
+            tail > backmost_plate,
+            "the tail is emitted at {tail} and the rearmost plate at {backmost_plate}: drawn in that order the last plate paints over the tail's stem, and the cluster floats off the end of the body",
+        );
+        let head = out
+            .iter()
+            .rposition(|p| p.part == HEAD)
+            .expect("a pose with segments should emit a head");
+        assert!(
+            head > backmost_plate,
+            "the head is emitted at {head} and the rearmost plate at {backmost_plate}: the skull has to lie over the plate it leads",
+        );
+    }
+
+    #[test]
+    fn adding_a_segment_leaves_the_tail_where_it_was() {
+        let rig = rig();
+        let plate = |grow| Segment {
+            body: BODIES[0],
+            grow,
+        };
+        let body = (0..4).map(|_| plate(1.0)).collect::<Vec<_>>();
+        let before = rear_edge(&rig, &body) + TAIL_BACK;
+
+        let longer = body
+            .iter()
+            .copied()
+            .chain([plate(GROW_START)])
+            .collect::<Vec<_>>();
+        let after = rear_edge(&rig, &longer) + TAIL_BACK;
+        assert!(
+            (after - before).abs() < 1e-3,
+            "adding a segment moved the tail from {before} to {after}: it is one organ on the back of the animal, not a part of whichever segment is last, so it may not twitch when a segment is put on",
+        );
+
+        let longer = body.iter().copied().chain([plate(1.0)]).collect::<Vec<_>>();
+        assert!(
+            rear_edge(&rig, &longer) > before + PITCH - 1e-3,
+            "a newcomer that has finished growing should have pushed the rear of the body back by its whole pitch, and pushed it by {}",
+            rear_edge(&rig, &longer) - before,
+        );
+    }
+
+    #[test]
+    fn the_stride_fits_inside_the_leg() {
+        let len = ((TOE[0] - HIP[0]).powi(2) + (TOE[1] - HIP[1]).powi(2)).sqrt() * LEG_SCALE;
+        assert!(
+            STRIDE / 2.0 < 0.45 * len,
+            "half a stride is {} against a leg that reaches {len:.1}: the foot would be asked to stand where the leg cannot",
+            STRIDE / 2.0,
+        );
+    }
 }

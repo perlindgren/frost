@@ -27,6 +27,6 @@ $env:RUST_LOG="info"; cargo run --example gizmos
 
 ## License
 
-The `assets/fonts/FiraCode-VariableFont_wght.fft` is a redistribution under OFL.
+The `assets/fonts/FiraCode-VariableFont_wght.ttf` is a redistribution under OFL.
 
 Copyright to the Developers (Per Lindgren/Iris Hulsman), for other assets and code. We will keep development sources available for now, hopefully we can find a license allowing the sources to be open and available (giving back to the game dev community), while protecting all rights to releases and distributions.
