@@ -25,6 +25,21 @@ or under Win11 with Powershell:
 $env:RUST_LOG="info"; cargo run --example gizmos
 ```
 
+## Repository hooks
+
+The versioned hooks in `.githooks/` gate commits (fmt + clippy) and pushes
+(tests), but git only runs them once this clone points at them — the
+trigger is a per-clone setting, never cloned itself. After every fresh
+clone, once:
+
+```shell
+sh .githooks/install.sh
+```
+
+(or clone with `git clone --config core.hooksPath=.githooks <url>` and skip
+the step). They are a gate you opt into, not a wall: `--no-verify` skips
+them by design.
+
 ## License
 
 The `assets/fonts/FiraCode-VariableFont_wght.ttf` is a redistribution under OFL.

@@ -618,10 +618,10 @@ impl Ui {
                     }
                 }
             }
-            if let Some(drag) = state.drag.take() {
-                if let Some(i) = specs.iter().position(|s| s.id == drag.view) {
-                    outs[i].events.push(TreeEvent::DragEnd);
-                }
+            if let Some(drag) = state.drag.take()
+                && let Some(i) = specs.iter().position(|s| s.id == drag.view)
+            {
+                outs[i].events.push(TreeEvent::DragEnd);
             }
         }
 
@@ -926,15 +926,11 @@ fn row_btn_boxes(add: bool, del: bool, right: f32) -> (Option<f32>, Option<f32>)
 /// The visible slice of a `key: val` row at a horizontal scroll: each
 /// side is `None` when scrolled out of view, else the text and its
 /// center x, relative to the body's text edge.
-fn window(
-    key: &str,
-    val: &str,
-    sx: usize,
-    maxc: usize,
-    adv: f32,
-) -> (Option<(String, f32)>, Option<(String, f32)>) {
+type Slice = Option<(String, f32)>;
+
+fn window(key: &str, val: &str, sx: usize, maxc: usize, adv: f32) -> (Slice, Slice) {
     let klen = key.chars().count();
-    let slice = |text: &str, base: usize| -> Option<(String, f32)> {
+    let slice = |text: &str, base: usize| -> Slice {
         let a = sx.max(base);
         let b = (sx + maxc).min(base + text.chars().count());
         (b > a).then(|| {

@@ -382,6 +382,10 @@ const PALETTE: [(f32, f32, f32); 8] = [
     (0.75, 0.90, 0.55),
 ];
 
+/// One undo step: the texture a crop replaced, and the sidecar positions
+/// it shifted — popped together by Ctrl-Z.
+type CropStep = (image::RgbaImage, Option<Vec<(f32, f32)>>);
+
 /// One sprite: its files, its textures and its slot's look.
 struct Sprite {
     /// The file the sprite was loaded from — Save writes back to it.
@@ -399,7 +403,7 @@ struct Sprite {
     /// Each crop's snapshot: the texture it replaced and the sidecar
     /// positions it shifted — Ctrl-Z pops both back, and the history
     /// bottom is the sprite's original.
-    history: Vec<(image::RgbaImage, Option<Vec<(f32, f32)>>)>,
+    history: Vec<CropStep>,
     /// The working texture as a shape — the work area's sprite node.
     shape: frost::Shape,
     /// The original, minimized to a slot's width — the slot's picture.
@@ -1664,20 +1668,20 @@ impl frost::Process for Demo {
             let next = (rows > 1 || cols > 1).then_some((rows, cols));
             if sp.atlas != next {
                 sp.atlas = next;
-                if let Some(doc) = sp.ron.as_mut() {
-                    if set_atlas(&mut doc.root, next) {
-                        doc.rows = ron_tree::layout(&doc.root);
-                        doc.clamp_scroll();
-                    }
+                if let Some(doc) = sp.ron.as_mut()
+                    && set_atlas(&mut doc.root, next)
+                {
+                    doc.rows = ron_tree::layout(&doc.root);
+                    doc.clamp_scroll();
                 }
             }
             if want_clear_atlas {
                 sp.atlas = None;
-                if let Some(doc) = sp.ron.as_mut() {
-                    if set_atlas(&mut doc.root, None) {
-                        doc.rows = ron_tree::layout(&doc.root);
-                        doc.clamp_scroll();
-                    }
+                if let Some(doc) = sp.ron.as_mut()
+                    && set_atlas(&mut doc.root, None)
+                {
+                    doc.rows = ron_tree::layout(&doc.root);
+                    doc.clamp_scroll();
                 }
             }
         }
@@ -2073,18 +2077,20 @@ impl frost::Process for Demo {
         // The tile grid: the atlas' rows and columns mapped onto the
         // sprite, the split drawn over the texture. The inner lines
         // only — the outer ones are the bounding box.
-        if let Some((rows, cols)) = self.active().and_then(|sp| sp.atlas) {
-            if tw > 0.0 && th > 0.0 && (rows > 1 || cols > 1) {
-                let wx = |px: f32| (px - tw / 2.0) * self.zoom + view[0];
-                let wy = |py: f32| (th / 2.0 - py) * self.zoom + view[1];
-                for i in 1..cols {
-                    let x = wx(tw * i as f32 / cols as f32);
-                    ctx.line(x, by0, x, by1, TILE, TILE_WIDTH, TILE_Z);
-                }
-                for j in 1..rows {
-                    let y = wy(th * j as f32 / rows as f32);
-                    ctx.line(bx0, y, bx1, y, TILE, TILE_WIDTH, TILE_Z);
-                }
+        if let Some((rows, cols)) = self.active().and_then(|sp| sp.atlas)
+            && tw > 0.0
+            && th > 0.0
+            && (rows > 1 || cols > 1)
+        {
+            let wx = |px: f32| (px - tw / 2.0) * self.zoom + view[0];
+            let wy = |py: f32| (th / 2.0 - py) * self.zoom + view[1];
+            for i in 1..cols {
+                let x = wx(tw * i as f32 / cols as f32);
+                ctx.line(x, by0, x, by1, TILE, TILE_WIDTH, TILE_Z);
+            }
+            for j in 1..rows {
+                let y = wy(th * j as f32 / rows as f32);
+                ctx.line(bx0, y, bx1, y, TILE, TILE_WIDTH, TILE_Z);
             }
         }
 

@@ -51,10 +51,16 @@ enum GpuInit {
     /// Not started yet (before the first `resumed`).
     Idle,
     /// The combined `request_adapter` + `request_device` future.
-    Init(Pin<Box<dyn Future<Output = Result<(Adapter, Device, Queue), String>>>>),
+    Init(GpuFuture),
     /// The setup failed and the page shows the error.
     Failed,
 }
+
+/// The combined `request_adapter` + `request_device` future: resolves to
+/// the GPU trio, or to the reason it failed, as a ready-made object
+/// because the event loop owns it across polls.
+#[cfg(target_arch = "wasm32")]
+type GpuFuture = Pin<Box<dyn Future<Output = Result<(Adapter, Device, Queue), String>>>>;
 
 /// The web event-loop handler: creates the window immediately, drives the
 /// async GPU setup, and hands everything to `Frost` once it completes.
@@ -135,12 +141,13 @@ impl<P: Process> ApplicationHandler for WebFrost<P> {
         }
         // The GPU is still coming up: keep the window alive, let Escape and
         // a close request still exit, and keep asking for frames.
-        if let WindowEvent::KeyboardInput { event, .. } = &event {
-            if event.state == ElementState::Pressed && event.logical_key == NamedKey::Escape {
-                log::info!("escape pressed, exiting");
-                event_loop.exit();
-                return;
-            }
+        if let WindowEvent::KeyboardInput { event, .. } = &event
+            && event.state == ElementState::Pressed
+            && event.logical_key == NamedKey::Escape
+        {
+            log::info!("escape pressed, exiting");
+            event_loop.exit();
+            return;
         }
         match event {
             WindowEvent::CloseRequested => {
@@ -163,6 +170,7 @@ impl<P: Process> ApplicationHandler for WebFrost<P> {
 impl<P: Process> WebFrost<P> {
     /// The web app's initial state: nothing has happened yet — no window,
     /// the GPU setup not started, and no `Frost` to hand the canvas to.
+    #[allow(clippy::too_many_arguments)] // the whole `Config` arrives at once
     pub(crate) fn new(
         instance: Instance,
         scene: Scene,
@@ -260,7 +268,9 @@ pub(crate) fn hide_fallback() {
         return;
     };
     if let Some(fallback) = document.get_element_by_id("fallback") {
-        let _ = fallback.remove();
+        // `remove` detaches the element and returns nothing; the DOM
+        // keeps no error path here — a missing node is the success case.
+        fallback.remove();
     }
 }
 
