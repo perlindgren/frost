@@ -224,9 +224,9 @@ pub struct Assets {
     /// swarm's slot shapes swap between them as cheap `Arc` clones.
     pub lice1: frost::Shape,
     pub lice2: frost::Shape,
-    /// The inventory panel, mid left: six slots, 0 to 5 from the top, the
-    /// tweezers resting in slot 2, the spade in slot 3, the spray can in
-    /// slot 4, and the watering can in slot 5.
+    /// The inventory panel, mid left: the shelf, painted with four bays,
+    /// the tweezers resting in the top one, then the spade, the spray can,
+    /// and the watering can at the bottom.
     pub items: frost::Shape,
     /// The held-items panel in the bottom right: the active tool in the
     /// left half, the stored one in the right.

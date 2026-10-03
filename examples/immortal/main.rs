@@ -49,20 +49,18 @@
 //! - The spade, `assets/sprites/spade.png`, is scaled `SPADE_SIZE` pixels
 //!   wide and rides the cursor by its grip — the middle of the wooden
 //!   handle, `SPADE_GRIP` in image pixels — the point a hand would hold it
-//!   by, and the pivot a dig swings around. A fresh press of the left mouse
-//!   button — one after a release; holding or re-pressing mid-stroke does
-//!   nothing — digs one stroke, and the stroke is one curve, [`dig_pose`],
-//!   that intertwines a rotation about the grip with a shift along the
-//!   blade's own line: over `DIG_WIND` of `DIG_TIME` the spade winds up
-//!   clockwise to `DIG_RAISE` while its grip draws back `DIG_PULL` pixels
-//!   up the handle, then it accelerates counter-clockwise to the full
-//!   plunge over `DIG_STRIKE` while the grip drives `DIG_LUNGE` pixels down
-//!   the point, and it eases back to the pose it is drawn in over the rest.
-//!   The angle the swing starts from is the sprite's own: the art is drawn
-//!   leaning into the dig, its point `SPADE_TIP` 188 px left and 131 px
-//!   below the grip, so the resting spade already aims 34.9° below the
-//!   horizontal and the plunge that buries it — `spade_plunge()`, 55.1° —
-//!   is a quarter turn less that lean, not a right angle.
+//!   by. A fresh press of the left mouse button — one after a release;
+//!   holding or re-pressing mid-stroke does nothing — digs one stroke: three
+//!   beats, one path, [`dig_offset`], with no rotation anywhere. Over
+//!   `DIG_PUSH` the tool is shoved forward `DIG_PUSH_DIST` pixels along its
+//!   own line, point first; over `DIG_HOLD` it stays there, buried; then
+//!   over `DIG_ARC` it arches up and to the left of the cursor — through
+//!   `DIG_ARC_CROWN`, out over the ground it just broke — and settles back
+//!   onto its anchor, where the stroke began. Forward is the direction the
+//!   art already draws, not one invented for the dig: the point sits
+//!   `SPADE_TIP` 188 px left and 131 px below the grip, so the spade as
+//!   drawn aims 34.9° below the horizontal and `spade_blade()` reads that
+//!   lean off the sprite to get the way to push.
 //!
 //! - The tweezers, `assets/sprites/Tweezers.png`, are scaled
 //!   `TWEEZERS_SIZE` pixels wide and ride the cursor by their jaws' points,
@@ -75,14 +73,23 @@
 //! `assets/sprites/items.png` is the inventory panel itself. It is scaled
 //! uniformly to fit the window's height, with a 20 pixel clearance to the
 //! top and bottom borders, and sits 20 pixels clear of the left border,
-//! centered vertically — mid left. Its space is split into six slots, 0 to
-//! 5 from the top, evenly along the y axis inside a 60 pixel margin at the
-//! top and bottom. The four tools rest on the shelf, drawn on top of the
-//! panel: the tweezers in slot 2, the spade in slot 3, the spray can in
-//! slot 4, and the watering can in slot 5 — each fitted to its own slot by
-//! its drawn content, so a sprite with a wide transparent margin around it
-//! still fills the shelf. Slots 0 and 1 start empty, and a left click can
-//! park any tool in any slot.
+//! centered vertically — mid left. The panel paints a shelf of four bays,
+//! and the shelf is what the slots are: `BAYS` carries each bay's opening
+//! centre and the front of its board's lit top — the line a tool's feet go
+//! on — both read off the sprite's own pixels. The bays are not evenly
+//! spaced, 200, 181, 205, and 144 pixels from board to ceiling, so each tool
+//! is fitted to its own bay and stands on that bay's board rather than
+//! floating at an even split's center. A bay's ceiling is the cut of the cell
+//! above it, see [`bay_ceiling`], so whatever a tool is drawn over is exactly
+//! what answers to its bay when clicked; the sizes are the shelf's own,
+//! [`Tool::shelf_width`] held down by what the bay can hold, which is how a
+//! watering can big enough to read at a glance lives in the shallowest bay of
+//! all. One tool per bay: the tweezers on top, then the spade, the spray can,
+//! and the watering can at the bottom, all drawn on top of the panel. A bay's
+//! click cell runs the panel's full width and is cut at the middle of each
+//! board, so the four cells tile the panel edge to edge and a press anywhere
+//! on the shelf trades with a bay instead of leaking through to the grass
+//! behind it.
 //!
 //! `assets/sprites/held_items.png` is a small panel in the bottom right
 //! corner, `MARGIN` pixels clear of the window's right and bottom borders,
@@ -731,35 +738,116 @@ fn held_scale(size: [f32; 2]) -> f32 {
     (w / size[0]).min(h / size[1])
 }
 
-/// The panel's logical slots, 0 (top) to 5 (bottom), evenly distributed
-/// over the slot strip's height.
-const SLOTS: usize = 6;
+/// The shift that centres a tool's *drawing* on whatever its node is
+/// anchored to, at scale `s`, in that node's scaled space: a sprite's
+/// content box is not always at its canvas's centre — `Tweezers.png`'s jaws
+/// sit 37 px right of the middle of the canvas the tool was exported onto —
+/// so anchoring the canvas leaves the drawing hanging out of whatever it was
+/// fitted to. The cans are exported to their content and need nothing; the
+/// spade needs a nudge; the tweezers need the whole correction.
+fn drawn_centring(tool: Tool, s: f32) -> [f32; 2] {
+    let box_ = tool.drawn();
+    let img = tool.image_size();
+    [
+        -s * ((box_[0][0] + box_[1][0]) / 2.0 - img[0] / 2.0),
+        -s * (img[1] / 2.0 - (box_[0][1] + box_[1][1]) / 2.0),
+    ]
+}
 
-/// The margin the slot strip keeps from the panel's top and bottom edges,
-/// in pixels.
-const SLOT_MARGIN: f32 = 60.0;
+/// Where a tool's node belongs in held cell `i`: the cell's center, shifted
+/// by [`drawn_centring`] so the drawing — the thing the player sees — sits
+/// inside the cell it was scaled to fit, not merely its canvas.
+fn cell_rest(i: usize, tool: Tool) -> [f32; 2] {
+    let c = drawn_centring(tool, held_scale(tool.drawn_size()));
+    [held_local(i)[0] + c[0], held_local(i)[1] + c[1]]
+}
 
-/// The slot the resting watering can sits in.
-const CAN_SLOT: usize = 5;
+/// The shelf's slots: the four bays `items.png` paints, 0 (top) to 3
+/// (bottom). The bays are drawn at their own heights — the chalk shelf is
+/// not an even grid — so every measure of a slot comes from the sprite.
+const SLOTS: usize = 4;
+
+/// One bay per painted shelf, measured off `items.png`'s pixels at the
+/// centre of its opening: `[opening centre x, rest y]`, `(0, 0)` the panel's
+/// upper-left corner and `y` growing down. The rest line is the front of the
+/// lit top of the board the bay stands on — the line a tool's feet go on,
+/// deliberately out on the board's surface rather than against the back
+/// wall, so a resting tool covers a little board and reads as standing in
+/// the shelf instead of floating above it.
+///
+/// The line is where the profile of the sprite's luminance at `x` 170..205
+/// turns up into each board's bright chalk edge, at `y` 264, 482, 700 and
+/// 911; the same profile falls back under each line at 273, 490, 708 and 926
+/// (see [`BAY_CUTS`]). Both series are evenly spaced — 218, 218, 211 and
+/// 218, 218, 217 — which is what says the fourth of each is the bottom
+/// board's own edge and not the shelf's frame below it, the frame being the
+/// brighter band still 14 rows lower, just above the panel's transparent
+/// bottom. How tall a bay is follows from its rest line and [`BAY_CUTS`],
+/// which is where its tool's head stops: four boards that evenly spaced leave
+/// the four bays near enough the same height, as a shelf should.
+const BAYS: [[f32; 2]; SLOTS] = [
+    [187.0, 264.0],
+    [187.0, 482.0],
+    [187.0, 700.0],
+    [187.0, 911.0],
+];
+
+/// The width of a bay's opening in image pixels: the dark back wall between
+/// the shelf's left upright (through `x` 76) and the open, see-through side
+/// that starts at `x` 298.
+const BAY_WIDTH: f32 = 220.0;
+
+/// The room a resting tool keeps from its bay's ceiling, and from its
+/// jambs, in pixels: the chalk boards are ragged and the shelf is drawn in
+/// perspective, so nothing is fitted flush. Vertically the inset is counted
+/// once, overhead only — a tool's feet are set on the board's rest line by
+/// [`slot_rest`] itself, not left floating a clear inset above it.
+const BAY_INSET: f32 = 12.0;
+
+/// The cuts that carve the panel into four click cells, in image pixels, `y`
+/// down: the middle of the board each bay stands on — midway between that
+/// bay's rest line and the bright lower edge of the same board — with the
+/// panel's own top and bottom edges beyond the outer bays. The cells
+/// therefore tile the panel edge to edge and each one covers its bay's
+/// whole opening and its board's front: a press anywhere on the shelf
+/// belongs to a bay, and never leaks out as a tool use on the grass behind
+/// it. The cut above a bay is also the ceiling of what may be drawn in it,
+/// see [`bay_ceiling`].
+const BAY_CUTS: [f32; SLOTS + 1] = [0.0, 268.5, 486.0, 704.0, ITEMS_SIZE[1]];
+
+/// The underside of the shelf's top frame, in image pixels: the one ceiling
+/// on the shelf that is not a cut between two bays, because there is no bay
+/// above the frame to click through. Read off the sprite, where the frame's
+/// front face ends at `y` 46..50.
+const FRAME_UNDER: f32 = 50.0;
+
+/// The line a tool standing in bay `i` may not be drawn above: the cut that
+/// divides its click cell from the bay above, or [`FRAME_UNDER`] at the top
+/// of the shelf. Picture and click box are then the same box — every pixel
+/// of a resting tool is a pixel that answers to its bay, and no tool reaches
+/// up into the shelf above its own.
+fn bay_ceiling(i: usize) -> f32 {
+    BAY_CUTS[i].max(FRAME_UNDER)
+}
+
+/// The slot the resting watering can sits in: the bottom bay.
+const CAN_SLOT: usize = 3;
 
 /// The slot the resting spray can sits in.
-const SPRAY_SLOT: usize = 4;
+const SPRAY_SLOT: usize = 2;
 
 /// The slot the resting spade sits in.
-const SPADE_SLOT: usize = 3;
+const SPADE_SLOT: usize = 1;
 
 /// The slot the resting tweezers sit in.
-const TWEEZERS_SLOT: usize = 2;
+const TWEEZERS_SLOT: usize = 0;
 
-/// The padding each resting can keeps from its slot's edges, in pixels.
-const SLOT_INSET: f32 = 30.0;
-
-/// The tools the items panel starts with, in slot order: the four tools
-/// resting on the shelf — the tweezers, the spade, the spray can, and the
-/// watering can, top to bottom — with the two top slots left free to park
-/// a tool in. The scene's seeded slot sprites and [`Demo::new`] both come
-/// from here, so the shelf's picture and the demo's table can never part
-/// company.
+/// The tools the items panel starts with, in slot order: one tool per
+/// painted bay — the tweezers, the spade, the spray can, and the watering
+/// can, top to bottom. The scene's seeded slot sprites and [`Demo::new`]
+/// both come from here, so the shelf's picture and the demo's table can
+/// never part company. A tool parked in a bay swaps with the one resting
+/// there, so every bay is both a home and a hand-over point.
 const fn seeded_slots() -> [Option<Tool>; SLOTS] {
     let mut slots = [None; SLOTS];
     slots[TWEEZERS_SLOT] = Some(Tool::Tweezers);
@@ -772,22 +860,62 @@ const fn seeded_slots() -> [Option<Tool>; SLOTS] {
 /// [seeded_slots] as a value: the shelf's starting layout.
 const SEEDED_SLOTS: [Option<Tool>; SLOTS] = seeded_slots();
 
-/// The center of slot `i` (0 = top) in the items node's local space: the
-/// slot's image-pixel center inside the margin-inset strip, y-flipped
-/// about the panel's center, so a child translated here lands on the
-/// slot's center.
+/// The center of slot `i`'s click cell in the items node's local space: the
+/// bay's opening centre in `x`, the middle of the cell's cut in `y`, both
+/// y-flipped about the panel's center — so a child translated here lands in
+/// the middle of the bay, and [`slot_hovered`] tests the same box.
 fn slot_local(i: usize) -> [f32; 2] {
-    let h = ITEMS_SIZE[1] - 2.0 * SLOT_MARGIN;
-    let py = SLOT_MARGIN + (i as f32 + 0.5) * (h / SLOTS as f32);
-    [0.0, ITEMS_SIZE[1] / 2.0 - py]
+    let mid = (BAY_CUTS[i] + BAY_CUTS[i + 1]) / 2.0;
+    [BAYS[i][0] - ITEMS_SIZE[0] / 2.0, ITEMS_SIZE[1] / 2.0 - mid]
 }
 
-/// The uniform scale that fits a `size`-pixel sprite into one slot,
-/// keeping `SLOT_INSET` clear of the slot's edges.
-fn slot_scale(size: [f32; 2]) -> f32 {
-    let w = ITEMS_SIZE[0] - 2.0 * SLOT_INSET;
-    let h = (ITEMS_SIZE[1] - 2.0 * SLOT_MARGIN) / SLOTS as f32 - 2.0 * SLOT_INSET;
+/// A slot click cell's half extents in image pixels: the panel's full width
+/// (the shelf's open right side belongs to its bay too) by the bay's own
+/// cut.
+fn slot_half(i: usize) -> [f32; 2] {
+    [ITEMS_SIZE[0] / 2.0, (BAY_CUTS[i + 1] - BAY_CUTS[i]) / 2.0]
+}
+
+/// The largest uniform scale a `size`-pixel tool's drawn content fits at in
+/// bay `i`: the width between its jambs less `BAY_INSET` on each side, and
+/// the headroom from its rest line up to [`bay_ceiling`] less the inset
+/// overhead.
+fn bay_scale(i: usize, size: [f32; 2]) -> f32 {
+    let [_, rest] = BAYS[i];
+    let w = BAY_WIDTH - 2.0 * BAY_INSET;
+    let h = rest - bay_ceiling(i) - BAY_INSET;
     (w / size[0]).min(h / size[1])
+}
+
+/// The scale a resting `tool` is drawn at in bay `i`: the width the tool
+/// asks for, see [`Tool::shelf_width`], no bigger than the bay can hold.
+fn shelf_scale(i: usize, tool: Tool) -> f32 {
+    let [dw, _] = tool.drawn_size();
+    bay_scale(i, tool.drawn_size()).min(tool.shelf_width() / dw)
+}
+
+/// Where a resting `tool` sits in bay `i`, at the scale [`shelf_scale`]
+/// gives it: the tool's drawn content centred on the bay's opening, standing
+/// on its board's rest line, not floated at the click cell's middle. The
+/// content box is off-centre in most textures, so the node — the texture's
+/// center — takes the correction that puts the drawing where the shelf says
+/// it should be. The feet are pinned to the board and the height is capped
+/// at [`bay_ceiling`], so the silhouette fills its bay without climbing the
+/// shelf above it.
+fn slot_rest(i: usize, tool: Tool) -> ([f32; 2], f32) {
+    let dy = tool.drawn_size()[1];
+    let s = shelf_scale(i, tool);
+    let c = drawn_centring(tool, s);
+    let [opening, rest] = BAYS[i];
+    (
+        [
+            opening - ITEMS_SIZE[0] / 2.0 + c[0],
+            // The centring puts the content's centre on the node; the feet
+            // belong on the board, so the node rides half the drawing above.
+            ITEMS_SIZE[1] / 2.0 - rest + c[1] + s * dy / 2.0,
+        ],
+        s,
+    )
 }
 
 /// The uniform scale a picked tomato rides at: the plant's fit scale on
@@ -852,16 +980,15 @@ fn nearest_free_slot(
 }
 
 /// Whether the user-space point `p` is inside slot `i`, for the panel node
-/// `items`: the slot's cell in the panel's local space — the full panel
-/// width by the strip's per-slot height, centered on `slot_local(i)` —
-/// mapped through the panel's world transform, the same scale-then-
-/// transform composition the renderer draws it with.
+/// `items`: the slot's click cell in the panel's local space — the full
+/// panel width by that bay's own cut, centered on `slot_local(i)` — mapped
+/// through the panel's world transform, the same scale-then-transform
+/// composition the renderer draws it with.
 fn slot_hovered(items: &frost::SceneNode, i: usize, p: [f32; 2]) -> bool {
     let world = frost::Transform::scale(items.scale).compose(&items.transform);
     let [cx, cy] = world.apply(slot_local(i));
-    (p[0] - cx).abs() <= ITEMS_SIZE[0] * items.scale[0] / 2.0
-        && (p[1] - cy).abs()
-            <= (ITEMS_SIZE[1] - 2.0 * SLOT_MARGIN) * items.scale[1] / SLOTS as f32 / 2.0
+    let [hw, hh] = slot_half(i);
+    (p[0] - cx).abs() <= hw * items.scale[0] && (p[1] - cy).abs() <= hh * items.scale[1]
 }
 
 /// `Spray1.png` and `Spray2.png`'s texture size in pixels: both frames
@@ -1009,105 +1136,99 @@ const SPADE_TIP_LOCAL: [f32; 2] = frost::Transform::anchor(SPADE_TIP, SPADE_IMAG
 
 /// The spade's drawn tilt, in radians: the direction from the grip to the
 /// blade's point, read off the sprite's own pixels. The point lies 188 px
-/// left and 131 px below the grip, so the spade at rest — the sprite
-/// exactly as drawn — already aims 34.9° below the horizontal, point to
-/// the lower left. That lean is the dig's start angle: the drawn pose is
-/// the poised spade, and every dig rotation is counted from it.
+/// left and 131 px below the grip, so the spade as drawn aims 34.9° below
+/// the horizontal, point to the lower left. That is the direction the dig
+/// pushes along: the tool goes where its own point already points, so the
+/// stroke needs no angle of its own.
 fn spade_blade() -> f32 {
     (SPADE_TIP_LOCAL[1] - SPADE_GRIP_LOCAL[1]).atan2(SPADE_TIP_LOCAL[0] - SPADE_GRIP_LOCAL[0])
 }
 
-/// The dig's full plunge, in radians counter-clockwise: the rotation about
-/// the grip that turns the drawn blade until its point aims straight down
-/// at the soil, `-π/2` reached from `spade_blade()`. A quarter turn less
-/// the 34.9° lean the sprite is drawn with, so 55.1° — not a right angle,
-/// because the art already leans into the swing.
-fn spade_plunge() -> f32 {
-    -std::f32::consts::FRAC_PI_2 - spade_blade()
+/// The stroke's three beats, in seconds: the spade is shoved forward along
+/// its own line in `DIG_PUSH`, stays buried for `DIG_HOLD`, then travels
+/// home along an arch in `DIG_ARC`.
+const DIG_PUSH: f32 = 0.16;
+const DIG_HOLD: f32 = 0.30;
+const DIG_ARC: f32 = 0.34;
+
+/// Seconds for one dig stroke: the three beats, so they can never stop
+/// adding up to the whole.
+const DIG_TIME: f32 = DIG_PUSH + DIG_HOLD + DIG_ARC;
+
+/// How far the push goes, in pixels measured along the blade's own line,
+/// point first: the grip leaves the cursor by this much and no further.
+const DIG_PUSH_DIST: f32 = 56.0;
+
+/// The arch's crown, in pixels from the cursor — `x` right, `y` up. The way
+/// home is not back along the push: the spade lifts out and sweeps up and to
+/// the left of the cursor, over the ground it just broke, and settles onto
+/// its anchor from there. The arch is a quadratic Bézier from the buried
+/// spot to the cursor through the control point [`dig_arch_control`] puts
+/// beyond this crown, so the path passes through the crown itself.
+const DIG_ARC_CROWN: [f32; 2] = [-74.0, 46.0];
+
+/// The Bézier control point that lifts the arch over [`DIG_ARC_CROWN`] from
+/// the buried spot `[0, 0]` back to the cursor: a quadratic reads its crown
+/// at the halfway mark as a quarter of the start plus half the control, so
+/// twice the crown less half the start is the control that lands it there.
+fn dig_arch_control(push: [f32; 2]) -> [f32; 2] {
+    [
+        2.0 * DIG_ARC_CROWN[0] - 0.5 * push[0],
+        2.0 * DIG_ARC_CROWN[1] - 0.5 * push[1],
+    ]
 }
 
-/// Seconds for one dig stroke: the wind-up, the strike, and the lift back
-/// to the pose the sprite is drawn in.
-const DIG_TIME: f32 = 0.6;
-
-/// The stroke's phases, as fractions of `DIG_TIME`: the spade winds up
-/// over the first `DIG_WIND`, drives through the air to the full plunge by
-/// `DIG_STRIKE`, and eases back to its drawn pose over the rest.
-const DIG_WIND: f32 = 0.4;
-const DIG_STRIKE: f32 = 0.62;
-
-/// The wind-up's swing, in radians clockwise: the rotation about the grip
-/// that lifts the drawn blade just past level — the point comes up from 35°
-/// below the horizontal to 5° above it — so the strike has a full right
-/// angle of arc to spend on the way down.
-const DIG_RAISE: f32 = 0.7;
-
-/// How far the grip leaves the cursor along the blade's own line, in
-/// pixels: `DIG_PULL` back up the handle through the wind-up, `DIG_LUNGE`
-/// down the point through the strike.
-const DIG_PULL: f32 = 22.0;
-const DIG_LUNGE: f32 = 40.0;
-
-/// The symmetric ease the gentle phases of a stroke are walked with: slow
-/// to leave, slow to arrive.
+/// The symmetric ease the stroke's beats are walked with: slow to leave,
+/// slow to arrive.
 fn smooth(u: f32) -> f32 {
     u * u * (3.0 - 2.0 * u)
 }
 
-/// The dig's pose at fraction `u` of the stroke: the spade's rotation about
-/// its grip, in radians counter-clockwise, and the grip's offset from the
-/// cursor along the blade's own line. The two are one movement: the offset
-/// rides whichever way the blade currently aims, so the spade draws back up
-/// its handle as it winds up and drives down its point as it strikes. Both
-/// come back to nothing at `u` = 1, where the spade sits exactly as drawn.
-fn dig_pose(u: f32) -> (f32, [f32; 2]) {
-    let u = u.clamp(0.0, 1.0);
-    let (angle, along) = if u <= DIG_WIND {
-        let e = smooth(u / DIG_WIND);
-        (-DIG_RAISE * e, -DIG_PULL * e)
-    } else if u <= DIG_STRIKE {
-        // The strike accelerates into the soil — a squared ease, where the
-        // winding and the lifting ease symmetrically.
-        let v = (u - DIG_WIND) / (DIG_STRIKE - DIG_WIND);
-        let e = v * v;
-        (
-            -DIG_RAISE + (DIG_RAISE + spade_plunge()) * e,
-            -DIG_PULL + (DIG_PULL + DIG_LUNGE) * e,
-        )
+/// The dig's offset at fraction `u` of the stroke: how far the grip — and so
+/// the whole spade, which does not turn for a dig — has left the cursor.
+/// Three beats, one path: shoved point-first down its own drawn line, eased
+/// out of the hand onto the soil; held there, buried, for `DIG_HOLD`; then
+/// arching up and to the left and home to the cursor, arriving exactly where
+/// it started. `u` = 0 and `u` = 1 are both the drawn pose on the anchor.
+fn dig_offset(u: f32) -> [f32; 2] {
+    let t = u.clamp(0.0, 1.0) * DIG_TIME;
+    // The line the spade travels along: its own, point first, down-left.
+    let push = [
+        DIG_PUSH_DIST * spade_blade().cos(),
+        DIG_PUSH_DIST * spade_blade().sin(),
+    ];
+    if t <= DIG_PUSH {
+        let e = smooth(t / DIG_PUSH);
+        [push[0] * e, push[1] * e]
+    } else if t <= DIG_PUSH + DIG_HOLD {
+        push
     } else {
-        let e = smooth((u - DIG_STRIKE) / (1.0 - DIG_STRIKE));
-        (spade_plunge() * (1.0 - e), DIG_LUNGE * (1.0 - e))
-    };
-    // The offset's direction: the unit vector from the grip to the blade's
-    // point, turned by the pose's own angle — the same rotation the spade
-    // itself undergoes about the grip.
-    let (c, s) = (angle.cos(), angle.sin());
-    let (ex, ey) = (
-        SPADE_TIP_LOCAL[0] - SPADE_GRIP_LOCAL[0],
-        SPADE_TIP_LOCAL[1] - SPADE_GRIP_LOCAL[1],
-    );
-    let l = (ex * ex + ey * ey).sqrt();
-    (
-        angle,
-        [(c * ex - s * ey) / l * along, (s * ex + c * ey) / l * along],
-    )
+        // The arch home. A quadratic Bézier between the buried spot and the
+        // cursor, walked with the same ease the push is eased with, so the
+        // stroke leaves the soil and lands on the anchor gently.
+        let e = smooth((t - DIG_PUSH - DIG_HOLD) / DIG_ARC);
+        let c = dig_arch_control(push);
+        let (a, b) = (1.0 - e, e);
+        [
+            a * a * push[0] + 2.0 * a * b * c[0],
+            a * a * push[1] + 2.0 * a * b * c[1],
+        ]
+    }
 }
 
-/// The node transform that puts the spade's grip on `(mx, my)`, shifted by
-/// the dig's offset `off`, and rotates the spade by `angle` radians around
-/// that grip.
+/// The node transform that puts the spade's grip on `(mx, my)` plus the
+/// dig's offset `off`.
 ///
 /// The grip sits `SPADE_GRIP_LOCAL` (scaled by `SPADE_SCALE`) from the
 /// node's origin in node space, so the transform shifts the grip to the
-/// origin, rotates, then shifts back to the pointer. At `angle = 0` and no
-/// offset this is exactly the unrotated pointer-follow position, the spade
-/// riding the cursor as drawn.
-fn spade_transform(mx: f32, my: f32, angle: f32, off: [f32; 2]) -> frost::Transform {
+/// origin and then to the pointer plus the dig's offset `off` — the spade
+/// never turns, it is carried. With no offset this is exactly the
+/// pointer-follow position, the spade riding the cursor as drawn.
+fn spade_transform(mx: f32, my: f32, off: [f32; 2]) -> frost::Transform {
     frost::Transform::translate([
         -SPADE_GRIP_LOCAL[0] * SPADE_SCALE,
         -SPADE_GRIP_LOCAL[1] * SPADE_SCALE,
     ])
-    .compose(&frost::Transform::rotate(angle))
     .compose(&frost::Transform::translate([mx + off[0], my + off[1]]))
 }
 
@@ -1189,6 +1310,35 @@ impl Tool {
     fn drawn_size(self) -> [f32; 2] {
         let box_ = self.drawn();
         [box_[1][0] - box_[0][0], box_[1][1] - box_[0][1]]
+    }
+
+    /// The width this tool asks the shelf to draw it at, in panel pixels —
+    /// or [`f32::MAX`] to take everything its bay can hold, which is what
+    /// [`shelf_scale`] caps these at. The bays are the geometry and these are
+    /// the picture: the tweezers and the watering can are wide, low shapes
+    /// that want their bay's whole width, while the spray can is all height
+    /// and would be the tallest thing on the shelf at the size its bay
+    /// allows, and the spade's diagonal reads best with the air it has
+    /// always had at its sides rather than blade and handle at the uprights.
+    fn shelf_width(self) -> f32 {
+        match self {
+            Tool::Tweezers | Tool::WaterCan => f32::MAX,
+            Tool::SprayCan => 90.0,
+            Tool::Spade => 165.0,
+        }
+    }
+
+    /// The tool's texture size in pixels: what its sprite node spans, as
+    /// opposed to [`Tool::drawn_size`], what the drawing spans inside that.
+    /// The two come apart by the transparent margin the art ships with —
+    /// a third of the spade's texture is nothing but air around the tool.
+    fn image_size(self) -> [f32; 2] {
+        match self {
+            Tool::WaterCan => CAN_IMAGE,
+            Tool::SprayCan => SPRAY_IMAGE,
+            Tool::Spade => SPADE_IMAGE,
+            Tool::Tweezers => TWEEZERS_IMAGE,
+        }
     }
 
     /// The scale the tool's sprite rides at as the cursor: the cans scaled
@@ -1655,9 +1805,9 @@ impl frost::Process for Demo {
 impl Demo {
     /// Builds the demo's initial state out of the loaded `assets`: the
     /// mouse holds no tool at all, the tools rest in the items panel's
-    /// slots — mirroring the panel's seeded sprites, [SEEDED_SLOTS]: the
-    /// tweezers, the spade, the spray can, and the watering can, top to
-    /// bottom, the two top slots free — the bench starts
+    /// bays — mirroring the panel's seeded sprites, [SEEDED_SLOTS]: the
+    /// tweezers, the spade, the spray can, and the watering can, one per
+    /// bay top to bottom — the bench starts
     /// bare: no plant planted, all six growth clocks at zero, all six
     /// water reserves full, and the basket still holding its starting
     /// tomato, seeded on the first frame once the basket's fit is known.
@@ -2157,17 +2307,31 @@ impl Demo {
                 )
             };
             let half = (held_local(1)[0] - held_local(0)[0]).abs() / 2.0;
+            // Where each cell's tool lands: the other cell's spot as that
+            // cell would hold this tool, so a drawing wide in its canvas
+            // arrives centred rather than hanging over the frame. The
+            // pairing is the one `sync_held` draws with, mid-flight
+            // included — the tool leaving a cell is the one riding.
+            let (left, right) = if self.cell_fly.is_some() {
+                (self.held, self.active)
+            } else {
+                (self.active, self.held)
+            };
+            let land = |i: usize, tool: Option<Tool>| match tool {
+                Some(tool) => cell_rest(i, tool),
+                None => held_local(i),
+            };
             self.cell_fly = Some([
                 CellFlight {
                     from: p0,
-                    to: held_local(1),
+                    to: land(1, left),
                     bump: -half,
                     t: 0.0,
                     dur: SWAP_FLIGHT_TIME,
                 },
                 CellFlight {
                     from: p1,
-                    to: held_local(0),
+                    to: land(0, right),
                     bump: half,
                     t: 0.0,
                     dur: SWAP_FLIGHT_TIME,
@@ -2226,9 +2390,9 @@ impl Demo {
                 }
             } else if on_slot.is_none() && self.active == Some(Tool::Spade) {
                 // A fresh press — one after a release, not a re-press
-                // mid-stroke — digs one stroke: the spade winds up, drives
-                // over to the full plunge, and lifts back to the pose it is
-                // drawn in, all over `DIG_TIME`. Holding the button, or
+                // mid-stroke — digs one stroke: the spade is shoved forward
+                // along its own line, held in the soil, and arched back to
+                // its anchor, all over `DIG_TIME`. Holding the button, or
                 // pressing again before the stroke lands, does nothing: the
                 // spade digs once per click.
                 if self.dig.is_none() {
@@ -2626,19 +2790,17 @@ impl Demo {
             // No tool held: nothing to tilt, burst, or emit.
             None => {}
             // The spade: the stroke, once a press started it, runs to
-            // `DIG_TIME`; its rotation and its lunge along the blade's line
-            // both come from `dig_pose`, and nothing is emitted.
+            // `DIG_TIME`; its whole pose is the grip's offset from the
+            // cursor, [`dig_offset`], and nothing is emitted.
             Some(Tool::Spade) => {
                 if let Some(t) = self.dig {
                     let nt = t + dt;
                     if nt >= DIG_TIME {
                         // The stroke is over: the spade sits in the pose it
-                        // is drawn in again.
+                        // is drawn in again, on its anchor.
                         self.dig = None;
-                        self.angle = 0.0;
                     } else {
                         self.dig = Some(nt);
-                        self.angle = dig_pose(nt / DIG_TIME).0;
                     }
                 }
             }
@@ -2667,17 +2829,17 @@ impl Demo {
             tool_node.transform = match tool {
                 Tool::WaterCan => can_transform(mx, my, self.angle),
                 Tool::SprayCan => spray_transform(mx, my, self.angle),
-                Tool::Spade => spade_transform(mx, my, self.angle, self.dig_offset()),
+                Tool::Spade => spade_transform(mx, my, self.dig_offset()),
                 Tool::Tweezers => tweezers_transform(mx, my),
             };
         }
     }
 
-    /// The dig stroke's grip offset from the cursor, in user pixels: the
-    /// offset of [`dig_pose`] at the stroke's live time, and nothing at all
-    /// while no stroke is running.
+    /// The dig stroke's grip offset from the cursor, in user pixels:
+    /// [`dig_offset`] at the stroke's live time, and nothing at all while no
+    /// stroke is running.
     fn dig_offset(&self) -> [f32; 2] {
-        self.dig.map_or([0.0, 0.0], |t| dig_pose(t / DIG_TIME).1)
+        self.dig.map_or([0.0, 0.0], |t| dig_offset(t / DIG_TIME))
     }
 
     /// Advances the particles even while not emitting, so an ongoing
@@ -2865,19 +3027,22 @@ impl Demo {
         self.slots[slot] = incoming;
         self.set_active(ctx, outgoing);
         self.slot_set(
+            slot,
             &mut ctx.scene().root.children[CHILD_ITEMS].children[slot],
             incoming,
         );
     }
 
-    /// Rests `tool` — or nothing — in the slot's node: the tool's shape at
-    /// the slot-fit scale, or no shape at all.
-    fn slot_set(&mut self, node: &mut frost::SceneNode, tool: Option<Tool>) {
+    /// Rests `tool` — or nothing — in bay `slot`'s node: the tool's shape at
+    /// its bay's fit scale, standing on that bay's rest line, or no shape at
+    /// all.
+    fn slot_set(&mut self, slot: usize, node: &mut frost::SceneNode, tool: Option<Tool>) {
         match tool {
             Some(tool) => {
+                let (t, s) = slot_rest(slot, tool);
                 node.shape = Some(self.tool_shape(tool));
-                let s = slot_scale(tool.drawn_size());
                 node.scale = [s, s];
+                node.transform = frost::Transform::translate(t);
             }
             None => node.shape = None,
         }
@@ -2938,7 +3103,7 @@ impl Demo {
         self.set_active(ctx, None);
         let items = &mut ctx.scene().root.children[CHILD_ITEMS];
         for (slot, node) in items.children.iter_mut().enumerate() {
-            self.slot_set(node, self.slots[slot]);
+            self.slot_set(slot, node, self.slots[slot]);
         }
         self.picking = None;
         self.flying = None;
@@ -3144,7 +3309,7 @@ impl Demo {
         // The items panel's slots mirror the restored tools.
         let items = &mut ctx.scene().root.children[CHILD_ITEMS];
         for (slot, node) in items.children.iter_mut().enumerate() {
-            self.slot_set(node, self.slots[slot]);
+            self.slot_set(slot, node, self.slots[slot]);
         }
     }
 
@@ -3306,17 +3471,23 @@ impl Demo {
                 }
                 if done {
                     self.cell_fly = None;
-                    let held = &mut ctx.scene().root.children[CHILD_HELD];
-                    for (i, cell) in held.children.iter_mut().take(2).enumerate() {
-                        cell.transform = frost::Transform::translate(held_local(i));
-                    }
+                    // Landing is `sync_held`'s business: it writes both the
+                    // tools and the spots they land on, each centred on the
+                    // drawing it carries.
                     self.sync_held(ctx);
                 }
             }
             None => {
+                // No flight in the air: every cell holds its own rest spot
+                // — its cell's center, nudged to centre the drawing it
+                // carries, the same spot `sync_held` writes.
+                let tools = [self.active, self.held];
                 let held = &mut ctx.scene().root.children[CHILD_HELD];
                 for (i, cell) in held.children.iter_mut().take(2).enumerate() {
-                    cell.transform = frost::Transform::translate(held_local(i));
+                    cell.transform = frost::Transform::translate(match tools[i] {
+                        Some(tool) => cell_rest(i, tool),
+                        None => held_local(i),
+                    });
                 }
             }
         }
@@ -3335,21 +3506,25 @@ impl Demo {
             (self.active, self.held)
         };
         let held = &mut ctx.scene().root.children[CHILD_HELD];
-        self.cell_set(&mut held.children[0], left);
-        self.cell_set(&mut held.children[1], right);
+        self.cell_set(0, &mut held.children[0], left);
+        self.cell_set(1, &mut held.children[1], right);
     }
 
     /// Puts `tool` — or nothing — in a held cell's node: the tool's shape
     /// at the held-fit scale, always the at-rest frame, or no shape at
     /// all.
-    fn cell_set(&mut self, node: &mut frost::SceneNode, tool: Option<Tool>) {
+    fn cell_set(&mut self, cell: usize, node: &mut frost::SceneNode, tool: Option<Tool>) {
         match tool {
             Some(tool) => {
                 node.shape = Some(self.tool_shape(tool));
                 let s = held_scale(tool.drawn_size());
                 node.scale = [s, s];
+                node.transform = frost::Transform::translate(cell_rest(cell, tool));
             }
-            None => node.shape = None,
+            None => {
+                node.shape = None;
+                node.transform = frost::Transform::translate(held_local(cell));
+            }
         }
     }
 
@@ -3751,30 +3926,33 @@ fn main() {
             Box::new(frost::SceneNode {
                 // The inventory panel, positioned and scaled by the process
                 // every frame: mid left, `MARGIN` clear of the top, bottom,
-                // and left borders. Its children are the six slots, one per
-                // slot in slot order — a node paints its shape before its
+                // and left borders. Its children are the four bays, one per
+                // bay in bay order — a node paints its shape before its
                 // children, so a resting tool renders on top of the panel —
-                // and they ride its fit on resize. The four tools rest on
-                // the shelf as [SEEDED_SLOTS] lays them out — the tweezers,
-                // the spade, the spray can, and the watering can, top to
-                // bottom — the two top slots start empty, and a left click
-                // can park any tool in any slot.
+                // and they ride its fit on resize. One tool per painted
+                // shelf, as [SEEDED_SLOTS] lays them out — the tweezers, the
+                // spade, the spray can, and the watering can, top to bottom
+                // — each standing on its own board.
                 shape: Some(assets.items.clone()),
                 order: zorder::UI,
                 children: (0..SLOTS)
                     .map(|i| {
-                        let (shape, scale) = match SEEDED_SLOTS[i] {
+                        let (shape, transform, scale) = match SEEDED_SLOTS[i] {
                             Some(tool) => {
-                                let s = slot_scale(tool.drawn_size());
-                                (Some(tool.sprite(&assets)), [s, s])
+                                let (t, s) = slot_rest(i, tool);
+                                (
+                                    Some(tool.sprite(&assets)),
+                                    frost::Transform::translate(t),
+                                    [s, s],
+                                )
                             }
-                            None => (None, [1.0, 1.0]),
+                            None => (None, frost::Transform::translate(slot_local(i)), [1.0, 1.0]),
                         };
                         Box::new(frost::SceneNode {
-                            // The tool at rest, centered in its slot — or an
-                            // empty slot, a shapeless node waiting for a
-                            // tool to be parked in it.
-                            transform: frost::Transform::translate(slot_local(i)),
+                            // The tool at rest in its bay — or an empty bay,
+                            // a shapeless node waiting for a tool to be
+                            // parked in it.
+                            transform,
                             scale,
                             shape,
                             ..Default::default()
@@ -3994,8 +4172,8 @@ mod tests {
     /// [Demo::new] starts the demo mirroring the scene's seeded sprites
     /// and the plants' full reserves: no tool is active or held, the four
     /// tools rest on the shelf as [SEEDED_SLOTS] lays them — the tweezers,
-    /// the spade, the spray can, and the watering can, top to bottom — with
-    /// the two top slots empty, the bench is bare — no
+    /// the spade, the spray can, and the watering can, one per painted bay
+    /// top to bottom — the bench is bare — no
     /// slot planted, every reserve full, the basket seed waiting to be
     /// seeded — nothing is falling, and no pour loop is running.
     #[test]
@@ -4010,8 +4188,10 @@ mod tests {
         assert_eq!(demo.slots[CAN_SLOT], Some(Tool::WaterCan));
         assert_eq!(demo.slots[SPADE_SLOT], Some(Tool::Spade));
         assert_eq!(demo.slots[TWEEZERS_SLOT], Some(Tool::Tweezers));
-        assert_eq!(demo.slots[0], None);
-        assert_eq!(demo.slots[1], None);
+        assert!(
+            demo.slots.iter().all(|s| s.is_some()),
+            "one tool starts in every painted bay"
+        );
         assert_eq!(demo.plants.len(), PLANT_POS.len());
         assert!(demo.plants.iter().all(|p| !p.planted));
         assert!(demo.plants.iter().all(|p| p.water == 1.0));
@@ -4020,205 +4200,366 @@ mod tests {
         assert!(demo.over);
     }
 
-    /// The shelf holds every tool exactly once and still has somewhere to
-    /// park one: [SEEDED_SLOTS] places all four tools in their own slots,
-    /// in the order the panel reads them from the top — tweezers, spade,
-    /// spray can, watering can — and leaves the two top slots empty; every
-    /// tool fits its own slot cell, and the cells tile the strip without
-    /// overlapping.
+    /// The shelf is the sprite's shelf. [SEEDED_SLOTS] puts one tool in each
+    /// of the four bays `items.png` paints, in the order the panel reads them
+    /// from the top — tweezers, spade, spray can, watering can; every bay is
+    /// a real opening between two boards and they march down the panel; every
+    /// resting tool is fitted to its own bay, centred on its opening, standing
+    /// on its board, and kept under the ceiling its click cell gives it; and
+    /// the four click cells tile the panel edge to edge, so no press can fall
+    /// between them.
     #[test]
-    fn the_shelf_holds_all_four_tools_and_two_free_slots() {
-        for tool in [Tool::WaterCan, Tool::SprayCan, Tool::Spade, Tool::Tweezers] {
-            assert_eq!(
-                SEEDED_SLOTS.iter().filter(|s| **s == Some(tool)).count(),
-                1,
-                "each tool rests on the shelf exactly once"
-            );
-        }
+    fn the_shelf_holds_one_tool_per_painted_bay() {
         assert_eq!(
             SEEDED_SLOTS,
             [
-                None,
-                None,
                 Some(Tool::Tweezers),
                 Some(Tool::Spade),
                 Some(Tool::SprayCan),
                 Some(Tool::WaterCan)
             ]
         );
-        // Every resting tool fits its cell with the inset clear, and the
-        // fit never flips a sprite inside out.
-        let cell_h = (ITEMS_SIZE[1] - 2.0 * SLOT_MARGIN) / SLOTS as f32;
+        for i in 0..SLOTS {
+            let [_, rest] = BAYS[i];
+            assert!(
+                rest - bay_ceiling(i) > BAY_INSET,
+                "bay {i} has no room to stand a tool in"
+            );
+            // A bay's ceiling is the cut above it, and every cut runs through
+            // the board between two bays: below the line the bay above stands
+            // on, above the line this bay stands on.
+            if i > 0 {
+                let [_, above] = BAYS[i - 1];
+                assert!(
+                    above < BAY_CUTS[i] && BAY_CUTS[i] < rest,
+                    "cut {i} must run through the board between bays"
+                );
+            }
+        }
+        // The check runs on the drawing, not the node: a sprite's content box
+        // sits off-centre in its texture, which is exactly what `slot_rest`
+        // exists to correct.
         for i in 0..SLOTS {
             let Some(tool) = SEEDED_SLOTS[i] else {
                 continue;
             };
-            let s = slot_scale(tool.drawn_size());
             let [dw, dh] = tool.drawn_size();
-            assert!(s > 0.0);
-            assert!(dw * s <= ITEMS_SIZE[0] - 2.0 * SLOT_INSET);
-            assert!(dh * s <= cell_h - 2.0 * SLOT_INSET);
+            let (t, s) = slot_rest(i, tool);
+            assert!(s > 0.0, "the fit must be a scale, not a mirror");
+            let box_ = tool.drawn();
+            let img = tool.image_size();
+            let lx = (box_[0][0] + box_[1][0]) / 2.0 - img[0] / 2.0;
+            let ly = img[1] / 2.0 - (box_[0][1] + box_[1][1]) / 2.0;
+            // Back into the panel's image pixels, y down.
+            let cx = ITEMS_SIZE[0] / 2.0 + t[0] + s * lx;
+            let cy = ITEMS_SIZE[1] / 2.0 - (t[1] + s * ly);
+            let [opening, rest] = BAYS[i];
+            assert!(
+                (cx - opening).abs() < 1e-2,
+                "the tool must sit on its bay's opening centre, not {cx}"
+            );
+            assert!(
+                (cy + s * dh / 2.0 - rest).abs() < 1e-2,
+                "the tool must stand on its bay's board"
+            );
+            assert!(
+                cy - s * dh / 2.0 >= bay_ceiling(i) + BAY_INSET - 1e-2,
+                "the tool must keep its inset of air overhead"
+            );
+            assert!(
+                dw * s <= BAY_WIDTH - 2.0 * BAY_INSET + 1e-2,
+                "the tool must fit between the bay's jambs"
+            );
+            // Every pixel of the drawing answers to its own bay's click cell
+            // — what `bay_ceiling` promises is kept in the picture.
+            assert!(
+                cy - s * dh / 2.0 >= BAY_CUTS[i] - 1e-2
+                    && cy + s * dh / 2.0 <= BAY_CUTS[i + 1] + 1e-2,
+                "{tool:?} is drawn outside its own click cell"
+            );
+            assert!(
+                (s - shelf_scale(i, tool)).abs() < 1e-6,
+                "`slot_rest` must draw at the scale `shelf_scale` gives"
+            );
         }
-        // The slot centers march down the strip, one full cell apart, and
-        // every cell stays inside the margins.
-        let step = (ITEMS_SIZE[1] - 2.0 * SLOT_MARGIN) / SLOTS as f32;
+        // The click cells tile the panel: edge to edge, in order, each one
+        // covering its own bay's opening.
+        assert_eq!(BAY_CUTS[0], 0.0);
+        assert_eq!(BAY_CUTS[SLOTS], ITEMS_SIZE[1]);
         for i in 0..SLOTS {
-            let drop = slot_local(0)[1] - slot_local(i)[1];
-            assert!((drop - step * i as f32).abs() < 1e-3);
-            let top = ITEMS_SIZE[1] / 2.0 - slot_local(i)[1];
-            assert!(top - step / 2.0 >= SLOT_MARGIN - 1e-3);
-            assert!(top + step / 2.0 <= ITEMS_SIZE[1] - SLOT_MARGIN + 1e-3);
+            assert!(BAY_CUTS[i] < BAY_CUTS[i + 1], "cell {i} is empty");
+            let mid = (BAY_CUTS[i] + BAY_CUTS[i + 1]) / 2.0;
+            assert!((ITEMS_SIZE[1] / 2.0 - slot_local(i)[1] - mid).abs() < 1e-3);
+            let [_, rest] = BAYS[i];
+            assert!(
+                BAY_CUTS[i] <= bay_ceiling(i) + 1e-2 && BAY_CUTS[i + 1] >= rest,
+                "cell {i} must cover its whole bay, board front and all"
+            );
+            // Every interior cut is the middle of the board it runs through:
+            // midway between the rest line of the bay above — the front of
+            // its lit top — and that same board's bright lower edge, which
+            // the sprite puts at `y` 273, 490, and 708 at the opening's
+            // centre.
+            if i > 0 {
+                const BOARD_EDGES: [f32; SLOTS - 1] = [273.0, 490.0, 708.0];
+                let [_, above] = BAYS[i - 1];
+                let middle = (above + BOARD_EDGES[i - 1]) / 2.0;
+                assert!(
+                    (BAY_CUTS[i] - middle).abs() < 1.0,
+                    "cut {i} must run through the middle of its board, not {middle}"
+                );
+            }
+            let [hw, hh] = slot_half(i);
+            assert_eq!(hw, ITEMS_SIZE[0] / 2.0);
+            // The cell spans exactly its own cut, edge for edge.
+            let y = slot_local(i)[1];
+            let top = ITEMS_SIZE[1] / 2.0 - (y + hh);
+            let bottom = ITEMS_SIZE[1] / 2.0 - (y - hh);
+            assert!(
+                (top - BAY_CUTS[i]).abs() < 1e-3 && (bottom - BAY_CUTS[i + 1]).abs() < 1e-3,
+                "cell {i} must span exactly its own cut"
+            );
         }
     }
 
-    /// The dig stroke starts and ends on the pose the sprite is drawn in:
-    /// no rotation and no offset at either end of `DIG_TIME`, the angle
-    /// continuous across the three phases, and the stroke spending its
-    /// whole arc between the raised wind-up and the full plunge.
+    /// The sizes the shelf draws its tools at, checked against the bays that
+    /// hold them. The wide shapes take the room their bay gives them — the
+    /// watering can spans the opening from jamb to jamb, being the tool a
+    /// player has to recognise fastest — and the two the shelf holds back are
+    /// held back on purpose: the spray can stops short of the height its bay
+    /// would give it, and the spade keeps the air at its sides. The four bays
+    /// come out near enough the same height, which is the shelf's own
+    /// geometry rather than a fitted guess: the boards of `items.png` are
+    /// evenly spaced, so a bay that reads much shallower than its neighbours
+    /// means a rest line was taken off the wrong board.
     #[test]
-    fn a_dig_stroke_leaves_its_drawn_pose_and_returns_to_it() {
-        let (a0, o0) = dig_pose(0.0);
-        assert_eq!((a0, o0), (0.0, [0.0, 0.0]));
-        let (a1, o1) = dig_pose(1.0);
-        assert!((a1 - 0.0).abs() < 1e-6 && o1[0].abs() < 1e-4 && o1[1].abs() < 1e-4);
-
-        // The stroke is a walk, not a jump: no frame-to-frame step is
-        // bigger than the phases' own pace allows.
-        let mut prev = dig_pose(0.0).0;
-        let mut max_step = 0.0f32;
-        for i in 1..=1000 {
-            let a = dig_pose(i as f32 / 1000.0).0;
-            max_step = max_step.max((a - prev).abs());
-            prev = a;
-        }
-        // The whole swing is `DIG_RAISE + plunge` radians of arc, spent
-        // over the strike's `DIG_STRIKE - DIG_WIND` of the stroke — the
-        // fastest it may move per frame is that arc over that window.
-        let arc = DIG_RAISE + spade_plunge();
-        let fastest = arc / ((DIG_STRIKE - DIG_WIND) / 1000.0);
+    fn the_shelf_draws_each_tool_at_its_bay_or_its_own_width() {
+        let height = |i: usize, tool: Tool| shelf_scale(i, tool) * tool.drawn_size()[1];
+        let wide = |i: usize, tool: Tool| shelf_scale(i, tool) * tool.drawn_size()[0];
+        let tallest = |i: usize, tool: Tool| bay_scale(i, tool.drawn_size()) * tool.drawn_size()[1];
+        // The picture itself, to the pixel, top bay to bottom. Nothing else
+        // in this test is a magic number, so this is where a change to the
+        // bays, or to a tool's asked width, shows up — rather than on the
+        // panel, between two boards that were measured once and never looked
+        // at again.
+        let seeded: Vec<[u32; 2]> = (0..SLOTS)
+            .map(|i| (i, SEEDED_SLOTS[i].unwrap()))
+            .map(|(i, tool)| [(wide(i, tool) + 0.5) as u32, (height(i, tool) + 0.5) as u32])
+            .collect();
+        assert_eq!(seeded, vec![[196, 133], [165, 145], [90, 183], [196, 148]]);
         assert!(
-            max_step <= fastest + 1e-3,
-            "a jump of {max_step} rad per step, faster than the strike's {fastest}"
+            (wide(CAN_SLOT, Tool::WaterCan) - (BAY_WIDTH - 2.0 * BAY_INSET)).abs() < 1e-3,
+            "the watering can must fill its bay from jamb to jamb"
         );
-
-        // The wind-up lifts the blade the other way, and the strike reaches
-        // the full plunge at its end.
-        assert!(dig_pose(DIG_WIND).0 < 0.0);
-        assert!((dig_pose(DIG_STRIKE).0 - spade_plunge()).abs() < 1e-6);
+        assert!(
+            height(SPRAY_SLOT, Tool::SprayCan) < tallest(SPRAY_SLOT, Tool::SprayCan) - 1.0,
+            "the spray can is meant to stop short of its bay"
+        );
+        // The boards are evenly spaced in the art, so the bays they carve are
+        // near enough the same height. This is the check that each rest line
+        // was read off the board its bay stands on: a line taken too high or
+        // too low shows up here as one shallow bay, long before it shows up
+        // on the panel as a tool floating above its board.
+        let first = BAYS[0][1] - bay_ceiling(0) - BAY_INSET;
+        for i in 1..SLOTS {
+            let h = BAYS[i][1] - bay_ceiling(i) - BAY_INSET;
+            assert!(
+                (h - first).abs() < 10.0,
+                "bay {i} stands {h} tall against bay 0's {first}, and the boards are evenly spaced"
+            );
+        }
+        assert!(
+            (shelf_scale(TWEEZERS_SLOT, Tool::Tweezers) * Tool::Tweezers.drawn_size()[0]
+                - (BAY_WIDTH - 2.0 * BAY_INSET))
+                .abs()
+                < 1e-3,
+            "the tweezers take the bay's whole width"
+        );
+        assert!(
+            (shelf_scale(SPADE_SLOT, Tool::Spade) * Tool::Spade.drawn_size()[0]
+                - Tool::Spade.shelf_width())
+            .abs()
+                < 1e-3,
+            "the spade is drawn at the width it asks for"
+        );
+        for i in 0..SLOTS {
+            let Some(tool) = SEEDED_SLOTS[i] else {
+                continue;
+            };
+            assert!(
+                shelf_scale(i, tool) <= bay_scale(i, tool.drawn_size()) + 1e-6,
+                "no tool may outgrow its bay"
+            );
+        }
     }
 
-    /// The plunge angle comes off the sprite, not a guess: rotating the
-    /// drawn spade by `spade_plunge()` about its grip turns the grip→point
-    /// direction — the 34.9° lean the art is drawn with — to point straight
-    /// down, and the wind-up lifts it just past level.
+    /// The dig is three beats and one path: the spade is shoved forward
+    /// along its own line to the full `DIG_PUSH_DIST`, held buried for
+    /// exactly `DIG_HOLD`, then arches home — and the stroke starts and ends
+    /// on the anchor, the tool exactly as drawn.
     #[test]
-    fn the_plunge_points_the_blade_straight_down() {
-        // The blade's drawn tilt: point 188 px left, 131 px below the grip.
-        // The blade's drawn tilt: point 188 px left, 131 px below the grip.
+    fn a_dig_stroke_pushes_holds_and_arches_home_to_the_anchor() {
+        assert_eq!(dig_offset(0.0), [0.0, 0.0]);
+        assert_eq!(dig_offset(1.0), [0.0, 0.0]);
+        let at = |s: f32| dig_offset(s / DIG_TIME);
+        // Forward is the way the blade points: left and down.
+        let push = [
+            DIG_PUSH_DIST * spade_blade().cos(),
+            DIG_PUSH_DIST * spade_blade().sin(),
+        ];
+        assert!(push[0] < 0.0 && push[1] < 0.0, "forward is left and down");
+        // Pushed to the full reach by the end of the push...
+        let p = at(DIG_PUSH);
+        assert!((p[0] - push[0]).abs() < 1e-4 && (p[1] - push[1]).abs() < 1e-4);
+        // ...held there, to the pixel, for the whole wait...
+        let mut s = DIG_PUSH;
+        while s <= DIG_PUSH + DIG_HOLD {
+            let o = at(s);
+            assert!(
+                (o[0] - push[0]).abs() < 1e-6 && (o[1] - push[1]).abs() < 1e-6,
+                "the spade must hold its bite at {s} s"
+            );
+            s += 0.01;
+        }
+        // ...and home along the arch, crowning up and to the left of the
+        // cursor at the arch's middle, and landing only at its end.
+        let crown = at(DIG_PUSH + DIG_HOLD + DIG_ARC / 2.0);
+        assert!(
+            (crown[0] - DIG_ARC_CROWN[0]).abs() < 1e-3
+                && (crown[1] - DIG_ARC_CROWN[1]).abs() < 1e-3,
+            "the arch must pass through its crown, not {crown:?}"
+        );
+        assert!(
+            crown[0] < 0.0 && crown[1] > 0.0,
+            "the way home goes left and up"
+        );
+        assert_ne!(at(DIG_TIME - 0.01), [0.0, 0.0], "the arch lands at its end");
+        // The whole stroke is a walk, not a jump: no millisecond of it moves
+        // the tool more than the arch's own length, walked at the ease's top
+        // speed, allows.
+        let reach = (DIG_PUSH_DIST * DIG_PUSH_DIST
+            + (DIG_ARC_CROWN[0].powi(2) + DIG_ARC_CROWN[1].powi(2))
+                .sqrt()
+                .powi(2))
+        .sqrt();
+        let stride = 1.5 * 2.0 * (2.0 * reach) / DIG_ARC * 0.001;
+        let mut prev = at(0.0);
+        let mut max_step = 0.0f32;
+        let mut s = 0.0;
+        while s <= DIG_TIME {
+            let o = at(s);
+            max_step = max_step.max(((o[0] - prev[0]).powi(2) + (o[1] - prev[1]).powi(2)).sqrt());
+            prev = o;
+            s += 0.001;
+        }
+        assert!(
+            max_step < stride,
+            "the stroke jumps {max_step} px in a millisecond, over its {stride} px pace"
+        );
+    }
+
+    /// The push direction is the sprite's own, not a guess: the point lies
+    /// 188 px left and 131 px below the grip, so the dig drives the tool
+    /// down and to the left along the line the art already draws — 34.9°
+    /// below the horizontal — instead of inventing an angle of its own.
+    #[test]
+    fn the_dig_pushes_along_the_line_the_art_draws() {
         let tilt = spade_blade();
         assert!(tilt < -std::f32::consts::FRAC_PI_2);
         assert!(tilt > -std::f32::consts::PI);
-        let (ex, ey) = (
-            SPADE_TIP_LOCAL[0] - SPADE_GRIP_LOCAL[0],
-            SPADE_TIP_LOCAL[1] - SPADE_GRIP_LOCAL[1],
-        );
-        // The grip→point direction after turning the spade by `a`.
-        let turned = |a: f32| {
-            let (c, s) = (a.cos(), a.sin());
-            [c * ex - s * ey, s * ex + c * ey]
-        };
-        // At the full plunge the point aims straight down: straight down is
-        // the one direction the drawn sprite does not already have.
-        let [px, py] = turned(spade_plunge());
-        assert!(
-            px.abs() < 1e-3 * ex.abs(),
-            "the plunge must aim the point down"
-        );
-        assert!(py < 0.0);
-        // The wind-up lifts the point level with the grip and past it, so
-        // the strike travels a full right angle on its way into the soil.
-        assert!(turned(-DIG_RAISE)[1] > 0.0, "the wind-up lifts the point");
-        assert!(spade_plunge() + DIG_RAISE > std::f32::consts::FRAC_PI_2);
-    }
-
-    /// The dig's offset rides the blade's own line: through the wind-up the
-    /// grip retreats up the handle, through the strike it drives down the
-    /// point, and the blade's point is lifted clear of its rest height
-    /// before it is buried under it — the stroke digs, it does not just
-    /// spin.
-    #[test]
-    fn the_dig_lunge_rides_the_blade_line() {
-        // The grip→point offset, in the sprite's own scaled pixels.
+        assert!((tilt.to_degrees() + 180.0 - 34.87).abs() < 0.1);
+        // The tilt and the grip→point chord are the same line: the push can
+        // only run along the blade, never across it.
         let (ex, ey) = (
             (SPADE_TIP_LOCAL[0] - SPADE_GRIP_LOCAL[0]) * SPADE_SCALE,
             (SPADE_TIP_LOCAL[1] - SPADE_GRIP_LOCAL[1]) * SPADE_SCALE,
         );
-        // The blade's point with the grip parked at the origin, at pose
-        // `angle` and `off` — the same map the tool node's transform is.
-        let point = |angle: f32, off: [f32; 2]| {
-            spade_transform(0.0, 0.0, angle, off).apply([
-                SPADE_TIP_LOCAL[0] * SPADE_SCALE,
-                SPADE_TIP_LOCAL[1] * SPADE_SCALE,
-            ])
-        };
-        let rest = point(0.0, [0.0, 0.0]);
-        assert!(rest[1] < 0.0, "the drawn blade hangs below its grip");
-
-        // The offset's component along the blade line, positive driving down
-        // the point; the wind-up pulls back up the handle, and the strike's
-        // end has driven the whole lunge down the point, never a step
-        // sideways off the line.
-        let along = |angle: f32, off: [f32; 2]| {
-            let (c, s) = (angle.cos(), angle.sin());
-            let (ux, uy) = (c * ex - s * ey, s * ex + c * ey);
-            let l = (ux * ux + uy * uy).sqrt();
-            (
-                (off[0] * ux + off[1] * uy) / l,
-                (off[0] * -uy + off[1] * ux) / l,
-            )
-        };
-        let (a, o) = dig_pose(DIG_WIND * 0.5);
-        assert!(along(a, o).0 < 0.0, "the wind-up pulls back up the handle");
-        let (a, o) = dig_pose(DIG_STRIKE);
-        let (along, side) = along(a, o);
-        assert!((along - DIG_LUNGE).abs() < 1e-3);
-        assert!(side.abs() < 1e-3);
-
-        // The wind-up lifts the point clear above the height it rests at,
-        // the strike's end buries it well below it, and the deepest moment
-        // of the whole stroke — the bottom of the dig — comes at or after
-        // the plunge, deeper than the lunge alone.
-        let at = |u: f32| {
-            let (a, o) = dig_pose(u);
-            point(a, o)[1]
-        };
-        assert!(at(DIG_WIND) > rest[1], "the wind-up lifts the point");
         assert!(
-            at(DIG_STRIKE) < rest[1] - DIG_LUNGE,
-            "the strike's end buries the point"
+            (tilt.cos() * ey - tilt.sin() * ex).abs() < 1e-3 * ex.abs(),
+            "the push must run along the blade, not across it"
         );
-        let mut lowest = rest[1];
-        let mut deepest = 0.0;
-        let mut u = 0.0;
-        while u <= 1.0 {
-            let y = at(u);
-            if y < lowest {
-                lowest = y;
-                deepest = u;
-            }
-            u += 0.01;
+    }
+
+    /// The stroke's shape: the deepest the tool ever goes is its bite, held
+    /// through the wait with nothing but the push behind it, and the arch
+    /// swings further from the cursor than the bite does — a loop out over
+    /// the ground it broke, not a rewind along the push.
+    #[test]
+    fn the_dig_bites_deepest_and_arches_widest() {
+        let mut lowest = f32::MAX;
+        let mut widest = 0.0f32;
+        let mut s = 0.0;
+        while s <= DIG_TIME {
+            let o = dig_offset(s / DIG_TIME);
+            lowest = lowest.min(o[1]);
+            widest = widest.max((o[0] * o[0] + o[1] * o[1]).sqrt());
+            s += 0.001;
         }
         assert!(
-            rest[1] - lowest > DIG_LUNGE,
-            "the stroke must dig deeper than its own lunge"
+            (lowest - DIG_PUSH_DIST * spade_blade().sin()).abs() < 1e-3,
+            "the bottom of the stroke must be the push itself"
         );
         assert!(
-            deepest >= DIG_STRIKE - 0.02,
-            "the dig bottoms out at the plunge, not before it (u = {deepest})"
+            widest > DIG_PUSH_DIST,
+            "the arch must clear the bite's reach, and does {widest}"
+        );
+    }
+
+    /// A docked tool's drawing sits inside its cell. The dock's scale fits a
+    /// tool's *content*, and `cell_rest` centres that content on the cell —
+    /// so a sprite exported onto a canvas wider than its drawing, like the
+    /// tweezers with their jaws 37 px off the canvas's middle, no longer
+    /// hangs out of the dock it was parked in.
+    #[test]
+    fn a_docked_tool_sits_inside_its_cell() {
+        for tool in [Tool::WaterCan, Tool::SprayCan, Tool::Spade, Tool::Tweezers] {
+            let s = held_scale(tool.drawn_size());
+            let [dw, dh] = tool.drawn_size();
+            let box_ = tool.drawn();
+            let img = tool.image_size();
+            // Where the canvas puts the drawing's centre, in node space.
+            let ox = (box_[0][0] + box_[1][0]) / 2.0 - img[0] / 2.0;
+            let oy = img[1] / 2.0 - (box_[0][1] + box_[1][1]) / 2.0;
+            for cell in 0..2 {
+                let p = cell_rest(cell, tool);
+                let [cx, cy] = held_local(cell);
+                // The renderer anchors the canvas; the drawing lands half an
+                // `ox` further along, and that is what must be inside.
+                let dx = p[0] + s * ox;
+                let dy = p[1] + s * oy;
+                assert!(
+                    (dx - cx).abs() < 1e-3,
+                    "{tool:?} in cell {cell}: its drawing sits {} px off the centre",
+                    dx - cx
+                );
+                assert!(
+                    (dy - cy).abs() < 1e-3,
+                    "{tool:?} in cell {cell}: its drawing sits {} px off the line",
+                    dy - cy
+                );
+                assert!(
+                    s * dw / 2.0 <= HELD_SIZE[0] / 4.0 - HELD_INSET + 1e-3,
+                    "{tool:?} is wider than its cell"
+                );
+                assert!(
+                    s * dh / 2.0 <= HELD_SIZE[1] / 2.0 - HELD_INSET + 1e-3,
+                    "{tool:?} is taller than its cell"
+                );
+            }
+        }
+        // The tweezers are the case that broke: their drawing is far enough
+        // off-centre in its canvas that anchoring the canvas would throw a
+        // good part of the tool outside the dock.
+        let off = drawn_centring(Tool::Tweezers, held_scale(Tool::Tweezers.drawn_size()));
+        assert!(
+            off[0].abs() > 10.0,
+            "the tweezers' canvas is badly off-centre"
         );
         assert!(
-            (lowest - at(DIG_STRIKE)).abs() < 1.0,
-            "the deepest point of the stroke is the plunge itself"
+            off[0].abs()
+                + held_scale(Tool::Tweezers.drawn_size()) * Tool::Tweezers.drawn_size()[0] / 2.0
+                > HELD_SIZE[0] / 4.0,
+            "uncorrected, the tweezers must be the tool that overhangs"
         );
     }
 

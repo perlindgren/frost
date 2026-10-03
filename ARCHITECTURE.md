@@ -792,17 +792,23 @@ disk. Run with `cargo run --example <name>`
 |              | draws on top; each child puts the image px `(308, 411)` on          |
 |              | the parent's origin; the parent carries the inverse, so the         |
 |              | image's center sits on the window's center                          |
-| immortal     | 1920x1080 (Config window_size); four tools ride the six-slot shelf: |
-|              | items.png split 0..5 top-down, the tweezers, spade, spray can, and  |
-|              | watering can resting in slots 2-5 and 0-1 left free to park one, a  |
-|              | left click on a slot swapping it with the held tool and the right   |
-|              | button trading held for stored; each sprite is fitted to its cell by|
-|              | its drawn alpha box, not its canvas; a fresh left click digs one    |
-|              | spade stroke - `dig_pose` twines a rotation about the handle's grip |
-|              | with a lunge along the blade's own line, starting from the angle the|
-|              | art is drawn at (point 34.9 deg under level, so the plunge that puts|
-|              | it straight down is 55.1 deg, not 90); the tweezers ride level by   |
-|              | their jaws and stay inert until there are pinch frames to pick with;|
+| immortal     | 1920x1080 (Config window_size); four tools ride the shelf items.png |
+|              | paints: the sprite's four bays ARE the four slots - BAYS holds each |
+|              | bay's opening centre and its board-top rest line, read off the      |
+|              | sprite's luminance bands; a bay's ceiling is its click cell's own   |
+|              | cut, so the four bays stand 200/181/205/144 px tall and each tool   |
+|              | is drawn at `Tool::shelf_width` capped by its bay - the watering    |
+|              | can fills the shelf's shallowest bay, the spray can held a little   |
+|              | under its own; tweezers, spade, spray can, watering can top to      |
+|              | bottom, click a bay to swap                                         |
+|              | with it, right button trades held for stored; a fresh left click    |
+|              | digs one spade stroke - `dig_offset`: shoved DIG_PUSH_DIST px along |
+|              | its own drawn line (34.9 deg below horizontal, read off the art),   |
+|              | held buried DIG_HOLD s, then arched up and left over the hole it    |
+|              | made and home to the cursor - no rotation, the tool is carried, not |
+|              | turned; docked and held tools are centred on their drawing rather   |
+|              | than their canvas, so the off-centre tweezers fit inside the dock;  |
+|              | the tweezers stay inert until pinch frames exist;                   |
 |              | plants grow one at a time, each slice opening its flowers once fully|
 |              | grown (the four lower slices' spawn points, the top slice bearing   |
 |              | none, populated with `flower.png`); one viper per fully grown plant |
