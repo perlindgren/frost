@@ -41,8 +41,13 @@ src/collision.rs      OrientedBox, Circle, Collider, push_out, reflect (pure mat
 src/rng.rs            Rng — seedable splitmix64, state get/set for save games
 src/diagnostics.rs    Diagnostics (flag-gated FPS/FT/PROC/DRAW HUD overlay
                       with folded strip charts), DiagnosticsFlags
-src/ui.rs             Ui immediate-mode widget layer (button, checkbox,
-                      slider, label, draggable panel), UiStyle
+src/ui/               Ui immediate-mode widget layer split by concern:
+                      mod.rs (Ui: begin, button, checkbox, slider, label,
+                      space, table), panel.rs (draggable folding panels),
+                      table.rs (grid columns), tree.rs (two-axis scrollable
+                      tree-view widget), style.rs — re-exports Ui, UiStyle
+                      and the TreeLine/TreeEvent/TreeSpec/TreeState/
+                      TreeStyle/TreeOut tree-view API
 src/audio.rs          Audio (device + loop player), Sound (decoded buffer),
                       AudioError — native-only, rodio-based
 src/text.rs           CPU text shaping/rasterization on swash, glyph shelf atlas
@@ -51,9 +56,11 @@ src/backend/mod.rs    `app`, `frame`, `wasm` (wasm32 only), `tests` (test only)
 src/backend/app.rs    Frost<P>: winit app handler + GPU state + render loop
 src/backend/frame.rs  Draw list model: Draw enum, scissor rects, uniform writers
 src/backend/wasm.rs   WebFrost: deferred async GPU setup + fallback DOM helpers
-src/backend/tests.rs  GPU-free backend tests (uniform layout, canvas behavior)
+src/backend/tests/    GPU-free backend tests, one file per area (uniforms,
+                      scissor, nodes, layers, camera, repeat, context,
+                      config, …)
 shaders/*.wgsl        line, circle, rectangle, shape (SDF circle+rect), sprite
-examples/             45 runnable demos, filed into folders (see table below)
+examples/             39 runnable demos, filed into folders (see table below)
 assets/               sprites/*.png (+ .pxo sidecars; immortal art, worm
                       crops, …), fonts/ (FiraCode Variable, JameGem08,
                       Leofont + licenses), audio/*.wav (swoof, waterflow,
@@ -61,6 +68,8 @@ assets/               sprites/*.png (+ .pxo sidecars; immortal art, worm
                       immortal plant's anchor files), ron/garden.ron
                       (ron_view)
 src/TODO.md           next planned feature (Body / rigid bodies)
+tests/                integration tests over the dogs_name flipbook art
+                      (headless Shape::sprite reads: frame fit, ink stats)
 ```
 
 The library uses only the `log` facade; consumers wire up their own logger
@@ -73,11 +82,16 @@ save file carry the stream across (`immortal` does exactly that).
 ## The public API (src/lib.rs)
 
 - `frost::run(scene: Scene, process: P) -> Result<(), ...>` — the entry point.
-  `run_configured` takes a `Config { vsync: bool, window_size: Option<[u32;2]> }`
-  (vsync default on, window size default platform) to turn vsync off for
-  uncapped frame rates or open the window at a specific inner size in logical
-  pixels (the user can still resize afterwards). Both exist for native and
-  wasm32.
+  `run_configured` takes a `Config { vsync: bool, window_size: Option<[u32;2]>,
+  window_size_px: Option<[u32;2]> }` (vsync default on, window size default
+  platform) to turn vsync off for uncapped frame rates or open the window at
+  a specific inner size — `window_size` in logical pixels, `window_size_px`
+  in **physical** pixels and winning over it. The engine's user space is
+  physical, so `window_size_px` pins an identical design space on every
+  display whatever scaling the OS applies (this is why `immortal`,
+  `dogs_name` and `centipede` open at a true 1920×1080 on all four dev
+  machines); it is ignored on web, where CSS sizes the canvas. The user can
+  still resize afterwards. Both functions exist for native and wasm32.
 - `Process` — `fn process(&mut self, ctx: &mut Context, dt: f32)`; `dt` is
   seconds since the previous frame (`0.0` on the first, clamped to 1.0s).
   **Any `FnMut(&mut Context, f32)` closure is a `Process`.**
@@ -85,6 +99,13 @@ save file carry the stream across (`immortal` does exactly that).
   - `scene() -> &mut Scene` — mutable access to the scene passed to `run`;
     mutate it here to animate it; it is drawn after the process returns.
   - `key_down(KeyCode) -> bool` — held physical keys (scancodes, layout-free).
+  - `char_down(char) -> bool` — whether a held key typed that character when
+    it went down, under the user's keyboard layout: the layout-following
+    twin of `key_down` (a physical code names a US-ANSI position — the
+    Swedish `+` key reports the code US calls `Minus`; `char_down('+')`
+    finds the `+` key on any layout). The character carries the modifiers
+    held at press (a macOS Option rewrites them); a release removes by
+    physical code, so held state never sticks.
   - `mouse_position() -> Option<[f32;2]>` — user coords, `None` when the cursor
     is outside the window (last known position is deliberately dropped).
   - `mouse_button_down(MouseButton) -> bool`
@@ -132,8 +153,8 @@ building the `Context` (physical y-down → user y-up).
 2. Build a fresh `Canvas` for the pixel size; compute `dt` from a monotonic
    millisecond clock (`Instant` native, `performance.now()` wasm), clamped to
    1.0s.
-3. Build the `Context` (canvas + scene + held keys + mouse state) and call
-   `process.process(&mut ctx, dt)`.
+3. Build the `Context` (canvas + scene + held keys + typed characters +
+   mouse state) and call `process.process(&mut ctx, dt)`.
 4. `scene.visit()` — every node's `Node::process`, **children before parent**
    (post-order), on the root tree and every layer tree.
 5. `canvas.draw_scene(&scene)` — walks each group depth-first, composing
@@ -184,7 +205,7 @@ building the `Context` (physical y-down → user y-up).
   each layer by its `speed`) — that's the parallax: higher speed reads as
   closer. `NodePath` names a node by (group index?, child indices).
   `Scene::world_at(path)` / `Scene::camera_world()` compute the composed world
-  transform (src/objects.rs:620–641).
+  transform (`pub(crate)` `world_at` / `camera_world` in `src/objects.rs`).
 - `Transform` — `p' = m * p + t` with rows `m[0]`, `m[1]`; `rotate(angle)` is
   CCW from +x toward +y; `a.compose(&b)` means **a first, then b**
   (matrix `b.m * a.m`); `invert()` for the render path; `scales()` for the AA
@@ -300,8 +321,9 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
 
 ## The GPU side (src/backend/app.rs, shaders/)
 
-- `Frost<P>` holds the wgpu instance/adapter/device/queue, `vsync` and
-  `window_size` (the `Config` values), the window (`Arc<Window>`), logical
+- `Frost<P>` holds the wgpu instance/adapter/device/queue, `vsync`,
+  `window_size` and `window_size_px` (the `Config` values), the window
+  (`Arc<Window>`), logical
   size + scale factor, the surface, the seven pipelines
   (line/polyline/circle/rect/shape/sprite/particles), `sprite_resources` (a
   `HashMap<(u64, u64), (TextureView, Sampler)>` keyed by the sprite pixel-data
@@ -327,13 +349,16 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
   skipped), the signed distance is measured in local units, and
   `smoothstep(-aa, aa, d)` gives the coverage. Rotation and scaling "apply for
   free".
-- Events (native): keyboard held-set (Escape exits), cursor position, mouse
+- Events (native): keyboard held-set and per-key typed characters (Escape
+  exits), cursor position, mouse
   buttons, mouse wheel (accumulated in lines per frame, reset after the
   frame's `process`), `CursorLeft`/`Focused(false)` **clear** the held state
-  (no stuck controls), resize/scale-factor reconfigure the surface (pipelines
+  and the typed characters (no stuck controls), resize/scale-factor
+  reconfigure the surface (pipelines
   rebuild only if the format changed), `RedrawRequested` → `render()` +
   re-request.
-  The window opens at the `Config`'s `window_size` (or the platform default),
+  The window opens at the `Config`'s `window_size_px`/`window_size` (or the
+  platform default),
   centered on the monitor, and requests its first redraw explicitly (Wayland
   won't deliver one otherwise).
 - `block_on` (native only) drives the adapter/device futures with a no-op
@@ -343,7 +368,8 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
 
 In the browser `request_adapter`/`request_device` are JS promises that only
 resolve once the main thread is free, so `run` defers GPU setup: `WebFrost`
-creates the canvas immediately (900×600, appended to the page), keeps the
+creates the canvas immediately (`Config::window_size` in CSS pixels, 900×600
+default — `window_size_px` is native-only), appended to the page), keeps the
 scene/process in a `Core`, and on every `resumed` polls the in-flight setup
 future (`GpuInit::{Idle, Init, Failed}`); when it completes it hands everything
 to a real `Frost`. `hide_fallback`/`show_fallback` swap the page's "Loading
@@ -427,7 +453,7 @@ offsets are `[0,16,24,32,48,64]` spanning 80 bytes, the `ParticlesUniforms`
 offsets are `[0,16,32,40]` spanning 48, and the `PolylineUniforms` offsets are
 `[0,2048,2064,2068]` spanning 2080 with a fixed 128-point vec4 array — the **CPU
 uniform writers must mirror these layouts**; the GPU-side mirror tests live in
-`src/backend/tests.rs`. If you change a shader uniform struct, update the
+`src/backend/tests/`. If you change a shader uniform struct, update the
 writer and both test sides together.
 
 ## Audio (native only)
@@ -479,7 +505,8 @@ that decodes an in-code WAV.
 `Diagnostics` is a HUD overlay whose statistics are each gated by a bit of
 the `DiagnosticsFlags` set passed to the constructor. The window size line
 (`"{w}x{h}"`) is always shown, and below it the enabled statistics in fixed
-order, all at 32 px: the smoothed frame rate (`"FPS {fps}"`, the `FPS`
+order, all at a base 32 px that the display scale (Alt+'+' / Alt+'-', under
+*Keyboard shortcuts*) grows or shrinks together: the smoothed frame rate (`"FPS {fps}"`, the `FPS`
 bit), the current frame time (`"FT {ms}ms"`, the `FT` bit), the last
 frame's total processing time (`"PROC {ms}ms"`, the `PROC` bit), that time
 excluding the overlay's own update cost (`"APP {ms}ms"` — the companion line
@@ -596,14 +623,22 @@ itself is a `Process`.
   pixel at 32 px) is a stable extent — so the topmost *visible* line's ink
   sits 20 px in from the window's top-left corner, and the visible parts
   reflow into that corner whenever one of them is hidden.
-- Keyboard shortcuts: the overlay reads six key combinations from the
+- Keyboard shortcuts: the overlay reads eight key combinations from the
   engine's key state on every `process`, acting on press edges only (a
   held combination toggles once): Alt-0 is the master switch — while off,
   every node draws nothing and the per-part toggles are remembered as-is —
   Alt-1..Alt-4 toggle the charts by position among the enabled charts (top
   chart first; the extra keys are no-ops when fewer than four charts are
-  enabled), and Alt-T toggles all the readout lines, the window-size line
-  included. The charts are independent of the text toggle. The layout
+  enabled), Alt-T toggles all the readout lines, the window-size line
+  included, and Alt+'+' / Alt+'-' grow or shrink the whole overlay — font,
+  margins, gaps and chart panels together — stepped by a quarter of the
+  current size and clamped between a quarter and four times the base. The
+  zoom pair matches **typed characters** (`+`/`=`/`±`/`−` grow,
+  `-`/`_`/`–`/`—` shrink, numpad included) so it follows the user's layout:
+  physical codes name US positions, where the Swedish `+` key sits on the
+  US `-`; the line extent re-measures at the new font size, so the stacked
+  lines stay even and every laid-out line re-lays out on its next refresh.
+  The charts are independent of the text toggle. The layout
   reflows around whatever is hidden — the visible lines and charts re-pack
   into the corner — while the node indices stay fixed to the construction
   slot order; a hidden node keeps its place as a bare pivot (`shape:
@@ -611,7 +646,8 @@ itself is a `Process`.
   re-shown line re-lays out its last text the next visible frame. The
   shortcuts are read, not consumed: a demo that wants the same
   combinations still sees them. They are also available as the methods
-  `toggle_all()`, `toggle_chart(index)`, and `toggle_text()`.
+  `toggle_all()`, `toggle_chart(index)`, `toggle_text()`, `scale()`, and
+  `set_scale(scale)`.
 - Pure CPU work (no device I/O), so it compiles on `wasm32` too — no cfg
   gate, unlike `audio`.
 
@@ -619,7 +655,7 @@ itself is a `Process`.
 `assets/fonts/FiraCode-VariableFont_wght.ttf`, with `DiagnosticsFlags::all()`;
 `examples/particles/square_fountains.rs` runs it over a live particle scene.
 
-## UI (src/ui.rs)
+## UI (src/ui/)
 
 `Ui` is an **immediate-mode widget layer** over the frame's `Canvas`: the
 app owns one `Ui` in its `Process` struct, calls `Ui::begin(ctx)` at the top
@@ -665,6 +701,14 @@ button clicks, a checkbox toggles, a slider's value changes.
   `readout` are the label-less pieces for a `[label | track | value]` row
   (see `examples/sprite_util.rs`); `id` scopes the retained auto widths so
   two tables in one panel keep their own columns.
+- **Tree view** (`tree.rs`) is the same widget family's two-axis-scrolling
+  list: `TreeLine` rows (key, value, a few flags, a value color) in a
+  resizable, scrollable panel — close `×`, corner grip, both scroll thumbs,
+  per-row fold/delete buttons, drag-reorder of deletable rows — driven
+  through `TreeSpec`/`TreeState` and answering `TreeEvent`s **by row index**
+  only: the widget knows nothing of the app's data model. `sprite_util`'s
+  sidecar panels and `ron_view` are its two applications (there
+  `examples/ron_view/tree.rs` is the data side, here it is the widget).
 - **Identity**: widget ids are FNV-1a hashes of the label scoped by the
   containing panel's id, so the same label in two panels is two widgets.
 - **Text** goes through `Canvas::text` (see above) with one shared
@@ -681,30 +725,35 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **183 tests + 5 doctests** passing, `cargo build --examples`
-clean. Notable test areas:
+Baseline: **206 lib tests + 3 integration tests (`tests/`) + 5 doctests**
+passing, `cargo build --examples` clean. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
   `Validator` stage wgpu runs in `create_shader_module` — this is what
   catches uniform-address-space layout rules the parser never checks) +
   uniform-offset assertions (above).
-- `src/backend/tests.rs` — GPU-free: uniform-layout mirrors, scissor math,
+- `src/backend/tests/` — GPU-free: uniform-layout mirrors, scissor math,
   `paint_order`, `expand_text` (splicing + atlas reuse across frames),
-  `context_reports_held_mouse_button`, `context_reports_mouse_wheel_delta`.
+  `context_reports_held_mouse_button`, `context_reports_mouse_wheel_delta`,
+  and the context's typed-character read (`char_down`).
+- `src/diagnostics.rs` — press-edge detection for all eight shortcuts, the
+  display-scale clamp, and the line-extent re-measure on scale change.
+- `tests/` — headless `Shape::sprite` reads of the `dogs_name` art (frame
+  fit, ink statistics), through the same public entry point the examples use.
 - `src/collision.rs` — push-out separation, reflect restitution semantics.
 - `src/tween.rs`, `src/particles.rs`, `src/text.rs` — behavior unit tests.
 - `src/rng.rs` — a fixed seed replays its stream; `state()`/`set_state()`
   round-trips continue it exactly.
 - `src/audio.rs` — device-free decode tests (synthetic WAV, bundled
   `swoof.wav`, error variants) + the `load_bytes` doctest.
-- `src/ui.rs` — the interaction model driven frame by frame through
+- `src/ui/` — the interaction model driven frame by frame through
   `begin_input` (press arming, armed release, hold past the rect, topmost
   overlap wins, one-frame click, panel drag moves by the pointer delta and
   retains), plus id hashing and rect math.
 
 ## Examples (examples/)
 
-45 demos, filed into subject folders — `shapes/`, `lighting/`, `inout/`,
+39 demos, filed into subject folders — `shapes/`, `lighting/`, `inout/`,
 `layers/`, `particles/`, `physics/`, `text/`, the `immortal/` game, and the
 tools (`sprite_util`, `worm`, …) at the top level. Cargo only auto-discovers
 `examples/*.rs` and `examples/*/main.rs`, so every folder member is named
@@ -744,6 +793,15 @@ disk. Run with `cargo run --example <name>`
 | sprites      | PNG sprites through the scene tree                                 |
 | tomato       | a plant assembled from three sprite slices                         |
 | grow         | the tomato plant growing slice by slice                            |
+| dogs_name    | the four-frame 1-2-1-4 flipbook monster (frame 3 deliberately repeats |
+|              | frame 1), bob/sway/breath, a true physical 1920x1080 window via    |
+|              | `Config::window_size_px`                                            |
+| centipede    | a whole animal assembled from the same monster's cut-out parts and |
+|              | walked seen from above: rigid one-pivot sprite legs whose planted- |
+|              | foot geometry IS the gait (pure clock, nothing keyframed), a      |
+|              | metachronal step wave, and one segment grown on screen per         |
+|              | crossing; all geometry in `rig.rs` (unit-tested), the folder's    |
+|              | README is the anatomy doc                                           |
 | collision    | the player with `push_out`/`reflect` collision                     |
 | cone_collider| the `cone` hall with physics added: the walls that cut shadows out  |
 |              | of the beam also push the player back (lighting × collision)        |
@@ -792,17 +850,22 @@ disk. Run with `cargo run --example <name>`
 |              | draws on top; each child puts the image px `(308, 411)` on          |
 |              | the parent's origin; the parent carries the inverse, so the         |
 |              | image's center sits on the window's center                          |
-| immortal     | 1920x1080 (Config window_size); four tools ride the six-slot shelf: |
-|              | items.png split 0..5 top-down, the tweezers, spade, spray can, and  |
-|              | watering can resting in slots 2-5 and 0-1 left free to park one, a  |
-|              | left click on a slot swapping it with the held tool and the right   |
-|              | button trading held for stored; each sprite is fitted to its cell by|
-|              | its drawn alpha box, not its canvas; a fresh left click digs one    |
-|              | spade stroke - `dig_pose` twines a rotation about the handle's grip |
-|              | with a lunge along the blade's own line, starting from the angle the|
-|              | art is drawn at (point 34.9 deg under level, so the plunge that puts|
-|              | it straight down is 55.1 deg, not 90); the tweezers ride level by   |
-|              | their jaws and stay inert until there are pinch frames to pick with;|
+| immortal     | 1920x1080 (Config window_size); four tools ride the shelf items.png |
+|              | paints: the sprite's four bays ARE the four slots - BAYS holds each |
+|              | bay's opening centre and its board-top rest line, read off the      |
+|              | sprite's luminance bands; a bay's ceiling is its click cell's own   |
+|              | cut, so the bays stand 214/213.5/214/207 px tall and every tool is  |
+|              | drawn at `tool_scale` - the largest size that fits every bay, so    |
+|              | nothing changes size as it moves along the shelf; tweezers, spade,  |
+|              | spray can, watering can top to bottom, click a bay to swap          |
+|              | with it, right button trades held for stored; a fresh left click    |
+|              | digs one spade stroke - `dig_offset`: shoved DIG_PUSH_DIST px along |
+|              | its own drawn line (34.9 deg below horizontal, read off the art),   |
+|              | held buried DIG_HOLD s, then arched up and left over the hole it    |
+|              | made and home to the cursor - no rotation, the tool is carried, not |
+|              | turned; docked and held tools are centred on their drawing rather   |
+|              | than their canvas, so the off-centre tweezers fit inside the dock;  |
+|              | the tweezers stay inert until pinch frames exist;                   |
 |              | plants grow one at a time, each slice opening its flowers once fully|
 |              | grown (the four lower slices' spawn points, the top slice bearing   |
 |              | none, populated with `flower.png`); one viper per fully grown plant |
@@ -914,9 +977,10 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 
 ```
 cargo build --examples   # expect EXIT 0
-cargo test               # expect 183 passed + 5 doctests
-cargo test --examples    # expect 137 passed (unit tests inside the examples;
-                           # ron_view/tree.rs compiles into both targets, so its 9 parser tests run twice)
+cargo test               # expect 206 lib + 3 integration + 5 doctests
+cargo test --examples    # expect ~152 passed (unit tests inside the examples,
+                           # centipede's rig included; ron_view/tree.rs compiles
+                           # into both targets, so its 9 parser tests run twice)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example worm     # peristaltic crawl, edge wrap; exits 0
 cargo run --example ron_view # fold rows, drag both scroll handles; exits 0

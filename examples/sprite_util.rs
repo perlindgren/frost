@@ -40,7 +40,9 @@
 //! from, and **Save As** asks a native dialog for a new name, defaulted
 //! to the sprite's current file name; both ask for confirmation before
 //! overwriting an existing file — and, when the sprite has a sidecar
-//! `.ron`, writes the tree back out beside the PNG. **Close** takes the
+//! `.ron`, writes the tree back out beside the PNG. A sprite without a
+//! sidecar gains one the first time it names a grid: the save that sets
+//! the atlas also creates the file it persists in. **Close** takes the
 //! active sprite out of its slot, and every later slot shifts left to
 //! fill the gap.
 //!
@@ -399,7 +401,9 @@ struct Sprite {
     ron: Option<RonDoc>,
     /// The tile grid the sprite splits into: the rows and columns the
     /// Atlas panel sets, read back from the sidecar's `atlas` field when
-    /// the sprite loads. `None` is no grid.
+    /// the sprite loads. `None` is no grid. Saving a sprite that names a
+    /// grid but has no sidecar yet creates one beside the PNG, so the
+    /// grid has a file to live in.
     atlas: Option<(usize, usize)>,
 }
 
@@ -962,16 +966,35 @@ impl Demo {
                 }
                 // The sidecar travels with its sprite: the tree is
                 // written back out — canonically re-laid, edits and
-                // folds faithfully — beside the saved PNG.
+                // folds faithfully — beside the saved PNG. A sprite
+                // without one gains a file the first time it names a
+                // grid: the save that sets the atlas also creates the
+                // sidecar it persists in.
                 let mut both = String::new();
+                let side = path.with_extension("ron");
+                let side_name = file_name_of(&side);
                 if let Some(doc) = self.active().and_then(|sp| sp.ron.as_ref()) {
-                    let side = path.with_extension("ron");
-                    let side_name = file_name_of(&side);
                     let text = ron_tree::to_text_doc(&doc.header, &doc.root, &doc.trailer);
                     match std::fs::write(&side, text) {
                         Ok(()) => {
                             log::info!("saved '{side_name}'");
                             both = format!(" and '{side_name}'");
+                        }
+                        Err(err) => log::warn!("failed to save '{side_name}': {err}"),
+                    }
+                } else if let Some(atlas) = self.active().and_then(|sp| sp.atlas) {
+                    let doc = new_sidecar(side_name.clone(), atlas);
+                    let text = ron_tree::to_text_doc(&doc.header, &doc.root, &doc.trailer);
+                    match std::fs::write(&side, text) {
+                        Ok(()) => {
+                            log::info!("saved '{side_name}'");
+                            both = format!(" and '{side_name}'");
+                            // The file joins the sprite: its panel opens
+                            // on the next frame, and later edits ride the
+                            // same file.
+                            if let Some(sp) = self.sprites.get_mut(self.active) {
+                                sp.ron = Some(doc);
+                            }
                         }
                         Err(err) => log::warn!("failed to save '{side_name}': {err}"),
                     }
@@ -2236,6 +2259,51 @@ fn load_ron(png: &std::path::Path) -> Option<RonDoc> {
     })
 }
 
+/// The sidecar a sprite gains on the first save that names a grid: a
+/// fresh document holding just the `atlas` field, laid out and ready
+/// for the panel — the shape [`load_ron`] builds for an existing file.
+fn new_sidecar(name: String, atlas: (usize, usize)) -> RonDoc {
+    let mut root = ron_tree::Val::Struct {
+        open: true,
+        head: String::new(),
+        curly: false,
+        fields: vec![(
+            "atlas".to_string(),
+            ron_tree::Item::plain(atlas_value(atlas.0, atlas.1)),
+        )],
+        tail: String::new(),
+    };
+    root.open_to(0, 1);
+    let rows = ron_tree::layout(&root);
+    let mut doc = RonDoc {
+        name,
+        header: String::new(),
+        trailer: String::new(),
+        root,
+        rows,
+        scroll: 0.0,
+        sx: 0.0,
+        edit: None,
+        vw: RON_W,
+        vh: RON_VIEW_H,
+    };
+    doc.clamp_scroll();
+    doc
+}
+
+/// The `atlas` field's value: the counts as a two-entry array,
+/// `[rows, cols]`.
+fn atlas_value(rows: usize, cols: usize) -> ron_tree::Val {
+    ron_tree::Val::Seq {
+        open: true,
+        items: vec![
+            ron_tree::Item::plain(ron_tree::Val::Atom(rows.to_string(), ron_tree::Kind::Num)),
+            ron_tree::Item::plain(ron_tree::Val::Atom(cols.to_string(), ron_tree::Kind::Num)),
+        ],
+        tail: String::new(),
+    }
+}
+
 /// The tile grid the sidecar's root names, if it names one: its
 /// `atlas` field's two entries, `[rows, cols]`. A field of the wrong
 /// shape — not a two-entry array, or a missing or zero count — reads
@@ -2275,20 +2343,7 @@ fn set_atlas(root: &mut ron_tree::Val, atlas: Option<(usize, usize)>) -> bool {
     };
     match atlas {
         Some((rows, cols)) => {
-            let seq = ron_tree::Val::Seq {
-                open: true,
-                items: vec![
-                    ron_tree::Item::plain(ron_tree::Val::Atom(
-                        rows.to_string(),
-                        ron_tree::Kind::Num,
-                    )),
-                    ron_tree::Item::plain(ron_tree::Val::Atom(
-                        cols.to_string(),
-                        ron_tree::Kind::Num,
-                    )),
-                ],
-                tail: String::new(),
-            };
+            let seq = atlas_value(rows, cols);
             match fields.iter_mut().find(|(key, _)| *key == "atlas") {
                 Some((_, item)) => item.val = seq,
                 None => fields.push(("atlas".to_string(), ron_tree::Item::plain(seq))),
@@ -3578,5 +3633,31 @@ mod tests {
             "a broken field reads as no grid"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fresh_sidecar_holds_only_the_grid() {
+        // The first save of a sprite that had no sidecar creates one:
+        // it holds just the `atlas` field, and the grid reads back the
+        // way a loaded file's does.
+        let doc = new_sidecar("probe.ron".to_string(), (2, 3));
+        assert_eq!(doc.name, "probe.ron");
+        let fields = match &doc.root {
+            ron_tree::Val::Struct { fields, .. } => fields,
+            _ => panic!("a tuple-struct root"),
+        };
+        assert_eq!(
+            fields.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            ["atlas"],
+            "nothing but the grid"
+        );
+        assert!(!doc.rows.is_empty(), "the panel has rows to draw");
+        let text = ron_tree::to_text_doc(&doc.header, &doc.root, &doc.trailer);
+        let reparsed = ron_tree::parse(&text).expect("the fresh sidecar parses");
+        assert_eq!(
+            atlas_of(&reparsed),
+            Some((2, 3)),
+            "the grid survives the file round trip"
+        );
     }
 }

@@ -1572,7 +1572,7 @@ mod tests {
         };
         let dt = 0.05;
         let scale = BUG_SIZE / 10.0;
-        let mut bugs = Bugs::new([&frame; 3]);
+        let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
         // Pin the swarm's randomizer: the spawn spots must stay more than
         // half a bug width apart, so each drop lands on exactly one bug,
         // and the clock-seeded default would occasionally cluster two.

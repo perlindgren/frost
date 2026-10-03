@@ -1,46 +1,49 @@
-//! A centipede built out of the `dogs_name` monster's cut-out parts, and
-//! the walk those parts were cut to make.
+//! A centipede built out of the `dogs_name` monster's cut-out parts and
+//! walked **seen from above**, which is the view the parts' own leg sprites
+//! imply once the ground plane is the whole picture.
 //!
 //! [`Monster_head.png`](assets/sprites/Monster_head.png), the three
 //! [`Monster_body`](assets/sprites/Monster_body1.png) chevrons,
-//! [`Monster_tail.png`](assets/sprites/Monster_tail.png) and the two halves
-//! of [`Monster_leg1.png`](assets/sprites/Monster_leg1.png) and
+//! [`Monster_tail.png`](assets/sprites/Monster_tail.png) and
 //! [`Monster_leg2.png`](assets/sprites/Monster_leg2.png) are loaded once and
-//! assembled by the [`rig`] module into an animal with a two-link leg on
-//! every segment: the head at the front, a chevron per segment with its
-//! knee hidden behind the paper hem as it is in the sheet, the spike cluster
-//! at the rear, and thigh-and-shin hanging under each segment.
+//! assembled by the [`rig`] module: the skull leads, the plates overlap down
+//! the back, the spike cluster lies over the last of them the way the skull
+//! lies over the first, and one sprite-leg comes out of each segment on **both**
+//! sides — a row of legs along the top of the body and a row along the bottom,
+//! the far row the same sprite with a negative `y` scale. A leg is one fragment
+//! of the sheet's leg, the piece that carries the clay foot, swung from its
+//! broken upper end; the art's other fragment, the thigh, is not drawn at all.
 //!
-//! The animal starts as three segments drawn at random from the three
-//! chevron variants, crawls right to left at [`rig::CRAWL_SPEED`], and when
-//! the whole of it — tail last — has gone off the left edge it comes back in
-//! from the right with **one more segment**. The newcomer is grown, not
-//! pasted on: it is a smaller chevron with shorter legs that reaches full
-//! size over [`rig::GROW_SECONDS`], so the addition reads as an animal
-//! moulting and stretching rather than a longer list of sprites. One more
-//! segment every round trip, until [`MAX_SEGMENTS`] makes it longer than the
-//! screen is wide and the crawl simply continues at that length.
+//! Those legs are not decoration hung off a moving body: each is a rigid
+//! limb on one pivot, so its foot can only ever sit on a circle around its
+//! hip, and the body goes only where that allows. A foot is planted for
+//! [`rig::DUTY`] of its cycle and dragged backward through the body at
+//! exactly the speed the body moves, which is what keeps the feet gripping
+//! rather than the whole animal skating along on shuffling feet; the angle a
+//! rigid leg has to swing through to do that is not uniform, and the
+//! resulting sweep — fast under the hip, crawling at the ends of the stance —
+//! is the gait. Nothing is keyframed: the whole pose is a pure function of
+//! the clock.
 //!
-//! The gait is [`rig`]’s: every segment’s foot alternates between a stance
-//! planted on the ground and a swing that reaches forward, each leg’s step
-//! [`rig::LAG`] of a cycle behind its neighbour’s, so the steps run head to
-//! tail in the same ripple the body’s spine is riding. Two details do most
-//! of the work of selling it:
-//!
-//! - the stride is exactly the ground the animal travels while a foot is
-//!   planted, so planted feet *grip* — the body slides over them instead of
-//!   the whole animal skating along on shuffling feet, and
-//! - the far-side legs are a half cycle out of step with the near ones,
-//!   shaded and slightly smaller, which is how one flat row of sprites reads
-//!   as two rows of legs under an animal.
-//!
-//! None of it is keyframed: the whole pose is a pure function of the clock,
-//! so a segment can be added mid-stride and nothing has to be re-tuned.
+//! The animal starts as three segments drawn at random from the three chevron
+//! variants and crawls right to left at [`rig::CRAWL_SPEED`], and it grows a
+//! segment **while it is on screen**: once the whole of it has come through the
+//! right edge, one more is put on at the rear. It starts on the slot of the
+//! segment in front, hidden under that plate, and slides back into a slot of its
+//! own over [`rig::GROW_SECONDS`] — swelling and lengthening the body as it
+//! goes. The tail does not stir until the newcomer's plate reaches further back
+//! than the one the tail was resting on: it is one organ on the back of the
+//! animal, not a part of whichever segment happens to be last, so it is pushed
+//! along rather than rebuilt. So the growth is one continuous stretch you can
+//! watch through the middle of a crossing, not a longer list of sprites
+//! arriving already made. Once the tail clears the left edge the animal
+//! starts again at the length it reached, and grows once more per crossing,
+//! until [`MAX_SEGMENTS`] and the crawl simply continues.
 //!
 //! The window opens at a physical 1920x1080 like `dogs_name`
-//! ([`frost::Config::window_size_px`]); the animal is scaled to the live
-//! window each frame and walks along a soil band under the same moonlit
-//! grey-green the flipbook sits in. Run with:
+//! ([`frost::Config::window_size_px`]) and the animal is scaled to the live
+//! window each frame — by its leg span, since from above the distance between
+//! its two rows of feet is the dimension it cannot exceed. Run with:
 //!
 //! ```text
 //! cargo run --example centipede
@@ -66,25 +69,26 @@ const START_SEGMENTS: usize = 3;
 /// keeps crawling.
 const MAX_SEGMENTS: usize = 26;
 
-/// The animal's height as a fraction of the window's. The fit scale maps
-/// the animal's art-space height — a hip at [`rig::Rig::spine_y`] and the
-/// skull above it — onto this, leaving sky over it and soil under it.
-const BODY_HEIGHT: f32 = 0.44;
+/// The animal's span across its track — the reach of both rows of feet,
+/// pads included — as a fraction of the window's height. The fit scale maps
+/// [`rig::Rig::half_span`] onto this, which leaves the legs inside the
+/// frame however many segments the animal grows to.
+const BODY_SPAN: f32 = 0.72;
 
-/// The ground line, as a fraction of the window's height below its centre:
-/// the animal walks along the lower third of the frame.
-const GROUND: f32 = 0.30;
+/// The track the animal crawls along, as a fraction of the window's height
+/// above its centre: the middle of the frame, with room on either side for
+/// the body wave to swing it.
+const TRACK: f32 = 0.0;
 
 /// How far past an edge the animal must be before it comes back at the
 /// other one, measured from its nose and its tail tip rather than from its
 /// origin, so it really has left the scene instead of respawning half-in.
 const MARGIN: f32 = 60.0;
 
-/// The root's children, in the order that draws them: the soil band, its
-/// lit edge along the ground line, and the animal on top of both.
-const SOIL: usize = 0;
-const EDGE: usize = 1;
-const ANIMAL: usize = 2;
+/// The animal's node, the root's only child: from above there is no
+/// horizon, no soil band and nothing to stand on, so the background is the
+/// ground it crawls over and the animal is all the scene has.
+const ANIMAL: usize = 0;
 
 /// The centipede: the segments it is built from, the clock its gait reads,
 /// and where it stands.
@@ -96,9 +100,9 @@ struct Centipede {
     /// grown, `1.0` being full size.
     segments: Vec<Segment>,
     /// Where the animal's origin sits in window pixels: the middle of its
-    /// front segment horizontally, and the ground it walks on vertically.
+    /// front segment horizontally, and its track vertically.
     x: f32,
-    ground_y: f32,
+    track_y: f32,
     /// The rig's numbers, derived once from the parts' texture sizes.
     rig: rig::Rig,
     /// The parts, indexed by [`rig`] part index.
@@ -110,6 +114,11 @@ struct Centipede {
     /// Whether the animal's nodes have to be rebuilt: set whenever its body
     /// changes, which is not only when it changes length.
     rebuild: bool,
+    /// Whether this crossing has already produced a segment. Growth is once a
+    /// trip rather than continuous, both so that the animal lengthens at a pace
+    /// a viewer can follow and so that the rear of the frame is not a permanent
+    /// sprouting.
+    grew: bool,
 }
 
 impl Centipede {
@@ -131,26 +140,38 @@ impl Centipede {
         rig::rear(&self.rig, &self.segments)
     }
 
-    /// The fit scale: the animal's art-space height — a hip at
-    /// [`rig::Rig::spine_y`] with the skull above it — onto [`BODY_HEIGHT`]
-    /// of the window, uniform: a centipede stretched sideways is just a
-    /// wrong centipede.
+    /// The fit scale: half the animal's lateral span onto half of
+    /// [`BODY_SPAN`] of the window. Uniform — a centipede squashed along its
+    /// own length is just a wrong centipede — and independent of how many
+    /// segments it has, so the animal never changes size as it grows.
     fn fit(&self, height: f32) -> f32 {
-        BODY_HEIGHT * height / (self.rig.spine_y() + self.rig.skull)
+        BODY_SPAN * height / (2.0 * self.rig.half_span())
     }
 
-    /// Starts a fresh animal of `count` segments, entering from the right
-    /// edge with its nose just off screen. The last segment is the new one,
-    /// and starts at [`rig::GROW_START`]; the ones in front of it are full
-    /// size, as they were in the animal that just left.
+    /// Adds one segment at the rear, at the size and the slot a segment is
+    /// born with: [`rig::GROW_START`] of its final plate, and no slot at all —
+    /// on top of the segment in front of it, which hides it, since the plates
+    /// are drawn rear first. Everything after this is the growth ramp.
+    fn grow_a_segment(&mut self) {
+        let body = self.random_body();
+        self.segments.push(Segment {
+            body,
+            grow: rig::GROW_START,
+        });
+        self.grew = true;
+        self.rebuild = true;
+        log::info!("the centipede grew: {} segments", self.segments.len());
+    }
+
+    /// Starts a fresh animal of `count` segments, entering from the right edge
+    /// with its nose just off screen, every segment full size and in its own
+    /// slot. Nothing grows on the way in: the newcomer that a crossing produces
+    /// arrives later, in view, from [`Centipede::grow_a_segment`].
     fn respawn(&mut self, count: usize, width: f32, fit: f32) {
         self.segments.clear();
         for _ in 0..count {
             let body = self.random_body();
             self.segments.push(Segment { body, grow: 1.0 });
-        }
-        if let Some(newest) = self.segments.last_mut() {
-            newest.grow = rig::GROW_START;
         }
         // The nose at `width / 2 + MARGIN`, and the rest of the animal
         // trailing off the edge behind it.
@@ -158,6 +179,7 @@ impl Centipede {
         // Even at `MAX_SEGMENTS`, where the length stops changing, this is a
         // different animal: it picked a fresh set of chevron variants.
         self.rebuild = true;
+        self.grew = false;
     }
 }
 
@@ -166,7 +188,7 @@ impl frost::Process for Centipede {
         self.t += dt;
         let (width, height) = ctx.size();
         let fit = self.fit(height);
-        self.ground_y = -GROUND * height;
+        self.track_y = TRACK * height;
 
         // The first frame knows the window size, which is when the animal
         // can be placed at all: build it entering from the right.
@@ -174,8 +196,22 @@ impl frost::Process for Centipede {
             self.respawn(START_SEGMENTS, width, fit);
         }
 
-        // Every segment stretches toward full size; only a newborn is ever
-        // short of it, and it gets there in `GROW_SECONDS`.
+        // The growth, and it happens out in the open: only once the whole
+        // animal is inside the right edge with a pitch to spare behind it, so
+        // the segment it gains has room to come out on screen.
+        if !self.grew
+            && self.segments.len() < MAX_SEGMENTS
+            && self.x + self.rear() * fit < width / 2.0 - MARGIN - rig::PITCH * fit
+        {
+            self.grow_a_segment();
+        }
+
+        // Every segment stretches toward full size; only a newcomer is ever
+        // short of it, and it gets there in `GROW_SECONDS`. Its legs go with
+        // it, since a leg's whole stance — hip height included — is scaled
+        // by the same number, and so does its slot: [`rig`] pulls a growing
+        // segment forward toward the one in front by how much it has left to
+        // grow, which is what turns the addition into one long stretch.
         for segment in &mut self.segments {
             segment.grow = (segment.grow + dt / rig::GROW_SECONDS).min(1.0);
         }
@@ -183,52 +219,24 @@ impl frost::Process for Centipede {
         // The crawl: forward is `-x`, at the speed the feet are strided for.
         self.x -= rig::CRAWL_SPEED * fit * dt;
 
-        // One trip across the window is one round trip of the gait's clock
-        // only in a loose sense — what matters is that the animal is gone.
-        // The tail is the last of it to leave, so when the tail tip passes
-        // the left margin it is time to come back with a new segment.
+        // What matters is that the animal is gone. The tail is the last of
+        // it to leave, so when the tail tip passes the left margin it is
+        // time to come back with a new segment.
         if self.x + self.rear() * fit < -width / 2.0 - MARGIN {
-            let grown = (self.segments.len() + 1).min(MAX_SEGMENTS);
-            self.respawn(grown, width, fit);
-            log::info!("the centipede grew: {} segments", self.segments.len());
+            let length = self.segments.len();
+            self.respawn(length, width, fit);
+            log::info!("the centipede came back: {length} segments");
         }
 
-        // The pose, in art units, back to front: far legs, near legs, tail,
-        // segments, head.
+        // The pose, in art units, back to front: both rows of legs, the
+        // tail, the plates from the rear in, and the head.
         rig::pose(&self.rig, &self.segments, self.t, &mut self.placements);
-
-        // The soil: a band from the ground line to the bottom of the window,
-        // with a lit edge along the line itself. Both are the root's
-        // children in window space, so they follow the window's size.
-        let soil = &mut ctx.scene().root.children[SOIL];
-        let depth = height / 2.0 + self.ground_y;
-        soil.shape = Some(frost::Shape::Rectangle {
-            center: [0.0, self.ground_y - depth / 2.0],
-            extent: [width / 2.0, depth / 2.0],
-            color: frost::Color {
-                r: 0.045,
-                g: 0.055,
-                b: 0.05,
-                a: 1.0,
-            },
-        });
-        let edge = &mut ctx.scene().root.children[EDGE];
-        edge.shape = Some(frost::Shape::Rectangle {
-            center: [0.0, self.ground_y],
-            extent: [width / 2.0, 1.5],
-            color: frost::Color {
-                r: 0.16,
-                g: 0.2,
-                b: 0.16,
-                a: 1.0,
-            },
-        });
 
         // The animal: one node per placement. The node carries the fit scale
         // and the animal's place, so a placement's own transform stays in
         // art units and only has to hang its part from its joint.
         let animal = &mut ctx.scene().root.children[ANIMAL];
-        animal.transform = frost::Transform::translate([self.x, self.ground_y]);
+        animal.transform = frost::Transform::translate([self.x, self.track_y]);
         animal.scale = [fit, fit];
 
         // The tree is rebuilt only when the body changes — which the rig
@@ -243,13 +251,6 @@ impl frost::Process for Centipede {
                 .map(|p| {
                     Box::new(frost::SceneNode {
                         shape: Some(self.shapes[p.part].clone()),
-                        // The far side's legs are the same clay in shadow.
-                        modulate: frost::Color {
-                            r: p.shade,
-                            g: p.shade,
-                            b: p.shade,
-                            a: 1.0,
-                        },
                         ..Default::default()
                     })
                 })
@@ -260,12 +261,15 @@ impl frost::Process for Centipede {
             // A part is centred on its node, so its joint has to be moved
             // back onto the node's origin — and since frost applies a node's
             // scale *before* its transform, that offset has to be scaled by
-            // the same factor to keep the joint where the rig put it.
+            // the same factor to keep the joint where the rig put it. The
+            // scale's `y` is negative for the top row of legs, which is the
+            // mirror: it folds the reflection into the same transform the
+            // bottom row uses.
             node.transform =
-                frost::Transform::translate([-p.pivot[0] * p.scale, -p.pivot[1] * p.scale])
+                frost::Transform::translate([-p.pivot[0] * p.scale[0], -p.pivot[1] * p.scale[1]])
                     .compose(&frost::Transform::rotate(p.angle))
                     .compose(&frost::Transform::translate(p.joint));
-            node.scale = [p.scale, p.scale];
+            node.scale = [p.scale[0], p.scale[1]];
         }
 
         log::trace!(
@@ -302,7 +306,9 @@ fn main() {
     }
 
     let scene = frost::Scene::new(frost::SceneNode {
-        // The same moonlit grey-green night the flipbook sits in.
+        // Seen from above there is no sky, so the clear colour is the
+        // ground: the same moonlit grey-green the flipbook sits in, taken
+        // for soil instead of for air.
         shape: Some(frost::Shape::Background {
             color: frost::Color {
                 r: 0.07,
@@ -311,15 +317,8 @@ fn main() {
                 a: 1.0,
             },
         }),
-        children: vec![
-            // The soil band and its lit edge, sized by the process, and the
-            // animal's node, built by the process. All three start empty:
-            // their shapes and children are the process's business, because
-            // only it knows the window size.
-            Box::new(frost::SceneNode::default()),
-            Box::new(frost::SceneNode::default()),
-            Box::new(frost::SceneNode::default()),
-        ],
+        // The animal's node, empty until the first frame builds it.
+        children: vec![Box::new(frost::SceneNode::default())],
         ..Default::default()
     });
 
@@ -329,12 +328,13 @@ fn main() {
             t: 0.0,
             segments: Vec::new(),
             x: 0.0,
-            ground_y: 0.0,
+            track_y: 0.0,
             rig: rig::Rig::new(sizes),
             shapes,
             placements: Vec::new(),
             rng: frost::Rng::new(),
             rebuild: true,
+            grew: false,
         },
         frost::Config {
             vsync: true,

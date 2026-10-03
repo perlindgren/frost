@@ -31,10 +31,12 @@ use crate::{
 };
 
 /// The snapshot format's version: the layout this build reads and writes.
-/// [load] rejects files whose version differs. Version 5 is the spade and
-/// the tweezers: the items panel's slot table is six deep now, and a dig
-/// stroke's elapsed time rides along with the tool's tilt and burst.
-pub const VERSION: u32 = 5;
+/// [load] rejects files whose version differs. Version 5 was the spade and
+/// the tweezers, with a dig stroke's elapsed time riding along with the
+/// tool's tilt and burst. Version 6 is the shelf: the slot table is as deep
+/// as `items.png` has bays — four — so a five-file's six-deep table would
+/// not decode anyway, and deserves the clean rejection a version gives it.
+pub const VERSION: u32 = 6;
 
 /// A snapshot load's failure: no candidate's file could be read
 /// ([LoadError::Io]), or a file was read but cannot be used by this build
