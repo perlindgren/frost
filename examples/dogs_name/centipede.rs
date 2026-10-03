@@ -40,10 +40,13 @@
 //! starts again at the length it reached, and grows once more per crossing,
 //! until [`MAX_SEGMENTS`] and the crawl simply continues.
 //!
-//! The window opens at a physical 1920x1080 like `dogs_name`
-//! ([`frost::Config::window_size_px`]) and the animal is scaled to the live
-//! window each frame — by its leg span, since from above the distance between
-//! its two rows of feet is the dimension it cannot exceed. Run with:
+//! The window opens at a 1920x1080 logical size like `dogs_name`
+//! ([`frost::Config::window_size`]), scaled with the display's density and
+//! clamped to the monitor if the screen is smaller, and
+//! `Config::render_size` pins the frame to those pixels — the animal is
+//! scaled to the render size each frame — by its leg span, since from
+//! above the distance between its two rows of feet is the dimension it
+//! cannot exceed. Run with:
 //!
 //! ```text
 //! cargo run --example centipede
@@ -53,10 +56,10 @@ mod rig;
 
 use rig::{Placement, Segment};
 
-/// The window's initial size in physical pixels, as in `dogs_name`: a real
-/// 1920x1080 panel window on every display, so the parts land one texel per
-/// pixel there and the fit scale below only has to cope with smaller
-/// windows.
+/// The render size the animal is scaled to, as in `dogs_name`, and the
+/// window's initial logical size: the frame lands one texel per pixel at
+/// that size and any other window size is a stretch of that finished
+/// frame, its 16:9 shape preserved.
 const WINDOW: [u32; 2] = [1920, 1080];
 
 /// How many segments the animal is born with. Each trip across the window
@@ -337,9 +340,13 @@ fn main() {
             grew: false,
         },
         frost::Config {
-            vsync: true,
-            window_size: None,
-            window_size_px: Some(WINDOW),
+            // The fixed 1920x1080 render target, as in `dogs_name`, and a
+            // window that opens at the same 16:9 shape in logical units:
+            // the same picture on every display, stretched, keeping its
+            // shape as the window moves.
+            window_size: Some(WINDOW),
+            render_size: Some(WINDOW),
+            ..Default::default()
         },
     ) {
         log::error!("frost failed: {err}");

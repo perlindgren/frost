@@ -29,7 +29,7 @@ fn particles_scissor_covers_the_whole_surface() {
 // The test exercises the deprecated immediate particle draw itself.
 #[allow(deprecated)]
 fn canvas_particles_packs_instances_in_pixel_space() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let tint = Color {
         r: 0.5,
         g: 0.25,
@@ -137,7 +137,7 @@ fn canvas_particles_packs_instances_in_pixel_space() {
 // The test exercises the deprecated immediate particle draw itself.
 #[allow(deprecated)]
 fn canvas_particles_with_no_particles_adds_no_draw() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     canvas.particles(&[], black(), 0.0);
     assert!(canvas.draws.is_empty());
 }

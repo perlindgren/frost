@@ -28,7 +28,7 @@ fn expand_text_splices_glyph_sprites_in_place() {
     // alpha and z.
     let font = test_font();
     let size = 48.0;
-    let mut canvas = Canvas::new((800, 600));
+    let mut canvas = Canvas::new((800, 600), 1.0);
     let tint = Color {
         r: 1.0,
         g: 0.5,
@@ -126,7 +126,7 @@ fn expand_text_reuses_the_atlas_across_frames() {
     );
 
     let mut frame = || {
-        let mut canvas = Canvas::new((800, 600));
+        let mut canvas = Canvas::new((800, 600), 1.0);
         canvas.draws = vec![Draw::Text {
             diagnostic: false,
             glow: black(),
@@ -170,7 +170,7 @@ fn expand_text_packs_glyphs_first_seen_on_a_later_frame() {
     let mut atlases: HashMap<(u64, u32, u32), text::Atlas> = HashMap::new();
 
     let mut frame = |text: &str| -> usize {
-        let mut canvas = Canvas::new((800, 600));
+        let mut canvas = Canvas::new((800, 600), 1.0);
         canvas.draws = vec![Draw::Text {
             diagnostic: false,
             glow: black(),
@@ -203,4 +203,73 @@ fn expand_text_packs_glyphs_first_seen_on_a_later_frame() {
         5,
         "glyphs first seen on a later frame must be packed and drawn"
     );
+}
+
+#[test]
+fn expand_text_at_density_2_bakes_at_the_physical_size_and_lays_out_logically() {
+    // The same 24 pt text on a scale-1 and a scale-2 canvas: two atlases
+    // keyed by their raster sizes (24 and 48) so each density gets glyphs
+    // baked at its own resolution, while the layout stays in logical
+    // units: the local quad sizes match between the two runs (up to the
+    // raster rounding of each glyph's cell), and every quad's world
+    // transform carries the density — twice the scales, and a pixel-space
+    // center at twice the place, since the 800x600 user space rasterizes
+    // onto a 1600x1200 panel.
+    let font = test_font();
+    let size = 24.0;
+    let white = Color {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+        a: 1.0,
+    };
+    let mut atlases: HashMap<(u64, u32, u32), text::Atlas> = HashMap::new();
+    let mut quads = |scale: f32| -> Vec<([f32; 2], [f32; 2], [f32; 2])> {
+        let mut canvas = Canvas::new((800, 600), scale);
+        canvas.draws = vec![Draw::Text {
+            diagnostic: false,
+            glow: black(),
+            world: Transform::identity(),
+            font: font.clone(),
+            text: "hi".to_string(),
+            size,
+            weight: 400.0,
+            color: white,
+            alpha: 1.0,
+            lit: 0.0,
+            z: 0.0,
+        }];
+        canvas.expand_text(&mut atlases);
+        canvas
+            .draws
+            .iter()
+            .map(|draw| match draw {
+                Draw::Sprite { world, size, .. } => (*size, world.scales(), world.t),
+                other => panic!("expected a glyph sprite, got {other:?}"),
+            })
+            .collect()
+    };
+    let one = quads(1.0);
+    let two = quads(2.0);
+    assert!(!one.is_empty(), "\"hi\" must produce glyph quads");
+    assert_eq!(one.len(), two.len());
+    // The two densities keep two atlases, each keyed by its raster size:
+    // neither can stretch the other's glyphs.
+    let base = Arc::as_ptr(&font) as *const () as u64;
+    assert!(atlases.contains_key(&(base, 24.0f32.to_bits(), 400.0f32.to_bits())));
+    assert!(atlases.contains_key(&(base, 48.0f32.to_bits(), 400.0f32.to_bits())));
+    for (a, b) in one.iter().zip(&two) {
+        // The logical layout matches within a glyph cell's rounding.
+        for axis in 0..2 {
+            assert!(
+                (a.0[axis] - b.0[axis]).abs() <= 1.0,
+                "logical quad size {a:?} vs {b:?}"
+            );
+            assert!((b.1[axis] - 2.0 * a.1[axis]).abs() <= f32::EPSILON);
+            assert!(
+                (b.2[axis] - 2.0 * a.2[axis]).abs() <= 2.0,
+                "pixel center {a:?} vs {b:?}"
+            );
+        }
+    }
 }

@@ -35,6 +35,14 @@ struct Core<P: Process> {
     /// The physical-pixel size request, carried for symmetry with the
     /// native config; `create_window` ignores it on the web.
     window_size_px: Option<[u32; 2]>,
+    /// The resizability request; `set_resizable` is a no-op on the web,
+    /// where the page owns the canvas size, but it is carried so
+    /// `attach_window` runs the same code as native.
+    resizable: bool,
+    /// The fixed render size, honored on the web like anywhere: the frame
+    /// renders to a buffer of this size and the blit stretches it over the
+    /// canvas.
+    render_size: Option<[u32; 2]>,
 }
 
 /// The in-flight async GPU setup on the web.
@@ -162,6 +170,8 @@ impl<P: Process> WebFrost<P> {
         vsync: bool,
         window_size: Option<[u32; 2]>,
         window_size_px: Option<[u32; 2]>,
+        resizable: bool,
+        render_size: Option<[u32; 2]>,
     ) -> Self {
         Self {
             instance: Some(instance),
@@ -171,6 +181,8 @@ impl<P: Process> WebFrost<P> {
                 vsync,
                 window_size,
                 window_size_px,
+                resizable,
+                render_size,
             }),
             window: None,
             gpu: GpuInit::Idle,
@@ -230,6 +242,8 @@ impl<P: Process> WebFrost<P> {
             core.vsync,
             core.window_size,
             core.window_size_px,
+            core.resizable,
+            core.render_size,
             core.scene,
             core.process,
         );

@@ -40,7 +40,11 @@
 //! from, and **Save As** asks a native dialog for a new name, defaulted
 //! to the sprite's current file name; both ask for confirmation before
 //! overwriting an existing file — and, when the sprite has a sidecar
-//! `.ron`, writes the tree back out beside the PNG. A sprite without a
+//! `.ron`, writes the tree back out beside the PNG. Each file is written
+//! only when its content actually differs from it: a sprite whose pixels
+//! and tree match the disk has nothing to save, and **Save** shows that
+//! instead of a button (the name's `*` marks the difference, and **Save
+//! As** stays a write — a new file always one). A sprite without a
 //! sidecar gains one the first time it names a grid: the save that sets
 //! the atlas also creates the file it persists in. **Close** takes the
 //! active sprite out of its slot, and every later slot shifts left to
@@ -386,6 +390,12 @@ struct Sprite {
     name: String,
     /// The working texture: crops replace it, saves write it.
     current: image::RgbaImage,
+    /// The texture as it stands on the file: the loader's decode, then
+    /// each save's bytes. The pixels compare against this to answer
+    /// whether Save has anything to do — undoing back to the loaded
+    /// picture is not a change, and an unchanged PNG is never re-encoded
+    /// (its file keeps the container that produced it).
+    saved_img: image::RgbaImage,
     /// Each crop's snapshot: the texture it replaced and the sidecar
     /// positions it shifted — Ctrl-Z pops both back, and the history
     /// bottom is the sprite's original.
@@ -399,12 +409,49 @@ struct Sprite {
     /// or the file does not parse. It lives and dies with the sprite:
     /// closing the slot drops the panel with it.
     ron: Option<RonDoc>,
+    /// The sidecar as it stands on the file, in the canonical text Save
+    /// writes — `None` when the sprite loaded without one. The tree's
+    /// counterpart of `saved_img`: same question, same answer.
+    saved_ron: Option<String>,
     /// The tile grid the sprite splits into: the rows and columns the
     /// Atlas panel sets, read back from the sidecar's `atlas` field when
     /// the sprite loads. `None` is no grid. Saving a sprite that names a
     /// grid but has no sidecar yet creates one beside the PNG, so the
     /// grid has a file to live in.
     atlas: Option<(usize, usize)>,
+}
+
+impl Sprite {
+    /// Whether the texture differs from the file's bytes: Save's question.
+    fn png_changed(&self) -> bool {
+        self.current != self.saved_img
+    }
+
+    /// The sidecar text a save would write: the parsed tree's rendering,
+    /// or — for a sprite that names a grid but has no sidecar yet — the
+    /// new file's text. `None` is "a save writes no sidecar".
+    fn ron_text(&self) -> Option<String> {
+        match &self.ron {
+            Some(doc) => Some(ron_tree::to_text_doc(&doc.header, &doc.root, &doc.trailer)),
+            None => self.atlas.map(|atlas| {
+                let doc = new_sidecar(file_name_of(&self.path.with_extension("ron")), atlas);
+                ron_tree::to_text_doc(&doc.header, &doc.root, &doc.trailer)
+            }),
+        }
+    }
+
+    /// Whether the sidecar — file or file-to-be — differs from the disk:
+    /// the other question Save asks.
+    fn ron_changed(&self) -> bool {
+        self.ron_text()
+            .is_some_and(|text| Some(&text) != self.saved_ron.as_ref())
+    }
+
+    /// Whether either save target differs from its file: the gate on the
+    /// Save button, the `*` marker and the overwrite prompt.
+    fn changed(&self) -> bool {
+        self.png_changed() || self.ron_changed()
+    }
 }
 
 /// A sprite's parsed sidecar: the tree with its fold flags, the
@@ -884,6 +931,8 @@ impl Demo {
 
     /// Save: write the active texture over the file it was loaded from,
     /// asking first — that file exists, by definition of overwriting it.
+    /// Nothing changed since the last save means nothing to write, and
+    /// nothing to ask about: the files keep their bytes untouched.
     fn save(&mut self, ctx: &mut frost::Context) {
         let Some(sp) = self.active() else { return };
         if sp.current.width() == 0 {
@@ -891,6 +940,10 @@ impl Demo {
         }
         if sp.path.as_os_str().is_empty() {
             self.status = String::from("save: no file to overwrite — use save as");
+            return;
+        }
+        if !sp.changed() {
+            self.status = format!("'{}': nothing to save", sp.name);
             return;
         }
         let (path, name) = (sp.path.clone(), file_name_of(&sp.path));
@@ -948,65 +1001,82 @@ impl Demo {
     }
 
     /// Write the active texture to `path` as PNG and make it the sprite's
-    /// file — the name and the Save target both follow. The slot keeps
-    /// showing the original: a slot is a sprite's identity, not its edit.
+    /// file — the name and the Save target both follow. Each save target
+    /// is compared with the bytes on disk and left alone when equal: a
+    /// save that only brings a sidecar into the world no longer re-encodes
+    /// pixels it never touched, and an untouched PNG keeps the container
+    /// that made it. Save As to a new name is always a change — the new
+    /// file knows nothing yet. The slot keeps showing the original: a slot
+    /// is a sprite's identity, not its edit.
     fn write_png(&mut self, path: &std::path::Path, name: String) {
-        let current = match self.active() {
-            Some(sp) => sp.current.clone(),
-            None => return,
-        };
-        let done = png_bytes(&current)
-            .and_then(|png| std::fs::write(path, png).map_err(|e| e.to_string()));
-        match done {
-            Ok(()) => {
-                log::info!("saved '{name}'");
-                if let Some(sp) = self.sprites.get_mut(self.active) {
-                    sp.path = path.to_path_buf();
-                    sp.name = name.clone();
+        let mut status = String::new();
+        let mut wrote = false;
+        if let Some(sp) = self.sprites.get_mut(self.active) {
+            // A different file is a change whether or not the pixels
+            // moved: the target has nothing to compare against.
+            let here = path == sp.path;
+            let mut saved_files: Vec<String> = Vec::new();
+            if !here || sp.png_changed() {
+                let done = png_bytes(&sp.current)
+                    .and_then(|png| std::fs::write(path, png).map_err(|e| e.to_string()));
+                match done {
+                    Ok(()) => {
+                        log::info!("saved '{name}'");
+                        sp.saved_img = sp.current.clone();
+                        saved_files.push(name.clone());
+                    }
+                    Err(err) => status = format!("save failed: {err}"),
                 }
-                // The sidecar travels with its sprite: the tree is
-                // written back out — canonically re-laid, edits and
-                // folds faithfully — beside the saved PNG. A sprite
-                // without one gains a file the first time it names a
-                // grid: the save that sets the atlas also creates the
-                // sidecar it persists in.
-                let mut both = String::new();
+            }
+            // The sidecar travels with its sprite: the tree is written
+            // back out — canonically re-laid, edits and folds faithful —
+            // beside the saved PNG, but only when it differs from its
+            // file. A sprite without one gains a file the first time it
+            // names a grid: the save that sets the atlas also creates the
+            // sidecar the grid lives in.
+            if status.is_empty()
+                && (!here || sp.ron_changed())
+                && let Some(text) = sp.ron_text()
+            {
                 let side = path.with_extension("ron");
                 let side_name = file_name_of(&side);
-                if let Some(doc) = self.active().and_then(|sp| sp.ron.as_ref()) {
-                    let text = ron_tree::to_text_doc(&doc.header, &doc.root, &doc.trailer);
-                    match std::fs::write(&side, text) {
-                        Ok(()) => {
-                            log::info!("saved '{side_name}'");
-                            both = format!(" and '{side_name}'");
+                match std::fs::write(&side, &text) {
+                    Ok(()) => {
+                        log::info!("saved '{side_name}'");
+                        sp.saved_ron = Some(text);
+                        saved_files.push(side_name.clone());
+                        // A grid without a document adopts the tree
+                        // its file now holds: the panel opens on the
+                        // next frame, and later edits ride the same
+                        // file.
+                        if sp.ron.is_none()
+                            && let Some(atlas) = sp.atlas
+                        {
+                            sp.ron = Some(new_sidecar(side_name, atlas));
                         }
-                        Err(err) => log::warn!("failed to save '{side_name}': {err}"),
                     }
-                } else if let Some(atlas) = self.active().and_then(|sp| sp.atlas) {
-                    let doc = new_sidecar(side_name.clone(), atlas);
-                    let text = ron_tree::to_text_doc(&doc.header, &doc.root, &doc.trailer);
-                    match std::fs::write(&side, text) {
-                        Ok(()) => {
-                            log::info!("saved '{side_name}'");
-                            both = format!(" and '{side_name}'");
-                            // The file joins the sprite: its panel opens
-                            // on the next frame, and later edits ride the
-                            // same file.
-                            if let Some(sp) = self.sprites.get_mut(self.active) {
-                                sp.ron = Some(doc);
-                            }
-                        }
-                        Err(err) => log::warn!("failed to save '{side_name}': {err}"),
-                    }
+                    Err(err) => log::warn!("failed to save '{side_name}': {err}"),
                 }
-                self.dir = path
-                    .parent()
-                    .filter(|d| !d.as_os_str().is_empty())
-                    .map(std::path::PathBuf::from);
-                self.status = format!("saved '{name}'{both}");
             }
-            Err(err) => self.status = format!("save failed: {err}"),
+            if !saved_files.is_empty() {
+                sp.path = path.to_path_buf();
+                sp.name = name.clone();
+                status = format!("saved '{}'", saved_files.join("' and '"));
+            } else if status.is_empty() {
+                // Nothing differed from its file. Save's own gate
+                // refuses this, and Save As cannot reach it — belt:
+                // say so plainly rather than claim a write.
+                status = format!("'{name}': nothing to save");
+            }
+            wrote = !saved_files.is_empty();
         }
+        if wrote {
+            self.dir = path
+                .parent()
+                .filter(|d| !d.as_os_str().is_empty())
+                .map(std::path::PathBuf::from);
+        }
+        self.status = status;
     }
 
     /// A still click on a sidecar view's row. A row that describes a
@@ -1404,13 +1474,17 @@ impl frost::Process for Demo {
         let mut want_save = false;
         let mut want_save_as = false;
         let mut want_close = false;
+        // The `*` is the dirty flag: pixels or tree differing from their
+        // files — not merely a non-empty history, which survives saves
+        // and would mark a freshly saved sprite as unsaved.
         let title = match self.active() {
-            Some(sp) if !sp.history.is_empty() => {
+            Some(sp) if sp.changed() => {
                 format!("{} *  ·  slot {}/{}", sp.name, self.active + 1, SLOTS)
             }
             Some(sp) => format!("{}  ·  slot {}/{}", sp.name, self.active + 1, SLOTS),
             None => format!("no sprite  ·  0/{SLOTS}"),
         };
+        let dirty = self.active().is_some_and(Sprite::changed);
         let ops_line = if self.status.is_empty() {
             match self.selection {
                 Some([x0, y0, x1, y1]) => {
@@ -1434,8 +1508,15 @@ impl frost::Process for Demo {
                 if ui.button(ctx, "crop") {
                     want_crop = true;
                 }
-                if ui.button(ctx, "save") {
-                    want_save = true;
+                if dirty {
+                    if ui.button(ctx, "save") {
+                        want_save = true;
+                    }
+                } else {
+                    // Not a button, just its muted line: with nothing
+                    // changed there is nothing to save. Save As keeps
+                    // its button — a new file is always a write.
+                    ui.readout(ctx, "save  ·  nothing to save");
                 }
                 if ui.button(ctx, "save as") {
                     want_save_as = true;
@@ -2208,14 +2289,22 @@ fn read_sprite(path: &std::path::Path) -> Result<Sprite, String> {
     if let Some((rows, cols)) = atlas {
         log::info!("atlas for '{name}': {rows} x {cols}");
     }
+    // Both baselines start as the disk: the decode is the texture's
+    // saved state, and the sidecar's canonical rendering is the tree's —
+    // the exact text a save would write, so a fresh sprite opens clean.
+    let saved_ron = ron
+        .as_ref()
+        .map(|doc| ron_tree::to_text_doc(&doc.header, &doc.root, &doc.trailer));
     Ok(Sprite {
         path: path.to_path_buf(),
         name,
-        current: tex,
+        current: tex.clone(),
+        saved_img: tex,
         history: Vec::new(),
         shape,
         thumb,
         ron,
+        saved_ron,
         atlas,
     })
 }
@@ -3072,9 +3161,12 @@ fn main() {
             ron_state: frost::TreeState::default(),
             ron_views: Vec::new(),
         },
-        // 1080p: the room a sidecar tree and the art both want.
+        // The room a sidecar tree and the art both want — in logical
+        // pixels, so on a 2x display this opens as a 1440-point-wide
+        // window rendering at 2880 physical: crisp panels and fonts,
+        // and it still fits a laptop screen (1920 logical would not).
         frost::Config {
-            window_size: Some([1920, 1080]),
+            window_size: Some([1440, 810]),
             ..Default::default()
         },
     ) {
@@ -3659,5 +3751,33 @@ mod tests {
             Some((2, 3)),
             "the grid survives the file round trip"
         );
+    }
+
+    #[test]
+    fn the_canonical_sidecar_is_a_round_trip_fixed_point() {
+        // The clean/dirty comparison compares canonical texts, so it is
+        // only honest if canonicalizing is stable: the text Save writes
+        // must re-parse to the very same text. Otherwise a freshly
+        // loaded sprite would open dirty, or a save would never clear
+        // its own mark.
+        let fresh = new_sidecar("probe.ron".into(), (2, 3));
+        let once = ron_tree::to_text_doc(&fresh.header, &fresh.root, &fresh.trailer);
+        let back = ron_tree::parse_doc(&once).expect("the canonical text parses");
+        let twice = ron_tree::to_text_doc(&back.header, &back.root, &back.trailer);
+        assert_eq!(once, twice, "canonicalizing is idempotent");
+    }
+
+    #[test]
+    fn comments_survive_the_canonical_round_trip() {
+        // Header and trailer comments ride the same comparison: if the
+        // rewrite dropped or reshaped them, the untouched file would
+        // count as changed forever after the first save.
+        let text = "// header note\n(\n    atlas: [1, 4],\n)\n// trailer note\n";
+        let doc = ron_tree::parse_doc(text).expect("the commented sidecar parses");
+        let once = ron_tree::to_text_doc(&doc.header, &doc.root, &doc.trailer);
+        let back = ron_tree::parse_doc(&once).expect("the rewrite parses");
+        let twice = ron_tree::to_text_doc(&back.header, &back.root, &back.trailer);
+        assert_eq!(once, twice, "with comments, still idempotent");
+        assert!(once.contains("header note") && once.contains("trailer note"));
     }
 }

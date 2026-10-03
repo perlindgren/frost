@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 #[test]
 fn node_scale_applies_to_the_shape_and_its_subtree() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene::new(SceneNode {
         diagnostic: false,
         glow: black(),
@@ -74,7 +74,7 @@ fn node_order_accumulates_down_the_tree_like_the_transform() {
     // A chain of nodes with orders 1, 2, 4: each node's own shape draws
     // at the order inherited from its ancestors plus its own, and the
     // children inherit that total, so the z's are 1, 3, 7.
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene::new(SceneNode {
         diagnostic: false,
         glow: black(),
@@ -138,7 +138,7 @@ fn node_modulate_multiplies_into_the_shape_and_its_subtree() {
         b: 1.0,
         a: 1.0,
     };
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene::new(SceneNode {
         diagnostic: false,
         glow: black(),
@@ -213,7 +213,7 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
     // The modulate multiplies the sprite's tint and the text's color,
     // channel by channel, but leaves the separate `alpha` opacity field
     // untouched: the opacity is not a color.
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     canvas.draw_scene(&Scene::new(SceneNode {
         diagnostic: false,
         glow: black(),

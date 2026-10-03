@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 #[test]
 fn draw_scene_composes_transforms_down_the_tree() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene::new(SceneNode {
         diagnostic: false,
         glow: black(),
@@ -86,7 +86,7 @@ fn draw_scene_rotates_a_translated_child() {
     // A translated child of a rotated parent (an orbiting shape): the
     // parent's rotation must rotate the child's translation, not the
     // other way around.
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene::new(SceneNode {
         diagnostic: false,
         glow: black(),
@@ -134,7 +134,7 @@ fn draw_scene_rotates_a_translated_child() {
 fn scene_shape_at_user_origin_lands_at_window_center() {
     // Regression: a scene shape at the user-space origin must land at
     // the window center, not the top-left pixel corner.
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene::new(SceneNode {
         diagnostic: false,
         glow: black(),
@@ -170,7 +170,7 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
     // A sprite node at the user-space origin must be centered on the
     // window center (not offset to a corner), and its texture size, tint
     // and z must travel onto the draw untouched.
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene::new(SceneNode {
         diagnostic: false,
         glow: black(),

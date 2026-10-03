@@ -8,22 +8,23 @@
 //! so the walk's squash lives in the art and the process only adds a
 //! gentle float, sway, and breathing on top. Because a sprite's pixels
 //! live behind an `Arc`, advancing the flipbook is just an `Arc` clone
-//! per frame, not a re-decode. The window opens at a true physical
-//! 1920x1080 on every display (`Config::window_size_px` — a 960x540
-//! point window on a 2x Retina screen), and since frost's user space is
-//! physical panel pixels, the frames land one texel per pixel on all of
-//! them; the fit scale comes from the live window size, so resizing or a
-//! different panel still fits the art inside.
+//! per frame, not a re-decode. The window opens at a 1920x1080 logical
+//! size — so it scales with the display's density, twice the panel pixels
+//! on a Retina Mac (`Config::window_size`), clamped to the monitor if the
+//! screen is smaller — and `Config::render_size` pins the frame to exactly
+//! 1920x1080 pixels, so the flipbook is authored, laid out and lit at one
+//! fixed resolution on every display. The window keeps the frame's 16:9
+//! shape as you drag it (and letterboxes if the window manager declines),
+//! so the art is always stretched to fill, never reflowed or squashed.
 //! Run with:
 //!
 //! ```text
 //! cargo run --example dogs_name
 //! ```
 
-/// The window's initial size in physical pixels: a real 1920x1080 panel
-/// window on every display (960x540 points where the scale factor is 2),
-/// 16:9 like the monster art, so a frame at fit scale fills the window
-/// edge to edge.
+/// The render size the monster art is authored at (16:9), used both as the
+/// fixed [`Config::render_size`] and the window's initial logical size, so
+/// the window opens filled by the frame and scales with the display.
 const WINDOW: [u32; 2] = [1920, 1080];
 
 /// How long each frame of the flipbook is held, in seconds — 0.125 is
@@ -133,9 +134,15 @@ fn main() {
             texture,
         },
         frost::Config {
-            vsync: true,
-            window_size: None,
-            window_size_px: Some(WINDOW),
+            // The art is authored at 1920x1080, so the frame is pinned to
+            // that pixel size and the window opens at the same size in
+            // logical units — scaled up by the display's density, clamped
+            // to the monitor if needed. Resizing keeps the 16:9 shape (or
+            // letterboxes), so the flipbook always fills the window, never
+            // reflows.
+            window_size: Some(WINDOW),
+            render_size: Some(WINDOW),
+            ..Default::default()
         },
     ) {
         log::error!("frost failed: {err}");

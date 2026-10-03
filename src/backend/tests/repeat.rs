@@ -41,7 +41,7 @@ fn repeat_layer_scene(repeat: [f32; 2]) -> Scene {
 
 #[test]
 fn a_zero_repeat_layer_draws_its_content_once() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = repeat_layer_scene([0.0, 0.0]);
     canvas.draw_scene(&scene);
     let painted = canvas.paint_order();
@@ -56,7 +56,7 @@ fn a_zero_repeat_layer_draws_its_content_once() {
 
 #[test]
 fn a_repeating_layer_draws_only_the_copies_reaching_the_window() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     // The window spans user x in [-50, 50]: with a period of 100, the
     // circle straddling the bottom edge is visible in its base copy at
     // the left edge and in its copy displaced by one period at the
@@ -82,7 +82,7 @@ fn a_repeating_layer_draws_only_the_copies_reaching_the_window() {
 
 #[test]
 fn repeat_offsets_follow_the_camera() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     // A camera at user x = 60 shifts the window to layer x in
     // [10, 110]: the circle's base copy has scrolled fully off the
     // window's left edge, and only its copy displaced by one period
@@ -130,7 +130,7 @@ fn a_copy_from_a_tile_the_window_does_not_overlap_reaches_the_window() {
     // window, though its tile [100, 200) does not overlap it Ã¢â‚¬â€ it must
     // be drawn, or it would pop into the middle of the window the
     // moment a moving camera's box crossed the tile boundary at 100.
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene {
         root: SceneNode::default(),
         layers: vec![Layer {
@@ -168,7 +168,7 @@ fn a_copy_from_a_tile_the_window_does_not_overlap_reaches_the_window() {
 
 #[test]
 fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     // A rectangle twenty wide, centered at layer x = 95: it straddles
     // the tile boundary at 100. With a period of 100 (greater than its
     // 20 width), it is legal: the window must see its two copies, one
@@ -245,7 +245,7 @@ fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
 #[test]
 #[should_panic(expected = "minimum repeat offset")]
 fn repeat_smaller_than_the_window_aborts() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = repeat_layer_scene([50.0, 0.0]);
     canvas.draw_scene(&scene);
 }
@@ -253,7 +253,7 @@ fn repeat_smaller_than_the_window_aborts() {
 #[test]
 #[should_panic(expected = "drawn twice")]
 fn an_object_wider_than_its_repeat_aborts() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     // A rectangle one hundred and twenty wide exceeds its period of
     // 100: its copies would overlap, so the same object would be drawn
     // twice.
@@ -293,13 +293,13 @@ fn an_object_wider_than_its_repeat_aborts() {
 fn repeat_is_per_axis() {
     // Both axes repeat: the circle straddling the bottom-left corner
     // is visible at all four corners of the window Ã¢â‚¬â€ four copies.
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = repeat_layer_scene([100.0, 100.0]);
     canvas.draw_scene(&scene);
     let painted = canvas.paint_order();
     assert_eq!(painted.len(), 4);
     // One axis repeats: two copies, not four.
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = repeat_layer_scene([100.0, 0.0]);
     canvas.draw_scene(&scene);
     let painted = canvas.paint_order();
@@ -357,7 +357,7 @@ fn a_camera_followed_object_in_a_repeating_layer_stays_at_the_window_center() {
     // pos = 60: the window spans layer x in [10, 110]. The object's
     // base copy is at the window center: user (60 - 60, 0) = (0, 0)
     // -> pixel (50, 50).
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     canvas.draw_scene(&scene([100.0, 0.0], 60.0));
     let painted = canvas.paint_order();
     assert_eq!(painted.len(), 1);
@@ -367,7 +367,7 @@ fn a_camera_followed_object_in_a_repeating_layer_stays_at_the_window_center() {
     assert_eq!(world.apply([0.0, 0.0]), [50.0, 50.0]);
     // pos = 150: the object has wandered a window and a half from the
     // origin; it is still at the window center.
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     canvas.draw_scene(&scene([100.0, 0.0], 150.0));
     let painted = canvas.paint_order();
     assert_eq!(painted.len(), 1);
@@ -377,7 +377,7 @@ fn a_camera_followed_object_in_a_repeating_layer_stays_at_the_window_center() {
     assert_eq!(world.apply([0.0, 0.0]), [50.0, 50.0]);
     // A non-repeating layer has no such limit: the same object is
     // drawn at the window center, wherever it is.
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     canvas.draw_scene(&scene([0.0, 0.0], 150.0));
     let painted = canvas.paint_order();
     assert_eq!(painted.len(), 1);

@@ -63,7 +63,7 @@ fn clear_color_is_the_last_background_in_call_order() {
 
 #[test]
 fn background_node_sorts_to_the_back_and_keeps_its_color() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     canvas.draw_scene(&Scene::new(SceneNode {
         diagnostic: false,
         glow: black(),
@@ -123,7 +123,7 @@ fn background_node_sorts_to_the_back_and_keeps_its_color() {
 
 #[test]
 fn layers_are_hard_draw_partitions() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene {
         root: SceneNode::default(),
         layers: vec![
@@ -204,7 +204,7 @@ fn layers_are_hard_draw_partitions() {
 
 #[test]
 fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene {
         root: SceneNode::default(),
         layers: vec![
@@ -321,7 +321,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
 
 #[test]
 fn the_base_group_paints_first_at_equal_order() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     canvas.circle(
         0.0,
         0.0,
@@ -385,7 +385,7 @@ fn the_base_group_paints_first_at_equal_order() {
 
 #[test]
 fn a_background_in_a_higher_layer_sets_the_clear_color() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene {
         root: SceneNode {
             diagnostic: false,
@@ -450,7 +450,7 @@ fn a_background_in_a_higher_layer_sets_the_clear_color() {
 
 #[test]
 fn without_layers_the_paint_order_is_the_global_z_sort() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     canvas.circle(
         0.0,
         0.0,

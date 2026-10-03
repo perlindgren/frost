@@ -22,6 +22,9 @@ pub(crate) const SPRITE_SHADER: &str = include_str!("../shaders/sprite.wgsl");
 /// The batched particle shader source.
 pub(crate) const PARTICLES_SHADER: &str = include_str!("../shaders/particles.wgsl");
 
+/// The fixed-render-size stretch (blit) shader source.
+pub(crate) const BLIT_SHADER: &str = include_str!("../shaders/blit.wgsl");
+
 #[cfg(test)]
 mod tests {
     //! Shader validation without running anything: naga's WGSL frontend and
@@ -32,8 +35,8 @@ mod tests {
     use super::*;
     use crate::backend::{LIGHT_FIELD_BUFFER_MIN, OCCLUDER_FIELD_BUFFER_MIN};
 
-    /// The seven shader sources with their file names.
-    fn all_shaders() -> [(&'static str, &'static str); 7] {
+    /// The eight shader sources with their file names.
+    fn all_shaders() -> [(&'static str, &'static str); 8] {
         [
             ("line.wgsl", LINE_SHADER),
             ("polyline.wgsl", POLYLINE_SHADER),
@@ -42,10 +45,11 @@ mod tests {
             ("shape.wgsl", SHAPE_SHADER),
             ("sprite.wgsl", SPRITE_SHADER),
             ("particles.wgsl", PARTICLES_SHADER),
+            ("blit.wgsl", BLIT_SHADER),
         ]
     }
 
-    /// All seven shaders parse as valid WGSL.
+    /// All eight shaders parse as valid WGSL.
     #[test]
     fn all_shaders_parse_as_wgsl() {
         for (name, source) in all_shaders() {
@@ -54,7 +58,7 @@ mod tests {
         }
     }
 
-    /// All seven shaders must pass naga's *validator*, not just its parser.
+    /// All eight shaders must pass naga's *validator*, not just its parser.
     /// Parsing only proves the WGSL is syntactically valid; the validator is
     /// the second stage wgpu runs inside `Device::create_shader_module`, and
     /// it enforces the address-space layout rules the parser never checks —

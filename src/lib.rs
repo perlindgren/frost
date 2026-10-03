@@ -7,7 +7,11 @@
 //! [`Node::process`], children before their parent), so both can mutate it
 //! in place to animate it. Draw with window-centered
 //! pixel coordinates: the origin is the window center, y points up, so the
-//! top-left corner is `(-width/2, height/2)`.
+//! top-left corner is `(-width/2, height/2)`. The unit is the logical
+//! pixel — the OS's window units: one panel pixel each at 100% scaling,
+//! more per unit on a high-density display (see [`Canvas::scale_factor`]) —
+//! so a layout sized in these units keeps its physical size on every
+//! screen, while text and shapes rasterize at the panel's own resolution.
 //!
 //! ```no_run
 //! let scene = frost::Scene::new(frost::SceneNode {
@@ -132,7 +136,11 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::Arc;
 
-use wgpu::{DeviceDescriptor, Instance, RequestAdapterOptions};
+use wgpu::Instance;
+// Only the native `run_configured` requests the adapter and device inline;
+// on the web that happens inside `WebFrost`, which imports its own.
+#[cfg(not(target_arch = "wasm32"))]
+use wgpu::{DeviceDescriptor, RequestAdapterOptions};
 use winit::event_loop::EventLoop;
 
 mod backend;
@@ -198,8 +206,24 @@ pub use audio::{Audio, AudioError, Sound};
 /// Coordinates are in pixels with the origin at the window center and the y
 /// axis pointing up: the top-left corner is `(-width/2, height/2)` and the
 /// bottom-right corner is `(width/2, -height/2)`.
+///
+/// These are *logical* pixels — the OS's points, which the display's scale
+/// factor turns into the physical panel pixels the frame is rendered at
+/// ([`Canvas::scale_factor`], [`Config::window_size`]). On a 100% display one
+/// unit is one panel pixel; on a Retina Mac two. Everything the frame holds —
+/// coordinates, text sizes, line widths, the mouse — shares this one unit, so
+/// an app laid out in it looks the same on every display and stays sharp on
+/// high-density ones: the engine rasterizes at the physical resolution and
+/// bakes text at the scaled size underneath the user space.
 pub struct Canvas {
     size: (f32, f32),
+    /// The display's scale factor: physical panel pixels per user-space
+    /// (logical) pixel. [`Canvas::user_to_pixel`] folds it into every draw,
+    /// and the immediate methods multiply their scalar sizes (a line's
+    /// width, a circle's radius, a light's reach) by it, so those reach the
+    /// shaders in panel pixels while everything the app speaks stays in
+    /// logical ones.
+    scale: f32,
     /// The base draw group: the immediate draw methods and every scene's
     /// root subtree, mixed by `z` and call order.
     draws: Vec<Draw>,
@@ -211,9 +235,12 @@ pub struct Canvas {
 }
 
 impl Canvas {
-    fn new(pixel_size: (u32, u32)) -> Self {
+    /// A canvas for a window `size` logical pixels wide and high, rendered
+    /// at `scale` physical panel pixels per logical pixel.
+    fn new(size: (u32, u32), scale: f32) -> Self {
         Self {
-            size: (pixel_size.0 as f32, pixel_size.1 as f32),
+            size: (size.0 as f32, size.1 as f32),
+            scale: scale.max(f32::EPSILON),
             draws: Vec::new(),
             layer_draws: Vec::new(),
             layer_orders: Vec::new(),
@@ -221,8 +248,24 @@ impl Canvas {
     }
 
     /// The window size in pixels as `(width, height)`.
+    ///
+    /// The unit is the user-space pixel — logical, not panel: on a display
+    /// with a scale factor of 2 this is half the framebuffer's pixel count
+    /// (see [`Canvas::scale_factor`]).
     pub fn size(&self) -> (f32, f32) {
         self.size
+    }
+
+    /// The display's scale factor: physical panel pixels per user-space
+    /// (logical) pixel — `1.0` on a 100% display, `2.0` on a Retina Mac.
+    ///
+    /// The frame is already rendered at the physical resolution and all
+    /// user-space draws are scaled by this factor underneath, so an app
+    /// rarely needs it: it exists for the rare case that measures something
+    /// in panel pixels — a fixed physical render target, say — and needs to
+    /// divide the factor back out.
+    pub fn scale_factor(&self) -> f32 {
+        self.scale
     }
 
     /// Draws a line from `(x0, y0)` to `(x1, y1)` in `color` with `width` in
@@ -236,7 +279,7 @@ impl Canvas {
         self.draws.push(Draw::Line {
             a: self.user_to_pixels(x0, y0),
             b: self.user_to_pixels(x1, y1),
-            width: width.max(0.0),
+            width: width.max(0.0) * self.scale,
             color,
             z,
             // An immediate canvas draw is not owned by any scene node.
@@ -253,7 +296,7 @@ impl Canvas {
     pub fn circle(&mut self, cx: f32, cy: f32, radius: f32, color: Color, z: f32) {
         self.draws.push(Draw::Circle {
             center: self.user_to_pixels(cx, cy),
-            radius: radius.max(0.0),
+            radius: radius.max(0.0) * self.scale,
             color,
             z,
             // An immediate canvas draw is not owned by any scene node.
@@ -291,7 +334,7 @@ impl Canvas {
             // Circles are rotationally symmetric, so the pixel-space angle
             // the fragment rotates out never matters; 0.0 keeps the packing
             // trivial.
-            data.extend_from_slice(&particle_instance(p, px, py, p.size, 0.0));
+            data.extend_from_slice(&particle_instance(p, px, py, p.size * self.scale, 0.0));
         }
         self.draws.push(Draw::Particles {
             data,
@@ -320,7 +363,7 @@ impl Canvas {
     pub fn rectangle(&mut self, cx: f32, cy: f32, dx: f32, dy: f32, color: Color, z: f32) {
         self.draws.push(Draw::Rectangle {
             center: self.user_to_pixels(cx, cy),
-            extent: [dx.max(0.0), dy.max(0.0)],
+            extent: [dx.max(0.0) * self.scale, dy.max(0.0) * self.scale],
             color,
             z,
             // An immediate canvas draw is not owned by any scene node.
@@ -440,7 +483,7 @@ impl Canvas {
         let origin = self.user_to_pixels(0.0, 0.0);
         self.draws.push(Draw::Light {
             pos: self.user_to_pixels(x, y),
-            radius: radius.max(0.0),
+            radius: radius.max(0.0) * self.scale,
             intensity,
             color,
             // Immediate-mode lights are point-sized: hard shadows.
@@ -549,12 +592,21 @@ impl Canvas {
     }
 
     /// The affine transform from user coordinates (window center origin,
-    /// y up) to the pixel coordinates the shaders use (top-left origin,
-    /// y down): `(x, y) -> (x + w/2, h/2 - y)`.
+    /// y up, logical pixels) to the pixel coordinates the shaders use
+    /// (top-left origin, y down, physical panel pixels):
+    /// `(x, y) -> (s * (x + w/2), s * (h/2 - y))` with `s` the scale factor.
+    ///
+    /// Folding the factor in here is the whole high-density story: every
+    /// scene geometry (shapes, sprites, glyph quads) composes onto this
+    /// transform, so one multiply maps the logical layout onto the physical
+    /// framebuffer. The scalar sizes that do not ride a transform — a
+    /// stroke width, a circle's radius, a light's reach, a particle's size —
+    /// multiply by `scale` where they are recorded instead.
     fn user_to_pixel(&self) -> Transform {
+        let s = self.scale;
         Transform {
-            m: [[1.0, 0.0], [0.0, -1.0]],
-            t: [self.size.0 / 2.0, self.size.1 / 2.0],
+            m: [[s, 0.0], [0.0, -s]],
+            t: [s * self.size.0 / 2.0, s * self.size.1 / 2.0],
         }
     }
 
@@ -575,11 +627,12 @@ impl Canvas {
     /// is centered on the text node's origin.
     pub(crate) fn expand_text(&mut self, atlases: &mut HashMap<(u64, u32, u32), text::Atlas>) {
         let pixel = self.user_to_pixel();
+        let scale = self.scale;
         let draws = std::mem::take(&mut self.draws);
-        self.draws = expand_text_list(pixel, draws, atlases);
+        self.draws = expand_text_list(pixel, draws, atlases, scale);
         for list in &mut self.layer_draws {
             let draws = std::mem::take(list);
-            *list = expand_text_list(pixel, draws, atlases);
+            *list = expand_text_list(pixel, draws, atlases, scale);
         }
     }
 
@@ -716,10 +769,23 @@ fn draw_node(
     let local = Transform::scale(node.scale).compose(&node.transform);
     let world = local.compose(parent);
     if let Some(shape) = &node.shape {
+        // The node's local-to-pixel transform: the shape shaders evaluate in
+        // pixel space (top-left, y down), so compose the user-to-pixel
+        // transform onto the world transform, like the direct-draw methods
+        // do for their arguments. The canvas's scale factor is folded into
+        // `user_to_pixel`, so everything that rides this transform — and
+        // every scalar sized from its scale below — lands in physical panel
+        // pixels.
+        let to_pixel = world.compose(&user_to_pixel);
         // Scale the anti-alias band with the transform's scale so it stays a
-        // constant number of screen pixels wide under scaling.
-        let [sx, sy] = world.scales();
+        // constant number of screen pixels wide under scaling — and across
+        // display densities: the band is booked in panel pixels.
+        let [sx, sy] = to_pixel.scales();
         let aa = AA_BAND / sx.max(sy).max(1e-9);
+        // The canvas scale on its own: a light's reach and penumbra are
+        // window-space sizes that never ride a node's scale, but they join
+        // the light field in panel pixels like every other recorded scalar.
+        let px_scale = user_to_pixel.scales()[0];
         let draw = match shape {
             // The shape shader evaluates in pixel space (top-left, y down),
             // so compose the user-to-pixel transform onto the world
@@ -730,7 +796,7 @@ fn draw_node(
                 radius,
                 color,
             } => Some(Draw::Shape {
-                world: world.compose(&user_to_pixel),
+                world: to_pixel,
                 center: *center,
                 params: [(*radius).max(0.0), 0.0],
                 kind: 0.0,
@@ -747,7 +813,7 @@ fn draw_node(
                 extent,
                 color,
             } => Some(Draw::Shape {
-                world: world.compose(&user_to_pixel),
+                world: to_pixel,
                 center: *center,
                 params: [extent[0].max(0.0), extent[1].max(0.0)],
                 kind: 1.0,
@@ -773,7 +839,6 @@ fn draw_node(
                     // Like an empty particle batch: nothing to draw.
                     None
                 } else {
-                    let to_pixel = world.compose(&user_to_pixel);
                     Some(Draw::Polyline {
                         points: points.iter().map(|p| to_pixel.apply(*p)).collect(),
                         width: (*width).max(0.0) * (sx * sy).sqrt(),
@@ -795,7 +860,7 @@ fn draw_node(
                 filter,
                 generation,
             } => Some(Draw::Sprite {
-                world: world.compose(&user_to_pixel),
+                world: to_pixel,
                 data: data.clone(),
                 // The buffer's stamped generation: an in-memory image may
                 // be rebuilt with new pixels at any time, so its identity
@@ -852,7 +917,6 @@ fn draw_node(
                 // and subtracting cancels the translation, carries the
                 // rotation (and any mirror) into the axis, and needs no
                 // atan2 that the pixel space's y flip would confuse.
-                let to_pixel = world.compose(&user_to_pixel);
                 let origin = to_pixel.apply([0.0, 0.0]);
                 let tip = to_pixel.apply([light.direction.cos(), light.direction.sin()]);
                 Some(Draw::Light {
@@ -860,15 +924,18 @@ fn draw_node(
                     // A negative radius is the directional sentinel
                     // (`Light::directional`): clamping it to zero would
                     // silently turn a sun into a degenerate point light,
-                    // so only real radii get clamped.
+                    // so only real radii get clamped. The reach and the
+                    // penumbra are window-space pixels — they never ride a
+                    // node's scale, but the canvas scale still carries them
+                    // to panel pixels.
                     radius: if light.radius < 0.0 {
                         -1.0
                     } else {
-                        light.radius.max(0.0)
+                        light.radius.max(0.0) * px_scale
                     },
                     intensity: light.intensity,
                     color: light.color.mul(modulate),
-                    penumbra: light.penumbra.max(0.0),
+                    penumbra: light.penumbra.max(0.0) * px_scale,
                     dir: normalized_axis([tip[0] - origin[0], tip[1] - origin[1]]),
                     cos_half: half_angle_cosine(light.spread),
                     feather: feather_band(light.spread, light.softness),
@@ -890,16 +957,14 @@ fn draw_node(
                     // draw.
                     None
                 } else {
-                    // The node's local space to the shader's pixel space,
-                    // like the shapes' `world.compose(&user_to_pixel)`.
-                    let to_pixel = world.compose(&user_to_pixel);
                     // The world scale as a uniform size factor: the
-                    // geometric mean of the two axis scales — exact under a
-                    // uniform scale, area-preserving under a non-uniform
-                    // one, where the shape cannot be stretched
-                    // independently along the two axes and so keeps its
-                    // proportions.
-                    let [sx, sy] = world.scales();
+                    // geometric mean of the two axis scales of the composed
+                    // local-to-pixel transform — exact under a uniform
+                    // scale, area-preserving under a non-uniform one, where
+                    // the shape cannot be stretched independently along the
+                    // two axes and so keeps its proportions. Being composed,
+                    // it carries the canvas scale too: the radius reaches
+                    // the shader in panel pixels.
                     let radius_scale = (sx * sy).sqrt();
                     // The pixel-space angle of the node's local +x axis: the
                     // direction `to_pixel` maps `(1, 0)` to. A particle's own
@@ -1185,15 +1250,30 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
 ///
 /// The glyphs are laid out with `text::layout` (pen positions, y up, from
 /// the text's left baseline origin) and rasterized with `text::rasterize`
-/// into the per-`(font, size, weight)` atlas in `atlases`, which the caller keeps
+/// into the per-`(font, raster size, weight)` atlas in `atlases`, which the caller keeps
 /// between frames so unchanged text never re-rasterizes and its texture
 /// buffer keeps a stable identity. Each glyph's quad is centered on its ink
 /// box; the whole text block is centered on the text node's origin.
+///
+/// `scale` is the display's scale factor: the text is *shaped and
+/// rasterized* at the physical size `size × scale` — so the atlas holds a
+/// glyph baked at the resolution the frame actually renders at, which is
+/// what keeps text sharp on a high-density display — and every metric the
+/// shaping yields comes back in raster pixels, so the layout divides it by
+/// `scale` to return to the text's own user-space units. The atlas key
+/// carries the raster size, never the requested one: the same font at two
+/// display densities rasterizes two atlases, each at its own resolution,
+/// and neither ever stretches the other's glyphs.
 fn expand_text_list(
     user_to_pixel: Transform,
     draws: Vec<Draw>,
     atlases: &mut HashMap<(u64, u32, u32), text::Atlas>,
+    scale: f32,
 ) -> Vec<Draw> {
+    // The reciprocal of the display's scale factor: metrics shaped at the
+    // raster size are divided back out below, so the expansion is the
+    // identity at 100% scaling and sharper above it.
+    let inv_scale = 1.0 / scale;
     let mut expanded = Vec::with_capacity(draws.len());
     for draw in draws {
         match draw {
@@ -1210,15 +1290,19 @@ fn expand_text_list(
                 z,
                 diagnostic,
             } => {
+                // The physical raster size: what `text::layout` and
+                // `text::rasterize` bake, so the atlas's texels are the
+                // panel pixels a glyph will cover.
+                let raster = size * scale;
                 // A broken font leaves the text undrawn; `Shape::text`
                 // validates the font up front, so this only guards a buffer
                 // that turned out unreadable.
-                let Some(layout) = text::layout(&font, &string, size, weight) else {
+                let Some(layout) = text::layout(&font, &string, raster, weight) else {
                     continue;
                 };
                 let key = (
                     Arc::as_ptr(&font) as *const () as u64,
-                    size.to_bits(),
+                    raster.to_bits(),
                     weight.to_bits(),
                 );
                 // Pack the missing glyphs into the map's own atlas, not a
@@ -1235,18 +1319,25 @@ fn expand_text_list(
                     if atlas.has(glyph.id) {
                         continue;
                     }
-                    if let Some(raster) = text::rasterize(&font, glyph.id, size, weight) {
+                    if let Some(raster) = text::rasterize(&font, glyph.id, raster, weight) {
                         missing.push((glyph.id, raster));
                     }
                 }
                 if !missing.is_empty() {
                     atlas.insert_many(&missing);
                 }
-                let [sx, sy] = world.scales();
+                // The band is booked against the composed (node-and-canvas)
+                // scale, so it stays a constant number of panel pixels.
+                let [sx, sy] = world.compose(&user_to_pixel).scales();
                 let aa = AA_BAND / sx.max(sy).max(1e-9);
                 // Center the text block (width by ascent + descent, baseline
-                // at the pen-space origin, y up) on the node's origin.
-                let origin = [-layout.width / 2.0, (layout.ascent - layout.descent) / 2.0];
+                // at the pen-space origin, y up) on the node's origin. The
+                // metrics come back in raster pixels; every one below is
+                // divided by the scale factor back into the text's units.
+                let origin = [
+                    -layout.width * inv_scale / 2.0,
+                    (layout.ascent - layout.descent) * inv_scale / 2.0,
+                ];
                 let (atlas_w, atlas_h) = (atlas.width as f32, atlas.height as f32);
                 for glyph in &layout.glyphs {
                     let Some(cell) = atlas.cell(glyph.id) else {
@@ -1255,10 +1346,11 @@ fn expand_text_list(
                     let (gw, gh) = (cell.width as f32, cell.height as f32);
                     // The glyph's pen position in the node's local space,
                     // plus the ink box's center offset from the pen: `left`
-                    // right and `top - height / 2` above the baseline.
+                    // right and `top - height / 2` above the baseline — all
+                    // raster pixels, divided back out.
                     let ink = [
-                        origin[0] + glyph.x + cell.left as f32 + gw / 2.0,
-                        origin[1] + glyph.y + cell.top as f32 - gh / 2.0,
+                        origin[0] + (glyph.x + cell.left as f32 + gw / 2.0) * inv_scale,
+                        origin[1] + (glyph.y + cell.top as f32 - gh / 2.0) * inv_scale,
                     ];
                     let glyph_world = Transform::translate(ink)
                         .compose(&world)
@@ -1276,7 +1368,10 @@ fn expand_text_list(
                         world: glyph_world,
                         data: atlas.data.clone(),
                         generation: atlas.generation(),
-                        size: [gw, gh],
+                        // The cell is a raster-pixel box; the quad rides the
+                        // transform that multiplies by the scale factor, so
+                        // its local size divides the factor back out.
+                        size: [gw * inv_scale, gh * inv_scale],
                         texture_size: [atlas.width, atlas.height],
                         // Glyphs are sampled at their native size (or
                         // scaled down for subpixel layout), so bilinear is
@@ -1555,6 +1650,11 @@ pub struct Config {
     /// request. `None` keeps the platform default (winit's default window
     /// size, or the web canvas's 900x600 default). The user can resize the
     /// window afterwards; this only sets the size it opens at.
+    ///
+    /// An opening request is an ambition, not a promise: a size larger
+    /// than the primary monitor is clamped down to fit it, aspect
+    /// preserved, so the window opens whole and centered rather than
+    /// hanging off the screen.
     pub window_size: Option<[u32; 2]>,
     /// The window's initial inner size in *physical* pixels,
     /// `[width, height]`.
@@ -1563,21 +1663,69 @@ pub struct Config {
     /// `Some([1920, 1080])` opens a 1920x1080 framebuffer on every
     /// display: a 1920x1080-point window at 1.0 scale, and a
     /// 960x540-point one on a Retina Mac — the same physical window
-    /// everywhere, the sane default when an app aims for a fixed render
-    /// size (say 1080p) across very different screens. Ignored on the
-    /// web, where the canvas lives in CSS pixels and [`Config::window_size`]
-    /// already says what it means. Wins over `window_size` when both are
-    /// set; if both are `None` the platform default stands.
+    /// everywhere. Ignored on the web, where the canvas lives in CSS pixels
+    /// and [`Config::window_size`] already says what it means. Wins over
+    /// `window_size` when both are set; if both are `None` the platform
+    /// default stands.
+    ///
+    /// The request sizes the *window*, not the user space: coordinates stay
+    /// logical pixels ([`Canvas::size`]), so a fixed physical window is not
+    /// a fixed render target — an app that lays itself out from
+    /// `ctx.size()` adapts either way. For a fixed render target — art
+    /// authored at one exact pixel size, rendered identically on every
+    /// display — see [`Config::render_size`].
+    ///
+    /// Like [`Config::window_size`], a request larger than the primary
+    /// monitor is clamped down to fit it, aspect preserved.
     pub window_size_px: Option<[u32; 2]>,
+    /// Whether the user can resize the window. Default `true`.
+    ///
+    /// `false` removes the resize affordance (and pins the size with hard
+    /// min/max bounds for window managers that ignore the style hint).
+    /// Ignored on the web, where the page owns the canvas's size.
+    pub resizable: bool,
+    /// A fixed render size in *physical* pixels, `[width, height]`.
+    ///
+    /// The frame is rendered into an offscreen buffer of exactly this size
+    /// and stretched over the whole window by one sampling pass — the
+    /// classic "fixed virtual resolution" of game engines, plain blit and
+    /// nothing smart. The app's user space is then the buffer's pixels:
+    /// [`Canvas::size`] reports `render_size` and [`Canvas::scale_factor`]
+    /// reports `1.0`, so an app authored at these pixels renders at exactly
+    /// the same physical size on every display, and window resizes (and
+    /// display density changes) only stretch the picture — never reflow it.
+    /// When the window's surface happens to be exactly this size the buffer
+    /// and the stretch pass are both skipped and the frame renders straight
+    /// to the screen, so a window pinned with [`Config::window_size_px`] to
+    /// the same numbers costs nothing over rendering directly.
+    ///
+    /// Stretched pixels are resampled, not re-rendered: text baked into a
+    /// smaller buffer comes up soft, which is why apps that draw readable UI
+    /// either leave this `None` (the default: the logical user space rides
+    /// the display's own resolution, sharp at any density) or set it to the
+    /// window's exact physical size.
+    ///
+    /// A window whose shape differs from the render size is never squashed:
+    /// the buffer is presented letterboxed — the largest centered rectangle
+    /// of the render size's aspect, black bars around it, and the mouse
+    /// mapped through that rectangle (cursor coordinates past its edges
+    /// report outside the play area, like an off-window position). A
+    /// resizable window additionally gets an engine-side aspect lock: a
+    /// drag to a wrong shape is answered with a request for the corrected
+    /// one, so the corner slides along the diagonal. Maximization, tiling
+    /// and window managers that decline the request simply letterbox.
+    pub render_size: Option<[u32; 2]>,
 }
 
 impl Default for Config {
-    /// Vsync on, and the platform's default window size.
+    /// Vsync on, a resizable window, and the platform's default size.
     fn default() -> Self {
         Self {
             vsync: true,
             window_size: None,
             window_size_px: None,
+            resizable: true,
+            render_size: None,
         }
     }
 }
@@ -1625,6 +1773,8 @@ pub fn run_configured<P: Process>(
         config.vsync,
         config.window_size,
         config.window_size_px,
+        config.resizable,
+        config.render_size,
         scene,
         process,
     );
@@ -1666,6 +1816,8 @@ pub fn run_configured<P: Process>(
         config.vsync,
         config.window_size,
         config.window_size_px,
+        config.resizable,
+        config.render_size,
     );
     event_loop.run_app(&mut app)?;
 
@@ -2085,7 +2237,7 @@ mod tests {
         // and color pass through, and the draw order is irrelevant, so it
         // stays 0.0. The light is omni, so its cone is wide open: the
         // cosine of the half angle is -1.0 and the axis is the fallback.
-        let mut canvas = Canvas::new((100, 100));
+        let mut canvas = Canvas::new((100, 100), 1.0);
         canvas.light(
             10.0,
             20.0,
@@ -2139,7 +2291,7 @@ mod tests {
         // 0: the immediate draw is pushed first (the process runs before
         // the scene is drawn), so the stable z-sort keeps it first in the
         // paint order, and the packed field's records follow.
-        let mut canvas = Canvas::new((100, 100));
+        let mut canvas = Canvas::new((100, 100), 1.0);
         canvas.light(
             0.0,
             0.0,
@@ -2332,7 +2484,7 @@ mod tests {
         // y-up user vector (cos 45, sin 45) becomes the y-down pixel vector
         // (0.707, -0.707), and the gate carries the cosine of the half
         // opening, cos(30 degrees).
-        let mut canvas = Canvas::new((100, 100));
+        let mut canvas = Canvas::new((100, 100), 1.0);
         canvas.light_cone(
             0.0,
             0.0,
@@ -2457,7 +2609,7 @@ mod tests {
         // must not reach the shader as NaN, which would poison the angular
         // gate for every pixel. The axis falls back to +x; the wide-open
         // spread passes everywhere regardless.
-        let mut canvas = Canvas::new((100, 100));
+        let mut canvas = Canvas::new((100, 100), 1.0);
         canvas.light_cone(
             0.0,
             0.0,
@@ -2607,5 +2759,139 @@ mod tests {
         )
         .with_penumbra(-3.0);
         assert_eq!(light.penumbra, 0.0);
+    }
+
+    /// The user-to-pixel transform of a `(100, 100)` canvas at a display
+    /// scale factor of 2: `(x, y) -> (2x + 100, 100 - 2y)` — the same
+    /// center-origin map, with every user unit paying two panel pixels.
+    fn pixel_map_2() -> Transform {
+        Transform::scale([2.0, -2.0]).compose(&Transform::translate([100.0, 100.0]))
+    }
+
+    #[test]
+    fn a_scale_2_canvas_maps_user_space_to_panel_pixels() {
+        // The user space stays logical: the size is the window's logical
+        // size, the center maps to the panel's center (which is at panel
+        // (100, 100) of a 200x200 panel), and the user corners reach the
+        // panel corners, doubled.
+        let canvas = Canvas::new((100, 100), 2.0);
+        assert_eq!(canvas.size(), (100.0, 100.0));
+        assert_eq!(canvas.scale_factor(), 2.0);
+        let to_pixel = canvas.user_to_pixel();
+        assert_eq!(to_pixel.apply([0.0, 0.0]), [100.0, 100.0]);
+        assert_eq!(to_pixel.apply([-50.0, -50.0]), [0.0, 200.0]);
+        assert_eq!(to_pixel.apply([50.0, 50.0]), [200.0, 0.0]);
+    }
+
+    #[test]
+    fn a_scale_2_canvas_doubles_the_scalar_sizes_it_records() {
+        // A width-2 line, a radius-5 circle and a light of reach 10
+        // recorded in logical units at density 2 reach the shaders in
+        // panel pixels: width 4, radius 10, reach 20 — and the endpoints
+        // land doubled like every other coordinate.
+        let mut canvas = Canvas::new((100, 100), 2.0);
+        canvas.line(-10.0, 0.0, 10.0, 0.0, WHITE, 2.0, 0.0);
+        canvas.circle(0.0, 0.0, 5.0, WHITE, 0.0);
+        canvas.light(0.0, 0.0, WHITE, 1.0, 10.0);
+        let [
+            Draw::Line { a, b, width, .. },
+            Draw::Circle { center, radius, .. },
+            Draw::Light {
+                pos, radius: reach, ..
+            },
+        ] = &canvas.draws[..]
+        else {
+            panic!(
+                "expected a line, a circle and a light, got {:?}",
+                canvas.draws
+            );
+        };
+        assert_eq!(*a, [80.0, 100.0]);
+        assert_eq!(*b, [120.0, 100.0]);
+        assert_eq!(*width, 4.0);
+        assert_eq!(*center, [100.0, 100.0]);
+        assert_eq!(*radius, 10.0);
+        assert_eq!(*pos, [100.0, 100.0]);
+        assert_eq!(*reach, 20.0);
+    }
+
+    #[test]
+    fn a_scale_2_pixel_map_scales_polyline_particle_and_light_scalars() {
+        // The scene path books its transform-free scalars — a polyline's
+        // width, a particle's size, a light's reach and penumbra — in
+        // panel pixels too: with the density folded into the user-to-pixel
+        // transform, width 1.5 strokes 3, size 3 inflates to 6, and a
+        // reach-10 penumbra-4 point light covers 20 with a penumbra of 8.
+        let map = pixel_map_2();
+        let mut draws = Vec::new();
+        draw_node(
+            map,
+            &SceneNode {
+                shape: Some(Shape::Polyline {
+                    points: vec![[-10.0, 0.0], [10.0, 0.0]],
+                    width: 1.5,
+                    color: WHITE,
+                }),
+                ..Default::default()
+            },
+            &Transform::identity(),
+            0.0,
+            WHITE,
+            &mut draws,
+        );
+        let [Draw::Polyline { points, width, .. }] = &draws[..] else {
+            panic!("expected one polyline draw, got {draws:?}")
+        };
+        assert_eq!(*width, 3.0);
+        assert_eq!(points[0], [80.0, 100.0]);
+        assert_eq!(points[1], [120.0, 100.0]);
+
+        let mut draws = Vec::new();
+        draw_node(
+            map,
+            &SceneNode {
+                shape: Some(Shape::Particles {
+                    system: ParticleSystem {
+                        particles: vec![particle([5.0, 5.0], 4.0, 3.0)],
+                    },
+                    color: WHITE,
+                    shape: ParticleShape::Circle,
+                }),
+                ..Default::default()
+            },
+            &Transform::identity(),
+            0.0,
+            WHITE,
+            &mut draws,
+        );
+        let batch = the_batch(&draws);
+        assert_eq!(instance_f32(&batch, 0, 0), 110.0);
+        assert_eq!(instance_f32(&batch, 0, 1), 90.0);
+        assert_eq!(instance_f32(&batch, 0, 2), 6.0);
+
+        let mut draws = Vec::new();
+        draw_node(
+            map,
+            &SceneNode {
+                shape: Some(Shape::Light {
+                    light: Light::point(WHITE, 1.0, 10.0).with_penumbra(4.0),
+                }),
+                ..Default::default()
+            },
+            &Transform::identity(),
+            0.0,
+            WHITE,
+            &mut draws,
+        );
+        let [
+            Draw::Light {
+                radius, penumbra, ..
+            },
+        ] = &draws[..]
+        else {
+            panic!("expected one light draw, got {draws:?}")
+        };
+        assert_eq!(*radius, 20.0);
+        assert_eq!(*penumbra, 8.0);
     }
 }

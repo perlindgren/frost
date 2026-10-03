@@ -1,11 +1,13 @@
 //! Four garden tools — a watering can, a spray can, a spade, and a pair of
 //! tweezers — as mouse cursors over a grass field
-//! that fills the window. The window opens at `WINDOW` pixels (1920x1080)
-//! of true physical panel size, set through `run_configured` and
-//! `Config::window_size_px`;
-//! `assets/sprites/grass.png` is exactly that size, so it fills the window
-//! without being stretched, and is re-stretched every frame to keep it
-//! covered if the window is resized.
+//! that fills the window. The window opens at `WINDOW` logical pixels
+//! (1920x1080), set through `run_configured` and `Config::window_size` —
+//! so its physical footprint scales with the display's density and is
+//! clamped to the monitor if it would not fit — and `Config::render_size`
+//! pins the frame to exactly 1920x1080;
+//! `assets/sprites/grass.png` is exactly that size, so it fills the frame
+//! without being stretched, and the frame is re-stretched every frame to
+//! cover the window at its new size, its shape kept.
 //!
 //! The mouse can hold two tools at once: the active one, drawn as the
 //! cursor's sprite, and a stored one, mirrored in the held-items panel. It
@@ -303,10 +305,12 @@ mod zorder;
 use assets_load::{Assets, Sounds};
 use fall::{Fall, FallPhase};
 
-/// The window's inner size in physical pixels, via
-/// `Config::window_size_px`: a true 1920x1080 panel window on every
-/// display — 960x540 points on a 2x Retina screen. The grass photo is
-/// exactly this size, so it fills the window 1:1.
+/// The window's initial size in logical pixels, via
+/// `Config::window_size` — its physical footprint grows with the display's
+/// scale factor, clamped to the monitor — and the fixed render size, via
+/// `Config::render_size`: the frame renders at exactly 1920x1080 and is
+/// stretched to fill the window. The grass photo is exactly this size, so
+/// it fills the frame without stretching.
 const WINDOW: [u32; 2] = [1920, 1080];
 
 /// `grass.png`'s texture size in pixels: a full-bleed 1920x1080 photo.
@@ -4142,7 +4146,13 @@ fn main() {
         scene,
         demo,
         frost::Config {
-            window_size_px: Some(WINDOW),
+            window_size: Some(WINDOW),
+            // The art is authored at 1920x1080, so render at exactly that
+            // pixel size on every display: `ctx.size()` says 1920x1080,
+            // the grass fills the buffer 1:1, and anything the window does
+            // beyond that is a stretch of the finished frame — shape kept,
+            // letterboxed if a window manager ever denies the shape.
+            render_size: Some(WINDOW),
             ..Default::default()
         },
     ) {

@@ -7,7 +7,7 @@ use crate::objects::*;
 
 #[test]
 fn a_camera_anchors_the_view_to_its_node() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene {
         root: SceneNode::default(),
         layers: vec![Layer {
@@ -83,7 +83,7 @@ fn a_camera_anchors_the_view_to_its_node() {
 
 #[test]
 fn layer_speed_scales_the_camera_motion() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene {
         root: SceneNode {
             diagnostic: false,
@@ -198,7 +198,7 @@ fn layer_speed_scales_the_camera_motion() {
 
 #[test]
 fn the_camera_rotation_turns_the_view() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene {
         root: SceneNode {
             diagnostic: false,
@@ -271,7 +271,7 @@ fn the_camera_rotation_turns_the_view() {
 
 #[test]
 fn a_missing_camera_path_renders_without_a_camera() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene {
         root: SceneNode {
             diagnostic: false,

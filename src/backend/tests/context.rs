@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 #[test]
 fn context_reports_held_keys() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let mut scene = Scene::default();
     let mut keys = HashSet::new();
     let typed = HashMap::new();
@@ -51,7 +51,7 @@ fn context_reports_held_keys() {
 
 #[test]
 fn context_reports_typed_character_of_held_key() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let mut scene = Scene::default();
     let keys = HashSet::new();
     // The Swedish `+` key: the physical position US calls `Minus`, typed
@@ -80,7 +80,7 @@ fn context_reports_typed_character_of_held_key() {
 
 #[test]
 fn context_reports_mouse_position() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let mut scene = Scene::default();
     let keys = HashSet::new();
     let typed = HashMap::new();
@@ -121,7 +121,7 @@ fn context_reports_mouse_position() {
 
 #[test]
 fn context_reports_held_mouse_button() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let mut scene = Scene::default();
     let keys = HashSet::new();
     let typed = HashMap::new();
@@ -166,7 +166,7 @@ fn context_reports_held_mouse_button() {
 
 #[test]
 fn context_reports_mouse_wheel_delta() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let mut scene = Scene::default();
     let keys = HashSet::new();
     let typed = HashMap::new();
@@ -191,7 +191,7 @@ fn context_reports_mouse_wheel_delta() {
 
 #[test]
 fn context_reports_no_gamepads_without_gilrs() {
-    let mut canvas = Canvas::new((100, 100));
+    let mut canvas = Canvas::new((100, 100), 1.0);
     let mut scene = Scene::default();
     let keys = HashSet::new();
     let typed = HashMap::new();

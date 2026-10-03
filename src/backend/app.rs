@@ -23,6 +23,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::dpi::PhysicalPosition;
+use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{NamedKey, PhysicalKey};
@@ -49,6 +50,28 @@ pub(crate) fn present_mode_for(vsync: bool) -> PresentMode {
     }
 }
 
+/// The offscreen render target of fixed render size mode (see
+/// `Config::render_size`): a texture of the requested size that the frame
+/// renders into, paired with its blit bind group (the texture as shader
+/// source, the bilinear sampler that stretches it, and the letterbox fit
+/// uniform), so the stretch pass is a `set_bind_group` and three
+/// vertices. The blit samples the surface format directly, so the stretch
+/// never re-encodes colors.
+struct BlitTarget {
+    /// The size this target was built for; a surface of exactly this size
+    /// renders to directly and leaves the target unused.
+    size: [u32; 2],
+    /// The texture behind `view`: nothing reads it after construction (the
+    /// view and bind group keep the GPU resource alive on their own), but
+    /// holding it makes the target's ownership obvious.
+    _texture: wgpu::Texture,
+    view: TextureView,
+    /// The 16-byte letterbox fit (`vec2` + padding), rewritten by `render`
+    /// whenever the surface's aspect may have moved.
+    fit_buffer: Buffer,
+    bind_group: BindGroup,
+}
+
 pub(crate) struct Frost<P: Process> {
     instance: Instance,
     adapter: Adapter,
@@ -64,12 +87,22 @@ pub(crate) struct Frost<P: Process> {
     /// The `Config`'s initial inner size in physical pixels; used once in
     /// `create_window`, and it wins over `window_size` there.
     window_size_px: Option<[u32; 2]>,
+    /// The `Config`'s resizability request; applied once in
+    /// `attach_window`.
+    resizable: bool,
+    /// The `Config`'s fixed render size in physical pixels, or `None` to
+    /// render at the window's own resolution (see `Config::render_size`).
+    render_size: Option<[u32; 2]>,
     #[allow(dead_code)]
     window_id: Option<WindowId>,
     /// The winit window (shared), kept so we can call `request_redraw` for
     /// continuous per-frame rendering.
     window: Option<Arc<Window>>,
     logical_size: (u32, u32),
+    /// The client size seen by the last `Resized` event, physical pixels;
+    /// the baseline [`Self::snap_aspect`] measures the drag against.
+    /// `(0, 0)` until the first resize lands.
+    last_resized_px: (u32, u32),
     scale: f32,
     surface: Option<Surface<'static>>,
     line_pipeline: Option<RenderPipeline>,
@@ -79,6 +112,14 @@ pub(crate) struct Frost<P: Process> {
     shape_pipeline: Option<RenderPipeline>,
     sprite_pipeline: Option<RenderPipeline>,
     particle_pipeline: Option<RenderPipeline>,
+    /// Stretches the fixed render size buffer over the window (see
+    /// `Config::render_size`); unused when the frame renders at the
+    /// window's own resolution.
+    blit_pipeline: Option<RenderPipeline>,
+    /// The offscreen render target for fixed render size mode, built on the
+    /// first frame that needs one: a surface already exactly the render
+    /// size skips both the buffer and the stretch pass.
+    blit_target: Option<BlitTarget>,
     /// The index buffer for particle batches: one quad per instance
     /// (`[0, 1, 2, 2, 1, 3]`), created once and shared by every batched
     /// draw in every frame.
@@ -168,8 +209,9 @@ pub(crate) struct Frost<P: Process> {
     typed: HashMap<KeyCode, char>,
     /// The mouse cursor's position in physical pixels, `(0, 0)` at the
     /// window's upper-left corner, or `None` when the cursor is outside the
-    /// window. Updated as cursor events arrive; the frame's `Canvas` works
-    /// in the same physical-pixel space.
+    /// window. Updated as cursor events arrive; `render` maps it into the
+    /// frame's user space (logical pixels, or the fixed render size) on
+    /// every frame.
     mouse: Option<[f32; 2]>,
     /// The mouse buttons currently held down, updated as mouse input
     /// events arrive.
@@ -198,6 +240,8 @@ impl<P: Process> Frost<P> {
         vsync: bool,
         window_size: Option<[u32; 2]>,
         window_size_px: Option<[u32; 2]>,
+        resizable: bool,
+        render_size: Option<[u32; 2]>,
         scene: Scene,
         process: P,
     ) -> Self {
@@ -322,9 +366,12 @@ impl<P: Process> Frost<P> {
             vsync,
             window_size,
             window_size_px,
+            resizable,
+            render_size,
             window_id: None,
             window: None,
             logical_size: (0, 0),
+            last_resized_px: (0, 0),
             scale: 1.0,
             surface: None,
             line_pipeline: None,
@@ -334,6 +381,8 @@ impl<P: Process> Frost<P> {
             shape_pipeline: None,
             sprite_pipeline: None,
             particle_pipeline: None,
+            blit_pipeline: None,
+            blit_target: None,
             particle_index_buffer: Some(particle_index_buffer),
             particle_placeholder,
             field_buffer,
@@ -365,7 +414,9 @@ impl<P: Process> Frost<P> {
 /// wins, and winit converts it through the monitor's scale factor, so the
 /// requested panel-pixel window opens at the same physical size on every
 /// display — including Retina Macs, where a logical request would double.
-/// `None` for both keeps the platform default. On the web, winit's canvas
+/// `None` for both keeps the platform default. An oversized request is
+/// clamped into the primary monitor, aspect preserved (see
+/// [`fit_into_monitor`]). On the web, winit's canvas
 /// is neither appended to the page nor sized by default: without the
 /// append it is invisible, and without a size it stays the browser's
 /// 300x150 default — so an unset size falls back to 900x600 there, and
@@ -378,12 +429,32 @@ pub(crate) fn create_window(
     let mut attributes = Window::default_attributes().with_title("frost");
     #[cfg(not(target_arch = "wasm32"))]
     {
-        use winit::dpi::PhysicalSize;
-
+        let monitor = event_loop.primary_monitor();
         if let Some([width, height]) = window_size_px {
-            attributes = attributes.with_inner_size(PhysicalSize::new(width, height));
+            // Physical request: compare against the monitor in physical
+            // pixels, and hand back a clamped physical size.
+            let size = match monitor.as_ref() {
+                Some(m) => fit_into_monitor([width, height], [m.size().width, m.size().height]),
+                None => [width, height],
+            };
+            attributes = attributes.with_inner_size(PhysicalSize::new(size[0], size[1]));
         } else if let Some([width, height]) = window_size {
-            attributes = attributes.with_inner_size(LogicalSize::new(width, height));
+            // Logical request: the monitor's own scale factor turns its
+            // physical size into the logical budget to fit into.
+            let size = match monitor.as_ref() {
+                Some(m) => {
+                    let s = m.scale_factor().max(0.01);
+                    fit_into_monitor(
+                        [width, height],
+                        [
+                            (m.size().width as f64 / s).round().max(1.0) as u32,
+                            (m.size().height as f64 / s).round().max(1.0) as u32,
+                        ],
+                    )
+                }
+                None => [width, height],
+            };
+            attributes = attributes.with_inner_size(LogicalSize::new(size[0], size[1]));
         }
     }
     #[cfg(target_arch = "wasm32")]
@@ -437,6 +508,68 @@ fn center_on_screen(event_loop: &ActiveEventLoop, window: &Window) {
         screen.width,
         screen.height
     );
+}
+
+/// Fits a requested opening size into the space available on the primary
+/// monitor, aspect preserved: a request that fits passes through
+/// untouched, an oversized one shrinks to the largest fitting size of its
+/// own aspect — a window that opens whole and centered beats one that
+/// hangs off the screen, and squashing the shape is not the same as
+/// making it smaller. `size` and `avail` are in the same unit (physical
+/// or logical, as the caller chose); with no monitor info the request
+/// passes through.
+#[cfg(not(target_arch = "wasm32"))]
+fn fit_into_monitor(size: [u32; 2], avail: [u32; 2]) -> [u32; 2] {
+    let (req_w, req_h) = (size[0] as f64, size[1] as f64);
+    let (max_w, max_h) = (avail[0].max(1) as f64, avail[1].max(1) as f64);
+    if req_w <= max_w && req_h <= max_h {
+        return size;
+    }
+    let factor = (max_w / req_w).min(max_h / req_h);
+    [
+        (req_w * factor).round().max(1.0) as u32,
+        (req_h * factor).round().max(1.0) as u32,
+    ]
+}
+
+/// Packs a letterbox fit into the blit uniform's 16 bytes: two floats of
+/// extent followed by the struct's padding.
+fn fit_bytes(fit: (f32, f32)) -> [u8; 16] {
+    let mut bytes = [0u8; 16];
+    bytes[0..4].copy_from_slice(&fit.0.to_le_bytes());
+    bytes[4..8].copy_from_slice(&fit.1.to_le_bytes());
+    bytes
+}
+
+/// The fraction `(width, height)` of a `surface` that a fixed
+/// `render_size` buffer fills when its aspect is preserved and the result
+/// is centered: `(1.0, 1.0)` when there is no fixed buffer or the aspects
+/// match (the picture covers the window), and a letterbox fraction
+/// otherwise — `(1.0, 0.5625)` for a 16:9 buffer on a square surface,
+/// bars top and bottom included. The blit pass scales its triangle by
+/// exactly this, and the mouse mapping divides it back out.
+pub(crate) fn content_fit(render_size: Option<[u32; 2]>, surface: (u32, u32)) -> (f32, f32) {
+    let Some([bw, bh]) = render_size else {
+        return (1.0, 1.0);
+    };
+    let (sw, sh) = (surface.0 as f32, surface.1 as f32);
+    if sw <= 0.0 || sh <= 0.0 {
+        return (1.0, 1.0);
+    }
+    if (bw as f64) * (sh as f64) > (bh as f64) * (sw as f64) {
+        // The buffer is wider than the surface: width-limited, with
+        // letterbox bars above and below.
+        (
+            1.0,
+            (bh as f64 * sw as f64 / (bw as f64 * sh as f64)) as f32,
+        )
+    } else {
+        // Taller (or exactly as wide): pillarbox bars left and right.
+        (
+            (bw as f64 * sh as f64 / (bh as f64 * sw as f64)) as f32,
+            1.0,
+        )
+    }
 }
 
 impl<P: Process> ApplicationHandler for Frost<P> {
@@ -567,6 +700,7 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                         (size.height as f64 / scale).max(1.0).round() as u32,
                     );
                     self.resize();
+                    self.snap_aspect(size);
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -634,6 +768,16 @@ impl<P: Process> Frost<P> {
             self.logical_size.1,
             self.scale
         );
+
+        // The resizability request. The style hint is enough on the
+        // well-behaved platforms; XFCE ignores it (per winit), so a
+        // non-resizable window also pins its size with hard min/max
+        // bounds. No-op on the web, where the page owns the canvas size.
+        if !self.resizable {
+            window.set_resizable(false);
+            window.set_min_inner_size(Some(inner));
+            window.set_max_inner_size(Some(inner));
+        }
 
         // With vsync, presentation runs once per vertical blank, so the
         // expected frame rate is the refresh rate of the monitor the window
@@ -716,6 +860,73 @@ impl<P: Process> Frost<P> {
         }
     }
 
+    /// The engine-side aspect lock of fixed render size mode (see
+    /// `Config::render_size`): a window dragged to a shape the buffer
+    /// does not fill answers with a request for the corrected size, so
+    /// the corner slides along the diagonal instead of opening letterbox
+    /// bars. winit 0.30 exposes no platform aspect hint (its X11 hint
+    /// field exists but nothing fills it, and the other platforms have no
+    /// code path at all), so the lock rides on the resize events
+    /// themselves: the corrected request re-enters the handler within
+    /// tolerance and the loop stops, while a compositor that declines the
+    /// request (Wayland may, fullscreen does) simply keeps the letterbox
+    /// the blit already draws. Maximizing is the user asking for a
+    /// specific rectangle, so it goes unfought.
+    fn snap_aspect(&mut self, size: PhysicalSize<u32>) {
+        let prev = std::mem::replace(&mut self.last_resized_px, (size.width, size.height));
+        let Some(render) = self.render_size else {
+            return;
+        };
+        if !self.resizable {
+            // A pinned window keeps the shape it opened with; the guard
+            // matters because a fixed-size window can still be resized
+            // programmatically, and that should letterbox, not fight.
+            return;
+        }
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        if window.is_maximized() {
+            return;
+        }
+        let (w, h) = (size.width as f64, size.height as f64);
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let aspect = render[0] as f64 / render[1] as f64;
+        // The correction keeps the axis the user moved: an edge drag
+        // adjusts the other dimension along the diagonal, and the
+        // dragged one tracks the cursor. With no baseline (the first
+        // event) or a balanced corner drag, fit inside the requested
+        // rectangle rather than growing past it.
+        let dw = size.width.abs_diff(prev.0) as f64;
+        let dh = size.height.abs_diff(prev.1) as f64;
+        let (w2, h2) = if prev == (0, 0) || (dw - dh).abs() < 2.0 {
+            if w / h > aspect {
+                (h * aspect, h)
+            } else {
+                (w, w / aspect)
+            }
+        } else if dw > dh {
+            (w, w / aspect)
+        } else {
+            (h * aspect, h)
+        };
+        let (w2, h2) = (w2.round().max(1.0) as u32, h2.round().max(1.0) as u32);
+        // Only correct a visibly wrong shape: the corrected request comes
+        // back within the tolerance, and the conversation ends.
+        if w2.abs_diff(size.width) < 2 && h2.abs_diff(size.height) < 2 {
+            return;
+        }
+        log::debug!("aspect lock: {w}x{h} → {w2}x{h2}");
+        // The return value reports a size applied immediately on the
+        // platforms that do; every platform that applies the request
+        // (and the ones that only deliver it, or decline it outright,
+        // leaving the letterbox to cope) reports through `Resized`,
+        // which is where our own state follows.
+        let _ = window.request_inner_size(PhysicalSize::new(w2, h2));
+    }
+
     /// Creates the shared line and circle pipelines. Uniform buffers and bind
     /// groups are created per draw call, see `primitive_uniform`.
     fn set_up_pipelines(&mut self, format: TextureFormat) {
@@ -730,6 +941,7 @@ impl<P: Process> Frost<P> {
             &line_module,
             format,
             "line pipeline",
+            true,
         ));
 
         let polyline_module = device.create_shader_module(ShaderModuleDescriptor {
@@ -741,6 +953,7 @@ impl<P: Process> Frost<P> {
             &polyline_module,
             format,
             "polyline pipeline",
+            true,
         ));
 
         let circle_module = device.create_shader_module(ShaderModuleDescriptor {
@@ -752,6 +965,7 @@ impl<P: Process> Frost<P> {
             &circle_module,
             format,
             "circle pipeline",
+            true,
         ));
 
         let rect_module = device.create_shader_module(ShaderModuleDescriptor {
@@ -763,6 +977,7 @@ impl<P: Process> Frost<P> {
             &rect_module,
             format,
             "rectangle pipeline",
+            true,
         ));
 
         let shape_module = device.create_shader_module(ShaderModuleDescriptor {
@@ -774,6 +989,7 @@ impl<P: Process> Frost<P> {
             &shape_module,
             format,
             "shape pipeline",
+            true,
         ));
 
         let sprite_module = device.create_shader_module(ShaderModuleDescriptor {
@@ -785,6 +1001,7 @@ impl<P: Process> Frost<P> {
             &sprite_module,
             format,
             "sprite pipeline",
+            true,
         ));
 
         let particles_module = device.create_shader_module(ShaderModuleDescriptor {
@@ -796,18 +1013,38 @@ impl<P: Process> Frost<P> {
             &particles_module,
             format,
             "particle pipeline",
+            true,
+        ));
+
+        // The fixed render size stretch: a full-screen sample of the
+        // render target onto the surface. It replaces the surface pixel
+        // instead of blending onto it — the buffer is the frame, not a
+        // layer over it.
+        let blit_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("blit shaders"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(BLIT_SHADER)),
+        });
+        self.blit_pipeline = Some(Self::create_pipeline(
+            device,
+            &blit_module,
+            format,
+            "blit pipeline",
+            false,
         ));
     }
 
     /// Builds a render pipeline for a shader with no vertex buffers
     /// (full-screen triangles, or instanced quads generated in the vertex
-    /// shader), one bind group at group 0, and a single alpha-blended color
-    /// target.
+    /// shader), one bind group at group 0, and a single color target —
+    /// alpha-blended when `blend` (every draw of the scene itself),
+    /// replaced otherwise (the fixed-render-size stretch, whose source is
+    /// the finished frame).
     fn create_pipeline(
         device: &Device,
         module: &ShaderModule,
         format: TextureFormat,
         label: &str,
+        blend: bool,
     ) -> RenderPipeline {
         device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some(label),
@@ -824,7 +1061,7 @@ impl<P: Process> Frost<P> {
                 compilation_options: PipelineCompilationOptions::default(),
                 targets: &[Some(ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: blend.then_some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: ColorWrites::ALL,
                 })],
             }),
@@ -834,6 +1071,90 @@ impl<P: Process> Frost<P> {
             multiview_mask: None,
             cache: None,
         })
+    }
+
+    /// Builds the fixed render size buffer: a texture of exactly `size`
+    /// pixels in the surface's own format — so the blit's samples need no
+    /// re-encoding — usable as both a render attachment and a sampled
+    /// texture, with its bind group pairing the view and a bilinear
+    /// sampler. Built once per size change, which for a fixed size means
+    /// once (the target survives resizes; only the requested size rebuilds
+    /// it), and dropped whenever the surface itself becomes that size.
+    fn new_blit_target(&mut self, size: [u32; 2]) -> BlitTarget {
+        let format = self
+            .format
+            .expect("a surface is attached before the first frame renders");
+        let texture = self.device.create_texture(&TextureDescriptor {
+            label: Some("render target"),
+            size: Extent3d {
+                width: size[0].max(1),
+                height: size[1].max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&TextureViewDescriptor::default());
+        let sampler = self.device.create_sampler(&SamplerDescriptor {
+            label: Some("blit sampler"),
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            ..Default::default()
+        });
+        // The letterbox fit uniform, seeded to fill the window; `render`
+        // rewrites it every frame. A zero-initialized buffer would draw the
+        // triangle at zero size, so the (1, 1) seed matters for the first
+        // frame if it ever ran before the per-frame write.
+        let fit_buffer = self.device.create_buffer(&BufferDescriptor {
+            label: Some("blit fit"),
+            size: 16,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue
+            .write_buffer(&fit_buffer, 0, &fit_bytes((1.0, 1.0)));
+        let bind_group = self.device.create_bind_group(&BindGroupDescriptor {
+            label: Some("blit bind group"),
+            layout: &self
+                .blit_pipeline
+                .as_ref()
+                .expect("the blit pipeline is built with the surface")
+                .get_bind_group_layout(0),
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&sampler),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &fit_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+            ],
+        });
+        log::info!(
+            "fixed render size: frames render to a {}x{} buffer, stretched to the window",
+            size[0],
+            size[1]
+        );
+        BlitTarget {
+            size,
+            _texture: texture,
+            view,
+            fit_buffer,
+            bind_group,
+        }
     }
 
     /// Creates the uniform buffer for one draw call plus its bind group.
@@ -1226,21 +1547,40 @@ impl<P: Process> Frost<P> {
         let t0 = now_millis();
 
         // Let the user update the scene and draw this frame, in their
-        // coordinate system.
-        let pixel_size = self.pixel_size();
-        let mut canvas = Canvas::new(pixel_size);
+        // coordinate system: the window's logical pixels at the display's
+        // scale factor — or, in fixed render size mode (`Config::render_size`),
+        // the render buffer's pixels one-for-one, the stretch pass carrying
+        // them to whatever the window is.
+        let surface_px = self.pixel_size();
+        let (user_size, user_scale) = match self.render_size {
+            Some([w, h]) => ((w, h), 1.0f32),
+            None => (self.logical_size, self.scale),
+        };
+        // The fraction of the surface the render fills once its aspect is
+        // preserved: (1, 1) unless fixed render size mode meets a window of
+        // a different shape, in which case the content is letterboxed and
+        // both the cursor mapping and the blit pass account for it.
+        let fit = content_fit(self.render_size, surface_px);
+        let mut canvas = Canvas::new(user_size, user_scale);
         let now = now_millis();
         let dt = self
             .last_millis
             .map(|last| ((now - last).max(0.0) / 1000.0).min(1.0) as f32)
             .unwrap_or(0.0);
         self.last_millis = Some(now);
-        // Flip the cursor from window (upper-left, y-down) to user
-        // coordinates: origin at the window's center, y up.
+        // Flip the cursor from window pixels (upper-left, y-down, physical)
+        // to user coordinates (origin at the window's center, y up): the
+        // surface-to-user ratio maps the density away in the default mode
+        // (1/scale) and the surface-to-buffer ratio in fixed render size
+        // mode, and one formula covers both. Dividing by the letterbox fit
+        // maps the cursor across the content rectangle, not the whole
+        // surface, so a pointer over a bar reads past the play edge.
         let mouse = self.mouse.map(|[mx, my]| {
             [
-                mx - pixel_size.0 as f32 / 2.0,
-                pixel_size.1 as f32 / 2.0 - my,
+                (mx - surface_px.0 as f32 / 2.0) * user_size.0 as f32
+                    / (surface_px.0 as f32 * fit.0),
+                (surface_px.1 as f32 / 2.0 - my) * user_size.1 as f32
+                    / (surface_px.1 as f32 * fit.1),
             ]
         });
         let process = &mut self.process;
@@ -1314,6 +1654,39 @@ impl<P: Process> Frost<P> {
         self.queue
             .write_buffer(&occluder_buffer, 0, &occluders.data);
 
+        // The frame's destination: the swapchain texture — or, in fixed
+        // render size mode when the surface is not already exactly that
+        // size, the offscreen buffer the blit pass stretches over the
+        // window afterwards. A surface that already matches the render
+        // size needs neither buffer nor pass. The target is taken out of
+        // `self` for the frame — the draw loop needs `&mut self` — and
+        // stored back after the blit. (This runs before the pipeline
+        // borrows below for the same reason: building it needs `&mut self`.)
+        let surface_view = output
+            .texture
+            .create_view(&TextureViewDescriptor::default());
+        let target = match self.render_size {
+            Some(size) if size != [surface_px.0, surface_px.1] => {
+                let cached = self.blit_target.take().filter(|t| t.size == size);
+                match cached {
+                    Some(t) => Some(t),
+                    None => Some(self.new_blit_target(size)),
+                }
+            }
+            _ => {
+                self.blit_target = None;
+                None
+            }
+        };
+        let frame_area = match &target {
+            Some(t) => [t.size[0], t.size[1]],
+            None => [output.texture.width(), output.texture.height()],
+        };
+        let view = match &target {
+            Some(t) => &t.view,
+            None => &surface_view,
+        };
+
         let (
             Some(line_pipeline),
             Some(polyline_pipeline),
@@ -1342,9 +1715,6 @@ impl<P: Process> Frost<P> {
         // or the default when the frame has none.
         let clear = clear_color(&draws);
 
-        let view = output
-            .texture
-            .create_view(&TextureViewDescriptor::default());
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor { label: None });
@@ -1359,7 +1729,7 @@ impl<P: Process> Frost<P> {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -1378,12 +1748,12 @@ impl<P: Process> Frost<P> {
                 multiview_mask: None,
             });
             // One pass for the whole frame. The background is cleared once
-            // for the full surface, then each draw sets the scissor to its
+            // for the full target, then each draw sets the scissor to its
             // tight bounding box, so fragments outside it are discarded and
             // the fragment shader only runs over the pixels the object can
-            // write. The viewport is left at the full surface, so the
+            // write. The viewport is left at the full target, so the
             // shaders' pixel coordinates stay absolute.
-            let render_area = [output.texture.width(), output.texture.height()];
+            let render_area = frame_area;
             for draw in draws {
                 let Some([x, y, w, h]) = draw.scissor_rect(render_area) else {
                     // Fully outside the surface, or a background (which
@@ -1667,6 +2037,37 @@ impl<P: Process> Frost<P> {
                 }
             }
         }
+        // Fixed render size mode: stretch the buffer over the window — one
+        // full-screen triangle, one bilinear sample per window pixel, scaled
+        // down to the letterbox rectangle when the shapes differ (black bars
+        // from the clear around it). The surface needs no clear when
+        // rendering direct.
+        if let (Some(t), Some(blit_pipeline)) = (target.as_ref(), self.blit_pipeline.as_ref()) {
+            self.queue.write_buffer(&t.fit_buffer, 0, &fit_bytes(fit));
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("blit pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &surface_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(blit_pipeline);
+            pass.set_bind_group(0, &t.bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        // Put the target back for the next frame — or leave `self` empty,
+        // so a surface that has since resized to exactly the render size
+        // finds nothing to reuse and drops the buffer for good.
+        self.blit_target = target;
         self.queue.submit([encoder.finish()]);
         // Record this frame's processing time and draw-call count before the
         // present: the frame's own `Context` already went out without them,
@@ -1718,5 +2119,75 @@ pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
         if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
             return value;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_monitor_fit_leaves_sizes_that_fit_untouched() {
+        assert_eq!(fit_into_monitor([1280, 720], [1512, 982]), [1280, 720]);
+        // Exactly the budget is not an overflow.
+        assert_eq!(fit_into_monitor([1512, 982], [1512, 982]), [1512, 982]);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_monitor_fit_shrinks_an_oversized_request_aspect_preserved() {
+        // 1920x1080 on a 1512-wide MacBook: the width binds, and the
+        // height falls by the same factor — the 16:9 shape survives.
+        let [w, h] = fit_into_monitor([1920, 1080], [1512, 982]);
+        assert_eq!(w, 1512);
+        assert!((w as f64 / h as f64 - 16.0 / 9.0).abs() < 0.01);
+        // A tall request on a wide monitor is height-bound instead.
+        let [w, h] = fit_into_monitor([1080, 1920], [1512, 982]);
+        assert_eq!(h, 982);
+        assert!((w as f64 / h as f64 - 1080.0 / 1920.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_matching_aspect_fills_the_surface() {
+        assert_eq!(content_fit(None, (100, 100)), (1.0, 1.0));
+        assert_eq!(content_fit(Some([1920, 1080]), (1920, 1080)), (1.0, 1.0));
+        // The same shape at a different size fills too: 800x450 is 16:9.
+        let (fx, fy) = content_fit(Some([1920, 1080]), (800, 450));
+        assert!((fx - 1.0).abs() < 1e-4 && (fy - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_wider_surface_than_buffer_pillarboxes_horizontally() {
+        // A square window with a 16:9 buffer: the buffer is wider, so it
+        // spans the full width and shrinks in height.
+        let (fx, fy) = content_fit(Some([1920, 1080]), (1000, 1000));
+        assert_eq!(fx, 1.0);
+        assert!((fy - 1000.0 * 1080.0 / (1920.0 * 1000.0)).abs() < 1e-4);
+        assert!(fy > 0.55 && fy < 0.57);
+    }
+
+    #[test]
+    fn a_taller_surface_than_buffer_letterboxes_vertically() {
+        // A square window with a 1:2 (portrait) buffer: the buffer is
+        // taller, so it spans the full height and shrinks in width.
+        let (fx, fy) = content_fit(Some([540, 1080]), (1000, 1000));
+        assert_eq!(fy, 1.0);
+        assert!((fx - 1000.0 * 540.0 / (1080.0 * 1000.0)).abs() < 1e-4);
+        assert!((fx - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_zero_sized_surface_falls_back_to_filling() {
+        // A zero surface would divide by zero; the guard returns (1, 1).
+        assert_eq!(content_fit(Some([1920, 1080]), (0, 0)), (1.0, 1.0));
+    }
+
+    #[test]
+    fn fit_bytes_writes_the_two_extents_and_pads() {
+        let bytes = fit_bytes((0.5, 0.25));
+        assert_eq!(f32::from_le_bytes(bytes[0..4].try_into().unwrap()), 0.5);
+        assert_eq!(f32::from_le_bytes(bytes[4..8].try_into().unwrap()), 0.25);
+        assert_eq!(&bytes[8..], &[0u8; 8]);
     }
 }
