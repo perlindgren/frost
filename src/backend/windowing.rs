@@ -7,6 +7,7 @@ use wgpu::PresentMode;
 use winit::dpi::LogicalSize;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::dpi::PhysicalPosition;
+#[cfg(not(target_arch = "wasm32"))]
 use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
