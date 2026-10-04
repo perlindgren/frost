@@ -406,10 +406,6 @@ pub struct Rig {
     /// [`PAD_CENTROID`]: the point a print is stamped at, through the same
     /// scale-turn-and-hang the leg node gives every other point of the art.
     pub pad_centroid: [f32; 2],
-    /// How far the nose reaches in front of the neck, at [`HEAD_SCALE`].
-    pub nose: f32,
-    /// How far the tail reaches behind its root, at [`BODY_SCALE`].
-    pub tail_reach: f32,
     /// How far each plate's rear edge lies behind its spine point, at
     /// [`BODY_SCALE`], per variant: where the tail has to tuck up against.
     pub plate_back: [f32; 3],
@@ -442,8 +438,6 @@ impl Rig {
             leg_len: (toe[0] * toe[0] + toe[1] * toe[1]).sqrt(),
             leg_rest: toe[1].atan2(toe[0]),
             pad_centroid: pivot(PAD_CENTROID, sizes[LEG]),
-            nose: (NECK[0] - 3.0) * BODY_SCALE * HEAD_SCALE,
-            tail_reach: (sizes[TAIL][0] - TAIL_ROOT[0]) * BODY_SCALE,
             plate_back: BODIES.map(|b| (sizes[b][0] - SPINE_ANCHOR[b - BODIES[0]][0]) * BODY_SCALE),
         }
     }
@@ -657,17 +651,17 @@ pub fn leg_states(rig: &Rig, segments: &[Segment], t: f32) -> Vec<LegState> {
     states
 }
 
-/// A print pressed since the last reading: the placement of the leg whose
-/// foot lifted — its joint, rotation and scale are what the print is
-/// stamped with — and which of the animal's feet it was.
+/// A foot that lifted since the last reading, named: which side, which
+/// segment. Nothing more — the example decides when the print is taken
+/// (the shutter may fall a heartbeat after the lift) and reads the leg's
+/// pose afresh at that moment, so stamping the lift-frame pose here
+/// would only tempt a second, staler copy of it.
 #[derive(Clone, Copy, Debug)]
 pub struct Print {
-    /// The pressing leg's side, `1.0` top, `-1.0` bottom.
+    /// The lifting leg's side, `1.0` top, `-1.0` bottom.
     pub side: f32,
     /// The segment its leg grows from.
     pub segment: usize,
-    /// The pressing leg's placement, at the frame of the lift.
-    pub placement: Placement,
 }
 
 /// Every foot that lifted between the frame `prev` remembers and this
@@ -692,7 +686,6 @@ pub fn pressed_prints(rig: &Rig, segments: &[Segment], t: f32, prev: &mut Vec<f3
                 prints.push(Print {
                     side: leg.side,
                     segment: leg.segment,
-                    placement: leg.placement,
                 });
             }
         }
@@ -765,13 +758,6 @@ pub fn pose(rig: &Rig, segments: &[Segment], t: f32, out: &mut Vec<Placement>) {
         angle: head,
         scale: [BODY_SCALE * HEAD_SCALE, BODY_SCALE * HEAD_SCALE],
     });
-}
-
-/// How far behind the front segment's middle the animal's rear tip sits, in
-/// monster units: the example needs it to know when the whole animal has left
-/// the window, and the tail is the last of it to go.
-pub fn rear(rig: &Rig, segments: &[Segment]) -> f32 {
-    rear_edge(rig, segments) + TAIL_BACK + rig.tail_reach
 }
 
 /// How far each body variant's plate reaches above and below the spine line at
@@ -1060,7 +1046,7 @@ mod tests {
             body: BODIES[0],
             grow: 1.0,
         };
-        let mut body = [grown(), grown(), grown()];
+        let body = [grown(), grown(), grown()];
         let mut prev = Vec::new();
         pressed_prints(&rig, &body, 0.0, &mut prev);
         // Put on a newcomer and watch the two seconds it swells through:
