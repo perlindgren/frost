@@ -1,6 +1,6 @@
 ﻿//! Window config: the vsync default and the present-mode mapping.
 
-use super::super::*;
+use super::super::windowing::present_mode_for;
 use wgpu::PresentMode;
 
 #[test]

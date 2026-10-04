@@ -14,6 +14,8 @@ pub(crate) use app::*;
 mod frame;
 pub(crate) use frame::*;
 
+mod windowing;
+
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 #[cfg(target_arch = "wasm32")]
