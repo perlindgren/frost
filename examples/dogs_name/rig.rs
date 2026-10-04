@@ -89,8 +89,13 @@ pub const BODIES: [usize; 3] = [1, 2, 3];
 pub const TAIL: usize = 4;
 /// A leg: one sprite, turned about its upper end.
 pub const LEG: usize = 5;
+/// The pressed print: [`Monster_foot.png`](assets/sprites/Monster_foot.png),
+/// the square clay footprint a lifted foot leaves in the soil. The rig
+/// never poses it — it only measures it — and the example stamps these
+/// world-side where the feet lifted.
+pub const FOOT: usize = 6;
 /// How many parts the rig knows, and how long the example's shape table is.
-pub const PART_COUNT: usize = 6;
+pub const PART_COUNT: usize = 7;
 
 /// The part files, in the order of the indices above.
 ///
@@ -106,6 +111,7 @@ pub const PART_FILES: [&str; PART_COUNT] = [
     "Monster_body3.png",
     "Monster_tail.png",
     "Monster_leg2.png",
+    "Monster_foot.png",
 ];
 
 // -------------------------------------------------------------- joints --
@@ -145,6 +151,22 @@ const HIP: Px = [22.0, 12.0];
 /// a foot, which is why the pad's own tilt comes out of the leg's angle
 /// instead of having to be posed.
 const TOE: Px = [201.0, 452.0];
+
+/// The middle of the clay pad as *muchness*, not as contact: the centroid
+/// of the pad band at the leg's foot, measured off `Monster_leg2.png`
+/// (the band's alpha centroid is `(198, 431)` — three pixels from the
+/// contact point above, the rig's `TOE` sitting a little low in the clay
+/// where the foot presses hardest). This is where a print is stamped:
+/// the pressed footprint belongs under the pad's bulk, not merely under
+/// its lowest point.
+///
+/// The pad's long axis measures 1.4 degrees off the sprite's own x, and
+/// the print sprite's axis measures 1.9 degrees off its x the same way —
+/// half a degree between them, which is nothing against the tens of
+/// degrees a swinging leg swings through. So a print laid down with the
+/// pressing leg's own rotation matches the foot that pressed it: no
+/// separate foot angle exists to pose.
+const PAD_CENTROID: Px = [198.0, 431.0];
 
 // --------------------------------------------------------------- layout --
 
@@ -380,6 +402,10 @@ pub struct Rig {
     /// The direction the leg points as it was drawn, in radians: what the
     /// leg's rotation is measured from.
     pub leg_rest: f32,
+    /// The pad's middle in the leg sprite's own local space, from
+    /// [`PAD_CENTROID`]: the point a print is stamped at, through the same
+    /// scale-turn-and-hang the leg node gives every other point of the art.
+    pub pad_centroid: [f32; 2],
     /// How far the nose reaches in front of the neck, at [`HEAD_SCALE`].
     pub nose: f32,
     /// How far the tail reaches behind its root, at [`BODY_SCALE`].
@@ -402,6 +428,9 @@ impl Rig {
             pivot(SPINE_ANCHOR[2], sizes[BODIES[2]]),
             pivot(TAIL_ROOT, sizes[TAIL]),
             pivot(HIP, sizes[LEG]),
+            // The print hangs from its own middle: the pad's centroid in
+            // the foot sprite measures a hair off its texture's centre.
+            pivot([sizes[FOOT][0] / 2.0, sizes[FOOT][1] / 2.0], sizes[FOOT]),
         ];
         // The leg points from its hip to its foot, as drawn, in local y-up
         // units: the one vector a rigid leg is defined by.
@@ -412,10 +441,25 @@ impl Rig {
             pivots,
             leg_len: (toe[0] * toe[0] + toe[1] * toe[1]).sqrt(),
             leg_rest: toe[1].atan2(toe[0]),
+            pad_centroid: pivot(PAD_CENTROID, sizes[LEG]),
             nose: (NECK[0] - 3.0) * BODY_SCALE * HEAD_SCALE,
             tail_reach: (sizes[TAIL][0] - TAIL_ROOT[0]) * BODY_SCALE,
             plate_back: BODIES.map(|b| (sizes[b][0] - SPINE_ANCHOR[b - BODIES[0]][0]) * BODY_SCALE),
         }
+    }
+
+    /// The pressing leg's pad middle, in monster space: the point of the
+    /// leg's art that [`PAD_CENTROID`] names, taken through the same
+    /// scale-then-turn the leg's own node gives every point of that art —
+    /// so it stands exactly under the pad, mirrored row included, and it
+    /// is the spot a print is stamped at.
+    pub fn pad_of(&self, leg: &Placement) -> [f32; 2] {
+        let pad = self.pad_centroid;
+        let turned = frost::Transform::rotate(leg.angle).apply([
+            (pad[0] - leg.pivot[0]) * leg.scale[0],
+            (pad[1] - leg.pivot[1]) * leg.scale[1],
+        ]);
+        [leg.joint[0] + turned[0], leg.joint[1] + turned[1]]
     }
 
     /// The radius a leg of the given scale can put its foot at, measured from
@@ -471,6 +515,16 @@ fn spine_angle(i: f32, t: f32) -> f32 {
 /// reads as lifted. Both halves meet at the same point at each end, so the
 /// foot never teleports.
 ///
+/// The fore-and-aft sense is the whole grip, and a sign here is worth
+/// stating plainly because its inversion is invisible in the walk and fatal
+/// to the trail: the planted foot must move *aft* through monster space —
+/// `x` falling with the phase — because the body crawls forward over it at
+/// exactly that rate in the world. Reverse it and the stance drags the foot
+/// forward at twice the animal's speed, the foot leaves the ground a stride
+/// ahead of where it pressed, and the prints land in front of the animal
+/// that is about to walk into them. [`a_planted_foot_holds_the_ground`]
+/// holds the line.
+///
 /// Only the fore-and-aft figure is chosen. The outward one is *solved*: a leg
 /// of length `reach` with its foot `x` off to one side must have that foot
 /// `√(reach² − x²)` out, so a foot bows in toward the body at both ends of its
@@ -478,10 +532,14 @@ fn spine_angle(i: f32, t: f32) -> f32 {
 /// hand and the clay leg would visibly stretch and shrink twice a cycle.
 fn foot_target(rig: &Rig, phase: f32, scale: f32) -> (f32, f32) {
     let swing = phase >= DUTY;
+    // Aft is negative and the stance must fall: from half a stride ahead
+    // of the hip (at `phase` 0, where the swing just set the foot down)
+    // to half a stride behind it (at `DUTY`, where it lifts) — the exact
+    // drag the crawl runs over. See the grip note above.
     let x = if swing {
-        STRIDE * (0.5 - (phase - DUTY) / (1.0 - DUTY))
+        STRIDE * ((phase - DUTY) / (1.0 - DUTY) - 0.5)
     } else {
-        STRIDE * (phase / DUTY - 0.5)
+        STRIDE * (0.5 - phase / DUTY)
     };
     let reach = rig.reach(scale)
         * if swing {
@@ -537,6 +595,112 @@ fn wrap(phase: f32) -> f32 {
     phase - phase.floor()
 }
 
+/// One leg this frame: the phase its foot is at, and the placement that
+/// draws it.
+#[derive(Clone, Copy, Debug)]
+pub struct LegState {
+    /// Which side of the body the leg grows from: `1.0` the top row of the
+    /// frame, `-1.0` the bottom.
+    pub side: f32,
+    /// Which segment it grows from, head-end at zero.
+    pub segment: usize,
+    /// The foot's cycle phase in `[0, 1)`, the same number [`place_leg`]
+    /// swung it with.
+    pub phase: f32,
+    /// Whether the segment this leg grows from is still swelling — a
+    /// growing leg stands short of its full stance, so its prints would
+    /// land inside the rows ([`pressed_prints`] passes on them).
+    pub growing: bool,
+    /// The leg's placement.
+    pub placement: Placement,
+}
+
+/// Both rows of legs at time `t`, in the order [`pose`] draws them, each
+/// with its phase beside it. [`pose`] draws its legs from here, so nothing
+/// can drift between the walk and whatever reads the phases — the print
+/// trail in [`pressed_prints`], or a test counting lifts.
+pub fn leg_states(rig: &Rig, segments: &[Segment], t: f32) -> Vec<LegState> {
+    let mut states = Vec::with_capacity(2 * segments.len());
+    for side in [-1.0, 1.0] {
+        // The two sides half a cycle apart: a foot planted on one side while
+        // its partner swings on the other.
+        let offset = if side > 0.0 { 0.0 } else { SIDE_PHASE };
+        for (i, seg) in segments.iter().enumerate().rev() {
+            let x = slot(segments, i);
+            let f = x / PITCH;
+            let phase = wrap(t / CYCLE - f * LAG + offset);
+            let mut one = Vec::with_capacity(1);
+            place_leg(
+                &mut one,
+                rig,
+                [
+                    x + HIP_BACK,
+                    // The wave *carries* the leg row sideways, exactly as it
+                    // carries the plate the leg grows from: the hip sits out
+                    // `HIP_OUT` from a spine that has moved, and the same
+                    // `spine_off` is added to both sides.
+                    side * HIP_OUT * seg.grow + spine_off(f, t),
+                ],
+                side,
+                phase,
+                seg.grow * LEG_SCALE,
+            );
+            states.push(LegState {
+                side,
+                segment: i,
+                phase,
+                growing: seg.grow < 1.0,
+                placement: one[0],
+            });
+        }
+    }
+    states
+}
+
+/// A print pressed since the last reading: the placement of the leg whose
+/// foot lifted — its joint, rotation and scale are what the print is
+/// stamped with — and which of the animal's feet it was.
+#[derive(Clone, Copy, Debug)]
+pub struct Print {
+    /// The pressing leg's side, `1.0` top, `-1.0` bottom.
+    pub side: f32,
+    /// The segment its leg grows from.
+    pub segment: usize,
+    /// The pressing leg's placement, at the frame of the lift.
+    pub placement: Placement,
+}
+
+/// Every foot that lifted between the frame `prev` remembers and this
+/// one: a print is pressed the frame a phase leaves stance, `prev` short
+/// of [`DUTY`] and the phase now past it — and only that frame, since
+/// `prev` is retaken to the current phases on the way out. A phase that
+/// wrapped past `1.0` crossed nothing; a body whose leg count changed
+/// (a segment grown, or a new animal) is retaken whole without pressing,
+/// so a print never lands on a leg that was not there to lift.
+///
+/// A leg whose segment is still growing walks but does not print: its
+/// whole stance — hip height included — is scaled by the growth, so a
+/// print pressed mid-swell lands short of its row, an outlier the
+/// animal never stood at. The newcomer's feet join the rows with the
+/// segment's first full-size step.
+pub fn pressed_prints(rig: &Rig, segments: &[Segment], t: f32, prev: &mut Vec<f32>) -> Vec<Print> {
+    let legs = leg_states(rig, segments, t);
+    let mut prints = Vec::new();
+    if prev.len() == legs.len() {
+        for (leg, was) in legs.iter().zip(prev.iter()) {
+            if leg.phase >= DUTY && *was < DUTY && !leg.growing {
+                prints.push(Print {
+                    side: leg.side,
+                    segment: leg.segment,
+                    placement: leg.placement,
+                });
+            }
+        }
+    }
+    *prev = legs.iter().map(|leg| leg.phase).collect();
+    prints
+}
+
 /// Fills `out` with the whole animal at time `t`, back to front: both rows of
 /// legs, then the plates from the rear in, then the tail, and the head last — so
 /// the two organs end up on top at their own ends of the body, the skull's ruff
@@ -550,36 +714,14 @@ pub fn pose(rig: &Rig, segments: &[Segment], t: f32, out: &mut Vec<Placement>) {
     out.clear();
 
     // Both rows of legs, and within each row the rear segments first, so that
-    // where two segments' legs overlap the one nearer the head wins.
-    for side in [-1.0, 1.0] {
-        // The two sides half a cycle apart: a foot planted on one side while
-        // its partner swings on the other.
-        let offset = if side > 0.0 { 0.0 } else { SIDE_PHASE };
-        for (i, seg) in segments.iter().enumerate().rev() {
-            let x = slot(segments, i);
-            let f = x / PITCH;
-            place_leg(
-                out,
-                rig,
-                [
-                    x + HIP_BACK,
-                    // The wave *carries* the leg row sideways, exactly as it
-                    // carries the plate the leg grows from: the hip sits out
-                    // `HIP_OUT` from a spine that has moved, and the same
-                    // `spine_off` is added to both sides. Written the other way
-                    // — `side * (HIP_OUT + spine_off)` — the ripple would push
-                    // each side's legs further out as it passed and the legs
-                    // would telescope in and out of the flanks, one side's
-                    // roots uncovering while the other's buried deeper, so the
-                    // animal would seem to have one good hip and one bad.
-                    side * HIP_OUT * seg.grow + spine_off(f, t),
-                ],
-                side,
-                wrap(t / CYCLE - f * LAG + offset),
-                seg.grow * LEG_SCALE,
-            );
-        }
-    }
+    // where two segments' legs overlap the one nearer the head wins — the
+    // order [`leg_states`] builds, which is where the trail reads its lifts
+    // from, so the walk and the prints are one fact.
+    out.extend(
+        leg_states(rig, segments, t)
+            .into_iter()
+            .map(|leg| leg.placement),
+    );
 
     // The plates, rear first, each turning into the wave it rides.
     for (i, seg) in segments.iter().enumerate().rev() {
@@ -721,6 +863,7 @@ mod tests {
             [397.0, 717.0],
             [322.0, 268.0], // the tail
             [320.0, 474.0], // a leg
+            [195.0, 113.0], // a pressed print
         ])
     }
 
@@ -790,6 +933,190 @@ mod tests {
             "a newcomer that has finished growing should have pushed the rear of the body back by its whole pitch, and pushed it by {}",
             rear_edge(&rig, &longer) - before,
         );
+    }
+
+    /// A print is pressed once per cycle per foot — the frame the phase
+    /// leaves stance, no other — and the trail knows every foot: ten
+    /// cycles of a four-legged frame is ten lifts of each, and a body
+    /// that changes between frames is retaken without pressing.
+    #[test]
+    fn every_foot_presses_one_print_per_cycle() {
+        let rig = rig();
+        let body = (0..2)
+            .map(|_| Segment {
+                body: BODIES[0],
+                grow: 1.0,
+            })
+            .collect::<Vec<_>>();
+        let mut prev = Vec::new();
+        // The first reading only learns the phases: nothing lifts the
+        // frame a leg is first seen.
+        assert!(
+            pressed_prints(&rig, &body, 0.0, &mut prev).is_empty(),
+            "a first reading must take the phases, not stamp on them"
+        );
+        let mut per_foot = [0usize; 4];
+        let dt = 1.0 / 60.0;
+        for frame in 1..=(CYCLE * 10.0 / dt) as u32 {
+            for print in pressed_prints(&rig, &body, frame as f32 * dt, &mut prev) {
+                per_foot[(print.side > 0.0) as usize * 2 + print.segment] += 1;
+            }
+        }
+        for (foot, lifts) in per_foot.iter().enumerate() {
+            assert!(
+                (9..=11).contains(lifts),
+                "foot {foot} lifted {lifts} times in ten cycles: each foot lifts exactly once a cycle, on the frame its phase crosses stance"
+            );
+        }
+    }
+
+    /// A leg that is added does not lift — it was never down — and its
+    /// neighbours are not disturbed either: the phase memory is retaken
+    /// whole, not half-shifted.
+    #[test]
+    fn a_body_that_changed_its_length_presses_nothing() {
+        let rig = rig();
+        let plate = || Segment {
+            body: BODIES[0],
+            grow: 1.0,
+        };
+        let mut prev = Vec::new();
+        let short = [plate()];
+        pressed_prints(&rig, &short, 0.41, &mut prev);
+        let long = [plate(), plate()];
+        assert!(
+            pressed_prints(&rig, &long, 0.42, &mut prev).is_empty(),
+            "a frame that grew a segment must retake its phases, not stamp with shifted ones"
+        );
+        // ...and the very next frame walks on normally: the trail is not
+        // disabled, just unfooled.
+        let mut lifted = false;
+        for frame in 1..=60 {
+            if !pressed_prints(&rig, &long, 0.42 + frame as f32 / 60.0, &mut prev).is_empty() {
+                lifted = true;
+            }
+        }
+        assert!(lifted, "the trail must resume after the body settled");
+    }
+
+    /// The print stands where the pad pressed: for every leg of every
+    /// frame, the stamp point — the pad's centroid through the node's own
+    /// transform — sits within a toe's width of the planted foot the gait
+    /// solved for, on both rows. If the stamp ever drifted off the art's
+    /// own geometry, this is where it shows.
+    #[test]
+    fn the_print_stands_where_the_pad_pressed() {
+        let rig = rig();
+        let body = [Segment {
+            body: BODIES[0],
+            grow: 1.0,
+        }];
+        // The pad centroid sits a toe's short step from the contact point
+        // the gait plants (they measured three and twenty-one pixels apart
+        // in the art): the stamp may be that far off the planted foot and
+        // no farther, once the leg's scale is on it.
+        let give = (3.0f32.powi(2) + 21.0f32.powi(2)).sqrt() * LEG_SCALE + 1.0;
+        for frame in 0..400 {
+            let t = frame as f32 * 0.005;
+            for leg in leg_states(&rig, &body, t) {
+                let pad = rig.pad_of(&leg.placement);
+                // The planted foot, by the rig's own definitions: the toe
+                // is `leg_len` from the hip along `leg_rest`, taken through
+                // the same turn.
+                let toe_rel = [
+                    rig.leg_len * rig.leg_rest.cos() * leg.placement.scale[0],
+                    rig.leg_len * rig.leg_rest.sin() * leg.placement.scale[1],
+                ];
+                let turned = frost::Transform::rotate(leg.placement.angle).apply(toe_rel);
+                let foot = [
+                    leg.placement.joint[0] + turned[0],
+                    leg.placement.joint[1] + turned[1],
+                ];
+                let d = ((pad[0] - foot[0]).powi(2) + (pad[1] - foot[1]).powi(2)).sqrt();
+                assert!(
+                    d <= give,
+                    "the print stands {d:.1} from the planted foot at t {t:.3} on side {}: the stamp has left the pad that pressed it",
+                    leg.side
+                );
+            }
+        }
+    }
+
+    /// The grip, in one line: a planted foot holds the ground. The body's
+    /// own crawl carries the hip forward at [`CRAWL_SPEED`] and the stance
+    /// drags the foot aft through monster space at the very same rate, so
+    /// the foot's world point — hip travel minus its forward reach — never
+    /// moves for the whole stance. This is the fact the prints are stamped
+    /// on: a foot that lifted pressed the ground where it stands, not a
+    /// stride ahead of itself.
+    /// A newcomer's feet walk without printing while it swells — one
+    /// print short of the row per crossing is the outlier this keeps out
+    /// of the soil — and join the rows the frame the segment is full
+    /// size.
+    #[test]
+    fn a_growing_foot_walks_but_does_not_print() {
+        let rig = rig();
+        let grown = || Segment {
+            body: BODIES[0],
+            grow: 1.0,
+        };
+        let mut body = [grown(), grown(), grown()];
+        let mut prev = Vec::new();
+        pressed_prints(&rig, &body, 0.0, &mut prev);
+        // Put on a newcomer and watch the two seconds it swells through:
+        // every print belongs to a settled segment.
+        let mut body = body.to_vec();
+        body.push(Segment {
+            body: BODIES[0],
+            grow: GROW_START,
+        });
+        let mut seen_newcomer = false;
+        for frame in 1..=150 {
+            body[3].grow =
+                (((frame as f32 / 60.0) / GROW_SECONDS) * (1.0 - GROW_START) + GROW_START).min(1.0);
+            for print in pressed_prints(&rig, &body, frame as f32 / 60.0, &mut prev) {
+                if print.segment == 3 {
+                    if body[3].grow < 1.0 {
+                        seen_newcomer = true; // must never happen
+                    }
+                }
+            }
+        }
+        assert!(
+            !seen_newcomer,
+            "a growing segment's foot pressed a print: it stood short of its row, and the soil remembers an outlier the animal never made"
+        );
+    }
+
+    #[test]
+    fn a_planted_foot_holds_the_ground() {
+        let rig = rig();
+        // Two frames deep inside one stance, sampled by the phase the
+        // gait itself would read at those times.
+        let (t1, t2) = (0.15 * CYCLE, 0.55 * CYCLE);
+        let (p1, p2) = (wrap(t1 / CYCLE), wrap(t2 / CYCLE));
+        assert!(p1 < DUTY && p2 < DUTY, "both samples must sit in stance");
+        let (reach1, _) = foot_target(&rig, p1, LEG_SCALE);
+        let (reach2, _) = foot_target(&rig, p2, LEG_SCALE);
+        // World fore-aft = the hip's crawl under the foot, minus the
+        // foot's forward reach; constant means the ground feels no slide.
+        let a = -CRAWL_SPEED * t1 - reach1;
+        let b = -CRAWL_SPEED * t2 - reach2;
+        assert!(
+            (a - b).abs() < 1.0,
+            "a planted foot slid {} units across the ground between stance frames: the grip is the gait",
+            a - b
+        );
+        // And it holds across the whole stance, not just the pair.
+        for k in 0..60 {
+            let t = CYCLE * (0.02 + 0.55 * k as f32 / 59.0);
+            let (r, _) = foot_target(&rig, wrap(t / CYCLE), LEG_SCALE);
+            let w = -CRAWL_SPEED * t - r;
+            assert!(
+                (w - a).abs() < 1.0,
+                "the planted foot drifted at t {t:.3}: {w} vs {a}"
+            );
+        }
     }
 
     #[test]
