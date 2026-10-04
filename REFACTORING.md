@@ -1,11 +1,12 @@
 # Refactoring review
 
-Overnight review of the larger files, with the four safe splits already
-executed as branches off `main` (each branch: pure moves, no behavior
-change, gate-green — `cargo fmt`, `cargo clippy --all-targets -D
-warnings`, 218 lib + 44 sprite_util + 101 immortal tests, wasm32 check,
-doc-link warnings at the `main` baseline of two). Merge any, all, or
-none; rebase is trivial since the branches touch disjoint files.
+Overnight review of the larger files, with the four safe splits
+executed as branches off `main` and **all four since merged** (each
+branch: pure moves, no behavior change, gate-green — `cargo fmt`,
+`cargo clippy --all-targets -D warnings`, 218 lib + 44 sprite_util +
+101 immortal tests, wasm32 check, doc-link warnings at the `main`
+baseline of two). The `refactor/*` branches are kept for review and can
+be deleted with `git branch -d refactor/*` at any time.
 
 ## Branches
 
