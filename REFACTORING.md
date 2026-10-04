@@ -43,31 +43,27 @@ public API change anywhere.
   one-step `process` are one product; the charts were its only real
   second responsibility.
 
-## The one big remaining candidate: `examples/immortal/main.rs` (5151)
+## The one big remaining candidate: `examples/immortal/main.rs` — DONE
 
 Immortal already splits its simulations into sibling modules (`bugs`,
-`plant`, `worms`, `fall`, `vipers`); `main.rs` still holds two systems
-in the old pattern:
+`plant`, `worms`, `fall`, `vipers`); main.rs has since shed its three
+biggest remaining systems (branch `refactor/immortal-split`, merged):
 
-1. **`tools.rs`** (~1,100–1,450 lines with tests, biggest win): the
-   `Tool` enum, per-tool transforms (can, spray, spade, tweezers), the
-   bay/slot/held-cell geometry, swap arcs, and the tool half of
-   `handle_input`. Mostly stateless consts + free functions — the
-   `basket.rs`/`zorder.rs` pattern — so it can move in stages; the
-   22 `Demo` fields behind it would fold into a `Tools` struct with
-   `step(dt)`/`layout(node)` per the sim-pool convention (like
-   `bugs.rs`), leaving the particle taps (`water.particles`,
-   `spray.particles`) and sound calls in `main`.
-2. **`fruit.rs`** (~570): pick/carry/drop/planting flight and the fall
-   drivers; its one coupling (`Landing::Slot` writes `plants[i]`)
-   becomes a returned event exactly like `bugs::StepEvents`.
-3. **`scene.rs`** (~300, near-zero risk): `main()`'s literal scene-tree
-   block into `build_scene(&Assets)`, keeping the `CHILD_*` index
-   contract next to the tree.
+1. **`tools.rs`** (~1,076 lines): the `Tool` enum, per-tool transforms
+   (can, spray, spade, tweezers), the bay/slot/held-cell geometry, swap
+   arcs, particle consts, and the eleven driving `Demo` methods. In a
+   binary crate a module may extend the root's types, so the methods
+   moved as an `impl Demo` block with no visibility churn beyond
+   `pub(crate)`.
+2. **`fruit.rs`** (~658): `Pick`/`Fly`/`Landing`, the carry/flight/
+   fall/planting methods, tomato pick geometry.
+3. **`scene.rs`** (~313): main's literal scene tree as
+   `build_scene(&Assets)`, with the `CHILD_*` index contract next to
+   the tree.
 
-Left undone overnight: this is the user's active demo, the `Demo`
-field-grouping is design taste rather than a mechanical move, and
-`process()`'s call order is a documented frame-invariant contract best
-kept visible in `main` — all reasons to decide it with fresh eyes
-rather than at 3 a.m. The branches above need no such judgement: they
-are pure relocations, reviewable as single moves.
+main.rs: 5151 → 3160. Left in place deliberately: the `process()` call
+sequence (the documented frame-invariant contract), `handle_input`
+(input orchestration), the save/capture/restore glue (touches every
+field), and the HUD/overlay (its `restart` reaches everywhere). The
+plants-and-water driver (~300, thin over `plant.rs`) remains the only
+runner-up.
