@@ -11,7 +11,8 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::NamedKey;
 use winit::window::{Window, WindowId};
 
-use super::{Frost, create_window};
+use super::Frost;
+use super::windowing::create_window;
 use crate::Process;
 use crate::objects::{Scene, SpriteFilter};
 
