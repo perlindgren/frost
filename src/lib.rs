@@ -1410,6 +1410,9 @@ pub struct Context<'c> {
     /// The character each held key typed as it went down, under the user's
     /// keyboard layout (see [`Context::char_down`]).
     typed: &'c HashMap<KeyCode, char>,
+    /// The engine's live stretch filter, mutable so a running app can flip
+    /// it (see [`Context::set_blit_filter`]).
+    blit_filter: &'c mut SpriteFilter,
     /// The window this frame is drawn into, or `None` before the window
     /// exists.
     window: Option<&'c Window>,
@@ -1475,6 +1478,24 @@ impl Context<'_> {
     /// the window, and use it for any window state the platform exposes.
     pub fn window(&self) -> Option<&Window> {
         self.window
+    }
+
+    /// The filter that stretches the fixed [`Config::render_size`] buffer
+    /// over the window — the upscaling filter (see
+    /// [`Config::blit_filter`]).
+    pub fn blit_filter(&self) -> SpriteFilter {
+        *self.blit_filter
+    }
+
+    /// Sets the stretch filter at runtime: the mid-session sibling of
+    /// setting [`Config::blit_filter`] at startup, effective from this
+    /// frame's stretch pass on. The live change rebuilds the blit sampler
+    /// and its bind group once, on the first frame that stretches with the
+    /// new setting. Without [`Config::render_size`] there is no stretch to
+    /// filter — the setting records faithfully and shows its effect the
+    /// moment a fixed buffer ever runs.
+    pub fn set_blit_filter(&mut self, filter: SpriteFilter) {
+        *self.blit_filter = filter;
     }
 
     /// The frame rate this app is expected to run at, in frames per second.
@@ -1715,10 +1736,33 @@ pub struct Config {
     /// one, so the corner slides along the diagonal. Maximization, tiling
     /// and window managers that decline the request simply letterbox.
     pub render_size: Option<[u32; 2]>,
+    /// The filter that resamples the fixed `render_size` buffer when the
+    /// stretch pass scales it to the window — the upscaling filter.
+    /// Default [`SpriteFilter::Linear`].
+    ///
+    /// This only matters with [`Config::render_size`] set and a window
+    /// whose surface differs from the buffer: without a fixed buffer there
+    /// is no stretch to filter, and when the surface matches the buffer
+    /// exactly the pass is skipped and every pixel lands one-for-one,
+    /// filter irrelevant.
+    ///
+    /// [`SpriteFilter::Linear`] (bilinear) blends each output pixel from
+    /// its neighbouring texels, smoothing scaled edges — the right default
+    /// for authored art, and the only sane choice at the fractional
+    /// ratios letterboxing and odd window sizes produce.
+    /// [`SpriteFilter::Nearest`] copies one texel per output pixel whole,
+    /// the pixel-art look: at an integer scale factor (a 1920x1080 buffer
+    /// on a 3840x2160 surface, say) every texel becomes an exact block of
+    /// screen pixels and hard edges stay hard. At fractional ratios the
+    /// same filter shows its other face — uneven texel sizes, shimmering
+    /// crawl while resizing — which is precisely the trade pixel purists
+    /// make on purpose.
+    pub blit_filter: SpriteFilter,
 }
 
 impl Default for Config {
-    /// Vsync on, a resizable window, and the platform's default size.
+    /// Vsync on, a resizable window, bilinear upscaling, and the
+    /// platform's default size.
     fn default() -> Self {
         Self {
             vsync: true,
@@ -1726,6 +1770,7 @@ impl Default for Config {
             window_size_px: None,
             resizable: true,
             render_size: None,
+            blit_filter: SpriteFilter::Linear,
         }
     }
 }
@@ -1775,6 +1820,7 @@ pub fn run_configured<P: Process>(
         config.window_size_px,
         config.resizable,
         config.render_size,
+        config.blit_filter,
         scene,
         process,
     );
@@ -1818,6 +1864,7 @@ pub fn run_configured<P: Process>(
         config.window_size_px,
         config.resizable,
         config.render_size,
+        config.blit_filter,
     );
     event_loop.run_app(&mut app)?;
 

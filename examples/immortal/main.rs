@@ -254,18 +254,20 @@
 //! again, the basket back to its starting tomato, the swarms empty, and
 //! the tools back in their slots, and the overlay goes down.
 //!
-//! A `frost::Diagnostics` overlay reports the window size, the frame
-//! rate, the frame time, the last frame's total processing time, and the
-//! last frame's GPU draw-call count, with four scrolling ten-second strip
+//! A `frost::Diagnostics` overlay reports the window size, the stretch
+//! filter, the frame rate, the frame time, the last frame's total
+//! processing time, and the last frame's GPU draw-call count, with four
+//! scrolling ten-second strip
 //! charts — the integration is the overlay's field in the demo state and
 //! one `process` call per frame; its first call creates a dedicated
 //! topmost layer in the scene and appends its own nodes to that layer's
 //! root, so the readout draws above every node the demo places, and the
 //! demo's scene needs no other change. The overlay's parts can be toggled
 //! while it runs — Alt-0 the whole overlay, Alt-1..Alt-4 the charts (top
-//! chart first), Alt-T the text — and the layout reflows around whatever
-//! is hidden; Alt+'+' and Alt+'-' grow and shrink the whole overlay, font
-//! included.
+//! chart first), Alt-T the text, Alt-F the stretch filter (bilinear ↔
+//! nearest, live — with `render_size` set it is the pixel-art switch) —
+//! and the layout reflows around whatever is hidden; Alt+'+' and Alt+'-'
+//! grow and shrink the whole overlay, font included.
 //!
 //! The game state can be saved and reloaded: F5 writes a snapshot — the
 //! demo's state, every plant's clocks, the swarms, the carried and the

@@ -13,7 +13,7 @@ use winit::window::{Window, WindowId};
 
 use super::{Frost, create_window};
 use crate::Process;
-use crate::objects::Scene;
+use crate::objects::{Scene, SpriteFilter};
 
 // ==================== web startup (wasm32 only) ====================
 //
@@ -43,6 +43,8 @@ struct Core<P: Process> {
     /// renders to a buffer of this size and the blit stretches it over the
     /// canvas.
     render_size: Option<[u32; 2]>,
+    /// The stretch pass's resampling filter (see `Config::blit_filter`).
+    blit_filter: SpriteFilter,
 }
 
 /// The in-flight async GPU setup on the web.
@@ -180,6 +182,7 @@ impl<P: Process> WebFrost<P> {
         window_size_px: Option<[u32; 2]>,
         resizable: bool,
         render_size: Option<[u32; 2]>,
+        blit_filter: SpriteFilter,
     ) -> Self {
         Self {
             instance: Some(instance),
@@ -191,6 +194,7 @@ impl<P: Process> WebFrost<P> {
                 window_size_px,
                 resizable,
                 render_size,
+                blit_filter,
             }),
             window: None,
             gpu: GpuInit::Idle,
@@ -252,6 +256,7 @@ impl<P: Process> WebFrost<P> {
             core.window_size_px,
             core.resizable,
             core.render_size,
+            core.blit_filter,
             core.scene,
             core.process,
         );

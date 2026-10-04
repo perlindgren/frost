@@ -53,7 +53,7 @@
 //!
 //! The flags gate only what the overlay draws: the engine's probes run
 //! every frame either way. With every flag set the overlay owns up to
-//! twenty-one nodes — six text lines, four graph panels, three reference
+//! twenty-two nodes — seven text lines, four graph panels, three reference
 //! lines, and eight chart polylines; the first call creates a dedicated
 //! topmost layer in the scene and appends them to that layer's root, and
 //! every later call updates those same nodes in place, so the demo's scene
@@ -64,7 +64,9 @@
 //! The overlay also answers to keyboard shortcuts, read from the engine's
 //! key state every frame: Alt-0 toggles the overlay as a whole, Alt-1..
 //! Alt-4 toggle the charts by position among the enabled ones (top chart
-//! first), and Alt-T toggles the readout lines; Alt+'+' and Alt+'-' — the
+//! first), Alt-T toggles the readout lines, and Alt-F flips the engine's
+//! stretch filter between bilinear and nearest (see the scaling line and
+//! [`crate::Context::set_blit_filter`]); Alt+'+' and Alt+'-' — the
 //! keys that type those signs wherever the user's layout puts them, the
 //! numpad pair included — grow
 //! or shrink the whole overlay — every dimension at once, the font,
@@ -90,7 +92,9 @@ use std::sync::Arc;
 
 use crate::backend::now_millis;
 use crate::objects::TextError;
-use crate::{Color, Context, KeyCode, Layer, Process, Scene, SceneNode, Shape, Transform};
+use crate::{
+    Color, Context, KeyCode, Layer, Process, Scene, SceneNode, Shape, SpriteFilter, Transform,
+};
 
 /// The readout's font size in pixels per em, at the overlay's base
 /// display scale.
@@ -121,7 +125,8 @@ const MARGIN: f32 = 20.0;
 const LINE_GAP: f32 = 6.0;
 
 /// The readout's probe text: every character a readout line can display —
-/// the digits, the "x", the "/", the ".", the "ms", and the fixed labels.
+/// the digits, the "x", the "/", the ".", the "ms", the parentheses of
+/// the physical-size suffix, and the fixed labels.
 /// The lines' vertical extent is measured over it at construction, and
 /// again whenever the display scale changes,
 /// because neither the current text's ink (Fira Code's "8" and "9" carry a
@@ -129,7 +134,7 @@ const LINE_GAP: f32 = 6.0;
 /// the font's metrics (both bundled fonts report degenerate ones —
 /// Leofont's ascent plus descent is about a pixel at 32 px, Fira Code's
 /// about two) is a stable extent for the lines.
-const PROBE: &str = "0123456789.x/ FPS FT PROC APP DRAW ms";
+const PROBE: &str = "0123456789.x/ FPS FT PROC APP DRAW ms Scaling: Linear Nearest ()";
 
 /// The readout lines' vertical extent in pixels at a font size of `size`:
 /// the highest ink top minus the lowest ink bottom over [`PROBE`], so no
@@ -319,9 +324,14 @@ impl DiagnosticsFlags {
     /// The draw-call line and the folded draw-call chart — the total, the
     /// app, and the overlay's own count as three series.
     pub const DRAW: Self = Self(1 << 3);
+    /// The scaling line: the filter that stretches the fixed render size
+    /// buffer over the window (see [`crate::Config::blit_filter`]), which
+    /// Alt-F flips between bilinear and nearest. A readout line only — it
+    /// has no chart.
+    pub const SCALING: Self = Self(1 << 4);
 
     /// Every statistic.
-    pub const ALL: Self = Self(0b1111);
+    pub const ALL: Self = Self(0b11111);
 
     /// No statistic — the window-size line alone, no charts.
     pub const NONE: Self = Self(0);
@@ -371,8 +381,11 @@ impl std::ops::BitOrAssign for DiagnosticsFlags {
 }
 
 /// A diagnostics overlay: left-aligned lines in the window's top-left
-/// corner — the window size on top (`800x600`), then, for each statistic
-/// enabled in [`DiagnosticsFlags`], its readout line: the smoothed frame
+/// corner — the window size on top (`800x600`, with the panel's physical
+/// size in parentheses — `1920x1080 (3840x2160)` — whenever the drawn
+/// pixels and the screen pixels differ), then, for each statistic
+/// enabled in [`DiagnosticsFlags`], its readout line: the stretch filter
+/// (`Scaling: Linear`, Alt-F flips it), the smoothed frame
 /// rate (`FPS 58`), the current frame time (`FT 16.7ms`), the last frame's
 /// total processing time (`PROC 0.52ms`), that time excluding this
 /// overlay's own update cost (`APP 0.41ms`), and the last frame's
@@ -396,7 +409,9 @@ impl std::ops::BitOrAssign for DiagnosticsFlags {
 /// Alt-1..Alt-4 the charts by position among the enabled ones, Alt-T the
 /// readout lines, or the [`Self::toggle_all`], [`Self::toggle_chart`], and
 /// [`Self::toggle_text`] methods — and the layout reflows around whatever
-/// is hidden. The overlay also scales as a whole — Alt+'+' and Alt+'-'
+/// is hidden. Alt-F flips the engine's stretch filter (the scaling line),
+/// acting on the [`crate::Context`] rather than on the overlay. The
+/// overlay also scales as a whole — Alt+'+' and Alt+'-'
 /// step it, [`Self::set_scale`] sets it — every dimension following, the
 /// font included.
 #[derive(Debug)]
@@ -410,9 +425,12 @@ pub struct Diagnostics {
     /// minus the lowest ink bottom over [`PROBE`], measured once at
     /// construction, so the digits' ink differences never change it.
     line_extent: f32,
-    /// The window-size line, drawn above the frame-rate line.
+    /// The window-size line, drawn above the scaling line.
     size_line: Line,
-    /// The frame-rate line, drawn below the window-size line.
+    /// The scaling line: the stretch filter's name (`Scaling: Nearest`),
+    /// flipped with Alt-F (enabled with the scaling flag).
+    scaling_line: Line,
+    /// The frame-rate line, drawn below the scaling line.
     fps_line: Line,
     /// The frame-time line, drawn below the frame-rate line.
     ft_line: Line,
@@ -423,7 +441,8 @@ pub struct Diagnostics {
     /// The draw-call line, drawn below the app-time line.
     draw_line: Line,
     /// The readout lines' slots, in append order: the size line first,
-    /// then the enabled statistic lines, FPS, FT, PROC, APP, DRAW order.
+    /// then the scaling line when enabled, then the enabled statistic
+    /// lines, FPS, FT, PROC, APP, DRAW order.
     line_slots: Vec<LineSlot>,
     /// The charts' slots, in append order: the enabled statistics, FPS, FT,
     /// PROC, DRAW order.
@@ -501,14 +520,20 @@ pub struct Diagnostics {
     /// Alt-3, Alt-4, Alt-T, Alt+'+', Alt+'-', in that order — for the
     /// press edge detection in `process`.
     prev_combos: [bool; 8],
+    /// Whether Alt-F was held last frame — the press edge detector for
+    /// the scaling toggle, separate from `prev_combos` because it acts on
+    /// the engine (through `Context`), not on the overlay's own state.
+    prev_scaling_combo: bool,
 }
 
 /// The readout's line slots, in append order: the window-size line first,
-/// then the enabled statistic lines.
+/// then the scaling line when enabled, then the enabled statistic lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LineSlot {
     /// The window-size line, always shown.
     Size,
+    /// The scaling line (enabled with the scaling flag).
+    Scaling,
     /// The frame-rate line.
     Fps,
     /// The frame-time line.
@@ -797,11 +822,15 @@ impl Diagnostics {
     pub fn from_bytes(font: &[u8], flags: DiagnosticsFlags) -> Result<Self, TextError> {
         swash::FontRef::from_index(font, 0).ok_or(TextError::InvalidFont)?;
         // The slots in append order: the readout lines (the size line
-        // first, then the enabled lines, FPS, FT, PROC, APP, DRAW order —
-        // the app line rides on the processing flag), the enabled chart
-        // panels, the reference lines (the draw chart has none), and the
-        // chart polylines (three per folded chart).
+        // first, then the scaling line when enabled, then the enabled
+        // lines, FPS, FT, PROC, APP, DRAW order — the app line rides on
+        // the processing flag), the enabled chart panels, the reference
+        // lines (the draw chart has none), and the chart polylines (three
+        // per folded chart).
         let mut line_slots = vec![LineSlot::Size];
+        if flags.contains(DiagnosticsFlags::SCALING) {
+            line_slots.push(LineSlot::Scaling);
+        }
         let mut chart_slots = Vec::new();
         if flags.contains(DiagnosticsFlags::FPS) {
             line_slots.push(LineSlot::Fps);
@@ -836,6 +865,7 @@ impl Diagnostics {
             font: Arc::from(font),
             line_extent,
             size_line: Line::new(),
+            scaling_line: Line::new(),
             fps_line: Line::new(),
             ft_line: Line::new(),
             proc_line: Line::new(),
@@ -861,6 +891,7 @@ impl Diagnostics {
             chart_on,
             scale: 1.0,
             prev_combos: [false; 8],
+            prev_scaling_combo: false,
         })
     }
 
@@ -868,6 +899,7 @@ impl Diagnostics {
     fn line(&self, slot: LineSlot) -> &Line {
         match slot {
             LineSlot::Size => &self.size_line,
+            LineSlot::Scaling => &self.scaling_line,
             LineSlot::Fps => &self.fps_line,
             LineSlot::Ft => &self.ft_line,
             LineSlot::Proc => &self.proc_line,
@@ -880,6 +912,7 @@ impl Diagnostics {
     fn line_mut(&mut self, slot: LineSlot) -> &mut Line {
         match slot {
             LineSlot::Size => &mut self.size_line,
+            LineSlot::Scaling => &mut self.scaling_line,
             LineSlot::Fps => &mut self.fps_line,
             LineSlot::Ft => &mut self.ft_line,
             LineSlot::Proc => &mut self.proc_line,
@@ -1038,6 +1071,18 @@ impl Diagnostics {
         self.prev_combos = combos;
     }
 
+    /// The press edge of the scaling toggle: reports `true` once, on the
+    /// frame `held` (Alt-F) goes from released to held — holding and
+    /// releasing report nothing. The caller performs the action — flipping
+    /// the engine's filter through the `Context` — because the edge
+    /// detector, unlike `apply_key_edges`, shares nothing with the
+    /// overlay's own display state.
+    fn scaling_press(&mut self, held: bool) -> bool {
+        let edge = held && !self.prev_scaling_combo;
+        self.prev_scaling_combo = held;
+        edge
+    }
+
     /// Hides the node for overlay slot `slot`: its shape is cleared,
     /// leaving a bare pivot that draws nothing, until the matching toggle
     /// shows it again and `place` restores the shape. A node the demo
@@ -1100,6 +1145,23 @@ impl Process for Diagnostics {
             plus,
             minus,
         ]);
+        // Alt-F flips the engine's stretch filter — bilinear for the
+        // smoothed upscale, nearest for the pixel-art one (see
+        // [`crate::Context::set_blit_filter`]). It rides on the press
+        // edge like the overlay's own combinations but stays out of
+        // `apply_key_edges`: it acts on the engine through the `Context`,
+        // not on the overlay's display state. The readout line below
+        // names the new filter in the same frame, and it toggles whether
+        // or not the line or the overlay is visible — the shortcut is
+        // live as long as the overlay is being processed.
+        let scaling_combo = alt && ctx.key_down(KeyCode::KeyF);
+        if self.scaling_press(scaling_combo) {
+            let next = match ctx.blit_filter() {
+                SpriteFilter::Linear => SpriteFilter::Nearest,
+                SpriteFilter::Nearest => SpriteFilter::Linear,
+            };
+            ctx.set_blit_filter(next);
+        }
         // The engine's own probes of the last completed frame: its CPU
         // work, its total GPU draw calls, and the draw calls this overlay's
         // own nodes produced. This frame's own probes are still running, so
@@ -1171,7 +1233,27 @@ impl Process for Diagnostics {
         // the size line always, a statistic line only when its flag is on;
         // while the text is hidden the lines are not rebuilt at all.
         if lines_on {
-            self.refresh_line(LineSlot::Size, format!("{}x{}", w as u32, h as u32));
+            // The size the app draws in, plus the panel's physical size in
+            // parentheses when the two differ: in fixed render size mode
+            // the buffer and the surface usually don't match (1920x1080
+            // stretched over 3840x2160), and at a display scale factor the
+            // logical user space and the physical panel never do — one
+            // app pixel per screen pixel, the case with nothing to say,
+            // keeps the line bare.
+            let physical = ctx.window().map(|wnd| wnd.inner_size());
+            let size_text = match physical {
+                Some(px) if (px.width, px.height) != (w as u32, h as u32) => {
+                    format!("{}x{} ({}x{})", w as u32, h as u32, px.width, px.height)
+                }
+                _ => format!("{}x{}", w as u32, h as u32),
+            };
+            self.refresh_line(LineSlot::Size, size_text);
+            if self.flags.contains(DiagnosticsFlags::SCALING) {
+                self.refresh_line(
+                    LineSlot::Scaling,
+                    format!("Scaling: {:?}", ctx.blit_filter()),
+                );
+            }
             if self.flags.contains(DiagnosticsFlags::FPS) {
                 self.refresh_line(LineSlot::Fps, format!("FPS {:.0}", self.fps.round()));
             }
@@ -1200,7 +1282,7 @@ impl Process for Diagnostics {
         // visible line's bottom; each visible panel hangs one panel
         // height plus GRAPH_GAP under the previous; all visible lines' ink
         // left edges sit MARGIN in from the window's left edge. The slot
-        // lists are tiny — at most six lines and four charts — so clone
+        // lists are tiny — at most seven lines and four charts — so clone
         // them, letting the loops below borrow the struct freely while
         // placing nodes.
         let line_slots = self.line_slots.clone();
@@ -1546,6 +1628,20 @@ mod tests {
     }
 
     #[test]
+    fn scaling_edge_fires_once_per_press() {
+        let mut d = overlay();
+        // Released: never an edge.
+        assert!(!d.scaling_press(false));
+        // Alt-F goes down: one edge.
+        assert!(d.scaling_press(true));
+        // Held across frames: silent.
+        assert!(!d.scaling_press(true));
+        // Released, then pressed again: a fresh edge.
+        assert!(!d.scaling_press(false));
+        assert!(d.scaling_press(true));
+    }
+
+    #[test]
     fn scale_edges_grow_and_shrink_on_press() {
         let mut d = overlay();
         assert_eq!(d.scale(), 1.0);
@@ -1630,6 +1726,9 @@ mod tests {
             "59",
             "61",
             "1920x1080",
+            "1920x1080 (3840x2160)",
+            "Scaling: Linear",
+            "Scaling: Nearest",
             "FPS 60",
             "FT 16.7ms",
             "PROC 12.34ms",

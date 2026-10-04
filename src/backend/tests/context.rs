@@ -12,12 +12,14 @@ fn context_reports_held_keys() {
     let typed = HashMap::new();
     let mouse_buttons = HashSet::new();
     {
+        let mut blit_filter = SpriteFilter::Linear;
         let ctx = Context {
             frame_diagnostic_draw_calls: 0,
             canvas: &mut canvas,
             scene: &mut scene,
             keys: &keys,
             typed: &typed,
+            blit_filter: &mut blit_filter,
             window: None,
             expected_fps: None,
             mouse: None,
@@ -30,12 +32,14 @@ fn context_reports_held_keys() {
         assert!(!ctx.key_down(KeyCode::KeyW));
     }
     keys.insert(KeyCode::KeyW);
+    let mut blit_filter = SpriteFilter::Linear;
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
         scene: &mut scene,
         keys: &keys,
         typed: &typed,
+        blit_filter: &mut blit_filter,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -59,12 +63,14 @@ fn context_reports_typed_character_of_held_key() {
     let mut typed = HashMap::new();
     typed.insert(KeyCode::Minus, '+');
     let mouse_buttons = HashSet::new();
+    let mut blit_filter = SpriteFilter::Linear;
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
         scene: &mut scene,
         keys: &keys,
         typed: &typed,
+        blit_filter: &mut blit_filter,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -85,12 +91,14 @@ fn context_reports_mouse_position() {
     let keys = HashSet::new();
     let typed = HashMap::new();
     let mouse_buttons = HashSet::new();
+    let mut blit_filter = SpriteFilter::Linear;
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
         scene: &mut scene,
         keys: &keys,
         typed: &typed,
+        blit_filter: &mut blit_filter,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -101,12 +109,14 @@ fn context_reports_mouse_position() {
         frame_draw_calls: 0,
     };
     assert_eq!(ctx.mouse_position(), None);
+    let mut blit_filter = SpriteFilter::Linear;
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
         scene: &mut scene,
         keys: &keys,
         typed: &typed,
+        blit_filter: &mut blit_filter,
         window: None,
         expected_fps: None,
         mouse: Some([12.0, -34.0]),
@@ -127,12 +137,14 @@ fn context_reports_held_mouse_button() {
     let typed = HashMap::new();
     let mut mouse_buttons = HashSet::new();
     {
+        let mut blit_filter = SpriteFilter::Linear;
         let ctx = Context {
             frame_diagnostic_draw_calls: 0,
             canvas: &mut canvas,
             scene: &mut scene,
             keys: &keys,
             typed: &typed,
+            blit_filter: &mut blit_filter,
             window: None,
             expected_fps: None,
             mouse: None,
@@ -145,12 +157,14 @@ fn context_reports_held_mouse_button() {
         assert!(!ctx.mouse_button_down(MouseButton::Left));
     }
     mouse_buttons.insert(MouseButton::Left);
+    let mut blit_filter = SpriteFilter::Linear;
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
         scene: &mut scene,
         keys: &keys,
         typed: &typed,
+        blit_filter: &mut blit_filter,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -171,12 +185,14 @@ fn context_reports_mouse_wheel_delta() {
     let keys = HashSet::new();
     let typed = HashMap::new();
     let mouse_buttons = HashSet::new();
+    let mut blit_filter = SpriteFilter::Linear;
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
         scene: &mut scene,
         keys: &keys,
         typed: &typed,
+        blit_filter: &mut blit_filter,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -196,12 +212,14 @@ fn context_reports_no_gamepads_without_gilrs() {
     let keys = HashSet::new();
     let typed = HashMap::new();
     let mouse_buttons = HashSet::new();
+    let mut blit_filter = SpriteFilter::Linear;
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
         scene: &mut scene,
         keys: &keys,
         typed: &typed,
+        blit_filter: &mut blit_filter,
         window: None,
         expected_fps: None,
         mouse: None,

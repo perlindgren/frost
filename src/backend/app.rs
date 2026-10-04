@@ -53,14 +53,20 @@ pub(crate) fn present_mode_for(vsync: bool) -> PresentMode {
 /// The offscreen render target of fixed render size mode (see
 /// `Config::render_size`): a texture of the requested size that the frame
 /// renders into, paired with its blit bind group (the texture as shader
-/// source, the bilinear sampler that stretches it, and the letterbox fit
-/// uniform), so the stretch pass is a `set_bind_group` and three
-/// vertices. The blit samples the surface format directly, so the stretch
-/// never re-encodes colors.
+/// source, the sampler — `Config::blit_filter` — that stretches it, and
+/// the letterbox fit uniform), so the stretch pass is a `set_bind_group`
+/// and three vertices. The blit samples the surface format directly, so
+/// the stretch never re-encodes colors.
 struct BlitTarget {
     /// The size this target was built for; a surface of exactly this size
     /// renders to directly and leaves the target unused.
     size: [u32; 2],
+    /// The filter this target's sampler samples with; a runtime change to
+    /// the engine's filter (see [`Context::set_blit_filter`]) retires the
+    /// cached target, and the next stretched frame builds a fresh sampler.
+    ///
+    /// [`Context::set_blit_filter`]: crate::Context::set_blit_filter
+    filter: SpriteFilter,
     /// The texture behind `view`: nothing reads it after construction (the
     /// view and bind group keep the GPU resource alive on their own), but
     /// holding it makes the target's ownership obvious.
@@ -93,6 +99,9 @@ pub(crate) struct Frost<P: Process> {
     /// The `Config`'s fixed render size in physical pixels, or `None` to
     /// render at the window's own resolution (see `Config::render_size`).
     render_size: Option<[u32; 2]>,
+    /// The filter the stretch pass samples the render buffer with when its
+    /// size differs from the surface (see `Config::blit_filter`).
+    blit_filter: SpriteFilter,
     #[allow(dead_code)]
     window_id: Option<WindowId>,
     /// The winit window (shared), kept so we can call `request_redraw` for
@@ -242,6 +251,7 @@ impl<P: Process> Frost<P> {
         window_size_px: Option<[u32; 2]>,
         resizable: bool,
         render_size: Option<[u32; 2]>,
+        blit_filter: SpriteFilter,
         scene: Scene,
         process: P,
     ) -> Self {
@@ -368,6 +378,7 @@ impl<P: Process> Frost<P> {
             window_size_px,
             resizable,
             render_size,
+            blit_filter,
             window_id: None,
             window: None,
             logical_size: (0, 0),
@@ -1099,10 +1110,18 @@ impl<P: Process> Frost<P> {
             view_formats: &[],
         });
         let view = texture.create_view(&TextureViewDescriptor::default());
+        // The user's upscaling choice (`Config::blit_filter`), applied to
+        // both axes: bilinear smooths the stretch, nearest keeps texels
+        // whole for the pixel-art look.
+        let filter_mode = match self.blit_filter {
+            SpriteFilter::Linear => FilterMode::Linear,
+            SpriteFilter::Nearest => FilterMode::Nearest,
+        };
+        let label = format!("blit sampler ({:?})", self.blit_filter);
         let sampler = self.device.create_sampler(&SamplerDescriptor {
-            label: Some("blit sampler"),
-            mag_filter: FilterMode::Linear,
-            min_filter: FilterMode::Linear,
+            label: Some(&label),
+            mag_filter: filter_mode,
+            min_filter: filter_mode,
             ..Default::default()
         });
         // The letterbox fit uniform, seeded to fill the window; `render`
@@ -1144,12 +1163,14 @@ impl<P: Process> Frost<P> {
             ],
         });
         log::info!(
-            "fixed render size: frames render to a {}x{} buffer, stretched to the window",
+            "fixed render size: frames render to a {}x{} buffer, stretched to the window with {:?} sampling",
             size[0],
-            size[1]
+            size[1],
+            self.blit_filter
         );
         BlitTarget {
             size,
+            filter: self.blit_filter,
             _texture: texture,
             view,
             fit_buffer,
@@ -1595,6 +1616,7 @@ impl<P: Process> Frost<P> {
                 scene,
                 keys,
                 typed,
+                blit_filter: &mut self.blit_filter,
                 // The window is attached before the first frame renders, so
                 // this is `Some` for every frame the process sees; the
                 // `Option` is the type the field has before attach.
@@ -1667,7 +1689,13 @@ impl<P: Process> Frost<P> {
             .create_view(&TextureViewDescriptor::default());
         let target = match self.render_size {
             Some(size) if size != [surface_px.0, surface_px.1] => {
-                let cached = self.blit_target.take().filter(|t| t.size == size);
+                // A cached target serves only while size and filter match;
+                // a runtime filter flip rebuilds the sampler once, on the
+                // frame that flips (or the next one that stretches).
+                let cached = self
+                    .blit_target
+                    .take()
+                    .filter(|t| t.size == size && t.filter == self.blit_filter);
                 match cached {
                     Some(t) => Some(t),
                     None => Some(self.new_blit_target(size)),
