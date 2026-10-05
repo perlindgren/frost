@@ -127,6 +127,14 @@
 //! Saving rewrites the sidecar with its comments intact — leads above
 //! their value, trails beside it, the header and trailer bookending the
 //! tree — only the line layout is the writer's own.
+//!
+//! A classic menu bar runs across the window's top edge: **File** unfolds
+//! **Open / Close / Save / Save as / Quit**, tracks the pointer along the
+//! bar while a list is open, highlights the hovered line, and dismisses
+//! on a click anywhere else. The bar itself is fully part of the app —
+//! drawn over every panel, owning every click that lands on it — but its
+//! items are deliberately inert: choosing one only logs the choice, it
+//! runs no file operation yet.
 
 use clap::Parser;
 use image::ImageEncoder;
@@ -139,6 +147,42 @@ use std::sync::Arc;
 #[allow(dead_code)]
 #[path = "ron_view/tree.rs"]
 mod ron_tree;
+
+/// The menu bar's one menu: the file verbs, lined up where every desktop
+/// app puts them. The items are deliberately inert: a choice lands in the
+/// log and nowhere else, and `Ctrl-O` remains the only working accelerator
+/// until these names are hooked to the buttons that already bear them. An
+/// item with an empty label draws the rule across the list: a separator,
+/// not a command.
+const FILE_MENU: frost::Menu<'static> = frost::Menu {
+    title: "File",
+    items: &[
+        frost::MenuItem {
+            label: "Open",
+            shortcut: "Ctrl-O",
+        },
+        frost::MenuItem {
+            label: "Close",
+            shortcut: "",
+        },
+        frost::MenuItem {
+            label: "Save",
+            shortcut: "",
+        },
+        frost::MenuItem {
+            label: "Save as",
+            shortcut: "",
+        },
+        frost::MenuItem {
+            label: "",
+            shortcut: "",
+        },
+        frost::MenuItem {
+            label: "Quit",
+            shortcut: "",
+        },
+    ],
+};
 
 /// The command line arguments.
 #[derive(Parser, Debug)]
@@ -1777,6 +1821,15 @@ impl frost::Process for Demo {
                     folded: !open,
                 });
             }
+        }
+
+        // The menu bar, declared after every panel so it is the last
+        // declared — which is what lets an open list float above the
+        // plates and win their clicks. Declaring it here (after all the
+        // panels, before the collected presses) puts its whole strip into
+        // `ui.hovering()` too: no slot or panel drag acts through it.
+        if let Some((menu, item)) = self.ui.menu_bar(ctx, &[FILE_MENU]) {
+            log::info!("menu: {menu} / {item}");
         }
 
         // The collected button presses, now outside every panel closure.

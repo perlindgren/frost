@@ -1,0 +1,642 @@
+//! The menu bar: a classic strip pinned to the window's top edge whose
+//! titles unfold drop-down lists — File, Edit, whatever the app declares.
+//!
+//! ```no_run
+//! struct Editor {
+//!     ui: frost::Ui,
+//! }
+//! impl frost::Process for Editor {
+//!     fn process(&mut self, ctx: &mut frost::Context, _dt: f32) {
+//!         // ...panels and widgets first: the bar must be declared last...
+//!         static FILE: frost::Menu<'static> = frost::Menu {
+//!             title: "File",
+//!             items: &[
+//!                 frost::MenuItem { label: "Open", shortcut: "Ctrl-O" },
+//!                 frost::MenuItem { label: "Quit", shortcut: "" },
+//!             ],
+//!         };
+//!         if let Some((menu, item)) = self.ui.menu_bar(ctx, &[FILE]) {
+//!             log::info!("{menu} / {item}");
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! **Declare it last.** The bar draws at the [`z`](UiStyle::base_z) its
+//! declaration order gives it, and so does its drop-down — declaring the
+//! bar after every panel is what lets the open menu float above them and
+//! win the clicks that land on it, by the same last-declared-wins rule
+//! that orders the rest of the UI.
+//!
+//! **The behavior is the classic one**, down to the details a user's hand
+//! expects: a click on a title opens its list, a click on the same title
+//! closes it again, and while a list is open, sliding the pointer along
+//! the bar switches which list is shown — menu tracking, no second click
+//! needed. Hovered items highlight; an item released elsewhere cancels.
+//! A click on the bar's bare strip or anywhere outside closes the open
+//! list, exactly as it dismisses a real menu. Choosing an item closes the
+//! list and returns `(menu title, item label)` for that frame.
+//!
+//! An item whose label is empty draws a separator line and swallows its
+//! click without choosing anything. Shortcut texts are display-only —
+//! the bar never dispatches keys; wire the shortcuts in your own input
+//! handling (the accelerator beside a title is a promise to do so).
+//!
+//! The bar and every open list register hit rects like any widget, so
+//! [`Ui::hovering`](Ui::hovering) reports them: a scene that gates its
+//! own mouse handling on `hovering` will not act through the bar or an
+//! open menu.
+
+use super::*;
+
+/// One line of a [`Menu`]'s drop-down. An empty `label` is a separator:
+/// a rule across the list that swallows its click and chooses nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct MenuItem<'a> {
+    /// The command's name, or `""` for a separator line.
+    pub label: &'a str,
+    /// The accelerator to show right-aligned on the line — display only:
+    /// the bar never dispatches keys. `""` shows nothing.
+    pub shortcut: &'a str,
+}
+
+impl<'a> MenuItem<'a> {
+    /// A named command with its (display-only) accelerator.
+    pub const fn new(label: &'a str, shortcut: &'a str) -> Self {
+        Self { label, shortcut }
+    }
+
+    /// A separator line.
+    pub const SEPARATOR: MenuItem<'static> = MenuItem {
+        label: "",
+        shortcut: "",
+    };
+}
+
+/// One top-level entry of the menu bar: a title and its list.
+#[derive(Clone, Copy, Debug)]
+pub struct Menu<'a> {
+    /// The title shown in the bar.
+    pub title: &'a str,
+    /// The list it unfolds.
+    pub items: &'a [MenuItem<'a>],
+}
+
+impl Ui {
+    /// Declares the whole menu bar for the frame — call it once, after
+    /// every other widget — and returns `(title, label)` on the frame an
+    /// item is chosen. See the [module](self) for the behavior.
+    pub fn menu_bar<'a>(
+        &mut self,
+        ctx: &mut Context,
+        menus: &[Menu<'a>],
+    ) -> Option<(&'a str, &'a str)> {
+        let size = ctx.size();
+        let (frame, choice) = self.menu_frame(menus, size);
+        self.paint_menu(ctx, &frame);
+        choice
+    }
+
+    /// The input-and-geometry heart of [`Ui::menu_bar`], without a canvas:
+    /// hit-test, open, track, close, choose — and hand back everything the
+    /// painter needs. Separate so the behavior is testable without a
+    /// window, like [`Ui::begin_input`](Ui::begin_input).
+    fn menu_frame<'a>(
+        &mut self,
+        menus: &[Menu<'a>],
+        size: (f32, f32),
+    ) -> (MenuFrame<'a>, Option<(&'a str, &'a str)>) {
+        let style = self.style;
+        let top = size.1 / 2.0;
+        let bar = Rect {
+            left: -size.0 / 2.0,
+            top,
+            w: size.0,
+            h: style.row_h,
+        };
+        // The bar's bare strip is a click sponge: a press that lands on
+        // it hits nothing of the scene's, and closes whatever is open.
+        let sponge = widget_id(0, "\u{1}menubar");
+        self.interact(sponge, bar);
+
+        // Titles, left to right.
+        let mut x = bar.left + style.pad;
+        let mut titles = Vec::with_capacity(menus.len());
+        for menu in menus {
+            let w = self.text_width(menu.title, style.font_size) + style.pad;
+            let rect = Rect {
+                left: x,
+                top,
+                w,
+                h: style.row_h,
+            };
+            let id = widget_id(0, &format!("menu:{}", menu.title));
+            let it = self.interact(id, rect);
+            titles.push(TitleFrame {
+                label: menu.title,
+                rect,
+                id,
+                hot: it.hot,
+                open: false,
+            });
+            x += w + style.pad;
+        }
+
+        // — the state machine, on this frame's click edges —
+        // It runs before the list is laid: a title click must show its
+        // list on the frame it opens, not the one after.
+        let mut choice = None;
+        if let Some(rel) = self.released_active {
+            let mut handled = false;
+            // A release on the open menu's own item line chooses — and
+            // anywhere else on that line's widget cancels, closing like
+            // a real menu's.
+            if let Some(oid) = self.menu_open
+                && let Some(m) = menus
+                    .iter()
+                    .find(|mn| widget_id(0, &format!("menu:{}", mn.title)) == oid)
+            {
+                if let Some(item) = m
+                    .items
+                    .iter()
+                    .find(|it| !it.label.is_empty() && widget_id(oid, it.label) == rel)
+                {
+                    if self.hover == Some(rel) {
+                        choice = Some((m.title, item.label));
+                    }
+                    self.menu_open = None;
+                    handled = true;
+                } else if rel == widget_id(oid, "\u{1}bg") {
+                    // A click in the list's own padding: stays open,
+                    // chooses nothing.
+                    handled = true;
+                }
+            }
+            if !handled
+                && let Some(t) = titles
+                    .iter()
+                    .find(|t| t.id == rel && t.rect.contains(self.pointer.unwrap_or([f32::NAN; 2])))
+            {
+                // A title click toggles: open it, or close its own.
+                self.menu_open = if self.menu_open == Some(t.id) {
+                    None
+                } else {
+                    Some(t.id)
+                };
+                handled = true;
+            }
+            if !handled {
+                self.menu_open = None; // a click on anything else dismisses
+            }
+        } else if self.released {
+            self.menu_open = None; // a click on nothing dismisses
+        }
+        // Menu tracking: with a list open, gliding over another title
+        // switches the list to it.
+        if let Some(open) = self.menu_open
+            && let Some(t) = titles.iter().find(|t| t.hot && t.id != open)
+        {
+            self.menu_open = Some(t.id);
+        }
+
+        // The open menu's list, laid and registered after the decision.
+        let mut drop = None;
+        let open_idx = self.menu_open.and_then(|oid| {
+            menus
+                .iter()
+                .position(|m| widget_id(0, &format!("menu:{}", m.title)) == oid)
+        });
+        if let Some(i) = open_idx {
+            let menu = &menus[i];
+            let title = titles[i].id;
+            let room = if menu.items.iter().any(|it| !it.shortcut.is_empty()) {
+                3.0 * style.pad
+            } else {
+                0.0
+            };
+            let widest = menu
+                .items
+                .iter()
+                .map(|it| {
+                    let l = self.text_width(it.label, style.font_size);
+                    let sc = self.text_width(it.shortcut, style.font_size);
+                    style.pad + l + room + sc + style.pad
+                })
+                .fold(titles[i].rect.w, f32::max);
+            let left = titles[i].rect.left;
+            let top = bar.top - bar.h;
+            let h: f32 = menu
+                .items
+                .iter()
+                .map(|it| {
+                    if it.label.is_empty() {
+                        style.row_gap
+                    } else {
+                        style.row_h
+                    }
+                })
+                .sum();
+            // The background registers FIRST: every row beats it in the
+            // overlap order, and it is what catches a click inside the
+            // list that lands on no row — the separator's band, the
+            // rounding slack. Such a click stays open, like a real
+            // menu's own padding.
+            self.interact(
+                widget_id(title, "\u{1}bg"),
+                Rect {
+                    left,
+                    top,
+                    w: widest,
+                    h,
+                },
+            );
+            let mut rows = Vec::with_capacity(menu.items.len());
+            // `y` holds the current rect's top edge and walks down.
+            let mut y = top;
+            for item in menu.items {
+                if item.label.is_empty() {
+                    rows.push(Row::Sep {
+                        rect: Rect {
+                            left,
+                            top: y,
+                            w: widest,
+                            h: style.row_gap,
+                        },
+                    });
+                    y -= style.row_gap;
+                } else {
+                    let rect = Rect {
+                        left,
+                        top: y,
+                        w: widest,
+                        h: style.row_h,
+                    };
+                    let it = self.interact(widget_id(title, item.label), rect);
+                    rows.push(Row::Item {
+                        label: item.label,
+                        shortcut: item.shortcut,
+                        rect,
+                        hot: it.hot,
+                        pressed: it.pressed,
+                    });
+                    y -= style.row_h;
+                }
+            }
+            drop = Some(DropFrame {
+                bg: Rect {
+                    left,
+                    top,
+                    w: widest,
+                    h,
+                },
+                rows,
+            });
+        }
+        // The title of whatever ended up open draws pressed.
+        if let Some(open) = self.menu_open
+            && let Some(t) = titles.iter_mut().find(|t| t.id == open)
+        {
+            t.open = true;
+        }
+        (MenuFrame { bar, titles, drop }, choice)
+    }
+
+    /// Lays a [`MenuFrame`] on the canvas: bar, titles, and the open list.
+    fn paint_menu(&mut self, ctx: &mut Context, frame: &MenuFrame) {
+        let style = self.style;
+        self.fill(ctx, frame.bar, style.title_bg);
+        for t in &frame.titles {
+            if t.open || t.hot {
+                let rect = Rect {
+                    left: t.rect.left,
+                    top: t.rect.top,
+                    w: t.rect.w,
+                    h: t.rect.h,
+                };
+                self.fill(
+                    ctx,
+                    rect,
+                    if t.open {
+                        style.widget_press
+                    } else {
+                        style.widget_hover
+                    },
+                );
+            }
+            let size = style.font_size;
+            let [cx, cy] = t.rect.center();
+            let label = t.label.to_owned();
+            self.text(ctx, [cx, cy], size, style.title_text, &label);
+        }
+        let Some(d) = &frame.drop else {
+            return;
+        };
+        self.fill(ctx, d.bg, style.panel_bg);
+        // A one-pixel rule under the bar and around the list's far edges:
+        // the menu lifts itself off the scene by its own outline.
+        let line = |ui: &mut Ui, ctx: &mut Context, x0, y0, x1, y1| {
+            let z = ui.z();
+            ctx.line(x0, y0, x1, y1, style.widget_hover, 1.0, z);
+        };
+        line(self, ctx, d.bg.left, d.bg.top, d.bg.left + d.bg.w, d.bg.top);
+        line(self, ctx, d.bg.left, d.bg.top, d.bg.left, d.bg.top - d.bg.h);
+        line(
+            self,
+            ctx,
+            d.bg.left + d.bg.w,
+            d.bg.top,
+            d.bg.left + d.bg.w,
+            d.bg.top - d.bg.h,
+        );
+        line(
+            self,
+            ctx,
+            d.bg.left,
+            d.bg.top - d.bg.h,
+            d.bg.left + d.bg.w,
+            d.bg.top - d.bg.h,
+        );
+        for row in &d.rows {
+            match row {
+                Row::Item {
+                    label,
+                    shortcut,
+                    rect,
+                    hot,
+                    pressed,
+                    ..
+                } => {
+                    if *pressed {
+                        self.fill(ctx, *rect, style.widget_press);
+                    } else if *hot {
+                        self.fill(ctx, *rect, style.widget_hover);
+                    }
+                    let size = style.font_size;
+                    let cy = rect.center()[1];
+                    let lw = self.text_width(label, size);
+                    let l = (*label).to_owned();
+                    self.text(
+                        ctx,
+                        [rect.left + style.pad + lw / 2.0, cy],
+                        size,
+                        style.text,
+                        &l,
+                    );
+                    if !shortcut.is_empty() {
+                        let sw = self.text_width(shortcut, size);
+                        let s = (*shortcut).to_owned();
+                        self.text(
+                            ctx,
+                            [rect.left + rect.w - style.pad - sw / 2.0, cy],
+                            size,
+                            style.text_muted,
+                            &s,
+                        );
+                    }
+                }
+                Row::Sep { rect } => {
+                    let y = rect.center()[1];
+                    let z = self.z();
+                    ctx.line(
+                        rect.left + style.pad / 2.0,
+                        y,
+                        rect.left + rect.w - style.pad / 2.0,
+                        y,
+                        style.widget_hover,
+                        1.0,
+                        z,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Everything one frame's [`Ui::menu_frame`] computed, ready to paint.
+struct MenuFrame<'a> {
+    bar: Rect,
+    titles: Vec<TitleFrame<'a>>,
+    drop: Option<DropFrame<'a>>,
+}
+
+struct TitleFrame<'a> {
+    label: &'a str,
+    rect: Rect,
+    id: u64,
+    hot: bool,
+    open: bool,
+}
+
+struct DropFrame<'a> {
+    bg: Rect,
+    rows: Vec<Row<'a>>,
+}
+
+enum Row<'a> {
+    Item {
+        label: &'a str,
+        shortcut: &'a str,
+        rect: Rect,
+        hot: bool,
+        pressed: bool,
+    },
+    Sep {
+        rect: Rect,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::tests::{frame, ui};
+
+    static FILE: Menu<'static> = Menu {
+        title: "File",
+        items: &[
+            MenuItem {
+                label: "Open",
+                shortcut: "Ctrl-O",
+            },
+            MenuItem {
+                label: "Save",
+                shortcut: "",
+            },
+            MenuItem::SEPARATOR,
+            MenuItem {
+                label: "Quit",
+                shortcut: "",
+            },
+        ],
+    };
+    static EDIT: Menu<'static> = Menu {
+        title: "Edit",
+        items: &[MenuItem {
+            label: "Undo",
+            shortcut: "Ctrl-Z",
+        }],
+    };
+    const SIZE: (f32, f32) = (800.0, 600.0);
+
+    /// One frame of the bar with both menus, through the state machine.
+    fn bar(ui: &mut Ui) -> MenuFrame<'static> {
+        let (f, _) = ui.menu_frame(&[FILE, EDIT], SIZE);
+        f
+    }
+
+    /// Click `p`: press frame, then release frame, returning the release
+    /// frame's menu state.
+    fn click_at(ui: &mut Ui, p: [f32; 2]) -> MenuFrame<'static> {
+        frame(ui, Some(p), true);
+        bar(ui);
+        frame(ui, Some(p), false);
+        bar(ui)
+    }
+
+    /// Move to `p` (a released frame) and return the first item line's
+    /// center of the open list, panicking if none is open.
+    fn open_item_center(ui: &mut Ui, p: [f32; 2], item: usize) -> ([f32; 2], MenuFrame<'static>) {
+        frame(ui, Some(p), false);
+        let f = bar(ui);
+        let d = f.drop.as_ref().expect("no list is open");
+        match &d.rows[item] {
+            Row::Item { rect, .. } => (rect.center(), f),
+            _ => panic!("row {item} is not an item"),
+        }
+    }
+
+    #[test]
+    fn a_title_click_opens_and_a_second_click_closes() {
+        let mut ui = ui();
+        frame(&mut ui, None, false);
+        let f = bar(&mut ui);
+        assert!(f.drop.is_none(), "the bar starts shut");
+        let file = f.titles[0].rect.center();
+        let f = click_at(&mut ui, file);
+        assert!(f.drop.is_some(), "the click opened File");
+        // Move away and back so the second click is a clean toggle.
+        frame(&mut ui, Some([0.0, -200.0]), false);
+        bar(&mut ui);
+        let f = click_at(&mut ui, file);
+        assert!(f.drop.is_none(), "the same title closes its own list");
+    }
+
+    #[test]
+    fn an_item_released_on_its_line_is_chosen_and_the_list_closes() {
+        let mut ui = ui();
+        frame(&mut ui, None, false);
+        let f = bar(&mut ui);
+        let file = f.titles[0].rect.center();
+        let f = click_at(&mut ui, file);
+        let item = match &f.drop.as_ref().unwrap().rows[0] {
+            Row::Item { rect, .. } => rect.center(),
+            _ => panic!("first row is Open"),
+        };
+        frame(&mut ui, Some(item), true);
+        bar(&mut ui);
+        frame(&mut ui, Some(item), false);
+        let (f, choice) = ui.menu_frame(&[FILE, EDIT], SIZE);
+        assert_eq!(choice, Some(("File", "Open")));
+        assert!(f.drop.is_none(), "choosing closes the list");
+    }
+
+    #[test]
+    fn a_click_anywhere_else_dismisses_the_open_list() {
+        let mut ui = ui();
+        frame(&mut ui, None, false);
+        let f = bar(&mut ui);
+        let file = f.titles[0].rect.center();
+        let f = click_at(&mut ui, file);
+        assert!(f.drop.is_some());
+        frame(&mut ui, Some([0.0, -200.0]), false);
+        let f = click_at(&mut ui, [0.0, -200.0]);
+        assert!(f.drop.is_none(), "a click on nothing dismisses the menu");
+    }
+
+    #[test]
+    fn an_open_bar_tracks_the_titles_it_glides_over() {
+        let mut ui = ui();
+        frame(&mut ui, None, false);
+        let f = bar(&mut ui);
+        let (file, edit) = (f.titles[0].rect.center(), f.titles[1].rect.center());
+        let edit_left = f.titles[1].rect.left;
+        let f = click_at(&mut ui, file);
+        assert!(f.drop.is_some(), "File is open");
+        // Glide onto Edit — no click anywhere — and the open list follows.
+        frame(&mut ui, Some(edit), false);
+        let f = bar(&mut ui);
+        let d = f.drop.expect("the list followed the titles");
+        assert_eq!(d.bg.left, edit_left, "the list switched to Edit's column");
+        // And a click now chooses from Edit's list.
+        let (undo, _) = open_item_center(&mut ui, edit, 0);
+        frame(&mut ui, Some(undo), true);
+        bar(&mut ui);
+        frame(&mut ui, Some(undo), false);
+        let (f, choice) = ui.menu_frame(&[FILE, EDIT], SIZE);
+        assert_eq!(choice, Some(("Edit", "Undo")));
+        assert!(f.drop.is_none());
+    }
+
+    #[test]
+    fn a_separator_clicks_for_nothing_but_still_eats_the_click() {
+        let mut ui = ui();
+        frame(&mut ui, None, false);
+        let f = bar(&mut ui);
+        let file = f.titles[0].rect.center();
+        let f = click_at(&mut ui, file);
+        let sep = match &f.drop.as_ref().unwrap().rows[2] {
+            Row::Sep { rect } => rect.center(),
+            _ => panic!("third row is the separator"),
+        };
+        frame(&mut ui, Some(sep), true);
+        let _ = bar(&mut ui);
+        frame(&mut ui, Some(sep), false);
+        let (f, choice) = ui.menu_frame(&[FILE, EDIT], SIZE);
+        assert_eq!(choice, None, "a separator chooses nothing");
+        assert!(
+            f.drop.is_some(),
+            "and a separator click keeps the list open"
+        );
+    }
+
+    #[test]
+    fn the_open_menu_wins_the_press_over_older_widgets() {
+        let mut ui = ui();
+        frame(&mut ui, None, false);
+        let f = bar(&mut ui);
+        let file = f.titles[0].rect.center();
+        let f = click_at(&mut ui, file);
+        let item = match &f.drop.as_ref().unwrap().rows[0] {
+            Row::Item { rect, .. } => rect.center(),
+            _ => unreachable!(),
+        };
+        // An ordinary widget declared before the bar, under the item:
+        // last declared wins, so the menu takes the press.
+        frame(&mut ui, Some(item), true);
+        ui.interact(
+            widget_id(7, "under"),
+            Rect::from_center(item[0], item[1], 400.0, 400.0),
+        );
+        let _ = bar(&mut ui);
+        frame(&mut ui, Some(item), false);
+        ui.interact(
+            widget_id(7, "under"),
+            Rect::from_center(item[0], item[1], 400.0, 400.0),
+        );
+        let (_, choice) = ui.menu_frame(&[FILE, EDIT], SIZE);
+        assert_eq!(
+            choice,
+            Some(("File", "Open")),
+            "the menu, not the widget, got the click"
+        );
+    }
+
+    #[test]
+    fn the_bar_owns_the_mouse_over_its_whole_strip() {
+        let mut ui = ui();
+        frame(&mut ui, None, false);
+        bar(&mut ui);
+        // Far from every title, yet on the strip.
+        frame(&mut ui, Some([350.0, 290.0]), false);
+        assert!(ui.hovering(), "the bar strip is not scene");
+    }
+}

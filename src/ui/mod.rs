@@ -1,7 +1,9 @@
 //! Reusable immediate-mode widgets: a [`Ui`] that draws [`button`](Ui::button),
-//! [`checkbox`](Ui::checkbox), [`slider`](Ui::slider), [`label`](Ui::label)
-//! and draggable [`panel`](Ui::panel) chrome straight onto the frame's
-//! [`Canvas`], over whatever the game draws.
+//! [`checkbox`](Ui::checkbox), [`slider`](Ui::slider), [`label`](Ui::label),
+//! draggable [`panel`](Ui::panel) chrome and a classic [`menu_bar`](Ui::menu_bar)
+//! straight onto the frame's [`Canvas`], over whatever the game draws.
+//! The menu bar is declared last, after every panel, so its open list
+//! floats above them and wins the clicks that land on it.
 //!
 //! The style follows the frame flow: declare your widgets every frame from
 //! [`Process::process`](crate::Process::process), exactly like the immediate
@@ -48,11 +50,13 @@ use std::sync::Arc;
 
 use crate::{Color, Context, TextError};
 
+mod menu;
 mod panel;
 mod style;
 mod table;
 mod tree;
 
+pub use menu::{Menu, MenuItem};
 use panel::PanelState;
 #[cfg(test)]
 use panel::{panel_body_id, panel_id};
@@ -165,6 +169,10 @@ pub struct Ui {
     /// The widget under the pointer, topmost first, resolved at `begin`
     /// from the rects the previous frame declared (see `hovering`).
     hover: Option<u64>,
+    /// The menu bar's open menu, by its title's widget id: the one piece
+    /// of menu state the immediate style cannot re-derive (see
+    /// [`Ui::menu_bar`]).
+    menu_open: Option<u64>,
     /// Every interactive rect declared so far this frame, in order.
     candidates: Vec<(u64, Rect)>,
     /// Each panel's retained position and size, keyed by its title id.
@@ -214,6 +222,7 @@ impl Ui {
             active: None,
             released_active: None,
             hover: None,
+            menu_open: None,
             candidates: Vec::new(),
             panels: HashMap::new(),
             tables: HashMap::new(),
