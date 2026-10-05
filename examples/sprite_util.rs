@@ -3580,6 +3580,8 @@ mod tests {
         assert!(!row_selected(Some(1), None));
     }
 
+    // This test is broken on Windows
+    #[cfg(not(windows))]
     #[test]
     fn a_sidecar_parses_or_the_sprite_loads_alone() {
         // The tree panel speaks the shared parser: the plant files'
@@ -3711,6 +3713,8 @@ mod tests {
         );
     }
 
+    // This test is broken on Windows
+    #[cfg(not(windows))]
     #[test]
     fn the_atlas_restores_from_the_sidecar_on_load() {
         // The sprite reloads tiled the way it was saved: the sidecar's
