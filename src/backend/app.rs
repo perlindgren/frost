@@ -78,6 +78,10 @@ pub(crate) struct Frost<P: Process> {
     /// The `Config`'s initial inner size in physical pixels; used once in
     /// `create_window`, and it wins over `window_size` there.
     window_size_px: Option<[u32; 2]>,
+    /// The `Config`'s scale-factor override, or `None` to use the display's
+    /// own scale factor; used in `create_window` (to size the window) and
+    /// in `attach_window` / `ScaleFactorChanged` (to pin `self.scale`).
+    scale_factor: Option<f32>,
     /// The `Config`'s resizability request; applied once in
     /// `attach_window`.
     resizable: bool,
@@ -234,6 +238,7 @@ impl<P: Process> Frost<P> {
         vsync: bool,
         window_size: Option<[u32; 2]>,
         window_size_px: Option<[u32; 2]>,
+        scale_factor: Option<f32>,
         resizable: bool,
         render_size: Option<[u32; 2]>,
         blit_filter: SpriteFilter,
@@ -361,6 +366,7 @@ impl<P: Process> Frost<P> {
             vsync,
             window_size,
             window_size_px,
+            scale_factor,
             resizable,
             render_size,
             blit_filter,
@@ -412,6 +418,7 @@ impl<P: Process> ApplicationHandler for Frost<P> {
             event_loop,
             self.window_size,
             self.window_size_px,
+            self.scale_factor,
         ));
     }
 
@@ -535,7 +542,11 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                self.scale = scale_factor as f32;
+                // An explicit `Config::scale_factor` override pins the
+                // engine's scale, so the OS's value is ignored.
+                if self.scale_factor.is_none() {
+                    self.scale = scale_factor as f32;
+                }
                 self.resize();
             }
             WindowEvent::RedrawRequested => {
@@ -587,7 +598,12 @@ impl<P: Process> Frost<P> {
         // winit reports the client area in *physical* pixels, so convert it
         // to logical here; `pixel_size()` multiplies by the scale factor.
         let inner = window.inner_size();
-        let scale = window.scale_factor();
+        // An explicit `Config::scale_factor` override pins the engine's
+        // scale; otherwise the display's own scale factor stands.
+        let scale = self
+            .scale_factor
+            .map(|s| s as f64)
+            .unwrap_or(window.scale_factor());
         self.scale = scale as f32;
         self.logical_size = (
             (inner.width as f64 / scale).max(1.0).round() as u32,

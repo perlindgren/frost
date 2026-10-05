@@ -101,6 +101,11 @@ Alternative settings for speculation:
   --ngram-mod 1 `
   --spec-draft-n-max 2
 ```
+
+```
+.\llama.exe serve -hf unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M --parallel 1 "-ngl" all "-fa" on "-c" 98304 "-ctk" q4_0 "-ctv" q4_0 --kv-unified --batch-size 4096 --ubatch-size 1024 --cache-prompt --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-draft-n-min 2  --spec-draft-n-max 4 --temp 0.15 --top-p 0.9
+```
+
 - Run in another terminal:
 
 ```shell

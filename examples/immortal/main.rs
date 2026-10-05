@@ -3821,6 +3821,21 @@ struct Cli {
     /// run is reproducible.
     #[arg(long)]
     seed: Option<u64>,
+    /// Run at native resolution: pin the engine's scale factor to 1.0 so
+    /// logical and physical pixels are one-for-one, ignoring the display's
+    /// DPI scaling. The window opens at its logical size in physical
+    /// pixels. Overridden by an explicit `--scale`.
+    #[arg(long)]
+    scale_native: bool,
+    /// Override the display's scale factor (the DPI scaling the operating
+    /// system applies between logical and physical pixels) with this value.
+    /// The window opens at `window_size * scale` physical pixels and the
+    /// engine converts to physical with `scale` instead of the OS's value.
+    /// `1.0` is native resolution (same as `--scale_native`); a fractional
+    /// value like `1.5` renders the logical layout at 1.5 physical pixels
+    /// per logical pixel. Wins over `--scale_native` when both are given.
+    #[arg(short = 's', long)]
+    scale: Option<f32>,
 }
 
 fn main() {
@@ -4144,6 +4159,10 @@ fn main() {
     if cli.load {
         demo.load_last_snapshot();
     }
+    // The scale-factor override: an explicit `--scale` wins over
+    // `--scale_native` (which is just `--scale 1.0`); neither given means
+    // the display's own DPI scaling stands.
+    let scale_factor = cli.scale.or_else(|| cli.scale_native.then_some(1.0));
     if let Err(err) = frost::run_configured(
         scene,
         demo,
@@ -4155,6 +4174,7 @@ fn main() {
             // beyond that is a stretch of the finished frame — shape kept,
             // letterboxed if a window manager ever denies the shape.
             render_size: Some(WINDOW),
+            scale_factor,
             ..Default::default()
         },
     ) {

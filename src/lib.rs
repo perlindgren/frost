@@ -504,6 +504,30 @@ pub struct Config {
     /// Like [`Config::window_size`], a request larger than the primary
     /// monitor is clamped down to fit it, aspect preserved.
     pub window_size_px: Option<[u32; 2]>,
+    /// An override for the display's scale factor, the factor the
+    /// operating system applies between logical and physical pixels (the
+    /// DPI scaling winit reports via `window.scale_factor()`).
+    ///
+    /// `None` (the default) uses the display's own scale factor: the window
+    /// opens at [`Config::window_size`] logical pixels and the engine
+    /// converts to physical with the OS's value. `Some(s)` pins the engine's
+    /// scale to `s` instead — the OS's value is ignored, and a logical
+    /// [`Config::window_size`] request is opened as a physical window of
+    /// `window_size * s` pixels (clamped to the monitor), so the engine's
+    /// logical size comes out exactly `window_size`.
+    ///
+    /// `Some(1.0)` is "native resolution": logical and physical pixels are
+    /// one-for-one, so the window opens at its logical size in physical
+    /// pixels and the display's DPI scaling is ignored. A fractional value
+    /// like `Some(1.5)` renders the logical layout at 1.5 physical pixels
+    /// per logical pixel, regardless of what the OS reports.
+    ///
+    /// [`Config::window_size_px`] is unaffected: a physical request is
+    /// already in physical pixels and wins over `window_size` either way.
+    /// On the web the canvas lives in CSS pixels and the page owns its
+    /// size, so the override only changes the engine's scale — the canvas
+    /// itself is not resized.
+    pub scale_factor: Option<f32>,
     /// Whether the user can resize the window. Default `true`.
     ///
     /// `false` removes the resize affordance (and pins the size with hard
@@ -573,6 +597,7 @@ impl Default for Config {
             vsync: true,
             window_size: None,
             window_size_px: None,
+            scale_factor: None,
             resizable: true,
             render_size: None,
             blit_filter: SpriteFilter::Linear,
@@ -623,6 +648,7 @@ pub fn run_configured<P: Process>(
         config.vsync,
         config.window_size,
         config.window_size_px,
+        config.scale_factor,
         config.resizable,
         config.render_size,
         config.blit_filter,
@@ -667,6 +693,7 @@ pub fn run_configured<P: Process>(
         config.vsync,
         config.window_size,
         config.window_size_px,
+        config.scale_factor,
         config.resizable,
         config.render_size,
         config.blit_filter,

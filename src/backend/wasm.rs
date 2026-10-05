@@ -36,6 +36,10 @@ struct Core<P: Process> {
     /// The physical-pixel size request, carried for symmetry with the
     /// native config; `create_window` ignores it on the web.
     window_size_px: Option<[u32; 2]>,
+    /// The scale-factor override; `create_window` ignores it on the web
+    /// (the page owns the canvas size), but it is carried so
+    /// `attach_window` / `ScaleFactorChanged` pin `self.scale` like native.
+    scale_factor: Option<f32>,
     /// The resizability request; `set_resizable` is a no-op on the web,
     /// where the page owns the canvas size, but it is carried so
     /// `attach_window` runs the same code as native.
@@ -94,7 +98,13 @@ impl<P: Process> ApplicationHandler for WebFrost<P> {
             // one.
             let window_size = self.core.as_ref().and_then(|core| core.window_size);
             let window_size_px = self.core.as_ref().and_then(|core| core.window_size_px);
-            self.window = Some(create_window(event_loop, window_size, window_size_px));
+            let scale_factor = self.core.as_ref().and_then(|core| core.scale_factor);
+            self.window = Some(create_window(
+                event_loop,
+                window_size,
+                window_size_px,
+                scale_factor,
+            ));
         }
         if matches!(self.gpu, GpuInit::Idle) {
             // The async block owns its own `Instance` clone (a cheap
@@ -181,6 +191,7 @@ impl<P: Process> WebFrost<P> {
         vsync: bool,
         window_size: Option<[u32; 2]>,
         window_size_px: Option<[u32; 2]>,
+        scale_factor: Option<f32>,
         resizable: bool,
         render_size: Option<[u32; 2]>,
         blit_filter: SpriteFilter,
@@ -193,6 +204,7 @@ impl<P: Process> WebFrost<P> {
                 vsync,
                 window_size,
                 window_size_px,
+                scale_factor,
                 resizable,
                 render_size,
                 blit_filter,
@@ -255,6 +267,7 @@ impl<P: Process> WebFrost<P> {
             core.vsync,
             core.window_size,
             core.window_size_px,
+            core.scale_factor,
             core.resizable,
             core.render_size,
             core.blit_filter,

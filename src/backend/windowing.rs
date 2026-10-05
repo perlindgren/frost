@@ -43,6 +43,7 @@ pub(crate) fn create_window(
     event_loop: &ActiveEventLoop,
     window_size: Option<[u32; 2]>,
     window_size_px: Option<[u32; 2]>,
+    scale_factor: Option<f32>,
 ) -> Arc<Window> {
     let mut attributes = Window::default_attributes().with_title("frost");
     #[cfg(not(target_arch = "wasm32"))]
@@ -57,22 +58,42 @@ pub(crate) fn create_window(
             };
             attributes = attributes.with_inner_size(PhysicalSize::new(size[0], size[1]));
         } else if let Some([width, height]) = window_size {
-            // Logical request: the monitor's own scale factor turns its
-            // physical size into the logical budget to fit into.
-            let size = match monitor.as_ref() {
-                Some(m) => {
-                    let s = m.scale_factor().max(0.01);
-                    fit_into_monitor(
-                        [width, height],
-                        [
-                            (m.size().width as f64 / s).round().max(1.0) as u32,
-                            (m.size().height as f64 / s).round().max(1.0) as u32,
-                        ],
-                    )
+            match scale_factor {
+                // A scale-factor override turns the logical request into a
+                // physical one: the window opens at `window_size * scale`
+                // physical pixels so the engine's logical size (physical /
+                // scale) comes out exactly `window_size`.
+                Some(s) => {
+                    let physical = [
+                        ((width as f64) * s as f64).round().max(1.0) as u32,
+                        ((height as f64) * s as f64).round().max(1.0) as u32,
+                    ];
+                    let size = match monitor.as_ref() {
+                        Some(m) => fit_into_monitor(physical, [m.size().width, m.size().height]),
+                        None => physical,
+                    };
+                    attributes = attributes.with_inner_size(PhysicalSize::new(size[0], size[1]));
                 }
-                None => [width, height],
-            };
-            attributes = attributes.with_inner_size(LogicalSize::new(size[0], size[1]));
+                // Without an override the request stays logical and the
+                // monitor's own scale factor turns its physical size into
+                // the logical budget to fit into.
+                None => {
+                    let size = match monitor.as_ref() {
+                        Some(m) => {
+                            let s = m.scale_factor().max(0.01);
+                            fit_into_monitor(
+                                [width, height],
+                                [
+                                    (m.size().width as f64 / s).round().max(1.0) as u32,
+                                    (m.size().height as f64 / s).round().max(1.0) as u32,
+                                ],
+                            )
+                        }
+                        None => [width, height],
+                    };
+                    attributes = attributes.with_inner_size(LogicalSize::new(size[0], size[1]));
+                }
+            }
         }
     }
     #[cfg(target_arch = "wasm32")]
@@ -80,6 +101,7 @@ pub(crate) fn create_window(
         use winit::platform::web::WindowAttributesExtWebSys;
 
         let _ = window_size_px;
+        let _ = scale_factor;
         let [width, height] = window_size.unwrap_or([900, 600]);
         attributes = attributes
             .with_append(true)
