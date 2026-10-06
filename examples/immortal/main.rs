@@ -137,7 +137,11 @@
 //! steps every frame at the growth's slowed pace — water or not: 8 seconds
 //! after full growth, its body modulates from red to a dark red over 8
 //! seconds, even on a dry plant whose growth clock withers backward —
-//! and a
+//! and in the last 5 seconds before that fall the fruit shivers with
+//! building intensity, trembling harder and harder until it lets
+//! go — the shiver fills the tail of the 8-second darkening and adds no
+//! time, and the drop releases from the fruit's resting point, not its
+//! tremble — and a
 //! picked fruit carries the color it had at pick, frozen while it rides
 //! the cursor and kept when it lands in the basket.
 //!
@@ -286,6 +290,16 @@
 //! cargo run --example immortal -- --seed 42
 //! ```
 //!
+//! A text field mid top of the window shows the frame's time scale —
+//! `1x` at the start — and the whole simulation runs at it: a click on
+//! the field steps the scale one forward, 1x to 2x to 4x to 8x, wrapping
+//! back to 1x, and a click-drag steers by distance — pulling right adds
+//! a step per `SPEED_STEP` pixels, pulling left takes one away, clamped
+//! to the table's ends — with the label previewing the drag's verdict
+//! live. Growth, aging, swarms, falls, particles, and the tool's
+//! animations all run at the chosen pace; only the diagnostics, the
+//! demo's real clock, and the audio keep real time.
+//!
 //! The cursor position comes from [`frost::Context::mouse_position`]. Run
 //! with:
 //!
@@ -365,6 +379,12 @@ const CHILD_BASKET: usize = 10;
 const CHILD_BADGE: usize = 11;
 const CHILD_HELD_FRUIT: usize = 12;
 const CHILD_OVERLAY: usize = 13;
+const CHILD_SPEED: usize = 14;
+
+/// The time-scale field node's children, in draw order: the background
+/// rectangle and the current scale's label.
+const SPEED_FIELD_BG: usize = 0;
+const SPEED_FIELD_LABEL: usize = 1;
 
 /// The game-over overlay node's children, in draw order: the "Game Over"
 /// title text, the Play button's rectangle, and the button's label. The
@@ -411,6 +431,82 @@ const PLAY_LABEL_SIZE: f32 = 54.0;
 /// `[0.0, PLAY_Y]`.
 fn on_play_button(p: [f32; 2]) -> bool {
     p[0].abs() <= PLAY_HALF[0] && (p[1] - PLAY_Y).abs() <= PLAY_HALF[1]
+}
+
+/// The frame's time scales, as multiples of real time: the game's whole
+/// simulation — growth, aging, swarms, falls, particles, and the tool's
+/// animations — steps on `dt * TIME_SCALES[speed]` instead of `dt`, while
+/// the real clock, the diagnostics, and the audio ride real time. The
+/// field mid top of the window shows the current one; it starts at 1x.
+const TIME_SCALES: [f32; 4] = [1.0, 2.0, 4.0, 8.0];
+
+/// The time-scale field's label size, in pixels.
+const SPEED_LABEL_SIZE: f32 = 48.0;
+
+/// The time-scale field's half extents, in window pixels: the box the
+/// label sits in, mid top of the window.
+const SPEED_HALF: [f32; 2] = [70.0, 34.0];
+
+/// The time-scale field's clearance to the window's top border, in
+/// window pixels.
+const SPEED_TOP: f32 = 14.0;
+
+/// The time-scale drag's slop, in window pixels: a press released within
+/// this many pixels of where it began is a click — the scale steps one
+/// forward, wrapping from 8x back to 1x; only a longer pull steers by
+/// distance.
+const SPEED_SLOP: f32 = 8.0;
+
+/// The time-scale drag's step, in window pixels: every one of these
+/// pulled to the right adds a step to the scale, every one to the left
+/// takes one away, rounded to the nearest step and clamped to the
+/// table's ends.
+const SPEED_STEP: f32 = 60.0;
+
+/// The time-scale field's background: a dark, semi-transparent wash, the
+/// game-over veil's lighter sibling.
+const SPEED_BG: frost::Color = frost::Color {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.45,
+};
+
+/// The time-scale field's background while the drag holds it down: the
+/// wash lit a step brighter.
+const SPEED_BG_HELD: frost::Color = frost::Color {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.65,
+};
+
+/// The time-scale field's center in user space, for a window of height
+/// `h`: mid-width, `SPEED_TOP` clear of the top border.
+fn speed_field_center(h: f32) -> [f32; 2] {
+    [0.0, h / 2.0 - SPEED_HALF[1] - SPEED_TOP]
+}
+
+/// Whether the user-space point `p` is inside the time-scale field's
+/// box, for a window of height `h`.
+fn on_speed_field(p: [f32; 2], h: f32) -> bool {
+    let c = speed_field_center(h);
+    (p[0] - c[0]).abs() <= SPEED_HALF[0] && (p[1] - c[1]).abs() <= SPEED_HALF[1]
+}
+
+/// The verdict of a time-scale click: the step after `start`, wrapping
+/// from the table's last scale back to its first.
+fn speed_click(start: usize) -> usize {
+    (start + 1) % TIME_SCALES.len()
+}
+
+/// The verdict of a time-scale drag: the scale index reached by pulling
+/// `dx` window pixels from a press that started at index `start` — one
+/// [TIME_SCALES] step per `SPEED_STEP` pixels, rounded to the nearest
+/// step, right faster and left slower, clamped to the table's ends
+/// (unlike the click, the drag does not wrap).
+fn speed_drag(start: usize, dx: f32) -> usize {
+    (start as f32 + (dx / SPEED_STEP).round()).clamp(0.0, TIME_SCALES.len() as f32 - 1.0) as usize
 }
 
 /// Whether the game-over overlay should be up over the bench: no plant is
@@ -858,6 +954,21 @@ struct Demo {
     /// The overlay's "Play" label, built once from the embedded font; laid
     /// onto the overlay's label child while the overlay is up.
     play_label: frost::Shape,
+    /// The frame's time scale: an index into [`TIME_SCALES`], starting at
+    /// 1x; the game's whole simulation steps on `dt * TIME_SCALES[speed]`.
+    /// The field mid top of the window shows it: a click there steps one
+    /// forward, wrapping, and a drag steers by distance — right faster,
+    /// left slower, clamped (see [`speed_click`] and [`speed_drag`]).
+    speed: usize,
+    /// The time-scale field's four labels — "1x", "2x", "4x", "8x" —
+    /// built once from the embedded font, one laid onto the field's label
+    /// child every frame.
+    speed_labels: [frost::Shape; TIME_SCALES.len()],
+    /// The live time-scale drag, if one is held down on the field: the
+    /// press's mouse x and the scale it started from. The verdict lands
+    /// on the release — a click steps, a pull drags — and until then the
+    /// field's label previews a dragging pointer's verdict live.
+    speed_press: Option<(f32, usize)>,
     /// The diagnostics overlay: the window size, the frame rate, the
     /// frame time, the last frame's processing time, and the last
     /// frame's GPU draw-call count, with four scrolling ten-second strip
@@ -918,6 +1029,14 @@ impl frost::Process for Demo {
             self.basket_seed = false;
             self.seed_basket_tomato(ctx);
         }
+
+        // The mid-top speed field picks the scale the frame runs at: from
+        // here the whole simulation — the growth and aging clocks, the
+        // swarms, the fruit's flight and falls, the tool's animations, the
+        // particles, and the Play hover's easing — steps on this scaled
+        // frame; only the diagnostics and the demo's real clock above keep
+        // real time, and the audio is what it is.
+        let dt = dt * TIME_SCALES[self.speed];
 
         // The bugs step on the planted table itself, not the count, so a
         // withered plant's bugs retarget and a replanted slot's plant gets
@@ -986,6 +1105,10 @@ impl frost::Process for Demo {
         // this frame, above, or fallen in the input's Play press, and the
         // veil must track the window's current size.
         self.layout_overlay(ctx, w, h);
+
+        // And the time-scale field, above the veil in tree order but under
+        // it by band: the box mid top, the label the live verdict.
+        self.layout_speed_field(ctx, h);
     }
 }
 
@@ -1022,6 +1145,17 @@ impl Demo {
             .expect("the embedded overlay font decodes");
         let play_label = frost::Shape::text_bytes(assets.font, "Play", PLAY_LABEL_SIZE)
             .expect("the embedded overlay font decodes");
+        // The time-scale field's four labels, built once: "1x", "2x",
+        // "4x", and "8x" — the TIME_SCALES table spelled in the overlay
+        // font.
+        let speed_labels = std::array::from_fn(|i| {
+            frost::Shape::text_bytes(
+                assets.font,
+                format!("{}x", TIME_SCALES[i] as usize),
+                SPEED_LABEL_SIZE,
+            )
+            .expect("the embedded overlay font decodes")
+        });
         // The button's background is the held-items panel; the fit scale
         // maps its texture exactly onto the button box.
         let play_button = assets.held_items.clone();
@@ -1118,6 +1252,9 @@ impl Demo {
             play_fit,
             play_hover: 0.0,
             play_label,
+            speed: 0,
+            speed_labels,
+            speed_press: None,
             diag,
             save_key: false,
             reload_key: false,
@@ -1232,6 +1369,34 @@ impl Demo {
             overlay.children[OVERLAY_BUTTON].shape = None;
             overlay.children[OVERLAY_LABEL].shape = None;
         }
+    }
+
+    /// Lays the time-scale field out, mid top of the window: the box at
+    /// its center, its background the dark wash — the brighter one while
+    /// a drag holds the field — and its label the current scale, or, while
+    /// a drag is past the slop, the verdict that pull would land on, so
+    /// the field previews the drag live.
+    fn layout_speed_field(&mut self, ctx: &mut frost::Context, h: f32) {
+        let center = speed_field_center(h);
+        let held = self.speed_press;
+        let shown = match held {
+            Some((start_x, start)) if (self.mouse[0] - start_x).abs() >= SPEED_SLOP => {
+                speed_drag(start, self.mouse[0] - start_x)
+            }
+            _ => self.speed,
+        };
+        let field = &mut ctx.scene().root.children[CHILD_SPEED];
+        field.transform = frost::Transform::translate(center);
+        field.children[SPEED_FIELD_BG].shape = Some(frost::Shape::Rectangle {
+            center: [0.0, 0.0],
+            extent: SPEED_HALF,
+            color: if held.is_some() {
+                SPEED_BG_HELD
+            } else {
+                SPEED_BG
+            },
+        });
+        field.children[SPEED_FIELD_LABEL].shape = Some(self.speed_labels[shown].clone());
     }
 
     /// Grows the planted plants in parallel, in parallel with the tool
@@ -1465,6 +1630,10 @@ impl Demo {
                 self.over = false;
                 self.restart(ctx);
             }
+            // A time-scale drag caught mid-pull when the overlay rose is
+            // abandoned: the release belongs to the Play button's world,
+            // not the field.
+            self.speed_press = None;
             self.pressed = left;
             return;
         }
@@ -1535,59 +1704,79 @@ impl Demo {
         // that starts elsewhere is a use of the active tool — or a tomato
         // pick, when no tool is held at all.
         if left && !self.pressed {
-            self.press_slot = on_slot;
-            if on_slot.is_none()
-                && self.active.is_none()
-                && self.picking.is_none()
-                && self.flying.is_none()
-            {
-                // No tool held, no seed flying: pick up a tomato under the
-                // pointer — ripe fruit off a plant, or a tomato out of
-                // the basket — and carry it.
-                let pick = self
-                    .pick_tomato(ctx)
-                    .map(|(pi, si)| Pick::Plant(pi, si))
-                    .or_else(|| self.pick_basket_tomato(ctx));
-                if let Some(pick) = pick {
-                    self.picking = Some(pick);
-                }
-            } else if on_slot.is_none() && self.active == Some(Tool::WaterCan) {
-                // Hold the left mouse button down to turn the can a quarter
-                // turn counter-clockwise around the pointer; the release
-                // turns it back. Each leg is a `ROTATE_TIME`-second tween
-                // restarted from wherever the can currently is, so a
-                // mid-rotation press or release picks up from the can's
-                // live angle.
-                self.rotation = frost::Tween::new(self.angle, CAN_ANGLE, ROTATE_TIME)
-                    .repeat(frost::Repeat::Once);
-            } else if on_slot.is_none() && self.active == Some(Tool::SprayCan) {
-                // A fresh press — one after a release, not a re-press
-                // mid-burst — triggers a burst while the can stands
-                // upright.
-                if self.burst.is_none() {
-                    self.burst = Some(0.0);
-                    self.sounds.device.play_once(&self.sounds.spray, Some(0.5));
-                    // PingPong is the tween's default: `0 ->
-                    // BURST_ANGLE` in `BURST_HALF` seconds and back in the
-                    // same time, so the tilting and the return take
-                    // `BURST_TIME` in all. The ticking below stops there,
-                    // before the cycle could wrap.
-                    self.rotation = frost::Tween::new(0.0, BURST_ANGLE, BURST_HALF);
-                    self.set_spray_frame(ctx, true);
-                }
-            } else if on_slot.is_none() && self.active == Some(Tool::Spade) {
-                // A fresh press — one after a release, not a re-press
-                // mid-stroke — digs one stroke: the spade is shoved forward
-                // along its own line, held in the soil, and arched back to
-                // its anchor, all over `DIG_TIME`. Holding the button, or
-                // pressing again before the stroke lands, does nothing: the
-                // spade digs once per click.
-                if self.dig.is_none() {
-                    self.dig = Some(0.0);
+            if on_speed_field(self.mouse, ctx.size().1) {
+                // The press belongs to the mid-top time-scale field: the
+                // drag starts here, and no tool, tomato, or slot sees
+                // this press at all.
+                self.speed_press = Some((self.mouse[0], self.speed));
+                self.press_slot = None;
+            } else {
+                self.press_slot = on_slot;
+                if on_slot.is_none()
+                    && self.active.is_none()
+                    && self.picking.is_none()
+                    && self.flying.is_none()
+                {
+                    // No tool held, no seed flying: pick up a tomato under the
+                    // pointer — ripe fruit off a plant, or a tomato out of
+                    // the basket — and carry it.
+                    let pick = self
+                        .pick_tomato(ctx)
+                        .map(|(pi, si)| Pick::Plant(pi, si))
+                        .or_else(|| self.pick_basket_tomato(ctx));
+                    if let Some(pick) = pick {
+                        self.picking = Some(pick);
+                    }
+                } else if on_slot.is_none() && self.active == Some(Tool::WaterCan) {
+                    // Hold the left mouse button down to turn the can a quarter
+                    // turn counter-clockwise around the pointer; the release
+                    // turns it back. Each leg is a `ROTATE_TIME`-second tween
+                    // restarted from wherever the can currently is, so a
+                    // mid-rotation press or release picks up from the can's
+                    // live angle.
+                    self.rotation = frost::Tween::new(self.angle, CAN_ANGLE, ROTATE_TIME)
+                        .repeat(frost::Repeat::Once);
+                } else if on_slot.is_none() && self.active == Some(Tool::SprayCan) {
+                    // A fresh press — one after a release, not a re-press
+                    // mid-burst — triggers a burst while the can stands
+                    // upright.
+                    if self.burst.is_none() {
+                        self.burst = Some(0.0);
+                        self.sounds.device.play_once(&self.sounds.spray, Some(0.5));
+                        // PingPong is the tween's default: `0 ->
+                        // BURST_ANGLE` in `BURST_HALF` seconds and back in the
+                        // same time, so the tilting and the return take
+                        // `BURST_TIME` in all. The ticking below stops there,
+                        // before the cycle could wrap.
+                        self.rotation = frost::Tween::new(0.0, BURST_ANGLE, BURST_HALF);
+                        self.set_spray_frame(ctx, true);
+                    }
+                } else if on_slot.is_none() && self.active == Some(Tool::Spade) {
+                    // A fresh press — one after a release, not a re-press
+                    // mid-stroke — digs one stroke: the spade is shoved forward
+                    // along its own line, held in the soil, and arched back to
+                    // its anchor, all over `DIG_TIME`. Holding the button, or
+                    // pressing again before the stroke lands, does nothing: the
+                    // spade digs once per click.
+                    if self.dig.is_none() {
+                        self.dig = Some(0.0);
+                    }
                 }
             }
         } else if !left && self.pressed {
-            if let Some(pick) = self.picking.take() {
+            if let Some((start_x, start)) = self.speed_press.take() {
+                // The release settles the time-scale field's gesture: a
+                // release inside the slop is a click — the scale steps one
+                // forward, wrapping from 8x back to 1x — and a longer pull
+                // drags by distance: right adds steps, left takes them
+                // away, clamped to the table's ends.
+                let dx = self.mouse[0] - start_x;
+                self.speed = if dx.abs() < SPEED_SLOP {
+                    speed_click(start)
+                } else {
+                    speed_drag(start, dx)
+                };
+            } else if let Some(pick) = self.picking.take() {
                 // The press was a tomato pick: a plant fruit drops into
                 // the basket or back onto its slot, a basket fruit drops
                 // at its release — kept in the basket, or planted on the
@@ -2211,6 +2400,85 @@ mod tests {
         assert!(demo.falls.is_empty());
         assert!(!demo.pouring);
         assert!(demo.over);
+    }
+
+    /// The demo opens with the time-scale field at 1x, its drag unheld,
+    /// and the four labels — "1x", "2x", "4x", "8x" — built from the
+    /// embedded font.
+    #[test]
+    fn the_speed_field_starts_at_one() {
+        let demo = Demo::new(Assets::load());
+        assert_eq!(demo.speed, 0, "1x at launch");
+        assert!(demo.speed_press.is_none());
+        for label in &demo.speed_labels {
+            assert!(
+                matches!(label, frost::Shape::Text { .. }),
+                "the scale labels are text"
+            );
+        }
+    }
+
+    /// [speed_click] walks the table one step at a time — 1x, 2x, 4x, 8x
+    /// — and wraps from the last scale back to the first.
+    #[test]
+    fn the_speed_click_walks_the_table_and_wraps() {
+        assert_eq!(speed_click(0), 1);
+        assert_eq!(speed_click(1), 2);
+        assert_eq!(speed_click(2), 3);
+        assert_eq!(speed_click(3), 0, "8x wraps back to 1x");
+        let mut i = 0;
+        for _ in 0..TIME_SCALES.len() {
+            i = speed_click(i);
+        }
+        assert_eq!(i, 0, "a full round of clicks returns home");
+    }
+
+    /// [speed_drag] steers by distance: one [TIME_SCALES] step per
+    /// `SPEED_STEP` pixels, rounded to the nearest step, right faster and
+    /// left slower, clamped to the table's ends — the drag never wraps.
+    #[test]
+    fn the_speed_drag_pulls_right_faster_and_left_slower() {
+        assert_eq!(speed_drag(0, 0.0), 0);
+        assert_eq!(
+            speed_drag(0, SPEED_STEP * 0.4),
+            0,
+            "rounds to the nearest step"
+        );
+        assert_eq!(speed_drag(0, SPEED_STEP * 0.6), 1);
+        assert_eq!(
+            speed_drag(0, SPEED_STEP * 2.0),
+            2,
+            "a long pull spans steps"
+        );
+        assert_eq!(speed_drag(1, -SPEED_STEP), 1 - 1);
+        assert_eq!(speed_drag(1, -SPEED_STEP * 9.0), 0, "clamps at 1x");
+        assert_eq!(speed_drag(3, SPEED_STEP * 9.0), 3, "clamps at 8x");
+        assert_eq!(speed_drag(3, -SPEED_STEP * 2.0), 1);
+    }
+
+    /// The field sits mid top of the window: centered across the width,
+    /// `SPEED_TOP` clear of the top border, riding the border as the
+    /// window grows; a point inside the box — to its very edge — hits,
+    /// a pixel beyond misses, and the window's center misses.
+    #[test]
+    fn the_speed_field_sits_mid_top() {
+        let h = 1080.0;
+        let c = speed_field_center(h);
+        assert_eq!(c[0], 0.0, "mid-width");
+        assert!(
+            (c[1] - (h / 2.0 - SPEED_HALF[1] - SPEED_TOP)).abs() < 1e-6,
+            "SPEED_TOP clear of the top border"
+        );
+        assert!(on_speed_field(c, h), "the center hits");
+        assert!(
+            on_speed_field([c[0] + SPEED_HALF[0], c[1]], h),
+            "the edge counts"
+        );
+        assert!(!on_speed_field([c[0] + SPEED_HALF[0] + 1.0, c[1]], h));
+        assert!(!on_speed_field([c[0], c[1] - SPEED_HALF[1] - 1.0], h));
+        assert!(!on_speed_field([0.0, 0.0], h), "the window's center misses");
+        // A taller window lifts its top border, and the field rides it.
+        assert!(speed_field_center(2.0 * h)[1] > c[1]);
     }
 
     /// The shelf is the sprite's shelf. [SEEDED_SLOTS] puts one tool in each

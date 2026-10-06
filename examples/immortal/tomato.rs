@@ -14,7 +14,11 @@
 //! without water: [STALE_DELAY] seconds after its ripe moment, its body
 //! modulates from ripe red to the dark red of [TOMATO_STALE] over
 //! [STALE_TIME]; at full staleness the fruit is overgrown, the moment the
-//! example drops it and regrows the slot. A regrown fruit runs the
+//! example drops it and regrows the slot. The last [SHIVER_TIME] seconds
+//! before that fall, the fruit shivers: [Tomato::shiver] ramps up with
+//! increasing intensity and [Tomato::shiver_offset] shakes the pivot it
+//! hangs from, until the fruit lets go — the shiver costs no extra time,
+//! it simply fills the tail of the stale period. A regrown fruit runs the
 //! slot's restarted schedule and stamps its own ripe moment.
 
 use super::plant::FLOWER_GROW_TIME;
@@ -36,6 +40,31 @@ pub const STALE_DELAY: f32 = 8.0;
 /// once [STALE_DELAY] has passed after full growth, the fruit's body
 /// modulates from ripe red to [TOMATO_STALE] over this time.
 pub const STALE_TIME: f32 = 8.0;
+
+/// How long an overgrown fruit shivers before it lets go, in seconds of
+/// the plant's aging clock: the shiver starts [SHIVER_TIME] seconds
+/// before the fall — [STALE_DELAY] plus [STALE_TIME] after the ripe
+/// moment — and builds to its full throw exactly as the fruit drops,
+/// adding no time to the schedule: it eats into the tail of
+/// [STALE_TIME], so the fruit darkens quietly for its first
+/// `STALE_TIME - SHIVER_TIME` seconds and shakes for the last
+/// [SHIVER_TIME].
+pub const SHIVER_TIME: f32 = 5.0;
+
+/// The shiver's shake rate, in cycles per second of the plant's aging
+/// clock — the clock running at `1 / GROW_SLOWDOWN` of real time, so at
+/// the example's slowdown the fruit trembles six times a real second.
+/// The body's y quiver runs at 1.31 times this rate, out of phase, so
+/// the fruit jitters on a wobble rather than sliding on a line.
+pub const SHIVER_FREQUENCY: f32 = 18.0;
+
+/// The shiver's throw at full intensity, in the plant's local pixels:
+/// the amplitude of each axis's oscillation at the falling moment, the
+/// ramp's square scaling it down from zero as the shiver begins. The
+/// full-grown fruit is about 213 local pixels wide, and the plant node
+/// scales by `PLANT_SCALE`, so the peak is a handful of screen pixels —
+/// a visible tremble on a hanging fruit, not a shake-off.
+pub const SHIVER_AMPLITUDE: f32 = 12.0;
 
 /// The tomato's full growth scale, in its own image's units: the fruit
 /// body grows to a third of its natural size, so at full growth it hangs
@@ -213,6 +242,42 @@ impl Tomato {
         self.stale(age) >= 1.0
     }
 
+    /// The shiver's intensity, 0..1, at aging clock `age`: zero until
+    /// [SHIVER_TIME] seconds before the fall — the [is_overgrown] moment,
+    /// [STALE_DELAY] plus [STALE_TIME] after the ripe stamp — then rising
+    /// linearly to 1 at the fall itself and holding; unripened fruit
+    /// never shivers.
+    pub fn shiver(&self, age: f32) -> f32 {
+        match self.ripened_at {
+            Some(r) => {
+                ((age - (r + STALE_DELAY + STALE_TIME - SHIVER_TIME)) / SHIVER_TIME).clamp(0.0, 1.0)
+            }
+            None => 0.0,
+        }
+    }
+
+    /// The shiver's shift at aging clock `age`, in the plant's local
+    /// pixels: the [Tomato::shiver] ramp squared — so the fruit starts
+    /// its tremble soft and builds toward the fall — times two
+    /// oscillations of the aging clock, x at [SHIVER_FREQUENCY] and y at
+    /// 1.31 times its rate a quarter turn out of phase, so the fruit
+    /// jitters on a wobble. Zero outside the shiver window; this is what
+    /// [Tomato::layout] translates the pivot by, and the hit test and
+    /// the fall read the fruit at its resting point, so the shiver
+    /// shakes the picture without moving the body.
+    pub fn shiver_offset(&self, age: f32) -> [f32; 2] {
+        let k = self.shiver(age);
+        if k <= 0.0 {
+            return [0.0, 0.0];
+        }
+        let a = age * SHIVER_FREQUENCY * std::f32::consts::TAU;
+        let throw = SHIVER_AMPLITUDE * k * k;
+        [
+            throw * a.sin(),
+            throw * (a * 1.31 + std::f32::consts::FRAC_PI_2).sin(),
+        ]
+    }
+
     /// Resets the fruit for a regrown bloom: the picked mark clears, and
     /// the ripe stamp clears, so the regrown fruit grows from zero on the
     /// slot's restarted schedule and stamps its own ripe moment.
@@ -230,8 +295,10 @@ impl Tomato {
     /// [TOMATO_FG] leaf sit at [tomato_leaf_offset] of the loaded shapes,
     /// shaped only from growth on, and the body's tint runs [tomato_color]
     /// from dark green to ripe red, modulated toward [TOMATO_STALE] by
-    /// the staleness. A pivot sent back from a failed drop gets its stale
-    /// carry transform reset to the plant's own.
+    /// the staleness. The pivot's transform is the [shiver_offset] at
+    /// `age` — the identity until the fruit shivers — so a pivot sent
+    /// back from a failed drop gets its stale carry transform reset to
+    /// the plant's own shiver.
     pub fn layout(
         &self,
         pivot: &mut frost::SceneNode,
@@ -243,7 +310,11 @@ impl Tomato {
     ) {
         let g = self.growth(t, bloom_start);
         let [ox, oy] = tomato_leaf_offset(body.sprite_size().expect("the tomato is a sprite"));
-        pivot.transform = frost::Transform::identity();
+        // The shiver: the pivot hangs off the flower's center by the
+        // shiver's shift — the identity while the fruit is not yet
+        // shivering — so the tremble shakes the whole fruit, calyx
+        // included, about the point it hangs from.
+        pivot.transform = frost::Transform::translate(self.shiver_offset(age));
         pivot.scale = [g * TOMATO_MAX_SCALE, g * TOMATO_MAX_SCALE];
         let bg = &mut pivot.children[TOMATO_BG];
         bg.transform = frost::Transform::translate([ox, oy]);
@@ -308,6 +379,101 @@ mod tests {
         assert!(!stamped(0.0).is_overgrown(over_at - 0.001));
         assert!(stamped(0.0).is_overgrown(over_at));
         assert!(stamped(0.0).is_overgrown(over_at + 100.0));
+    }
+
+    /// The [Tomato::shiver] curve: zero until [SHIVER_TIME] seconds
+    /// before the fall — the [Tomato::is_overgrown] moment — then rising
+    /// linearly to 1 at the fall itself, holding; unripened fruit never
+    /// shivers.
+    #[test]
+    fn the_shiver_runs_the_last_seconds_before_the_fall() {
+        let t = stamped(0.0);
+        let fall = STALE_DELAY + STALE_TIME;
+        assert_eq!(
+            t.shiver(fall - SHIVER_TIME),
+            0.0,
+            "the window opens at zero"
+        );
+        assert_eq!(
+            t.shiver(fall - SHIVER_TIME - 0.001),
+            0.0,
+            "before the window, nothing"
+        );
+        assert!(
+            (t.shiver(fall - SHIVER_TIME * 0.5) - 0.5).abs() < 1e-6,
+            "the ramp is linear"
+        );
+        assert_eq!(t.shiver(fall), 1.0, "full intensity as the fruit lets go");
+        assert_eq!(t.shiver(fall + 50.0), 1.0, "and it holds");
+        assert_eq!(
+            Tomato::default().shiver(1000.0),
+            0.0,
+            "unripened fruit never shivers"
+        );
+    }
+
+    /// The shiver costs no time: its window is the tail of the stale
+    /// period — [SHIVER_TIME] fits inside [STALE_TIME] — so the fruit
+    /// darkens quietly for the first `STALE_TIME - SHIVER_TIME` seconds,
+    /// shakes for the last [SHIVER_TIME], and falls on the same frame
+    /// it always did.
+    #[test]
+    fn the_shiver_fits_inside_the_stale_period() {
+        assert!(
+            SHIVER_TIME < STALE_TIME,
+            "the shiver must fit inside the darkening, not follow it"
+        );
+        let t = stamped(0.0);
+        let fall = STALE_DELAY + STALE_TIME;
+        // The window opens after the darkening starts, and closes at the fall.
+        let opens = STALE_DELAY + (STALE_TIME - SHIVER_TIME);
+        assert_eq!(t.shiver(opens), 0.0, "quiet while the fruit only darkens");
+        assert!(
+            t.shiver(opens + 0.001) > 0.0,
+            "the shiver is the tail of the darkening"
+        );
+        assert_eq!(t.is_overgrown(fall - 0.001), false, "the fall is unchanged");
+        assert!(t.is_overgrown(fall), "the fall is unchanged");
+    }
+
+    /// [Tomato::shiver_offset]: zero outside the window; inside, each
+    /// axis stays within the ramp's squared throw, and the wobble of the
+    /// window's last second shakes harder than its first — increasing
+    /// intensity, not a steady tremble.
+    #[test]
+    fn the_shiver_offset_wobbles_harder_as_the_fall_nears() {
+        let t = stamped(0.0);
+        let fall = STALE_DELAY + STALE_TIME;
+        let open = fall - SHIVER_TIME;
+        assert_eq!(
+            t.shiver_offset(open - 1.0),
+            [0.0, 0.0],
+            "at rest before the window"
+        );
+
+        // Every axis, everywhere, stays within the throw the ramp squares.
+        let mut first_second = 0.0f32;
+        let mut last_second = 0.0f32;
+        for i in 0..600 {
+            let age = open + (i as f32) * SHIVER_TIME / 600.0;
+            let throw = SHIVER_AMPLITUDE * t.shiver(age).powi(2) + 1e-6;
+            let [x, y] = t.shiver_offset(age);
+            assert!(
+                x.abs() <= throw && y.abs() <= throw,
+                "bounded by the squared ramp"
+            );
+            let peak = x.abs().max(y.abs());
+            if age < open + 1.0 {
+                first_second = first_second.max(peak);
+            }
+            if age > fall - 1.0 {
+                last_second = last_second.max(peak);
+            }
+        }
+        assert!(
+            last_second > first_second * 4.0,
+            "the last second ({last_second}) should tremble far harder than the first ({first_second})"
+        );
     }
 
     /// [Tomato::stamp_ripe] stamps the ripe moment exactly, whatever the

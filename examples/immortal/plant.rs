@@ -54,7 +54,12 @@
 //! plant's aging clock — the one [Plant::age] advances every frame, with
 //! or without water: [tomato::STALE_DELAY] seconds after full growth, its
 //! body modulates from ripe red to the dark red of [tomato::TOMATO_STALE],
-//! over [tomato::STALE_TIME]. A dry plant withers instead of holding:
+//! over [tomato::STALE_TIME]. In the last [tomato::SHIVER_TIME] seconds
+//! before the fall the overgrown fruit shivers, its tremble building
+//! with increasing intensity — [tomato::Tomato::shiver_offset] shakes
+//! the tomato's pivot — until it lets go; the shiver fills the tail of
+//! the stale period and adds no time. A dry plant withers instead of
+//! holding:
 //! [Plant::wither] runs the growth clock backward — the slices, the
 //! flowers, and the green fruit all shrink back together — until the
 //! point of full ripening, the moment every fruit the plant still bears

@@ -307,6 +307,25 @@ pub fn build(assets: &Assets) -> frost::Scene {
                 order: zorder::OVERLAY,
                 ..Default::default()
             }),
+            Box::new(frost::SceneNode {
+                // The time-scale field, mid top of the window: the process
+                // positions the node and dresses its two children — the
+                // background rectangle and the current scale's label, "1x"
+                // through "8x" — every frame. It rides the UI band, so the
+                // game-over overlay dims it like the rest of the chrome.
+                children: vec![
+                    Box::new(frost::SceneNode {
+                        // The background rectangle.
+                        ..Default::default()
+                    }),
+                    Box::new(frost::SceneNode {
+                        // The scale's label.
+                        ..Default::default()
+                    }),
+                ],
+                order: zorder::UI,
+                ..Default::default()
+            }),
         ],
         ..Default::default()
     })
