@@ -828,7 +828,11 @@ fn corner_box(panel: [f32; 4]) -> [f32; 4] {
 /// Row `i`'s center y: rows count down from the body's top edge, under
 /// the top padding, shifted by the scroll.
 fn row_y(i: usize, body: [f32; 4], scroll: f32, st: TreeStyle) -> f32 {
-    body[3] - st.pad - scroll - (i as f32 + 0.5) * st.row_h
+    // Scrolling DOWN walks the document: every row climbs by `scroll`,
+    // so the later rows enter at the bottom as the early ones leave at
+    // the top. The sign here is the whole convention — `row_at` and the
+    // thumbs read it the same way.
+    body[3] - st.pad + scroll - (i as f32 + 0.5) * st.row_h
 }
 
 /// The row under `p`, or `None` when the point is outside the body or

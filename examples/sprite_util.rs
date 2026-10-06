@@ -11,32 +11,32 @@
 //! follow it), and drag a slot onto another to swap the two sprites'
 //! positions.
 //!
-//! The first dialog is a child of the window, so it opens on top of it:
-//! the window is created first and the dialog is parented to it on the
-//! first frame (a dialog without a parent opens at the screen's default
-//! spot, far from the window). It is modal, so the frame loop blocks
-//! until a file is picked; canceling quits.
+//! Every dialog is a child of the window, so it opens on top of it (a
+//! parentless dialog lands at the screen's default spot, far from the
+//! window). Dialogs appear only when asked for — **Open**, **Ctrl-O**,
+//! **Save as** — never on their own: a launch with no argument simply
+//! opens an empty workbench, and canceling a dialog returns to it.
 //!
-//! The controls are two draggable [`frost::Ui`] panels (drag one by its
-//! title bar, click the bar to fold it away). The "View" panel is laid out
-//! as a [`frost::Ui::table`]: three rows of `[label | track | readout]`
-//! for the zoom and the checker's two grey levels, above the last-click
-//! line. The table gives each column a policy — the label column hugs its
-//! text and aligns left, the track column stretches to fill the row, and
-//! the value readout hugs and centers — so the labels and values line up
-//! down the panel while the tracks soak up the slack.
+//! The controls are draggable [`frost::Ui`] panels (drag one by its
+//! title bar, click the bar to fold it away) — and the view's own state
+//! lives in the menu bar: the View menu carries the zoom level and the
+//! last click as readouts, and the checker's two grey levels as live
+//! [`frost::MenuItem::slider`] lines whose tracks you can grab without
+//! leaving the list. Sliders in a menu is an unusual uniform; the menu
+//! widget sewed it, and it fits.
 //!
-//! The "Operations" panel edits the active sprite: **Open** (**Ctrl-O**)
-//! adds another sprite to the next free slot — while the slots fill up,
-//! the newest sprite becomes the active one; **Crop** cuts the texture to
+//! The File and Operations menus edit the active sprite: **Open**
+//! (**Ctrl-O**) adds another sprite to the next free slot — while the
+//! slots fill up, the newest sprite becomes the active one; **Crop** cuts the texture to
 //! the selection rectangle if one is dragged (a left-drag over the work
 //! area draws it; a click that barely moves instead logs the pixel and
 //! its slot) — and to the opaque content when there is no selection,
 //! trimming the fully transparent borders. The sidecar's positions ride
 //! the cut: each shifts by the crop's origin, clamped to the new bounds,
 //! so it stays put relative to the pixels that survive. Every crop is
-//! remembered per sprite, so **Ctrl-Z** undoes it — texture and sidecar
-//! together — walking back step by step to that sprite's original. **Save** writes the texture over the file it came
+//! remembered on a history that spans the whole bench: **Ctrl-Z** steps
+//! back over any command — crop, mark, frame edit, slot move — and
+//! **Ctrl-Shift-Z** steps forward again. **Save** writes the texture over the file it came
 //! from, and **Save As** asks a native dialog for a new name, defaulted
 //! to the sprite's current file name; both ask for confirmation before
 //! overwriting an existing file — and, when the sprite has a sidecar
@@ -60,9 +60,11 @@
 //! the frame being edited, so the panel previews as it builds; the solo
 //! active sprite returns when the last frame is deleted.
 //!
-//! The wheel zooms about the cursor (the point under it stays put), a
-//! middle-drag — the wheel button held — grabs the work area and moves
-//! the sprite with the cursor,
+//! The wheel zooms about the cursor (the point under it stays put),
+//! **Ctrl-+** and **Ctrl--** step the zoom about the work area's centre
+//! (the same characters and keys as the overlay's Alt pair, so a `+`
+//! means plus on every layout), a middle-drag — the wheel button held —
+//! grabs the work area and moves the sprite with the cursor,
 //! and [`frost::Ui::hovering`] is what tells a click on the UI from one
 //! on the scene: a press the UI claims never draws a selection, touches
 //! a slot or logs a pixel.
@@ -87,11 +89,12 @@
 //!
 //! The first sprite's source can be given on the command line with
 //! `-i`/`--input`: a PNG file is opened immediately, without any file
-//! dialog, and a folder is where the file dialog opens — a relative path
-//! is expanded against the working directory and resolved to an absolute
-//! one, because the native dialog (notably on Windows) ignores anything
-//! else and opens in its default spot. Without the argument, the dialog
-//! opens in the folder the example was launched from:
+//! dialog, and a folder is where the first *Open* dialog will open — a
+//! relative path is expanded against the working directory and resolved
+//! to an absolute one, because the native dialog (notably on Windows)
+//! ignores anything else and opens in its default spot. Without the
+//! argument the tool starts empty and dialogs open in the folder it was
+//! launched from:
 //!
 //! ```text
 //! cargo run --example sprite_util -- -i assets/sprites/bird1.png
@@ -128,10 +131,20 @@
 //! their value, trails beside it, the header and trailer bookending the
 //! tree — only the line layout is the writer's own.
 //!
+//! The View menu switches the workbench between two views — **Markers**
+//! (the full editing desk, the panels below) and **Atlas** (only the
+//! Atlas panel, the grid's rows and columns) — and the view's own name
+//! is noted at the menu bar's right end. The tile strip at the bottom
+//! belongs to both: a sprite is picked and worked on identically either
+//! way. A launch with no argument starts empty, in Markers.
+//!
 //! A classic menu bar runs across the window's top edge: **File** unfolds
-//! **Open / Close / Save / Save as / Quit**, tracks the pointer along the
-//! bar while a list is open, highlights the hovered line, and dismisses
-//! on a click anywhere else. The bar itself is fully part of the app —
+//! **Open / Close / Save / Save as / Quit** and **View** unfolds
+//! **Markers / Atlas / Tile Map**; while a list is open the pointer
+//! tracks along the bar — sliding onto another title switches the list
+//! without another click — hovered lines highlight, and a click anywhere
+//! else dismisses. The bar's right end carries the last command and, at
+//! the very end, the view's own name. The bar itself is fully part of the app —
 //! drawn over every panel, owning every click that lands on it — but its
 //! items are deliberately inert: choosing one only logs the choice, it
 //! runs no file operation yet.
@@ -148,50 +161,139 @@ use std::sync::Arc;
 #[path = "ron_view/tree.rs"]
 mod ron_tree;
 
-/// The menu bar's one menu: the file verbs, lined up where every desktop
-/// app puts them. The items are deliberately inert: a choice lands in the
-/// log and nowhere else, and `Ctrl-O` remains the only working accelerator
-/// until these names are hooked to the buttons that already bear them. An
-/// item with an empty label draws the rule across the list: a separator,
-/// not a command.
+/// The File menu: the file verbs, lined up where every desktop app puts
+/// them, with the two history steps among them. Open, Close, Save, Save
+/// as, Undo and Redo do their named work — the pair walk the whole
+/// bench's history, every crop, mark, frame and slot move; Quit stays
+/// inert until its verb exists.
+/// An item with an empty label draws the rule across the list: a
+/// separator, not a command.
 const FILE_MENU: frost::Menu<'static> = frost::Menu {
     title: "File",
     items: &[
-        frost::MenuItem {
-            label: "Open",
-            shortcut: "Ctrl-O",
-        },
-        frost::MenuItem {
-            label: "Close",
-            shortcut: "",
-        },
-        frost::MenuItem {
-            label: "Save",
-            shortcut: "",
-        },
-        frost::MenuItem {
-            label: "Save as",
-            shortcut: "",
-        },
-        frost::MenuItem {
-            label: "",
-            shortcut: "",
-        },
-        frost::MenuItem {
-            label: "Quit",
-            shortcut: "",
-        },
+        frost::MenuItem::new("Open", "Ctrl-O"),
+        frost::MenuItem::new("Close", ""),
+        frost::MenuItem::new("Save", ""),
+        frost::MenuItem::new("Save as", ""),
+        frost::MenuItem::new("Undo", "Ctrl-Z"),
+        frost::MenuItem::new("Redo", "Ctrl-Shift-Z"),
+        frost::MenuItem::SEPARATOR,
+        frost::MenuItem::new("Quit", ""),
     ],
+};
+
+/// The workbench's view: which set of panels answers to the View menu.
+/// `Markers` is the full editing desk — every panel; `Atlas` keeps only
+/// the Atlas panel, the grid's rows and columns alone on the screen.
+/// (Tile Map will complete the trio when it exists; its menu line is
+/// already there, inert.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum View {
+    Markers,
+    Atlas,
+}
+
+impl View {
+    /// The bar's right-hand note: the view's own name.
+    fn name(self) -> &'static str {
+        match self {
+            View::Markers => "Markers",
+            View::Atlas => "Atlas",
+        }
+    }
+}
+
+/// One sprite as pure data: everything its GPU shapes are derived from.
+/// The shapes themselves never enter the history — a restored world
+/// rebuilds them from these pixels.
+#[derive(Clone)]
+struct WorldSprite {
+    path: std::path::PathBuf,
+    name: String,
+    current: image::RgbaImage,
+    saved_img: image::RgbaImage,
+    ron: Option<RonDoc>,
+    saved_ron: Option<String>,
+    atlas: Option<(usize, usize)>,
+    thumb_img: image::RgbaImage,
+}
+
+/// One frame as data: the layers' PNG bytes (a layer's shape IS its
+/// snapshot) and the time the frame holds.
+#[derive(Clone)]
+struct WorldFrame {
+    layers: Vec<Vec<u8>>,
+    next_time: f32,
+}
+
+/// The animation as data: the frames, the one the clock stands on, and
+/// whether playback wraps. The running clock itself — playing, dir,
+/// elapsed — stands outside history: undo does not pause a tune.
+#[derive(Clone)]
+struct WorldAnim {
+    frames: Vec<WorldFrame>,
+    frame: usize,
+    looping: bool,
+}
+
+/// Everything the commands touch, captured whole: the unit of undo.
+/// View settings (zoom, the greys), the dialogs' remembered folder and
+/// the status line stand outside — history is about the bench's
+/// content, not the way it is held.
+#[derive(Clone)]
+struct World {
+    sprites: Vec<WorldSprite>,
+    active: usize,
+    anim: WorldAnim,
+    view: View,
+    selection: Option<[f32; 4]>,
+}
+
+/// The most worlds either road keeps; older steps age off the back.
+const HISTORY_MAX: usize = 64;
+
+/// One command's worth of memory: the world as it stood goes on the
+/// undo road, and the redo road — the future this step chose over —
+/// dissolves.
+fn push_step(undo: &mut Vec<World>, redo: &mut Vec<World>, now: World) {
+    undo.push(now);
+    if undo.len() > HISTORY_MAX {
+        undo.remove(0);
+    }
+    redo.clear();
+}
+
+/// One step back: the newest past becomes the present, and the present
+/// goes onto the road forward. `None` when there is no past.
+fn step_back(undo: &mut Vec<World>, redo: &mut Vec<World>, now: World) -> Option<World> {
+    let past = undo.pop()?;
+    redo.push(now);
+    Some(past)
+}
+
+/// One step forward: the mirror image.
+fn step_forward(undo: &mut Vec<World>, redo: &mut Vec<World>, now: World) -> Option<World> {
+    let future = redo.pop()?;
+    undo.push(now);
+    Some(future)
+}
+
+/// The Operations menu: the verbs that edit the active sprite's pixels.
+/// The panel that once carried them is gone — the menu is their home.
+const OPERATIONS_MENU: frost::Menu<'static> = frost::Menu {
+    title: "Operations",
+    items: &[frost::MenuItem::new("Crop", "")],
 };
 
 /// The command line arguments.
 #[derive(Parser, Debug)]
 #[command(name = "sprite_util")]
 struct Args {
-    /// A PNG file to open immediately, skipping the file dialog — or a
-    /// folder, in which case the file dialog opens there (a relative
+    /// A PNG file to open immediately, skipping any file dialog — or a
+    /// folder, in which case later Open dialogs open there (a relative
     /// path is expanded against the working directory). Without the
-    /// argument, the dialog opens in the working directory.
+    /// argument the tool starts empty, and dialogs open in the working
+    /// directory.
     #[arg(short = 'i', long = "input", value_name = "PATH")]
     input: Option<std::path::PathBuf>,
 }
@@ -426,10 +528,6 @@ const PALETTE: [(f32, f32, f32); 8] = [
     (0.75, 0.90, 0.55),
 ];
 
-/// One undo step: the texture a crop replaced, and the sidecar positions
-/// it shifted — popped together by Ctrl-Z.
-type CropStep = (image::RgbaImage, Option<Vec<(f32, f32)>>);
-
 /// One sprite: its files, its textures and its slot's look.
 struct Sprite {
     /// The file the sprite was loaded from — Save writes back to it.
@@ -444,10 +542,10 @@ struct Sprite {
     /// picture is not a change, and an unchanged PNG is never re-encoded
     /// (its file keeps the container that produced it).
     saved_img: image::RgbaImage,
-    /// Each crop's snapshot: the texture it replaced and the sidecar
-    /// positions it shifted — Ctrl-Z pops both back, and the history
-    /// bottom is the sprite's original.
-    history: Vec<CropStep>,
+    /// The small picture a slot shows — kept as pixels, because when a
+    /// sprite returns through undo its thumbnail's shape is rebuilt
+    /// from these.
+    thumb_img: image::RgbaImage,
     /// The working texture as a shape — the work area's sprite node.
     shape: frost::Shape,
     /// The original, minimized to a slot's width — the slot's picture.
@@ -504,6 +602,7 @@ impl Sprite {
 
 /// A sprite's parsed sidecar: the tree with its fold flags, the
 /// flattened visible rows, and the panel's scroll and fold state.
+#[derive(Clone)]
 struct RonDoc {
     /// The sidecar's file name, for the panel's title.
     name: String,
@@ -545,9 +644,11 @@ impl RonDoc {
 
 /// One picture within a frame: the active sprite's shape, snapshotted
 /// when the layer was added — later crops and closed slots leave the
-/// frame's layers untouched.
+/// frame's layers untouched. The PNG the shape was built from rides
+/// along: the history rebuilds a layer's shape from these bytes.
 struct Layer {
     shape: frost::Shape,
+    png: Vec<u8>,
 }
 
 /// One animation frame: a set of layers, stacked as added, and the time
@@ -698,12 +799,25 @@ struct Demo {
     /// record of the views, rebuilt between the panel calls and the
     /// tree painting.
     ron_views: Vec<RonView>,
-    /// The folder the first file dialog opens in, still to pick: `Some`
-    /// until the first frame has shown the dialog. A picked file loads
-    /// into the first slot; canceling quits the program.
-    pending: Option<std::path::PathBuf>,
+    /// The view the View menu last chose: decides which panels this
+    /// frame declares, and names itself at the menu bar's right end.
+    view: View,
+    /// The road back: one whole-world snapshot per command, newest
+    /// last.
+    undo_stack: Vec<World>,
+    /// The road forward again: the worlds undo stepped off, newest
+    /// last; a fresh command empties it — the future a new past erases.
+    redo_stack: Vec<World>,
+    /// Whether Ctrl(-Shift)-Z rested down last frame: the keys speak on
+    /// their rising edges only.
+    was_redo: bool,
+    /// The zoom pair's edges, same rising-edge rule.
+    was_zoom_in: bool,
+    was_zoom_out: bool,
     /// The folder the next dialog opens in: where the last file was
-    /// read from or written to.
+    /// read from or written to, or — before any dialog has run — the
+    /// folder the command line named, the working directory when no
+    /// argument did.
     dir: Option<std::path::PathBuf>,
     /// The Operations panel's status line: the selection's size, or the
     /// outcome of the last operation.
@@ -784,7 +898,7 @@ impl Demo {
         status: String,
     ) -> Option<()> {
         let png = png_bytes(&img).ok()?;
-        let shape = frost::Shape::sprite_bytes(&png).ok()?;
+        let shape = frost::Shape::sprite_bytes_nearest(&png).ok()?;
         let sp = self.sprites.get_mut(self.active)?;
         sp.current = img;
         sp.shape = shape;
@@ -810,6 +924,8 @@ impl Demo {
                 self.status = format!("open: {err}");
             }
             Ok(sp) => {
+                // Loading is a command too: undo can give the slot back.
+                self.stamp();
                 self.dir = path
                     .parent()
                     .filter(|d| !d.as_os_str().is_empty())
@@ -849,9 +965,9 @@ impl Demo {
     /// Crop: to the selection when one is dragged, else to the opaque
     /// content — trimming the fully transparent borders. The sidecar's
     /// positions shift by the cut's origin, clamped to the new bounds, so
-    /// they stay put relative to the pixels that survive. The replaced
-    /// texture and the shifted positions go on the sprite's history, so
-    /// undo can walk both back.
+    /// they stay put relative to the pixels that survive. The whole world
+    /// before the cut goes onto the history, so undo brings back the
+    /// pixels, the positions and everything else the stroke touched.
     fn crop(&mut self, ctx: &mut frost::Context) {
         let Some(sp) = self.active() else { return };
         if sp.current.width() == 0 {
@@ -882,20 +998,13 @@ impl Demo {
         };
         let cut = image::imageops::crop_imm(&sp.current, x, y, cw, ch).to_image();
         let (nx, ny) = (cut.width(), cut.height());
-        let sp = &mut self.sprites[self.active];
-        // The positions as the sidecar names them right now — undo puts
-        // them back, whatever the crop does to them.
-        let pre = sp.ron.as_ref().map(|doc| {
-            let mut spots = Vec::new();
-            scan_spots(&doc.root, &mut Vec::new(), "", &mut spots);
-            spots.iter().map(|s| (s.x, s.y)).collect::<Vec<_>>()
-        });
-        sp.history.push((sp.current.clone(), pre));
+        self.stamp();
         if self
             .apply(ctx, cut, format!("cropped to {nx} x {ny} px"))
             .is_none()
         {
-            self.sprites[self.active].history.pop();
+            // Nothing was rebuilt: the step never happened.
+            self.undo_stack.pop();
             self.status = String::from("crop: could not rebuild the sprite");
         } else if let Some(doc) = self.sprites[self.active].ron.as_mut() {
             let n = shift_spots(&mut doc.root, x as f32, y as f32, (nx, ny));
@@ -906,35 +1015,136 @@ impl Demo {
         }
     }
 
-    /// One step back through the active sprite's crops — texture and
-    /// sidecar positions together; the history ends at its original.
+    /// The bench as pure data: every sprite's pixels, sidecar and grid,
+    /// the animation's frames, the active slot, the view, the selection.
+    fn capture(&self) -> World {
+        World {
+            sprites: self
+                .sprites
+                .iter()
+                .map(|sp| WorldSprite {
+                    path: sp.path.clone(),
+                    name: sp.name.clone(),
+                    current: sp.current.clone(),
+                    saved_img: sp.saved_img.clone(),
+                    ron: sp.ron.clone(),
+                    saved_ron: sp.saved_ron.clone(),
+                    atlas: sp.atlas,
+                    thumb_img: sp.thumb_img.clone(),
+                })
+                .collect(),
+            active: self.active,
+            anim: WorldAnim {
+                frames: self
+                    .anim
+                    .frames
+                    .iter()
+                    .map(|f| WorldFrame {
+                        layers: f.layers.iter().map(|l| l.png.clone()).collect(),
+                        next_time: f.next_time,
+                    })
+                    .collect(),
+                frame: self.anim.frame,
+                looping: self.anim.looping,
+            },
+            view: self.view,
+            selection: self.selection,
+        }
+    }
+
+    /// One command's before-picture, called right before the state
+    /// changes. The redo road dissolves with it: a new past erases the
+    /// future it did not take.
+    fn stamp(&mut self) {
+        let now = self.capture();
+        push_step(&mut self.undo_stack, &mut self.redo_stack, now);
+    }
+
+    /// Undo: one step back over every kind of command — crops, marks,
+    /// frame edits, slot moves — restoring the whole bench, textures
+    /// rebuilt from the snapshot's own pixels.
     fn undo(&mut self, ctx: &mut frost::Context) {
-        let prev = self
-            .sprites
-            .get_mut(self.active)
-            .and_then(|sp| sp.history.pop());
-        match prev {
-            Some((img, pre)) => {
-                let (w, h) = (img.width(), img.height());
-                if self
-                    .apply(ctx, img, format!("undo: back to {w} x {h} px"))
-                    .is_none()
-                {
-                    self.status = String::from("undo: could not rebuild the sprite");
-                } else if let (Some(pre), Some(doc)) = (pre, self.sprites[self.active].ron.as_mut())
-                {
-                    if !restore_spots(&mut doc.root, &pre) {
-                        log::warn!(
-                            "undo: the sidecar's positions changed since the crop — \
-                            the texture is back, the positions are left as they are"
-                        );
-                    } else {
-                        doc.rows = ron_tree::layout(&doc.root);
-                    }
+        let now = self.capture();
+        let Some(past) = step_back(&mut self.undo_stack, &mut self.redo_stack, now) else {
+            self.status = String::from("undo: nothing to undo");
+            return;
+        };
+        self.restore(ctx, past, "undo");
+    }
+
+    /// Redo: one step forward again, the same worlds walked backwards
+    /// down the road undo left behind.
+    fn redo(&mut self, ctx: &mut frost::Context) {
+        let now = self.capture();
+        let Some(future) = step_forward(&mut self.undo_stack, &mut self.redo_stack, now) else {
+            self.status = String::from("redo: nothing to redo");
+            return;
+        };
+        self.restore(ctx, future, "redo");
+    }
+
+    /// Write a captured world back: pixels, sidecars, grids, frames, the
+    /// view and the active slot, every GPU shape rebuilt from stored
+    /// bytes. PNG round-trips are lossless, so a rebuilt texture is the
+    /// old one to the bit.
+    fn restore(&mut self, ctx: &mut frost::Context, world: World, word: &str) {
+        let mut sprites = Vec::with_capacity(world.sprites.len());
+        for ws in world.sprites {
+            let shape = png_bytes(&ws.current)
+                .ok()
+                .and_then(|png| frost::Shape::sprite_bytes_nearest(&png).ok());
+            let thumb_img = ws.thumb_img;
+            let thumb = png_bytes(&thumb_img)
+                .ok()
+                .and_then(|png| frost::Shape::sprite_bytes_nearest(&png).ok());
+            let (Some(shape), Some(thumb)) = (shape, thumb) else {
+                log::warn!("{}: could not rebuild '{}', left out", word, ws.name);
+                continue;
+            };
+            sprites.push(Sprite {
+                path: ws.path,
+                name: ws.name,
+                current: ws.current,
+                saved_img: ws.saved_img,
+                shape,
+                thumb,
+                thumb_img,
+                ron: ws.ron,
+                saved_ron: ws.saved_ron,
+                atlas: ws.atlas,
+            });
+        }
+        self.sprites = sprites;
+        self.active = world.active.min(self.sprites.len().saturating_sub(1));
+        let mut anim = Anim::default();
+        anim.looping = world.anim.looping;
+        for wf in world.anim.frames {
+            let mut layers = Vec::with_capacity(wf.layers.len());
+            for png in wf.layers {
+                if let Ok(shape) = frost::Shape::sprite_bytes_nearest(&png) {
+                    layers.push(Layer { shape, png });
                 }
             }
-            None => self.status = String::from("undo: already at the original"),
+            anim.frames.push(Frame {
+                layers,
+                next_time: wf.next_time,
+            });
         }
+        anim.frame = world.anim.frame.min(anim.frames.len().saturating_sub(1));
+        self.anim = anim;
+        self.view = world.view;
+        self.selection = world.selection;
+        self.last_click = None;
+        let (w, h) = self
+            .active()
+            .map_or((0, 0), |sp| (sp.current.width(), sp.current.height()));
+        self.status = if w == 0 {
+            format!("{word}: back to an empty bench")
+        } else {
+            format!("{word}: back to {w} x {h} px")
+        };
+        self.sync_work(ctx);
+        self.refresh_slots(ctx);
     }
 
     /// Close: take the active sprite out of its slot; every later sprite
@@ -960,6 +1170,7 @@ impl Demo {
             let title = doc.name.clone();
             self.ui.set_folded(&title, false);
         }
+        self.stamp();
         let name = self.sprites.remove(i).name;
         // The sidecar views were laid out this frame from the sprite
         // list as it stood before the close, and the rest of the frame
@@ -1199,6 +1410,9 @@ impl Demo {
             return;
         };
         let cpath = row.path.clone();
+        // The [+] lives only on sequence rows, so this is always a
+        // real step: the world before the fresh entry goes down.
+        self.stamp();
         let Some(doc) = self.sprites[slot].ron.as_mut() else {
             return;
         };
@@ -1221,18 +1435,24 @@ impl Demo {
     /// A sidecar view's [-]: remove the entry the row names from its
     /// sequence — the picked editing goes with it.
     fn row_del(&mut self, ctx: &mut frost::Context, slot: usize, row: usize) {
-        let Some(doc) = self.sprites.get(slot).and_then(|sp| sp.ron.as_ref()) else {
-            return;
-        };
-        let Some(row) = doc.rows.get(row) else {
+        let Some(row) = self
+            .sprites
+            .get(slot)
+            .and_then(|sp| sp.ron.as_ref())
+            .and_then(|doc| doc.rows.get(row))
+        else {
             return;
         };
         let path = row.path.clone();
         if path.is_empty() {
             return;
         }
+        // The removal is coming: remember the entry while it lives.
+        self.stamp();
         let mut spots = Vec::new();
-        scan_spots(&doc.root, &mut Vec::new(), "", &mut spots);
+        if let Some(doc) = self.sprites[slot].ron.as_ref() {
+            scan_spots(&doc.root, &mut Vec::new(), "", &mut spots);
+        }
         if spot_of_row(&spots, &path).is_some() && self.active != slot {
             self.active = slot;
             self.selection = None;
@@ -1256,6 +1476,9 @@ impl Demo {
     /// tolerance becomes a reorder: the entry the press started on
     /// follows the pointer, sliding one seat per crossed row.
     fn ron_drag_start(&mut self, slot: usize, row: usize) {
+        // A reorder is one command however many rows it shuffles: the
+        // world before the drag goes down now.
+        self.stamp();
         let Some(doc) = self.sprites.get(slot).and_then(|sp| sp.ron.as_ref()) else {
             return;
         };
@@ -1305,32 +1528,6 @@ impl Demo {
 
 impl frost::Process for Demo {
     fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
-        // When no file was given on the command line, pick one in a
-        // native file dialog — on the first frame, now that the window
-        // exists. The dialog is a child of the window, so it opens on top
-        // of it (a parentless dialog would open at the screen's default
-        // spot), and it is modal: the loop blocks here until the user
-        // picks a file or cancels.
-        if let Some(dir) = &self.pending {
-            let mut dialog = rfd::FileDialog::new()
-                .set_title("sprite_util: choose a sprite")
-                .set_directory(dir)
-                .add_filter("PNG images", &["png"]);
-            if let Some(window) = ctx.window() {
-                dialog = dialog.set_parent(window);
-            }
-            let picked = dialog.pick_file();
-            self.pending = None;
-            let Some(path) = picked else {
-                log::warn!("no file selected — quitting");
-                std::process::exit(0);
-            };
-            // Load the pick into the first slot; the first interactive
-            // frame is the next one.
-            self.load_sprite(ctx, path);
-            return;
-        }
-
         // The animation clock runs on wall time; when it rolls to a new
         // frame, the work area repaints its layer pool to that frame.
         if self.anim.tick(dt) {
@@ -1469,115 +1666,15 @@ impl frost::Process for Demo {
             }
         }
 
-        // The UI frame: the View panel's sliders read and write the demo's
-        // values, and both panels' bodies claim the mouse over them — a
+        // The UI frame: the panels claim the mouse over their bodies — a
         // press the UI holds is never a selection drag, a slot touch or a
         // sprite click.
         self.ui.begin(ctx);
-        let click_label = match &self.last_click {
-            Some(([px, py], inside)) => format!(
-                "click: ({px:.1}, {py:.1}) {}",
-                if *inside { "inside" } else { "outside" }
-            ),
-            None => String::from("click: none"),
-        };
-        self.ui.panel(
-            ctx,
-            "View",
-            [-w / 2.0 + PANEL_W / 2.0 + 20.0, h / 2.0 - 120.0],
-            PANEL_W,
-            |ui, ctx| {
-                // One table, three rows of [label | track | readout]: the
-                // label column hugs its text and sits left, the track
-                // column stretches to fill, the readout hugs and centers.
-                ui.table(
-                    ctx,
-                    "view",
-                    &[
-                        frost::Col::auto(frost::Align::Left),
-                        frost::Col::stretch(1.0, frost::Align::Left),
-                        frost::Col::auto(frost::Align::Center),
-                    ],
-                    |ui, ctx| {
-                        ui.label(ctx, "zoom");
-                        ui.slider_track(ctx, "zoom", &mut self.zoom, ZOOM_MIN, ZOOM_MAX);
-                        ui.readout(ctx, &format!("{:.2}", self.zoom));
-                        ui.label(ctx, "light");
-                        ui.slider_track(ctx, "light", &mut self.light, 0.0, 1.0);
-                        ui.readout(ctx, &format!("{:.2}", self.light));
-                        ui.label(ctx, "dark");
-                        ui.slider_track(ctx, "dark", &mut self.dark, 0.0, 1.0);
-                        ui.readout(ctx, &format!("{:.2}", self.dark));
-                    },
-                );
-                ui.space(6.0);
-                ui.label(ctx, &click_label);
-            },
-        );
-        // The Operations panel: which buttons were pressed is collected
-        // here and acted on after the panels, so the modal dialogs and the
-        // texture edits never run inside a panel's layout closure.
-        let mut want_open = false;
-        let mut want_crop = false;
-        let mut want_save = false;
-        let mut want_save_as = false;
-        let mut want_close = false;
-        // The `*` is the dirty flag: pixels or tree differing from their
-        // files — not merely a non-empty history, which survives saves
-        // and would mark a freshly saved sprite as unsaved.
-        let title = match self.active() {
-            Some(sp) if sp.changed() => {
-                format!("{} *  ·  slot {}/{}", sp.name, self.active + 1, SLOTS)
-            }
-            Some(sp) => format!("{}  ·  slot {}/{}", sp.name, self.active + 1, SLOTS),
-            None => format!("no sprite  ·  0/{SLOTS}"),
-        };
-        let dirty = self.active().is_some_and(Sprite::changed);
-        let ops_line = if self.status.is_empty() {
-            match self.selection {
-                Some([x0, y0, x1, y1]) => {
-                    format!("selection {:.0} x {:.0} px", x1 - x0, y1 - y0)
-                }
-                None => String::from("drag to select, or crop trims"),
-            }
-        } else {
-            self.status.clone()
-        };
-        self.ui.panel(
-            ctx,
-            "Operations",
-            [-w / 2.0 + PANEL_W / 2.0 + 20.0, h / 2.0 - 330.0],
-            PANEL_W,
-            |ui, ctx| {
-                ui.label(ctx, &title);
-                if ui.button(ctx, "open") {
-                    want_open = true;
-                }
-                if ui.button(ctx, "crop") {
-                    want_crop = true;
-                }
-                if dirty {
-                    if ui.button(ctx, "save") {
-                        want_save = true;
-                    }
-                } else {
-                    // Not a button, just its muted line: with nothing
-                    // changed there is nothing to save. Save As keeps
-                    // its button — a new file is always a write.
-                    ui.readout(ctx, "save  ·  nothing to save");
-                }
-                if ui.button(ctx, "save as") {
-                    want_save_as = true;
-                }
-                if ui.button(ctx, "close") {
-                    want_close = true;
-                }
-                ui.space(6.0);
-                ui.label(ctx, &ops_line);
-                ui.label(ctx, "ctrl-o open  ·  ctrl-z undo");
-            },
-        );
-
+        // Which panels this frame declares: Markers keeps the whole
+        // editing desk, Atlas keeps only its grid. The slots below and
+        // the work area are the views' common ground — a sprite is
+        // picked and worked on the same way in either.
+        let markers_view = self.view == View::Markers;
         // The Animation panel: a frame is a set of layers holding for
         // its own time; playback wraps (loop) or bounces (ping-pong).
         // Buttons set flags acted on after the panels.
@@ -1611,52 +1708,54 @@ impl frost::Process for Demo {
             )
         };
         let play_label = if self.anim.playing { "stop" } else { "play" };
-        self.ui.panel(
-            ctx,
-            "Animation",
-            [w / 2.0 - PANEL_W / 2.0 - 20.0, h / 2.0 - 120.0],
-            PANEL_W,
-            |ui, ctx| {
-                ui.label(ctx, &anim_line);
-                ui.table(
-                    ctx,
-                    "anim",
-                    &[
-                        frost::Col::auto(frost::Align::Center),
-                        frost::Col::auto(frost::Align::Center),
-                        frost::Col::auto(frost::Align::Center),
-                    ],
-                    |ui, ctx| {
-                        if ui.button(ctx, "prev") {
-                            want_prev_frame = true;
-                        }
-                        if ui.button(ctx, "add frame") {
-                            want_add_frame = true;
-                        }
-                        if ui.button(ctx, "del frame") {
-                            want_del_frame = true;
-                        }
-                        if ui.button(ctx, "next") {
-                            want_next_frame = true;
-                        }
-                        if ui.button(ctx, "add layer") {
-                            want_add_layer = true;
-                        }
-                        if ui.button(ctx, "del layer") {
-                            want_del_layer = true;
-                        }
-                        ui.label(ctx, "till next");
-                        ui.slider_track(ctx, "frame time", &mut next_time, TIME_MIN, TIME_MAX);
-                        ui.readout(ctx, &format!("{next_time:.2}s"));
-                    },
-                );
-                ui.space(6.0);
-                ui.checkbox(ctx, "loop  (off = ping-pong)", &mut looping);
-                if ui.button(ctx, play_label) {
-                    want_play = true;
-                }
-            },
-        );
+        if markers_view {
+            self.ui.panel(
+                ctx,
+                "Animation",
+                [w / 2.0 - PANEL_W / 2.0 - 20.0, h / 2.0 - 120.0],
+                PANEL_W,
+                |ui, ctx| {
+                    ui.label(ctx, &anim_line);
+                    ui.table(
+                        ctx,
+                        "anim",
+                        &[
+                            frost::Col::auto(frost::Align::Center),
+                            frost::Col::auto(frost::Align::Center),
+                            frost::Col::auto(frost::Align::Center),
+                        ],
+                        |ui, ctx| {
+                            if ui.button(ctx, "prev") {
+                                want_prev_frame = true;
+                            }
+                            if ui.button(ctx, "add frame") {
+                                want_add_frame = true;
+                            }
+                            if ui.button(ctx, "del frame") {
+                                want_del_frame = true;
+                            }
+                            if ui.button(ctx, "next") {
+                                want_next_frame = true;
+                            }
+                            if ui.button(ctx, "add layer") {
+                                want_add_layer = true;
+                            }
+                            if ui.button(ctx, "del layer") {
+                                want_del_layer = true;
+                            }
+                            ui.label(ctx, "till next");
+                            ui.slider_track(ctx, "frame time", &mut next_time, TIME_MIN, TIME_MAX);
+                            ui.readout(ctx, &format!("{next_time:.2}s"));
+                        },
+                    );
+                    ui.space(6.0);
+                    ui.checkbox(ctx, "loop  (off = ping-pong)", &mut looping);
+                    if ui.button(ctx, play_label) {
+                        want_play = true;
+                    }
+                },
+            );
+        }
 
         // The Atlas panel: how the active sprite splits into tiles. The
         // sliders set the grid's rows and columns, the grid draws over
@@ -1672,44 +1771,53 @@ impl frost::Process for Demo {
             Some((rows, cols)) => format!("{rows} x {cols} · {} tiles", rows * cols),
             None => String::from("no grid · 1 x 1 is none"),
         };
-        self.ui.panel(
-            ctx,
-            "Atlas",
-            [w / 2.0 - PANEL_W / 2.0 - 20.0, h / 2.0 - 330.0],
-            PANEL_W,
-            |ui, ctx| {
-                ui.label(ctx, &atlas_line);
-                ui.table(
-                    ctx,
-                    "atlas",
-                    &[
-                        frost::Col::auto(frost::Align::Left),
-                        frost::Col::stretch(1.0, frost::Align::Left),
-                        frost::Col::auto(frost::Align::Center),
-                    ],
-                    |ui, ctx| {
-                        ui.label(ctx, "rows");
-                        ui.slider_track(ctx, "atlas rows", &mut atlas_rows, 1.0, ATLAS_MAX);
-                        ui.readout(ctx, &format!("{atlas_rows:.0}"));
-                        ui.label(ctx, "cols");
-                        ui.slider_track(ctx, "atlas cols", &mut atlas_cols, 1.0, ATLAS_MAX);
-                        ui.readout(ctx, &format!("{atlas_cols:.0}"));
-                    },
-                );
-                ui.space(6.0);
-                if ui.button(ctx, "clear") {
-                    want_clear_atlas = true;
-                }
-            },
-        );
+        if !markers_view {
+            self.ui.panel(
+                ctx,
+                "Atlas",
+                [w / 2.0 - PANEL_W / 2.0 - 20.0, h / 2.0 - 330.0],
+                PANEL_W,
+                |ui, ctx| {
+                    ui.label(ctx, &atlas_line);
+                    ui.table(
+                        ctx,
+                        "atlas",
+                        &[
+                            frost::Col::auto(frost::Align::Left),
+                            frost::Col::stretch(1.0, frost::Align::Left),
+                            frost::Col::auto(frost::Align::Center),
+                        ],
+                        |ui, ctx| {
+                            ui.label(ctx, "rows");
+                            ui.slider_track(ctx, "atlas rows", &mut atlas_rows, 1.0, ATLAS_MAX);
+                            ui.readout(ctx, &format!("{atlas_rows:.0}"));
+                            ui.label(ctx, "cols");
+                            ui.slider_track(ctx, "atlas cols", &mut atlas_cols, 1.0, ATLAS_MAX);
+                            ui.readout(ctx, &format!("{atlas_cols:.0}"));
+                        },
+                    );
+                    ui.space(6.0);
+                    if ui.button(ctx, "clear") {
+                        want_clear_atlas = true;
+                    }
+                },
+            );
+        }
         // The sliders' read-back: when the grid moved, write it into the
         // active sprite — and, beside its sidecar's root, so Save
         // carries it with the PNG. The sidecar's rows rebuild from the
         // tree, the way every other sidecar edit does.
+        let rows = atlas_rows.round().max(1.0) as usize;
+        let cols = atlas_cols.round().max(1.0) as usize;
+        let next = (rows > 1 || cols > 1).then_some((rows, cols));
+        let setting = self.active().is_some_and(|sp| sp.atlas != next);
+        let clearing = want_clear_atlas && self.active().is_some_and(|sp| sp.atlas.is_some());
+        if setting || clearing {
+            // The grid moved — by slider step or by clear: one step of
+            // history per movement, the way any other command counts.
+            self.stamp();
+        }
         if let Some(sp) = self.sprites.get_mut(self.active) {
-            let rows = atlas_rows.round().max(1.0) as usize;
-            let cols = atlas_cols.round().max(1.0) as usize;
-            let next = (rows > 1 || cols > 1).then_some((rows, cols));
             if sp.atlas != next {
                 sp.atlas = next;
                 if let Some(doc) = sp.ron.as_mut()
@@ -1735,15 +1843,52 @@ impl frost::Process for Demo {
         let ctrl =
             ctx.key_down(frost::KeyCode::ControlLeft) || ctx.key_down(frost::KeyCode::ControlRight);
         let open_key = ctrl && ctx.key_down(frost::KeyCode::KeyO);
-        let undo_key = ctrl && ctx.key_down(frost::KeyCode::KeyZ);
+        let shift =
+            ctx.key_down(frost::KeyCode::ShiftLeft) || ctx.key_down(frost::KeyCode::ShiftRight);
+        let undo_key = ctrl && ctx.key_down(frost::KeyCode::KeyZ) && !shift;
+        let redo_key = ctrl && shift && ctx.key_down(frost::KeyCode::KeyZ);
         if open_key && !self.was_open {
             self.open_dialog(ctx);
         }
         if undo_key && !self.was_undo {
             self.undo(ctx);
         }
+        if redo_key && !self.was_redo {
+            self.redo(ctx);
+        }
+        // Ctrl-+ and Ctrl-- step the zoom about the work area's centre,
+        // one wheel-notch per press. The characters lead, exactly as for
+        // the overlay's Alt pair: a physical code names a US-ANSI
+        // position, so the Swedish `+` key reports the US `-` code and a
+        // physical fallback would zoom the WRONG way on that layout —
+        // only the typed character follows the user's keys. The set is
+        // every character the +/− keys type with Ctrl held across
+        // platforms (the plain glyphs, the `=` the US + key carries,
+        // and the macOS Option weavings); the numpad codes, whose signs
+        // are layout-independent, join as the safety net.
+        let zoom_in = ctrl
+            && (ctx.char_down('+')
+                || ctx.char_down('=')
+                || ctx.char_down('\u{b1}')
+                || ctx.char_down('\u{2212}')
+                || ctx.key_down(frost::KeyCode::NumpadAdd));
+        let zoom_out = ctrl
+            && (ctx.char_down('-')
+                || ctx.char_down('_')
+                || ctx.char_down('\u{2013}')
+                || ctx.char_down('\u{2014}')
+                || ctx.key_down(frost::KeyCode::NumpadSubtract));
+        if zoom_in && !self.was_zoom_in {
+            self.zoom = (self.zoom * WHEEL_ZOOM).clamp(ZOOM_MIN, ZOOM_MAX);
+        }
+        if zoom_out && !self.was_zoom_out {
+            self.zoom = (self.zoom / WHEEL_ZOOM).clamp(ZOOM_MIN, ZOOM_MAX);
+        }
         self.was_open = open_key;
         self.was_undo = undo_key;
+        self.was_redo = redo_key;
+        self.was_zoom_in = zoom_in;
+        self.was_zoom_out = zoom_out;
 
         // Space's rising edge starts and stops the animation clock.
         let space = ctx.key_down(frost::KeyCode::Space);
@@ -1783,6 +1928,7 @@ impl frost::Process for Demo {
             .sprites
             .iter()
             .enumerate()
+            .filter(|_| markers_view)
             .filter_map(|(i, sp)| sp.ron.as_ref().map(|d| (i, d.name.clone(), d.vw, d.vh)))
             .collect();
         for (i, title, vw, vh) in open_docs {
@@ -1828,42 +1974,106 @@ impl frost::Process for Demo {
         // plates and win their clicks. Declaring it here (after all the
         // panels, before the collected presses) puts its whole strip into
         // `ui.hovering()` too: no slot or panel drag acts through it.
-        if let Some((menu, item)) = self.ui.menu_bar(ctx, &[FILE_MENU]) {
-            log::info!("menu: {menu} / {item}");
+        // The bar's trailing notes: the last command, then the view's
+        // own name at the very end. An empty status draws nothing.
+        let mut notes: Vec<&str> = Vec::with_capacity(2);
+        if !self.status.is_empty() {
+            notes.push(self.status.as_str());
+        }
+        notes.push(self.view.name());
+        // The View menu is assembled each frame: the three named corners
+        // (Markers and Atlas switch the workbench, Tile Map waits for its
+        // view and stays inert), and beneath them the view's own state —
+        // the zoom as a readout, the checker's two greys as live
+        // sliders. The panel that carried all of it is gone; the menu
+        // wears its clothes. The last click needs no line: the bar's
+        // status note already tells it.
+        let zoom_note = format!("{:.2}", self.zoom);
+        let view_menu = frost::Menu {
+            title: "View",
+            items: &[
+                frost::MenuItem::new("Markers", ""),
+                frost::MenuItem::new("Atlas", ""),
+                frost::MenuItem::new("Tile Map", ""),
+                frost::MenuItem::SEPARATOR,
+                frost::MenuItem::readout("Zoom", "Ctrl +/Ctrl -", &zoom_note),
+                frost::MenuItem::slider("Light", 0.0, 1.0, self.light),
+                frost::MenuItem::slider("Dark", 0.0, 1.0, self.dark),
+            ],
+        };
+        let menus = [FILE_MENU, view_menu, OPERATIONS_MENU];
+        match self.ui.menu_bar(ctx, &menus, &notes) {
+            Some(frost::MenuEvent::Chose(menu, item)) => {
+                log::info!("menu: {menu} / {item}");
+                // Every acted-on line names itself first; the verbs that
+                // write a richer line of their own (undo, crop, save)
+                // simply write over it, and the note reads theirs.
+                self.status = item.to_lowercase();
+                match (menu, item) {
+                    ("View", "Markers") => self.view = View::Markers,
+                    ("View", "Atlas") => self.view = View::Atlas,
+                    ("File", "Open") => self.open_dialog(ctx),
+                    ("File", "Close") => self.close_active(ctx),
+                    ("File", "Save") => self.save(ctx),
+                    ("File", "Save as") => self.save_as(ctx),
+                    ("File", "Undo") => self.undo(ctx),
+                    ("File", "Redo") => self.redo(ctx),
+                    ("Operations", "Crop") => self.crop(ctx),
+                    // Quit and Tile Map wait for the day their verbs exist.
+                    _ => {}
+                }
+            }
+            // A grey travelled its slider: the value lands quietly — the
+            // checker re-greys live, every frame — and the status note
+            // keeps the last real command's words.
+            Some(frost::MenuEvent::Slid(_, line, v)) => match line {
+                "Light" => self.light = v,
+                "Dark" => self.dark = v,
+                _ => {}
+            },
+            None => {}
         }
 
         // The collected button presses, now outside every panel closure.
-        if want_open {
-            self.open_dialog(ctx);
-        }
-        if want_crop {
-            self.crop(ctx);
-        }
-        if want_close {
-            self.close_active(ctx);
-        }
-        if want_save {
-            self.save(ctx);
-        }
-        if want_save_as {
-            self.save_as(ctx);
-        }
 
         // The animation edits. The duration slider and loop checkbox
         // wrote their locals; commit them, then act on the buttons.
+        let time_moved = self
+            .anim
+            .frames
+            .get(self.anim.frame)
+            .is_some_and(|f| f.next_time != next_time);
+        if time_moved {
+            // The duration slider steps into history as it moves; each
+            // step is a command the user dragged through.
+            self.stamp();
+        }
         if let Some(f) = self.anim.frames.get_mut(self.anim.frame) {
             f.next_time = next_time;
         }
-        self.anim.looping = looping;
+        if self.anim.looping != looping {
+            self.stamp();
+            self.anim.looping = looping;
+        }
         if want_add_frame {
             // A new frame, inserted after the one being edited, opens
             // with the active sprite as its first layer.
             let at = (self.anim.frame + 1).min(self.anim.frames.len());
-            let shape = self.active().map(|sp| sp.shape.clone());
+            self.stamp();
+            let shot = self
+                .active()
+                .and_then(|sp| png_bytes(&sp.current).ok())
+                .and_then(|png| {
+                    frost::Shape::sprite_bytes_nearest(&png)
+                        .ok()
+                        .map(|s| (s, png))
+                });
             self.anim.frames.insert(
                 at,
                 Frame {
-                    layers: shape.map(|s| vec![Layer { shape: s }]).unwrap_or_default(),
+                    layers: shot
+                        .map(|(shape, png)| vec![Layer { shape, png }])
+                        .unwrap_or_default(),
                     next_time: TIME_DEFAULT,
                 },
             );
@@ -1871,23 +2081,46 @@ impl frost::Process for Demo {
             self.sync_work(ctx);
         }
         if want_add_layer {
-            let shape = self.active().map(|sp| sp.shape.clone());
-            if let Some(shape) = shape
-                && let Some(f) = self.anim.frames.get_mut(self.anim.frame)
-                && f.layers.len() < LAYER_NODES
-            {
-                f.layers.push(Layer { shape });
+            let shot = self
+                .active()
+                .and_then(|sp| png_bytes(&sp.current).ok())
+                .and_then(|png| {
+                    frost::Shape::sprite_bytes_nearest(&png)
+                        .ok()
+                        .map(|s| (s, png))
+                });
+            let room = self
+                .anim
+                .frames
+                .get(self.anim.frame)
+                .is_some_and(|f| f.layers.len() < LAYER_NODES);
+            if shot.is_some() && room {
+                self.stamp();
+                if let Some((shape, png)) = shot
+                    && let Some(f) = self.anim.frames.get_mut(self.anim.frame)
+                {
+                    f.layers.push(Layer { shape, png });
+                }
             }
             self.sync_work(ctx);
         }
         if want_del_layer {
-            if let Some(f) = self.anim.frames.get_mut(self.anim.frame) {
-                f.layers.pop();
+            let some = self
+                .anim
+                .frames
+                .get(self.anim.frame)
+                .is_some_and(|f| !f.layers.is_empty());
+            if some {
+                self.stamp();
+                if let Some(f) = self.anim.frames.get_mut(self.anim.frame) {
+                    f.layers.pop();
+                }
             }
             self.sync_work(ctx);
         }
         if want_del_frame {
             if self.anim.frame < self.anim.frames.len() {
+                self.stamp();
                 self.anim.frames.remove(self.anim.frame);
                 self.anim.set_frame(
                     self.anim
@@ -2001,6 +2234,16 @@ impl frost::Process for Demo {
                         // show them.
                         let mut say = None;
                         if inside
+                            && self.active().is_some_and(|sp| {
+                                sp.ron.as_ref().is_some_and(|doc| doc.edit.is_some())
+                            })
+                        {
+                            // Moving or placing a mark: the stroke's
+                            // before-picture goes down before the tree
+                            // takes the new numbers.
+                            self.stamp();
+                        }
+                        if inside
                             && let Some(sp) = self.sprites.get_mut(self.active)
                             && let Some(doc) = &mut sp.ron
                             && let Some(pi) = doc.edit
@@ -2044,6 +2287,7 @@ impl frost::Process for Demo {
                 } else if let Some(to) = slot_at(p, w, h)
                     && to != from_slot
                 {
+                    self.stamp();
                     self.sprites.swap(from_slot, to);
                     self.active = swapped_active(self.active, from_slot, to);
                     self.refresh_slots(ctx);
@@ -2327,7 +2571,8 @@ fn read_sprite(path: &std::path::Path) -> Result<Sprite, String> {
     if path.extension().and_then(|e| e.to_str()) != Some("png") {
         return Err(format!("'{name}' is not a PNG file"));
     }
-    let shape = frost::Shape::sprite(path).map_err(|e| format!("failed to load '{name}': {e}"))?;
+    let shape =
+        frost::Shape::sprite_nearest(path).map_err(|e| format!("failed to load '{name}': {e}"))?;
     let tex = image::open(path)
         .map(|img| img.to_rgba8())
         .map_err(|e| format!("failed to decode '{name}': {e}"))?;
@@ -2339,7 +2584,7 @@ fn read_sprite(path: &std::path::Path) -> Result<Sprite, String> {
         ((ih as f32) * k).round().max(1.0) as u32,
     );
     let small = image::imageops::resize(&tex, tw, th, image::imageops::FilterType::Lanczos3);
-    let thumb = frost::Shape::sprite_bytes(&png_bytes(&small)?)
+    let thumb = frost::Shape::sprite_bytes_nearest(&png_bytes(&small)?)
         .map_err(|e| format!("failed to build the thumbnail: {e}"))?;
     let ron = load_ron(path);
     // The grid the sidecar named, if it named one — the sprite reloads
@@ -2359,9 +2604,9 @@ fn read_sprite(path: &std::path::Path) -> Result<Sprite, String> {
         name,
         current: tex.clone(),
         saved_img: tex,
-        history: Vec::new(),
         shape,
         thumb,
+        thumb_img: small,
         ron,
         saved_ron,
         atlas,
@@ -2530,8 +2775,9 @@ fn in_rect(r: [f32; 4], p: [f32; 2]) -> bool {
 fn ron_color(k: ron_tree::VKind) -> frost::Color {
     let c = |r, g, b| frost::Color { r, g, b, a: 1.0 };
     match k {
-        ron_tree::VKind::Head => c(0.93, 0.78, 0.44),
-        ron_tree::VKind::Close => c(0.55, 0.55, 0.60),
+        // The closing bracket is its opening one's twin: same amber,
+        // and bold like any head (see the line's `head` flag).
+        ron_tree::VKind::Head | ron_tree::VKind::Close => c(0.93, 0.78, 0.44),
         ron_tree::VKind::Atom(ron_tree::Kind::Str) => c(0.72, 0.86, 0.66),
         ron_tree::VKind::Atom(ron_tree::Kind::Char) => c(0.66, 0.80, 0.78),
         ron_tree::VKind::Atom(ron_tree::Kind::Num) => c(0.60, 0.78, 0.96),
@@ -2649,24 +2895,6 @@ fn shift_spots(root: &mut ron_tree::Val, dx: f32, dy: f32, bounds: (u32, u32)) -
     n
 }
 
-/// Undo's job for a sidecar: write the positions back to the values `pre`
-/// kept before the crop. The tree must carry exactly those positions
-/// still — list entries added or removed since the crop leave it
-/// untouched. Whether it wrote them.
-fn restore_spots(root: &mut ron_tree::Val, pre: &[(f32, f32)]) -> bool {
-    let mut spots = Vec::new();
-    scan_spots(root, &mut Vec::new(), "", &mut spots);
-    if spots.len() != pre.len() {
-        return false;
-    }
-    for (spot, (px, py)) in spots.iter().zip(pre.iter()) {
-        if let Some(v) = ron_tree::walk(root, &spot.path) {
-            write_spot(v, *px, *py);
-        }
-    }
-    true
-}
-
 /// The pan offset that puts texture point `(x, y)` at the work area's
 /// centre — the click map solved backwards for the offset (the strip's
 /// vertical shift cancels: the point lands at the work area's centre,
@@ -2739,11 +2967,89 @@ fn seq_add(root: &mut ron_tree::Val, path: &[u16]) -> Option<usize> {
         return None;
     };
     let fresh = match items.last() {
-        Some(it) => ron_tree::Item::plain(it.val.clone()),
-        None => ron_tree::Item::plain(ron_tree::Val::Atom(String::from("0"), ron_tree::Kind::Num)),
+        Some(it) => ron_tree::Item::plain(zero_like(&it.val)),
+        // An empty list keeps no shape to copy; in this sidecar's world
+        // a list is a list of positions, so the first entry starts as
+        // an unplaced one at the corner.
+        None => ron_tree::Item::plain(ron_tree::Val::Struct {
+            open: true,
+            head: String::new(),
+            curly: false,
+            fields: (0..2)
+                .map(|_| {
+                    (
+                        String::new(),
+                        ron_tree::Item::plain(ron_tree::Val::Atom(
+                            String::from("0.0"),
+                            ron_tree::Kind::Num,
+                        )),
+                    )
+                })
+                .collect(),
+            tail: String::new(),
+        }),
     };
     items.push(fresh);
     Some(items.len() - 1)
+}
+
+/// The emptied shape of a value: an atom to a fresh zero of its kind,
+/// a container to the same skeleton with every child emptied — folds
+/// open, comments left out. A sequence's new entry takes this shape
+/// from its neighbour's, never a copy of one: an exact twin of the
+/// last marker would land on the very pixel its twin already holds,
+/// indistinguishable, unclickable, shaky.
+fn zero_like(v: &ron_tree::Val) -> ron_tree::Val {
+    use ron_tree::{Item, Val};
+    match v {
+        Val::Atom(_, kind) => Val::Atom(
+            match kind {
+                ron_tree::Kind::Num => String::from("0.0"),
+                ron_tree::Kind::Bool => String::from("false"),
+                ron_tree::Kind::Str => String::from("\"\""),
+                ron_tree::Kind::Char => String::from("'\\''"),
+                // A path is its variant's name: there is no emptier one.
+                ron_tree::Kind::Path => v_atom_text(v),
+            },
+            *kind,
+        ),
+        Val::Seq { .. } => Val::Seq {
+            open: true,
+            items: Vec::new(),
+            tail: String::new(),
+        },
+        Val::Struct {
+            head,
+            curly,
+            fields,
+            ..
+        } => Val::Struct {
+            open: true,
+            head: head.clone(),
+            curly: *curly,
+            fields: fields
+                .iter()
+                .map(|(name, it)| (name.clone(), Item::plain(zero_like(&it.val))))
+                .collect(),
+            tail: String::new(),
+        },
+        Val::Map { entries, .. } => Val::Map {
+            open: true,
+            entries: entries
+                .iter()
+                .map(|(k, it)| (k.clone(), Item::plain(zero_like(&it.val))))
+                .collect(),
+            tail: String::new(),
+        },
+    }
+}
+
+/// The lone atom's own text — a path keeps its name when emptied.
+fn v_atom_text(v: &ron_tree::Val) -> String {
+    match v {
+        ron_tree::Val::Atom(text, _) => text.clone(),
+        _ => String::new(),
+    }
 }
 
 /// Remove the nth entry of the sequence at `path`; true when it was there.
@@ -2807,7 +3113,7 @@ fn ron_spec<'a>(
         lines.push(frost::TreeLine {
             key: row.key.as_str(),
             val: row.val.as_str(),
-            head: matches!(row.vkind, ron_tree::VKind::Head),
+            head: matches!(row.vkind, ron_tree::VKind::Head | ron_tree::VKind::Close),
             val_color,
             add,
             del,
@@ -3075,10 +3381,11 @@ fn main() {
     };
 
     // A file on the command line is loaded here, before the window
-    // exists, and takes the leftmost slot; without the argument all slots
-    // start empty and the demo's first frame opens the file dialog — as a
-    // child of the window, so it lands on top of it — and loads the pick
-    // into the first slot (see `load_sprite`).
+    // exists, and takes the leftmost slot; otherwise all slots start
+    // empty: the workbench is the tool's neutral state, and the way to
+    // fill it is whatever the user asks for next — File / Open, the
+    // panel's open button, Ctrl-O — never something the tool does on
+    // its own at launch.
     let sprites: Vec<Sprite> = match immediate {
         Some(file) => vec![read_sprite(file).unwrap_or_else(|err| {
             log::error!("{err}");
@@ -3094,7 +3401,7 @@ fn main() {
         .or_else(|| dialog_dir.clone());
 
     // The HUD font, the same monospaced variable font the diagnostics
-    // overlay uses — shared by the panel's labels and the usage line.
+    // overlay uses — shared by the panel's labels and the menu bar.
     let font = format!("{root}/assets/fonts/FiraCode-VariableFont_wght.ttf");
     let ui = frost::Ui::from_font(&font).expect("failed to load the UI font");
     // The seat numbers' font: one Arc's worth of the same FiraCode,
@@ -3102,15 +3409,11 @@ fn main() {
     // file.
     let ron_font: Arc<[u8]> =
         Arc::from(std::fs::read(&font).expect("failed to read the sidecar font"));
-    let help = Some(
-        frost::Shape::text(
-            &font,
-            "space play   ctrl-o open   ctrl-z undo   wheel zoom",
-            20.0,
-        )
-        .expect("failed to load assets/fonts/FiraCode-VariableFont_wght.ttf")
-        .with_weight(520.0),
-    );
+    // The help line that used to hang under the title bar is gone: the
+    // menu bar, with its names and shortcuts, is the map now. The node
+    // stays — the scene's fixed indices do not shift for an undrawn
+    // shape.
+    let help = None;
 
     // The work area's layer pool comes first: the process points the
     // nodes at the animation's current frame (or the active sprite
@@ -3210,8 +3513,13 @@ fn main() {
             was_down: false,
             last_mouse: None,
             last_click: None,
-            pending: dialog_dir,
             dir,
+            view: View::Markers,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            was_redo: false,
+            was_zoom_in: false,
+            was_zoom_out: false,
             status: String::new(),
             ron_font,
             r_press: None,
@@ -3487,26 +3795,115 @@ mod tests {
         assert_eq!((spots[1].x, spots[1].y), (200.0, 600.0));
     }
 
+    fn bench(active: usize) -> World {
+        World {
+            sprites: Vec::new(),
+            active,
+            anim: WorldAnim {
+                frames: Vec::new(),
+                frame: 0,
+                looping: true,
+            },
+            view: View::Markers,
+            selection: None,
+        }
+    }
+
     #[test]
-    fn undo_restores_the_positions_the_crop_kept() {
+    fn the_history_walks_back_and_forth() {
+        // The roads hold the before-pictures of commands. The bench sat
+        // on slot 0, a command moved it to 1 (world 0 went down), a
+        // second moved it to 2 (world 1 went down): the present is 2.
+        let (mut undo, mut redo) = (Vec::new(), Vec::new());
+        push_step(&mut undo, &mut redo, bench(0));
+        push_step(&mut undo, &mut redo, bench(1));
+        // One step back: world 1 emerges, the present goes to redo.
+        let past = step_back(&mut undo, &mut redo, bench(2)).expect("one past");
+        assert_eq!(past.active, 1);
+        assert_eq!(redo.len(), 1);
+        // One more: world 0, the bench's first seat.
+        let older = step_back(&mut undo, &mut redo, past).expect("two pasts");
+        assert_eq!(older.active, 0);
+        // And forward again, the same worlds in the same order.
+        let back1 = step_forward(&mut undo, &mut redo, older).expect("one future");
+        assert_eq!(back1.active, 1);
+        let back2 = step_forward(&mut undo, &mut redo, back1).expect("two futures");
+        assert_eq!(back2.active, 2);
+        // Walked dry, forward is a polite nothing.
+        assert!(step_forward(&mut undo, &mut redo, back2).is_none());
+    }
+
+    #[test]
+    fn a_new_command_dissolves_the_redo_road() {
+        let (mut undo, mut redo) = (Vec::new(), Vec::new());
+        push_step(&mut undo, &mut redo, bench(0));
+        step_back(&mut undo, &mut redo, bench(1));
+        assert_eq!(redo.len(), 1);
+        // A fresh command: the future the undo had opened is gone.
+        push_step(&mut undo, &mut redo, bench(2));
+        assert!(redo.is_empty());
+    }
+
+    #[test]
+    fn the_history_ages_its_oldest_steps_out() {
+        let (mut undo, mut redo) = (Vec::new(), Vec::new());
+        for i in 0..(HISTORY_MAX + 10) {
+            push_step(&mut undo, &mut redo, bench(i % 7));
+        }
+        assert_eq!(undo.len(), HISTORY_MAX);
+        assert_eq!(
+            undo.last().expect("not empty").active,
+            (HISTORY_MAX + 9) % 7
+        );
+    }
+
+    fn spots_of(root: &ron_tree::Val) -> Vec<(String, f32, f32)> {
+        let mut fresh = Vec::new();
+        scan_spots(root, &mut Vec::new(), "", &mut fresh);
+        fresh.iter().map(|s| (s.label.clone(), s.x, s.y)).collect()
+    }
+
+    #[test]
+    fn a_fresh_position_never_lands_on_its_twin() {
+        // The shape the sidecar writes: a list of two-number tuples.
         let mut root =
-            ron_tree::parse("(lower_anchor: (317.0, 671.0), flower_anchors: [(308.0, 615.0)])")
-                .expect("a small sidecar");
-        let mut spots = Vec::new();
-        scan_spots(&root, &mut Vec::new(), "", &mut spots);
-        let kept: Vec<(f32, f32)> = spots.iter().map(|s| (s.x, s.y)).collect();
-        shift_spots(&mut root, 100.0, 50.0, (520, 620));
-        assert!(restore_spots(&mut root, &kept), "the very same tree");
-        let mut spots = Vec::new();
-        scan_spots(&root, &mut Vec::new(), "", &mut spots);
-        assert_eq!((spots[0].x, spots[0].y), (317.0, 671.0));
-        assert_eq!((spots[1].x, spots[1].y), (308.0, 615.0));
-        // A position gone since the crop: the tree is left untouched.
-        let mut one = ron_tree::parse("(lower_anchor: (317.0, 671.0))").expect("parses");
-        assert!(!restore_spots(&mut one, &kept));
-        let mut spots = Vec::new();
-        scan_spots(&one, &mut Vec::new(), "", &mut spots);
-        assert_eq!((spots[0].x, spots[0].y), (317.0, 671.0));
+            ron_tree::parse("(flower_anchors: [(308.0, 615.0)])").expect("a small sidecar");
+        let n = seq_add(&mut root, &[0]).expect("a sequence");
+        assert_eq!(n, 1);
+        let found = spots_of(&root);
+        // Two positions, and the fresh one is an unplaced corner —
+        // never an exact copy of the anchor it grew beside.
+        assert_eq!(found.len(), 2);
+        assert_eq!((found[1].1, found[1].2), (0.0, 0.0));
+        assert_eq!((found[0].1, found[0].2), (308.0, 615.0));
+    }
+
+    #[test]
+    fn the_first_entry_of_an_empty_list_is_a_placeable_position() {
+        // An empty list has no neighbour to take shape from: the [+]
+        // must still put down a position the click can claim, not a
+        // bare `0` the tree shows but no marker or edit can reach.
+        let mut root = ron_tree::parse("(flower_anchors: [])").expect("an empty list");
+        let n = seq_add(&mut root, &[0]).expect("a sequence");
+        assert_eq!(n, 0);
+        let found = spots_of(&root);
+        assert_eq!(found.len(), 1, "the new entry is a position, not an atom");
+        assert_eq!((found[0].1, found[0].2), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_fresh_number_joins_a_list_of_numbers() {
+        // The same honesty for the shapes that are not positions: the
+        // zero of a number list is a number.
+        let mut root = ron_tree::parse("(seats: [1, 2])").expect("numbers");
+        assert_eq!(seq_add(&mut root, &[0]), Some(2));
+        let Some(ron_tree::Val::Seq { items, .. }) = ron_tree::walk(&mut root, &[0]) else {
+            panic!("the seats list is not a sequence");
+        };
+        let ron_tree::Val::Atom(text, ron_tree::Kind::Num) = &items[2].val else {
+            panic!("the fresh seat is not an atom: {:?}", items[2].val);
+        };
+        assert_eq!(text, "0.0");
     }
 
     #[test]
@@ -3534,9 +3931,10 @@ mod tests {
     }
 
     #[test]
-    fn lists_add_copy_delete_and_slide() {
+    fn lists_add_zero_delete_and_slide() {
         let mut root = ron_tree::parse("[10, 20, 30]").expect("parses");
-        // Add copies the last entry's shape — comments stay behind.
+        // Add puts down an emptied shape — a fresh 0.0 beside their
+        // numbers — and comments stay behind.
         assert_eq!(seq_add(&mut root, &[]), Some(3));
         assert_eq!(seq_remove(&mut root, &[], 0), true);
         assert_eq!(seq_remove(&mut root, &[], 9), false);
@@ -3544,7 +3942,7 @@ mod tests {
         assert_eq!(seq_move(&mut root, &[], 1, 1), None);
         assert_eq!(
             ron_tree::to_text(&root),
-            "[\n    30,\n    20,\n    30,\n]\n"
+            "[\n    0.0,\n    20,\n    30,\n]\n"
         );
         // Nested sequences answer to their path.
         let mut nest = ron_tree::parse("(ups: [(1.0, 1.0)])").expect("parses");

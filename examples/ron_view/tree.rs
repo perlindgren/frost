@@ -729,7 +729,8 @@ pub fn parse(src: &str) -> Result<Val, String> {
 pub enum VKind {
     /// A container head or its folded `…` form: heavy, amber.
     Head,
-    /// A closing bracket: light.
+    /// A closing bracket: dressed like its opening one — the view
+    /// paints it amber and bold, the Head's own colors.
     Close,
     /// An atom, by kind.
     Atom(Kind),
@@ -737,6 +738,7 @@ pub enum VKind {
 
 /// One visible row: a heavy prefix and a value side, and — for
 /// containers and their closing brackets — the fold path they toggle.
+#[derive(Clone)]
 pub struct Row {
     /// The fold-path from the root: child indices.
     pub path: Vec<u16>,

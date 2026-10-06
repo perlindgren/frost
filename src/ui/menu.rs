@@ -11,11 +11,12 @@
 //!         static FILE: frost::Menu<'static> = frost::Menu {
 //!             title: "File",
 //!             items: &[
-//!                 frost::MenuItem { label: "Open", shortcut: "Ctrl-O" },
-//!                 frost::MenuItem { label: "Quit", shortcut: "" },
+//!                 frost::MenuItem::new("Open", "Ctrl-O"),
+//!                 frost::MenuItem::new("Quit", ""),
 //!             ],
 //!         };
-//!         if let Some((menu, item)) = self.ui.menu_bar(ctx, &[FILE]) {
+//!         if let Some(frost::MenuEvent::Chose(menu, item)) = self.ui.menu_bar(ctx, &[FILE], &[])
+//!         {
 //!             log::info!("{menu} / {item}");
 //!         }
 //!     }
@@ -42,12 +43,38 @@
 //! the bar never dispatches keys; wire the shortcuts in your own input
 //! handling (the accelerator beside a title is a promise to do so).
 //!
+//! **A list is not only commands.** A [`MenuItem::readout`] line shows a
+//! live label and value (`Zoom 1.25`, say) where a command would — it
+//! chooses nothing and dismisses nothing. A [`MenuItem::slider`] line
+//! carries a whole slider in one row: the row is the grab area, the
+//! track spans the line between label and value, and while it is held
+//! the list stays open and the line reports [`MenuEvent::Slid`] every
+//! frame the value moves — release commits and the list, still open,
+//! awaits the next line. Sliders live where panels used to be: the
+//! menus hold the settings without occupying the canvas.
+//!
 //! The bar and every open list register hit rects like any widget, so
 //! [`Ui::hovering`](Ui::hovering) reports them: a scene that gates its
 //! own mouse handling on `hovering` will not act through the bar or an
 //! open menu.
 
 use super::*;
+
+/// What a [`Menu`]'s line is: a command to choose, a value to read, or
+/// a value to set.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ItemKind<'a> {
+    /// A command: released on its line, it closes the list and reports
+    /// [`MenuEvent::Chose`].
+    Command,
+    /// A live read-only line: the label names the value, shown
+    /// right-aligned where a shortcut would sit. Clicks pass it by.
+    Readout { value: &'a str },
+    /// A live slider in one line: the row is the grab area, the track
+    /// spans between label and value, and holding it reports
+    /// [`MenuEvent::Slid`] as the value travels. The list stays open.
+    Slider { min: f32, max: f32, value: f32 },
+}
 
 /// One line of a [`Menu`]'s drop-down. An empty `label` is a separator:
 /// a rule across the list that swallows its click and chooses nothing.
@@ -56,21 +83,60 @@ pub struct MenuItem<'a> {
     /// The command's name, or `""` for a separator line.
     pub label: &'a str,
     /// The accelerator to show right-aligned on the line — display only:
-    /// the bar never dispatches keys. `""` shows nothing.
+    /// the bar never dispatches keys. `""` shows nothing. Ignored by
+    /// readout and slider lines, which own the line's right edge.
     pub shortcut: &'a str,
+    /// What the line is: see [`ItemKind`].
+    pub kind: ItemKind<'a>,
 }
 
 impl<'a> MenuItem<'a> {
     /// A named command with its (display-only) accelerator.
     pub const fn new(label: &'a str, shortcut: &'a str) -> Self {
-        Self { label, shortcut }
+        Self {
+            label,
+            shortcut,
+            kind: ItemKind::Command,
+        }
+    }
+
+    /// A read-only line: the label left, the value right, and — when
+    /// given (`""` shows nothing) — the accelerator that summons the
+    /// value's changes, shown muted before the value.
+    pub const fn readout(label: &'a str, shortcut: &'a str, value: &'a str) -> Self {
+        Self {
+            label,
+            shortcut,
+            kind: ItemKind::Readout { value },
+        }
+    }
+
+    /// A slider line driving a value in `min..=max`.
+    pub const fn slider(label: &'a str, min: f32, max: f32, value: f32) -> Self {
+        Self {
+            label,
+            shortcut: "",
+            kind: ItemKind::Slider { min, max, value },
+        }
     }
 
     /// A separator line.
     pub const SEPARATOR: MenuItem<'static> = MenuItem {
         label: "",
         shortcut: "",
+        kind: ItemKind::Command,
     };
+}
+
+/// What the menu bar hands back for a frame: a chosen command, or a
+/// slider line's value on the move.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MenuEvent<'a> {
+    /// An item released on its own line: `(menu title, item label)`.
+    Chose(&'a str, &'a str),
+    /// A slider line moved — every frame it is held, and once more on
+    /// the release that commits it: `(menu title, line label, value)`.
+    Slid(&'a str, &'a str, f32),
 }
 
 /// One top-level entry of the menu bar: a title and its list.
@@ -84,16 +150,36 @@ pub struct Menu<'a> {
 
 impl Ui {
     /// Declares the whole menu bar for the frame — call it once, after
-    /// every other widget — and returns `(title, label)` on the frame an
-    /// item is chosen. See the [module](self) for the behavior.
+    /// every other widget — and reports the frame's [`MenuEvent`]: a
+    /// chosen command, or a slider line's value on the move. `notes` are read-only strings drawn right-aligned
+    /// on the bar in the muted color, the LAST one at the bar's far end
+    /// and its predecessors stepping leftwards: the last command and the
+    /// current mode, say. They are paint only — clicks there belong to
+    /// the bar's strip, not to any item. See the [module](self) for the
+    /// behavior.
     pub fn menu_bar<'a>(
         &mut self,
         ctx: &mut Context,
         menus: &[Menu<'a>],
-    ) -> Option<(&'a str, &'a str)> {
+        notes: &[&str],
+    ) -> Option<MenuEvent<'a>> {
         let size = ctx.size();
         let (frame, choice) = self.menu_frame(menus, size);
         self.paint_menu(ctx, &frame);
+        // The notes sit on the finished bar: paint them only after the
+        // plate was laid, or the plate buries them.
+        let (pad, font, color) = (self.style.pad, self.style.font_size, self.style.text_muted);
+        let [_, cy] = frame.bar.center();
+        // Letters sit on the line's optical center, not the box's.
+        let cy = cy - self.style.menu_lift * font;
+        let mut x = frame.bar.left + frame.bar.w - pad;
+        for note in notes.iter().rev() {
+            let w = self.text_width(note, font);
+            x -= w;
+            let s = (*note).to_owned();
+            self.text(ctx, [x, cy], font, color, &s);
+            x -= pad;
+        }
         choice
     }
 
@@ -105,7 +191,7 @@ impl Ui {
         &mut self,
         menus: &[Menu<'a>],
         size: (f32, f32),
-    ) -> (MenuFrame<'a>, Option<(&'a str, &'a str)>) {
+    ) -> (MenuFrame<'a>, Option<MenuEvent<'a>>) {
         let style = self.style;
         let top = size.1 / 2.0;
         let bar = Rect {
@@ -146,6 +232,7 @@ impl Ui {
         // It runs before the list is laid: a title click must show its
         // list on the frame it opens, not the one after.
         let mut choice = None;
+        let mut slid: Option<MenuEvent<'a>> = None;
         if let Some(rel) = self.released_active {
             let mut handled = false;
             // A release on the open menu's own item line chooses — and
@@ -156,15 +243,24 @@ impl Ui {
                     .iter()
                     .find(|mn| widget_id(0, &format!("menu:{}", mn.title)) == oid)
             {
-                if let Some(item) = m
-                    .items
-                    .iter()
-                    .find(|it| !it.label.is_empty() && widget_id(oid, it.label) == rel)
-                {
+                if let Some(item) = m.items.iter().find(|it| {
+                    !it.label.is_empty()
+                        && it.kind == ItemKind::Command
+                        && widget_id(oid, it.label) == rel
+                }) {
                     if self.hover == Some(rel) {
                         choice = Some((m.title, item.label));
                     }
                     self.menu_open = None;
+                    handled = true;
+                } else if m.items.iter().any(|it| {
+                    it.kind != ItemKind::Command
+                        && !it.label.is_empty()
+                        && widget_id(oid, it.label) == rel
+                }) {
+                    // A slider line's release: the drag's last frame. The
+                    // value lands in the layout below; the list stays
+                    // open, ready for the next line.
                     handled = true;
                 } else if rel == widget_id(oid, "\u{1}bg") {
                     // A click in the list's own padding: stays open,
@@ -219,8 +315,30 @@ impl Ui {
                 .iter()
                 .map(|it| {
                     let l = self.text_width(it.label, style.font_size);
-                    let sc = self.text_width(it.shortcut, style.font_size);
-                    style.pad + l + room + sc + style.pad
+                    match it.kind {
+                        ItemKind::Command => {
+                            let sc = self.text_width(it.shortcut, style.font_size);
+                            style.pad + l + room + sc + style.pad
+                        }
+                        ItemKind::Readout { value } => {
+                            let v = self.text_width(value, style.font_size);
+                            let sc = self.text_width(it.shortcut, style.font_size);
+                            let sc = if sc > 0.0 { sc + style.pad } else { 0.0 };
+                            style.pad + l + room + sc + v + style.pad
+                        }
+                        ItemKind::Slider { value, .. } => {
+                            // Label, a fixed-width track, the value: the
+                            // list grows to hold the slider at ease.
+                            let v = self.text_width(&format!("{value:.2}"), style.font_size);
+                            style.pad
+                                + l
+                                + 2.0 * style.pad
+                                + MENU_TRACK
+                                + 2.0 * style.pad
+                                + v
+                                + style.pad
+                        }
+                    }
                 })
                 .fold(titles[i].rect.w, f32::max);
             let left = titles[i].rect.left;
@@ -250,6 +368,17 @@ impl Ui {
                     h,
                 },
             );
+            // The table rule for the value lines: every slider shares
+            // one label column — the widest of them — so the tracks
+            // start in line, stretch across the slack, and end before
+            // the values, the way a label-track-readout table lays its
+            // rows.
+            let slider_col = menu
+                .items
+                .iter()
+                .filter(|it| matches!(it.kind, ItemKind::Slider { .. }))
+                .map(|it| self.text_width(it.label, style.font_size))
+                .fold(0.0f32, f32::max);
             let mut rows = Vec::with_capacity(menu.items.len());
             // `y` holds the current rect's top edge and walks down.
             let mut y = top;
@@ -264,23 +393,69 @@ impl Ui {
                         },
                     });
                     y -= style.row_gap;
-                } else {
-                    let rect = Rect {
-                        left,
-                        top: y,
-                        w: widest,
-                        h: style.row_h,
-                    };
-                    let it = self.interact(widget_id(title, item.label), rect);
-                    rows.push(Row::Item {
-                        label: item.label,
-                        shortcut: item.shortcut,
-                        rect,
-                        hot: it.hot,
-                        pressed: it.pressed,
-                    });
-                    y -= style.row_h;
+                    continue;
                 }
+                let rect = Rect {
+                    left,
+                    top: y,
+                    w: widest,
+                    h: style.row_h,
+                };
+                match item.kind {
+                    ItemKind::Command => {
+                        let it = self.interact(widget_id(title, item.label), rect);
+                        rows.push(Row::Item {
+                            label: item.label,
+                            shortcut: item.shortcut,
+                            rect,
+                            hot: it.hot,
+                            pressed: it.pressed,
+                        });
+                    }
+                    ItemKind::Readout { value } => {
+                        // No registration: the list's background catches
+                        // clicks on the line and keeps them inside, like
+                        // the separator's band.
+                        rows.push(Row::Readout {
+                            label: item.label,
+                            shortcut: item.shortcut,
+                            value,
+                            rect,
+                        });
+                    }
+                    ItemKind::Slider { min, max, value } => {
+                        let it = self.interact(widget_id(title, item.label), rect);
+                        let mut v = value;
+                        if it.held || it.clicked {
+                            // Held: the knob follows the pointer across
+                            // the track, and the line reports each frame.
+                            if let Some(p) = self.pointer {
+                                let track = slider_track(self, &style, &rect, slider_col, v);
+                                let (lo, hi) = (
+                                    track.left + style.knob_r,
+                                    track.left + track.w - style.knob_r,
+                                );
+                                if hi > lo && max > min {
+                                    let t = ((p[0] - lo) / (hi - lo)).clamp(0.0, 1.0);
+                                    v = min + t * (max - min);
+                                }
+                            }
+                            slid = Some(MenuEvent::Slid(menu.title, item.label, v));
+                        }
+                        let track = slider_track(self, &style, &rect, slider_col, v);
+                        rows.push(Row::Slider {
+                            label: item.label,
+                            min,
+                            max,
+                            value: v,
+                            rect,
+                            track,
+                            hot: it.hot,
+                            pressed: it.pressed,
+                        });
+                    }
+                }
+                y -= style.row_h;
             }
             drop = Some(DropFrame {
                 bg: Rect {
@@ -298,7 +473,8 @@ impl Ui {
         {
             t.open = true;
         }
-        (MenuFrame { bar, titles, drop }, choice)
+        let event = choice.map(|(t, l)| MenuEvent::Chose(t, l)).or(slid);
+        (MenuFrame { bar, titles, drop }, event)
     }
 
     /// Lays a [`MenuFrame`] on the canvas: bar, titles, and the open list.
@@ -325,6 +501,7 @@ impl Ui {
             }
             let size = style.font_size;
             let [cx, cy] = t.rect.center();
+            let cy = cy - style.menu_lift * size;
             let label = t.label.to_owned();
             self.text(ctx, [cx, cy], size, style.title_text, &label);
         }
@@ -372,7 +549,7 @@ impl Ui {
                         self.fill(ctx, *rect, style.widget_hover);
                     }
                     let size = style.font_size;
-                    let cy = rect.center()[1];
+                    let cy = rect.center()[1] - style.menu_lift * size;
                     let lw = self.text_width(label, size);
                     let l = (*label).to_owned();
                     self.text(
@@ -393,6 +570,113 @@ impl Ui {
                             &s,
                         );
                     }
+                }
+                Row::Readout {
+                    label,
+                    shortcut,
+                    value,
+                    rect,
+                } => {
+                    let size = style.font_size;
+                    let cy = rect.center()[1] - style.menu_lift * size;
+                    let lw = self.text_width(label, size);
+                    let l = (*label).to_owned();
+                    self.text(
+                        ctx,
+                        [rect.left + style.pad + lw / 2.0, cy],
+                        size,
+                        style.text,
+                        &l,
+                    );
+                    let vw = self.text_width(value, size);
+                    let v = (*value).to_owned();
+                    let vr = rect.left + rect.w - style.pad;
+                    self.text(ctx, [vr - vw / 2.0, cy], size, style.text_muted, &v);
+                    if !shortcut.is_empty() {
+                        // The accelerator sits just before the value.
+                        let sw = self.text_width(shortcut, size);
+                        let sc = (*shortcut).to_owned();
+                        self.text(
+                            ctx,
+                            [vr - vw - style.pad - sw / 2.0, cy],
+                            size,
+                            style.text_muted,
+                            &sc,
+                        );
+                    }
+                }
+                Row::Slider {
+                    label,
+                    min,
+                    max,
+                    value,
+                    rect,
+                    track,
+                    hot,
+                    pressed,
+                } => {
+                    if *pressed {
+                        self.fill(ctx, *rect, style.widget_press);
+                    } else if *hot {
+                        self.fill(ctx, *rect, style.widget_hover);
+                    }
+                    let size = style.font_size;
+                    let cy = rect.center()[1] - style.menu_lift * size;
+                    let lw = self.text_width(label, size);
+                    let l = (*label).to_owned();
+                    self.text(
+                        ctx,
+                        [rect.left + style.pad + lw / 2.0, cy],
+                        size,
+                        style.text,
+                        &l,
+                    );
+                    let v = (*value).to_owned();
+                    let vs = format!("{v:.2}");
+                    let vw = self.text_width(&vs, size);
+                    self.text(
+                        ctx,
+                        [rect.left + rect.w - style.pad - vw / 2.0, cy],
+                        size,
+                        style.text_muted,
+                        &vs,
+                    );
+                    // The track, the filled span, the knob: the panel
+                    // slider's own dress, worn inside the list — and
+                    // laid by the shared column, as a table lays it.
+                    let track = *track;
+                    let knob = style.knob_r;
+                    let t = if *max > *min {
+                        ((*value - *min) / (*max - *min)).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let knob_x = track.left + knob + t * (track.w - 2.0 * knob).max(0.0);
+                    self.fill(ctx, track, style.track);
+                    let fill = Rect {
+                        left: track.left + knob,
+                        top: track.top,
+                        w: (knob_x - track.left - knob).max(0.0),
+                        h: track.h,
+                    };
+                    if fill.w > 0.0 {
+                        self.fill(ctx, fill, style.accent);
+                    }
+                    let white = Color {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 1.0,
+                        a: 1.0,
+                    };
+                    let knob_color = if *pressed {
+                        style.accent.lerp(white, 0.35)
+                    } else if *hot {
+                        style.accent.lerp(white, 0.15)
+                    } else {
+                        style.accent
+                    };
+                    let z = self.z();
+                    ctx.circle(knob_x, track.center()[1], knob, knob_color, z);
                 }
                 Row::Sep { rect } => {
                     let y = rect.center()[1];
@@ -432,6 +716,7 @@ struct DropFrame<'a> {
     rows: Vec<Row<'a>>,
 }
 
+/// One laid line of the open list, ready to paint.
 enum Row<'a> {
     Item {
         label: &'a str,
@@ -440,9 +725,50 @@ enum Row<'a> {
         hot: bool,
         pressed: bool,
     },
+    Readout {
+        label: &'a str,
+        shortcut: &'a str,
+        value: &'a str,
+        rect: Rect,
+    },
+    Slider {
+        label: &'a str,
+        min: f32,
+        max: f32,
+        /// The value as it now stands — the drag's, while held.
+        value: f32,
+        rect: Rect,
+        track: Rect,
+        hot: bool,
+        pressed: bool,
+    },
     Sep {
         rect: Rect,
     },
+}
+
+/// The width a menu slider's track asks for; a longer list stretches
+/// it, a narrow menu is not allowed to crush it.
+const MENU_TRACK: f32 = 96.0;
+
+/// A menu slider line's track: the span between the label and the
+/// value readout, centered in the row — the geometry the drag maps the
+/// pointer onto and the painter draws.
+fn slider_track(ui: &mut Ui, style: &UiStyle, rect: &Rect, col: f32, value: f32) -> Rect {
+    // The column is the menu's shared label column, not this line's
+    // own label: the tracks all start in line and stretch to the
+    // values, the way the panel's table laid them.
+    let lw = col;
+    let vw = ui.text_width(&format!("{value:.2}"), style.font_size);
+    let x0 = rect.left + style.pad + lw + style.pad;
+    let x1 = rect.left + rect.w - style.pad - vw - style.pad;
+    let w = (x1 - x0).max(2.0 * style.knob_r + 1.0);
+    Rect::from_center(
+        (x0 + x1) / 2.0,
+        rect.center()[1],
+        w,
+        style.track_h.max(2.0 * style.knob_r),
+    )
 }
 
 #[cfg(test)]
@@ -453,27 +779,24 @@ mod tests {
     static FILE: Menu<'static> = Menu {
         title: "File",
         items: &[
-            MenuItem {
-                label: "Open",
-                shortcut: "Ctrl-O",
-            },
-            MenuItem {
-                label: "Save",
-                shortcut: "",
-            },
+            MenuItem::new("Open", "Ctrl-O"),
+            MenuItem::new("Save", ""),
             MenuItem::SEPARATOR,
-            MenuItem {
-                label: "Quit",
-                shortcut: "",
-            },
+            MenuItem::new("Quit", ""),
         ],
     };
     static EDIT: Menu<'static> = Menu {
         title: "Edit",
-        items: &[MenuItem {
-            label: "Undo",
-            shortcut: "Ctrl-Z",
-        }],
+        items: &[MenuItem::new("Undo", "Ctrl-Z")],
+    };
+    static VIEW: Menu<'static> = Menu {
+        title: "View",
+        items: &[
+            MenuItem::new("Markers", ""),
+            MenuItem::SEPARATOR,
+            MenuItem::readout("Zoom", "Ctrl +/Ctrl -", "1.00"),
+            MenuItem::slider("Light", 0.0, 1.0, 0.5),
+        ],
     };
     const SIZE: (f32, f32) = (800.0, 600.0);
 
@@ -481,6 +804,11 @@ mod tests {
     fn bar(ui: &mut Ui) -> MenuFrame<'static> {
         let (f, _) = ui.menu_frame(&[FILE, EDIT], SIZE);
         f
+    }
+
+    /// One frame of a bar carrying only the VIEW menu — the slider's.
+    fn vbar(ui: &mut Ui) -> (MenuFrame<'static>, Option<MenuEvent<'static>>) {
+        ui.menu_frame(&[VIEW], SIZE)
     }
 
     /// Click `p`: press frame, then release frame, returning the release
@@ -535,7 +863,7 @@ mod tests {
         bar(&mut ui);
         frame(&mut ui, Some(item), false);
         let (f, choice) = ui.menu_frame(&[FILE, EDIT], SIZE);
-        assert_eq!(choice, Some(("File", "Open")));
+        assert_eq!(choice, Some(MenuEvent::Chose("File", "Open")));
         assert!(f.drop.is_none(), "choosing closes the list");
     }
 
@@ -572,7 +900,7 @@ mod tests {
         bar(&mut ui);
         frame(&mut ui, Some(undo), false);
         let (f, choice) = ui.menu_frame(&[FILE, EDIT], SIZE);
-        assert_eq!(choice, Some(("Edit", "Undo")));
+        assert_eq!(choice, Some(MenuEvent::Chose("Edit", "Undo")));
         assert!(f.drop.is_none());
     }
 
@@ -625,9 +953,84 @@ mod tests {
         let (_, choice) = ui.menu_frame(&[FILE, EDIT], SIZE);
         assert_eq!(
             choice,
-            Some(("File", "Open")),
+            Some(MenuEvent::Chose("File", "Open")),
             "the menu, not the widget, got the click"
         );
+    }
+
+    #[test]
+    fn a_slider_line_travels_with_the_pointer_and_keeps_the_list_open() {
+        let mut ui = ui();
+        frame(&mut ui, None, false);
+        let (f, _) = vbar(&mut ui);
+        let view = f.titles[0].rect.center();
+        // Open View the classic way.
+        let f = {
+            frame(&mut ui, Some(view), true);
+            vbar(&mut ui);
+            frame(&mut ui, Some(view), false);
+            vbar(&mut ui).0
+        };
+        let row = match &f.drop.as_ref().expect("View is open").rows[3] {
+            Row::Slider { rect, .. } => *rect,
+            _ => panic!("the fourth line is the slider"),
+        };
+        // Glide to the line, right of centre — one frame so the row
+        // holds the hover — then press and HOLD: the press resolves a
+        // frame late, so the capture — and the slide — begin one frame
+        // after the button falls.
+        let grab = [row.left + row.w * 0.8, row.center()[1]];
+        frame(&mut ui, Some(grab), false);
+        vbar(&mut ui);
+        frame(&mut ui, Some(grab), true);
+        vbar(&mut ui);
+        frame(&mut ui, Some(grab), true);
+        let (f, slid) = vbar(&mut ui);
+        assert!(f.drop.is_some(), "grabbing a slider keeps the list open");
+        let MenuEvent::Slid(_, label, v) = slid.expect("the held press reports a value") else {
+            panic!("a slide was expected, got {slid:?}");
+        };
+        assert_eq!(label, "Light");
+        assert!(
+            v > 0.5,
+            "grabbing right of centre lands past the middle: {v}"
+        );
+        // Drag left, button still down: the value follows the pointer.
+        let left = [row.left + row.w * 0.3, row.center()[1]];
+        frame(&mut ui, Some(left), true);
+        let (_, slid) = vbar(&mut ui);
+        let MenuEvent::Slid(_, _, v2) = slid.expect("the drag reports each frame") else {
+            panic!("a slide was expected");
+        };
+        assert!(v2 < v, "the knob followed the pointer left: {v2} < {v}");
+        // Release: the last frame reports once more, and the menu — by
+        // the design that makes a slider usable — stays open.
+        frame(&mut ui, Some(left), false);
+        let (f, slid) = vbar(&mut ui);
+        assert!(matches!(slid, Some(MenuEvent::Slid(..))), "release commits");
+        assert!(f.drop.is_some(), "and the list outlives the release");
+    }
+
+    #[test]
+    fn a_readout_line_chooses_nothing_and_closes_nothing() {
+        let mut ui = ui();
+        frame(&mut ui, None, false);
+        let (f, _) = vbar(&mut ui);
+        let view = f.titles[0].rect.center();
+        frame(&mut ui, Some(view), true);
+        vbar(&mut ui);
+        frame(&mut ui, Some(view), false);
+        let (f, _) = vbar(&mut ui);
+        let row = match &f.drop.as_ref().expect("View is open").rows[2] {
+            Row::Readout { rect, .. } => *rect,
+            _ => panic!("the third line is the readout"),
+        };
+        frame(&mut ui, Some(row.center()), true);
+        vbar(&mut ui);
+        frame(&mut ui, Some(row.center()), false);
+        let (f, slid) = vbar(&mut ui);
+        assert_eq!(slid, None, "a readout has no event to give");
+        assert!(f.drop.is_some(), "and its click belongs to the list");
     }
 
     #[test]

@@ -191,8 +191,8 @@ pub use diagnostics::{Diagnostics, DiagnosticsFlags};
 
 mod ui;
 pub use ui::{
-    Align, Col, ColSize, Menu, MenuItem, TreeEvent, TreeLine, TreeOut, TreeSpec, TreeState,
-    TreeStyle, Ui, UiStyle,
+    Align, Col, ColSize, ItemKind, Menu, MenuEvent, MenuItem, TreeEvent, TreeLine, TreeOut,
+    TreeSpec, TreeState, TreeStyle, Ui, UiStyle,
 };
 
 mod rng;

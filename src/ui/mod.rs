@@ -56,7 +56,7 @@ mod style;
 mod table;
 mod tree;
 
-pub use menu::{Menu, MenuItem};
+pub use menu::{ItemKind, Menu, MenuEvent, MenuItem};
 use panel::PanelState;
 #[cfg(test)]
 use panel::{panel_body_id, panel_id};

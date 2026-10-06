@@ -258,6 +258,21 @@ fn row_at_maps_points_to_rows_and_guarding() {
 }
 
 #[test]
+fn scrolling_lifts_rows_toward_the_top() {
+    let body = [0.0, 0.0, 300.0, 200.0];
+    // Two rows of scroll (2 x 20 px): row 2 arrives at exactly where
+    // row 0 sat unscrolled — the document walks up, the window stays.
+    assert!(
+        row_y(2, body, 40.0, *STYLE) > row_y(2, body, 0.0, *STYLE),
+        "rows climb, not sink"
+    );
+    assert!(
+        (row_y(2, body, 40.0, *STYLE) - row_y(0, body, 0.0, *STYLE)).abs() < 1e-3,
+        "one row of scroll is exactly one row of climb"
+    );
+}
+
+#[test]
 fn row_at_follows_the_scroll() {
     let body = [0.0, 0.0, 300.0, 200.0];
     // Scrolled down 40 px, the point at row 0's unscrolled center is
