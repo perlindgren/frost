@@ -828,6 +828,69 @@ fn draw_node(
                     })
                 }
             }
+            // The tile map: every placement becomes one instance of the
+            // map's single instanced draw. A tile is a box, so its two
+            // axes ride the composed transform's scales independently —
+            // the exact stretch a rectangle gets, where the particle
+            // batch above has to compromise on the geometric mean — and
+            // the view clip rides the same transform as a box, so the
+            // scissor cuts the batch at the window the map is seen
+            // through.
+            Shape::TileMap {
+                data,
+                width,
+                height,
+                generation,
+                filter,
+                tiles,
+                clip,
+                color,
+            } => {
+                if tiles.is_empty() {
+                    // Like an empty particle batch: nothing to draw.
+                    None
+                } else {
+                    let mut packed = Vec::with_capacity(tiles.len() * 48);
+                    let mut box_min = [f32::MAX; 2];
+                    let mut box_max = [f32::MIN; 2];
+                    for tile in tiles {
+                        let [cx, cy] = to_pixel.apply(tile.center);
+                        let hw = (tile.size[0] * 0.5 * sx).max(0.0);
+                        let hh = (tile.size[1] * 0.5 * sy).max(0.0);
+                        box_min = [box_min[0].min(cx - hw), box_min[1].min(cy - hh)];
+                        box_max = [box_max[0].max(cx + hw), box_max[1].max(cy + hh)];
+                        packed.extend_from_slice(&tilemap_instance(
+                            cx,
+                            cy,
+                            hw,
+                            hh,
+                            tile.uv,
+                            &tile.color,
+                        ));
+                    }
+                    let clip_px = clip.map(|[x0, y0, x1, y1]| {
+                        aabb_of_box(
+                            &to_pixel,
+                            [(x0 + x1) / 2.0, (y0 + y1) / 2.0],
+                            (x1 - x0) / 2.0,
+                            (y1 - y0) / 2.0,
+                        )
+                    });
+                    Some(Draw::TileMap {
+                        data: packed,
+                        count: tiles.len() as u32,
+                        color: color.mul(modulate),
+                        atlas_data: data.clone(),
+                        atlas_size: [*width, *height],
+                        atlas_generation: *generation,
+                        filter: *filter,
+                        bounds: (box_min, box_max),
+                        clip: clip_px,
+                        z: order,
+                        diagnostic: node.diagnostic,
+                    })
+                }
+            }
         };
         if let Some(draw) = draw {
             draws.push(draw);
@@ -1052,6 +1115,34 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
         // be measured. A batch in a repeating layer therefore skips the
         // period-overflow check.
         Shape::Particles { .. } => None,
+        // A tile map's box is the box over its tiles: the extent is
+        // data rather than a parameter, but a bounded one.
+        Shape::TileMap { tiles, .. } => {
+            let first = tiles.first()?;
+            let mut min = [
+                first.center[0] - first.size[0] / 2.0,
+                first.center[1] - first.size[1] / 2.0,
+            ];
+            let mut max = [
+                first.center[0] + first.size[0] / 2.0,
+                first.center[1] + first.size[1] / 2.0,
+            ];
+            for tile in tiles.iter().skip(1) {
+                min = [
+                    min[0].min(tile.center[0] - tile.size[0] / 2.0),
+                    min[1].min(tile.center[1] - tile.size[1] / 2.0),
+                ];
+                max = [
+                    max[0].max(tile.center[0] + tile.size[0] / 2.0),
+                    max[1].max(tile.center[1] + tile.size[1] / 2.0),
+                ];
+            }
+            Some((
+                "tilemap",
+                [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0],
+                [(max[0] - min[0]) / 2.0, (max[1] - min[1]) / 2.0],
+            ))
+        }
     }
 }
 
@@ -2277,5 +2368,218 @@ mod tests {
         };
         assert_eq!(*radius, 20.0);
         assert_eq!(*penumbra, 8.0);
+    }
+
+    // Tile maps: the collection tests the same way the particle batch
+    // is tested — one node in, one draw out, and the packed instance
+    // bytes read back float by float.
+
+    /// The fields of a tile-map draw that the tests read.
+    struct Map<'a> {
+        data: &'a [u8],
+        count: u32,
+        color: Color,
+        bounds: ([f32; 2], [f32; 2]),
+        clip: Option<([f32; 2], [f32; 2])>,
+        z: f32,
+    }
+
+    /// The node's tile-map draw: panics if the node drew anything but
+    /// exactly one tile map.
+    fn the_map(draws: &[Draw]) -> Map<'_> {
+        match draws {
+            [
+                Draw::TileMap {
+                    data,
+                    count,
+                    color,
+                    bounds,
+                    clip,
+                    z,
+                    ..
+                },
+            ] => Map {
+                data,
+                count: *count,
+                color: *color,
+                bounds: *bounds,
+                clip: *clip,
+                z: *z,
+            },
+            other => panic!("expected one tile map draw, got {other:?}"),
+        }
+    }
+
+    /// Reads the little-endian float at component `component` (0..12 in
+    /// the three instance vec4s: center, half-extents; UV bounds; tint)
+    /// of tile `tile` in the packed instance data of the map.
+    fn tile_f32(map: &Map, tile: usize, component: usize) -> f32 {
+        let start = tile * 48 + component * 4;
+        f32::from_le_bytes(map.data[start..start + 4].try_into().unwrap())
+    }
+
+    /// A full-opacity color for tile tests.
+    fn rgba(r: f32, g: f32, b: f32, a: f32) -> Color {
+        Color { r, g, b, a }
+    }
+
+    /// A tile map shape over the 4x4-byte test atlas with the given
+    /// placements.
+    fn tile_map_full(tiles: Vec<Tile>, clip: Option<[f32; 4]>, color: Color) -> Shape {
+        Shape::TileMap {
+            data: vec![0u8; 16].into(),
+            width: 2,
+            height: 2,
+            generation: 1,
+            filter: SpriteFilter::Nearest,
+            tiles,
+            clip,
+            color,
+        }
+    }
+
+    /// A plain tile map: the given placements, no clip, white batch.
+    fn tile_map(tiles: Vec<Tile>) -> Shape {
+        tile_map_full(tiles, None, WHITE)
+    }
+
+    #[test]
+    fn node_tilemap_places_tiles_in_pixel_space() {
+        // A node translated to (10, 20) with a 32x32 tile at local
+        // (5, 5): the center lands at user (15, 25), pixel (65, 25);
+        // the half-extents ride the canvas scale untouched (1x here).
+        let node = SceneNode {
+            transform: Transform::translate([10.0, 20.0]),
+            shape: Some(tile_map(vec![Tile {
+                center: [5.0, 5.0],
+                size: [32.0, 32.0],
+                uv: [0.25, 0.5, 0.5, 1.0],
+                color: WHITE,
+            }])),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        let map = the_map(&draws);
+        assert_eq!(map.count, 1);
+        assert_eq!(tile_f32(&map, 0, 0), 65.0);
+        assert_eq!(tile_f32(&map, 0, 1), 25.0);
+        assert_eq!(tile_f32(&map, 0, 2), 16.0);
+        assert_eq!(tile_f32(&map, 0, 3), 16.0);
+        // The UV bounds pass through untouched, in order.
+        assert_eq!(tile_f32(&map, 0, 4), 0.25);
+        assert_eq!(tile_f32(&map, 0, 5), 0.5);
+        assert_eq!(tile_f32(&map, 0, 6), 0.5);
+        assert_eq!(tile_f32(&map, 0, 7), 1.0);
+    }
+
+    #[test]
+    fn node_tilemap_scales_each_axis_apart() {
+        // A tile is a box: under a (2, 3) node scale its two axes
+        // stretch independently — the exact answer, not the particle
+        // batch's geometric mean.
+        let node = SceneNode {
+            scale: [2.0, 3.0],
+            shape: Some(tile_map(vec![Tile::new(
+                [10.0, 10.0],
+                [32.0, 32.0],
+                [0.0, 0.0, 1.0, 1.0],
+            )])),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        let map = the_map(&draws);
+        // user center (20, 30) -> pixel (70, 20); halves 32 and 48.
+        assert_eq!(tile_f32(&map, 0, 0), 70.0);
+        assert_eq!(tile_f32(&map, 0, 1), 20.0);
+        assert_eq!(tile_f32(&map, 0, 2), 32.0);
+        assert_eq!(tile_f32(&map, 0, 3), 48.0);
+    }
+
+    #[test]
+    fn node_tilemap_bounds_union_and_view_clip() {
+        // Two tiles far apart: the batch box is their union; the view
+        // clip rides the node's transform as a box of its own.
+        let node = SceneNode {
+            shape: Some(tile_map_full(
+                vec![
+                    Tile::new([-30.0, 0.0], [20.0, 20.0], [0.0, 0.0, 0.5, 0.5]),
+                    Tile::new([50.0, 30.0], [20.0, 20.0], [0.5, 0.5, 1.0, 1.0]),
+                ],
+                Some([-10.0, -20.0, 30.0, 20.0]),
+                WHITE,
+            )),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        let map = the_map(&draws);
+        assert_eq!(map.count, 2);
+        // The local box spans x -40..60, y -10..40; pixel space shifts
+        // x by 50 and flips y, so it lands at ([10, 10], [110, 60]) —
+        // and the pixel-space y *min* comes from the local y *max*.
+        assert_eq!(map.bounds.0, [10.0, 10.0]);
+        assert_eq!(map.bounds.1, [110.0, 60.0]);
+        let clip = map.clip.expect("the clip rides the draw");
+        assert_eq!(clip.0, [40.0, 30.0]);
+        assert_eq!(clip.1, [80.0, 70.0]);
+    }
+
+    #[test]
+    fn empty_tilemap_draws_nothing() {
+        // Like an empty particle batch.
+        let node = SceneNode {
+            shape: Some(tile_map(Vec::new())),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        assert!(draws.is_empty(), "an empty map draws nothing: {draws:?}");
+    }
+
+    #[test]
+    fn node_tilemap_multiplies_tints() {
+        // Like the particle batch, modulate rides the draw's own color
+        // once — the packed per-tile tint stays the tile's raw color,
+        // and the shader's product of the two carries every factor.
+        let node = SceneNode {
+            modulate: rgba(0.5, 0.5, 0.5, 1.0),
+            shape: Some(tile_map_full(
+                vec![Tile {
+                    center: [0.0, 0.0],
+                    size: [10.0, 10.0],
+                    uv: [0.0, 0.0, 1.0, 1.0],
+                    color: rgba(1.0, 1.0, 0.5, 0.8),
+                }],
+                None,
+                rgba(1.0, 0.0, 0.0, 1.0),
+            )),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        let map = the_map(&draws);
+        assert_eq!(tile_f32(&map, 0, 8), 1.0);
+        assert_eq!(tile_f32(&map, 0, 9), 1.0);
+        assert_eq!(tile_f32(&map, 0, 10), 0.5);
+        assert_eq!(tile_f32(&map, 0, 11), 0.8);
+        assert_eq!(map.color, rgba(0.5, 0.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn node_tilemap_draws_at_the_node_order() {
+        let node = SceneNode {
+            order: 7.0,
+            shape: Some(tile_map(vec![Tile::new(
+                [0.0, 0.0],
+                [8.0, 8.0],
+                [0.0, 0.0, 1.0, 1.0],
+            )])),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        assert_eq!(the_map(&draws).z, 7.0);
     }
 }

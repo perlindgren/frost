@@ -22,6 +22,9 @@ pub(crate) const SPRITE_SHADER: &str = include_str!("../shaders/sprite.wgsl");
 /// The batched particle shader source.
 pub(crate) const PARTICLES_SHADER: &str = include_str!("../shaders/particles.wgsl");
 
+/// The tile map (instanced atlas quads) shader source.
+pub(crate) const TILEMAP_SHADER: &str = include_str!("../shaders/tilemap.wgsl");
+
 /// The fixed-render-size stretch (blit) shader source.
 pub(crate) const BLIT_SHADER: &str = include_str!("../shaders/blit.wgsl");
 
@@ -35,8 +38,8 @@ mod tests {
     use super::*;
     use crate::backend::{LIGHT_FIELD_BUFFER_MIN, OCCLUDER_FIELD_BUFFER_MIN};
 
-    /// The eight shader sources with their file names.
-    fn all_shaders() -> [(&'static str, &'static str); 8] {
+    /// The nine shader sources with their file names.
+    fn all_shaders() -> [(&'static str, &'static str); 9] {
         [
             ("line.wgsl", LINE_SHADER),
             ("polyline.wgsl", POLYLINE_SHADER),
@@ -45,11 +48,12 @@ mod tests {
             ("shape.wgsl", SHAPE_SHADER),
             ("sprite.wgsl", SPRITE_SHADER),
             ("particles.wgsl", PARTICLES_SHADER),
+            ("tilemap.wgsl", TILEMAP_SHADER),
             ("blit.wgsl", BLIT_SHADER),
         ]
     }
 
-    /// All eight shaders parse as valid WGSL.
+    /// All nine shaders parse as valid WGSL.
     #[test]
     fn all_shaders_parse_as_wgsl() {
         for (name, source) in all_shaders() {
@@ -58,7 +62,7 @@ mod tests {
         }
     }
 
-    /// All eight shaders must pass naga's *validator*, not just its parser.
+    /// All nine shaders must pass naga's *validator*, not just its parser.
     /// Parsing only proves the WGSL is syntactically valid; the validator is
     /// the second stage wgpu runs inside `Device::create_shader_module`, and
     /// it enforces the address-space layout rules the parser never checks —
@@ -184,6 +188,37 @@ mod tests {
         // The struct's total size must equal the CPU-side buffer length,
         // otherwise the buffer would be too short or carry dead bytes.
         assert_eq!(total_size, 48);
+    }
+
+    /// The member offsets WGSL assigns to `TileMapUniforms` must match the
+    /// CPU-side uniform writer in `tilemap_uniform_data` (vec2 @0, vec4 @16
+    /// — 16 bytes, 16-byte aligned — 32 bytes total). This is the GPU-side
+    /// mirror of the writer, so a layout drift on either side fails a test.
+    #[test]
+    fn tilemap_uniform_offsets_match_the_cpu_layout() {
+        let module = naga::front::wgsl::parse_str(TILEMAP_SHADER)
+            .expect("tilemap.wgsl should parse (see all_shaders_parse_as_wgsl)");
+        let ty = module
+            .types
+            .iter()
+            .find_map(|(_, ty)| match &ty.inner {
+                naga::TypeInner::Struct { .. } if ty.name.as_deref() == Some("TileMapUniforms") => {
+                    Some(ty)
+                }
+                _ => None,
+            })
+            .expect("tilemap.wgsl should declare the TileMapUniforms struct");
+        let (offsets, total_size) = match &ty.inner {
+            naga::TypeInner::Struct { members, span } => (
+                members.iter().map(|m| m.offset).collect::<Vec<u32>>(),
+                *span,
+            ),
+            _ => unreachable!("TileMapUniforms must be a struct"),
+        };
+        assert_eq!(offsets, [0, 16]);
+        // The struct's total size must equal the CPU-side buffer length,
+        // otherwise the buffer would be too short or carry dead bytes.
+        assert_eq!(total_size, 32);
     }
 
     /// The member offsets WGSL assigns to `PolylineUniforms` must match the

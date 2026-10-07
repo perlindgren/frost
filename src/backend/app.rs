@@ -106,6 +106,9 @@ pub(crate) struct Frost<P: Process> {
     shape_pipeline: Option<RenderPipeline>,
     sprite_pipeline: Option<RenderPipeline>,
     particle_pipeline: Option<RenderPipeline>,
+    /// The tile map pipeline: one instanced quad per tile, sampling the
+    /// batch's atlas through per-instance UV bounds.
+    tilemap_pipeline: Option<RenderPipeline>,
     /// Stretches the fixed render size buffer over the window (see
     /// `Config::render_size`); unused when the frame renders at the
     /// window's own resolution.
@@ -123,6 +126,12 @@ pub(crate) struct Frost<P: Process> {
     /// carries a texture (binding 2) and a sampler (binding 3), but the SDF
     /// kinds — circles and rectangles — never sample it.
     particle_placeholder: (TextureView, Sampler),
+    /// The two sampling filters, one sampler each, shared by every
+    /// cached texture: a tileset shown nearest on a tile map and
+    /// bilinear as a sprite uploads ONE texture and picks its sampler
+    /// by filter — the samplers depend on nothing else.
+    sampler_linear: Sampler,
+    sampler_nearest: Sampler,
     /// The frame's light field storage buffer: a 32-byte header plus one
     /// 48-byte record per light at the peak count so far. It starts at
     /// the buffer's minimum size — the header plus one vec4, the WGSL
@@ -150,7 +159,7 @@ pub(crate) struct Frost<P: Process> {
     /// sampler are stored. When an atlas repacks, its stale entry is
     /// evicted right after the text is expanded; a sprite buffer's stale
     /// entry is evicted lazily, when a new buffer recycles its address.
-    sprite_resources: HashMap<(u64, u64), (TextureView, Sampler)>,
+    sprite_resources: HashMap<(u64, u64), TextureView>,
     /// The rasterized glyph atlas for each distinct `(font, size, weight)`
     /// triple, keyed by the font buffer's pointer, the size's bits and the
     /// weight's bits. Kept between
@@ -334,6 +343,39 @@ impl<P: Process> Frost<P> {
                 border_color: None,
             }),
         );
+        // One sampler per filter, built once for the whole app: the
+        // descriptors differ only in the filter mode, so every sprite,
+        // glyph atlas, particle image, and tile map of the same filter
+        // shares one sampler, and every texture of the same pixels
+        // shares one texture — the two axes no longer entangled.
+        let sampler_linear = device.create_sampler(&SamplerDescriptor {
+            label: Some("linear sampler"),
+            address_mode_u: AddressMode::ClampToEdge,
+            address_mode_v: AddressMode::ClampToEdge,
+            address_mode_w: AddressMode::ClampToEdge,
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            mipmap_filter: MipmapFilterMode::Nearest,
+            lod_min_clamp: 0.0,
+            lod_max_clamp: f32::MAX,
+            compare: None,
+            anisotropy_clamp: 1,
+            border_color: None,
+        });
+        let sampler_nearest = device.create_sampler(&SamplerDescriptor {
+            label: Some("nearest sampler"),
+            address_mode_u: AddressMode::ClampToEdge,
+            address_mode_v: AddressMode::ClampToEdge,
+            address_mode_w: AddressMode::ClampToEdge,
+            mag_filter: FilterMode::Nearest,
+            min_filter: FilterMode::Nearest,
+            mipmap_filter: MipmapFilterMode::Nearest,
+            lod_min_clamp: 0.0,
+            lod_max_clamp: f32::MAX,
+            compare: None,
+            anisotropy_clamp: 1,
+            border_color: None,
+        });
 
         // The gamepad controller: gilrs opens the platform's input devices
         // and connects every gamepad already present. When it cannot open
@@ -377,10 +419,13 @@ impl<P: Process> Frost<P> {
             shape_pipeline: None,
             sprite_pipeline: None,
             particle_pipeline: None,
+            tilemap_pipeline: None,
             blit_pipeline: None,
             blit_target: None,
             particle_index_buffer: Some(particle_index_buffer),
             particle_placeholder,
+            sampler_linear,
+            sampler_nearest,
             field_buffer,
             occluder_buffer,
             sprite_resources: HashMap::new(),
@@ -847,6 +892,18 @@ impl<P: Process> Frost<P> {
             true,
         ));
 
+        let tilemap_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("tilemap shaders"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(TILEMAP_SHADER)),
+        });
+        self.tilemap_pipeline = Some(Self::create_pipeline(
+            device,
+            &tilemap_module,
+            format,
+            "tilemap pipeline",
+            true,
+        ));
+
         // The fixed render size stretch: a full-screen sample of the
         // render target onto the surface. It replaces the surface pixel
         // instead of blending onto it — the buffer is the frame, not a
@@ -1045,12 +1102,7 @@ impl<P: Process> Frost<P> {
     /// in. The texture itself is kept alive by the view: `TextureView`
     /// holds a reference to its texture, so storing the view in
     /// `sprite_resources` is enough.
-    fn sprite_texture(
-        &self,
-        data: &[u8],
-        size: [f32; 2],
-        filter: SpriteFilter,
-    ) -> (TextureView, Sampler) {
+    fn sprite_texture(&self, data: &[u8], size: [f32; 2]) -> TextureView {
         let width = (size[0] as u32).max(1);
         let height = (size[1] as u32).max(1);
         let texture = self.device.create_texture(&TextureDescriptor {
@@ -1087,27 +1139,16 @@ impl<P: Process> Frost<P> {
                 depth_or_array_layers: 1,
             },
         );
-        let filter_mode = match filter {
-            SpriteFilter::Linear => FilterMode::Linear,
-            SpriteFilter::Nearest => FilterMode::Nearest,
-        };
-        let sampler = self.device.create_sampler(&SamplerDescriptor {
-            label: Some("sprite sampler"),
-            address_mode_u: AddressMode::ClampToEdge,
-            address_mode_v: AddressMode::ClampToEdge,
-            address_mode_w: AddressMode::ClampToEdge,
-            // The texture's own sampling filter: bilinear for photographic
-            // sprites, nearest-neighbor for pixel-art-style ones.
-            mag_filter: filter_mode,
-            min_filter: filter_mode,
-            mipmap_filter: MipmapFilterMode::Nearest,
-            lod_min_clamp: 0.0,
-            lod_max_clamp: f32::MAX,
-            compare: None,
-            anisotropy_clamp: 1,
-            border_color: None,
-        });
-        (view, sampler)
+        view
+    }
+
+    /// The sampler a draw's filter picks: one of the two built once at
+    /// startup, so a texture shared across filters stays shared.
+    fn sampler_for(&self, filter: SpriteFilter) -> Sampler {
+        match filter {
+            SpriteFilter::Linear => self.sampler_linear.clone(),
+            SpriteFilter::Nearest => self.sampler_nearest.clone(),
+        }
     }
 
     /// Evicts a stale entry from the sprite texture cache: two live
@@ -1116,10 +1157,7 @@ impl<P: Process> Frost<P> {
     /// address the new one has recycled, and its texture is dead weight.
     /// An associated function (not a method) so the render loop can call
     /// it while it still holds the immutable pipeline borrows.
-    fn evict_recycled_buffer(
-        resources: &mut HashMap<(u64, u64), (TextureView, Sampler)>,
-        key: (u64, u64),
-    ) {
+    fn evict_recycled_buffer(resources: &mut HashMap<(u64, u64), TextureView>, key: (u64, u64)) {
         if let Some(stale) = resources
             .iter()
             .find(|(k, _)| k.0 == key.0)
@@ -1279,6 +1317,69 @@ impl<P: Process> Frost<P> {
                         offset: 0,
                         size: None,
                     }),
+                },
+            ],
+        });
+        (uniform_buffer, instance_buffer, bind_group)
+    }
+
+    /// Creates the uniform buffer (batch tint and surface size), the
+    /// instance buffer (three `vec4`s per tile), and the four-entry bind
+    /// group (uniform, instances, atlas view, sampler) for one tile-map
+    /// draw call. Same per-draw buffer rationale as
+    /// [`Frost::primitive_uniform`] — and, unlike the particle batch,
+    /// the tile map is never lit, so no light fields join the group.
+    fn tilemap_uniform(
+        &self,
+        pipeline: &RenderPipeline,
+        data: &[u8],
+        uniform_data: &[u8],
+        view: &TextureView,
+        sampler: &Sampler,
+    ) -> (Buffer, Buffer, BindGroup) {
+        let device = &self.device;
+        let uniform_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("tilemap uniform buffer"),
+            size: uniform_data.len() as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&uniform_buffer, 0, uniform_data);
+        let instance_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("tilemap instance buffer"),
+            size: data.len() as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&instance_buffer, 0, data);
+        let layout = pipeline.get_bind_group_layout(0);
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("tilemap bind group"),
+            layout: &layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &uniform_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &instance_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::TextureView(view),
+                },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: BindingResource::Sampler(sampler),
                 },
             ],
         });
@@ -1543,6 +1644,7 @@ impl<P: Process> Frost<P> {
             Some(shape_pipeline),
             Some(sprite_pipeline),
             Some(particle_pipeline),
+            Some(tilemap_pipeline),
         ) = (
             self.line_pipeline.as_ref(),
             self.polyline_pipeline.as_ref(),
@@ -1551,6 +1653,7 @@ impl<P: Process> Frost<P> {
             self.shape_pipeline.as_ref(),
             self.sprite_pipeline.as_ref(),
             self.particle_pipeline.as_ref(),
+            self.tilemap_pipeline.as_ref(),
         )
         else {
             return;
@@ -1751,24 +1854,26 @@ impl<P: Process> Frost<P> {
                         // per file; glyph quads from the same atlas share
                         // one atlas texture the same way.
                         let key = (Arc::as_ptr(&data) as *const () as u64, generation);
-                        let (view, sampler) = match self.sprite_resources.get(&key) {
-                            Some((view, sampler)) => (view.clone(), sampler.clone()),
+                        let view = match self.sprite_resources.get(&key) {
+                            Some(view) => view.clone(),
                             None => {
                                 // This buffer may have recycled a freed
                                 // buffer's address: evict the stale entry
                                 // before inserting, so it can never serve
                                 // pixels to a live buffer.
                                 Self::evict_recycled_buffer(&mut self.sprite_resources, key);
-                                let (view, sampler) = self.sprite_texture(
+                                let view = self.sprite_texture(
                                     &data,
                                     [texture_size[0] as f32, texture_size[1] as f32],
-                                    filter,
                                 );
-                                self.sprite_resources
-                                    .insert(key, (view.clone(), sampler.clone()));
-                                (view, sampler)
+                                self.sprite_resources.insert(key, view.clone());
+                                view
                             }
                         };
+                        // The filter picks the sampler, not the cache:
+                        // bilinear and nearest-neighbor draws of one
+                        // image share the texture and split only here.
+                        let sampler = self.sampler_for(filter);
                         let (_buffer, bind_group) = self.sprite_uniform(
                             sprite_pipeline,
                             "sprite uniforms",
@@ -1815,26 +1920,24 @@ impl<P: Process> Frost<P> {
                                 // can never hit a stale texture.
                                 let key =
                                     (Arc::as_ptr(&image) as *const () as u64, sprite_generation);
-                                match self.sprite_resources.get(&key) {
-                                    Some((view, sampler)) => (view.clone(), sampler.clone()),
+                                let view = match self.sprite_resources.get(&key) {
+                                    Some(view) => view.clone(),
                                     None => {
                                         Self::evict_recycled_buffer(
                                             &mut self.sprite_resources,
                                             key,
                                         );
-                                        // Particle images keep bilinear
-                                        // sampling: `ParticleShape` carries
-                                        // no filter.
-                                        let (view, sampler) = self.sprite_texture(
+                                        let view = self.sprite_texture(
                                             &image,
                                             [sprite_size[0] as f32, sprite_size[1] as f32],
-                                            SpriteFilter::Linear,
                                         );
-                                        self.sprite_resources
-                                            .insert(key, (view.clone(), sampler.clone()));
-                                        (view, sampler)
+                                        self.sprite_resources.insert(key, view.clone());
+                                        view
                                     }
-                                }
+                                };
+                                // Particle images keep bilinear sampling:
+                                // `ParticleShape` carries no filter.
+                                (view, self.sampler_for(SpriteFilter::Linear))
                             }
                             None => self.particle_placeholder.clone(),
                         };
@@ -1862,6 +1965,65 @@ impl<P: Process> Frost<P> {
                         );
                         pass.set_pipeline(particle_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
+                        pass.set_index_buffer(
+                            particle_index_buffer.slice(..),
+                            wgpu::IndexFormat::Uint32,
+                        );
+                        draw_calls += 1;
+                        if diagnostic {
+                            diagnostic_draws += 1;
+                        }
+                        pass.draw_indexed(0..6, 0, 0..count);
+                    }
+                    Draw::TileMap {
+                        data,
+                        count,
+                        color,
+                        atlas_data,
+                        atlas_size,
+                        atlas_generation,
+                        filter,
+                        diagnostic,
+                        ..
+                    } => {
+                        if count == 0 {
+                            continue;
+                        }
+                        // The atlas rides the shared texture cache: a
+                        // tileset drawn on the map and shown as a sprite
+                        // (or a particle image) uploads one GPU texture.
+                        let key = (
+                            Arc::as_ptr(&atlas_data) as *const () as u64,
+                            atlas_generation,
+                        );
+                        let view = match self.sprite_resources.get(&key) {
+                            Some(view) => view.clone(),
+                            None => {
+                                Self::evict_recycled_buffer(&mut self.sprite_resources, key);
+                                let view = self.sprite_texture(
+                                    &atlas_data,
+                                    [atlas_size[0] as f32, atlas_size[1] as f32],
+                                );
+                                self.sprite_resources.insert(key, view.clone());
+                                view
+                            }
+                        };
+                        let sampler = self.sampler_for(filter);
+                        let uniform_data = tilemap_uniform_data(
+                            [render_area[0] as f32, render_area[1] as f32],
+                            color,
+                        );
+                        let (_uniform, _instances, bind_group) = self.tilemap_uniform(
+                            tilemap_pipeline,
+                            &data,
+                            &uniform_data,
+                            &view,
+                            &sampler,
+                        );
+                        pass.set_pipeline(tilemap_pipeline);
+                        pass.set_bind_group(0, &bind_group, &[]);
+                        // The shared unit-quad index buffer — the very
+                        // one the particle batch walks.
                         pass.set_index_buffer(
                             particle_index_buffer.slice(..),
                             wgpu::IndexFormat::Uint32,

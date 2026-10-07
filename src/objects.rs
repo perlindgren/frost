@@ -316,6 +316,51 @@ impl ParticleShape {
     }
 }
 
+/// One tile placed on a tile map: a copy of an atlas sub-rectangle, laid
+/// at `center` in the map node's local space, `size` wide and tall, and
+/// tinted by `color`.
+///
+/// A tile is placed like a rectangle and sampled like a sprite: the node's
+/// transform, scale, and modulate move, stretch, and tint the placement
+/// exactly as they would a rectangle's, while [`Tile::uv`] picks *what*
+/// the tile shows out of the map's atlas. `uv` is
+/// `[min_u, min_v, max_u, max_v]` in `[0, 1]` texture coordinates with
+/// the top-left origin a PNG carries — so the cell at `(col, row)` of an
+/// even `cols`-by-`rows` atlas grid spans
+/// `(col / cols, row / rows, (col + 1) / cols, (row + 1) / rows)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tile {
+    /// The tile's center, in the map node's local space.
+    pub center: [f32; 2],
+    /// The tile's full width and height in local units: `32.0` by `32.0`
+    /// lays a 32-pixel atlas cell at one texture pixel per scene pixel.
+    pub size: [f32; 2],
+    /// The atlas sub-rectangle to show, `[min_u, min_v, max_u, max_v]`.
+    pub uv: [f32; 4],
+    /// The tile's own tint, multiplied with the batch's `color`, the
+    /// node's composed modulate, and the sampled texel's own alpha.
+    /// White shows the atlas uncolored.
+    pub color: Color,
+}
+
+impl Tile {
+    /// A tile at `center` of `size`, showing the atlas sub-rectangle
+    /// `uv`, in the atlas's own colors.
+    pub fn new(center: [f32; 2], size: [f32; 2], uv: [f32; 4]) -> Self {
+        Self {
+            center,
+            size,
+            uv,
+            color: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+        }
+    }
+}
+
 /// A light source: the color, strength, falloff extent, and cone of a
 /// light, held by a [`Shape::Light`] node.
 ///
@@ -653,6 +698,60 @@ pub enum Shape {
         /// before.
         shape: ParticleShape,
     },
+    /// A tile map: [`Tile`] placements sharing one atlas texture, drawn
+    /// in **one instanced draw call** however many tiles the map holds —
+    /// the batching spine of the particle batch, aimed at static art.
+    ///
+    /// Created by [`Shape::tilemap`] and [`Shape::tilemap_bytes`], which
+    /// decode the atlas PNG up front and start with no tiles; place with
+    /// [`Shape::push_tile`] or [`Shape::set_tiles`]. Like
+    /// [`Shape::Particles`], the map lives in the node's local space:
+    /// every placement rides the node's world transform and scale (a tile
+    /// is a box, so its two axes scale independently — the exact answer
+    /// a rectangle gives, not the particle batch's geometric mean), is
+    /// tinted by `color` times the node's composed modulate times each
+    /// tile's own `color`, and draws at the node's composed order. A map
+    /// with no tiles draws nothing.
+    ///
+    /// `clip` cuts the map to a view rectangle, in the node's local
+    /// space, as `[min_x, min_y, max_x, max_y]`: the tile quads are
+    /// scissored to the rectangle the node's transform maps it to, so a
+    /// map can be enormous while only its visible window ever reaches
+    /// the screen. `None` clips to nothing.
+    ///
+    /// The map is not lit by the frame's light field (a tile map is
+    /// scenery, not a scene actor), and the atlas is sampled with
+    /// `filter` — [`SpriteFilter::Nearest`] by construction, since tile
+    /// atlases are pixel art; [`Shape::set_filter`] changes it.
+    TileMap {
+        /// The atlas's RGBA8 pixel data, row by row, top row first — the
+        /// same shared-buffer arrangement, texture-cache identity, and
+        /// upload cost as a [`Shape::Sprite`]'s: a tileset drawn on the
+        /// map and shown as a sprite shares one GPU texture.
+        data: Arc<[u8]>,
+        /// The atlas texture's width in pixels.
+        width: u32,
+        /// The atlas texture's height in pixels.
+        height: u32,
+        /// The buffer's generation, identifying `data` to the backend's
+        /// texture cache.
+        generation: u64,
+        /// How the atlas is sampled when a tile is scaled away from its
+        /// texture size.
+        filter: SpriteFilter,
+        /// The placements. Order among them is draw order within the
+        /// single instanced call: tiles later in the list win where two
+        /// placements overlap.
+        tiles: Vec<Tile>,
+        /// The view rectangle the map is scissored to, in the node's
+        /// local space, as `[min_x, min_y, max_x, max_y]`; `None` draws
+        /// unclipped.
+        clip: Option<[f32; 4]>,
+        /// The batch's base tint, multiplied with the node's composed
+        /// modulate and every tile's own `color`. White leaves the
+        /// atlas as authored.
+        color: Color,
+    },
     /// A light: contributes the node's [`Light`] to the frame's light
     /// field.
     ///
@@ -825,7 +924,80 @@ impl Shape {
     pub fn sprite_size(&self) -> Option<[f32; 2]> {
         match self {
             Self::Sprite { width, height, .. } => Some([*width as f32, *height as f32]),
+            Self::TileMap { width, height, .. } => Some([*width as f32, *height as f32]),
             _ => None,
+        }
+    }
+
+    /// Creates a tile-map shape from the PNG atlas at `path`, empty of
+    /// tiles and sampled nearest-neighbor.
+    ///
+    /// The file is read and decoded to RGBA8 immediately, so a missing
+    /// file or a non-PNG file fails here, not at render time; the pixels
+    /// live behind an [`Arc`] and share the backend's texture cache with
+    /// a [`Shape::Sprite`] of the same image. Place tiles with
+    /// [`Shape::push_tile`] and cut the map to its window with
+    /// [`Shape::set_clip`].
+    pub fn tilemap(path: impl AsRef<Path>) -> Result<Self, SpriteError> {
+        let bytes = std::fs::read(path.as_ref()).map_err(SpriteError::Io)?;
+        Self::tilemap_bytes(&bytes)
+    }
+
+    /// Creates a tile-map shape from the PNG atlas in `bytes`: the
+    /// in-memory counterpart of [`Shape::tilemap`], for atlases embedded
+    /// with `include_bytes!` or held by an editor.
+    pub fn tilemap_bytes(bytes: impl AsRef<[u8]>) -> Result<Self, SpriteError> {
+        let image = image::load_from_memory(bytes.as_ref()).map_err(SpriteError::Decode)?;
+        let rgba = image.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        let data = Arc::from(rgba.into_raw().into_boxed_slice());
+        Ok(Self::TileMap {
+            data,
+            width,
+            height,
+            generation: NEXT_SPRITE_GENERATION.fetch_add(1, Ordering::Relaxed),
+            filter: SpriteFilter::Nearest,
+            tiles: Vec::new(),
+            clip: None,
+            color: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+        })
+    }
+
+    /// Adds one [`Tile`] placement to the map, on top of every tile
+    /// already there. Does nothing to a shape that is not a tile map.
+    pub fn push_tile(&mut self, tile: Tile) {
+        if let Self::TileMap { tiles, .. } = self {
+            tiles.push(tile);
+        }
+    }
+
+    /// Replaces the map's placements. Does nothing to a shape that is
+    /// not a tile map.
+    pub fn set_tiles(&mut self, tiles: impl IntoIterator<Item = Tile>) {
+        if let Self::TileMap { tiles: old, .. } = self {
+            *old = tiles.into_iter().collect();
+        }
+    }
+
+    /// Cuts the map to the view rectangle `[min_x, min_y, max_x, max_y]`
+    /// in its local space (`None` for no clip). Does nothing to a shape
+    /// that is not a tile map.
+    pub fn set_clip(&mut self, clip: Option<[f32; 4]>) {
+        if let Self::TileMap { clip: c, .. } = self {
+            *c = clip;
+        }
+    }
+
+    /// Sets the atlas's sampling filter. Does nothing to a shape that is
+    /// not a tile map.
+    pub fn set_filter(&mut self, filter: SpriteFilter) {
+        if let Self::TileMap { filter: f, .. } = self {
+            *f = filter;
         }
     }
 }
