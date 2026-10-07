@@ -26,6 +26,28 @@
 //! the value readout hugs and centers — so the labels and values line up
 //! down the panel while the tracks soak up the slack.
 //!
+//! A menu bar runs along the window's top edge, above everything: **File**
+//! (Open, Close, Save, Save as) and **Mode** (Markers, Tile Set, Tile Map).
+//! It is hand-drawn — the [`frost::Ui`] has no menu widget — with its own
+//! hit-testing, so a press the bar claims never reaches the scene. The
+//! Mode items are mutually exclusive, a check marks the current one
+//! (Markers at launch); the File items are chrome only, no actions yet.
+//!
+//! Three demonstration text inputs sit in a centered row above the slots
+//! strip: fixed-width fields that each show ten characters at a time and
+//! scroll the rest past as the cursor moves. A click in a field focuses
+//! it and places the cursor; a click elsewhere unfocuses it. **Tab**
+//! moves the focus to the next field (wrapping), **Shift-Tab** to the
+//! previous, and with no field focused either refocuses the last one;
+//! **Escape** releases the focus. While focused a field takes typed
+//! characters, arrow navigation, backspace and delete, and Shift-arrow
+//! marks a range that backspace, delete and typing replace; a held key
+//! repeats after a 0.3-second pause, then every 0.1 seconds. A held
+//! left button drags the mark from the click, and a right-click pastes
+//! the clipboard. **Ctrl-C** copies the marked range (or the whole
+//! buffer) and **Ctrl-V** pastes the clipboard. The focused field's cursor
+//! blinks.
+//!
 //! The "Operations" panel edits the active sprite: **Open** (**Ctrl-O**)
 //! adds another sprite to the next free slot — while the slots fill up,
 //! the newest sprite becomes the active one; **Crop** cuts the texture to
@@ -265,6 +287,41 @@ const PLATE_EMPTY: frost::Color = frost::Color {
     b: 0.095,
     a: 1.0,
 };
+/// The menu bar's background.
+const MENU_BG: frost::Color = frost::Color {
+    r: 0.11,
+    g: 0.12,
+    b: 0.16,
+    a: 1.0,
+};
+/// A top-level item's hover, and the open menu's highlight.
+const MENU_HOVER: frost::Color = frost::Color {
+    r: 0.22,
+    g: 0.26,
+    b: 0.36,
+    a: 1.0,
+};
+/// The menu's text.
+const MENU_TEXT: frost::Color = frost::Color {
+    r: 0.92,
+    g: 0.94,
+    b: 0.98,
+    a: 1.0,
+};
+/// The dropdown's background.
+const MENU_DROP_BG: frost::Color = frost::Color {
+    r: 0.10,
+    g: 0.11,
+    b: 0.15,
+    a: 0.98,
+};
+/// A dropdown item's hover.
+const MENU_DROP_HOVER: frost::Color = frost::Color {
+    r: 0.25,
+    g: 0.45,
+    b: 0.85,
+    a: 1.0,
+};
 
 /// The bounding box's line width, in pixels.
 const BBOX_WIDTH: f32 = 2.0;
@@ -300,6 +357,125 @@ const THUMB_ORDER: f32 = 0.6;
 
 /// The order of a thumbnail being dragged between slots: above the HUD.
 const DRAG_ORDER: f32 = 3.0;
+
+/// The menu bar's draw order: above the UI's panels and the sidecar
+/// trees, so the bar and its dropdown sit over everything.
+const MENU_Z: f32 = 20_000.0;
+
+/// The menu bar's height, in pixels.
+const MENU_H: f32 = 30.0;
+
+/// A dropdown item's height, in pixels.
+const MENU_ITEM_H: f32 = 26.0;
+
+/// The horizontal padding inside a top-level menu item.
+const MENU_ITEM_PAD: f32 = 12.0;
+
+/// The horizontal padding inside a dropdown item.
+const MENU_DROP_PAD: f32 = 14.0;
+
+/// The width of the check column at a dropdown item's left: reserved in
+/// every dropdown so the labels line up, worn only by the selected Mode
+/// item.
+const MENU_CHECK_W: f32 = 16.0;
+
+/// The gap between a dropdown item's check column and its label.
+const MENU_LABEL_GAP: f32 = 4.0;
+
+/// The menu text's size, in pixels per em.
+const MENU_SIZE: f32 = 15.0;
+
+/// The demonstration text input's visible width, in characters: the field
+/// shows this many at a time and scrolls the rest past.
+const TEXT_INPUT_COLS: usize = 10;
+
+/// How many demonstration text inputs sit in the row above the slots:
+/// Tab and Shift-Tab move the focus between them.
+const TEXT_INPUT_COUNT: usize = 3;
+
+/// The gap between two demonstration text inputs in the row, in pixels.
+const TEXT_INPUT_GAP: f32 = 20.0;
+
+/// The demonstration text input's buffer capacity, in characters: typing
+/// past it is ignored.
+const TEXT_INPUT_MAX: usize = 64;
+
+/// The demonstration text input's font size, in pixels per em.
+const TEXT_INPUT_SIZE: f32 = 16.0;
+
+/// The demonstration text input's character advance, in pixels: the
+/// monospace font's 0.6 em per character, at the input's size.
+const TEXT_INPUT_CHAR_W: f32 = TEXT_INPUT_SIZE * ADVANCE_EM;
+
+/// The horizontal padding inside the demonstration text input's field.
+const TEXT_INPUT_PAD: f32 = 8.0;
+
+/// The demonstration text input's field height, in pixels.
+const TEXT_INPUT_H: f32 = 32.0;
+
+/// The gap between the demonstration text input and the slots strip's top
+/// edge.
+const TEXT_INPUT_MARGIN: f32 = 20.0;
+
+/// The demonstration text input's draw order: above the UI's panels and
+/// the sidecar trees, below the menu bar.
+const TEXT_INPUT_Z: f32 = 18_000.0;
+
+/// The demonstration text input's field background.
+const TEXT_INPUT_BG: frost::Color = frost::Color {
+    r: 0.08,
+    g: 0.09,
+    b: 0.12,
+    a: 1.0,
+};
+
+/// The demonstration text input's text colour.
+const TEXT_INPUT_TEXT: frost::Color = frost::Color {
+    r: 0.92,
+    g: 0.94,
+    b: 0.98,
+    a: 1.0,
+};
+
+/// The demonstration text input's cursor colour.
+const TEXT_INPUT_CURSOR: frost::Color = frost::Color {
+    r: 0.35,
+    g: 0.72,
+    b: 1.0,
+    a: 1.0,
+};
+
+/// The characters the demonstration text input accepts: the letters, the
+/// digits, the space, and a few common punctuation marks.
+const TEXT_INPUT_CHARS: &[char] = &[
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's',
+    't', 'u', 'v', 'w', 'x', 'y', 'z', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L',
+    'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '0', '1', '2', '3', '4',
+    '5', '6', '7', '8', '9', ' ', '.', ',', '!', '?', '-', '_', '(', ')', '/',
+];
+
+/// The interval between repeated actions while a key is held down, in
+/// seconds: the first press acts immediately, and every further tick
+/// after this interval acts again.
+const TEXT_INPUT_REPEAT: f32 = 0.075;
+
+/// The pause after a key's press before its first repeat, in seconds: the
+/// press acts immediately, the first repeat lands this long after it, and
+/// every repeat after that lands [`TEXT_INPUT_REPEAT`] later.
+const TEXT_INPUT_INITIAL_DELAY: f32 = 0.3;
+
+/// The focused field's cursor blink period, in seconds: the cursor is
+/// visible for the first half of each period and hidden for the second.
+const TEXT_INPUT_BLINK: f32 = 1.0;
+
+/// The demonstration text input's selection highlight: the cursor's blue
+/// at a third of its strength.
+const TEXT_INPUT_SEL: frost::Color = frost::Color {
+    r: 0.35,
+    g: 0.72,
+    b: 1.0,
+    a: 0.30,
+};
 
 /// The scene's layer nodes — and the cap on layers per animation frame.
 /// The pool shows the animation's current frame, or the active sprite
@@ -584,6 +760,438 @@ impl Anim {
     }
 }
 
+/// The top-level menus of the window's menu bar.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Menu {
+    /// File operations: Open, Close, Save, Save as.
+    File,
+    /// The view modes: Markers, Tile Set, Tile Map.
+    Mode,
+}
+
+impl Menu {
+    /// The menu's label, as it reads in the bar.
+    fn label(self) -> &'static str {
+        match self {
+            Menu::File => "File",
+            Menu::Mode => "Mode",
+        }
+    }
+    /// The menu's items, top to bottom. The Mode menu's are the
+    /// [`ViewMode`]s, in [`VIEW_MODES`] order; the File menu's are
+    /// chrome only, no actions yet.
+    fn items(self) -> &'static [&'static str] {
+        match self {
+            Menu::File => &["Open", "Close", "Save", "Save as"],
+            Menu::Mode => &["Markers", "Tile Set", "Tile Map"],
+        }
+    }
+}
+
+/// The view mode the Mode menu selects between: its items are these,
+/// mutually exclusive, and a check marks the current one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ViewMode {
+    /// Position markers on the sprite.
+    Markers,
+    /// The sprite as a tile set.
+    TileSet,
+    /// The sprite as a tile map.
+    TileMap,
+}
+
+/// The Mode menu's items, in the order the menu lists them — the index
+/// of a pressed item is its mode.
+const VIEW_MODES: [ViewMode; 3] = [ViewMode::Markers, ViewMode::TileSet, ViewMode::TileMap];
+
+/// A demonstration text input: a fixed-width field holding a buffer of
+/// text, a cursor, a scroll offset, a focus flag, and a marked range. It
+/// shows [`TEXT_INPUT_COLS`] characters at a time and scrolls to keep the
+/// cursor in view. Its keys act only while it is focused: insertion,
+/// arrow navigation, backspace and delete, selection, and the clipboard.
+struct TextInput {
+    /// The field's text.
+    buffer: String,
+    /// The cursor's position in the buffer, 0..=buffer's character count.
+    cursor: usize,
+    /// The index of the first visible character.
+    scroll: usize,
+    /// Whether the field has keyboard focus: its keys act only while set.
+    focused: bool,
+    /// The marked range, if any: `(start, end)` with `start <= end`, the
+    /// cursor always at one of the two ends.
+    sel: Option<(usize, usize)>,
+}
+
+impl TextInput {
+    /// An empty field, the cursor at the start, unfocused.
+    fn new() -> Self {
+        Self {
+            buffer: String::new(),
+            cursor: 0,
+            scroll: 0,
+            focused: false,
+            sel: None,
+        }
+    }
+
+    /// Sets the field's focus; losing it also clears the selection.
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        if !focused {
+            self.sel = None;
+        }
+    }
+
+    /// Places the cursor at the buffer index under the window `x`
+    /// coordinate within the field's `rect`, clearing any selection.
+    fn click_at(&mut self, x: f32, rect: [f32; 4]) {
+        let len = self.buffer.chars().count();
+        let col = (((x - rect[0]) - TEXT_INPUT_PAD) / TEXT_INPUT_CHAR_W).floor() as usize;
+        let cell = col.min(TEXT_INPUT_COLS);
+        self.cursor = (self.scroll + cell).min(len);
+        self.sel = None;
+        self.clamp_scroll();
+    }
+
+    /// Marks the range from the drag `anchor` to the buffer index under the
+    /// window `x` coordinate within the field's `rect`, moving the cursor
+    /// to that index: dragging away from the anchor extends the mark,
+    /// dragging back over it shrinks it.
+    fn drag_to(&mut self, anchor: usize, x: f32, rect: [f32; 4]) {
+        let len = self.buffer.chars().count();
+        let col = (((x - rect[0]) - TEXT_INPUT_PAD) / TEXT_INPUT_CHAR_W).floor() as usize;
+        let cell = col.min(TEXT_INPUT_COLS);
+        let idx = (self.scroll + cell).min(len);
+        let (s, e) = if anchor <= idx {
+            (anchor, idx)
+        } else {
+            (idx, anchor)
+        };
+        self.sel = Some((s, e));
+        self.cursor = idx;
+        self.clamp_scroll();
+    }
+
+    /// The marked range, if it covers at least one character.
+    fn selection_range(&self) -> Option<(usize, usize)> {
+        self.sel.filter(|&(s, e)| s < e)
+    }
+
+    /// The marked characters, or the empty string when nothing is marked.
+    fn selected_text(&self) -> String {
+        let Some((s, e)) = self.selection_range() else {
+            return String::new();
+        };
+        self.buffer.chars().skip(s).take(e - s).collect()
+    }
+
+    /// Removes the marked range, if any, leaving the cursor at its start.
+    /// Returns whether anything was removed.
+    fn delete_selection(&mut self) -> bool {
+        let Some((s, e)) = self.selection_range() else {
+            return false;
+        };
+        let mut chars: Vec<char> = self.buffer.chars().collect();
+        chars.drain(s..e);
+        self.buffer = chars.into_iter().collect();
+        self.cursor = s;
+        self.sel = None;
+        self.clamp_scroll();
+        true
+    }
+
+    /// Inserts `ch` at the cursor, replacing any marked range, moving the
+    /// cursor right, up to the field's capacity.
+    fn insert(&mut self, ch: char) {
+        self.delete_selection();
+        if self.buffer.chars().count() < TEXT_INPUT_MAX {
+            let mut chars: Vec<char> = self.buffer.chars().collect();
+            chars.insert(self.cursor, ch);
+            self.buffer = chars.into_iter().collect();
+            self.cursor += 1;
+        }
+        self.clamp_scroll();
+    }
+
+    /// Inserts `s` at the cursor, replacing any marked range, up to the
+    /// field's capacity: the surplus is dropped.
+    fn insert_str(&mut self, s: &str) {
+        self.delete_selection();
+        let mut chars: Vec<char> = self.buffer.chars().collect();
+        let room = TEXT_INPUT_MAX.saturating_sub(chars.len());
+        let take: Vec<char> = s.chars().take(room).collect();
+        chars.splice(self.cursor..self.cursor, take.iter().cloned());
+        self.cursor += take.len();
+        self.buffer = chars.into_iter().collect();
+        self.clamp_scroll();
+    }
+
+    /// Deletes the marked range if there is one, else the character left
+    /// of the cursor, moving the cursor left.
+    fn backspace(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
+        if self.cursor > 0 {
+            let mut chars: Vec<char> = self.buffer.chars().collect();
+            chars.remove(self.cursor - 1);
+            self.buffer = chars.into_iter().collect();
+            self.cursor -= 1;
+        }
+        self.clamp_scroll();
+    }
+
+    /// Deletes the marked range if there is one, else the character at
+    /// the cursor.
+    fn delete(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
+        let len = self.buffer.chars().count();
+        if self.cursor < len {
+            let mut chars: Vec<char> = self.buffer.chars().collect();
+            chars.remove(self.cursor);
+            self.buffer = chars.into_iter().collect();
+        }
+        self.clamp_scroll();
+    }
+
+    /// Moves the cursor left, if it is not at the start, clearing any
+    /// selection.
+    fn move_left(&mut self) {
+        self.sel = None;
+        self.cursor = self.cursor.saturating_sub(1);
+        self.clamp_scroll();
+    }
+
+    /// Moves the cursor right, if it is not at the end, clearing any
+    /// selection.
+    fn move_right(&mut self) {
+        self.sel = None;
+        self.cursor = (self.cursor + 1).min(self.buffer.chars().count());
+        self.clamp_scroll();
+    }
+
+    /// Marks one more character to the left: the cursor walks left, the
+    /// selection growing behind it, or shrinking when it walks back onto
+    /// the anchor.
+    fn select_left(&mut self) {
+        match self.sel {
+            Some((s, e)) if self.cursor == e && e > s => {
+                self.sel = Some((s, e - 1));
+                self.cursor = e - 1;
+            }
+            Some((s, e)) if self.cursor == s && s > 0 => {
+                self.sel = Some((s - 1, e));
+                self.cursor = s - 1;
+            }
+            _ => {
+                if self.cursor > 0 {
+                    self.sel = Some((self.cursor - 1, self.cursor));
+                    self.cursor -= 1;
+                }
+            }
+        }
+        self.clamp_scroll();
+    }
+
+    /// Marks one more character to the right: the cursor walks right, the
+    /// selection growing behind it, or shrinking when it walks back onto
+    /// the anchor.
+    fn select_right(&mut self) {
+        let len = self.buffer.chars().count();
+        match self.sel {
+            Some((s, e)) if self.cursor == s && s < e => {
+                self.sel = Some((s + 1, e));
+                self.cursor = s + 1;
+            }
+            Some((s, e)) if self.cursor == e && e < len => {
+                self.sel = Some((s, e + 1));
+                self.cursor = e + 1;
+            }
+            _ => {
+                if self.cursor < len {
+                    self.sel = Some((self.cursor, self.cursor + 1));
+                    self.cursor += 1;
+                }
+            }
+        }
+        self.clamp_scroll();
+    }
+
+    /// Adjusts the scroll so the cursor stays within the visible window:
+    /// the field follows the cursor when it would otherwise leave.
+    fn clamp_scroll(&mut self) {
+        let len = self.buffer.chars().count();
+        let visible = len.min(TEXT_INPUT_COLS);
+        let max_scroll = len.saturating_sub(visible);
+        if self.cursor < self.scroll {
+            self.scroll = self.cursor;
+        } else if self.cursor > self.scroll + visible {
+            self.scroll = self.cursor - visible;
+        }
+        self.scroll = self.scroll.min(max_scroll);
+    }
+
+    /// Draws the field at `rect` (its `[left, bottom, right, top]`), with
+    /// the visible characters, the marked range, and the cursor.
+    fn draw(&self, ctx: &mut frost::Context, rect: [f32; 4], font: &Arc<[u8]>, blink_on: bool) {
+        // The field's background.
+        ctx.rectangle(
+            (rect[0] + rect[2]) / 2.0,
+            (rect[1] + rect[3]) / 2.0,
+            (rect[2] - rect[0]) / 2.0,
+            (rect[3] - rect[1]) / 2.0,
+            TEXT_INPUT_BG,
+            TEXT_INPUT_Z,
+        );
+        // The visible characters, one per cell from the field's left pad.
+        let chars: Vec<char> = self.buffer.chars().collect();
+        // The marked range, if any: a highlight behind the selected cells.
+        if let Some((s, e)) = self.selection_range() {
+            let vis_start = s.max(self.scroll);
+            let vis_end = e.min(self.scroll + TEXT_INPUT_COLS).min(chars.len());
+            if vis_start < vis_end {
+                let x0 =
+                    rect[0] + TEXT_INPUT_PAD + (vis_start - self.scroll) as f32 * TEXT_INPUT_CHAR_W;
+                let x1 =
+                    rect[0] + TEXT_INPUT_PAD + (vis_end - self.scroll) as f32 * TEXT_INPUT_CHAR_W;
+                ctx.rectangle(
+                    (x0 + x1) / 2.0,
+                    (rect[1] + rect[3]) / 2.0,
+                    (x1 - x0) / 2.0,
+                    (rect[3] - rect[1]) / 2.0,
+                    TEXT_INPUT_SEL,
+                    TEXT_INPUT_Z,
+                );
+            }
+        }
+        let end = (self.scroll + TEXT_INPUT_COLS).min(chars.len());
+        for (i, &ch) in chars[self.scroll..end].iter().enumerate() {
+            let x = rect[0] + TEXT_INPUT_PAD + (i as f32 + 0.5) * TEXT_INPUT_CHAR_W;
+            let y = (rect[1] + rect[3]) / 2.0 - RON_LIFT * TEXT_INPUT_SIZE;
+            ctx.text(
+                x,
+                y,
+                font,
+                ch.to_string(),
+                TEXT_INPUT_SIZE,
+                600.0,
+                TEXT_INPUT_TEXT,
+                TEXT_INPUT_Z,
+            );
+        }
+        // The cursor: a vertical line at the cursor's cell boundary, shown
+        // only while the field is focused and the blink is in its visible
+        // half.
+        if self.focused && blink_on {
+            let cx =
+                rect[0] + TEXT_INPUT_PAD + (self.cursor - self.scroll) as f32 * TEXT_INPUT_CHAR_W;
+            ctx.line(
+                cx,
+                rect[1] + 4.0,
+                cx,
+                rect[3] - 4.0,
+                TEXT_INPUT_CURSOR,
+                1.5,
+                TEXT_INPUT_Z,
+            );
+        }
+        // The focus box: a border around the field while it has the focus.
+        if self.focused {
+            ctx.line(
+                rect[0],
+                rect[1],
+                rect[2],
+                rect[1],
+                TEXT_INPUT_CURSOR,
+                2.0,
+                TEXT_INPUT_Z,
+            );
+            ctx.line(
+                rect[0],
+                rect[3],
+                rect[2],
+                rect[3],
+                TEXT_INPUT_CURSOR,
+                2.0,
+                TEXT_INPUT_Z,
+            );
+            ctx.line(
+                rect[0],
+                rect[1],
+                rect[0],
+                rect[3],
+                TEXT_INPUT_CURSOR,
+                2.0,
+                TEXT_INPUT_Z,
+            );
+            ctx.line(
+                rect[2],
+                rect[1],
+                rect[2],
+                rect[3],
+                TEXT_INPUT_CURSOR,
+                2.0,
+                TEXT_INPUT_Z,
+            );
+        }
+    }
+}
+
+/// Whether a held key acts this frame: `true` on its press edge and on
+/// every [`TEXT_INPUT_REPEAT`] tick while it stays held, the first repeat
+/// landing [`TEXT_INPUT_INITIAL_DELAY`] after the press. `acc` accumulates
+/// the time since the last action and is reset when the key is released,
+/// so a key held while the field is unfocused never fires a stale repeat
+/// on refocus.
+fn key_tick(held: bool, was: bool, acc: &mut f32, dt: f32) -> bool {
+    if !held {
+        *acc = 0.0;
+        return false;
+    }
+    if !was {
+        // The press acts now; seed the accumulator so the first repeat
+        // lands [`TEXT_INPUT_INITIAL_DELAY`] after it, not
+        // [`TEXT_INPUT_REPEAT`].
+        *acc = TEXT_INPUT_REPEAT - TEXT_INPUT_INITIAL_DELAY;
+        return true;
+    }
+    *acc += dt;
+    if *acc >= TEXT_INPUT_REPEAT {
+        *acc -= TEXT_INPUT_REPEAT;
+        true
+    } else {
+        false
+    }
+}
+
+/// The window rect of the `i`-th demonstration text input: a centered row
+/// of [`TEXT_INPUT_COUNT`] fields, [`TEXT_INPUT_GAP`] apart, sitting
+/// [`TEXT_INPUT_MARGIN`] above the slots strip.
+fn text_field_rect(i: usize, h: f32) -> [f32; 4] {
+    let field_w = TEXT_INPUT_COLS as f32 * TEXT_INPUT_CHAR_W + 2.0 * TEXT_INPUT_PAD;
+    let total_w =
+        TEXT_INPUT_COUNT as f32 * field_w + (TEXT_INPUT_COUNT - 1) as f32 * TEXT_INPUT_GAP;
+    let left = -total_w / 2.0 + i as f32 * (field_w + TEXT_INPUT_GAP);
+    let bottom = -h / 2.0 + STRIP_H + TEXT_INPUT_MARGIN;
+    [left, bottom, left + field_w, bottom + TEXT_INPUT_H]
+}
+
+/// The focus target for a Tab (or Shift-Tab) press: the next field
+/// (wrapping) or the previous (wrapping) from `current`, or the
+/// last-focused field when none is focused.
+fn focus_target(current: Option<usize>, last: usize, shift: bool) -> Option<usize> {
+    match current {
+        Some(i) => {
+            let n = TEXT_INPUT_COUNT;
+            Some(if shift { (i + n - 1) % n } else { (i + 1) % n })
+        }
+        None => Some(last),
+    }
+}
+
 /// The demo's state.
 struct Demo {
     /// The widget layer: the View and Operations panels.
@@ -664,12 +1272,284 @@ struct Demo {
     /// The Operations panel's status line: the selection's size, or the
     /// outcome of the last operation.
     status: String,
+    /// The top-level menu currently open, if any.
+    menu_open: Option<Menu>,
+    /// The view mode the Mode menu has selected: its items are mutually
+    /// exclusive, a check marks this one.
+    mode: ViewMode,
+    /// The demonstration text inputs, a centered row above the slots.
+    text_inputs: [TextInput; TEXT_INPUT_COUNT],
+    /// Which text input has the focus, if any: Tab and Shift-Tab move it,
+    /// Escape clears it.
+    text_focus: Option<usize>,
+    /// The last text input that had the focus: a Tab with no field focused
+    /// refocuses it.
+    text_last_focus: usize,
+    /// The buffer index a mouse drag in the focused field started from,
+    /// while the left button is held: `None` when no drag is in progress.
+    text_drag: Option<usize>,
+    /// The system clipboard the inputs' Ctrl-C / Ctrl-V read and write.
+    /// Built once at startup: re-creating the handle (and re-initializing
+    /// the platform's clipboard) on every press would be wasteful.
+    clipboard: Option<arboard::Clipboard>,
+    /// Whether the left arrow was held last frame: its rising edge moves
+    /// the input's cursor left.
+    was_left: bool,
+    /// Whether the right arrow was held last frame: its rising edge moves
+    /// the input's cursor right.
+    was_right: bool,
+    /// Whether backspace was held last frame: its rising edge deletes the
+    /// character left of the input's cursor.
+    was_backspace: bool,
+    /// Whether delete was held last frame: its rising edge deletes the
+    /// character at the input's cursor.
+    was_delete: bool,
+    /// The characters the input's keys typed last frame: their rising
+    /// edges insert.
+    was_typed: std::collections::HashSet<char>,
+    /// Whether Ctrl-C was held last frame: its rising edge copies the
+    /// input's selection to the clipboard.
+    was_copy: bool,
+    /// Whether Ctrl-V was held last frame: its rising edge pastes the
+    /// clipboard into the input.
+    was_paste: bool,
+    /// Whether Tab was held last frame: its rising edge moves the focus to
+    /// the next (or, with Shift, previous) text input.
+    was_tab: bool,
+    /// The time since the left arrow's last action, for its repeat.
+    repeat_left: f32,
+    /// The time since the right arrow's last action, for its repeat.
+    repeat_right: f32,
+    /// The time since backspace's last action, for its repeat.
+    repeat_backspace: f32,
+    /// The time since delete's last action, for its repeat.
+    repeat_delete: f32,
+    /// The time since each typed character's last action, for its repeat.
+    repeat_typed: std::collections::HashMap<char, f32>,
+    /// The focused field's cursor blink clock, in seconds: it advances every
+    /// frame and is reset to zero when a field gains the focus, so the
+    /// cursor is visible the moment a field is focused.
+    blink_timer: f32,
 }
 
 impl Demo {
     /// The active sprite, or `None` while all slots are empty.
     fn active(&self) -> Option<&Sprite> {
         self.sprites.get(self.active)
+    }
+
+    /// Moves the text-input focus to `i`, or clears it when `None`: the
+    /// focused field's flag is set, every other field's is cleared (and its
+    /// selection dropped), the last-focused index is remembered, and any
+    /// in-progress mouse drag ends.
+    fn set_text_focus(&mut self, focus: Option<usize>) {
+        for (i, ti) in self.text_inputs.iter_mut().enumerate() {
+            ti.set_focus(focus == Some(i));
+        }
+        self.text_focus = focus;
+        if let Some(i) = focus {
+            self.text_last_focus = i;
+            self.blink_timer = 0.0;
+        }
+        self.text_drag = None;
+    }
+
+    /// The menu bar's input: lay out the bar and its items, handle the
+    /// press and the hover, and report whether the menu claimed the press
+    /// — a claimed press never reaches the scene. The bar is full width,
+    /// pinned to the window's top edge; the top-level items sit left to
+    /// right from its left edge, and the open menu's dropdown hangs below
+    /// its item.
+    fn menu_input(&mut self, w: f32, h: f32, pressed: bool, pos: Option<[f32; 2]>) -> bool {
+        // The bar: full width, pinned to the window's top edge.
+        let bar: [f32; 4] = [-w / 2.0, h / 2.0 - MENU_H, w / 2.0, h / 2.0];
+        // The top-level items, laid out left to right from the bar's left
+        // edge.
+        let mut x = bar[0] + MENU_ITEM_PAD;
+        let mut tops: [([f32; 4], Menu); 2] = [([0.0; 4], Menu::File), ([0.0; 4], Menu::Mode)];
+        for (i, m) in [Menu::File, Menu::Mode].iter().enumerate() {
+            let tw = menu_text_width(m.label());
+            let item_w = tw + 2.0 * MENU_ITEM_PAD;
+            tops[i] = ([x, bar[1], x + item_w, bar[3]], *m);
+            x += item_w;
+        }
+        // The pre-press dropdown, for the press-in-menu test.
+        let pre_drop = self
+            .menu_open
+            .map(|open| menu_drop(open, tops[open as usize].0[0], bar[1]));
+        // Whether the press landed on a top-level item or a dropdown item.
+        let press_in_menu = pressed
+            && pos.is_some_and(|p| {
+                tops.iter().any(|(rect, _)| in_rect(*rect, p))
+                    || pre_drop
+                        .as_ref()
+                        .is_some_and(|(_, items)| items.iter().any(|r| in_rect(*r, p)))
+            });
+        let was_open = self.menu_open.is_some();
+        let pre_open = self.menu_open;
+        // The press: a top-level item toggles or switches, a Mode
+        // dropdown item selects its mode, and a press anywhere else
+        // closes an open menu.
+        if pressed && let Some(p) = pos {
+            let hit_top = tops
+                .iter()
+                .find(|(rect, _)| in_rect(*rect, p))
+                .map(|(_, m)| *m);
+            match hit_top {
+                Some(m) if self.menu_open == Some(m) => self.menu_open = None,
+                Some(m) => self.menu_open = Some(m),
+                None => {
+                    // A Mode dropdown item: its index is its mode, and
+                    // the modes are mutually exclusive — the press moves
+                    // the check. Any other item just closes the menu.
+                    if pre_open == Some(Menu::Mode)
+                        && let Some((_, items)) = &pre_drop
+                        && let Some(i) = items.iter().position(|r| in_rect(*r, p))
+                    {
+                        self.mode = VIEW_MODES[i];
+                    }
+                    self.menu_open = None;
+                }
+            }
+        }
+        // The hover: while a menu is open, resting on another top-level
+        // item switches to it.
+        if self.menu_open.is_some()
+            && let Some(p) = pos
+        {
+            for (rect, m) in &tops {
+                if in_rect(*rect, p) && self.menu_open != Some(*m) {
+                    self.menu_open = Some(*m);
+                }
+            }
+        }
+        // The menu claims the press when it lands on a top-level or
+        // dropdown item, when an open menu is dismissed by a press
+        // elsewhere, or when it lands anywhere on the bar — the empty
+        // stretch to the right of the last item is the bar's, not the
+        // scene's.
+        let press_in_bar = pressed && pos.is_some_and(|p| in_rect(bar, p));
+        press_in_menu || (was_open && pressed) || press_in_bar
+    }
+
+    /// The menu bar's paint: the bar, its top-level items, and the open
+    /// dropdown with its items. Drawn last, so it sits above the UI's
+    /// panels and the sidecar trees.
+    fn menu_draw(&mut self, ctx: &mut frost::Context, w: f32, h: f32, pos: Option<[f32; 2]>) {
+        // The bar: full width, pinned to the window's top edge.
+        let bar: [f32; 4] = [-w / 2.0, h / 2.0 - MENU_H, w / 2.0, h / 2.0];
+        // The top-level items, laid out left to right from the bar's left
+        // edge.
+        let mut x = bar[0] + MENU_ITEM_PAD;
+        let mut tops: [([f32; 4], Menu); 2] = [([0.0; 4], Menu::File), ([0.0; 4], Menu::Mode)];
+        for (i, m) in [Menu::File, Menu::Mode].iter().enumerate() {
+            let tw = menu_text_width(m.label());
+            let item_w = tw + 2.0 * MENU_ITEM_PAD;
+            tops[i] = ([x, bar[1], x + item_w, bar[3]], *m);
+            x += item_w;
+        }
+        // The bar's plate.
+        ctx.rectangle(
+            (bar[0] + bar[2]) / 2.0,
+            (bar[1] + bar[3]) / 2.0,
+            (bar[2] - bar[0]) / 2.0,
+            (bar[3] - bar[1]) / 2.0,
+            MENU_BG,
+            MENU_Z,
+        );
+        // The top-level items: a hover or the open menu highlights.
+        for (rect, m) in &tops {
+            let hovered = pos.is_some_and(|p| in_rect(*rect, p));
+            let open = self.menu_open == Some(*m);
+            if hovered || open {
+                ctx.rectangle(
+                    (rect[0] + rect[2]) / 2.0,
+                    (rect[1] + rect[3]) / 2.0,
+                    (rect[2] - rect[0]) / 2.0,
+                    (rect[3] - rect[1]) / 2.0,
+                    MENU_HOVER,
+                    MENU_Z,
+                );
+            }
+            ctx.text(
+                (rect[0] + rect[2]) / 2.0,
+                (rect[1] + rect[3]) / 2.0 - RON_LIFT * MENU_SIZE,
+                &self.ron_font,
+                m.label(),
+                MENU_SIZE,
+                600.0,
+                MENU_TEXT,
+                MENU_Z,
+            );
+        }
+        // The open dropdown: its plate and its items, a hover highlights.
+        if let Some(open) = self.menu_open {
+            let (drop_rect, item_rects) = menu_drop(open, tops[open as usize].0[0], bar[1]);
+            ctx.rectangle(
+                (drop_rect[0] + drop_rect[2]) / 2.0,
+                (drop_rect[1] + drop_rect[3]) / 2.0,
+                (drop_rect[2] - drop_rect[0]) / 2.0,
+                (drop_rect[3] - drop_rect[1]) / 2.0,
+                MENU_DROP_BG,
+                MENU_Z,
+            );
+            for (i, item) in open.items().iter().enumerate() {
+                let rect = &item_rects[i];
+                let hovered = pos.is_some_and(|p| in_rect(*rect, p));
+                if hovered {
+                    ctx.rectangle(
+                        (rect[0] + rect[2]) / 2.0,
+                        (rect[1] + rect[3]) / 2.0,
+                        (rect[2] - rect[0]) / 2.0,
+                        (rect[3] - rect[1]) / 2.0,
+                        MENU_DROP_HOVER,
+                        MENU_Z,
+                    );
+                }
+                let cy = (rect[1] + rect[3]) / 2.0 - RON_LIFT * MENU_SIZE;
+                // The selected Mode item wears a check in the column left
+                // of its label; the modes are mutually exclusive, so at
+                // most one item is checked. The check is a line drawing,
+                // so it sits on the item's true centre — no RON_LIFT —
+                // with a bounding box symmetric about it.
+                if open == Menu::Mode && VIEW_MODES[i] == self.mode {
+                    let check_cx = rect[0] + MENU_DROP_PAD + MENU_CHECK_W / 2.0;
+                    let check_cy = (rect[1] + rect[3]) / 2.0;
+                    ctx.line(
+                        check_cx - 5.0,
+                        check_cy + 1.0,
+                        check_cx - 1.5,
+                        check_cy - 3.5,
+                        MENU_TEXT,
+                        2.0,
+                        MENU_Z,
+                    );
+                    ctx.line(
+                        check_cx - 1.5,
+                        check_cy - 3.5,
+                        check_cx + 5.0,
+                        check_cy + 3.5,
+                        MENU_TEXT,
+                        2.0,
+                        MENU_Z,
+                    );
+                }
+                // The label left-aligns in the space right of the check
+                // column, so the items line up under each other.
+                let label_left = rect[0] + MENU_DROP_PAD + MENU_CHECK_W + MENU_LABEL_GAP;
+                let cx = label_left + menu_text_width(item) / 2.0;
+                ctx.text(
+                    cx,
+                    cy,
+                    &self.ron_font,
+                    *item,
+                    MENU_SIZE,
+                    600.0,
+                    MENU_TEXT,
+                    MENU_Z,
+                );
+            }
+        }
     }
 
     /// The active sprite's sidecar panel state, if it has one.
@@ -1379,10 +2259,12 @@ impl frost::Process for Demo {
         // marker nearest the click lights up its row — the path unfolds
         // and the view scrolls that row to its centre — and the
         // position is picked, so the next LEFT click moves it. A press
-        // that travels is a pan attempt, not a pick.
+        // that travels is a pan attempt, not a pick. A press in a text
+        // field is the field's (a paste), not a pick.
         if rpressed
             && let Some(p) = pos
             && !over_ron
+            && !(0..TEXT_INPUT_COUNT).any(|i| in_rect(text_field_rect(i, h), p))
         {
             self.r_press = Some(p);
         }
@@ -1701,26 +2583,172 @@ impl frost::Process for Demo {
         self.was_open = open_key;
         self.was_undo = undo_key;
 
-        // Space's rising edge starts and stops the animation clock.
+        // The demonstration text inputs: a centered row of
+        // [`TEXT_INPUT_COUNT`] fields above the slots strip. A press in a
+        // field focuses it, places the cursor and starts a mouse drag that
+        // marks from the cursor; a press elsewhere unfocuses it.
+        if pressed && let Some(p) = pos {
+            let hit = (0..TEXT_INPUT_COUNT).find(|&i| in_rect(text_field_rect(i, h), p));
+            match hit {
+                Some(i) => {
+                    self.set_text_focus(Some(i));
+                    self.text_inputs[i].click_at(p[0], text_field_rect(i, h));
+                    self.text_drag = Some(self.text_inputs[i].cursor);
+                }
+                None => {
+                    self.set_text_focus(None);
+                }
+            }
+        }
+        // A held left button in the focused field drags the selection from
+        // its anchor to the cursor's cell; releasing the button ends the
+        // drag.
+        if down
+            && let Some(i) = self.text_focus
+            && let Some(anchor) = self.text_drag
+            && let Some(p) = pos
+            && in_rect(text_field_rect(i, h), p)
+        {
+            self.text_inputs[i].drag_to(anchor, p[0], text_field_rect(i, h));
+        }
+        if released {
+            self.text_drag = None;
+        }
+        // A right-click in the focused field pastes the clipboard.
+        if rpressed
+            && let Some(i) = self.text_focus
+            && let Some(p) = pos
+            && in_rect(text_field_rect(i, h), p)
+            && let Some(clip) = self.clipboard.as_mut()
+            && let Ok(text) = clip.get_text()
+        {
+            let text: String = text.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+            self.text_inputs[i].insert_str(&text);
+        }
+
+        // Space's rising edge starts and stops the animation clock, but
+        // only while no input is focused: focused, it inserts a space.
         let space = ctx.key_down(frost::KeyCode::Space);
-        if space && !self.was_space {
+        if space && !self.was_space && self.text_focus.is_none() {
             self.anim.playing = !self.anim.playing;
             self.anim.dir = 1;
         }
         self.was_space = space;
 
-        // Escape's rising edge lets go of a picked position.
+        // Escape's rising edge: a focused input loses its focus (the field
+        // is remembered, so a later Tab refocuses it); otherwise it lets
+        // go of a picked position.
         let esc = ctx.key_down(frost::KeyCode::Escape);
         if esc && !self.was_esc {
-            let mut was = false;
-            if let Some(doc) = self.ron_mut() {
-                was = doc.edit.take().is_some();
-            }
-            if was {
-                self.status = String::from("edit: released");
+            if self.text_focus.is_some() {
+                self.set_text_focus(None);
+            } else {
+                let mut was = false;
+                if let Some(doc) = self.ron_mut() {
+                    was = doc.edit.take().is_some();
+                }
+                if was {
+                    self.status = String::from("edit: released");
+                }
             }
         }
         self.was_esc = esc;
+
+        // Tab's rising edge moves the focus to the next field (wrapping),
+        // Shift-Tab to the previous; with no field focused, either
+        // refocuses the last one.
+        let shift =
+            ctx.key_down(frost::KeyCode::ShiftLeft) || ctx.key_down(frost::KeyCode::ShiftRight);
+        let tab = ctx.key_down(frost::KeyCode::Tab);
+        if tab && !self.was_tab {
+            self.set_text_focus(focus_target(self.text_focus, self.text_last_focus, shift));
+        }
+        self.was_tab = tab;
+
+        // The demonstration text inputs: their keys act only while one is
+        // focused. Each held key acts on its press and then repeats after
+        // the initial delay, every [`TEXT_INPUT_REPEAT`] seconds; the ticks
+        // are computed here, outside the focus check, so a key held while
+        // unfocused never fires a stale repeat on refocus.
+        let left = ctx.key_down(frost::KeyCode::ArrowLeft);
+        let right = ctx.key_down(frost::KeyCode::ArrowRight);
+        let backspace = ctx.key_down(frost::KeyCode::Backspace);
+        let delete = ctx.key_down(frost::KeyCode::Delete);
+        let tick_left = key_tick(left, self.was_left, &mut self.repeat_left, dt);
+        let tick_right = key_tick(right, self.was_right, &mut self.repeat_right, dt);
+        let tick_backspace = key_tick(
+            backspace,
+            self.was_backspace,
+            &mut self.repeat_backspace,
+            dt,
+        );
+        let tick_delete = key_tick(delete, self.was_delete, &mut self.repeat_delete, dt);
+        let mut tick_typed = std::collections::HashSet::new();
+        for &ch in TEXT_INPUT_CHARS {
+            let held = !ctrl && ctx.char_down(ch);
+            let was = self.was_typed.contains(&ch);
+            let acc = self.repeat_typed.entry(ch).or_insert(0.0);
+            if key_tick(held, was, acc, dt) {
+                tick_typed.insert(ch);
+            }
+        }
+        let copy_key = ctrl && ctx.key_down(frost::KeyCode::KeyC);
+        let paste_key = ctrl && ctx.key_down(frost::KeyCode::KeyV);
+        if let Some(i) = self.text_focus {
+            if tick_left {
+                if shift {
+                    self.text_inputs[i].select_left();
+                } else {
+                    self.text_inputs[i].move_left();
+                }
+            }
+            if tick_right {
+                if shift {
+                    self.text_inputs[i].select_right();
+                } else {
+                    self.text_inputs[i].move_right();
+                }
+            }
+            if tick_backspace {
+                self.text_inputs[i].backspace();
+            }
+            if tick_delete {
+                self.text_inputs[i].delete();
+            }
+            for &ch in &tick_typed {
+                self.text_inputs[i].insert(ch);
+            }
+            if copy_key && !self.was_copy {
+                let text = self.text_inputs[i].selected_text();
+                let text = if text.is_empty() {
+                    self.text_inputs[i].buffer.clone()
+                } else {
+                    text
+                };
+                if let Some(clip) = self.clipboard.as_mut() {
+                    let _ = clip.set_text(text);
+                }
+            }
+            if paste_key
+                && !self.was_paste
+                && let Some(clip) = self.clipboard.as_mut()
+                && let Ok(text) = clip.get_text()
+            {
+                let text: String = text.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+                self.text_inputs[i].insert_str(&text);
+            }
+        }
+        self.was_copy = copy_key;
+        self.was_paste = paste_key;
+        self.was_left = left;
+        self.was_right = right;
+        self.was_backspace = backspace;
+        self.was_delete = delete;
+        self.was_typed = TEXT_INPUT_CHARS
+            .iter()
+            .copied()
+            .filter(|&ch| !ctrl && ctx.char_down(ch))
+            .collect();
 
         let (row_h, pad) = {
             let st = self.ui.style_mut();
@@ -1858,11 +2886,18 @@ impl frost::Process for Demo {
             self.anim.dir = 1;
         }
 
+        // The menu bar: its own hit-testing, above everything. A press
+        // the menu claims never reaches the scene.
+        let menu_claimed = self.menu_input(w, h, pressed, pos);
+
         // The left button's work: press lands on a slot, on the work area
-        // or nowhere the demo owns; release decides — click or drag.
+        // or nowhere the demo owns; release decides — click or drag. A
+        // press in a text field is the field's, not the scene's.
         if pressed
+            && !menu_claimed
             && !self.ui.hovering()
             && let Some(p) = pos
+            && !(0..TEXT_INPUT_COUNT).any(|i| in_rect(text_field_rect(i, h), p))
         {
             match slot_at(p, w, h) {
                 Some(i) => self.slot_drag = Some((i, p)),
@@ -2263,6 +3298,18 @@ impl frost::Process for Demo {
         // The cursor's position for next frame's middle-drag delta; `None`
         // (outside the window) clears it, so re-entering never jumps.
         self.last_mouse = pos;
+
+        // The demonstration text inputs, a centered row above the slots
+        // strip. The focused field's cursor blinks on a shared clock.
+        self.blink_timer = (self.blink_timer + dt) % TEXT_INPUT_BLINK;
+        let blink_on = self.blink_timer < TEXT_INPUT_BLINK / 2.0;
+        for i in 0..TEXT_INPUT_COUNT {
+            self.text_inputs[i].draw(ctx, text_field_rect(i, h), &self.ron_font, blink_on);
+        }
+
+        // The menu bar, drawn last so it sits above the UI's panels and
+        // the sidecar trees.
+        self.menu_draw(ctx, w, h, pos);
     }
 }
 
@@ -2469,6 +3516,32 @@ fn ron_default(w: f32, h: f32, row_h: f32, pad: f32, cascade: usize) -> [f32; 2]
 /// Whether a window point is inside a rectangle.
 fn in_rect(r: [f32; 4], p: [f32; 2]) -> bool {
     p[0] >= r[0] && p[0] <= r[2] && p[1] >= r[1] && p[1] <= r[3]
+}
+
+/// The width of a string in the menu font: FiraCode is monospaced at
+/// 0.6 em per character, so the width is pure character arithmetic.
+fn menu_text_width(s: &str) -> f32 {
+    s.chars().count() as f32 * MENU_SIZE * ADVANCE_EM
+}
+
+/// The dropdown's plate and item rectangles for an open menu: below the
+/// bar, aligned to the menu's top-level item's left edge, as wide as its
+/// widest item.
+fn menu_drop(open: Menu, top_left: f32, bar_bottom: f32) -> ([f32; 4], Vec<[f32; 4]>) {
+    let items = open.items();
+    let widest = items.iter().map(|s| menu_text_width(s)).fold(0.0, f32::max);
+    // The check column is reserved in every dropdown, so the labels line
+    // up whether or not an item wears a check.
+    let drop_w = widest + 2.0 * MENU_DROP_PAD + MENU_CHECK_W + MENU_LABEL_GAP;
+    let drop_h = items.len() as f32 * MENU_ITEM_H;
+    let drop_rect: [f32; 4] = [top_left, bar_bottom - drop_h, top_left + drop_w, bar_bottom];
+    let item_rects = (0..items.len())
+        .map(|i| {
+            let y1 = bar_bottom - i as f32 * MENU_ITEM_H;
+            [drop_rect[0], y1 - MENU_ITEM_H, drop_rect[2], y1]
+        })
+        .collect();
+    (drop_rect, item_rects)
 }
 
 /// The panel's value-side color: container heads amber, closing
@@ -3166,6 +4239,27 @@ fn main() {
             ron_drag: None,
             ron_state: frost::TreeState::default(),
             ron_views: Vec::new(),
+            menu_open: None,
+            mode: ViewMode::Markers,
+            text_inputs: [TextInput::new(), TextInput::new(), TextInput::new()],
+            text_focus: None,
+            text_last_focus: 0,
+            text_drag: None,
+            clipboard: arboard::Clipboard::new().ok(),
+            was_left: false,
+            was_right: false,
+            was_backspace: false,
+            was_delete: false,
+            was_typed: std::collections::HashSet::new(),
+            was_copy: false,
+            was_paste: false,
+            was_tab: false,
+            repeat_left: 0.0,
+            repeat_right: 0.0,
+            repeat_backspace: 0.0,
+            repeat_delete: 0.0,
+            repeat_typed: std::collections::HashMap::new(),
+            blink_timer: 0.0,
         },
         // The room a sidecar tree and the art both want — in logical
         // pixels, so on a 2x display this opens as a 1440-point-wide
@@ -3184,6 +4278,263 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_input_inserts_navigates_and_deletes() {
+        let mut ti = TextInput::new();
+        // Insert "hello".
+        for ch in "hello".chars() {
+            ti.insert(ch);
+        }
+        assert_eq!(ti.buffer, "hello");
+        assert_eq!(ti.cursor, 5);
+        // Walk the cursor back to the start.
+        for _ in 0..5 {
+            ti.move_left();
+        }
+        assert_eq!(ti.cursor, 0);
+        // Insert "X" at the start.
+        ti.insert('X');
+        assert_eq!(ti.buffer, "Xhello");
+        assert_eq!(ti.cursor, 1);
+        // Backspace takes the character left of the cursor.
+        ti.backspace();
+        assert_eq!(ti.buffer, "hello");
+        assert_eq!(ti.cursor, 0);
+        // Backspace at the start is a no-op.
+        ti.backspace();
+        assert_eq!(ti.buffer, "hello");
+        assert_eq!(ti.cursor, 0);
+    }
+
+    #[test]
+    fn text_input_scrolls_when_the_cursor_leaves_the_view() {
+        let mut ti = TextInput::new();
+        // Fifteen characters: the field shows ten, so the view must scroll.
+        for ch in "abcdefghijklmno".chars() {
+            ti.insert(ch);
+        }
+        assert_eq!(ti.buffer, "abcdefghijklmno");
+        assert_eq!(ti.cursor, 15);
+        // The cursor at the end pushes the view to the end.
+        assert_eq!(ti.scroll, 15 - TEXT_INPUT_COLS);
+        // Walk the cursor back to the start: the view follows.
+        for _ in 0..15 {
+            ti.move_left();
+        }
+        assert_eq!(ti.cursor, 0);
+        assert_eq!(ti.scroll, 0);
+        // A short buffer never scrolls.
+        let mut short = TextInput::new();
+        for ch in "abc".chars() {
+            short.insert(ch);
+        }
+        assert_eq!(short.scroll, 0);
+    }
+
+    #[test]
+    fn text_input_holds_its_capacity() {
+        let mut ti = TextInput::new();
+        for ch in "0123456789abcdef".repeat(4).chars() {
+            ti.insert(ch);
+        }
+        assert_eq!(ti.buffer.chars().count(), TEXT_INPUT_MAX);
+        // One more is ignored.
+        ti.insert('x');
+        assert_eq!(ti.buffer.chars().count(), TEXT_INPUT_MAX);
+    }
+
+    #[test]
+    fn text_input_selection_extends_and_shrinks() {
+        let mut ti = TextInput::new();
+        for ch in "hello".chars() {
+            ti.insert(ch);
+        }
+        // Cursor at the end (5). Shift-left extends the selection leftward.
+        ti.select_left();
+        assert_eq!(ti.selection_range(), Some((4, 5)));
+        assert_eq!(ti.cursor, 4);
+        ti.select_left();
+        assert_eq!(ti.selection_range(), Some((3, 5)));
+        assert_eq!(ti.cursor, 3);
+        // Shift-right from the selection's start shrinks it back.
+        ti.select_right();
+        assert_eq!(ti.selection_range(), Some((4, 5)));
+        assert_eq!(ti.cursor, 4);
+        ti.select_right();
+        // The selection collapses to empty at the anchor.
+        assert_eq!(ti.selection_range(), None);
+        assert_eq!(ti.cursor, 5);
+        // The empty selection remembers its anchor: Shift-left re-extends it.
+        ti.select_left();
+        assert_eq!(ti.selection_range(), Some((4, 5)));
+        assert_eq!(ti.cursor, 4);
+        // A plain move collapses the selection.
+        ti.move_left();
+        assert_eq!(ti.selection_range(), None);
+        assert_eq!(ti.cursor, 3);
+    }
+
+    #[test]
+    fn text_input_backspace_and_delete_remove_the_marked_range() {
+        let mut ti = TextInput::new();
+        for ch in "hello".chars() {
+            ti.insert(ch);
+        }
+        // Mark "ll" (indices 2..4) and backspace it away.
+        ti.move_left();
+        ti.select_left();
+        ti.select_left();
+        assert_eq!(ti.selection_range(), Some((2, 4)));
+        ti.backspace();
+        assert_eq!(ti.buffer, "heo");
+        assert_eq!(ti.cursor, 2);
+        assert_eq!(ti.selection_range(), None);
+        // Mark "e" (index 1) and delete it.
+        ti.select_left();
+        assert_eq!(ti.selection_range(), Some((1, 2)));
+        ti.delete();
+        assert_eq!(ti.buffer, "ho");
+        assert_eq!(ti.cursor, 1);
+        assert_eq!(ti.selection_range(), None);
+    }
+
+    #[test]
+    fn text_input_insert_replaces_the_selection() {
+        let mut ti = TextInput::new();
+        for ch in "hello".chars() {
+            ti.insert(ch);
+        }
+        // Mark "ell" (indices 1..4) and type "E" over it.
+        ti.move_left();
+        ti.select_left();
+        ti.select_left();
+        ti.select_left();
+        assert_eq!(ti.selection_range(), Some((1, 4)));
+        ti.insert('E');
+        assert_eq!(ti.buffer, "hEo");
+        assert_eq!(ti.cursor, 2);
+        assert_eq!(ti.selection_range(), None);
+    }
+
+    #[test]
+    fn text_input_insert_str_caps_at_capacity() {
+        let mut ti = TextInput::new();
+        // Fill to the capacity.
+        for ch in "0123456789abcdef".repeat(4).chars() {
+            ti.insert(ch);
+        }
+        assert_eq!(ti.buffer.chars().count(), TEXT_INPUT_MAX);
+        // A paste at the end is ignored.
+        ti.insert_str("xyz");
+        assert_eq!(ti.buffer.chars().count(), TEXT_INPUT_MAX);
+        // A paste with room replaces the selection and fills the rest.
+        let mut ti2 = TextInput::new();
+        for ch in "abc".chars() {
+            ti2.insert(ch);
+        }
+        // Mark "bc" (indices 1..3).
+        ti2.select_left();
+        ti2.select_left();
+        assert_eq!(ti2.selection_range(), Some((1, 3)));
+        ti2.insert_str("12345");
+        // "a" + "12345" = "a12345".
+        assert_eq!(ti2.buffer, "a12345");
+        assert_eq!(ti2.cursor, 6);
+    }
+
+    #[test]
+    fn key_tick_repeats_and_resets() {
+        let dt = 0.016; // ~60 fps
+        let mut acc = 0.0;
+        // Released: no tick, accumulator reset.
+        assert!(!key_tick(false, false, &mut acc, dt));
+        assert_eq!(acc, 0.0);
+        // Press edge: ticks immediately, and seeds the accumulator so the
+        // first repeat lands TEXT_INPUT_INITIAL_DELAY after the press, not
+        // TEXT_INPUT_REPEAT.
+        assert!(key_tick(true, false, &mut acc, dt));
+        assert!((acc - (TEXT_INPUT_REPEAT - TEXT_INPUT_INITIAL_DELAY)).abs() < 1e-6);
+        // Held: the first repeat lands at the initial delay, within a frame.
+        let mut t = 0.0;
+        let mut first = None;
+        for _ in 0..100 {
+            t += dt;
+            if key_tick(true, true, &mut acc, dt) {
+                first = Some(t);
+                break;
+            }
+        }
+        let Some(at) = first else {
+            panic!("the first repeat never landed");
+        };
+        assert!((at - TEXT_INPUT_INITIAL_DELAY).abs() <= dt, "first at {at}");
+        // After the first repeat, the next one lands TEXT_INPUT_REPEAT later.
+        let mut t = 0.0;
+        let mut next = None;
+        for _ in 0..100 {
+            t += dt;
+            if key_tick(true, true, &mut acc, dt) {
+                next = Some(t);
+                break;
+            }
+        }
+        let Some(at) = next else {
+            panic!("the second repeat never landed");
+        };
+        assert!((at - TEXT_INPUT_REPEAT).abs() <= dt, "next at {at}");
+        // Released: the accumulator resets, so a later refocus never fires
+        // a stale repeat.
+        let mut acc = TEXT_INPUT_REPEAT;
+        assert!(!key_tick(false, true, &mut acc, dt));
+        assert_eq!(acc, 0.0);
+    }
+
+    #[test]
+    fn focus_target_walks_the_fields_and_refocuses_the_last() {
+        // Tab walks forward, wrapping past the last field to the first.
+        assert_eq!(focus_target(None, 0, false), Some(0));
+        assert_eq!(focus_target(Some(0), 0, false), Some(1));
+        assert_eq!(focus_target(Some(1), 1, false), Some(2));
+        assert_eq!(focus_target(Some(2), 2, false), Some(0));
+        // Shift-Tab walks backward, wrapping past the first to the last.
+        assert_eq!(focus_target(Some(0), 0, true), Some(2));
+        assert_eq!(focus_target(Some(1), 1, true), Some(0));
+        assert_eq!(focus_target(Some(2), 2, true), Some(1));
+        // With no field focused, either refocuses the last one.
+        assert_eq!(focus_target(None, 2, false), Some(2));
+        assert_eq!(focus_target(None, 1, true), Some(1));
+    }
+
+    #[test]
+    fn drag_to_marks_from_the_anchor_to_the_cursor() {
+        let mut ti = TextInput::new();
+        ti.insert_str("abcdefghij"); // ten chars, one per visible cell
+        let rect = text_field_rect(0, 810.0);
+        // A click at the field's left pad puts the cursor at the start.
+        ti.click_at(rect[0] + TEXT_INPUT_PAD, rect);
+        assert_eq!(ti.cursor, 0);
+        // Dragging to the middle of the fifth cell marks the first five.
+        let x = rect[0] + TEXT_INPUT_PAD + 4.5 * TEXT_INPUT_CHAR_W;
+        ti.drag_to(0, x, rect);
+        assert_eq!(ti.selection_range(), Some((0, 4)));
+        assert_eq!(ti.cursor, 4);
+        // Dragging back over the anchor shrinks the mark.
+        let x = rect[0] + TEXT_INPUT_PAD + 1.5 * TEXT_INPUT_CHAR_W;
+        ti.drag_to(0, x, rect);
+        assert_eq!(ti.selection_range(), Some((0, 1)));
+        assert_eq!(ti.cursor, 1);
+        // Dragging left of the anchor flips the range, the cursor at the
+        // drag's end.
+        let mut ti = TextInput::new();
+        ti.insert_str("abcdefghij");
+        ti.click_at(rect[0] + TEXT_INPUT_PAD + 4.5 * TEXT_INPUT_CHAR_W, rect);
+        assert_eq!(ti.cursor, 4);
+        let x = rect[0] + TEXT_INPUT_PAD + 1.5 * TEXT_INPUT_CHAR_W;
+        ti.drag_to(4, x, rect);
+        assert_eq!(ti.selection_range(), Some((1, 4)));
+        assert_eq!(ti.cursor, 1);
+    }
 
     #[test]
     fn window_and_texture_points_round_trip() {
