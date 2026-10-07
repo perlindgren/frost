@@ -5,14 +5,16 @@
 // One instanced draw_indexed per map, whatever the map holds; clipping
 // is the CPU's per-draw scissor, so nothing here knows about the view.
 //
-// The CPU packs three vec4 per tile in PIXEL space (top-left origin, y
-// down): (px, py, hw, hh) — the tile's center and half-extents in
-// pixels; (min_u, min_v, max_u, max_v) — the atlas sub-rectangle in
-// texture coordinates (top-left origin, the PNG's own orientation, so
-// the cell's first row of texels lands on the quad's upper edge); and
-// (r, g, b, a) — the tile's tint, the batch's color times the node's
-// modulate times the tile's own color. The whole batch also shares the
-// uniform's base color, multiplied again in the fragment stage.
+// The CPU packs four vec4 per tile in PIXEL space (top-left origin, y
+// down): (px, py) — the tile's center in pixels — and (ux, uy), the
+// tile's mapped x-axis half-edge; (vx, vy), the mapped y-axis half-edge
+// (the quad spans center ± u ± v, so the node's rotation rides the
+// edges exactly as its scale does); (min_u, min_v, max_u, max_v) — the
+// atlas sub-rectangle in texture coordinates (top-left origin, the
+// PNG's own orientation, so the cell's first row of texels lands on the
+// quad's u-negative edge); and (r, g, b, a) — the tile's own color,
+// the batch color and node modulate riding the uniform instead. The
+// fragment stage multiplies texel, tint, and uniform together.
 struct TileMapUniforms {
     size: vec2<f32>, // surface size in pixels
     color: vec4<f32>, // the batch's base tint (already node-modulated)
@@ -54,11 +56,12 @@ fn vs_main(
     @builtin(vertex_index) vi: u32,
     @builtin(instance_index) ii: u32,
 ) -> VertexOutput {
-    // Three vec4 per tile; the batch's draw count is the number of
-    // tiles, so the instance's data sits at 3 * ii.
-    let place = instances[3 * ii];
-    let uv_span = instances[3 * ii + 1];
-    let tint = instances[3 * ii + 2];
+    // Four vec4 per tile; the batch's draw count is the number of
+    // tiles, so the instance's data sits at 4 * ii.
+    let place = instances[4 * ii]; // (center, u)
+    let edge = instances[4 * ii + 1]; // (v, pad)
+    let uv_span = instances[4 * ii + 2];
+    let tint = instances[4 * ii + 3];
     // The quad's four corners, in the same order the shared index
     // buffer [0, 1, 2, 2, 1, 3] walks them (the particle batch's own
     // pattern).
@@ -67,17 +70,17 @@ fn vs_main(
         vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, 1.0),
     );
     let corner = corners[vi];
-    let p = place.xy + corner * place.zw;
+    let p = place.xy + corner.x * place.zw + corner.y * edge.xy;
     // The pixel space is top-left, y down; the NDC space is bottom-left,
     // y up, so the y axis flips when mapping.
     let ndc = vec2<f32>(p.x / u.size.x * 2.0 - 1.0, 1.0 - p.y / u.size.y * 2.0);
     var out: VertexOutput;
     out.position = vec4<f32>(ndc, 0.0, 1.0);
     out.uv_span = uv_span;
-    // The quad's own 0..1 coordinates: the pixel corners mapped up. The
-    // pixel space is y down, so quad_uv = (0, 0) lands on the quad's
-    // upper-left corner — where the atlas cell's first texel row and
-    // first column belong.
+    // The quad's own 0..1 coordinates: the ±1 corners mapped up. At
+    // rest the u-negative, v-negative corner is the quad's upper-left —
+    // where the atlas cell's first texel row and column belong — and
+    // under rotation that corner keeps carrying uv = (0, 0) with it.
     out.quad_uv = corner * 0.5 + vec2<f32>(0.5, 0.5);
     out.tint = tint;
     return out;

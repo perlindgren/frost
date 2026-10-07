@@ -214,13 +214,16 @@ pub(crate) enum Draw {
     },
     /// A tile-map batch drawn in one instanced draw call.
     ///
-    /// `data` holds three `vec4<f32>`s per tile — `(px, py, hw, hh)`
-    /// (pixel-space center and half-extents, top-left origin, y down),
+    /// `data` holds four `vec4<f32>`s per tile — `(px, py, ux, uy)`
+    /// (pixel-space center — top-left origin, y down — and the tile's
+    /// mapped x-axis half-edge), `(vx, vy, 0, 0)` (the mapped y-axis
+    /// half-edge; the two edge vectors carry the node's rotation with
+    /// them, the way the particle batch's packed angle does),
     /// `(min_u, min_v, max_u, max_v)` (the atlas sub-rectangle), and
-    /// `(r, g, b, a)` (the tile's tint: batch color times modulate times
-    /// the tile's own color) — packed as 48 bytes per tile, so
-    /// `count == data.len() / 48`. The whole batch shares the atlas
-    /// texture and the uniform's base `color`.
+    /// `(r, g, b, a)` (the tile's tint: the tile's own color, the batch
+    /// color and node modulate riding the uniform) — packed as 64 bytes
+    /// per tile, so `count == data.len() / 64`. The whole batch shares
+    /// the atlas texture and the uniform's base `color`.
     TileMap {
         /// The packed instance data, twelve floats (48 bytes) per tile.
         data: Vec<u8>,
@@ -768,33 +771,37 @@ pub(crate) fn tilemap_uniform_data(size: [f32; 2], color: Color) -> Vec<u8> {
     data
 }
 
-/// Packs one tile of a [`Draw::TileMap`] batch: twelve little-endian
-/// floats, 48 bytes — first the pixel center `(px, py)` and half-extents
-/// `(hw, hh)`, then the atlas sub-rectangle `(min_u, min_v, max_u,
-/// max_v)`, then the tint `(r, g, b, a)` — in the layout
-/// `tilemap.wgsl` reads as `array<vec4<f32>>` with three vec4s per
-/// instance. Negative half-extents are clamped to `0.0`.
+/// Packs one tile of a [`Draw::TileMap`] batch: sixteen little-endian
+/// floats, 64 bytes — the pixel center `(px, py)` and mapped x-axis
+/// half-edge `(ux, uy)`, the mapped y-axis half-edge `(vx, vy)` (padded
+/// to a vec4), the atlas sub-rectangle `(min_u, min_v, max_u, max_v)`,
+/// and the tint `(r, g, b, a)` — in the layout `tilemap.wgsl` reads as
+/// `array<vec4<f32>>` with four vec4s per instance. The quad spans
+/// `center ± u ± v`, so whatever the node's transform did to the tile's
+/// two axes — scale, flip, rotate — the quad follows.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tilemap_instance(
     px: f32,
     py: f32,
-    hw: f32,
-    hh: f32,
+    u: [f32; 2],
+    v: [f32; 2],
     uv: [f32; 4],
     tint: &Color,
-) -> [u8; 48] {
-    let mut out = [0u8; 48];
+) -> [u8; 64] {
+    let mut out = [0u8; 64];
     out[0..4].copy_from_slice(&px.to_le_bytes());
     out[4..8].copy_from_slice(&py.to_le_bytes());
-    out[8..12].copy_from_slice(&hw.max(0.0).to_le_bytes());
-    out[12..16].copy_from_slice(&hh.max(0.0).to_le_bytes());
-    for (i, v) in uv.iter().enumerate() {
-        out[16 + i * 4..20 + i * 4].copy_from_slice(&v.to_le_bytes());
+    out[8..12].copy_from_slice(&u[0].to_le_bytes());
+    out[12..16].copy_from_slice(&u[1].to_le_bytes());
+    out[16..20].copy_from_slice(&v[0].to_le_bytes());
+    out[20..24].copy_from_slice(&v[1].to_le_bytes());
+    for (i, w) in uv.iter().enumerate() {
+        out[32 + i * 4..36 + i * 4].copy_from_slice(&w.to_le_bytes());
     }
-    out[32..36].copy_from_slice(&tint.r.to_le_bytes());
-    out[36..40].copy_from_slice(&tint.g.to_le_bytes());
-    out[40..44].copy_from_slice(&tint.b.to_le_bytes());
-    out[44..48].copy_from_slice(&tint.a.to_le_bytes());
+    out[48..52].copy_from_slice(&tint.r.to_le_bytes());
+    out[52..56].copy_from_slice(&tint.g.to_le_bytes());
+    out[56..60].copy_from_slice(&tint.b.to_le_bytes());
+    out[60..64].copy_from_slice(&tint.a.to_le_bytes());
     out
 }
 

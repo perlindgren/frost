@@ -59,14 +59,17 @@ fn tilemap_clip_off_surface_skips_the_draw() {
 }
 
 #[test]
-fn tilemap_instances_pack_three_vec4s() {
-    // Center, half-extents; UV bounds; tint — twelve little-endian
-    // floats, 48 bytes, in the order tilemap.wgsl reads them.
+fn tilemap_instances_pack_four_vec4s() {
+    // Center and x-half-edge, y-half-edge (padded), UV bounds, tint —
+    // sixteen little-endian floats, 64 bytes, in the order
+    // tilemap.wgsl reads them. The edges are plain vectors: a rotated
+    // node's negative or swiveled directions pass through untouched —
+    // they carry the rotation.
     let bytes = tilemap_instance(
         65.0,
         25.0,
-        16.0,
-        24.0,
+        [16.0, -16.0],
+        [16.0, 16.0],
         [0.25, 0.5, 0.75, 1.0],
         &rgba(1.0, 0.5, 0.25, 0.8),
     );
@@ -76,14 +79,13 @@ fn tilemap_instances_pack_three_vec4s() {
     assert_eq!(
         floats,
         vec![
-            65.0, 25.0, 16.0, 24.0, 0.25, 0.5, 0.75, 1.0, 1.0, 0.5, 0.25, 0.8
+            65.0, 25.0, 16.0, -16.0, 16.0, 16.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 0.5, 0.25,
+            0.8
         ]
     );
-    // Negative half-extents clamp to zero rather than flipping the quad.
-    let bytes = tilemap_instance(0.0, 0.0, -5.0, -5.0, [0.0; 4], &rgba(0.0, 0.0, 0.0, 0.0));
-    assert_eq!(bytes[8..16], [0u8; 8]);
+    // The vec4 gap is dead bytes: zero, never neighbor data.
+    assert_eq!(bytes[24..32], [0u8; 8]);
 }
-
 #[test]
 fn tilemap_uniforms_layout_is_size_then_color() {
     // vec2 @ 0, vec4 @ 16 — 32 bytes, the WGSL-mirrored layout pinned by
