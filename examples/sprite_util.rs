@@ -191,6 +191,13 @@ const FILE_MENU: frost::Menu<'static> = frost::Menu {
 enum View {
     Markers,
     Atlas,
+    /// The tile-map desk: the work area becomes a map canvas — the
+    /// tileset's cell pitch extended as an infinite grid over the
+    /// checker, with the map's axes marked — and the sprite steps off
+    /// it: the tileset is the source, the map (once it can hold tiles)
+    /// is what the canvas shows. The grid is the whole view today;
+    /// painting tiles into maps arrives with its own steps.
+    TileMap,
 }
 
 impl View {
@@ -199,6 +206,7 @@ impl View {
         match self {
             View::Markers => "Markers",
             View::Atlas => "Atlas",
+            View::TileMap => "Tile Map",
         }
     }
 }
@@ -247,6 +255,37 @@ struct World {
     anim: WorldAnim,
     view: View,
     selection: Option<[f32; 4]>,
+    maps: Vec<MapLayer>,
+}
+
+/// One tileset's worth of painted cells, anchored on the map's origin:
+/// a grid of atlas-cell indices, `EMPTY_CELL` where nothing stands.
+/// A multi-tileset picture is several of these layers, each naming its
+/// tileset by path — the desk paints one, the canvas shows them all.
+#[derive(Clone, PartialEq)]
+struct MapLayer {
+    /// The PNG the cells cut their pictures from. By path, because
+    /// slots shift when sprites close and a map outlives that shuffle.
+    tileset: std::path::PathBuf,
+    cols: usize,
+    rows: usize,
+    cells: Vec<u32>,
+    /// Each cell's orientation, painted with the cell and erased with
+    /// it: bit 0 flip-x, bit 1 flip-y, bits 2..3 clockwise quarter-
+    /// turns. The transform is the map's memory, not the brush's mood
+    /// — which is why it lives here, inside the layer, and rides the
+    /// undo road in every snapshot of the world.
+    tfms: Vec<u8>,
+}
+
+/// One mouse-held paint stroke. `touched` gates the undo step: a
+/// stroke that changes nothing (a click outside the map) must not
+/// claim a place on the road.
+#[derive(Clone, Copy)]
+struct Paint {
+    erase: bool,
+    touched: bool,
+    n: u32,
 }
 
 /// The most worlds either road keeps; older steps age off the back.
@@ -316,18 +355,22 @@ const PANEL_W: f32 = 300.0;
 /// with the sprite — one cell is always 16 pixels on screen.
 const CHECK_CELL: f32 = 16.0;
 
-/// The checker's default light grey level, 0.0-1.0.
-const GREY_LIGHT: f32 = 0.95;
+/// The checker's default light grey level, 0.0-1.0. The defaults are
+/// deliberately near-black: the pattern must read as a checkerboard
+/// without becoming the brightest thing in a dark room — the greys
+/// stay live sliders in the View menu for whoever wants them louder.
+const GREY_LIGHT: f32 = 0.10;
 
 /// The checker's default dark grey level, 0.0-1.0.
-const GREY_DARK: f32 = 0.65;
+const GREY_DARK: f32 = 0.05;
 
 /// How far the left button may travel between press and release and still
 /// count as a click (select a slot, or log a pixel) rather than a drag
 /// (a selection rectangle in the work area, or a slot swap).
 const CLICK_TOL: f32 = 4.0;
 
-/// The number of sprite slots along the bottom.
+/// The strip's thumbnail pool: the most slots visible at once. A
+/// deeper rack rides behind the strip's scrollbar.
 const SLOTS: usize = 7;
 
 /// A slot's edge, in pixels.
@@ -383,6 +426,22 @@ const SELECT: frost::Color = frost::Color {
     b: 1.0,
     a: 1.0,
 };
+/// The tile-map desk's grid lines: one order above the checker and
+/// below every shape, so painted tiles will sit on the grid, not in it.
+const GRID_Z: f32 = -0.5;
+/// The map's own axes: a touch louder than the grid, still beneath
+/// everything paintable.
+const AXIS: frost::Color = frost::Color {
+    r: 0.62,
+    g: 0.62,
+    b: 0.68,
+    a: 1.0,
+};
+const AXIS_Z: f32 = -0.4;
+/// The grid's doubling ladder: while a cell's on-screen pitch drops
+/// below this many window pixels, the drawn step doubles — so the grid
+/// stays a few dozen lines at any zoom, always on whole cells.
+const GRID_MIN_PX: f32 = 8.0;
 /// The atlas' tile grid: the sprite split into its rows and columns.
 const TILE: frost::Color = frost::Color {
     r: 0.55,
@@ -502,10 +561,41 @@ const RON_ORDER: f32 = 15_000.0;
 /// The position markers' pool: two circles per position — the colour
 /// dot and its white centre — ordered above the sprite, its box and the
 /// click marker, and under the UI's panel plate.
+/// The band's cell nodes: after every node the sprite desks own, and
+/// before the single ghost node that completes the pool.
+const BAND0: usize = SPOTT + SPOTS_MAX;
+const GHOST: usize = BAND0 + BAND_CELLS;
 const SPOTS: usize = THUMBS + SLOTS;
 const SPOTT: usize = SPOTS + 2 * SPOTS_MAX;
 const SPOTS_MAX: usize = 24;
 const SPOT_ORDER: f32 = 2.9;
+/// How many tileset cells the band shows at most; a bigger atlas waits
+/// for the band's own scrolling (a later step).
+/// A cell with nothing in it. Real atlas cells count from 0.
+const EMPTY_CELL: u32 = u32::MAX;
+/// The map a first click creates: 40 by 24 tiles at the origin — a
+/// generous field one canvas wide at 1:1 zoom. A map-size control is
+/// the ergonomics step's; the layer stores its own size, so the
+/// default can change without disturbing any painted map.
+const MAP_COLS: usize = 40;
+const MAP_ROWS: usize = 24;
+/// Maps draw above the desk's grid, below the band and the ghost.
+const MAP_Z: f32 = 1.0;
+/// The rack's node pool: a tileset grid up to 8 x 8 shows whole; a
+/// deeper grid's tail stays out of the rack.
+const BAND_CELLS: usize = 64;
+/// The band's cell boxes on screen: a row of squares this wide, above
+/// the slots strip, starting at the window's left edge.
+const BAND_CELL: f32 = 56.0;
+/// The gap between two band cells.
+const BAND_GAP: f32 = 6.0;
+/// The band's cell shapes' order: above the map's future tiles, below
+/// the HUD, so the source art is never hidden by its own picture.
+const BAND_Z: f32 = 1.4;
+/// The cursor ghost's order: above the cells, below dragged things.
+const GHOST_Z: f32 = 2.6;
+/// The cursor ghost's opacity: a promise, not a commitment.
+const GHOST_A: f32 = 0.55;
 /// The seat numbers beside list-entry markers: deliberately larger
 /// than the row text — they're read at a glance over the art, where
 /// the palette dot alone is not enough.
@@ -733,6 +823,29 @@ impl Anim {
 struct Demo {
     /// The widget layer: the View and Operations panels.
     ui: frost::Ui,
+    /// The tileset band's base shape: a `TileMap` shape sharing the
+    /// active tileset's very pixel buffer (the same texture the sprite
+    /// desk draws), kept so each cell is a one-tile clone of it.
+    band_base: Option<frost::Shape>,
+    /// What `band_base` was built from — slot, texture identity, grid —
+    /// so the rebuild happens only when one of them moves.
+    band_key: Option<(usize, usize, u64, usize, usize)>,
+    /// The band's per-cell shapes: one tile each, sized to fit the
+    /// cell box, rebuilt with the base.
+    cell_shapes: Vec<frost::Shape>,
+    /// The atlas cell the next click will paint: the brush. A tool
+    /// mode like the active slot, outside the undo road.
+    picked_cell: Option<usize>,
+    /// The tile desk's painted layers — the picture, and the undo
+    /// road's property (captured into every `World`).
+    maps: Vec<MapLayer>,
+    /// A left- or right-held paint stroke, between press and release.
+    paint: Option<Paint>,
+    /// The very first frame re-syncs the work pool after the world
+    /// exists: the boot construction baked the sprite into a node by
+    /// hand, and everything the world can carry (maps included)
+    /// reaches the canvas through `sync_work` from then on.
+    first_frame: bool,
     /// The loaded sprites — a sprite's slot is its index.
     sprites: Vec<Sprite>,
     /// The slot whose sprite fills the work area and takes the
@@ -754,6 +867,11 @@ struct Demo {
     drag_from: Option<[f32; 2]>,
     /// The slot being dragged between slots, and where its press began.
     slot_drag: Option<(usize, [f32; 2])>,
+    /// The slot strip's scroll, in window pixels — `f32::MAX` parks
+    /// it at the far end, clamped back each frame.
+    slot_scroll: f32,
+    /// The scrollbar knob's grab offset while it is dragged.
+    slot_scrub: Option<f32>,
     /// Whether Ctrl-Z was held last frame: its rising edge is the undo.
     was_undo: bool,
     /// Whether Ctrl-O was held last frame: its rising edge is the open.
@@ -814,6 +932,16 @@ struct Demo {
     /// The zoom pair's edges, same rising-edge rule.
     was_zoom_in: bool,
     was_zoom_out: bool,
+    /// The paintbrush's standing orientation: bit 0 flip-x, bit 1
+    /// flip-y, bits 2..3 clockwise quarter-turns. Tool state, like the
+    /// picked cell — outside the undo road; it changes what the NEXT
+    /// stroke paints, and every map keeps what it was painted with.
+    brush: u8,
+    /// The orientation keys' edges: X mirrors sideways, Y mirrors
+    /// top-to-bottom, R turns a quarter clockwise, Shift-R back.
+    was_flipx: bool,
+    was_flipy: bool,
+    was_turn: bool,
     /// The folder the next dialog opens in: where the last file was
     /// read from or written to, or — before any dialog has run — the
     /// folder the command line named, the working directory when no
@@ -860,18 +988,109 @@ impl Demo {
         }
     }
 
+    /// Rebuild the tileset band when the tileset, its texture or its
+    /// grid moved. The base is the active sprite's own pixels wearing a
+    /// `TileMap` face — one texture for the sprite and every cell of
+    /// the band, keyed by the same buffer identity the engine's
+    /// texture cache uses — and each cell is that base with a single
+    /// tile: the cell's atlas rectangle, stretched over the cell box.
+    fn sync_band(&mut self) {
+        let Some((key, base, tiles)) = self.active().and_then(|sp| match &sp.shape {
+            frost::Shape::Sprite {
+                data,
+                width,
+                height,
+                generation,
+                ..
+            } => {
+                let (rows, cols) = sp.atlas.unwrap_or((1, 1));
+                let key = (
+                    self.active,
+                    std::sync::Arc::as_ptr(data) as *const u8 as usize,
+                    *generation,
+                    rows,
+                    cols,
+                );
+                let base = frost::Shape::TileMap {
+                    data: data.clone(),
+                    width: *width,
+                    height: *height,
+                    generation: *generation,
+                    filter: frost::SpriteFilter::Nearest,
+                    tiles: Vec::new(),
+                    clip: None,
+                    color: frost::Color {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 1.0,
+                        a: 1.0,
+                    },
+                };
+                Some((
+                    key,
+                    base,
+                    [
+                        *width as f32 / cols.max(1) as f32,
+                        *height as f32 / rows.max(1) as f32,
+                    ],
+                ))
+            }
+            _ => None,
+        }) else {
+            self.band_base = None;
+            self.band_key = None;
+            self.cell_shapes.clear();
+            return;
+        };
+        if self.band_key == Some(key) {
+            return;
+        }
+        self.band_key = Some(key);
+        let (rows, cols) = (key.3, key.4);
+        // Fit the cell's texture aspect inside the band's square box.
+        let k = (BAND_CELL / tiles[0]).min(BAND_CELL / tiles[1]);
+        let (dw, dh) = (tiles[0] * k, tiles[1] * k);
+        let cells = (rows * cols).min(BAND_CELLS);
+        self.cell_shapes = (0..cells)
+            .map(|i| {
+                let mut shape = base.clone();
+                shape.set_tiles(vec![frost::Tile::new(
+                    [0.0, 0.0],
+                    [dw, dh],
+                    cell_uv(i, rows, cols),
+                )]);
+                shape
+            })
+            .collect();
+        self.band_base = Some(base);
+        // A grid that shrank under the brush drops the brush.
+        if self.picked_cell.is_some_and(|c| c >= rows * cols) {
+            self.picked_cell = None;
+        }
+    }
+
     /// Repaint the work area's layer pool: the animation's current frame
     /// when any frame exists (so the panel previews what it edits), else
-    /// the active sprite alone in the first node.
+    /// the active sprite alone in the first node. On the tile-map desk
+    /// the same pool carries the maps — one painted layer per node.
     fn sync_work(&self, ctx: &mut frost::Context) {
         let frame = if self.anim.frames.is_empty() {
             None
         } else {
             Some(&self.anim.frames[self.anim.frame.min(self.anim.frames.len() - 1)])
         };
+        // The tile-map desk shows maps, not the tileset: the sprite and
+        // the animation's layers stay off the canvas (the tileset is the
+        // paint source, not the picture).
+        let tile_view = self.view == View::TileMap;
         for i in 0..LAYER_NODES {
             let node = &mut ctx.scene().root.children[i];
+            node.order = if tile_view { MAP_Z } else { i as f32 * 0.01 };
             node.shape = match &frame {
+                _ if tile_view => self
+                    .maps
+                    .get(i)
+                    .and_then(|m| m.shape(self.sprites.iter().find(|sp| sp.path == m.tileset))),
                 Some(f) => f.layers.get(i).map(|l| l.shape.clone()),
                 None if i == 0 => self.active().map(|sp| sp.shape.clone()),
                 None => None,
@@ -914,10 +1133,6 @@ impl Demo {
     /// becomes the active one. A full house or an unloadable file is
     /// reported on the status line, not fatal.
     fn load_sprite(&mut self, ctx: &mut frost::Context, path: std::path::PathBuf) {
-        if self.sprites.len() >= SLOTS {
-            self.status = format!("open: all {SLOTS} slots are full");
-            return;
-        }
         match read_sprite(&path) {
             Err(err) => {
                 log::warn!("open failed: {err}");
@@ -943,10 +1158,6 @@ impl Demo {
 
     /// Open: a native dialog for another sprite, into the next free slot.
     fn open_dialog(&mut self, ctx: &mut frost::Context) {
-        if self.sprites.len() >= SLOTS {
-            self.status = format!("open: all {SLOTS} slots are full");
-            return;
-        }
         let mut dialog = rfd::FileDialog::new()
             .set_title("sprite_util: open a sprite")
             .add_filter("PNG images", &["png"]);
@@ -1049,6 +1260,7 @@ impl Demo {
             },
             view: self.view,
             selection: self.selection,
+            maps: self.maps.clone(),
         }
     }
 
@@ -1134,6 +1346,8 @@ impl Demo {
         self.anim = anim;
         self.view = world.view;
         self.selection = world.selection;
+        self.maps = world.maps;
+        self.paint = None;
         self.last_click = None;
         let (w, h) = self
             .active()
@@ -1549,6 +1763,14 @@ impl frost::Process for Demo {
         // The active sprite's center in window coordinates: the work
         // area's center plus the pan offset.
         let view = [self.offset[0], self.offset[1] + WORK_Y];
+        // The tile-map desk's canvas behavior: no sprite to pick, drag
+        // or crop — the canvas is a map camera now.
+        let tile_view = self.view == View::TileMap;
+        if self.first_frame {
+            self.first_frame = false;
+            self.sync_work(ctx);
+        }
+        self.sync_band();
 
         // Every sidecar tree re-pins its scroll every frame, so folding
         // a node, resizing a panel or closing a file can never strand a
@@ -1592,16 +1814,31 @@ impl frost::Process for Demo {
                 scrolled = true;
             }
         }
+        // The slot strip's window for this frame: its plate count —
+        // one per sprite plus the spare loader plate — the pool's
+        // visible width, and the scroll clamped to what they allow.
+        // (`f32::MAX` parked in the scroll means "ride to the end",
+        // how a freshly loaded sprite earns its view.)
+        let slot_count = self.sprites.len() + 1;
+        let sv = strip_view(w, slot_count);
+        self.slot_scroll = self.slot_scroll.clamp(0.0, sv.scroll_max);
         if wheel != 0.0 && !scrolled {
-            let z1 = (self.zoom * WHEEL_ZOOM.powf(wheel)).clamp(ZOOM_MIN, ZOOM_MAX);
-            if z1 != self.zoom {
-                let k = z1 / self.zoom;
-                let [ax, ay] = pos.unwrap_or([0.0, WORK_Y]);
-                self.offset = [
-                    ax - (ax - self.offset[0]) * k,
-                    (ay - WORK_Y) - ((ay - WORK_Y) - self.offset[1]) * k,
-                ];
-                self.zoom = z1;
+            let over_strip = pos.is_some_and(|p| p[1] < -h / 2.0 + STRIP_H);
+            if over_strip && sv.scroll_max > 0.0 {
+                // The wheel belongs to the strip while the cursor
+                // rests on it and there is something to scroll.
+                self.slot_scroll = (self.slot_scroll - wheel * 48.0).clamp(0.0, sv.scroll_max);
+            } else {
+                let z1 = (self.zoom * WHEEL_ZOOM.powf(wheel)).clamp(ZOOM_MIN, ZOOM_MAX);
+                if z1 != self.zoom {
+                    let k = z1 / self.zoom;
+                    let [ax, ay] = pos.unwrap_or([0.0, WORK_Y]);
+                    self.offset = [
+                        ax - (ax - self.offset[0]) * k,
+                        (ay - WORK_Y) - ((ay - WORK_Y) - self.offset[1]) * k,
+                    ];
+                    self.zoom = z1;
+                }
             }
         }
 
@@ -1622,6 +1859,7 @@ impl frost::Process for Demo {
         // position is picked, so the next LEFT click moves it. A press
         // that travels is a pan attempt, not a pick.
         if rpressed
+            && !tile_view
             && let Some(p) = pos
             && !over_ron
         {
@@ -1889,6 +2127,38 @@ impl frost::Process for Demo {
         self.was_redo = redo_key;
         self.was_zoom_in = zoom_in;
         self.was_zoom_out = zoom_out;
+        // The brush's orientation, on the tile desk only: X and Y
+        // mirror the cell, R turns a quarter clockwise, Shift-R back.
+        // Characters lead, as everywhere the keyboard turns — a letter
+        // follows the user's layout — but the turn's DIRECTION reads
+        // the physical Shift, so a Caps-Locked keyboard still turns
+        // clockwise on a plain R.
+        let flipx_key = tile_view && (ctx.char_down('x') || ctx.char_down('X'));
+        let flipy_key = tile_view && (ctx.char_down('y') || ctx.char_down('Y'));
+        let turn_key = tile_view && (ctx.char_down('r') || ctx.char_down('R'));
+        if flipx_key && !self.was_flipx {
+            self.brush ^= 1;
+            self.status = if self.brush & 1 != 0 {
+                "flip x on".to_owned()
+            } else {
+                "flip x off".to_owned()
+            };
+        }
+        if flipy_key && !self.was_flipy {
+            self.brush ^= 2;
+            self.status = if self.brush & 2 != 0 {
+                "flip y on".to_owned()
+            } else {
+                "flip y off".to_owned()
+            };
+        }
+        if turn_key && !self.was_turn {
+            self.brush = tfm_turn(self.brush, !shift);
+            self.status = format!("turned {}", turn_note(self.brush));
+        }
+        self.was_flipx = flipx_key;
+        self.was_flipy = flipy_key;
+        self.was_turn = turn_key;
 
         // Space's rising edge starts and stops the animation clock.
         let space = ctx.key_down(frost::KeyCode::Space);
@@ -1982,8 +2252,8 @@ impl frost::Process for Demo {
         }
         notes.push(self.view.name());
         // The View menu is assembled each frame: the three named corners
-        // (Markers and Atlas switch the workbench, Tile Map waits for its
-        // view and stays inert), and beneath them the view's own state —
+        // all switch the workbench, and beneath them the view's own
+        // state —
         // the zoom as a readout, the checker's two greys as live
         // sliders. The panel that carried all of it is gone; the menu
         // wears its clothes. The last click needs no line: the bar's
@@ -1992,16 +2262,33 @@ impl frost::Process for Demo {
         let view_menu = frost::Menu {
             title: "View",
             items: &[
-                frost::MenuItem::new("Markers", ""),
-                frost::MenuItem::new("Atlas", ""),
-                frost::MenuItem::new("Tile Map", ""),
+                frost::MenuItem::new("Markers", "").checked(self.view == View::Markers),
+                frost::MenuItem::new("Atlas", "").checked(self.view == View::Atlas),
+                frost::MenuItem::new("Tile Map", "").checked(self.view == View::TileMap),
                 frost::MenuItem::SEPARATOR,
                 frost::MenuItem::readout("Zoom", "Ctrl +/Ctrl -", &zoom_note),
                 frost::MenuItem::slider("Light", 0.0, 1.0, self.light),
                 frost::MenuItem::slider("Dark", 0.0, 1.0, self.dark),
             ],
         };
-        let menus = [FILE_MENU, view_menu, OPERATIONS_MENU];
+        // The brush's own menu, and it has no reason to exist off the
+        // tile desk: transforms paint cells, and only there are cells.
+        let transform_menu = frost::Menu {
+            title: "Transform",
+            items: &[
+                frost::MenuItem::new("Flip X", "X").checked(self.brush & 1 != 0),
+                frost::MenuItem::new("Flip Y", "Y").checked(self.brush & 2 != 0),
+                frost::MenuItem::SEPARATOR,
+                frost::MenuItem::new("Rotate 90 CW", "R"),
+                frost::MenuItem::new("Rotate 90 CCW", "Shift-R"),
+                frost::MenuItem::readout("Turn", "", turn_note(self.brush)),
+            ],
+        };
+        let menus: Vec<frost::Menu> = if tile_view {
+            vec![FILE_MENU, view_menu, transform_menu, OPERATIONS_MENU]
+        } else {
+            vec![FILE_MENU, view_menu, OPERATIONS_MENU]
+        };
         match self.ui.menu_bar(ctx, &menus, &notes) {
             Some(frost::MenuEvent::Chose(menu, item)) => {
                 log::info!("menu: {menu} / {item}");
@@ -2010,8 +2297,28 @@ impl frost::Process for Demo {
                 // simply write over it, and the note reads theirs.
                 self.status = item.to_lowercase();
                 match (menu, item) {
-                    ("View", "Markers") => self.view = View::Markers,
-                    ("View", "Atlas") => self.view = View::Atlas,
+                    // Switching the desk re-syncs the work layer: the
+                    // tile-map desk hides the sprite (it is the paint
+                    // source, not the picture), and leaving it brings
+                    // the sprite — or the animation frame — back.
+                    ("View", "Markers") => {
+                        self.view = View::Markers;
+                        self.sync_work(ctx);
+                    }
+                    ("View", "Atlas") => {
+                        self.view = View::Atlas;
+                        self.sync_work(ctx);
+                    }
+                    ("View", "Tile Map") => {
+                        self.view = View::TileMap;
+                        self.sync_work(ctx);
+                    }
+                    // The brush turns and mirrors; the maps keep what
+                    // they were painted with, so nothing re-syncs.
+                    ("Transform", "Flip X") => self.brush ^= 1,
+                    ("Transform", "Flip Y") => self.brush ^= 2,
+                    ("Transform", "Rotate 90 CW") => self.brush = tfm_turn(self.brush, true),
+                    ("Transform", "Rotate 90 CCW") => self.brush = tfm_turn(self.brush, false),
                     ("File", "Open") => self.open_dialog(ctx),
                     ("File", "Close") => self.close_active(ctx),
                     ("File", "Save") => self.save(ctx),
@@ -2019,7 +2326,7 @@ impl frost::Process for Demo {
                     ("File", "Undo") => self.undo(ctx),
                     ("File", "Redo") => self.redo(ctx),
                     ("Operations", "Crop") => self.crop(ctx),
-                    // Quit and Tile Map wait for the day their verbs exist.
+                    // Quit waits for the day its verb exists.
                     _ => {}
                 }
             }
@@ -2150,10 +2457,114 @@ impl frost::Process for Demo {
             && !self.ui.hovering()
             && let Some(p) = pos
         {
-            match slot_at(p, w, h) {
-                Some(i) => self.slot_drag = Some((i, p)),
-                None if in_work_area(p, w, h) => self.drag_from = Some(p),
-                None => {}
+            // The strip's scrollbar claims its bottom band first; the
+            // plates sit above it and never share its pixels.
+            let scrub = sv.scroll_max > 0.0
+                && p[1] <= -h / 2.0 + (SCROLL_Y + SCROLL_H / 2.0)
+                && p[0] >= sv.x0
+                && p[0] <= sv.x0 + sv.track_w;
+            if scrub {
+                self.slot_scrub = Some(p[0] - scroll_knob(&sv, self.slot_scroll).0);
+            } else {
+                // On the tile desk the band claims its own cells first:
+                // clicking one sets the brush. Nowhere else does the
+                // press mean anything new.
+                let (brows, bcols) = self.active().and_then(|sp| sp.atlas).unwrap_or((1, 1));
+                let cell = if tile_view {
+                    band_pick(p, w, h, brows, bcols, self.cell_shapes.len())
+                } else {
+                    None
+                };
+                match cell {
+                    Some(i) => {
+                        self.picked_cell = Some(i);
+                        self.status = format!("tile {} picked", i + 1);
+                    }
+                    None => match slot_at(p, w, h, self.slot_scroll, slot_count) {
+                        Some(i) => self.slot_drag = Some((i, p)),
+                        None if in_work_area(p, w, h) && !tile_view => self.drag_from = Some(p),
+                        None if tile_view
+                            && in_work_area(p, w, h)
+                            && self.picked_cell.is_some() =>
+                        {
+                            self.paint = Some(Paint {
+                                erase: false,
+                                touched: false,
+                                n: 0,
+                            });
+                        }
+                        None => {}
+                    },
+                }
+            }
+        }
+        // Right on the tile desk erases: a press there opens a stroke,
+        // and the block below keeps it erasing for as long as the
+        // button is held. (Elsewhere right still spot-picks.)
+        if rpressed
+            && tile_view
+            && let Some(p) = pos
+            && !over_ron
+            && !self.ui.hovering()
+            && in_work_area(p, w, h)
+        {
+            self.paint = Some(Paint {
+                erase: true,
+                touched: false,
+                n: 0,
+            });
+        }
+        // The stroke, continued: every frame the painting button is
+        // held, the cell under the cursor is written. The undo step is
+        // taken on the first cell the stroke actually changes — a
+        // click on empty space outside the map stays a no-op all the
+        // way down, road unstained.
+        let stroke = self
+            .paint
+            .map(|st| (st.erase, if st.erase { rdown } else { down }));
+        if let Some((erase, true)) = stroke
+            && let Some(p) = pos
+        {
+            let brush = self.active().map(|sp| {
+                let (arows, acols) = sp.atlas.unwrap_or((1, 1));
+                (
+                    sp.path.clone(),
+                    sp.current.width() as f32 / acols.max(1) as f32,
+                    sp.current.height() as f32 / arows.max(1) as f32,
+                )
+            });
+            if let Some((path, tw, th)) = brush {
+                let mx = (p[0] - view[0]) / self.zoom;
+                let my = (p[1] - view[1]) / self.zoom;
+                let (col, row) = grid_cell(mx, my, tw, th);
+                let changed = if erase {
+                    erase_at(&mut self.maps, col, row)
+                } else if let Some(cell) = self.picked_cell {
+                    paint_at(&mut self.maps, &path, cell, self.brush, col, row)
+                } else {
+                    false
+                };
+                if changed {
+                    if self.paint.is_some_and(|st| !st.touched) {
+                        self.stamp();
+                    }
+                    if let Some(st) = &mut self.paint {
+                        st.touched = true;
+                        st.n += 1;
+                    }
+                    self.sync_work(ctx);
+                }
+            }
+        }
+        // Release closes the stroke, and a stroke that painted says
+        // how many cells it moved.
+        for (edge, erase, word) in [(released, false, "painted"), (rreleased, true, "erased")] {
+            if edge
+                && self.paint.is_some_and(|st| st.erase == erase)
+                && let Some(st) = self.paint.take()
+                && st.touched
+            {
+                self.status = format!("{word} {} cell{}", st.n, if st.n == 1 { "" } else { "s" });
             }
         }
         // The sidecar views' trees, one widget frame each: the widget
@@ -2280,12 +2691,22 @@ impl frost::Process for Demo {
             {
                 let moved = ((p[0] - from[0]).powi(2) + (p[1] - from[1]).powi(2)).sqrt();
                 if moved < CLICK_TOL {
-                    self.active = from_slot;
-                    self.selection = None;
-                    self.last_click = None;
-                    self.sync_work(ctx);
-                } else if let Some(to) = slot_at(p, w, h)
+                    if from_slot < self.sprites.len() {
+                        self.active = from_slot;
+                        self.selection = None;
+                        self.last_click = None;
+                        self.sync_work(ctx);
+                    } else {
+                        // The spare plate: pressing it opens the
+                        // dialog, and the scroll parks at the far end
+                        // so the newcomer is in view when it lands.
+                        self.open_dialog(ctx);
+                        self.slot_scroll = f32::MAX;
+                    }
+                } else if from_slot < self.sprites.len()
+                    && let Some(to) = slot_at(p, w, h, self.slot_scroll, self.sprites.len() + 1)
                     && to != from_slot
+                    && to < self.sprites.len()
                 {
                     self.stamp();
                     self.sprites.swap(from_slot, to);
@@ -2293,6 +2714,18 @@ impl frost::Process for Demo {
                     self.refresh_slots(ctx);
                 }
             }
+        }
+
+        // A held scrollbar knob rides the cursor; letting go ends it.
+        if let Some(grab) = self.slot_scrub
+            && let Some(p) = pos
+        {
+            let kw = scroll_knob(&sv, self.slot_scroll).1;
+            let f = ((p[0] - grab) - sv.x0) / (sv.track_w - kw).max(1.0);
+            self.slot_scroll = (f * sv.scroll_max).clamp(0.0, sv.scroll_max);
+        }
+        if !down {
+            self.slot_scrub = None;
         }
 
         // The work area's layer pool: every node carries the pan and the
@@ -2316,15 +2749,21 @@ impl frost::Process for Demo {
         let (hw, hh) = ((tw * self.zoom) / 2.0, (th * self.zoom) / 2.0);
         let (bx0, by0) = (view[0] - hw, view[1] - hh);
         let (bx1, by1) = (view[0] + hw, view[1] + hh);
-        // The box's intersection with the work area.
-        let (rx0, ry0, rx1, ry1) = (
-            bx0.max(-w / 2.0),
-            by0.max(-h / 2.0 + STRIP_H),
-            bx1.min(w / 2.0),
-            by1.min(h / 2.0),
-        );
+        // The box's intersection with the work area — or, on the
+        // tile-map desk, the work area entire: the map has no bounds
+        // the checker should respect, so the pattern fills the canvas.
+        let (rx0, ry0, rx1, ry1) = if tile_view {
+            (-w / 2.0, -h / 2.0 + STRIP_H, w / 2.0, h / 2.0)
+        } else {
+            (
+                bx0.max(-w / 2.0),
+                by0.max(-h / 2.0 + STRIP_H),
+                bx1.min(w / 2.0),
+                by1.min(h / 2.0),
+            )
+        };
         let checker = &mut ctx.scene().root.children[CHECKER];
-        if rx1 > rx0 && ry1 > ry0 && tw > 0.0 {
+        if rx1 > rx0 && ry1 > ry0 && (tw > 0.0 || tile_view) {
             let cw = ((rx1 - rx0) / CHECK_CELL).ceil() as u32;
             let ch = ((ry1 - ry0) / CHECK_CELL).ceil() as u32;
             let key = (
@@ -2351,7 +2790,7 @@ impl frost::Process for Demo {
 
         // The bounding box: the sprite's full on-screen rectangle; the
         // parts outside the window are clipped by the GPU.
-        if tw > 0.0 && th > 0.0 {
+        if tw > 0.0 && th > 0.0 && !tile_view {
             ctx.line(bx0, by0, bx1, by0, BBOX, BBOX_WIDTH, BBOX_Z);
             ctx.line(bx1, by0, bx1, by1, BBOX, BBOX_WIDTH, BBOX_Z);
             ctx.line(bx1, by1, bx0, by1, BBOX, BBOX_WIDTH, BBOX_Z);
@@ -2360,7 +2799,7 @@ impl frost::Process for Demo {
 
         // The crop selection: the texture-space rectangle mapped back to
         // the window — the same transform the marker dot uses.
-        if let Some([x0, y0, x1, y1]) = self.selection {
+        if let Some([x0, y0, x1, y1]) = self.selection.filter(|_| !tile_view) {
             let wx = |px: f32| (px - tw / 2.0) * self.zoom + view[0];
             let wy = |py: f32| (th / 2.0 - py) * self.zoom + view[1];
             let (sx0, sx1) = (wx(x0), wx(x1));
@@ -2375,6 +2814,7 @@ impl frost::Process for Demo {
         // sprite, the split drawn over the texture. The inner lines
         // only — the outer ones are the bounding box.
         if let Some((rows, cols)) = self.active().and_then(|sp| sp.atlas)
+            && !tile_view
             && tw > 0.0
             && th > 0.0
             && (rows > 1 || cols > 1)
@@ -2391,8 +2831,56 @@ impl frost::Process for Demo {
             }
         }
 
-        // The slots strip: its floor, each slot's plate, and the active
-        // slot's frame. The thumbnails are scene nodes, positioned below.
+        // The tile-map grid: the active tileset's cell pitch extended
+        // across the whole work area, the map axes drawn louder. The
+        // drawn step doubles while a cell shrinks below GRID_MIN_PX on
+        // screen, so the grid thins by powers of two — always on whole
+        // cells, always a few dozen lines, and the tile coordinates
+        // stay legible off any surviving line. With no tileset loaded
+        // the pitch falls back to the demo tile, so the desk is never
+        // a blank void.
+        if tile_view {
+            let (tx, ty) = self
+                .active()
+                .map(|sp| {
+                    let (rows, cols) = sp.atlas.unwrap_or((1, 1));
+                    (
+                        sp.current.width() as f32 / cols.max(1) as f32,
+                        sp.current.height() as f32 / rows.max(1) as f32,
+                    )
+                })
+                .unwrap_or((32.0, 32.0));
+            let (sx, sy) = (grid_step(tx, self.zoom), grid_step(ty, self.zoom));
+            let (x0w, y0w, x1w, y1w) = (-w / 2.0, -h / 2.0 + STRIP_H, w / 2.0, h / 2.0);
+            // The work area's corners in map space; the window's y-up
+            // and the map's y-up agree, so one sign serves both axes.
+            let (mx0, mx1) = ((x0w - view[0]) / self.zoom, (x1w - view[0]) / self.zoom);
+            let (my0, my1) = ((y0w - view[1]) / self.zoom, (y1w - view[1]) / self.zoom);
+            let wx = |x: f32| x * self.zoom + view[0];
+            let wy = |y: f32| y * self.zoom + view[1];
+            let cols_at = |n: i64| if n == 0 { AXIS } else { TILE };
+            let wid_at = |n: i64| if n == 0 { BBOX_WIDTH } else { TILE_WIDTH };
+            let z_at = |n: i64| if n == 0 { AXIS_Z } else { GRID_Z };
+            let nx = |v: f32, s: f32| (v / s).floor() as i64;
+            let nxe = |v: f32, s: f32| (v / s).ceil() as i64;
+            let mut n = nx(mx0, sx);
+            while n <= nxe(mx1, sx) {
+                let x = wx(n as f32 * sx);
+                ctx.line(x, y0w, x, y1w, cols_at(n), wid_at(n), z_at(n));
+                n += 1;
+            }
+            let mut n = nx(my0, sy);
+            while n <= nxe(my1, sy) {
+                let y = wy(n as f32 * sy);
+                ctx.line(x0w, y, x1w, y, cols_at(n), wid_at(n), z_at(n));
+                n += 1;
+            }
+        }
+
+        // The slots strip: its floor, one plate per sprite plus the
+        // spare loader plate, the active slot's frame — and, when the
+        // plates outrun the pool, a scrollbar along the strip's bottom
+        // edge.
         ctx.rectangle(
             0.0,
             -h / 2.0 + STRIP_H / 2.0,
@@ -2401,14 +2889,24 @@ impl frost::Process for Demo {
             STRIP,
             STRIP_Z,
         );
-        for i in 0..SLOTS {
-            let [cx, cy] = slot_center(i, w, h);
+        for i in 0..slot_count {
+            let [cx, cy] = slot_center(i, w, h, self.slot_scroll);
+            if cx + SLOT / 2.0 < sv.x0 || cx - SLOT / 2.0 > sv.x0 + sv.visible_px {
+                continue;
+            }
             let plate = if i < self.sprites.len() {
                 PLATE
             } else {
                 PLATE_EMPTY
             };
             ctx.rectangle(cx, cy, SLOT / 2.0, SLOT / 2.0, plate, PLATE_Z);
+            if i == self.sprites.len() {
+                // The spare plate wears a plus: press it for the open
+                // dialog.
+                let g = SLOT / 5.0;
+                ctx.line(cx - g, cy, cx + g, cy, AXIS, 2.0, PLATE_Z + 0.1);
+                ctx.line(cx, cy - g, cx, cy + g, AXIS, 2.0, PLATE_Z + 0.1);
+            }
             if i == self.active && i < self.sprites.len() {
                 let r = SLOT / 2.0;
                 ctx.line(cx - r, cy - r, cx + r, cy - r, SELECT, BBOX_WIDTH, FRAME_Z);
@@ -2417,18 +2915,171 @@ impl frost::Process for Demo {
                 ctx.line(cx - r, cy + r, cx - r, cy - r, SELECT, BBOX_WIDTH, FRAME_Z);
             }
         }
+        if sv.scroll_max > 0.0 {
+            let ty = -h / 2.0 + SCROLL_Y;
+            let (kx, kw) = scroll_knob(&sv, self.slot_scroll);
+            ctx.rectangle(
+                sv.x0 + sv.track_w / 2.0,
+                ty,
+                sv.track_w / 2.0,
+                SCROLL_H / 2.0,
+                PLATE_EMPTY,
+                PLATE_Z + 0.05,
+            );
+            ctx.rectangle(
+                kx + kw / 2.0,
+                ty,
+                kw / 2.0,
+                SCROLL_H / 2.0,
+                AXIS,
+                PLATE_Z + 0.1,
+            );
+        }
 
         // The slot thumbnails: minimized originals, centered on their
-        // plates. A dragged thumbnail rides the cursor, above everything
-        // until it lands.
-        for i in 0..SLOTS {
-            let node = &mut ctx.scene().root.children[THUMBS + i];
-            let dragging = self.slot_drag.is_some_and(|(slot, _)| slot == i);
-            node.order = if dragging { DRAG_ORDER } else { THUMB_ORDER };
-            node.transform = match (dragging, pos) {
-                (true, Some(p)) => frost::Transform::translate(p),
-                _ => frost::Transform::translate(slot_center(i, w, h)),
-            };
+        // plates — the pool maps the scrolled window, so scrolling
+        // moves which sprite rides which node. A dragged thumbnail
+        // rides the cursor, above everything until it lands.
+        {
+            let first = (self.slot_scroll / sv.pitch).floor() as usize;
+            for j in 0..SLOTS {
+                let node = &mut ctx.scene().root.children[THUMBS + j];
+                let i = first + j;
+                if let Some(sp) = self.sprites.get(i) {
+                    node.shape = Some(sp.thumb.clone());
+                    let dragging = self.slot_drag.is_some_and(|(slot, _)| slot == i);
+                    node.order = if dragging { DRAG_ORDER } else { THUMB_ORDER };
+                    node.transform = match (dragging, pos) {
+                        (true, Some(p)) => frost::Transform::translate(p),
+                        _ => frost::Transform::translate(slot_center(i, w, h, self.slot_scroll)),
+                    };
+                } else {
+                    node.shape = None;
+                }
+            }
+        }
+
+        // --- The tileset band (tile desk only) --------------------------
+        // The active tileset's first cells, one box each, above the
+        // slots strip: the brush rack. The picked cell wears the
+        // selection frame, and the cursor answers back — the cell
+        // under it shows a translucent ghost of the picked tile, the
+        // same one-tile `TileMap` shapes the rack draws, scaled into
+        // the map and placed where a click would land.
+        {
+            let (brows, bcols) = self.active().and_then(|sp| sp.atlas).unwrap_or((1, 1));
+            let rects = band_rects(w, h, brows, bcols);
+            if tile_view && !self.cell_shapes.is_empty() {
+                let cells = self.cell_shapes.len().min(rects.len());
+                let cell = band_fit(brows, bcols, w, h);
+                // The plate: one quiet board behind the whole rack,
+                // hugging the matrix as drawn.
+                let (mut x0, mut y0) = (f32::MAX, f32::MAX);
+                let (mut x1, mut y1) = (f32::MIN, f32::MIN);
+                for r in rects.iter().take(cells) {
+                    x0 = x0.min(r[0]);
+                    y0 = y0.min(r[1]);
+                    x1 = x1.max(r[2]);
+                    y1 = y1.max(r[3]);
+                }
+                ctx.rectangle(
+                    (x0 + x1) / 2.0,
+                    (y0 + y1) / 2.0,
+                    (x1 - x0) / 2.0 + 6.0,
+                    (y1 - y0) / 2.0 + 6.0,
+                    PLATE,
+                    PLATE_Z,
+                );
+                // The pool keeps its full size; the rack's cell
+                // decides what shows. Shapes are built for the
+                // standard box, so a shrunk rack scales them.
+                for node in &mut ctx.scene().root.children[BAND0..BAND0 + BAND_CELLS] {
+                    node.shape = None;
+                }
+                let k2 = (cell / BAND_CELL).min(1.0);
+                for (i, rect) in rects.iter().take(cells).enumerate() {
+                    let node = &mut ctx.scene().root.children[BAND0 + i];
+                    node.shape = self.cell_shapes.get(i).cloned();
+                    node.scale = [k2, k2];
+                    node.transform = frost::Transform::translate([
+                        (rect[0] + rect[2]) / 2.0,
+                        (rect[1] + rect[3]) / 2.0,
+                    ]);
+                    node.order = BAND_Z;
+                }
+                if let Some(picked) = self.picked_cell.filter(|c| *c < cells) {
+                    let [x0, y0, x1, y1] = rects[picked];
+                    ctx.line(x0, y0, x1, y0, SELECT, BBOX_WIDTH, BAND_Z + 0.1);
+                    ctx.line(x1, y0, x1, y1, SELECT, BBOX_WIDTH, BAND_Z + 0.1);
+                    ctx.line(x1, y1, x0, y1, SELECT, BBOX_WIDTH, BAND_Z + 0.1);
+                    ctx.line(x0, y1, x0, y0, SELECT, BBOX_WIDTH, BAND_Z + 0.1);
+                }
+                // The ghost: the picked tile where the next click
+                // would place it. Off the canvas, in a panel or over
+                // the rack itself, it withdraws.
+                let over_band = rects
+                    .iter()
+                    .take(cells)
+                    .any(|[x0, y0, x1, y1]| p_in(pos, [*x0, *y0, *x1, *y1]));
+                let ghost = match (
+                    &self.band_base,
+                    self.picked_cell.filter(|c| *c < self.cell_shapes.len()),
+                    pos,
+                    tile_view
+                        && in_work_area(pos.unwrap_or([0.0, -1e9]), w, h)
+                        && !self.ui.hovering()
+                        && !over_band,
+                ) {
+                    (Some(base), Some(cell), Some(p), true) => {
+                        let (rows, cols) = self.active().and_then(|sp| sp.atlas).unwrap_or((1, 1));
+                        let (tw, th) = (
+                            self.active().map_or(1.0, |sp| sp.current.width() as f32)
+                                / cols.max(1) as f32,
+                            self.active().map_or(1.0, |sp| sp.current.height() as f32)
+                                / rows.max(1) as f32,
+                        );
+                        // The cell the cursor stands on, in map space:
+                        // columns to the right, rows downward (the
+                        // grid's y runs down, the window's runs up).
+                        let mx = (p[0] - view[0]) / self.zoom;
+                        let my = (p[1] - view[1]) / self.zoom;
+                        let (col, row) = grid_cell(mx, my, tw, th);
+                        // The brush only reaches the map — the layer
+                        // this tileset owns, or the map a first click
+                        // would create. Past its edge, no ghost.
+                        let (bc, br) = self
+                            .active()
+                            .map_or((0, 0), |sp| paint_bounds(&self.maps, &sp.path));
+                        if cell_in(col, row, bc, br) {
+                            let center = [
+                                (col as f32 + 0.5) * tw * self.zoom + view[0],
+                                -(row as f32 + 0.5) * th * self.zoom + view[1],
+                            ];
+                            let mut shape = base.clone();
+                            let b = self.brush;
+                            shape.set_tiles(vec![
+                                frost::Tile::new([0.0, 0.0], [tw, th], cell_uv(cell, rows, cols))
+                                    .transformed((b >> 2) & 3, b & 1 != 0, b & 2 != 0),
+                            ]);
+                            if let frost::Shape::TileMap { color, .. } = &mut shape {
+                                color.a = GHOST_A;
+                            }
+                            let node = &mut ctx.scene().root.children[GHOST];
+                            node.transform = ghost_transform(self.zoom, center);
+                            node.order = GHOST_Z;
+                            Some(shape)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                ctx.scene().root.children[GHOST].shape = ghost;
+            } else {
+                for node in &mut ctx.scene().root.children[BAND0..=GHOST] {
+                    node.shape = None;
+                }
+            }
         }
 
         // --- The sidecar views ------------------------------------------
@@ -2463,10 +3114,11 @@ impl frost::Process for Demo {
         // stay readable at any zoom.
         let mut marks = 0usize;
         let mut numbered = 0usize;
-        if self
-            .sprites
-            .get(self.active)
-            .is_some_and(|sp| sp.ron.is_some())
+        if !tile_view
+            && self
+                .sprites
+                .get(self.active)
+                .is_some_and(|sp| sp.ron.is_some())
         {
             let [tw, th] = size;
             for (pi, s) in spots.iter().enumerate() {
@@ -2908,6 +3560,265 @@ fn center_offset(spot: (f32, f32), size: [f32; 2], zoom: f32) -> [f32; 2] {
     ]
 }
 
+impl MapLayer {
+    fn blank(tileset: std::path::PathBuf, cols: usize, rows: usize) -> Self {
+        Self {
+            tileset,
+            cols,
+            rows,
+            cells: vec![EMPTY_CELL; cols * rows],
+            tfms: vec![0; cols * rows],
+        }
+    }
+
+    /// The storage slot of grid column/row — the map's cells are
+    /// numbered from its top-left, while grid coordinates radiate
+    /// from the origin, which sits at the map's center.
+    fn at(&self, col: i32, row: i32) -> Option<usize> {
+        cell_in(col, row, self.cols, self.rows)
+            .then(|| (row + self.rows as i32 / 2) * self.cols as i32 + (col + self.cols as i32 / 2))
+            .map(|i| i as usize)
+    }
+
+    /// Paint over one cell — picture and orientation together; true
+    /// when the cell actually changed. A repaint that only turns the
+    /// tile IS a change; an eraser on an empty cell is not, whatever
+    /// orientation bits it carries.
+    fn set_cell(&mut self, col: i32, row: i32, cell: u32, tfm: u8) -> bool {
+        match self.at(col, row) {
+            Some(i) => {
+                let erased = cell == EMPTY_CELL;
+                let changed = self.cells[i] != cell || (!erased && self.tfms[i] != tfm);
+                if changed {
+                    self.cells[i] = cell;
+                    self.tfms[i] = if erased { 0 } else { tfm };
+                }
+                changed
+            }
+            _ => false,
+        }
+    }
+
+    /// The layer as a `TileMap` shape sharing the tileset's pixels —
+    /// or `None` when the tileset is closed (the layer waits for its
+    /// source to reopen) or holds nothing (an invisible layer asks
+    /// nothing of the renderer). Cells past the tileset's current
+    /// grid — one shrank since they were painted — are skipped.
+    fn shape(&self, tileset: Option<&Sprite>) -> Option<frost::Shape> {
+        let sp = tileset?;
+        let (data, width, height, generation) = match &sp.shape {
+            frost::Shape::Sprite {
+                data,
+                width,
+                height,
+                generation,
+                ..
+            } => (data.clone(), *width, *height, *generation),
+            _ => return None,
+        };
+        let (arows, acols) = sp.atlas.unwrap_or((1, 1));
+        let (tw, th) = (
+            width as f32 / acols.max(1) as f32,
+            height as f32 / arows.max(1) as f32,
+        );
+        let tiles: Vec<frost::Tile> = self
+            .cells
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &c)| {
+                (c != EMPTY_CELL && (c as usize) < arows * acols).then_some((i, c))
+            })
+            .map(|(i, c)| {
+                let gx = (i % self.cols) as f32 - self.cols as f32 / 2.0 + 0.5;
+                let gy = (i / self.cols) as f32 - self.rows as f32 / 2.0 + 0.5;
+                let t = self.tfms[i];
+                frost::Tile::new(
+                    [gx * tw, -gy * th],
+                    [tw, th],
+                    cell_uv(c as usize, arows, acols),
+                )
+                .transformed((t >> 2) & 3, t & 1 != 0, t & 2 != 0)
+            })
+            .collect();
+        if tiles.is_empty() {
+            return None;
+        }
+        let mut shape = frost::Shape::TileMap {
+            data,
+            width,
+            height,
+            generation,
+            filter: frost::SpriteFilter::Nearest,
+            tiles: Vec::new(),
+            clip: None,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+        };
+        shape.set_tiles(tiles);
+        Some(shape)
+    }
+}
+
+/// Whether grid column/row lies on a `cols`-by-`rows` map centered on
+/// the origin. Even dimensions make the grid half-open on the right
+/// and bottom: it spans x in [-w/2, w/2) like the cells' own floors.
+fn cell_in(col: i32, row: i32, cols: usize, rows: usize) -> bool {
+    col + cols as i32 / 2 >= 0
+        && row + rows as i32 / 2 >= 0
+        && col + cols as i32 / 2 < cols as i32
+        && row + rows as i32 / 2 < rows as i32
+}
+
+/// The map-space point's grid cell: columns to the right, rows
+/// downward — the grid's rows run with the texture's, not the window's.
+fn grid_cell(mx: f32, my: f32, tw: f32, th: f32) -> (i32, i32) {
+    (mx.div_euclid(tw) as i32, (-my).div_euclid(th) as i32)
+}
+
+/// The bounds the brush reaches with this tileset: its own layer if
+/// one exists, else the map a first click would create.
+fn paint_bounds(maps: &[MapLayer], tileset: &std::path::Path) -> (usize, usize) {
+    maps.iter()
+        .find(|m| m.tileset == tileset)
+        .map_or((MAP_COLS, MAP_ROWS), |m| (m.cols, m.rows))
+}
+
+/// Paint one cell with the tileset's layer, creating the layer on the
+/// first stroke. True when a cell changed.
+fn paint_at(
+    maps: &mut Vec<MapLayer>,
+    tileset: &std::path::Path,
+    cell: usize,
+    tfm: u8,
+    col: i32,
+    row: i32,
+) -> bool {
+    let i = match maps.iter().position(|m| m.tileset == tileset) {
+        Some(i) => i,
+        None => {
+            maps.push(MapLayer::blank(tileset.to_path_buf(), MAP_COLS, MAP_ROWS));
+            maps.len() - 1
+        }
+    };
+    maps[i].set_cell(col, row, cell as u32, tfm)
+}
+
+/// Turn a packed orientation one quarter — clockwise, or back. The
+/// flips ride along untouched: they name the screen's axes, so a
+/// turned, mirrored cell is still mirrored sideways, and turning has
+/// no reason to rearrange them.
+fn tfm_turn(code: u8, cw: bool) -> u8 {
+    let rot = ((code >> 2) & 3) + if cw { 1 } else { 3 };
+    (code & 3) | ((rot & 3) << 2)
+}
+
+/// The brush's turn in words, for the status line and the rack.
+fn turn_note(code: u8) -> &'static str {
+    match (code >> 2) & 3 {
+        0 => "upright",
+        1 => "90 deg cw",
+        2 => "upside down",
+        _ => "90 deg ccw",
+    }
+}
+
+/// Clear one cell on every layer: the eraser lifts what stands there,
+/// whichever tileset painted it. True when anything came off.
+fn erase_at(maps: &mut [MapLayer], col: i32, row: i32) -> bool {
+    // `fold`, not `any`: the eraser must visit every layer even after
+    // one gave up its cell — short-circuiting here would leave the
+    // other tilesets' paint standing under the cursor.
+    maps.iter_mut().fold(false, |changed, m| {
+        changed | m.set_cell(col, row, EMPTY_CELL, 0)
+    })
+}
+
+/// The ghost node's transform: the tile scaled into the cell's world
+/// center — scale FIRST, pan after, which is the desk's own order.
+/// Composing them the other way round scales the pan too, and the
+/// ghost drifts away from the cursor as the zoom moves off 1.
+fn ghost_transform(zoom: f32, center: [f32; 2]) -> frost::Transform {
+    frost::Transform::scale([zoom, zoom]).compose(&frost::Transform::translate(center))
+}
+
+/// The grid's drawn step, in map units: the cell's own pitch, doubled
+/// up the ladder while its lines would stand closer than
+/// `GRID_MIN_PX` window pixels apart. Always a whole power-of-two
+/// count of CELLS — that is the point: a step merely clamped to the
+/// pixel floor would slide the lines off the cell boundaries, and a
+/// grid the ghost no longer stands on is a lie about the map.
+fn grid_step(cell: f32, zoom: f32) -> f32 {
+    let mut s = cell;
+    while s * zoom < GRID_MIN_PX {
+        s *= 2.0;
+    }
+    s
+}
+
+/// The atlas cell `idx`'s texture rectangle in a `rows`-by-`cols` grid,
+/// row-major, top-left origin like the PNG's own rows.
+fn cell_uv(idx: usize, rows: usize, cols: usize) -> [f32; 4] {
+    let (row, col) = ((idx / cols) as f32, (idx % cols) as f32);
+    let (rows, cols) = (rows as f32, cols as f32);
+    [
+        col / cols,
+        row / rows,
+        (col + 1.0) / cols,
+        (row + 1.0) / rows,
+    ]
+}
+
+/// The rack's cell edge for a grid in a window: the standard box,
+/// shrunk only when the whole matrix would not fit above the strip.
+fn band_fit(rows: usize, cols: usize, w: f32, h: f32) -> f32 {
+    let cw = (w - 40.0) / cols.max(1) as f32 - BAND_GAP;
+    let ch = (h - STRIP_H - 28.0) / rows.max(1) as f32 - BAND_GAP;
+    BAND_CELL.min(cw).min(ch).max(12.0)
+}
+
+/// The band's boxes: the active tileset's grid drawn as its matrix —
+/// row-major like the atlas, bottom-anchored above the slots strip.
+/// The band and its hit test draw from the same list, so what is
+/// clickable is exactly what is drawn; a grid deeper than the pool
+/// keeps only its first `BAND_CELLS` cells.
+fn band_rects(w: f32, h: f32, rows: usize, cols: usize) -> Vec<[f32; 4]> {
+    let rows = rows.max(1);
+    let cols = cols.max(1);
+    let cell = band_fit(rows, cols, w, h);
+    let base = -h / 2.0 + STRIP_H + 14.0 + cell / 2.0;
+    (0..(rows * cols).min(BAND_CELLS))
+        .map(|i| {
+            let (r, c) = (i / cols, i % cols);
+            let cx = -w / 2.0 + 20.0 + cell / 2.0 + c as f32 * (cell + BAND_GAP);
+            let cy = base + (rows - 1 - r) as f32 * (cell + BAND_GAP);
+            [
+                cx - cell / 2.0,
+                cy - cell / 2.0,
+                cx + cell / 2.0,
+                cy + cell / 2.0,
+            ]
+        })
+        .collect()
+}
+
+/// Whether `p` (if any) lies inside the rectangle.
+fn p_in(p: Option<[f32; 2]>, [x0, y0, x1, y1]: [f32; 4]) -> bool {
+    p.is_some_and(|[x, y]| x >= x0 && x <= x1 && y >= y0 && y <= y1)
+}
+
+/// The band cell at `p`, if `p` lands on one of the `cells` cells the
+/// band actually shows.
+fn band_pick(p: [f32; 2], w: f32, h: f32, rows: usize, cols: usize, cells: usize) -> Option<usize> {
+    band_rects(w, h, rows, cols)
+        .into_iter()
+        .take(cells)
+        .position(|[x0, y0, x1, y1]| p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1)
+}
+
 /// The position whose marker sits nearest `at` (window pixels), within
 /// `r` of it — the sprite's way back into the tree.
 fn spot_pick(
@@ -3186,21 +4097,64 @@ fn swapped_active(active: usize, i: usize, j: usize) -> usize {
     }
 }
 
-/// The `i`th slot's center, in window coordinates.
-fn slot_center(i: usize, w: f32, h: f32) -> [f32; 2] {
+/// The strip's visible window for a plate count: where it starts, how
+/// wide the pool can show, and how far the scroll may run.
+struct StripView {
+    x0: f32,
+    pitch: f32,
+    visible_px: f32,
+    track_w: f32,
+    scroll_max: f32,
+}
+
+fn strip_view(w: f32, count: usize) -> StripView {
+    let pitch = SLOT + SLOT_GAP;
+    let x0 = -w / 2.0 + SLOT_MARGIN;
+    let across = (((w - 2.0 * SLOT_MARGIN) + SLOT_GAP) / pitch).floor() as usize;
+    let visible = across.clamp(1, SLOTS);
+    let visible_px = visible as f32 * pitch - SLOT_GAP;
+    let total_px = count.max(1) as f32 * pitch - SLOT_GAP;
+    StripView {
+        x0,
+        pitch,
+        visible_px,
+        track_w: (w - 2.0 * SLOT_MARGIN).max(1.0),
+        scroll_max: (total_px - visible_px).max(0.0),
+    }
+}
+
+/// The strip's scrollbar rides the window's bottom edge.
+const SCROLL_Y: f32 = 6.0;
+const SCROLL_H: f32 = 8.0;
+
+/// The knob's left edge and width at a scroll position.
+fn scroll_knob(sv: &StripView, scroll: f32) -> (f32, f32) {
+    let total = (sv.visible_px + sv.scroll_max).max(1.0);
+    let kw = (sv.track_w * (sv.visible_px / total)).max(30.0);
+    let x = sv.x0 + (scroll / sv.scroll_max.max(1.0)) * (sv.track_w - kw);
+    (x, kw)
+}
+
+/// The `i`th slot's center, in window coordinates, at a scroll offset.
+fn slot_center(i: usize, w: f32, h: f32, scroll: f32) -> [f32; 2] {
     [
-        -w / 2.0 + SLOT_MARGIN + SLOT / 2.0 + i as f32 * (SLOT + SLOT_GAP),
+        -w / 2.0 + SLOT_MARGIN + SLOT / 2.0 + i as f32 * (SLOT + SLOT_GAP) - scroll,
         -h / 2.0 + STRIP_H / 2.0,
     ]
 }
 
-/// The slot under a window point, if any.
-fn slot_at(p: [f32; 2], w: f32, h: f32) -> Option<usize> {
+/// The slot under a window point — among the `count` plates the strip
+/// shows, and only within the pool's visible box.
+fn slot_at(p: [f32; 2], w: f32, h: f32, scroll: f32, count: usize) -> Option<usize> {
     if p[1] > -h / 2.0 + STRIP_H {
         return None;
     }
-    (0..SLOTS).find(|i| {
-        let [cx, cy] = slot_center(*i, w, h);
+    let sv = strip_view(w, count);
+    if p[0] < sv.x0 || p[0] > sv.x0 + sv.visible_px {
+        return None;
+    }
+    (0..count).find(|i| {
+        let [cx, cy] = slot_center(*i, w, h, scroll);
         (p[0] - cx).abs() <= SLOT / 2.0 && (p[1] - cy).abs() <= SLOT / 2.0
     })
 }
@@ -3364,6 +4318,10 @@ fn main() {
     // the path is joined onto the working directory (an absolute input
     // replaces it) and canonicalized.
     let Args { input } = Args::parse();
+    // Where the workbench starts. The boot construction below honors
+    // it (a command-line sprite must not land on a canvas that starts
+    // on the tile-map desk), as does the `Demo`'s own initial state.
+    let start_view = View::Markers;
     let (immediate, dialog_dir) = match &input {
         Some(path) if path.is_file() => (Some(path.as_path()), None),
         Some(path) if path.is_dir() => {
@@ -3423,8 +4381,14 @@ fn main() {
     let mut children: Vec<Box<frost::SceneNode>> = (0..LAYER_NODES)
         .map(|i| {
             Box::new(frost::SceneNode {
-                // A command-line sprite is already in the first node.
-                shape: if i == 0 { work_shape.clone() } else { None },
+                // A command-line sprite is already in the first node —
+                // unless the tool boots straight onto the tile-map
+                // desk, which shows maps, not tilesets.
+                shape: if i == 0 && start_view != View::TileMap {
+                    work_shape.clone()
+                } else {
+                    None
+                },
                 order: i as f32 * 0.01, // layered, under the strip's 0.2
                 ..Default::default()
             })
@@ -3473,6 +4437,11 @@ fn main() {
             ..Default::default()
         })
     }));
+    children.extend((0..BAND_CELLS + 1).map(|_| {
+        // The tileset band's cells and the cursor ghost: shapeless
+        // until the tile-map desk points them at the active tileset.
+        Box::new(frost::SceneNode::default())
+    }));
     children.extend((0..SPOTS_MAX).map(|_| {
         Box::new(frost::SceneNode {
             order: SPOT_ORDER + 0.05,
@@ -3503,6 +4472,8 @@ fn main() {
             selection: None,
             drag_from: None,
             slot_drag: None,
+            slot_scroll: 0.0,
+            slot_scrub: None,
             was_undo: false,
             was_open: false,
             was_space: false,
@@ -3514,12 +4485,23 @@ fn main() {
             last_mouse: None,
             last_click: None,
             dir,
-            view: View::Markers,
+            view: start_view,
+            band_base: None,
+            band_key: None,
+            cell_shapes: Vec::new(),
+            picked_cell: None,
+            maps: Vec::new(),
+            paint: None,
+            first_frame: true,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             was_redo: false,
             was_zoom_in: false,
             was_zoom_out: false,
+            brush: 0,
+            was_flipx: false,
+            was_flipy: false,
+            was_turn: false,
             status: String::new(),
             ron_font,
             r_press: None,
@@ -3616,24 +4598,60 @@ mod tests {
     fn slots_line_up_along_the_strip_and_are_hit_by_point() {
         let (w, h) = (800.0, 600.0);
         // The leftmost slot starts at the margin, flush with the strip.
-        let [cx, cy] = slot_center(0, w, h);
+        let [cx, cy] = slot_center(0, w, h, 0.0);
         assert_eq!(cx, -w / 2.0 + SLOT_MARGIN + SLOT / 2.0);
         assert_eq!(cy, -h / 2.0 + STRIP_H / 2.0);
         // Neighbors sit one slot and one gap apart.
-        let [cx1, _] = slot_center(1, w, h);
+        let [cx1, _] = slot_center(1, w, h, 0.0);
         assert_eq!(cx1 - cx, SLOT + SLOT_GAP);
         // Each slot's center is its own; the gaps and the area above the
         // strip belong to no slot.
         for i in 0..SLOTS {
-            let [x, y] = slot_center(i, w, h);
-            assert_eq!(slot_at([x, y], w, h), Some(i));
+            let [x, y] = slot_center(i, w, h, 0.0);
+            assert_eq!(slot_at([x, y], w, h, 0.0, i + 1), Some(i));
         }
-        let [cx0, cy0] = slot_center(0, w, h);
+        let [cx0, cy0] = slot_center(0, w, h, 0.0);
         assert_eq!(
-            slot_at([cx0 + SLOT / 2.0 + SLOT_GAP / 2.0, cy0], w, h),
+            slot_at([cx0 + SLOT / 2.0 + SLOT_GAP / 2.0, cy0], w, h, 0.0, SLOTS),
             None
         );
-        assert_eq!(slot_at([cx0, cy0 + STRIP_H / 2.0 + 1.0], w, h), None);
+        assert_eq!(
+            slot_at([cx0, cy0 + STRIP_H / 2.0 + 1.0], w, h, 0.0, SLOTS),
+            None
+        );
+    }
+
+    #[test]
+    fn the_strip_always_keeps_a_plate_free_to_load() {
+        // One plate per sprite plus the spare: a handful of sprites
+        // in a wide window all show, and nobody needs the scrollbar...
+        let wide = strip_view(1440.0, 3);
+        assert_eq!(wide.scroll_max, 0.0);
+        // ...but the pool caps what one window can show, so the
+        // plate past the pool's end — the seventh sprite's, or the
+        // spare's — earns a scrollbar of exactly the overflow.
+        let tight = strip_view(1440.0, SLOTS + 1);
+        assert!(tight.scroll_max > 0.0);
+    }
+
+    #[test]
+    fn the_scroll_moves_what_the_pick_names() {
+        let (w, h) = (800.0, 600.0);
+        let count = 9;
+        let sv = strip_view(w, count);
+        assert!(sv.scroll_max > 0.0);
+        let pitch = SLOT + SLOT_GAP;
+        let cy = -h / 2.0 + STRIP_H / 2.0;
+        // One pitch of scroll, and slot 1 stands where slot 0 stood:
+        // plates, picks and thumbnails all read the same offset.
+        let p = [-w / 2.0 + SLOT_MARGIN + SLOT / 2.0, cy];
+        assert_eq!(slot_at(p, w, h, 0.0, count), Some(0));
+        assert_eq!(slot_at(p, w, h, pitch, count), Some(1));
+        // The knob runs the whole track over the scroll's span.
+        let at_rest = scroll_knob(&sv, 0.0);
+        let at_end = scroll_knob(&sv, sv.scroll_max);
+        assert!((at_rest.0 - sv.x0).abs() < 1e-3);
+        assert!((at_end.0 + at_end.1 - (sv.x0 + sv.track_w)).abs() < 1e-3);
     }
 
     #[test]
@@ -3806,6 +4824,7 @@ mod tests {
             },
             view: View::Markers,
             selection: None,
+            maps: Vec::new(),
         }
     }
 
@@ -4236,5 +5255,298 @@ mod tests {
         let twice = ron_tree::to_text_doc(&back.header, &back.root, &back.trailer);
         assert_eq!(once, twice, "with comments, still idempotent");
         assert!(once.contains("header note") && once.contains("trailer note"));
+    }
+
+    #[test]
+    fn band_cells_tile_the_rack_row() {
+        // The rack is a left-aligned row of fixed boxes above the
+        // slots strip: exact edges hit, the gap between cells misses,
+        // and the strip itself is not part of the rack.
+        let (w, h) = (1440.0, 810.0);
+        let rects = band_rects(w, h, 1, 12);
+        assert_eq!(rects.len(), 12);
+        let [x0, y0, x1, y1] = rects[0];
+        assert!(band_pick([x0 + 1.0, (y0 + y1) / 2.0], w, h, 1, 12, 4) == Some(0));
+        let [nx0, ..] = rects[1];
+        // The gap between cell 0 and cell 1 belongs to no cell.
+        assert!(band_pick([x1 - 0.5, (y0 + y1) / 2.0], w, h, 1, 12, 4) == Some(0));
+        assert!(band_pick([(x1 + nx0) / 2.0, (y0 + y1) / 2.0], w, h, 1, 12, 4).is_none());
+        // A cell the band doesn't show (only 4 of 12 painted) is not
+        // clickable even where its box would sit.
+        let [fx0, fy0, fx1, fy1] = rects[4];
+        assert!(band_pick([(fx0 + fx1) / 2.0, (fy0 + fy1) / 2.0], w, h, 1, 12, 4).is_none());
+        assert!(band_pick([(fx0 + fx1) / 2.0, (fy0 + fy1) / 2.0], w, h, 1, 12, 12) == Some(4));
+        // Below the rack, the slots strip lives — the rack's y must
+        // clear it by its stated margin.
+        assert!(y0 >= -h / 2.0 + STRIP_H);
+    }
+
+    #[test]
+    fn the_rack_copies_the_tileset_grid() {
+        // A 2 x 2 tileset is a matrix in the atlas' own reading
+        // order: cell 1 right of cell 0, cell 2 below cell 0.
+        let (w, h) = (1440.0, 810.0);
+        let rects = band_rects(w, h, 2, 2);
+        assert_eq!(rects.len(), 4);
+        let (a, b, c) = (rects[0], rects[1], rects[2]);
+        assert!(b[0] >= a[2] && (b[1] - a[1]).abs() < 1e-3);
+        assert!((c[0] - a[0]).abs() < 1e-3 && c[3] <= a[1]);
+        let mid = |r: [f32; 4]| [(r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0];
+        assert_eq!(band_pick(mid(b), w, h, 2, 2, 4), Some(1));
+        assert_eq!(band_pick(mid(c), w, h, 2, 2, 4), Some(2));
+        // A deep grid stays inside the window: an 8 x 8 rack, cells
+        // shrunk to fit, fits the desk above the strip on every side.
+        let big = band_rects(w, h, 8, 8);
+        assert_eq!(big.len(), 64);
+        let right = big.iter().map(|r| r[2]).fold(f32::MIN, f32::max);
+        let top = big.iter().map(|r| r[3]).fold(f32::MIN, f32::max);
+        let left = big.iter().map(|r| r[0]).fold(f32::MAX, f32::min);
+        let bot = big.iter().map(|r| r[1]).fold(f32::MAX, f32::min);
+        assert!(left >= -w / 2.0 && right <= w / 2.0);
+        assert!(bot >= -h / 2.0 + STRIP_H && top <= h / 2.0);
+    }
+
+    #[test]
+    fn atlas_cells_run_row_major_over_the_unit_square() {
+        // A 2x3 grid: cell 0 top-left, cell 3 bottom-left (row-major,
+        // the PNG's own row order), every cell one sixth of the sheet.
+        let uv = cell_uv(3, 2, 3);
+        assert_eq!(uv, [0.0, 0.5, 1.0 / 3.0, 1.0]);
+        assert_eq!(cell_uv(0, 2, 3), [0.0, 0.0, 1.0 / 3.0, 0.5]);
+        assert_eq!(cell_uv(5, 2, 3), [2.0 / 3.0, 0.5, 1.0, 1.0]);
+        // A gridless tileset is one cell covering the whole sheet.
+        assert_eq!(cell_uv(0, 1, 1), [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn the_ghost_snaps_to_the_cell_under_the_cursor() {
+        // The ghost's cell math, the same expressions the render uses:
+        // map point -> column (rightward) and row (downward, because
+        // the grid's y runs down while the window's runs up). Cells
+        // are 32 wide, 16 tall; div_euclid must floor negative points
+        // into the negative cells without leaning on them.
+        let (tw, th) = (32.0, 16.0);
+        let cell = |mx: f32, my: f32| (mx.div_euclid(tw), (-my).div_euclid(th));
+        assert_eq!(cell(1.0, 1.0), (0.0, -1.0)); // a hair above origin is already the row above
+        assert_eq!(cell(1.0, -1.0), (0.0, 0.0)); // below-right of origin: cell (0,0)
+        assert_eq!(cell(31.9, -16.1), (0.0, 1.0)); // across the width, still row 1
+        assert_eq!(cell(32.1, -16.1), (1.0, 1.0)); // one cell in each way
+        assert_eq!(cell(-0.1, -0.1), (-1.0, 0.0)); // one column left, same row
+        assert_eq!(cell(-33.0, 17.0), (-2.0, -2.0)); // up and left
+        // And a ghost placed at that cell's center lands back inside
+        // the same cell: placement and snapping are inverses.
+        let (col, row) = cell(-33.0, 17.0);
+        let center = [(col as f32 + 0.5) * tw, -((row as f32 + 0.5) * th)];
+        assert_eq!(cell(center[0], center[1]), (col, row));
+    }
+
+    /// A little sprite the tests can paint with: a 4x2 texture, four
+    /// 2x1 cells, the atlas grid of `basic_tiles.png` in miniature.
+    fn tileset(path: &str) -> Sprite {
+        let img = image::RgbaImage::from_pixel(4, 2, image::Rgba([255, 0, 0, 255]));
+        let png = png_bytes(&img).expect("a flat image encodes");
+        let shape = frost::Shape::sprite_bytes_nearest(&png).expect("a flat sprite decodes");
+        Sprite {
+            path: std::path::PathBuf::from(path),
+            name: path.into(),
+            current: img.clone(),
+            saved_img: img.clone(),
+            thumb_img: img,
+            shape,
+            thumb: frost::Shape::sprite_bytes_nearest(&png).expect("the thumb too"),
+            ron: None,
+            saved_ron: None,
+            atlas: Some((2, 2)),
+        }
+    }
+
+    #[test]
+    fn a_maps_cells_are_numbered_from_its_top_left() {
+        // The map radiates grid coordinates from its center but stores
+        // rows from its own top-left: on a 4x4 map, the corner cells
+        // land at 0 and 15, and the half-open edge (col 2) has no
+        // storage at all.
+        let m = MapLayer::blank("t.png".into(), 4, 4);
+        assert_eq!(m.at(-2, -2), Some(0));
+        assert_eq!(m.at(1, 1), Some(15));
+        assert_eq!(m.at(2, -2), None);
+        assert_eq!(m.at(-3, -2), None);
+    }
+
+    #[test]
+    fn one_stroke_one_layer_and_erasers_lift_everything_there() {
+        let a = std::path::PathBuf::from("a.png");
+        let b = std::path::PathBuf::from("b.png");
+        let mut maps = Vec::new();
+        // The first stroke creates its tileset's layer; more strokes
+        // on the same tileset join it; a different tileset starts its
+        // own layer — the multi-tileset picture, layered.
+        assert!(paint_at(&mut maps, &a, 0, 0, 3, -4));
+        assert!(paint_at(&mut maps, &a, 1, 0, 4, -4));
+        assert_eq!(maps.len(), 1);
+        assert!(paint_at(&mut maps, &b, 2, 0, 3, -4));
+        assert_eq!(maps.len(), 2);
+        assert_eq!(maps[0].at(3, -4).map(|i| maps[0].cells[i]), Some(0));
+        // Repainting what stands there changes nothing — the stroke
+        // must not count it, nor claim an undo step for it.
+        assert!(!paint_at(&mut maps, &a, 0, 0, 3, -4));
+        // Erasing lifts the cell from every layer that holds one.
+        assert!(erase_at(&mut maps, 3, -4));
+        assert_eq!(
+            maps[0].at(3, -4).map(|i| maps[0].cells[i]),
+            Some(EMPTY_CELL)
+        );
+        assert_eq!(
+            maps[1].at(3, -4).map(|i| maps[1].cells[i]),
+            Some(EMPTY_CELL)
+        );
+        // With nothing left there, the eraser reports the silence.
+        assert!(!erase_at(&mut maps, 3, -4));
+    }
+
+    #[test]
+    fn the_brush_reaches_its_layer_or_the_default_first_map() {
+        // Before any stroke the bounds are the map a first click would
+        // create; once a layer exists, its size is the reach.
+        let a = std::path::PathBuf::from("a.png");
+        assert_eq!(paint_bounds(&[], &a), (MAP_COLS, MAP_ROWS));
+        let mut maps = vec![MapLayer::blank(a.clone(), 6, 4)];
+        assert_eq!(paint_bounds(&maps, &a), (6, 4));
+        // A second tileset with no layer yet still aims at the default.
+        assert_eq!(
+            paint_bounds(&maps, &std::path::PathBuf::from("b.png")),
+            (MAP_COLS, MAP_ROWS)
+        );
+        maps[0].set_cell(-3, -2, 1, 0);
+        assert!(cell_in(-3, -2, 6, 4));
+        assert!(!cell_in(3, -2, 6, 4)); // the half-open right edge
+        assert!(!cell_in(-4, -2, 6, 4));
+    }
+
+    #[test]
+    fn a_layer_becomes_tiles_centered_on_the_origin() {
+        let sp = tileset("t.png");
+        let mut m = MapLayer::blank(sp.path.clone(), 4, 4);
+        // 2x1 cells on a 4x4 map: the top-left cell centers at
+        // (-1.5 * 2, +1.5 * 1) — x right, y down, the origin at the
+        // map's center.
+        m.set_cell(-2, -2, 0, 0);
+        m.set_cell(1, 1, 3, 0);
+        // A stale cell past the tileset's current grid (the atlas
+        // shrank since it was painted) is skipped, not clamped.
+        m.set_cell(0, 0, 7, 0);
+        let shape = m.shape(Some(&sp)).expect("two live cells draw");
+        let frost::Shape::TileMap { tiles, .. } = &shape else {
+            panic!("a layer's shape is a tilemap");
+        };
+        assert_eq!(tiles.len(), 2, "the stale cell is skipped");
+        assert_eq!(tiles[0].center, [-3.0, 1.5]);
+        assert_eq!(tiles[0].size, [2.0, 1.0]);
+        assert_eq!(tiles[0].uv, [0.0, 0.0, 0.5, 0.5]);
+        assert_eq!(tiles[1].center, [3.0, -1.5]);
+        assert_eq!(tiles[1].uv, [0.5, 0.5, 1.0, 1.0]);
+        // No tileset, or nothing painted: no shape asks for anything.
+        assert!(m.shape(None).is_none());
+        let empty = MapLayer::blank(sp.path.clone(), 4, 4);
+        assert!(empty.shape(Some(&sp)).is_none());
+    }
+
+    #[test]
+    fn the_transform_is_the_maps_memory() {
+        // Painted with the cell, erased with it. Repainting the same
+        // picture TURNED is a change; a paint that changes neither the
+        // picture nor its orientation is not; and the eraser sweeps
+        // the bits away so the cell can stand clean again.
+        let mut m = MapLayer::blank(std::path::PathBuf::from("t.png"), 4, 4);
+        let i = m.at(0, 0).unwrap();
+        assert!(m.set_cell(0, 0, 3, 0));
+        assert!(!m.set_cell(0, 0, 3, 0));
+        assert!(m.set_cell(0, 0, 3, 5)); // the very same tile, turned
+        assert_eq!(m.tfms[i], 5);
+        assert!(m.set_cell(0, 0, EMPTY_CELL, 0));
+        assert_eq!(m.tfms[i], 0);
+        assert!(!m.set_cell(0, 0, EMPTY_CELL, 9)); // empty is empty
+    }
+
+    #[test]
+    fn the_ghost_transform_scales_then_pans() {
+        // The ghost must ride the desk's own order: the tile's local
+        // center scales into the cell's world center. The reversed
+        // composition scales the pan as well — the very drift the
+        // desk was built to avoid.
+        let (zoom, view) = (0.4, [30.0, -12.0]);
+        let (tw, row, col) = (32.0, -1, 2);
+        let center = [
+            (col as f32 + 0.5) * tw * zoom + view[0],
+            -((row as f32 + 0.5) * tw * zoom) + view[1],
+        ];
+        let t = ghost_transform(zoom, center);
+        let p = t.apply([0.0, 0.0]);
+        assert!((p[0] - center[0]).abs() < 1e-3 && (p[1] - center[1]).abs() < 1e-3);
+        // A tile's edge: half a zoomed tile right of the center.
+        let e = t.apply([tw / 2.0, 0.0]);
+        assert!((e[0] - (center[0] + tw / 2.0 * zoom)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_grid_ladder_stands_on_whole_cells() {
+        // Whatever the tile and whatever the zoom, the drawn grid
+        // keeps its lines on cell boundaries — a power-of-two count
+        // of whole cells — and keeps them a readable distance apart.
+        for &cell in &[32.0f32, 24.0, 16.0, 7.0] {
+            for &zoom in &[4.0f32, 1.0, 0.5, 0.3, 0.25, 0.0625] {
+                let step = grid_step(cell, zoom);
+                assert!(
+                    step * zoom >= GRID_MIN_PX - 1e-4,
+                    "{cell} px at {zoom} zoom drew {step} apart"
+                );
+                let k = (step / cell).log2().round();
+                assert!(
+                    k >= 0.0 && (step / cell - 2f32.powf(k)).abs() < 1e-3,
+                    "{cell} px at {zoom} zoom drew {step}: not a ladder of cells"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn four_clockwise_quarters_come_home_and_the_flips_ride() {
+        let mut c = 0u8;
+        for _ in 0..4 {
+            c = tfm_turn(c, true);
+        }
+        assert_eq!(c, 0, "a full turn is the identity");
+        assert_eq!(tfm_turn(tfm_turn(0, true), false), 0, "back and forth");
+        let turned = tfm_turn(1 | (2 << 2), true); // flip x, one turn on
+        assert_eq!(turned & 3, 1, "the flip survived the turn");
+        assert_eq!((turned >> 2) & 3, 3, "and the turn counted");
+    }
+
+    #[test]
+    fn a_layer_hands_the_renderer_its_cells_orientations() {
+        // The store decodes onto the tiles: bits out, flags in — and
+        // the size stays as authored, because the renderer, not the
+        // store, is what turns the extents.
+        let mut m = MapLayer::blank(std::path::PathBuf::from("t.png"), 2, 2);
+        m.set_cell(-1, -1, 0, 1 | (3 << 2)); // flip x, three quarters cw
+        let sp = tileset("t.png");
+        let shape = m.shape(Some(&sp)).expect("one painted cell draws");
+        let frost::Shape::TileMap { tiles, .. } = shape else {
+            panic!("a tile map");
+        };
+        assert_eq!(tiles.len(), 1);
+        assert_eq!(tiles[0].rot, 3);
+        assert!(tiles[0].flip_x);
+        assert!(!tiles[0].flip_y);
+        assert_eq!(tiles[0].size, [2.0, 1.0]);
+    }
+
+    #[test]
+    fn grid_cell_hands_the_stroke_the_same_cell_as_the_ghost() {
+        // The i32 face of the snapping, used by the actual strokes:
+        // floors, including through the negative side.
+        assert_eq!(grid_cell(1.0, 1.0, 32.0, 16.0), (0, -1));
+        assert_eq!(grid_cell(-33.0, 17.0, 32.0, 16.0), (-2, -2));
+        assert_eq!(grid_cell(31.9, -0.1, 32.0, 16.0), (0, 0));
     }
 }

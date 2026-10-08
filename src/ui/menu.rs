@@ -88,6 +88,12 @@ pub struct MenuItem<'a> {
     pub shortcut: &'a str,
     /// What the line is: see [`ItemKind`].
     pub kind: ItemKind<'a>,
+    /// The tick of a mode line: the list paints a check mark in a
+    /// left gutter before this line, saying the item names the state
+    /// that is in effect. Dispatch does not change — a checked line
+    /// is chosen like any other, and choosing the mode you are in is
+    /// the application's nothing-to-do.
+    pub checked: bool,
 }
 
 impl<'a> MenuItem<'a> {
@@ -97,7 +103,16 @@ impl<'a> MenuItem<'a> {
             label,
             shortcut,
             kind: ItemKind::Command,
+            checked: false,
         }
+    }
+
+    /// Show this line as the mode in effect: a check mark in the
+    /// list's left gutter.
+    #[must_use]
+    pub const fn checked(mut self, yes: bool) -> Self {
+        self.checked = yes;
+        self
     }
 
     /// A read-only line: the label left, the value right, and — when
@@ -108,6 +123,7 @@ impl<'a> MenuItem<'a> {
             label,
             shortcut,
             kind: ItemKind::Readout { value },
+            checked: false,
         }
     }
 
@@ -117,6 +133,7 @@ impl<'a> MenuItem<'a> {
             label,
             shortcut: "",
             kind: ItemKind::Slider { min, max, value },
+            checked: false,
         }
     }
 
@@ -125,6 +142,7 @@ impl<'a> MenuItem<'a> {
         label: "",
         shortcut: "",
         kind: ItemKind::Command,
+        checked: false,
     };
 }
 
@@ -305,6 +323,14 @@ impl Ui {
         if let Some(i) = open_idx {
             let menu = &menus[i];
             let title = titles[i].id;
+            // The gutter every line leaves on its left for a checked
+            // line's tick: it exists for the whole list the moment any
+            // line wears one, so labels stand in one column.
+            let gutter = if menu.items.iter().any(|it| it.checked) {
+                1.4 * style.font_size
+            } else {
+                0.0
+            };
             let room = if menu.items.iter().any(|it| !it.shortcut.is_empty()) {
                 3.0 * style.pad
             } else {
@@ -318,19 +344,20 @@ impl Ui {
                     match it.kind {
                         ItemKind::Command => {
                             let sc = self.text_width(it.shortcut, style.font_size);
-                            style.pad + l + room + sc + style.pad
+                            style.pad + gutter + l + room + sc + style.pad
                         }
                         ItemKind::Readout { value } => {
                             let v = self.text_width(value, style.font_size);
                             let sc = self.text_width(it.shortcut, style.font_size);
                             let sc = if sc > 0.0 { sc + style.pad } else { 0.0 };
-                            style.pad + l + room + sc + v + style.pad
+                            style.pad + gutter + l + room + sc + v + style.pad
                         }
                         ItemKind::Slider { value, .. } => {
                             // Label, a fixed-width track, the value: the
                             // list grows to hold the slider at ease.
                             let v = self.text_width(&format!("{value:.2}"), style.font_size);
                             style.pad
+                                + gutter
                                 + l
                                 + 2.0 * style.pad
                                 + MENU_TRACK
@@ -410,6 +437,7 @@ impl Ui {
                             rect,
                             hot: it.hot,
                             pressed: it.pressed,
+                            checked: item.checked,
                         });
                     }
                     ItemKind::Readout { value } => {
@@ -430,7 +458,8 @@ impl Ui {
                             // Held: the knob follows the pointer across
                             // the track, and the line reports each frame.
                             if let Some(p) = self.pointer {
-                                let track = slider_track(self, &style, &rect, slider_col, v);
+                                let track =
+                                    slider_track(self, &style, &rect, slider_col, gutter, v);
                                 let (lo, hi) = (
                                     track.left + style.knob_r,
                                     track.left + track.w - style.knob_r,
@@ -442,7 +471,7 @@ impl Ui {
                             }
                             slid = Some(MenuEvent::Slid(menu.title, item.label, v));
                         }
-                        let track = slider_track(self, &style, &rect, slider_col, v);
+                        let track = slider_track(self, &style, &rect, slider_col, gutter, v);
                         rows.push(Row::Slider {
                             label: item.label,
                             min,
@@ -533,6 +562,18 @@ impl Ui {
             d.bg.left + d.bg.w,
             d.bg.top - d.bg.h,
         );
+        // The gutter is a fact about the rows, and the painter reads
+        // the same fact the layout used: one tick in the list, and
+        // every label shifts by it.
+        let gutter = if d
+            .rows
+            .iter()
+            .any(|r| matches!(r, Row::Item { checked: true, .. }))
+        {
+            1.4 * style.font_size
+        } else {
+            0.0
+        };
         for row in &d.rows {
             match row {
                 Row::Item {
@@ -541,7 +582,7 @@ impl Ui {
                     rect,
                     hot,
                     pressed,
-                    ..
+                    checked,
                 } => {
                     if *pressed {
                         self.fill(ctx, *rect, style.widget_press);
@@ -554,11 +595,42 @@ impl Ui {
                     let l = (*label).to_owned();
                     self.text(
                         ctx,
-                        [rect.left + style.pad + lw / 2.0, cy],
+                        [rect.left + style.pad + gutter + lw / 2.0, cy],
                         size,
                         style.text,
                         &l,
                     );
+                    if *checked {
+                        // The tick, drawn as two strokes: a check-mark
+                        // glyph is a font's favor to ask, and the UI
+                        // font is not asked to do favors. It rides the
+                        // row's own middle, not the label's lifted
+                        // anchor: strokes land exactly where they are
+                        // told, and it is the letters that need the
+                        // lift to look centered.
+                        let s = size;
+                        let gx = rect.left + style.pad + gutter / 2.0;
+                        let ry = rect.center()[1];
+                        let z = self.z();
+                        ctx.line(
+                            gx - 0.30 * s,
+                            ry + 0.08 * s,
+                            gx - 0.02 * s,
+                            ry - 0.24 * s,
+                            style.text,
+                            1.6,
+                            z,
+                        );
+                        ctx.line(
+                            gx - 0.02 * s,
+                            ry - 0.24 * s,
+                            gx + 0.42 * s,
+                            ry + 0.36 * s,
+                            style.text,
+                            1.6,
+                            z,
+                        );
+                    }
                     if !shortcut.is_empty() {
                         let sw = self.text_width(shortcut, size);
                         let s = (*shortcut).to_owned();
@@ -583,7 +655,7 @@ impl Ui {
                     let l = (*label).to_owned();
                     self.text(
                         ctx,
-                        [rect.left + style.pad + lw / 2.0, cy],
+                        [rect.left + style.pad + gutter + lw / 2.0, cy],
                         size,
                         style.text,
                         &l,
@@ -626,7 +698,7 @@ impl Ui {
                     let l = (*label).to_owned();
                     self.text(
                         ctx,
-                        [rect.left + style.pad + lw / 2.0, cy],
+                        [rect.left + style.pad + gutter + lw / 2.0, cy],
                         size,
                         style.text,
                         &l,
@@ -724,6 +796,7 @@ enum Row<'a> {
         rect: Rect,
         hot: bool,
         pressed: bool,
+        checked: bool,
     },
     Readout {
         label: &'a str,
@@ -754,13 +827,20 @@ const MENU_TRACK: f32 = 96.0;
 /// A menu slider line's track: the span between the label and the
 /// value readout, centered in the row — the geometry the drag maps the
 /// pointer onto and the painter draws.
-fn slider_track(ui: &mut Ui, style: &UiStyle, rect: &Rect, col: f32, value: f32) -> Rect {
+fn slider_track(
+    ui: &mut Ui,
+    style: &UiStyle,
+    rect: &Rect,
+    col: f32,
+    gutter: f32,
+    value: f32,
+) -> Rect {
     // The column is the menu's shared label column, not this line's
     // own label: the tracks all start in line and stretch to the
     // values, the way the panel's table laid them.
     let lw = col;
     let vw = ui.text_width(&format!("{value:.2}"), style.font_size);
-    let x0 = rect.left + style.pad + lw + style.pad;
+    let x0 = rect.left + style.pad + gutter + lw + style.pad;
     let x1 = rect.left + rect.w - style.pad - vw - style.pad;
     let w = (x1 - x0).max(2.0 * style.knob_r + 1.0);
     Rect::from_center(
@@ -1031,6 +1111,77 @@ mod tests {
         let (f, slid) = vbar(&mut ui);
         assert_eq!(slid, None, "a readout has no event to give");
         assert!(f.drop.is_some(), "and its click belongs to the list");
+    }
+
+    /// Click a one-menu bar's title open and return the open frame.
+    fn opened(ui: &mut Ui, menu: &'static Menu<'static>) -> MenuFrame<'static> {
+        frame(ui, None, false);
+        let (f, _) = ui.menu_frame(&[*menu], SIZE);
+        let title = f.titles[0].rect.center();
+        frame(ui, Some(title), true);
+        ui.menu_frame(&[*menu], SIZE);
+        frame(ui, Some(title), false);
+        ui.menu_frame(&[*menu], SIZE).0
+    }
+
+    #[test]
+    fn a_checked_line_opens_a_gutter_and_ticks_its_own_row() {
+        // The gutter is a property of the list, not the row: one
+        // checked line shifts every label, so the marks stand in a
+        // column and the plain lines line up with the ticked one.
+        static MODES: Menu<'static> = Menu {
+            title: "Modes",
+            items: &[
+                MenuItem::new("Markers", "").checked(true),
+                MenuItem::new("Tile Map", ""),
+            ],
+        };
+        static PLAIN: Menu<'static> = Menu {
+            title: "Modes",
+            items: &[MenuItem::new("Markers", ""), MenuItem::new("Tile Map", "")],
+        };
+        let mut marked = ui();
+        let f = opened(&mut marked, &MODES);
+        let d = f.drop.expect("the list is open");
+        assert!(
+            matches!(&d.rows[0], Row::Item { checked: true, .. }),
+            "the checked line keeps its mark to the painter"
+        );
+        assert!(
+            matches!(&d.rows[1], Row::Item { checked: false, .. }),
+            "the plain line reports none"
+        );
+        // The list widened by exactly the gutter: same labels, same
+        // fonts, one more column.
+        let mut plain = ui();
+        let g = opened(&mut plain, &PLAIN);
+        let grow = d.bg.w - g.drop.expect("the plain list opens too").bg.w;
+        assert!(
+            (grow - 1.4 * marked.style.font_size).abs() < 1e-3,
+            "the gutter is 1.4 em, not {grow}"
+        );
+    }
+
+    #[test]
+    fn a_checked_line_is_chosen_like_any_other() {
+        // The mark reports; it does not disarm. Choosing the mode in
+        // effect stays an ordinary — if idle — command.
+        static MODES: Menu<'static> = Menu {
+            title: "Modes",
+            items: &[MenuItem::new("Markers", "").checked(true)],
+        };
+        let mut u = ui();
+        let f = opened(&mut u, &MODES);
+        let row = match &f.drop.as_ref().expect("open").rows[0] {
+            Row::Item { rect, .. } => *rect,
+            _ => panic!("the first line is a command"),
+        };
+        frame(&mut u, Some(row.center()), true);
+        u.menu_frame(&[MODES], SIZE);
+        frame(&mut u, Some(row.center()), false);
+        let (g, chose) = u.menu_frame(&[MODES], SIZE);
+        assert_eq!(chose, Some(MenuEvent::Chose("Modes", "Markers")));
+        assert!(g.drop.is_none(), "and the list closes as any choice does");
     }
 
     #[test]

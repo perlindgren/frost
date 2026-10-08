@@ -341,6 +341,17 @@ pub struct Tile {
     /// node's composed modulate, and the sampled texel's own alpha.
     /// White shows the atlas uncolored.
     pub color: Color,
+    /// The atlas cell's own orientation: clockwise quarter-turns,
+    /// 0..=3, applied in screen space before the flips. An odd turn
+    /// lays the cell sideways, so the painted quad swaps the tile's
+    /// width and height — `size` keeps describing the cell as
+    /// authored, the renderer turns the extent.
+    pub rot: u8,
+    /// The cell mirrored left-to-right, in screen space, after `rot`:
+    /// an x-flip always means sideways, whatever the orientation.
+    pub flip_x: bool,
+    /// The cell mirrored top-to-bottom, in screen space, after `rot`.
+    pub flip_y: bool,
 }
 
 impl Tile {
@@ -357,7 +368,21 @@ impl Tile {
                 b: 1.0,
                 a: 1.0,
             },
+            rot: 0,
+            flip_x: false,
+            flip_y: false,
         }
+    }
+
+    /// The tile with its cell turned `rot` clockwise quarter-turns
+    /// (counts past three wrap) and mirrored on the `flip_x` and
+    /// `flip_y` screen axes — the orientation of a painted cell.
+    #[must_use]
+    pub const fn transformed(mut self, rot: u8, flip_x: bool, flip_y: bool) -> Self {
+        self.rot = rot % 4;
+        self.flip_x = flip_x;
+        self.flip_y = flip_y;
+        self
     }
 }
 

@@ -773,12 +773,15 @@ pub(crate) fn tilemap_uniform_data(size: [f32; 2], color: Color) -> Vec<u8> {
 
 /// Packs one tile of a [`Draw::TileMap`] batch: sixteen little-endian
 /// floats, 64 bytes — the pixel center `(px, py)` and mapped x-axis
-/// half-edge `(ux, uy)`, the mapped y-axis half-edge `(vx, vy)` (padded
-/// to a vec4), the atlas sub-rectangle `(min_u, min_v, max_u, max_v)`,
-/// and the tint `(r, g, b, a)` — in the layout `tilemap.wgsl` reads as
+/// half-edge `(ux, uy)`, the mapped y-axis half-edge `(vx, vy)` padded
+/// to a vec4 by the cell's own orientation — the flip bits (`x` is 1,
+/// `y` is 2, both is 3) and the clockwise quarter-turn count — the
+/// atlas sub-rectangle `(min_u, min_v, max_u, max_v)`, and the tint
+/// `(r, g, b, a)` — in the layout `tilemap.wgsl` reads as
 /// `array<vec4<f32>>` with four vec4s per instance. The quad spans
 /// `center ± u ± v`, so whatever the node's transform did to the tile's
-/// two axes — scale, flip, rotate — the quad follows.
+/// two axes — scale, flip, rotate — the quad follows; and whatever the
+/// cell's own `flags` say, the sampling obeys.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tilemap_instance(
     px: f32,
@@ -787,6 +790,7 @@ pub(crate) fn tilemap_instance(
     v: [f32; 2],
     uv: [f32; 4],
     tint: &Color,
+    flags: [f32; 2],
 ) -> [u8; 64] {
     let mut out = [0u8; 64];
     out[0..4].copy_from_slice(&px.to_le_bytes());
@@ -795,6 +799,8 @@ pub(crate) fn tilemap_instance(
     out[12..16].copy_from_slice(&u[1].to_le_bytes());
     out[16..20].copy_from_slice(&v[0].to_le_bytes());
     out[20..24].copy_from_slice(&v[1].to_le_bytes());
+    out[24..28].copy_from_slice(&flags[0].to_le_bytes());
+    out[28..32].copy_from_slice(&flags[1].to_le_bytes());
     for (i, w) in uv.iter().enumerate() {
         out[32 + i * 4..36 + i * 4].copy_from_slice(&w.to_le_bytes());
     }

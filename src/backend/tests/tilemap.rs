@@ -72,6 +72,7 @@ fn tilemap_instances_pack_four_vec4s() {
         [16.0, 16.0],
         [0.25, 0.5, 0.75, 1.0],
         &rgba(1.0, 0.5, 0.25, 0.8),
+        [3.0, 1.0],
     );
     let (words, tail) = bytes.as_chunks::<4>();
     assert!(tail.is_empty());
@@ -79,12 +80,15 @@ fn tilemap_instances_pack_four_vec4s() {
     assert_eq!(
         floats,
         vec![
-            65.0, 25.0, 16.0, -16.0, 16.0, 16.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 0.5, 0.25,
+            65.0, 25.0, 16.0, -16.0, 16.0, 16.0, 3.0, 1.0, 0.25, 0.5, 0.75, 1.0, 1.0, 0.5, 0.25,
             0.8
         ]
     );
-    // The vec4 gap is dead bytes: zero, never neighbor data.
-    assert_eq!(bytes[24..32], [0u8; 8]);
+    // The edge vec4's two floats of slack are no longer slack: they
+    // carry the cell's own orientation — flip bits (both here) and the
+    // clockwise quarter-turn count — and nothing else rides there.
+    assert_eq!(f32::from_le_bytes(bytes[24..28].try_into().unwrap()), 3.0);
+    assert_eq!(f32::from_le_bytes(bytes[28..32].try_into().unwrap()), 1.0);
 }
 #[test]
 fn tilemap_uniforms_layout_is_size_then_color() {

@@ -59,7 +59,7 @@ fn vs_main(
     // Four vec4 per tile; the batch's draw count is the number of
     // tiles, so the instance's data sits at 4 * ii.
     let place = instances[4 * ii]; // (center, u)
-    let edge = instances[4 * ii + 1]; // (v, pad)
+    let edge = instances[4 * ii + 1]; // (v, flips, quarter-turns)
     let uv_span = instances[4 * ii + 2];
     let tint = instances[4 * ii + 3];
     // The quad's four corners, in the same order the shared index
@@ -81,7 +81,40 @@ fn vs_main(
     // rest the u-negative, v-negative corner is the quad's upper-left —
     // where the atlas cell's first texel row and column belong — and
     // under rotation that corner keeps carrying uv = (0, 0) with it.
-    out.quad_uv = corner * 0.5 + vec2<f32>(0.5, 0.5);
+    //
+    // The cell's own orientation now steers where each corner looks in
+    // the atlas. A clockwise quarter-turn moves the picture so the
+    // quad's upper-left shows the source's LOWER-left corner: sampling
+    // (v, 1 - u) walks that corner map; the counterclockwise turn is
+    // its inverse, (1 - v, u). Both are true rotations — the corner
+    // cycle goes one way around the quad, never mirrored through a
+    // diagonal, which is what transposes like (1 - v, 1 - u) would
+    // have done. The flips apply after, on screen axes — edge.z packs
+    // them as bits, x is 1 and y is 2 — so an x-flip is always
+    // sideways, whatever the orientation. The CPU swapped the quad's
+    // extents for odd turns, so the walk lands on a quad that already
+    // fits.
+    var q = corner * 0.5 + vec2<f32>(0.5, 0.5);
+    switch (u32(edge.w + 0.5) % 4u) {
+        case 1u: {
+            q = vec2<f32>(q.y, 1.0 - q.x);
+        }
+        case 2u: {
+            q = vec2<f32>(1.0 - q.x, 1.0 - q.y);
+        }
+        case 3u: {
+            q = vec2<f32>(1.0 - q.y, q.x);
+        }
+        default: {}
+    }
+    let flips = u32(edge.z + 0.5);
+    if ((flips & 1u) != 0u) {
+        q.x = 1.0 - q.x;
+    }
+    if ((flips & 2u) != 0u) {
+        q.y = 1.0 - q.y;
+    }
+    out.quad_uv = q;
     out.tint = tint;
     return out;
 }

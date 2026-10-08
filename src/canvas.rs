@@ -857,9 +857,16 @@ fn draw_node(
                     for tile in tiles {
                         let [cx, cy] = to_pixel.apply(tile.center);
                         // The tile's two half-edges through the linear
-                        // part: each axis lands on a matrix column.
-                        let ex = tile.size[0] * 0.5;
-                        let ey = tile.size[1] * 0.5;
+                        // part: each axis lands on a matrix column. An
+                        // odd quarter-turn lays the cell sideways — the
+                        // extents swap here, the flags tell the sampler.
+                        let [sx, sy] = if tile.rot % 2 == 1 {
+                            [tile.size[1], tile.size[0]]
+                        } else {
+                            tile.size
+                        };
+                        let ex = sx * 0.5;
+                        let ey = sy * 0.5;
                         let u = [to_pixel.m[0][0] * ex, to_pixel.m[1][0] * ex];
                         let v = [to_pixel.m[0][1] * ey, to_pixel.m[1][1] * ey];
                         // The quad's own AABB: |u| + |v| per axis, so a
@@ -875,6 +882,10 @@ fn draw_node(
                             v,
                             tile.uv,
                             &tile.color,
+                            [
+                                tile.flip_x as u8 as f32 + 2.0 * tile.flip_y as u8 as f32,
+                                (tile.rot % 4) as f32,
+                            ],
                         ));
                     }
                     let clip_px = clip.map(|[x0, y0, x1, y1]| {
@@ -1127,23 +1138,29 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
         // A tile map's box is the box over its tiles: the extent is
         // data rather than a parameter, but a bounded one.
         Shape::TileMap { tiles, .. } => {
+            // The box describes what the renderer paints, so a turned
+            // cell contributes its swapped extent, not its authored one.
+            let half = |t: &Tile| {
+                let [sx, sy] = if t.rot % 2 == 1 {
+                    [t.size[1], t.size[0]]
+                } else {
+                    t.size
+                };
+                (sx / 2.0, sy / 2.0)
+            };
             let first = tiles.first()?;
-            let mut min = [
-                first.center[0] - first.size[0] / 2.0,
-                first.center[1] - first.size[1] / 2.0,
-            ];
-            let mut max = [
-                first.center[0] + first.size[0] / 2.0,
-                first.center[1] + first.size[1] / 2.0,
-            ];
+            let (fw, fh) = half(first);
+            let mut min = [first.center[0] - fw, first.center[1] - fh];
+            let mut max = [first.center[0] + fw, first.center[1] + fh];
             for tile in tiles.iter().skip(1) {
+                let (w, h) = half(tile);
                 min = [
-                    min[0].min(tile.center[0] - tile.size[0] / 2.0),
-                    min[1].min(tile.center[1] - tile.size[1] / 2.0),
+                    min[0].min(tile.center[0] - w),
+                    min[1].min(tile.center[1] - h),
                 ];
                 max = [
-                    max[0].max(tile.center[0] + tile.size[0] / 2.0),
-                    max[1].max(tile.center[1] + tile.size[1] / 2.0),
+                    max[0].max(tile.center[0] + w),
+                    max[1].max(tile.center[1] + h),
                 ];
             }
             Some((
@@ -2421,8 +2438,9 @@ mod tests {
 
     /// Reads the little-endian float at component `component` (0..16 in
     /// the four instance vec4s: center and x-half-edge; y-half-edge and
-    /// pad; UV bounds; tint — so uv lives at 8..12 and the tint at
-    /// 12..16) of tile `tile` in the packed instance data of the map.
+    /// the orientation flags — flips, then quarter-turns; UV bounds;
+    /// tint — so uv lives at 8..12 and the tint at 12..16) of tile
+    /// `tile` in the packed instance data of the map.
     fn tile_f32(map: &Map, tile: usize, component: usize) -> f32 {
         let start = tile * 64 + component * 4;
         f32::from_le_bytes(map.data[start..start + 4].try_into().unwrap())
@@ -2460,12 +2478,11 @@ mod tests {
         // the half-extents ride the canvas scale untouched (1x here).
         let node = SceneNode {
             transform: Transform::translate([10.0, 20.0]),
-            shape: Some(tile_map(vec![Tile {
-                center: [5.0, 5.0],
-                size: [32.0, 32.0],
-                uv: [0.25, 0.5, 0.5, 1.0],
-                color: WHITE,
-            }])),
+            shape: Some(tile_map(vec![Tile::new(
+                [5.0, 5.0],
+                [32.0, 32.0],
+                [0.25, 0.5, 0.5, 1.0],
+            )])),
             ..Default::default()
         };
         let mut draws = Vec::new();
@@ -2486,6 +2503,36 @@ mod tests {
         assert_eq!(tile_f32(&map, 0, 9), 0.5);
         assert_eq!(tile_f32(&map, 0, 10), 0.5);
         assert_eq!(tile_f32(&map, 0, 11), 1.0);
+    }
+
+    #[test]
+    fn a_transformed_tile_swaps_its_edges_and_rides_its_flags() {
+        // A cell turned one quarter lies sideways on the quad: the
+        // half-edges carry the swapped extents, the edge vec4's last
+        // two floats carry the flip bits and the turn, and the batch's
+        // AABB books the sideways footprint.
+        let node = SceneNode {
+            shape: Some(tile_map(vec![
+                Tile::new([0.0, 0.0], [32.0, 16.0], [0.0, 0.0, 0.5, 0.5])
+                    .transformed(1, true, false),
+            ])),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&node, &mut draws);
+        let map = the_map(&draws);
+        // Swapped half-edges: the x-axis now carries the 16-tall
+        // dimension's half, the y-axis the 32-wide one's.
+        assert_eq!(tile_f32(&map, 0, 2), 8.0);
+        assert_eq!(tile_f32(&map, 0, 5), -16.0);
+        // The flags: flip bits (x only), then one clockwise turn.
+        assert_eq!(tile_f32(&map, 0, 6), 1.0);
+        assert_eq!(tile_f32(&map, 0, 7), 1.0);
+        // And the batch's box is the sideways box, about the pixel
+        // center wherever the canvas parks it.
+        let (cx, cy) = (tile_f32(&map, 0, 0), tile_f32(&map, 0, 1));
+        assert_eq!(map.bounds.0, [cx - 8.0, cy - 16.0]);
+        assert_eq!(map.bounds.1, [cx + 8.0, cy + 16.0]);
     }
 
     #[test]
@@ -2614,6 +2661,9 @@ mod tests {
                     size: [10.0, 10.0],
                     uv: [0.0, 0.0, 1.0, 1.0],
                     color: rgba(1.0, 1.0, 0.5, 0.8),
+                    rot: 0,
+                    flip_x: false,
+                    flip_y: false,
                 }],
                 None,
                 rgba(1.0, 0.0, 0.0, 1.0),
