@@ -77,19 +77,20 @@ fn vs_main(
     var out: VertexOutput;
     out.position = vec4<f32>(ndc, 0.0, 1.0);
     out.uv_span = uv_span;
-    // The quad's own 0..1 coordinates: the ±1 corners mapped up. At
-    // rest the u-negative, v-negative corner is the quad's upper-left —
-    // where the atlas cell's first texel row and column belong — and
-    // under rotation that corner keeps carrying uv = (0, 0) with it.
+    // The quad's own 0..1 coordinates: the ±1 corners mapped up. The
+    // v-negative corner is the quad's low edge on screen, so the
+    // fragment flips v on the way to the texture and the atlas cell's
+    // first texel row — its TOP — lands on the quad's top: the same
+    // convention sprite.wgsl pays, and what keeps the atlas upright.
     //
     // The cell's own orientation now steers where each corner looks in
-    // the atlas. A clockwise quarter-turn moves the picture so the
-    // quad's upper-left shows the source's LOWER-left corner: sampling
-    // (v, 1 - u) walks that corner map; the counterclockwise turn is
-    // its inverse, (1 - v, u). Both are true rotations — the corner
-    // cycle goes one way around the quad, never mirrored through a
-    // diagonal, which is what transposes like (1 - v, 1 - u) would
-    // have done. The flips apply after, on screen axes — edge.z packs
+    // the quad's own frame. Because the fragment flips v on the way to
+    // the texture, the walk here must run conjugate to the picture's
+    // rotation: a clockwise quarter-turn of the upright cell samples
+    // (1 - v, u), and the counterclockwise turn is its inverse,
+    // (v, 1 - u). Both are true rotations — the corner cycle goes one
+    // way around the quad, never mirrored through a diagonal, which
+    // what transposes like (1 - v, 1 - u) would have done. The flips apply after, on screen axes — edge.z packs
     // them as bits, x is 1 and y is 2 — so an x-flip is always
     // sideways, whatever the orientation. The CPU swapped the quad's
     // extents for odd turns, so the walk lands on a quad that already
@@ -97,13 +98,13 @@ fn vs_main(
     var q = corner * 0.5 + vec2<f32>(0.5, 0.5);
     switch (u32(edge.w + 0.5) % 4u) {
         case 1u: {
-            q = vec2<f32>(q.y, 1.0 - q.x);
+            q = vec2<f32>(1.0 - q.y, q.x);
         }
         case 2u: {
             q = vec2<f32>(1.0 - q.x, 1.0 - q.y);
         }
         case 3u: {
-            q = vec2<f32>(1.0 - q.y, q.x);
+            q = vec2<f32>(q.y, 1.0 - q.x);
         }
         default: {}
     }
@@ -122,8 +123,13 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // The tile's slice of the atlas: the quad's 0..1 run stretched
-    // between the cell's UV bounds.
-    let uv = mix(in.uv_span.xy, in.uv_span.zw, in.quad_uv);
+    // between the cell's UV bounds. v flips on the way: the quad's
+    // v runs bottom-up (the v-negative corner is the quad's LOW edge
+    // on screen), while the texture's v=0 is the first texel row —
+    // the atlas cell's TOP row, the engine's convention, the same
+    // one sprite.wgsl pays by flipping there. Without this flip
+    // every tile would read its cell upside down.
+    let uv = mix(in.uv_span.xy, in.uv_span.zw, vec2<f32>(in.quad_uv.x, 1.0 - in.quad_uv.y));
     let t = textureSample(tex, samp, uv);
     // The texel's own color times the tile's tint times the batch's —
     // like a sprite's tint and alpha: the texture's alpha carries through

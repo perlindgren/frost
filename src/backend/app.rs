@@ -210,6 +210,23 @@ pub(crate) struct Frost<P: Process> {
     /// press recorded no matter which modifiers moved in between, and the
     /// character a shortcut matches never changes while the key is held.
     typed: HashMap<KeyCode, char>,
+    /// The `Config`'s escape policy: when true, an Escape press ends
+    /// the app; when false the key belongs to the process, which
+    /// closes through `Context::exit` when it means to (see
+    /// `Config::escape_exits`).
+    escape_exits: bool,
+    /// The `Config`'s close-button policy (see `Config::close_exits`):
+    /// when false, the request waits one frame for the process to ask
+    /// (`Context::close_requested`).
+    close_exits: bool,
+    /// A close request waiting for the next frame's process.
+    close_request: bool,
+    /// Raised by the process through `Context::exit`: the frame is
+    /// drawn as asked and the loop then closes.
+    exit_requested: bool,
+    /// Whether the frame's `Context` key reads answer dead (see
+    /// `Context::set_keys_frozen`).
+    keys_frozen: bool,
     /// The mouse cursor's position in physical pixels, `(0, 0)` at the
     /// window's upper-left corner, or `None` when the cursor is outside the
     /// window. Updated as cursor events arrive; `render` maps it into the
@@ -246,6 +263,8 @@ impl<P: Process> Frost<P> {
         resizable: bool,
         render_size: Option<[u32; 2]>,
         blit_filter: SpriteFilter,
+        escape_exits: bool,
+        close_exits: bool,
         scene: Scene,
         process: P,
     ) -> Self {
@@ -444,6 +463,11 @@ impl<P: Process> Frost<P> {
             mouse_wheel: 0.0,
             gilrs,
             process,
+            escape_exits,
+            close_exits,
+            close_request: false,
+            exit_requested: false,
+            keys_frozen: false,
         }
     }
 }
@@ -514,7 +538,10 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                         self.typed.insert(code, ch);
                     }
                 }
-                if event.state == ElementState::Pressed && event.logical_key == NamedKey::Escape {
+                if self.escape_exits
+                    && event.state == ElementState::Pressed
+                    && event.logical_key == NamedKey::Escape
+                {
                     log::info!("escape pressed, exiting");
                     event_loop.exit();
                 }
@@ -563,8 +590,16 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                 self.mouse_buttons.clear();
             }
             WindowEvent::CloseRequested => {
-                log::info!("window close requested, exiting");
-                event_loop.exit();
+                if self.close_exits {
+                    log::info!("window close requested, exiting");
+                    event_loop.exit();
+                } else {
+                    // The process owns the question: the request waits
+                    // for the next frame's `Context::close_requested`
+                    // and the window stands meanwhile.
+                    log::info!("window close requested, asking the process");
+                    self.close_request = true;
+                }
             }
             WindowEvent::Resized(size) => {
                 // `size` is the physical client size; store the logical size
@@ -585,9 +620,16 @@ impl<P: Process> ApplicationHandler for Frost<P> {
             }
             WindowEvent::RedrawRequested => {
                 self.render();
-                // winit only delivers RedrawRequested after we ask for it, so
-                // request the next frame to keep animation running continuously.
-                if let Some(window) = self.window.as_ref() {
+                // A process that asked to leave has its last frame drawn
+                // and queued; the loop now ends, exactly as when the
+                // window's close button is pressed.
+                if self.exit_requested {
+                    log::info!("process requested exit");
+                    event_loop.exit();
+                } else if let Some(window) = self.window.as_ref() {
+                    // winit only delivers RedrawRequested after we ask for
+                    // it, so request the next frame to keep animation
+                    // running continuously.
                     window.request_redraw();
                 }
             }
@@ -627,6 +669,14 @@ impl<P: Process> Frost<P> {
     /// Called from [`Self::resumed`] once a window exists; on the web the
     /// window is created before the async GPU setup completes, and this runs
     /// when it does.
+    /// Records a close request raised before this app existed — the
+    /// web's warm-up path — so the first frames hear it like any other
+    /// (see `Context::close_requested`).
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn note_close_request(&mut self) {
+        self.close_request = true;
+    }
+
     pub(crate) fn attach_window(&mut self, window: Arc<Window>) {
         self.window_id = Some(window.id());
         // winit reports the client area in *physical* pixels, so convert it
@@ -1550,6 +1600,9 @@ impl<P: Process> Frost<P> {
                 frame_draw_calls: self.frame_draw_calls,
                 frame_diagnostic_draw_calls: self.frame_diagnostic_draw_calls,
                 mouse_wheel: self.mouse_wheel,
+                exit: &mut self.exit_requested,
+                keys_frozen: &mut self.keys_frozen,
+                close_requested: self.close_request,
             };
             process.process(&mut ctx, dt);
         }
@@ -1557,6 +1610,9 @@ impl<P: Process> Frost<P> {
         // so a frame that never reads it discards the delta rather than
         // leaking it into the next.
         self.mouse_wheel = 0.0;
+        // The close request belongs to the frame that just ran: what
+        // the process did not ask about is done asking.
+        self.close_request = false;
         // The user's process ran; now update the scene tree itself: every
         // node's `Node::process`, children before their parent.
         self.scene.visit();

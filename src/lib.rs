@@ -191,7 +191,7 @@ pub use diagnostics::{Diagnostics, DiagnosticsFlags};
 
 mod ui;
 pub use ui::{
-    Align, Col, ColSize, ItemKind, Menu, MenuEvent, MenuItem, TreeEvent, TreeLine, TreeOut,
+    Align, Answer, Col, ColSize, ItemKind, Menu, MenuEvent, MenuItem, TreeEvent, TreeLine, TreeOut,
     TreeSpec, TreeState, TreeStyle, Ui, UiStyle,
 };
 
@@ -244,6 +244,14 @@ pub struct Context<'c> {
     /// [`Diagnostics`] overlay's own nodes (see
     /// [`Context::frame_diagnostic_draw_calls`]).
     frame_diagnostic_draw_calls: u32,
+    /// The engine's exit flag, raised by [`Context::exit`]: the frame
+    /// completes as drawn, and the loop then closes.
+    exit: &'c mut bool,
+    /// The engine's key freeze, read live (see [`Context::set_keys_frozen`]).
+    keys_frozen: &'c mut bool,
+    /// A close request raised between the last frame and this one
+    /// (see [`Context::close_requested`]).
+    close_requested: bool,
 }
 
 impl Context<'_> {
@@ -257,6 +265,13 @@ impl Context<'_> {
     /// The state is updated as keyboard events arrive, so it reflects every
     /// press and release since the previous frame.
     pub fn key_down(&self, key: KeyCode) -> bool {
+        !*self.keys_frozen && self.keys.contains(&key)
+    }
+
+    /// [`Context::key_down`], unread by the key freeze: the app's modal
+    /// reads its own keys through here while every other key stands
+    /// dead (see [`Context::set_keys_frozen`]).
+    pub fn key_down_raw(&self, key: KeyCode) -> bool {
         self.keys.contains(&key)
     }
 
@@ -272,7 +287,52 @@ impl Context<'_> {
     /// the press (a macOS Option, which rewrites characters) shows up in
     /// it. Multi-character presses match on their first character.
     pub fn char_down(&self, ch: char) -> bool {
+        !*self.keys_frozen && self.typed.values().any(|&c| c == ch)
+    }
+
+    /// [`Context::char_down`], unread by the key freeze (see
+    /// [`Context::key_down_raw`]).
+    pub fn char_down_raw(&self, ch: char) -> bool {
         self.typed.values().any(|&c| c == ch)
+    }
+
+    /// Asks the engine to close the application when this frame is
+    /// drawn. The frame completes — whatever the process draws last is
+    /// what the window shows last — and the loop then ends, the same
+    /// as if the window's close button was pressed.
+    pub fn exit(&mut self) {
+        *self.exit = true;
+    }
+
+    /// Freezes the keyboard reads: while frozen, [`Context::key_down`]
+    /// and [`Context::char_down`] answer false for every key, so the
+    /// game's keyboard controls stand down while a modal dialog holds
+    /// the keys. The freeze is read live, effective the moment it is
+    /// set; the dialog itself hears the keys through
+    /// [`Context::key_down_raw`] and [`Context::char_down_raw`]. Held
+    /// keys are remembered, not dropped: unfreezing mid-press finds
+    /// them still down, and a key released while frozen shows no edge
+    /// at all.
+    pub fn set_keys_frozen(&mut self, frozen: bool) {
+        *self.keys_frozen = frozen;
+    }
+
+    /// Whether the keyboard reads are frozen now (see
+    /// [`Context::set_keys_frozen`]).
+    pub fn keys_frozen(&self) -> bool {
+        *self.keys_frozen
+    }
+
+    /// Whether the window's close was requested since the previous
+    /// frame: the window manager's close button lands here — once, in
+    /// the next frame — for an app that set [`Config::close_exits`]
+    /// false. The request is read-once like the wheel's delta: a frame
+    /// that never asks discards it, and the window stands regardless
+    /// until the app closes it, most honestly through
+    /// [`Context::exit`]. With the default policy the close button
+    /// ends the app directly and this never reports.
+    pub fn close_requested(&self) -> bool {
+        self.close_requested
     }
 
     /// The window this frame is drawn into, or `None` before the window
@@ -564,6 +624,23 @@ pub struct Config {
     /// crawl while resizing — which is precisely the trade pixel purists
     /// make on purpose.
     pub blit_filter: SpriteFilter,
+    /// Whether the Escape key, on its own, ends the application.
+    ///
+    /// True is the classic convenience: every app closes at a keypress.
+    /// An app that gives Escape a place in its own controls — a modal
+    /// of its own, a selection to let go — sets this false and owns the
+    /// key, closing the app through [`Context::exit`] when it means to.
+    pub escape_exits: bool,
+    /// Whether the window's close button, on its own, ends the
+    /// application.
+    ///
+    /// True is the classic promise: the close button closes. An app
+    /// with work worth keeping sets this false: the close request
+    /// arrives at the process instead (see [`Context::close_requested`])
+    /// and the app decides — typically by asking through a modal and
+    /// closing with [`Context::exit`] when the answer is yes. The
+    /// window stands until the app acts.
+    pub close_exits: bool,
 }
 
 impl Default for Config {
@@ -577,6 +654,8 @@ impl Default for Config {
             resizable: true,
             render_size: None,
             blit_filter: SpriteFilter::Linear,
+            escape_exits: true,
+            close_exits: true,
         }
     }
 }
@@ -627,6 +706,8 @@ pub fn run_configured<P: Process>(
         config.resizable,
         config.render_size,
         config.blit_filter,
+        config.escape_exits,
+        config.close_exits,
         scene,
         process,
     );
@@ -671,6 +752,8 @@ pub fn run_configured<P: Process>(
         config.resizable,
         config.render_size,
         config.blit_filter,
+        config.escape_exits,
+        config.close_exits,
     );
     event_loop.run_app(&mut app)?;
 
