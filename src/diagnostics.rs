@@ -803,6 +803,13 @@ impl Diagnostics {
             .unwrap_or(1.0);
         let mut layer = Layer::new(SceneNode::default());
         layer.order = order;
+        // The overlay is a heads-up display: it belongs to the window,
+        // not to the world. A layer's default speed is the camera's own
+        // (1.0), which would scroll the overlay away with the scene —
+        // in a camera scene the overlay would slide off the window
+        // within seconds. Speed 0.0 pins the group to the fixed,
+        // window-centered user space however the camera moves.
+        layer.speed = 0.0;
         let idx = scene.layers.len();
         scene.layers.push(layer);
         self.layer = Some(idx);

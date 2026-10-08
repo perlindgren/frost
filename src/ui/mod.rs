@@ -1,7 +1,9 @@
 //! Reusable immediate-mode widgets: a [`Ui`] that draws [`button`](Ui::button),
-//! [`checkbox`](Ui::checkbox), [`slider`](Ui::slider), [`label`](Ui::label)
-//! and draggable [`panel`](Ui::panel) chrome straight onto the frame's
-//! [`Canvas`], over whatever the game draws.
+//! [`checkbox`](Ui::checkbox), [`slider`](Ui::slider), [`label`](Ui::label),
+//! draggable [`panel`](Ui::panel) chrome and a classic [`menu_bar`](Ui::menu_bar)
+//! straight onto the frame's [`Canvas`], over whatever the game draws.
+//! The menu bar is declared last, after every panel, so its open list
+//! floats above them and wins the clicks that land on it.
 //!
 //! The style follows the frame flow: declare your widgets every frame from
 //! [`Process::process`](crate::Process::process), exactly like the immediate
@@ -48,11 +50,13 @@ use std::sync::Arc;
 
 use crate::{Color, Context, TextError};
 
+mod menu;
 mod panel;
 mod style;
 mod table;
 mod tree;
 
+pub use menu::{ItemKind, Menu, MenuEvent, MenuItem};
 use panel::PanelState;
 #[cfg(test)]
 use panel::{panel_body_id, panel_id};
@@ -134,6 +138,16 @@ struct Layout {
     table: Option<TableFrame>,
 }
 
+/// The answer a [`Ui::confirm`] box received: one of its two buttons
+/// was clicked on this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answer {
+    /// The affirmative button.
+    Yes,
+    /// The refusal.
+    No,
+}
+
 /// The immediate-mode widget layer. Keep one per window, owned by your
 /// [`Process`](crate::Process) alongside the state the widgets drive; call
 /// [`Ui::begin`] once per frame, declare widgets, and mutate your game state
@@ -165,6 +179,17 @@ pub struct Ui {
     /// The widget under the pointer, topmost first, resolved at `begin`
     /// from the rects the previous frame declared (see `hovering`).
     hover: Option<u64>,
+    /// The menu bar's open menu, by its title's widget id: the one piece
+    /// of menu state the immediate style cannot re-derive (see
+    /// [`Ui::menu_bar`]).
+    menu_open: Option<u64>,
+    /// Whether a modal box stands this frame: widgets outside it are
+    /// drawn but inert, and panels refuse their drags (see
+    /// [`Ui::set_modal`] and [`Ui::confirm`]).
+    modal_armed: bool,
+    /// Whether the widget being declared right now belongs to the
+    /// modal box — the exception that keeps the box clickable.
+    in_modal: bool,
     /// Every interactive rect declared so far this frame, in order.
     candidates: Vec<(u64, Rect)>,
     /// Each panel's retained position and size, keyed by its title id.
@@ -214,6 +239,9 @@ impl Ui {
             active: None,
             released_active: None,
             hover: None,
+            menu_open: None,
+            modal_armed: false,
+            in_modal: false,
             candidates: Vec::new(),
             panels: HashMap::new(),
             tables: HashMap::new(),
@@ -243,7 +271,29 @@ impl Ui {
     /// until the frame after a panel first appears — the hit test runs on
     /// the previous frame's rects, as the press does.
     pub fn hovering(&self) -> bool {
-        self.hover.is_some()
+        // A modal box owns the whole window: even empty air answers
+        // true, so every game action guarded by this stands down.
+        self.modal_armed || self.hover.is_some()
+    }
+
+    /// Declare the frame's modality: while a modal box stands, the UI
+    /// owns the window entire — [`Ui::hovering`] answers true even in
+    /// empty air, widgets outside the box are drawn but inert, and
+    /// panels refuse to be dragged. The box itself, drawn between the
+    /// internals of [`Ui::confirm`], keeps its input. Call once per
+    /// frame right after [`Ui::begin`], with the app's live modal
+    /// state; a drag captured before the box rose is dropped on the rise.
+    pub fn set_modal(&mut self, armed: bool) {
+        if armed && !self.modal_armed {
+            self.active = None;
+            self.hold_origin = None;
+        }
+        self.modal_armed = armed;
+    }
+
+    /// Whether a modal box stands this frame (see [`Ui::set_modal`]).
+    pub fn modal(&self) -> bool {
+        self.modal_armed
     }
 
     /// The input-free heart of [`Ui::begin`], separate so the interaction
@@ -280,8 +330,10 @@ impl Ui {
             // window): drop the capture.
             self.active = None;
         }
-        // A dragged panel's title bar holding the id: move with the pointer.
+        // A dragged panel's title bar holding the id: move with the
+        // pointer. A modal box stands: panels hold still.
         if input.down
+            && !self.modal_armed
             && let Some(active) = self.active
             && let Some(panel) = self.panels.get_mut(&active)
         {
@@ -390,13 +442,24 @@ impl Ui {
     fn interact(&mut self, id: u64, rect: Rect) -> Interaction {
         let held = self.active == Some(id);
         self.candidates.push((id, rect));
-        Interaction {
+        let it = Interaction {
             // Hover shows only while no other widget holds the press.
             hot: self.hover == Some(id) && (held || self.active.is_none()),
             held,
             pressed: held && self.down,
             clicked: self.released_active == Some(id) && self.hover == Some(id),
+        };
+        // A modal box stands: every widget outside it is drawn plainly
+        // but hears nothing — no light, no press, no click.
+        if self.modal_armed && !self.in_modal {
+            return Interaction {
+                hot: false,
+                held: false,
+                pressed: false,
+                clicked: false,
+            };
         }
+        it
     }
 
     /// The next draw's `z`.
@@ -486,6 +549,81 @@ impl Ui {
             Align::Right => row.left + row.w - w / 2.0,
         };
         self.text_at_x(ctx, cx, row.center()[1], size, color, text);
+    }
+
+    /// The modal question box, drawn over everything the frame has
+    /// drawn: the window dims under a veil, the question stands at the
+    /// centre on a panel, and the two answers wait beneath it. The
+    /// frame an answer is clicked, `Some` it returns. The app declares
+    /// the box's modality with [`Ui::set_modal`] at the frame's start;
+    /// this call is the box itself — the one island of input while it
+    /// stands. `size` is the window's user-space size.
+    pub fn confirm(
+        &mut self,
+        ctx: &mut Context,
+        size: [f32; 2],
+        question: &str,
+        yes: &str,
+        no: &str,
+    ) -> Option<Answer> {
+        let style = self.style;
+        let pad = style.pad;
+        // The panel sizes to the question with a courteous floor, and
+        // holds three rows: the question and the two answers.
+        let w = (self.text_width(question, style.font_size) + 4.0 * pad).max(240.0);
+        let h = 2.0 * pad + 3.0 * style.row_h + 3.0 * style.row_gap;
+        let panel = Rect {
+            left: -w / 2.0,
+            top: h / 2.0,
+            w,
+            h,
+        };
+        // The veil over the whole window first — under the panel, above
+        // the world — then the panel's own face.
+        let veil = Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.45,
+        };
+        let win = Rect {
+            left: -size[0] / 2.0,
+            top: size[1] / 2.0,
+            w: size[0],
+            h: size[1],
+        };
+        self.fill(ctx, win, veil);
+        let bg = style.panel_bg;
+        self.fill(ctx, panel, bg);
+        // The rows live inside the padding, in a scope of their own:
+        // a "Yes" button in the box cannot collide with one elsewhere.
+        let scope = widget_id(
+            self.layout
+                .last()
+                .expect("layout stack is never empty")
+                .scope,
+            question,
+        );
+        self.layout.push(Layout {
+            left: panel.left + pad,
+            width: panel.w - 2.0 * pad,
+            cursor: panel.top - pad,
+            scope,
+            table: None,
+        });
+        self.in_modal = true;
+        self.label(ctx, question);
+        let yes_hit = self.button(ctx, yes);
+        let no_hit = self.button(ctx, no);
+        self.in_modal = false;
+        self.layout.pop();
+        if yes_hit {
+            Some(Answer::Yes)
+        } else if no_hit {
+            Some(Answer::No)
+        } else {
+            None
+        }
     }
 
     /// Spacing of `h` pixels, pushing the rows below it down.
@@ -920,6 +1058,75 @@ mod tests {
             ui.panel_position("Settings"),
             Some([17.0, 10.0]),
             "the position is retained after the release"
+        );
+    }
+
+    #[test]
+    fn a_modal_blinds_everything_outside_the_box() {
+        let mut ui = ui();
+        frame(&mut ui, Some([0.0, 0.0]), false);
+        let id = widget_id(0, "go");
+        let rect = Rect::from_center(0.0, 0.0, 100.0, 30.0);
+        ui.interact(id, rect);
+        // The box rises. A press lands on the plain widget's rect —
+        // and means nothing.
+        ui.set_modal(true);
+        frame(&mut ui, Some([0.0, 0.0]), true);
+        let it = ui.interact(id, rect);
+        assert!(!it.pressed && !it.hot, "outside, the press falls dead");
+        frame(&mut ui, Some([0.0, 0.0]), false);
+        let it = ui.interact(id, rect);
+        assert!(!it.clicked, "outside, the release clicks nothing");
+        assert!(ui.hovering(), "armed, the UI owns the pointer whole");
+        // Inside the box, the same press-release clicks.
+        ui.set_modal(false);
+        ui.set_modal(true);
+        frame(&mut ui, Some([0.0, 0.0]), false);
+        ui.in_modal = true;
+        ui.interact(id, rect);
+        ui.in_modal = false;
+        frame(&mut ui, Some([0.0, 0.0]), true);
+        ui.in_modal = true;
+        ui.interact(id, rect);
+        ui.in_modal = false;
+        frame(&mut ui, Some([0.0, 0.0]), true);
+        ui.in_modal = true;
+        let it = ui.interact(id, rect);
+        assert!(it.pressed, "inside, the press captures");
+        ui.in_modal = false;
+        frame(&mut ui, Some([0.0, 0.0]), false);
+        ui.in_modal = true;
+        let it = ui.interact(id, rect);
+        assert!(it.clicked, "inside, the release clicks");
+        ui.in_modal = false;
+    }
+
+    #[test]
+    fn panels_hold_still_while_the_box_stands() {
+        let mut ui = ui();
+        let id = panel_id("Settings");
+        ui.panels.insert(
+            id,
+            PanelState {
+                pos: [0.0, 0.0],
+                w: 200.0,
+                h: 60.0,
+                folded: false,
+                rect: [-100.0, -30.0, 100.0, 30.0],
+            },
+        );
+        let title = Rect::from_center(0.0, 30.0 - 14.0, 200.0, 28.0);
+        frame(&mut ui, Some([0.0, 16.0]), false);
+        ui.interact(id, title);
+        // The box rises; a press lands on the title bar and drags.
+        ui.set_modal(true);
+        frame(&mut ui, Some([0.0, 16.0]), true);
+        ui.interact(id, title);
+        frame(&mut ui, Some([30.0, 40.0]), true);
+        assert_eq!(
+            ui.panel_position("Settings"),
+            Some([0.0, 0.0]),
+            "the box owns the pointer: the panel holds still"
         );
     }
 

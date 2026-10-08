@@ -212,6 +212,49 @@ pub(crate) enum Draw {
         /// calls.
         diagnostic: bool,
     },
+    /// A tile-map batch drawn in one instanced draw call.
+    ///
+    /// `data` holds four `vec4<f32>`s per tile — `(px, py, ux, uy)`
+    /// (pixel-space center — top-left origin, y down — and the tile's
+    /// mapped x-axis half-edge), `(vx, vy, 0, 0)` (the mapped y-axis
+    /// half-edge; the two edge vectors carry the node's rotation with
+    /// them, the way the particle batch's packed angle does),
+    /// `(min_u, min_v, max_u, max_v)` (the atlas sub-rectangle), and
+    /// `(r, g, b, a)` (the tile's tint: the tile's own color, the batch
+    /// color and node modulate riding the uniform) — packed as 64 bytes
+    /// per tile, so `count == data.len() / 64`. The whole batch shares
+    /// the atlas texture and the uniform's base `color`.
+    TileMap {
+        /// The packed instance data, twelve floats (48 bytes) per tile.
+        data: Vec<u8>,
+        /// The number of tiles in `data`.
+        count: u32,
+        /// The batch's base tint (already node-modulated; each tile's
+        /// tint in the instance data multiplies it further).
+        color: Color,
+        /// The atlas's RGBA8 pixel data.
+        atlas_data: Arc<[u8]>,
+        /// The atlas's `(width, height)` in pixels.
+        atlas_size: [u32; 2],
+        /// The generation of the `atlas_data` buffer: it identifies the
+        /// buffer to the shared texture cache, so a freed-and-recycled
+        /// buffer address can never hit a stale texture.
+        atlas_generation: u64,
+        /// The atlas's sampling filter, choosing the sampler the texture
+        /// is bound with.
+        filter: SpriteFilter,
+        /// The pixel-space box over all the tile quads, as
+        /// `([min_x, min_y], [max_x, max_y])` — the batch's own extent.
+        bounds: ([f32; 2], [f32; 2]),
+        /// The pixel-space view clip, in the same box form: the scissor
+        /// intersects it with `bounds`, so a map clipped off-screen is
+        /// skipped whole.
+        clip: Option<([f32; 2], [f32; 2])>,
+        z: f32,
+        /// Whether the draw was produced by a [`crate::Diagnostics`]
+        /// overlay node, as on the other variants.
+        diagnostic: bool,
+    },
     /// A block of text: expanded into one [`Draw::Sprite`] per glyph by
     /// [`Canvas::expand_text`] before the frame is rendered, so this
     /// variant never reaches the render loop itself.
@@ -300,6 +343,7 @@ impl Draw {
             Draw::Shape { z, .. } => *z,
             Draw::Sprite { z, .. } => *z,
             Draw::Particles { z, .. } => *z,
+            Draw::TileMap { z, .. } => *z,
             Draw::Text { z, .. } => *z,
             // The background is always at the very back.
             Draw::Background { .. } => f32::MIN,
@@ -391,6 +435,18 @@ impl Draw {
             // whole surface: the per-particle quads are already tight, and
             // the rasterizer discards everything else for free.
             Draw::Particles { .. } => ([0.0, 0.0], [area[0] as f32, area[1] as f32]),
+            Draw::TileMap { bounds, clip, .. } => {
+                // The batch's own box, cut by the view clip if it has
+                // one: quads outside the clip rasterize nowhere, and a
+                // clip wholly off the surface returns None below and
+                // skips the draw entirely.
+                let (mut min, mut max) = *bounds;
+                if let Some((cmin, cmax)) = clip {
+                    min = [min[0].max(cmin[0]), min[1].max(cmin[1])];
+                    max = [max[0].min(cmax[0]), max[1].min(cmax[1])];
+                }
+                (min, max)
+            }
             // A background never draws; the early return above covers it.
             Draw::Background { .. } => unreachable!(),
             // A light never draws; the early return above covers it.
@@ -697,6 +753,61 @@ pub(crate) fn particle_instance(p: &Particle, px: f32, py: f32, size: f32, angle
     out[20..24].copy_from_slice(&p.color.r.to_le_bytes());
     out[24..28].copy_from_slice(&p.color.g.to_le_bytes());
     out[28..32].copy_from_slice(&p.color.b.to_le_bytes());
+    out
+}
+
+/// Tile map batch uniform data, 32 bytes, matching the WGSL uniform-space
+/// layout of the `TileMapUniforms` struct: `size` (a vec2) @ 0 and
+/// `color` (a vec4) @ 16 (16 bytes, 16-byte aligned, leaving an 8-byte
+/// gap); the struct size rounds up to 32.
+pub(crate) fn tilemap_uniform_data(size: [f32; 2], color: Color) -> Vec<u8> {
+    let mut data = vec![0u8; 32];
+    write_f32_at(&mut data, 0, size[0]);
+    write_f32_at(&mut data, 4, size[1]);
+    write_f32_at(&mut data, 16, color.r);
+    write_f32_at(&mut data, 20, color.g);
+    write_f32_at(&mut data, 24, color.b);
+    write_f32_at(&mut data, 28, color.a);
+    data
+}
+
+/// Packs one tile of a [`Draw::TileMap`] batch: sixteen little-endian
+/// floats, 64 bytes — the pixel center `(px, py)` and mapped x-axis
+/// half-edge `(ux, uy)`, the mapped y-axis half-edge `(vx, vy)` padded
+/// to a vec4 by the cell's own orientation — the flip bits (`x` is 1,
+/// `y` is 2, both is 3) and the clockwise quarter-turn count — the
+/// atlas sub-rectangle `(min_u, min_v, max_u, max_v)`, and the tint
+/// `(r, g, b, a)` — in the layout `tilemap.wgsl` reads as
+/// `array<vec4<f32>>` with four vec4s per instance. The quad spans
+/// `center ± u ± v`, so whatever the node's transform did to the tile's
+/// two axes — scale, flip, rotate — the quad follows; and whatever the
+/// cell's own `flags` say, the sampling obeys.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn tilemap_instance(
+    px: f32,
+    py: f32,
+    u: [f32; 2],
+    v: [f32; 2],
+    uv: [f32; 4],
+    tint: &Color,
+    flags: [f32; 2],
+) -> [u8; 64] {
+    let mut out = [0u8; 64];
+    out[0..4].copy_from_slice(&px.to_le_bytes());
+    out[4..8].copy_from_slice(&py.to_le_bytes());
+    out[8..12].copy_from_slice(&u[0].to_le_bytes());
+    out[12..16].copy_from_slice(&u[1].to_le_bytes());
+    out[16..20].copy_from_slice(&v[0].to_le_bytes());
+    out[20..24].copy_from_slice(&v[1].to_le_bytes());
+    out[24..28].copy_from_slice(&flags[0].to_le_bytes());
+    out[28..32].copy_from_slice(&flags[1].to_le_bytes());
+    for (i, w) in uv.iter().enumerate() {
+        out[32 + i * 4..36 + i * 4].copy_from_slice(&w.to_le_bytes());
+    }
+    out[48..52].copy_from_slice(&tint.r.to_le_bytes());
+    out[52..56].copy_from_slice(&tint.g.to_le_bytes());
+    out[56..60].copy_from_slice(&tint.b.to_le_bytes());
+    out[60..64].copy_from_slice(&tint.a.to_le_bytes());
     out
 }
 

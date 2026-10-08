@@ -46,6 +46,12 @@ struct Core<P: Process> {
     render_size: Option<[u32; 2]>,
     /// The stretch pass's resampling filter (see `Config::blit_filter`).
     blit_filter: SpriteFilter,
+    /// Whether Escape, on its own, ends the app (see
+    /// `Config::escape_exits`).
+    escape_exits: bool,
+    /// Whether the close button, on its own, ends the app (see
+    /// `Config::close_exits`).
+    close_exits: bool,
 }
 
 /// The in-flight async GPU setup on the web.
@@ -78,6 +84,9 @@ pub(crate) struct WebFrost<P: Process> {
     gpu: GpuInit,
     /// The real app, once the adapter and device are ready.
     frost: Option<Frost<P>>,
+    /// A close request that arrived before the app did — delivered
+    /// the moment there is a `Frost` to hear it.
+    pending_close: bool,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -147,6 +156,7 @@ impl<P: Process> ApplicationHandler for WebFrost<P> {
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && event.state == ElementState::Pressed
             && event.logical_key == NamedKey::Escape
+            && self.core.as_ref().is_none_or(|core| core.escape_exits)
         {
             log::info!("escape pressed, exiting");
             event_loop.exit();
@@ -154,8 +164,16 @@ impl<P: Process> ApplicationHandler for WebFrost<P> {
         }
         match event {
             WindowEvent::CloseRequested => {
-                log::info!("window close requested, exiting");
-                event_loop.exit();
+                if self.core.as_ref().is_none_or(|core| core.close_exits) {
+                    log::info!("window close requested, exiting");
+                    event_loop.exit();
+                    return;
+                }
+                // The app owns the question, and no app exists until
+                // the GPU finishes: the request is kept and delivered
+                // the moment there is someone to ask.
+                log::info!("window close requested, waiting for the app");
+                self.pending_close = true;
                 return;
             }
             WindowEvent::RedrawRequested => {
@@ -184,6 +202,8 @@ impl<P: Process> WebFrost<P> {
         resizable: bool,
         render_size: Option<[u32; 2]>,
         blit_filter: SpriteFilter,
+        escape_exits: bool,
+        close_exits: bool,
     ) -> Self {
         Self {
             instance: Some(instance),
@@ -196,10 +216,13 @@ impl<P: Process> WebFrost<P> {
                 resizable,
                 render_size,
                 blit_filter,
+                escape_exits,
+                close_exits,
             }),
             window: None,
             gpu: GpuInit::Idle,
             frost: None,
+            pending_close: false,
         }
     }
 
@@ -258,10 +281,14 @@ impl<P: Process> WebFrost<P> {
             core.resizable,
             core.render_size,
             core.blit_filter,
+            core.escape_exits,
             core.scene,
             core.process,
         );
         frost.attach_window(window);
+        if self.pending_close {
+            frost.note_close_request();
+        }
         self.frost = Some(frost);
     }
 }
