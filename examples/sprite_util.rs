@@ -201,11 +201,53 @@ const SLOT_MARGIN: f32 = 14.0;
 /// a slot's edge minus its inner padding.
 const THUMB_MAX: f32 = 84.0;
 
+/// The menu bar's height, in pixels: the strip across the window's top
+/// that holds the menu titles.
+const MENU_H: f32 = 24.0;
+
+/// The distance from the window's left edge to the first menu title.
+const MENU_PAD: f32 = 8.0;
+
+/// The "File" title's hit width, in pixels: its hover highlight and click
+/// target, a little wider than the text.
+const MENU_FILE_W: f32 = 48.0;
+
+/// A dropdown item's height, in pixels.
+const MENU_ITEM_H: f32 = 22.0;
+
+/// The dropdown's width, in pixels: wide enough for the longest item
+/// ("Save as") plus its padding.
+const MENU_DROP_W: f32 = 140.0;
+
+/// The menu text's size, in pixels per em.
+const MENU_TEXT: f32 = 14.0;
+
+/// The File menu's items, top to bottom.
+const MENU_ITEMS: [&str; 5] = ["Open", "Close", "Save", "Save as", "Quit"];
+
+/// The "View" title's hit width, in pixels: its hover highlight and click
+/// target, to the right of "File".
+const MENU_VIEW_W: f32 = 48.0;
+
+/// The View dropdown's width, in pixels: wide enough for its longest item
+/// ("Tile Map") plus its padding.
+const MENU_VIEW_DROP_W: f32 = 110.0;
+
+/// The View menu's items, top to bottom.
+const VIEW_ITEMS: [&str; 3] = ["Markers", "Atlas", "Tile Map"];
+
+/// The menu bar's menus: which one's dropdown is open, if any.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Menu {
+    File,
+    View,
+}
+
 /// The work area's center height above the window's bottom-edge frame:
-/// the work area spans from the strip's top edge to the window's top, so
-/// its center sits half a strip above the bottom — whatever the height,
-/// since the strip's height is fixed.
-const WORK_Y: f32 = STRIP_H / 2.0;
+/// the work area spans from the strip's top edge to the menu bar's bottom
+/// edge, so its center sits half a strip minus half a menu bar above the
+/// bottom — whatever the height, since both are fixed.
+const WORK_Y: f32 = (STRIP_H - MENU_H) / 2.0;
 
 /// The atlas' slider ceiling: the most rows or columns one grid may
 /// have. 16 x 16 tiles any sensible sprite.
@@ -265,6 +307,30 @@ const PLATE_EMPTY: frost::Color = frost::Color {
     b: 0.095,
     a: 1.0,
 };
+/// The open dropdown's floor: a touch lighter than the bar, so the panel
+/// reads as raised over it.
+const MENU_DROP: frost::Color = frost::Color {
+    r: 0.1,
+    g: 0.1,
+    b: 0.13,
+    a: 1.0,
+};
+/// The "File" title's hover highlight, and a dropdown item's: a blue that
+/// reads as the active choice.
+const MENU_HL: frost::Color = frost::Color {
+    r: 0.2,
+    g: 0.26,
+    b: 0.38,
+    a: 1.0,
+};
+/// The menu text's colour: near-white, so it reads over the bar and the
+/// highlights alike.
+const MENU_TEXT_C: frost::Color = frost::Color {
+    r: 0.86,
+    g: 0.87,
+    b: 0.9,
+    a: 1.0,
+};
 
 /// The bounding box's line width, in pixels.
 const BBOX_WIDTH: f32 = 2.0;
@@ -300,6 +366,16 @@ const THUMB_ORDER: f32 = 0.6;
 
 /// The order of a thumbnail being dragged between slots: above the HUD.
 const DRAG_ORDER: f32 = 3.0;
+
+/// The menu bar's fill order: above the HUD (which paints at ten
+/// thousand), so the bar and its dropdown never hide behind a panel.
+const MENU_Z: f32 = 20_000.0;
+
+/// The menu titles' and dropdown's order: above the bar's fill.
+const MENU_ITEM_Z: f32 = 20_001.0;
+
+/// The menu text's order: above everything in the menu.
+const MENU_TEXT_Z: f32 = 20_002.0;
 
 /// The scene's layer nodes — and the cap on layers per animation frame.
 /// The pool shows the animation's current frame, or the active sprite
@@ -664,6 +740,12 @@ struct Demo {
     /// The Operations panel's status line: the selection's size, or the
     /// outcome of the last operation.
     status: String,
+    /// Which menu's dropdown is open, if any.
+    menu_open: Option<Menu>,
+    /// The open menu's item under the cursor, for its hover highlight: its
+    /// index into that menu's items, or none while no menu is open or the
+    /// cursor is off the list.
+    menu_hover: Option<usize>,
 }
 
 impl Demo {
@@ -1709,7 +1791,8 @@ impl frost::Process for Demo {
         }
         self.was_space = space;
 
-        // Escape's rising edge lets go of a picked position.
+        // Escape's rising edge lets go of a picked position and closes an
+        // open menu.
         let esc = ctx.key_down(frost::KeyCode::Escape);
         if esc && !self.was_esc {
             let mut was = false;
@@ -1718,6 +1801,9 @@ impl frost::Process for Demo {
             }
             if was {
                 self.status = String::from("edit: released");
+            }
+            if self.menu_open.is_some() {
+                self.menu_open = None;
             }
         }
         self.was_esc = esc;
@@ -1858,9 +1944,73 @@ impl frost::Process for Demo {
             self.anim.dir = 1;
         }
 
+        // The menu bar's work: a press on a title opens (or re-pressing
+        // closes) its dropdown, a press on an open item logs the action
+        // and closes, and a press anywhere else dismisses an open menu. A
+        // press the menu handles never reaches the slots or the work area.
+        let mut menu_consumed = false;
+        if pressed && let Some(p) = pos {
+            if in_file_entry(p, w, h) {
+                // A press on "File" toggles it, or switches to it if
+                // another menu is open.
+                self.menu_open = if self.menu_open == Some(Menu::File) {
+                    None
+                } else {
+                    Some(Menu::File)
+                };
+                menu_consumed = true;
+            } else if in_view_entry(p, w, h) {
+                self.menu_open = if self.menu_open == Some(Menu::View) {
+                    None
+                } else {
+                    Some(Menu::View)
+                };
+                menu_consumed = true;
+            } else if let Some(open) = self.menu_open {
+                // A menu is open and the press is off its title: an item
+                // in the open menu logs and closes, a press elsewhere
+                // dismisses.
+                let item = match open {
+                    Menu::File => menu_item_at(Some(p), w, h),
+                    Menu::View => view_item_at(Some(p), w, h),
+                };
+                if let Some(i) = item {
+                    // The items are inert: they log the choice, they do
+                    // not perform it.
+                    let label = match open {
+                        Menu::File => MENU_ITEMS[i],
+                        Menu::View => VIEW_ITEMS[i],
+                    };
+                    self.status = format!("menu: {}", label);
+                    log::info!("menu: {}", label);
+                    self.menu_open = None;
+                    menu_consumed = true;
+                } else if !self.ui.hovering() {
+                    // A press outside the menu and off the UI: it
+                    // dismisses the menu and is eaten, so it never starts
+                    // a drag or a slot.
+                    self.menu_open = None;
+                    menu_consumed = true;
+                } else {
+                    // A press on a UI widget: the menu closes, but the
+                    // widget keeps the click.
+                    self.menu_open = None;
+                }
+            }
+        }
+        // The hovered item in the open menu, for its highlight: only while
+        // a menu is open and the cursor is over one of its rows.
+        self.menu_hover = match self.menu_open {
+            Some(Menu::File) => menu_item_at(pos, w, h),
+            Some(Menu::View) => view_item_at(pos, w, h),
+            None => None,
+        };
+
         // The left button's work: press lands on a slot, on the work area
-        // or nowhere the demo owns; release decides — click or drag.
+        // or nowhere the demo owns; release decides — click or drag. A
+        // press the menu consumed never reaches here.
         if pressed
+            && !menu_consumed
             && !self.ui.hovering()
             && let Some(p) = pos
         {
@@ -2024,7 +2174,7 @@ impl frost::Process for Demo {
             bx0.max(-w / 2.0),
             by0.max(-h / 2.0 + STRIP_H),
             bx1.min(w / 2.0),
-            by1.min(h / 2.0),
+            by1.min(h / 2.0 - MENU_H),
         );
         let checker = &mut ctx.scene().root.children[CHECKER];
         if rx1 > rx0 && ry1 > ry0 && tw > 0.0 {
@@ -2238,10 +2388,10 @@ impl frost::Process for Demo {
             node.shape = None;
         }
 
-        // The usage line, pinned near the top edge, so resizing keeps it
-        // in place.
+        // The usage line, pinned just below the menu bar, so resizing
+        // keeps it in place.
         let help = &mut ctx.scene().root.children[HELP];
-        help.transform = frost::Transform::translate([0.0, h / 2.0 - 28.0]);
+        help.transform = frost::Transform::translate([0.0, h / 2.0 - MENU_H - 28.0]);
 
         // The marker dot rides the last click in window space — the
         // inverse of the conversion above — and shrinks away when there
@@ -2258,6 +2408,114 @@ impl frost::Process for Demo {
             }
         } else if let Some(frost::Shape::Circle { radius, .. }) = &mut marker.shape {
             *radius = 0.0;
+        }
+
+        // The menu bar across the window's top: its floor, each title
+        // (lit when hovered or open), and, while one is open, the dropdown
+        // below it with its hovered item lit. The items are inert — they
+        // log, they do not act.
+        {
+            ctx.rectangle(
+                0.0,
+                h / 2.0 - MENU_H / 2.0,
+                w / 2.0,
+                MENU_H / 2.0,
+                STRIP,
+                MENU_Z,
+            );
+            // The "File" title, lit when hovered or open.
+            let [fx0, fy0, fx1, fy1] = file_entry(w, h);
+            let file_lit =
+                self.menu_open == Some(Menu::File) || pos.is_some_and(|p| in_file_entry(p, w, h));
+            if file_lit {
+                ctx.rectangle(
+                    (fx0 + fx1) / 2.0,
+                    (fy0 + fy1) / 2.0,
+                    (fx1 - fx0) / 2.0,
+                    (fy1 - fy0) / 2.0,
+                    MENU_HL,
+                    MENU_ITEM_Z,
+                );
+            }
+            ctx.text(
+                (fx0 + fx1) / 2.0,
+                (fy0 + fy1) / 2.0 - RON_LIFT * MENU_TEXT,
+                &self.ron_font,
+                "File",
+                MENU_TEXT,
+                520.0,
+                MENU_TEXT_C,
+                MENU_TEXT_Z,
+            );
+            // The "View" title, to the right of "File".
+            let [vx0, vy0, vx1, vy1] = view_entry(w, h);
+            let view_lit =
+                self.menu_open == Some(Menu::View) || pos.is_some_and(|p| in_view_entry(p, w, h));
+            if view_lit {
+                ctx.rectangle(
+                    (vx0 + vx1) / 2.0,
+                    (vy0 + vy1) / 2.0,
+                    (vx1 - vx0) / 2.0,
+                    (vy1 - vy0) / 2.0,
+                    MENU_HL,
+                    MENU_ITEM_Z,
+                );
+            }
+            ctx.text(
+                (vx0 + vx1) / 2.0,
+                (vy0 + vy1) / 2.0 - RON_LIFT * MENU_TEXT,
+                &self.ron_font,
+                "View",
+                MENU_TEXT,
+                520.0,
+                MENU_TEXT_C,
+                MENU_TEXT_Z,
+            );
+            // The open menu's dropdown, with its hovered item lit.
+            if let Some(open) = self.menu_open {
+                let (rect, items) = match open {
+                    Menu::File => (dropdown(w, h), MENU_ITEMS.as_slice()),
+                    Menu::View => (view_dropdown(w, h), VIEW_ITEMS.as_slice()),
+                };
+                let [dx0, dy0, dx1, dy1] = rect;
+                ctx.rectangle(
+                    (dx0 + dx1) / 2.0,
+                    (dy0 + dy1) / 2.0,
+                    (dx1 - dx0) / 2.0,
+                    (dy1 - dy0) / 2.0,
+                    MENU_DROP,
+                    MENU_ITEM_Z,
+                );
+                for (i, item) in items.iter().enumerate() {
+                    // The item's row: the dropdown's top edge down by i
+                    // rows.
+                    let iy1 = dy1 - i as f32 * MENU_ITEM_H;
+                    let iy0 = iy1 - MENU_ITEM_H;
+                    if self.menu_hover == Some(i) {
+                        ctx.rectangle(
+                            (dx0 + dx1) / 2.0,
+                            (iy0 + iy1) / 2.0,
+                            (dx1 - dx0) / 2.0,
+                            (iy1 - iy0) / 2.0,
+                            MENU_HL,
+                            MENU_ITEM_Z,
+                        );
+                    }
+                    // The item's text, left-aligned in the dropdown: the
+                    // monospace width over two, from the left padding.
+                    let tw = item.len() as f32 * MENU_TEXT * ADVANCE_EM;
+                    ctx.text(
+                        dx0 + 12.0 + tw / 2.0,
+                        (iy0 + iy1) / 2.0 - RON_LIFT * MENU_TEXT,
+                        &self.ron_font,
+                        *item,
+                        MENU_TEXT,
+                        520.0,
+                        MENU_TEXT_C,
+                        MENU_TEXT_Z,
+                    );
+                }
+            }
         }
 
         // The cursor's position for next frame's middle-drag delta; `None`
@@ -2846,9 +3104,90 @@ fn slot_at(p: [f32; 2], w: f32, h: f32) -> Option<usize> {
     })
 }
 
-/// Whether a window point is in the work area — above the slots strip.
+/// Whether a window point is in the work area — above the slots strip and
+/// below the menu bar.
 fn in_work_area(p: [f32; 2], _w: f32, h: f32) -> bool {
-    p[1] >= -h / 2.0 + STRIP_H
+    p[1] >= -h / 2.0 + STRIP_H && p[1] < h / 2.0 - MENU_H
+}
+
+/// The "File" title's hit rectangle: from the window's left edge plus the
+/// menu's padding, across the title's width, spanning the bar's height.
+fn file_entry(w: f32, h: f32) -> [f32; 4] {
+    let x0 = -w / 2.0 + MENU_PAD;
+    [x0, h / 2.0 - MENU_H, x0 + MENU_FILE_W, h / 2.0]
+}
+
+/// Whether a window point is over the "File" title.
+fn in_file_entry(p: [f32; 2], w: f32, h: f32) -> bool {
+    let [x0, y0, x1, y1] = file_entry(w, h);
+    p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1
+}
+
+/// The open dropdown's rectangle: below the bar, under the "File" title,
+/// tall enough for all its items.
+fn dropdown(w: f32, h: f32) -> [f32; 4] {
+    let x0 = -w / 2.0 + MENU_PAD;
+    let y1 = h / 2.0 - MENU_H;
+    [
+        x0,
+        y1 - MENU_ITEM_H * MENU_ITEMS.len() as f32,
+        x0 + MENU_DROP_W,
+        y1,
+    ]
+}
+
+/// The dropdown item under the cursor, if it is over one: its index into
+/// [`MENU_ITEMS`]. `None` while the cursor is outside the window or off
+/// the list.
+fn menu_item_at(pos: Option<[f32; 2]>, w: f32, h: f32) -> Option<usize> {
+    let p = pos?;
+    let [x0, y0, x1, y1] = dropdown(w, h);
+    if !(p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1) {
+        return None;
+    }
+    // The cursor's row from the top: the dropdown's top edge minus the
+    // cursor's height, over the item's height.
+    let i = ((y1 - p[1]) / MENU_ITEM_H) as usize;
+    (i < MENU_ITEMS.len()).then_some(i)
+}
+
+/// The "View" title's hit rectangle: to the right of "File", spanning the
+/// bar's height.
+fn view_entry(w: f32, h: f32) -> [f32; 4] {
+    let x0 = -w / 2.0 + MENU_PAD + MENU_FILE_W;
+    [x0, h / 2.0 - MENU_H, x0 + MENU_VIEW_W, h / 2.0]
+}
+
+/// Whether a window point is over the "View" title.
+fn in_view_entry(p: [f32; 2], w: f32, h: f32) -> bool {
+    let [x0, y0, x1, y1] = view_entry(w, h);
+    p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1
+}
+
+/// The View dropdown's rectangle: below the bar, under the "View" title,
+/// tall enough for all its items.
+fn view_dropdown(w: f32, h: f32) -> [f32; 4] {
+    let x0 = -w / 2.0 + MENU_PAD + MENU_FILE_W;
+    let y1 = h / 2.0 - MENU_H;
+    [
+        x0,
+        y1 - MENU_ITEM_H * VIEW_ITEMS.len() as f32,
+        x0 + MENU_VIEW_DROP_W,
+        y1,
+    ]
+}
+
+/// The View dropdown item under the cursor, if it is over one: its index
+/// into [`VIEW_ITEMS`]. `None` while the cursor is outside the window or
+/// off the list.
+fn view_item_at(pos: Option<[f32; 2]>, w: f32, h: f32) -> Option<usize> {
+    let p = pos?;
+    let [x0, y0, x1, y1] = view_dropdown(w, h);
+    if !(p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1) {
+        return None;
+    }
+    let i = ((y1 - p[1]) / MENU_ITEM_H) as usize;
+    (i < VIEW_ITEMS.len()).then_some(i)
 }
 
 /// The window point's position in the texture's pixel space: `(0, 0)`
@@ -3160,6 +3499,8 @@ fn main() {
             pending: dialog_dir,
             dir,
             status: String::new(),
+            menu_open: None,
+            menu_hover: None,
             ron_font,
             r_press: None,
             was_rdown: false,
@@ -3281,9 +3622,15 @@ mod tests {
         let strip_top = -h / 2.0 + STRIP_H;
         assert!(!in_work_area([0.0, strip_top - 1.0], 800.0, h));
         assert!(in_work_area([0.0, strip_top + 1.0], 800.0, h));
-        // The work area's center is half a strip above the bottom edge,
-        // so a sprite panned to it floats clear of the slots.
-        assert_eq!(WORK_Y, STRIP_H / 2.0);
+        // The menu bar's bottom edge is the work area's top: a point in
+        // the bar is outside, a point just below it is inside.
+        let menu_bottom = h / 2.0 - MENU_H;
+        assert!(!in_work_area([0.0, menu_bottom + 1.0], 800.0, h));
+        assert!(in_work_area([0.0, menu_bottom - 1.0], 800.0, h));
+        // The work area's center is half a strip minus half a menu bar
+        // above the bottom edge, so a sprite panned to it floats clear of
+        // the slots.
+        assert_eq!(WORK_Y, (STRIP_H - MENU_H) / 2.0);
     }
 
     #[test]

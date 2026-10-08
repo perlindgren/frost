@@ -139,7 +139,7 @@ agent-default-model:
 - Run in one terminal:
 
 ```shell
-HSA_OVERRIDE_GFX_VERSION=11.0.0 llama-server -hf unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M --parallel 1 -ngl all -fa on -c 98304 -ctk q8_0 -ctv q8_0
+HSA_OVERRIDE_GFX_VERSION=11.0.0 llama-server -hf unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M --parallel 1 -ngl all -fa on -c 131072 --spec-draft-n-max 2 --spec-type draft-mtp --cache-type-v q4_0 --cache-type-k q4_0 --temperature 0.15 --top_p 0.9
 ```
 
 - Run in another terminal:
