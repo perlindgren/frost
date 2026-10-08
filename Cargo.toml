@@ -221,6 +221,11 @@ path = "examples/dogs_name/dogs_name.rs"
 name = "centipede"
 path = "examples/dogs_name/centipede.rs"
 
+# The text-input example lives in the `examples/text/` folder.
+[[example]]
+name = "text_input"
+path = "examples/text/text_input.rs"
+
 [dev-dependencies]
 # Command line parsing for the `repeat` example (`--repeat_x`, `--repeat_y`).
 clap = { version = "4", features = ["derive"] }
