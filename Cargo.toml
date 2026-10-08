@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# Cross-platform system clipboard for the `sprite_util` example's Ctrl-C /
+# Ctrl-V; winit 0.30 has no clipboard API of its own.
+arboard = "3.6.1"
 gilrs = "0.11.2"
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = { version = "0.4.34", features = ["release_max_level_off"] }
@@ -217,6 +220,11 @@ path = "examples/dogs_name/dogs_name.rs"
 [[example]]
 name = "centipede"
 path = "examples/dogs_name/centipede.rs"
+
+# The text-input example lives in the `examples/text/` folder.
+[[example]]
+name = "text_input"
+path = "examples/text/text_input.rs"
 
 [dev-dependencies]
 # Command line parsing for the `repeat` example (`--repeat_x`, `--repeat_y`).
