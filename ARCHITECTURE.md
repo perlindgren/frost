@@ -836,7 +836,10 @@ passing, `cargo build --examples` clean. Notable test areas:
   display-scale clamp, and the line-extent re-measure on scale change.
 - `tests/` — headless `Shape::sprite` reads of the `dogs_name` art (frame
   fit, ink statistics), through the same public entry point the examples use.
-- `src/collision.rs` — push-out separation, reflect restitution semantics.
+- `src/collision.rs` — push-out separation, reflect restitution semantics,
+  and the convex occluder polygon: what it refuses rather than repair, the
+  receiver-inside rule, and the two-percent band a tessellated disc keeps from
+  the round one.
 - `src/bake.rs` — each role's fusion policy, quarter-turn equivalence, what
   gets rejected and why, and a sampled coverage property: a fused set covers
   exactly the points the authored boxes covered, on random piles and on a

@@ -28,6 +28,14 @@
 /// overlapping.
 const EPS: f32 = 1e-6;
 
+/// The slack a convexity check allows, in pixels, plus a term relative to the
+/// edge's distance from the origin: a corner lies *on* the two edges that meet
+/// it, so the check is testing equality, and f32 rounding at a coordinate of a
+/// few hundred pixels is a few ten-thousandths wide. The segment epsilon would
+/// reject a well-formed polygon for it. A dent a player could see is worth a
+/// hundred times this.
+const CONVEX_EPS: f32 = 1e-4;
+
 /// The epsilon a segment's direction must exceed along an axis for that
 /// axis's slab to clip the interval at all — the shaders' `1e-6` kept
 /// verbatim, so the CPU and GPU segment tests take the same branch for the
@@ -410,6 +418,241 @@ pub fn reflect(vel: [f32; 2], n: [f32; 2], e: f32) -> [f32; 2] {
     }
     let k = (1.0 + e) * vn;
     [vel[0] - k * n[0], vel[1] - k * n[1]]
+}
+
+/// The most edges a [`Convex`] may have, and the number of sides a
+/// [`Convex::disc`] is cut into.
+///
+/// One number serves both because the GPU cost of a polygon is per edge: every
+/// shadow ray clips against every edge of every occluder, and a light with a
+/// penumbra fires nine rays per pixel. Sixteen is enough to be round — the
+/// sixteen-gon inscribed in a disc stays within two percent of its radius,
+/// which at any size a player can see is under a pixel or two of edge
+/// travel — and small enough that a hundred lights still cost a fragment
+/// nothing. Shapes needing more are the author's to simplify, not the
+/// renderer's to approximate.
+pub const MAX_PLANES: usize = 16;
+
+/// The number of sides [`Convex::disc`] uses: the widest polygon the type
+/// allows, so the tessellated circle is as round as the cap permits.
+pub const DISC_SIDES: usize = MAX_PLANES;
+
+/// A convex polygon, held as the half-plane of each of its edges.
+///
+/// The half-planes are the representation rather than a derived one: a convex
+/// shape *is* the intersection of the half-planes its edges bound, which is
+/// what makes the segment test the box's slab test with more slabs — no
+/// new geometry, no new case. Normals are normalised and their offsets
+/// computed once, here, so a shader clipping a ray against sixteen edges does
+/// sixteen dot products instead of sixteen square roots.
+///
+/// This is the occluder's shape, not a physics body: [`Collider`] gains no
+/// variant for it, because pushing two polygons apart needs the separating
+/// axis of a curved boundary and a contact normal worth its name, and that is
+/// a step of its own rather than a free rider on this one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Convex {
+    /// Each edge as `(n.x, n.y, c, _)` with `n` the outward unit normal: a
+    /// point is inside the edge when `n.x * p.x + n.y * p.y <= c`.
+    planes: [[f32; 4]; MAX_PLANES],
+    /// How many of `planes` are in use. Always at least three.
+    count: u8,
+    /// The polygon's own axis-aligned bounds, so a caller can reject a ray
+    /// that misses it without touching a single edge.
+    bounds: ([f32; 2], [f32; 2]),
+}
+
+impl Convex {
+    /// The polygon bounded by `points`, given in order around it either way.
+    ///
+    /// The winding is inferred from the signed area, so the same shape drawn
+    /// backwards is the same polygon — the y-flip between image space and
+    /// pixel space reverses a winding on its way to the GPU, and a shape that
+    /// silently turned inside out there would have its normals pointing
+    /// inwards and shadow everything.
+    ///
+    /// `None` is the answer for anything that cannot be a convex occluder:
+    /// fewer than three corners, more than [`MAX_PLANES`], a repeated or
+    /// nearly-coincident corner, a coordinate that is not a number, or a
+    /// corner that bulges outward. Nothing is decomposed and nothing is
+    /// repaired: a concave outline is a shape the author meant differently
+    /// than the renderer would guess, so it is reported rather than drawn
+    /// wrong.
+    pub fn new(points: &[[f32; 2]]) -> Option<Self> {
+        if points.len() < 3 || points.len() > MAX_PLANES {
+            return None;
+        }
+        if !points.iter().all(|p| p[0].is_finite() && p[1].is_finite()) {
+            return None;
+        }
+        let doubled_area: f32 = points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .map(|([ax, ay], [bx, by])| ax * by - bx * ay)
+            .sum();
+        if doubled_area.abs() < EPS {
+            return None; // collinear, or a shape with no area to occlude with
+        }
+        // Order the corners counter-clockwise in the signed-area sense, so one
+        // normal convention serves every input winding.
+        let ordered: Vec<[f32; 2]> = if doubled_area > 0.0 {
+            points.to_vec()
+        } else {
+            points.iter().rev().copied().collect()
+        };
+        let center = [
+            ordered.iter().map(|p| p[0]).sum::<f32>() / ordered.len() as f32,
+            ordered.iter().map(|p| p[1]).sum::<f32>() / ordered.len() as f32,
+        ];
+        let mut planes = [[0.0f32; 4]; MAX_PLANES];
+        for i in 0..ordered.len() {
+            let a = ordered[i];
+            let b = ordered[(i + 1) % ordered.len()];
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let length = len(d);
+            if length < EPS {
+                return None; // a repeated corner: the edge has no direction
+            }
+            let mut n = [d[1] / length, -d[0] / length];
+            let mut c = n[0] * a[0] + n[1] * a[1];
+            if n[0] * center[0] + n[1] * center[1] > c {
+                // The interior landed outside this edge: the winding was
+                // already the other way round, or the corner bulges out.
+                n = [-n[0], -n[1]];
+                c = -c;
+            }
+            if n[0] * center[0] + n[1] * center[1] > c {
+                return None;
+            }
+            planes[i] = [n[0], n[1], c, 0.0];
+        }
+        // Every corner inside every edge is what convexity means, and it is
+        // cheap to check here rather than to discover as a wrong shadow.
+        for p in &ordered {
+            for plane in planes.iter().take(ordered.len()) {
+                let slack = CONVEX_EPS + plane[2].abs() * 1e-6;
+                if plane[0] * p[0] + plane[1] * p[1] > plane[2] + slack {
+                    return None;
+                }
+            }
+        }
+        let lo = [
+            ordered.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min),
+            ordered.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min),
+        ];
+        let hi = [
+            ordered
+                .iter()
+                .map(|p| p[0])
+                .fold(f32::NEG_INFINITY, f32::max),
+            ordered
+                .iter()
+                .map(|p| p[1])
+                .fold(f32::NEG_INFINITY, f32::max),
+        ];
+        Some(Self {
+            planes,
+            count: ordered.len() as u8,
+            bounds: (lo, hi),
+        })
+    }
+
+    /// A regular `DISC_SIDES`-sided polygon with its corners on the circle of
+    /// `radius` about `center`: the shape a disc becomes on the way to the
+    /// occluder field, where a curved edge has to be told to the GPU as flat
+    /// ones.
+    ///
+    /// The disc's own exact form stays available as [`Circle`] — physics wants
+    /// the round normal, and the shadow is the only consumer that cannot have
+    /// it. The gap between the two is bounded by the polygon's inradius,
+    /// `radius * cos(pi / DISC_SIDES)`, and pinned by a test, because it is
+    /// the tolerance every GPU-versus-CPU shadow comparison over a circle has
+    /// to be measured against.
+    pub fn disc(center: [f32; 2], radius: f32) -> Self {
+        let step = std::f32::consts::TAU / DISC_SIDES as f32;
+        let points: Vec<[f32; 2]> = (0..DISC_SIDES)
+            .map(|k| {
+                let (sin, cos) = (k as f32 * step).sin_cos();
+                [center[0] + radius * cos, center[1] + radius * sin]
+            })
+            .collect();
+        // Regular, convex and within the cap by construction, so there is no
+        // error to return; a radius that is not a number is the author's.
+        Self::new(&points).expect("a regular polygon is convex")
+    }
+
+    /// The edges as `(n.x, n.y, c, _)`, and how many of them there are: the
+    /// bytes a packer writes into the occluder field, in order.
+    pub fn planes(&self) -> (&[[f32; 4]], usize) {
+        (&self.planes, self.count as usize)
+    }
+
+    /// The polygon's axis-aligned bounds in its own space, as the low and high
+    /// corners. A ray missing these misses the shape, which is what makes the
+    /// bounds worth shipping to the GPU: four comparisons reject a shadow ray
+    /// before sixteen clip it.
+    pub fn bounds(&self) -> ([f32; 2], [f32; 2]) {
+        self.bounds
+    }
+
+    /// The center and half-extents of those bounds, in the [`OrientedBox`]
+    /// convention the occluder record already carries: the full size is twice
+    /// the half.
+    pub fn bounds_as_box(&self) -> OrientedBox {
+        let (lo, hi) = self.bounds;
+        OrientedBox::new(
+            [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0],
+            [(hi[0] - lo[0]) / 2.0, (hi[1] - lo[1]) / 2.0],
+        )
+    }
+
+    /// Whether `p` is inside the polygon or exactly on its edge — the
+    /// inclusive test, matching [`Collider::contains`] so that the receiver
+    /// inside an occluder is lit whether the occluder is a box, a disc or a
+    /// rock.
+    pub fn contains(&self, p: [f32; 2]) -> bool {
+        self.planes[..self.count as usize]
+            .iter()
+            .all(|plane| plane[0] * p[0] + plane[1] * p[1] <= plane[2])
+    }
+
+    /// Where the segment `from` to `to` enters the polygon, as `t` in `from +
+    /// t * (to - from)`, or `None` when it misses: the same interval clip the
+    /// box performs, one edge at a time, and the same acceptance rule — an
+    /// exit at exactly `t = 1` is a graze of the far edge, an entry at exactly
+    /// `t = 1` a touch of the near one.
+    pub fn cast(&self, from: [f32; 2], to: [f32; 2]) -> Option<f32> {
+        let (planes, count) = self.planes();
+        let mut tmin = 0.0f32;
+        let mut tmax = 1.0f32;
+        for plane in planes.iter().take(count) {
+            // Which side of the edge each endpoint falls on. The segment lies
+            // inside the edge where `dot(n, p) - c` is at or below zero, and
+            // that quantity is linear along it, so one crossing bounds the
+            // interval — and a segment already through the edge on both ends
+            // needs no division at all, which is where the box's slab epsilon
+            // would otherwise be needed.
+            let da = plane[0] * from[0] + plane[1] * from[1] - plane[2];
+            let db = plane[0] * to[0] + plane[1] * to[1] - plane[2];
+            if da > 0.0 {
+                if db > 0.0 {
+                    return None; // both ends outside this edge: no crossing
+                }
+                tmin = tmin.max(da / (da - db));
+            } else if db > 0.0 {
+                tmax = tmax.min(da / (da - db));
+            }
+        }
+        (tmax > tmin && tmax > 0.0 && tmin < 1.0).then_some(tmin)
+    }
+
+    /// Whether this polygon blocks the light at `from` from reaching `to`:
+    /// the segment enters it, and `to` is not itself inside it. The receiver
+    /// rule is [`Collider::occludes`]'s, unchanged — a surface inside an
+    /// occluder is lit, and the occluder shadows only what lies behind it.
+    pub fn occludes(&self, from: [f32; 2], to: [f32; 2]) -> bool {
+        !self.contains(to) && self.cast(from, to).is_some()
+    }
 }
 
 #[cfg(test)]
@@ -874,5 +1117,172 @@ mod tests {
             first_hit([200.0, 0.0], [400.0, 0.0], &[beyond, circle]),
             Some(0)
         );
+    }
+
+    #[test]
+    fn a_convex_polygon_blocks_the_light_between_its_edges() {
+        // An octagon standing between lamp and wall: the wall behind it is in
+        // shadow, the wall beside it is not, and the difference is the
+        // polygon's silhouette rather than its bounding box's — the corner
+        // points are the ones a box would get wrong.
+        let points: Vec<[f32; 2]> = (0..8)
+            .map(|k| {
+                let a = std::f32::consts::TAU * k as f32 / 8.0;
+                [40.0 * a.cos(), 40.0 * a.sin()]
+            })
+            .collect();
+        let octagon = Convex::new(&points).expect("a regular octagon is convex");
+        let lamp = [-100.0, 0.0];
+        assert!(
+            octagon.occludes(lamp, [100.0, 0.0]),
+            "a ray straight through the octagon should be blocked"
+        );
+        // Past the silhouette, where the light reaches and the polygon's
+        // bounds would have lied. The octagon's top corner at (0, 40) is the
+        // tangent from this lamp, throwing shadow to y = 80 at x = 100; its
+        // bounds' near corner at (-40, 40) is a steeper tangent still, and
+        // would have thrown shadow to y = 133. A point between the two is lit
+        // by the shape and darkened by its box.
+        let beyond = [100.0, 100.0];
+        assert!(
+            !octagon.occludes(lamp, beyond),
+            "past the silhouette the light should reach"
+        );
+        assert!(
+            occluded(lamp, beyond, &[Collider::Box(octagon.bounds_as_box())]),
+            "the same ray against the bounds should be blocked: the edges are \
+             what changed the answer, which is the whole point of the shape"
+        );
+        assert!(
+            octagon.contains([0.0, 0.0]),
+            "the octagon's own middle is inside it"
+        );
+        // And the bounds agree with the shape they wrap.
+        let (lo, hi) = octagon.bounds();
+        assert!(lo[0] < -39.0 && hi[1] > 39.0, "the bounds wrap the corners");
+    }
+
+    #[test]
+    fn a_receiver_inside_a_convex_polygon_is_lit() {
+        // The rule the shaders implement and `occluded` promises: an occluder
+        // never shades its own interior, so the same segment that is blocked
+        // to a point beyond the shape is not blocked to a point within it.
+        let square = Convex::new(&[[-20.0, -20.0], [20.0, -20.0], [20.0, 20.0], [-20.0, 20.0]])
+            .expect("a square is convex");
+        assert!(square.occludes([-100.0, 0.0], [100.0, 0.0]));
+        assert!(
+            !square.occludes([-100.0, 0.0], [0.0, 0.0]),
+            "a receiver inside the polygon is lit, not blocked"
+        );
+        // A light inside still casts: the skip tests the receiver alone, so
+        // the far side of the shape is shadowed from within.
+        assert!(
+            square.occludes([0.0, 0.0], [100.0, 0.0]),
+            "a lamp inside an occluder still shades what is behind it"
+        );
+    }
+
+    #[test]
+    fn the_same_polygon_wound_backwards_is_the_same_polygon() {
+        // Image space flips y on the way to a framebuffer, which reverses a
+        // winding. Normals derived from the wrong winding point inward and
+        // turn the shape into its own complement, so the winding is inferred,
+        // not assumed — and both orders must answer alike.
+        let rock = [[0.0, -30.0], [25.0, -10.0], [15.0, 25.0], [-20.0, 20.0]];
+        let forward = Convex::new(&rock).expect("this rock is convex");
+        let reversed: Vec<[f32; 2]> = rock.iter().rev().copied().collect();
+        let backward = Convex::new(&reversed).expect("wound the other way, still convex");
+        assert_eq!(forward, backward, "the winding should not reach the answer");
+        for probe in [[0.0, 0.0], [60.0, 0.0], [-60.0, 40.0], [10.0, 100.0]] {
+            assert_eq!(
+                forward.contains(probe),
+                backward.contains(probe),
+                "{probe:?} got two answers"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shape_that_cannot_be_a_convex_occluder_is_refused() {
+        // Concave, degenerate, tiny, huge or numb: each of these would be a
+        // shadow the renderer invented rather than the one that was drawn.
+        let l_shape = [
+            [0.0, 0.0],
+            [40.0, 0.0],
+            [40.0, 20.0],
+            [20.0, 20.0],
+            [20.0, 40.0],
+            [0.0, 40.0],
+        ];
+        assert!(Convex::new(&l_shape).is_none(), "an L is not convex");
+        assert!(
+            Convex::new(&[[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]]).is_none(),
+            "three points on a line enclose nothing"
+        );
+        assert!(
+            Convex::new(&[[0.0, 0.0], [10.0, 0.0], [10.0, 0.0], [0.0, 10.0]]).is_none(),
+            "a repeated corner leaves an edge without a direction"
+        );
+        assert!(
+            Convex::new(&[[0.0, 0.0], [10.0, 0.0]]).is_none(),
+            "two corners make no shape"
+        );
+        let too_many: Vec<[f32; 2]> = (0..MAX_PLANES + 1)
+            .map(|k| {
+                let a = std::f32::consts::TAU * k as f32 / (MAX_PLANES + 1) as f32;
+                [a.cos(), a.sin()]
+            })
+            .collect();
+        assert!(
+            Convex::new(&too_many).is_none(),
+            "past the cap the GPU cost is the author's to choose"
+        );
+        assert!(
+            Convex::new(&[[0.0, 0.0], [f32::NAN, 5.0], [0.0, 10.0]]).is_none(),
+            "a coordinate that is not a number is not a shape"
+        );
+    }
+
+    #[test]
+    fn a_tessellated_disc_stays_within_two_percent_of_the_round_one() {
+        // The tolerance every GPU shadow over a circle is measured against:
+        // the sixteen-gon's corners are on the circle and its edges cut
+        // inside, so the two shapes differ only in the thin band between the
+        // inradius and the radius — never outside the circle, never inside
+        // the inradius.
+        let radius = 40.0;
+        let polygon = Convex::disc([0.0, 0.0], radius);
+        let circle = Collider::Circle(Circle {
+            center: [0.0, 0.0],
+            radius,
+        });
+        let inradius = radius * (std::f32::consts::PI / DISC_SIDES as f32).cos();
+        assert!(
+            inradius > radius * 0.98,
+            "a {DISC_SIDES}-gon should sit within two percent of its circle"
+        );
+        for k in 0..720 {
+            let a = std::f32::consts::TAU * k as f32 / 720.0;
+            let direction = [a.cos(), a.sin()];
+            let at = |d: f32| [direction[0] * d, direction[1] * d];
+            assert!(
+                polygon.contains(at(inradius - 0.5)) && circle.contains(at(inradius - 0.5)),
+                "every direction agrees deep inside, at {a}"
+            );
+            assert!(
+                !polygon.contains(at(radius + 0.5)) && !circle.contains(at(radius + 0.5)),
+                "neither shape reaches beyond its radius, at {a}"
+            );
+            // Where they disagree at all, it is inside the band and nowhere
+            // wider: the polygon is contained in the circle by construction.
+            for probe in [radius - 1.0, radius, radius * 0.99] {
+                if polygon.contains(at(probe)) != circle.contains(at(probe)) {
+                    assert!(
+                        probe > inradius,
+                        "a disagreement at {probe} is outside the tessellation band"
+                    );
+                }
+            }
+        }
     }
 }
