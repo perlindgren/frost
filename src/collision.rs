@@ -43,7 +43,7 @@ const CONVEX_EPS: f32 = 1e-4;
 const SLAB_EPS: f32 = 1e-6;
 
 /// The dot product of two 2D vectors.
-fn dot(a: [f32; 2], b: [f32; 2]) -> f32 {
+pub(crate) fn dot(a: [f32; 2], b: [f32; 2]) -> f32 {
     a[0] * b[0] + a[1] * b[1]
 }
 
@@ -161,6 +161,17 @@ impl Collider {
                 })
             }
         }
+    }
+
+    /// Slide the shape: every center coordinate moves by `delta`, and
+    /// nothing else changes — a box keeps its size and its angle.
+    pub fn translate(&mut self, delta: [f32; 2]) {
+        let center = match self {
+            Collider::Box(b) => &mut b.center,
+            Collider::Circle(c) => &mut c.center,
+        };
+        center[0] += delta[0];
+        center[1] += delta[1];
     }
 
     /// Where the segment from `from` to `to` first enters this shape: the `t`

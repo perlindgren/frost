@@ -190,6 +190,10 @@ path = "examples/physics/collision.rs"
 name = "authored_hall"
 path = "examples/physics/authored_hall.rs"
 
+[[example]]
+name = "bodies"
+path = "examples/physics/bodies.rs"
+
 # The shape examples live in the `examples/shapes/` folder. Cargo only
 # auto-discovers `examples/*.rs` and `examples/*/main.rs`, so each file in
 # the folder is named here explicitly; the example names stay the same, so

@@ -1,11 +1,12 @@
 # Physics examples
 
-Two demos — the folder is where the physics-related examples live:
+Three demos — the folder is where the physics-related examples live:
 
 | Example | What it shows | Run with |
 |---|---|---|
 | `collision` | the `player` example with collision: the button is an oriented box the size of its sprite, steered like a small car (`W`/`A`/`S`/`D` accelerate it relative to the way it faces, `Q`/`E` turn it, and with no key held it coasts and slows), pushed out of four random obstacle squares and of the window edges, its velocity reflected off each surface it meets (restitution 0.6); a thin outline shows its actual collision box | `cargo run --example collision` |
 | `authored_hall` | a dark hall of brick sprites whose shadows *and* collisions come from data, not code: one `bake_sidecar` call reads `brick.ron` beside `brick.png` at load, and its single baked footprint rides every brick — `declare_occluders` under each transform cuts the player's glow *and* mouse-aimed torch beam into shadows, the baked solids push the player out with the sidecar's own `(bounce: 0.35)`; a mis-authored sidecar refuses to start the example (`docs/authored-shapes.md`) | `cargo run --example authored_hall` |
+| `bodies` | the `physics` module drawn: three elastic `Body` rectangles (weights 1, 2, 4) at random non-overlapping starts with 50–100 px/s velocities, rattling in a box of four 50 px walls — every contact a perfectly elastic impulse, and a live kinetic-energy readout that stays flat while the velocities trade (momentum *does* move: a wall is an outside force); the `frost::Diagnostics` overlay rides on top — frame time, processing time and draw calls, charted — to put a number under any perceived jitter (Alt-0 hides it) | `cargo run --example bodies` |
 
 Both files sit in this folder rather than at the examples' top level, so
 each is declared explicitly in `Cargo.toml` (cargo only auto-discovers
@@ -35,6 +36,14 @@ same window-centered, y-up space the rest of frost draws in.
   velocity's normal component (the body slides along the surface), `1` is
   a perfectly elastic bounce; a velocity already moving away from the
   surface comes back unchanged.
+
+The `frost::physics` module moves those shapes: a `Body` is a `Collider`
+plus a velocity and a `weight`, `advance(dt)` integrates the center,
+`resolve_pair` trades two bodies' momentum along their `push_out` normal
+with a perfectly elastic impulse (penetration split by inverse weight,
+already-parting pairs never kicked), and `resolve_static` bounces a body
+off a shape that never moves. `kinetic_energy` and `momentum` read the two
+ledgers the impulse cannot spend; `bodies` puts the first on screen.
 
 The module answers questions; it owns no world and does no integration.
 The demo's `Process` keeps the position and velocity, builds a `Collider`
@@ -76,6 +85,9 @@ bridge and the rendering stay the same.
   different transforms. The brick sprites themselves are *not* marked
   `occludes` — the silhouette the light field gets is the one the sidecar
   drew, inset two pixels from the picture's edge.
+- **Move, then resolve — pairs, then walls.** `bodies` advances every body,
+  settles every pair, then settles every body against every wall: one pass,
+  each contact exact on its own, in an order that is a choice and not a law.
 - **The obstacles are a one-time random draw.** The four squares are
   generated once from the first frame's window size (with random colors),
   whole square kept inside the visible area, and never moved again — the

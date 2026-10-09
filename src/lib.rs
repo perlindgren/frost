@@ -186,6 +186,9 @@ pub use tween::*;
 mod collision;
 pub use collision::*;
 
+mod physics;
+pub use physics::*;
+
 mod bake;
 pub use bake::*;
 

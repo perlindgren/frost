@@ -39,6 +39,8 @@ src/tween.rs          Tween<T> (f32 / [f32;2]) with Repeat modes
 src/particles.rs      Particle, ParticleSystem (pure simulation)
 src/collision.rs      OrientedBox, Circle, Collider, Convex, push_out, reflect
                       (pure math; Convex is the occluder's polygon, half-planes only)
+src/physics.rs        Body (Collider + velocity + weight), resolve_pair,
+                      resolve_static, kinetic_energy (elastic, pure math)
 src/bake.rs           Feature, Role, Material -> Baker -> Baked (authored geometry)
 src/shapes.rs         authored-shapes reader: the sidecar `shapes:` vocabulary,
                       one pass over the parsed ron tree, both arms —
@@ -470,6 +472,33 @@ Pure math — no winit/wgpu, identical on wasm, no dependencies. Intentionally
   colliders from node transforms each frame, applies `push_out` + `reflect`,
   and writes the results back into the node transforms.
 
+## Physics (src/physics.rs)
+
+The collision module answers static questions and owns no state; physics
+puts those shapes in motion. A `Body` is a `Collider` (which carries the
+position, as it does for every shape) plus a velocity and a weight, and the
+module's one contract is that contacts trade momentum without spending
+energy.
+
+- `Body::advance(dt)` integrates the center by the velocity — position is a
+  `Collider::translate`, so the shape stays the shape.
+- `resolve_pair(a, b)` stands two overlapping bodies apart along the
+  `push_out` normal, splitting the penetration by inverse weight (the lighter
+  does most of the moving), then reverses their approach with an equal-and-
+  opposite impulse along that normal. The impulse is `e = 1` and touches only
+  the normal component, so the closing speed becomes the separating speed:
+  energy and momentum both hold. A pair that overlaps yet is already parting
+  gets the positional fix only, never a second kick.
+- `resolve_static(body, wall)` is the same with an immovable partner — it
+  reduces exactly to `reflect(vel, dir, 1.0)`, so a wall takes nothing.
+- `kinetic_energy` and `momentum` read the two ledgers; a test watches the
+  first stay flat across a three-body round and every wall bounce.
+
+It is deliberately small: discrete integration (a body moving farther than a
+wall is thick in one frame passes through — `Collider::cast` is the tool for
+that day), no angular momentum, friction, or gravity. The same
+rapier2d-upgrade note from the collision section covers outgrowing it.
+
 ## Bake (src/bake.rs)
 
 Authored geometry — a sprite's body, a tile's solid top, a hurt box — turns
@@ -858,7 +887,7 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **337 lib tests + 3 integration tests (`tests/`) + 7 doctests**
+Baseline: **346 lib tests + 3 integration tests (`tests/`) + 7 doctests**
 passing, `cargo build` (lib + the `sprite_util` tool) clean. The tool's 81
 tests — 68 that moved with `examples/sprite_util.rs` to
 `tools/sprite_util/main.rs`, the asset-path guard, the three
@@ -899,6 +928,10 @@ dock's geometry) — ride along in the same
   notes falling off first.
 - `tests/` — headless `Shape::sprite` reads of the `dogs_name` art (frame
   fit, ink statistics), through the same public entry point the examples use.
+- `src/physics.rs` — the elastic impulse's two conserved ledgers (energy and
+  momentum, checked against closed-form one-dimensional results and a
+  three-body round), the inverse-weight split of a shared penetration, and
+  the anti-stick rule that a separating pair is separated but never sped up.
 - `src/collision.rs` — push-out separation, reflect restitution semantics,
   and the convex occluder polygon: what it refuses rather than repair, the
   receiver-inside rule, and the two-percent band a tessellated disc keeps from
@@ -999,6 +1032,9 @@ tool surface. The `sprite_util` row below stays as the description.
 | collision    | the player with `push_out`/`reflect` collision                     |
 | cone_collider| the `cone` hall with physics added: the walls that cut shadows out  |
 |              | of the beam also push the player back (lighting × collision)        |
+| bodies       | three elastic `Body` rectangles rattling in a box of four           |
+|              | 50 px walls, under the diagnostics overlay: random starts,          |
+|              | and a kinetic-energy readout that does not move                     |
 | authored_hall| a dark brick hall whose shadows and collisions come                 |
 |              | from `brick.ron`, baked once at load: one `Baked`                   |
 |              | rides every brick — occluders declared per instance                 |
@@ -1195,7 +1231,7 @@ cargo build              # expect EXIT 0; covers the lib AND the tool —
 cargo build --examples   # expect EXIT 0; no longer covers the tool
 cargo build -p sprite_util   # expect EXIT 0; the tool on its own, now in
                                # tools/sprite_util/ as its own package
-cargo test               # expect 337 lib + 3 integration + 7 doctests
+cargo test               # expect 346 lib + 3 integration + 7 doctests
                            # + 72 sprite_util (the tool's unit tests run
                            # here now: a binary target is tested by default)
 cargo test --examples    # expect 126 passed (unit tests inside the examples,
