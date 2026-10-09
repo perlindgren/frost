@@ -57,10 +57,13 @@ src/backend/mod.rs    `app`, `frame`, `wasm` (wasm32 only), `tests` (test only)
 src/backend/app.rs    Frost<P>: winit app handler + GPU state + render loop
 src/backend/frame.rs  Draw list model: Draw enum, scissor rects, uniform writers
 src/backend/wasm.rs   WebFrost: deferred async GPU setup + fallback DOM helpers
-src/backend/tests/    GPU-free backend tests, one file per area (uniforms,
-                      scissor, nodes, layers, camera, repeat, context,
-                      config, …)
-shaders/*.wgsl        line, circle, rectangle, shape (SDF circle+rect), sprite
+src/backend/tests/    Backend tests, one file per area (uniforms, scissor,
+                      nodes, layers, camera, repeat, context, config, …) —
+                      all GPU-free but the few that render for real
+                      (sprites, tilemap, shadows) and say so when they can't
+shaders/*.wgsl        nine pipelines (line, polyline, circle, rectangle, shape,
+                      sprite, particles, tilemap, blit) plus lighting.wgsl, the
+                      lighting vocabulary the three lit ones are built on
 examples/             39 runnable demos, filed into folders (see table below)
 assets/               sprites/*.png (+ .pxo sidecars; immortal art, worm
                       crops, …), fonts/ (FiraCode Variable, JameGem08,
@@ -502,7 +505,7 @@ nothing but data in and flat lists out.
 
 ## Shaders (shaders/*.wgsl, src/shaders.rs)
 
-Seven small WGSL files, all full-screen-triangle + SDF/sampling:
+Nine pipelines, all full-screen-triangle + SDF/sampling; seven are tabulated:
 
 | file        | pipeline   | uniforms (byte layout)                                              |
 |-------------|------------|---------------------------------------------------------------------|
@@ -514,12 +517,25 @@ Seven small WGSL files, all full-screen-triangle + SDF/sampling:
 | sprite.wgsl | sprite     | `to_local`@0 `translation`@16 `size`@24 `tint`@32 `alpha`@48 `uv_rect`@64 → 80 |
 | particles.wgsl | particles | `size`@0 `color`@16 `misc`@32 `lit`@40 → 48 (one instanced draw per batch) |
 
+`lighting.wgsl` is in no table because it is not a pipeline: it is WGSL text
+`src/shaders.rs` prepends to `shape.wgsl`, `sprite.wgsl` and `particles.wgsl`,
+the three pipelines that read the frame's light and occluder fields. It holds
+what those three had as byte-identical copies — the two field record types, the
+`occluded` slab test, the shadow taps, the `light_mix` loop — and it declares no
+`@group` or `@binding`, because those two storage bindings sit at different
+indices per pipeline, so each host keeps its own `field` and `occluders`
+declarations around it. The shared text therefore reads two names declared after
+it, which WGSL allows: a module-scope name is in scope across the whole program.
+The naga tests below run on the *assembled* sources, and
+`the_lighting_vocabulary_is_shared_not_copied` keeps a copy from creeping back
+into a fourth shader, where it would compile happily and disagree with the rest.
+
 The polyline's fragment shader walks its 128-point uniform array and takes the
 minimum point-to-segment distance — a stroke of any length is still one draw
 call; its scissor is the point bounding box plus half the stroke width and the
 AA band, so the fragment loop only runs over the pixels the stroke can write.
 
-`src/shaders.rs` includes them and has tests that **parse all seven with
+`src/shaders.rs` includes them and has tests that **parse all nine with
 `naga::front::wgsl::parse_str`** (the same frontend wgpu uses, so validity is
 pinned without a GPU) and assert the `ShapeUniforms`/`SpriteUniforms` member
 offsets are `[0,16,24,32,48,64]` spanning 80 bytes, the `ParticlesUniforms`
@@ -798,17 +814,24 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **206 lib tests + 3 integration tests (`tests/`) + 5 doctests**
+Baseline: **289 lib tests + 3 integration tests (`tests/`) + 7 doctests**
 passing, `cargo build --examples` clean. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
   `Validator` stage wgpu runs in `create_shader_module` — this is what
   catches uniform-address-space layout rules the parser never checks) +
   uniform-offset assertions (above).
-- `src/backend/tests/` — GPU-free: uniform-layout mirrors, scissor math,
-  `paint_order`, `expand_text` (splicing + atlas reuse across frames),
+- `src/backend/tests/` — mostly GPU-free: uniform-layout mirrors, scissor
+  math, `paint_order`, `expand_text` (splicing + atlas reuse across frames),
   `context_reports_held_mouse_button`, `context_reports_mouse_wheel_delta`,
   and the context's typed-character read (`char_down`).
+- `src/backend/tests/shadows.rs` — the exception, and the reason the rule is
+  stated: it renders the real packed occluder field through the real
+  `shape.wgsl` on whatever adapter the machine has, and compares every pixel
+  with `collision::occluded`. That agreement cannot be checked from either
+  side alone, so this is the one place a drift between the CPU's slab test and
+  the shader's can be caught; with no adapter it prints that the shadow went
+  unverified rather than passing quietly.
 - `src/diagnostics.rs` — press-edge detection for all eight shortcuts, the
   display-scale clamp, and the line-extent re-measure on scale change.
 - `tests/` — headless `Shape::sprite` reads of the `dogs_name` art (frame

@@ -16,6 +16,7 @@ mod particles;
 mod repeat;
 mod scene;
 mod scissor;
+mod shadows;
 mod sprites;
 mod text;
 mod tilemap;

@@ -1,5 +1,13 @@
 //! The WGSL shader sources, embedded at compile time from the `.wgsl` files
 //! in the crate's `shaders/` directory.
+//!
+//! Three of them — the pipelines that light a surface — are assembled from
+//! `lighting.wgsl` plus their own file, so the shadow test and the loop over
+//! the lights live in one place instead of three that can drift apart. A WGSL
+//! name declared at module scope is in scope across the whole program, so the
+//! shared text may read the `field` and `occluders` bindings its host declares
+//! after it; those two declarations stay in each host because their `@binding`
+//! indices differ per pipeline.
 
 /// The line shader source.
 pub(crate) const LINE_SHADER: &str = include_str!("../shaders/line.wgsl");
@@ -13,14 +21,26 @@ pub(crate) const CIRCLE_SHADER: &str = include_str!("../shaders/circle.wgsl");
 /// The rectangle shader source.
 pub(crate) const RECT_SHADER: &str = include_str!("../shaders/rectangle.wgsl");
 
-/// The shape (scene circle/rectangle) shader source.
-pub(crate) const SHAPE_SHADER: &str = include_str!("../shaders/shape.wgsl");
+/// The shape (scene circle/rectangle) shader source: the shared lighting
+/// vocabulary, then the pipeline that paints a lit circle or rectangle.
+pub(crate) const SHAPE_SHADER: &str = concat!(
+    include_str!("../shaders/lighting.wgsl"),
+    include_str!("../shaders/shape.wgsl")
+);
 
-/// The sprite (texture) shader source.
-pub(crate) const SPRITE_SHADER: &str = include_str!("../shaders/sprite.wgsl");
+/// The sprite (texture) shader source: the shared lighting vocabulary, then
+/// the pipeline that paints textured sprites lit by the frame's fields.
+pub(crate) const SPRITE_SHADER: &str = concat!(
+    include_str!("../shaders/lighting.wgsl"),
+    include_str!("../shaders/sprite.wgsl")
+);
 
-/// The batched particle shader source.
-pub(crate) const PARTICLES_SHADER: &str = include_str!("../shaders/particles.wgsl");
+/// The batched particle shader source: the shared lighting vocabulary, then
+/// the pipeline that paints thousands of small lit quads in one draw.
+pub(crate) const PARTICLES_SHADER: &str = concat!(
+    include_str!("../shaders/lighting.wgsl"),
+    include_str!("../shaders/particles.wgsl")
+);
 
 /// The tile map (instanced atlas quads) shader source.
 pub(crate) const TILEMAP_SHADER: &str = include_str!("../shaders/tilemap.wgsl");
@@ -81,6 +101,48 @@ mod tests {
             )
             .validate(&module)
             .unwrap_or_else(|err| panic!("{name} fails device-side validation: {err}"));
+        }
+    }
+
+    /// The lighting vocabulary is shared, not copied. Each lit pipeline
+    /// carries `lighting.wgsl` once and declares the shadow test exactly
+    /// once; three copies of `occluded` is what this replaced, and the shape
+    /// of bug it invites is a fix landing in two of the three files, leaving
+    /// one shader's shadows disagreeing with the CPU and with its neighbours.
+    #[test]
+    fn the_lighting_vocabulary_is_shared_not_copied() {
+        const LIGHTING: &str = include_str!("../shaders/lighting.wgsl");
+        for (name, source) in [
+            ("shape", SHAPE_SHADER),
+            ("sprite", SPRITE_SHADER),
+            ("particles", PARTICLES_SHADER),
+        ] {
+            assert!(
+                source.starts_with(LIGHTING),
+                "{name} must be the shared vocabulary followed by its own code"
+            );
+            for declaration in [
+                "struct LightField ",
+                "struct OccluderField ",
+                "fn occluded(",
+                "fn light_mix(",
+            ] {
+                assert_eq!(
+                    source.matches(declaration).count(),
+                    1,
+                    "{name} must declare {declaration}... exactly once, from the shared file"
+                );
+            }
+        }
+        // A pipeline that paints no light carries none of the vocabulary: a
+        // fourth copy would compile, and nothing but this test would notice.
+        for (name, source) in all_shaders() {
+            if !source.starts_with(LIGHTING) {
+                assert!(
+                    !source.contains("fn occluded("),
+                    "{name} paints no light and must not carry the shadow test"
+                );
+            }
         }
     }
 
