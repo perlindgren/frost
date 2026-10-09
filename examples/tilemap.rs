@@ -71,14 +71,10 @@ const GROUND: usize = 2;
 const PLAYER: usize = 3;
 const NEAR: usize = 4;
 
-/// The RON parser and tree model, shared with `ron_view` and
-/// `sprite_util`: this example compiles the same `ron_view/tree.rs`
-/// through a path include and reads one fact from it — the sidecar's
-/// grid. `ron_view` uses the whole module; the sidecar panel leaves its
-/// viewer-only helpers unused, hence the blanket allow.
-#[allow(dead_code)]
-#[path = "ron_view/tree.rs"]
-mod ron_tree;
+/// The RON parser and tree model now live in the crate as `frost::ron`,
+/// which this example reads through under the name `ron_tree`: it
+/// reads one fact from a sidecar — the grid.
+use frost::ron as ron_tree;
 
 /// The tile grid the sidecar's root names, if it names one: its
 /// `atlas` field's two entries, `[rows, cols]`. A field of the wrong

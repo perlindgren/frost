@@ -40,6 +40,10 @@ src/particles.rs      Particle, ParticleSystem (pure simulation)
 src/collision.rs      OrientedBox, Circle, Collider, Convex, push_out, reflect
                       (pure math; Convex is the occluder's polygon, half-planes only)
 src/bake.rs           Feature, Role, Material -> Baker -> Baked (authored geometry)
+src/ron.rs            hand-written RON subset: Val/Item tree, parse_doc /
+                      to_text_doc, lossless by preservation (comments and
+                      verbatim atoms ride through); shared by ron_view,
+                      sprite_util and tilemap — namespaced, not globbed
 src/rng.rs            Rng — seedable splitmix64, state get/set for save games
 src/diagnostics.rs    Diagnostics (flag-gated FPS/FT/PROC/DRAW HUD overlay
                       with folded strip charts), DiagnosticsFlags
@@ -821,7 +825,8 @@ button clicks, a checkbox toggles, a slider's value changes.
   through `TreeSpec`/`TreeState` and answering `TreeEvent`s **by row index**
   only: the widget knows nothing of the app's data model. `sprite_util`'s
   sidecar panels and `ron_view` are its two applications (there
-  `examples/ron_view/tree.rs` is the data side, here it is the widget).
+  `frost::ron` and `examples/ron_view/view.rs` are the data and row
+  sides, here it is the widget).
 - **Identity**: widget ids are FNV-1a hashes of the label scoped by the
   containing panel's id, so the same label in two panels is two widgets.
 - **Text** goes through `Canvas::text` (see above) with one shared
@@ -838,7 +843,7 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **297 lib tests + 3 integration tests (`tests/`) + 7 doctests**
+Baseline: **304 lib tests + 3 integration tests (`tests/`) + 7 doctests**
 passing, `cargo build --examples` clean. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
@@ -875,6 +880,12 @@ passing, `cargo build --examples` clean. Notable test areas:
   gets rejected and why, and a sampled coverage property: a fused set covers
   exactly the points the authored boxes covered, on random piles and on a
   half-filled tile lattice.
+- `src/ron.rs` — the RON subset itself: atoms, numbers and enum paths kept
+  verbatim, comments as noise that still survives the writer, errors that carry
+  a line number, and `assets/ron/garden.ron` round-tripped to a fixed point —
+  the property that makes the file safe for a tool to rewrite at all. (The
+  sprite sidecar fixture is round-tripped over in `sprite_util`'s own tests,
+  where the tool that rewrites it lives.)
 - `src/tween.rs`, `src/particles.rs`, `src/text.rs` — behavior unit tests.
 - `src/rng.rs` — a fixed seed replays its stream; `state()`/`set_state()`
   round-trips continue it exactly.
@@ -893,12 +904,13 @@ tools (`sprite_util`, `worm`, …) at the top level. Cargo only auto-discovers
 `examples/*.rs` and `examples/*/main.rs`, so every folder member is named
 with an explicit `[[example]]` entry in `Cargo.toml` — the short names keep
 working: `cargo run --example parallax`. `ron_view/` is the exception that
-proves the rule: a `main.rs` folder target needs no entry, and its
-`tree.rs` — the RON-subset parser, tree model and row flattener (every
-value carries its source comments through parse, edit and save) — is
-path-included by `sprite_util` too (`#[path = "ron_view/tree.rs"]`), so
-both examples parse sidecars and samples with one shared, dependency-free
-parser. Most load their
+proves the rule: a `main.rs` folder target needs no entry, and its RON-subset
+parser, tree model and writer (every value carries its source comments
+through parse, edit and save) now live in the crate as `src/ron.rs`, so
+both examples parse sidecars and samples with the crate's own
+dependency-free parser; what stayed in the example is the row flattener
+(`view.rs`, path-included by `sprite_util` too), which flattens a tree
+into the folded rows both viewers paint. Most load their
 assets from disk at runtime, pinned to the crate root via
 `CARGO_MANIFEST_DIR`; `immortal` and `text_web` embed their assets into the
 binary with `include_bytes!` instead, so they run with no asset files on
@@ -1062,13 +1074,13 @@ disk. Run with `cargo run --example <name>`
 | widgets      | the `Ui` layer: a draggable Tomato panel (three color sliders, a    |
 |              | Spin checkbox, a Speed slider, a Reset button) and an About label   |
 |              | panel drive a spinning face's color and rotation                    |
-| ron_view     | a foldable, scrollable tree view of a `.ron` file (`tree.rs`,       |
-|              | shared with `sprite_util`'s sidecar panels): click `[-]/[+]`        |
-|              | rows to fold, drag the two scroll handles (or wheel / shift-wheel), |
-|              | text in FiraCode Variable — keys & heads at weight 700, values at   |
-|              | 500; ships with a dependency-free RON-subset parser (comments,      |
-|              | enums, maps, escapes; line-numbered errors) and `assets/ron/        |
-|              | garden.ron` as its sample; `-i` opens any .ron                      |
+| ron_view     | a foldable, scrollable tree view of a `.ron` file (`view.rs`,       |
+|              | the rows shared with `sprite_util`'s sidecar panels): click         |
+|              | `[-]/[+]` rows to fold, drag the two scroll handles (or wheel       |
+|              | / shift-wheel), text in FiraCode Variable — keys & heads at         |
+|              | weight 700, values at 500; reads through the crate's own            |
+|              | RON-subset parser (`frost::ron`: comments, enums, maps,             |
+|              | escapes; line-numbered errors); `assets/ron/garden.ron` sample      |
 
 `cursor.rs` is the most complete reference demo: `CAN_IMAGE [331,247]` scaled
 to 100 px, a 90° CCW tilt tween (0.5 s, rebuilt on press/release edges),
@@ -1120,10 +1132,11 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 
 ```
 cargo build --examples   # expect EXIT 0
-cargo test               # expect 206 lib + 3 integration + 5 doctests
-cargo test --examples    # expect ~152 passed (unit tests inside the examples,
-                           # centipede's rig included; ron_view/tree.rs compiles
-                           # into both targets, so its 9 parser tests run twice)
+cargo test               # expect 304 lib + 3 integration + 7 doctests
+cargo test --examples    # expect ~194 passed (unit tests inside the examples,
+                           # centipede's rig included; ron_view/view.rs compiles
+                           # into both ron_view and sprite_util, so its 2 fold
+                           # tests run twice; the parser tests run in the lib)
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example worm     # peristaltic crawl, edge wrap; exits 0
 cargo run --example ron_view # fold rows, drag both scroll handles; exits 0

@@ -189,6 +189,14 @@ pub use collision::*;
 mod bake;
 pub use bake::*;
 
+/// The crate's own RON subset: a dependency-free parser, tree model and
+/// lossless writer (comments and verbatim atoms ride through the tree),
+/// consumed by the `ron_view` and `sprite_util` examples — and by
+/// anything else that must read a `.ron` file back out unchanged. Kept
+/// namespaced because its names (`Val`, `Item`, `Doc`, `parse`…) are a
+/// format's vocabulary, not the engine's.
+pub mod ron;
+
 mod diagnostics;
 pub use diagnostics::{Diagnostics, DiagnosticsFlags};
 

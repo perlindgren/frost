@@ -17,24 +17,23 @@
 ## The sidecar already exists
 
 A sprite's `<name>.png` may have a `<name>.ron` beside it. `sprite_util` reads
-it on load ([`examples/sprite_util.rs:3909`](../examples/sprite_util.rs#L3909))
-and rewrites it on save ([` :1558 `](../examples/sprite_util.rs#L1558)), and it
+it on load ([`examples/sprite_util.rs:3911`](../examples/sprite_util.rs#L3911))
+and rewrites it on save ([` :1560 `](../examples/sprite_util.rs#L1560)), and it
 is a far better host for shape data than a new file would be:
 
 - **Comments and unknown keys survive a round-trip.** The reader is a
-  hand-written RON-subset tree
-  ([`examples/ron_view/tree.rs`](../examples/ron_view/tree.rs), path-included
-  into `sprite_util` at
-  [`:161`](../examples/sprite_util.rs#L161)) that stores every field verbatim
+  hand-written RON-subset tree now living in the crate as
+  [`src/ron.rs`](../src/ron.rs) (`frost::ron`, consumed by both
+  examples) that stores every field verbatim
   with its surrounding comment runs, and writes them back
-  (`to_text_doc`, [`tree.rs:856`](../examples/ron_view/tree.rs#L856)).
+  (`to_text_doc`).
   `sprite_util` itself interprets exactly two things — `atlas`, and any struct
   with two numeric fields — and passes everything else through untouched.
   Canonicalisation is a fixed point, tested against a real shipped sidecar
   (`a_real_plant_sidecar_round_trips_with_its_comments`,
-  [`:6096`](../examples/sprite_util.rs#L6096);
+  [`:6098`](../examples/sprite_util.rs#L6098);
   `the_canonical_sidecar_is_a_round_trip_fixed_point`,
-  [`:6299`](../examples/sprite_util.rs#L6299)).
+  [`:6301`](../examples/sprite_util.rs#L6301)).
 - **It is already extended by hand.** The keys in the shipped sidecars are
   `atlas`, `segment`, `image`, `lower_anchor`, `upper_anchor`, `flower_anchors`
   — none of them written by any Rust code, all of them read by *nobody* in the
@@ -42,20 +41,21 @@ is a far better host for shape data than a new file would be:
   the tool will not touch.
 
 Two things follow from that. The work is not "invent a format" but "add a
-vocabulary to a document designed for additions". And the blocker is
-**location**: `tree.rs` is an example, path-included by two examples, so the
-engine cannot use it. Giving it a home in `src/` is the first step, and it is a
-split as much as a move — `Val`, `Item`, `parse_doc`, `to_text` are the engine's;
-`Row`, `flatten`, `layout`, `VKind`, `toggle`, `open_to`, `preview` belong to the
-viewer that draws a tree of them.
+vocabulary to a document designed for additions". And the **location**
+blocker is gone: the parser moved into the crate as `src/ron.rs`, split as
+a move plus a seam — `Val`, `Item`, `parse_doc`, `to_text` are the engine's;
+`Row`, `flatten`, `layout`, `VKind` belong to the viewer and live in
+`examples/ron_view/view.rs` (`toggle`, `open_to`, `preview`, `inline`
+stayed in the crate as methods on `Val` — Rust's orphan rule leaves no
+other home for them).
 
 ## Three constraints the file imposes
 
 **Positions are arrays, never tuples.** `sprite_util` treats any *struct with
 exactly two numeric-atom fields* as a draggable position marker
-(`spot_coords`, [`:4128`](../examples/sprite_util.rs#L4128), capped at
+(`spot_coords`, [`:4130`](../examples/sprite_util.rs#L4130), capped at
 `SPOTS_MAX`). That is why `atlas` is deliberately an array, per the comment at
-[`:4019`](../examples/sprite_util.rs#L4019): *"a two-number tuple would read as a
+[`:4021`](../examples/sprite_util.rs#L4021): *"a two-number tuple would read as a
 position spot"*. So `center: [4.0, 2.0]` stays data, while `center: (4.0, 2.0)`
 becomes a handle the tool lets you drag — a shape whose numbers move under the
 author's hands, which is the class of bug the rest of this document is about.
@@ -63,7 +63,7 @@ When the tool learns to drag *shapes*, that arrives as an explicit feature over
 a known key, not as a coincidence of arity.
 
 **"An unparseable sidecar: the sprite simply loads" is wrong for shapes.** That
-is the existing policy ([`:3916`](../examples/sprite_util.rs#L3916): `log::warn!`
+is the existing policy ([`:3918`](../examples/sprite_util.rs#L3918): `log::warn!`
 then load without it), and for an atlas grid it is right — a missing grid is a
 whole-sprite sprite. A hit box is different: a sprite that silently loads with
 *no* collision is a bug no one can see by playing, which is the exact failure
@@ -119,9 +119,9 @@ shapes: [
 was agreed over a positional list, and it stays right — a map edit that inserts
 a column must not silently move every shape in the level. But it cannot be built
 now, because tile maps have *no file format at all*: `MapLayer`
-([`:265`](../examples/sprite_util.rs#L265)) holds `cells: Vec<u32>` indexed by a
+([`:267`](../examples/sprite_util.rs#L267)) holds `cells: Vec<u32>` indexed by a
 row-major formula
-([`at`, `:4214`](../examples/sprite_util.rs#L4214)) and lives only in memory and
+([`at`, `:4216`](../examples/sprite_util.rs#L4216)) and lives only in memory and
 in undo snapshots. Keyed tile shapes arrive *with* the map format, as its second
 key — inventing one to hold the other would smuggle a format decision in through
 the back door.
@@ -129,8 +129,10 @@ the back door.
 ## Order of work
 
 1. **`tree.rs` into `src/`**, data separated from view, both examples
-   re-pointed, its nine parser tests coming with it. Mechanical, and the only
-   thing on this list that cannot be done incrementally.
+   re-pointed, its parser tests coming with it. Mechanical, and the only
+   thing on this list that cannot be done incrementally. **Done:**
+   `src/ron.rs` is the data (its tests with it), `examples/ron_view/view.rs`
+   the row view the two viewers share.
 2. **The reader**: the vocabulary above, in `src/`, producing `Feature`s for a
    `Baker` — plus the pixel-to-node conversion, the typed errors, and the
    round-trip and space tests. This is where the schema is finally agreed by

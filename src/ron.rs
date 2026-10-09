@@ -1,27 +1,44 @@
-//! The RON-subset parser and tree model, shared by the `ron_view` viewer
-//! (its whole view) and `sprite_util` (sidecar panels for sprites).
+//! A hand-written RON subset: the parser, tree model and writer shared
+//! by the `ron_view` viewer and `sprite_util`'s sidecar panels.
 //!
-//! The parser is deliberately dependency-free like every other example
-//! here: line and (nestable) block comments, `!` type markers, `Name(..)`
-//! and `Name {..}` structs, named and positional fields, `(...)` anonymous
-//! structs, arrays, maps with string-ish keys, strings and chars (kept
-//! verbatim, escapes and all), integers, floats, exponents, underscores,
-//! bools, and enum paths — unit (`Kind::Bee`), newtype (`Kind::Bug(Count(3))`)
-//! and struct variants (`Watering::PingPong { .. }`) — with trailing
-//! commas allowed everywhere. It errors with a line number rather than
-//! guessing.
+//! The subset speaks line and (nestable) block comments, `!` type
+//! markers, `Name(..)` and `Name {..}` structs, named and positional
+//! fields, `(..)` anonymous structs, arrays, maps with string-ish keys,
+//! strings and chars (kept verbatim, escapes and all), integers,
+//! floats, exponents, underscores, bools, and enum paths — unit
+//! (`Kind::Bee`), newtype (`Kind::Bug(Count(3))`) and struct variants
+//! (`Watering::PingPong { .. }`) — with trailing commas allowed
+//! everywhere. It errors with a line number rather than guessing. Raw
+//! (`r".."`) and multi-line strings are not in the subset.
 //!
-//! Containers carry their fold state in the tree (`Val::open_to`,
-//! `Val::toggle`); [`layout`] flattens the visible rows, each carrying the
-//! fold-path it toggles. Pure std — every renderer colors and weights the
-//! rows (`VKind`) as it likes.
+//! This is not a deserializer: the module owns no types it decodes into
+//! and asks no type what to expect. It is lossless by preservation —
+//! comments, unknown keys, numbers and strings all stay text, riding in
+//! the tree exactly as the source wrote them — so a file that is read,
+//! edited and saved returns everything the program did not recognize.
+//! The one deliberate loss is the `!Type(..)` marker: the parser
+//! consumes it and keeps only the value inside, because the marker
+//! names the writer's type, which neither a viewer nor an editor needs.
+//!
+//! The tree carries the source's own shapes: containers hold their fold
+//! state in `open`, and every value travels in an [`Item`] with the
+//! comments that surrounded it, which is what makes the round trip
+//! lossless. What the module does not own is the *view*: the flattener
+//! that turns a tree into drawable rows (`VKind`, `Row`, `flatten`,
+//! `layout`) belongs to whoever paints it and lives in
+//! `examples/ron_view/view.rs`, path-included by both examples.
 
 /// What an atom's text is, for coloring and weighting it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
+    /// `true` or `false`.
     Bool,
+    /// An integer or float, kept verbatim: digits, `_` separators,
+    /// fraction, exponent and type suffix all ride along as text.
     Num,
+    /// A `"quoted"` string, quotes and escapes included.
     Str,
+    /// A `'quoted'` char, verbatim like a string.
     Char,
     /// A path-like atom: an enum unit variant, a bare identifier.
     Path,
@@ -69,6 +86,7 @@ pub enum Val {
 pub struct Item {
     pub lead: String,
     pub trail: String,
+    /// The entry's value.
     pub val: Val,
 }
 
@@ -85,8 +103,23 @@ impl Item {
 
 impl Val {
     /// The value's one-line text: atoms verbatim, containers as a
-    /// bracketed ellipsis — enough for map keys, which the view shows
-    /// flat.
+    /// bracketed ellipsis — enough for map keys, which the parser
+    /// stringifies through it.
+    pub fn display(&self) -> String {
+        match self {
+            Val::Atom(s, _) => s.clone(),
+            Val::Seq { .. } => "[…]".into(),
+            Val::Struct { head, curly, .. } => {
+                format!(
+                    "{head}{}…{}",
+                    if *curly { " {" } else { "(" },
+                    if *curly { "}" } else { ")" }
+                )
+            }
+            Val::Map { .. } => "{…}".into(),
+        }
+    }
+
     /// One line for a folded container: the whole subtree inline when
     /// it fits `INLINE_MAX` characters — a flower anchor reads
     /// `(317.0, 671.0)`, not `(…)` — and [`Val::display`]'s bracketed
@@ -149,21 +182,6 @@ impl Val {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-        }
-    }
-
-    pub fn display(&self) -> String {
-        match self {
-            Val::Atom(s, _) => s.clone(),
-            Val::Seq { .. } => "[…]".into(),
-            Val::Struct { head, curly, .. } => {
-                format!(
-                    "{head}{}…{}",
-                    if *curly { " {" } else { "(" },
-                    if *curly { "}" } else { ")" }
-                )
-            }
-            Val::Map { .. } => "{…}".into(),
         }
     }
 
@@ -687,8 +705,12 @@ impl<'a> Parser<'a> {
 /// the header above it and the trailer that followed it.
 #[derive(Debug, PartialEq)]
 pub struct Doc {
+    /// The comment run above the root, verbatim, one per line.
     pub header: String,
+    /// The document's value.
     pub root: Val,
+    /// The comments after the root: its same-line trail, then the
+    /// whole-line run that closed the file.
     pub trailer: String,
 }
 
@@ -719,128 +741,6 @@ pub fn parse_doc(src: &str) -> Result<Doc, String> {
 /// Parse a RON document into the view's tree, comments and all.
 pub fn parse(src: &str) -> Result<Val, String> {
     parse_doc(src).map(|d| d.root)
-}
-
-// ---------------------------------------------------------------------------
-// Rows: the flattened, folded view of the tree
-
-/// What the value side of a row is, for its color and weight.
-#[derive(Clone, Copy)]
-pub enum VKind {
-    /// A container head or its folded `…` form: heavy, amber.
-    Head,
-    /// A closing bracket: dressed like its opening one — the view
-    /// paints it amber and bold, the Head's own colors.
-    Close,
-    /// An atom, by kind.
-    Atom(Kind),
-}
-
-/// One visible row: a heavy prefix and a value side, and — for
-/// containers and their closing brackets — the fold path they toggle.
-#[derive(Clone)]
-pub struct Row {
-    /// The fold-path from the root: child indices.
-    pub path: Vec<u16>,
-    /// The heavy prefix: indent, `[+]/[-]` marker, key and colon.
-    pub key: String,
-    /// The value side.
-    pub val: String,
-    pub vkind: VKind,
-    /// `Some` for the rows a click folds: the flag it would flip.
-    pub fold: Option<bool>,
-}
-
-/// The fold-path index of the nth child row of a container. Paths are
-/// the child lists of `Val`, shared by `child_at` and the flattener.
-pub fn flatten(v: &Val, path: &mut Vec<u16>, depth: u16, key: &str, rows: &mut Vec<Row>) {
-    let ind = "    ".repeat(depth as usize);
-    match v {
-        Val::Atom(s, k) => rows.push(Row {
-            path: path.clone(),
-            key: format!("{ind}{key}"),
-            val: s.clone(),
-            vkind: VKind::Atom(*k),
-            fold: None,
-        }),
-        _ => {
-            let (open, head, o, c) = match v {
-                Val::Atom(..) => unreachable!(),
-                Val::Seq { open, .. } => (*open, String::new(), '[', ']'),
-                Val::Struct {
-                    open, head, curly, ..
-                } => (
-                    *open,
-                    head.clone(),
-                    if *curly { '{' } else { '(' },
-                    if *curly { '}' } else { ')' },
-                ),
-                Val::Map { open, .. } => (*open, String::new(), '{', '}'),
-            };
-            let marker = if open { "[-]" } else { "[+]" };
-            rows.push(Row {
-                path: path.clone(),
-                key: format!("{ind}{marker} {key}"),
-                val: if open {
-                    format!("{head}{o}")
-                } else {
-                    v.preview()
-                },
-                vkind: VKind::Head,
-                fold: Some(open),
-            });
-            if !open {
-                return;
-            }
-            // The children, then the closing bracket row at the
-            // container's own depth.
-            let kids: Vec<(String, &Val)> = match v {
-                Val::Seq { items, .. } => items
-                    .iter()
-                    .enumerate()
-                    .map(|(n, it)| (format!("{n}: "), &it.val))
-                    .collect(),
-                Val::Struct { fields, .. } => fields
-                    .iter()
-                    .map(|(k, it)| {
-                        (
-                            if k.is_empty() {
-                                String::new()
-                            } else {
-                                format!("{k}: ")
-                            },
-                            &it.val,
-                        )
-                    })
-                    .collect(),
-                Val::Map { entries, .. } => entries
-                    .iter()
-                    .map(|(k, it)| (format!("{k}: "), &it.val))
-                    .collect(),
-                Val::Atom(..) => Vec::new(),
-            };
-            for (n, (k, child)) in kids.iter().enumerate() {
-                path.push(n as u16);
-                flatten(child, path, depth + 1, k, rows);
-                path.pop();
-            }
-            rows.push(Row {
-                path: path.clone(),
-                key: ind.clone(),
-                val: c.to_string(),
-                vkind: VKind::Close,
-                fold: Some(open),
-            });
-        }
-    }
-}
-
-/// Rebuild the row list from the tree.
-pub fn layout(root: &Val) -> Vec<Row> {
-    let mut rows = Vec::new();
-    let mut path = Vec::new();
-    flatten(root, &mut path, 0, "", &mut rows);
-    rows
 }
 
 // ---------------------------------------------------------------------------
@@ -991,7 +891,7 @@ mod tests {
 
     /// The shipped sample, embedded so the parser is tested against its
     /// real target.
-    const GARDEN: &str = include_str!("../../assets/ron/garden.ron");
+    const GARDEN: &str = include_str!("../assets/ron/garden.ron");
 
     #[test]
     fn the_garden_parses_with_every_flavour() {
@@ -1091,43 +991,6 @@ mod tests {
         let err = parse("(a: 1) junk").unwrap_err();
         assert!(err.starts_with("line 1:"), "{err}");
         assert!(parse("/* open").is_err());
-    }
-
-    #[test]
-    fn folding_hides_the_children_and_the_close_row() {
-        let mut root = parse("(a: Foo(b: 1), c: 2)").unwrap();
-        root.open_to(0, 1);
-        let rows = layout(&root);
-        // root, Foo( open, its b row, Foo's ')' row, c: 2, and the
-        // root's own ')' row — six.
-        assert_eq!(rows.len(), 6);
-        // Fold the Foo container by its path [0]: its row keeps the
-        // one-line preview, its b and ')' rows vanish.
-        walk(&mut root, &[0]).unwrap().toggle();
-        let folded = layout(&root);
-        assert_eq!(folded.len(), 4); // root, Foo(b: 1), c: 2, ')'
-        assert_eq!(folded[1].val, "Foo(b: 1)");
-        // And unfolding brings them back.
-        walk(&mut root, &[0]).unwrap().toggle();
-        assert_eq!(layout(&root).len(), 6);
-    }
-
-    #[test]
-    fn a_folded_container_previews_its_whole_line() {
-        // open_to(0, 0) opens the root and folds everything deeper.
-        let mut root = parse("(a: [1, 2])").unwrap();
-        root.open_to(0, 0);
-        let rows = layout(&root);
-        assert_eq!(rows.len(), 3); // root, a: [1, 2], ')'
-        assert_eq!(rows[0].key, "[-] ");
-        assert_eq!(rows[0].val, "(");
-        assert_eq!(rows[1].key, "    [+] a: ");
-        assert_eq!(rows[1].val, "[1, 2]");
-        // Too long to preview inline — the bracketed ellipsis returns.
-        let mut big = parse("(a: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])").unwrap();
-        big.open_to(0, 0);
-        assert_eq!(layout(&big)[1].val, "[…]");
-        assert_eq!(rows[2].val, ")");
     }
 
     /// Every test's panic door when the tree is not the expected shape.

@@ -102,8 +102,8 @@
 //! ```
 
 //! A sprite may bring a sidecar: when `<name>.png` has a `<name>.ron`
-//! beside it, the file — the RON subset `ron_view` speaks, parsed by the
-//! very same `tree.rs`, shared by path-include — opens as a foldable
+//! beside it, the file — the RON subset `ron_view` speaks, parsed by
+//! the crate's own `frost::ron` — opens as a foldable
 //! tree — one `Ui` panel per open file, each titled by its file name,
 //! cascading from the work area's lower right, dragging and folding like
 //! every other panel and scrolling by its own pair of handles (the
@@ -153,13 +153,15 @@ use clap::Parser;
 use image::ImageEncoder;
 use std::sync::Arc;
 
-/// The RON parser and tree model, shared with `ron_view`: both examples
-/// compile the same `ron_view/tree.rs`, this one through a path include.
-/// `ron_view` uses the whole module; the sidecar panel leaves its
-/// viewer-only helpers unused, hence the blanket allow.
-#[allow(dead_code)]
-#[path = "ron_view/tree.rs"]
-mod ron_tree;
+/// The RON parser and tree model now live in the crate as `frost::ron`,
+/// which both examples consume as a library; this file keeps calling it
+/// `ron_tree`. The row view — `VKind`, `Row`, `flatten`, `layout` —
+/// stayed on the example side: the shared `ron_view/view.rs`,
+/// path-included here under the name `ron_view`.
+use frost::ron as ron_tree;
+
+#[path = "ron_view/view.rs"]
+mod ron_view;
 
 /// The File menu: the file verbs, lined up where every desktop app puts
 /// them, with the two history steps among them. Open, Close, Save, Save
@@ -717,7 +719,7 @@ struct RonDoc {
     /// The parsed tree — the containers' fold flags live here.
     root: ron_tree::Val,
     /// The visible rows, rebuilt whenever a fold flips.
-    rows: Vec<ron_tree::Row>,
+    rows: Vec<ron_view::Row>,
     /// The scroll offsets in pixels: `scroll` down the rows, `sx`
     /// across them, 0 at the tree's top-left.
     scroll: f32,
@@ -1263,7 +1265,7 @@ impl Demo {
             self.status = String::from("crop: could not rebuild the sprite");
         } else if let Some(doc) = self.sprites[self.active].ron.as_mut() {
             let n = shift_spots(&mut doc.root, x as f32, y as f32, (nx, ny));
-            doc.rows = ron_tree::layout(&doc.root);
+            doc.rows = ron_view::layout(&doc.root);
             if n > 0 {
                 self.status = format!("cropped to {nx} x {ny} px — {n} positions shifted");
             }
@@ -1647,7 +1649,7 @@ impl Demo {
                 if let Some(v) = ron_tree::walk(&mut doc.root, &path) {
                     v.toggle();
                 }
-                doc.rows = ron_tree::layout(&doc.root);
+                doc.rows = ron_view::layout(&doc.root);
                 doc.clamp_scroll();
             }
         }
@@ -1675,7 +1677,7 @@ impl Demo {
             return;
         };
         if let Some(n) = seq_add(&mut doc.root, &cpath) {
-            doc.rows = ron_tree::layout(&doc.root);
+            doc.rows = ron_view::layout(&doc.root);
             doc.clamp_scroll();
             let mut fresh = Vec::new();
             scan_spots(&doc.root, &mut Vec::new(), "", &mut fresh);
@@ -1723,7 +1725,7 @@ impl Demo {
         let n = *path.last().expect("a non-empty path's last index") as usize;
         let cpath = &path[..path.len() - 1];
         if seq_remove(&mut doc.root, cpath, n) {
-            doc.rows = ron_tree::layout(&doc.root);
+            doc.rows = ron_view::layout(&doc.root);
             doc.clamp_scroll();
             doc.edit = None;
             self.status = format!("removed entry #{n} from the list");
@@ -1768,7 +1770,7 @@ impl Demo {
         };
         let to = (r.path.len() == cpath.len() + 1
             && r.path.starts_with(&cpath)
-            && !matches!(r.vkind, ron_tree::VKind::Close))
+            && !matches!(r.vkind, ron_view::VKind::Close))
         .then(|| r.path[cpath.len()] as usize);
         let Some(doc) = self.sprites[slot].ron.as_mut() else {
             return;
@@ -1776,7 +1778,7 @@ impl Demo {
         if let Some(to) = to
             && let Some(to) = seq_move(&mut doc.root, &cpath, from, to)
         {
-            doc.rows = ron_tree::layout(&doc.root);
+            doc.rows = ron_view::layout(&doc.root);
             doc.clamp_scroll();
             self.ron_drag = Some((slot, cpath, to));
             self.status = format!("reordering: entry #{from} -> #{to}");
@@ -2052,7 +2054,7 @@ impl frost::Process for Demo {
                     if let Some(doc) = self.sprites[slot].ron.as_mut() {
                         doc.edit = Some(pi);
                         unfold_path(&mut doc.root, &path);
-                        doc.rows = ron_tree::layout(&doc.root);
+                        doc.rows = ron_view::layout(&doc.root);
                         if let Some(i) = doc.rows.iter().position(|r| r.path == path) {
                             let track = self
                                 .ron_views
@@ -2233,7 +2235,7 @@ impl frost::Process for Demo {
                 if let Some(doc) = sp.ron.as_mut()
                     && set_atlas(&mut doc.root, next)
                 {
-                    doc.rows = ron_tree::layout(&doc.root);
+                    doc.rows = ron_view::layout(&doc.root);
                     doc.clamp_scroll();
                 }
             }
@@ -2242,7 +2244,7 @@ impl frost::Process for Demo {
                 if let Some(doc) = sp.ron.as_mut()
                     && set_atlas(&mut doc.root, None)
                 {
-                    doc.rows = ron_tree::layout(&doc.root);
+                    doc.rows = ron_view::layout(&doc.root);
                     doc.clamp_scroll();
                 }
             }
@@ -3061,7 +3063,7 @@ impl frost::Process for Demo {
                                             ron_tree::Kind::Num,
                                         );
                                     }
-                                    doc.rows = ron_tree::layout(&doc.root);
+                                    doc.rows = ron_view::layout(&doc.root);
                                     say = Some(format!("moved '{label}' to ({px:.1}, {py:.1})"));
                                 }
                             }
@@ -3926,7 +3928,7 @@ fn load_ron(png: &std::path::Path) -> Option<RonDoc> {
     root.open_to(0, 1);
     let name = file_name_of(&side);
     log::info!("sidecar '{name}' loaded for '{}'", file_name_of(png));
-    let rows = ron_tree::layout(&root);
+    let rows = ron_view::layout(&root);
     Some(RonDoc {
         name,
         header,
@@ -3956,7 +3958,7 @@ fn new_sidecar(name: String, atlas: (usize, usize)) -> RonDoc {
         tail: String::new(),
     };
     root.open_to(0, 1);
-    let rows = ron_tree::layout(&root);
+    let rows = ron_view::layout(&root);
     let mut doc = RonDoc {
         name,
         header: String::new(),
@@ -4061,17 +4063,17 @@ fn in_rect(r: [f32; 4], p: [f32; 2]) -> bool {
 /// The panel's value-side color: container heads amber, closing
 /// brackets muted, atoms by kind — `ron_view`'s palette on the dark
 /// plate.
-fn ron_color(k: ron_tree::VKind) -> frost::Color {
+fn ron_color(k: ron_view::VKind) -> frost::Color {
     let c = |r, g, b| frost::Color { r, g, b, a: 1.0 };
     match k {
         // The closing bracket is its opening one's twin: same amber,
         // and bold like any head (see the line's `head` flag).
-        ron_tree::VKind::Head | ron_tree::VKind::Close => c(0.93, 0.78, 0.44),
-        ron_tree::VKind::Atom(ron_tree::Kind::Str) => c(0.72, 0.86, 0.66),
-        ron_tree::VKind::Atom(ron_tree::Kind::Char) => c(0.66, 0.80, 0.78),
-        ron_tree::VKind::Atom(ron_tree::Kind::Num) => c(0.60, 0.78, 0.96),
-        ron_tree::VKind::Atom(ron_tree::Kind::Bool) => c(0.83, 0.68, 0.95),
-        ron_tree::VKind::Atom(ron_tree::Kind::Path) => c(0.64, 0.86, 0.84),
+        ron_view::VKind::Head | ron_view::VKind::Close => c(0.93, 0.78, 0.44),
+        ron_view::VKind::Atom(ron_tree::Kind::Str) => c(0.72, 0.86, 0.66),
+        ron_view::VKind::Atom(ron_tree::Kind::Char) => c(0.66, 0.80, 0.78),
+        ron_view::VKind::Atom(ron_tree::Kind::Num) => c(0.60, 0.78, 0.96),
+        ron_view::VKind::Atom(ron_tree::Kind::Bool) => c(0.83, 0.68, 0.95),
+        ron_view::VKind::Atom(ron_tree::Kind::Path) => c(0.64, 0.86, 0.84),
     }
 }
 
@@ -4894,11 +4896,11 @@ fn unfold_path(root: &mut ron_tree::Val, path: &[u16]) {
 /// The list-edit buttons a row carries: `(add, del)` — an add on an
 /// open sequence's head row, a delete on one of a sequence's OWN item
 /// rows (a head or an atom; the closing bracket row never gets one).
-fn row_buttons(root: &ron_tree::Val, row: &ron_tree::Row) -> (bool, bool) {
+fn row_buttons(root: &ron_tree::Val, row: &ron_view::Row) -> (bool, bool) {
     let add =
-        matches!(row.vkind, ron_tree::VKind::Head) && row.fold == Some(true) && row.val == "[";
+        matches!(row.vkind, ron_view::VKind::Head) && row.fold == Some(true) && row.val == "[";
     let del = !row.path.is_empty()
-        && !matches!(row.vkind, ron_tree::VKind::Close)
+        && !matches!(row.vkind, ron_view::VKind::Close)
         && ron_tree::find(root, &row.path[..row.path.len() - 1])
             .is_some_and(|p| matches!(p, ron_tree::Val::Seq { .. }));
     (add, del)
@@ -5058,7 +5060,7 @@ fn ron_spec<'a>(
         lines.push(frost::TreeLine {
             key: row.key.as_str(),
             val: row.val.as_str(),
-            head: matches!(row.vkind, ron_tree::VKind::Head | ron_tree::VKind::Close),
+            head: matches!(row.vkind, ron_view::VKind::Head | ron_view::VKind::Close),
             val_color,
             add,
             del,
@@ -5995,7 +5997,7 @@ mod tests {
     fn sequence_rows_carry_their_buttons() {
         let mut root = ron_tree::parse("(a: [1, (2.0, 3.0)], b: 4)").expect("parses");
         root.open_to(0, 9);
-        let rows = ron_tree::layout(&root);
+        let rows = ron_view::layout(&root);
         let row = |want: &str| {
             rows.iter()
                 .find(|r| r.val == want && !(want == "(" && r.path.is_empty()))
@@ -6084,7 +6086,7 @@ mod tests {
         scan_spots(&root, &mut Vec::new(), "", &mut spots);
         let deep = spots[1].path.clone();
         unfold_path(&mut root, &deep);
-        let rows = ron_tree::layout(&root);
+        let rows = ron_view::layout(&root);
         // The list opened; both entries show, and the path's own row
         // (the tuple head, folded, previewing its numbers) is there to
         // be centred.

@@ -8,20 +8,22 @@
 //! keys, container heads and titles carry a heavy 700 weight, values a
 //! medium 500, so the tree's spine stands out from its leaves.
 //!
-//! The parser is a hand-rolled RON subset, deliberately dependency-free
-//! like every other example here: line and (nestable) block comments,
-//! `!` type markers, `Name(...)` and `Name {...}` structs, named and
-//! positional fields, `(...)` anonymous structs, arrays, maps with
-//! string-ish keys, strings and chars (kept verbatim, escapes and all),
-//! integers, floats, exponents, underscores, bools, and enum paths —
-//! unit (`Kind::Bee`), newtype (`Kind::Bug(Count(3))`) and struct
-//! variants (`Watering::PingPong { .. }`) — with trailing commas
-//! allowed everywhere. It errors with a line number rather than
-//! guessing.
+//! The parser is the crate's own `frost::ron` — a hand-rolled RON
+//! subset with no parser crate behind it:
+//! line and (nestable) block comments, `!` type markers, `Name(...)`
+//! and `Name {...}` structs, named and positional fields, `(...)`
+//! anonymous structs, arrays, maps with string-ish keys, strings and
+//! chars (kept verbatim, escapes and all), integers, floats,
+//! exponents, underscores, bools, and enum paths — unit (`Kind::Bee`),
+//! newtype (`Kind::Bug(Count(3))`) and struct variants
+//! (`Watering::PingPong { .. }`) — with trailing commas allowed
+//! everywhere. It errors with a line number rather than guessing.
 //!
-//! The parser, the tree model and the row flattener live in `tree.rs`,
-//! shared (by a `#[path]` include) with `sprite_util`, whose sidecar
-//! panels read the same format.
+//! The parser, the tree model and the writer live in the crate, shared
+//! with `sprite_util`'s sidecar panels; what stays in this folder is
+//! the row flattener, `view.rs` — the same file `sprite_util`
+//! path-includes — which flattens a tree into the rows both viewers
+//! draw.
 //!
 //! Each visible row owns two text shapes: the heavy prefix (indent,
 //! `[+]/[-]` marker, key) and the value side (head, atom, or the `…`
@@ -36,14 +38,14 @@
 //! cargo run --example ron_view -- -i assets/ron/garden.ron  # or any .ron
 //! ```
 
+use frost::ron::{Kind, Val, parse, walk};
 use std::sync::Arc;
 
-/// The shared parser and tree module: `sprite_util` compiles the same
-/// file and uses its writer and child accessors, which this viewer
-/// itself never calls — hence the allow.
-#[allow(dead_code)]
-mod tree;
-use tree::{Kind, Row, VKind, Val, layout, parse, walk};
+/// The row view: the tree flattened into visible rows. The data side —
+/// parser, tree model, writer — is the crate's own `frost::ron`;
+/// `sprite_util` compiles this same file for its sidecar panels.
+mod view;
+use view::{Row, VKind, layout};
 
 // ---------------------------------------------------------------------------
 // The view
