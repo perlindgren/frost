@@ -34,9 +34,9 @@
 //! Only rectangles fuse: a fusion is taken when the result is still one
 //! rectangle covering exactly the points the parts covered, which an L or a
 //! circle never is. Nothing is dropped quietly either. A shape the bake cannot
-//! honour — a circle asking to occlude, which needs the convex-polygon record
-//! the shaders do not have yet; a box with no width, which occludes and blocks
-//! nothing — comes back from [`Baker::add`] as a [`Rejection`] the loader can
+//! honour — a circle asking to occlude, which the fused list of rectangles has
+//! nowhere to put; a box with no width, which occludes and blocks nothing —
+//! comes back from [`Baker::add`] as a [`Rejection`] the loader can
 //! name, instead of vanishing into a list that looks fine. A painted sprite
 //! that silently cannot cast a shadow is the failure this path exists to end.
 //!
@@ -330,7 +330,7 @@ fn classify(shape: Footprint, role: Role) -> Result<Route, &'static str> {
     match (role, shape) {
         (Role::Occlude, Footprint::Box(b)) => Ok(Route::Occluder(b)),
         (Role::Occlude, Footprint::Circle(_)) => Err(
-            "only a rectangle reaches the occluder field: a circle needs the convex-polygon record the shaders do not have yet",
+            "the fused occluders are rectangles: a circle reaches the light field              only as the sixteen-gon cut from it, and a bake has nowhere to keep              one until its output carries more than boxes",
         ),
         (Role::Solid, s) => Ok(Route::Shape(s.collider())),
         (Role::Hit, s) => Ok(Route::Shape(s.collider())),

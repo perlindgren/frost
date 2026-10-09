@@ -928,22 +928,40 @@ pub(crate) fn occluder_field_buffer_size(count: u32) -> u64 {
 /// translation with the box's local center; and the box's local half-extents.
 pub(crate) const OCCLUDER_RECORD: usize = 48;
 
+/// The byte size of one occluder half-plane: `(n.x, n.y, c, _)`, a polygon's
+/// edge with its outward unit normal and offset, following its record. A box
+/// has none and its record is [`OCCLUDER_RECORD`] bytes exactly, which is what
+/// lets a field packed before polygons still read correctly: the record's
+/// plane count sits in a component that was padding, and zero of them is a
+/// box.
+pub(crate) const OCCLUDER_PLANE: usize = 16;
+
 /// The frame's occluder field, packed little-endian for the GPU's storage
 /// buffer.
 ///
 /// The layout is a [`OCCLUDER_FIELD_HEADER`]-byte header — the occluder
 /// `count` at bytes `0..4`, 12 padding bytes — followed by one
-/// [`OCCLUDER_RECORD`]-byte record per occluder, in call order: a
-/// `(m00, m10, m01, m11)` `vec4`, the inverse of the occluder's world
-/// transform, column-major (pixel space to the occluder's local space), then
-/// a `(tx, ty, cx, cy)` `vec4`, the inverse transform's translation and the
-/// box's local center, then a `(hx, hy, 0, 0)` `vec4`, the box's local half-
-/// extents. The records line up with the unsized WGSL `array<vec4<f32>>`
-/// tail of the field's storage struct, so `data` can be bound as-is.
+/// record per occluder, in call order: a `(m00, m10, m01, m11)` `vec4`, the
+/// inverse of the occluder's world transform, column-major (pixel space to the
+/// occluder's local space), then a `(tx, ty, cx, cy)` `vec4`, the inverse
+/// transform's translation and the box's local center, then a `(hx, hy,
+/// planes, 0)` `vec4`, the box's local half-extents and the number of
+/// [`OCCLUDER_PLANE`]-byte half-planes that follow it — zero for a box, and for
+/// a polygon the edges that bound it, each an outward unit normal and its
+/// offset in the occluder's own space.
+///
+/// Records are therefore variable length, `3 + planes` `vec4`s apiece, and a
+/// shader walks them with a running offset rather than `3 * i`. It already
+/// visits every occluder in order — the first blocker ends the search — so the
+/// walk costs nothing it was not paying anyway, and in exchange a box keeps
+/// the exact 48 bytes it had before. The records line up with the unsized WGSL
+/// `array<vec4<f32>>` tail of the field's storage struct, so `data` can be
+/// bound as-is.
 pub(crate) struct OccluderField {
     /// The number of occluders packed — the header's `count`.
     pub count: u32,
-    /// The packed bytes: a 16-byte header plus `count * 48` bytes.
+    /// The packed bytes: a 16-byte header plus one record per occluder, each
+    /// [`OCCLUDER_RECORD`] bytes plus one [`OCCLUDER_PLANE`] per edge.
     pub data: Vec<u8>,
 }
 
@@ -958,6 +976,9 @@ pub(crate) struct OccluderField {
 /// is ignored.
 pub(crate) fn pack_occluder_field(draws: &[Draw], declared: &[Occluder]) -> OccluderField {
     let mut count = 0u32;
+    // Records are variable length, so the next one's address is carried
+    // rather than computed from the count.
+    let mut cursor = OCCLUDER_FIELD_HEADER;
     let mut data = vec![0u8; OCCLUDER_FIELD_HEADER];
     for draw in draws {
         let Draw::Shape {
@@ -974,31 +995,41 @@ pub(crate) fn pack_occluder_field(draws: &[Draw], declared: &[Occluder]) -> Occl
         if *kind != 1.0 || *occludes != 1.0 {
             continue;
         }
-        count += write_occluder_record(&mut data, count, world, center, params);
+        count += write_occluder_record(&mut data, &mut cursor, world, center, params, &[]);
     }
     for o in declared {
-        count += write_occluder_record(&mut data, count, &o.world, &o.center, &o.half);
+        // A box brings no edges; a polygon brings its own, already in the
+        // space the record's inverse transform points at.
+        let planes = match &o.polygon {
+            Some(polygon) => polygon.planes(),
+            None => &[],
+        };
+        count +=
+            write_occluder_record(&mut data, &mut cursor, &o.world, &o.center, &o.half, planes);
     }
     data[0..4].copy_from_slice(&count.to_le_bytes());
     OccluderField { count, data }
 }
 
-/// Writes one occluder record after the `count` records already in `data`, and
-/// returns how many records were written: `1`, or `0` when `world` cannot be
-/// inverted — a transform that collapses a box to a line or a point occludes
-/// nothing, and the field keeps no hole where its record would have gone.
+/// Writes one occluder record at `cursor` — its half-planes included —
+/// advances `cursor` past it, and returns how many occluders were written:
+/// `1`, or `0` when `world` cannot be inverted — a transform that collapses a
+/// box to a line or a point occludes nothing, and the field keeps no hole
+/// where its record would have gone.
 fn write_occluder_record(
     data: &mut Vec<u8>,
-    count: u32,
+    cursor: &mut usize,
     world: &Transform,
     center: &[f32; 2],
     half: &[f32; 2],
+    planes: &[[f32; 4]],
 ) -> u32 {
     let Some(inverse) = world.invert() else {
         return 0;
     };
-    let off = OCCLUDER_FIELD_HEADER + count as usize * OCCLUDER_RECORD;
-    data.resize(off + OCCLUDER_RECORD, 0);
+    let off = *cursor;
+    let span = OCCLUDER_RECORD + planes.len() * OCCLUDER_PLANE;
+    data.resize(off + span, 0);
     // vec4 0: the inverse transform's linear part, column-major — the
     // same layout the shape uniforms' `to_local` uses.
     write_f32_at(data, off, inverse.m[0][0]);
@@ -1011,9 +1042,20 @@ fn write_occluder_record(
     write_f32_at(data, off + 20, inverse.t[1]);
     write_f32_at(data, off + 24, center[0]);
     write_f32_at(data, off + 28, center[1]);
-    // vec4 2: the box's local half-extents; the rest of the vec4 stays zero
-    // from the resize.
+    // vec4 2: the box's local half-extents, then the edge count — the
+    // component that was padding before polygons, and still zero for a box.
     write_f32_at(data, off + 32, half[0]);
     write_f32_at(data, off + 36, half[1]);
+    write_f32_at(data, off + 40, planes.len() as f32);
+    // And the edges themselves, in the occluder's own space: each an outward
+    // unit normal and the offset it sits at, ready to clip a ray against
+    // without a normalisation or a square root on the way.
+    for (k, plane) in planes.iter().enumerate() {
+        let at = off + OCCLUDER_RECORD + k * OCCLUDER_PLANE;
+        write_f32_at(data, at, plane[0]);
+        write_f32_at(data, at + 4, plane[1]);
+        write_f32_at(data, at + 8, plane[2]);
+    }
+    *cursor = off + span;
     1
 }

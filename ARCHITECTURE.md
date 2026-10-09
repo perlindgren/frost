@@ -283,11 +283,17 @@ never count (`Diagnostics` excludes them like backgrounds).
   transform, joining the same field after the painted occluders. Both channels
   keep the shape local, which is why a non-uniformly scaled caster still throws
   square-cornered shadows — the shader pulls the pixel into the shape's space
-  rather than pushing a sheared box out.
+  rather than pushing a sheared box out. A shape that is neither a rectangle nor
+  aligned in its own space declares with `Canvas::occluder_polygon(world,
+  &Convex)` instead, and a *disc* occludes that way too: a curved edge has to be
+  told to hardware as flat ones, so a disc ships the sixteen-gon inscribed in it
+  (its corners on the circle, within two percent of its radius) while physics
+  keeps the round `Circle` and its exact normal.
 - The backend packs the frame into two **storage buffers** bound to every
   draw: the light field (32-byte header — count and the scene's ambient —
   plus one 48-byte record per light) and the occluder field (16-byte header
-  plus 48 bytes per occluder). Both start at their binding minimum and grow
+  plus a 48-byte record per occluder, each followed by one 16-byte half-plane
+  per edge of a polygon). Both start at their binding minimum and grow
   only to the peak count, so a lighter frame writes a shorter slice into the
   same buffer; the shaders read ambient and the lists from these fields.
 
@@ -489,7 +495,7 @@ nothing but data in and flat lists out.
   and charges the difference to the edges.
 - Nothing is dropped quietly. `add` returns `Rejection { index, role, why }`,
   `#[must_use]`, for geometry the bake cannot honour: a circle asking to
-  occlude, which needs the convex-polygon record the shaders do not have yet,
+  occlude, which the fused rectangle list has nowhere to put,
   or a shape with no area at all. A painted sprite that silently cannot cast a
   shadow is exactly the failure this path exists to end, so it says so out loud
   instead of leaving a list that looks fine.
@@ -526,7 +532,11 @@ what those three had as byte-identical copies — the two field record types, th
 indices per pipeline, so each host keeps its own `field` and `occluders`
 declarations around it. The shared text therefore reads two names declared after
 it, which WGSL allows: a module-scope name is in scope across the whole program.
-The naga tests below run on the *assembled* sources, and
+`occluded` walks the occluder records with a running offset rather than a
+stride, because a polygon's record is `3 + edges` `vec4`s and a box's is still
+exactly three — the count riding in a component that was padding, so a field
+packed before polygons still reads as boxes. The naga tests below run on the
+*assembled* sources, and
 `the_lighting_vocabulary_is_shared_not_copied` keeps a copy from creeping back
 into a fourth shader, where it would compile happily and disagree with the rest.
 
@@ -814,7 +824,7 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **289 lib tests + 3 integration tests (`tests/`) + 7 doctests**
+Baseline: **296 lib tests + 3 integration tests (`tests/`) + 7 doctests**
 passing, `cargo build --examples` clean. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
@@ -831,7 +841,14 @@ passing, `cargo build --examples` clean. Notable test areas:
   with `collision::occluded`. That agreement cannot be checked from either
   side alone, so this is the one place a drift between the CPU's slab test and
   the shader's can be caught; with no adapter it prints that the shadow went
-  unverified rather than passing quietly.
+  unverified rather than passing quietly. A box is required to agree exactly,
+  away from where its shadow edge crosses between neighbouring pixels; a disc
+  gets the tessellation's own bound instead, which needs no invented epsilon
+  because containment does the work — the sixteen-gon contains the circle it
+  inscribes and is contained in the one it is inscribed in, and a shadow grows
+  with the shape casting it, so its shadow must sit between theirs (outside the
+  disc, where the receiver-inside rule is silent for all three), with the
+  disagreement counted to show the band is as thin as `DISC_SIDES` claims.
 - `src/diagnostics.rs` — press-edge detection for all eight shortcuts, the
   display-scale clamp, and the line-extent re-measure on scale change.
 - `tests/` — headless `Shape::sprite` reads of the `dogs_name` art (frame
@@ -1069,7 +1086,10 @@ spread/life/size randomization.
 8. The **last** `Background` in call order wins as the clear color.
 9. **Authored shapes stay local.** `Baker`'s output and `Canvas::occluder`'s
    arguments are a shape in its own space plus a transform, never world-space
-   corners: a turned, non-uniformly scaled rectangle is not an oriented box, so
+   corners — which is also why a `Convex` occluder ships half-planes and not
+   corners: a turned or mirrored instance needs no second polygon and no
+   re-derived normals, and the y-flip to the framebuffer reverses a winding
+   that was never asked to mean anything: a turned, non-uniformly scaled rectangle is not an oriented box, so
    baking it into coordinates would force an approximation of the shear — on the
    GPU, which pulls the pixel into the shape's space rather than pushing a
    sheared box out, and on the CPU alike.

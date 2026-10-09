@@ -581,10 +581,15 @@ impl Convex {
         Self::new(&points).expect("a regular polygon is convex")
     }
 
-    /// The edges as `(n.x, n.y, c, _)`, and how many of them there are: the
-    /// bytes a packer writes into the occluder field, in order.
-    pub fn planes(&self) -> (&[[f32; 4]], usize) {
-        (&self.planes, self.count as usize)
+    /// The edges as `(n.x, n.y, c, _)`, in the order they run around the
+    /// shape: exactly the ones it has, which are the bytes a packer writes
+    /// into the occluder field. The length *is* the edge count, deliberately —
+    /// the backing array is sized for the widest polygon a shape may be, so
+    /// handing it out whole would let a caller ship a hexagon's record wearing
+    /// sixteen edges, ten of them zeros that clip nothing and cost a shadow
+    /// ray each.
+    pub fn planes(&self) -> &[[f32; 4]] {
+        &self.planes[..self.count as usize]
     }
 
     /// The polygon's axis-aligned bounds in its own space, as the low and high
@@ -622,10 +627,10 @@ impl Convex {
     /// exit at exactly `t = 1` is a graze of the far edge, an entry at exactly
     /// `t = 1` a touch of the near one.
     pub fn cast(&self, from: [f32; 2], to: [f32; 2]) -> Option<f32> {
-        let (planes, count) = self.planes();
+        let planes = self.planes();
         let mut tmin = 0.0f32;
         let mut tmax = 1.0f32;
-        for plane in planes.iter().take(count) {
+        for plane in planes {
             // Which side of the edge each endpoint falls on. The segment lies
             // inside the edge where `dot(n, p) - c` is at or below zero, and
             // that quantity is linear along it, so one crossing bounds the

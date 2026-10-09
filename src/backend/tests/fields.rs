@@ -3,6 +3,7 @@
 use super::super::*;
 use super::*;
 use crate::canvas::Occluder;
+use crate::collision::Convex;
 use crate::objects::*;
 
 fn field_f32(data: &[u8], offset: usize) -> f32 {
@@ -321,11 +322,13 @@ fn occluder_field_appends_declared_occluders_after_the_drawn_ones() {
             world: Transform::translate([50.0, -20.0]),
             center: [1.0, 2.0],
             half: [10.0, 20.0],
+            polygon: None,
         },
         Occluder {
             world: Transform::rotate(std::f32::consts::FRAC_PI_2),
             center: [0.0, 0.0],
             half: [4.0, 6.0],
+            polygon: None,
         },
     ];
     let field = pack_occluder_field(&[drawn], &declared);
@@ -373,11 +376,13 @@ fn occluder_field_skips_a_declared_occluder_it_cannot_invert() {
             world: Transform::scale([0.0, 1.0]),
             center: [0.0, 0.0],
             half: [10.0, 10.0],
+            polygon: None,
         },
         Occluder {
             world: Transform::translate([7.0, 0.0]),
             center: [0.0, 0.0],
             half: [3.0, 4.0],
+            polygon: None,
         },
     ];
     let field = pack_occluder_field(&[], &declared);
@@ -411,4 +416,91 @@ fn field_buffer_sizes_floor_at_the_wgsl_minimum_binding_size() {
         occluder_field_buffer_size(1),
         (OCCLUDER_FIELD_HEADER + OCCLUDER_RECORD) as u64
     );
+}
+
+#[test]
+fn a_polygon_record_carries_its_edges_and_the_next_record_follows_them() {
+    // A box keeps the 48 bytes it always had and a polygon pays for its own
+    // edges, so the field is walked with a cursor rather than indexed by a
+    // stride: a box's edge count sits in the component that used to be
+    // padding - zero of them, which is what a box means - and the record after
+    // a polygon starts past its last edge.
+    // A hexagon rather than the widest shape the type allows, because the
+    // claim under test is that a record carries *its* edges and not the most a
+    // shape could have: the stride follows the count, not the cap.
+    let corners: Vec<[f32; 2]> = (0..6)
+        .map(|k| {
+            let a = std::f32::consts::TAU * k as f32 / 6.0;
+            [10.0 * a.cos(), 10.0 * a.sin()]
+        })
+        .collect();
+    let rock = Convex::new(&corners).expect("a regular hexagon is convex");
+    let planes = rock.planes();
+    let edges = planes.len();
+    assert_eq!(edges, 6, "a hexagon ships six edges, not the cap of 16");
+    let bounds = rock.bounds_as_box();
+    let declared = [
+        Occluder {
+            world: Transform::translate([10.0, 0.0]),
+            center: [0.0, 0.0],
+            half: [3.0, 4.0],
+            polygon: None,
+        },
+        Occluder {
+            world: Transform::identity(),
+            center: bounds.center,
+            half: bounds.half,
+            polygon: Some(rock),
+        },
+        Occluder {
+            world: Transform::translate([0.0, 5.0]),
+            center: [1.0, 1.0],
+            half: [2.0, 2.0],
+            polygon: None,
+        },
+    ];
+    let field = pack_occluder_field(&[], &declared);
+    assert_eq!(field.count, 3);
+    assert_eq!(
+        field.data.len(),
+        OCCLUDER_FIELD_HEADER + 3 * OCCLUDER_RECORD + edges * OCCLUDER_PLANE,
+        "the field should hold three records and sixteen edges, no more"
+    );
+
+    let first = OCCLUDER_FIELD_HEADER;
+    assert_eq!(
+        field_f32(&field.data, first + 40),
+        0.0,
+        "a box carries no edges"
+    );
+    let polygon = first + OCCLUDER_RECORD;
+    assert_eq!(field_f32(&field.data, polygon + 40), edges as f32);
+    assert_eq!(
+        field_f32(&field.data, polygon + 32),
+        bounds.half[0],
+        "the record's half-extents are the box around the polygon, the cheap \
+         reject the shader tests before it clips a single edge"
+    );
+    let after = polygon + OCCLUDER_RECORD + edges * OCCLUDER_PLANE;
+    assert_eq!(field_f32(&field.data, after + 40), 0.0);
+    assert_eq!(
+        field_f32(&field.data, after + 32),
+        2.0,
+        "and the box after a polygon is a box"
+    );
+    assert_eq!(
+        field_f32(&field.data, after + 20),
+        -5.0,
+        "carrying its own inverse"
+    );
+
+    // The edges themselves, verbatim from the CPU's half-planes: an outward
+    // unit normal and its offset, in the occluder's own space.
+    for (k, plane) in planes.iter().enumerate() {
+        let at = polygon + OCCLUDER_RECORD + k * OCCLUDER_PLANE;
+        assert_eq!(field_f32(&field.data, at), plane[0]);
+        assert_eq!(field_f32(&field.data, at + 4), plane[1]);
+        assert_eq!(field_f32(&field.data, at + 8), plane[2]);
+        assert_eq!(field_f32(&field.data, at + 12), 0.0);
+    }
 }

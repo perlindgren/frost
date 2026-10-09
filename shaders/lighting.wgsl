@@ -37,61 +37,125 @@ struct LightField {
 // call order — (m00, m10, m01, m11), the inverse of the occluder's world
 // transform, column-major (pixel space to the occluder's local space), then
 // (tx, ty, cx, cy), the inverse transform's translation and the box's local
-// center, then (hx, hy, 0, 0), the box's local half-extents. The CPU sizes
-// the bound buffer to fit the frame's occluders.
+// center, then (hx, hy, planes, 0), the box's local half-extents and the count
+// of half-planes that follow the record — zero for a box, and for a convex
+// polygon one (n.x, n.y, c, _) vec4 per edge, its outward unit normal and the
+// offset it sits at, both in the occluder's own space. Records are therefore
+// variable length, `3 + planes` vec4s apiece. The CPU sizes the bound buffer to
+// fit the frame's occluders.
 struct OccluderField {
     count: u32,
     pad: array<u32, 3>,
     occluders: array<vec4<f32>>,
 };
 
-// Whether any occluder blocks the light at `l` from reaching the pixel
-// `p`: true when the open segment from the light to the pixel passes
-// through the interior of one of the occluders' boxes. The test runs in
-// each box's own local space, where the box is axis-aligned around its
-// center — the classic slab interval of a line against an axis-aligned box.
+// Whether a point in an occluder's own space lies inside all `planes` of its
+// edges, each held as (n.x, n.y, c, _) with the inside being dot(n, q) <= c.
+fn in_planes(base: u32, planes: u32, q: vec2<f32>) -> bool {
+    for (var k = 0u; k < planes; k++) {
+        let n = occluders.occluders[base + k];
+        if (n.x * q.x + n.y * q.y > n.z) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Whether the open segment (ll, lp) keeps a piece inside all `planes` edges:
+// the box's slab clip with more slabs, because a convex shape *is* the
+// intersection of its edges' half-planes. Each endpoint's distance to an edge
+// is linear along the segment, so one crossing bounds the interval, and an edge
+// with both endpoints outside it ends the search outright — which is why this
+// clip needs no epsilon on a direction, where the slab test above needs one.
+fn clip_planes(base: u32, planes: u32, ll: vec2<f32>, lp: vec2<f32>) -> bool {
+    var tmin = 0.0;
+    var tmax = 1.0;
+    for (var k = 0u; k < planes; k++) {
+        let n = occluders.occluders[base + k];
+        let da = n.x * ll.x + n.y * ll.y - n.z;
+        let db = n.x * lp.x + n.y * lp.y - n.z;
+        if (da > 0.0) {
+            if (db > 0.0) {
+                return false;
+            }
+            tmin = max(tmin, da / (da - db));
+        } else if (db > 0.0) {
+            tmax = min(tmax, da / (da - db));
+        }
+    }
+    return tmax > tmin && tmax > 0.0 && tmin < 1.0;
+}
+
+// Whether any occluder blocks the light at `l` from reaching the pixel `p`:
+// true when the open segment from the light to the pixel passes through the
+// interior of one of them. The test runs in each occluder's own space, where a
+// box is axis-aligned about its center — the classic slab interval of a line
+// against an axis-aligned box — and a convex polygon is the list of edges it
+// was shipped with, clipped against that same interval.
+//
+// Records vary in length, so the walk carries an offset rather than multiplying
+// an index: it already visited the occluders in order, since the first blocker
+// ends the search, and in exchange a box keeps the exact 48 bytes it had before
+// polygons existed. A box carries no edges and the slabs are the whole shape; a
+// polygon's half-extents are the box *around* it, so the slabs become the cheap
+// reject in front of its edges, which is worth having at up to sixteen clips a
+// ray, nine rays a pixel, per light.
 fn occluded(l: vec2<f32>, p: vec2<f32>) -> bool {
+    var base = 0u;
     for (var i = 0u; i < occluders.count; i++) {
-        let m = occluders.occluders[3 * i];
-        let tv = occluders.occluders[3 * i + 1];
-        let half = occluders.occluders[3 * i + 2].xy;
+        let rec = occluders.occluders[base + 2u];
+        let edges = u32(rec.z);
+        let m = occluders.occluders[base];
+        let tv = occluders.occluders[base + 1u];
+        let half = rec.xy;
         let center = tv.zw;
-        // The light and the pixel in the box's local space.
+        // The light and the pixel in the occluder's local space.
         let ll = vec2<f32>(m.x * l.x + m.z * l.y + tv.x, m.y * l.x + m.w * l.y + tv.y);
         let lp = vec2<f32>(m.x * p.x + m.z * p.y + tv.x, m.y * p.x + m.w * p.y + tv.y);
-        // The box never blocks the light from its own surface: a pixel on
-        // or inside the box is lit directly, and the box casts its shadow
-        // only on what lies behind it.
-        if (all(abs(lp - center) <= half)) {
-            continue;
+        // The occluder never blocks the light from its own surface: a pixel on
+        // or inside it is lit directly, and it shadows only what lies behind.
+        // For a polygon the record's extents are only its bounds, so stepping
+        // inside the bounds is not yet stepping inside the shape.
+        var inside = all(abs(lp - center) <= half);
+        if (inside && edges > 0u) {
+            inside = in_planes(base + 3u, edges, lp);
         }
-        // The interval of t in [0, 1] where the segment ll + t * (lp - ll)
-        // lies inside the box, built slab by slab.
-        let d = lp - ll;
-        var tmin = 0.0;
-        var tmax = 1.0;
-        if (abs(d.x) > 1e-6) {
-            let t1 = (center.x - half.x - ll.x) / d.x;
-            let t2 = (center.x + half.x - ll.x) / d.x;
-            tmin = max(tmin, min(t1, t2));
-            tmax = min(tmax, max(t1, t2));
-        } else if (ll.x < center.x - half.x || ll.x > center.x + half.x) {
-            tmax = -1.0; // parallel to the slab, outside it: no crossing
+        var blocked = false;
+        if (!inside) {
+            // The interval of t in [0, 1] where the segment ll + t * (lp - ll)
+            // lies inside the bounds, built slab by slab.
+            let d = lp - ll;
+            var tmin = 0.0;
+            var tmax = 1.0;
+            if (abs(d.x) > 1e-6) {
+                let t1 = (center.x - half.x - ll.x) / d.x;
+                let t2 = (center.x + half.x - ll.x) / d.x;
+                tmin = max(tmin, min(t1, t2));
+                tmax = min(tmax, max(t1, t2));
+            } else if (ll.x < center.x - half.x || ll.x > center.x + half.x) {
+                tmax = -1.0; // parallel to the slab, outside it: no crossing
+            }
+            if (abs(d.y) > 1e-6) {
+                let t1 = (center.y - half.y - ll.y) / d.y;
+                let t2 = (center.y + half.y - ll.y) / d.y;
+                tmin = max(tmin, min(t1, t2));
+                tmax = min(tmax, max(t1, t2));
+            } else if (ll.y < center.y - half.y || ll.y > center.y + half.y) {
+                tmax = -1.0;
+            }
+            // The segment cuts through the bounds when the interval has
+            // positive length and reaches into the open segment (0, 1): the
+            // pixel is strictly outside the occluder, so the exit lands before
+            // t = 1. A box stops here; a polygon asks its edges, which are the
+            // shape and get the last word.
+            if (tmax > tmin && tmax > 0.0 && tmin < 1.0) {
+                blocked = edges == 0u || clip_planes(base + 3u, edges, ll, lp);
+            }
         }
-        if (abs(d.y) > 1e-6) {
-            let t1 = (center.y - half.y - ll.y) / d.y;
-            let t2 = (center.y + half.y - ll.y) / d.y;
-            tmin = max(tmin, min(t1, t2));
-            tmax = min(tmax, max(t1, t2));
-        } else if (ll.y < center.y - half.y || ll.y > center.y + half.y) {
-            tmax = -1.0;
-        }
-        // The segment cuts through the box when the interval has positive
-        // length and reaches into the open segment (0, 1): the pixel is
-        // strictly outside the box, so the exit lands before t = 1.
-        if (tmax > tmin && tmax > 0.0 && tmin < 1.0) {
+        if (blocked) {
             return true;
         }
+        base += 3u + edges;
     }
     return false;
 }

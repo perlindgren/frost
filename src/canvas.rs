@@ -5,6 +5,7 @@
 //! expansion included.
 
 use crate::backend::*;
+use crate::collision::Convex;
 use crate::objects::*;
 use crate::particles::*;
 use crate::text;
@@ -21,8 +22,14 @@ pub(crate) struct Occluder {
     /// The box's center in the occluder's own space.
     pub(crate) center: [f32; 2],
     /// The box's half-extents in the occluder's own space: the full size is
-    /// `2 * half`, the [`Canvas::rectangle`] convention.
+    /// `2 * half`, the [`Canvas::rectangle`] convention. For a polygon this is
+    /// the box around it, and the field uses it to reject a ray with four
+    /// comparisons before any edge is clipped.
     pub(crate) half: [f32; 2],
+    /// The shape's edges, when it is a polygon rather than a box: the
+    /// half-planes [`Convex`] holds, in the same local space as `center` and
+    /// `half`. `None` is the box.
+    pub(crate) polygon: Option<Convex>,
 }
 
 /// The drawing surface for a frame, reachable through the [`crate::Context`] passed
@@ -234,6 +241,35 @@ impl Canvas {
             world: to_pixel,
             center,
             half: [half[0].max(0.0), half[1].max(0.0)],
+            polygon: None,
+        });
+    }
+
+    /// Declares a convex polygon occluder: [`Convex`] in the node's own space,
+    /// placed by the same kind of `world` transform [`Canvas::occluder`] takes.
+    ///
+    /// This is how an occluder that is neither a rectangle nor a disc reaches
+    /// the light field — a rock, a sloped roof, a hit box with corners — and
+    /// the disc reaches it the same way, as the polygon it is cut into for the
+    /// GPU, since a curved edge has to be told to hardware as flat ones.
+    ///
+    /// The polygon never leaves its own space. Its edges ship next to the same
+    /// inverse transform a box ships, so an instance that is turned or
+    /// mirrored needs no second polygon and no re-derived normals: the shader
+    /// brings the light and the pixel to the shape, as it has always done for
+    /// a box. That is why a convex shape's winding survives a y-flip on the
+    /// way to the framebuffer without anyone noticing — the shape is asked the
+    /// question in the space it was drawn in.
+    ///
+    /// Like the box form, this casts shadows only; it stops no body.
+    pub fn occluder_polygon(&mut self, world: Transform, polygon: &Convex) {
+        let to_pixel = world.compose(&self.user_to_pixel());
+        let bounds = polygon.bounds_as_box();
+        self.occluders.push(Occluder {
+            world: to_pixel,
+            center: bounds.center,
+            half: bounds.half,
+            polygon: Some(*polygon),
         });
     }
 

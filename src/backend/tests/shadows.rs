@@ -19,7 +19,7 @@ use super::*;
 use crate::Canvas;
 use crate::backend::app::block_on;
 use crate::canvas::Occluder;
-use crate::collision::{Collider, OrientedBox, occluded};
+use crate::collision::{Circle, Collider, Convex, DISC_SIDES, OrientedBox, occluded};
 use crate::objects;
 use crate::objects::*;
 use crate::shaders::SHAPE_SHADER;
@@ -90,7 +90,11 @@ fn paint(draws: &[Draw], declared: &[Occluder]) -> Option<Vec<u8>> {
     // both loops stop at the header's count.
     let padded = |field: &Vec<u8>| {
         let mut bytes = field.clone();
-        bytes.resize(256, 0);
+        // Grow only: `resize` would as happily truncate, and a polygon's
+        // field runs past 256 bytes on its second edge onwards.
+        if bytes.len() < 256 {
+            bytes.resize(256, 0);
+        }
         bytes
     };
     let light_buffer = device.create_buffer_init(&BufferInitDescriptor {
@@ -456,5 +460,203 @@ fn the_gpu_shadows_exactly_where_the_cpu_says() {
         "only {checked} of {} pixels sat away from a shadow edge: the \
          neighbourhood filter discarded the test rather than its noise",
         SPAN * SPAN
+    );
+}
+
+/// The same bridge, asked about a disc: an occluder with no rectangle in it
+/// anywhere, so the field carries sixteen half-planes and the shader clips
+/// against each of them.
+///
+/// Two comparisons, because two things have to be true and only one of them is
+/// about the tessellation. The GPU must agree with the CPU's own sixteen-gon
+/// exactly — the same edges, the same clip, so nothing but a float of rounding
+/// may separate them. And the sixteen-gon's shadow must fall *between* the
+/// shadows of the two circles it lies between: the polygon contains the circle
+/// it inscribes and is contained in the circle it is inscribed in, and a shadow
+/// grows with the shape casting it, so the in-circle's shadow is a subset of
+/// the polygon's and a subset of the polygon's is the circum-circle's. That
+/// sandwich is the tessellation's whole claim, stated without an epsilon
+/// invented for the test.
+#[test]
+fn a_disc_shadows_the_gpu_the_way_the_cpu_says_it_should() {
+    let surface = Draw::Shape {
+        world: Transform::identity(),
+        center: [32.0, 32.0],
+        params: [80.0, 80.0],
+        kind: 1.0,
+        aa: 1.0,
+        color: objects::Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        },
+        glow: black(),
+        lit: 1.0,
+        occludes: 0.0,
+        z: 0.0,
+        diagnostic: false,
+    };
+    let lamp = [8.0, 8.5];
+    let light = Draw::Light {
+        pos: lamp,
+        radius: 1000.0,
+        intensity: 1.0,
+        color: objects::Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        },
+        penumbra: 0.0,
+        dir: [1.0, 0.0],
+        cos_half: -1.0,
+        feather: 0.0,
+        z: 0.0,
+    };
+    let draws = [light, surface];
+
+    // A disc of radius 14, turned and placed in user space. The turn matters
+    // only in that it is real: the edges reach the GPU in the disc's own space
+    // and the light arrives there through the record's inverse, so a flipped
+    // or rotated instance asks the same question of the same sixteen planes.
+    let radius = 14.0;
+    let polygon = Convex::disc([0.0, 0.0], radius);
+    let mut canvas = Canvas::new((SPAN, SPAN), 1.0);
+    canvas.occluder_polygon(
+        Transform::rotate(0.4).compose(&Transform::translate([6.0, -10.0])),
+        &polygon,
+    );
+    let declared = &canvas.occluders[0];
+    assert_eq!(
+        declared.polygon.map(|p| p.planes().len()),
+        Some(DISC_SIDES),
+        "the declaration should have carried the whole polygon"
+    );
+    // The record's box is now the box *around* the disc: sixteen corners at
+    // radius 14 reach 14 * cos(pi/16) across the flats and 14 to the corners.
+    assert!(
+        declared.half[0] > radius * 0.99 && declared.half[0] <= radius + 0.01,
+        "the bounds should wrap the polygon, got {:?}",
+        declared.half
+    );
+
+    let red = match paint(&draws, &canvas.occluders) {
+        Some(red) => red,
+        None => return,
+    };
+
+    // Everything the CPU asks, it asks in the occluder's own space — the same
+    // step the shader takes with the record's inverse — so the polygon it
+    // consults is the one that was packed, not a copy the test re-derived.
+    let to_local = declared.world.invert().expect("a non-degenerate world");
+    let polygon = declared.polygon.expect("a polygon was declared");
+    let local = |q: [f32; 2]| to_local.apply(q);
+    let lamp_local = local(lamp);
+    let receiver = |x: u32, y: u32| local([x as f32 + 0.5, y as f32 + 0.5]);
+    // The circle the sixteen-gon inscribes: the polygon reaches this far
+    // across its flats and `radius` to its corners, and those two circles are
+    // the bounds of every disagreement the tessellation can cause.
+    let inradius = radius * (std::f32::consts::PI / DISC_SIDES as f32).cos();
+    let disc = Collider::Circle(Circle {
+        center: [0.0, 0.0],
+        radius,
+    });
+    let inner = Collider::Circle(Circle {
+        center: [0.0, 0.0],
+        radius: inradius,
+    });
+    let by_polygon = |x: u32, y: u32| polygon.occludes(lamp_local, receiver(x, y));
+    let by_disc = |x: u32, y: u32| occluded(lamp_local, receiver(x, y), &[disc]);
+    let by_in_circle = |x: u32, y: u32| occluded(lamp_local, receiver(x, y), &[inner]);
+
+    let mut wrong = vec![];
+    let (mut checked, mut dark, mut lit, mut band) = (0usize, 0usize, 0usize, 0usize);
+    for y in 0..SPAN {
+        for x in 0..SPAN {
+            let shadowed = red[(y * SPAN + x) as usize] < 128;
+            if shadowed {
+                dark += 1;
+            } else {
+                lit += 1;
+            }
+            // Exact against the same sixteen edges, wherever the polygon's own
+            // shadow edge is not passing between neighbouring pixels.
+            let here = by_polygon(x, y);
+            let settled = (-1i32..=1).all(|dy| {
+                (-1i32..=1).all(|dx| {
+                    let (cx, cy) = (x as i32 + dx, y as i32 + dy);
+                    cx < 0
+                        || cy < 0
+                        || cx as u32 >= SPAN
+                        || cy as u32 >= SPAN
+                        || by_polygon(cx as u32, cy as u32) == here
+                })
+            });
+            if settled {
+                checked += 1;
+                if shadowed != here {
+                    wrong.push((x, y, here, red[(y * SPAN + x) as usize]));
+                }
+            }
+            // The sandwich — but only for a receiver outside the whole disc,
+            // and that condition is the shape's own rule, not a fudge: a pixel
+            // inside an occluder is lit by design, so the rim between the
+            // polygon's flats and its corners is exactly where the polygon
+            // legitimately lights a point its inscribed circle would shade.
+            // Outside the circum-circle the receiver-inside rule is silent for
+            // all three shapes, and containment alone carries the argument.
+            let [rx, ry] = receiver(x, y);
+            if rx * rx + ry * ry > radius * radius {
+                if shadowed {
+                    assert!(
+                        by_disc(x, y),
+                        "the GPU shaded ({x}, {y}), which no circle of radius \
+                         {radius} placed here would shade"
+                    );
+                } else {
+                    assert!(
+                        !by_in_circle(x, y),
+                        "the GPU lit ({x}, {y}) inside the shadow of the disc's \
+                         inscribed circle, which the polygon contains"
+                    );
+                }
+                if by_disc(x, y) != here {
+                    band += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} pixels disagree with the CPU's own sixteen-gon, first five of {:?}",
+        wrong.len(),
+        &wrong[..wrong.len().min(5)]
+    );
+    assert!(
+        dark > 200 && lit > 200,
+        "the disc scene is {dark} pixels dark and {lit} lit"
+    );
+    assert!(
+        checked > (SPAN * SPAN) as usize / 2,
+        "only {checked} of {} pixels sat away from the polygon's shadow edge",
+        SPAN * SPAN
+    );
+    // The tessellation's promise, counted in pixels instead of argued about in
+    // geometry: the sixteen-gon's shadow differs from the round disc's on some
+    // pixels — otherwise nothing here touched the edges at all — and on few of
+    // them. The sandwich above says no disagreement can reach outside the band
+    // between the two circles; this says the band is as thin as it is meant to
+    // be. Three pixels of 4096, at this radius, is the two percent spending
+    // itself where it should.
+    assert!(
+        band > 0,
+        "the sixteen-gon and the round disc cast the same shadow everywhere: \
+         nothing here tested the tessellation"
+    );
+    assert!(
+        band < (SPAN * SPAN) as usize / 100,
+        "{band} pixels disagreed between the polygon and its circle: the \
+         tessellation is coarser than {DISC_SIDES} sides claim to be"
     );
 }
