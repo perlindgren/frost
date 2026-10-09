@@ -11,6 +11,13 @@
 //! [`Collider::push_out`] together with [`reflect`], and writes the new
 //! position back into the scene node's transform.
 //!
+//! Segments are asked the same way, with no more state: [`Collider::cast`]
+//! says where a segment first enters a shape, and the two policies built on
+//! it differ only in what they do when an endpoint is inside a shape —
+//! [`occluded`] is the CPU twin of the shaders' `occluded`, where a receiver
+//! inside an occluder is lit rather than blocked, while [`visible`] answers
+//! line of sight, where a shape containing either endpoint blocks.
+//!
 //! When a game outgrows this — stacking, joints, ragdolls, dozens of
 //! mutually dynamic bodies that need a broadphase, or continuous collision
 //! for very fast projectiles — the replacement is `rapier2d`: move the state
@@ -20,6 +27,12 @@
 /// The f32 epsilon: shapes whose gap is this or larger are touching, not
 /// overlapping.
 const EPS: f32 = 1e-6;
+
+/// The epsilon a segment's direction must exceed along an axis for that
+/// axis's slab to clip the interval at all — the shaders' `1e-6` kept
+/// verbatim, so the CPU and GPU segment tests take the same branch for the
+/// same ray.
+const SLAB_EPS: f32 = 1e-6;
 
 /// The dot product of two 2D vectors.
 fn dot(a: [f32; 2], b: [f32; 2]) -> f32 {
@@ -141,6 +154,150 @@ impl Collider {
             }
         }
     }
+
+    /// Where the segment from `from` to `to` first enters this shape: the `t`
+    /// in `0.0 <= t < 1.0` of `from + t * (to - from)`, or `None` when the
+    /// segment misses the shape or merely grazes it.
+    ///
+    /// The interior counts and the boundary does not, so a segment ending
+    /// exactly on the boundary is `None` — the same convention as
+    /// [`Collider::push_out`], where touching is not overlapping. A `from`
+    /// already inside is `Some(0.0)`, and a zero-length segment hits exactly
+    /// when its point is inside.
+    ///
+    /// The one rough edge, inherited from the shaders' `occluded` that this
+    /// mirrors: a segment lying *exactly* in the plane of a box face counts
+    /// as inside that slab rather than on its boundary, so a ray skimming a
+    /// face can hit. It is deliberate — a directional light's rays share one
+    /// direction exactly, so that case is reached routinely rather than by
+    /// accident — and pinned by a test.
+    pub fn cast(&self, from: [f32; 2], to: [f32; 2]) -> Option<f32> {
+        match self {
+            Collider::Box(b) => box_segment_t(from, to, b),
+            Collider::Circle(c) => circle_segment_t(from, to, c),
+        }
+    }
+
+    /// Whether `p` is inside the shape or exactly on its boundary — the
+    /// inclusive test, which is what both the shaders' occluder skip and
+    /// [`Collider::occludes`] want.
+    pub fn contains(&self, p: [f32; 2]) -> bool {
+        match self {
+            Collider::Box(b) => {
+                let (sin, cos) = b.angle.sin_cos();
+                let rel = [p[0] - b.center[0], p[1] - b.center[1]];
+                let lx = rel[0] * cos + rel[1] * sin;
+                let ly = -rel[0] * sin + rel[1] * cos;
+                lx.abs() <= b.half[0] && ly.abs() <= b.half[1]
+            }
+            Collider::Circle(c) => len([p[0] - c.center[0], p[1] - c.center[1]]) <= c.radius,
+        }
+    }
+
+    /// Whether this shape blocks the light at `from` from reaching `to`: the
+    /// segment enters it, and `to` is not itself inside it.
+    ///
+    /// The second half is the shaders' rule — an occluder never shades its
+    /// own surface or interior, so a receiver inside a box is lit and the box
+    /// shadows only what lies behind it. Note the asymmetry it leaves: a
+    /// *light* inside an occluder still casts from its far side, because the
+    /// skip tests the receiver alone.
+    pub fn occludes(&self, from: [f32; 2], to: [f32; 2]) -> bool {
+        !self.contains(to) && self.cast(from, to).is_some()
+    }
+}
+
+/// The `t` where the segment from `from` to `to` enters `b`, clipped slab by
+/// slab. Both endpoints go into the box's own frame first, where it is
+/// axis-aligned about the origin — the same transform [`circle_box_push_out`]
+/// uses — and each of the two slabs then narrows the interval of `t` spent
+/// inside, exactly as the shaders' `occluded` does.
+fn box_segment_t(from: [f32; 2], to: [f32; 2], b: &OrientedBox) -> Option<f32> {
+    let (sin, cos) = b.angle.sin_cos();
+    let to_local = |p: [f32; 2]| -> [f32; 2] {
+        let rel = [p[0] - b.center[0], p[1] - b.center[1]];
+        [rel[0] * cos + rel[1] * sin, -rel[0] * sin + rel[1] * cos]
+    };
+    let ll = to_local(from);
+    let lp = to_local(to);
+    let d = [lp[0] - ll[0], lp[1] - ll[1]];
+
+    let mut tmin: f32 = 0.0;
+    let mut tmax: f32 = 1.0;
+    for i in 0..2 {
+        let h = b.half[i];
+        if d[i].abs() > SLAB_EPS {
+            let t1 = (-h - ll[i]) / d[i];
+            let t2 = (h - ll[i]) / d[i];
+            tmin = tmin.max(t1.min(t2));
+            tmax = tmax.min(t1.max(t2));
+        } else if ll[i] < -h || ll[i] > h {
+            // Parallel to this slab and outside it: there is no crossing to
+            // find, whatever the other axis says.
+            return None;
+        }
+    }
+
+    // The interval must have positive length and reach into the open segment
+    // `(0, 1)`: an exit at exactly `t = 1` is a graze of the far face, and an
+    // entry at exactly `t = 1` a touch of the near one.
+    (tmax > tmin && tmax > 0.0 && tmin < 1.0).then_some(tmin)
+}
+
+/// The `t` where the segment from `from` to `to` enters `c`, by the
+/// quadratic the circle's equation and the segment's line give together.
+fn circle_segment_t(from: [f32; 2], to: [f32; 2], c: &Circle) -> Option<f32> {
+    let d = [to[0] - from[0], to[1] - from[1]];
+    let f = [from[0] - c.center[0], from[1] - c.center[1]];
+    let a = dot(d, d);
+    if a <= EPS * EPS {
+        // A zero-length segment has no direction to solve for: it hits only
+        // if the point itself is inside.
+        return (len(f) <= c.radius).then_some(0.0);
+    }
+    let b = 2.0 * dot(f, d);
+    let disc = b * b - 4.0 * a * (dot(f, f) - c.radius * c.radius);
+    if disc <= 0.0 {
+        // A miss, or a tangency: the boundary is not the interior.
+        return None;
+    }
+    let s = disc.sqrt();
+    let (t0, t1) = ((-b - s) / (2.0 * a), (-b + s) / (2.0 * a));
+    (t1 > 0.0 && t0 < 1.0).then_some(t0.max(0.0))
+}
+
+/// The nearest shape the segment from `from` to `to` enters, as its index in
+/// `shapes`, or `None` when it enters none. The caller keeps the identity of
+/// its own shapes — this module reports only which of the ones it was handed,
+/// so it stays as stateless as the tests it answers. Ties go to the earlier
+/// index.
+pub fn first_hit(from: [f32; 2], to: [f32; 2], shapes: &[Collider]) -> Option<usize> {
+    let mut best: Option<(f32, usize)> = None;
+    for (i, s) in shapes.iter().enumerate() {
+        if let Some(t) = s.cast(from, to)
+            && best.is_none_or(|(bt, _)| t < bt)
+        {
+            best = Some((t, i));
+        }
+    }
+    best.map(|(_, i)| i)
+}
+
+/// Whether any occluder blocks the light at `from` from reaching `to`: the
+/// CPU's twin of the shaders' `occluded`, answering the same question the
+/// pixels are answered with — see [`Collider::occludes`] for the rules it
+/// applies, and [`visible`] for the line-of-sight reading of the same field.
+pub fn occluded(from: [f32; 2], to: [f32; 2], occluders: &[Collider]) -> bool {
+    occluders.iter().any(|o| o.occludes(from, to))
+}
+
+/// Whether a viewer at `from` sees a target at `to`: `false` as soon as one
+/// shape's interior meets the segment, at any `t` including `0.0`. So a shape
+/// containing either endpoint blocks the view, which is the opposite answer
+/// [`occluded`] gives for a receiver inside an occluder — a lamp inside a
+/// crate lights the crate, a crate-mate inside it is not *seen* through it.
+pub fn visible(from: [f32; 2], to: [f32; 2], blockers: &[Collider]) -> bool {
+    first_hit(from, to, blockers).is_none()
 }
 
 /// The box–box minimum translation vector, by the separating-axis theorem:
@@ -555,5 +712,167 @@ mod tests {
     fn reflect_ignores_velocity_away_from_surface() {
         let v = reflect([100.0, 50.0], [1.0, 0.0], 0.5);
         assert!(close(v, [100.0, 50.0], 1e-6));
+    }
+
+    // -- Segment queries --
+
+    /// The box the segment tests share: centered at the origin, spanning ±50.
+    fn seg_box() -> Collider {
+        Collider::Box(OrientedBox::new([0.0, 0.0], [50.0, 50.0]))
+    }
+
+    /// The circle the segment tests share: centered at the origin, radius 50.
+    fn seg_circle() -> Collider {
+        Collider::Circle(Circle {
+            center: [0.0, 0.0],
+            radius: 50.0,
+        })
+    }
+
+    #[test]
+    fn segment_enters_a_box_at_the_near_face() {
+        let t = seg_box().cast([-100.0, 0.0], [100.0, 0.0]).unwrap();
+        assert!((t - 0.25).abs() < 1e-5); // x = -50 of a 200 px segment.
+    }
+
+    #[test]
+    fn segment_touching_a_box_face_is_not_a_hit() {
+        assert_eq!(seg_box().cast([-100.0, 0.0], [-50.0, 0.0]), None);
+        assert_eq!(seg_box().cast([-100.0, 0.0], [-60.0, 0.0]), None);
+    }
+
+    #[test]
+    fn segment_ending_inside_a_box_hits_at_the_face() {
+        let t = seg_box().cast([-100.0, 0.0], [0.0, 0.0]).unwrap();
+        assert!((t - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn segment_starting_inside_a_box_hits_at_zero() {
+        let t = seg_box().cast([0.0, 0.0], [100.0, 0.0]).unwrap();
+        assert!(t.abs() < 1e-6);
+    }
+
+    #[test]
+    fn segment_parallel_and_outside_a_slab_misses() {
+        // Ten pixels above the box, running along it: the degenerate slab has
+        // nothing to clip, so the parallel-outside branch is what rejects.
+        assert_eq!(seg_box().cast([-100.0, 60.0], [100.0, 60.0]), None);
+    }
+
+    #[test]
+    fn segment_skimming_a_box_face_counts_as_inside_that_slab() {
+        // The shaders' convention, mirrored on purpose: `ll.y > half.y` is an
+        // exclusive test, so a ray lying exactly in the face plane is inside
+        // the slab rather than on its boundary. A directional light's rays
+        // share one direction exactly, so this branch is reached routinely.
+        let t = seg_box().cast([-100.0, 50.0], [100.0, 50.0]).unwrap();
+        assert!((t - 0.25).abs() < 1e-5);
+    }
+
+    #[test]
+    fn segment_hits_a_rotated_box_through_its_own_axes() {
+        // A quarter turn turns the 80 x 20 bar into a 20 x 80 one: entered
+        // along y at -40 of a 200 px segment.
+        let bar = Collider::Box(OrientedBox::rotated([0.0, 0.0], [40.0, 10.0], FRAC_PI_2));
+        let t = bar.cast([0.0, -100.0], [0.0, 100.0]).unwrap();
+        assert!((t - 0.3).abs() < 1e-5);
+    }
+
+    #[test]
+    fn degenerate_segment_hits_only_when_its_point_is_inside() {
+        assert_eq!(seg_box().cast([0.0, 0.0], [0.0, 0.0]), Some(0.0));
+        assert_eq!(seg_box().cast([100.0, 0.0], [100.0, 0.0]), None);
+        assert_eq!(seg_circle().cast([0.0, 0.0], [0.0, 0.0]), Some(0.0));
+        assert_eq!(seg_circle().cast([100.0, 0.0], [100.0, 0.0]), None);
+    }
+
+    #[test]
+    fn segment_enters_a_circle_at_the_near_crossing() {
+        let t = seg_circle().cast([-100.0, 0.0], [100.0, 0.0]).unwrap();
+        assert!((t - 0.25).abs() < 1e-5);
+        assert_eq!(seg_circle().cast([-100.0, 0.0], [-50.0, 0.0]), None);
+    }
+
+    #[test]
+    fn segment_tangent_to_a_circle_is_not_a_hit() {
+        assert_eq!(seg_circle().cast([-100.0, 50.0], [100.0, 50.0]), None);
+        assert_eq!(seg_circle().cast([-100.0, 60.0], [100.0, 60.0]), None);
+    }
+
+    #[test]
+    fn contains_is_inclusive_of_the_boundary() {
+        assert!(seg_box().contains([50.0, 0.0]));
+        assert!(seg_box().contains([0.0, 0.0]));
+        assert!(!seg_box().contains([50.1, 0.0]));
+        assert!(seg_circle().contains([0.0, 50.0]));
+        assert!(!seg_circle().contains([0.0, 50.1]));
+    }
+
+    // -- Occlusion and line of sight --
+
+    #[test]
+    fn occluded_ignores_the_occluder_holding_the_receiver() {
+        // The shaders' skip: a receiver inside the box is lit by the lamp,
+        // even though the segment runs through the box to reach it.
+        let b = seg_box();
+        assert!(b.cast([-100.0, 0.0], [0.0, 0.0]).is_some());
+        assert!(!b.occludes([-100.0, 0.0], [0.0, 0.0]));
+        assert!(!occluded([-100.0, 0.0], [0.0, 0.0], &[b]));
+    }
+
+    #[test]
+    fn occluded_reports_a_light_inside_the_occluder() {
+        // The other half of the same rule: the skip tests the receiver alone,
+        // so a lamp inside a crate still shades what lies beyond it.
+        let b = seg_box();
+        assert!(b.occludes([0.0, 0.0], [100.0, 0.0]));
+        assert!(occluded([0.0, 0.0], [100.0, 0.0], &[b]));
+    }
+
+    #[test]
+    fn occluded_uses_the_open_segment() {
+        // The light is 10 px clear of the box and the ray stops short of it.
+        assert!(!occluded([-60.0, 0.0], [-55.0, 0.0], &[seg_box()]));
+        assert!(occluded([-60.0, 0.0], [60.0, 0.0], &[seg_box()]));
+    }
+
+    #[test]
+    fn visible_blocks_both_endpoints_inside() {
+        // Where `occluded` says lit, `visible` says hidden: the same field,
+        // the opposite policy for an endpoint inside a shape.
+        assert!(!visible([-100.0, 0.0], [0.0, 0.0], &[seg_box()]));
+        assert!(!visible([0.0, 0.0], [100.0, 0.0], &[seg_box()]));
+        assert!(visible([-100.0, 80.0], [100.0, 80.0], &[seg_box()]));
+    }
+
+    #[test]
+    fn an_empty_field_neither_shades_hides_nor_hits() {
+        assert!(!occluded([-100.0, 0.0], [100.0, 0.0], &[]));
+        assert!(visible([-100.0, 0.0], [100.0, 0.0], &[]));
+        assert_eq!(first_hit([-100.0, 0.0], [100.0, 0.0], &[]), None);
+    }
+
+    #[test]
+    fn first_hit_reports_the_nearest_shape_by_index() {
+        let near = Collider::Box(OrientedBox::new([100.0, 0.0], [20.0, 20.0]));
+        let far = Collider::Box(OrientedBox::new([300.0, 0.0], [20.0, 20.0]));
+        let (from, to) = ([-100.0, 0.0], [400.0, 0.0]);
+        assert_eq!(first_hit(from, to, &[near, far]), Some(0));
+        assert_eq!(first_hit(from, to, &[far, near]), Some(1));
+        assert_eq!(first_hit(from, to, &[far]), Some(0));
+        assert_eq!(first_hit([200.0, 0.0], [250.0, 0.0], &[near, far]), None);
+    }
+
+    #[test]
+    fn first_hit_mixes_shape_kinds_by_distance() {
+        let circle = seg_circle();
+        let beyond = Collider::Box(OrientedBox::new([300.0, 0.0], [20.0, 20.0]));
+        let (from, to) = ([-100.0, 0.0], [400.0, 0.0]);
+        assert_eq!(first_hit(from, to, &[beyond, circle]), Some(1));
+        assert_eq!(
+            first_hit([200.0, 0.0], [400.0, 0.0], &[beyond, circle]),
+            Some(0)
+        );
     }
 }

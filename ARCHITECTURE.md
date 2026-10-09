@@ -420,6 +420,14 @@ Pure math — no winit/wgpu, identical on wasm, no dependencies. Intentionally
   `Collider::{Box, Circle}`.
 - `push_out(&other) -> Option<PushOut { dir, depth }>` — the minimum separating
   translation to resolve the overlap (SAT for boxes, direct for circles).
+- Segment queries, the CPU twin of the shaders' `occluded` so gameplay and
+  pixels answer the same question: `Collider::cast(from, to) -> Option<t>`
+  (the entering `t` of the open segment) and `contains(p)`, plus the two
+  policies over a field of shapes — `occluded(from, to, &[..])`, where a
+  receiver *inside* an occluder is lit, and `visible(from, to, &[..])` for line
+  of sight, where a shape holding either endpoint blocks — and `first_hit` for
+  the index of the nearest. That inside-case split is the whole difference
+  between the two policies.
 - `reflect(vel, normal, restitution)` — kills the normal component (scaled by
   restitution), leaves the tangent; no-op for velocity already leaving the
   surface.
