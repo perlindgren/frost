@@ -176,6 +176,15 @@ the back door.
 
 ## Tilesets, and what a tool can promise
 
+> **Decided.** A tileset is its own `.ron` file, and a tile map will be too —
+> not a key on a sprite's sidecar, and not a new format. Both are written in the
+> same RON subset the sidecars use ([`src/ron.rs`](../src/ron.rs)), so a map and
+> a tileset get the same parser, the same comments surviving a rewrite, and the
+> same errors with a line number in them; a second format would have been a
+> second parser, and two parsers is the one thing this document rules out.
+> `frost` loads both, since `frost` is the library and the tile tools are things
+> it ships with.
+
 A tileset is its own asset that **refers to a sprite** — a source path, a grid,
 and the per-tile annotations — rather than being a key on the sprite's sidecar.
 The older reading is the degenerate case of it: one tileset referring to one
