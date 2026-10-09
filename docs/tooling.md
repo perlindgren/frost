@@ -126,3 +126,21 @@ gap left behind in `examples/` is a backlog whose size nobody has measured. It i
 left unfixed deliberately: a lint sweep across 48 demos is its own change, with
 its own review, and it should not ride into a packaging commit where a broken
 demonstration would be blamed on the workspace.
+
+## Games come too, later, one at a time
+
+The games follow the same road — `dogs_name` and `immortal` as workspace
+members, and eventually their own crates. Not now, because nothing forces it and
+the move is churn for its own sake. Two things worth noticing when it does
+happen.
+
+A game becoming a binary target buys the same thing the tools bought: its test
+code starts being linted, because clippy compiles bin harnesses and not example
+ones. That pays down the backlog above one game at a time, for free, which is a
+better reason to move a game than tidiness.
+
+But keep at least one game in `examples/`. An example is the closest thing in
+this repository to what a stranger writes — it sees `frost` only through the
+published surface, with no shared manifest and no path shortcuts — and once
+every game is a member of the workspace, that view is gone. The games are the
+author's; the example is the user's, and the two fail in different ways.
