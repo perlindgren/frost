@@ -472,7 +472,8 @@ nothing but data in and flat lists out.
   the node's `Transform`, one bake serves every instance, and a stretched or
   turned sprite still throws square-cornered shadows because nothing was baked
   into world coordinates and nothing has to approximate a sheared box.
-- `Baked { occluders, solids, hits }` is one authored set seen three ways,
+- `Baked { occluders, disc_occluders, solids, hits }` is one authored set seen
+  three ways,
   because the consumers want different things from the same shape. `occluders`
   are fused rectangles — the GPU reads one record per shape and tests every lit
   pixel against every record, so a floor of four thousand tiles is four thousand
@@ -480,7 +481,10 @@ nothing but data in and flat lists out.
   one seam a light ray can slip along. `solids` fuse too, but only within one
   material, so a crate touching a trampoline does not become one bouncing wall.
   `hits` are never fused, because the game has to answer *which box was
-  struck*.
+  struck*. `disc_occluders` are the circles authored to cast — kept circles,
+  counted rather than merged, since no fusion of two circles is a circle anyone
+  drew, and cut into the polygon the light field speaks only on the way out, so
+  a bake never holds an approximation of a shape somebody authored.
 - A fusion is taken only when the result is still one rectangle covering
   exactly the points its parts covered: agree across one axis, touch or overlap
   along the other, repeated until a pass changes nothing. An L stays two boxes
@@ -494,20 +498,27 @@ nothing but data in and flat lists out.
   nearly so. Widening the grouping past a rounding error buys the records back
   and charges the difference to the edges.
 - Nothing is dropped quietly. `add` returns `Rejection { index, role, why }`,
-  `#[must_use]`, for geometry the bake cannot honour: a circle asking to
-  occlude, which the fused rectangle list has nowhere to put,
-  or a shape with no area at all. A painted sprite that silently cannot cast a
+  `#[must_use]`, for geometry the bake cannot honour: a shape with no area, or a
+  corner that is not a number. A painted sprite that silently cannot cast a
   shadow is exactly the failure this path exists to end, so it says so out loud
-  instead of leaving a list that looks fine.
+  instead of leaving a list that looks fine. What it *can* honour has grown: an
+  occluding circle used to be a refusal, and is now the round list above.
 - Two exits close the loop: `declare_occluders(canvas, world)` feeds the fused
   boxes to `Canvas::occluder` under the node's transform, each box's own turn
-  folded into that transform so the shape stays local; and
-  `occluder_colliders()` hands the same rectangles to `occluded` / `visible`, so
-  the gameplay answer and the pixel answer come from one bake.
-- Not here yet: capsules and convex polygons, the sidecar reader that would
-  build these features from a `.ron`, and a tile-grid broadphase for line
-  queries over very large maps — fused strips keep a linear scan cheap enough
-  until a real map says otherwise.
+  folded into that transform so the shape stays local, and the round list to
+  `Canvas::occluder_polygon` as `Convex::disc` — the tessellation happens here,
+  at the border and once, which is why nothing upstream of it is an
+  approximation; and `occluder_colliders()` hands the same shapes — the discs
+  still round, because asking the CPU about the polygon would fold the answer
+  into the question — to `occluded` / `visible`, so the gameplay answer and the
+  pixel answer come from one bake.
+- Not here yet: capsules; convex polygons as `solids` or `hits`, which is a
+  step of its own — they occlude already, but pushing two polygons apart needs
+  the separating axis of a curved boundary and a contact normal worth the name,
+  while occlusion only ever asks whether a segment crossed an edge; the sidecar
+  reader that would build these features from a `.ron`; and a tile-grid
+  broadphase for line queries over very large maps — fused strips keep a linear
+  scan cheap enough until a real map says otherwise.
 
 ## Shaders (shaders/*.wgsl, src/shaders.rs)
 
@@ -824,7 +835,7 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **296 lib tests + 3 integration tests (`tests/`) + 7 doctests**
+Baseline: **297 lib tests + 3 integration tests (`tests/`) + 7 doctests**
 passing, `cargo build --examples` clean. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the

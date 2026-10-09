@@ -34,19 +34,26 @@
 //! Only rectangles fuse: a fusion is taken when the result is still one
 //! rectangle covering exactly the points the parts covered, which an L or a
 //! circle never is. Nothing is dropped quietly either. A shape the bake cannot
-//! honour — a circle asking to occlude, which the fused list of rectangles has
-//! nowhere to put; a box with no width, which occludes and blocks nothing —
-//! comes back from [`Baker::add`] as a [`Rejection`] the loader can
-//! name, instead of vanishing into a list that looks fine. A painted sprite
-//! that silently cannot cast a shadow is the failure this path exists to end.
+//! honour — a box with no width, or a corner that is not a number — comes back
+//! from [`Baker::add`] as a [`Rejection`] the loader can name, instead of
+//! vanishing into a list that looks fine. A painted sprite that silently cannot
+//! cast a shadow is the failure this path exists to end.
 //!
-//! Not here yet: capsules and convex polygons, the sidecar reader that would
+//! An occluding *circle* is no longer among the refusals, and it is not
+//! flattened on the way in either: the bake keeps it round and the
+//! tessellation happens at the border, in [`Baked::declare_occluders`], where
+//! the circle becomes the sixteen-gon the light field speaks. The authored
+//! description outlives the bake, so the CPU is asked about the circle that was
+//! drawn while the GPU is given the edges it can hold — the same arrangement
+//! that lets a fused box keep its own turn until the transform carries it.
+//!
+//! Not here yet: capsules, the sidecar reader that would
 //! build these features from a `.ron`, and a tile-grid broadphase for line
 //! queries over very large maps — fused strips keep a linear scan cheap enough
 //! until a real map says otherwise.
 
 use crate::canvas::Canvas;
-use crate::collision::{Circle, Collider, OrientedBox};
+use crate::collision::{Circle, Collider, Convex, OrientedBox};
 use crate::objects::Transform;
 
 /// How far apart two authored edges may be and still count as the same edge,
@@ -278,6 +285,12 @@ pub struct Solid {
 pub struct Baked {
     /// The fused rectangles a frame declares as shadows.
     pub occluders: Vec<OrientedBox>,
+    /// The circles authored to cast, kept circles: a fusion of two circles is
+    /// no circle at all, so these are counted rather than merged, and they are
+    /// cut into the polygon the light field speaks only on the way out, in
+    /// [`Baked::declare_occluders`] — which is also why the CPU's shadow
+    /// question goes to the round shape and not to its approximation.
+    pub disc_occluders: Vec<Circle>,
     /// The shapes that block movement, fused within each material.
     pub solids: Vec<Solid>,
     /// The shapes that only answer *what was struck*, exactly as authored.
@@ -293,29 +306,55 @@ impl Baked {
     /// transform it is declared with — so a fused strip of tiles authored at
     /// any angle enters the light field exactly as a hand-written
     /// [`Canvas::occluder`] call would.
+    ///
+    /// A baked circle is tessellated here and nowhere earlier:
+    /// [`Convex::disc`](crate::Convex::disc) cuts it into the polygon the field
+    /// carries, the one place a round shape has to become flat ones. The bake
+    /// had every right to keep it a circle, so the approximation is made once,
+    /// at the last moment, by the only function that needs it.
     pub fn declare_occluders(&self, canvas: &mut Canvas, world: Transform) {
         for b in &self.occluders {
             let to_node = Transform::rotate(b.angle).compose(&Transform::translate(b.center));
             canvas.occluder(to_node.compose(&world), [0.0, 0.0], b.half);
+        }
+        for c in &self.disc_occluders {
+            canvas.occluder_polygon(world, &Convex::disc(c.center, c.radius));
         }
     }
 
     /// The baked occluders as [`Collider`]s, for asking the same question on
     /// the CPU: [`occluded`](crate::occluded) and [`visible`](crate::visible)
     /// over this list answer it the way the shader will, in the node's space.
+    ///
+    /// Round occluders come back round, deliberately, even though the shader
+    /// will be handed their sixteen-gon. The two differ by under two percent of
+    /// a radius, which is how far a shadow's edge is allowed to move; asking
+    /// the CPU about the polygon too would fold the answer into the question,
+    /// and a shadow that disagreed would no longer say which side was wrong.
     pub fn occluder_colliders(&self) -> Vec<Collider> {
-        self.occluders.iter().copied().map(Collider::Box).collect()
+        self.occluders
+            .iter()
+            .copied()
+            .map(Collider::Box)
+            .chain(self.disc_occluders.iter().copied().map(Collider::Circle))
+            .collect()
     }
 
     /// Whether the bake left nothing behind.
     pub fn is_empty(&self) -> bool {
-        self.occluders.is_empty() && self.solids.is_empty() && self.hits.is_empty()
+        self.occluders.is_empty()
+            && self.disc_occluders.is_empty()
+            && self.solids.is_empty()
+            && self.hits.is_empty()
     }
 }
 
 /// Where one accepted shape is routed.
 enum Route {
     Occluder(OrientedBox),
+    /// An occluding circle, bound for the round list rather than the fused
+    /// one: nothing about a circle survives being merged with anything else.
+    Disc(Circle),
     Shape(Collider),
 }
 
@@ -329,9 +368,7 @@ fn classify(shape: Footprint, role: Role) -> Result<Route, &'static str> {
     }
     match (role, shape) {
         (Role::Occlude, Footprint::Box(b)) => Ok(Route::Occluder(b)),
-        (Role::Occlude, Footprint::Circle(_)) => Err(
-            "the fused occluders are rectangles: a circle reaches the light field              only as the sixteen-gon cut from it, and a bake has nowhere to keep              one until its output carries more than boxes",
-        ),
+        (Role::Occlude, Footprint::Circle(c)) => Ok(Route::Disc(c)),
         (Role::Solid, s) => Ok(Route::Shape(s.collider())),
         (Role::Hit, s) => Ok(Route::Shape(s.collider())),
     }
@@ -364,6 +401,7 @@ fn classify(shape: Footprint, role: Role) -> Result<Route, &'static str> {
 #[derive(Clone, Debug, Default)]
 pub struct Baker {
     occluders: Vec<OrientedBox>,
+    disc_occluders: Vec<Circle>,
     solids: Vec<(u32, Collider)>,
     hits: Vec<Collider>,
 }
@@ -387,6 +425,7 @@ impl Baker {
             let shape = feature.shape.placed(place);
             match classify(shape, feature.role) {
                 Ok(Route::Occluder(b)) => self.occluders.push(canonical(&b)),
+                Ok(Route::Disc(c)) => self.disc_occluders.push(c),
                 Ok(Route::Shape(s)) => match feature.role {
                     // Solids are grouped by turn before they fuse, so their
                     // turn is folded into a quarter turn first. A hit is never
@@ -451,6 +490,10 @@ impl Baker {
 
         Baked {
             occluders,
+            // Authored order, unfused: two circles side by side are two
+            // circles, and the only way to make one of them another shape would
+            // be to invent a shape nobody drew.
+            disc_occluders: self.disc_occluders,
             solids,
             hits: self.hits,
         }
@@ -650,24 +693,89 @@ mod tests {
     }
 
     #[test]
-    fn a_circle_cannot_occlude_yet_and_says_which_one_it_was() {
-        // The point of the rejection list: a shape that will do nothing is
-        // reported, not dropped — and the same circle is welcome as a solid.
+    fn an_occluding_circle_stays_round_and_reaches_the_field_as_a_polygon() {
+        // The round case, end to end: honoured rather than refused, kept round
+        // by the bake, put to the CPU's shadow question as a circle, and cut
+        // into edges only at the last step — the declared record.
         let mut baker = Baker::new();
         let rejected = baker.add(
             Placement::IDENTITY,
             &[
-                Feature::occluding(Footprint::disc([0.0, 0.0], 12.0)),
-                Feature::solid(Footprint::disc([0.0, 0.0], 12.0), 0.0),
+                Feature::occluding(Footprint::disc([4.0, -3.0], 12.0)),
+                Feature::solid(Footprint::disc([4.0, -3.0], 12.0), 0.0),
             ],
         );
-        assert_eq!(rejected.len(), 1);
-        assert_eq!(rejected[0].index, 0);
-        assert_eq!(rejected[0].role, Role::Occlude);
+        assert!(
+            rejected.is_empty(),
+            "an occluding circle is honoured now, got {rejected:?}"
+        );
         let baked = baker.finish();
-        assert!(baked.occluders.is_empty());
+        assert!(
+            baked.occluders.is_empty(),
+            "nothing about a circle turns into a box"
+        );
+        assert_eq!(baked.disc_occluders.len(), 1);
+        assert_eq!(baked.disc_occluders[0].center, [4.0, -3.0]);
+        assert_eq!(baked.disc_occluders[0].radius, 12.0);
         assert_eq!(baked.solids.len(), 1);
         assert!(matches!(baked.solids[0].shape, Collider::Circle(_)));
+        assert_eq!(baked.occluder_colliders().len(), 1);
+        assert!(
+            matches!(baked.occluder_colliders()[0], Collider::Circle(_)),
+            "the CPU is asked about the circle the author drew, not its \
+             sixteen-gon"
+        );
+        assert!(!baked.is_empty());
+
+        // And the border: one declared occluder, carrying the authored center,
+        // the edges it was cut into, and the node's transform.
+        let mut canvas = Canvas::new((64, 64), 1.0);
+        baked.declare_occluders(&mut canvas, Transform::translate([10.0, 20.0]));
+        assert_eq!(canvas.occluders.len(), 1);
+        let declared = canvas.occluders[0]
+            .polygon
+            .expect("a disc declares itself as a polygon");
+        assert_eq!(
+            declared.planes().len(),
+            crate::collision::DISC_SIDES,
+            "the declared disc should carry every edge the tessellation has"
+        );
+        let bounds = declared.bounds_as_box();
+        assert_eq!(
+            bounds.center,
+            [4.0, -3.0],
+            "the polygon is the authored disc, not a new shape centred elsewhere"
+        );
+        assert!(
+            (bounds.half[0] - 12.0).abs() < 1e-4 && (bounds.half[1] - 12.0).abs() < 1e-4,
+            "the bounds should wrap the disc, got {:?}",
+            bounds.half
+        );
+    }
+
+    #[test]
+    fn two_occluding_circles_are_two_circles() {
+        // Fusion is the bake's whole economy, and it stops at the circle: two
+        // discs side by side do not become a strip, a capsule or one bigger
+        // disc, because no shape covers their points and is still what was
+        // authored. They are counted, and each is cut on its own.
+        let mut baker = Baker::new();
+        accept(
+            &mut baker,
+            Placement::IDENTITY,
+            &[
+                Feature::occluding(Footprint::disc([-6.0, 0.0], 6.0)),
+                Feature::occluding(Footprint::disc([6.0, 0.0], 6.0)),
+            ],
+        );
+        let baked = baker.finish();
+        assert!(baked.occluders.is_empty());
+        assert_eq!(
+            baked.disc_occluders.len(),
+            2,
+            "touching discs stay two discs"
+        );
+        assert_eq!(baked.occluder_colliders().len(), 2);
     }
 
     #[test]
@@ -1131,11 +1239,31 @@ mod tests {
                 &[tile()],
             );
         }
+        accept(
+            &mut baker,
+            Placement::at([80.0, 40.0]),
+            &[Feature::occluding(Footprint::disc([0.0, 0.0], 10.0))],
+        );
         let baked = baker.finish();
         let occluders = baked.occluder_colliders();
-        assert_eq!(occluders.len(), 1);
-        // Straight through the strip: blocked. Over the end of it: not.
+        assert_eq!(
+            occluders.len(),
+            2,
+            "one fused strip and one round occluder, both in the CPU's list"
+        );
+        // Straight through the strip: blocked.
         assert!(crate::occluded([-60.0, 0.0], [100.0, 0.0], &occluders));
-        assert!(!crate::occluded([-60.0, 40.0], [100.0, 40.0], &occluders));
+        // And forty pixels up — clear of the strip by every one of a tile's
+        // eight half-heights — the ray now runs into the disc. The round
+        // occluder reached the question the CPU asks, in the node's space,
+        // without a rectangle being asked to stand in for it.
+        assert!(
+            crate::occluded([-60.0, 40.0], [100.0, 40.0], &occluders),
+            "the disc authored at [80, 40] should block the ray above the strip"
+        );
+        assert!(
+            !crate::occluded([-60.0, 80.0], [100.0, 80.0], &occluders),
+            "and the ray above the disc should still be clear"
+        );
     }
 }
