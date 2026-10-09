@@ -803,12 +803,12 @@ button clicks, a checkbox toggles, a slider's value changes.
   panel **claims its whole area** (body included): presses land on the
   panel, never on a widget or the game behind it, and `Ui::hovering()` —
   the pointer over any widget or panel — lets a raw-input game tell UI
-  clicks from scene clicks (see `examples/sprite_util.rs`). Two accessors
+  clicks from scene clicks (see `tools/sprite_util/main.rs`). Two accessors
   reach a panel from outside: `Ui::panel_position(title)` reads where it
   sits, `Ui::panel_rect(title)` reports the plate as it was PAINTED last
   call (the height the drawing used — content laid over a plate must
   trust this, not its own same-frame request, or it floats a frame
-  ahead of the pixels; see `examples/sprite_util.rs`), and
+  ahead of the pixels; see `tools/sprite_util/main.rs`), and
   `Ui::set_folded(title, folded)` is the program's hand on the title-bar
   click — code that closes or restores a panel uses it so a reopened
   title never greets you folded.
@@ -824,7 +824,7 @@ button clicks, a checkbox toggles, a slider's value changes.
   one-frame model) or `Stretch(w)` (a weighted share of the leftover) — and
   an [`Align`] (`Left`/`Center`/`Right`) honored by text. `slider_track` and
   `readout` are the label-less pieces for a `[label | track | value]` row
-  (see `examples/sprite_util.rs`); `id` scopes the retained auto widths so
+  (see `tools/sprite_util/main.rs`); `id` scopes the retained auto widths so
   two tables in one panel keep their own columns.
 - **Tree view** (`tree.rs`) is the same widget family's two-axis-scrolling
   list: `TreeLine` rows (key, value, a few flags, a value color) in a
@@ -852,7 +852,10 @@ button clicks, a checkbox toggles, a slider's value changes.
 ## Testing
 
 Baseline: **324 lib tests + 3 integration tests (`tests/`) + 7 doctests**
-passing, `cargo build --examples` clean. Notable test areas:
+passing, `cargo build` (lib + the `sprite_util` tool) clean. The tool's 69
+tests — 68 that moved with `examples/sprite_util.rs` to
+`tools/sprite_util/main.rs` plus the asset-path guard — ride along in the
+same `cargo test` now that it is a binary target. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
   `Validator` stage wgpu runs in `create_shader_module` — this is what
@@ -912,9 +915,9 @@ passing, `cargo build --examples` clean. Notable test areas:
 
 ## Examples (examples/)
 
-39 demos, filed into subject folders — `shapes/`, `lighting/`, `inout/`,
+48 demos, filed into subject folders — `shapes/`, `lighting/`, `inout/`,
 `layers/`, `particles/`, `physics/`, `text/`, the `immortal/` game, and the
-tools (`sprite_util`, `worm`, …) at the top level. Cargo only auto-discovers
+tools (`worm`, `tilemap`, …) at the top level. Cargo only auto-discovers
 `examples/*.rs` and `examples/*/main.rs`, so every folder member is named
 with an explicit `[[example]]` entry in `Cargo.toml` — the short names keep
 working: `cargo run --example parallax`. `ron_view/` is the exception that
@@ -931,6 +934,14 @@ binary with `include_bytes!` instead, so they run with no asset files on
 disk. Run with `cargo run --example <name>`
 (`RUST_LOG=info` for logs; on Windows PowerShell:
 `RUST_LOG=info cargo run --example gizmos 2>&1 | Out-String`).
+
+`sprite_util` is no longer in this folder or this package: the tool lives
+at [`tools/sprite_util/`](tools/sprite_util/main.rs) as its own workspace
+package — run with `cargo run -p sprite_util`, tested by plain `cargo test`
+(see [`docs/tooling.md`](docs/tooling.md)). Its `ron_view` row flattener is
+still the one in `examples/ron_view/view.rs`, path-included across the
+directory line: a known debt until a second tool proves the view is shared
+tool surface. The `sprite_util` row below stays as the description.
 
 | example      | shows                                                              |
 |--------------|--------------------------------------------------------------------|
@@ -1145,12 +1156,23 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 ## Verification loop
 
 ```
-cargo build --examples   # expect EXIT 0
+cargo build              # expect EXIT 0; covers the lib AND the tool —
+                           # both are default members of the workspace
+cargo build --examples   # expect EXIT 0; no longer covers the tool
+cargo build -p sprite_util   # expect EXIT 0; the tool on its own, now in
+                               # tools/sprite_util/ as its own package
 cargo test               # expect 324 lib + 3 integration + 7 doctests
-cargo test --examples    # expect ~194 passed (unit tests inside the examples,
+                           # + 69 sprite_util (the tool's unit tests run
+                           # here now: a binary target is tested by default)
+cargo test --examples    # expect 126 passed (unit tests inside the examples,
                            # centipede's rig included; ron_view/view.rs compiles
                            # into both ron_view and sprite_util, so its 2 fold
-                           # tests run twice; the parser tests run in the lib)
+                           # tests run twice; the parser tests run in the lib;
+                           # the tool's 68 moved tests are NOT here anymore —
+                           # they are in the plain `cargo test` above)
+cargo check --target wasm32-unknown-unknown -p frost
+                           # expect EXIT 0; scoped to -p frost so the native-only
+                           # tool (rfd, env_logger) is not built for wasm
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example worm     # peristaltic crawl, edge wrap; exits 0
 cargo run --example ron_view # fold rows, drag both scroll handles; exits 0
@@ -1159,4 +1181,5 @@ cargo run --example button   # hover-scale + click-swoosh check; window exits 0
 cargo run --example widgets  # panels drag, widgets drive the face; exits 0
 cargo run --example tomato_sprite   # overlay check; window exits 0
 cargo run --example immortal   # 1920x1080 window: grass fills it 1:1; exits 0
+cargo run -p sprite_util     # the tool, run from the workspace root; -i <png|folder>
 ```

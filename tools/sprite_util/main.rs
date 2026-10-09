@@ -82,7 +82,7 @@
 //! Run with:
 //!
 //! ```text
-//! cargo run --example sprite_util
+//! cargo run -p sprite_util
 //! ```
 //!
 //! (Set `RUST_LOG=info` to see the click lines.)
@@ -97,8 +97,8 @@
 //! launched from:
 //!
 //! ```text
-//! cargo run --example sprite_util -- -i assets/sprites/bird1.png
-//! cargo run --example sprite_util -- -i assets/sprites
+//! cargo run -p sprite_util -- -i assets/sprites/bird1.png
+//! cargo run -p sprite_util -- -i assets/sprites
 //! ```
 
 //! A sprite may bring a sidecar: when `<name>.png` has a `<name>.ron`
@@ -154,13 +154,17 @@ use image::ImageEncoder;
 use std::sync::Arc;
 
 /// The RON parser and tree model now live in the crate as `frost::ron`,
-/// which both examples consume as a library; this file keeps calling it
+/// which the tool consumes as a library; this file keeps calling it
 /// `ron_tree`. The row view — `VKind`, `Row`, `flatten`, `layout` —
 /// stayed on the example side: the shared `ron_view/view.rs`,
-/// path-included here under the name `ron_view`.
+/// path-included here under the name `ron_view`. The path reaches up into
+/// `examples/ron_view/` because the tool and that example share the file
+/// and promoting it into `frost` would be a public-API commitment. The
+/// right direction is a debt: when a second tool needs the view, it moves
+/// into code the tools share (see `docs/tooling.md`).
 use frost::ron as ron_tree;
 
-#[path = "ron_view/view.rs"]
+#[path = "../../examples/ron_view/view.rs"]
 mod ron_view;
 
 /// The File menu: the file verbs, lined up where every desktop app puts
@@ -5341,13 +5345,36 @@ fn checker_shape(cw: u32, ch: u32, light: f32, dark: f32) -> Option<frost::Shape
     frost::Shape::sprite_bytes_nearest(&png).ok()
 }
 
+/// The repository's HUD font, relative to the repository root — the same
+/// monospaced variable font the diagnostics overlay uses.
+const HUD_FONT: &str = "assets/fonts/FiraCode-VariableFont_wght.ttf";
+
+/// The repository root, resolved from this package's manifest directory.
+/// The tool is a workspace member at `tools/sprite_util`, so
+/// `CARGO_MANIFEST_DIR` is *not* the repository root — it is two levels
+/// below it — and every asset path must be built from the root, never
+/// from the manifest directory directly. `the_hud_font_is_where_the_asset_helper_points`
+/// checks this at test time: the wrong number of `..` is otherwise a
+/// silent re-point that only fails when the tool starts up.
+fn repo_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the tool lives at tools/sprite_util, under a `tools` parent")
+        .parent()
+        .expect("and `tools` itself has the repository root as its parent")
+        .to_path_buf()
+}
+
+/// One asset of the repository — `assets/...`, relative to the repository
+/// root — as an absolute path. Every runtime asset load goes through
+/// here, so the root is pinned in exactly one place.
+fn asset_path(rel: &str) -> std::path::PathBuf {
+    repo_root().join(rel)
+}
+
 fn main() {
     env_logger::init();
     log::info!("frost started");
-
-    // `CARGO_MANIFEST_DIR` pins the asset paths to the crate root, so the
-    // example works no matter where it is run from.
-    let root = std::env!("CARGO_MANIFEST_DIR");
 
     // The folder the dialog opens in when no input folder is given:
     // where the example was launched from, not where its binary lives.
@@ -5409,8 +5436,10 @@ fn main() {
         .or_else(|| dialog_dir.clone());
 
     // The HUD font, the same monospaced variable font the diagnostics
-    // overlay uses — shared by the panel's labels and the menu bar.
-    let font = format!("{root}/assets/fonts/FiraCode-VariableFont_wght.ttf");
+    // overlay uses — shared by the panel's labels and the menu bar. The
+    // path comes from the repository root via `asset_path`, not from
+    // `CARGO_MANIFEST_DIR`, which names the tool's package directory.
+    let font = asset_path(HUD_FONT);
     let ui = frost::Ui::from_font(&font).expect("failed to load the UI font");
     // The seat numbers' font: one Arc's worth of the same FiraCode,
     // every marker's text cloning the pointer, never re-reading the
@@ -5595,6 +5624,21 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hud_font_is_where_the_asset_helper_points() {
+        // `CARGO_MANIFEST_DIR` names `tools/sprite_util`, not the
+        // repository root, so the font path is a runtime one built by
+        // `asset_path` — and a wrong root is invisible to the compiler.
+        // This is the loud version of the startup failure the tool would
+        // otherwise meet with a window that never opens.
+        let font = asset_path(HUD_FONT);
+        assert!(
+            font.is_file(),
+            "the HUD font is not where `asset_path` points: {}",
+            font.display()
+        );
+    }
 
     #[test]
     fn window_and_texture_points_round_trip() {
@@ -6023,8 +6067,8 @@ mod tests {
         // Add puts down an emptied shape — a fresh 0.0 beside their
         // numbers — and comments stay behind.
         assert_eq!(seq_add(&mut root, &[]), Some(3));
-        assert_eq!(seq_remove(&mut root, &[], 0), true);
-        assert_eq!(seq_remove(&mut root, &[], 9), false);
+        assert!(seq_remove(&mut root, &[], 0));
+        assert!(!seq_remove(&mut root, &[], 9));
         assert_eq!(seq_move(&mut root, &[], 2, 0), Some(0));
         assert_eq!(seq_move(&mut root, &[], 1, 1), None);
         assert_eq!(
@@ -6096,7 +6140,7 @@ mod tests {
 
     #[test]
     fn a_real_plant_sidecar_round_trips_with_its_comments() {
-        let src = include_str!("../assets/sprites/plant1.ron");
+        let src = include_str!("../../assets/sprites/plant1.ron");
         let d = ron_tree::parse_doc(src).expect("plant1 parses");
         let text = ron_tree::to_text_doc(&d.header, &d.root, &d.trailer);
         assert_eq!(ron_tree::parse_doc(&text).expect("re-parses"), d);
@@ -6586,7 +6630,7 @@ mod tests {
         assert_eq!(clip_paste(&mut maps, &c, 0, 0), 3);
         let m = &maps[0];
         for cell in [m.at(0, 0), m.at(1, 0), m.at(0, 1)] {
-            assert_eq!(m.cells[cell.expect("inside") as usize], 5);
+            assert_eq!(m.cells[cell.expect("inside")], 5);
         }
         // A second paste on the same spot changes nothing, and past
         // the map's edge the stamp is polite: nothing written, no
@@ -6617,6 +6661,15 @@ mod tests {
         assert_eq!(clip_trim(&mut e), None);
     }
 
+    // The `1 * 3 + 1` below is the row-major formula spelled out: cell
+    // (row 1, col 1) of a clip `c.cols` wide — `c.cols == 3` asserted
+    // above, and the asserted values placed at `set_cell(1, 1, …)`:
+    // `row × cols + col`, exactly the index into the flattened grid.
+    // Clippy reads the multiply-by-one as an identity operation and
+    // cannot know it is carrying the formula; reducing it to `4` (or even
+    // `3 + 1`) leaves an index whose shape no longer names its cell. The
+    // allow documents that, and marks why the expression stays.
+    #[allow(clippy::identity_op)]
     #[test]
     fn the_selection_copy_reads_one_tilesets_view() {
         let mut maps = vec![

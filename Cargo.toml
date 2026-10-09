@@ -3,8 +3,21 @@ name = "frost"
 version = "0.1.0"
 edition = "2024"
 
+# The engine plus its tools (docs/tooling.md). The tools are separate
+# packages so their dependencies — `clap`, `env_logger`, … — stay out of
+# `frost`'s tree; nothing a tool needs is ever added to `[dependencies]`
+# below. `cargo build`/`cargo test` from this directory still cover both:
+# with a root package, cargo's default would be the root package alone, so
+# the members are named explicitly.
+[workspace]
+members = ["tools/sprite_util"]
+default-members = [".", "tools/sprite_util"]
+# Edition 2024 implies resolver 3; stated explicitly so the workspace
+# resolver cannot drift from the packages' editions.
+resolver = "3"
+
 [dependencies]
-# Cross-platform system clipboard for the `sprite_util` example's Ctrl-C /
+# Cross-platform system clipboard for the `text_input` example's Ctrl-C /
 # Ctrl-V; winit 0.30 has no clipboard API of its own.
 arboard = "3.6.1"
 gilrs = "0.11.2"

@@ -22,8 +22,8 @@
 ## The sidecar already exists
 
 A sprite's `<name>.png` may have a `<name>.ron` beside it. `sprite_util` reads
-it on load ([`examples/sprite_util.rs:3911`](../examples/sprite_util.rs#L3911))
-and rewrites it on save ([` :1560 `](../examples/sprite_util.rs#L1560)), and it
+it on load ([`tools/sprite_util/main.rs:3915`](../tools/sprite_util/main.rs#L3915))
+and rewrites it on save ([`:1564`](../tools/sprite_util/main.rs#L1564)), and it
 is a far better host for shape data than a new file would be:
 
 - **Comments and unknown keys survive a round-trip.** The reader is a
@@ -36,9 +36,9 @@ is a far better host for shape data than a new file would be:
   with two numeric fields — and passes everything else through untouched.
   Canonicalisation is a fixed point, tested against a real shipped sidecar
   (`a_real_plant_sidecar_round_trips_with_its_comments`,
-  [`:6098`](../examples/sprite_util.rs#L6098);
+  [`:6147`](../tools/sprite_util/main.rs#L6147);
   `the_canonical_sidecar_is_a_round_trip_fixed_point`,
-  [`:6301`](../examples/sprite_util.rs#L6301)).
+  [`:6350`](../tools/sprite_util/main.rs#L6350)).
 - **It is already extended by hand.** The keys in the shipped sidecars are
   `atlas`, `segment`, `image`, `lower_anchor`, `upper_anchor`, `flower_anchors`
   — none of them written by any Rust code, all of them read by *nobody* in the
@@ -58,9 +58,9 @@ other home for them).
 
 **Positions are arrays, never tuples.** `sprite_util` treats any *struct with
 exactly two numeric-atom fields* as a draggable position marker
-(`spot_coords`, [`:4130`](../examples/sprite_util.rs#L4130), capped at
+(`spot_coords`, [`:4134`](../tools/sprite_util/main.rs#L4134), capped at
 `SPOTS_MAX`). That is why `atlas` is deliberately an array, per the comment at
-[`:4021`](../examples/sprite_util.rs#L4021): *"a two-number tuple would read as a
+[`:4025`](../tools/sprite_util/main.rs#L4025): *"a two-number tuple would read as a
 position spot"*. So `center: [4.0, 2.0]` stays data, while `center: (4.0, 2.0)`
 becomes a handle the tool lets you drag — a shape whose numbers move under the
 author's hands, which is the class of bug the rest of this document is about.
@@ -68,7 +68,7 @@ When the tool learns to drag *shapes*, that arrives as an explicit feature over
 a known key, not as a coincidence of arity.
 
 **"An unparseable sidecar: the sprite simply loads" is wrong for shapes.** That
-is the existing policy ([`:3918`](../examples/sprite_util.rs#L3918): `log::warn!`
+is the existing policy ([`:3922`](../tools/sprite_util/main.rs#L3922): `log::warn!`
 then load without it), and for an atlas grid it is right — a missing grid is a
 whole-sprite sprite. A hit box is different: a sprite that silently loads with
 *no* collision is a bug no one can see by playing, which is the exact failure
@@ -167,12 +167,41 @@ markers are precisely where the two would part company. One parser, always.
 was agreed over a positional list, and it stays right — a map edit that inserts
 a column must not silently move every shape in the level. But it cannot be built
 now, because tile maps have *no file format at all*: `MapLayer`
-([`:267`](../examples/sprite_util.rs#L267)) holds `cells: Vec<u32>` indexed by a
+([`:271`](../tools/sprite_util/main.rs#L271)) holds `cells: Vec<u32>` indexed by a
 row-major formula
-([`at`, `:4216`](../examples/sprite_util.rs#L4216)) and lives only in memory and
+([`at`, `:4220`](../tools/sprite_util/main.rs#L4220)) and lives only in memory and
 in undo snapshots. Keyed tile shapes arrive *with* the map format, as its second
 key — inventing one to hold the other would smuggle a format decision in through
 the back door.
+
+## Tilesets, and what a tool can promise
+
+A tileset is its own asset that **refers to a sprite** — a source path, a grid,
+and the per-tile annotations — rather than being a key on the sprite's sidecar.
+The older reading is the degenerate case of it: one tileset referring to one
+sprite with a plain grid is exactly what `atlas` means today, so nothing has to
+migrate. What the indirection buys is the only sensible home for keyed per-tile
+shapes, and the ability to carve two sets out of one sheet. What it costs is a
+reference that can go stale, which is the part worth deciding on purpose.
+
+Tile identity is the whole of that problem. A flat id (`3`) breaks when the grid
+arithmetic changes — change the column count and id 3 names different pixels. A
+coordinate (`(3, 2)`) survives that and breaks when the sheet is relaid out. And
+both survive the case that actually matters: an artist repaints tile 3 in place,
+the reference stays valid, and every shape annotated on it is quietly wrong for
+the new art. So the tileset carries explicit ids that the tool carries across a
+relayout by matching positions, and records a digest per tile id.
+
+The division of labour follows from what each side can actually see. At load
+time the engine reports what is definitely broken: a tileset that does not
+resolve, an id past the end of its tileset. The digest question is not a
+load-time question at all — a repainted tile is not an error — so it belongs to
+the tool, at the moment the author is looking: *"you changed tile 3; it has a
+collision shape and four maps use it."* No editor can make that safe, and it is
+worth being blunt about why: the file is not malformed, the reference is
+correct, and the thing that changed is whether the art still suits its hit box.
+That is a judgement, and a tool's job is to put the judgement in front of the
+person making it.
 
 ## Order of work
 

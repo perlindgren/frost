@@ -33,8 +33,10 @@ public API change anywhere.
   plumbing. Optional tidy: its test module tests three files (core,
   `panel.rs`, `table.rs`); the table/panel tests could move beside what
   they test. Cosmetic, low value.
-- **`examples/sprite_util.rs` (3789)** — a narrated single-file tool on
-  purpose (129-line module doc, 24% comments, tests via `super::*`).
+- **`tools/sprite_util/main.rs`** (the former `examples/sprite_util.rs`,
+  3789 then; its own workspace package now, the file since grown) — a
+  narrated single-file tool on purpose (129-line module doc, 24% comments,
+  tests via `super::*`).
   One cheap win if it ever grows again: lift the 266-line paint tail of
   `process()` (the checkerboard/strip/markers block) into a private
   `fn paint`; read-mostly, zero test churn. Everything else should stay

@@ -1,0 +1,27 @@
+# The sprite workbench, its own package. It lives in the workspace so it can
+# depend on `frost` like any other consumer and keep its own dependencies:
+# `clap` and `env_logger` (and `rfd`, `image`, `log`) serve this editor only
+# and must not ride into every downstream `frost` tree (docs/tooling.md).
+[package]
+name = "sprite_util"
+version = "0.1.0"
+edition = "2024"
+
+# The source sits at the package root, not in `src/` — it is a tool, and the
+# layout says so.
+[[bin]]
+name = "sprite_util"
+path = "main.rs"
+
+[dependencies]
+frost = { path = "../.." }
+# Command line parsing (`-i`/`--input`).
+clap = { version = "4", features = ["derive"] }
+# Logger initialization; `frost` itself only uses the `log` facade.
+env_logger = "0.11.11"
+# PNG decoding/encoding of the sprites, matching the version and feature set
+# `frost` resolves.
+image = { version = "0.25", default-features = false, features = ["png"] }
+log = { version = "0.4.34", features = ["release_max_level_off"] }
+# Native file dialogs (open/save/message).
+rfd = "0.17.2"
