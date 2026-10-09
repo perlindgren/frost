@@ -53,19 +53,31 @@ The first step is the boring one and it needs no decisions:
 1. Move the file to `tools/sprite_util/main.rs`, declare `[[bin]] name =
    "sprite_util"` with that path, and drop the `example` entry. Same package, so
    nothing else moves: no workspace, no new crate, no asset paths to retune.
-2. Its unit tests get *better*, not different — a binary's `#[cfg(test)]` tests
-   run under plain `cargo test`, where today they only run when someone
-   remembers `cargo test --example sprite_util`. Roughly sixty-eight tests
-   currently depend on that memory.
+2. Its unit tests get *better*, not different. Examples are not tested by plain
+   `cargo test` — Cargo leaves `test` off for that target kind — so the tool's
+   sixty-six tests run only when someone asks for `cargo test --example
+   sprite_util`, which is why the verification loop in `ARCHITECTURE.md` names
+   it. A binary target is tested by default, so the same tests start running in
+   the everyday command with no edits.
 3. Then, and only then, split the file along the seams that measurement finds,
    because a module boundary inside a tool is a normal edit while a module
    boundary across the engine/tool line is a decision about API.
 
-Two things to check before step 1 rather than after. Asset paths are pinned to
-the crate root via `CARGO_MANIFEST_DIR`, which does not change inside the same
-package but *would* change the day a tool becomes its own package — so the move
-is the moment to make each asset path say what it means rather than rely on
-where the manifest happens to sit. And the verification commands in
+**The step is not as boring as it looks, and this is the decision inside it.**
+The tool parses its arguments with `clap` and installs `env_logger`, and both are
+`[dev-dependencies]` — a binary target does not see dev-dependencies, so the
+move will not compile until either both are promoted into the crate's real
+dependencies, which puts them in every downstream tree to serve one editor, or
+the tools become their own package, which is the end state this document is
+pointing at anyway and brings the asset-path question with it early. Choosing
+the second is honest about what `tools/` means; choosing the first buys the
+layout now and leaves the second option open.
+
+Two further things to check before step 1 rather than after. Asset paths are
+pinned to the crate root via `CARGO_MANIFEST_DIR`, which does not change inside
+the same package but would silently re-point the day a tool becomes its own
+package — the font is loaded that way, and a silent re-point is worse than the
+two compile-time path fixes the move needs. And the verification commands in
 `ARCHITECTURE.md` name `--examples` in the gate; a target change has to update
 them in the same commit, or the document starts describing a build nobody runs.
 

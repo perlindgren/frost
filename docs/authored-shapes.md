@@ -192,7 +192,12 @@ the back door.
 3. **`sprite_util` draws them**: rects, circles, polygons, with the convexity
    refusal and the existing `status:` line as the voice
    (`"shapes: that outline is concave"`).
-4. **The map file**, with keyed tile shapes as part of it.
+4. **The map file**, with keyed tile shapes as part of it — promoted from a
+   tool's convenience to shipped surface: `frost` is a library that comes with
+   tile-set and tile-map tools (`docs/tooling.md`), so the format is something
+   users write and the engine must load. That argues the map model itself moves
+   into `src/` *before* the format is designed, rather than being promoted from
+   a tool's editor state afterwards.
 5. **Capsules**, and convex polygons as `solid` / `hit` — the latter needing the
    separating axis of a curved boundary and a contact normal worth the name.
    They occlude already; pushing things apart is the step that has not been
