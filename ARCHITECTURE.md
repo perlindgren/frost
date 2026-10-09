@@ -40,6 +40,9 @@ src/particles.rs      Particle, ParticleSystem (pure simulation)
 src/collision.rs      OrientedBox, Circle, Collider, Convex, push_out, reflect
                       (pure math; Convex is the occluder's polygon, half-planes only)
 src/bake.rs           Feature, Role, Material -> Baker -> Baked (authored geometry)
+src/shapes.rs         authored-shapes reader: the sidecar `shapes:` vocabulary,
+                      read from a parsed ron Doc into Features for a Baker —
+                      the pixel-to-node flip, every error returned not logged
 src/ron.rs            hand-written RON subset: Val/Item tree, parse_doc /
                       to_text_doc, lossless by preservation (comments and
                       verbatim atoms ride through); shared by ron_view,
@@ -467,8 +470,8 @@ into engine shapes here. Pure math like collision: no winit, no wgpu, no state,
 nothing but data in and flat lists out.
 
 - `Feature { role, shape, material }` is one authored fact, in the space of the
-  sprite frame or atlas cell it describes: `Footprint::{rect, tilted, disc}`
-  for the shape, `Role::{Occlude, Solid, Hit}` for what it is for, and
+  sprite frame or atlas cell it describes: `Footprint::{rect, tilted, disc,
+  poly}` for the shape, `Role::{Occlude, Solid, Hit}` for what it is for, and
   `Material { bounce }` — the `e` of `reflect` — for the roles that care.
 - `Baker` takes a `Feature` list per `Placement` (a sprite frame at its own
   origin, one atlas cell per tile that uses it) and `finish()`es the whole set
@@ -479,8 +482,8 @@ nothing but data in and flat lists out.
   the node's `Transform`, one bake serves every instance, and a stretched or
   turned sprite still throws square-cornered shadows because nothing was baked
   into world coordinates and nothing has to approximate a sheared box.
-- `Baked { occluders, disc_occluders, solids, hits }` is one authored set seen
-  three ways,
+- `Baked { occluders, disc_occluders, poly_occluders, solids, hits }` is one
+  authored set seen per consumer,
   because the consumers want different things from the same shape. `occluders`
   are fused rectangles — the GPU reads one record per shape and tests every lit
   pixel against every record, so a floor of four thousand tiles is four thousand
@@ -492,6 +495,8 @@ nothing but data in and flat lists out.
   counted rather than merged, since no fusion of two circles is a circle anyone
   drew, and cut into the polygon the light field speaks only on the way out, so
   a bake never holds an approximation of a shape somebody authored.
+  `poly_occluders` are the convex outlines authored to cast, and they need no
+  last-moment work at all: the outline is already the edges the field speaks.
 - A fusion is taken only when the result is still one rectangle covering
   exactly the points its parts covered: agree across one axis, touch or overlap
   along the other, repeated until a pass changes nothing. An L stays two boxes
@@ -512,8 +517,9 @@ nothing but data in and flat lists out.
   occluding circle used to be a refusal, and is now the round list above.
 - Two exits close the loop: `declare_occluders(canvas, world)` feeds the fused
   boxes to `Canvas::occluder` under the node's transform, each box's own turn
-  folded into that transform so the shape stays local, and the round list to
-  `Canvas::occluder_polygon` as `Convex::disc` — the tessellation happens here,
+  folded into that transform so the shape stays local, and the round and
+  polygonal lists to `Canvas::occluder_polygon` — the discs as `Convex::disc`,
+  the authored outlines as drawn — the tessellation happens here,
   at the border and once, which is why nothing upstream of it is an
   approximation; and `occluder_colliders()` hands the same shapes — the discs
   still round, because asking the CPU about the polygon would fold the answer
@@ -523,11 +529,11 @@ nothing but data in and flat lists out.
   step of its own — they occlude already, but pushing two polygons apart needs
   the separating axis of a curved boundary and a contact normal worth the name,
   while occlusion only ever asks whether a segment crossed an edge; the reader
-  that would build these features from the `.ron` sidecar which already rides
-  each sprite, whose shape and constraints are written up in
-  `docs/authored-shapes.md`; and a tile-grid broadphase for line queries over
-  very large maps — fused strips keep a linear scan cheap enough until a real
-  map says otherwise.
+  that builds these features from the `.ron` sidecar which already rides
+  each sprite has arrived as `src/shapes.rs`, whose vocabulary and constraints
+  are written up in `docs/authored-shapes.md`; and a tile-grid broadphase for
+  line queries over very large maps — fused strips keep a linear scan cheap
+  enough until a real map says otherwise.
 
 ## Shaders (shaders/*.wgsl, src/shaders.rs)
 
@@ -845,7 +851,7 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **307 lib tests + 3 integration tests (`tests/`) + 7 doctests**
+Baseline: **324 lib tests + 3 integration tests (`tests/`) + 7 doctests**
 passing, `cargo build --examples` clean. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
@@ -882,6 +888,12 @@ passing, `cargo build --examples` clean. Notable test areas:
   gets rejected and why, and a sampled coverage property: a fused set covers
   exactly the points the authored boxes covered, on random piles and on a
   half-filled tile lattice.
+- `src/shapes.rs` — the sidecar's `shapes:` vocabulary end to end: sidecar
+  text through `ron::parse_doc`, the reader, a real `Baker` and
+  `declare_occluders`; the pixel-to-node flip pinned by an asymmetric case;
+  and the refusals — every error reported not just the first, a tuple
+  position answered with the tool's spot rule, capsules and concave outlines
+  refused by name.
 - `src/ron.rs` — the RON subset itself: atoms, numbers and enum paths kept
   verbatim, comments as noise that still survives the writer, errors that carry
   a line number, and `assets/ron/garden.ron` round-tripped to a fixed point —
@@ -1134,7 +1146,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 
 ```
 cargo build --examples   # expect EXIT 0
-cargo test               # expect 307 lib + 3 integration + 7 doctests
+cargo test               # expect 324 lib + 3 integration + 7 doctests
 cargo test --examples    # expect ~194 passed (unit tests inside the examples,
                            # centipede's rig included; ron_view/view.rs compiles
                            # into both ron_view and sprite_util, so its 2 fold

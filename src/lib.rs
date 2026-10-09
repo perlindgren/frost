@@ -189,6 +189,9 @@ pub use collision::*;
 mod bake;
 pub use bake::*;
 
+mod shapes;
+pub use shapes::*;
+
 /// The crate's own RON subset: a dependency-free parser, tree model and
 /// lossless writer (comments and verbatim atoms ride through the tree),
 /// consumed by the `ron_view` and `sprite_util` examples — and by

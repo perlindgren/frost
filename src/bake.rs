@@ -47,10 +47,21 @@
 //! drawn while the GPU is given the edges it can hold — the same arrangement
 //! that lets a fused box keep its own turn until the transform carries it.
 //!
-//! Not here yet: capsules, the reader that would build these features from the
-//! `.ron` sidecar that already rides each sprite (`docs/authored-shapes.md`),
-//! and a tile-grid broadphase for line queries over very large maps — fused
-//! strips keep a linear scan cheap enough until a real map says otherwise.
+//! An occluding *convex polygon* is honoured as well, and it is the one
+//! shape that lives in the bake rather than being fused or cut: it arrives
+//! as [`Footprint::poly`], joins [`Baked`]'s polygon list whole, and is
+//! declared through [`Canvas::occluder_polygon`] exactly as authored — the
+//! outline is already what the light field speaks. Asked to block movement
+//! or to be struck, the same polygon is a refusal:
+//! [`collision`](crate::collision) has no polygon body, and deriving one
+//! is a step of its own.
+//!
+//! Not here yet: capsules, and the convex polygon for the roles that push
+//! bodies apart. The reader that builds these features from the `.ron`
+//! sidecar that already rides each sprite has arrived as
+//! [`crate::shapes`] (`docs/authored-shapes.md`). A tile-grid broadphase
+//! for line queries over very large maps is still missing — fused strips
+//! keep a linear scan cheap enough until a real map says otherwise.
 
 use crate::canvas::Canvas;
 use crate::collision::{Circle, Collider, Convex, OrientedBox};
@@ -84,6 +95,17 @@ pub enum Role {
     Hit,
 }
 
+/// Why a convex polygon is refused wherever two shapes must be pushed
+/// apart, as the stable text a [`Rejection`] carries and a loader prints.
+///
+/// Occlusion only ever asks whether a segment crossed an edge, which the
+/// half-planes answer directly; a body needs the separating axis of a
+/// curved boundary and a contact normal worth the name, which is a step of
+/// its own rather than a free rider on this one. The reader quotes the
+/// same sentence when a sidecar asks a polygon to be solid or hit, so the
+/// author hears one reason from whichever end they come to.
+pub(crate) const POLY_NOT_PUSHED: &str = "a convex polygon occludes; pushing two polygons apart needs the separating axis of a curved boundary and a contact normal worth the name, which is a step of its own";
+
 /// How a shape that blocks movement behaves when something meets it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Material {
@@ -102,11 +124,18 @@ impl Material {
 /// One authored shape, in the space of the thing it was authored for: a
 /// sprite's own frame, or one atlas cell's.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // the polygon rides by value, like `Convex` everywhere else in the crate; a bake runs once per sprite load, not per frame, and nothing here wants a `Footprint` to stop being `Copy`
 pub enum Footprint {
     /// A rectangle, possibly turned about its own center.
     Box(OrientedBox),
     /// A circle.
     Circle(Circle),
+    /// A convex polygon, held as the half-planes of its own edges.
+    ///
+    /// It occludes, and nothing else: the roles that push bodies apart ask
+    /// for a separating axis and a contact normal, which a polygon cannot
+    /// yet give (`POLY_NOT_PUSHED`).
+    Poly(Convex),
 }
 
 impl Footprint {
@@ -127,11 +156,23 @@ impl Footprint {
         Self::Circle(Circle { center, radius })
     }
 
-    /// The shape as a [`Collider`], for the roles that answer questions.
-    pub fn collider(self) -> Collider {
+    /// The convex polygon `shape`, as [`Convex::new`] accepted it — which
+    /// is the only way one exists. A shape that was concave or crossed
+    /// never becomes a footprint; the refusal is the author's to read.
+    pub fn poly(shape: Convex) -> Self {
+        Self::Poly(shape)
+    }
+
+    /// The shape as a [`Collider`], for the roles that answer questions,
+    /// or `None` for the one shape that has no collider: the convex
+    /// polygon occludes, but `Collider` gained no polygon variant, and a
+    /// role asked to push a polygon apart takes the refusal rather than a
+    /// hull nobody drew.
+    pub fn collider(self) -> Option<Collider> {
         match self {
-            Self::Box(b) => Collider::Box(b),
-            Self::Circle(c) => Collider::Circle(c),
+            Self::Box(b) => Some(Collider::Box(b)),
+            Self::Circle(c) => Some(Collider::Circle(c)),
+            Self::Poly(_) => None,
         }
     }
 
@@ -156,6 +197,33 @@ impl Footprint {
                 center: turn(c.center),
                 radius: c.radius,
             }),
+            Self::Poly(p) => {
+                if place == Placement::IDENTITY {
+                    return Self::Poly(p);
+                }
+                // A `Convex` keeps its edges, not its corners, so the
+                // corners come back out of them as each pair of
+                // neighbouring half-planes' crossing, travel through the
+                // placement like any other point, and the outline is
+                // rebuilt from the moved corners. The move is rigid and
+                // convexity survives it, so `Convex::new` — which was
+                // asked to accept this shape once already — has nothing
+                // new to refuse; were it ever to disagree, the authored
+                // polygon stands rather than any stand-in, because a
+                // shape in the wrong place is still the shape somebody
+                // drew and a bounding box would be a quiet hull.
+                let planes = p.planes();
+                let mut moved: Vec<[f32; 2]> = Vec::with_capacity(planes.len());
+                for i in 0..planes.len() {
+                    let (a, b) = (planes[i], planes[(i + 1) % planes.len()]);
+                    let det = a[0] * b[1] - a[1] * b[0];
+                    moved.push(turn([
+                        (a[2] * b[1] - a[1] * b[2]) / det,
+                        (a[0] * b[2] - a[2] * b[0]) / det,
+                    ]));
+                }
+                Self::Poly(Convex::new(&moved).unwrap_or(p))
+            }
         }
     }
 
@@ -172,15 +240,23 @@ impl Footprint {
             Self::Circle(c) => {
                 c.center[0].is_finite() && c.center[1].is_finite() && c.radius.is_finite()
             }
+            Self::Poly(p) => {
+                let (lo, hi) = p.bounds();
+                lo[0].is_finite() && lo[1].is_finite() && hi[0].is_finite() && hi[1].is_finite()
+            }
         }
     }
 
     /// Whether the shape covers no points at all: a box with a side of zero or
-    /// less, or a circle without a radius.
+    /// less, a circle without a radius, or a polygon that was never allowed
+    /// to enclose nothing in the first place.
     fn empty(self) -> bool {
         match self {
             Self::Box(b) => b.half[0] <= 0.0 || b.half[1] <= 0.0,
             Self::Circle(c) => c.radius <= 0.0,
+            // `Convex::new` refuses an outline with no area, so a polygon
+            // that exists at all has something to occlude with.
+            Self::Poly(_) => false,
         }
     }
 }
@@ -279,7 +355,7 @@ pub struct Solid {
     pub bounce: f32,
 }
 
-/// What a bake produced: three flat lists, all in the node's own space, each
+/// What a bake produced: flat lists, all in the node's own space, each
 /// ready for the consumer it belongs to.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Baked {
@@ -291,6 +367,13 @@ pub struct Baked {
     /// [`Baked::declare_occluders`] — which is also why the CPU's shadow
     /// question goes to the round shape and not to its approximation.
     pub disc_occluders: Vec<Circle>,
+    /// The convex polygons authored to cast, each kept as the outline it was
+    /// drawn with: a fusion of two polygons is a shape nobody drew, and no
+    /// record here needs a tessellation — the outline is already the edges
+    /// the light field speaks. These are declared through
+    /// [`Canvas::occluder_polygon`], in their own space like every other
+    /// record.
+    pub poly_occluders: Vec<Convex>,
     /// The shapes that block movement, fused within each material.
     pub solids: Vec<Solid>,
     /// The shapes that only answer *what was struck*, exactly as authored.
@@ -311,7 +394,9 @@ impl Baked {
     /// [`Convex::disc`](crate::Convex::disc) cuts it into the polygon the field
     /// carries, the one place a round shape has to become flat ones. The bake
     /// had every right to keep it a circle, so the approximation is made once,
-    /// at the last moment, by the only function that needs it.
+    /// at the last moment, by the only function that needs it. An authored
+    /// polygon arrives at that moment already flat — it goes to
+    /// [`Canvas::occluder_polygon`] as the outline it was drawn with.
     pub fn declare_occluders(&self, canvas: &mut Canvas, world: Transform) {
         for b in &self.occluders {
             let to_node = Transform::rotate(b.angle).compose(&Transform::translate(b.center));
@@ -319,6 +404,11 @@ impl Baked {
         }
         for c in &self.disc_occluders {
             canvas.occluder_polygon(world, &Convex::disc(c.center, c.radius));
+        }
+        // The authored polygons need no last-moment tessellation: the
+        // outline the author drew is already the edges the field carries.
+        for p in &self.poly_occluders {
+            canvas.occluder_polygon(world, p);
         }
     }
 
@@ -331,6 +421,12 @@ impl Baked {
     /// a radius, which is how far a shadow's edge is allowed to move; asking
     /// the CPU about the polygon too would fold the answer into the question,
     /// and a shadow that disagreed would no longer say which side was wrong.
+    ///
+    /// The authored polygons are not in this list: [`Collider`] has no
+    /// polygon variant, and the honest CPU twin of their shadow question
+    /// would have to cross an edge exactly as the field does, which is the
+    /// same missing step as the polygon collider that would push bodies.
+    /// Declaring them is unaffected — the field itself carries their edges.
     pub fn occluder_colliders(&self) -> Vec<Collider> {
         self.occluders
             .iter()
@@ -344,17 +440,22 @@ impl Baked {
     pub fn is_empty(&self) -> bool {
         self.occluders.is_empty()
             && self.disc_occluders.is_empty()
+            && self.poly_occluders.is_empty()
             && self.solids.is_empty()
             && self.hits.is_empty()
     }
 }
 
 /// Where one accepted shape is routed.
+#[allow(clippy::large_enum_variant)] // the same by-value polygon as `Footprint` above; a route is a hand-off inside one `add` call, not a thing that travels
 enum Route {
     Occluder(OrientedBox),
     /// An occluding circle, bound for the round list rather than the fused
     /// one: nothing about a circle survives being merged with anything else.
     Disc(Circle),
+    /// An occluding convex polygon, bound for the list it is declared from:
+    /// it fuses with nothing, and it is already the edges the field speaks.
+    Poly(Convex),
     Shape(Collider),
 }
 
@@ -369,8 +470,13 @@ fn classify(shape: Footprint, role: Role) -> Result<Route, &'static str> {
     match (role, shape) {
         (Role::Occlude, Footprint::Box(b)) => Ok(Route::Occluder(b)),
         (Role::Occlude, Footprint::Circle(c)) => Ok(Route::Disc(c)),
-        (Role::Solid, s) => Ok(Route::Shape(s.collider())),
-        (Role::Hit, s) => Ok(Route::Shape(s.collider())),
+        (Role::Occlude, Footprint::Poly(p)) => Ok(Route::Poly(p)),
+        (Role::Solid | Role::Hit, s) => match s.collider() {
+            Some(c) => Ok(Route::Shape(c)),
+            // The one footprint without a collider: a convex polygon asked
+            // to push a body, or to be named as what was struck.
+            None => Err(POLY_NOT_PUSHED),
+        },
     }
 }
 
@@ -402,6 +508,7 @@ fn classify(shape: Footprint, role: Role) -> Result<Route, &'static str> {
 pub struct Baker {
     occluders: Vec<OrientedBox>,
     disc_occluders: Vec<Circle>,
+    poly_occluders: Vec<Convex>,
     solids: Vec<(u32, Collider)>,
     hits: Vec<Collider>,
 }
@@ -426,6 +533,7 @@ impl Baker {
             match classify(shape, feature.role) {
                 Ok(Route::Occluder(b)) => self.occluders.push(canonical(&b)),
                 Ok(Route::Disc(c)) => self.disc_occluders.push(c),
+                Ok(Route::Poly(p)) => self.poly_occluders.push(p),
                 Ok(Route::Shape(s)) => match feature.role {
                     // Solids are grouped by turn before they fuse, so their
                     // turn is folded into a quarter turn first. A hit is never
@@ -451,7 +559,7 @@ impl Baker {
         rejected
     }
 
-    /// Fuse what can be fused and hand over the three lists.
+    /// Fuse what can be fused and hand over the lists.
     pub fn finish(self) -> Baked {
         use std::collections::BTreeMap;
 
@@ -494,6 +602,8 @@ impl Baker {
             // circles, and the only way to make one of them another shape would
             // be to invent a shape nobody drew.
             disc_occluders: self.disc_occluders,
+            // The same reason, in edges: an outline is declared as drawn.
+            poly_occluders: self.poly_occluders,
             solids,
             hits: self.hits,
         }
@@ -776,6 +886,102 @@ mod tests {
             "touching discs stay two discs"
         );
         assert_eq!(baked.occluder_colliders().len(), 2);
+    }
+
+    #[test]
+    fn a_convex_polygon_reaches_the_field_as_its_own_outline() {
+        // The round case again, one step further: the shape is honoured,
+        // unfused and untessellated, and the declared record carries the
+        // authored half-planes themselves — the edges, not a box around
+        // them and not a new polygon.
+        let corners = [[-8.0, -4.0], [10.0, -2.0], [2.0, 9.0]];
+        let rock = Convex::new(&corners).expect("this triangle is convex");
+        let mut baker = Baker::new();
+        accept(
+            &mut baker,
+            Placement::IDENTITY,
+            &[Feature::occluding(Footprint::poly(rock))],
+        );
+        let baked = baker.finish();
+        assert!(
+            baked.occluders.is_empty() && baked.disc_occluders.is_empty(),
+            "nothing about a polygon turns into a box or a circle"
+        );
+        assert_eq!(baked.poly_occluders, [rock]);
+        assert!(!baked.is_empty());
+        assert_eq!(
+            baked.occluder_colliders().len(),
+            0,
+            "the polygon is not in the CPU's list either: Collider has no \
+             polygon variant, and a bounding box would be a hull"
+        );
+
+        let mut canvas = Canvas::new((64, 64), 1.0);
+        baked.declare_occluders(&mut canvas, Transform::translate([10.0, 20.0]));
+        assert_eq!(canvas.occluders.len(), 1);
+        let declared = canvas.occluders[0]
+            .polygon
+            .expect("a polygon declares itself with its edges");
+        assert_eq!(
+            declared.planes(),
+            rock.planes(),
+            "the field is handed the authored outline, verbatim"
+        );
+    }
+
+    #[test]
+    fn a_placed_polygon_travels_with_the_cell_it_was_placed_into() {
+        // The one reconstruction `placed` does: a cell's polygon shifted
+        // two tiles over arrives shifted — its corners are rebuilt from
+        // the edges, moved and refitted, and must land where the cell did
+        // rather than where the cell's picture sits by default.
+        let corners = [[-8.0, -4.0], [10.0, -2.0], [2.0, 9.0]];
+        let rock = Convex::new(&corners).expect("this triangle is convex");
+        let want = rock.bounds_as_box().center;
+        let mut baker = Baker::new();
+        accept(
+            &mut baker,
+            Placement::at([32.0, 16.0]),
+            &[Feature::occluding(Footprint::poly(rock))],
+        );
+        let moved = baker.finish().poly_occluders.swap_remove(0);
+        assert_eq!(
+            moved.planes().len(),
+            rock.planes().len(),
+            "the same edges travel, no more and none added"
+        );
+        let got = moved.bounds_as_box().center;
+        assert!(
+            (got[0] - (want[0] + 32.0)).abs() < 1e-3 && (got[1] - (want[1] + 16.0)).abs() < 1e-3,
+            "the bounds moved to {got:?}, expected [{}, {}]",
+            want[0] + 32.0,
+            want[1] + 16.0
+        );
+    }
+
+    #[test]
+    fn a_convex_polygon_is_refused_where_two_shapes_must_be_pushed_apart() {
+        // Occlusion asks whether a segment crossed an edge; movement and
+        // hurt boxes ask for a separating axis and a contact normal, and
+        // the bake says so instead of answering with a hull.
+        let corners = [[-8.0, -4.0], [10.0, -2.0], [2.0, 9.0]];
+        let rock = Convex::new(&corners).expect("this triangle is convex");
+        let mut baker = Baker::new();
+        let rejected = baker.add(
+            Placement::IDENTITY,
+            &[
+                Feature::solid(Footprint::poly(rock), 0.0),
+                Feature::hit(Footprint::poly(rock)),
+            ],
+        );
+        assert_eq!(rejected.len(), 2);
+        for why in [rejected[0].why, rejected[1].why] {
+            assert!(
+                why.contains("separating axis"),
+                "the refusal must name what is missing, got {why:?}"
+            );
+        }
+        assert!(baker.finish().is_empty());
     }
 
     #[test]
@@ -1153,7 +1359,7 @@ mod tests {
                 let x = trunc(rand() * 24.0);
                 let y = trunc(rand() * 24.0);
                 let shape = Footprint::rect([x + w / 2.0, y + h / 2.0], [w / 2.0, h / 2.0]);
-                authored.push(shape.collider());
+                authored.push(shape.collider().expect("a rect is baked to a collider"));
                 accept(
                     &mut baker,
                     Placement::IDENTITY,
@@ -1177,7 +1383,7 @@ mod tests {
                         continue;
                     }
                     let shape = Footprint::rect([col as f32 * 16.0, row as f32 * 16.0], [8.0, 8.0]);
-                    authored.push(shape.collider());
+                    authored.push(shape.collider().expect("a rect is baked to a collider"));
                     accept(
                         &mut baker,
                         Placement::IDENTITY,

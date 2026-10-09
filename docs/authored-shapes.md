@@ -7,12 +7,17 @@
 > [`Baked`](../src/bake.rs) with per-consumer fusion, the occluder field carries
 > polygons as variable-stride records, and
 > [`src/backend/tests/shadows.rs`](../src/backend/tests/shadows.rs) proves the
-> GPU shadows exactly where the CPU says it should. What has **not** shipped is
-> the half that lets an author *say* any of this: there is no textual schema for
-> a shape, so a shape can only reach the engine from code — a
-> `Canvas::occluder` / `occluder_polygon` call, or a `Baker` fed by hand. This
-> document records what is already true of the files involved and what has been
-> decided, so the next step does not have to rediscover either.
+> GPU shadows exactly where the CPU says it should. The reader has now shipped
+> too ([step 2 below](#order-of-work)): [`src/shapes.rs`](../src/shapes.rs)
+> reads the vocabulary below out of a parsed `frost::ron` document and hands a
+> [`Baker`](../src/bake.rs) its `Feature`s, or every error the document holds.
+> What has *not* shipped is the drawing half: `sprite_util` cannot draw these
+> shapes yet (step 3), and no loader in the repo feeds a sidecar's `shapes` to
+> a `Baker` at load time — so today a shape reaches a running game only
+> through this reader, a `Canvas::occluder` / `occluder_polygon` call, or a
+> hand-fed `Baker`. This document records what is true of the files involved
+> and what has been decided, so the next step does not have to rediscover
+> either.
 
 ## The sidecar already exists
 
@@ -106,7 +111,7 @@ read.
 shapes: [
     (kind: "rect", at: [16.0, 8.0], size: [24.0, 16.0], solid: true),
     (kind: "circle", at: [16.0, 2.0], radius: 6.0, occludes: true),
-    (kind: "poly", at: [0.0, 0.0], points: [[0.0, 0.0], [12.0, 4.0], [2.0, 14.0]], hit: true),
+    (kind: "poly", at: [0.0, 0.0], points: [[0.0, 0.0], [12.0, 4.0], [2.0, 14.0]], occludes: true),
     // one wall, both jobs: bouncy, and it throws a shadow
     (kind: "rect", at: [16.0, 30.0], size: [32.0, 8.0], solid: (bounce: 0.2), occludes: true),
 ]
@@ -178,7 +183,12 @@ the back door.
    the row view the two viewers share.
 2. **The reader**: the vocabulary above, in `src/`, reading `frost::ron::Val`
    directly (no serde) into `Feature`s for a `Baker` — plus the pixel-to-node
-   conversion, the typed errors, and the round-trip and space tests.
+   conversion, the typed errors, and the round-trip and space tests. **Done:**
+   `src/shapes.rs` is the reader — `authored_shapes` hands back the feature
+   list or every error the document holds, the flip lives in one function
+   pinned by its asymmetric test, and `Footprint::poly` carried the convex
+   outline into `Baker`, as an occluder only, until step 5 gives the roles
+   that push their separating axis.
 3. **`sprite_util` draws them**: rects, circles, polygons, with the convexity
    refusal and the existing `status:` line as the voice
    (`"shapes: that outline is concave"`).
