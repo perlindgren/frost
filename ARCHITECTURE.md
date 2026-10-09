@@ -477,8 +477,13 @@ nothing but data in and flat lists out.
   along the other, repeated until a pass changes nothing. An L stays two boxes
   and a gap stays a gap, while a 4×5 block becomes one box. Boxes fuse only
   with others turned alike, and a turn within a hair of a quarter turn is
-  snapped to it — which is what lets a tile laid down sideways fuse with its
-  upright neighbours.
+  snapped to it — which is what lets a tile laid down sideways, or turned three
+  quarters, fuse with its upright neighbours. Away from a quarter turn "alike"
+  means *the same number*: a turn reached by two different calculations costs an
+  extra record and never a wrong box, because a fusion group takes one of its own
+  members as its frame, and that is what makes the fusion exact rather than
+  nearly so. Widening the grouping past a rounding error buys the records back
+  and charges the difference to the edges.
 - Nothing is dropped quietly. `add` returns `Rejection { index, role, why }`,
   `#[must_use]`, for geometry the bake cannot honour: a circle asking to
   occlude, which needs the convex-polygon record the shaders do not have yet,

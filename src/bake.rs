@@ -465,6 +465,13 @@ impl Baker {
 /// the same kind of ground: an upright tile and one laid down sideways come out
 /// of here alike, and a box's angle is either a quarter turn or genuinely its
 /// own, never the float residue of a composition that meant a quarter turn.
+///
+/// Away from a quarter turn nothing is folded, so two boxes share a group only
+/// when their turns are the same number. A turn reached by two different
+/// calculations therefore costs one extra record — and only that, since a
+/// group's frame is one of its own members, which is what lets the flattened
+/// fusion be exact rather than nearly so. Buckets wider than a rounding error
+/// would buy the records back and charge the difference to the edges.
 fn canonical(b: &OrientedBox) -> OrientedBox {
     let mut out = *b;
     while out.angle >= std::f32::consts::FRAC_PI_2 {
@@ -908,11 +915,12 @@ mod tests {
     #[test]
     fn a_shared_odd_angle_fuses_on_agreement_and_misses_on_drift() {
         // Two boxes of one orientation, edge to edge along their own axis, at
-        // an angle nobody would call a quarter turn. Reached by the same
-        // literal, the two fuse like any row of tiles would.
+        // an angle nobody would call a quarter turn. `first` and `second` are
+        // the turns each box carries: the same number reaches both, or the
+        // second arrives there through arithmetic of its own.
         let (sin, cos) = 0.4f32.sin_cos();
         let along_own_x = [32.0 * cos, 32.0 * sin];
-        let pair = |turn| {
+        let pair = |first: f32, second: f32| {
             let mut baker = Baker::new();
             accept(
                 &mut baker,
@@ -920,7 +928,7 @@ mod tests {
                 &[Feature::occluding(Footprint::tilted(
                     [0.0, 0.0],
                     [16.0, 8.0],
-                    turn,
+                    first,
                 ))],
             );
             accept(
@@ -929,27 +937,33 @@ mod tests {
                 &[Feature::occluding(Footprint::tilted(
                     along_own_x,
                     [16.0, 8.0],
-                    turn,
+                    second,
                 ))],
             );
             baker.finish().occluders
         };
         assert_eq!(
-            pair(0.4).len(),
+            pair(0.4, 0.4).len(),
             1,
             "two boxes of one turn, edge to edge, should be one"
         );
 
-        // Reached by arithmetic instead - the same turn, gathered through a sum
-        // the way a tool measuring an edge might - the two land in different
-        // groups and stay two records. That is the miss this module accepts
-        // today: an angle is folded near a quarter turn, not near an arbitrary
-        // one, and folding exactly is what buys the flattened fusion its
-        // exactness. Extra records cost tests per pixel; an approximate frame
-        // would cost edges, so the conservatism is deliberate.
+        // One ULP of drift between them and they stay two records, however
+        // surely they touch: an angle is folded near a quarter turn, not near
+        // an arbitrary one, and folding exactly is what buys the flattened
+        // fusion its exactness. The cost of the conservatism is records per
+        // pixel; the cost of an approximate frame would be edges.
         let drifted = (0.4f32 + 10.0) - 10.0;
         assert_ne!(drifted, 0.4, "the drift the test is about vanished");
-        assert_eq!(pair(drifted).len(), 2);
+        assert_eq!(pair(0.4, drifted).len(), 2);
+        // And the same turn reached two ways still covers the same ground, so
+        // the two records are correct, just not as few as they could be.
+        let two = pair(0.4, drifted);
+        for (want_angle, want_center) in [(0.4, [0.0, 0.0]), (drifted, along_own_x)] {
+            let found = two.iter().find(|b| b.angle == want_angle).unwrap();
+            assert_eq!(found.center, want_center);
+            assert_eq!(found.half, [16.0, 8.0]);
+        }
     }
 
     #[test]
