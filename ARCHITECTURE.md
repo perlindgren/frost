@@ -279,11 +279,13 @@ never count (`Diagnostics` excludes them like backgrounds).
   glow` per pixel; `SceneNode::glow` (a `Color`, alpha-scaled) is the shape's
   own emission — visible in the dark, never shadowed, never spilling onto
   neighbors (attach a `Shape::Light` child for that); `SceneNode::occludes`
-  makes a rectangle's transformed silhouette block every light's path to
-  pixels behind it — a shadow caster. A wall can be `lit + occludes` at once.
-  Only a painted *rectangle* reaches the field that way — `Shape::Sprite` has
-  no rectangle silhouette to pack — so anything else that must cast, a sprite
-  body, one tile of a map, a physics hit box, declares itself with
+  makes a shape's transformed silhouette block every light's path to pixels
+  behind it — a shadow caster. A wall can be `lit + occludes` at once. A
+  painted rectangle reaches the field as itself and a painted circle as the
+  sixteen-gon inscribed in it, because a curve still has to be told to
+  hardware as flat edges; `Shape::Sprite` has no silhouette to pack at all, so
+  anything else that must cast, a sprite body, one tile of a map, a physics hit
+  box, declares itself with
   `Canvas::occluder(world, center, half)`: a box in its own space plus a world
   transform, joining the same field after the painted occluders. Both channels
   keep the shape local, which is why a non-uniformly scaled caster still throws
@@ -843,7 +845,7 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **304 lib tests + 3 integration tests (`tests/`) + 7 doctests**
+Baseline: **307 lib tests + 3 integration tests (`tests/`) + 7 doctests**
 passing, `cargo build --examples` clean. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
@@ -1132,7 +1134,7 @@ module's documented escape hatch remains `rapier2d` if this outgrows it.
 
 ```
 cargo build --examples   # expect EXIT 0
-cargo test               # expect 304 lib + 3 integration + 7 doctests
+cargo test               # expect 307 lib + 3 integration + 7 doctests
 cargo test --examples    # expect ~194 passed (unit tests inside the examples,
                            # centipede's rig included; ron_view/view.rs compiles
                            # into both ron_view and sprite_util, so its 2 fold

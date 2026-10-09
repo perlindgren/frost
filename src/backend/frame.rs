@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::canvas::Occluder;
+use crate::collision::Convex;
 use crate::objects::*;
 use crate::particles::Particle;
 
@@ -102,7 +103,8 @@ pub(crate) enum Draw {
         lit: f32,
         /// Whether the shape occludes the frame's lights: `1.0` when the
         /// node's `occludes` flag is set, `0.0` when it casts no shadow.
-        /// Only rectangles (kind `1.0`) are packed into the occluder field.
+        /// Rectangles (kind `1.0`) and circles (kind `0.0`) reach the
+        /// occluder field, a circle as the polygon inscribed in it.
         occludes: f32,
         z: f32,
         /// Whether the draw was produced by a [`crate::Diagnostics`]
@@ -968,9 +970,14 @@ pub(crate) struct OccluderField {
 /// Packs the frame's occluder field: the occluding shapes it drew, then the
 /// occluders the app declared.
 ///
-/// Rectangle [`Draw::Shape`]s flagged `occludes` come first, in call order,
-/// followed by `declared` — the [`Canvas::occluder`](crate::Canvas::occluder)
-/// calls, in declaration order. The two channels add; neither suppresses the
+/// Painted rectangles and circles flagged `occludes` come first, in call order
+/// — a circle as the polygon cut from it, since a curved edge has to be told to
+/// hardware as flat ones — followed by `declared`, the
+/// [`Canvas::occluder`](crate::Canvas::occluder) and
+/// [`Canvas::occluder_polygon`](crate::Canvas::occluder_polygon) calls, in
+/// declaration order. Any other painted shape casts nothing: a sprite, a line
+/// or a glyph has no silhouette here to pack, which is what the declare channel
+/// exists for. The two channels add; neither suppresses the
 /// other. A shape whose world transform cannot be inverted is skipped (it
 /// collapses to a line or a point and occludes nothing), and every other draw
 /// is ignored.
@@ -992,10 +999,39 @@ pub(crate) fn pack_occluder_field(draws: &[Draw], declared: &[Occluder]) -> Occl
         else {
             continue;
         };
-        if *kind != 1.0 || *occludes != 1.0 {
+        if *occludes != 1.0 {
             continue;
         }
-        count += write_occluder_record(&mut data, &mut cursor, world, center, params, &[]);
+        // The two kinds the paint pipeline draws and the field can hold. A
+        // rectangle is its own record; a circle is the polygon the field
+        // speaks, cut here rather than in the shape shader because the shadow
+        // wants edges where the painting wants a distance, and the record's
+        // inverse transform then carries the turn or mirror for free. A circle
+        // without a usable radius is skipped for the very reason a collapsed
+        // transform is: it occludes nothing — and no polygon can be cut from
+        // it, so passing it on would trade a silent no-op for a panic in the
+        // frame path, which is the worse of the two by a wide margin.
+        let disc = match *kind {
+            1.0 => None,
+            0.0 if params[0] > 0.0 && params[0].is_finite() => {
+                Some(Convex::disc(*center, params[0]))
+            }
+            _ => continue,
+        };
+        count += match disc {
+            None => write_occluder_record(&mut data, &mut cursor, world, center, params, &[]),
+            Some(polygon) => {
+                let bounds = polygon.bounds_as_box();
+                write_occluder_record(
+                    &mut data,
+                    &mut cursor,
+                    world,
+                    &bounds.center,
+                    &bounds.half,
+                    polygon.planes(),
+                )
+            }
+        };
     }
     for o in declared {
         // A box brings no edges; a polygon brings its own, already in the

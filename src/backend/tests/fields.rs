@@ -3,7 +3,7 @@
 use super::super::*;
 use super::*;
 use crate::canvas::Occluder;
-use crate::collision::Convex;
+use crate::collision::{Convex, DISC_SIDES};
 use crate::objects::*;
 
 fn field_f32(data: &[u8], offset: usize) -> f32 {
@@ -227,14 +227,15 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
         occludes: 0.0,
         z: 0.0,
     };
-    // Flagged, but a circle: only rectangles occlude.
-    let circle = Draw::Shape {
+    // Flagged, but a sprite: its silhouette is the texture's, and the field
+    // has nothing to pack that into — the declare channel is for this.
+    let sprite = Draw::Shape {
         diagnostic: false,
         glow: black(),
         world: Transform::identity(),
         center: [0.0, 0.0],
         params: [1.0, 0.0],
-        kind: 0.0,
+        kind: 2.0,
         aa: 0.0,
         color: black(),
         lit: 0.0,
@@ -256,7 +257,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
         occludes: 1.0,
         z: 0.0,
     };
-    let field = pack_occluder_field(&[translated, unflagged, rotated, circle, degenerate], &[]);
+    let field = pack_occluder_field(&[translated, unflagged, rotated, sprite, degenerate], &[]);
     assert_eq!(field.count, 2);
     assert_eq!(
         field.data.len(),
@@ -503,4 +504,89 @@ fn a_polygon_record_carries_its_edges_and_the_next_record_follows_them() {
         assert_eq!(field_f32(&field.data, at + 8), plane[2]);
         assert_eq!(field_f32(&field.data, at + 12), 0.0);
     }
+}
+
+#[test]
+fn a_flagged_circle_is_packed_as_the_polygon_cut_from_it() {
+    // Painting a circle and flagging it used to be a silent no-op: the field
+    // only had room for rectangles. It now has edges, so the round silhouette
+    // the author drew reaches the light as the sixteen-gon inscribed in it,
+    // with the record's box left holding the bounds the shader rejects a ray
+    // against before it clips a single edge.
+    let radius = 12.0;
+    let painted = Draw::Shape {
+        diagnostic: false,
+        glow: black(),
+        world: Transform::translate([10.0, 20.0]),
+        center: [3.0, -4.0],
+        params: [radius, radius],
+        kind: 0.0,
+        aa: 0.0,
+        color: black(),
+        lit: 0.0,
+        occludes: 1.0,
+        z: 0.0,
+    };
+    let want = Convex::disc([3.0, -4.0], radius);
+    let field = pack_occluder_field(&[painted], &[]);
+    assert_eq!(field.count, 1);
+    assert_eq!(
+        field.data.len(),
+        OCCLUDER_FIELD_HEADER + OCCLUDER_RECORD + DISC_SIDES * OCCLUDER_PLANE,
+        "a painted circle should cost one record and its own sixteen edges"
+    );
+    let record = OCCLUDER_FIELD_HEADER;
+    assert_eq!(field_f32(&field.data, record + 40), DISC_SIDES as f32);
+    assert_eq!(
+        field_f32(&field.data, record + 24),
+        3.0,
+        "the polygon's centre"
+    );
+    assert_eq!(field_f32(&field.data, record + 32), radius);
+    assert_eq!(field_f32(&field.data, record + 36), radius);
+    for (k, plane) in want.planes().iter().enumerate() {
+        let at = record + OCCLUDER_RECORD + k * OCCLUDER_PLANE;
+        assert_eq!(field_f32(&field.data, at), plane[0]);
+        assert_eq!(field_f32(&field.data, at + 4), plane[1]);
+        assert_eq!(field_f32(&field.data, at + 8), plane[2]);
+    }
+}
+
+#[test]
+fn a_painted_circle_without_a_usable_radius_casts_nothing_instead_of_panicking() {
+    // A radius tweens through zero, and a circle is drawn at infinite size by
+    // someone who meant the opposite of what they wrote. Neither is a shape the
+    // field can hold - and unlike a rectangle, whose degenerate record simply
+    // hits nothing, cutting a polygon out of nothing is an error the polygon
+    // builder rightly refuses. The frame path takes the refusal as a skip, the
+    // same answer a collapsed transform gets, rather than as a panic that stops
+    // the run over a pixel nobody can see.
+    let bare = |radius: f32| Draw::Shape {
+        diagnostic: false,
+        glow: black(),
+        world: Transform::identity(),
+        center: [0.0, 0.0],
+        params: [radius, radius],
+        kind: 0.0,
+        aa: 0.0,
+        color: black(),
+        lit: 0.0,
+        occludes: 1.0,
+        z: 0.0,
+    };
+    for radius in [0.0, -4.0, f32::NAN, f32::INFINITY] {
+        let field = pack_occluder_field(&[bare(radius)], &[]);
+        assert_eq!(
+            field.count, 0,
+            "a circle of radius {radius} should be skipped, not packed"
+        );
+        assert_eq!(
+            field.data.len(),
+            OCCLUDER_FIELD_HEADER,
+            "and leave no record behind"
+        );
+    }
+    // While the real one beside them still stands.
+    let field = pack_occluder_field(&[bare(0.0), bare(6.0)], &[]);
+    assert_eq!(field.count, 1, "only the usable circle reaches the field");
 }

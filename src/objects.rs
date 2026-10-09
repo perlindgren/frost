@@ -1151,13 +1151,14 @@ pub struct SceneNode {
     /// unlit, exactly as before.
     pub lit: bool,
     /// Whether the node's own shape occludes the frame's lights: when true
-    /// and the shape is a rectangle, the rectangle's silhouette blocks the
-    /// light's path to every lit pixel behind it, casting a shadow. How
+    /// the shape's silhouette blocks the light's path to every lit pixel
+    /// behind it, casting a shadow — a rectangle as itself, a circle as the
+    /// polygon cut from it. How
     /// sharp that shadow's edge is belongs to the light, not the occluder:
     /// a point-sized light ([`Light::penumbra`] `0.0`) is cut off on a hard
     /// per-pixel silhouette, while a light with a penumbra fades across an
     /// edge as wide as its disk. The shadow is evaluated in the frame's
-    /// pixel space from the rectangle's full composed transform, so a
+    /// pixel space from the shape's full composed transform, so a
     /// rotated, scaled, or translated node casts the shadow of wherever it
     /// actually sits.
     ///

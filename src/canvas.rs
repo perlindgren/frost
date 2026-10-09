@@ -223,9 +223,9 @@ impl Canvas {
     /// corners and all — and it is why a box is declared as a local shape
     /// instead of as the four world corners it happens to have this frame.
     ///
-    /// Declaring is how anything that is not a painted rectangle occludes.
-    /// The light field takes its occluders from rectangle shapes flagged
-    /// `occludes`, so a `Sprite` — or a whole tilemap, which is one sprite
+    /// Declaring is how anything that is not a painted rectangle or circle
+    /// occludes. The light field takes its painted occluders from rectangle
+    /// and circle shapes flagged `occludes`, so a `Sprite` — or a whole tilemap, which is one sprite
     /// with an atlas — casts no shadow however its node is flagged: an
     /// occluder that is a sprite's body, a tile, or a physics body's hit box
     /// has to be declared. Declared occluders join the field after the painted

@@ -660,3 +660,154 @@ fn a_disc_shadows_the_gpu_the_way_the_cpu_says_it_should() {
          tessellation is coarser than {DISC_SIDES} sides claim to be"
     );
 }
+
+/// The same circle reaching the light field by the other road: painted and
+/// flagged, rather than declared. The packer used to drop these on the floor —
+/// only rectangles had a record — so a `Shape::circle` with `occludes` set
+/// lit everything behind it and said nothing about it.
+///
+/// The claim is therefore not primarily about geometry, which the declared
+/// case above already pins: it is that the two roads agree pixel for pixel.
+/// Painting a circle and declaring a circle must produce the same record and so
+/// the same shadow, because the shadow is a property of the shape and not of
+/// how the author happened to mention it.
+#[test]
+fn a_painted_circle_and_a_declared_one_shadow_alike() {
+    let surface = Draw::Shape {
+        world: Transform::identity(),
+        center: [32.0, 32.0],
+        params: [80.0, 80.0],
+        kind: 1.0,
+        aa: 1.0,
+        color: objects::Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        },
+        glow: black(),
+        lit: 1.0,
+        occludes: 0.0,
+        z: 0.0,
+        diagnostic: false,
+    };
+    let lamp = [8.0, 8.5];
+    let light = Draw::Light {
+        pos: lamp,
+        radius: 1000.0,
+        intensity: 1.0,
+        color: objects::Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        },
+        penumbra: 0.0,
+        dir: [1.0, 0.0],
+        cos_half: -1.0,
+        feather: 0.0,
+        z: 0.0,
+    };
+    // Painted, turned and placed in the same way a node would be, and drawn
+    // invisible: this is about the shadow it casts, not the pixels it covers.
+    //
+    // The two channels speak different spaces, which this test is partly here
+    // to state: a draw's `world` is already in pixel space — the canvas folded
+    // its flip in when it expanded the node — while `Canvas::occluder_polygon`
+    // takes a user-space transform and applies that flip itself. Handing the
+    // same numbers to both places the shape in two different spots, so the
+    // painted one is given what a node would actually produce.
+    let radius = 14.0;
+    let world = Transform::rotate(0.4).compose(&Transform::translate([6.0, -10.0]));
+    // Declared first, so the painted draw is given exactly the record world
+    // the declare channel produced — pixel space, flip included, rather than
+    // the user-space numbers a caller hands over.
+    let mut canvas = Canvas::new((SPAN, SPAN), 1.0);
+    canvas.occluder_polygon(world, &Convex::disc([0.0, 0.0], radius));
+    let painted_world = canvas.occluders[0].world;
+    let caster = Draw::Shape {
+        world: painted_world,
+        center: [0.0, 0.0],
+        params: [radius, radius],
+        kind: 0.0,
+        aa: 1.0,
+        color: objects::Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        },
+        glow: black(),
+        lit: 0.0,
+        occludes: 1.0,
+        z: 0.0,
+        diagnostic: false,
+    };
+
+    let painted = match paint(&[light.clone(), surface.clone(), caster], &[]) {
+        Some(red) => red,
+        None => return,
+    };
+    let declared = match paint(&[light, surface], &canvas.occluders) {
+        Some(red) => red,
+        None => return,
+    };
+    assert_eq!(
+        painted, declared,
+        "painting a circle and declaring it produced different shadows: the two \
+         roads must reach the field as the same record"
+    );
+
+    // And that one shared shadow is the one the CPU computes from the same
+    // sixteen edges, asked in the occluder's own space as the shader asks it.
+    let to_local = painted_world.invert().expect("a non-degenerate world");
+    let polygon = Convex::disc([0.0, 0.0], radius);
+    let lamp_local = to_local.apply(lamp);
+    let blocked = |x: u32, y: u32| {
+        polygon.occludes(lamp_local, to_local.apply([x as f32 + 0.5, y as f32 + 0.5]))
+    };
+    let mut wrong = vec![];
+    let (mut checked, mut dark, mut lit) = (0usize, 0usize, 0usize);
+    for y in 0..SPAN {
+        for x in 0..SPAN {
+            let shadowed = painted[(y * SPAN + x) as usize] < 128;
+            if shadowed {
+                dark += 1;
+            } else {
+                lit += 1;
+            }
+            let here = blocked(x, y);
+            let settled = (-1i32..=1).all(|dy| {
+                (-1i32..=1).all(|dx| {
+                    let (cx, cy) = (x as i32 + dx, y as i32 + dy);
+                    cx < 0
+                        || cy < 0
+                        || cx as u32 >= SPAN
+                        || cy as u32 >= SPAN
+                        || blocked(cx as u32, cy as u32) == here
+                })
+            });
+            if settled {
+                checked += 1;
+                if shadowed != here {
+                    wrong.push((x, y, here, painted[(y * SPAN + x) as usize]));
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} pixels disagree with the CPU's own sixteen-gon, first five of {:?}",
+        wrong.len(),
+        &wrong[..wrong.len().min(5)]
+    );
+    assert!(
+        dark > 200 && lit > 200,
+        "the painted circle left {dark} pixels dark and {lit} lit"
+    );
+    assert!(
+        checked > (SPAN * SPAN) as usize / 2,
+        "only {checked} of {} pixels sat away from the shadow edge",
+        SPAN * SPAN
+    );
+}
