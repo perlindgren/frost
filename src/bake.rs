@@ -47,10 +47,10 @@
 //! drawn while the GPU is given the edges it can hold — the same arrangement
 //! that lets a fused box keep its own turn until the transform carries it.
 //!
-//! Not here yet: capsules, the sidecar reader that would
-//! build these features from a `.ron`, and a tile-grid broadphase for line
-//! queries over very large maps — fused strips keep a linear scan cheap enough
-//! until a real map says otherwise.
+//! Not here yet: capsules, the reader that would build these features from the
+//! `.ron` sidecar that already rides each sprite (`docs/authored-shapes.md`),
+//! and a tile-grid broadphase for line queries over very large maps — fused
+//! strips keep a linear scan cheap enough until a real map says otherwise.
 
 use crate::canvas::Canvas;
 use crate::collision::{Circle, Collider, Convex, OrientedBox};

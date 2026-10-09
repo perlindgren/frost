@@ -37,7 +37,8 @@ src/objects.rs        Color, Transform, Shape, Light, ParticleShape,
                       world_at / camera_world
 src/tween.rs          Tween<T> (f32 / [f32;2]) with Repeat modes
 src/particles.rs      Particle, ParticleSystem (pure simulation)
-src/collision.rs      OrientedBox, Circle, Collider, push_out, reflect (pure math)
+src/collision.rs      OrientedBox, Circle, Collider, Convex, push_out, reflect
+                      (pure math; Convex is the occluder's polygon, half-planes only)
 src/bake.rs           Feature, Role, Material -> Baker -> Baked (authored geometry)
 src/rng.rs            Rng — seedable splitmix64, state get/set for save games
 src/diagnostics.rs    Diagnostics (flag-gated FPS/FT/PROC/DRAW HUD overlay
@@ -515,10 +516,12 @@ nothing but data in and flat lists out.
 - Not here yet: capsules; convex polygons as `solids` or `hits`, which is a
   step of its own — they occlude already, but pushing two polygons apart needs
   the separating axis of a curved boundary and a contact normal worth the name,
-  while occlusion only ever asks whether a segment crossed an edge; the sidecar
-  reader that would build these features from a `.ron`; and a tile-grid
-  broadphase for line queries over very large maps — fused strips keep a linear
-  scan cheap enough until a real map says otherwise.
+  while occlusion only ever asks whether a segment crossed an edge; the reader
+  that would build these features from the `.ron` sidecar which already rides
+  each sprite, whose shape and constraints are written up in
+  `docs/authored-shapes.md`; and a tile-grid broadphase for line queries over
+  very large maps — fused strips keep a linear scan cheap enough until a real
+  map says otherwise.
 
 ## Shaders (shaders/*.wgsl, src/shaders.rs)
 
