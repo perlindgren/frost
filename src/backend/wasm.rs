@@ -282,6 +282,7 @@ impl<P: Process> WebFrost<P> {
             core.render_size,
             core.blit_filter,
             core.escape_exits,
+            core.close_exits,
             core.scene,
             core.process,
         );

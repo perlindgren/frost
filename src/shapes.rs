@@ -1,6 +1,5 @@
 //! The shapes an author drew in the picture, read out of a sprite's `.ron`
-//! sidecar: the `shapes` key's entries turned into [`Feature`]s for a
-//! [`Baker`](crate::Baker), placed in the node's space.
+//! sidecar: the `shapes` key's entries, in one pass, as both views of them.
 //!
 //! The vocabulary is one flat list, one entry per shape, with the kind as
 //! a field and the three consumers' roles as flags on the same entry — a
@@ -25,6 +24,16 @@
 //! occluder only — pushing two polygons apart needs a separating axis and
 //! a contact normal worth the name, which is a step of its own.
 //!
+//! The read serves two consumers, so it has two arms:
+//! [`read_shapes`] hands back what the author drew, in the texture's own
+//! pixels, plus every error — the arm a drawing tool uses, drawing every
+//! entry whose geometry it could read while the errors speak beside it
+//! (`sprite_util` overlays the shapes over the sprite exactly this way).
+//! [`authored_shapes`] is the arm a [`Baker`](crate::Baker) feeds: the
+//! same single pass, but all-or-nothing — one defect is the whole
+//! document refused — and its entries stand in the node's space, every
+//! role of an entry a [`Feature`] of its own.
+//!
 //! This is a vocabulary for a document designed for additions. The
 //! sidecar round-trips through `sprite_util` with its comments and its
 //! unknown keys intact — the tool interprets `atlas` and two-number
@@ -42,30 +51,33 @@
 //! * **Errors are returned, never logged.** The sidecar's standing policy
 //!   — an unparseable file: the sprite simply loads — is right for an
 //!   atlas grid and wrong for hit boxes: a sprite that silently loads with
-//!   no collision is a bug nobody can see by playing. [`authored_shapes`]
-//!   hands the caller every error it found, all of them in one pass, and
-//!   the caller decides whether the sprite loads; the reader never
-//!   logs-and-continues.
+//!   no collision is a bug nobody can see by playing. Both arms hand the
+//!   caller every error it found, all of them in one pass, and the caller
+//!   decides whether the sprite loads; the reader never logs-and-continues.
 //!
 //! Authored numbers are in the texture's pixels: x right, y *down*, origin
 //! at the image's top-left. The engine's footprints stand centred on the
 //! node in user space, which is y-*up*, one unit per pixel — so the flip
 //! happens here, in [`pixel_to_node`] and nowhere else, the way
-//! `docs/authored-shapes.md` records it must.
-//! A polygon is convex or refused: [`Convex::new`] rejects a concave or
-//! self-crossing outline, and this reader passes that refusal straight
+//! `docs/authored-shapes.md` records it must. An authored shape that
+//! reaches a baker takes the flip once, on its way out of this module;
+//! an authored shape that reaches the author's eyes never takes it at
+//! all. A polygon is convex or refused: [`Convex::new`] rejects a concave
+//! or self-crossing outline, and this reader passes that refusal straight
 //! through as its own message — nothing is decomposed, and nothing is
-//! quietly hulled.
+//! quietly hulled. Convexity survives a reflection, so it is decided in
+//! the pixels it was authored in, before the flip — a drawing tool and a
+//! baker must agree on which outlines are the same outline.
 
 use crate::bake::{Feature, Footprint, POLY_NOT_PUSHED};
 use crate::collision::{Convex, MAX_PLANES};
-use crate::ron::{Doc, Kind, Val};
+use crate::ron::{Kind, Val};
 
 /// Every error one reading of a sidecar produced, at once.
 ///
 /// An author fixing a sidecar wants the whole list, not the first
-/// complaint and a rebuild per round trip, so [`authored_shapes`] reports
-/// every defect it finds in the document in a single pass. The crate's
+/// complaint and a rebuild per round trip, so one reading of the
+/// document reports every defect it finds in a single pass. The crate's
 /// standing policy for sidecars is that a bad file still loads the
 /// sprite; that is the right call for an atlas grid and the wrong one for
 /// a hit box, so this travels to the caller, who owns the decision — a
@@ -126,55 +138,164 @@ impl std::fmt::Display for ShapeError {
     }
 }
 
-/// The names an entry may use, and nothing else: the vocabulary *inside*
-/// an entry is closed, because the tool preserves faithfully whatever it
-/// does not know, so a `solidss:` key would be kept forever and never
-/// read — the mistake has to be caught while it can still be fixed.
-const KNOWN_KEYS: [&str; 8] = [
-    "kind", "at", "size", "radius", "points", "solid", "occludes", "hit",
-];
+/// One entry of the `shapes` list, as its author drew it: the geometry
+/// in the texture's own pixels — x right, y down from the image's
+/// top-left — with the roles the entry asked for.
+///
+/// This is what the author sees and what a tool draws; [`authored_shapes`]
+/// turns the same entries into the engine's [`Feature`]s, which is where
+/// the pixel-to-node flip happens. An entry stands here whenever its
+/// *geometry* read — kind, place and shape all understood — even when
+/// something else about it failed: a tool showing the author their own
+/// sidecar wants the outlines it could read on screen *while* it reports
+/// what it refused. An entry whose geometry it could not read is absent,
+/// and its errors say why.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Authored {
+    /// The entry's seat in the `shapes` list — the same address the
+    /// errors of [`ShapeError::entry`] give.
+    pub entry: usize,
+    /// The centre, in the image's pixels.
+    pub at: [f32; 2],
+    /// What the entry is, in the image's pixels.
+    pub shape: AuthoredShape,
+    /// The three questions, exactly as answered; a bad answer is off
+    /// *and* in the error list. `bounce` belongs to `solid`.
+    pub solid: bool,
+    pub bounce: f32,
+    pub occludes: bool,
+    pub hit: bool,
+}
 
-/// Read the `shapes` key of an already-parsed sidecar into the features a
-/// [`Baker`](crate::Baker) takes, with the authored pixels turned into the node's
-/// space.
+/// The geometry of one authored entry, in the image's pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AuthoredShape {
+    /// Centred on the entry's `at`; full width and height, not
+    /// half-extents — half-extents are the engine's convention, not the
+    /// author's.
+    Rect { size: [f32; 2] },
+    /// Centred on the entry's `at`.
+    Circle { radius: f32 },
+    /// Corners *relative to* the entry's `at`, closed; convex (the read
+    /// refused anything else) and no more than [`MAX_PLANES`] of them.
+    Poly { points: Vec<[f32; 2]> },
+}
+
+/// Read the `shapes` key of a parsed sidecar as authored: every entry
+/// whose geometry read, in the texture's pixels, and every error the
+/// document holds — at once, in one pass over `root`, the sidecar's
+/// parsed tree.
 ///
-/// Opening the file is the caller's job — this takes the parsed
-/// [`Doc`], never a path — and so is deciding what a refusal means: the
-/// `Ok` arm carries every entry the document got right, the `Err` arm
-/// every defect it got wrong, *all of them*, because an author fixing a
-/// sidecar wants the whole list at once.
+/// The two halves answer different questions and both travel back
+/// together: a drawing tool paints the list it got and reads the errors
+/// aloud (which is what `sprite_util` does — shapes on the sprite, the
+/// first refusal on the status line), while a baker wants
+/// [`authored_shapes`], which treats any error as a refusal of the whole
+/// document. A geometry that read but whose *roles* failed — a polygon
+/// asked to push, a flag written as a number — draws all the same: the
+/// picture shows what was drawn, the errors say what was refused.
 ///
-/// `size_px` is the image the shapes were drawn on, `[width, height]` in
-/// pixels: authored positions are pixels of that image with y down from
-/// its top-left, and the conversion lands each shape centred on the node,
-/// y up.
-///
-/// No `shapes` key, or an empty list, is not an error and returns nothing
-/// — which is where a caller's derive-from-bounds default takes over: a
-/// sprite or tile with no authored shapes derives them from the bounds it
-/// already has. The key is authoritative only once it is present, because
-/// the moment an author draws a shape the picture has stopped describing
-/// it.
-pub fn authored_shapes(doc: &Doc, size_px: [f32; 2]) -> Result<Vec<Feature>, ShapeErrors> {
+/// No `shapes` key, or an empty list, is not an error and returns
+/// nothing — which is where a caller's derive-from-bounds default takes
+/// over: a sprite or tile with no authored shapes derives them from the
+/// bounds it already has. The key is authoritative only once it is
+/// present, because the moment an author draws a shape the picture has
+/// stopped describing it.
+pub fn read_shapes(root: &Val) -> (Vec<Authored>, ShapeErrors) {
     let mut errors = Vec::new();
-    let Some(shapes) = top_level_key(&doc.root, "shapes") else {
-        return Ok(Vec::new());
+    let Some(shapes) = top_level_key(root, "shapes") else {
+        return (Vec::new(), ShapeErrors::default());
     };
     let Val::Seq { items, .. } = shapes else {
         errors.push(problem(
             None,
             "the value of `shapes` should be a list of entries like (kind: \"rect\", ..)",
         ));
-        return Err(ShapeErrors { errors });
+        return (Vec::new(), ShapeErrors { errors });
     };
-    let mut features = Vec::new();
+    let mut authored = Vec::new();
     for (index, item) in items.iter().enumerate() {
-        features.extend(read_entry(index, &item.val, size_px, &mut errors));
+        authored.extend(read_entry(index, &item.val, &mut errors));
+    }
+    (authored, ShapeErrors { errors })
+}
+
+/// Read the `shapes` key of a parsed sidecar into the features a
+/// [`Baker`](crate::Baker) takes, with the authored pixels turned into the node's
+/// space.
+///
+/// This is [`read_shapes`] and the flip: one pass reads every entry, and
+/// any error at all refuses the whole document — a missing hit box is
+/// invisible in play, so the caller gets `Err` with *every* defect in it,
+/// never a partial bake that looks fine. `size_px` is the image the
+/// shapes were drawn on, `[width, height]` in pixels: authored positions
+/// are pixels of that image with y down from its top-left, and the
+/// conversion lands each shape centred on the node, y up. Each role an
+/// entry asked for becomes its own [`Feature`], all of them over the one
+/// footprint.
+pub fn authored_shapes(root: &Val, size_px: [f32; 2]) -> Result<Vec<Feature>, ShapeErrors> {
+    let (authored, errs) = read_shapes(root);
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    let mut errors = Vec::new();
+    let mut features = Vec::new();
+    for entry in &authored {
+        if let Some(shape) = footprint(entry, size_px, &mut errors) {
+            if entry.solid {
+                features.push(Feature::solid(shape, entry.bounce));
+            }
+            if entry.occludes {
+                features.push(Feature::occluding(shape));
+            }
+            if entry.hit {
+                features.push(Feature::hit(shape));
+            }
+        }
     }
     if errors.is_empty() {
         Ok(features)
     } else {
         Err(ShapeErrors { errors })
+    }
+}
+
+/// One authored entry's footprint in the node's space: the geometry
+/// flipped through the one conversion, full sizes become half-extents,
+/// and the polygon's corners travel through the same single conversion
+/// as every other authored position — the convexity that made the read
+/// accept the outline was decided in the pixels and survives the flip
+/// (a reflection preserves straight lines and betweenness, so a convex
+/// outline stays convex), which is what lets a refusal-free read reach
+/// here; if it somehow did not, the conversion says so rather than
+/// baking a shape nobody authored.
+fn footprint(
+    entry: &Authored,
+    size_px: [f32; 2],
+    errors: &mut Vec<ShapeError>,
+) -> Option<Footprint> {
+    let center = pixel_to_node(entry.at, size_px);
+    match &entry.shape {
+        AuthoredShape::Rect { size } => {
+            Some(Footprint::rect(center, [size[0] / 2.0, size[1] / 2.0]))
+        }
+        AuthoredShape::Circle { radius } => Some(Footprint::disc(center, *radius)),
+        AuthoredShape::Poly { points } => {
+            let moved: Vec<[f32; 2]> = points
+                .iter()
+                .map(|p| pixel_to_node([entry.at[0] + p[0], entry.at[1] + p[1]], size_px))
+                .collect();
+            match Convex::new(&moved) {
+                Some(outline) => Some(Footprint::poly(outline)),
+                None => {
+                    errors.push(problem(
+                        Some(entry.entry),
+                        "that outline is concave or self-crossing: a polygon is convex or refused — it is not decomposed, and not hulled",
+                    ));
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -212,22 +333,18 @@ fn top_level_key<'v>(root: &'v Val, name: &str) -> Option<&'v Val> {
 }
 
 /// Read one entry of the list, collecting every complaint it earns into
-/// `errors` and returning the features it deserves — none at all if any
-/// of them structural, because a half-read shape is the silently-wrong
-/// kind this reader exists to stop.
-fn read_entry(
-    index: usize,
-    entry: &Val,
-    size_px: [f32; 2],
-    errors: &mut Vec<ShapeError>,
-) -> Vec<Feature> {
-    let start = errors.len();
+/// `errors` and returning it whenever its *geometry* read. The roles
+/// travel with it as answered — a bad answer is off and in the error
+/// list — because the picture and the bake ask different questions of a
+/// broken entry: the picture shows the outline it can still show, the
+/// bake receives no features from a document holding any error at all.
+fn read_entry(index: usize, entry: &Val, errors: &mut Vec<ShapeError>) -> Option<Authored> {
     let Val::Struct { fields, .. } = entry else {
         errors.push(problem(
             Some(index),
             "an entry is a struct like (kind: \"rect\", at: [16.0, 8.0], size: [24.0, 16.0], solid: true)",
         ));
-        return Vec::new();
+        return None;
     };
     let field = |key: &str| fields.iter().find(|(k, _)| k == key).map(|(_, it)| &it.val);
 
@@ -280,7 +397,7 @@ fn read_entry(
             Some(index),
             "kind `capsule` is refused: capsules are in the vocabulary but implemented nowhere yet, so there is no shape to make of the entry",
         ));
-        return Vec::new();
+        return None;
     }
 
     let mut at_px = None;
@@ -313,14 +430,7 @@ fn read_entry(
     let mut shape = None;
     match (kind, at_px) {
         (Some("rect"), Some(at)) => match field("size").and_then(pair) {
-            Some(size) => {
-                // Full pixels in; half-extents are the engine's convention,
-                // taken up here and nowhere else.
-                shape = Some(Footprint::rect(
-                    pixel_to_node(at, size_px),
-                    [size[0] / 2.0, size[1] / 2.0],
-                ));
-            }
+            Some(size) => shape = Some(ShapeAt::Rect { at, size }),
             None if field("size").is_some() => errors.push(problem(
                 Some(index),
                 "`size` is an array of two numbers, [width, height] in full pixels; half-extents are the engine's, not the author's",
@@ -331,7 +441,7 @@ fn read_entry(
             )),
         },
         (Some("circle"), Some(at)) => match field("radius").and_then(number) {
-            Some(radius) => shape = Some(Footprint::disc(pixel_to_node(at, size_px), radius)),
+            Some(radius) => shape = Some(ShapeAt::Circle { at, radius }),
             None if field("radius").is_some() => errors.push(problem(
                 Some(index),
                 "`radius` is a single number, in pixels",
@@ -345,7 +455,7 @@ fn read_entry(
                 "a circle needs `radius`: one number, in pixels",
             )),
         },
-        (Some("poly"), Some(at)) => shape = read_poly(index, at, field("points"), size_px, errors),
+        (Some("poly"), Some(at)) => shape = read_poly(index, at, field("points"), errors),
         // `kind` and `at` each reported their own problem already.
         (Some(_), None) | (None, _) => {}
         // `capsule` returned above; nothing else is a known kind.
@@ -408,39 +518,62 @@ fn read_entry(
         ));
     }
 
-    if errors.len() > start {
-        return Vec::new();
-    }
-    let Some(shape) = shape else {
-        // Unreachable: every arm that leaves `shape` unset pushed an
-        // error above. Left as a fall-through rather than an unwrap,
-        // because an unreadable entry staying silent about a feature is
-        // worse than the reader trusting itself one level too far.
-        return Vec::new();
-    };
-    let mut made = Vec::new();
-    if solid {
-        made.push(Feature::solid(shape, bounce));
-    }
-    if occludes {
-        made.push(Feature::occluding(shape));
-    }
-    if hit {
-        made.push(Feature::hit(shape));
-    }
-    made
+    // The geometry draws whatever the roles did: the outline the author
+    // drew is readable, and hiding it because a flag was written wrong
+    // would hide the very picture the error line is about.
+    Some(match shape? {
+        ShapeAt::Rect { at, size } => Authored {
+            entry: index,
+            at,
+            shape: AuthoredShape::Rect { size },
+            solid,
+            bounce,
+            occludes,
+            hit,
+        },
+        ShapeAt::Circle { at, radius } => Authored {
+            entry: index,
+            at,
+            shape: AuthoredShape::Circle { radius },
+            solid,
+            bounce,
+            occludes,
+            hit,
+        },
+        ShapeAt::Poly { at, points } => Authored {
+            entry: index,
+            at,
+            shape: AuthoredShape::Poly { points },
+            solid,
+            bounce,
+            occludes,
+            hit,
+        },
+    })
 }
 
-/// The polygon's outline: the authored corners, flipped into the node's
-/// space through the one conversion, handed to [`Convex::new`] — whose
+/// A geometry read together with the place it stands on: `read_entry`'s
+/// private pair, split into [`Authored`] once the roles have been read
+/// too. Public life knows only [`AuthoredShape`], which is the geometry
+/// already standing on its entry's `at`.
+enum ShapeAt {
+    Rect { at: [f32; 2], size: [f32; 2] },
+    Circle { at: [f32; 2], radius: f32 },
+    Poly { at: [f32; 2], points: Vec<[f32; 2]> },
+}
+
+/// The polygon's outline, in the pixels it was authored in: the corners
+/// absolute against the entry's `at`, handed to [`Convex::new`] — whose
 /// refusal is reported as the concavity it means rather than repaired.
+/// The refusal reads the same here as it did after the flip because a
+/// reflection preserves convexity: the tool that draws the outline and
+/// the baker that ships it must not disagree about which outlines exist.
 fn read_poly(
     index: usize,
-    at_px: [f32; 2],
+    at: [f32; 2],
     points: Option<&Val>,
-    size_px: [f32; 2],
     errors: &mut Vec<ShapeError>,
-) -> Option<Footprint> {
+) -> Option<ShapeAt> {
     let Some(Val::Seq { items, .. }) = points else {
         errors.push(problem(
             Some(index),
@@ -479,18 +612,20 @@ fn read_poly(
         ));
         return None;
     }
-    // The corners travel through the same single conversion as every
-    // other authored position, `at` included: a polygon's points are
-    // relative to the entry's centre, and adding before flipping keeps
-    // the flip the only translation between the two spaces. The flip
-    // reverses the winding; `Convex::new` infers winding from the signed
-    // area, so it is not corrected here.
-    let moved: Vec<[f32; 2]> = corners
+    // Convexity is decided on the absolute corners — adding `at` first
+    // changes nothing about the answer, it is a translation — and the
+    // entry keeps the corners *relative* to `at`, the way they were
+    // authored: drawing the outline and baking it each add the centre
+    // when and where their own space asks for it.
+    let absolute: Vec<[f32; 2]> = corners
         .iter()
-        .map(|p| pixel_to_node([at_px[0] + p[0], at_px[1] + p[1]], size_px))
+        .map(|p| [at[0] + p[0], at[1] + p[1]])
         .collect();
-    match Convex::new(&moved) {
-        Some(outline) => Some(Footprint::poly(outline)),
+    match Convex::new(&absolute) {
+        Some(_) => Some(ShapeAt::Poly {
+            at,
+            points: corners,
+        }),
         None => {
             errors.push(problem(
                 Some(index),
@@ -578,6 +713,14 @@ fn problem(entry: Option<usize>, body: impl Into<String>) -> ShapeError {
     ShapeError { entry, message }
 }
 
+/// The names an entry may use, and nothing else: the vocabulary *inside*
+/// an entry is closed, because the tool preserves faithfully whatever it
+/// does not know, so a `solidss:` key would be kept forever and never
+/// read — the mistake has to be caught while it can still be fixed.
+const KNOWN_KEYS: [&str; 8] = [
+    "kind", "at", "size", "radius", "points", "solid", "occludes", "hit",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,7 +734,14 @@ mod tests {
     /// hands the engine off, with a parsed `Doc` and a pixel size.
     fn read(text: &str, size_px: [f32; 2]) -> Result<Vec<Feature>, ShapeErrors> {
         let doc = ron::parse_doc(text).expect("the test's sidecar parses");
-        authored_shapes(&doc, size_px)
+        authored_shapes(&doc.root, size_px)
+    }
+
+    /// The same text through the drawing arm: what a tool would paint,
+    /// and what it would read aloud, in one pass.
+    fn read_px(text: &str) -> (Vec<Authored>, ShapeErrors) {
+        let doc = ron::parse_doc(text).expect("the test's sidecar parses");
+        read_shapes(&doc.root)
     }
 
     /// Read, insisting the document was fine: a test that quietly read
@@ -853,6 +1003,80 @@ mod tests {
         assert!(plain.is_empty());
         let empty = read_ok("(shapes: [])", SHEET);
         assert!(empty.is_empty());
+        let (authored, errs) = read_px("(atlas: [4, 4])");
+        assert!(authored.is_empty() && errs.is_empty());
+    }
+
+    #[test]
+    fn the_drawing_arm_holds_the_pixels_the_author_wrote() {
+        // The same entry the bake arm flips to [-8, 4]: the drawing arm
+        // hands back the pixel the author typed, flipped by nobody, so a
+        // tool painting over the texture needs no conversion of its own.
+        let (authored, errs) = read_px(
+            "(shapes: [(kind: \"rect\", at: [8.0, 4.0], size: [8.0, 4.0], solid: (bounce: 0.2), occludes: true)])",
+        );
+        assert!(errs.is_empty(), "the reading said:\n{errs}");
+        assert_eq!(
+            authored,
+            vec![Authored {
+                entry: 0,
+                at: [8.0, 4.0],
+                shape: AuthoredShape::Rect { size: [8.0, 4.0] },
+                solid: true,
+                bounce: 0.2,
+                occludes: true,
+                hit: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn the_drawing_arm_keeps_every_outline_it_read_and_says_the_rest() {
+        // The seam the overlay exists for: a good rect, a concave L, and
+        // a capsule behind it. The bake arm would refuse all three; the
+        // drawing arm paints the one outline it could read while naming
+        // both refusals — the author sees their shapes AND the reasons.
+        let (authored, errs) = read_px(
+            "(shapes: [
+                (kind: \"rect\", at: [8.0, 4.0], size: [8.0, 4.0], solid: true),
+                (kind: \"poly\", at: [0.0, 0.0], points: [[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [20.0, 20.0], [20.0, 40.0], [0.0, 40.0]], occludes: true),
+                (kind: \"capsule\", at: [8.0, 4.0], radius: 3.0, solid: true),
+            ])",
+        );
+        assert_eq!(authored.len(), 1, "only the readable geometry draws");
+        assert_eq!(authored[0].entry, 0);
+        assert_eq!(errs.len(), 2, "the whole report was:\n{errs}");
+        assert!(errs.errors[0].message.contains("concave"), "{errs}");
+        assert!(errs.errors[1].message.contains("capsule"), "{errs}");
+    }
+
+    #[test]
+    fn a_role_that_failed_still_draws_the_shape_it_was_written_on() {
+        // A polygon authored solid earns the separating-axis refusal,
+        // and its outline is still the author's own drawing: it draws,
+        // with its occludes role answered and the refusal reported. The
+        // bake arm still refuses the document — one error, whole file —
+        // and says the very same sentence.
+        let (authored, errs) = read_px(&format!(
+            "(shapes: [{TRIANGLE}, solid: true, occludes: true)])"
+        ));
+        assert_eq!(authored.len(), 1);
+        assert!(!authored[0].solid, "the refused role reads off");
+        assert!(authored[0].occludes);
+        assert!(
+            matches!(&authored[0].shape, AuthoredShape::Poly { points } if points.len() == 3),
+            "the outline reaches the drawing arm as the corners it was authored with"
+        );
+        assert_eq!(errs.len(), 1, "the whole report was:\n{errs}");
+        assert!(errs.errors[0].message.contains("separating axis"), "{errs}");
+        let bake_errs = read_err(
+            &format!("(shapes: [{TRIANGLE}, solid: true, occludes: true)])"),
+            SHEET,
+        );
+        assert_eq!(
+            bake_errs.errors, errs.errors,
+            "both arms speak one vocabulary"
+        );
     }
 
     #[test]

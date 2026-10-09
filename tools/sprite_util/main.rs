@@ -435,6 +435,19 @@ const SELECT: frost::Color = frost::Color {
     b: 1.0,
     a: 1.0,
 };
+/// The authored `shapes:` of a sidecar, drawn over the sprite: a warm
+/// amber that is none of the desk's other furniture — the bounding box
+/// is white, the selection blue, the atlas grid green, and the position
+/// markers cycle the palette.
+const SHAPE: frost::Color = frost::Color {
+    r: 1.0,
+    g: 0.78,
+    b: 0.22,
+    a: 0.95,
+};
+/// The authored shapes' outline stroke: the bounding box's weight, so
+/// the two read as one family of desk furniture.
+const SHAPE_WIDTH: f32 = 2.0;
 /// The tile-map desk's grid lines: one order above the checker and
 /// below every shape, so painted tiles will sit on the grid, not in it.
 const GRID_Z: f32 = -0.5;
@@ -496,6 +509,11 @@ const TILE_Z: f32 = 1.6;
 
 /// The selection's order: above the bounding box, below the click marker.
 const SELECT_Z: f32 = 1.8;
+
+/// The authored shapes' order: above the crop selection, below the
+/// position markers — an overlay of the sprite's own furniture, never
+/// above the things the author is editing.
+const SHAPE_Z: f32 = 2.0;
 
 /// The checker backdrop's order: behind the sprite and the HUD.
 const CHECK_ORDER: f32 = -1.0;
@@ -1000,6 +1018,10 @@ struct Demo {
     /// The Operations panel's status line: the selection's size, or the
     /// outcome of the last operation.
     status: String,
+    /// Whether the sidecar's authored `shapes:` draw over the sprite:
+    /// the View menu's Shapes line. Validation ignores it — a refusal
+    /// speaks on the notes whether or not the overlay is checked.
+    show_shapes: bool,
 }
 
 impl Demo {
@@ -2420,16 +2442,35 @@ impl frost::Process for Demo {
             }
         }
 
+        // The authored shapes: the active sprite's sidecar read once
+        // per frame — the desk below paints its geometry, the bar's
+        // notes voice its refusals. The read runs whether or not the
+        // overlay is checked: validation is a voice, not a view option,
+        // and a mis-authored hit box must not go quiet because someone
+        // turned the drawing off. On the tile desk the sprite is the
+        // paint source, not the picture — its pixels are cells, and
+        // per-tile shapes wait for the map format.
+        let (authored, shape_errs) = match self.active().and_then(|sp| sp.ron.as_ref()) {
+            Some(doc) if !tile_view => frost::read_shapes(&doc.root),
+            _ => (Vec::new(), frost::ShapeErrors::default()),
+        };
+        let shapes_note = shapes_note(&shape_errs);
+
         // The menu bar, declared after every panel so it is the last
         // declared — which is what lets an open list float above the
         // plates and win their clicks. Declaring it here (after all the
         // panels, before the collected presses) puts its whole strip into
         // `ui.hovering()` too: no slot or panel drag acts through it.
-        // The bar's trailing notes: the last command, then the view's
-        // own name at the very end. An empty status draws nothing.
-        let mut notes: Vec<&str> = Vec::with_capacity(2);
+        // The bar's trailing notes: the last command, then the shapes
+        // that refused to read, then the view's own name at the very
+        // end. An empty status draws nothing; so does an error-free
+        // sidecar.
+        let mut notes: Vec<&str> = Vec::with_capacity(3);
         if !self.status.is_empty() {
             notes.push(self.status.as_str());
+        }
+        if let Some(note) = shapes_note.as_deref() {
+            notes.push(note);
         }
         notes.push(self.view.name());
         // The View menu is assembled each frame: the three named corners
@@ -2447,6 +2488,7 @@ impl frost::Process for Demo {
                 frost::MenuItem::new("Atlas", "").checked(self.view == View::Atlas),
                 frost::MenuItem::new("Tile Map", "").checked(self.view == View::TileMap),
                 frost::MenuItem::SEPARATOR,
+                frost::MenuItem::new("Shapes", "").checked(self.show_shapes),
                 frost::MenuItem::readout("Zoom", "Ctrl +/Ctrl -", &zoom_note),
                 frost::MenuItem::slider("Light", 0.0, 1.0, self.light),
                 frost::MenuItem::slider("Dark", 0.0, 1.0, self.dark),
@@ -2497,6 +2539,10 @@ impl frost::Process for Demo {
                         self.view = View::TileMap;
                         self.sync_work(ctx);
                     }
+                    // The overlay's own line: a display choice, no desk
+                    // to re-sync — and unlike the views, it does not
+                    // silence the refusals, only the drawing.
+                    ("View", "Shapes") => self.show_shapes = !self.show_shapes,
                     // The brush turns and mirrors; the maps keep what
                     // they were painted with, so nothing re-syncs.
                     ("Transform", "Flip X") => self.brush = tfm_flip_x(self.brush),
@@ -3302,6 +3348,29 @@ impl frost::Process for Demo {
                 let y = wy(th * j as f32 / rows as f32);
                 if let Some((a, b)) = clip_h(y, bx0, bx1) {
                     ctx.line(a, y, b, y, TILE, TILE_WIDTH, TILE_Z);
+                }
+            }
+        }
+
+        // The authored shapes: the sidecar's `shapes:` entries drawn
+        // over the sprite in the texture's pixels — the author's own
+        // view of the geometry a bake will one day take. Rectangles and
+        // polygons get their outline stroked; a circle gets stroked as
+        // the 16-gon the light field actually shadows with —
+        // `Convex::disc`'s own vertex ring — so what sits on the desk
+        // is the edge the shadow will have. Every entry whose geometry
+        // read draws, whatever else the reading refused beside it; the
+        // refusals speak on the bar's notes. Like the position markers,
+        // the overlay is the sprite's own furniture: panned off the
+        // desk it rides the art over the strip, the clipping belonging
+        // to the desk's lines, not to it.
+        if self.show_shapes && !tile_view && tw > 0.0 && th > 0.0 {
+            for sh in &authored {
+                let corners = shape_corners(sh, size, view, self.zoom);
+                for i in 0..corners.len() {
+                    let [ax, ay] = corners[i];
+                    let [bx, by] = corners[(i + 1) % corners.len()];
+                    ctx.line(ax, ay, bx, by, SHAPE, SHAPE_WIDTH, SHAPE_Z);
                 }
             }
         }
@@ -4201,6 +4270,58 @@ fn center_offset(spot: (f32, f32), size: [f32; 2], zoom: f32) -> [f32; 2] {
         (size[0] / 2.0 - spot.0) * zoom,
         (spot.1 - size[1] / 2.0) * zoom,
     ]
+}
+
+/// The bar's voice for the authored shapes: the reading's first refusal
+/// in full, and a count of the ones behind it. The menu bar has one
+/// line's width, and the first refusal is the one to fix first — the
+/// reader hands the whole list to any caller who wants to show more,
+/// and every message already names its entry, so even the second is
+/// findable from the first's neighbourhood on screen.
+fn shapes_note(errs: &frost::ShapeErrors) -> Option<String> {
+    let first = errs.errors.first()?;
+    Some(match errs.errors.len() {
+        1 => first.message.clone(),
+        n => format!("{} (+{} more)", first.message, n - 1),
+    })
+}
+
+/// One authored shape's outline in window space, closed by the caller's
+/// neighbour-walking: a rect's four corners, a circle's inscribed
+/// [`frost::DISC_SIDES`]-gon — the very ring `Convex::disc` sends to the
+/// occluder field, so the desk shows the edge the shadow will have —
+/// and a polygon's own corners, added to its entry's `at` as authored.
+/// The map is the desk's one, shared by the markers and the click math:
+/// texture pixels measured y down from the image's top-left, the window
+/// y up about its centre, every distance scaled by the zoom and shifted
+/// by the pan.
+fn shape_corners(sh: &frost::Authored, size: [f32; 2], view: [f32; 2], zoom: f32) -> Vec<[f32; 2]> {
+    let wx = |px: f32| (px - size[0] / 2.0) * zoom + view[0];
+    let wy = |py: f32| (size[1] / 2.0 - py) * zoom + view[1];
+    match &sh.shape {
+        frost::AuthoredShape::Rect { size: s } => {
+            let (x0, x1) = (wx(sh.at[0] - s[0] / 2.0), wx(sh.at[0] + s[0] / 2.0));
+            // Pixels measure y down, the window up: the *upper* pixel
+            // edge is the *higher* window one.
+            let (y0, y1) = (wy(sh.at[1] + s[1] / 2.0), wy(sh.at[1] - s[1] / 2.0));
+            vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+        }
+        frost::AuthoredShape::Circle { radius } => {
+            let r = radius * zoom;
+            let (cx, cy) = (wx(sh.at[0]), wy(sh.at[1]));
+            let step = std::f32::consts::TAU / frost::DISC_SIDES as f32;
+            (0..frost::DISC_SIDES)
+                .map(|k| {
+                    let (sin, cos) = (k as f32 * step).sin_cos();
+                    [cx + r * cos, cy + r * sin]
+                })
+                .collect()
+        }
+        frost::AuthoredShape::Poly { points } => points
+            .iter()
+            .map(|p| [wx(sh.at[0] + p[0]), wy(sh.at[1] + p[1])])
+            .collect(),
+    }
 }
 
 impl MapLayer {
@@ -5586,6 +5707,7 @@ fn main() {
             was_flipy: false,
             was_turn: false,
             status: String::new(),
+            show_shapes: true,
             ron_font,
             r_press: None,
             m_press: None,
@@ -5891,6 +6013,98 @@ mod tests {
         coord.push(1);
         assert_eq!(spot_of_row(&spots, &coord), Some(1));
         assert_eq!(spot_of_row(&spots, &[9]), None);
+    }
+
+    #[test]
+    fn authored_shapes_stay_in_the_textures_pixels_the_author_wrote() {
+        let root = ron_tree::parse(
+            "(atlas: [4, 4], shapes: [(kind: \"rect\", at: [16.0, 8.0], size: [24.0, 16.0], solid: true)])",
+        )
+        .expect("a small sidecar");
+        let (authored, errs) = frost::read_shapes(&root);
+        assert!(errs.is_empty(), "the reading said:\n{errs}");
+        assert_eq!(authored.len(), 1);
+        // What the desk draws are the pixels: no centring, no flip —
+        // those belong to the baker's leg of the read, not the tool's.
+        assert_eq!(authored[0].at, [16.0, 8.0]);
+        assert_eq!(
+            authored[0].shape,
+            frost::AuthoredShape::Rect { size: [24.0, 16.0] }
+        );
+        assert!(authored[0].solid, "the roles travel with the geometry");
+    }
+
+    #[test]
+    fn the_shapes_note_names_the_first_refusal_and_counts_the_rest() {
+        let root = ron_tree::parse(
+            "(shapes: [
+                (kind: \"rect\", at: [8.0, 4.0], size: [8.0, 4.0]),
+                (kind: \"blob\", at: [1.0, 2.0], occludes: true),
+                (kind: \"capsule\", at: [1.0, 2.0], radius: 2.0, hit: true),
+            ])",
+        )
+        .expect("a small sidecar");
+        let (_, errs) = frost::read_shapes(&root);
+        let note = shapes_note(&errs).expect("a bad sidecar gets a note");
+        assert!(note.starts_with("shapes entry 0:"), "{note}");
+        assert!(note.contains("all off"), "{note}");
+        assert!(note.ends_with("(+2 more)"), "{note}");
+        // A clean reading says nothing: no shapes key, no note.
+        let clean = ron_tree::parse("(atlas: [4, 4])").expect("a small sidecar");
+        let (_, errs) = frost::read_shapes(&clean);
+        assert_eq!(shapes_note(&errs), None);
+    }
+
+    #[test]
+    fn the_shapes_overlay_rides_the_map_the_markers_use() {
+        // Texture pixel (16, 8) of a 32 x 16 sheet is its centre: the
+        // shape's centre must land on the desk's centre, at any zoom
+        // and any pan. The asymmetric corners pin the y-flip — the
+        // *upper* pixel edge sits *higher* on the window, the opposite
+        // of what the reader tells the baker, and the same flip the
+        // markers and the click map already make.
+        let rect = frost::Authored {
+            entry: 0,
+            at: [16.0, 8.0],
+            shape: frost::AuthoredShape::Rect { size: [8.0, 4.0] },
+            solid: true,
+            bounce: 0.0,
+            occludes: false,
+            hit: false,
+        };
+        let view = [7.0, -3.0];
+        let corners = shape_corners(&rect, [32.0, 16.0], view, 2.0);
+        assert_eq!(
+            corners,
+            [[-1.0, -7.0], [15.0, -7.0], [15.0, 1.0], [-1.0, 1.0]]
+        );
+
+        // A disc draws as the ring `Convex::disc` sends to the field:
+        // `DISC_SIDES` corners, the first at +x, radius scaled by the
+        // zoom like everything else on the desk.
+        let disc = frost::Authored {
+            shape: frost::AuthoredShape::Circle { radius: 3.0 },
+            ..rect.clone()
+        };
+        let corners = shape_corners(&disc, [32.0, 16.0], view, 2.0);
+        assert_eq!(corners.len(), frost::DISC_SIDES);
+        assert!((corners[0][0] - 13.0).abs() < 1e-3, "{corners:?}");
+        assert!((corners[0][1] + 3.0).abs() < 1e-3, "{corners:?}");
+
+        // A polygon's corners are relative to `at`, and stay that way:
+        // the map adds the centre exactly once.
+        let poly = frost::Authored {
+            at: [10.0, 10.0],
+            shape: frost::AuthoredShape::Poly {
+                points: vec![[0.0, 0.0], [4.0, 0.0], [0.0, 4.0]],
+            },
+            ..rect
+        };
+        let corners = shape_corners(&poly, [32.0, 16.0], view, 2.0);
+        // wx(10) = (10-16)*2+7 = -5; wy(10) = (8-10)*2-3 = -7 — the
+        // authored corner (0, 0); (4, 0) moves right in x, and the
+        // pixel-down corner (0, 4) moves DOWN on the window.
+        assert_eq!(corners, [[-5.0, -7.0], [3.0, -7.0], [-5.0, -15.0]]);
     }
 
     #[test]

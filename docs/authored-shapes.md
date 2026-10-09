@@ -7,17 +7,21 @@
 > [`Baked`](../src/bake.rs) with per-consumer fusion, the occluder field carries
 > polygons as variable-stride records, and
 > [`src/backend/tests/shadows.rs`](../src/backend/tests/shadows.rs) proves the
-> GPU shadows exactly where the CPU says it should. The reader has now shipped
-> too ([step 2 below](#order-of-work)): [`src/shapes.rs`](../src/shapes.rs)
-> reads the vocabulary below out of a parsed `frost::ron` document and hands a
-> [`Baker`](../src/bake.rs) its `Feature`s, or every error the document holds.
-> What has *not* shipped is the drawing half: `sprite_util` cannot draw these
-> shapes yet (step 3), and no loader in the repo feeds a sidecar's `shapes` to
-> a `Baker` at load time — so today a shape reaches a running game only
-> through this reader, a `Canvas::occluder` / `occluder_polygon` call, or a
-> hand-fed `Baker`. This document records what is true of the files involved
-> and what has been decided, so the next step does not have to rediscover
-> either.
+> GPU shadows exactly where the CPU says it should. The reader has shipped too
+> ([step 2 below](#order-of-work)), in two arms: [`src/shapes.rs`](../src/shapes.rs)
+> reads the vocabulary below out of a parsed `frost::ron` tree in one pass and
+> hands back both `frost::read_shapes` — the entries in the texture's own
+> pixels, what a drawing tool paints — and `frost::authored_shapes`, the
+> [`Feature`](../src/bake.rs)s a [`Baker`](../src/bake.rs) takes, in the node's
+> space — plus every error the document holds. The drawing half has shipped
+> with it ([step 3 below](#order-of-work)): `sprite_util` overlays the shapes
+> over the sprite and voices the refusals on its menu bar. What has *not*
+> shipped is the load-time seam: no loader in the repo feeds a sidecar's
+> `shapes` to a `Baker` when a game starts — so today a shape reaches a running
+> game only through this reader, a `Canvas::occluder` / `occluder_polygon`
+> call, or a hand-fed `Baker`. This document records what is true of the files
+> involved and what has been decided, so the next step does not have to
+> rediscover either.
 
 ## The sidecar already exists
 
@@ -32,8 +36,11 @@ is a far better host for shape data than a new file would be:
   examples) that stores every field verbatim
   with its surrounding comment runs, and writes them back
   (`to_text_doc`).
-  `sprite_util` itself interprets exactly two things — `atlas`, and any struct
-  with two numeric fields — and passes everything else through untouched.
+  `sprite_util` itself interprets two things — `atlas`, and any struct with
+  two numeric fields — and passes everything else through untouched; the
+  `shapes:` key is now *read* for the overlay and its validation, but the
+  save path never rewrites it, so the file round-trips with the same
+  verbatim preservation as before.
   Canonicalisation is a fixed point, tested against a real shipped sidecar
   (`a_real_plant_sidecar_round_trips_with_its_comments`,
   [`:6147`](../tools/sprite_util/main.rs#L6147);
@@ -229,7 +236,22 @@ person making it.
    that push their separating axis.
 3. **`sprite_util` draws them**: rects, circles, polygons, with the convexity
    refusal and the existing `status:` line as the voice
-   (`"shapes: that outline is concave"`).
+   (`"shapes: that outline is concave"`). **Done:** the tool reads the active
+   sidecar's tree every frame with `frost::read_shapes` and strokes what it
+   read in amber over the sprite — a rect by its four edges, a circle as the
+   very `DISC_SIDES`-gon `Convex::disc` sends to the occluder field (the desk
+   shows the edge the shadow will have), a polygon by its authored corners —
+   all through the same texture→window map the position markers use, pinned
+   against it by a test. An entry whose *geometry* read draws even when the
+   reading refused something else about it, and the first refusal — with a
+   count of its siblings — rides the menu bar's notes beside the view name,
+   whether or not the View ▸ Shapes checkbox is drawing anything. Two things
+   the step deliberately left out, for the same reason the step itself is
+   only a drawing: **a crop does not shift authored positions** — the markers
+   ride the cut, the shapes do not, so cropping drifts them off the art;
+   visible with the overlay on, and to be decided with the tool's first move
+   of authored numbers (which is also where dragging arrives). And no editing:
+   the shapes are drawn, not grabbed.
 4. **The map file**, with keyed tile shapes as part of it — promoted from a
    tool's convenience to shipped surface: `frost` is a library that comes with
    tile-set and tile-map tools (`docs/tooling.md`), so the format is something

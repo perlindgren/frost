@@ -71,6 +71,13 @@ The first step is the boring one and it needs no decisions:
    to drop — the target was auto-discovered. And the sixty-six tests are
    sixty-eight — the move carried 68 tests verbatim, plus a 69th, the
    asset-path guard.
+   (The "byte-identical tree" claim later stopped holding on its own: an
+   `arboard` for the `text_input` example and an unused `rfd` crept into
+   `frost`'s `[dependencies]`, and once a stale lockfile stopped hiding
+   them, `arboard` — which does not compile for wasm32 — broke the wasm
+   check of the library. Both are dev-dependencies now, which is where
+   example-only dependencies live and what this step's whole argument
+   insists on.)
 2. Its unit tests get *better*, not different. Examples are not tested by plain
    `cargo test` — Cargo leaves `test` off for that target kind — so the tool's
    sixty-six tests run only when someone asks for `cargo test --example

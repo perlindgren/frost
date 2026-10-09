@@ -22,13 +22,13 @@ challenge for a local-hosted AI workflow, human learning of engine internals, an
 
 ```
 Cargo.toml            deps: gilrs 0.11 (gamepads), image 0.25 (png),
-                      log 0.4 (release_max_level_off), rfd 0.17 (native
-                      file dialogs), swash 0.2 (text), wgpu 30.0.1,
-                      winit 0.30.13; native-only: rodio 0.22 (audio);
-                      wasm32-only: web-sys, console_error_panic_hook;
-                      dev-deps: clap, env_logger, naga 30.0.0 (shader
-                      validation, no GPU needed), serde + ron 0.8 (the
-                      immortal example's save file)
+                      log 0.4 (release_max_level_off), swash 0.2 (text),
+                      wgpu 30.0.1, winit 0.30.13; native-only: rodio 0.22
+                      (audio); wasm32-only: web-sys,
+                      console_error_panic_hook; dev-deps: arboard 3.6 (the
+                      text_input example's clipboard), clap, env_logger,
+                      naga 30.0.0 (shader validation, no GPU needed),
+                      serde + ron 0.8 (the immortal example's save file)
 src/lib.rs            crate docs + public API: Canvas, Context, Process, Config,
                       run / run_configured, draw_scene, paint_order, expand_text,
                       gamepad re-exports (gilrs Axis / Button / Gamepad)
@@ -41,8 +41,12 @@ src/collision.rs      OrientedBox, Circle, Collider, Convex, push_out, reflect
                       (pure math; Convex is the occluder's polygon, half-planes only)
 src/bake.rs           Feature, Role, Material -> Baker -> Baked (authored geometry)
 src/shapes.rs         authored-shapes reader: the sidecar `shapes:` vocabulary,
-                      read from a parsed ron Doc into Features for a Baker —
-                      the pixel-to-node flip, every error returned not logged
+                      one pass over the parsed ron tree, both arms —
+                      read_shapes hands the entries back in the texture's
+                      pixels (what sprite_util draws over the sprite),
+                      authored_shapes hands Features for a Baker to eat in
+                      the node's space — the pixel-to-node flip, every error
+                      returned not logged
 src/ron.rs            hand-written RON subset: Val/Item tree, parse_doc /
                       to_text_doc, lossless by preservation (comments and
                       verbatim atoms ride through); shared by ron_view,
@@ -851,11 +855,12 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **324 lib tests + 3 integration tests (`tests/`) + 7 doctests**
-passing, `cargo build` (lib + the `sprite_util` tool) clean. The tool's 69
+Baseline: **327 lib tests + 3 integration tests (`tests/`) + 7 doctests**
+passing, `cargo build` (lib + the `sprite_util` tool) clean. The tool's 72
 tests — 68 that moved with `examples/sprite_util.rs` to
-`tools/sprite_util/main.rs` plus the asset-path guard — ride along in the
-same `cargo test` now that it is a binary target. Notable test areas:
+`tools/sprite_util/main.rs`, the asset-path guard, and the three
+authored-shapes overlay tests — ride along in the same
+`cargo test` now that it is a binary target. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
   `Validator` stage wgpu runs in `create_shader_module` — this is what
@@ -896,7 +901,9 @@ same `cargo test` now that it is a binary target. Notable test areas:
   `declare_occluders`; the pixel-to-node flip pinned by an asymmetric case;
   and the refusals — every error reported not just the first, a tuple
   position answered with the tool's spot rule, capsules and concave outlines
-  refused by name.
+  refused by name. The two arms agree: the drawing arm keeps every outline
+  whose geometry read while the refusals pile up beside them, and a role the
+  bake refuses reaches the tool and the baker as one and the same sentence.
 - `src/ron.rs` — the RON subset itself: atoms, numbers and enum paths kept
   verbatim, comments as noise that still survives the writer, errors that carry
   a line number, and `assets/ron/garden.ron` round-tripped to a fixed point —
@@ -1095,7 +1102,12 @@ tool surface. The `sprite_util` row below stays as the description.
 |              | the parser keeps leads, trails, tails and the header, the writer    |
 |              | puts them back. Sequences wear + / × row buttons and entries        |
 |              | reorder by press-drag; a list entry's marker shows its seat         |
-|              | number on the sprite                                              |
+|              | number on the sprite. A `shapes:` key draws over the                |
+|              | sprite as amber outlines — rects by their edges,                    |
+|              | circles as the 16-gon the light field shadows with,                 |
+|              | polygons as authored (View ▸ Shapes toggles the                     |
+|              | drawing, never the validation); the bar's notes then                |
+|              | voice the first refusal of a mis-authored entry.                    |
 | widgets      | the `Ui` layer: a draggable Tomato panel (three color sliders, a    |
 |              | Spin checkbox, a Speed slider, a Reset button) and an About label   |
 |              | panel drive a spinning face's color and rotation                    |
@@ -1161,8 +1173,8 @@ cargo build              # expect EXIT 0; covers the lib AND the tool —
 cargo build --examples   # expect EXIT 0; no longer covers the tool
 cargo build -p sprite_util   # expect EXIT 0; the tool on its own, now in
                                # tools/sprite_util/ as its own package
-cargo test               # expect 324 lib + 3 integration + 7 doctests
-                           # + 69 sprite_util (the tool's unit tests run
+cargo test               # expect 327 lib + 3 integration + 7 doctests
+                           # + 72 sprite_util (the tool's unit tests run
                            # here now: a binary target is tested by default)
 cargo test --examples    # expect 126 passed (unit tests inside the examples,
                            # centipede's rig included; ron_view/view.rs compiles
@@ -1172,7 +1184,9 @@ cargo test --examples    # expect 126 passed (unit tests inside the examples,
                            # they are in the plain `cargo test` above)
 cargo check --target wasm32-unknown-unknown -p frost
                            # expect EXIT 0; scoped to -p frost so the native-only
-                           # tool (rfd, env_logger) is not built for wasm
+                           # tool is not built for wasm; dev-dependencies (arboard, clap,
+                           # env_logger, ...) serve examples and tests only, so a lib-only
+                           # check never compiles them
 cargo run --example cursor   # visual check; closing the window exits 0
 cargo run --example worm     # peristaltic crawl, edge wrap; exits 0
 cargo run --example ron_view # fold rows, drag both scroll handles; exits 0
