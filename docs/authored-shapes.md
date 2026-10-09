@@ -83,24 +83,41 @@ skipped. Do not "fix" it by authoring in pixel space throughout: keeping shapes
 local to their own space is invariant 9, and it is why a sheared instance still
 throws square-cornered shadows.
 
-## The vocabulary (proposed, not yet agreed in name)
+## The vocabulary
 
 One authored shape is one `Feature` in the engine's sense — a role, a footprint,
 and the placement that puts it in the node — so the text says the same three
-things. Field *names* below are a proposal; the three parts are not negotiable,
-because they are what `Baker` consumes:
+things. The agreed shape of it is **one flat list, with the kind as a field and the
+roles as flags on the same entry**. The alternative that looked best for a while
+was a single `role` field, and the reason it lost is the commonest shape an
+author draws: a wall is solid *and* occluding, and one role per entry means
+writing its geometry twice, in two entries that will not stay identical. A
+flag per consumer says what the shape actually is, and lets the reader make the
+one-to-many step into [`Baker`](../src/bake.rs) — up to three `add` calls from
+one authored entry — instead of pushing that split into the file. Kind is still
+a string, so a misspelling is possible, which is exactly why the reader's errors
+are typed rather than defaulted: a shape nobody typed correctly must fail
+loudly, not vanish. A misspelling *inside* an entry is caught for the same
+reason, and is the reason the roles are not top-level keys — the tool preserves
+what it does not know, so a `solidss:` key would be kept faithfully and never
+read.
 
 ```ron
 shapes: [
-    (role: "solid", kind: "rect", at: [16.0, 8.0], size: [24.0, 16.0]),
-    (role: "occlude", kind: "circle", at: [16.0, 2.0], radius: 6.0),
-    (role: "hit", kind: "poly", at: [0.0, 0.0], points: [[0.0, 0.0], [12.0, 4.0], [2.0, 14.0]]),
+    (kind: "rect", at: [16.0, 8.0], size: [24.0, 16.0], solid: true),
+    (kind: "circle", at: [16.0, 2.0], radius: 6.0, occludes: true),
+    (kind: "poly", at: [0.0, 0.0], points: [[0.0, 0.0], [12.0, 4.0], [2.0, 14.0]], hit: true),
+    // one wall, both jobs: bouncy, and it throws a shadow
+    (kind: "rect", at: [16.0, 30.0], size: [32.0, 8.0], solid: (bounce: 0.2), occludes: true),
 ]
 ```
 
-- `role` is `occlude`, `solid` or `hit` — [`Role`](../src/bake.rs), unchanged,
-  because it is the question the shape answers, not a property of the drawing.
-  `solid` carries an optional `bounce` (a [`Material`](../src/bake.rs)).
+- The flags are the three questions of [`Role`](../src/bake.rs), unchanged,
+  because they are what a consumer asks of a shape and not properties of the
+  drawing. All three off is a refusal to accept the entry — an authored shape
+  nobody wants is a mistake, not a comment. `solid` takes `true` or, when the
+  author means a particular surface, `(bounce: 0.2)` for a
+  [`Material`](../src/bake.rs).
 - `kind` is `rect`, `circle`, `capsule` or `poly`. `capsule` is not implemented
   anywhere yet; it is in the grammar so adding it is not a format change.
 - **Derive from the object, allow the override.** With no `shapes` key a sprite
@@ -114,6 +131,32 @@ shapes: [
   refuse to accept one for the same reason: a decomposition is a decision the
   renderer would make silently, on the author's behalf. Sixteen edges is the
   cap, because the GPU cost is per edge, per shadow ray, per penumbra tap.
+
+**Frames are not in this yet.** A `shapes` list describes the sprite in texture
+pixels and applies to every frame of it. A per-frame override was designed and
+deliberately **not** reserved: the animation system is not in its final shape,
+and a key invented to hold something the host does not yet model tends to be
+unmade later at the cost of every file that used it. Adding `frames: {2: [...]}`
+later is a compatible change, because the tool already preserves keys it does
+not know.
+
+**Not serde, at least not yet.** Two separate questions hide here. Could the
+sidecar *be* serde's RON? No: `sprite_util` rewrites these files and must keep
+comments, unknown keys and numbers exactly as written, and serde's model is
+"deserialize into a type, serialize a fresh document" — comments and unknown
+keys are gone by construction, which is the whole reason the hand-written tree
+exists. Could the *engine* read the tree with serde, given a `Deserializer` over
+`Val`? Yes, and it is the right refactor once there are several typed keys —
+`#[derive(Deserialize)]` for physics, maps and animations is worth a few hundred
+lines of Visitor dispatch, plus promoting serde from dev-dependency to a real
+one. Not for this key: what matters here is errors with judgement in them
+(*"occlude: a circle needs a radius, found `size`"*, *"that outline is
+concave"*), and a direct read of `Val` produces those while serde's errors over
+a dynamic tree are at their weakest. The option to refuse outright is the `ron`
+crate engine-side while the tool keeps its own parser: two parsers with
+different accepted subsets means the tool can canonicalise a file that then
+means something else to the engine, since raw strings, tuples and `!Type`
+markers are precisely where the two would part company. One parser, always.
 
 **Keyed by tile id, when tiles have a file.** `tiles: { 3: [...], 17: [...] }`
 was agreed over a positional list, and it stays right — a map edit that inserts
@@ -133,10 +176,9 @@ the back door.
    thing on this list that cannot be done incrementally. **Done:**
    `src/ron.rs` is the data (its tests with it), `examples/ron_view/view.rs`
    the row view the two viewers share.
-2. **The reader**: the vocabulary above, in `src/`, producing `Feature`s for a
-   `Baker` — plus the pixel-to-node conversion, the typed errors, and the
-   round-trip and space tests. This is where the schema is finally agreed by
-   being written down in Rust.
+2. **The reader**: the vocabulary above, in `src/`, reading `frost::ron::Val`
+   directly (no serde) into `Feature`s for a `Baker` — plus the pixel-to-node
+   conversion, the typed errors, and the round-trip and space tests.
 3. **`sprite_util` draws them**: rects, circles, polygons, with the convexity
    refusal and the existing `status:` line as the voice
    (`"shapes: that outline is concave"`).
