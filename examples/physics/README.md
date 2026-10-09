@@ -1,14 +1,15 @@
 # Physics examples
 
-One demo for now — the folder is where the physics-related examples live:
+Two demos — the folder is where the physics-related examples live:
 
 | Example | What it shows | Run with |
 |---|---|---|
 | `collision` | the `player` example with collision: the button is an oriented box the size of its sprite, steered like a small car (`W`/`A`/`S`/`D` accelerate it relative to the way it faces, `Q`/`E` turn it, and with no key held it coasts and slows), pushed out of four random obstacle squares and of the window edges, its velocity reflected off each surface it meets (restitution 0.6); a thin outline shows its actual collision box | `cargo run --example collision` |
+| `authored_hall` | a dark hall of brick sprites whose shadows *and* collisions come from data, not code: one `bake_sidecar` call reads `brick.ron` beside `brick.png` at load, and its single baked footprint rides every brick — `declare_occluders` under each transform cuts the player's glow *and* mouse-aimed torch beam into shadows, the baked solids push the player out with the sidecar's own `(bounce: 0.35)`; a mis-authored sidecar refuses to start the example (`docs/authored-shapes.md`) | `cargo run --example authored_hall` |
 
-The file sits in this folder rather than at the examples' top level, so it
-is declared explicitly in `Cargo.toml` (cargo only auto-discovers
-`examples/*.rs` and `examples/*/main.rs`); the example name is unchanged.
+Both files sit in this folder rather than at the examples' top level, so
+each is declared explicitly in `Cargo.toml` (cargo only auto-discovers
+`examples/*.rs` and `examples/*/main.rs`); the example names are unchanged.
 For the pure-input version of the same button, see `../inout/player.rs`.
 
 ## The model
@@ -68,6 +69,13 @@ bridge and the rendering stay the same.
   sprite's size (Button.png is 164 x 195, so half extents `[82, 97.5]`),
   and the outline is drawn at z = 1.0, on top of the button, so the box
   you see is the box the physics uses.
+- **One sidecar, one bake, every brick.** `authored_hall` reads
+  `assets/sprites/brick.ron` exactly once, at boot, and the one
+  [`Baked`](../../src/bake.rs) it gets back serves every brick in the
+  room: declared shadows and collided solids are the same records under
+  different transforms. The brick sprites themselves are *not* marked
+  `occludes` — the silhouette the light field gets is the one the sidecar
+  drew, inset two pixels from the picture's edge.
 - **The obstacles are a one-time random draw.** The four squares are
   generated once from the first frame's window size (with random colors),
   whole square kept inside the visible area, and never moved again — the

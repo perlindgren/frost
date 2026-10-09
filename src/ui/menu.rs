@@ -172,9 +172,12 @@ impl Ui {
     /// chosen command, or a slider line's value on the move. `notes` are read-only strings drawn right-aligned
     /// on the bar in the muted color, the LAST one at the bar's far end
     /// and its predecessors stepping leftwards: the last command and the
-    /// current mode, say. They are paint only — clicks there belong to
-    /// the bar's strip, not to any item. See the [module](self) for the
-    /// behavior.
+    /// current mode, say. The menu titles keep the bar's left, so a note
+    /// that runs out of room to their right is cut to a `...`-led tail —
+    /// a note's end is its point, so the tail is what survives — and the
+    /// earlier notes fall off the left first. They are paint only —
+    /// clicks there belong to the bar's strip, not to any item. See the
+    /// [module](self) for the behavior.
     pub fn menu_bar<'a>(
         &mut self,
         ctx: &mut Context,
@@ -190,15 +193,87 @@ impl Ui {
         let [_, cy] = frame.bar.center();
         // Letters sit on the line's optical center, not the box's.
         let cy = cy - self.style.menu_lift * font;
-        let mut x = frame.bar.left + frame.bar.w - pad;
-        for note in notes.iter().rev() {
-            let w = self.text_width(note, font);
-            x -= w;
-            let s = (*note).to_owned();
-            self.text(ctx, [x, cy], font, color, &s);
-            x -= pad;
+        // The titles own the bar up to the last one's right edge; the
+        // notes are laid in what is left of that, to the bar's end.
+        let limit = frame
+            .titles
+            .iter()
+            .map(|t| t.rect.left + t.rect.w)
+            .fold(frame.bar.left, f32::max)
+            + pad;
+        let right = frame.bar.left + frame.bar.w - pad;
+        for (note, center) in self.plan_notes(notes, font, right, limit, pad) {
+            self.text(ctx, [center, cy], font, color, &note);
         }
         choice
+    }
+
+    /// The paint-only heart of [`Ui::menu_bar`]'s notes, without a
+    /// canvas: lay `notes` right-to-left in `(limit, right]`, answering
+    /// `(text, center_x)` in the order the notes were given.
+    ///
+    /// Text draws centered — [`crate::Canvas::text`]'s anchor is the
+    /// glyph run's middle, not its edge — so a note of width `w` ending
+    /// at `x` draws at `x - w / 2`, and the next note's end starts a
+    /// `pad` further left. A note wider than the room left of it keeps
+    /// its tail behind a `...` lead (the tail is the half that says
+    /// something), and once not even that fits, the note and every
+    /// earlier one are left out.
+    fn plan_notes(
+        &mut self,
+        notes: &[&str],
+        font: f32,
+        right: f32,
+        limit: f32,
+        pad: f32,
+    ) -> Vec<(String, f32)> {
+        let mut laid: Vec<(String, f32)> = Vec::with_capacity(notes.len());
+        let mut edge = right;
+        for note in notes.iter().rev() {
+            let room = edge - limit;
+            if room <= pad {
+                break;
+            }
+            let w = self.text_width(note, font);
+            let text = if w <= room {
+                (*note).to_owned()
+            } else if let Some(tail) = self.ellipsize(note, font, room) {
+                tail
+            } else {
+                break;
+            };
+            let w = self.text_width(&text, font);
+            laid.push((text, edge - w / 2.0));
+            edge -= w + pad;
+        }
+        laid.reverse();
+        laid
+    }
+
+    /// The longest `...`-led tail of `note` that measures no more than
+    /// `room`, searching over char boundaries so a cut never splits a
+    /// codepoint (width grows with the tail, so the fit is a binary
+    /// search). `None` when not even the dots fit on their own.
+    fn ellipsize(&mut self, note: &str, font: f32, room: f32) -> Option<String> {
+        if room <= self.text_width("...", font) {
+            return None;
+        }
+        let starts: Vec<usize> = note.char_indices().map(|(i, _)| i).collect();
+        let (mut lo, mut hi) = (0usize, starts.len());
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            let probe = format!("...{}", &note[starts[mid]..]);
+            if self.text_width(&probe, font) <= room {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        if lo == starts.len() {
+            None
+        } else {
+            Some(format!("...{}", &note[starts[lo]..]))
+        }
     }
 
     /// The input-and-geometry heart of [`Ui::menu_bar`], without a canvas:
@@ -1192,5 +1267,93 @@ mod tests {
         // Far from every title, yet on the strip.
         frame(&mut ui, Some([350.0, 290.0]), false);
         assert!(ui.hovering(), "the bar strip is not scene");
+    }
+
+    /// Half-widths of the two notes plus a pad: the space a correct
+    /// center-anchored layout leaves between two notes' centers.
+    fn gap(u: &mut Ui, a: &str, b: &str, font: f32, pad: f32) -> f32 {
+        (u.text_width(a, font) + u.text_width(b, font)) / 2.0 + pad
+    }
+
+    #[test]
+    fn the_last_note_ends_at_the_bars_far_end() {
+        let (font, pad, right, limit) = (14.0, 6.0, 500.0, 0.0);
+        let mut u = ui();
+        let laid = u.plan_notes(&["a", "the mode"], font, right, limit, pad);
+        assert_eq!(laid.len(), 2);
+        let w = u.text_width("the mode", font);
+        assert!(
+            (laid[1].1 + w / 2.0 - right).abs() < 0.01,
+            "the last note's right edge is the bar's far end, not half a \
+             note left of it: {}",
+            laid[1].1
+        );
+    }
+
+    #[test]
+    fn notes_step_leftwards_without_touching() {
+        let (font, pad, right, limit) = (14.0, 6.0, 500.0, 0.0);
+        let mut u = ui();
+        let laid = u.plan_notes(&["one", "two", "three"], font, right, limit, pad);
+        for pair in laid.windows(2) {
+            let need = gap(&mut u, pair[0].0.as_str(), pair[1].0.as_str(), font, pad);
+            assert!(
+                pair[1].1 - pair[0].1 >= need - 0.01,
+                "`{}` and `{}` overlap: centers {:.1} and {:.1}, need {:.1} apart",
+                pair[0].0,
+                pair[1].0,
+                pair[0].1,
+                pair[1].1,
+                need,
+            );
+        }
+    }
+
+    #[test]
+    fn a_note_out_of_room_keeps_its_tail_behind_dots() {
+        let (font, pad, right, limit) = (14.0, 6.0, 500.0, 380.0);
+        let mut u = ui();
+        let long =
+            "shapes entry 3: kind `blob` is not a shape: the vocabulary is rect, circle, poly";
+        let laid = u.plan_notes(&[long, "view"], font, right, limit, pad);
+        assert_eq!(laid.len(), 2, "both notes still speak");
+        assert_eq!(laid[1].0, "view", "the note with room is not cut");
+        let cut = &laid[0].0;
+        assert!(
+            cut.starts_with("..."),
+            "the overflow leads with dots: {cut}"
+        );
+        assert!(
+            cut.ends_with("poly"),
+            "the tail — the half that says something — survives: {cut}"
+        );
+        let w = u.text_width(cut, font);
+        assert!(
+            laid[0].1 - w / 2.0 >= limit - 0.01,
+            "the cut note stays clear of the titles"
+        );
+    }
+
+    #[test]
+    fn when_the_room_runs_out_the_earliest_notes_fall_off_first() {
+        let (font, pad, right, limit) = (14.0, 6.0, 500.0, 470.0);
+        let mut u = ui();
+        let laid = u.plan_notes(
+            &["first", "second", "the mode that speaks last"],
+            font,
+            right,
+            limit,
+            pad,
+        );
+        assert!(
+            !laid.iter().any(|l| l.0 == "first" || l.0 == "second"),
+            "the earliest notes are the first sacrifices, got {:?}",
+            laid.iter().map(|l| &l.0).collect::<Vec<_>>()
+        );
+        let last = &laid.last().expect("the last note keeps the far slot").0;
+        assert!(
+            last.ends_with("last") || last.starts_with("..."),
+            "the last note holds its place, whole or cut: {last}"
+        );
     }
 }

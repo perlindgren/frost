@@ -134,7 +134,7 @@
 //! The View menu switches the workbench between two views — **Markers**
 //! (the full editing desk, the panels below) and **Atlas** (only the
 //! Atlas panel, the grid's rows and columns) — and the view's own name
-//! is noted at the menu bar's right end. The tile strip at the bottom
+//! is noted at the status band's right end. The tile strip at the bottom
 //! belongs to both: a sprite is picked and worked on identically either
 //! way. A launch with no argument starts empty, in Markers.
 //!
@@ -143,11 +143,22 @@
 //! **Markers / Atlas / Tile Map**; while a list is open the pointer
 //! tracks along the bar — sliding onto another title switches the list
 //! without another click — hovered lines highlight, and a click anywhere
-//! else dismisses. The bar's right end carries the last command and, at
-//! the very end, the view's own name. The bar itself is fully part of the app —
-//! drawn over every panel, owning every click that lands on it — but its
-//! items are deliberately inert: choosing one only logs the choice, it
-//! runs no file operation yet.
+//! else dismisses. The bar itself is fully part of the app — drawn
+//! over every panel, owning every click that lands on it — and its
+//! items run their named verbs. Its one note, right-aligned, voices
+//! what the file's `shapes:` got wrong; everything else the bar used
+//! to carry moved to the bottom of the window, where it belongs:
+//!
+//! The status band spans the window's bottom edge — the last command
+//! at the left, the view's own name pinned at the right — and the slot
+//! strip stands on it. A click anywhere on the band opens the log:
+//! the last messages as four docked rows above the slots, newest
+//! first. The up and down arrows step the highlight, the left and
+//! right arrows and the bottom thumb slide long lines, the right
+//! thumb and the wheel drive the shown window, and a click lands the
+//! highlight on its row; Escape, or another click on the band, puts
+//! the panel away. The band remembers fifty messages, collapses
+//! repeats into one, and forgets the oldest first.
 
 use clap::Parser;
 use image::ImageEncoder;
@@ -403,7 +414,14 @@ const THUMB_MAX: f32 = 84.0;
 /// the work area spans from the strip's top edge to the window's top, so
 /// its center sits half a strip above the bottom — whatever the height,
 /// since the strip's height is fixed.
-const WORK_Y: f32 = STRIP_H / 2.0;
+/// The status band's height: the window's bottommost row belongs to
+/// the log bar, and everything else stands on it — the window's floor
+/// for the rest of the tool is [`floor_y`].
+const STATUS_H: f32 = 26.0;
+
+/// The work area's center as an offset: the band and the strip both
+/// push the desk up, and the sprite centers between them and the top.
+const WORK_Y: f32 = (STRIP_H + STATUS_H) / 2.0;
 
 /// The atlas' slider ceiling: the most rows or columns one grid may
 /// have. 16 x 16 tiles any sensible sprite.
@@ -490,6 +508,35 @@ const PLATE_EMPTY: frost::Color = frost::Color {
     r: 0.075,
     g: 0.075,
     b: 0.095,
+    a: 1.0,
+};
+/// The status band's fill: the window's bottommost row, and the log
+/// panel's shelf when it stands.
+const LOG_BAND: frost::Color = frost::Color {
+    r: 0.085,
+    g: 0.085,
+    b: 0.105,
+    a: 1.0,
+};
+/// The log plate: a shade above the band, a shade under the slot
+/// plates — the panel is furniture, not a third voice.
+const LOG_PLATE: frost::Color = frost::Color {
+    r: 0.11,
+    g: 0.11,
+    b: 0.135,
+    a: 1.0,
+};
+/// The messages' ink, and the thumbs' grey.
+const LOG_TEXT: frost::Color = frost::Color {
+    r: 0.78,
+    g: 0.8,
+    b: 0.86,
+    a: 1.0,
+};
+const LOG_THUMB: frost::Color = frost::Color {
+    r: 0.3,
+    g: 0.3,
+    b: 0.37,
     a: 1.0,
 };
 
@@ -584,6 +631,10 @@ const THUMBS: usize = LAYER_NODES + 3;
 /// over the panel plates — the UI counts up from its 10 000 base, and
 /// the trees must sit on top of their own plates.
 const RON_ORDER: f32 = 15_000.0;
+
+/// The log bar's order: over every panel the UI paints and over the
+/// sidecar trees — the docked log wins the pixels it stands on.
+const LOG_Z: f32 = 15_400.0;
 
 /// The position markers' pool: two circles per position — the colour
 /// dot and its white centre — ordered above the sprite, its box and the
@@ -1015,9 +1066,29 @@ struct Demo {
     /// folder the command line named, the working directory when no
     /// argument did.
     dir: Option<std::path::PathBuf>,
-    /// The Operations panel's status line: the selection's size, or the
-    /// outcome of the last operation.
+    /// The status band's message: the outcome of the last operation,
+    /// spoken at the window's bottom edge — and, as it changes, the
+    /// log's newest voice.
     status: String,
+    /// The log bar's memory: every status the bench has spoken, oldest
+    /// first, as many as `LOG_KEEP` of them.
+    log: Vec<String>,
+    /// The last status captured: a message is an event when it
+    /// changes, and a change is measured against this.
+    log_seen: String,
+    /// Whether the log panel stands open above its band.
+    log_open: bool,
+    /// The panel's highlighted row and first visible row, as display
+    /// indices into the newest-first view: 0 is the newest message.
+    log_sel: usize,
+    log_top: usize,
+    /// Long lines' shared x offset, in pixels.
+    log_sx: f32,
+    /// A held thumb: whether it is the vertical one, and the grab's
+    /// offset inside it.
+    log_grab: Option<(bool, f32)>,
+    /// The arrows' held state: a press steps once; holding does not run.
+    log_arrows: [bool; 4],
     /// Whether the sidecar's authored `shapes:` draw over the sprite:
     /// the View menu's Shapes line. Validation ignores it — a refusal
     /// speaks on the notes whether or not the overlay is checked.
@@ -1057,6 +1128,39 @@ impl Demo {
         match self.active() {
             Some(sp) => [sp.current.width() as f32, sp.current.height() as f32],
             None => [0.0, 0.0],
+        }
+    }
+
+    /// A press inside the open panel: the thumbs claim first — their
+    /// drags live in the held state — and otherwise the row under the
+    /// cursor takes the highlight.
+    fn log_press(&mut self, p: [f32; 2], w: f32, h: f32) {
+        let panel = log_panel_rect(w, h);
+        let body = log_body(panel);
+        let len = self.log.len();
+        let (off, kh) = log_v_thumb(len, body[3] - body[1], self.log_top);
+        if len > LOG_ROWS
+            && p[0] >= body[2]
+            && p[0] <= body[2] + LOG_TRACK_W
+            && p[1] <= body[3] - off
+            && p[1] >= body[3] - off - kh
+        {
+            self.log_grab = Some((true, p[1] - (body[3] - off)));
+            return;
+        }
+        let view_w = body[2] - body[0];
+        let content = log_wide(&self.log) as f32 * RON_ADV;
+        let (hoff, hw) = log_h_thumb(view_w, content, view_w, self.log_sx);
+        if content > view_w
+            && p[1] <= panel[1] + LOG_PAD
+            && p[0] >= body[0] + hoff
+            && p[0] <= body[0] + hoff + hw
+        {
+            self.log_grab = Some((false, p[0] - (body[0] + hoff)));
+            return;
+        }
+        if let Some(row) = log_row_at(len, self.log_top, body, p[1]) {
+            self.log_sel = row;
         }
     }
 
@@ -1820,6 +1924,11 @@ impl frost::Process for Demo {
             self.sync_work(ctx);
         }
 
+        // The log captures the bench's voice: whatever the last
+        // handlers settled on is this frame's message, and only a
+        // change of it is an event worth remembering.
+        log_note(&mut self.log, &mut self.log_seen, &self.status);
+
         let (w, h) = ctx.size();
         // The exit guard: Escape asks, the box answers. While the box
         // stands every other key is dead and the pointer belongs to
@@ -1845,15 +1954,24 @@ impl frost::Process for Demo {
             self.was_block_esc = esc_now;
         } else {
             ctx.set_keys_frozen(false);
-            let holding = self.clip.is_some()
-                || self.sel.is_some()
-                || self.sel_drag.is_some()
-                || self.ron().is_some_and(|d| d.edit.is_some());
-            if esc_edge && !holding {
-                self.quit_prompt = true;
-                self.was_esc = true;
-                self.was_block_esc = true;
-                self.status = String::from("quit? — Enter/Y leaves, Escape/N stays");
+            // The log panel answers Escape before the bench does: it
+            // closes, and the closing is the key's whole meaning this
+            // frame — not a let-go, and not the quit question.
+            if esc_edge && self.log_open {
+                self.log_open = false;
+                self.was_esc = esc_now;
+                self.was_block_esc = esc_now;
+            } else {
+                let holding = self.clip.is_some()
+                    || self.sel.is_some()
+                    || self.sel_drag.is_some()
+                    || self.ron().is_some_and(|d| d.edit.is_some());
+                if esc_edge && !holding {
+                    self.quit_prompt = true;
+                    self.was_esc = true;
+                    self.was_block_esc = true;
+                    self.status = String::from("quit? — Enter/Y leaves, Escape/N stays");
+                }
             }
         }
         // The window manager's close button asks the same question:
@@ -1917,7 +2035,24 @@ impl frost::Process for Demo {
         // sideways with Shift — while it rests on an open view's body;
         // anywhere else it keeps zooming.
         let mut scrolled = false;
+        if wheel != 0.0 && self.log_open && pos.is_some_and(|p| in_rect(log_panel_rect(w, h), p)) {
+            // The log answers the wheel over its own pixels: the
+            // window steps two rows a line, Shift slides sideways.
+            if ctx.key_down(frost::KeyCode::ShiftLeft) || ctx.key_down(frost::KeyCode::ShiftRight) {
+                let body = log_body(log_panel_rect(w, h));
+                let wide = log_wide(&self.log) as f32 * RON_ADV;
+                let max = (wide - (body[2] - body[0])).max(0.0);
+                self.log_sx = (self.log_sx - wheel * 2.0 * RON_ADV).clamp(0.0, max);
+            } else {
+                let step = (wheel * 2.0).round() as i64;
+                let len = self.log.len();
+                self.log_top =
+                    (self.log_top as i64 - step).clamp(0, len.saturating_sub(1) as i64) as usize;
+            }
+            scrolled = true;
+        }
         if wheel != 0.0
+            && !scrolled
             && let Some(p) = pos
         {
             let slot = self
@@ -1976,7 +2111,7 @@ impl frost::Process for Demo {
             None
         };
         if wheel != 0.0 && !scrolled {
-            let over_strip = pos.is_some_and(|p| p[1] < -h / 2.0 + STRIP_H);
+            let over_strip = pos.is_some_and(|p| p[1] < floor_y(h) + STRIP_H);
             let over_band = bplate.is_some_and(|r| p_in(pos, r));
             if over_band {
                 // Over the tileset panel the wheel belongs to the
@@ -2032,6 +2167,7 @@ impl frost::Process for Demo {
             && self.clip.is_some()
             && ((p[0] - from[0]).powi(2) + (p[1] - from[1]).powi(2)).sqrt() < CLICK_TOL
             && !self.ui.hovering()
+            && !self.log_open
             && !over_ron
             && let Some((col, row)) = desk_cell(self.active(), p, view, self.zoom)
         {
@@ -2371,6 +2507,39 @@ impl frost::Process for Demo {
         }
         self.was_space = space;
 
+        // The log's arrows: while the panel stands, up and down step
+        // the highlight one message a press (holding does not run),
+        // and left and right slide long lines. Closed, or asked by
+        // the quit box, the arrows rest — and their held state parks,
+        // so reopening never fires an old press.
+        if self.log_open && !self.quit_prompt {
+            let arrows = [
+                ctx.key_down(frost::KeyCode::ArrowUp),
+                ctx.key_down(frost::KeyCode::ArrowDown),
+                ctx.key_down(frost::KeyCode::ArrowLeft),
+                ctx.key_down(frost::KeyCode::ArrowRight),
+            ];
+            let len = self.log.len();
+            if arrows[0] && !self.log_arrows[0] && len > 0 {
+                self.log_sel = self.log_sel.saturating_sub(1);
+                self.log_top = log_reveal(len, self.log_top, self.log_sel);
+            }
+            if arrows[1] && !self.log_arrows[1] && len > 0 {
+                self.log_sel = (self.log_sel + 1).min(len - 1);
+                self.log_top = log_reveal(len, self.log_top, self.log_sel);
+            }
+            if arrows[2] && !self.log_arrows[2] || arrows[3] && !self.log_arrows[3] {
+                let step = if arrows[2] { -4.0 } else { 4.0 } * RON_ADV;
+                let wide = log_wide(&self.log) as f32 * RON_ADV;
+                let body = log_body(log_panel_rect(w, h));
+                let max = (wide - (body[2] - body[0])).max(0.0);
+                self.log_sx = (self.log_sx + step).clamp(0.0, max);
+            }
+            self.log_arrows = arrows;
+        } else {
+            self.log_arrows = [false; 4];
+        }
+
         // Escape's rising edge lets go of a picked position.
         let esc = ctx.key_down(frost::KeyCode::Escape);
         if esc && !self.was_esc {
@@ -2461,18 +2630,14 @@ impl frost::Process for Demo {
         // plates and win their clicks. Declaring it here (after all the
         // panels, before the collected presses) puts its whole strip into
         // `ui.hovering()` too: no slot or panel drag acts through it.
-        // The bar's trailing notes: the last command, then the shapes
-        // that refused to read, then the view's own name at the very
-        // end. An empty status draws nothing; so does an error-free
-        // sidecar.
-        let mut notes: Vec<&str> = Vec::with_capacity(3);
-        if !self.status.is_empty() {
-            notes.push(self.status.as_str());
-        }
+        // The bar's one note: the shapes that refused to read. The
+        // last command speaks on the status band now, and the view's
+        // own name is pinned at the band's right edge — the menu bar
+        // is for menus, and for what the file got wrong.
+        let mut notes: Vec<&str> = Vec::new();
         if let Some(note) = shapes_note.as_deref() {
             notes.push(note);
         }
-        notes.push(self.view.name());
         // The View menu is assembled each frame: the three named corners
         // all switch the workbench, and beneath them the view's own
         // state —
@@ -2707,14 +2872,37 @@ impl frost::Process for Demo {
         self.was_block_esc = esc;
         // The left button's work: press lands on a slot, on the work area
         // or nowhere the demo owns; release decides — click or drag.
+        // The status band answers a click anywhere on it: the band
+        // toggles the panel, and an open panel takes the press for
+        // its own rows and thumbs. Either way the press is the bar's,
+        // and the chain below never hears it.
+        let mut log_hit = false;
         if pressed
             && !self.ui.hovering()
+            && let Some(p) = pos
+        {
+            if in_rect(log_bar_rect(w, h), p) {
+                self.log_open = !self.log_open;
+                if self.log_open {
+                    self.log_sel = 0;
+                    self.log_top = 0;
+                    self.log_sx = 0.0;
+                }
+                log_hit = true;
+            } else if self.log_open && in_rect(log_panel_rect(w, h), p) {
+                self.log_press(p, w, h);
+                log_hit = true;
+            }
+        }
+        if pressed
+            && !self.ui.hovering()
+            && !log_hit
             && let Some(p) = pos
         {
             // The strip's scrollbar claims its bottom band first; the
             // plates sit above it and never share its pixels.
             let scrub = sv.scroll_max > 0.0
-                && p[1] <= -h / 2.0 + (SCROLL_Y + SCROLL_H / 2.0)
+                && p[1] <= floor_y(h) + (SCROLL_Y + SCROLL_H / 2.0)
                 && p[0] >= sv.x0
                 && p[0] <= sv.x0 + sv.track_w;
             if scrub {
@@ -2798,6 +2986,7 @@ impl frost::Process for Demo {
             && tile_view
             && let Some(p) = pos
             && !over_ron
+            && !self.log_open
             && !self.ui.hovering()
             && (band_pick(p, brows, bcols, bcell, bor, bcells).is_some() || in_work_area(p, w, h))
         {
@@ -2852,6 +3041,7 @@ impl frost::Process for Demo {
         if del_edge
             && tile_view
             && !over_ron
+            && !self.log_open
             && !self.ui.hovering()
             && pos.is_some_and(|p| in_work_area(p, w, h))
         {
@@ -3200,6 +3390,155 @@ impl frost::Process for Demo {
             self.slot_scrub = None;
         }
 
+        // A held log thumb rides the cursor: the vertical one drives
+        // the shown window, the horizontal one slides long lines.
+        // Letting go ends the ride; the selection keeps its place.
+        if let Some((vert, grab)) = self.log_grab
+            && let Some(p) = pos
+        {
+            let body = log_body(log_panel_rect(w, h));
+            let len = self.log.len();
+            if vert {
+                self.log_top = log_top_at(len, body[3] - body[1], body[3] - (p[1] - grab));
+            } else {
+                let view_w = body[2] - body[0];
+                let content = log_wide(&self.log) as f32 * RON_ADV;
+                self.log_sx = log_sx_at(view_w, content, view_w, p[0] - grab - body[0]);
+            }
+        }
+        if !down {
+            self.log_grab = None;
+        }
+
+        // The status band: the bench's voice at the window's bottom
+        // edge — the newest message at the left, the view's own name
+        // pinned at the right — and one click away, the log: the last
+        // messages as docked rows, whose thumbs answer drag, wheel
+        // and arrows alike.
+        let bar = log_bar_rect(w, h);
+        let bcy = (bar[1] + bar[3]) / 2.0;
+        ctx.rectangle(0.0, bcy, w / 2.0, STATUS_H / 2.0, LOG_BAND, LOG_Z);
+        let view_name = self.view.name();
+        let name_w = view_name.chars().count() as f32 * RON_ADV;
+        ctx.text(
+            bar[2] - LOG_INSET - name_w / 2.0,
+            bcy - RON_LIFT * RON_SIZE,
+            &self.ron_font,
+            view_name,
+            RON_SIZE,
+            700.0,
+            LOG_TEXT,
+            LOG_Z + 0.5,
+        );
+        if !self.status.is_empty() {
+            let room = ((bar[2] - bar[0] - 3.0 * LOG_INSET - name_w) / RON_ADV).max(0.0) as usize;
+            let shown = log_head(&self.status, room);
+            let wd = shown.chars().count() as f32 * RON_ADV;
+            ctx.text(
+                bar[0] + LOG_INSET + wd / 2.0,
+                bcy - RON_LIFT * RON_SIZE,
+                &self.ron_font,
+                shown,
+                RON_SIZE,
+                400.0,
+                LOG_TEXT,
+                LOG_Z + 0.5,
+            );
+        }
+        if self.log_open {
+            let panel = log_panel_rect(w, h);
+            let body = log_body(panel);
+            ctx.rectangle(
+                (panel[0] + panel[2]) / 2.0,
+                (panel[1] + panel[3]) / 2.0,
+                (panel[2] - panel[0]) / 2.0,
+                (panel[3] - panel[1]) / 2.0,
+                LOG_PLATE,
+                LOG_Z,
+            );
+            let len = self.log.len();
+            if len == 0 {
+                ctx.text(
+                    0.0,
+                    (body[1] + body[3]) / 2.0 - RON_LIFT * RON_SIZE,
+                    &self.ron_font,
+                    "the bench has said nothing yet",
+                    RON_SIZE,
+                    400.0,
+                    LOG_TEXT,
+                    LOG_Z + 0.5,
+                );
+            }
+            // Rows slice by the character, as the sidecar trees do:
+            // the shared x offset decides the first visible character.
+            let start = (self.log_sx / RON_ADV) as usize;
+            let vis = ((body[2] - body[0] - 2.0 * LOG_INSET) / RON_ADV).max(0.0) as usize;
+            for d in self.log_top..(self.log_top + LOG_ROWS).min(len) {
+                let Some(msg) = log_line(&self.log, d) else {
+                    continue;
+                };
+                let y = body[3] - (d - self.log_top) as f32 * LOG_LINE - LOG_LINE / 2.0;
+                if d == self.log_sel {
+                    ctx.rectangle(
+                        (body[0] + body[2]) / 2.0,
+                        y,
+                        (body[2] - body[0]) / 2.0 - 4.0,
+                        LOG_LINE / 2.0 - 1.0,
+                        SELECT,
+                        LOG_Z + 0.2,
+                    );
+                }
+                let shown: String = msg.chars().skip(start).take(vis).collect();
+                let wd = shown.chars().count() as f32 * RON_ADV;
+                ctx.text(
+                    body[0] + LOG_INSET + wd / 2.0,
+                    y - RON_LIFT * RON_SIZE,
+                    &self.ron_font,
+                    shown,
+                    RON_SIZE,
+                    if d == self.log_sel { 700.0 } else { 400.0 },
+                    LOG_TEXT,
+                    LOG_Z + 0.5,
+                );
+            }
+            // Thumbs: proportional, vertical on the strip at the
+            // body's right, horizontal under the rows — each shown
+            // only when there is somewhere to go.
+            let track_h = body[3] - body[1];
+            let (off, kh) = log_v_thumb(len, track_h, self.log_top);
+            if len > LOG_ROWS {
+                ctx.rectangle(
+                    body[2] + LOG_TRACK_W / 2.0,
+                    (body[1] + body[3]) / 2.0,
+                    LOG_TRACK_W / 2.0 - 3.0,
+                    track_h / 2.0,
+                    LOG_BAND,
+                    LOG_Z + 0.3,
+                );
+                ctx.rectangle(
+                    body[2] + LOG_TRACK_W / 2.0,
+                    body[3] - off - kh / 2.0,
+                    LOG_THICK / 2.0,
+                    kh / 2.0,
+                    LOG_THUMB,
+                    LOG_Z + 0.4,
+                );
+            }
+            let view_w = body[2] - body[0];
+            let content = log_wide(&self.log) as f32 * RON_ADV;
+            let (hoff, hw) = log_h_thumb(view_w, content, view_w, self.log_sx);
+            if content > view_w {
+                ctx.rectangle(
+                    body[0] + hoff + hw / 2.0,
+                    panel[1] + LOG_PAD / 2.0,
+                    hw / 2.0,
+                    LOG_THICK / 2.0,
+                    LOG_THUMB,
+                    LOG_Z + 0.4,
+                );
+            }
+        }
+
         // The work area's layer pool: every node carries the pan and the
         // zoom — a uniform scale about its center, then the pan offset
         // from the work area's center. The shapes come from the sync.
@@ -3214,7 +3553,7 @@ impl frost::Process for Demo {
         if tile_view {
             let clip = [
                 (-w / 2.0 - view[0]) / self.zoom,
-                (-h / 2.0 + STRIP_H - view[1]) / self.zoom,
+                (floor_y(h) + STRIP_H - view[1]) / self.zoom,
                 (w / 2.0 - view[0]) / self.zoom,
                 (h / 2.0 - view[1]) / self.zoom,
             ];
@@ -3242,11 +3581,11 @@ impl frost::Process for Demo {
         // tile-map desk, the work area entire: the map has no bounds
         // the checker should respect, so the pattern fills the canvas.
         let (rx0, ry0, rx1, ry1) = if tile_view {
-            (-w / 2.0, -h / 2.0 + STRIP_H, w / 2.0, h / 2.0)
+            (-w / 2.0, floor_y(h) + STRIP_H, w / 2.0, h / 2.0)
         } else {
             (
                 bx0.max(-w / 2.0),
-                by0.max(-h / 2.0 + STRIP_H),
+                by0.max(floor_y(h) + STRIP_H),
                 bx1.min(w / 2.0),
                 by1.min(h / 2.0),
             )
@@ -3280,7 +3619,7 @@ impl frost::Process for Demo {
         // The desk's own lines stop at the work area's edge: no
         // bounding box, atlas grid or crop selection escapes onto the
         // slots strip or past the top of the window.
-        let (wx0, wy0, wx1, wy1) = (-w / 2.0, -h / 2.0 + STRIP_H, w / 2.0, h / 2.0);
+        let (wx0, wy0, wx1, wy1) = (-w / 2.0, floor_y(h) + STRIP_H, w / 2.0, h / 2.0);
         let clip_v = |x: f32, y0: f32, y1: f32| -> Option<(f32, f32)> {
             let (a, b) = (y0.max(wy0), y1.min(wy1));
             (x >= wx0 && x <= wx1 && b > a).then_some((a, b))
@@ -3395,7 +3734,7 @@ impl frost::Process for Demo {
                 })
                 .unwrap_or((32.0, 32.0));
             let (sx, sy) = (grid_step(tx, self.zoom), grid_step(ty, self.zoom));
-            let (x0w, y0w, x1w, y1w) = (-w / 2.0, -h / 2.0 + STRIP_H, w / 2.0, h / 2.0);
+            let (x0w, y0w, x1w, y1w) = (-w / 2.0, floor_y(h) + STRIP_H, w / 2.0, h / 2.0);
             // The work area's corners in map space; the window's y-up
             // and the map's y-up agree, so one sign serves both axes.
             let (mx0, mx1) = ((x0w - view[0]) / self.zoom, (x1w - view[0]) / self.zoom);
@@ -3461,7 +3800,7 @@ impl frost::Process for Demo {
         // edge.
         ctx.rectangle(
             0.0,
-            -h / 2.0 + STRIP_H / 2.0,
+            floor_y(h) + STRIP_H / 2.0,
             w / 2.0,
             STRIP_H / 2.0,
             STRIP,
@@ -3494,7 +3833,7 @@ impl frost::Process for Demo {
             }
         }
         if sv.scroll_max > 0.0 {
-            let ty = -h / 2.0 + SCROLL_Y;
+            let ty = floor_y(h) + SCROLL_Y;
             let (kx, kw) = scroll_knob(&sv, self.slot_scroll);
             ctx.rectangle(
                 sv.x0 + sv.track_w / 2.0,
@@ -4124,7 +4463,7 @@ fn ron_default(w: f32, h: f32, row_h: f32, pad: f32, cascade: usize) -> [f32; 2]
     let step = cascade as f32 * 34.0;
     [
         w / 2.0 - 20.0 - RON_W / 2.0 - step,
-        -h / 2.0 + STRIP_H + 12.0 + panel_h / 2.0 + step,
+        floor_y(h) + STRIP_H + 12.0 + panel_h / 2.0 + step,
     ]
 }
 
@@ -4884,7 +5223,7 @@ fn cell_uv(idx: usize, rows: usize, cols: usize) -> [f32; 4] {
 /// shrunk only when the whole matrix would not fit above the strip.
 fn band_fit(rows: usize, cols: usize, w: f32, h: f32) -> f32 {
     let cw = (w - 40.0) / cols.max(1) as f32 - BAND_GAP;
-    let ch = (h - STRIP_H - 28.0) / rows.max(1) as f32 - BAND_GAP;
+    let ch = (h - STATUS_H - STRIP_H - 28.0) / rows.max(1) as f32 - BAND_GAP;
     BAND_CELL.min(cw).min(ch).max(12.0)
 }
 
@@ -4898,7 +5237,7 @@ fn band_cell(rows: usize, cols: usize, w: f32, h: f32, zoom: f32) -> f32 {
 /// The panel's corner: the plate's lower-left, at rest in the desk's
 /// lower-left, above the slots strip.
 fn band_origin_default(w: f32, h: f32) -> [f32; 2] {
-    [-w / 2.0 + 14.0, -h / 2.0 + STRIP_H + 8.0]
+    [-w / 2.0 + 14.0, floor_y(h) + STRIP_H + 8.0]
 }
 
 /// The panel's boxes: the active tileset's grid drawn as its matrix,
@@ -4955,7 +5294,7 @@ fn band_clamp(origin: [f32; 2], cell: f32, rows: usize, cols: usize, w: f32, h: 
     };
     [
         fix(origin[0], -w / 2.0 + 2.0, w / 2.0 - 2.0 - pw),
-        fix(origin[1], -h / 2.0 + STRIP_H + 2.0, h / 2.0 - 2.0 - ph),
+        fix(origin[1], floor_y(h) + STRIP_H + 2.0, h / 2.0 - 2.0 - ph),
     ]
 }
 
@@ -5296,18 +5635,177 @@ fn scroll_knob(sv: &StripView, scroll: f32) -> (f32, f32) {
     (x, kw)
 }
 
+/// The usable floor: below this the window belongs to the status
+/// band, and the strip, the work area and every panel stand on it.
+fn floor_y(h: f32) -> f32 {
+    -h / 2.0 + STATUS_H
+}
+
+/// The log panel's row pitch and padding, its text inset, and the
+/// vertical thumb's strip: the panel is four rows of the sidecar
+/// tree's own rhythm, docked.
+const LOG_ROWS: usize = 4;
+const LOG_KEEP: usize = 50;
+const LOG_LINE: f32 = RON_LINE;
+const LOG_PAD: f32 = 6.0;
+const LOG_INSET: f32 = 12.0;
+const LOG_TRACK_W: f32 = 12.0;
+/// Both thumbs' thickness, so the sideways one weighs the same as
+/// the up-and-down one: one widget, two directions.
+const LOG_THICK: f32 = 6.0;
+
+/// The status band's rect, and the open panel's: the band spans the
+/// window's bottom edge, and the panel docks on the work area's floor
+/// just above it — clear of the slots, over the desk's lower rows.
+fn log_bar_rect(w: f32, h: f32) -> [f32; 4] {
+    [-w / 2.0, -h / 2.0, w / 2.0, floor_y(h)]
+}
+
+fn log_panel_rect(w: f32, h: f32) -> [f32; 4] {
+    let bottom = floor_y(h) + STRIP_H;
+    [
+        -w / 2.0,
+        bottom,
+        w / 2.0,
+        bottom + LOG_ROWS as f32 * LOG_LINE + 2.0 * LOG_PAD,
+    ]
+}
+
+/// The panel's row region: the plate inside its padding, with the
+/// thumb's strip reserved at the right.
+fn log_body(panel: [f32; 4]) -> [f32; 4] {
+    [
+        panel[0],
+        panel[1] + LOG_PAD,
+        panel[2] - LOG_TRACK_W,
+        panel[3] - LOG_PAD,
+    ]
+}
+
+/// Capture one frame into the log: a message is an event when the
+/// status changed, and the log records changes, not frames. Repeats
+/// collapse, silence records nothing, and the oldest message dies at
+/// `LOG_KEEP`.
+fn log_note(log: &mut Vec<String>, seen: &mut String, now: &str) {
+    if now.is_empty() || now == seen {
+        return;
+    }
+    *seen = now.to_string();
+    if log.last().map(String::as_str) != Some(now) {
+        log.push(now.to_string());
+    }
+    while log.len() > LOG_KEEP {
+        log.remove(0);
+    }
+}
+
+/// The panel shows the log newest first: display row `i` is the
+/// `i`th-newest message.
+fn log_line(log: &[String], display: usize) -> Option<&str> {
+    log.len().checked_sub(display + 1).map(|i| log[i].as_str())
+}
+
+/// Keep the highlighted row inside the shown window with the least
+/// motion of the window.
+fn log_reveal(len: usize, top: usize, sel: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let sel = sel.min(len - 1);
+    let top = top.min(len.saturating_sub(LOG_ROWS));
+    if sel < top {
+        sel
+    } else if sel >= top + LOG_ROWS {
+        sel + 1 - LOG_ROWS
+    } else {
+        top
+    }
+}
+
+/// The row under a window point in the open panel: the shown window
+/// decided by `top`, the newest message at the panel's top.
+fn log_row_at(len: usize, top: usize, body: [f32; 4], y: f32) -> Option<usize> {
+    if y > body[3] || y < body[1] {
+        return None;
+    }
+    let row = ((body[3] - y) / LOG_LINE).floor().max(0.0) as usize;
+    let row = top + row;
+    (row < len && row < top + LOG_ROWS).then_some(row)
+}
+
+/// The vertical thumb's `(offset from the track's top, length)`: a
+/// log that fits owns the whole track — there is nowhere to go.
+fn log_v_thumb(len: usize, track_h: f32, top: usize) -> (f32, f32) {
+    if len <= LOG_ROWS {
+        return (0.0, track_h);
+    }
+    let kh = (track_h * LOG_ROWS as f32 / len as f32).max(16.0);
+    (top as f32 / (len - LOG_ROWS) as f32 * (track_h - kh), kh)
+}
+
+/// The window top a vertical thumb drag asks for: `y` is the
+/// pointer's distance below the track's top, less the grab.
+fn log_top_at(len: usize, track_h: f32, y: f32) -> usize {
+    if len <= LOG_ROWS {
+        return 0;
+    }
+    let (_o, kh) = log_v_thumb(len, track_h, 0);
+    let f = (y / (track_h - kh).max(1.0)).clamp(0.0, 1.0);
+    (f * (len - LOG_ROWS) as f32).round() as usize
+}
+
+/// The log's widest line in characters: FiraCode's advance is
+/// constant, so the panel's content width is pure arithmetic.
+fn log_wide(log: &[String]) -> usize {
+    log.iter().map(|l| l.chars().count()).max().unwrap_or(0)
+}
+
+/// The horizontal thumb's `(offset from the track's left, length)`
+/// over `content_w` of content in a `view_w` window.
+fn log_h_thumb(view_w: f32, content_w: f32, track_w: f32, sx: f32) -> (f32, f32) {
+    let over = content_w - view_w;
+    if over <= 0.0 {
+        return (0.0, track_w);
+    }
+    let kw = (track_w * (view_w / content_w)).max(16.0);
+    ((sx / over).min(1.0) * (track_w - kw), kw)
+}
+
+/// The x offset a horizontal thumb drag asks for.
+fn log_sx_at(view_w: f32, content_w: f32, track_w: f32, x: f32) -> f32 {
+    let over = (content_w - view_w).max(0.0);
+    if over == 0.0 {
+        return 0.0;
+    }
+    let (_o, kw) = log_h_thumb(view_w, content_w, track_w, 0.0);
+    (x / (track_w - kw).max(1.0)).clamp(0.0, 1.0) * over
+}
+
+/// The band's one message: the newest status, with its head kept and
+/// its tail cut to `room` characters when the view name needs space.
+fn log_head(msg: &str, room: usize) -> String {
+    let chars = msg.chars().count();
+    if chars <= room {
+        return msg.to_string();
+    }
+    if room <= 3 {
+        return ".".repeat(room);
+    }
+    msg.chars().take(room - 3).collect::<String>() + "..."
+}
+
 /// The `i`th slot's center, in window coordinates, at a scroll offset.
 fn slot_center(i: usize, w: f32, h: f32, scroll: f32) -> [f32; 2] {
     [
         -w / 2.0 + SLOT_MARGIN + SLOT / 2.0 + i as f32 * (SLOT + SLOT_GAP) - scroll,
-        -h / 2.0 + STRIP_H / 2.0,
+        floor_y(h) + STRIP_H / 2.0,
     ]
 }
 
 /// The slot under a window point — among the `count` plates the strip
 /// shows, and only within the pool's visible box.
 fn slot_at(p: [f32; 2], w: f32, h: f32, scroll: f32, count: usize) -> Option<usize> {
-    if p[1] > -h / 2.0 + STRIP_H {
+    if p[1] > floor_y(h) + STRIP_H {
         return None;
     }
     let sv = strip_view(w, count);
@@ -5336,7 +5834,7 @@ fn stroke_held(st: &Paint, down: bool, del: bool) -> bool {
 /// Whether a window point lies in the work area (everything above
 /// the slots strip).
 fn in_work_area(p: [f32; 2], _w: f32, h: f32) -> bool {
-    p[1] >= -h / 2.0 + STRIP_H
+    p[1] >= floor_y(h) + STRIP_H
 }
 
 /// The window point's position in the texture's pixel space: `(0, 0)`
@@ -5707,6 +6205,14 @@ fn main() {
             was_flipy: false,
             was_turn: false,
             status: String::new(),
+            log: Vec::new(),
+            log_seen: String::new(),
+            log_open: false,
+            log_sel: 0,
+            log_top: 0,
+            log_sx: 0.0,
+            log_grab: None,
+            log_arrows: [false; 4],
             show_shapes: true,
             ron_font,
             r_press: None,
@@ -5834,7 +6340,7 @@ mod tests {
         // The leftmost slot starts at the margin, flush with the strip.
         let [cx, cy] = slot_center(0, w, h, 0.0);
         assert_eq!(cx, -w / 2.0 + SLOT_MARGIN + SLOT / 2.0);
-        assert_eq!(cy, -h / 2.0 + STRIP_H / 2.0);
+        assert_eq!(cy, floor_y(h) + STRIP_H / 2.0);
         // Neighbors sit one slot and one gap apart.
         let [cx1, _] = slot_center(1, w, h, 0.0);
         assert_eq!(cx1 - cx, SLOT + SLOT_GAP);
@@ -5875,7 +6381,7 @@ mod tests {
         let sv = strip_view(w, count);
         assert!(sv.scroll_max > 0.0);
         let pitch = SLOT + SLOT_GAP;
-        let cy = -h / 2.0 + STRIP_H / 2.0;
+        let cy = floor_y(h) + STRIP_H / 2.0;
         // One pitch of scroll, and slot 1 stands where slot 0 stood:
         // plates, picks and thumbnails all read the same offset.
         let p = [-w / 2.0 + SLOT_MARGIN + SLOT / 2.0, cy];
@@ -5891,12 +6397,13 @@ mod tests {
     #[test]
     fn the_strip_divides_the_work_area_from_the_slots() {
         let h = 600.0;
-        let strip_top = -h / 2.0 + STRIP_H;
+        let strip_top = floor_y(h) + STRIP_H;
         assert!(!in_work_area([0.0, strip_top - 1.0], 800.0, h));
         assert!(in_work_area([0.0, strip_top + 1.0], 800.0, h));
-        // The work area's center is half a strip above the bottom edge,
-        // so a sprite panned to it floats clear of the slots.
-        assert_eq!(WORK_Y, STRIP_H / 2.0);
+        // The work area's center is half a strip and half a band above
+        // the bottom edge, so a sprite panned to it floats clear of
+        // the slots and of the status bar alike.
+        assert_eq!(WORK_Y, (STRIP_H + STATUS_H) / 2.0);
     }
 
     #[test]
@@ -5980,7 +6487,7 @@ mod tests {
         let c = ron_default(w, h, row_h, pad, 0);
         let panel_h = row_h + 2.0 * pad + RON_VIEW_H;
         assert!(
-            c[1] - panel_h / 2.0 >= -h / 2.0 + STRIP_H,
+            c[1] - panel_h / 2.0 >= floor_y(h) + STRIP_H,
             "a fresh panel should clear the slot strip"
         );
         assert!(
@@ -6605,7 +7112,7 @@ mod tests {
         assert!(band_pick([(fx0 + fx1) / 2.0, (fy0 + fy1) / 2.0], 1, 12, cell, o, 4).is_none());
         assert!(band_pick([(fx0 + fx1) / 2.0, (fy0 + fy1) / 2.0], 1, 12, cell, o, 12) == Some(4));
         // Below the rack, the slots strip lives.
-        assert!(y0 >= -h / 2.0 + STRIP_H);
+        assert!(y0 >= floor_y(h) + STRIP_H);
     }
 
     #[test]
@@ -6631,7 +7138,7 @@ mod tests {
         assert_eq!(big.len(), 64);
         let [px0, py0, px1, py1] = band_plate(&big, 64).unwrap();
         assert!(px0 >= -w / 2.0 && px1 <= w / 2.0);
-        assert!(py0 >= -h / 2.0 + STRIP_H && py1 <= h / 2.0);
+        assert!(py0 >= floor_y(h) + STRIP_H && py1 <= h / 2.0);
         // The panel's wheel is its own: the canvas never enters this
         // number, the cell simply scales.
         let doubled = band_cell(2, 2, w, h, 2.0);
@@ -7125,15 +7632,136 @@ mod tests {
         // takes no place on the undo road.
         assert!(!erase_rect(&mut maps, [0, 0, 1, 1]));
     }
+
+    #[test]
+    fn the_log_records_changes_not_frames() {
+        let mut log = Vec::new();
+        let mut seen = String::new();
+        log_note(&mut log, &mut seen, ""); // silence records nothing
+        log_note(&mut log, &mut seen, "opened brick.png");
+        log_note(&mut log, &mut seen, "opened brick.png"); // same frame, same voice
+        assert_eq!(log, vec!["opened brick.png".to_string()]);
+        log_note(&mut log, &mut seen, "cropped");
+        log_note(&mut log, &mut seen, "opened brick.png"); // back again: a new event
+        assert_eq!(log.len(), 3);
+        assert_eq!(log.last().unwrap(), "opened brick.png");
+    }
+
+    #[test]
+    fn the_log_forgets_its_oldest_at_the_cap() {
+        let mut log = Vec::new();
+        let mut seen = String::new();
+        for i in 0..LOG_KEEP + 10 {
+            log_note(&mut log, &mut seen, &format!("message {i}"));
+        }
+        assert_eq!(log.len(), LOG_KEEP);
+        assert_eq!(log.first().unwrap(), &format!("message {}", 10));
+        assert_eq!(log.last().unwrap(), &format!("message {}", LOG_KEEP + 9));
+    }
+
+    #[test]
+    fn the_panel_shows_the_newest_first() {
+        let log: Vec<String> = ["one", "two", "three"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(log_line(&log, 0), Some("three"));
+        assert_eq!(log_line(&log, 2), Some("one"));
+        assert_eq!(log_line(&log, 3), None);
+    }
+
+    #[test]
+    fn the_highlight_travels_and_pulls_the_window() {
+        // A highlight inside the window moves nothing; one below the
+        // foot slides it exactly onto the foot; one above the brow
+        // snaps the brow down to it.
+        let len = 10;
+        assert_eq!(log_reveal(len, 2, 4), 2);
+        assert_eq!(log_reveal(len, 2, 6), 3);
+        assert_eq!(log_reveal(len, 4, 1), 1);
+        // And the window never overpays its fare at either end.
+        assert_eq!(log_reveal(len, 99, 0), 0);
+        assert_eq!(log_reveal(2, 0, 1), 0);
+    }
+
+    #[test]
+    fn the_rows_map_their_pixels_to_the_shown_window() {
+        let body = [0.0, 0.0, 400.0, 4.0 * LOG_LINE];
+        // With row 5 of the display at the brow, its middle is the
+        // half-row below the top; the foot's last pixel still counts.
+        assert_eq!(log_row_at(10, 5, body, body[3] - LOG_LINE / 2.0), Some(5));
+        assert_eq!(
+            log_row_at(10, 5, body, body[1] + 0.5),
+            Some(5 + LOG_ROWS - 1)
+        );
+        // Outside the body, and past the last message: no row.
+        assert_eq!(log_row_at(10, 5, body, body[3] + 1.0), None);
+        assert_eq!(log_row_at(6, 5, body, body[3] - 3.5 * LOG_LINE), None);
+    }
+
+    #[test]
+    fn the_vertical_thumb_is_proportional_and_round_trips() {
+        // A log that fits owns the whole track; one twice as long as
+        // the window takes half of it.
+        assert_eq!(log_v_thumb(3, 80.0, 0), (0.0, 80.0));
+        let (o, kh) = log_v_thumb(8, 80.0, 0);
+        assert_eq!((o, kh), (0.0, 40.0));
+        let (o, _) = log_v_thumb(8, 80.0, 2);
+        assert!((o - 20.0).abs() < 1e-3);
+        let (o, _) = log_v_thumb(8, 80.0, 4);
+        assert!((o - 40.0).abs() < 1e-3); // the last window sits at the end
+        // The drag reads the same arithmetic backwards, clamped.
+        assert_eq!(log_top_at(8, 80.0, 0.0), 0);
+        assert_eq!(log_top_at(8, 80.0, 20.0), 2);
+        assert_eq!(log_top_at(8, 80.0, 40.0), 4);
+        assert_eq!(log_top_at(8, 80.0, 999.0), 4);
+    }
+
+    #[test]
+    fn the_horizontal_thumb_is_proportional_too() {
+        assert_eq!(log_h_thumb(100.0, 80.0, 100.0, 5.0), (0.0, 100.0));
+        let (o, kw) = log_h_thumb(100.0, 200.0, 100.0, 0.0);
+        assert_eq!((o, kw), (0.0, 50.0));
+        let (o, _) = log_h_thumb(100.0, 200.0, 100.0, 100.0);
+        assert!((o - 50.0).abs() < 1e-3);
+        // A dragged thumb asks for the offset it stands for, clamped.
+        assert!((log_sx_at(100.0, 200.0, 100.0, 25.0) - 50.0).abs() < 1e-3);
+        assert!((log_sx_at(100.0, 200.0, 100.0, -9.0) - 0.0).abs() < 1e-3);
+        assert!((log_sx_at(100.0, 200.0, 100.0, 1_000.0) - 100.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_band_keeps_the_head_of_its_message() {
+        // The head is the news; the tail is the ellipsis. A room too
+        // small for letters is a room of dots.
+        assert_eq!(log_head("cropped to 8 x 8", 40), "cropped to 8 x 8");
+        assert_eq!(log_head("cropped to 8 x 8", 9), "croppe...");
+        assert_eq!(log_head("cropped to 8 x 8", 2), "..");
+    }
+
+    #[test]
+    fn the_panel_docks_on_the_work_floor_above_the_band() {
+        let (w, h) = (800.0, 600.0);
+        let bar = log_bar_rect(w, h);
+        assert_eq!(bar, [-400.0, -300.0, 400.0, floor_y(h)]);
+        // The panel stands on the work area's floor — clear of the
+        // slots, over the desk's lower rows — and is four rows tall.
+        let panel = log_panel_rect(w, h);
+        assert_eq!(panel[1], floor_y(h) + STRIP_H);
+        assert_eq!(
+            panel[3] - panel[1],
+            LOG_ROWS as f32 * LOG_LINE + 2.0 * LOG_PAD
+        );
+    }
 }
 
-#[cfg(test)]
 /// The block's dress, byte-for-byte honest: composite the block's
 /// tiles into a real picture the same way the shader samples them,
 /// transform THAT with the image crate (the honest rotation and
 /// mirror), and rebuild the block with the demo's rules. The two
 /// composites must match to the pixel — the test that pinned the
 /// flip-conjugation rule after two algebraic guesses missed it.
+#[cfg(test)]
 mod the_block_dresses_like_the_picture {
     use super::*;
 

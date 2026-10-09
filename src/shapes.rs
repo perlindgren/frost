@@ -34,6 +34,14 @@
 //! document refused — and its entries stand in the node's space, every
 //! role of an entry a [`Feature`] of its own.
 //!
+//! [`bake_sidecar`] is the load-time seam that puts the two together:
+//! it finds `<name>.ron` beside the `<name>.png` a game is about to
+//! draw, parses it, reads it and bakes it — the sprite's authored set
+//! once, in the sprite's space, for the game to declare and collide per
+//! frame through [`Baked`]'s own exits. A mis-authored sidecar fails the
+//! load loudly, because a game quietly missing its collision is the bug
+//! this whole module exists to make impossible.
+//!
 //! This is a vocabulary for a document designed for additions. The
 //! sidecar round-trips through `sprite_util` with its comments and its
 //! unknown keys intact — the tool interprets `atlas` and two-number
@@ -69,9 +77,10 @@
 //! the pixels it was authored in, before the flip — a drawing tool and a
 //! baker must agree on which outlines are the same outline.
 
-use crate::bake::{Feature, Footprint, POLY_NOT_PUSHED};
+use crate::bake::{Baked, Baker, Feature, Footprint, POLY_NOT_PUSHED, Placement, Rejection};
 use crate::collision::{Convex, MAX_PLANES};
 use crate::ron::{Kind, Val};
+use std::path::Path;
 
 /// Every error one reading of a sidecar produced, at once.
 ///
@@ -257,6 +266,110 @@ pub fn authored_shapes(root: &Val, size_px: [f32; 2]) -> Result<Vec<Feature>, Sh
         Ok(features)
     } else {
         Err(ShapeErrors { errors })
+    }
+}
+
+/// Why a sprite's authored set could not be loaded and baked.
+///
+/// Every variant is a voice, not a log line: the loader hands the whole
+/// complaint to its caller, who decides whether the sprite still loads.
+/// A game that starts with silently missing collision is the bug this
+/// exists to prevent; a missing sidecar is not a complaint at all —
+/// [`bake_sidecar`] answers it with an empty [`Baked`].
+#[derive(Debug)]
+pub enum SidecarError {
+    /// The sidecar exists but could not be read off the disk.
+    Io(std::io::Error),
+    /// The PNG's own size could not be read — the sidecar's numbers mean
+    /// nothing without the image they were authored against.
+    Png(image::ImageError),
+    /// The sidecar is not the RON subset the parser accepts. The tool's
+    /// own policy is *unparseable: the sprite simply loads* — right for
+    /// a tree the author is mid-edit on — but at the load seam the tree
+    /// carries hit boxes, so the failure travels on.
+    Ron(String),
+    /// The `shapes` key was readable and refused: the whole list of
+    /// [`ShapeErrors`], in one pass, exactly as [`authored_shapes`]
+    /// reports them.
+    Shapes(ShapeErrors),
+    /// The reader handed the baker a footprint the baker itself refused.
+    /// It should be unreachable — the reader's geometry is finite and
+    /// non-empty by construction, which is the baker's whole refusal
+    /// list — but a refusal that *did* happen is reported, never
+    /// dropped on the floor: a quietly missing hit box is the crime.
+    Bake(Vec<Rejection>),
+}
+
+impl std::fmt::Display for SidecarError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SidecarError::Io(err) => write!(f, "the sidecar could not be read: {err}"),
+            SidecarError::Png(err) => write!(f, "the sprite's size could not be read: {err}"),
+            SidecarError::Ron(err) => write!(f, "the sidecar does not parse: {err}"),
+            SidecarError::Shapes(errs) => write!(f, "{errs}"),
+            SidecarError::Bake(rejected) => {
+                for (i, r) in rejected.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str("\n")?;
+                    }
+                    write!(f, "feature {}: {:?}", r.index, r.why)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl std::error::Error for SidecarError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            SidecarError::Io(err) => Some(err),
+            SidecarError::Png(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
+/// The load-time seam: a sprite's authored set, loaded from its files —
+/// the `<name>.ron` found beside the `<name>.png`, parsed, read, and
+/// baked once into the sprite's own space.
+///
+/// The [`Baked`] answer rides every instance: declare its occluders and
+/// collide against its solids wherever a node or a tile stands, and one
+/// brick sidecar walls a whole hall (see the `authored_hall` example).
+/// A sprite *without* a sidecar is the seam's most common answer and not
+/// an error: an empty [`Baked`], where a caller that wants bounds-derived
+/// shapes derives them — which role those bounds play is the caller's
+/// business, which is why the seam does not guess.
+pub fn bake_sidecar(png: impl AsRef<Path>) -> Result<Baked, SidecarError> {
+    let png = png.as_ref();
+    let (w, h) = image::image_dimensions(png).map_err(SidecarError::Png)?;
+    let sidecar = png.with_extension("ron");
+    let text = match std::fs::read_to_string(&sidecar) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Baked::default()),
+        Err(err) => return Err(SidecarError::Io(err)),
+    };
+    bake_sidecar_text([w as f32, h as f32], &text)
+}
+
+/// [`bake_sidecar`] with its inputs already in hand: the image's size,
+/// which the sidecar's pixels are authored against, and the sidecar's
+/// text. The wasm games reach the seam this way — both files come out of
+/// the binary through `include_bytes!` and `include_str!`, where there is
+/// no directory beside a PNG to look in.
+pub fn bake_sidecar_text(size_px: [f32; 2], sidecar: &str) -> Result<Baked, SidecarError> {
+    let doc = crate::ron::parse_doc(sidecar).map_err(SidecarError::Ron)?;
+    let features = authored_shapes(&doc.root, size_px).map_err(SidecarError::Shapes)?;
+    if features.is_empty() {
+        return Ok(Baked::default());
+    }
+    let mut baker = Baker::new();
+    let rejected = baker.add(Placement::IDENTITY, &features);
+    if rejected.is_empty() {
+        Ok(baker.finish())
+    } else {
+        Err(SidecarError::Bake(rejected))
     }
 }
 
@@ -1139,5 +1252,110 @@ mod tests {
             .as_ref()
             .expect("the polygon occluder carries its own edges");
         assert_eq!(triangle.planes(), want.planes());
+    }
+
+    /// A shipped asset by name: the seam's tests read the same files a
+    /// game reads, not copies of them.
+    fn asset(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("assets")
+            .join(name)
+    }
+
+    #[test]
+    fn the_sidecar_bakes_at_load() {
+        // The text twin of the seam — the shape of a wasm game's boot:
+        // bytes in hand, nothing read from a directory. One bake, every
+        // consumer's list already sorted.
+        let baked = bake_sidecar_text(
+            SHEET,
+            "(shapes: [
+                (kind: \"rect\", at: [8.0, 4.0], size: [8.0, 4.0], solid: (bounce: 0.2), occludes: true),
+                (kind: \"circle\", at: [16.0, 2.0], radius: 6.0, occludes: true),
+            ])",
+        )
+        .expect("a well-authored sidecar loads");
+        assert_eq!(
+            baked.occluders,
+            [crate::collision::OrientedBox::new([-8.0, 4.0], [4.0, 2.0])],
+            "the wall occludes, fused from its two roles into one"
+        );
+        assert_eq!(
+            baked.disc_occluders,
+            [Circle {
+                center: [0.0, 6.0],
+                radius: 6.0
+            }]
+        );
+        assert_eq!(baked.solids.len(), 1);
+        assert_eq!(baked.solids[0].bounce, 0.2, "the material rode along");
+        assert!(baked.hits.is_empty());
+    }
+
+    #[test]
+    fn a_sprite_without_a_sidecar_loads_with_nothing_authored() {
+        // The seam's most common answer, and not an error.
+        let baked = bake_sidecar(asset("sprites/Button.png")).expect("Button.png loads");
+        assert!(baked.is_empty());
+    }
+
+    #[test]
+    fn a_sidecar_without_shapes_bakes_nothing_and_stays_everything_else() {
+        // A real shipped sidecar: an `atlas` key, no `shapes` — the
+        // file parses, the reader finds nothing, the tool's own keys are
+        // simply not the seam's business.
+        let baked = bake_sidecar(asset("sprites/basic_tiles.png")).expect("the atlas loads");
+        assert!(baked.is_empty());
+    }
+
+    #[test]
+    fn the_halls_brick_bakes_its_authored_footprint() {
+        // The asset the `authored_hall` example builds its room from,
+        // pinned at the seam: the 64 x 64 picture carries one inset
+        // footprint that both blocks and occludes, bouncy off the face.
+        let baked = bake_sidecar(asset("sprites/brick.png")).expect("the brick loads");
+        assert_eq!(
+            baked.occluders,
+            [crate::collision::OrientedBox::new([0.0, 0.0], [30.0, 30.0])]
+        );
+        assert_eq!(baked.solids.len(), 1);
+        assert_eq!(baked.solids[0].bounce, 0.35);
+        assert_eq!(
+            baked.occluder_colliders().len(),
+            1,
+            "and the CPU twin agrees"
+        );
+    }
+
+    #[test]
+    fn a_misauthored_sidecar_fails_the_load_and_names_every_defect() {
+        // The policy, at the seam: the game gets the whole list and
+        // decides; nothing loads half-collidable, and nothing logs.
+        let err = bake_sidecar_text(
+            SHEET,
+            "(shapes: [
+                (kind: \"rect\", at: [8.0, 4.0], size: [16.0], solid: true),
+                (kind: \"blob\", at: [1.0, 2.0], occludes: true),
+            ])",
+        )
+        .expect_err("a mis-authored sidecar must not bake");
+        match err {
+            SidecarError::Shapes(errs) => {
+                assert_eq!(errs.len(), 2, "the whole report was:\n{errs}");
+                assert!(errs.errors[0].message.contains("`size`"), "{errs}");
+                assert_eq!(errs.errors[1].entry, Some(1), "{errs}");
+            }
+            other => panic!("expected the shapes' own refusals, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unparseable_sidecar_is_a_load_failure_not_a_log_line() {
+        let err = bake_sidecar_text(SHEET, "(shapes: [ (kind: \"rect\" ")
+            .expect_err("half a file is not a sidecar");
+        assert!(
+            matches!(err, SidecarError::Ron(_)),
+            "the RON failure should travel, got {err:?}"
+        );
     }
 }

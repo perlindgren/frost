@@ -45,8 +45,11 @@ src/shapes.rs         authored-shapes reader: the sidecar `shapes:` vocabulary,
                       read_shapes hands the entries back in the texture's
                       pixels (what sprite_util draws over the sprite),
                       authored_shapes hands Features for a Baker to eat in
-                      the node's space — the pixel-to-node flip, every error
-                      returned not logged
+                      the node's space; bake_sidecar is the load-time seam:
+                      a sprite's <name>.ron found beside its png, parsed,
+                      read and baked once, the load refused loudly on any
+                      defect — the pixel-to-node flip, every error returned
+                      not logged
 src/ron.rs            hand-written RON subset: Val/Item tree, parse_doc /
                       to_text_doc, lossless by preservation (comments and
                       verbatim atoms ride through); shared by ron_view,
@@ -855,11 +858,13 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **327 lib tests + 3 integration tests (`tests/`) + 7 doctests**
-passing, `cargo build` (lib + the `sprite_util` tool) clean. The tool's 72
+Baseline: **337 lib tests + 3 integration tests (`tests/`) + 7 doctests**
+passing, `cargo build` (lib + the `sprite_util` tool) clean. The tool's 81
 tests — 68 that moved with `examples/sprite_util.rs` to
-`tools/sprite_util/main.rs`, the asset-path guard, and the three
-authored-shapes overlay tests — ride along in the same
+`tools/sprite_util/main.rs`, the asset-path guard, the three
+authored-shapes overlay tests, and the nine that pin the status band's
+log (capture by change, the cap, the window and thumb arithmetic, the
+dock's geometry) — ride along in the same
 `cargo test` now that it is a binary target. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
@@ -886,6 +891,12 @@ authored-shapes overlay tests — ride along in the same
   disagreement counted to show the band is as thin as `DISC_SIDES` claims.
 - `src/diagnostics.rs` — press-edge detection for all eight shortcuts, the
   display-scale clamp, and the line-extent re-measure on scale change.
+- `src/ui/menu.rs` — the bar's state machine without a canvas, and the
+  notes' paint geometry: right-aligned from the bar's far end with
+  center-anchored text (a note's center, never its edge, steps by half
+  widths), a `...`-led tail kept when a note overruns the room the titles
+  leave — the tail is the half that says something — and the earliest
+  notes falling off first.
 - `tests/` — headless `Shape::sprite` reads of the `dogs_name` art (frame
   fit, ink statistics), through the same public entry point the examples use.
 - `src/collision.rs` — push-out separation, reflect restitution semantics,
@@ -904,6 +915,11 @@ authored-shapes overlay tests — ride along in the same
   refused by name. The two arms agree: the drawing arm keeps every outline
   whose geometry read while the refusals pile up beside them, and a role the
   bake refuses reaches the tool and the baker as one and the same sentence.
+  The load-time seam too: `bake_sidecar` against the real shipped files —
+  a missing sidecar bakes nothing, an `atlas`-only one bakes nothing,
+  `brick.ron` bakes the hall's one bouncy footprint — while a mis-authored
+  file fails the load with the whole report and an unparseable one travels
+  as a RON failure, never a log line.
 - `src/ron.rs` — the RON subset itself: atoms, numbers and enum paths kept
   verbatim, comments as noise that still survives the writer, errors that carry
   a line number, and `assets/ron/garden.ron` round-tripped to a fixed point —
@@ -983,6 +999,12 @@ tool surface. The `sprite_util` row below stays as the description.
 | collision    | the player with `push_out`/`reflect` collision                     |
 | cone_collider| the `cone` hall with physics added: the walls that cut shadows out  |
 |              | of the beam also push the player back (lighting × collision)        |
+| authored_hall| a dark brick hall whose shadows and collisions come                 |
+|              | from `brick.ron`, baked once at load: one `Baked`                   |
+|              | rides every brick — occluders declared per instance                 |
+|              | cut glow and the mouse-aimed torch beam into shadows,               |
+|              | the baked solids bounce the player with the sidecar's               |
+|              | own restitution (`docs/authored-shapes.md`)                         |
 | lighting     | a lit floor, a lit ball with an ember plume, three lights sweeping  |
 |              | across them — the feature tour                                      |
 | lit_unlit    | two same-color rectangles — one `lit: true` — and a light on the    |
@@ -1173,7 +1195,7 @@ cargo build              # expect EXIT 0; covers the lib AND the tool —
 cargo build --examples   # expect EXIT 0; no longer covers the tool
 cargo build -p sprite_util   # expect EXIT 0; the tool on its own, now in
                                # tools/sprite_util/ as its own package
-cargo test               # expect 327 lib + 3 integration + 7 doctests
+cargo test               # expect 337 lib + 3 integration + 7 doctests
                            # + 72 sprite_util (the tool's unit tests run
                            # here now: a binary target is tested by default)
 cargo test --examples    # expect 126 passed (unit tests inside the examples,
@@ -1192,6 +1214,9 @@ cargo run --example worm     # peristaltic crawl, edge wrap; exits 0
 cargo run --example ron_view # fold rows, drag both scroll handles; exits 0
 cargo run --example sound    # Space/L/+/- check; closing the window exits 0
 cargo run --example button   # hover-scale + click-swoosh check; window exits 0
+cargo run --example authored_hall   # bricks' shadows and bounces come from
+                           # brick.ron (RUST_LOG=info logs the one-bake line);
+                           # closing the window exits 0
 cargo run --example widgets  # panels drag, widgets drive the face; exits 0
 cargo run --example tomato_sprite   # overlay check; window exits 0
 cargo run --example immortal   # 1920x1080 window: grass fills it 1:1; exits 0

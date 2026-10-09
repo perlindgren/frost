@@ -15,13 +15,20 @@
 > [`Feature`](../src/bake.rs)s a [`Baker`](../src/bake.rs) takes, in the node's
 > space — plus every error the document holds. The drawing half has shipped
 > with it ([step 3 below](#order-of-work)): `sprite_util` overlays the shapes
-> over the sprite and voices the refusals on its menu bar. What has *not*
-> shipped is the load-time seam: no loader in the repo feeds a sidecar's
-> `shapes` to a `Baker` when a game starts — so today a shape reaches a running
-> game only through this reader, a `Canvas::occluder` / `occluder_polygon`
-> call, or a hand-fed `Baker`. This document records what is true of the files
-> involved and what has been decided, so the next step does not have to
-> rediscover either.
+> over the sprite and voices the refusals on its menu bar. The **load-time
+> seam** has shipped too: [`bake_sidecar`](../src/shapes.rs) finds
+> `<name>.ron` beside the `<name>.png` a game is about to draw, parses, reads
+> and bakes it once — and a mis-authored sidecar *refuses the load* with the
+> whole report, which is the policy the seam exists to make possible. Its
+> twin `bake_sidecar_text` serves wasm games, whose files come out of the
+> binary rather than a directory; a sprite without a sidecar bakes nothing,
+> which is where a caller's derive-from-bounds default takes over. The
+> `authored_hall` example ([`examples/physics/authored_hall.rs`](../examples/physics/authored_hall.rs))
+> runs the seam once at boot and rides the one baked set onto every brick of
+> a dark hall. What has *not* shipped is the map file (step 4) and shapes
+> that push bodies around (step 5). This document records what is true of
+> the files involved and what has been decided, so the next step does not
+> have to rediscover either.
 
 ## The sidecar already exists
 
