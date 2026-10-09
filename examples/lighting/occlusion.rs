@@ -17,10 +17,21 @@
 //! wall is leaned over: the shadow is cast from the rectangle's full
 //! composed transform, so its silhouette leans exactly where the wall does.
 //!
-//! Two lit circles drift through the gaps between the walls. Only rectangles
-//! occlude, so the circles are never in a shadow's path, however squarely
-//! the lamp passes behind them, and the huge backdrop is a receiver only:
-//! flagging it would shadow the whole scene.
+//! Two lit circles drift through the gaps between the walls. Only a painted
+//! rectangle carries the `occludes` flag into the light field, so the circles
+//! are never in a shadow's path, however squarely the lamp passes behind them,
+//! and the huge backdrop is a receiver only: flagging it would shadow the
+//! whole scene.
+//!
+//! A fourth shadow sweeps the lower window with nothing standing in it: a bar
+//! declared every frame with [`frost::Canvas::occluder`] and never drawn.
+//! Declaring is how anything that is not a painted rectangle blocks a light —
+//! a sprite's body, one tile of a map, a physics hit box — and the silhouette
+//! it throws swings with the transform it was declared by, exactly as a
+//! painted occluder's does. Press `G` to outline the invisible box in pale
+//! blue: the outline is the CPU's own [`frost::OrientedBox`], the shadow is
+//! the GPU's record of that same box, and the two lining up is the whole
+//! check.
 //!
 //! Lights are never drawn, so the lamp is marked by two immediate circles: a
 //! soft tinted halo and a small white core. Immediate draws are unlit, so
@@ -61,12 +72,40 @@ const ORBIT_RATE: f32 = 0.45;
 /// must lean with it.
 const WALL_TILT: f32 = 0.32;
 
+/// The declared bar's half-extents, in pixels: a slim slab, and nothing is
+/// ever drawn for it.
+const GHOST_HALF: [f32; 2] = [16.0, 30.0];
+
+/// The declared bar's center height: below the wall row, above the panels, so
+/// its shadow falls on the backdrop between them.
+const GHOST_Y: f32 = -95.0;
+
+/// How far the declared bar swings either side of the center, in pixels.
+const GHOST_SWING: f32 = 200.0;
+
+/// The declared bar's swing rate, in radians per second.
+const GHOST_RATE: f32 = 0.5;
+
+/// The declared bar's slower lean, in radians per second: the lean is what
+/// shows a declared silhouette following the transform it was declared with.
+const GHOST_TILT_RATE: f32 = 0.35;
+
 /// How much the per-frame breathing pulses the light's falloff extent, as a
 /// fraction of [`RADIUS`].
 const PULSE: f32 = 0.05;
 
 /// The breathing rate of the pulse, in radians per second.
 const PULSE_RATE: f32 = 1.3;
+
+/// The bar's outline, drawn when `G` shows the box: the pale blue the
+/// collision demo uses to mark the box it really collides with, for the same
+/// reason — see the box the light field was given, not the shadow it throws.
+const OUTLINE: frost::Color = frost::Color {
+    r: 0.7,
+    g: 0.9,
+    b: 1.0,
+    a: 0.9,
+};
 
 /// The core marker's radius, in pixels.
 const CORE_RADIUS: f32 = 5.0;
@@ -81,11 +120,25 @@ const HALO_ALPHA: f32 = 0.3;
 struct Demo {
     /// The elapsed time, in seconds: the clock of the orbit and the pulse.
     t: f32,
+    /// Whether the declared bar is outlined: `G` flips it.
+    show_ghost: bool,
+    /// Whether `G` was down last frame. [`frost::Context::key_down`] answers
+    /// *held*, not *just went down*, so a held key would flip the outline
+    /// every frame and strobe; the stored flag makes it one flip per press.
+    was_g: bool,
 }
 
 impl frost::Process for Demo {
     fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
         self.t += dt;
+
+        // G: show or hide the outline of the box that casts with nothing
+        // drawn for it.
+        let g = ctx.key_down(frost::KeyCode::KeyG);
+        if g && !self.was_g {
+            self.show_ghost = !self.show_ghost;
+        }
+        self.was_g = g;
 
         // The lamp rides the ellipse, gently breathing so the pool's edge
         // visibly moves even where the shadow geometry stands still.
@@ -96,6 +149,32 @@ impl frost::Process for Demo {
         ];
         let pulse = 1.0 + PULSE * (self.t * PULSE_RATE).sin();
         ctx.light(pos[0], pos[1], LAMP, INTENSITY, RADIUS * pulse);
+
+        // The bar no shape stands for: declared to the frame every frame, and
+        // placed by the same composition a scene node carries — turned about
+        // its own center, then moved there. Everything the walls prove about a
+        // painted occluder holds for it, because by the time the light field
+        // is packed the two are the same record.
+        let gx = GHOST_SWING * (self.t * GHOST_RATE).sin();
+        let tilt = 0.45 * (self.t * GHOST_TILT_RATE).cos();
+        ctx.occluder(
+            frost::Transform::rotate(tilt).compose(&frost::Transform::translate([gx, GHOST_Y])),
+            [0.0, 0.0],
+            GHOST_HALF,
+        );
+
+        // `G`: the same box the light field just took, drawn as its four
+        // corners. The shadow comes from the record packed off the declaration
+        // above and the outline from `OrientedBox::corners` — the CPU's own
+        // reading of that box — so the two lining up is the check, and the box
+        // the light sees is a box you can measure, as in the collision demo.
+        if self.show_ghost {
+            let corners = frost::OrientedBox::rotated([gx, GHOST_Y], GHOST_HALF, tilt).corners();
+            for i in 0..4 {
+                let (a, b) = (corners[i], corners[(i + 1) % 4]);
+                ctx.line(a[0], a[1], b[0], b[1], OUTLINE, 1.5, 1.0);
+            }
+        }
 
         // Its markers: immediate draws are unlit, so they stay bright
         // wherever they travel. The halo takes the lamp's own color at low

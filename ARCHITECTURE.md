@@ -38,6 +38,7 @@ src/objects.rs        Color, Transform, Shape, Light, ParticleShape,
 src/tween.rs          Tween<T> (f32 / [f32;2]) with Repeat modes
 src/particles.rs      Particle, ParticleSystem (pure simulation)
 src/collision.rs      OrientedBox, Circle, Collider, push_out, reflect (pure math)
+src/bake.rs           Feature, Role, Material -> Baker -> Baked (authored geometry)
 src/rng.rs            Rng — seedable splitmix64, state get/set for save games
 src/diagnostics.rs    Diagnostics (flag-gated FPS/FT/PROC/DRAW HUD overlay
                       with folded strip charts), DiagnosticsFlags
@@ -272,6 +273,14 @@ never count (`Diagnostics` excludes them like backgrounds).
   neighbors (attach a `Shape::Light` child for that); `SceneNode::occludes`
   makes a rectangle's transformed silhouette block every light's path to
   pixels behind it — a shadow caster. A wall can be `lit + occludes` at once.
+  Only a painted *rectangle* reaches the field that way — `Shape::Sprite` has
+  no rectangle silhouette to pack — so anything else that must cast, a sprite
+  body, one tile of a map, a physics hit box, declares itself with
+  `Canvas::occluder(world, center, half)`: a box in its own space plus a world
+  transform, joining the same field after the painted occluders. Both channels
+  keep the shape local, which is why a non-uniformly scaled caster still throws
+  square-cornered shadows — the shader pulls the pixel into the shape's space
+  rather than pushing a sheared box out.
 - The backend packs the frame into two **storage buffers** bound to every
   draw: the light field (32-byte header — count and the scene's ambient —
   plus one 48-byte record per light) and the occluder field (16-byte header
@@ -434,6 +443,57 @@ Pure math — no winit/wgpu, identical on wasm, no dependencies. Intentionally
 - The intended usage pattern: the game's `Process` owns all state, builds
   colliders from node transforms each frame, applies `push_out` + `reflect`,
   and writes the results back into the node transforms.
+
+## Bake (src/bake.rs)
+
+Authored geometry — a sprite's body, a tile's solid top, a hurt box — turns
+into engine shapes here. Pure math like collision: no winit, no wgpu, no state,
+nothing but data in and flat lists out.
+
+- `Feature { role, shape, material }` is one authored fact, in the space of the
+  sprite frame or atlas cell it describes: `Footprint::{rect, tilted, disc}`
+  for the shape, `Role::{Occlude, Solid, Hit}` for what it is for, and
+  `Material { bounce }` — the `e` of `reflect` — for the roles that care.
+- `Baker` takes a `Feature` list per `Placement` (a sprite frame at its own
+  origin, one atlas cell per tile that uses it) and `finish()`es the whole set
+  into `Baked`. Collecting before fusing is what lets a tile map bake at all:
+  two tiles of one wall fuse because they end up adjacent in the map's space,
+  which nothing knows while the cell is still one cell.
+- In and out, everything stays in **the node's own space**. A baked set rides
+  the node's `Transform`, one bake serves every instance, and a stretched or
+  turned sprite still throws square-cornered shadows because nothing was baked
+  into world coordinates and nothing has to approximate a sheared box.
+- `Baked { occluders, solids, hits }` is one authored set seen three ways,
+  because the consumers want different things from the same shape. `occluders`
+  are fused rectangles — the GPU reads one record per shape and tests every lit
+  pixel against every record, so a floor of four thousand tiles is four thousand
+  shadow tests per pixel per light, and fusing also retires the shared edge, the
+  one seam a light ray can slip along. `solids` fuse too, but only within one
+  material, so a crate touching a trampoline does not become one bouncing wall.
+  `hits` are never fused, because the game has to answer *which box was
+  struck*.
+- A fusion is taken only when the result is still one rectangle covering
+  exactly the points its parts covered: agree across one axis, touch or overlap
+  along the other, repeated until a pass changes nothing. An L stays two boxes
+  and a gap stays a gap, while a 4×5 block becomes one box. Boxes fuse only
+  with others turned alike, and a turn within a hair of a quarter turn is
+  snapped to it — which is what lets a tile laid down sideways fuse with its
+  upright neighbours.
+- Nothing is dropped quietly. `add` returns `Rejection { index, role, why }`,
+  `#[must_use]`, for geometry the bake cannot honour: a circle asking to
+  occlude, which needs the convex-polygon record the shaders do not have yet,
+  or a shape with no area at all. A painted sprite that silently cannot cast a
+  shadow is exactly the failure this path exists to end, so it says so out loud
+  instead of leaving a list that looks fine.
+- Two exits close the loop: `declare_occluders(canvas, world)` feeds the fused
+  boxes to `Canvas::occluder` under the node's transform, each box's own turn
+  folded into that transform so the shape stays local; and
+  `occluder_colliders()` hands the same rectangles to `occluded` / `visible`, so
+  the gameplay answer and the pixel answer come from one bake.
+- Not here yet: capsules and convex polygons, the sidecar reader that would
+  build these features from a `.ron`, and a tile-grid broadphase for line
+  queries over very large maps — fused strips keep a linear scan cheap enough
+  until a real map says otherwise.
 
 ## Shaders (shaders/*.wgsl, src/shaders.rs)
 
@@ -749,6 +809,10 @@ passing, `cargo build --examples` clean. Notable test areas:
 - `tests/` — headless `Shape::sprite` reads of the `dogs_name` art (frame
   fit, ink statistics), through the same public entry point the examples use.
 - `src/collision.rs` — push-out separation, reflect restitution semantics.
+- `src/bake.rs` — each role's fusion policy, quarter-turn equivalence, what
+  gets rejected and why, and a sampled coverage property: a fused set covers
+  exactly the points the authored boxes covered, on random piles and on a
+  half-filled tile lattice.
 - `src/tween.rs`, `src/particles.rs`, `src/text.rs` — behavior unit tests.
 - `src/rng.rs` — a fixed seed replays its stream; `state()`/`set_state()`
   round-trips continue it exactly.
@@ -972,6 +1036,12 @@ spread/life/size randomization.
 7. **Text expansion happens before sorting**, so glyphs inherit the node's
    paint position.
 8. The **last** `Background` in call order wins as the clear color.
+9. **Authored shapes stay local.** `Baker`'s output and `Canvas::occluder`'s
+   arguments are a shape in its own space plus a transform, never world-space
+   corners: a turned, non-uniformly scaled rectangle is not an oriented box, so
+   baking it into coordinates would force an approximation of the shear — on the
+   GPU, which pulls the pixel into the shape's space rather than pushing a
+   sheared box out, and on the CPU alike.
 
 ## Direction
 

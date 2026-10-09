@@ -11,6 +11,20 @@ use crate::text;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// One occluder the app declared for this frame: a box in its own space,
+/// placed by a world transform, added to the frame's occluder field beside
+/// the shapes flagged `occludes` (see [`Canvas::occluder`]).
+pub(crate) struct Occluder {
+    /// The occluder's local-to-pixel transform, the canvas scale folded in —
+    /// the same space and the same meaning as a [`Draw::Shape`]'s `world`.
+    pub(crate) world: Transform,
+    /// The box's center in the occluder's own space.
+    pub(crate) center: [f32; 2],
+    /// The box's half-extents in the occluder's own space: the full size is
+    /// `2 * half`, the [`Canvas::rectangle`] convention.
+    pub(crate) half: [f32; 2],
+}
+
 /// The drawing surface for a frame, reachable through the [`crate::Context`] passed
 /// to [`crate::Process::process`] (which derefs to it).
 ///
@@ -43,6 +57,10 @@ pub struct Canvas {
     layer_draws: Vec<Vec<Draw>>,
     /// The order of each explicit scene layer, in declaration order.
     layer_orders: Vec<f32>,
+    /// The occluders the app declared this frame with [`Canvas::occluder`],
+    /// in declaration order. The frame's occluder field takes the shapes
+    /// flagged `occludes` first and these after them.
+    pub(crate) occluders: Vec<Occluder>,
 }
 
 impl Canvas {
@@ -55,6 +73,7 @@ impl Canvas {
             draws: Vec::new(),
             layer_draws: Vec::new(),
             layer_orders: Vec::new(),
+            occluders: Vec::new(),
         }
     }
 
@@ -179,6 +198,42 @@ impl Canvas {
             z,
             // An immediate canvas draw is not owned by any scene node.
             diagnostic: false,
+        });
+    }
+
+    /// Declares a box that cuts the frame's lights, without drawing anything.
+    ///
+    /// `world` places the occluder the way a scene node's `transform` places
+    /// its shape — the app's user space, window-centered and y-up, usually
+    /// rotated about the occluder's own center and then translated — and
+    /// `center` and `half` are the box in its *own* space, `half` being the
+    /// [`Canvas::rectangle`] convention: the full size is `2 * half`.
+    ///
+    /// Shape and transform stay separate all the way to the shader, which
+    /// pulls the light and the pixel into the occluder's local space rather
+    /// than pushing a sheared box out into the window. That is what lets a
+    /// non-uniformly scaled `world` occlude like the drawing it stands for,
+    /// corners and all — and it is why a box is declared as a local shape
+    /// instead of as the four world corners it happens to have this frame.
+    ///
+    /// Declaring is how anything that is not a painted rectangle occludes.
+    /// The light field takes its occluders from rectangle shapes flagged
+    /// `occludes`, so a `Sprite` — or a whole tilemap, which is one sprite
+    /// with an atlas — casts no shadow however its node is flagged: an
+    /// occluder that is a sprite's body, a tile, or a physics body's hit box
+    /// has to be declared. Declared occluders join the field after the painted
+    /// ones, in declaration order, and the two channels add: nothing here
+    /// suppresses a flagged rectangle.
+    ///
+    /// A declared occluder casts *shadows* only. It stops no body — collision
+    /// remains the app's own [`crate::Collider`], the same box built from the
+    /// same transform and asked a different question.
+    pub fn occluder(&mut self, world: Transform, center: [f32; 2], half: [f32; 2]) {
+        let to_pixel = world.compose(&self.user_to_pixel());
+        self.occluders.push(Occluder {
+            world: to_pixel,
+            center,
+            half: [half[0].max(0.0), half[1].max(0.0)],
         });
     }
 
@@ -2694,5 +2749,32 @@ mod tests {
         let mut draws = Vec::new();
         draw_one(&node, &mut draws);
         assert_eq!(the_map(&draws).z, 7.0);
+    }
+
+    #[test]
+    fn a_declared_occluder_is_stored_in_pixel_space_with_its_shape_local() {
+        // A 100 x 100 window at scale 2: user space is window-centered and
+        // y-up, pixels are top-left and y-down. The declared occluder's
+        // transform crosses into pixel space at the declare call, exactly as
+        // a draw's arguments do, while its center and half-extents stay in the
+        // occluder's own space for the shader to work in.
+        let mut canvas = Canvas::new((100, 100), 2.0);
+        canvas.occluder(Transform::translate([10.0, 20.0]), [1.0, 2.0], [3.0, -4.0]);
+        assert_eq!(canvas.occluders.len(), 1);
+        let o = &canvas.occluders[0];
+        // The transform carries the occluder's origin wherever the canvas
+        // puts that user-space point, and a unit step is now two panel pixels
+        // down the y axis.
+        assert_eq!(o.world.apply([0.0, 0.0]), canvas.user_to_pixels(10.0, 20.0));
+        assert_eq!(o.world.m, [[2.0, 0.0], [0.0, -2.0]]);
+        assert_eq!(
+            o.world.apply([1.0, 0.0]),
+            [o.world.t[0] + 2.0, o.world.t[1]]
+        );
+        // The shape never left its own space — and a negative half-extent is
+        // clamped to zero rather than turning the box inside out, as a
+        // rectangle's extent is.
+        assert_eq!(o.center, [1.0, 2.0]);
+        assert_eq!(o.half, [3.0, 0.0]);
     }
 }

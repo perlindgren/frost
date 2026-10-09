@@ -1,7 +1,8 @@
-﻿//! Light-field and occluder-field packing into their GPU buffers.
+//! Light-field and occluder-field packing into their GPU buffers.
 
 use super::super::*;
 use super::*;
+use crate::canvas::Occluder;
 use crate::objects::*;
 
 fn field_f32(data: &[u8], offset: usize) -> f32 {
@@ -161,17 +162,20 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
 fn occluder_field_packs_an_empty_header() {
     // No occluders: just the 16-byte header Ã¢â‚¬â€ count 0, 12 padding bytes Ã¢â‚¬â€
     // and no records.
-    let field = pack_occluder_field(&[Draw::Light {
-        pos: [10.0, 20.0],
-        radius: 5.0,
-        intensity: 1.0,
-        color: black(),
-        penumbra: 0.0,
-        dir: [1.0, 0.0],
-        cos_half: -1.0,
-        feather: 0.0,
-        z: 0.0,
-    }]);
+    let field = pack_occluder_field(
+        &[Draw::Light {
+            pos: [10.0, 20.0],
+            radius: 5.0,
+            intensity: 1.0,
+            color: black(),
+            penumbra: 0.0,
+            dir: [1.0, 0.0],
+            cos_half: -1.0,
+            feather: 0.0,
+            z: 0.0,
+        }],
+        &[],
+    );
     assert_eq!(field.count, 0);
     assert_eq!(field.data.len(), OCCLUDER_FIELD_HEADER);
     assert_eq!(u32::from_le_bytes(field.data[0..4].try_into().unwrap()), 0);
@@ -251,7 +255,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
         occludes: 1.0,
         z: 0.0,
     };
-    let field = pack_occluder_field(&[translated, unflagged, rotated, circle, degenerate]);
+    let field = pack_occluder_field(&[translated, unflagged, rotated, circle, degenerate], &[]);
     assert_eq!(field.count, 2);
     assert_eq!(
         field.data.len(),
@@ -293,6 +297,95 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     assert_eq!(field_f32(&field.data, o + 36), 6.0);
     assert_eq!(field_f32(&field.data, o + 40), 0.0);
     assert_eq!(field_f32(&field.data, o + 44), 0.0);
+}
+
+#[test]
+fn occluder_field_appends_declared_occluders_after_the_drawn_ones() {
+    // One flagged rectangle plus two declared occluders: three records, the
+    // drawn one first, the declared ones in declaration order.
+    let drawn = Draw::Shape {
+        diagnostic: false,
+        glow: black(),
+        world: Transform::identity(),
+        center: [0.0, 0.0],
+        params: [10.0, 10.0],
+        kind: 1.0,
+        aa: 0.0,
+        color: black(),
+        lit: 0.0,
+        occludes: 1.0,
+        z: 0.0,
+    };
+    let declared = [
+        Occluder {
+            world: Transform::translate([50.0, -20.0]),
+            center: [1.0, 2.0],
+            half: [10.0, 20.0],
+        },
+        Occluder {
+            world: Transform::rotate(std::f32::consts::FRAC_PI_2),
+            center: [0.0, 0.0],
+            half: [4.0, 6.0],
+        },
+    ];
+    let field = pack_occluder_field(&[drawn], &declared);
+    assert_eq!(field.count, 3);
+    assert_eq!(
+        field.data.len(),
+        OCCLUDER_FIELD_HEADER + 3 * OCCLUDER_RECORD
+    );
+    assert_eq!(u32::from_le_bytes(field.data[0..4].try_into().unwrap()), 3);
+
+    // Record 0: the drawn rectangle, identity inverse, nothing translated.
+    let r0 = OCCLUDER_FIELD_HEADER;
+    assert_eq!(field_f32(&field.data, r0 + 16), 0.0);
+    assert_eq!(field_f32(&field.data, r0 + 32), 10.0);
+
+    // Record 1: the declared occluder's own center and half-extents ride
+    // through untouched, and the inverse carries the negated translation.
+    let r1 = r0 + OCCLUDER_RECORD;
+    assert_eq!(field_f32(&field.data, r1 + 16), -50.0);
+    assert_eq!(field_f32(&field.data, r1 + 20), 20.0);
+    assert_eq!(field_f32(&field.data, r1 + 24), 1.0);
+    assert_eq!(field_f32(&field.data, r1 + 28), 2.0);
+    assert_eq!(field_f32(&field.data, r1 + 32), 10.0);
+    assert_eq!(field_f32(&field.data, r1 + 36), 20.0);
+
+    // Record 2: a quarter turn, whose inverse is the turn back - the linear
+    // part column-major is (0, -1, 1, 0), within the f32 of a quarter turn.
+    let r2 = r1 + OCCLUDER_RECORD;
+    let near = |offset: usize, want: f32| (field_f32(&field.data, offset) - want).abs() < 1e-6;
+    assert!(near(r2, 0.0));
+    assert!(near(r2 + 4, -1.0));
+    assert!(near(r2 + 8, 1.0));
+    assert!(near(r2 + 12, 0.0));
+    assert_eq!(field_f32(&field.data, r2 + 32), 4.0);
+    assert_eq!(field_f32(&field.data, r2 + 36), 6.0);
+}
+
+#[test]
+fn occluder_field_skips_a_declared_occluder_it_cannot_invert() {
+    // A declared occluder under a collapsed transform occludes nothing, and
+    // the field keeps no hole where its record would have gone: the one that
+    // does stand is packed first.
+    let declared = [
+        Occluder {
+            world: Transform::scale([0.0, 1.0]),
+            center: [0.0, 0.0],
+            half: [10.0, 10.0],
+        },
+        Occluder {
+            world: Transform::translate([7.0, 0.0]),
+            center: [0.0, 0.0],
+            half: [3.0, 4.0],
+        },
+    ];
+    let field = pack_occluder_field(&[], &declared);
+    assert_eq!(field.count, 1);
+    assert_eq!(field.data.len(), OCCLUDER_FIELD_HEADER + OCCLUDER_RECORD);
+    assert_eq!(field_f32(&field.data, OCCLUDER_FIELD_HEADER + 16), -7.0);
+    assert_eq!(field_f32(&field.data, OCCLUDER_FIELD_HEADER + 32), 3.0);
+    assert_eq!(field_f32(&field.data, OCCLUDER_FIELD_HEADER + 36), 4.0);
 }
 
 #[test]

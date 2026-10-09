@@ -49,7 +49,7 @@ fn len(v: [f32; 2]) -> f32 {
 ///
 /// `half` uses the same convention as `Canvas::rectangle` (dx/dy): the
 /// full size of the box is `2 * half`. An `angle` of `0.0` is axis-aligned.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OrientedBox {
     /// The box's center in window-centered pixels.
     pub center: [f32; 2],
@@ -100,7 +100,7 @@ impl OrientedBox {
 }
 
 /// A circle.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Circle {
     /// The circle's center in window-centered pixels.
     pub center: [f32; 2],
@@ -109,7 +109,7 @@ pub struct Circle {
 }
 
 /// A collision shape.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Collider {
     /// A (possibly rotated) box.
     Box(OrientedBox),

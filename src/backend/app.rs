@@ -1646,9 +1646,10 @@ impl<P: Process> Frost<P> {
         let field_buffer = self.field_buffer_for(field.count);
         self.queue.write_buffer(&field_buffer, 0, &field.data);
 
-        // The frame's occluder field: the flagged rectangle shapes packed
-        // in call order. Same grow-only buffer as the light field.
-        let occluders = pack_occluder_field(&draws);
+        // The frame's occluder field: the flagged rectangle shapes packed in
+        // call order, then the occluders the app declared this frame with
+        // `Canvas::occluder`. Same grow-only buffer as the light field.
+        let occluders = pack_occluder_field(&draws, &canvas.occluders);
         let occluder_buffer = self.occluder_buffer_for(occluders.count);
         self.queue
             .write_buffer(&occluder_buffer, 0, &occluders.data);

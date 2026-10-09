@@ -186,6 +186,9 @@ pub use tween::*;
 mod collision;
 pub use collision::*;
 
+mod bake;
+pub use bake::*;
+
 mod diagnostics;
 pub use diagnostics::{Diagnostics, DiagnosticsFlags};
 

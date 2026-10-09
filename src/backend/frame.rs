@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::canvas::Occluder;
 use crate::objects::*;
 use crate::particles::Particle;
 
@@ -946,13 +947,16 @@ pub(crate) struct OccluderField {
     pub data: Vec<u8>,
 }
 
-/// Packs the frame's occluder field from its draws.
+/// Packs the frame's occluder field: the occluding shapes it drew, then the
+/// occluders the app declared.
 ///
-/// Only rectangle [`Draw::Shape`]s flagged `occludes` contribute, in call
-/// order; a shape whose world transform cannot be inverted is skipped (it
-/// collapses to a line or a point and occludes nothing). Every other draw is
-/// ignored.
-pub(crate) fn pack_occluder_field(draws: &[Draw]) -> OccluderField {
+/// Rectangle [`Draw::Shape`]s flagged `occludes` come first, in call order,
+/// followed by `declared` — the [`Canvas::occluder`](crate::Canvas::occluder)
+/// calls, in declaration order. The two channels add; neither suppresses the
+/// other. A shape whose world transform cannot be inverted is skipped (it
+/// collapses to a line or a point and occludes nothing), and every other draw
+/// is ignored.
+pub(crate) fn pack_occluder_field(draws: &[Draw], declared: &[Occluder]) -> OccluderField {
     let mut count = 0u32;
     let mut data = vec![0u8; OCCLUDER_FIELD_HEADER];
     for draw in draws {
@@ -970,29 +974,46 @@ pub(crate) fn pack_occluder_field(draws: &[Draw]) -> OccluderField {
         if *kind != 1.0 || *occludes != 1.0 {
             continue;
         }
-        let Some(inverse) = world.invert() else {
-            continue;
-        };
-        let off = OCCLUDER_FIELD_HEADER + count as usize * OCCLUDER_RECORD;
-        data.resize(off + OCCLUDER_RECORD, 0);
-        // vec4 0: the inverse transform's linear part, column-major — the
-        // same layout the shape uniforms' `to_local` uses.
-        write_f32_at(&mut data, off, inverse.m[0][0]);
-        write_f32_at(&mut data, off + 4, inverse.m[1][0]);
-        write_f32_at(&mut data, off + 8, inverse.m[0][1]);
-        write_f32_at(&mut data, off + 12, inverse.m[1][1]);
-        // vec4 1: the inverse transform's translation, then the box's local
-        // center.
-        write_f32_at(&mut data, off + 16, inverse.t[0]);
-        write_f32_at(&mut data, off + 20, inverse.t[1]);
-        write_f32_at(&mut data, off + 24, center[0]);
-        write_f32_at(&mut data, off + 28, center[1]);
-        // vec4 2: the box's local half-extents; the rest of the vec4 stays
-        // zero from the resize.
-        write_f32_at(&mut data, off + 32, params[0]);
-        write_f32_at(&mut data, off + 36, params[1]);
-        count += 1;
+        count += write_occluder_record(&mut data, count, world, center, params);
+    }
+    for o in declared {
+        count += write_occluder_record(&mut data, count, &o.world, &o.center, &o.half);
     }
     data[0..4].copy_from_slice(&count.to_le_bytes());
     OccluderField { count, data }
+}
+
+/// Writes one occluder record after the `count` records already in `data`, and
+/// returns how many records were written: `1`, or `0` when `world` cannot be
+/// inverted — a transform that collapses a box to a line or a point occludes
+/// nothing, and the field keeps no hole where its record would have gone.
+fn write_occluder_record(
+    data: &mut Vec<u8>,
+    count: u32,
+    world: &Transform,
+    center: &[f32; 2],
+    half: &[f32; 2],
+) -> u32 {
+    let Some(inverse) = world.invert() else {
+        return 0;
+    };
+    let off = OCCLUDER_FIELD_HEADER + count as usize * OCCLUDER_RECORD;
+    data.resize(off + OCCLUDER_RECORD, 0);
+    // vec4 0: the inverse transform's linear part, column-major — the
+    // same layout the shape uniforms' `to_local` uses.
+    write_f32_at(data, off, inverse.m[0][0]);
+    write_f32_at(data, off + 4, inverse.m[1][0]);
+    write_f32_at(data, off + 8, inverse.m[0][1]);
+    write_f32_at(data, off + 12, inverse.m[1][1]);
+    // vec4 1: the inverse transform's translation, then the box's local
+    // center.
+    write_f32_at(data, off + 16, inverse.t[0]);
+    write_f32_at(data, off + 20, inverse.t[1]);
+    write_f32_at(data, off + 24, center[0]);
+    write_f32_at(data, off + 28, center[1]);
+    // vec4 2: the box's local half-extents; the rest of the vec4 stays zero
+    // from the resize.
+    write_f32_at(data, off + 32, half[0]);
+    write_f32_at(data, off + 36, half[1]);
+    1
 }
