@@ -81,14 +81,13 @@ src/backend/tests/    Backend tests, one file per area (uniforms, scissor,
 shaders/*.wgsl        nine pipelines (line, polyline, circle, rectangle, shape,
                       sprite, particles, tilemap, blit) plus lighting.wgsl, the
                       lighting vocabulary the three lit ones are built on
-examples/             39 runnable demos, filed into folders (see table below)
+examples/             40 runnable demos, filed into folders (see table below)
 assets/               sprites/*.png (+ .pxo sidecars; immortal art, worm
                       crops, …), fonts/ (FiraCode Variable, JameGem08,
                       Leofont + licenses), audio/*.wav (swoof, waterflow,
                       bug/viper clips, …), sprites/plant1..5.ron (the
                       immortal plant's anchor files), ron/garden.ron
                       (ron_view)
-src/TODO.md           next planned feature (Body / rigid bodies)
 tests/                integration tests over the dogs_name flipbook art
                       (headless Shape::sprite reads: frame fit, ink stats)
 ```
@@ -1217,11 +1216,12 @@ spread/life/size randomization.
 
 ## Direction
 
-`src/TODO.md` is the queue: a `Body` type (velocity, weight, shape) with
-energy-conserving collisions via the collision normal. Demo: 50 px-wide wall
-rectangles on all four sides plus three random non-overlapping rectangle bodies
-at the center with random initial velocities of 50–100 px/s. The collision
-module's documented escape hatch remains `rapier2d` if this outgrows it.
+The queue moved into the game it serves: `examples/immortal/TODO.md` carries
+the immortal wish-list — graphics (shop icon, progression toward immortality,
+level indicators), sound effects, music, and the fruit's ripen-rot-fall cycle.
+The library's last queue entry, the `Body` type, shipped as `src/physics.rs`
+with the `bodies` example as its demo; the physics section's `rapier2d` note
+stays the documented escape hatch if it ever outgrows itself.
 
 ## Verification loop
 
