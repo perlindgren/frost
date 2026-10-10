@@ -149,9 +149,16 @@ Status of each rung, updated as work lands. `[ ]` = claim, `[x]` = fact.
       next frame*) without a restart. The seam between watched and
       compiled is itself a test: disk assembles exactly what
       `include_str!` embedded. Checked 2026-10-10.
-- [ ] **The guard** — `frost::map::tileset_names` + the app-side test
-      *the world ships every tileset it names*: a forgotten
-      `include_bytes!` dies at `cargo test`.
+- [ ] **The guard** — reader landed 2026-10-10, and it followed the
+      codec into the guest: `map::tileset_names` in sprite_util
+      (first-spoken order, none twice, cuts deliberately out — the
+      name is the cargo question), with its desk face
+      `waiting_names` (identity by name *and* cut, as dressing
+      decides) and `open_map` naming who waits instead of counting.
+      The app-side test — *the world ships every tileset it names* —
+      waits for the first app that ships a map; the half rung keeps
+      the box open until `include_bytes!` can die at `cargo test`
+      somewhere real.
 - [ ] **The telling** — live announce + `state_of_affairs` snapshot in
       the house RON dialect, transition-driven (value-key dirty check,
       frame-end flush, `rev`-counted, structure only — an autosave with

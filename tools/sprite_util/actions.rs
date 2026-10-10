@@ -351,17 +351,27 @@ impl Demo {
             push_step(&mut self.undo_stack, &mut self.redo_stack, before);
         }
         self.sync_work(ctx);
-        let waiting = self
-            .maps
-            .iter()
-            .filter(|m| m.tileset.sprite(&self.sprites).is_none())
-            .count();
+        let names = tileset_names(&self.maps);
+        log::info!("map '{name}': it asks for {}", names.join(", "));
+        let waiting = waiting_names(&self.maps, &self.sprites);
         let mut status = format!("map: opened {} layers from {name}", self.maps.len());
-        if waiting > 0 {
-            status.push_str(&format!(
-                ", {waiting} waiting for their tileset{}",
-                if waiting == 1 { "" } else { "s" }
-            ));
+        if !waiting.is_empty() {
+            // Named, not counted — the guard's face the desk can
+            // show at the opening: who waits, and why (the desk
+            // does not wear that identity).
+            let spoken = if waiting.len() > 3 {
+                format!(
+                    "{}, and {} more",
+                    waiting[..3].join(", "),
+                    waiting.len() - 3
+                )
+            } else {
+                waiting.join(", ")
+            };
+            status.push_str(&format!(", waiting for their tilesets: {spoken}"));
+            for who in &waiting {
+                log::warn!("map '{name}': '{who}' waits undressed — the desk does not wear it");
+            }
         }
         for why in &refused {
             log::warn!("map '{name}': {why}");

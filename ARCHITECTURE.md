@@ -1371,10 +1371,18 @@ a game running different shaders after a save than after a rebuild.
 Unity would call this a domain reload; here it is ten stats and a
 veto.
 
-**And one guard the name table makes possible:** a small reader (say
-`frost::map::tileset_names`) lists the names a map file asks for, so an
-app's own test can assert every one of them sits in its `ASSETS` table —
-a forgotten `include_bytes!` dies at `cargo test`, not in the field. The
+**And one guard the name table makes possible:** a small reader lists the
+names a map file asks for, so an app's own test can assert every one of
+them sits in its `ASSETS` table — a forgotten `include_bytes!` dies at
+`cargo test`, not in the field. The reader landed 2026-10-10, and the
+finding is *where*: not at the paragraph's guessed `frost::map`, but in
+the guest — the guard follows the codec, and the codec is the tool's
+dialect, so the engine stays map-blind and `map::tileset_names` lives in
+sprite_util beside the layers it reads. Its desk-side face
+`waiting_names` decides waiting by full identity, name and cut together,
+exactly as dressing does, and `open_map` names the waiters in its note
+where it once counted them. The app-side pin needs an app that ships a
+map; none does yet — the box stays open, and the demo rung owes it. The
 resolver core, the watcher tick, and the rebind-mid-swap semantics are
 still to be designed; this paragraph is the finding, not the plan. The
 engines this bet is made against, and the scoreboard tracking it, live in

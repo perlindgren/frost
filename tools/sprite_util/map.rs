@@ -776,6 +776,39 @@ pub(crate) fn map_of(root: &ron_tree::Val) -> (Vec<MapLayer>, Vec<String>) {
 
 /// A layer fixture's tileset: the stub sprites' name, cut 2 x 2 — the
 /// cut the `tileset` fixture declares.
+/// The tileset names a map asks for, first-spoken order, none
+/// twice. The guard's reader: an app's own test can assert every
+/// name its maps speak sits in the table it ships, so a forgotten
+/// `include_bytes!` dies at `cargo test`, not in the field. The
+/// cuts stay out on purpose — the name is the cargo question;
+/// the cut is the dressing question.
+pub(crate) fn tileset_names(layers: &[MapLayer]) -> Vec<&str> {
+    let mut names: Vec<&str> = Vec::new();
+    for layer in layers {
+        if !names.contains(&layer.tileset.name.as_str()) {
+            names.push(&layer.tileset.name);
+        }
+    }
+    names
+}
+
+/// The names a map asks for that the desk does not wear — waiting
+/// is decided by full identity, name and cut together, exactly as
+/// dressing is, and the cut that disagrees leaves the tileset
+/// waiting. What `open_map` names in its note: the guard's other
+/// face, the one the tool can answer at the opening.
+pub(crate) fn waiting_names<'a>(layers: &'a [MapLayer], sprites: &'a [Sprite]) -> Vec<&'a str> {
+    let mut waiting: Vec<&'a str> = Vec::new();
+    for layer in layers {
+        if layer.tileset.sprite(sprites).is_none()
+            && !waiting.contains(&layer.tileset.name.as_str())
+        {
+            waiting.push(&layer.tileset.name);
+        }
+    }
+    waiting
+}
+
 #[cfg(test)]
 pub(crate) fn tref(name: &str) -> TilesetRef {
     TilesetRef {
@@ -1184,5 +1217,54 @@ mod tests {
         // And a sweep over an empty rectangle changes nothing, so it
         // takes no place on the undo road.
         assert!(!erase_rect(&mut maps, [0, 0, 1, 1]));
+    }
+
+    /// A map speaks each of its tilesets once, in the order it
+    /// first speaks them — whatever the cells hold, names are the
+    /// cargo question and the cargo list has no duplicates.
+    #[test]
+    fn the_map_names_its_tilesets_once_in_order() {
+        let layers = vec![
+            MapLayer::blank(tref("grass"), 4, 2),
+            MapLayer::blank(tref("bug"), 4, 2),
+            MapLayer::blank(tref("grass"), 8, 2),
+        ];
+        assert_eq!(tileset_names(&layers), ["grass", "bug"]);
+        assert!(
+            tileset_names(&[]).is_empty(),
+            "an empty map promises nothing"
+        );
+    }
+
+    /// Waiting is decided by full identity — a name the desk wears
+    /// at the wrong cut still waits, once and named — because
+    /// undressed layers wait for exactly what dressing needs.
+    #[test]
+    fn a_waiting_tileset_is_named_by_identity() {
+        let mut wrong_cut = tileset("moss.png");
+        wrong_cut.atlas = Some((1, 4));
+        let layers = vec![
+            MapLayer::blank(tref("grass"), 4, 2),
+            MapLayer::blank(tref("moss"), 4, 2),
+            MapLayer::blank(tref("bug"), 4, 2),
+            MapLayer::blank(tref("moss"), 4, 2),
+        ];
+        assert_eq!(
+            waiting_names(&layers, &[tileset("grass.png"), wrong_cut]),
+            ["moss", "bug"],
+            "the disagreeing cut waits, and waits once"
+        );
+        assert!(
+            waiting_names(
+                &layers,
+                &[
+                    tileset("grass.png"),
+                    tileset("moss.png"),
+                    tileset("bug.png")
+                ]
+            )
+            .is_empty(),
+            "a desk that wears every identity has no waiters"
+        );
     }
 }
