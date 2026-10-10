@@ -606,7 +606,10 @@ minimum point-to-segment distance — a stroke of any length is still one draw
 call; its scissor is the point bounding box plus half the stroke width and the
 AA band, so the fragment loop only runs over the pixels the stroke can write.
 
-`src/shaders.rs` includes them and has tests that **parse all nine with
+`src/shaders.rs` includes them, hosts the watched-shader table `SOURCES`
+and the runtime `validate` (naga's parse + validator, the same two stages
+`create_shader_module` runs — the watching `Live` refuses a batch before the
+GPU ever sees it), and has tests that **parse all nine with
 `naga::front::wgsl::parse_str`** (the same frontend wgpu uses, so validity is
 pinned without a GPU) and assert the `ShapeUniforms`/`SpriteUniforms` member
 offsets are `[0,16,24,32,48,64]` spanning 80 bytes, the `ParticlesUniforms`
@@ -1343,6 +1346,30 @@ heard from a field on the next press, and the overlay's text
 derived from its font and so derived anew. A file that stops
 decoding leaves the old asset worn; the log speaks; the garden does
 not blink. A shipped world watches paths that never answer.
+
+The shader tier was the ladder's last surprise, and it was a
+surprise in the doctrine's favour: the WGSL had lived in `shaders/`
+files all along (the consts in `src/shaders.rs` are `include_str!`,
+and three sources are assembled — `lighting.wgsl` plus their host),
+so the tier needed a sense and a seam, not a restructure. The sense
+is `shaders::Live` — one `Watch` per file, debug builds only,
+polled at the head of `render` before the surface is even asked,
+because a saved shader should land whether or not a window is
+compositing. The seam is the batch: any touched file re-assembles
+*every* source from disk — which is how a `lighting.wgsl` edit
+reaches the three lit pipelines at once — validates the whole table
+through naga's parse and validator (the very two stages
+`create_shader_module` runs), and swaps only if all nine compile.
+A broken file refuses the batch: the old shaders stand, the log
+carries naga's words, and the next save gets its chance. The swap
+sets `format` to `None` — the pipelines rebuild by the exact road a
+surface-format change always took, so the tier rides a path that
+existed and was tested long before it. One test pins the seam
+between the watched world and the shipped one: disk assembles
+byte-exactly what `include_str!` embedded — drift there would mean
+a game running different shaders after a save than after a rebuild.
+Unity would call this a domain reload; here it is ten stats and a
+veto.
 
 **And one guard the name table makes possible:** a small reader (say
 `frost::map::tileset_names`) lists the names a map file asks for, so an

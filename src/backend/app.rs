@@ -31,7 +31,6 @@ use crate::backend::frame::*;
 use crate::backend::wasm::hide_fallback;
 use crate::backend::windowing::*;
 use crate::objects::*;
-use crate::shaders::*;
 use crate::text;
 use crate::{Canvas, Context, KeyCode, Process};
 
@@ -172,6 +171,12 @@ pub(crate) struct Frost<P: Process> {
     /// The surface format the current pipelines were built for; they are only
     /// rebuilt when this changes.
     format: Option<TextureFormat>,
+    /// The watched shader directory, debug builds on filesystem
+    /// targets only: `render` polls it, and a passing batch sets
+    /// `format` to `None` so the pipelines rebuild by the same road
+    /// a surface-format change always took.
+    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+    shaders: crate::shaders::Live,
     /// Millisecond timestamp of the previous rendered frame, used to
     /// compute `dt` (see `now_millis`).
     last_millis: Option<f64>,
@@ -450,6 +455,10 @@ impl<P: Process> Frost<P> {
             sprite_resources: HashMap::new(),
             text_atlases: HashMap::new(),
             format: None,
+            #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+            shaders: crate::shaders::Live::new(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders"),
+            ),
             last_millis: None,
             frame_processing_ms: 0.0,
             frame_draw_calls: 0,
@@ -853,6 +862,28 @@ impl<P: Process> Frost<P> {
         let _ = window.request_inner_size(PhysicalSize::new(w2, h2));
     }
 
+    /// A pipeline's shader text as it stands this frame: the live
+    /// text if a watched file has spoken it, the const compiled
+    /// into the binary otherwise. The names are the table's in
+    /// `crate::shaders`.
+    fn wgsl(&self, name: &str) -> &str {
+        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+        if let Some(text) = self.shaders.get(name) {
+            return text;
+        }
+        match name {
+            "line" => crate::shaders::LINE_SHADER,
+            "polyline" => crate::shaders::POLYLINE_SHADER,
+            "circle" => crate::shaders::CIRCLE_SHADER,
+            "rectangle" => crate::shaders::RECT_SHADER,
+            "shape" => crate::shaders::SHAPE_SHADER,
+            "sprite" => crate::shaders::SPRITE_SHADER,
+            "particles" => crate::shaders::PARTICLES_SHADER,
+            "tilemap" => crate::shaders::TILEMAP_SHADER,
+            _ => crate::shaders::BLIT_SHADER,
+        }
+    }
+
     /// Creates the shared line and circle pipelines. Uniform buffers and bind
     /// groups are created per draw call, see `primitive_uniform`.
     fn set_up_pipelines(&mut self, format: TextureFormat) {
@@ -860,7 +891,7 @@ impl<P: Process> Frost<P> {
 
         let line_module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("line shaders"),
-            source: ShaderSource::Wgsl(Cow::Borrowed(LINE_SHADER)),
+            source: ShaderSource::Wgsl(Cow::Borrowed(self.wgsl("line"))),
         });
         self.line_pipeline = Some(Self::create_pipeline(
             device,
@@ -872,7 +903,7 @@ impl<P: Process> Frost<P> {
 
         let polyline_module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("polyline shaders"),
-            source: ShaderSource::Wgsl(Cow::Borrowed(POLYLINE_SHADER)),
+            source: ShaderSource::Wgsl(Cow::Borrowed(self.wgsl("polyline"))),
         });
         self.polyline_pipeline = Some(Self::create_pipeline(
             device,
@@ -884,7 +915,7 @@ impl<P: Process> Frost<P> {
 
         let circle_module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("circle shaders"),
-            source: ShaderSource::Wgsl(Cow::Borrowed(CIRCLE_SHADER)),
+            source: ShaderSource::Wgsl(Cow::Borrowed(self.wgsl("circle"))),
         });
         self.circle_pipeline = Some(Self::create_pipeline(
             device,
@@ -896,7 +927,7 @@ impl<P: Process> Frost<P> {
 
         let rect_module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("rectangle shaders"),
-            source: ShaderSource::Wgsl(Cow::Borrowed(RECT_SHADER)),
+            source: ShaderSource::Wgsl(Cow::Borrowed(self.wgsl("rectangle"))),
         });
         self.rect_pipeline = Some(Self::create_pipeline(
             device,
@@ -908,7 +939,7 @@ impl<P: Process> Frost<P> {
 
         let shape_module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("shape shaders"),
-            source: ShaderSource::Wgsl(Cow::Borrowed(SHAPE_SHADER)),
+            source: ShaderSource::Wgsl(Cow::Borrowed(self.wgsl("shape"))),
         });
         self.shape_pipeline = Some(Self::create_pipeline(
             device,
@@ -920,7 +951,7 @@ impl<P: Process> Frost<P> {
 
         let sprite_module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("sprite shaders"),
-            source: ShaderSource::Wgsl(Cow::Borrowed(SPRITE_SHADER)),
+            source: ShaderSource::Wgsl(Cow::Borrowed(self.wgsl("sprite"))),
         });
         self.sprite_pipeline = Some(Self::create_pipeline(
             device,
@@ -932,7 +963,7 @@ impl<P: Process> Frost<P> {
 
         let particles_module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("particle shaders"),
-            source: ShaderSource::Wgsl(Cow::Borrowed(PARTICLES_SHADER)),
+            source: ShaderSource::Wgsl(Cow::Borrowed(self.wgsl("particles"))),
         });
         self.particle_pipeline = Some(Self::create_pipeline(
             device,
@@ -944,7 +975,7 @@ impl<P: Process> Frost<P> {
 
         let tilemap_module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("tilemap shaders"),
-            source: ShaderSource::Wgsl(Cow::Borrowed(TILEMAP_SHADER)),
+            source: ShaderSource::Wgsl(Cow::Borrowed(self.wgsl("tilemap"))),
         });
         self.tilemap_pipeline = Some(Self::create_pipeline(
             device,
@@ -960,7 +991,7 @@ impl<P: Process> Frost<P> {
         // layer over it.
         let blit_module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("blit shaders"),
-            source: ShaderSource::Wgsl(Cow::Borrowed(BLIT_SHADER)),
+            source: ShaderSource::Wgsl(Cow::Borrowed(self.wgsl("blit"))),
         });
         self.blit_pipeline = Some(Self::create_pipeline(
             device,
@@ -1524,6 +1555,15 @@ impl<P: Process> Frost<P> {
     }
 
     fn render(&mut self) {
+        // The shader tier, first among equals: one poll per frame —
+        // ten stats — before the surface is even asked, so a saved
+        // shader lands whether or not a window is compositing. A
+        // passing batch rebuilds the pipelines next frame; the
+        // game's state, buffers, and textures carry across untouched.
+        #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+        if self.shaders.poll() {
+            self.format = None;
+        }
         let (output, reconfigure) = self.acquire_frame();
         if reconfigure {
             self.resize();

@@ -48,6 +48,120 @@ pub(crate) const TILEMAP_SHADER: &str = include_str!("../shaders/tilemap.wgsl");
 /// The fixed-render-size stretch (blit) shader source.
 pub(crate) const BLIT_SHADER: &str = include_str!("../shaders/blit.wgsl");
 
+/// The shader table: each pipeline's source by name, and the files
+/// its text is assembled from, in order — the shape of the consts
+/// above, speakable at runtime. `App::wgsl` asks by these names;
+/// a watched file re-assembles every source that reads from it,
+/// which is how a `lighting.wgsl` edit reaches the three lit
+/// pipelines at once.
+pub(crate) const SOURCES: &[(&str, &[&str])] = &[
+    ("line", &["line"]),
+    ("polyline", &["polyline"]),
+    ("circle", &["circle"]),
+    ("rectangle", &["rectangle"]),
+    ("shape", &["lighting", "shape"]),
+    ("sprite", &["lighting", "sprite"]),
+    ("particles", &["lighting", "particles"]),
+    ("tilemap", &["tilemap"]),
+    ("blit", &["blit"]),
+];
+
+/// The two stages wgpu runs inside `create_shader_module`: naga's
+/// parse, then its validator. A source that fails either stage
+/// here fails at runtime there — so the watching app catches it
+/// here, where a refusal is a log line and the old shaders stand,
+/// not there, where it is a dead frame. Same build gate as `Live`,
+/// its only caller: `wgpu` re-exports naga on the backends that
+/// compile shaders at runtime, and wasm is not one of them.
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+pub(crate) fn validate(source: &str) -> Result<(), String> {
+    let module = wgpu::naga::front::wgsl::parse_str(source).map_err(|err| format!("{err}"))?;
+    wgpu::naga::valid::Validator::new(
+        wgpu::naga::valid::ValidationFlags::all(),
+        wgpu::naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .map_err(|err| format!("{err}"))?;
+    Ok(())
+}
+
+/// The watched shader directory: development edits `.wgsl` files
+/// under a running game, and this carries the live text that
+/// shadows the embedded consts. Debug builds only, on targets with
+/// a filesystem — the release world's shaders are the ones compiled
+/// into the crate, and naga saw them at `cargo test`.
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+pub(crate) struct Live {
+    /// The directory of files, and one sense per file.
+    dir: std::path::PathBuf,
+    watches: Vec<(&'static str, crate::Watch)>,
+    /// Live text per source name, swapped in only by a batch that
+    /// passed validation whole.
+    live: std::collections::HashMap<&'static str, String>,
+}
+
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+impl Live {
+    /// Watch a directory of `.wgsl` files from their state right
+    /// now: the first change reported is one made after the game
+    /// booted.
+    pub(crate) fn new(dir: std::path::PathBuf) -> Self {
+        let mut watches: Vec<(&'static str, crate::Watch)> = Vec::new();
+        for (_, files) in SOURCES {
+            for file in *files {
+                if !watches.iter().any(|(seen, _)| *seen == *file) {
+                    watches.push((*file, crate::Watch::new(dir.join(format!("{file}.wgsl")))));
+                }
+            }
+        }
+        Self {
+            dir,
+            watches,
+            live: std::collections::HashMap::new(),
+        }
+    }
+
+    /// One poll: ten stats, and if any file moved — reassemble the
+    /// whole table from disk, put it past naga, and swap it only if
+    /// every source compiles. A broken file refuses the batch:
+    /// the old sources stand, the log names the error, and the
+    /// next save gets its chance. True when live text changed —
+    /// the caller rebuilds the pipelines.
+    pub(crate) fn poll(&mut self) -> bool {
+        if !self.watches.iter_mut().any(|(_, w)| w.changed()) {
+            return false;
+        }
+        let mut next = std::collections::HashMap::new();
+        for (name, files) in SOURCES {
+            let mut source = String::new();
+            for file in *files {
+                match std::fs::read_to_string(self.dir.join(format!("{file}.wgsl"))) {
+                    Ok(text) => source.push_str(&text),
+                    Err(err) => {
+                        log::warn!(
+                            "shader: '{file}.wgsl' unreadable ({err}) — the old shaders stand"
+                        );
+                        return false;
+                    }
+                }
+            }
+            if let Err(err) = validate(&source) {
+                log::warn!("shader: '{name}' does not compile — the old shaders stand:\n{err}");
+                return false;
+            }
+            next.insert(*name, source);
+        }
+        self.live = next;
+        log::info!("shader: recompiled from disk — the pipelines rebuild next frame");
+        true
+    }
+
+    /// The live text of a source, if a watched file has spoken it.
+    pub(crate) fn get(&self, name: &str) -> Option<&String> {
+        self.live.get(name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Shader validation without running anything: naga's WGSL frontend and
@@ -450,5 +564,68 @@ mod tests {
             } => {}
             other => panic!("the OccluderField tail should be a dynamic array, got {other:?}"),
         }
+    }
+
+    /// The watched table mirrors the compiled consts: a file read
+    /// from disk assembles exactly the text `include_str!`
+    /// assembled into the binary. This is the seam between the
+    /// watched world and the shipped one — if it drifts, a game
+    /// would run different shaders after a save than after a
+    /// rebuild.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_watched_table_speaks_the_compiled_truth() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+        let compiled: Vec<(&str, &str)> = all_shaders()
+            .into_iter()
+            .map(|(name, source)| (name.trim_end_matches(".wgsl"), source))
+            .collect();
+        for (name, files) in SOURCES {
+            let mut assembled = String::new();
+            for file in *files {
+                assembled.push_str(
+                    &std::fs::read_to_string(dir.join(format!("{file}.wgsl")))
+                        .unwrap_or_else(|err| panic!("{file}.wgsl: {err}")),
+                );
+            }
+            let const_source = compiled
+                .iter()
+                .find(|(n, _)| *n == *name)
+                .map(|(_, s)| *s)
+                .unwrap_or_else(|| panic!("no compiled source named {name}"));
+            assert_eq!(assembled, const_source, "{name} assembles differently");
+        }
+    }
+
+    /// The watch, end to end on a scratch directory: an edit that
+    /// compiles swaps in, and one that does not is refused with
+    /// the good live text still standing.
+    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+    #[test]
+    fn a_touched_shader_is_vetted_then_swapped() {
+        let dir = std::env::temp_dir().join(format!("frost_shaders_{}", std::process::id()));
+        let shipped = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+        std::fs::create_dir_all(&dir).unwrap();
+        for entry in std::fs::read_dir(&shipped).unwrap() {
+            let path = entry.unwrap().path();
+            std::fs::copy(&path, dir.join(path.file_name().unwrap())).unwrap();
+        }
+        let mut live = Live::new(dir.clone());
+        assert!(!live.poll(), "a fresh copy changes nothing");
+        let mut sprite = std::fs::read(dir.join("sprite.wgsl")).unwrap();
+        sprite.extend_from_slice(b"\n// touched by the test\n");
+        std::fs::write(dir.join("sprite.wgsl"), &sprite).unwrap();
+        assert!(live.poll());
+        assert!(
+            live.get("sprite")
+                .is_some_and(|src| src.contains("touched by the test"))
+        );
+        std::fs::write(dir.join("sprite.wgsl"), b"fn broken(({{{").unwrap();
+        assert!(!live.poll(), "a broken batch is refused");
+        assert!(
+            live.get("sprite")
+                .is_some_and(|src| src.contains("touched by the test"))
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

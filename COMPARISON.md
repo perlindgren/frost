@@ -138,10 +138,17 @@ Status of each rung, updated as work lands. `[ ]` = claim, `[x]` = fact.
       re-reads frames every frame, so a field swap *is* the rebind),
       `Spray` re-decoded by hand, `Leofont` re-typeset as derived
       text. Game state untouched throughout. Checked 2026-10-10.
-- [ ] **Shaders** — `.wgsl` watched, pipeline rebuilt at runtime
-      (`create_render_pipeline` is already a runtime call; naga is
-      already a dependency). The rung where frost embarrasses the big
-      engines.
+- [x] **Shaders** — landed as `shaders::Live`: every `.wgsl` watched
+      (ten stats a frame, debug builds on filesystem targets), a
+      touched file re-assembles the whole table from disk, naga —
+      the same two stages wgpu runs — vets the batch, and a passing
+      batch rebuilds the pipelines by the same road a surface-format
+      change always took. Proven live: a broken `sprite.wgsl` was
+      refused (*the old shaders stand*) with the game rendering on;
+      the fix compiled three seconds later (*the pipelines rebuild
+      next frame*) without a restart. The seam between watched and
+      compiled is itself a test: disk assembles exactly what
+      `include_str!` embedded. Checked 2026-10-10.
 - [ ] **The guard** — `frost::map::tileset_names` + the app-side test
       *the world ships every tileset it names*: a forgotten
       `include_bytes!` dies at `cargo test`.
