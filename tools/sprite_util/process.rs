@@ -820,6 +820,8 @@ impl frost::Process for Demo {
                     ("File", "Close") => self.close_active(ctx),
                     ("File", "Save") => self.save(ctx),
                     ("File", "Save as") => self.save_as(ctx),
+                    ("File", "Open map") => self.open_map(ctx),
+                    ("File", "Save map") => self.save_map(ctx),
                     ("File", "Undo") => self.undo(ctx),
                     ("File", "Redo") => self.redo(ctx),
                     ("Operations", "Crop") => self.crop(ctx),

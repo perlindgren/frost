@@ -5,10 +5,13 @@
 use crate::art::*;
 use crate::desk::*;
 use crate::layout::*;
+use crate::map::*;
 use crate::ron_panels::*;
 use crate::ron_view;
 use crate::sidecar::*;
 use crate::spots::*;
+use crate::world::push_step;
+use frost::ron as ron_tree;
 
 /// The File menu: the file verbs, lined up where every desktop app puts
 /// them, with the two history steps among them. Open, Close, Save, Save
@@ -24,6 +27,8 @@ pub(crate) const FILE_MENU: frost::Menu<'static> = frost::Menu {
         frost::MenuItem::new("Close", ""),
         frost::MenuItem::new("Save", ""),
         frost::MenuItem::new("Save as", ""),
+        frost::MenuItem::new("Open map", ""),
+        frost::MenuItem::new("Save map", ""),
         frost::MenuItem::new("Undo", "Ctrl-Z"),
         frost::MenuItem::new("Redo", "Ctrl-Shift-Z"),
         frost::MenuItem::SEPARATOR,
@@ -247,6 +252,132 @@ impl Demo {
             return;
         }
         self.write_png(&target, name);
+    }
+
+    /// Write the canvas's layers to a file of their own: one document
+    /// for the map, every layer and the tileset that dresses it. The
+    /// PNGs stay untouched — this file says what stands where, and
+    /// dressed by whom.
+    pub(crate) fn save_map(&mut self, ctx: &mut frost::Context) {
+        if self.maps.is_empty() {
+            self.status = String::from("map: nothing painted to save");
+            return;
+        }
+        let stem = self.active().map_or_else(
+            || "world".to_string(),
+            |sp| crate::art::asset_name(&sp.path),
+        );
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("sprite_util: save map")
+            .set_file_name(format!("{stem}.map.ron"))
+            .add_filter("RON documents", &["ron"]);
+        let dir = self
+            .active()
+            .and_then(|sp| sp.path.parent())
+            .filter(|d| !d.as_os_str().is_empty())
+            .or(self.dir.as_deref())
+            .map(std::path::Path::to_path_buf);
+        if let Some(dir) = &dir {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(window) = ctx.window() {
+            dialog = dialog.set_parent(window);
+        }
+        let Some(mut target) = dialog.save_file() else {
+            self.status = String::from("map: canceled");
+            return;
+        };
+        match target.extension() {
+            None => {
+                target.set_extension("ron");
+            }
+            Some(ext) if ext.eq_ignore_ascii_case("ron") => {}
+            Some(_) => {
+                self.status = String::from("map: only RON documents");
+                return;
+            }
+        }
+        let name = file_name_of(&target);
+        if target.exists() && !confirm_overwrite(ctx, &name) {
+            self.status = String::from("map: canceled");
+            return;
+        }
+        let text = ron_tree::to_text_doc(MAP_FILE_HEADER, &map_value(&self.maps), "");
+        match std::fs::write(&target, text) {
+            Ok(()) => self.status = format!("map: wrote {} layers to {name}", self.maps.len()),
+            Err(err) => {
+                log::warn!("map save failed: {err}");
+                self.status = format!("map: cannot write {name}: {err}");
+            }
+        }
+    }
+
+    /// Open a map file: the canvas becomes the file's layers, and the
+    /// undo road remembers the canvas that was — opening a map is a
+    /// step like any other. Tilesets off the bench keep their layers
+    /// waiting, dressed again when their source opens.
+    pub(crate) fn open_map(&mut self, ctx: &mut frost::Context) {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("sprite_util: open map")
+            .add_filter("RON documents", &["ron"]);
+        if let Some(dir) = &self.dir {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(window) = ctx.window() {
+            dialog = dialog.set_parent(window);
+        }
+        let Some(target) = dialog.pick_file() else {
+            self.status = String::from("map: canceled");
+            return;
+        };
+        let name = file_name_of(&target);
+        let Ok(src) = std::fs::read_to_string(&target) else {
+            self.status = format!("map: cannot read {name}");
+            return;
+        };
+        let Ok(doc) = ron_tree::parse_doc(&src) else {
+            self.status = format!("map: {name} is not RON");
+            return;
+        };
+        let (layers, refused) = map_of(&doc.root);
+        if layers.is_empty() {
+            let why = refused.first().map(String::as_str).unwrap_or("no layers");
+            self.status = format!("map: {name} holds no map ({why})");
+            return;
+        }
+        let before = self.capture();
+        self.maps = layers;
+        if self.maps != before.maps {
+            push_step(&mut self.undo_stack, &mut self.redo_stack, before);
+        }
+        self.sync_work(ctx);
+        let waiting = self
+            .maps
+            .iter()
+            .filter(|m| m.tileset.sprite(&self.sprites).is_none())
+            .count();
+        let mut status = format!("map: opened {} layers from {name}", self.maps.len());
+        if waiting > 0 {
+            status.push_str(&format!(
+                ", {waiting} waiting for their tileset{}",
+                if waiting == 1 { "" } else { "s" }
+            ));
+        }
+        for why in &refused {
+            log::warn!("map '{name}': {why}");
+        }
+        if let Some(first) = refused.first() {
+            let more = refused.len() - 1;
+            status.push_str(&format!(
+                " — {first}{}",
+                if more > 0 {
+                    format!(", and {more} more refused")
+                } else {
+                    String::new()
+                }
+            ));
+        }
+        self.status = status;
     }
 
     /// Write the active texture to `path` as PNG and make it the sprite's

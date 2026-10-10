@@ -1272,6 +1272,14 @@ the existing `set_atlas` machinery; a tileset the file names that nothing
 can find gets the house treatment — first refusal named, the rest counted,
 spoken on the status band like `shapes_note`.
 
+Landed 2026-10-10, with one remainder on the record: the codec and both
+verbs shipped — cells written `(x, y, code, tfm)` from the layer's
+top-left, empties never written, refusals named by the reader and spoken
+by the opener — but the opener does not yet *pull* missing tilesets from
+disk. Their layers wait dressed-as-nothing, which the desk has always
+known how to do; pulling them by house convention is the increment that
+closes this paragraph.
+
 **The name table is also the hot-reload seam — the shipping model and the
 dev loop turn out to share one interface.** Game code never says
 `include_bytes!`; it says *give me `basic_tiles`*, and one resolver sits

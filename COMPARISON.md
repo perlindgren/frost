@@ -113,8 +113,10 @@ Status of each rung, updated as work lands. `[ ]` = claim, `[x]` = fact.
       path-only identity it replaced dressed both cuts from the first
       same-path slot — the bug the test's slot order keeps as a trap).
       Checked 2026-10-10.
-- [ ] **Map file** — `.map.ron` codec, sparse cells, round-trip tests;
-      `Save map` / `Open map` born in `actions.rs`.
+- [x] **Map file** — `.map.ron` codec landed: sparse cells (empties are
+      never written), tileset identity stamped per layer, round-trip and
+      refusal tests in `map.rs`; `Save map` / `Open map` born in
+      `actions.rs` as the first verbs on the seam. Checked 2026-10-10.
 - [ ] **The table** — house pattern: `const ASSETS: &[(&str, &[u8])]` of
       `include_bytes!` entries, one resolver behind a feature flag;
       an app compiles release-embedded and debug-from-disk with zero

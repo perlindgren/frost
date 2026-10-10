@@ -5,6 +5,7 @@ use crate::art::asset_name;
 use crate::clip::*;
 use crate::layout::*;
 use crate::world::*;
+use frost::ron as ron_tree;
 
 /// A tileset's identity: the file's name and the cut made into it.
 /// The same PNG cut two ways is two tilesets — the same cell code
@@ -51,7 +52,7 @@ impl TilesetRef {
 /// A multi-tileset picture is several of these layers, each naming its
 /// tileset by name and cut — the desk paints one, the canvas shows
 /// them all.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MapLayer {
     /// The tileset the cells cut their pictures from. By identity,
     /// because slots shift when sprites close and a map outlives that
@@ -560,6 +561,219 @@ mod the_block_dresses_like_the_picture {
         );
     }
 }
+/// The header every map file carries: the format, spoken to whoever
+/// opens it next.
+pub(crate) const MAP_FILE_HEADER: &str = "// sprite_util map file — painted cells for the tile-map desk.\n\
+// Each layer names its tileset by name and cut — (\"basic_tiles\", 2, 8)\n\
+// is that file with 2 rows and 8 columns of cells. Cells stand as\n\
+// (x, y, code, tfm) from the layer's top-left; an absent cell is\n\
+// empty, and empty cells are not written.";
+
+/// A small integer atom.
+fn num(text: &str) -> ron_tree::Val {
+    ron_tree::Val::Atom(text.to_string(), ron_tree::Kind::Num)
+}
+
+/// A parenthesised record of fields — named where named, positional
+/// where not.
+fn record(fields: Vec<(&str, ron_tree::Val)>) -> ron_tree::Val {
+    ron_tree::Val::Struct {
+        open: true,
+        head: String::new(),
+        curly: false,
+        fields: fields
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), ron_tree::Item::plain(v)))
+            .collect(),
+        tail: String::new(),
+    }
+}
+
+/// A bracketed list of values.
+fn list(items: Vec<ron_tree::Val>) -> ron_tree::Val {
+    ron_tree::Val::Seq {
+        open: true,
+        items: items.into_iter().map(ron_tree::Item::plain).collect(),
+        tail: String::new(),
+    }
+}
+
+/// The map file's root: every layer as one `layers:` list — each
+/// entry naming its tileset (name and cut), the layer's extent, and
+/// the cells that stand. Empty cells are never written: an absence
+/// written is a presence faked.
+pub(crate) fn map_value(maps: &[MapLayer]) -> ron_tree::Val {
+    record(vec![(
+        "layers",
+        list(
+            maps.iter()
+                .map(|m| {
+                    let cells = m
+                        .cells
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, c)| **c != EMPTY_CELL)
+                        .map(|(i, &c)| {
+                            record(vec![
+                                ("", num(&(i % m.cols).to_string())),
+                                ("", num(&(i / m.cols).to_string())),
+                                ("", num(&c.to_string())),
+                                ("", num(&m.tfms[i].to_string())),
+                            ])
+                        })
+                        .collect();
+                    record(vec![
+                        (
+                            "tileset",
+                            record(vec![
+                                (
+                                    "",
+                                    ron_tree::Val::Atom(
+                                        format!("\"{}\"", m.tileset.name),
+                                        ron_tree::Kind::Str,
+                                    ),
+                                ),
+                                ("", num(&m.tileset.rows.to_string())),
+                                ("", num(&m.tileset.cols.to_string())),
+                            ]),
+                        ),
+                        ("cols", num(&m.cols.to_string())),
+                        ("rows", num(&m.rows.to_string())),
+                        ("cells", list(cells)),
+                    ])
+                })
+                .collect(),
+        ),
+    )])
+}
+
+/// The named field of a record, if this is a record that has it.
+fn field<'v>(v: &'v ron_tree::Val, name: &str) -> Option<&'v ron_tree::Val> {
+    match v {
+        ron_tree::Val::Struct { fields, .. } => fields
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, item)| &item.val),
+        _ => None,
+    }
+}
+
+/// The listed entries, if this is a list.
+fn entries(v: &ron_tree::Val) -> Option<&[ron_tree::Item]> {
+    match v {
+        ron_tree::Val::Seq { items, .. } => Some(items),
+        _ => None,
+    }
+}
+
+/// The nth entry of a positional record or a list — the dialect
+/// spells tuples as nameless records, and a hand-written list is
+/// read the same.
+fn pos(v: &ron_tree::Val, n: usize) -> Option<&ron_tree::Val> {
+    match v {
+        ron_tree::Val::Struct { fields, .. } => fields.get(n).map(|(_, it)| &it.val),
+        ron_tree::Val::Seq { items, .. } => items.get(n).map(|it| &it.val),
+        _ => None,
+    }
+}
+
+/// A bare number's text, if this is one.
+fn number(v: &ron_tree::Val) -> Option<&str> {
+    match v {
+        ron_tree::Val::Atom(s, ron_tree::Kind::Num) => Some(s),
+        _ => None,
+    }
+}
+
+/// A quoted string, unwrapped, if this is one.
+fn text(v: &ron_tree::Val) -> Option<&str> {
+    match v {
+        ron_tree::Val::Atom(s, ron_tree::Kind::Str) => Some(s.trim_matches('\"')),
+        _ => None,
+    }
+}
+
+/// The map file's layers: every readable entry read, every refused
+/// one named — the first so the status band can speak it, the rest
+/// so the count can stand behind it. Cells past their layer's extent
+/// or wearing an impossible transform are skipped where they lie,
+/// noted by their layer: a map opens as much as it can.
+pub(crate) fn map_of(root: &ron_tree::Val) -> (Vec<MapLayer>, Vec<String>) {
+    let mut layers = Vec::new();
+    let mut refused = Vec::new();
+    let Some(items) = field(root, "layers").and_then(entries) else {
+        refused.push("no `layers:` list".to_string());
+        return (layers, refused);
+    };
+    for (n, item) in items.iter().enumerate() {
+        let who = format!("layer {}", n + 1);
+        let cut = field(&item.val, "tileset");
+        let at = |n| cut.and_then(|t| pos(t, n));
+        let (Some(name), Some(trows), Some(tcols)) = (
+            at(0).and_then(text),
+            at(1)
+                .and_then(number)
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|v| *v > 0),
+            at(2)
+                .and_then(number)
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|v| *v > 0),
+        ) else {
+            refused.push(format!("{who} names no tileset as (\"name\", rows, cols)"));
+            continue;
+        };
+        let (Some(cols), Some(rows)) = (
+            field(&item.val, "cols")
+                .and_then(number)
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|v| *v > 0),
+            field(&item.val, "rows")
+                .and_then(number)
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|v| *v > 0),
+        ) else {
+            refused.push(format!("{who} says no honest extent"));
+            continue;
+        };
+        let mut layer = MapLayer::blank(
+            TilesetRef {
+                name: name.to_string(),
+                rows: trows,
+                cols: tcols,
+            },
+            cols,
+            rows,
+        );
+        let mut skipped = 0;
+        let Some(cells) = field(&item.val, "cells").and_then(entries) else {
+            refused.push(format!("{who} carries no `cells:` list"));
+            continue;
+        };
+        for cell in cells {
+            let ok = (|| {
+                let x = pos(&cell.val, 0).and_then(number)?.parse::<usize>().ok()?;
+                let y = pos(&cell.val, 1).and_then(number)?.parse::<usize>().ok()?;
+                let code = pos(&cell.val, 2).and_then(number)?.parse::<u32>().ok()?;
+                let tfm = pos(&cell.val, 3).and_then(number)?.parse::<u64>().ok()?;
+                (tfm < 16).then_some((x, y, code, tfm as u8))
+            })();
+            match ok {
+                Some((x, y, code, tfm)) if x < cols && y < rows => {
+                    layer.cells[y * cols + x] = code;
+                    layer.tfms[y * cols + x] = tfm;
+                }
+                _ => skipped += 1,
+            }
+        }
+        if skipped > 0 {
+            refused.push(format!("{who} skipped {skipped} unreadable cells"));
+        }
+        layers.push(layer);
+    }
+    (layers, refused)
+}
+
 /// A layer fixture's tileset: the stub sprites' name, cut 2 x 2 — the
 /// cut the `tileset` fixture declares.
 #[cfg(test)]
@@ -574,6 +788,77 @@ pub(crate) fn tref(name: &str) -> TilesetRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Layers in, text out, text in: the file means exactly what the
+    /// canvas meant — identities, extents, cells, orientations alike.
+    #[test]
+    fn the_map_round_trips_through_text() {
+        let mut grass = MapLayer::blank(tref("grass"), 4, 2);
+        grass.set_cell(0, 0, 3, 0);
+        grass.set_cell(1, 0, 1, 7); // a turned, mirrored cell rides along
+        let mut stone = MapLayer::blank(
+            TilesetRef {
+                name: "stone".into(),
+                rows: 1,
+                cols: 4,
+            },
+            4,
+            2,
+        );
+        stone.set_cell(-1, 1, 2, 4);
+        let maps = vec![grass, stone];
+        let text = ron_tree::to_text_doc(MAP_FILE_HEADER, &map_value(&maps), "");
+        let back = ron_tree::parse_doc(&text).expect("the written file parses");
+        let (layers, refused) = map_of(&back.root);
+        assert!(refused.is_empty(), "refused: {refused:?}");
+        assert_eq!(layers, maps);
+    }
+
+    /// The file carries what stands, and nothing else: a layer with
+    /// three painted cells holds three entries, not a grid of zeros.
+    #[test]
+    fn an_empty_cell_is_never_written() {
+        let mut m = MapLayer::blank(tref("t"), 4, 2);
+        m.set_cell(-2, 0, 1, 0);
+        m.set_cell(-1, 0, 2, 0);
+        m.set_cell(0, 0, 3, 0);
+        let root = ron_tree::parse(&ron_tree::to_text(&map_value(&[m]))).unwrap();
+        let entry = entries(field(&root, "layers").unwrap()).unwrap();
+        let cells = field(&entry[0].val, "cells").unwrap();
+        assert_eq!(entries(cells).unwrap().len(), 3);
+    }
+
+    /// A file is read as far as it is honest: an entry that is not a
+    /// layer is refused by name, and its readable neighbours still
+    /// open.
+    #[test]
+    fn the_reader_names_what_it_refuses() {
+        let root = ron_tree::parse(
+            "(layers: [42, (tileset: (\"tiles\", 2, 2), cols: 2, rows: 2, cells: [(0, 0, 1, 0)])])",
+        )
+        .unwrap();
+        let (layers, refused) = map_of(&root);
+        assert_eq!(layers.len(), 1);
+        assert_eq!(refused.len(), 1);
+        assert!(refused[0].contains("layer 1"), "refused: {refused:?}");
+    }
+
+    /// Cells past their layer's extent, or wearing an impossible
+    /// transform, are skipped where they lie — noted, not fatal: the
+    /// layer opens as large as it means to be.
+    #[test]
+    fn a_cell_past_the_layer_is_skipped_not_fatal() {
+        let root = ron_tree::parse(
+            "(layers: [(tileset: (\"tiles\", 2, 2), cols: 2, rows: 2, cells: [(9, 9, 1, 0), (0, 0, 1, 0), (1, 1, 2, 99)])])",
+        )
+        .unwrap();
+        let (layers, refused) = map_of(&root);
+        assert_eq!(layers.len(), 1);
+        let painted = layers[0].cells.iter().filter(|&&c| c != EMPTY_CELL).count();
+        assert_eq!(painted, 1);
+        assert_eq!(refused.len(), 1);
+        assert!(refused[0].contains("2"), "refused: {refused:?}");
+    }
 
     /// One PNG, cut two ways, is two tilesets: the layers must find
     /// their own dresser even when the older identity — path alone —
