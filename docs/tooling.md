@@ -1,6 +1,6 @@
 # Tools live beside the engine, not inside `examples/`
 
-> **Status.** Decided, and steps 1–2 are now done — see the **Done** notes
+> **Status.** Decided, and steps 1–3 are now done — see the **Done** notes
 > below the steps. `sprite_util` is a tool: it edits the
 > author's files, it has no interest in demonstrating an API, and it is where
 > work happens daily. It used to live at
@@ -10,10 +10,11 @@
 > around seven thousand lines and holds both the engine's sidecar vocabulary and
 > the tool's own drag-handle heuristics in one undifferentiated mass. It now
 > lives at
-> [`tools/sprite_util/main.rs`](../tools/sprite_util/main.rs), its own package
-> in a Cargo workspace, and the layout half of this document is history; what
-> remains open is step 3 — the splits inside the tool — and the second tool
-> that will decide the fate of the shared `ron_view` row view.
+> [`tools/sprite_util/`](../tools/sprite_util/), its own package in a Cargo
+> workspace, split along its subjects into sixteen small files with the tests
+> riding beside what they pin, and this document is history except for one
+> open question: the second tool that will decide the fate of the shared
+> `ron_view` row view.
 
 ## The principle
 
@@ -92,6 +93,18 @@ The first step is the boring one and it needs no decisions:
 3. Then, and only then, split the file along the seams that measurement finds,
    because a module boundary inside a tool is a normal edit while a module
    boundary across the engine/tool line is a decision about API.
+   **Done.** The seams were already in the file — its own banner comments had
+   been naming the subjects for its whole life — and the split followed them:
+   `theme`, `layout`, `world`, `art`, `strip`, `journal`, `band`, `spots`,
+   `sidecar`, `ron_panels`, `map`, `clip`, `desk`, `actions`, plus `process`
+   (the frame's handlers) and `draw` (its painters), with `main.rs` kept for
+   the crate doc, the arguments and the entry point. Tests moved with the
+   subject they pin, each module carrying its own `mod tests`. One real
+   change came with the motion: the frame's shared geometry — canvas, pan,
+   zoom, pointer, strip view, tileset panel state — became one `FrameState`
+   record the handlers fill once and every painter reads, because eight
+   painter functions had wanted fourteen threaded arguments between them.
+   Pure code motion otherwise: the same 81 tests, the same pixels.
 
 **The step is not as boring as it looks, and this is the decision inside it.**
 The tool parses its arguments with `clap` and installs `env_logger`, and both are

@@ -838,12 +838,12 @@ button clicks, a checkbox toggles, a slider's value changes.
   panel **claims its whole area** (body included): presses land on the
   panel, never on a widget or the game behind it, and `Ui::hovering()` —
   the pointer over any widget or panel — lets a raw-input game tell UI
-  clicks from scene clicks (see `tools/sprite_util/main.rs`). Two accessors
+  clicks from scene clicks (see `tools/sprite_util/process.rs`). Two accessors
   reach a panel from outside: `Ui::panel_position(title)` reads where it
   sits, `Ui::panel_rect(title)` reports the plate as it was PAINTED last
   call (the height the drawing used — content laid over a plate must
   trust this, not its own same-frame request, or it floats a frame
-  ahead of the pixels; see `tools/sprite_util/main.rs`), and
+  ahead of the pixels; see `tools/sprite_util/process.rs`), and
   `Ui::set_folded(title, folded)` is the program's hand on the title-bar
   click — code that closes or restores a panel uses it so a reopened
   title never greets you folded.
@@ -859,7 +859,7 @@ button clicks, a checkbox toggles, a slider's value changes.
   one-frame model) or `Stretch(w)` (a weighted share of the leftover) — and
   an [`Align`] (`Left`/`Center`/`Right`) honored by text. `slider_track` and
   `readout` are the label-less pieces for a `[label | track | value]` row
-  (see `tools/sprite_util/main.rs`); `id` scopes the retained auto widths so
+  (see `tools/sprite_util/process.rs`); `id` scopes the retained auto widths so
   two tables in one panel keep their own columns.
 - **Tree view** (`tree.rs`) is the same widget family's two-axis-scrolling
   list: `TreeLine` rows (key, value, a few flags, a value color) in a
@@ -888,8 +888,8 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 Baseline: **346 lib tests + 3 integration tests (`tests/`) + 7 doctests**
 passing, `cargo build` (lib + the `sprite_util` tool) clean. The tool's 81
-tests — 68 that moved with `examples/sprite_util.rs` to
-`tools/sprite_util/main.rs`, the asset-path guard, the three
+tests — 68 that moved with `examples/sprite_util.rs`, each living in the
+subject module it pins, the asset-path guard, the three
 authored-shapes overlay tests, and the nine that pin the status band's
 log (capture by change, the cap, the window and thumb arithmetic, the
 dock's geometry) — ride along in the same
@@ -996,7 +996,18 @@ package — run with `cargo run -p sprite_util`, tested by plain `cargo test`
 (see [`docs/tooling.md`](docs/tooling.md)). Its `ron_view` row flattener is
 still the one in `examples/ron_view/view.rs`, path-included across the
 directory line: a known debt until a second tool proves the view is shared
-tool surface. The `sprite_util` row below stays as the description.
+tool surface. The tool's one `main.rs` became a crate of its own subjects:
+`theme` (colors, z-orders, pool ids), `layout` (zoom, pan, selection),
+`world` (sprites, the bench, the undo history), `art` (PNG codec, asset
+paths), `strip` (the slot strip), `journal` (the status band's log),
+`band` (the tileset rack), `spots` and `sidecar` and `ron_panels` (the
+positions, the `.ron` files, their foldable trees), `map` and `clip` (the
+tile-map desk and the clipboard block), `desk` (the `Demo` state and its
+frame sync), `draw` and `process` (the frame: painters read one
+`FrameState` geometry record the handlers fill once), and `actions` —
+where a planned verb is born: a menu line and its method, side by side.
+Each module's `mod tests` holds the tests that pin its subject. The
+`sprite_util` row below stays as the description.
 
 | example      | shows                                                              |
 |--------------|--------------------------------------------------------------------|
@@ -1232,7 +1243,7 @@ cargo build --examples   # expect EXIT 0; no longer covers the tool
 cargo build -p sprite_util   # expect EXIT 0; the tool on its own, now in
                                # tools/sprite_util/ as its own package
 cargo test               # expect 346 lib + 3 integration + 7 doctests
-                           # + 72 sprite_util (the tool's unit tests run
+                           # + 81 sprite_util (the tool's unit tests run
                            # here now: a binary target is tested by default)
 cargo test --examples    # expect 126 passed (unit tests inside the examples,
                            # centipede's rig included; ron_view/view.rs compiles
