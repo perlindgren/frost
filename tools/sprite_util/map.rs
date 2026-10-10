@@ -1,19 +1,62 @@
 //! The tile-map desk: layers of cells, the brush and its
 //! dressing, erasing and the ghost.
 // The subjects this one reads.
+use crate::art::asset_name;
 use crate::clip::*;
 use crate::layout::*;
 use crate::world::*;
 
+/// A tileset's identity: the file's name and the cut made into it.
+/// The same PNG cut two ways is two tilesets — the same cell code
+/// carries different pictures under each — while name and cut alike is
+/// one tileset, whichever slot it sits on. By name (the file stem, not
+/// the path) because the identity must outlive slots, folders, and the
+/// filesystem itself: a shipped app names its embedded bytes exactly
+/// so, and a path would die at the binary's edge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TilesetRef {
+    pub(crate) name: String,
+    pub(crate) rows: usize,
+    pub(crate) cols: usize,
+}
+
+impl TilesetRef {
+    /// The identity of a bench sprite: its name, and the atlas
+    /// declaration as the cut — a sprite with no declaration is one
+    /// whole cell, the cut every unpainted sprite secretly has.
+    pub(crate) fn of(sp: &Sprite) -> Self {
+        let (rows, cols) = sp.atlas.unwrap_or((1, 1));
+        Self {
+            name: asset_name(&sp.path),
+            rows,
+            cols,
+        }
+    }
+
+    /// The bench sprite wearing this tileset — same name, same cut —
+    /// or `None` while it sits off the bench. The cut is part of the
+    /// match because one file cut two ways dresses two ways: name
+    /// alone would let the first same-path slot win, which is the
+    /// exact bug this type exists to kill.
+    pub(crate) fn sprite<'a>(&self, sprites: &'a [Sprite]) -> Option<&'a Sprite> {
+        sprites.iter().find(|sp| {
+            asset_name(&sp.path) == self.name
+                && sp.atlas.unwrap_or((1, 1)) == (self.rows, self.cols)
+        })
+    }
+}
+
 /// One tileset's worth of painted cells, anchored on the map's origin:
 /// a grid of atlas-cell indices, `EMPTY_CELL` where nothing stands.
 /// A multi-tileset picture is several of these layers, each naming its
-/// tileset by path — the desk paints one, the canvas shows them all.
+/// tileset by name and cut — the desk paints one, the canvas shows
+/// them all.
 #[derive(Clone, PartialEq)]
 pub(crate) struct MapLayer {
-    /// The PNG the cells cut their pictures from. By path, because
-    /// slots shift when sprites close and a map outlives that shuffle.
-    pub(crate) tileset: std::path::PathBuf,
+    /// The tileset the cells cut their pictures from. By identity,
+    /// because slots shift when sprites close and a map outlives that
+    /// shuffle — and the files it names outlive the folders too.
+    pub(crate) tileset: TilesetRef,
     pub(crate) cols: usize,
     pub(crate) rows: usize,
     pub(crate) cells: Vec<u32>,
@@ -45,7 +88,7 @@ pub(crate) const GHOST_Z: f32 = 2.6;
 pub(crate) const GHOST_A: f32 = 0.55;
 
 impl MapLayer {
-    pub(crate) fn blank(tileset: std::path::PathBuf, cols: usize, rows: usize) -> Self {
+    pub(crate) fn blank(tileset: TilesetRef, cols: usize, rows: usize) -> Self {
         Self {
             tileset,
             cols,
@@ -165,9 +208,9 @@ pub(crate) fn grid_cell(mx: f32, my: f32, tw: f32, th: f32) -> (i32, i32) {
 
 /// The bounds the brush reaches with this tileset: its own layer if
 /// one exists, else the map a first click would create.
-pub(crate) fn paint_bounds(maps: &[MapLayer], tileset: &std::path::Path) -> (usize, usize) {
+pub(crate) fn paint_bounds(maps: &[MapLayer], tileset: &TilesetRef) -> (usize, usize) {
     maps.iter()
-        .find(|m| m.tileset == tileset)
+        .find(|m| &m.tileset == tileset)
         .map_or((MAP_COLS, MAP_ROWS), |m| (m.cols, m.rows))
 }
 
@@ -222,16 +265,16 @@ pub(crate) fn desk_cell(
 
 pub(crate) fn paint_at(
     maps: &mut Vec<MapLayer>,
-    tileset: &std::path::Path,
+    tileset: &TilesetRef,
     cell: usize,
     tfm: u8,
     col: i32,
     row: i32,
 ) -> bool {
-    let i = match maps.iter().position(|m| m.tileset == tileset) {
+    let i = match maps.iter().position(|m| &m.tileset == tileset) {
         Some(i) => i,
         None => {
-            maps.push(MapLayer::blank(tileset.to_path_buf(), MAP_COLS, MAP_ROWS));
+            maps.push(MapLayer::blank(tileset.clone(), MAP_COLS, MAP_ROWS));
             maps.len() - 1
         }
     };
@@ -472,7 +515,7 @@ mod the_block_dresses_like_the_picture {
     /// tiles mixed, with a gap and three different tiles.
     fn demo_clip() -> Clip {
         Clip {
-            tileset: std::path::PathBuf::from("wild.png"),
+            tileset: tref("wild"),
             cols: 3,
             rows: 2,
             cells: vec![0, 1, 2, 3, 1, EMPTY_CELL],
@@ -517,9 +560,60 @@ mod the_block_dresses_like_the_picture {
         );
     }
 }
+/// A layer fixture's tileset: the stub sprites' name, cut 2 x 2 — the
+/// cut the `tileset` fixture declares.
+#[cfg(test)]
+pub(crate) fn tref(name: &str) -> TilesetRef {
+    TilesetRef {
+        name: name.to_string(),
+        rows: 2,
+        cols: 2,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One PNG, cut two ways, is two tilesets: the layers must find
+    /// their own dresser even when the older identity — path alone —
+    /// would have dressed both from whichever slot came first. The
+    /// order below is that bug's trap, left in on purpose.
+    #[test]
+    fn one_file_cut_two_ways_stays_two_tilesets() {
+        let square = tileset("same.png"); // the fixture's 2 x 2 cut
+        let four = TilesetRef::of(&square);
+        let mut wide = tileset("same.png");
+        wide.atlas = Some((1, 4));
+        let sprites = vec![wide, square];
+        assert_eq!(
+            four,
+            TilesetRef {
+                name: "same".into(),
+                rows: 2,
+                cols: 2
+            }
+        );
+        assert_ne!(four, TilesetRef::of(&sprites[0]));
+        assert_eq!(four.sprite(&sprites).and_then(|sp| sp.atlas), Some((2, 2)));
+        let long = TilesetRef {
+            name: "same".into(),
+            rows: 1,
+            cols: 4,
+        };
+        assert_eq!(long.sprite(&sprites).and_then(|sp| sp.atlas), Some((1, 4)));
+        // And a cut nothing wears is nobody's sprite: it waits, as a
+        // closed tileset's layer waits, for its source to open.
+        assert!(
+            TilesetRef {
+                name: "same".into(),
+                rows: 4,
+                cols: 1
+            }
+            .sprite(&sprites)
+            .is_none()
+        );
+    }
 
     #[test]
     fn the_transform_is_the_maps_memory() {
@@ -527,7 +621,7 @@ mod tests {
         // tile, unturned, is no change; the same tile turned is one
         // the road remembers; and the eraser takes the bits down
         // with the tile.
-        let mut m = MapLayer::blank(std::path::PathBuf::from("t.png"), 4, 2);
+        let mut m = MapLayer::blank(tref("t"), 4, 2);
         // The cell at grid (1, 0) — and the storage slot its centered
         // coordinates land in.
         let slot = m.at(1, 0).expect("inside the map");
@@ -625,7 +719,7 @@ mod tests {
         // The store decodes onto the tiles: bits out, flags in — and
         // the size stays as authored, because the renderer, not the
         // store, is what turns the extents.
-        let mut m = MapLayer::blank(std::path::PathBuf::from("t.png"), 2, 2);
+        let mut m = MapLayer::blank(tref("t"), 2, 2);
         m.set_cell(-1, -1, 0, 1 | (3 << 2)); // flip x, three quarters cw
         let sp = tileset("t.png");
         let shape = m.shape(Some(&sp)).expect("one painted cell draws");
@@ -657,7 +751,7 @@ mod tests {
         // clip_turn's counterclockwise arm; the drawn picture is the
         // oracle, so this test is the contract.
         let mut clip = Clip {
-            tileset: std::path::PathBuf::from("basic_tiles.png"),
+            tileset: tref("basic_tiles"),
             cols: 2,
             rows: 1,
             cells: vec![2, 3],
@@ -715,7 +809,7 @@ mod tests {
                 let d = dress_gesture(shift, ctrl, alt);
                 let brush = dress_brush(code, d);
                 let mut clip = Clip {
-                    tileset: std::path::PathBuf::from("t.png"),
+                    tileset: tref("t"),
                     cols: 1,
                     rows: 1,
                     cells: vec![1],
@@ -735,7 +829,7 @@ mod tests {
         // can never show a cell the drop will skip — least of all
         // where the block hangs past a map edge.
         let clip = Clip {
-            tileset: std::path::PathBuf::from("wild.png"),
+            tileset: tref("wild"),
             cols: 3,
             rows: 2,
             cells: vec![0, 1, 2, 3, 1, EMPTY_CELL],
@@ -763,7 +857,7 @@ mod tests {
             fits > 0 && fits < rim.len(),
             "the rim really clips some cells"
         );
-        let mut maps = vec![MapLayer::blank(std::path::PathBuf::from("wild.png"), 8, 8)];
+        let mut maps = vec![MapLayer::blank(tref("wild"), 8, 8)];
         let n = clip_paste(&mut maps, &clip, 3, 0) as usize;
         assert_eq!(n, fits, "the promise and the drop agree at the edge");
         let written = (-4..4)
@@ -791,8 +885,8 @@ mod tests {
     #[test]
     fn the_selection_erase_sweeps_every_layer() {
         let mut maps = vec![
-            MapLayer::blank(std::path::PathBuf::from("a.png"), 4, 4),
-            MapLayer::blank(std::path::PathBuf::from("b.png"), 4, 4),
+            MapLayer::blank(tref("a"), 4, 4),
+            MapLayer::blank(tref("b"), 4, 4),
         ];
         maps[0].set_cell(0, 0, 7, 1);
         maps[1].set_cell(1, 1, 9, 0);

@@ -10,7 +10,7 @@ use crate::map::*;
 /// and pastes as one picture — a block is a brush made of tiles.
 #[derive(Clone)]
 pub(crate) struct Clip {
-    pub(crate) tileset: std::path::PathBuf,
+    pub(crate) tileset: TilesetRef,
     pub(crate) cols: usize,
     pub(crate) rows: usize,
     /// Row-major, top line first; `EMPTY_CELL` marks a gap.
@@ -22,13 +22,13 @@ pub(crate) struct Clip {
 /// `EMPTY_CELL` wherever its layer was empty or off the edge.
 pub(crate) fn clip_take(
     maps: &[MapLayer],
-    tileset: &std::path::Path,
+    tileset: &TilesetRef,
     c0: i32,
     r0: i32,
     cols: usize,
     rows: usize,
 ) -> Clip {
-    let layer = maps.iter().find(|m| m.tileset == tileset);
+    let layer = maps.iter().find(|m| &m.tileset == tileset);
     let mut cells = Vec::with_capacity(cols * rows);
     let mut tfms = Vec::with_capacity(cols * rows);
     for r in 0..rows {
@@ -50,7 +50,7 @@ pub(crate) fn clip_take(
         }
     }
     Clip {
-        tileset: tileset.to_path_buf(),
+        tileset: tileset.clone(),
         cols,
         rows,
         cells,
@@ -244,7 +244,7 @@ pub(crate) fn clip_paste(maps: &mut Vec<MapLayer>, clip: &Clip, col: i32, row: i
 #[cfg(test)]
 pub(crate) fn block(rows: usize, cols: usize, cells: &[u32], tfms: &[u8]) -> Clip {
     Clip {
-        tileset: std::path::PathBuf::from("x.png"),
+        tileset: tref("x"),
         cols,
         rows,
         cells: cells.to_vec(),
@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn the_paste_anchors_the_block_on_the_cursor() {
-        let mut maps = vec![MapLayer::blank(std::path::PathBuf::from("x.png"), 4, 4)];
+        let mut maps = vec![MapLayer::blank(tref("x"), 4, 4)];
         let c = block(2, 2, &[5, 5, 5, EMPTY_CELL], &[0, 0, 0, 0]);
         // Two across, two deep, one a gap: three cells land, the
         // anchor cell riding the cursor (gaps skip, never erase).
@@ -343,32 +343,32 @@ mod tests {
     #[test]
     fn the_selection_copy_reads_one_tilesets_view() {
         let mut maps = vec![
-            MapLayer::blank(std::path::PathBuf::from("a.png"), 4, 4),
-            MapLayer::blank(std::path::PathBuf::from("b.png"), 4, 4),
+            MapLayer::blank(tref("a"), 4, 4),
+            MapLayer::blank(tref("b"), 4, 4),
         ];
         maps[0].set_cell(1, 1, 7, 5);
         maps[1].set_cell(1, 1, 9, 0);
-        let c = clip_take(&maps, std::path::Path::new("a.png"), 0, 0, 3, 2);
+        let c = clip_take(&maps, &tref("a"), 0, 0, 3, 2);
         assert_eq!((c.rows, c.cols), (2, 3));
         // One tileset's view of the map: its own cell, not the layer
         // painted above it; EMPTY on gaps and past the edge.
         assert_eq!(c.cells[1 * 3 + 1], 7);
         assert_eq!(c.tfms[1 * 3 + 1], 5);
         assert_eq!(c.cells[0], EMPTY_CELL);
-        let d = clip_take(&maps, std::path::Path::new("missing.png"), 0, 0, 2, 2);
+        let d = clip_take(&maps, &tref("missing"), 0, 0, 2, 2);
         assert!(d.cells.iter().all(|c| *c == EMPTY_CELL));
     }
 
     #[test]
     fn a_move_cuts_the_frame_and_the_frame_travels() {
         let clip = Clip {
-            tileset: std::path::PathBuf::from("wild.png"),
+            tileset: tref("wild"),
             cols: 3,
             rows: 2,
             cells: vec![1, 2, 3, 4, 5, EMPTY_CELL],
             tfms: vec![0, 0, 0, 0, 0, 0],
         };
-        let mut maps = vec![MapLayer::blank(std::path::PathBuf::from("wild.png"), 8, 8)];
+        let mut maps = vec![MapLayer::blank(tref("wild"), 8, 8)];
         for (c, r, cell) in [(-1, -1, 1), (0, -1, 2), (1, -1, 3), (-1, 0, 4), (0, 0, 5)] {
             maps[0].set_cell(c, r, cell, 0);
         }
@@ -392,13 +392,13 @@ mod tests {
     #[test]
     fn a_move_without_a_frame_is_a_plain_drop() {
         let clip = Clip {
-            tileset: std::path::PathBuf::from("wild.png"),
+            tileset: tref("wild"),
             cols: 3,
             rows: 2,
             cells: vec![1, 2, 3, 4, 5, EMPTY_CELL],
             tfms: vec![0, 0, 0, 0, 0, 0],
         };
-        let mut maps = vec![MapLayer::blank(std::path::PathBuf::from("wild.png"), 8, 8)];
+        let mut maps = vec![MapLayer::blank(tref("wild"), 8, 8)];
         let (n, erased, sel) = clip_move(&mut maps, &clip, None, 0, 0);
         assert_eq!((n, erased), (5, false), "nothing to cut, all to drop");
         assert_eq!(

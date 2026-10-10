@@ -407,7 +407,7 @@ impl Demo {
                 _ if tile_view => self
                     .maps
                     .get(i)
-                    .and_then(|m| m.shape(self.sprites.iter().find(|sp| sp.path == m.tileset))),
+                    .and_then(|m| m.shape(m.tileset.sprite(&self.sprites))),
                 Some(f) => f.layers.get(i).map(|l| l.shape.clone()),
                 None if i == 0 => self.active().map(|sp| sp.shape.clone()),
                 None => None,

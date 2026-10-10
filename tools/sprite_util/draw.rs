@@ -496,7 +496,9 @@ impl Demo {
                                 && !over_band
                                 && !self.ui.hovering()
                                 && in_work_area(p, f.w, f.h)
-                                && self.active().is_some_and(|sp| sp.path == clip.tileset) =>
+                                && self
+                                    .active()
+                                    .is_some_and(|sp| TilesetRef::of(sp) == clip.tileset) =>
                         {
                             let (rows, cols) =
                                 self.active().and_then(|sp| sp.atlas).unwrap_or((1, 1));
@@ -581,7 +583,7 @@ impl Demo {
                             // would create. Past its edge, no ghost.
                             let (bc, br) = self
                                 .active()
-                                .map_or((0, 0), |sp| paint_bounds(&self.maps, &sp.path));
+                                .map_or((0, 0), |sp| paint_bounds(&self.maps, &TilesetRef::of(sp)));
                             if cell_in(col, row, bc, br) {
                                 let center = [
                                     (col as f32 + 0.5) * tw * self.zoom + f.view[0],

@@ -108,9 +108,11 @@ scene-editing is the coupling this refuses.
 
 Status of each rung, updated as work lands. `[ ]` = claim, `[x]` = fact.
 
-- [ ] **Asset names** — `TilesetRef { name, rows, cols }`; the two-same-file,
-      two-grid dress test passes (it fails today — see ARCHITECTURE,
-      Direction).
+- [x] **Asset names** — `TilesetRef { name, rows, cols }` landed;
+      `one_file_cut_two_ways_stays_two_tilesets` pins the dress (the
+      path-only identity it replaced dressed both cuts from the first
+      same-path slot — the bug the test's slot order keeps as a trap).
+      Checked 2026-10-10.
 - [ ] **Map file** — `.map.ron` codec, sparse cells, round-trip tests;
       `Save map` / `Open map` born in `actions.rs`.
 - [ ] **The table** — house pattern: `const ASSETS: &[(&str, &[u8])]` of

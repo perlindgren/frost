@@ -1245,17 +1245,19 @@ of `include_bytes!` entries) — is the **asset name**: the file stem. The
 house already treats the stem as the key (`<stem>.ron` rides `<stem>.png`);
 what was sloppy was carrying it around inside a path.
 
-**Two tilesets can share a sprite — and the desk doesn't see it yet (a
-live bug).** The atlas grid is per-loaded-instance state, so the same PNG
-can sit in two slots cut two ways (1×4 here, 2×8 there). `MapLayer` stamps
-provenance by path alone and the tile desk dresses with
-`sprites.iter().find(|sp| sp.path == m.tileset)` — first match wins — so a
-layer painted against one grid gets dressed from a same-path slot with the
-other. The fix names the identity properly: `TilesetRef { name, rows, cols
-}` — file plus the cut made into it — which fully determines a cell's
-picture and code, and also gives a map its save format's meaning. A test
-that two same-file, different-grid slots dress independently fails today;
-that is the point of writing it.
+**Two tilesets can share a sprite — and the desk used to be blind to it
+(fixed 2026-10-10).** The atlas grid is per-loaded-instance state, so the
+same PNG can sit in two slots cut two ways (1×4 here, 2×8 there).
+`MapLayer` stamped provenance by path alone and the tile desk dressed with
+first-match — so a layer painted against one grid got dressed from a
+same-path slot with the other. The identity is now what it always
+meant: `TilesetRef { name, rows, cols }` — the file's stem plus the cut
+made into it, which fully determines a cell's picture and code — and the
+map's save format inherits that meaning from the field it stamps.
+`one_file_cut_two_ways_stays_two_tilesets` pins it, and the storage
+language it introduced (`asset_name` in `art.rs`: a path says where a
+file was found, a name says what it is) is the first rung of the name
+architecture above.
 
 **Maps get a file: `.map.ron`, names throughout.** The tile desk paints
 `Vec<MapLayer>` and nothing persists it — an evening of tiling evaporates

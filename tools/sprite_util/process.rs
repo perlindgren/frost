@@ -1194,12 +1194,12 @@ impl frost::Process for Demo {
             let brush = self.active().map(|sp| {
                 let (arows, acols) = sp.atlas.unwrap_or((1, 1));
                 (
-                    sp.path.clone(),
+                    TilesetRef::of(sp),
                     sp.current.width() as f32 / acols.max(1) as f32,
                     sp.current.height() as f32 / arows.max(1) as f32,
                 )
             });
-            if let Some((path, tw, th)) = brush {
+            if let Some((cut, tw, th)) = brush {
                 let mx = (p[0] - view[0]) / self.zoom;
                 let my = (p[1] - view[1]) / self.zoom;
                 let (col, row) = grid_cell(mx, my, tw, th);
@@ -1210,7 +1210,7 @@ impl frost::Process for Demo {
                 let changed = if erase {
                     erase_at(&mut self.maps, col, row)
                 } else if let Some(cell) = self.picked_cell {
-                    paint_at(&mut self.maps, &path, cell, self.brush, col, row)
+                    paint_at(&mut self.maps, &cut, cell, self.brush, col, row)
                 } else {
                     false
                 };
@@ -1247,12 +1247,12 @@ impl frost::Process for Demo {
                 }
             } else {
                 self.sel_drag = None;
-                let path = self.active().map(|sp| sp.path.clone());
-                match (self.sel, path) {
-                    (Some([ca, ra, cb, rb]), Some(path)) if tile_view => {
+                let cut = self.active().map(TilesetRef::of);
+                match (self.sel, cut) {
+                    (Some([ca, ra, cb, rb]), Some(cut)) if tile_view => {
                         let mut clip = clip_take(
                             &self.maps,
-                            &path,
+                            &cut,
                             ca,
                             ra,
                             (cb - ca + 1) as usize,

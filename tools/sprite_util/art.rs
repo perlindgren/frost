@@ -113,6 +113,16 @@ pub(crate) fn repo_root() -> std::path::PathBuf {
         .to_path_buf()
 }
 
+/// An asset's name: the file stem — the key that resolves in every
+/// world a frost app runs in (repo, loose beside the binary, embedded
+/// in a single one). Where a path says where a file was found, a name
+/// says what it is; storage speaks names.
+pub(crate) fn asset_name(path: &std::path::Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 /// One asset of the repository — `assets/...`, relative to the repository
 /// root — as an absolute path. Every runtime asset load goes through
 /// here, so the root is pinned in exactly one place.
