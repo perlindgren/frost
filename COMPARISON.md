@@ -130,8 +130,14 @@ Status of each rung, updated as work lands. `[ ]` = claim, `[x]` = fact.
       at 10:27:35 answered in the log the same second, window up,
       game state intact. Refusals keep the last honest config and
       name themselves. Checked 2026-10-10.
-- [ ] **Media tier** — textures/audio/fonts: mtime → decode → re-upload →
-      rebind by name, mid-run, state intact.
+- [x] **Media tier** — landed in immortal's `rebind`, engine additions
+      zero (the texture cache had keyed on `(pointer, generation)`
+      from the start — new pixels were always a new texture; only
+      noticing was missing). Proven live in one second at 08:30:42:
+      grass redressed by node, `Bug1a` re-cut by field (the swarm
+      re-reads frames every frame, so a field swap *is* the rebind),
+      `Spray` re-decoded by hand, `Leofont` re-typeset as derived
+      text. Game state untouched throughout. Checked 2026-10-10.
 - [ ] **Shaders** — `.wgsl` watched, pipeline rebuilt at runtime
       (`create_render_pipeline` is already a runtime call; naga is
       already a dependency). The rung where frost embarrasses the big

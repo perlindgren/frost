@@ -1330,6 +1330,20 @@ equivalent reloads scripts; the numbers that make the game *play*
 the way it plays live in its scene files, behind an editor. Here the
 crown jewel is a file and a watch.
 
+The media tier climbed next, and it asked nothing of the engine:
+the texture cache has keyed textures by `(pointer, generation)`
+since the first frame, so new bytes were always a new texture
+waiting to be noticed — only the sense was missing, and `Watch` was
+built for it. immortal's `rebind` is the pattern: a table of watched
+names, and one arm per name because the *wearer* is what an engine
+cannot know. The arms differ only in where the name is worn — the
+grass on a node shaped once, a walk frame in a field the swarm
+re-reads every frame (so a field swap *is* the rebind), a sound
+heard from a field on the next press, and the overlay's text
+derived from its font and so derived anew. A file that stops
+decoding leaves the old asset worn; the log speaks; the garden does
+not blink. A shipped world watches paths that never answer.
+
 **And one guard the name table makes possible:** a small reader (say
 `frost::map::tileset_names`) lists the names a map file asks for, so an
 app's own test can assert every one of them sits in its `ASSETS` table —

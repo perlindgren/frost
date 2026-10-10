@@ -560,6 +560,19 @@ const PIP: frost::Color = frost::Color {
 /// times that span in real time — the slices, the flowers, and the
 /// tomatoes alike — and the water reserve drains with the growth, over
 /// `GROW_SLOWDOWN * DRAIN_TIME` real seconds.
+/// The watched media: the store's name for each, and its loose
+/// path. A name joins the list when `rebind` learns where the
+/// garden wears it — the list is the tier's reach. Development
+/// edits these files and the running garden redresses; a shipped
+/// world watches paths that never answer, and the table's entries
+/// stand for the life of the process.
+const MEDIA: &[(&str, &str)] = &[
+    ("grass", "assets/sprites/grass.png"),
+    ("Bug1a", "assets/sprites/Bug1a.png"),
+    ("Spray", "assets/audio/Spray.wav"),
+    ("Leofont-Regular", "assets/fonts/Leofont-Regular.ttf"),
+];
+
 const GROW_SLOWDOWN: f32 = 3.0;
 
 /// The time a plant's water reserve takes to drain from full (1.0) to dry
@@ -752,6 +765,9 @@ struct Demo {
     /// The sense on the data file: one `stat` per frame, a change
     /// once per rewrite.
     watch: frost::Watch,
+    /// The watched media, name and sense together: a changed file
+    /// re-decodes and re-wears its name through `rebind`.
+    media: Vec<(&'static str, frost::Watch)>,
     /// The cursor's last reported position; the tool sticks here while the
     /// cursor is outside the window.
     mouse: [f32; 2],
@@ -1027,6 +1043,19 @@ impl frost::Process for Demo {
             self.reread_config();
         }
 
+        // The media tier's same question, asked of every watched
+        // name. Names first, delivery after: the borrow of the
+        // list stays shallow, and `rebind` owns the tree.
+        let mut hot: Vec<&'static str> = Vec::new();
+        for (name, w) in &mut self.media {
+            if w.changed() {
+                hot.push(name);
+            }
+        }
+        for name in hot {
+            self.rebind(name, ctx);
+        }
+
         // The diagnostics overlay steps first, before the demo's own clock:
         // its first call appends its own nodes to the scene's root, and
         // every later call updates those same nodes in place.
@@ -1143,6 +1172,73 @@ impl Demo {
     /// bare: no plant planted, all six growth clocks at zero, all six
     /// water reserves full, and the basket still holding its starting
     /// tomato, seeded on the first frame once the basket's fit is known.
+    /// Re-decode a watched asset and re-wear it where the garden
+    /// wears its name. The arms differ only in where the name is
+    /// worn: the grass lives on a node shaped once, so it is
+    /// rebound there; the swarm re-reads the walk frames from the
+    /// fields each frame, so a field swap IS the rebind; the spray
+    /// hiss is heard from the field on the next press; and the
+    /// overlay's text is derived from the font, so it is derived
+    /// anew. A file that no longer decodes leaves the old asset
+    /// worn and the log speaks — the garden never blinks over a
+    /// half-saved file.
+    fn rebind(&mut self, name: &str, ctx: &mut frost::Context) {
+        let Some(bytes) = self.store.bytes(name) else {
+            log::warn!("media: the store answers nothing for '{name}' — the old asset stays worn");
+            return;
+        };
+        match name {
+            "grass" => match frost::Shape::sprite_bytes(&bytes) {
+                Ok(shape) => {
+                    let (w, h) = match &shape {
+                        frost::Shape::Sprite { width, height, .. } => (*width, *height),
+                        _ => (0, 0),
+                    };
+                    ctx.scene().root.children[CHILD_GRASS].shape = Some(shape);
+                    log::info!("media: '{name}' redressed the field at {w} x {h}");
+                }
+                Err(err) => {
+                    log::warn!("media: '{name}' no longer decodes ({err}) — the old field stays")
+                }
+            },
+            "Bug1a" => match frost::Shape::sprite_bytes(&bytes) {
+                Ok(shape) => {
+                    self.bug1 = shape;
+                    log::info!("media: '{name}' re-cut; the swarm wears it next frame");
+                }
+                Err(err) => {
+                    log::warn!("media: '{name}' no longer decodes ({err}) — the old walk stays")
+                }
+            },
+            "Spray" => match frost::Sound::load_bytes(&bytes) {
+                Ok(sound) => {
+                    self.sounds.spray = sound;
+                    log::info!("media: '{name}' re-decoded; the next press hisses new");
+                }
+                Err(err) => log::warn!(
+                    "media: '{name}' no longer decodes ({err}) — the old hiss stays loaded"
+                ),
+            },
+            "Leofont-Regular" => {
+                // The font's wearers are derived: the overlay's two
+                // text shapes, re-typeset from the new bytes. The
+                // diagnostics font rides its own boot and is not on
+                // the watched list — honest reach, same door.
+                let (Ok(title), Ok(label)) = (
+                    frost::Shape::text_bytes(&bytes, "Game Over", OVERLAY_TITLE_SIZE),
+                    frost::Shape::text_bytes(&bytes, "Play", PLAY_LABEL_SIZE),
+                ) else {
+                    log::warn!("media: '{name}' no longer typesets — the old faces stay");
+                    return;
+                };
+                self.game_over = title;
+                self.play_label = label;
+                log::info!("media: '{name}' re-cut; the overlay re-types next show");
+            }
+            _ => log::info!("media: '{name}' changed; nothing wears it yet"),
+        }
+    }
+
     /// Rebuild the config from the store's answer — the watched
     /// file's new root, or the table's entry when nothing loose
     /// speaks — and say so: the log is the proof the tier lives.
@@ -1159,6 +1255,10 @@ impl Demo {
         let store = assets.store.clone();
         let watch = frost::Watch::new(GAMEPLAY_FILE);
         let config = Config::from_store(&store);
+        let media = MEDIA
+            .iter()
+            .map(|(name, path)| (*name, frost::Watch::new(path)))
+            .collect();
 
         // The tools at rest in the items panel's slots, mirroring the
         // panel's seeded sprites: [SEEDED_SLOTS], the one table the scene's
@@ -1212,6 +1312,7 @@ impl Demo {
             config,
             store,
             watch,
+            media,
             mouse: [0.0, 0.0],
             active: None,
             held: None,
