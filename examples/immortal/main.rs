@@ -573,6 +573,12 @@ const MEDIA: &[(&str, &str)] = &[
     ("Leofont-Regular", "assets/fonts/Leofont-Regular.ttf"),
 ];
 
+/// The folder where tools look for running applications: cards are
+/// the ephemeral half, live files the told half (see
+/// `frost::Teller` — ARCHITECTURE's telling). A tool enumerates the
+/// folder the way a debugger lists processes.
+const TELL_DIR: &str = "target/frost/live";
+
 const GROW_SLOWDOWN: f32 = 3.0;
 
 /// The time a plant's water reserve takes to drain from full (1.0) to dry
@@ -768,6 +774,16 @@ struct Demo {
     /// The watched media, name and sense together: a changed file
     /// re-decodes and re-wears its name through `rebind`.
     media: Vec<(&'static str, frost::Watch)>,
+    /// The telling: the card in the folder for tools to find and
+    /// the live file that rev-counts this garden's being. An idle
+    /// garden says nothing; a garden that changes says it once.
+    teller: frost::Teller,
+    /// The cheap discrete key the being hangs from: which beds are
+    /// planted, whether the garden was ever planted, whether it is
+    /// over, and the pace it reads. Every field of the snapshot
+    /// moves this key and nothing else does — the dirty check is
+    /// derived, so nothing can forget to mark it.
+    being_key: (u32, bool, bool, Config),
     /// The cursor's last reported position; the tool sticks here while the
     /// cursor is outside the window.
     mouse: [f32; 2],
@@ -1160,6 +1176,17 @@ impl frost::Process for Demo {
         // And the time-scale field, above the veil in tree order but under
         // it by band: the box mid top, the label the live verdict.
         self.layout_speed_field(ctx, h);
+
+        // The telling's flush, at frame end: a frame that plants,
+        // withers, and re-reads its config tells once, not three
+        // times — and the key says whether even that once is a
+        // word or silence.
+        let beat = self.beat();
+        if beat != self.being_key {
+            self.being_key = beat;
+            let being = self.state_of_affairs();
+            self.teller.publish(&being);
+        }
     }
 }
 
@@ -1172,6 +1199,81 @@ impl Demo {
     /// bare: no plant planted, all six growth clocks at zero, all six
     /// water reserves full, and the basket still holding its starting
     /// tomato, seeded on the first frame once the basket's fit is known.
+    /// The cheap key the being hangs from. Everything the snapshot
+    /// holds moves this tuple, and nothing outside the snapshot
+    /// touches it — which is why no mutation site anywhere needs to
+    /// remember to tell: the check is the being, taken cheaply.
+    fn beat(&self) -> (u32, bool, bool, Config) {
+        let mut beds = 0u32;
+        for (i, plant) in self.plants.iter().enumerate() {
+            if plant.planted {
+                beds |= 1 << i;
+            }
+        }
+        (beds, self.ever_planted, self.over, self.config)
+    }
+
+    /// The app's being in its own words — the ARCHITECTURE telling:
+    /// one hand-written function, no reflection, zero cost where
+    /// absent. What the garden *is*, not what it is doing: the
+    /// pace it reads, the files it watches, the names it ships,
+    /// the beds it holds. Continuous values — clocks, tweens,
+    /// positions — have no transitions and do not join the telling.
+    fn state_of_affairs(&self) -> frost::ron::Val {
+        frost::ron::record_named(&[
+            ("told", frost::ron::text("immortal")),
+            (
+                "config",
+                frost::ron::record_named(&[
+                    (
+                        "grow_slowdown",
+                        frost::ron::number(f64::from(self.config.grow_slowdown)),
+                    ),
+                    (
+                        "drain_time",
+                        frost::ron::number(f64::from(self.config.drain_time)),
+                    ),
+                    (
+                        "dry_yellow_time",
+                        frost::ron::number(f64::from(self.config.dry_yellow_time)),
+                    ),
+                    (
+                        "dry_white_time",
+                        frost::ron::number(f64::from(self.config.dry_white_time)),
+                    ),
+                ]),
+            ),
+            (
+                "watches",
+                frost::ron::record(
+                    MEDIA
+                        .iter()
+                        .map(|(name, _)| frost::ron::text(name))
+                        .collect(),
+                ),
+            ),
+            (
+                "ships",
+                frost::ron::record(self.store.names().map(frost::ron::text).collect()),
+            ),
+            (
+                "beds",
+                frost::ron::record(
+                    self.plants
+                        .iter()
+                        .enumerate()
+                        .map(|(i, plant)| {
+                            frost::ron::record(vec![
+                                frost::ron::number(i as f64),
+                                frost::ron::flag(plant.planted),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+        ])
+    }
+
     /// Re-decode a watched asset and re-wear it where the garden
     /// wears its name. The arms differ only in where the name is
     /// worn: the grass lives on a node shaped once, so it is
@@ -1308,11 +1410,13 @@ impl Demo {
             frost::Diagnostics::from_bytes(&assets.diag_font, frost::DiagnosticsFlags::all())
                 .expect("the embedded overlay font decodes");
 
-        Demo {
+        let mut demo = Demo {
             config,
             store,
             watch,
             media,
+            teller: frost::Teller::open(TELL_DIR, "immortal"),
+            being_key: (0, false, false, config),
             mouse: [0.0, 0.0],
             active: None,
             held: None,
@@ -1402,7 +1506,14 @@ impl Demo {
             save_key: false,
             reload_key: false,
             loaded: None,
-        }
+        };
+        // The boot publish: coming into existence is a transition,
+        // so a tool attaching to a freshly booted, never-touched
+        // garden already has a being to read.
+        demo.being_key = demo.beat();
+        let being = demo.state_of_affairs();
+        demo.teller.publish(&being);
+        demo
     }
 
     /// Fits the window's chrome — the grass, the items panel, the
@@ -3570,5 +3681,34 @@ mod tests {
         // A mid-travel capture resumes mid-travel: after the same tick,
         // both tweens agree.
         assert_eq!(restored.tick(0.25), original.tick(0.25));
+    }
+
+    /// The snapshot round-trips through the house dialect: what the
+    /// garden says of itself is RON a tool parses with the parser it
+    /// already has, and parses as what the garden meant — the pace
+    /// the data tier read, the names the table ships, six beds.
+    #[test]
+    fn the_garden_tells_a_being_a_tool_can_read() {
+        let demo = Demo::new(Assets::load());
+        assert!(demo.teller.live_file().exists(), "boot published a being");
+        let body = frost::ron::to_text_doc("", &demo.state_of_affairs(), "");
+        let doc = frost::ron::parse_doc(&body).expect("the being is RON");
+        let root = &doc.root;
+        assert_eq!(
+            root.child(0).map(frost::ron::Val::inline).as_deref(),
+            Some("\"immortal\"")
+        );
+        let config = root.child(1).expect("the pace it reads");
+        assert_eq!(
+            config.child(0).map(frost::ron::Val::inline).as_deref(),
+            Some(GROW_SLOWDOWN.to_string().as_str()),
+            "the told pace is the read pace"
+        );
+        match root.child(4).expect("the beds") {
+            frost::ron::Val::Struct { fields, .. } => {
+                assert_eq!(fields.len(), PLANT_POS.len(), "every bed is told")
+            }
+            other => panic!("beds is a record, not {other:?}"),
+        }
     }
 }

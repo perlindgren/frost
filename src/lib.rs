@@ -202,8 +202,12 @@ pub use shapes::*;
 /// namespaced because its names (`Val`, `Item`, `Doc`, `parse`…) are a
 /// format's vocabulary, not the engine's.
 pub mod assets;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tell;
 pub mod watch;
 pub use assets::{Assets, Table};
+#[cfg(not(target_arch = "wasm32"))]
+pub use tell::Teller;
 pub use watch::Watch;
 pub mod ron;
 

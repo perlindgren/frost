@@ -159,11 +159,20 @@ Status of each rung, updated as work lands. `[ ]` = claim, `[x]` = fact.
       waits for the first app that ships a map; the half rung keeps
       the box open until `include_bytes!` can die at `cargo test`
       somewhere real.
-- [ ] **The telling** — live announce + `state_of_affairs` snapshot in
-      the house RON dialect, transition-driven (value-key dirty check,
-      frame-end flush, `rev`-counted, structure only — an autosave with
-      manners); a tool attaches to a running app and reads its being,
-      tools writing documents only.
+- [ ] **The telling** — the told half landed 2026-10-10:
+      `frost::Teller` — announce card in `target/frost/live/` (dies
+      with the app, and the folder self-heals crashed authors *and*
+      their orphaned documents by pid liveness), a `rev`-counted live
+      file in the house RON dialect, published by value-key dirty
+      check at frame end. immortal tells `told, config, watches,
+      ships, beds` — and proved it live: save the pace file, the
+      being re-told as rev 2 with the new pace three seconds later;
+      revert, rev 3; in between, an idle garden wrote nothing, ever.
+      One refinement over the paragraph's proposal: the key is
+      *derived* (the discrete facts the snapshot holds), so no
+      mutation site can forget to mark it. The rung's other half —
+      a tool attaching and reading — awaits sprite_util's reader;
+      the box stays open until a tool has read a being.
 - [ ] **A demo to prove it** — `immortal` (or a small new example) runs
       from loose names in debug, ships as one embedded binary, and
       survives a live tileset edit mid-run.

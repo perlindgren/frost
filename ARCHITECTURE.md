@@ -1445,6 +1445,27 @@ snapshot a living app keeps become one format from one function, so
 opening a sleeping application and attaching to a running one is one
 reader, two folders.
 
+*The telling landed 2026-10-10 as `frost::Teller`* (src/tell.rs) —
+cards, live files, `rev`, and the self-healing folder exactly as
+the paragraph sketches them, with one refinement the writing
+demanded: instead of mutation sites setting a bit, the app's key is
+*derived* from the discrete facts its snapshot holds (which beds are
+planted, whether the garden was ever planted, whether it is over,
+what pace it reads) — a derived key cannot forget to be dirty, and
+the whole garden needed zero mark-calls to become tellable.
+immortal's `state_of_affairs` speaks `told, config, watches, ships,
+beds` — structure, never clocks; the boot publish proved *coming
+into existence is a transition* (rev 1 before a single frame), and
+the live run proved the rest: `grow_slowdown` saved to 2 re-told the
+being as rev 2 three seconds later, reverted to 3 as rev 3, and the
+idle minutes between wrote nothing. The folder's manners were proven
+too: cards die with their apps (`Drop`), and a fresh boot pruned a
+nightmare's worth of stale cards, orphaned documents, and crashed
+pids by signal-zero liveness — leaving exactly one card: the app
+that is actually running. What still owes: a reader in
+`sprite_util` — attach-to-list, read-the-being — which is the demo
+rung's neighborhood.
+
 *One mechanism, both directions:* hot reload has the tool writing a
 document while the app's watcher pulls; introspection has the app writing
 a snapshot while the tool's watcher pulls. The watched-file primitive

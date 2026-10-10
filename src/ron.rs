@@ -746,6 +746,53 @@ pub fn parse(src: &str) -> Result<Val, String> {
 // ---------------------------------------------------------------------------
 // The writer: the parser's counterpart, for anything that saves
 
+/// A `"quoted"` text atom — quotes added, the house dialect spells
+/// strings. Together with [`flag`], [`number`], [`record`] and
+/// [`record_named`] these are the constructors for a `Val` an app
+/// builds to publish: apps tell their being in values, and values
+/// start somewhere.
+pub fn text(s: &str) -> Val {
+    Val::Atom(format!("\"{s}\""), Kind::Str)
+}
+
+/// A `true` / `false` atom.
+pub fn flag(on: bool) -> Val {
+    Val::Atom(on.to_string(), Kind::Bool)
+}
+
+/// A number atom, Rust's shortest round-tripping spelling.
+pub fn number(v: f64) -> Val {
+    Val::Atom(v.to_string(), Kind::Num)
+}
+
+/// A positional record `(a, b, ..)` — the house's tuple shape.
+pub fn record(items: Vec<Val>) -> Val {
+    Val::Struct {
+        open: true,
+        head: String::new(),
+        curly: false,
+        fields: items
+            .into_iter()
+            .map(|v| (String::new(), Item::plain(v)))
+            .collect(),
+        tail: String::new(),
+    }
+}
+
+/// A named-fields record `(a: 1, b: 2, ..)`.
+pub fn record_named(fields: &[(&str, Val)]) -> Val {
+    Val::Struct {
+        open: true,
+        head: String::new(),
+        curly: false,
+        fields: fields
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), Item::plain(v.clone())))
+            .collect(),
+        tail: String::new(),
+    }
+}
+
 /// Full RON text for a document — the counterpart to [`parse_doc`].
 /// Comments survive: leads go above their entry, trails follow it on
 /// the same line, tails sit before the closing bracket, and the header
