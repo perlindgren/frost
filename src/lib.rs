@@ -207,7 +207,7 @@ pub mod tell;
 pub mod watch;
 pub use assets::{Assets, Table};
 #[cfg(not(target_arch = "wasm32"))]
-pub use tell::Teller;
+pub use tell::{Announcement, Teller, Tiding};
 pub use watch::Watch;
 pub mod ron;
 

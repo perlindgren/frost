@@ -201,6 +201,11 @@ pub(crate) struct Demo {
     /// folder the command line named, the working directory when no
     /// argument did.
     pub(crate) dir: Option<std::path::PathBuf>,
+    /// The bench's ear for a running application, when it is
+    /// listening to one: reread on every telling, unmade when the
+    /// card dies. One attachment at a time — a conversation, not a
+    /// watchlist.
+    pub(crate) attached: Option<crate::actions::Attachment>,
     /// The status band's message: the outcome of the last operation,
     /// spoken at the window's bottom edge — and, as it changes, the
     /// log's newest voice.

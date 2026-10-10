@@ -36,6 +36,34 @@ pub(crate) const FILE_MENU: frost::Menu<'static> = frost::Menu {
     ],
 };
 
+/// The folder every application tells into — the well-known place
+/// the debugger lists and the bench listens at.
+pub(crate) const ATTACH_DIR: &str = "target/frost/live";
+
+/// The App menu: the bench's ear for running applications. Attach
+/// cycles the announced folder — the debugger's list of living
+/// tellings; while attached the bench rereads each telling and
+/// speaks what it says: rev, names, planted beds. Detach ends the
+/// conversation. The bench writes nothing into the folder: a tool
+/// reads beings and writes only documents it owns.
+pub(crate) const APP_MENU: frost::Menu<'static> = frost::Menu {
+    title: "App",
+    items: &[
+        frost::MenuItem::new("Attach", ""),
+        frost::MenuItem::new("Detach", ""),
+    ],
+};
+
+/// One attachment to one running application: what its card
+/// announced, the sense on its live file (the same sense the
+/// reload ladder runs on — roles swap, machinery doesn't), and the
+/// last rev read, so only real tellings are spoken.
+pub(crate) struct Attachment {
+    pub(crate) card: frost::Announcement,
+    pub(crate) watch: frost::Watch,
+    pub(crate) rev: u64,
+}
+
 /// The Operations menu: the verbs that edit the active sprite's pixels.
 /// The panel that once carried them is gone — the menu is their home.
 pub(crate) const OPERATIONS_MENU: frost::Menu<'static> = frost::Menu {
@@ -467,5 +495,135 @@ impl Demo {
                 .map(std::path::PathBuf::from);
         }
         self.status = status;
+    }
+
+    /// Attach to the next living telling in the folder: the
+    /// debugger's list, cycled, so several running worlds can each
+    /// be reached from one bench.
+    pub(crate) fn attach(&mut self) {
+        let mut cards = frost::Teller::announce(ATTACH_DIR);
+        if cards.is_empty() {
+            self.status = String::from("app: no running application to attach to");
+            return;
+        }
+        let next = match &self.attached {
+            Some(held) => cards
+                .iter()
+                .position(|c| c.pid == held.card.pid)
+                .map(|i| (i + 1) % cards.len())
+                .unwrap_or(0),
+            None => 0,
+        };
+        let card = cards.swap_remove(next);
+        log::info!("app: attached to {} (pid {})", card.name, card.pid);
+        self.attached = Some(Attachment {
+            watch: frost::Watch::new(&card.live_file),
+            card,
+            rev: 0,
+        });
+        self.read_attached();
+    }
+
+    /// The frame's listening: one stat on the card, one on the live
+    /// file. The card's absence is the app's death — its documents
+    /// may remain, its announcement does not. A changed live file
+    /// is a telling: read it and speak what it says.
+    pub(crate) fn read_attached(&mut self) {
+        if let Some(held) = self.attached.as_mut() {
+            if !held.card.card.exists() {
+                log::info!("app: {} is gone — its card died with it", held.card.name);
+                self.status = format!("app: {} is gone", held.card.name);
+                self.attached = None;
+                return;
+            }
+            if !held.watch.changed() {
+                return;
+            }
+            let Some(tide) = frost::Teller::tiding(&held.card) else {
+                self.status = format!("app: '{}' told unreadable news", held.card.name);
+                return;
+            };
+            if tide.rev != held.rev {
+                let beds = planted_beds(&tide.being);
+                let names = spoken_names(&tide.being, "ships");
+                log::info!(
+                    "app: '{}' tells rev {} — {names} names, {beds} beds planted",
+                    held.card.name,
+                    tide.rev
+                );
+                self.status = format!(
+                    "app: attached {} (pid {}) — rev {}, {names} names, {beds} beds",
+                    held.card.name, held.card.pid, tide.rev
+                );
+                held.rev = tide.rev;
+            }
+        }
+    }
+
+    /// End the conversation: the app, its sense, and its news are
+    /// forgotten. The folder never felt the bench write.
+    pub(crate) fn detach(&mut self) {
+        match self.attached.take() {
+            Some(held) => {
+                log::info!("app: detached from {}", held.card.name);
+                self.status = format!("app: detached from {}", held.card.name);
+            }
+            None => self.status = String::from("app: nothing to detach"),
+        }
+    }
+}
+
+/// How many beds a told being says are planted: the entries of the
+/// beds record wearing a `true`. Read by name, not by place — the
+/// dialect is the contract.
+pub(crate) fn planted_beds(being: &frost::ron::Val) -> usize {
+    match frost::ron::field(being, "beds") {
+        Some(frost::ron::Val::Struct { fields, .. }) => fields
+            .iter()
+            .filter(|(_, item)| item.val.inline().contains("true"))
+            .count(),
+        _ => 0,
+    }
+}
+
+/// How many spoken names a named record of the being holds.
+pub(crate) fn spoken_names(being: &frost::ron::Val, what: &str) -> usize {
+    match frost::ron::field(being, what) {
+        Some(frost::ron::Val::Struct { fields, .. }) => fields.len(),
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bench reads a being by name, not by place: beds counted
+    /// by their `true`, names counted from the record it was told
+    /// to count, and silence read as none. The dialect is the
+    /// contract — order is not.
+    #[test]
+    fn a_being_is_read_by_name_not_by_place() {
+        let being = frost::ron::record_named(&[
+            ("told", frost::ron::text("immortal")),
+            (
+                "ships",
+                frost::ron::record(vec![frost::ron::text("grass"), frost::ron::text("bug")]),
+            ),
+            (
+                "beds",
+                frost::ron::record(vec![
+                    frost::ron::record(vec![frost::ron::number(0.0), frost::ron::flag(true)]),
+                    frost::ron::record(vec![frost::ron::number(1.0), frost::ron::flag(false)]),
+                ]),
+            ),
+        ]);
+        assert_eq!(spoken_names(&being, "ships"), 2);
+        assert_eq!(planted_beds(&being), 1);
+        assert_eq!(
+            spoken_names(&being, "absent"),
+            0,
+            "a silent field reads as none"
+        );
     }
 }

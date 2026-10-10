@@ -159,7 +159,7 @@ Status of each rung, updated as work lands. `[ ]` = claim, `[x]` = fact.
       waits for the first app that ships a map; the half rung keeps
       the box open until `include_bytes!` can die at `cargo test`
       somewhere real.
-- [ ] **The telling** — the told half landed 2026-10-10:
+- [x] **The telling** — the told half landed 2026-10-10:
       `frost::Teller` — announce card in `target/frost/live/` (dies
       with the app, and the folder self-heals crashed authors *and*
       their orphaned documents by pid liveness), a `rev`-counted live
@@ -171,8 +171,17 @@ Status of each rung, updated as work lands. `[ ]` = claim, `[x]` = fact.
       One refinement over the paragraph's proposal: the key is
       *derived* (the discrete facts the snapshot holds), so no
       mutation site can forget to mark it. The rung's other half —
-      a tool attaching and reading — awaits sprite_util's reader;
-      the box stays open until a tool has read a being.
+      the reader landed the same day and the box closes: the
+      `attune` example attaches to the folder and reads — proven
+      live beside a running immortal: *attached rev 1 — 45 names,
+      0 beds planted*, then *tells rev 2*, *tells rev 3* as the
+      pace file changed and reverted, and at the end, *pid 40428
+      is gone — its card died with it*. `sprite_util` wears the
+      same protocol as a menu (App → Attach cycles the living
+      tellings; the bench's status band speaks each rev it hears,
+      and Detach ends the conversation). Tools read beings; tools
+      write documents only — the folder never felt the bench
+      write. Checked 2026-10-10.
 - [ ] **A demo to prove it** — `immortal` (or a small new example) runs
       from loose names in debug, ships as one embedded binary, and
       survives a live tileset edit mid-run.

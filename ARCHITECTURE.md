@@ -1462,9 +1462,22 @@ idle minutes between wrote nothing. The folder's manners were proven
 too: cards die with their apps (`Drop`), and a fresh boot pruned a
 nightmare's worth of stale cards, orphaned documents, and crashed
 pids by signal-zero liveness — leaving exactly one card: the app
-that is actually running. What still owes: a reader in
-`sprite_util` — attach-to-list, read-the-being — which is the demo
-rung's neighborhood.
+that is actually running. The reader landed the same
+day: `Teller::announce` lists the folder as a debugger lists
+processes — pruning the departed, reading each surviving card in
+the house dialect — and `Teller::tiding` returns a telling's rev
+and being, resolving relative paths through the card's own answers
+so guest and app need no shared working directory. `frost::ron`
+gained `field`, the spoken lookup: readers who care about `ships`
+ask by name, which is what makes the telling a dialect and not a
+coincidence of order. `sprite_util` wears it as `App → Attach`
+(cycling the living tellings, status band speaking each rev, card
+absence meaning death); `examples/attune.rs` wears it as a console
+— and proved the whole protocol live beside a running immortal:
+attach at rev 1, re-told as rev 2 and rev 3 with the pace file's
+edit and revert, and at the end, the card's absence spoken aloud:
+*pid 40428 is gone — its card died with it*. Birth, change, and
+death, over files, with the folder as the bus.
 
 *One mechanism, both directions:* hot reload has the tool writing a
 document while the app's watcher pulls; introspection has the app writing

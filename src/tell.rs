@@ -117,6 +117,120 @@ impl Teller {
     }
 }
 
+/// A card's answer: what a running application announced itself
+/// to be, read back from its card. The guest's view of `ls` on the
+/// telling folder — a debugger's process list, wearing the house
+/// dialect.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Announcement {
+    /// The application's own name for itself.
+    pub name: String,
+    /// The author's process — liveness is still this question alone.
+    pub pid: u32,
+    /// Where the app was working: the root its relative paths speak
+    /// from.
+    pub asset_root: std::path::PathBuf,
+    /// The file the app's tellings land in.
+    pub live_file: PathBuf,
+    /// The card itself — its absence is how the app's death is
+    /// noticed.
+    pub card: PathBuf,
+}
+
+/// The latest telling, read: the revision from the file's header
+/// and the being from its root. What a guest knows; how the app
+/// came to tell it stays the app's business.
+#[derive(Debug)]
+pub struct Tiding {
+    /// The monotonic count of tellings published.
+    pub rev: u64,
+    /// The structure the app told, whole.
+    pub being: crate::ron::Val,
+}
+
+impl Teller {
+    /// List the folder as a debugger lists processes: the surviving
+    /// cards of living apps, by name then pid. Prunes the departed
+    /// first, because listing and healing are the same question
+    /// here — who is gone.
+    pub fn announce(dir: impl AsRef<Path>) -> Vec<Announcement> {
+        let dir = dir.as_ref();
+        prune(dir, std::process::id());
+        let mut out = Vec::new();
+        let Ok(entries) = fs::read_dir(dir) else {
+            return out;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_card = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".card.ron"));
+            if !is_card {
+                continue;
+            }
+            let Ok(src) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(doc) = crate::ron::parse_doc(&src) else {
+                continue;
+            };
+            let name = crate::ron::field(&doc.root, "name").map(spoken);
+            let pid =
+                crate::ron::field(&doc.root, "pid").and_then(|v| v.inline().parse::<u32>().ok());
+            let asset_root = crate::ron::field(&doc.root, "asset_root").map(spoken);
+            let live_file = crate::ron::field(&doc.root, "live_file").map(spoken);
+            let (Some(name), Some(pid), Some(asset_root), Some(live_file)) =
+                (name, pid, asset_root, live_file)
+            else {
+                continue;
+            };
+            if alive(pid) {
+                out.push(Announcement {
+                    name,
+                    pid,
+                    asset_root: PathBuf::from(asset_root),
+                    live_file: PathBuf::from(live_file),
+                    card: path,
+                });
+            }
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name).then(a.pid.cmp(&b.pid)));
+        out
+    }
+
+    /// Read an announcement's latest telling: `None` when the file
+    /// refuses to parse or cannot be found — from either side, a
+    /// relative path is resolved against the card's own answers,
+    /// so guest and app need not share a working directory.
+    pub fn tiding(what: &Announcement) -> Option<Tiding> {
+        let mut candidates = vec![what.live_file.clone()];
+        if what.live_file.is_relative() {
+            candidates.push(what.asset_root.join(&what.live_file));
+            candidates.push(what.card.parent()?.join(&what.live_file));
+        }
+        let src = candidates
+            .iter()
+            .find_map(|path| fs::read_to_string(path).ok())?;
+        let rev = src.lines().find_map(|line| {
+            let rest = line.split_once("rev ")?.1;
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse().ok()
+        })?;
+        let doc = crate::ron::parse_doc(&src).ok()?;
+        Some(Tiding {
+            rev,
+            being: doc.root,
+        })
+    }
+}
+
+/// A quoted atom's spoken text: the value's one-line inline, minus
+/// the quotes the dialect wears.
+fn spoken(v: &crate::ron::Val) -> String {
+    v.inline().trim_matches('"').to_string()
+}
+
 impl Drop for Teller {
     fn drop(&mut self) {
         // The card is the live half of the announcement: gone with
@@ -281,6 +395,45 @@ mod tests {
         assert!(
             dir.join(format!("drop-{}.live.ron", std::process::id()))
                 .exists()
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The guest's side of the protocol, end to end in a scratch
+    /// folder: a card of a living pid is listed (a ghost's is not),
+    /// and its telling reads back with rev from the header and
+    /// structure from the root.
+    #[test]
+    fn a_guest_reads_the_folder_and_the_telling() {
+        let dir = scratch("guest");
+        let me = std::process::id();
+        let tell = Teller::open(&dir, "guest");
+        assert_eq!(tell.name, "guest");
+        fs::write(
+            dir.join("ghost-4294967290.card.ron"),
+            "// stale\n(\n    name: \"ghost\",\n    pid: 4294967290,\n    asset_root: \"/nowhere\",\n    live_file: \"ghost.live.ron\",\n)\n",
+        )
+        .unwrap();
+        let cards = Teller::announce(&dir);
+        assert_eq!(cards.len(), 1, "only the living are listed");
+        assert_eq!(cards[0].name, "guest");
+        assert_eq!(cards[0].pid, me);
+        // The app had not published yet — nothing to read.
+        assert!(Teller::tiding(&cards[0]).is_none());
+        // Now it tells, by hand: header rev and rooted being.
+        let being = crate::ron::record_named(&[("told", crate::ron::text("guest"))]);
+        let text = format!(
+            "// guest tells its being — rev 7, pid {me}\n{}",
+            crate::ron::to_text_doc("", &being, "")
+        );
+        fs::write(tell.live_file(), &text).unwrap();
+        let tiding = Teller::tiding(&cards[0]).expect("the telling reads");
+        assert_eq!(tiding.rev, 7);
+        assert_eq!(
+            crate::ron::field(&tiding.being, "told")
+                .map(|v| v.inline())
+                .as_deref(),
+            Some("\"guest\"")
         );
         fs::remove_dir_all(&dir).ok();
     }

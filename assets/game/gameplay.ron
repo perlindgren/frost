@@ -5,7 +5,7 @@
 // they are.
 (
     // Growth runs at 1/grow_slowdown of real time (main.rs).
-    grow_slowdown: 3.0,
+    grow_slowdown: 1.0,
     // A plant's water reserve drains over this many growth-clock
     // seconds — 8.25 real seconds at the slowdown, chosen to leave
     // the plant thirsty just before its base completes.

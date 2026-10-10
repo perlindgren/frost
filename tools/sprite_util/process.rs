@@ -20,6 +20,10 @@ use frost::ron as ron_tree;
 
 impl frost::Process for Demo {
     fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
+        // The telling arrives before the work: one stat on the card,
+        // one on the live file, and any being retold is spoken and shelved.
+        self.read_attached();
+
         // The animation clock runs on wall time; when it rolls to a new
         // frame, the work area repaints its layer pool to that frame.
         if self.anim.tick(dt) {
@@ -778,9 +782,9 @@ impl frost::Process for Demo {
         // active texture, and the tile-map desk has no texture to cut
         // — only cells. There, the Transform menu wears the bar.
         let menus: Vec<frost::Menu> = if tile_view {
-            vec![FILE_MENU, view_menu, transform_menu]
+            vec![FILE_MENU, APP_MENU, view_menu, transform_menu]
         } else {
-            vec![FILE_MENU, view_menu, OPERATIONS_MENU]
+            vec![FILE_MENU, APP_MENU, view_menu, OPERATIONS_MENU]
         };
         match self.ui.menu_bar(ctx, &menus, &notes) {
             Some(frost::MenuEvent::Chose(menu, item)) => {
@@ -822,6 +826,8 @@ impl frost::Process for Demo {
                     ("File", "Save as") => self.save_as(ctx),
                     ("File", "Open map") => self.open_map(ctx),
                     ("File", "Save map") => self.save_map(ctx),
+                    ("App", "Attach") => self.attach(),
+                    ("App", "Detach") => self.detach(),
                     ("File", "Undo") => self.undo(ctx),
                     ("File", "Redo") => self.redo(ctx),
                     ("Operations", "Crop") => self.crop(ctx),

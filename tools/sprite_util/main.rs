@@ -417,6 +417,7 @@ fn main() {
             was_flipx: false,
             was_flipy: false,
             was_turn: false,
+            attached: None,
             status: String::new(),
             log: Vec::new(),
             log_seen: String::new(),

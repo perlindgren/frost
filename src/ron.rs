@@ -793,6 +793,25 @@ pub fn record_named(fields: &[(&str, Val)]) -> Val {
     }
 }
 
+/// The value under a spoken name: the named field of a record or
+/// the entry of a map. Readers who care about `ships` — not about
+/// the fourth child — ask by name; apps that rename a field know
+/// the reader hears it, which is what makes the telling a dialect
+/// and not a coincidence of order.
+pub fn field<'a>(v: &'a Val, name: &str) -> Option<&'a Val> {
+    match v {
+        Val::Struct { fields, .. } => fields
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, item)| &item.val),
+        Val::Map { entries, .. } => entries
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, item)| &item.val),
+        _ => None,
+    }
+}
+
 /// Full RON text for a document — the counterpart to [`parse_doc`].
 /// Comments survive: leads go above their entry, trails follow it on
 /// the same line, tails sit before the closing bracket, and the header
