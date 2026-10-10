@@ -1303,6 +1303,19 @@ held host-side across an ABI-stable seam — a tax the API would carry
 forever, so if it ever comes it comes as a documented *app pattern*, never
 a frost API.
 
+Landed 2026-10-10 as `frost::Assets` (src/assets.rs): a `Table` of
+name-and-bytes compiled into the binary, loose directories admitted
+above it by stem, and one request answering both worlds — immortal's
+44 assets all flow through it, and its release binary boots from
+`/tmp` with nothing on disk but itself. One finding the road
+produced: **a name is the full request only when the format is
+known** — the sprite directories keep their `.ron` sidecars beside
+the PNGs, and `Getingeye1.ron` shadowed its own sprite's bytes until
+the ask learned to name its formats (`asset(name, exts)`); name and
+format together dress an ask, exactly as name and cut identify a
+tileset. The watcher (mtime → decode → rebind) remains the tiers' to
+raise; today's resolver reads loose files when asked.
+
 **And one guard the name table makes possible:** a small reader (say
 `frost::map::tileset_names`) lists the names a map file asks for, so an
 app's own test can assert every one of them sits in its `ASSETS` table —

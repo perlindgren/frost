@@ -117,10 +117,13 @@ Status of each rung, updated as work lands. `[ ]` = claim, `[x]` = fact.
       never written), tileset identity stamped per layer, round-trip and
       refusal tests in `map.rs`; `Save map` / `Open map` born in
       `actions.rs` as the first verbs on the seam. Checked 2026-10-10.
-- [ ] **The table** — house pattern: `const ASSETS: &[(&str, &[u8])]` of
-      `include_bytes!` entries, one resolver behind a feature flag;
-      an app compiles release-embedded and debug-from-disk with zero
-      code forks.
+- [x] **The table** — `frost::Assets`: an app's `include_bytes!` entries
+      as one `frost::Table`, loose directories shadowing it by name;
+      immortal serves 44 sprites, sounds, and fonts through the one
+      resolver — and its release binary boots from `/tmp` with no
+      `assets/` anywhere. Refined on the way: no feature flag — the
+      flag would only fork what disk-over-table already unites.
+      Checked 2026-10-10.
 - [ ] **Data tier** — a gameplay `.ron` re-parsed on change; the running
       app rebuilds config from the new root. *The rung that wins
       against Godot.*

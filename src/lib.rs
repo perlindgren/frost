@@ -201,6 +201,8 @@ pub use shapes::*;
 /// anything else that must read a `.ron` file back out unchanged. Kept
 /// namespaced because its names (`Val`, `Item`, `Doc`, `parse`…) are a
 /// format's vocabulary, not the engine's.
+pub mod assets;
+pub use assets::{Assets, Table};
 pub mod ron;
 
 mod diagnostics;

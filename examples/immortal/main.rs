@@ -1141,16 +1141,16 @@ impl Demo {
         // The game-over overlay's shapes, built once: the title and the
         // Play label from the embedded font — each an `Arc`-shared copy of
         // the font's bytes — and the button's rectangle.
-        let game_over = frost::Shape::text_bytes(assets.font, "Game Over", OVERLAY_TITLE_SIZE)
+        let game_over = frost::Shape::text_bytes(&assets.font, "Game Over", OVERLAY_TITLE_SIZE)
             .expect("the embedded overlay font decodes");
-        let play_label = frost::Shape::text_bytes(assets.font, "Play", PLAY_LABEL_SIZE)
+        let play_label = frost::Shape::text_bytes(&assets.font, "Play", PLAY_LABEL_SIZE)
             .expect("the embedded overlay font decodes");
         // The time-scale field's four labels, built once: "1x", "2x",
         // "4x", and "8x" — the TIME_SCALES table spelled in the overlay
         // font.
         let speed_labels = std::array::from_fn(|i| {
             frost::Shape::text_bytes(
-                assets.font,
+                &assets.font,
                 format!("{}x", TIME_SCALES[i] as usize),
                 SPEED_LABEL_SIZE,
             )
@@ -1166,8 +1166,9 @@ impl Demo {
         // with every statistic enabled: the window size, the frame rate,
         // the frame time, the processing time, the draw-call count, and
         // the four strip charts.
-        let diag = frost::Diagnostics::from_bytes(assets.diag_font, frost::DiagnosticsFlags::all())
-            .expect("the embedded overlay font decodes");
+        let diag =
+            frost::Diagnostics::from_bytes(&assets.diag_font, frost::DiagnosticsFlags::all())
+                .expect("the embedded overlay font decodes");
 
         Demo {
             mouse: [0.0, 0.0],
