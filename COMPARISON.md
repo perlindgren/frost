@@ -124,9 +124,12 @@ Status of each rung, updated as work lands. `[ ]` = claim, `[x]` = fact.
       `assets/` anywhere. Refined on the way: no feature flag — the
       flag would only fork what disk-over-table already unites.
       Checked 2026-10-10.
-- [ ] **Data tier** — a gameplay `.ron` re-parsed on change; the running
-      app rebuilds config from the new root. *The rung that wins
-      against Godot.*
+- [x] **Data tier** — `frost::Watch` + `Config::from_store`: immortal
+      watches `assets/game/gameplay.ron` and rebuilds its config from
+      the new root the frame the file changes — proven live: a touch
+      at 10:27:35 answered in the log the same second, window up,
+      game state intact. Refusals keep the last honest config and
+      name themselves. Checked 2026-10-10.
 - [ ] **Media tier** — textures/audio/fonts: mtime → decode → re-upload →
       rebind by name, mid-run, state intact.
 - [ ] **Shaders** — `.wgsl` watched, pipeline rebuilt at runtime

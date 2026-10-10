@@ -23,7 +23,7 @@ pub type Table = &'static [(&'static str, &'static [u8])];
 
 /// The resolver behind the one request: loose files first, the
 /// compiled table beneath them, `None` beneath both.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Assets {
     /// The bytes compiled into this binary.
     table: Table,

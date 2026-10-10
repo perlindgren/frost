@@ -202,7 +202,9 @@ pub use shapes::*;
 /// namespaced because its names (`Val`, `Item`, `Doc`, `parse`…) are a
 /// format's vocabulary, not the engine's.
 pub mod assets;
+pub mod watch;
 pub use assets::{Assets, Table};
+pub use watch::Watch;
 pub mod ron;
 
 mod diagnostics;

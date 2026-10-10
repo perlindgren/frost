@@ -16,6 +16,7 @@ const IMMORTALITY_ALPHA: f32 = 0.2;
 /// The loose `assets/` directories shadow entries by the same name —
 /// see [`frost::Assets`].
 const ASSETS: frost::Table = &[
+    ("gameplay", include_bytes!("../../assets/game/gameplay.ron")),
     ("grass", include_bytes!("../../assets/sprites/grass.png")),
     (
         "water_can_outline",
@@ -173,6 +174,10 @@ pub struct Sounds {
 /// — the output and every clip — embedded at compile time with
 /// `include_bytes!` and decoded by [`Assets::load`].
 pub struct Assets {
+    /// The resolver that answered this boot: the table, and the
+    /// loose directories this working directory has. The `Demo`
+    /// keeps it — the watched data file is re-read through it.
+    pub store: frost::Assets,
     /// The grass photo, exactly the window size: stretched to fill the
     /// window by the process.
     pub grass: frost::Shape,
@@ -253,12 +258,14 @@ impl Assets {
         let store = frost::Assets::embedded(ASSETS)
             .with_dir("assets/sprites")
             .with_dir("assets/audio")
-            .with_dir("assets/fonts");
+            .with_dir("assets/fonts")
+            .with_dir("assets/game");
         let mut immortality = sprite(&store, "sustainable_immortality");
         if let frost::Shape::Sprite { alpha, .. } = &mut immortality {
             *alpha = IMMORTALITY_ALPHA;
         }
         Assets {
+            store: store.clone(),
             grass: sprite(&store, "grass"),
             can: sprite(&store, "water_can_outline"),
             spray1: sprite(&store, "Spray1"),

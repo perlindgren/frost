@@ -150,7 +150,7 @@
 //! time's pace — the slices, the flowers, and the tomatoes alike, all
 //! planted plants at once: while a plant is growing —
 //! planted, not yet complete, its slices or its blooms still growing —
-//! its growth clock is stepped forward by `dt / GROW_SLOWDOWN`, and its
+//! its growth clock is stepped forward by `dt / self.config.grow_slowdown`, and its
 //! reserve drains over `DRAIN_TIME` of that slowed clock —
 //! `GROW_SLOWDOWN * DRAIN_TIME` real seconds — and growth proceeds only
 //! while the reserve holds; a plant whose reserve runs dry withers
@@ -310,6 +310,7 @@
 mod assets_load;
 mod basket;
 mod bugs;
+mod config;
 mod fall;
 mod fruit;
 pub(crate) use fruit::*;
@@ -324,6 +325,7 @@ mod worms;
 mod zorder;
 
 use assets_load::{Assets, Sounds};
+use config::{Config, GAMEPLAY_FILE};
 use fall::{Fall, FallPhase};
 
 /// The window's initial size in logical pixels, via
@@ -553,7 +555,7 @@ const PIP: frost::Color = frost::Color {
 };
 
 /// The factor by which the plants' growth runs slow: the process steps a
-/// plant's growth clock by `dt / GROW_SLOWDOWN` per frame, so a slice
+/// plant's growth clock by `dt / self.config.grow_slowdown` per frame, so a slice
 /// that grows over its `plant::GROW_TIMES` span takes `GROW_SLOWDOWN`
 /// times that span in real time — the slices, the flowers, and the
 /// tomatoes alike — and the water reserve drains with the growth, over
@@ -563,7 +565,7 @@ const GROW_SLOWDOWN: f32 = 3.0;
 /// The time a plant's water reserve takes to drain from full (1.0) to dry
 /// (0.0), in growth-clock seconds, while the plant is growing: the
 /// process drains a planted plant that is not yet complete by
-/// `dt / (DRAIN_TIME * GROW_SLOWDOWN)` per frame — the drain runs at the
+/// `dt / (self.config.drain_time * self.config.grow_slowdown)` per frame — the drain runs at the
 /// growth's slowed pace — and the span is chosen so a freshly planted,
 /// fully watered seed runs dry just before its base slice is fully grown:
 /// the base grows over 3 growth-clock seconds (`plant::GROW_TIMES[0]`),
@@ -723,7 +725,7 @@ struct WateredPlant {
     /// aging clock.
     plant: plant::Plant,
     /// The water reserve, 1.0 (well watered) to 0.0 (dry): drained by
-    /// `dt / (DRAIN_TIME * GROW_SLOWDOWN)` per frame while the plant
+    /// `dt / (self.config.drain_time * self.config.grow_slowdown)` per frame while the plant
     /// grows, restored by `DROP_WATER` per drop that falls into its root
     /// hitbox; at 0.0 the growth withers — the clock runs backward at
     /// half the growth's pace toward the point of full ripening, where it
@@ -738,6 +740,18 @@ struct WateredPlant {
 }
 
 struct Demo {
+    /// The garden's numbers, as data: the boot read them through the
+    /// store, and the watch swaps in a file's new root the frame it
+    /// changes. Every read of a pace goes through here.
+    config: Config,
+    /// The resolver that answered this boot — the table, and the
+    /// loose directories this working directory has; the watched
+    /// data file is re-read through it, so a loose edit and the
+    /// shipped entry speak with one voice.
+    store: frost::Assets,
+    /// The sense on the data file: one `stat` per frame, a change
+    /// once per rewrite.
+    watch: frost::Watch,
     /// The cursor's last reported position; the tool sticks here while the
     /// cursor is outside the window.
     mouse: [f32; 2],
@@ -861,11 +875,11 @@ struct Demo {
     /// order: the bench starts bare — no plant planted, every clock at
     /// zero, every reserve full — and a seed landing in a slot plants it.
     /// Every planted plant grows at once: the process steps each planted
-    /// plant's clock forward by `dt / GROW_SLOWDOWN` while its water
+    /// plant's clock forward by `dt / self.config.grow_slowdown` while its water
     /// reserve holds, then lays it out on the matching child of the plants
     /// node (root's [`CHILD_PLANTS`] child), in parallel with the tool
     /// system; the reserve of a planted plant that is not yet complete
-    /// drains by `dt / (DRAIN_TIME * GROW_SLOWDOWN)` per frame — at the
+    /// drains by `dt / (self.config.drain_time * self.config.grow_slowdown)` per frame — at the
     /// growth's slowed pace — and restores by `DROP_WATER` per drop that
     /// falls into its root hitbox, and a plant at 0.0 withers instead:
     /// its growth clock runs backward at half the growth's pace toward
@@ -1005,6 +1019,14 @@ impl frost::Process for Demo {
     /// the live overlay is drawn; and the game-over overlay lays out over
     /// the window.
     fn process(&mut self, ctx: &mut frost::Context, dt: f32) {
+        // The data tier's one question per frame. A changed file is
+        // rebuilt from the whole — the new root read anew, never
+        // patched — and a file that fails to speak keeps the last
+        // honest config, saying why to the log.
+        if self.watch.changed() {
+            self.reread_config();
+        }
+
         // The diagnostics overlay steps first, before the demo's own clock:
         // its first call appends its own nodes to the scene's root, and
         // every later call updates those same nodes in place.
@@ -1121,7 +1143,23 @@ impl Demo {
     /// bare: no plant planted, all six growth clocks at zero, all six
     /// water reserves full, and the basket still holding its starting
     /// tomato, seeded on the first frame once the basket's fit is known.
+    /// Rebuild the config from the store's answer — the watched
+    /// file's new root, or the table's entry when nothing loose
+    /// speaks — and say so: the log is the proof the tier lives.
+    fn reread_config(&mut self) {
+        self.config = Config::from_store(&self.store);
+        log::info!("config: the garden re-read its pace from '{GAMEPLAY_FILE}'");
+    }
+
     fn new(assets: Assets) -> Demo {
+        // The data tier's boot: the store answers for the gameplay
+        // file, the watch starts on the file's state right now, and
+        // the config is read from whatever the store names — loose
+        // file in development, table entry in a shipped world.
+        let store = assets.store.clone();
+        let watch = frost::Watch::new(GAMEPLAY_FILE);
+        let config = Config::from_store(&store);
+
         // The tools at rest in the items panel's slots, mirroring the
         // panel's seeded sprites: [SEEDED_SLOTS], the one table the scene's
         // slot children are built from too.
@@ -1171,6 +1209,9 @@ impl Demo {
                 .expect("the embedded overlay font decodes");
 
         Demo {
+            config,
+            store,
+            watch,
             mouse: [0.0, 0.0],
             active: None,
             held: None,
@@ -1407,9 +1448,9 @@ impl Demo {
     /// while the plant is well watered, and at `1 / GROW_SLOWDOWN` of
     /// real time's pace: a planted plant that is not yet complete — its
     /// slices or its blooms still growing — drains its water reserve by
-    /// `dt / (DRAIN_TIME * GROW_SLOWDOWN)` every frame — the drain runs
+    /// `dt / (self.config.drain_time * self.config.grow_slowdown)` every frame — the drain runs
     /// with the growth — and steps its clock forward by
-    /// `dt / GROW_SLOWDOWN`, so fully grown slices keep opening blooms
+    /// `dt / self.config.grow_slowdown`, so fully grown slices keep opening blooms
     /// while the water holds; a plant whose reserve runs dry withers
     /// instead — its growth clock runs backward at half the growth's
     /// pace, `dt / (GROW_SLOWDOWN * 2)`, the slices, the flowers, and the
@@ -1438,8 +1479,9 @@ impl Demo {
         for i in 0..PLANT_POS.len() {
             if self.plants[i].planted {
                 if !self.plants[i].plant.complete() {
-                    self.plants[i].water =
-                        (self.plants[i].water - dt / (DRAIN_TIME * GROW_SLOWDOWN)).max(0.0);
+                    self.plants[i].water = (self.plants[i].water
+                        - dt / (self.config.drain_time * self.config.grow_slowdown))
+                        .max(0.0);
                 }
                 // The growth clock runs slow: forward while the reserve
                 // is wet, and backward — the withering, at half the
@@ -1450,17 +1492,19 @@ impl Demo {
                 // DRY_WHITE_TIME; the layout lerps the node's modulate
                 // from white to DRY_YELLOW over the dryness.
                 if self.plants[i].water > 0.0 {
-                    self.plants[i].plant.step(dt / GROW_SLOWDOWN);
+                    self.plants[i].plant.step(dt / self.config.grow_slowdown);
                     self.plants[i].dryness =
-                        (self.plants[i].dryness - dt / DRY_WHITE_TIME).max(0.0);
+                        (self.plants[i].dryness - dt / self.config.dry_white_time).max(0.0);
                 } else {
-                    self.plants[i].plant.wither(dt / (GROW_SLOWDOWN * 2.0));
+                    self.plants[i]
+                        .plant
+                        .wither(dt / (self.config.grow_slowdown * 2.0));
                     self.plants[i].dryness =
-                        (self.plants[i].dryness + dt / DRY_YELLOW_TIME).min(1.0);
+                        (self.plants[i].dryness + dt / self.config.dry_yellow_time).min(1.0);
                 }
                 // The aging clock runs every frame, water or not: ripe
                 // fruits wait and stale on it.
-                self.plants[i].plant.age(dt / GROW_SLOWDOWN);
+                self.plants[i].plant.age(dt / self.config.grow_slowdown);
                 // A planted plant that has withered completely is gone —
                 // no slice, no bloom, nothing visible — and its slot is
                 // free: the plant resets to a fresh, invisible seed, so

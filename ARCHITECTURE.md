@@ -1316,6 +1316,20 @@ format together dress an ask, exactly as name and cut identify a
 tileset. The watcher (mtime → decode → rebind) remains the tiers' to
 raise; today's resolver reads loose files when asked.
 
+The data tier climbed that ladder first, landed the same day:
+`frost::Watch` (src/watch.rs) is the shared sense — a file's stamp,
+polled once per frame, `changed()` true once per rewrite, appearing
+and vanishing counted as rewrites, silence on targets without a
+filesystem — and immortal's `Config` (config.rs) is the pattern it
+serves: four of the garden's paces read from
+`assets/game/gameplay.ron` through the store, rebuilt whole from the
+new root on change, every refusal keeping the last honest config
+with its name in the log. The live proof is in the rung's check:
+touch, and the running game answers the same second. Godot's
+equivalent reloads scripts; the numbers that make the game *play*
+the way it plays live in its scene files, behind an editor. Here the
+crown jewel is a file and a watch.
+
 **And one guard the name table makes possible:** a small reader (say
 `frost::map::tileset_names`) lists the names a map file asks for, so an
 app's own test can assert every one of them sits in its `ASSETS` table —
