@@ -1234,6 +1234,153 @@ The library's last queue entry, the `Body` type, shipped as `src/physics.rs`
 with the `bodies` example as its demo; the physics section's `rapier2d` note
 stays the documented escape hatch if it ever outgrows itself.
 
+**Asset identity moves from paths to names.** The key finding: a shipped app
+is one self-contained binary — assets arrive via `include_bytes!` at compile
+time (`immortal`'s `assets_load.rs` is the pattern), so a saved file that
+names `assets/sprites/basic_tiles.png` refers to a place that does not exist
+in the binary. The one noun that survives all three worlds — repo (resolved
+by `asset_path` beside the crate root), loose runtime (an `assets/` folder
+next to the binary), shipped (a `const ASSETS: &[(&str, &[u8])]` name table
+of `include_bytes!` entries) — is the **asset name**: the file stem. The
+house already treats the stem as the key (`<stem>.ron` rides `<stem>.png`);
+what was sloppy was carrying it around inside a path.
+
+**Two tilesets can share a sprite — and the desk doesn't see it yet (a
+live bug).** The atlas grid is per-loaded-instance state, so the same PNG
+can sit in two slots cut two ways (1×4 here, 2×8 there). `MapLayer` stamps
+provenance by path alone and the tile desk dresses with
+`sprites.iter().find(|sp| sp.path == m.tileset)` — first match wins — so a
+layer painted against one grid gets dressed from a same-path slot with the
+other. The fix names the identity properly: `TilesetRef { name, rows, cols
+}` — file plus the cut made into it — which fully determines a cell's
+picture and code, and also gives a map its save format's meaning. A test
+that two same-file, different-grid slots dress independently fails today;
+that is the point of writing it.
+
+**Maps get a file: `.map.ron`, names throughout.** The tile desk paints
+`Vec<MapLayer>` and nothing persists it — an evening of tiling evaporates
+at window close. The format follows the identity above —
+`(tileset: ("basic_tiles", 2, 8), cols: .., rows: .., cells: [(col, row,
+code, tfm), ..])` — sparse (cell 0 is not written), the orientation byte
+riding with the cell because the transform is the map's memory, layers
+keeping the order the desk renders. `Save map` / `Open map` are born in
+`actions.rs` as the first planned verbs on that seam; opening a map pulls
+the tilesets it names that the bench lacks, setting the recorded grid with
+the existing `set_atlas` machinery; a tileset the file names that nothing
+can find gets the house treatment — first refusal named, the rest counted,
+spoken on the status band like `shapes_note`.
+
+**The name table is also the hot-reload seam — the shipping model and the
+dev loop turn out to share one interface.** Game code never says
+`include_bytes!`; it says *give me `basic_tiles`*, and one resolver sits
+behind that request: the const table in release, the same names read from
+disk under a watcher in debug. Same code, same bytes-to-GPU path — the
+decode-from-bytes entry points already serve both worlds — so a tileset
+saved in `sprite_util` lands in a running game the next frame, process
+state untouched (immediate mode keeps UI state nearly stateless, and not
+restarting keeps the game's own state: the state preservation Godot buys
+with a scene graph, frost gets for free). The ladder, cheapest first:
+**data** (a gameplay `.ron` re-parsed on mtime change — the app rebuilds
+config from the root; more than Godot offers for data-driven play, and
+free); **textures, audio, fonts** (mtime → decode → `write_texture` →
+rebind by name); **maps** (re-parse and rebuild the tilemap shapes — free
+once data exists); **shaders** (`create_render_pipeline` is a runtime
+call and naga is already a dependency — watching the `.wgsl` files is
+surprisingly easy, and it is where frost can embarrass the big engines);
+**code**, honestly last: incremental `cargo run` is the floor, and a true
+hot swap means a cdylib game crate swapped by a dylib reloader with state
+held host-side across an ABI-stable seam — a tax the API would carry
+forever, so if it ever comes it comes as a documented *app pattern*, never
+a frost API.
+
+**And one guard the name table makes possible:** a small reader (say
+`frost::map::tileset_names`) lists the names a map file asks for, so an
+app's own test can assert every one of them sits in its `ASSETS` table —
+a forgotten `include_bytes!` dies at `cargo test`, not in the field. The
+resolver core, the watcher tick, and the rebind-mid-swap semantics are
+still to be designed; this paragraph is the finding, not the plan. The
+engines this bet is made against, and the scoreboard tracking it, live in
+`COMPARISON.md`.
+
+**Tools are guests: the app is the truth, so design the telling.** In
+Godot the scene tree *is* the application — a file (`*.tscn`) that the
+editor mutates as ground truth and the game merely renders. In frost the
+inverse holds: truth is a running program, and the scene tree is a frame
+artifact — `process()` manufactures it from app state every frame and
+discards it — so no tool can *extract* an application's state of affairs;
+it can only be *told*. The architecture that follows has two clocks, one
+mechanism, and one discipline.
+
+*Document truth* serves the selected, sleeping application: whatever the
+author wants tools to see lives in the RON dialect on purpose — save
+games already do (immortal carries its `Rng` stream in `.ron`), maps will
+(`.map.ron`), gameplay values will (the data tier above). Opening an
+application in `sprite_util` then means: open its world document, read
+which tilesets it names and at which cuts (`("basic_tiles", 2, 8)`), and
+rebuild exactly those on the bench via the `set_atlas` machinery. The
+document set is the app's identity while it sleeps.
+
+*Live truth* serves the running application: it announces itself with a
+small card in a well-known folder (say `target/frost/live/` — name, pid,
+asset root, where its live file is; deleted on exit, stale entries pruned
+by pid liveness), which is what "attach to the *selected* application"
+means concretely — a tool enumerates the folder like a debugger lists
+processes. The app then publishes `fn state_of_affairs(&self) ->
+frost::ron::Val` — its own being in its own words, one hand-written
+function, zero cost where absent, no reflection tax and no shared Rust
+types across the tool boundary; tools read the tree with the parser they
+already have.
+
+The snapshot is *transition-driven, not clock-driven, and it carries
+structure only*. Streaming data (tweens, lerps, anything without
+transitions) does not join the telling — a tool that wants continuous
+values wants a socket, someday, not a file. What is published is the
+app's static structure, so the file is not a stream at all but a
+document with an author who lives in a process: idle apps write nothing,
+ever. The clock is a dirty check, and the house already owns both idioms
+it needs: value-key dirtiness (the checker backdrop's
+`if key != self.checker_key` — serialize once, compare against last
+published, and since the serialization *is* the snapshot, the check is
+nearly free and a forgotten flag cannot hide a change) and set-and-flush
+(the journal collapsing repeats: mutation sites set a bit, one flush at
+the end of `process()` coalesces a burst — an erase touching forty cells
+publishes once, not forty watcher fires). Every publish carries a
+monotonic `rev` (tools that coalesce watcher events still know something
+happened, and in what order; an unchanged `rev` says the write was a
+heartbeat, not a change), and the first write happens at boot — a
+freshly loaded, never-mutated app still has a structure worth seeing,
+because coming into existence is a transition. Liveness stays the
+announce card's pid question; change and life are different questions
+and do not mix in one file. What this converges on: a dirty-driven
+structure publish is an *autosave with manners* — same serialization,
+same clock, same dialect, different folder — which folds the
+sleeping/running duality shut: the save a dead app leaves and the
+snapshot a living app keeps become one format from one function, so
+opening a sleeping application and attaching to a running one is one
+reader, two folders.
+
+*One mechanism, both directions:* hot reload has the tool writing a
+document while the app's watcher pulls; introspection has the app writing
+a snapshot while the tool's watcher pulls. The watched-file primitive
+designed for the reload ladder *is* the inter-tool bus — roles swap,
+machinery doesn't. Sockets can wait until someone needs sub-frame
+latency; files speak at editing speed. The name spine closes the loop:
+snapshots name assets by name, so `sprite_util`, attached to a running
+game, can answer "where does this tile I am editing appear?" — the
+draw-list echo (a frame trace, if draws ever carry a debug tag) is a
+later rung that has to earn its keep against the logic-side snapshot.
+
+*One discipline:* tools write documents, never memories. There is
+deliberately no push-into-the-running-app channel — Godot's bidirectional
+scene editing is exactly the coupling frost refuses, an editor that must
+own the truth or become a second author of a book it cannot read. The app
+owns its being; the tools own the documents; the watcher is the only
+courier. Summed up: Godot's editor edits the truth; frost's app *is* the
+truth, so tools read documents (sleeping state) and snapshots (running
+state), write only documents, and one watched-file mechanism carries
+every word in both directions.
+
+
 ## Verification loop
 
 ```
