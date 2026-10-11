@@ -206,9 +206,12 @@ const C_NIGHT: Color = Color {
     b: 0.15,
     a: 1.0,
 };
-/// An ant's lamp: reach in tiles, and the width of its soft rim, in px.
+/// An ant's lamp: reach in tiles. The rim stays hard: a penumbra costs
+/// the shader nine shadow rays per light at every fragment that light
+/// reaches, and nine times the arithmetic is exactly what the frame
+/// budget cannot pay at 4K. Tile walls cast tile shadows.
 const LAMP_REACH: f32 = 2.6;
-const LAMP_PENUMBRA: f32 = 28.0;
+const LAMP_PENUMBRA: f32 = 0.0;
 const C_DIRT: Color = Color {
     r: 0.44,
     g: 0.31,
@@ -406,6 +409,10 @@ struct Demo {
     /// an undo-woken ant has its entry removed, so tucking it in again
     /// flares afresh.
     landing: HashMap<usize, f32>,
+    /// The player's own tuck-in: `Some` from the moment she stands on
+    /// the queen's bed, flashing down from 1.0; `None` while she walks
+    /// and her lamp burns. Step off and return, and it flares afresh.
+    player_home: Option<f32>,
     note_t: f32,
     frost_t: f32,
     frost_bit: bool,
@@ -449,6 +456,7 @@ impl Demo {
             font: Arc::from(GAME_FONT),
             note: String::new(),
             landing: HashMap::new(),
+            player_home: None,
             note_t: 0.0,
             frost_t: 0.0,
             frost_bit: false,
@@ -486,6 +494,7 @@ impl Demo {
         self.route.clear();
         self.note.clear();
         self.landing.clear();
+        self.player_home = None;
         self.note_t = 0.0;
         self.frost_t = 0.0;
         self.frost_bit = false;
@@ -962,8 +971,9 @@ impl Demo {
             })
             .collect();
         // Slots: leaves, ants, the player pair, one lamp per ant plus
-        // the player's, the two backdrop sprites, and the tile pool.
-        let slots = LEAVES.len() + game.ants.len() * 2 + 5 + tiles.len();
+        // the player's, a beacon per bed, the two backdrop sprites,
+        // and the tile pool.
+        let slots = LEAVES.len() + game.ants.len() * 2 + 5 + tiles.len() + game.level.beds.len();
         {
             let root = &mut ctx.scene().root;
             while root.children.len() < slots {
@@ -973,8 +983,10 @@ impl Demo {
         }
         // Every ant is a lamp: an omni light riding the pixel it stands
         // on, throwing a couple of tiles of warm reach, soft at the rim.
-        // Sleeping ants bank to embers; a landing flare stokes the lamp
-        // as it blazes. The player carries the brightest, warmest one.
+        // Hitting the target pays out a loud circular spike; an ant
+        // asleep emits nothing at all — the lamp lives only for the
+        // flash. The player is an ant too, and the queen's bed is her
+        // target: same flare on arrival, same dark after.
         {
             let reach = TILE * ZOOM * LAMP_REACH;
             let base = LEAVES.len() + game.ants.len() + 2;
@@ -986,6 +998,13 @@ impl Demo {
                 };
                 let asleep = matches!(game.ants[id].state, game::AntState::Asleep(_));
                 let flare = self.landing.get(&id).copied().unwrap_or(0.0);
+                // Asleep: zero light, ever — only the tuck-in spike
+                // burns, and it burns loud.
+                let intensity = if asleep { flare * 3.0 } else { 1.4 };
+                if intensity <= 0.0 {
+                    node.shape = None;
+                    continue;
+                }
                 let c = ant_color(game.ants[id].color);
                 // A little white in the core, the ant's own hue in the
                 // throw of it.
@@ -996,29 +1015,34 @@ impl Demo {
                     a: 1.0,
                 };
                 node.shape = Some(frost::Shape::Light {
+                    light: frost::Light::point(col, intensity, reach).with_penumbra(LAMP_PENUMBRA),
+                });
+                node.transform = Transform::translate(self.screen(g.at));
+            }
+            // The player: a lamp while she walks, a spike when she
+            // reaches the queen's bed, then the dark of the tucked-in.
+            let node = &mut ctx.scene().root.children[base + game.ants.len()];
+            let intensity = match self.player_home {
+                Some(t) => t * 4.5,
+                None => 1.7,
+            };
+            if intensity > 0.0 {
+                node.shape = Some(frost::Shape::Light {
                     light: frost::Light::point(
-                        col,
-                        if asleep { 0.5 } else { 1.4 } + flare * 2.2,
+                        Color {
+                            r: 1.0,
+                            g: 0.86,
+                            b: 0.66,
+                            a: 1.0,
+                        },
+                        intensity,
                         reach,
                     )
                     .with_penumbra(LAMP_PENUMBRA),
                 });
-                node.transform = Transform::translate(self.screen(g.at));
+            } else {
+                node.shape = None;
             }
-            let node = &mut ctx.scene().root.children[base + game.ants.len()];
-            node.shape = Some(frost::Shape::Light {
-                light: frost::Light::point(
-                    Color {
-                        r: 1.0,
-                        g: 0.86,
-                        b: 0.66,
-                        a: 1.0,
-                    },
-                    1.7,
-                    reach,
-                )
-                .with_penumbra(LAMP_PENUMBRA),
-            });
             node.transform = Transform::translate(self.screen(self.player_at));
         }
         // The map as a window, in two sprites. Behind: the far
@@ -1074,6 +1098,63 @@ impl Demo {
             node.lit = true;
             node.order = -0.4;
         }
+        // Painted occlusion is a rectangle's privilege — a sprite's
+        // body casts no shadow on the flag alone — so the hill's solid
+        // cells declare their boxes here. But every occluder the field
+        // carries is tested by every fragment any light reaches, so
+        // one box per tile at 4K is a frame budget in chains: instead,
+        // touching solids merge into per-row runs. A merged run casts
+        // the same shadow its tiles ever did — the tile hairlines that
+        // used to leak a thread of light measure a pixel, and a merged
+        // edge is invisible against the row it belongs to.
+        {
+            let ts = TILE * ZOOM;
+            let mut runs: Vec<(i32, i32, i32)> = Vec::new();
+            let mut i = 0;
+            while i < tiles.len() {
+                let (row, col_s, _) = tiles[i];
+                let mut col_e = col_s;
+                let mut j = i + 1;
+                while j < tiles.len() && tiles[j].0 == row && tiles[j].1 == col_e + 1 {
+                    col_e = tiles[j].1;
+                    j += 1;
+                }
+                runs.push((col_s, col_e, row));
+                i = j;
+            }
+            // Sorted by span, then row, so a stack of equal spans — the
+            // frame's sides, a pile's flank — sits adjacent in line for
+            // the upward merge. A row-major scan could never see it: a
+            // row with two runs puts the other column's run between the
+            // stack's own links, and the stack stayed one box per row,
+            // leaking a hairline of light through every seam it drew.
+            runs.sort_unstable();
+            let mut k = 0;
+            while k < runs.len() {
+                let (col_s, col_e, row0) = runs[k];
+                let mut row1 = row0;
+                let mut m = k + 1;
+                while m < runs.len()
+                    && runs[m].0 == col_s
+                    && runs[m].1 == col_e
+                    && runs[m].2 == row1 + 1
+                {
+                    row1 = runs[m].2;
+                    m += 1;
+                }
+                let [x0, y0] = self.screen(self.cell_px(game::Cell::new(col_s, row0)));
+                let [x1, y1] = self.screen(self.cell_px(game::Cell::new(col_e, row1)));
+                // Full cells, not drawn tiles: the hairline inset is a
+                // detail of the grain, while the hill's body is solid
+                // to the grid — so the shadow must be too.
+                ctx.occluder(
+                    Transform::translate([(x0 + x1) * 0.5, (y0 + y1) * 0.5]),
+                    [0.0, 0.0],
+                    [((x1 - x0) + ts) * 0.5, ((y0 - y1) + ts) * 0.5],
+                );
+                k = m;
+            }
+        }
         {
             let [tw, th] = self.soil.sprite_size().unwrap_or([1.0, 1.0]);
             let ts = TILE * ZOOM;
@@ -1099,12 +1180,26 @@ impl Demo {
                 // The same hairline inset every tile keeps, grain intact.
                 node.scale = [(ts - 1.5) / tw, (ts - 1.5) / th];
                 node.modulate = shade(if *rock { wall } else { dirt_tint }, noise);
-                // Walls receive the night and cut its light: lit, and
-                // occluding, so an ant around a corner leaves the
-                // corridor beyond it dark.
+                // Walls receive the night: lit, so an ant around the
+                // corner leaves the corridor beyond genuinely dark —
+                // the declared boxes do the cutting.
                 node.lit = true;
-                node.occludes = true;
                 node.order = 0.0;
+            }
+        }
+        // The beds are the hill's beacons: each carries a faint light
+        // of its own colour — enough to find across a dark room and to
+        // aim a push by, never enough to light one. They burn always:
+        // a taken bed keeps glowing, the target outlives the ant.
+        {
+            let base = LEAVES.len() + game.ants.len() * 2 + 3 + tiles.len();
+            for (i, (cell, color)) in game.level.beds.iter().enumerate() {
+                let node = &mut ctx.scene().root.children[base + i];
+                node.shape = Some(frost::Shape::Light {
+                    light: frost::Light::point(ant_color(*color), 0.5, TILE * ZOOM * 1.3)
+                        .with_penumbra(LAMP_PENUMBRA),
+                });
+                node.transform = Transform::translate(self.screen(self.cell_px(*cell)));
             }
         }
         let mut asleep_z: Vec<[f32; 2]> = Vec::new();
@@ -1534,8 +1629,20 @@ impl Process for Demo {
                     }
                 }
             }
+            // The player is an ant, and the queen's bed is her target:
+            // standing on it tucks her in like any ant — spike, then
+            // dark. Stepping off (undo, stubbornness) relights the lamp.
+            self.player_home = match game.tile(game.player) {
+                level::Tile::Bed(game::AntColor::White) => {
+                    Some(self.player_home.unwrap_or(1.0).max(0.0))
+                }
+                _ => None,
+            };
         }
         for t in self.landing.values_mut() {
+            *t = (*t - dt / LAND_FLASH).max(0.0);
+        }
+        if let Some(t) = &mut self.player_home {
             *t = (*t - dt / LAND_FLASH).max(0.0);
         }
         self.refresh(dt);
