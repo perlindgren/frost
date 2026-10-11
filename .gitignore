@@ -4,5 +4,6 @@
 # tracked so any machine can `rustup target add wasm32-unknown-unknown
 # && cargo install wasm-bindgen-cli --version 0.2.128 && ./web/build.sh`.
 /web/pkg/
+/antifrost-web.zip
 Cargo.lock
 **/.DS_Store
