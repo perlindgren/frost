@@ -15,9 +15,11 @@ mod level;
 mod solver;
 
 use frost::{
-    Color, Context, Diagnostics, DiagnosticsFlags, KeyCode, MouseButton, Particle, ParticleShape,
-    ParticleSystem, Process, Repeat, Rng, Scene, SceneNode, SpriteFilter, Tile, Transform, Tween,
+    Color, Context, KeyCode, MouseButton, Particle, ParticleShape, ParticleSystem, Process, Rng,
+    Scene, SceneNode, SpriteFilter, Tile, Transform,
 };
+#[cfg(feature = "diag")]
+use frost::{Diagnostics, DiagnosticsFlags};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
@@ -26,6 +28,7 @@ use std::sync::Arc;
 const GAME_FONT: &[u8] = include_bytes!("assets/fonts/Barrfont-Regular.ttf");
 /// Diagnostics alone keeps Fira Code: the overlay is an instrument
 /// panel, not a signpost, and its numbers want a coding face.
+#[cfg(feature = "diag")]
 const DIAG_FONT: &[u8] = include_bytes!("../../assets/fonts/FiraCode-VariableFont_wght.ttf");
 /// The far background drifts at 0.85 of the camera's pan — almost one
 /// with the front layer, the small lag being the whole depth cue. It is
@@ -40,6 +43,10 @@ const LEVELS: &str = include_str!("levels.ron");
 /// under every tile. The hairline gaps between tiles and the void past the
 /// hill's edge read as earth instead of as a screen.
 const SOIL: &[u8] = include_bytes!("assets/sprites/soil.png");
+
+/// The bed, the user's own sprite: laid square on the bed's cell,
+/// tinted nothing, lit like everything else that lives in the hill.
+const BED: &[u8] = include_bytes!("assets/sprites/bed.png");
 
 const TILE: f32 = 44.0;
 
@@ -64,8 +71,11 @@ const CAM_EASE_TAU: f32 = 0.18;
 /// through the middle 25 % of the window in each axis.
 const CAM_DEAD: f32 = 0.25;
 
-/// The eleven leaf sprites — each sheet is one instanced particle batch.
-const LEAVES: [&[u8]; 11] = [
+/// The falling deck: eleven leaf sheets and the snowflake, each sheet
+/// one instanced particle batch. The twelfth sheet waits — past par
+/// the wind starts dealing it into the hand, and by double par the
+/// sky plays nothing else.
+const LEAVES: [&[u8]; 12] = [
     include_bytes!("assets/sprites/leaf1.png"),
     include_bytes!("assets/sprites/leaf2.png"),
     include_bytes!("assets/sprites/leaf3.png"),
@@ -77,7 +87,11 @@ const LEAVES: [&[u8]; 11] = [
     include_bytes!("assets/sprites/leaf9.png"),
     include_bytes!("assets/sprites/leaf10.png"),
     include_bytes!("assets/sprites/leaf11.png"),
+    include_bytes!("assets/sprites/snow_flake.png"),
 ];
+
+/// The snowflake's slot in `LEAVES` — never dealt as a leaf.
+const SNOW_SHEET: usize = LEAVES.len() - 1;
 
 /// The hand-tailored ant — four right-facing frames of a walk cycle, drawn
 /// top-down like the board reads it. The sheets are large (~970 px wide),
@@ -175,6 +189,16 @@ fn ground_sprite(cols: usize, rows: usize) -> Result<(frost::Shape, [f32; 2]), S
 /// origins stay evenly spread across the window width as they recycle.
 const N_LEAVES: usize = 30;
 
+/// The sky's ceiling: the deck swells from thirty to eighty as the
+/// weather comes in, newcomers called down by the storm itself.
+const N_MAX: usize = 80;
+
+/// The terminal gale, in px/s, at full frost — and it holds there:
+/// the weather caps at double par. Its speed is the deck's own mean
+/// fall speed, so a full storm streaks the sky at 45 degrees on
+/// average, wind and gravity met in equal measure.
+const WIND_MAX: f32 = 65.0;
+
 /// Leaves draw above the ants (z ≈ 1.5) and below the frost rim and every
 /// UI pixel.
 const LEAF_Z: f32 = 1.8;
@@ -212,6 +236,36 @@ const C_NIGHT: Color = Color {
 /// budget cannot pay at 4K. Tile walls cast tile shadows.
 const LAMP_REACH: f32 = 2.6;
 const LAMP_PENUMBRA: f32 = 0.0;
+
+/// Lamps breathe — ants are alive, not night-lights, and the breath
+/// is meant to be *seen*. Asleep: a warm pool that swells and subsides,
+/// a long slow haul of a breath — the dorm is never dark. Awake and
+/// still: a clear deep sway. Working: the lamp roars and dips — the
+/// swing grows to most of the light itself and the pace nearly
+/// triples. Stopping lets the exertion sink on an exponential, so the
+/// roar decays by degrees into the sway, and the queen's bed — hers
+/// or any ant's — is the slowest breath of all.
+const BREATH_SLEEP_BASE: f32 = 0.55;
+const BREATH_SLEEP_AMP: f32 = 0.42;
+/// Breaths per second: sleep is a four-and-a-half-second affair.
+const BREATH_SLEEP_RATE: f32 = 0.22;
+const BREATH_LAMP_BASE: f32 = 1.4;
+const BREATH_CALM_AMP: f32 = 0.6;
+const BREATH_WORK_AMP: f32 = 1.25;
+const BREATH_CALM_RATE: f32 = 0.45;
+const BREATH_WORK_RATE: f32 = 1.15;
+/// Exertion time constants: up brisk, down gradual.
+const BREATH_UP_TAU: f32 = 0.4;
+const BREATH_DOWN_TAU: f32 = 2.6;
+/// A full-speed ant's hop, in px per second, saturates exertion.
+const BREATH_FULL_SPEED: f32 = 520.0;
+
+/// The corner arc's control arm, in tile lengths: at 90° the hop bends
+/// into a quarter-circle of roughly this reach; smaller cuts tighter.
+const HOP_ARC_K: f32 = 0.55;
+/// How fast a facing turns, in rad/s — a 180 spins in about half a
+/// second, a tuck-in lifts the head a touch slower.
+const TURN_RATE: f32 = 7.0;
 const C_DIRT: Color = Color {
     r: 0.44,
     g: 0.31,
@@ -295,23 +349,136 @@ fn face_of(dir: game::Dir) -> [f32; 2] {
 }
 
 /// Per-ant pixel glide: where it is drawn, where it is heading.
+/// One hop's path: a cubic between two cells whose control arms lie
+/// along the directions of travel at either end. Entering and leaving
+/// the same way, the arms fall on the line and the hop is straight;
+/// at a corner they stand out and the hop bends into a quarter
+/// circle — position and facing curve together, because both read the
+/// same curve.
+#[derive(Clone, Copy)]
+struct Hop {
+    a: [f32; 2],
+    b: [f32; 2],
+    c: [f32; 2],
+    d: [f32; 2],
+    t: f32,
+    dur: f32,
+}
+
+impl Hop {
+    /// A finished hop parked at `p`, going nowhere — for snaps and spawns.
+    fn flat(p: [f32; 2], dur: f32) -> Self {
+        Self {
+            a: p,
+            b: p,
+            c: p,
+            d: p,
+            t: 1.0,
+            dur,
+        }
+    }
+    /// Re-armed from `from` to `to`, entering along `entry` and leaving
+    /// along `exit` (unit axes): perpendicular, the arms bend the
+    /// corner; aligned, the arms lie flat and it is a straight line.
+    fn to(&mut self, from: [f32; 2], to: [f32; 2], entry: [f32; 2], exit: [f32; 2], dur: f32) {
+        let dot = entry[0] * exit[0] + entry[1] * exit[1];
+        let k = if dot.abs() < 0.5 {
+            HOP_ARC_K * TILE
+        } else {
+            0.0
+        };
+        *self = Self {
+            a: from,
+            b: [from[0] + entry[0] * k, from[1] + entry[1] * k],
+            c: [to[0] - exit[0] * k, to[1] - exit[1] * k],
+            d: to,
+            t: 0.0,
+            dur,
+        };
+    }
+    fn tick(&mut self, dt: f32) -> [f32; 2] {
+        self.t = (self.t + dt / self.dur).min(1.0);
+        let t = self.t;
+        let u = 1.0 - t;
+        let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+        [
+            w[0] * self.a[0] + w[1] * self.b[0] + w[2] * self.c[0] + w[3] * self.d[0],
+            w[0] * self.a[1] + w[1] * self.b[1] + w[2] * self.c[1] + w[3] * self.d[1],
+        ]
+    }
+}
+
+/// Turns `from` toward `to` by at most `max` radians.
+fn turn_toward(from: [f32; 2], to: [f32; 2], max: f32) -> [f32; 2] {
+    let a = (from[0] * to[1] - from[1] * to[0])
+        .atan2(from[0] * to[0] + from[1] * to[1])
+        .clamp(-max, max);
+    let (s, c) = a.sin_cos();
+    [from[0] * c - from[1] * s, from[0] * s + from[1] * c]
+}
+
+/// One z off a sleeper's breath: it drifts up, wanders a little on the
+/// way, and its glyph grows from a small z to a full Z before it goes.
+struct Zzz {
+    at: [f32; 2],
+    vel: [f32; 2],
+    age: f32,
+    ttl: f32,
+    seed: f32,
+}
+
+/// The verdict splash: when the last ant lies down, a word spins up
+/// from a speck until it fills half the screen, rests a heartbeat,
+/// and fades to the hill's own quiet. The growth time is drawn
+/// randomly, so the spin — one clean turn and the landing — comes to
+/// rest on a random tilt anywhere within 45 degrees of level.
+struct Splash {
+    text: String,
+    t: f32,
+    grow: f32,
+    end: f32,
+}
+
+impl Splash {
+    const HOLD: f32 = 0.35;
+    const FADE: f32 = 2.475;
+    fn total(&self) -> f32 {
+        self.grow + Self::HOLD + Self::FADE
+    }
+}
+
 struct Glide {
     at: [f32; 2],
     target: [f32; 2],
-    tween: Tween<[f32; 2]>,
+    /// The direction this walker travels — the next hop's entry tangent.
+    dir: [f32; 2],
     /// Walk-cycle clock, in seconds. It turns continuously — ants mill
     /// about even where they stand — and only an asleep ant's drawing
     /// ignores it.
     anim: f32,
+    hop: Hop,
 }
 
 impl Glide {
     fn step(&mut self, to: [f32; 2], dt: f32) {
         if !closer(self.target, to) {
-            self.tween = Tween::new(self.at, to, TRAIL_HOP).repeat(Repeat::Once);
+            // The exit direction reads off the old target — the cell
+            // just left; a walker that has never left anywhere reads it
+            // off the hop itself.
+            let mut ex = [to[0] - self.target[0], to[1] - self.target[1]];
+            if ex[0].abs() + ex[1].abs() < 1e-3 {
+                ex = [to[0] - self.at[0], to[1] - self.at[1]];
+            }
+            let exit = if ex[0].abs() >= ex[1].abs() {
+                [ex[0].signum(), 0.0]
+            } else {
+                [0.0, ex[1].signum()]
+            };
+            self.hop.to(self.at, to, self.dir, exit, TRAIL_HOP);
+            self.dir = exit;
             self.target = to;
         }
-        self.at = self.tween.tick(dt);
+        self.at = self.hop.tick(dt);
         self.anim += dt;
     }
 }
@@ -326,8 +493,6 @@ impl Glide {
 struct Leaf {
     /// Which sprite sheet draws this leaf (index into `LEAVES`).
     sprite: usize,
-    /// The lane (0..`N_LEAVES`) this leaf re-enters above when recycled.
-    lane: usize,
     pos: [f32; 2],
     /// Descent speed in px/s, modulated by the flip.
     fall: f32,
@@ -349,18 +514,41 @@ struct Leaf {
     size: f32,
 }
 
+/// Everything a fresh draw needs to know about the current sky.
+struct Sky {
+    w: f32,
+    h: f32,
+    /// The canopy's parallax offset — spawn and wrap live in the
+    /// leaves' own space, which keeps every re-entry at a visible edge.
+    off: [f32; 2],
+    /// The frost's odds of dealing a snowflake.
+    snow: f32,
+    /// The windward emission reach.
+    reach: f32,
+}
+
 impl Leaf {
     /// A fresh leaf slightly above the visible window — which, in the
     /// parallax-shifted space the leaf lane lives in, is the window at
-    /// `-off` — jittered inside its lane.
-    fn fresh(lane: usize, w: f32, h: f32, off: [f32; 2], rng: &mut Rng) -> Self {
-        let lane_w = w / N_LEAVES as f32;
+    /// `-off` — jittered inside its lane. `lane` of `lanes`.
+    fn fresh(lane: usize, lanes: usize, sky: &Sky, rng: &mut Rng) -> Self {
+        // The deal: with the frost's own odds, the wind turns a leaf
+        // face down into a snowflake — the sheet changes, the
+        // behaviour does not: a flake sways, flips and spins exactly
+        // like any leaf.
+        let sprite = if rng.next_f32() < sky.snow {
+            SNOW_SHEET
+        } else {
+            (rng.next_f32() * SNOW_SHEET as f32) as usize % SNOW_SHEET.max(1)
+        };
+        // The emission width: the window, plus the windward reach a
+        // gale needs upwind so its drift still paints the whole sky.
+        let lane_w = (sky.w + sky.reach) / lanes.max(1) as f32;
         Self {
-            sprite: (rng.next_f32() * LEAVES.len() as f32) as usize % LEAVES.len(),
-            lane,
+            sprite,
             pos: [
-                -w / 2.0 - off[0] + lane_w * (lane as f32 + 0.5 + rng.in_range(-0.4, 0.4)),
-                h / 2.0 - off[1] + rng.in_range(24.0, 140.0),
+                -sky.w / 2.0 - sky.off[0] + lane_w * (lane as f32 + 0.5 + rng.in_range(-0.4, 0.4)),
+                sky.h / 2.0 - sky.off[1] + rng.in_range(24.0, 140.0),
             ],
             fall: rng.in_range(38.0, 92.0),
             sway: rng.in_range(26.0, 85.0),
@@ -385,7 +573,26 @@ struct Demo {
     game: Option<game::Game>,
     player_at: [f32; 2],
     player_target: [f32; 2],
-    player_tween: Tween<[f32; 2]>,
+    player_hop: Hop,
+    /// A 180° reversal taken in place: the direction turning into, or
+    /// `None` when nobody is spinning.
+    spin: Option<[f32; 2]>,
+    /// The facing the player's sprite actually shows — it turns toward
+    /// `face` instead of snapping, and lifts to the ceiling when she
+    /// tucks into the queen's bed.
+    player_face: [f32; 2],
+    /// The same turning for every ant, keyed by id.
+    render_face: HashMap<usize, [f32; 2]>,
+    /// Zs adrift over the sleepers, emitted on the breath's peak.
+    zs: Vec<Zzz>,
+    /// The verdict, mid-splash, if the hill just won.
+    splash: Option<Splash>,
+    /// Whether this hill's verdict has already been read — undo can
+    /// unwin a hill, and then it earns a fresh splash.
+    splash_done: bool,
+    /// The bloom each sleeper owes the coming crest: how many zs are
+    /// left, the phase angle of the next, and the spacing between.
+    zbloom: HashMap<usize, (u32, f32, f32)>,
     player_anim: f32,
     face: [f32; 2],
     glides: HashMap<usize, Glide>,
@@ -400,11 +607,15 @@ struct Demo {
     /// texture itself, a single cell, the whole sheet — is shared by
     /// every wall and dirt placement, instanced in one draw call.
     tile_atlas: frost::Shape,
+    /// The bed sprite, laid square on every bed's cell.
+    bed: frost::Shape,
     /// The giant ground sprite, rebuilt per hill: its punched hole must
     /// match the hill's rectangle, and the span it is drawn across.
     ground: Option<(frost::Shape, [f32; 2])>,
     /// The engine's diagnostics overlay: window size, FPS, frame time,
     /// processing times, draw calls, with Alt-0..Alt-T shortcuts.
+    /// The profiler HUD, compiled in only with `--features diag`.
+    #[cfg(feature = "diag")]
     diag: Diagnostics,
     font: Arc<[u8]>,
     note: String,
@@ -417,6 +628,13 @@ struct Demo {
     /// the queen's bed, flashing down from 1.0; `None` while she walks
     /// and her lamp burns. Step off and return, and it flares afresh.
     player_home: Option<f32>,
+    /// Per lamp — each ant, then the player keyed at `ants.len()`:
+    /// the breath phase, the exertion it rides, the last position the
+    /// breath tick saw, and whether the lamp was resting last frame
+    /// (the transition is where sleep strikes up). The motion in
+    /// between is the exertion's cue; `BREATH_*` turns exertion into
+    /// pace and depth.
+    breath: HashMap<usize, (f32, f32, [f32; 2], bool)>,
     note_t: f32,
     frost_t: f32,
     frost_bit: bool,
@@ -428,6 +646,9 @@ struct Demo {
     leaf_rng: Rng,
     leaves: Vec<Leaf>,
     leaves_seeded: bool,
+    /// How many of the deck are currently in the air — thirty in calm
+    /// weather, swelling toward `N_MAX` as the frost deepens.
+    leaves_active: usize,
     leaf_t: f32,
 }
 
@@ -441,6 +662,7 @@ impl Demo {
         let mut tile_atlas =
             frost::Shape::tilemap_bytes(SOIL).expect("shipped soil bakes as an atlas");
         tile_atlas.set_filter(SpriteFilter::Linear);
+        let bed = frost::Shape::sprite_bytes(BED).expect("shipped bed sprite decodes");
         let levels = level::load_levels(LEVELS);
         if levels.is_empty() {
             log::error!("antifrost: no levels loaded");
@@ -451,7 +673,14 @@ impl Demo {
             game: None,
             player_at: [0.0, 0.0],
             player_target: [0.0, 0.0],
-            player_tween: Tween::new([0.0, 0.0], [0.0, 0.0], HOP).repeat(Repeat::Once),
+            player_hop: Hop::flat([0.0, 0.0], HOP),
+            spin: None,
+            player_face: [1.0, 0.0],
+            render_face: HashMap::new(),
+            zs: Vec::new(),
+            splash: None,
+            splash_done: false,
+            zbloom: HashMap::new(),
             player_anim: 0.0,
             face: [1.0, 0.0],
             glides: HashMap::new(),
@@ -459,7 +688,9 @@ impl Demo {
             ant_frames,
             soil,
             tile_atlas,
+            bed,
             ground: None,
+            #[cfg(feature = "diag")]
             diag: Diagnostics::from_bytes(DIAG_FONT, DiagnosticsFlags::all()).unwrap_or_else(
                 |err| {
                     log::error!("antifrost: bad diagnostics font: {err}");
@@ -470,6 +701,7 @@ impl Demo {
             note: String::new(),
             landing: HashMap::new(),
             player_home: None,
+            breath: HashMap::new(),
             note_t: 0.0,
             frost_t: 0.0,
             frost_bit: false,
@@ -479,6 +711,7 @@ impl Demo {
             leaf_rng: Rng::default(),
             leaves: Vec::new(),
             leaves_seeded: false,
+            leaves_active: N_LEAVES,
             leaf_t: 0.0,
         };
         demo.load(0);
@@ -501,12 +734,20 @@ impl Demo {
         self.game = Some(game::Game::start(level));
         self.player_at = start;
         self.player_target = start;
-        self.player_tween = Tween::new(start, start, HOP).repeat(Repeat::Once);
+        self.player_hop = Hop::flat(start, HOP);
+        self.spin = None;
+        self.player_face = [1.0, 0.0];
+        self.render_face.clear();
+        self.zs.clear();
+        self.zbloom.clear();
+        self.splash = None;
+        self.splash_done = false;
         self.glides.clear();
         self.cam = start;
         self.route.clear();
         self.note.clear();
         self.landing.clear();
+        self.breath.clear();
         self.player_home = None;
         self.note_t = 0.0;
         self.frost_t = 0.0;
@@ -665,20 +906,25 @@ impl Demo {
         if !closer(self.player_target, want) {
             // Facing rides the step that actually happened — keys, click
             // route, or undo all turn the same way, and a move that the
-            // hill refused turns nothing.
+            // hill refused turns nothing. And corners bend: leaving the
+            // corner cell along the *old* facing and arriving along the
+            // new, the hop curves a quarter circle, so the turn reads
+            // through the path instead of snapping at the cell.
             let step = [
                 want[0] - self.player_target[0],
                 want[1] - self.player_target[1],
             ];
-            self.face = if step[0].abs() >= step[1].abs() {
+            let exit = if step[0].abs() >= step[1].abs() {
                 [step[0].signum(), 0.0]
             } else {
                 [0.0, step[1].signum()]
             };
-            self.player_tween = Tween::new(self.player_at, want, HOP).repeat(Repeat::Once);
+            self.player_hop
+                .to(self.player_at, want, self.face, exit, HOP);
+            self.face = exit;
             self.player_target = want;
         }
-        self.player_at = self.player_tween.tick(dt);
+        self.player_at = self.player_hop.tick(dt);
         self.player_anim += dt;
 
         // Where every ant wants to be; trail ants read the packed history.
@@ -709,8 +955,9 @@ impl Demo {
                 .or_insert_with(|| Glide {
                     at: to,
                     target: to,
-                    tween: Tween::new(to, to, TRAIL_HOP).repeat(Repeat::Once),
+                    dir: [0.0, 0.0],
                     anim: 0.0,
+                    hop: Hop::flat(to, TRAIL_HOP),
                 })
                 .step(to, dt);
         }
@@ -719,8 +966,11 @@ impl Demo {
             self.note_t = 2.4;
         }
 
-        // The frost: over par and the rim of the world turns cold. Soft —
-        // it never stops the walk, it only remembers that winter arrived.
+        // The frost: over par and winter arrives — snow mixed into
+        // the leaves, a wind off the right, both climbing with the
+        // round count. Past double par the weather caps and simply
+        // holds. The gauge eases toward its mark, so an undo walks
+        // the snow back into the leaves.
         let over = self
             .game
             .as_ref()
@@ -730,8 +980,13 @@ impl Demo {
             self.note = "the frost bites  keep walking".to_string();
             self.note_t = 2.4;
         }
-        self.frost_t += if over { dt / 1.2 } else { -dt / 1.2 };
-        self.frost_t = self.frost_t.clamp(0.0, 1.0);
+        let target = match self.game.as_ref() {
+            Some(g) if g.level.par > 0 => {
+                ((g.moves as f32 - g.level.par as f32) / g.level.par as f32).clamp(0.0, 1.0)
+            }
+            _ => 0.0,
+        };
+        self.frost_t += (target - self.frost_t) * (1.0 - (-(dt / 1.2)).exp());
     }
 
     /// Autumn over the hill: thirty leaves flutter down and drift clean
@@ -749,10 +1004,30 @@ impl Demo {
             -self.cam[0] * ZOOM * LEAF_PARALLAX,
             -self.cam[1] * ZOOM * LEAF_PARALLAX,
         ];
+        self.leaf_t += dt;
+        // The weather: past par the gauge climbs, the wind leans out
+        // of the right, and the snow creeps into the deck — all three
+        // capped at double par, where the storm holds its note.
+        let wind_mag = self.frost_t * WIND_MAX;
+        // The emission width answers the wind: upwind reach equal to
+        // the drift a flake performs across its whole fall, so the
+        // gale paints an even sky instead of a bare right edge.
+        let reach = wind_mag * h / WIND_MAX;
+        // A slow shared gust all the leaves hang from — and under it,
+        // once it comes, the gale out of the right.
+        let wind =
+            16.0 * (0.11 * self.leaf_t).sin() + 7.0 * (0.37 * self.leaf_t + 2.1).sin() - wind_mag;
+        let sky = Sky {
+            w,
+            h,
+            off,
+            snow: self.frost_t,
+            reach,
+        };
         if !self.leaves_seeded {
             self.leaves_seeded = true;
-            self.leaves = (0..N_LEAVES)
-                .map(|lane| Leaf::fresh(lane, w, h, off, &mut self.leaf_rng))
+            self.leaves = (0..N_MAX)
+                .map(|lane| Leaf::fresh(lane, N_MAX, &sky, &mut self.leaf_rng))
                 .collect();
             // Scatter the first volley through the air, so the hill
             // opens already in autumn rather than waiting for a fall.
@@ -762,11 +1037,18 @@ impl Demo {
                     .in_range(-h / 2.0 - off[1] + 20.0, h / 2.0 - off[1] + 60.0);
             }
         }
-        self.leaf_t += dt;
-        // A slow shared gust all the leaves hang from.
-        let wind = 16.0 * (0.11 * self.leaf_t).sin() + 7.0 * (0.37 * self.leaf_t + 2.1).sin();
         let mut batches = vec![ParticleSystem::default(); LEAVES.len()];
-        for leaf in &mut self.leaves {
+        // The storm's ledger: thirty in calm weather, swelling toward
+        // eighty as the frost deepens — newcomers are called in from
+        // above, dealt like everything else.
+        let active = (N_LEAVES as f32 + (N_MAX - N_LEAVES) as f32 * self.frost_t) as usize;
+        if active > self.leaves_active {
+            for i in self.leaves_active..active {
+                self.leaves[i] = Leaf::fresh(i, active, &sky, &mut self.leaf_rng);
+            }
+        }
+        self.leaves_active = active;
+        for (i, leaf) in self.leaves.iter_mut().enumerate().take(active) {
             leaf.phase += leaf.freq * dt;
             leaf.flip_phase += leaf.flip_freq * dt;
             let flip = leaf.flip_phase.sin();
@@ -791,15 +1073,18 @@ impl Demo {
             // margin clears the fattest leaf's half-width so nothing
             // pops at an edge.
             let m = 100.0;
-            if leaf.pos[0] > w / 2.0 - off[0] + m {
-                leaf.pos[0] -= w + 2.0 * m;
+            if leaf.pos[0] > w / 2.0 - off[0] + m + reach {
+                leaf.pos[0] -= w + 2.0 * m + reach;
             } else if leaf.pos[0] < -w / 2.0 - off[0] - m {
-                leaf.pos[0] += w + 2.0 * m;
+                // Taken by the gale: the flake walks back onto the
+                // windward edge, anywhere along the reach and at its
+                // own height — drift and feed stay even.
+                leaf.pos[0] = w / 2.0 - off[0] + m + self.leaf_rng.in_range(0.0, reach + m);
             }
             // Past the bottom and the leaf is simply gone — recycled to
             // its lane above the window. No pile, no fade.
             if leaf.pos[1] < -h / 2.0 - off[1] - m {
-                *leaf = Leaf::fresh(leaf.lane, w, h, off, &mut self.leaf_rng);
+                *leaf = Leaf::fresh(i, active, &sky, &mut self.leaf_rng);
             }
             batches[leaf.sprite].spawn(Particle {
                 pos: leaf.pos,
@@ -825,48 +1110,96 @@ impl Demo {
         }
     }
 
-    // ------------------------------------------------------------- draw
-
-    fn draw_board(&self, ctx: &mut Context) {
-        let Some(game) = &self.game else { return };
-        // A cell as the camera shows it; the hairline gap and the bed's
-        // corner radii stay in screen pixels so zoom never fattens them.
-        let ts = TILE * ZOOM;
-        for row in 0..game.level.rows as i32 {
-            for col in 0..game.level.cols as i32 {
-                let cell = game::Cell::new(col, row);
-                let [x, y] = self.screen(self.cell_px(cell));
-                match game.tile(cell) {
-                    // Tunnels draw nothing: the hill is solid where rock
-                    // and dirt are, and the tunnels are the holes cut
-                    // into it — what shows through is the far sprite
-                    // sliding under the board. Rock and dirt draw
-                    // nothing here either: both wear the soil sprite,
-                    // sprites only ride scene nodes, and only nodes
-                    // take part in the light field — the hill's solid
-                    // cells are drawn from the node pool in `draw_ants`
-                    // as receivers and occluders. Beds hang their
-                    // accent in the open cell: immediate, unlit, and
-                    // all the better for it — in the dark, a bed reads
-                    // as its own small warmth.
-                    level::Tile::Rock | level::Tile::Tunnel | level::Tile::Dirt => {}
-                    level::Tile::Bed(color) => {
-                        let c = ant_color(color);
-                        ctx.rectangle(x, y - ts * 0.13, ts * 0.36, ts * 0.17, shade(c, 0.75), 0.05);
-                        ctx.rectangle(x, y - ts * 0.13, ts * 0.30, ts * 0.12, shade(c, 0.55), 0.06);
-                        ctx.rectangle(
-                            x - ts * 0.14,
-                            y - ts * 0.02,
-                            ts * 0.10,
-                            ts * 0.06,
-                            shade(c, 1.3),
-                            0.07,
-                        );
-                    }
-                }
+    /// Advance one lamp's breath: the phase turns at the lamp's rate,
+    /// and the exertion chases the speed the lamp is actually
+    /// travelling at — brisk on the way up, gradual on the way down,
+    /// so stopping slows the pace by degrees rather than by switch.
+    /// Phases start scattered on the golden angle, so a dorm of
+    /// sleepers never breathes in chorus. A resting lamp also blooms
+    /// its zs: a burst of two to five, spread over the eighth of a
+    /// breath that leads to the crest, the last z landing exactly on
+    /// the peak of the breath.
+    fn breathe(&mut self, id: usize, at: [f32; 2], resting: bool, dt: f32) {
+        let e = self
+            .breath
+            .entry(id)
+            .or_insert((id as f32 * 2.399_963_3, 0.0, at, resting));
+        if resting && !e.3 {
+            // Sleep does not strike up mid-breath. It starts three
+            // quarters into one, so the first bloom is soon behind
+            // the sleeper — soon, not instant, the way a first yawn
+            // still has to gather.
+            e.0 = 3.0 * std::f32::consts::FRAC_PI_2;
+        }
+        e.3 = resting;
+        let dx = at[0] - e.2[0];
+        let dy = at[1] - e.2[1];
+        e.2 = at;
+        let speed = (dx * dx + dy * dy).sqrt() / dt.max(1e-3);
+        let target = (speed / BREATH_FULL_SPEED).min(1.0);
+        let tau = if target > e.1 {
+            BREATH_UP_TAU
+        } else {
+            BREATH_DOWN_TAU
+        };
+        e.1 += (target - e.1) * (1.0 - (-(dt / tau)).exp());
+        let rate = if resting {
+            BREATH_SLEEP_RATE
+        } else {
+            BREATH_CALM_RATE + (BREATH_WORK_RATE - BREATH_CALM_RATE) * e.1
+        };
+        let prev = e.0;
+        e.0 = (e.0 + dt * rate * std::f32::consts::TAU) % std::f32::consts::TAU;
+        if !resting {
+            self.zbloom.remove(&id);
+            return;
+        }
+        if e.0 < prev {
+            // A breath has just begun: draw the next bloom's lot — how
+            // many zs, and how wide a window. The window is an eighth
+            // of the breath, ± a quarter of itself redrawn every
+            // cycle, always ending its last z on the crest.
+            let n = (self.leaf_rng.in_range(2.0, 5.0).round() as u32).clamp(2, 5);
+            let w = std::f32::consts::FRAC_PI_4 * self.leaf_rng.in_range(0.75, 1.25);
+            self.zbloom
+                .insert(id, (n, std::f32::consts::FRAC_PI_2 - w, w / (n - 1) as f32));
+        }
+        // Angles run from an eighth-turn out to the quarter-turn that
+        // crowns the crest — an eighth of the period, to the last z.
+        let mut fire = 0u32;
+        if let Some(b) = self.zbloom.get_mut(&id) {
+            while b.0 > 0 && prev < b.1 && b.1 <= e.0 {
+                b.0 -= 1;
+                b.1 += b.2;
+                fire += 1;
             }
         }
+        for _ in 0..fire {
+            self.spawn_z(at);
+        }
     }
+
+    /// One z off a sleeper's breath, into the air above its head:
+    /// tilted a random way and never quite the same twice.
+    fn spawn_z(&mut self, at: [f32; 2]) {
+        let jx = self.leaf_rng.in_range(-6.0, 6.0);
+        // Three fifths of the old drift and rise — a sleepy exhale —
+        // and a life stretched by the same factor, so each z still
+        // climbs as high as it ever did, only slower.
+        let vx = self.leaf_rng.in_range(-18.0, 18.0) * 0.6;
+        let vy = self.leaf_rng.in_range(30.0, 48.0) * 0.6;
+        let ttl = self.leaf_rng.in_range(1.6, 2.3) / 0.6;
+        let seed = self.leaf_rng.in_range(0.0, std::f32::consts::TAU);
+        self.zs.push(Zzz {
+            at: [at[0] + jx, at[1] + TILE * 0.34],
+            vel: [vx, vy],
+            age: 0.0,
+            ttl,
+            seed,
+        });
+    }
+
+    // ------------------------------------------------------------- draw
 
     /// Places one baked ant frame as a scene node: centered on `at`,
     /// turned so the head points along `face`, mirrored for a left walk,
@@ -905,7 +1238,7 @@ impl Demo {
         node.order = order;
     }
 
-    fn draw_ants(&mut self, ctx: &mut Context) {
+    fn draw_ants(&mut self, ctx: &mut Context, dt: f32) {
         let Some(game) = &self.game else { return };
         // Chain link line: player → head → … → tail.
         if !game.trail.is_empty() {
@@ -984,12 +1317,10 @@ impl Demo {
             })
             .collect();
         // Slots: leaves, ants, the player pair, one lamp per ant plus
-        // the player's, a beacon per bed, the two backdrop sprites,
-        // and the tile pool.
-        // Slots: leaves, ants, the player pair, one lamp per ant plus
         // the player's, the single tile map holding every solid, a
-        // beacon per bed, and the two backdrop sprites.
-        let slots = LEAVES.len() + game.ants.len() * 2 + 6 + game.level.beds.len();
+        // beacon and a sprite per bed (two apiece), and the two
+        // backdrop sprites.
+        let slots = LEAVES.len() + game.ants.len() * 2 + 6 + game.level.beds.len() * 2;
         {
             let root = &mut ctx.scene().root;
             while root.children.len() < slots {
@@ -997,12 +1328,13 @@ impl Demo {
             }
             root.children.truncate(slots);
         }
-        // Every ant is a lamp: an omni light riding the pixel it stands
-        // on, throwing a couple of tiles of warm reach, soft at the rim.
-        // Hitting the target pays out a loud circular spike; an ant
-        // asleep emits nothing at all — the lamp lives only for the
-        // flash. The player is an ant too, and the queen's bed is her
-        // target: same flare on arrival, same dark after.
+        // Every ant is a lamp, and every lamp breathes: at rest a
+        // gentle sway, working a deeper faster pulse, and stopping
+        // winds the pace down by degrees. Asleep keeps only a faint
+        // slow pulse on the dark — the dorm breathes, it does not go
+        // out — and the tuck-in spike burns loud over it. The player
+        // is an ant too, and the queen's bed is her target: same
+        // breath, same flare.
         {
             let reach = TILE * ZOOM * LAMP_REACH;
             let base = LEAVES.len() + game.ants.len() + 2;
@@ -1014,9 +1346,18 @@ impl Demo {
                 };
                 let asleep = matches!(game.ants[id].state, game::AntState::Asleep(_));
                 let flare = self.landing.get(&id).copied().unwrap_or(0.0);
-                // Asleep: zero light, ever — only the tuck-in spike
-                // burns, and it burns loud.
-                let intensity = if asleep { flare * 3.0 } else { 1.4 };
+                let (phase, exertion, ..) = self
+                    .breath
+                    .get(&id)
+                    .copied()
+                    .unwrap_or((0.0, 0.0, [0.0; 2], false));
+                let intensity = if asleep {
+                    BREATH_SLEEP_BASE + BREATH_SLEEP_AMP * phase.sin() + flare * 3.0
+                } else {
+                    BREATH_LAMP_BASE
+                        + (BREATH_CALM_AMP + (BREATH_WORK_AMP - BREATH_CALM_AMP) * exertion)
+                            * phase.sin()
+                };
                 if intensity <= 0.0 {
                     node.shape = None;
                     continue;
@@ -1035,12 +1376,22 @@ impl Demo {
                 });
                 node.transform = Transform::translate(self.screen(g.at));
             }
-            // The player: a lamp while she walks, a spike when she
-            // reaches the queen's bed, then the dark of the tucked-in.
+            // The player breathes with the rest: a working pulse on
+            // the walk, the queen's bed a loud spike, and then the
+            // faint slow sway of the tucked-in.
             let node = &mut ctx.scene().root.children[base + game.ants.len()];
+            let (phase, exertion, ..) = self
+                .breath
+                .get(&game.ants.len())
+                .copied()
+                .unwrap_or((0.0, 0.0, [0.0; 2], false));
             let intensity = match self.player_home {
-                Some(t) => t * 4.5,
-                None => 1.7,
+                Some(t) => BREATH_SLEEP_BASE + BREATH_SLEEP_AMP * phase.sin() + t * 4.5,
+                None => {
+                    BREATH_LAMP_BASE
+                        + (BREATH_CALM_AMP + (BREATH_WORK_AMP - BREATH_CALM_AMP) * exertion)
+                            * phase.sin()
+                }
             };
             if intensity > 0.0 {
                 node.shape = Some(frost::Shape::Light {
@@ -1226,7 +1577,25 @@ impl Demo {
                 node.transform = Transform::translate(self.screen(self.cell_px(*cell)));
             }
         }
-        let mut asleep_z: Vec<[f32; 2]> = Vec::new();
+        // And the beds receive as well as give: the user's own bed
+        // sprite, square on the cell, lit by the beacon it sleeps
+        // under and every lamp that reaches it.
+        {
+            let base = LEAVES.len() + game.ants.len() * 2 + 4 + game.level.beds.len();
+            let [tw, th] = self.bed.sprite_size().unwrap_or([1.0, 1.0]);
+            let s = (TILE * ZOOM - 2.0) / tw.max(th);
+            for (i, (cell, color)) in game.level.beds.iter().enumerate() {
+                let node = &mut ctx.scene().root.children[base + i];
+                node.shape = Some(self.bed.clone());
+                node.transform = Transform::translate(self.screen(self.cell_px(*cell)));
+                node.scale = [s, s];
+                // Each bed wears its sleeper's colour — the sprite is
+                // the modulate's base cloth, not the other way round.
+                node.modulate = ant_color(*color);
+                node.lit = true;
+                node.order = 0.05;
+            }
+        }
         for id in 0..game.ants.len() {
             let Some(g) = self.glides.get(&id) else {
                 continue;
@@ -1260,22 +1629,41 @@ impl Demo {
             let z = 1.0 + g.at[1] * 1e-4;
             let node = &mut ctx.scene().root.children[LEAVES.len() + id];
             let at = self.screen(g.at);
-            self.put_ant(node, frame_of(g.anim, asleep), at, face, col, z);
-            if asleep {
-                asleep_z.push(g.at);
-            }
+            // Facings turn, never snap: toward travel on foot, toward
+            // the ceiling when tucked in.
+            let want_face = if asleep { [0.0, 1.0] } else { face };
+            let rf = self.render_face.entry(id).or_insert(want_face);
+            *rf = turn_toward(*rf, want_face, TURN_RATE * dt);
+            let rf = *rf;
+            self.put_ant(node, frame_of(g.anim, asleep), at, rf, col, z);
         }
-        for at in asleep_z {
-            let [x, y] = self.screen(at);
+        // The zs: one born at each breath's crest, adrift and growing
+        // from a small z to a full Z, wandering one way and then the
+        // other, and thinning out as it climbs. Immediate text rides
+        // above the dark like every other word in the game.
+        for zz in &self.zs {
+            let k = (zz.age / zz.ttl).min(1.0);
+            let [x, y] = self.screen([
+                zz.at[0] + 8.0 * (zz.seed + zz.age * 1.56).sin() * k,
+                zz.at[1],
+            ]);
             ctx.text(
-                x + TILE * ZOOM * 0.26,
-                y + TILE * ZOOM * 0.36,
+                x,
+                y,
                 &self.font,
                 "z",
-                48.0,
+                // Whole points only: the glyph atlas is keyed by size,
+                // and a z that grew through fractional sizes would
+                // bake itself a fresh atlas every frame.
+                (16.0 + 36.0 * k).round(),
                 700.0,
-                C_DIM,
-                1.53,
+                Color {
+                    r: C_DIM.r,
+                    g: C_DIM.g,
+                    b: C_DIM.b,
+                    a: 1.0 - k * k,
+                },
+                1.56,
             );
         }
         // The player: a near-black copy of the same frame a couple of
@@ -1292,7 +1680,7 @@ impl Demo {
                 &mut root.children[LEAVES.len() + back],
                 frame,
                 [at[0] + 1.5 * ZOOM, at[1] - 1.5 * ZOOM],
-                self.face,
+                self.player_face,
                 Color {
                     r: 0.06,
                     g: 0.05,
@@ -1305,63 +1693,60 @@ impl Demo {
                 &mut root.children[LEAVES.len() + player],
                 frame,
                 at,
-                self.face,
+                self.player_face,
                 ant_color(game::AntColor::White),
                 1.5,
             );
         }
     }
 
-    /// A rim of ice creeping in from the edges once par is gone. Two
-    /// nested bands of translucent blue, strong outside, dissolving
-    /// inward; sits under every UI pixel on purpose.
-    fn draw_frost(&self, ctx: &mut Context) {
-        let f = self.frost_t * self.frost_t;
-        if f <= 0.01 {
-            return;
-        }
-        let (w, h) = ctx.size();
-        let ice = |a: f32| Color {
-            r: 0.66,
-            g: 0.80,
-            b: 0.94,
-            a: a * f,
+    /// Draw the verdict: one clean spin from a speck, eased so the
+    /// speck lingers tiny before it blooms to half the screen; a
+    /// heartbeat at full size; then the fade to the hill's own words.
+    fn draw_splash(&self, ctx: &mut Context) {
+        let Some(s) = &self.splash else { return };
+        let (w, _) = ctx.size();
+        let k = (s.t / s.grow).min(1.0);
+        let e = k * k * (3.0 - 2.0 * k);
+        // The word is baked once, at one fixed size, and the growth
+        // rides the node's scale: the whole splash needs exactly one
+        // glyph atlas, and the bloom is smooth at every step.
+        const SPLASH_EM: f32 = 200.0;
+        // Full growth: the word fills half the screen's width.
+        let scale = (e * w / (1.3 * SPLASH_EM * s.text.len().max(4) as f32)).max(0.002);
+        // Five full turns — a quarter faster spinning than four —
+        // landing on the drawn tilt within 45 degrees of level; the
+        // random growth time keeps the landing unpredictable, the
+        // angle is simply where the turn stops.
+        let angle = (5.0 * std::f32::consts::TAU + s.end) * e;
+        let alpha = if s.t <= s.grow + Splash::HOLD {
+            1.0
+        } else {
+            (1.0 - (s.t - s.grow - Splash::HOLD) / Splash::FADE).max(0.0)
         };
-        let band = (w.min(h) * 0.09).max(40.0);
-        for (depth, tint) in [(band, ice(0.10)), (band * 0.45, ice(0.14))] {
-            ctx.rectangle(
-                0.0,
-                h / 2.0 - depth / 2.0,
-                w / 2.0,
-                depth / 2.0,
-                tint,
-                UI - 1.0,
-            );
-            ctx.rectangle(
-                0.0,
-                -h / 2.0 + depth / 2.0,
-                w / 2.0,
-                depth / 2.0,
-                tint,
-                UI - 1.0,
-            );
-            ctx.rectangle(
-                -w / 2.0 + depth / 2.0,
-                0.0,
-                depth / 2.0,
-                h / 2.0,
-                tint,
-                UI - 1.0,
-            );
-            ctx.rectangle(
-                w / 2.0 - depth / 2.0,
-                0.0,
-                depth / 2.0,
-                h / 2.0,
-                tint,
-                UI - 1.0,
-            );
+        // The example's own font Arc, handed over whole: the glyph
+        // atlas is keyed on the buffer's pointer, and a fresh Arc per
+        // frame (what `text_bytes` builds) would mint a fresh atlas
+        // every frame — the flicker this line is careful about.
+        let mut shape =
+            match frost::Shape::text_shared(Arc::clone(&self.font), s.text.clone(), SPLASH_EM) {
+                Ok(shape) => shape,
+                Err(_) => return,
+            };
+        if let frost::Shape::Text {
+            color, alpha: a, ..
+        } = &mut shape
+        {
+            *color = C_TEXT;
+            *a = alpha;
         }
+        ctx.scene().root.children.push(Box::new(SceneNode {
+            shape: Some(shape),
+            transform: Transform::rotate(angle),
+            scale: [scale, scale],
+            order: UI + 1.0,
+            ..Default::default()
+        }));
     }
 
     fn draw_hud(&self, ctx: &mut Context) {
@@ -1441,7 +1826,7 @@ impl Demo {
                 UI + 1.0,
             );
         }
-        if game.won {
+        if game.won && self.splash.is_none() {
             ctx.text(
                 0.0,
                 44.0,
@@ -1518,7 +1903,19 @@ impl Demo {
     /// Any refusal — a line that packed into the way, a sleeper claimed,
     /// the hill sleeping — ends the route right there.
     fn walk_the_route(&mut self) {
-        if self.route.is_empty() || !closer(self.player_at, self.player_target) {
+        if self.route.is_empty()
+            || self.spin.is_some()
+            || !closer(self.player_at, self.player_target)
+        {
+            return;
+        }
+        // A reversal of the travelling direction is a turn, not a
+        // step: spin in place and leave the direction queued — the
+        // route resumes the instant the about-face lands.
+        let dir = self.route[0];
+        let to = face_of(dir);
+        if self.face[0] * to[0] + self.face[1] * to[1] < -0.99 {
+            self.spin = Some(to);
             return;
         }
         let Some(game) = &mut self.game else {
@@ -1528,7 +1925,7 @@ impl Demo {
             self.route.clear();
             return;
         }
-        let dir = self.route.remove(0);
+        self.route.remove(0);
         if game.move_player(dir).is_err() {
             self.route.clear();
         }
@@ -1537,6 +1934,7 @@ impl Demo {
 
 impl Process for Demo {
     fn process(&mut self, ctx: &mut Context, dt: f32) {
+        #[cfg(feature = "diag")]
         self.diag.process(ctx, dt);
         // F11 flips the window's fullscreen state — the runtime twin of
         // `Config::fullscreen`, reached through the engine's own window.
@@ -1618,8 +2016,15 @@ impl Process for Demo {
                         // carry its facing — turn by hand.
                         self.face = face_of(dir);
                         let _ = game.push(dir);
-                    } else {
-                        let _ = game.move_player(dir);
+                    } else if self.spin.is_none() {
+                        // The keyboard's 180 obeys the route's law:
+                        // about-face in place, then walk.
+                        let to = face_of(dir);
+                        if self.face[0] * to[0] + self.face[1] * to[1] < -0.99 {
+                            self.spin = Some(to);
+                        } else {
+                            let _ = game.move_player(dir);
+                        }
                     }
                 }
             }
@@ -1669,15 +2074,87 @@ impl Process for Demo {
         if let Some(t) = &mut self.player_home {
             *t = (*t - dt / LAND_FLASH).max(0.0);
         }
+        // Breath tick: every lamp's phase and exertion, the player's
+        // last. The resting flag is sleep for an ant, home for her.
+        if let Some(game) = &self.game {
+            let lamps: Vec<(usize, [f32; 2], bool)> = (0..game.ants.len())
+                .map(|id| {
+                    (
+                        id,
+                        self.glides.get(&id).map(|g| g.at).unwrap_or([0.0, 0.0]),
+                        matches!(game.ants[id].state, game::AntState::Asleep(_)),
+                    )
+                })
+                .collect();
+            let home = (game.ants.len(), self.player_at, self.player_home.is_some());
+            for (id, at, resting) in lamps {
+                self.breathe(id, at, resting, dt);
+            }
+            self.breathe(home.0, home.1, home.2, dt);
+        }
+        // The zs drift up and grow old.
+        for z in &mut self.zs {
+            z.age += dt;
+            z.at[0] += z.vel[0] * dt;
+            z.at[1] += z.vel[1] * dt;
+        }
+        self.zs.retain(|z| z.age < z.ttl);
+        // Facings turn and never snap: the player spins through her
+        // 180s, and a tucked-in queen lifts her head to the ceiling.
+        let face_to = if self.player_home.is_some() {
+            [0.0, 1.0]
+        } else if let Some(s) = self.spin {
+            s
+        } else {
+            self.face
+        };
+        self.player_face = turn_toward(self.player_face, face_to, TURN_RATE * dt);
+        if let Some(s) = self.spin
+            && self.player_face[0] * s[0] + self.player_face[1] * s[1] > 0.999
+        {
+            self.face = s;
+            self.spin = None;
+            self.player_face = s;
+        }
+        // The verdict: when the hill is won and has not yet been told
+        // its own name, draw one from the hat — the praise tier reads
+        // the par, the spin reads the dice.
+        if let Some(game) = &self.game {
+            if !game.won {
+                self.splash_done = false;
+            } else if self.splash.is_none() && !self.splash_done {
+                let praise: [&str; 3] = if game.level.par > 0 && game.moves <= game.level.par {
+                    ["EXCELLENT", "PERFECT", "SUPER"]
+                } else {
+                    ["YOU DID IT", "GOOD JOB", "WELL DONE"]
+                };
+                let pick = self.leaf_rng.in_range(0.0, 2.999) as usize;
+                let text = praise[pick].to_string();
+                let grow = self.leaf_rng.in_range(1.875, 2.55);
+                let end = self.leaf_rng.in_range(-45.0, 45.0) * std::f32::consts::FRAC_PI_4 / 45.0;
+                self.splash = Some(Splash {
+                    text,
+                    t: 0.0,
+                    grow,
+                    end,
+                });
+            }
+        }
+        if let Some(s) = &mut self.splash {
+            s.t += dt;
+            if s.t >= s.total() {
+                self.splash = None;
+                self.splash_done = true;
+            }
+        }
         self.refresh(dt);
         self.update_camera(ctx, dt);
         self.walk_the_route();
 
         self.update_leaves(ctx, dt);
-        self.draw_board(ctx);
-        self.draw_ants(ctx);
-        self.draw_frost(ctx);
+        self.draw_ants(ctx, dt);
         self.draw_hud(ctx);
+        self.draw_splash(ctx);
     }
 }
 
@@ -1744,6 +2221,9 @@ fn main() {
         Demo::new(ant_frames, soil),
         frost::Config {
             window_size: Some([1920, 1080]),
+            // The hill opens full screen; F11 flips to the windowed
+            // size above, and again back.
+            fullscreen: true,
             // Vsync stays on (the default): the vsync-off experiment hit
             // 200 fps with heavy judder, so the pipeline has headroom
             // and the display's cadence is the right pin.

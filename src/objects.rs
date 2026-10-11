@@ -933,6 +933,37 @@ impl Shape {
         })
     }
 
+    /// Creates a text shape from a font buffer already shared behind an
+    /// [`Arc`].
+    ///
+    /// This is [`Shape::text_bytes`] without the copy: the shape reuses
+    /// the caller's buffer. Since the glyph atlas cache is keyed on that
+    /// buffer's pointer, every shape built from one `Arc` shares one
+    /// atlas — while two `text_bytes` calls on the same bytes mint two
+    /// buffers, and two atlases. Per-frame text (an animated splash)
+    /// should share the `Arc`: the pointer stays stable, so the atlas
+    /// is built once instead of rebuilt and re-uploaded every frame.
+    pub fn text_shared(
+        font: Arc<[u8]>,
+        text: impl Into<String>,
+        size: f32,
+    ) -> Result<Self, TextError> {
+        swash::FontRef::from_index(&font, 0).ok_or(TextError::InvalidFont)?;
+        Ok(Self::Text {
+            text: text.into(),
+            font,
+            size,
+            weight: 400.0,
+            color: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+        })
+    }
+
     /// Sets the text's `wght` variation-axis value: `400.0` is the Regular
     /// [`Shape::text`] and [`Shape::text_bytes`] default, `700.0` a full
     /// bold, and anything in between renders proportionally thicker —

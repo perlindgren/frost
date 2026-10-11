@@ -1284,6 +1284,18 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
 /// carries the raster size, never the requested one: the same font at two
 /// display densities rasterizes two atlases, each at its own resolution,
 /// and neither ever stretches the other's glyphs.
+/// The atlas side for a text raster size. Font vertical metrics lie —
+/// display fonts mask far taller than their claimed span — so the
+/// budget comes from the em itself: four em to a side covers several
+/// shelves of masks up to about 1.2 em tall, which is a dozen or more
+/// glyph cells at any size. In whole 64-pixel steps, between the
+/// default side and a ceiling for screen-filling text.
+fn atlas_side(raster: f32) -> u32 {
+    ((4.0 * raster).ceil() as u32)
+        .next_multiple_of(64)
+        .clamp(512, 2048)
+}
+
 fn expand_text_list(
     user_to_pixel: Transform,
     draws: Vec<Draw>,
@@ -1329,10 +1341,14 @@ fn expand_text_list(
                 // clone: a clone's new cells would be dropped, because the
                 // key is already registered by the time the first new glyph
                 // appears (an earlier draw or frame), and the glyphs would
-                // never draw. `or_default` also keeps an atlas in the map
-                // even when nothing was packed (e.g. all-space text) so
-                // later frames hit it.
-                let atlas = atlases.entry(key).or_default();
+                // never draw. A miss builds an atlas scaled to this text's
+                // raster — big text (a screen-filling splash) would have
+                // every glyph skipped at the default side — and the entry
+                // stays in the map even when nothing is packed (e.g.
+                // all-space text) so later frames hit it.
+                let atlas = atlases
+                    .entry(key)
+                    .or_insert_with(|| text::Atlas::sized(atlas_side(raster)));
                 // Rasterize the glyphs the atlas does not have yet.
                 let mut missing = Vec::new();
                 for glyph in &layout.glyphs {

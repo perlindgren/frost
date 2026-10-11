@@ -273,3 +273,55 @@ fn expand_text_at_density_2_bakes_at_the_physical_size_and_lays_out_logically() 
         }
     }
 }
+
+#[test]
+fn expand_text_big_letters_keep_every_glyph() {
+    // Splash-sized text in a display font: Barrfont masks ~1 em tall
+    // while its own metrics claim 0.4 em, so the atlas budget must
+    // come from the em, not the metrics. At the earlier 2.5-em side
+    // the last letter of "EXCELLENT" and "SUPER" fell off the final
+    // shelf and was dropped; the 4-em side holds this word with room
+    // to spare.
+    let font: Arc<[u8]> = Arc::from(
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/antifrost/assets/fonts/Barrfont-Regular.ttf"
+        ))
+        .expect("splash font should be readable"),
+    );
+    let size = 400.0;
+    let word = "EXCELLENTSUPERPERFECT";
+    let layout = text::layout(&font, word, size, 400.0).expect("splash font should lay out");
+    let mut canvas = Canvas::new((800, 600), 1.0);
+    canvas.draws = vec![Draw::Text {
+        diagnostic: false,
+        glow: black(),
+        world: Transform::identity(),
+        font: font.clone(),
+        text: word.to_string(),
+        size,
+        weight: 400.0,
+        color: black(),
+        alpha: 1.0,
+        lit: 1.0,
+        z: 0.0,
+    }];
+    let mut atlases: HashMap<(u64, u32, u32), text::Atlas> = HashMap::new();
+    canvas.expand_text(&mut atlases);
+    let sprites = canvas
+        .draws
+        .iter()
+        .filter(|d| matches!(d, Draw::Sprite { .. }))
+        .count();
+    assert_eq!(
+        sprites,
+        layout.glyphs.len(),
+        "every glyph of the word should get an atlas cell"
+    );
+    let atlas = atlases.values().next().expect("the word packs one atlas");
+    assert!(
+        atlas.width > 1024,
+        "big text should outgrow the side that dropped letters, got {}",
+        atlas.width
+    );
+}

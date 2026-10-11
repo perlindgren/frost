@@ -266,3 +266,9 @@ naga = { version = "30.0.0", features = ["wgsl-in"] }
 # readable, comment-friendly text on disk.
 serde = { version = "1", features = ["derive"] }
 ron = "0.8"
+
+# Diagnostics overlay: compiles the profiler HUD of the `antifrost`
+# example in (`--features diag`); the default build leaves it out of
+# the binary entirely, not merely hidden.
+[features]
+diag = []

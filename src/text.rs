@@ -208,10 +208,19 @@ pub(crate) struct Atlas {
 
 impl Default for Atlas {
     fn default() -> Self {
+        Self::sized(ATLAS_SIZE)
+    }
+}
+
+impl Atlas {
+    /// An atlas `side` pixels square. The packer is content with any
+    /// size; big text (a splash filling the screen) needs one scaled
+    /// to its raster, or its glyphs would all be skipped as too big.
+    pub fn sized(side: u32) -> Self {
         Self {
-            data: Arc::from(vec![0u8; (ATLAS_SIZE * ATLAS_SIZE * 4) as usize]),
-            width: ATLAS_SIZE,
-            height: ATLAS_SIZE,
+            data: Arc::from(vec![0u8; (side * side * 4) as usize]),
+            width: side,
+            height: side,
             generation: NEXT_ATLAS_GENERATION.fetch_add(1, Ordering::Relaxed),
             stale_key: None,
             cells: HashMap::new(),
@@ -220,9 +229,7 @@ impl Default for Atlas {
             row_height: 0,
         }
     }
-}
 
-impl Atlas {
     /// Whether the glyph `id` is already packed in the atlas.
     pub fn has(&self, id: u16) -> bool {
         self.cells.contains_key(&id)
