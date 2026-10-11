@@ -16,7 +16,7 @@ mod solver;
 
 use frost::{
     Color, Context, Diagnostics, DiagnosticsFlags, KeyCode, MouseButton, Particle, ParticleShape,
-    ParticleSystem, Process, Repeat, Rng, Scene, SceneNode, Transform, Tween,
+    ParticleSystem, Process, Repeat, Rng, Scene, SceneNode, SpriteFilter, Tile, Transform, Tween,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -396,6 +396,10 @@ struct Demo {
     ant_frames: Vec<frost::Shape>,
     /// The soil backdrop, stretched across the window below the board.
     soil: frost::Shape,
+    /// The hill's solids draw as one tile map: this atlas — the soil
+    /// texture itself, a single cell, the whole sheet — is shared by
+    /// every wall and dirt placement, instanced in one draw call.
+    tile_atlas: frost::Shape,
     /// The giant ground sprite, rebuilt per hill: its punched hole must
     /// match the hill's rectangle, and the span it is drawn across.
     ground: Option<(frost::Shape, [f32; 2])>,
@@ -429,6 +433,14 @@ struct Demo {
 
 impl Demo {
     fn new(ant_frames: Vec<frost::Shape>, soil: frost::Shape) -> Self {
+        // The soil texture doubles as the hill's tile atlas: one cell,
+        // the whole sheet, every placement sampling all of it. A
+        // photographic atlas wants bilinear, not the map's pixel-art
+        // default. A soil PNG that decodes for one must decode for the
+        // other — anything else is a broken build.
+        let mut tile_atlas =
+            frost::Shape::tilemap_bytes(SOIL).expect("shipped soil bakes as an atlas");
+        tile_atlas.set_filter(SpriteFilter::Linear);
         let levels = level::load_levels(LEVELS);
         if levels.is_empty() {
             log::error!("antifrost: no levels loaded");
@@ -446,6 +458,7 @@ impl Demo {
             cam: [0.0, 0.0],
             ant_frames,
             soil,
+            tile_atlas,
             ground: None,
             diag: Diagnostics::from_bytes(DIAG_FONT, DiagnosticsFlags::all()).unwrap_or_else(
                 |err| {
@@ -973,7 +986,10 @@ impl Demo {
         // Slots: leaves, ants, the player pair, one lamp per ant plus
         // the player's, a beacon per bed, the two backdrop sprites,
         // and the tile pool.
-        let slots = LEAVES.len() + game.ants.len() * 2 + 5 + tiles.len() + game.level.beds.len();
+        // Slots: leaves, ants, the player pair, one lamp per ant plus
+        // the player's, the single tile map holding every solid, a
+        // beacon per bed, and the two backdrop sprites.
+        let slots = LEAVES.len() + game.ants.len() * 2 + 6 + game.level.beds.len();
         {
             let root = &mut ctx.scene().root;
             while root.children.len() < slots {
@@ -1156,43 +1172,51 @@ impl Demo {
             }
         }
         {
-            let [tw, th] = self.soil.sprite_size().unwrap_or([1.0, 1.0]);
-            let ts = TILE * ZOOM;
-            let base = LEAVES.len() + game.ants.len() * 2 + 3;
-            let dirt_tint = Color {
-                r: C_DIRT.r * 2.2,
-                g: C_DIRT.g * 2.2,
-                b: C_DIRT.b * 2.2,
-                a: 1.0,
-            };
+            // The hill's solids draw as one tile map: every wall and
+            // dirt cell is a placement sharing the soil atlas, drawn
+            // instanced in a single call — the engine's answer to the
+            // per-cell node pool this replaces. Placements ride the
+            // node's space, which is the screen's here; tint per tile
+            // — rock bare soil, dirt the old C_DIRT, both keeping the
+            // standing jitter — and the whole map lights as one
+            // surface. The shadows are the merged boxes declared
+            // above: batched art and shadow arithmetic are separate
+            // problems, and only one of them is a draw call.
+            let mut map = self.tile_atlas.clone();
+            let inset = TILE * ZOOM - 1.5;
             let wall = Color {
                 r: 1.0,
                 g: 1.0,
                 b: 1.0,
                 a: 1.0,
             };
-            for (i, (row, col, rock)) in tiles.iter().enumerate() {
+            let dirt_tint = Color {
+                r: C_DIRT.r * 2.2,
+                g: C_DIRT.g * 2.2,
+                b: C_DIRT.b * 2.2,
+                a: 1.0,
+            };
+            map.set_tiles(tiles.iter().map(|(row, col, rock)| {
                 let [x, y] = self.screen(self.cell_px(game::Cell::new(*col, *row)));
                 let noise = 1.0 + ((col * 31 + row * 17) % 3) as f32 * 0.045;
-                let node = &mut ctx.scene().root.children[base + i];
-                node.shape = Some(self.soil.clone());
-                node.transform = Transform::translate([x, y]);
-                // The same hairline inset every tile keeps, grain intact.
-                node.scale = [(ts - 1.5) / tw, (ts - 1.5) / th];
-                node.modulate = shade(if *rock { wall } else { dirt_tint }, noise);
-                // Walls receive the night: lit, so an ant around the
-                // corner leaves the corridor beyond genuinely dark —
-                // the declared boxes do the cutting.
-                node.lit = true;
-                node.order = 0.0;
-            }
+                let mut tile = Tile::new([x, y], [inset, inset], [0.0, 0.0, 1.0, 1.0]);
+                tile.color = shade(if *rock { wall } else { dirt_tint }, noise);
+                tile
+            }));
+            let node = &mut ctx.scene().root.children[LEAVES.len() + game.ants.len() * 2 + 3];
+            node.shape = Some(map);
+            node.transform = Transform::translate([0.0, 0.0]);
+            node.scale = [1.0, 1.0];
+            node.modulate = wall;
+            node.lit = true;
+            node.order = 0.0;
         }
         // The beds are the hill's beacons: each carries a faint light
         // of its own colour — enough to find across a dark room and to
         // aim a push by, never enough to light one. They burn always:
         // a taken bed keeps glowing, the target outlives the ant.
         {
-            let base = LEAVES.len() + game.ants.len() * 2 + 3 + tiles.len();
+            let base = LEAVES.len() + game.ants.len() * 2 + 4;
             for (i, (cell, color)) in game.level.beds.iter().enumerate() {
                 let node = &mut ctx.scene().root.children[base + i];
                 node.shape = Some(frost::Shape::Light {
