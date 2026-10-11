@@ -11,6 +11,7 @@ use crate::map::*;
 use crate::ron_panels::*;
 use crate::sidecar::*;
 use crate::spots::*;
+use crate::strip::slot_at;
 use crate::strip::*;
 use crate::theme::*;
 
@@ -310,30 +311,78 @@ impl Demo {
             STRIP,
             STRIP_Z,
         );
-        for i in 0..f.slot_count {
+        // The bench follows the desk: sprite slots (and the spare
+        // loader plate) on the sprite desks, the map's layers on the
+        // tile-map desk — one cell per layer, each wearing its
+        // tileset's face. The highlight is one frame in both modes,
+        // drawn the same blue; hidden layers veil, and every layer
+        // wears its z in the cell's upper-right corner.
+        // One bench per desk, one spare plate per bench: the cell
+        // past the last sprite opens a sprite, the cell past the last
+        // layer opens a map — the desk always offers its own next
+        // thing, even on a bare day with nothing loaded at all.
+        let bench_layers = f.tile_view;
+        let count = f.slot_count;
+        for i in 0..count {
             let [cx, cy] = slot_center(i, f.w, f.h, self.slot_scroll);
             if cx + SLOT / 2.0 < f.sv.x0 || cx - SLOT / 2.0 > f.sv.x0 + f.sv.visible_px {
                 continue;
             }
-            let plate = if i < self.sprites.len() {
-                PLATE
+            let filled = i < if bench_layers {
+                self.maps.len()
             } else {
-                PLATE_EMPTY
+                self.sprites.len()
             };
+            let plate = if filled { PLATE } else { PLATE_EMPTY };
             ctx.rectangle(cx, cy, SLOT / 2.0, SLOT / 2.0, plate, PLATE_Z);
-            if i == self.sprites.len() {
+            if i == if bench_layers {
+                self.maps.len()
+            } else {
+                self.sprites.len()
+            } {
                 // The spare plate wears a plus: press it for the open
-                // dialog.
+                // dialog — the map desk's loads a map.
                 let g = SLOT / 5.0;
                 ctx.line(cx - g, cy, cx + g, cy, AXIS, 2.0, PLATE_Z + 0.1);
                 ctx.line(cx, cy - g, cx, cy + g, AXIS, 2.0, PLATE_Z + 0.1);
             }
-            if i == self.active && i < self.sprites.len() {
+            let chosen = if bench_layers {
+                i == self.active_layer
+            } else {
+                i == self.active && i < self.sprites.len()
+            };
+            if chosen {
+                // A hidden layer still holds the highlight — it is
+                // still the layer you draw on — but its frame stands
+                // banked, agreeing with the veil over its face.
                 let r = SLOT / 2.0;
-                ctx.line(cx - r, cy - r, cx + r, cy - r, SELECT, BBOX_WIDTH, FRAME_Z);
-                ctx.line(cx + r, cy - r, cx + r, cy + r, SELECT, BBOX_WIDTH, FRAME_Z);
-                ctx.line(cx + r, cy + r, cx - r, cy + r, SELECT, BBOX_WIDTH, FRAME_Z);
-                ctx.line(cx - r, cy + r, cx - r, cy - r, SELECT, BBOX_WIDTH, FRAME_Z);
+                let ink = if bench_layers && !self.layer_visible.get(i).copied().unwrap_or(true) {
+                    FRAME_DIM
+                } else {
+                    SELECT
+                };
+                ctx.line(cx - r, cy - r, cx + r, cy - r, ink, BBOX_WIDTH, FRAME_Z);
+                ctx.line(cx + r, cy - r, cx + r, cy + r, ink, BBOX_WIDTH, FRAME_Z);
+                ctx.line(cx + r, cy + r, cx - r, cy + r, ink, BBOX_WIDTH, FRAME_Z);
+                ctx.line(cx - r, cy + r, cx - r, cy - r, ink, BBOX_WIDTH, FRAME_Z);
+            }
+            if bench_layers {
+                if !self.layer_visible.get(i).copied().unwrap_or(true) {
+                    ctx.rectangle(
+                        cx,
+                        cy,
+                        SLOT / 2.0,
+                        SLOT / 2.0,
+                        STRIP_DIM,
+                        THUMB_ORDER + 0.02,
+                    );
+                }
+                if i < SLOTS {
+                    let [nx, ny] = [cx + SLOT / 2.0 - 18.0, cy + SLOT / 2.0 - 18.0];
+                    let num = &mut ctx.scene().root.children[LAYZ0 + i];
+                    num.transform = frost::Transform::translate([nx, ny]);
+                    num.order = FRAME_Z + 0.05;
+                }
             }
         }
         if f.sv.scroll_max > 0.0 {
@@ -382,6 +431,41 @@ impl Demo {
                 } else {
                     node.shape = None;
                 }
+            }
+        }
+
+        // Hover answers back, on the tile-set desk only: the tile
+        // set under the cursor speaks its name and wears its cut, in
+        // letters above the strip. The shape is shaped only when the
+        // hover moves or the answer changes — a still cursor costs
+        // nothing, and a dragged thumbnail speaks no name.
+        let hovered = if self.view == View::TileSet && self.slot_drag.is_none() {
+            f.pos
+                .and_then(|p| slot_at(p, f.w, f.h, self.slot_scroll, self.sprites.len()))
+        } else {
+            None
+        };
+        let answer = hovered.map(|i| (i, self.tileset_answer(i)));
+        if answer != self.hover_slot_key {
+            self.hover_slot_key = answer;
+            self.hover_label = self
+                .hover_slot_key
+                .as_ref()
+                .map(|(_, text)| self.ron_text(text.clone(), 15.0, 0.52, HOVER_INK));
+        }
+        {
+            let node = &mut ctx.scene().root.children[HELP];
+            match (
+                self.hover_slot_key.as_ref().map(|(i, _)| *i),
+                &self.hover_label,
+            ) {
+                (Some(i), Some(shape)) => {
+                    let [cx, cy] = slot_center(i, f.w, f.h, self.slot_scroll);
+                    node.shape = Some(shape.clone());
+                    node.transform = frost::Transform::translate([cx, cy + 44.0]);
+                    node.order = DRAG_ORDER;
+                }
+                _ => node.shape = None,
             }
         }
     }
@@ -489,71 +573,116 @@ impl Demo {
                 // gathers on the cursor's cell, dressed as copied.
                 // Only the active tileset ghosts — one shape, one
                 // texture; a block of another tileset still pastes.
-                let block_ghost =
-                    match (&self.clip, &self.band_base, f.pos) {
-                        (Some(clip), Some(base), Some(p))
-                            if f.tile_view
-                                && !over_band
-                                && !self.ui.hovering()
-                                && in_work_area(p, f.w, f.h)
-                                && self
-                                    .active()
-                                    .is_some_and(|sp| TilesetRef::of(sp) == clip.tileset) =>
-                        {
-                            let (rows, cols) =
-                                self.active().and_then(|sp| sp.atlas).unwrap_or((1, 1));
-                            let (tw, th) = (
-                                self.active().map_or(1.0, |sp| sp.current.width() as f32)
-                                    / cols.max(1) as f32,
-                                self.active().map_or(1.0, |sp| sp.current.height() as f32)
-                                    / rows.max(1) as f32,
-                            );
-                            let (col, row) = grid_cell(
-                                (p[0] - f.view[0]) / self.zoom,
-                                (p[1] - f.view[1]) / self.zoom,
-                                tw,
-                                th,
-                            );
-                            let (bc, br) = paint_bounds(&self.maps, &clip.tileset);
-                            {
-                                // Preview the drop the desk will
-                                // perform: exactly the cells the drop
-                                // writes — the paste's own list,
-                                // intersected with the map. Where the
-                                // block hangs past an edge, the
-                                // preview shows the part that lands,
-                                // no more and no less.
-                                let (oc, orr) = (col, row);
-                                let mut shape = base.clone();
-                                let tiles: Vec<frost::Tile> =
-                                    ghost_cells(clip, col, row, bc, br)
-                                        .into_iter()
-                                        .map(|(c, r, cell, tf)| {
-                                            frost::Tile::new(
-                                                [(c - oc) as f32 * tw, -((r - orr) as f32) * th],
-                                                [tw, th],
-                                                cell_uv(cell as usize, rows, cols),
-                                            )
-                                            .transformed((tf >> 2) & 3, tf & 1 != 0, tf & 2 != 0)
-                                        })
-                                        .collect();
-                                shape.set_tiles(tiles);
-                                if let frost::Shape::TileMap { color, .. } = &mut shape {
-                                    color.a = GHOST_A;
-                                }
-                                let center = [
-                                    (oc as f32 + 0.5) * tw * self.zoom + f.view[0],
-                                    -(orr as f32 + 0.5) * th * self.zoom + f.view[1],
-                                ];
-                                let node = &mut ctx.scene().root.children[GHOST];
-                                node.transform = ghost_transform(self.zoom, center);
-                                node.order = GHOST_Z;
-                                Some(shape)
-                            }
+                // A held block ghosts the drop on EVERY looked-at
+                // layer — the seen picture travels whole. Tiles
+                // sharing a sheet ride one ghost shape (a shape is
+                // one texture; each tile carries its own cut of it),
+                // and every distinct sheet adds its own ghost from
+                // the pool. The pool holds GHOSTS_N sheets: past
+                // that a sheet previews nothing, though the drop
+                // still writes it — ample for any plausible stack.
+                if let (Some(clip), Some(p)) = (&self.clip, f.pos)
+                    && f.tile_view
+                    && !over_band
+                    && !self.ui.hovering()
+                    && in_work_area(p, f.w, f.h)
+                {
+                    let (arows, acols) = self.active().and_then(|sp| sp.atlas).unwrap_or((1, 1));
+                    let (tw, th) = (
+                        self.active().map_or(1.0, |sp| sp.current.width() as f32)
+                            / acols.max(1) as f32,
+                        self.active().map_or(1.0, |sp| sp.current.height() as f32)
+                            / arows.max(1) as f32,
+                    );
+                    let (col, row) = grid_cell(
+                        (p[0] - f.view[0]) / self.zoom,
+                        (p[1] - f.view[1]) / self.zoom,
+                        tw,
+                        th,
+                    );
+                    // The drop the desk will perform, per layer:
+                    // the paste's own list, cut to that layer's
+                    // map. Where the block hangs past an edge the
+                    // preview shows the part that lands, no more
+                    // and no less. Sheets group: blocks wearing one
+                    // sheet join one shape.
+                    let mut groups: Vec<(std::path::PathBuf, frost::Shape, Vec<frost::Tile>)> =
+                        Vec::new();
+                    for blk in clip
+                        .blocks
+                        .iter()
+                        .filter(|b| self.layer_visible.get(b.layer).copied().unwrap_or(true))
+                    {
+                        let Some(layer) = self.maps.get(blk.layer) else {
+                            continue;
+                        };
+                        let Some((sp, (rows, cols))) =
+                            dressed(&layer.tileset, &self.shelf, &self.sprites)
+                        else {
+                            continue;
+                        };
+                        let (bc, br) = paint_bounds(&self.maps, blk.layer);
+                        let tiles: Vec<frost::Tile> = ghost_cells(clip, blk, col, row, bc, br)
+                            .into_iter()
+                            .map(|(c, r, cell, tf)| {
+                                frost::Tile::new(
+                                    [(c - col) as f32 * tw, -((r - row) as f32) * th],
+                                    [tw, th],
+                                    cell_uv(cell as usize, rows, cols),
+                                )
+                                .transformed(
+                                    (tf >> 2) & 3,
+                                    tf & 1 != 0,
+                                    tf & 2 != 0,
+                                )
+                            })
+                            .collect();
+                        if tiles.is_empty() {
+                            continue;
                         }
-                        _ => None,
-                    };
-                let ghost = block_ghost.or_else(|| {
+                        if let Some(g) = groups.iter_mut().find(|(sheet, _, _)| *sheet == sp.path) {
+                            g.2.extend(tiles);
+                        } else if groups.len() < GHOSTS_N {
+                            // The sheet lends its texture as a tile
+                            // map: a bare sprite would swallow every
+                            // placement silently, and the ghost would
+                            // stand undressed on the cursor.
+                            let Some(base) = ghost_base(&sp.shape) else {
+                                continue;
+                            };
+                            groups.push((sp.path.clone(), base, tiles));
+                        }
+                    }
+                    let center = [
+                        (col as f32 + 0.5) * tw * self.zoom + f.view[0],
+                        -(row as f32 + 0.5) * th * self.zoom + f.view[1],
+                    ];
+                    let shown = groups.len();
+                    for (i, (_, mut shape, tiles)) in groups.into_iter().enumerate() {
+                        shape.set_tiles(tiles);
+                        if let frost::Shape::TileMap { color, .. } = &mut shape {
+                            color.a = GHOST_A;
+                        }
+                        let node = &mut ctx.scene().root.children[GHOSTS + i];
+                        node.transform = ghost_transform(self.zoom, center);
+                        node.order = GHOST_Z;
+                        node.shape = Some(shape);
+                    }
+                    for node in &mut ctx.scene().root.children[GHOSTS + shown..GHOSTS + GHOSTS_N] {
+                        node.shape = None;
+                    }
+                } else {
+                    for node in &mut ctx.scene().root.children[GHOSTS..GHOSTS + GHOSTS_N] {
+                        node.shape = None;
+                    }
+                }
+                // The one-tile ghost stands only with empty hands:
+                // a held block IS the brush, and its ghosts are the
+                // stack above — never a lone tile over the picture
+                // the click would really drop.
+                let ghost = if self.clip.is_some() {
+                    None
+                } else {
                     match (
                         &self.band_base,
                         self.picked_cell.filter(|c| *c < self.cell_shapes.len()),
@@ -581,9 +710,7 @@ impl Demo {
                             // The brush only reaches the map — the layer
                             // this tileset owns, or the map a first click
                             // would create. Past its edge, no ghost.
-                            let (bc, br) = self
-                                .active()
-                                .map_or((0, 0), |sp| paint_bounds(&self.maps, &TilesetRef::of(sp)));
+                            let (bc, br) = paint_bounds(&self.maps, self.active_layer);
                             if cell_in(col, row, bc, br) {
                                 let center = [
                                     (col as f32 + 0.5) * tw * self.zoom + f.view[0],
@@ -616,10 +743,13 @@ impl Demo {
                         }
                         _ => None,
                     }
-                });
+                };
                 ctx.scene().root.children[GHOST].shape = ghost;
             } else {
                 for node in &mut ctx.scene().root.children[BAND0..=HELD] {
+                    node.shape = None;
+                }
+                for node in &mut ctx.scene().root.children[GHOSTS..GHOSTS + GHOSTS_N] {
                     node.shape = None;
                 }
             }

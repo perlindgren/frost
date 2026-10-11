@@ -13,6 +13,7 @@ use frost::ron as ron_tree;
 #[derive(Clone)]
 pub(crate) struct WorldSprite {
     pub(crate) path: std::path::PathBuf,
+    pub(crate) doc: Option<std::path::PathBuf>,
     pub(crate) name: String,
     pub(crate) current: image::RgbaImage,
     pub(crate) saved_img: image::RgbaImage,
@@ -113,6 +114,15 @@ pub(crate) const TIME_MAX: f32 = 2.0;
 pub(crate) struct Sprite {
     /// The file the sprite was loaded from — Save writes back to it.
     pub(crate) path: std::path::PathBuf,
+    /// The tile-set document this slot wears, when one is bound. It is
+    /// what makes a slot a TILE SET rather than a sheet: the same
+    /// sheet may stand twice on the bench, each slot wearing its own
+    /// document, its own cut and its own roles.
+    /// The tile-set document this slot wears, when one is bound. It is
+    /// what makes a slot a TILE SET rather than a sheet: the same
+    /// sheet may stand twice on the bench, each slot wearing its own
+    /// document, its own cut and its own roles.
+    pub(crate) doc: Option<std::path::PathBuf>,
     /// The file's name, for the HUD, the dialogs and the logs.
     pub(crate) name: String,
     /// The working texture: crops replace it, saves write it.
@@ -185,6 +195,7 @@ impl Sprite {
 /// when the layer was added — later crops and closed slots leave the
 /// frame's layers untouched. The PNG the shape was built from rides
 /// along: the history rebuilds a layer's shape from these bytes.
+#[derive(Clone)]
 pub(crate) struct Layer {
     pub(crate) shape: frost::Shape,
     pub(crate) png: Vec<u8>,
@@ -192,7 +203,7 @@ pub(crate) struct Layer {
 
 /// One animation frame: a set of layers, stacked as added, and the time
 /// it holds before the next frame.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct Frame {
     pub(crate) layers: Vec<Layer>,
     pub(crate) next_time: f32,
@@ -201,7 +212,7 @@ pub(crate) struct Frame {
 /// The animation: an ordered set of frames kept by a clock. Looping
 /// playback wraps at the ends; ping-pong walks back through the frames
 /// instead, each end held once per sweep.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct Anim {
     pub(crate) frames: Vec<Frame>,
     /// The frame the clock is in — also the frame the panel edits.
@@ -312,6 +323,7 @@ pub(crate) fn tileset(name: &str) -> Sprite {
     let png = png_bytes(&img).unwrap();
     Sprite {
         path: std::path::PathBuf::from(name),
+        doc: None,
         name: name.to_string(),
         current: img.clone(),
         saved_img: img.clone(),

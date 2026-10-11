@@ -4,10 +4,11 @@
 // paints a surface with them.
 //
 // This file is not a shader. `src/shaders.rs` prepends it to `shape.wgsl`,
-// `sprite.wgsl` and `particles.wgsl`, the three pipelines that read the
-// frame's light and occluder fields; the other shaders get no part of it.
+// `sprite.wgsl`, `particles.wgsl` and `tilemap.wgsl`, the four
+// pipelines that read the frame's light and occluder fields; the other
+// shaders get no part of it.
 // It declares no `@group` and no `@binding`, because the two storage
-// bindings sit at different indices in each of those three: each host
+// bindings sit at different indices in each of those four: each host
 // declares its own `field` and `occluders` variables around this text. A
 // module-scope name in WGSL is in scope across the whole program, so a
 // function here may read a variable its host declares after it - that

@@ -21,6 +21,7 @@ fn map_draw(bounds: ([f32; 2], [f32; 2]), clip: Option<([f32; 2], [f32; 2])>) ->
         atlas_size: [1, 1],
         atlas_generation: 1,
         filter: SpriteFilter::Nearest,
+        lit: 0.0,
         bounds,
         clip,
         z: 1.0,
@@ -91,14 +92,15 @@ fn tilemap_instances_pack_four_vec4s() {
     assert_eq!(f32::from_le_bytes(bytes[28..32].try_into().unwrap()), 1.0);
 }
 #[test]
-fn tilemap_uniforms_layout_is_size_then_color() {
-    // vec2 @ 0, vec4 @ 16 — 32 bytes, the WGSL-mirrored layout pinned by
-    // the shaders test.
-    let data = tilemap_uniform_data([1440.0, 810.0], rgba(1.0, 0.5, 0.0, 0.25));
+fn tilemap_uniforms_layout_is_size_lit_then_color() {
+    // vec2 @ 0, lit @ 8, vec4 @ 16 — 32 bytes, the WGSL-mirrored layout
+    // pinned by the shaders test.
+    let data = tilemap_uniform_data([1440.0, 810.0], rgba(1.0, 0.5, 0.0, 0.25), 1.0);
     assert_eq!(data.len(), 32);
     let f = |offset: usize| f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
     assert_eq!(f(0), 1440.0);
     assert_eq!(f(4), 810.0);
+    assert_eq!(f(8), 1.0, "lit rides the padding gap");
     assert_eq!(f(16), 1.0);
     assert_eq!(f(20), 0.5);
     assert_eq!(f(24), 0.0);
@@ -224,8 +226,11 @@ impl Gpu {
     }
 
     /// Render `count` packed instances over an `aw × ah` RGBA8 atlas
-    /// with the batch `color`, and return the framebuffer as
+    /// with the batch `color`, under `lit` and the packed light and
+    /// occluder `fields` (empty fields and `lit = 0.0` paint the map
+    /// exactly as the bridge always did), and return the framebuffer as
     /// row-major RGBA bytes.
+    #[allow(clippy::too_many_arguments)] // fields ride every lit pipeline alike
     fn paint(
         &self,
         instances: &[u8],
@@ -234,6 +239,9 @@ impl Gpu {
         aw: u32,
         ah: u32,
         color: Color,
+        lit: f32,
+        lights: &[u8],
+        occluders: &[u8],
     ) -> Vec<u8> {
         use wgpu::util::{BufferInitDescriptor, DeviceExt};
         use wgpu::*;
@@ -286,8 +294,29 @@ impl Gpu {
         );
         let uniform = self.device.create_buffer_init(&BufferInitDescriptor {
             label: Some("bridge uniform"),
-            contents: &tilemap_uniform_data([SPAN as f32, SPAN as f32], color),
+            contents: &tilemap_uniform_data([SPAN as f32, SPAN as f32], color, lit),
             usage: BufferUsages::UNIFORM,
+        });
+        // The spliced pipeline declares the two fields; wgpu demands
+        // every declaration be bound, light or not. Padded past any
+        // adapter's minimum storage-binding size, dead bytes the
+        // shaders' count-terminated loops never reach.
+        let padded = |b: &[u8]| {
+            let mut v = b.to_vec();
+            if v.len() < 256 {
+                v.resize(256, 0);
+            }
+            v
+        };
+        let field_buf = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("bridge light field"),
+            contents: &padded(lights),
+            usage: BufferUsages::STORAGE,
+        });
+        let occl_buf = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("bridge occluder field"),
+            contents: &padded(occluders),
+            usage: BufferUsages::STORAGE,
         });
         let inst_buf = self.device.create_buffer_init(&BufferInitDescriptor {
             label: Some("bridge instances"),
@@ -341,6 +370,22 @@ impl Gpu {
                 BindGroupEntry {
                     binding: 3,
                     resource: BindingResource::Sampler(&sampler),
+                },
+                BindGroupEntry {
+                    binding: 4,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &field_buf,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 5,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &occl_buf,
+                        offset: 0,
+                        size: None,
+                    }),
                 },
             ],
         });
@@ -458,7 +503,7 @@ fn the_shader_paints_what_the_contract_promise() {
             [flips as f32, rot as f32],
         ));
     }
-    let shot = gpu.paint(&instances, 16, &atlas, A, A, white);
+    let shot = gpu.paint(&instances, 16, &atlas, A, A, white, 0.0, &[], &[]);
     let mut wrong = Vec::new();
     for code in 0..16u32 {
         let (flips, rot) = (code & 3, code >> 2);
@@ -572,7 +617,7 @@ fn the_scene_paints_what_the_contract_promise() {
             other.len()
         ),
     };
-    let shot = gpu.paint(&packed, count, &atlas, AW, AH, color);
+    let shot = gpu.paint(&packed, count, &atlas, AW, AH, color, 0.0, &[], &[]);
     // The contract's picture, composed in pixel space from the same
     // user-space placements: the canvas maps user (ux, uy) to pixel
     // (ux + W/2, H/2 − uy) at scale 1 — the y-flip is the whole point
@@ -622,5 +667,99 @@ fn the_scene_paints_what_the_contract_promise() {
     assert!(
         wrong.is_empty(),
         "the real geometry drifted from the contract:\n{wrong:?}"
+    );
+}
+
+/// The spliced pipeline, proven on real pixels: a lit map's tiles
+/// multiply the frame's light mix, and where an occluder stands
+/// between lamp and floor the tile reads dark — the shadow falls
+/// ON the map, which is the sentence tilemaps could not say before
+/// this splice. Unlit, the same map under the same lamp is exactly
+/// the map it always was: light is a node's choice, never a tax.
+#[test]
+fn a_shadow_falls_on_a_lit_map() {
+    let Some(gpu) = Gpu::new() else {
+        eprintln!(
+            "tile-map bridge: no adapter on this machine — the lit-map test goes unverified!"
+        );
+        return;
+    };
+    // One white tile filling the target, one white atlas pixel, a
+    // white batch: the byte a pixel reads IS the light mix, so the
+    // assertions are plain speech. The lamp sits left of center,
+    // wide-radiused so falloff alone barely dents the frame; the
+    // wall is a declared box across the middle, tall enough to
+    // shadow the probe point and the lamp's line.
+    let white = rgba(1.0, 1.0, 1.0, 1.0);
+    let atlas = vec![255u8; 4];
+    let instances = tilemap_instance(
+        SPAN as f32 / 2.0,
+        SPAN as f32 / 2.0,
+        [SPAN as f32 / 2.0, 0.0],
+        [0.0, -(SPAN as f32) / 2.0],
+        [0.0, 0.0, 1.0, 1.0],
+        &white,
+        [0.0, 0.0],
+    );
+    let light = Draw::Light {
+        pos: [32.0, 64.0],
+        radius: 600.0,
+        intensity: 1.0,
+        color: white,
+        penumbra: 0.0,
+        dir: [1.0, 0.0],
+        cos_half: -1.0,
+        feather: 0.0,
+        z: 1.0,
+    };
+    let lights = crate::backend::frame::pack_light_field(&[light], black());
+    let wall = crate::canvas::Occluder {
+        world: crate::objects::Transform::identity(),
+        center: [64.0, 64.0],
+        half: [6.0, 28.0],
+        polygon: None,
+    };
+    let occluders = crate::backend::frame::pack_occluder_field(&[], &[wall]);
+    let px = |shot: &[u8], x: u32, y: u32| shot[4 * (y * SPAN + x) as usize];
+    let (left, right) = (24, 104);
+
+    // Unlit: the lamp is scenery to this map. Both probes full.
+    let shot = gpu.paint(&instances, 1, &atlas, 1, 1, white, 0.0, &[], &[]);
+    assert!(
+        px(&shot, left, 64) > 250 && px(&shot, right, 64) > 250,
+        "an unlit map must not feel the light: {left} reads {}, {right} reads {}",
+        px(&shot, left, 64),
+        px(&shot, right, 64)
+    );
+
+    // Lit, no wall: both probes take the mix — the far one slightly
+    // less, as the falloff says, but unmistakably lit.
+    let shot = gpu.paint(&instances, 1, &atlas, 1, 1, white, 1.0, &lights.data, &[]);
+    assert!(
+        px(&shot, left, 64) > 200 && px(&shot, right, 64) > 150,
+        "a lit map must take the light: {left} reads {}, {right} reads {}",
+        px(&shot, left, 64),
+        px(&shot, right, 64)
+    );
+
+    // Lit, wall across the lamp's path: the near side keeps its
+    // light, the far side falls to the black ambient. The shadow
+    // fell ON the tiles.
+    let shot = gpu.paint(
+        &instances,
+        1,
+        &atlas,
+        1,
+        1,
+        white,
+        1.0,
+        &lights.data,
+        &occluders.data,
+    );
+    assert!(
+        px(&shot, left, 64) > 200 && px(&shot, right, 64) < 8,
+        "the wall must shadow the tile behind it: {left} reads {}, {right} reads {}",
+        px(&shot, left, 64),
+        px(&shot, right, 64)
     );
 }

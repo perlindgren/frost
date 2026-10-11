@@ -183,7 +183,14 @@ impl frost::Process for Demo {
         // visible width, and the scroll clamped to what they allow.
         // (`f32::MAX` parked in the scroll means "ride to the end",
         // how a freshly loaded sprite earns its view.)
-        let slot_count = self.sprites.len() + 1;
+        // The strip's bench follows the desk: layers on the tile-map
+        // desk, sprite slots on the others — and always one spare
+        // plate past the end, wearing the plus.
+        let slot_count = if self.view == View::TileMap {
+            self.maps.len() + 1
+        } else {
+            self.sprites.len() + 1
+        };
         let sv = strip_view(w, slot_count);
         self.slot_scroll = self.slot_scroll.clamp(0.0, sv.scroll_max);
         // The tileset panel's frame-state: its grid, its cell size at
@@ -250,7 +257,7 @@ impl frost::Process for Demo {
         // picture moves.
         if mdown
             && !over_ron
-            && self.view != View::Atlas
+            && self.view != View::TileSet
             && let (Some([lx, ly]), Some([mx, my])) = (self.last_mouse, pos)
         {
             self.offset[0] += mx - lx;
@@ -279,7 +286,14 @@ impl frost::Process for Demo {
         {
             let before = self.capture();
             let clip = self.clip.clone().expect("a block is held");
-            let (n, erased, sel) = clip_move(&mut self.maps, &clip, self.sel, col, row);
+            let (n, erased, sel) = clip_move(
+                &mut self.maps,
+                &self.layer_visible,
+                &clip,
+                self.sel,
+                col,
+                row,
+            );
             self.sel = sel;
             log::info!("block: moved to ({col},{row}) wrote {n} cut {erased}");
             if n > 0 || erased {
@@ -454,7 +468,7 @@ impl frost::Process for Demo {
         if !markers_view {
             self.ui.panel(
                 ctx,
-                "Atlas",
+                "Tile Set",
                 [w / 2.0 - PANEL_W / 2.0 - 20.0, h / 2.0 - 330.0],
                 PANEL_W,
                 |ui, ctx| {
@@ -536,6 +550,30 @@ impl frost::Process for Demo {
         if redo_key && !self.was_redo {
             self.redo(ctx);
         }
+        // The number row, everywhere on the desk: 1..9 choose the
+        // bottom row by place — a tile map layer on the map desk, a
+        // sprite slot or tile set plate elsewhere — the same choice
+        // a click on the plate makes. Places past the last plate
+        // pass unanswered: the digit row never opens dialogs.
+        const DIGITS: [(frost::KeyCode, usize); 9] = [
+            (frost::KeyCode::Digit1, 0),
+            (frost::KeyCode::Digit2, 1),
+            (frost::KeyCode::Digit3, 2),
+            (frost::KeyCode::Digit4, 3),
+            (frost::KeyCode::Digit5, 4),
+            (frost::KeyCode::Digit6, 5),
+            (frost::KeyCode::Digit7, 6),
+            (frost::KeyCode::Digit8, 7),
+            (frost::KeyCode::Digit9, 8),
+        ];
+        let plain = !ctrl && !shift;
+        for (key, i) in DIGITS {
+            let down = ctx.key_down(key);
+            if down && !self.was_digits[i] && plain {
+                self.row_pick(ctx, i);
+            }
+            self.was_digits[i] = down;
+        }
         // Ctrl-+ and Ctrl-- step the zoom about the work area's centre,
         // one wheel-notch per press. The characters lead, exactly as for
         // the overlay's Alt pair: a physical code names a US-ANSI
@@ -570,36 +608,29 @@ impl frost::Process for Demo {
         self.was_zoom_in = zoom_in;
         self.was_zoom_out = zoom_out;
         // The brush's orientation, on the tile desk only: X and Y
-        // mirror the cell, R turns a quarter counterclockwise, Shift-R back.
+        // mirror, R turns a quarter counterclockwise, Shift-R back.
         // Characters lead, as everywhere the keyboard turns — a letter
         // follows the user's layout — but the turn's DIRECTION reads
         // the physical Shift, so a Caps-Locked keyboard still turns
-        // the plain way on a plain R.
+        // the plain way on a plain R. And the verb dresses what the
+        // cursor would actually drop: a held block takes it as one
+        // picture, exactly as the mouse's right-click dresses it —
+        // keys never dress an invisible brush behind held tiles.
         let flipx_key = tile_view && (ctx.char_down('x') || ctx.char_down('X'));
         let flipy_key = tile_view && (ctx.char_down('y') || ctx.char_down('Y'));
         let turn_key = tile_view && (ctx.char_down('r') || ctx.char_down('R'));
         if flipx_key && !self.was_flipx {
-            self.brush = tfm_flip_x(self.brush);
-            self.status = if self.brush & 1 != 0 {
-                "flip x on".to_owned()
-            } else {
-                "flip x off".to_owned()
-            };
+            self.status = self.dress_verb(Dress::FlipX);
         }
         if flipy_key && !self.was_flipy {
-            self.brush = tfm_flip_y(self.brush);
-            self.status = if self.brush & 2 != 0 {
-                "flip y on".to_owned()
-            } else {
-                "flip y off".to_owned()
-            };
+            self.status = self.dress_verb(Dress::FlipY);
         }
         if turn_key && !self.was_turn {
             // The keyboard brings no Alt or Control to R — but the
             // turn's direction still comes from the one table, so
             // key and mouse can never disagree about "plain".
-            self.brush = dress_brush(self.brush, dress_gesture(shift, false, false));
-            self.status = format!("turned {}", turn_note(self.brush));
+            let gesture = dress_gesture(shift, false, false);
+            self.status = self.dress_verb(gesture);
         }
         self.was_flipx = flipx_key;
         self.was_flipy = flipy_key;
@@ -756,7 +787,7 @@ impl frost::Process for Demo {
             title: "View",
             items: &[
                 frost::MenuItem::new("Markers", "").checked(self.view == View::Markers),
-                frost::MenuItem::new("Atlas", "").checked(self.view == View::Atlas),
+                frost::MenuItem::new("Tile Set", "").checked(self.view == View::TileSet),
                 frost::MenuItem::new("Tile Map", "").checked(self.view == View::TileMap),
                 frost::MenuItem::SEPARATOR,
                 frost::MenuItem::new("Shapes", "").checked(self.show_shapes),
@@ -781,10 +812,13 @@ impl frost::Process for Demo {
         // Operations is a sprite-desk menu: its one verb crops the
         // active texture, and the tile-map desk has no texture to cut
         // — only cells. There, the Transform menu wears the bar.
+        // The File menu wears the view's object: Open and Save speak
+        // tile sets on the tile-set desk, sprites on the other two.
+        let file = file_menu(self.view);
         let menus: Vec<frost::Menu> = if tile_view {
-            vec![FILE_MENU, APP_MENU, view_menu, transform_menu]
+            vec![file, APP_MENU, view_menu, transform_menu]
         } else {
-            vec![FILE_MENU, APP_MENU, view_menu, OPERATIONS_MENU]
+            vec![file, APP_MENU, view_menu, OPERATIONS_MENU]
         };
         match self.ui.menu_bar(ctx, &menus, &notes) {
             Some(frost::MenuEvent::Chose(menu, item)) => {
@@ -798,18 +832,9 @@ impl frost::Process for Demo {
                     // tile-map desk hides the sprite (it is the paint
                     // source, not the picture), and leaving it brings
                     // the sprite — or the animation frame — back.
-                    ("View", "Markers") => {
-                        self.view = View::Markers;
-                        self.sync_work(ctx);
-                    }
-                    ("View", "Atlas") => {
-                        self.view = View::Atlas;
-                        self.sync_work(ctx);
-                    }
-                    ("View", "Tile Map") => {
-                        self.view = View::TileMap;
-                        self.sync_work(ctx);
-                    }
+                    ("View", "Markers") => self.switch_view(ctx, View::Markers),
+                    ("View", "Tile Set") => self.switch_view(ctx, View::TileSet),
+                    ("View", "Tile Map") => self.switch_view(ctx, View::TileMap),
                     // The overlay's own line: a display choice, no desk
                     // to re-sync — and unlike the views, it does not
                     // silence the refusals, only the drawing.
@@ -820,12 +845,12 @@ impl frost::Process for Demo {
                     ("Transform", "Flip Y") => self.brush = tfm_flip_y(self.brush),
                     ("Transform", "Rotate 90 CW") => self.brush = tfm_turn(self.brush, true),
                     ("Transform", "Rotate 90 CCW") => self.brush = tfm_turn(self.brush, false),
-                    ("File", "Open") => self.open_dialog(ctx),
+                    ("File", "Open" | "Open Tile Set" | "Open Tile Map") => self.open_dialog(ctx),
                     ("File", "Close") => self.close_active(ctx),
-                    ("File", "Save") => self.save(ctx),
-                    ("File", "Save as") => self.save_as(ctx),
-                    ("File", "Open map") => self.open_map(ctx),
-                    ("File", "Save map") => self.save_map(ctx),
+                    ("File", "Save" | "Save Tile Set" | "Save Tile Map") => self.save(ctx),
+                    ("File", "Save as" | "Save as Tile Set" | "Save as Tile Map") => {
+                        self.save_as(ctx)
+                    }
                     ("App", "Attach") => self.attach(),
                     ("App", "Detach") => self.detach(),
                     ("File", "Undo") => self.undo(ctx),
@@ -1025,6 +1050,22 @@ impl frost::Process for Demo {
                 self.band_drag = Some(([p[0] - bor[0], p[1] - bor[1]], p, bor));
             } else {
                 match slot_at(p, w, h, self.slot_scroll, slot_count) {
+                    Some(i) if tile_view && shift_held && i < self.maps.len() => {
+                        // Shift-click on the bench: the layer's eye
+                        // opens or shuts. Many layers may be looked
+                        // at; only the highlighted one takes paint.
+                        let shown = !self.layer_visible[i];
+                        self.layer_visible[i] = shown;
+                        // The eye answers the canvas the same click:
+                        // the work list is rebuilt now, not at the
+                        // next edit's mercy.
+                        self.sync_work(ctx);
+                        self.status = format!(
+                            "map: '{}' {}",
+                            self.maps[i].tileset,
+                            if shown { "shown" } else { "hidden" }
+                        );
+                    }
                     Some(i) => self.slot_drag = Some((i, p)),
                     None if in_work_area(p, w, h) && !tile_view => self.drag_from = Some(p),
                     // Shift + left drags a selection: release copies
@@ -1059,7 +1100,9 @@ impl frost::Process for Demo {
                         if let Some((col, row)) = desk_cell(self.active(), p, view, self.zoom) {
                             let before = self.capture();
                             let n = match &self.clip {
-                                Some(clip) => clip_paste(&mut self.maps, clip, col, row),
+                                Some(clip) => {
+                                    clip_paste(&mut self.maps, &self.layer_visible, clip, col, row)
+                                }
                                 None => 0,
                             };
                             log::info!("block: pasted at ({col},{row}) wrote {n}");
@@ -1092,6 +1135,39 @@ impl frost::Process for Demo {
         // cell becomes the brush as it dresses; on the desk the brush
         // dresses where it stands. Erasing rides Delete or Ctrl —
         // seen above and below. (Elsewhere right still spot-picks.)
+        if rpressed
+            && tile_view
+            // Only a real cell earns a history step: the spare
+            // plate has no layer to raise.
+            && pos.and_then(|p| slot_at(p, w, h, self.slot_scroll, slot_count))
+                .is_some_and(|i| i < self.maps.len() && self.maps.len() > 1)
+            && let Some(p) = pos
+            && !over_ron
+            && !self.log_open
+            && !self.ui.hovering()
+            && let Some(i) = slot_at(p, w, h, self.slot_scroll, slot_count)
+        {
+            // Right-click on a bench cell: the layer rises one place
+            // in the draw stack — the top wraps under, the stack
+            // cycles. A step of history: Undo calls the picture back.
+            self.stamp();
+            if let Some((at, active)) = raise_layer(&mut self.maps, i, self.active_layer) {
+                // The stack cycles; the tile memories ride with
+                // their layers, not with their places.
+                if i + 1 == self.maps.len() {
+                    let mem = self.layer_brush.remove(i);
+                    self.layer_brush.insert(0, mem);
+                } else {
+                    self.layer_brush.swap(i, i + 1);
+                }
+                self.active_layer = active;
+                let who = self.maps[at].tileset.clone();
+                self.status = format!("map: '{who}' wears z {at}");
+                log::info!("layer: '{who}' raised to z {at}");
+                self.sync_work(ctx);
+                self.refresh_slots(ctx);
+            }
+        }
         if rpressed
             && tile_view
             && let Some(p) = pos
@@ -1129,11 +1205,10 @@ impl frost::Process for Demo {
                         // it turn and mirror together.
                         dress_block(clip, &mut self.sel, dress_gesture(shift, ctrl, alt));
                         log::info!(
-                            "block: {dressed} -> {}x{} cells={:?} tfms={:?} sel={:?}",
+                            "block: {dressed} -> {}x{} over {} layer(s), sel={:?}",
                             clip.cols,
                             clip.rows,
-                            clip.cells,
-                            clip.tfms,
+                            clip.blocks.len(),
                             self.sel
                         );
                         format!("block {dressed}")
@@ -1202,7 +1277,7 @@ impl frost::Process for Demo {
             let brush = self.active().map(|sp| {
                 let (arows, acols) = sp.atlas.unwrap_or((1, 1));
                 (
-                    TilesetRef::of(sp),
+                    asset_name(&sp.path),
                     sp.current.width() as f32 / acols.max(1) as f32,
                     sp.current.height() as f32 / arows.max(1) as f32,
                 )
@@ -1218,7 +1293,15 @@ impl frost::Process for Demo {
                 let changed = if erase {
                     erase_at(&mut self.maps, col, row)
                 } else if let Some(cell) = self.picked_cell {
-                    paint_at(&mut self.maps, &cut, cell, self.brush, col, row)
+                    paint_at(
+                        &mut self.maps,
+                        self.active_layer,
+                        &cut,
+                        cell,
+                        self.brush,
+                        col,
+                        row,
+                    )
                 } else {
                     false
                 };
@@ -1255,53 +1338,59 @@ impl frost::Process for Demo {
                 }
             } else {
                 self.sel_drag = None;
-                let cut = self.active().map(TilesetRef::of);
-                match (self.sel, cut) {
-                    (Some([ca, ra, cb, rb]), Some(cut)) if tile_view => {
-                        let mut clip = clip_take(
+                match self.sel.filter(|_| tile_view) {
+                    Some([ca, ra, cb, rb]) => {
+                        // The frame copies what the eye sees: every
+                        // looked-at layer gives its block, and the
+                        // paste will carry each block home again.
+                        let taken = clip_take(
                             &self.maps,
-                            &cut,
+                            &self.layer_visible,
                             ca,
                             ra,
                             (cb - ca + 1) as usize,
                             (rb - ra + 1) as usize,
                         );
-                        match clip_trim(&mut clip) {
-                            Some((c0, r0, c1, r1)) => {
-                                // The frame shrinks to the picture:
-                                // turns pivot on it and drops hug it.
-                                self.sel = Some([
-                                    ca + c0 as i32,
-                                    ra + r0 as i32,
-                                    ca + c1 as i32,
-                                    ra + r1 as i32,
-                                ]);
-                                let (fw, fh) = ((cb - ca + 1) as usize, (rb - ra + 1) as usize);
-                                log::info!(
-                                    "block: took sel [{ca},{ra},{cb},{rb}] trimmed to {:?} -> {}x{} cells={:?} tfms={:?}",
-                                    self.sel,
-                                    clip.cols,
-                                    clip.rows,
-                                    clip.cells,
-                                    clip.tfms
-                                );
-                                self.status = if (clip.cols, clip.rows) == (fw, fh) {
-                                    format!(
-                                        "selected {}\u{d7}{} — click to paste, Delete clears the source",
-                                        clip.cols, clip.rows
-                                    )
-                                } else {
-                                    format!(
-                                        "selected {}\u{d7}{} of {fw}\u{d7}{fh} — the frame trimmed to the picture",
-                                        clip.cols, clip.rows
-                                    )
-                                };
-                                self.clip = Some(clip);
+                        if let Some(mut clip) = taken {
+                            match clip_trim(&mut clip) {
+                                Some((c0, r0, c1, r1)) => {
+                                    // The frame shrinks to the picture:
+                                    // turns pivot on it and drops hug it.
+                                    self.sel = Some([
+                                        ca + c0 as i32,
+                                        ra + r0 as i32,
+                                        ca + c1 as i32,
+                                        ra + r1 as i32,
+                                    ]);
+                                    let (fw, fh) = ((cb - ca + 1) as usize, (rb - ra + 1) as usize);
+                                    log::info!(
+                                        "block: took sel [{ca},{ra},{cb},{rb}] trimmed to {:?} -> {}x{} over {} layer(s)",
+                                        self.sel,
+                                        clip.cols,
+                                        clip.rows,
+                                        clip.blocks.len()
+                                    );
+                                    self.status = if (clip.cols, clip.rows) == (fw, fh) {
+                                        format!(
+                                            "selected {}\u{d7}{} — click to paste, Delete clears the source",
+                                            clip.cols, clip.rows
+                                        )
+                                    } else {
+                                        format!(
+                                            "selected {}\u{d7}{} of {fw}\u{d7}{fh} — the frame trimmed to the picture",
+                                            clip.cols, clip.rows
+                                        )
+                                    };
+                                    self.clip = Some(clip);
+                                }
+                                None => {
+                                    self.sel = None;
+                                    self.status = "the selection held nothing".to_string();
+                                }
                             }
-                            None => {
-                                self.sel = None;
-                                self.status = "the selection held nothing".to_string();
-                            }
+                        } else {
+                            self.sel = None;
+                            self.status = "the selection held nothing".to_string();
                         }
                     }
                     _ => self.sel = None,
@@ -1432,7 +1521,27 @@ impl frost::Process for Demo {
             {
                 let moved = ((p[0] - from[0]).powi(2) + (p[1] - from[1]).powi(2)).sqrt();
                 if moved < CLICK_TOL {
-                    if from_slot < self.sprites.len() {
+                    if self.view == View::TileMap {
+                        if from_slot < self.maps.len() {
+                            // The click sets the layer to view and
+                            // draw — and wakes the slot wearing its
+                            // sheet, so the rack shows the very tiles
+                            // this layer paints with.
+                            let who = self.maps[from_slot].tileset.clone();
+                            self.select_layer(from_slot);
+                            self.selection = None;
+                            self.last_click = None;
+                            self.status = format!("map: painting on '{who}'");
+                            self.sync_work(ctx);
+                            self.refresh_slots(ctx);
+                        } else {
+                            // The spare plate of the map desk: press
+                            // it for the open dialog — both roads at
+                            // once, map or tileset, from a bare bench
+                            // or a loaded one.
+                            self.open_map_or_tileset(ctx);
+                        }
+                    } else if from_slot < self.sprites.len() {
                         self.active = from_slot;
                         self.selection = None;
                         self.last_click = None;
@@ -1449,7 +1558,8 @@ impl frost::Process for Demo {
                         // of `usize` — a debug-build panic.
                         self.slot_scroll = sv.scroll_max;
                     }
-                } else if from_slot < self.sprites.len()
+                } else if self.view != View::TileMap
+                    && from_slot < self.sprites.len()
                     && let Some(to) = slot_at(p, w, h, self.slot_scroll, self.sprites.len() + 1)
                     && to != from_slot
                     && to < self.sprites.len()

@@ -11,7 +11,6 @@ use crate::ron_view;
 use crate::sidecar::*;
 use crate::spots::*;
 use crate::world::push_step;
-use frost::ron as ron_tree;
 
 /// The File menu: the file verbs, lined up where every desktop app puts
 /// them, with the two history steps among them. Open, Close, Save, Save
@@ -35,6 +34,112 @@ pub(crate) const FILE_MENU: frost::Menu<'static> = frost::Menu {
         frost::MenuItem::new("Quit", ""),
     ],
 };
+
+/// The same menu on Tile Set duty: the two verbs whose object is the
+/// document. The bench holds tile sets here — sheets wearing a cut
+/// and a document's roles — and Open and Save say what they open and
+/// save. The rest of the bench's verbs keep their names: Close closes
+/// a slot, Undo walks one history whatever the slot holds.
+pub(crate) const FILE_MENU_TILESET: frost::Menu<'static> = frost::Menu {
+    title: "File",
+    items: &[
+        frost::MenuItem::new("Open Tile Set", "Ctrl-O"),
+        frost::MenuItem::new("Close", ""),
+        frost::MenuItem::new("Save Tile Set", ""),
+        frost::MenuItem::new("Save as Tile Set", ""),
+        frost::MenuItem::new("Undo", "Ctrl-Z"),
+        frost::MenuItem::new("Redo", "Ctrl-Shift-Z"),
+        frost::MenuItem::SEPARATOR,
+        frost::MenuItem::new("Quit", ""),
+    ],
+};
+
+/// The same menu on Tile Map duty: the map is the work here, so the
+/// three verbs that name their object name the map. The desk decides
+/// the noun — the view says what mode the desk is in.
+pub(crate) const FILE_MENU_TILEMAP: frost::Menu<'static> = frost::Menu {
+    title: "File",
+    items: &[
+        frost::MenuItem::new("Open Tile Map", "Ctrl-O"),
+        frost::MenuItem::new("Close", ""),
+        frost::MenuItem::new("Save Tile Map", ""),
+        frost::MenuItem::new("Save as Tile Map", ""),
+        frost::MenuItem::new("Undo", "Ctrl-Z"),
+        frost::MenuItem::new("Redo", "Ctrl-Shift-Z"),
+        frost::MenuItem::SEPARATOR,
+        frost::MenuItem::new("Quit", ""),
+    ],
+};
+
+/// The File menu the bar shows: the verbs wear the view's object —
+/// sprites at the editing desk, tile sets at theirs, tile maps at
+/// the painting desk. No menu ever offers a thing the desk it stands
+/// on is not working.
+pub(crate) fn file_menu(view: crate::desk::View) -> frost::Menu<'static> {
+    match view {
+        crate::desk::View::Markers => FILE_MENU,
+        crate::desk::View::TileSet => FILE_MENU_TILESET,
+        crate::desk::View::TileMap => FILE_MENU_TILEMAP,
+    }
+}
+
+/// Where an opened tile-set document goes on the bench: wake the
+/// slot already wearing it, adopt a bare slot over the same sheet,
+/// or make room — a fresh slot. The last case is what lets two tile
+/// sets wear one sheet: the same PNG twice on the bench, each with
+/// its own document, its own cut, its own roles.
+#[derive(Debug, PartialEq, Eq)]
+enum SlotChoice {
+    Wake(usize),
+    Adopt(usize),
+    Fresh,
+}
+
+/// The rule, pure: no slot ever wears two documents, and no document
+/// ever wakes two slots. A sheet already spoken for by another
+/// document never silently gives up its cut — the newcomer takes a
+/// slot of its own.
+fn slot_for_doc(
+    slots: &[(&std::path::Path, Option<&std::path::Path>)],
+    sheet: &std::path::Path,
+    doc: &std::path::Path,
+) -> SlotChoice {
+    if let Some(i) = slots.iter().position(|(_, d)| *d == Some(doc)) {
+        return SlotChoice::Wake(i);
+    }
+    if let Some(i) = slots.iter().position(|(p, d)| *p == sheet && d.is_none()) {
+        return SlotChoice::Adopt(i);
+    }
+    SlotChoice::Fresh
+}
+
+/// Which of the tile-map desk's two roads a chosen file takes.
+/// The name carries the office, as everywhere on the desk:
+/// `*.map.ron` is a map, any other RON a tileset document, a PNG
+/// a raw sheet awaiting its cut.
+#[derive(Debug, PartialEq, Eq)]
+enum Road {
+    Map,
+    TilesetDoc,
+    Sheet,
+}
+
+fn opened_road(path: &std::path::Path) -> Road {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+    {
+        Road::Sheet
+    } else if path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .ends_with(".map.ron")
+    {
+        Road::Map
+    } else {
+        Road::TilesetDoc
+    }
+}
 
 /// The folder every application tells into — the well-known place
 /// the debugger lists and the bench listens at.
@@ -102,9 +207,25 @@ impl Demo {
 
     /// Open: a native dialog for another sprite, into the next free slot.
     pub(crate) fn open_dialog(&mut self, ctx: &mut frost::Context) {
+        // Each desk opens its own thing: the map desk goes straight
+        // to a map; the tile-set desk answers two roads — a PNG is a
+        // new tile set awaiting its cut, a RON one already remembered
+        // — and the sprite desk keeps its single door.
+        if self.view == View::TileMap {
+            self.open_map_or_tileset(ctx);
+            return;
+        }
+        let tileset = self.view == View::TileSet;
         let mut dialog = rfd::FileDialog::new()
-            .set_title("sprite_util: open a sprite")
+            .set_title(if tileset {
+                "sprite_util: open a tile set"
+            } else {
+                "sprite_util: open a sprite"
+            })
             .add_filter("PNG images", &["png"]);
+        if tileset {
+            dialog = dialog.add_filter("RON documents", &["ron"]);
+        }
         if let Some(dir) = &self.dir {
             dialog = dialog.set_directory(dir);
         }
@@ -112,8 +233,442 @@ impl Demo {
             dialog = dialog.set_parent(window);
         }
         match dialog.pick_file() {
+            Some(path)
+                if path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("ron")) =>
+            {
+                self.open_tileset_doc(ctx, path)
+            }
             Some(path) => self.load_sprite(ctx, path),
             None => self.status = String::from("open: canceled"),
+        }
+    }
+
+    /// The tile-map desk's open, both roads at once: a map (`*.map.ron`)
+    /// opens as the desk's one and only map, its layers replacing the
+    /// bench; a tileset — remembered document or raw PNG sheet —
+    /// joins the current map as a NEW EMPTY LAYER wearing it. Every
+    /// layer names a tileset, every tileset names a sheet: the chain
+    /// is what the bench shows.
+    pub(crate) fn open_map_or_tileset(&mut self, ctx: &mut frost::Context) {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("sprite_util: open a tile map or a tile set")
+            .add_filter("RON documents", &["ron"])
+            .add_filter("PNG images", &["png"]);
+        let dir = self
+            .map_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .filter(|d| !d.as_os_str().is_empty())
+            .or(self.dir.as_deref())
+            .map(std::path::Path::to_path_buf);
+        if let Some(dir) = &dir {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(window) = ctx.window() {
+            dialog = dialog.set_parent(window);
+        }
+        let Some(target) = dialog.pick_file() else {
+            self.status = String::from("open: canceled");
+            return;
+        };
+        match opened_road(&target) {
+            Road::Map => self.open_map_at(ctx, target),
+            Road::TilesetDoc => self.add_tileset_layer(ctx, Some(target), None),
+            Road::Sheet => self.add_tileset_layer(ctx, None, Some(target)),
+        }
+    }
+
+    /// The tileset's road onto the map desk, whether remembered (a
+    /// `.ron` document speaking name, sheet, cut and roles) or raw (a
+    /// PNG sheet named after itself, wearing its sidecar's cut — or
+    /// none yet). The sheet walks to the bench, the document — when
+    /// there is one — to the shelf, and the map grows an empty layer
+    /// wearing the tileset's spoken name: as large as the layers it
+    /// joins, a field of its own when it is the first. The highlight
+    /// moves to the newcomer — what you loaded is what you draw with.
+    pub(crate) fn add_tileset_layer(
+        &mut self,
+        ctx: &mut frost::Context,
+        doc: Option<std::path::PathBuf>,
+        sheet_choice: Option<std::path::PathBuf>,
+    ) {
+        let (spoken, sheet) = match (&doc, sheet_choice) {
+            (Some(path), _) => {
+                let name = file_name_of(path);
+                let Ok(src) = std::fs::read_to_string(path) else {
+                    self.status = format!("tile set: cannot read {name}");
+                    return;
+                };
+                let (ts, refused) = frost::tileset::from_text(&src);
+                let Some(ts) = ts.filter(|_| refused.is_empty()) else {
+                    let why = refused.first().map(String::as_str).unwrap_or("no tile set");
+                    self.status = format!("tile set: {name} holds no tile set ({why})");
+                    return;
+                };
+                let sheet = sheet_beside(path, &ts.sheet);
+                (Some(ts), sheet)
+            }
+            (None, Some(sheet)) => (None, sheet),
+            (None, None) => return,
+        };
+        // The sheet to the bench: wake its slot, or carry it in.
+        match self.sprites.iter().position(|sp| sp.path == sheet) {
+            Some(i) => {
+                self.active = i;
+                self.selection = None;
+                self.last_click = None;
+            }
+            None => {
+                self.load_sprite(ctx, sheet.clone());
+                if self.active().is_none_or(|sp| sp.path != sheet) {
+                    return; // load_sprite spoke the refusal
+                }
+            }
+        }
+        let ts = match spoken {
+            Some(ts) => {
+                // The document's cut replaces the bench's, sidecar
+                // panel and all — the tile set mode's law, kept here.
+                self.stamp();
+                if let Some(sp) = self.sprites.get_mut(self.active)
+                    && sp.atlas != Some((ts.rows, ts.cols))
+                {
+                    sp.atlas = Some((ts.rows, ts.cols));
+                    if let Some(sdoc) = sp.ron.as_mut()
+                        && set_atlas(&mut sdoc.root, Some((ts.rows, ts.cols)))
+                    {
+                        sdoc.rows = ron_view::layout(&sdoc.root);
+                        sdoc.clamp_scroll();
+                    }
+                }
+                if let Some(path) = &doc {
+                    if let Some(e) = self.shelf.iter_mut().find(|e| e.tileset.name == ts.name) {
+                        e.path = path.clone();
+                        e.tileset = ts.clone();
+                    } else {
+                        self.shelf.push(ShelfTileset {
+                            path: path.clone(),
+                            tileset: ts.clone(),
+                        });
+                    }
+                }
+                ts
+            }
+            None => {
+                // A raw sheet speaks for itself: named after itself,
+                // one tile until the panel says otherwise.
+                let (rows, cols) = self.active().and_then(|sp| sp.atlas).unwrap_or((1, 1));
+                frost::tileset::Tileset::new(asset_name(&sheet), file_name_of(&sheet), rows, cols)
+            }
+        };
+        let (cols, rows) = self
+            .maps
+            .first()
+            .map_or((MAP_COLS, MAP_ROWS), |m| (m.cols, m.rows));
+        self.stamp();
+        self.maps.push(MapLayer::blank(ts.name.clone(), cols, rows));
+        self.align_layers();
+        let last = self.maps.len() - 1;
+        self.select_layer(last);
+        self.sync_work(ctx);
+        self.refresh_slots(ctx);
+        self.status = format!("map: layer '{}' joins the bench", ts.name);
+    }
+
+    /// Open Tile Set, the document's road: the `.ron` speaks name,
+    /// sheet, cut and roles; the sheet it names is adopted onto the
+    /// bench — or its open slot is woken — and the cut the document
+    /// wears replaces the bench's, the way the panel sets it: the
+    /// document is the cut's memory, and on this road memory wins.
+    pub(crate) fn open_tileset_doc(&mut self, ctx: &mut frost::Context, path: std::path::PathBuf) {
+        let name = file_name_of(&path);
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            self.status = format!("tile set: cannot read {name}");
+            return;
+        };
+        let (ts, refused) = frost::tileset::from_text(&src);
+        let Some(ts) = ts.filter(|_| refused.is_empty()) else {
+            let why = refused.first().map(String::as_str).unwrap_or("no tile set");
+            self.status = format!("tile set: {name} holds no tile set ({why})");
+            return;
+        };
+        let sheet = sheet_beside(&path, &ts.sheet);
+        let bench = self
+            .sprites
+            .iter()
+            .map(|sp| (sp.path.as_path(), sp.doc.as_deref()))
+            .collect::<Vec<_>>();
+        let wake = |demo: &mut Self, i: usize| {
+            demo.active = i;
+            demo.selection = None;
+            demo.last_click = None;
+        };
+        match slot_for_doc(&bench, &sheet, &path) {
+            SlotChoice::Wake(i) => wake(self, i),
+            SlotChoice::Adopt(i) => {
+                wake(self, i);
+                self.sprites[i].doc = Some(path.clone());
+            }
+            SlotChoice::Fresh => {
+                self.load_sprite(ctx, sheet.clone());
+                if self.active().is_none_or(|sp| sp.path != sheet) {
+                    // load_sprite spoke the refusal; no more to say.
+                    return;
+                }
+                self.sprites[self.active].doc = Some(path.clone());
+            }
+        }
+        self.stamp();
+        if let Some(sp) = self.sprites.get_mut(self.active)
+            && sp.atlas != Some((ts.rows, ts.cols))
+        {
+            sp.atlas = Some((ts.rows, ts.cols));
+            if let Some(doc) = sp.ron.as_mut()
+                && set_atlas(&mut doc.root, Some((ts.rows, ts.cols)))
+            {
+                doc.rows = ron_view::layout(&doc.root);
+                doc.clamp_scroll();
+            }
+        }
+        if let Some(e) = self.shelf.iter_mut().find(|e| e.tileset.name == ts.name) {
+            e.path = path;
+            e.tileset = ts.clone();
+        } else {
+            self.shelf.push(ShelfTileset {
+                path,
+                tileset: ts.clone(),
+            });
+        }
+        self.sync_work(ctx);
+        self.refresh_slots(ctx);
+        self.status = format!("tile set: opened '{}' from {name}", ts.name);
+    }
+
+    /// The document the active tile set would save, as pure data:
+    /// where it lives — the shelf's place when one remembers it, the
+    /// desk's auto-shelf beside the sheet otherwise — and what it
+    /// says: the bench's cut worn now, the shelf's roles kept. The
+    /// file itself is Save Tile Set's to write.
+    fn tileset_to_save(
+        sheet: &std::path::Path,
+        cut: (usize, usize),
+        known: Option<&ShelfTileset>,
+    ) -> (std::path::PathBuf, frost::tileset::Tileset) {
+        match known {
+            Some(e) => {
+                let mut ts = e.tileset.clone();
+                ts.rows = cut.0;
+                ts.cols = cut.1;
+                (e.path.clone(), ts)
+            }
+            None => {
+                let mut path = sheet.to_path_buf();
+                path.set_extension("tileset.ron");
+                let ts = frost::tileset::Tileset::new(
+                    asset_name(sheet),
+                    file_name_of(sheet),
+                    cut.0,
+                    cut.1,
+                );
+                (path, ts)
+            }
+        }
+    }
+
+    /// Save Tile Set: the document is the work. The bench's cut and
+    /// the shelf's roles go to the file — the sheet is never touched.
+    /// Pixels are the sprite's affair, edited where sprites are
+    /// edited; this verb owns only what the tile set is.
+    /// A tile set re-shelved under a new name, as pure data: the
+    /// spoken name follows the chosen file — the desk keeps name and
+    /// shelf in step — the sheet reference is re-voiced from the new
+    /// folder, so the chain walks from wherever the document now
+    /// stands, and the bench's cut and the shelf's roles ride along.
+    fn tileset_as(
+        sheet: &std::path::Path,
+        cut: (usize, usize),
+        known: Option<&ShelfTileset>,
+        new_path: &std::path::Path,
+    ) -> frost::tileset::Tileset {
+        let file = new_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let spoken = file
+            .strip_suffix(".tileset.ron")
+            .or_else(|| file.strip_suffix(".ron"))
+            .unwrap_or(&file)
+            .to_string();
+        let new_dir = new_path
+            .parent()
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let sheet_ref = frost::map::relative(&new_dir, &sheet.to_string_lossy());
+        let mut ts = known.map(|e| e.tileset.clone()).unwrap_or_else(|| {
+            frost::tileset::Tileset::new(spoken.clone(), sheet_ref.clone(), cut.0, cut.1)
+        });
+        ts.name = spoken;
+        ts.sheet = sheet_ref;
+        ts.rows = cut.0;
+        ts.cols = cut.1;
+        ts
+    }
+
+    /// Save as Tile Set: the document goes out under a new name. The
+    /// sheet is never touched, and the old document — if one stands
+    /// where the shelf remembers it — stands untouched too.
+    pub(crate) fn save_as_tileset(&mut self, ctx: &mut frost::Context) {
+        let Some(sp) = self.active() else {
+            self.status = String::from("tile set: no tile set on the bench");
+            return;
+        };
+        let Some(cut) = sp.atlas else {
+            self.status = format!(
+                "tile set: '{}' waits for its cut — set the grid first",
+                sp.name
+            );
+            return;
+        };
+        if sp.path.as_os_str().is_empty() {
+            self.status = String::from("tile set: the sheet has no file to stand beside");
+            return;
+        }
+        let sheet = sp.path.clone();
+        let doc = sp.doc.clone();
+        let known = doc
+            .as_ref()
+            .and_then(|d| self.shelf.iter().find(|e| &e.path == d).cloned())
+            .or_else(|| {
+                self.shelf
+                    .iter()
+                    .find(|e| sheet_beside(&e.path, &e.tileset.sheet) == sheet)
+                    .cloned()
+            });
+        let (suggested, dir) = match &known {
+            Some(e) => (
+                e.path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "tileset.ron".to_string()),
+                e.path
+                    .parent()
+                    .filter(|d| !d.as_os_str().is_empty())
+                    .map(std::path::Path::to_path_buf),
+            ),
+            None => (
+                format!("{}.tileset.ron", asset_name(&sheet)),
+                sheet
+                    .parent()
+                    .filter(|d| !d.as_os_str().is_empty())
+                    .map(std::path::Path::to_path_buf),
+            ),
+        };
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("sprite_util: save tile set as")
+            .set_file_name(suggested)
+            .add_filter("RON documents", &["ron"]);
+        if let Some(dir) = &dir {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(window) = ctx.window() {
+            dialog = dialog.set_parent(window);
+        }
+        let Some(mut target) = dialog.save_file() else {
+            self.status = String::from("tile set: canceled");
+            return;
+        };
+        match target.extension() {
+            None => {
+                target.set_extension("ron");
+            }
+            Some(ext) if ext.eq_ignore_ascii_case("ron") => {}
+            Some(_) => {
+                self.status = String::from("tile set: only RON documents");
+                return;
+            }
+        }
+        let ts = Self::tileset_as(&sheet, cut, known.as_ref(), &target);
+        let who = ts.name.clone();
+        let name = file_name_of(&target);
+        if target.exists() && !confirm_overwrite(ctx, &name) {
+            self.status = String::from("tile set: canceled");
+            return;
+        }
+        match std::fs::write(&target, frost::tileset::to_text(&ts)) {
+            Ok(()) => {
+                if let Some(sp) = self.sprites.get_mut(self.active) {
+                    sp.doc = Some(target.clone());
+                }
+                // A name is an identity: the shelf entry joins by it.
+                // The entry the rename walked away from keeps its
+                // file where it stood — the shelf remembers both.
+                if let Some(e) = self.shelf.iter_mut().find(|e| e.tileset.name == who) {
+                    e.path = target.clone();
+                    e.tileset = ts;
+                } else {
+                    self.shelf.push(ShelfTileset {
+                        path: target,
+                        tileset: ts,
+                    });
+                }
+                self.status = format!("tile set: wrote '{who}' to {name}");
+            }
+            Err(err) => self.status = format!("tile set: cannot write {name}: {err}"),
+        }
+    }
+
+    pub(crate) fn save_tileset(&mut self, ctx: &mut frost::Context) {
+        let Some(sp) = self.active() else {
+            self.status = String::from("tile set: no tile set on the bench");
+            return;
+        };
+        let Some(cut) = sp.atlas else {
+            self.status = format!(
+                "tile set: '{}' waits for its cut — set the grid first",
+                sp.name
+            );
+            return;
+        };
+        if sp.path.as_os_str().is_empty() {
+            self.status = String::from("tile set: the sheet has no file to stand beside");
+            return;
+        }
+        let sheet = sp.path.clone();
+        let doc = sp.doc.clone();
+        // The slot's own document answers first; only a slot wearing
+        // none asks the shelf to guess from the sheet.
+        let known = doc
+            .as_ref()
+            .and_then(|d| self.shelf.iter().find(|e| &e.path == d).cloned())
+            .or_else(|| {
+                self.shelf
+                    .iter()
+                    .find(|e| sheet_beside(&e.path, &e.tileset.sheet) == sheet)
+                    .cloned()
+            });
+        let (path, ts) = Self::tileset_to_save(&sheet, cut, known.as_ref());
+        let who = ts.name.clone();
+        let name = file_name_of(&path);
+        if path.exists() && !confirm_overwrite(ctx, &name) {
+            self.status = String::from("tile set: canceled");
+            return;
+        }
+        match std::fs::write(&path, frost::tileset::to_text(&ts)) {
+            Ok(()) => {
+                if let Some(sp) = self.sprites.get_mut(self.active) {
+                    sp.doc = Some(path.clone());
+                }
+                if let Some(e) = self.shelf.iter_mut().find(|e| e.tileset.name == who) {
+                    e.path = path;
+                    e.tileset = ts;
+                } else {
+                    self.shelf.push(ShelfTileset { path, tileset: ts });
+                }
+                self.status = format!("tile set: wrote '{who}' to {name}");
+            }
+            Err(err) => self.status = format!("tile set: cannot write {name}: {err}"),
         }
     }
 
@@ -216,6 +771,22 @@ impl Demo {
     /// Nothing changed since the last save means nothing to write, and
     /// nothing to ask about: the files keep their bytes untouched.
     pub(crate) fn save(&mut self, ctx: &mut frost::Context) {
+        // On the tile-set desk, Save is Save Tile Set — the label
+        // the bar wears and the work the button does are one thing.
+        if self.view == View::TileSet {
+            self.save_tileset(ctx);
+            return;
+        }
+        // On the map desk, Save Tile Map goes quietly back to the
+        // map it came from; one never yet saved asks where, like any
+        // other Save without a file.
+        if self.view == View::TileMap {
+            match self.map_path.clone() {
+                Some(target) => self.save_map_to(ctx, target),
+                None => self.save_map(ctx),
+            }
+            return;
+        }
         let Some(sp) = self.active() else { return };
         if sp.current.width() == 0 {
             return;
@@ -240,6 +811,16 @@ impl Demo {
     /// current file name; an existing target asks the same overwrite
     /// confirmation.
     pub(crate) fn save_as(&mut self, ctx: &mut frost::Context) {
+        // On the tile-set desk the verb is Save as Tile Set; on the
+        // map desk, Save as Tile Map — the dialog either way.
+        if self.view == View::TileSet {
+            self.save_as_tileset(ctx);
+            return;
+        }
+        if self.view == View::TileMap {
+            self.save_map(ctx);
+            return;
+        }
         let Some(sp) = self.active() else { return };
         if sp.current.width() == 0 {
             return;
@@ -291,20 +872,41 @@ impl Demo {
             self.status = String::from("map: nothing painted to save");
             return;
         }
-        let stem = self.active().map_or_else(
-            || "world".to_string(),
-            |sp| crate::art::asset_name(&sp.path),
-        );
-        let mut dialog = rfd::FileDialog::new()
-            .set_title("sprite_util: save map")
-            .set_file_name(format!("{stem}.map.ron"))
-            .add_filter("RON documents", &["ron"]);
-        let dir = self
+        // The document names its own save: an opened or saved map
+        // speaks its name and opens its folder. Only paint born on
+        // the bench, never saved, falls back to naming itself after
+        // the sheet it was painted with.
+        let bench_dir = self
             .active()
             .and_then(|sp| sp.path.parent())
             .filter(|d| !d.as_os_str().is_empty())
             .or(self.dir.as_deref())
             .map(std::path::Path::to_path_buf);
+        let (file, dir) = match &self.map_path {
+            Some(p) => (
+                p.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "world.map.ron".to_string()),
+                p.parent()
+                    .filter(|d| !d.as_os_str().is_empty())
+                    .map(std::path::Path::to_path_buf)
+                    .or(bench_dir),
+            ),
+            None => (
+                format!(
+                    "{}.map.ron",
+                    self.active().map_or_else(
+                        || "world".to_string(),
+                        |sp| crate::art::asset_name(&sp.path)
+                    )
+                ),
+                bench_dir,
+            ),
+        };
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("sprite_util: save map")
+            .set_file_name(file)
+            .add_filter("RON documents", &["ron"]);
         if let Some(dir) = &dir {
             dialog = dialog.set_directory(dir);
         }
@@ -325,14 +927,89 @@ impl Demo {
                 return;
             }
         }
+        self.save_map_to(ctx, target);
+    }
+
+    /// The writer half of saving a map: the place is already known —
+    /// the dialog's choice, or the path the desk remembers from the
+    /// last open or save. The overwrite asks its question here too:
+    /// a Save over a file somebody else made is still a replace.
+    fn save_map_to(&mut self, ctx: &mut frost::Context, target: std::path::PathBuf) {
         let name = file_name_of(&target);
         if target.exists() && !confirm_overwrite(ctx, &name) {
             self.status = String::from("map: canceled");
             return;
         }
-        let text = ron_tree::to_text_doc(MAP_FILE_HEADER, &map_value(&self.maps), "");
-        match std::fs::write(&target, text) {
-            Ok(()) => self.status = format!("map: wrote {} layers to {name}", self.maps.len()),
+        // The cargo first: every tileset a layer names gets its
+        // document written — to the shelf's place beside the sheet —
+        // before the map that points at them. A layer whose tileset
+        // neither shelf nor bench can dress is refused by name and
+        // stays out of the file: a map must not promise a dressing it
+        // cannot ship. The layer waits on the bench in memory; the
+        // file stays honest about what it carries.
+        let map_dir = target
+            .parent()
+            .map(|d| d.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let mut map_out = frost::map::Map::default();
+        let mut carried: Vec<&str> = Vec::new();
+        let mut refused: Vec<String> = Vec::new();
+        for who in tileset_names(&self.maps) {
+            let Some((sp, (rows, cols))) = dressed(who, &self.shelf, &self.sprites) else {
+                refused.push(format!("layer '{who}': its tileset waits off the bench"));
+                continue;
+            };
+            let (path, mut ts) = match self.shelf.iter().find(|e| e.tileset.name == who) {
+                Some(entry) => (entry.path.clone(), entry.tileset.clone()),
+                None => {
+                    let mut path = sp.path.clone();
+                    path.set_extension("tileset.ron");
+                    let sheet = sp
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_else(|| format!("{who}.png"));
+                    (path, frost::tileset::Tileset::new(who, sheet, rows, cols))
+                }
+            };
+            ts.rows = rows;
+            ts.cols = cols;
+            if let Err(err) = std::fs::write(&path, frost::tileset::to_text(&ts)) {
+                refused.push(format!("'{who}': its document cannot be written: {err}"));
+                continue;
+            }
+            let reference =
+                frost::map::relative(&map_dir, &path.to_string_lossy().replace('\\', "/"));
+            if !map_out.tilesets.contains(&reference) {
+                map_out.tilesets.push(reference);
+            }
+            carried.push(who);
+        }
+        map_out.layers = self
+            .maps
+            .iter()
+            .filter(|m| carried.contains(&m.tileset.as_str()))
+            .cloned()
+            .collect();
+        match std::fs::write(&target, frost::map::to_text(&map_out)) {
+            Ok(()) => {
+                self.map_path = Some(target.clone());
+                self.status = format!("map: wrote {} layers to {name}", map_out.layers.len());
+                for why in &refused {
+                    log::warn!("map save: {why}");
+                }
+                if let Some(first) = refused.first() {
+                    let more = refused.len() - 1;
+                    self.status.push_str(&format!(
+                        " — {first}{}",
+                        if more > 0 {
+                            format!(", and {more} more")
+                        } else {
+                            String::new()
+                        }
+                    ));
+                }
+            }
             Err(err) => {
                 log::warn!("map save failed: {err}");
                 self.status = format!("map: cannot write {name}: {err}");
@@ -340,48 +1017,89 @@ impl Demo {
         }
     }
 
-    /// Open a map file: the canvas becomes the file's layers, and the
-    /// undo road remembers the canvas that was — opening a map is a
-    /// step like any other. Tilesets off the bench keep their layers
-    /// waiting, dressed again when their source opens.
-    pub(crate) fn open_map(&mut self, ctx: &mut frost::Context) {
-        let mut dialog = rfd::FileDialog::new()
-            .set_title("sprite_util: open map")
-            .add_filter("RON documents", &["ron"]);
-        if let Some(dir) = &self.dir {
-            dialog = dialog.set_directory(dir);
-        }
-        if let Some(window) = ctx.window() {
-            dialog = dialog.set_parent(window);
-        }
-        let Some(target) = dialog.pick_file() else {
-            self.status = String::from("map: canceled");
-            return;
-        };
+    /// The map road with the place already chosen: the loader half,
+    /// one stroke — cargo to the shelf, sheets to the bench, layers
+    /// to the bench of layers.
+    pub(crate) fn open_map_at(&mut self, ctx: &mut frost::Context, target: std::path::PathBuf) {
         let name = file_name_of(&target);
         let Ok(src) = std::fs::read_to_string(&target) else {
             self.status = format!("map: cannot read {name}");
             return;
         };
-        let Ok(doc) = ron_tree::parse_doc(&src) else {
-            self.status = format!("map: {name} is not RON");
-            return;
-        };
-        let (layers, refused) = map_of(&doc.root);
-        if layers.is_empty() {
+        let (map, mut refused) = frost::map::from_text(&src);
+        if map.layers.is_empty() {
             let why = refused.first().map(String::as_str).unwrap_or("no layers");
             self.status = format!("map: {name} holds no map ({why})");
             return;
         }
+        // The cargo comes onto the shelf with the map: every tileset
+        // document the file points at, resolved against the map's own
+        // path — the one operation the guard and the desk share —
+        // read and parsed. A document that answers nothing is named,
+        // and its layers wait for it exactly as a closed sprite's do.
+        let mut shelf: Vec<ShelfTileset> = Vec::new();
+        for reference in &map.tilesets {
+            let resolved = frost::map::resolve(&target.to_string_lossy(), reference);
+            let path = target
+                .parent()
+                .map(|dir| dir.join(&resolved))
+                .unwrap_or_else(|| std::path::PathBuf::from(&resolved));
+            match std::fs::read_to_string(&path) {
+                Ok(doc_src) => {
+                    let (ts, errs) = frost::tileset::from_text(&doc_src);
+                    for why in errs {
+                        refused.push(format!("'{reference}': {why}"));
+                    }
+                    if let Some(ts) = ts
+                        && !shelf.iter().any(|e| e.tileset.name == ts.name)
+                    {
+                        shelf.push(ShelfTileset { path, tileset: ts });
+                    }
+                }
+                Err(err) => refused.push(format!(
+                    "tileset '{reference}' answers nothing ({}: {err})",
+                    path.display()
+                )),
+            }
+        }
+        // The cargo's sheets walk onto the bench themselves. A map
+        // is dressed by sprites and the desk paints with what stands
+        // under hand — so opening a map opens what its tilesets cut,
+        // each sheet resolved from the document that names it, the
+        // same operation the guard walks. A sheet already open keeps
+        // its slot; one that answers nothing is left to the waiting
+        // names below, exactly as a missing identity always was.
+        let mut admitted: Vec<String> = Vec::new();
+        for entry in &shelf {
+            let sheet = sheet_beside(&entry.path, &entry.tileset.sheet);
+            if self.sprites.iter().any(|sp| sp.path == sheet) {
+                continue;
+            }
+            self.load_sprite(ctx, sheet.clone());
+            admitted.push(file_name_of(&sheet));
+        }
+        // And the desk turns to face what it opened: the Tile Map
+        // view is where the map's layers live. The document is now
+        // the desk's own — Save map will answer with its name.
+        self.view = View::TileMap;
+        self.map_path = Some(target.clone());
         let before = self.capture();
-        self.maps = layers;
+        self.maps = map.layers;
+        self.shelf = shelf;
+        // A new map is a new stack of memories: every layer's first
+        // choosing is owed again, top-left and neutral.
+        self.layer_brush.clear();
+        self.active_layer = 0;
+        self.align_layers();
+        self.recall_layer();
         if self.maps != before.maps {
             push_step(&mut self.undo_stack, &mut self.redo_stack, before);
         }
         self.sync_work(ctx);
+        self.refresh_slots(ctx);
         let names = tileset_names(&self.maps);
         log::info!("map '{name}': it asks for {}", names.join(", "));
-        let waiting = waiting_names(&self.maps, &self.sprites);
+        let waiting = waiting_names(&self.maps, &self.shelf, &self.sprites);
         let mut status = format!("map: opened {} layers from {name}", self.maps.len());
         if !waiting.is_empty() {
             // Named, not counted — the guard's face the desk can
@@ -414,6 +1132,9 @@ impl Demo {
                     String::new()
                 }
             ));
+        }
+        if !admitted.is_empty() {
+            status.push_str(&format!(" — sheet to the bench: {}", admitted.join(", ")));
         }
         self.status = status;
     }
@@ -596,6 +1317,122 @@ pub(crate) fn spoken_names(being: &frost::ron::Val, what: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
+    /// Save Tile Set's file, pure: a never-shelved sheet is shelved
+    /// beside itself, named after itself, wearing the bench's cut;
+    /// a shelved document keeps its place and its spoken roles and
+    /// takes only the new cut. No dialog, no disk — the shape the
+    /// verb writes.
+    /// The name tells which road a file takes on the map desk:
+    /// `*.map.ron` is a map, any other RON a tileset document,
+    /// a PNG a raw sheet.
+    #[test]
+    fn the_name_tells_which_road_a_file_takes() {
+        use std::path::Path;
+        assert_eq!(
+            opened_road(Path::new("/m/courtyard.map.ron")),
+            Road::Map,
+            "the map wears its office"
+        );
+        assert_eq!(
+            opened_road(Path::new("/s/basic_tiles.tileset.ron")),
+            Road::TilesetDoc
+        );
+        assert_eq!(
+            opened_road(Path::new("/s/handwritten.ron")),
+            Road::TilesetDoc,
+            "any other RON is a document"
+        );
+        assert_eq!(opened_road(Path::new("/s/basic_tiles.png")), Road::Sheet);
+        assert_eq!(opened_road(Path::new("/s/odd.PNG")), Road::Sheet);
+    }
+
+    /// One sheet, two documents: the document already worn wakes its
+    /// slot; a bare sheet adopts the opened document; a sheet already
+    /// worn by another document makes room for a new slot — two tile
+    /// sets may wear one sheet, and never fight over one cut.
+    #[test]
+    fn two_tile_sets_may_wear_one_sheet() {
+        use std::path::Path;
+        let sheet = Path::new("/a/sheet.png");
+        let doc1 = Path::new("/a/one.tileset.ron");
+        let doc2 = Path::new("/a/two.tileset.ron");
+        let empty: Vec<(&Path, Option<&Path>)> = Vec::new();
+        assert_eq!(slot_for_doc(&empty, sheet, doc1), SlotChoice::Fresh);
+        let bare = vec![(sheet, None)];
+        assert_eq!(slot_for_doc(&bare, sheet, doc1), SlotChoice::Adopt(0));
+        let worn = vec![(sheet, Some(doc1))];
+        assert_eq!(slot_for_doc(&worn, sheet, doc1), SlotChoice::Wake(0));
+        assert_eq!(slot_for_doc(&worn, sheet, doc2), SlotChoice::Fresh);
+    }
+
+    /// Save as Tile Set, pure: the spoken name follows the chosen
+    /// file — `green.tileset.ron` speaks "green" — the sheet is
+    /// re-voiced from the new folder, and a shelved document's roles
+    /// ride along to the new name.
+    #[test]
+    fn a_tile_set_renamed_revoices_its_chain() {
+        let sheet = std::path::Path::new("/work/assets/sprites/moss.png");
+        let fresh = Demo::tileset_as(
+            sheet,
+            (1, 4),
+            None,
+            std::path::Path::new("/work/assets/sprites/green.tileset.ron"),
+        );
+        assert_eq!(fresh.name, "green", "the name follows the shelf");
+        assert_eq!(
+            fresh.sheet, "moss.png",
+            "beside it, the sheet is named bare"
+        );
+        assert_eq!((fresh.rows, fresh.cols), (1, 4));
+        let mut shelved = frost::tileset::Tileset::new("moss", "moss.png", 1, 1);
+        shelved.set_solid(2, true);
+        let known = ShelfTileset {
+            path: std::path::PathBuf::from("/work/assets/sprites/moss.tileset.ron"),
+            tileset: shelved,
+        };
+        let moved = Demo::tileset_as(
+            sheet,
+            (2, 2),
+            Some(&known),
+            std::path::Path::new("/work/sets/green.ron"),
+        );
+        assert_eq!(moved.name, "green");
+        assert_eq!(
+            moved.sheet, "../assets/sprites/moss.png",
+            "the reference walks from the new folder"
+        );
+        assert!(moved.is_solid(2), "roles ride along to the new name");
+        assert_eq!((moved.rows, moved.cols), (2, 2));
+    }
+
+    #[test]
+    fn the_tile_set_saves_its_own_document() {
+        let sheet = std::path::Path::new("/work/assets/sprites/moss.png");
+        let (path, ts) = Demo::tileset_to_save(sheet, (2, 4), None);
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("/work/assets/sprites/moss.tileset.ron"),
+            "the auto-shelf stands beside the sheet"
+        );
+        assert_eq!(
+            (ts.name.as_str(), ts.sheet.as_str(), ts.rows, ts.cols),
+            ("moss", "moss.png", 2, 4)
+        );
+        let mut shelved = frost::tileset::Tileset::new("moss", "../sprites/moss.png", 1, 1);
+        shelved.set_solid(3, true);
+        let known = ShelfTileset {
+            path: std::path::PathBuf::from("/work/sets/moss.ron"),
+            tileset: shelved,
+        };
+        let (path, ts) = Demo::tileset_to_save(sheet, (2, 4), Some(&known));
+        assert_eq!(path, std::path::PathBuf::from("/work/sets/moss.ron"));
+        assert_eq!(
+            (ts.rows, ts.cols),
+            (2, 4),
+            "the bench's cut is the current word"
+        );
+        assert!(ts.is_solid(3), "roles the document spoke survive the save");
+    }
     use super::*;
 
     /// The bench reads a being by name, not by place: beds counted

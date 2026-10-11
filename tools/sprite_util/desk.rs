@@ -14,14 +14,15 @@ use crate::world::*;
 use std::sync::Arc;
 
 /// The workbench's view: which set of panels answers to the View menu.
-/// `Markers` is the full editing desk — every panel; `Atlas` keeps only
-/// the Atlas panel, the grid's rows and columns alone on the screen.
-/// (Tile Map will complete the trio when it exists; its menu line is
-/// already there, inert.)
+/// `Markers` is the full editing desk — every panel; `TileSet` keeps
+/// only the tile-set panel, the cut's rows and columns alone on the
+/// screen, and its bench holds tile sets: each one a sheet, a cut,
+/// and the roles its document speaks. (Tile Map completes the trio:
+/// the painting desk.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum View {
     Markers,
-    Atlas,
+    TileSet,
     /// The tile-map desk: the work area becomes a map canvas — the
     /// tileset's cell pitch extended as an infinite grid over the
     /// checker, with the map's axes marked — and the sprite steps off
@@ -36,7 +37,7 @@ impl View {
     pub(crate) fn name(self) -> &'static str {
         match self {
             View::Markers => "Markers",
-            View::Atlas => "Atlas",
+            View::TileSet => "Tile Set",
             View::TileMap => "Tile Map",
         }
     }
@@ -59,9 +60,36 @@ pub(crate) struct Demo {
     /// The atlas cell the next click will paint: the brush. A tool
     /// mode like the active slot, outside the undo road.
     pub(crate) picked_cell: Option<usize>,
+    /// The tile-set bench's hover — slot and spoken line — and the
+    /// label it wears. A still cursor over an unchanged bench shapes
+    /// no text: the key decides when to reshape.
+    pub(crate) hover_slot_key: Option<(usize, String)>,
+    pub(crate) hover_label: Option<frost::Shape>,
+    /// The tile-map bench: the layer the desk views and draws to,
+    /// and which layers the canvas shows. Painting answers to this
+    /// position, never to a name — two layers may wear one tileset;
+    /// the visibility is the eye's, outside the undo road.
+    pub(crate) active_layer: usize,
+    pub(crate) layer_visible: Vec<bool>,
+    /// Each layer remembers the tile it last wore and that tile's
+    /// turn: `Some` once the layer has been left once, `None` while
+    /// its first choosing is still owed (the top-left tile, neutral).
+    pub(crate) layer_brush: Vec<Option<(usize, u8)>>,
+    /// The number row's held state, one per digit, so a press is
+    /// one choice and not a repeat.
+    pub(crate) was_digits: [bool; 9],
+    /// Each view keeps its own desk: what it loaded, what it holds,
+    /// how far its road walked. The three desks are disjunct
+    /// worlds — switching archives one and recalls the other, so
+    /// nothing one desk carries ever shows on another's row.
+    pub(crate) benches: [Bench; 3],
     /// The tile desk's painted layers — the picture, and the undo
     /// road's property (captured into every `World`).
     pub(crate) maps: Vec<MapLayer>,
+    /// The tileset documents the desk carries: opened with a map,
+    /// rewritten when one is saved. The document — not a sprite's
+    /// momentary atlas panel — is the cut's memory.
+    pub(crate) shelf: Vec<ShelfTileset>,
     /// A paint or erase stroke in flight: opened by a left-press (or
     /// by Delete over the desk) and lived out while its trigger holds.
     pub(crate) paint: Option<Paint>,
@@ -201,6 +229,10 @@ pub(crate) struct Demo {
     /// folder the command line named, the working directory when no
     /// argument did.
     pub(crate) dir: Option<std::path::PathBuf>,
+    /// The document the desk works on: the map it last opened or
+    /// saved. Save map answers with its name and folder — the desk
+    /// remembers the document, not only the bench it paints with.
+    pub(crate) map_path: Option<std::path::PathBuf>,
     /// The bench's ear for a running application, when it is
     /// listening to one: reread on every telling, unmade when the
     /// card dies. One attachment at a time — a conversation, not a
@@ -235,6 +267,94 @@ pub(crate) struct Demo {
     pub(crate) show_shapes: bool,
 }
 
+/// Which view's archive a view opens: the slot in `benches`.
+pub(crate) fn view_idx(view: View) -> usize {
+    match view {
+        View::Markers => 0,
+        View::TileSet => 1,
+        View::TileMap => 2,
+    }
+}
+
+/// One desk's whole memory, kept while its view stands unoccupied:
+/// the bench and what it wears, the work and the copy held over it,
+/// the eye's zoom and scroll, and the undo road walked on it. A
+/// desk is not shared between views — what you load for one stays
+/// on it; each view recalls its own state, nothing more and nothing
+/// less.
+pub(crate) struct Bench {
+    /// The sprite slots and which sits at the bench's right hand.
+    pub(crate) sprites: Vec<Sprite>,
+    pub(crate) active: usize,
+    /// The tile map's layers, the tileset cargo, and the bench of
+    /// layers' own words: highlight, eyes, and tile memories.
+    pub(crate) maps: Vec<MapLayer>,
+    pub(crate) shelf: Vec<ShelfTileset>,
+    pub(crate) active_layer: usize,
+    pub(crate) layer_visible: Vec<bool>,
+    pub(crate) layer_brush: Vec<Option<(usize, u8)>>,
+    /// The map file this desk's picture came from and returns to.
+    pub(crate) map_path: Option<std::path::PathBuf>,
+    /// The brush: the picked atlas cell and its turn.
+    pub(crate) picked_cell: Option<usize>,
+    pub(crate) brush: u8,
+    /// The held copy: block and its frame.
+    pub(crate) clip: Option<Clip>,
+    pub(crate) sel: Option<[i32; 4]>,
+    /// The crop selection dragged on the work area.
+    pub(crate) selection: Option<[f32; 4]>,
+    /// The animation built on this desk.
+    pub(crate) anim: Anim,
+    /// The eye: the work area's zoom and pan, the bench's scroll.
+    pub(crate) zoom: f32,
+    pub(crate) offset: [f32; 2],
+    pub(crate) slot_scroll: f32,
+    /// The undo road walked on this desk alone.
+    pub(crate) undo_stack: Vec<World>,
+    pub(crate) redo_stack: Vec<World>,
+}
+
+impl Default for Bench {
+    fn default() -> Self {
+        Self {
+            anim: Anim {
+                looping: true,
+                dir: 1,
+                ..Anim::default()
+            },
+            zoom: 1.0,
+            ..Self::bare()
+        }
+    }
+}
+
+impl Bench {
+    /// An untouched desk: every collection empty, every eye at rest.
+    fn bare() -> Self {
+        Self {
+            sprites: Vec::new(),
+            active: 0,
+            maps: Vec::new(),
+            shelf: Vec::new(),
+            active_layer: 0,
+            layer_visible: Vec::new(),
+            layer_brush: Vec::new(),
+            map_path: None,
+            picked_cell: None,
+            brush: 0,
+            clip: None,
+            sel: None,
+            selection: None,
+            anim: Anim::default(),
+            zoom: 1.0,
+            offset: [0.0, 0.0],
+            slot_scroll: 0.0,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        }
+    }
+}
+
 impl Demo {
     /// The active sprite, or `None` while all slots are empty.
     pub(crate) fn active(&self) -> Option<&Sprite> {
@@ -267,6 +387,196 @@ impl Demo {
             color,
             alpha: 1.0,
         }
+    }
+
+    /// The line a hover speaks: the name the slot answers to — the
+    /// bound document's spoken name when one is worn, the sheet's own
+    /// stem otherwise — together with the cut it wears.
+    pub(crate) fn tileset_answer(&self, i: usize) -> String {
+        let name = match self
+            .sprites
+            .get(i)
+            .and_then(|sp| sp.doc.as_ref())
+            .and_then(|d| self.shelf.iter().find(|e| &e.path == d))
+        {
+            Some(e) => e.tileset.name.clone(),
+            None => self
+                .sprites
+                .get(i)
+                .map_or_else(String::new, |sp| sp.name.clone()),
+        };
+        match self.sprites.get(i).and_then(|sp| sp.atlas) {
+            Some((rows, cols)) => format!("{name} · {rows} x {cols}"),
+            None => format!("{name} · no grid"),
+        }
+    }
+
+    /// Exchange the working fields with the archive of the view now
+    /// held: laid down when leaving, taken up when entering — one
+    /// road, walked twice through a door. Nothing copies: the desks
+    /// travel whole, and an occupied view's archive stands bare.
+    /// In-flight gestures are no part of a desk's memory; whoever
+    /// calls this road releases them on the way out.
+    fn swap_desk(&mut self) {
+        let b = &mut self.benches[view_idx(self.view)];
+        std::mem::swap(&mut b.sprites, &mut self.sprites);
+        std::mem::swap(&mut b.active, &mut self.active);
+        std::mem::swap(&mut b.maps, &mut self.maps);
+        std::mem::swap(&mut b.shelf, &mut self.shelf);
+        std::mem::swap(&mut b.active_layer, &mut self.active_layer);
+        std::mem::swap(&mut b.layer_visible, &mut self.layer_visible);
+        std::mem::swap(&mut b.layer_brush, &mut self.layer_brush);
+        std::mem::swap(&mut b.map_path, &mut self.map_path);
+        std::mem::swap(&mut b.picked_cell, &mut self.picked_cell);
+        std::mem::swap(&mut b.brush, &mut self.brush);
+        std::mem::swap(&mut b.clip, &mut self.clip);
+        std::mem::swap(&mut b.sel, &mut self.sel);
+        std::mem::swap(&mut b.selection, &mut self.selection);
+        std::mem::swap(&mut b.anim, &mut self.anim);
+        std::mem::swap(&mut b.zoom, &mut self.zoom);
+        std::mem::swap(&mut b.offset, &mut self.offset);
+        std::mem::swap(&mut b.slot_scroll, &mut self.slot_scroll);
+        std::mem::swap(&mut b.undo_stack, &mut self.undo_stack);
+        std::mem::swap(&mut b.redo_stack, &mut self.redo_stack);
+    }
+
+    /// The door between desks. The views are disjunct worlds: the
+    /// desk you leave is laid down whole, the desk you enter is
+    /// recalled whole — a tileset loaded for one never stands on
+    /// another's row, and neither desk's undo road crosses into
+    /// the other. Derived things retake themselves: the rack's
+    /// shapes, the layer bench's alignment, the canvas's work.
+    pub(crate) fn switch_view(&mut self, ctx: &mut frost::Context, to: View) {
+        self.swap_desk();
+        self.view = to;
+        self.swap_desk();
+        // In-flight gestures belong to the desk left behind.
+        self.sel_drag = None;
+        self.slot_drag = None;
+        self.drag_from = None;
+        self.slot_scrub = None;
+        self.paint = None;
+        // The rack retells itself from the entered desk's slot.
+        self.band_key = None;
+        self.align_layers();
+        self.sync_work(ctx);
+        self.refresh_slots(ctx);
+    }
+
+    /// Keep the tile-map bench honest after any change of the maps:
+    /// the highlight never stands beyond the stack, and every layer
+    /// has exactly one visibility word.
+    pub(crate) fn align_layers(&mut self) {
+        self.active_layer = self.active_layer.min(self.maps.len().saturating_sub(1));
+        self.layer_visible.resize(self.maps.len(), true);
+        self.layer_brush.resize(self.maps.len(), None);
+    }
+
+    /// The standing layer's remembered tile onto the rack: the last
+    /// one painted there, or — the first time — the atlas's top-left
+    /// tile worn neutral.
+    pub(crate) fn recall_layer(&mut self) {
+        let (cell, tfm) = self
+            .layer_brush
+            .get(self.active_layer)
+            .copied()
+            .flatten()
+            .unwrap_or((0, 0));
+        self.picked_cell = Some(cell);
+        self.brush = tfm;
+    }
+
+    /// The slot wearing a layer's sheet takes the bench's seat, so
+    /// the rack shows the very tiles this layer paints with.
+    fn wake_layer_sheet(&mut self, i: usize) {
+        let sheet = self
+            .maps
+            .get(i)
+            .and_then(|m| dressed(&m.tileset, &self.shelf, &self.sprites))
+            .map(|(sp, _)| sp.path.clone());
+        if let Some(sheet) = sheet
+            && let Some(s) = self.sprites.iter().position(|sp| sp.path == sheet)
+        {
+            self.active = s;
+        }
+    }
+
+    /// The bottom row by keyboard: the plate at place `i` answers
+    /// as if clicked. On the map desk a layer takes the highlight —
+    /// its tile memory recalled, its sheet woken; elsewhere a slot
+    /// wakes to the bench.
+    pub(crate) fn row_pick(&mut self, ctx: &mut frost::Context, i: usize) {
+        if self.view == View::TileMap {
+            if i < self.maps.len() && i != self.active_layer {
+                let who = self.maps[i].tileset.clone();
+                self.select_layer(i);
+                self.selection = None;
+                self.last_click = None;
+                self.status = format!("map: painting on '{who}'");
+                self.sync_work(ctx);
+                self.refresh_slots(ctx);
+            }
+        } else if i < self.sprites.len() {
+            self.active = i;
+            self.selection = None;
+            self.last_click = None;
+            self.status = format!("slot: '{}'", asset_name(&self.sprites[i].path));
+            self.sync_work(ctx);
+        }
+    }
+
+    /// One dress verb, aimed where the cursor will drop: a held
+    /// block takes it as one picture — the desk's rule, keys and
+    /// mouse alike; with empty hands the single-tile brush answers.
+    /// The words say which was dressed.
+    pub(crate) fn dress_verb(&mut self, d: Dress) -> String {
+        let word = match d {
+            Dress::FlipX => "flipped x",
+            Dress::FlipY => "flipped y",
+            Dress::Turn(cw) => {
+                if cw {
+                    "turned cw"
+                } else {
+                    "turned ccw"
+                }
+            }
+        };
+        if self.clip.is_some() {
+            if let Some(clip) = &mut self.clip {
+                dress_block(clip, &mut self.sel, d);
+            }
+            format!("block {word}")
+        } else {
+            self.brush = dress_brush(self.brush, d);
+            format!("brush {word} — {}", turn_note(self.brush))
+        }
+    }
+
+    /// Leave one layer, enter another: the layer departed keeps the
+    /// tile and the turn it wore; the layer entered speaks its own
+    /// memory. A click on the standing highlight is no departure —
+    /// the rack keeps its tile, and only the sheet wakes.
+    pub(crate) fn select_layer(&mut self, i: usize) {
+        if i >= self.maps.len() {
+            return;
+        }
+        if i != self.active_layer {
+            if let Some(mem) = self.layer_brush.get_mut(self.active_layer) {
+                *mem = Some((self.picked_cell.unwrap_or(0), self.brush));
+            }
+            self.active_layer = i;
+            self.recall_layer();
+        }
+        self.wake_layer_sheet(i);
+    }
+
+    /// The layer's face on the bench: its tileset's sheet thumbnail,
+    /// dressed the way the canvas dresses the layer — the cell wears
+    /// the picture the map is painted with.
+    pub(crate) fn layer_thumb(&self, i: usize) -> Option<frost::Shape> {
+        let name = self.maps.get(i)?.tileset.as_str();
+        let (sp, _) = dressed(name, &self.shelf, &self.sprites)?;
+        Some(sp.thumb.clone())
     }
 
     /// The active sprite's texture size, or zero while there is none.
@@ -412,7 +722,8 @@ impl Demo {
                 _ if tile_view => self
                     .maps
                     .get(i)
-                    .and_then(|m| m.shape(m.tileset.sprite(&self.sprites))),
+                    .filter(|_| self.layer_visible.get(i).copied().unwrap_or(true))
+                    .and_then(|m| layer_shape(m, &self.shelf, &self.sprites)),
                 Some(f) => f.layers.get(i).map(|l| l.shape.clone()),
                 None if i == 0 => self.active().map(|sp| sp.shape.clone()),
                 None => None,
@@ -423,9 +734,21 @@ impl Demo {
     /// Re-point every slot node at its slot's thumbnail (or hide empty
     /// slots). Only needed when slots change: opens, closes, swaps.
     pub(crate) fn refresh_slots(&self, ctx: &mut frost::Context) {
+        let bench_layers = self.view == View::TileMap;
         for i in 0..SLOTS {
             let node = &mut ctx.scene().root.children[THUMBS + i];
-            node.shape = self.sprites.get(i).map(|sp| sp.thumb.clone());
+            node.shape = if bench_layers {
+                self.layer_thumb(i)
+            } else {
+                self.sprites.get(i).map(|sp| sp.thumb.clone())
+            };
+            // The z-order number: shaped here, placed by the draw.
+            let num = &mut ctx.scene().root.children[LAYZ0 + i];
+            num.shape = if bench_layers && i < self.maps.len() {
+                Some(self.ron_text(format!("{i}"), 14.0, 0.55, HOVER_INK))
+            } else {
+                None
+            };
         }
     }
 
@@ -459,6 +782,7 @@ impl Demo {
                 .iter()
                 .map(|sp| WorldSprite {
                     path: sp.path.clone(),
+                    doc: sp.doc.clone(),
                     name: sp.name.clone(),
                     current: sp.current.clone(),
                     saved_img: sp.saved_img.clone(),
@@ -539,6 +863,7 @@ impl Demo {
             };
             sprites.push(Sprite {
                 path: ws.path,
+                doc: ws.doc,
                 name: ws.name,
                 current: ws.current,
                 saved_img: ws.saved_img,
@@ -581,6 +906,7 @@ impl Demo {
         } else {
             format!("{word}: back to {w} x {h} px")
         };
+        self.align_layers();
         self.sync_work(ctx);
         self.refresh_slots(ctx);
     }

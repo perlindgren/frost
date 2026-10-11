@@ -12,6 +12,34 @@ pub(crate) const BG: frost::Color = frost::Color {
     a: 1.0,
 };
 
+/// The bench's hover speaks in this: the quiet bright of a label
+/// that rides above the strip and answers to no panel.
+pub(crate) const HOVER_INK: frost::Color = frost::Color {
+    r: 0.92,
+    g: 0.92,
+    b: 0.96,
+    a: 1.0,
+};
+
+/// The veil a hidden layer wears on the bench: the cell keeps its
+/// place and its number, the picture behind it stands down.
+/// The selection frame as a hidden layer wears it: the same blue,
+/// banked — the highlight still says which cell draws, the dim says
+/// the layer keeps its light off the canvas.
+pub(crate) const FRAME_DIM: frost::Color = frost::Color {
+    r: 0.35,
+    g: 0.72,
+    b: 1.0,
+    a: 0.35,
+};
+
+pub(crate) const STRIP_DIM: frost::Color = frost::Color {
+    r: 0.05,
+    g: 0.05,
+    b: 0.07,
+    a: 0.62,
+};
+
 pub(crate) const MARKER: frost::Color = frost::Color {
     r: 1.0,
     g: 0.45,
@@ -203,6 +231,18 @@ pub(crate) const GHOST: usize = BAND0 + BAND_CELLS;
 /// The plate's corner chip: the brush as it stands — the picked
 /// cell's art wearing the brush's transform.
 pub(crate) const HELD: usize = BAND0 + BAND_CELLS + 1;
+
+/// The layer numbers' pool: one text node per strip cell, shaped
+/// when the bench changes and placed by the draw — the z-order each
+/// layer wears, in the cell's upper-right corner (tile-map desk).
+pub(crate) const LAYZ0: usize = HELD + 1;
+
+/// The block-ghosts' pool: one node per SHEET among the held
+/// copy's blocks — a shape is one texture, so twin layers wearing
+/// one sheet ride one ghost, and every distinct sheet adds its own.
+pub(crate) const GHOSTS: usize = LAYZ0 + SLOTS;
+
+pub(crate) const GHOSTS_N: usize = 4;
 
 pub(crate) const SPOTS: usize = THUMBS + SLOTS;
 

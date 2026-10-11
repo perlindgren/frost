@@ -42,8 +42,14 @@ pub(crate) const PARTICLES_SHADER: &str = concat!(
     include_str!("../shaders/particles.wgsl")
 );
 
-/// The tile map (instanced atlas quads) shader source.
-pub(crate) const TILEMAP_SHADER: &str = include_str!("../shaders/tilemap.wgsl");
+/// The tile map (instanced atlas quads) shader source: the shared
+/// lighting vocabulary, then the pipeline that paints a map's tiles —
+/// lit by the frame's fields when its node asks, exactly as before when
+/// it does not.
+pub(crate) const TILEMAP_SHADER: &str = concat!(
+    include_str!("../shaders/lighting.wgsl"),
+    include_str!("../shaders/tilemap.wgsl")
+);
 
 /// The fixed-render-size stretch (blit) shader source.
 pub(crate) const BLIT_SHADER: &str = include_str!("../shaders/blit.wgsl");
@@ -52,7 +58,7 @@ pub(crate) const BLIT_SHADER: &str = include_str!("../shaders/blit.wgsl");
 /// its text is assembled from, in order — the shape of the consts
 /// above, speakable at runtime. `App::wgsl` asks by these names;
 /// a watched file re-assembles every source that reads from it,
-/// which is how a `lighting.wgsl` edit reaches the three lit
+/// which is how a `lighting.wgsl` edit reaches the four lit
 /// pipelines at once.
 pub(crate) const SOURCES: &[(&str, &[&str])] = &[
     ("line", &["line"]),
@@ -62,7 +68,7 @@ pub(crate) const SOURCES: &[(&str, &[&str])] = &[
     ("shape", &["lighting", "shape"]),
     ("sprite", &["lighting", "sprite"]),
     ("particles", &["lighting", "particles"]),
-    ("tilemap", &["tilemap"]),
+    ("tilemap", &["lighting", "tilemap"]),
     ("blit", &["blit"]),
 ];
 
@@ -367,9 +373,10 @@ mod tests {
     }
 
     /// The member offsets WGSL assigns to `TileMapUniforms` must match the
-    /// CPU-side uniform writer in `tilemap_uniform_data` (vec2 @0, vec4 @16
-    /// — 16 bytes, 16-byte aligned — 32 bytes total). This is the GPU-side
-    /// mirror of the writer, so a layout drift on either side fails a test.
+    /// CPU-side uniform writer in `tilemap_uniform_data` (vec2 @0, lit
+    /// (f32) @8 — the byte the padding gap already held — vec4 @16,
+    /// 16-byte aligned; 32 bytes total). This is the GPU-side mirror of
+    /// the writer, so a layout drift on either side fails a test.
     #[test]
     fn tilemap_uniform_offsets_match_the_cpu_layout() {
         let module = naga::front::wgsl::parse_str(TILEMAP_SHADER)
@@ -391,7 +398,7 @@ mod tests {
             ),
             _ => unreachable!("TileMapUniforms must be a struct"),
         };
-        assert_eq!(offsets, [0, 16]);
+        assert_eq!(offsets, [0, 8, 16]);
         // The struct's total size must equal the CPU-side buffer length,
         // otherwise the buffer would be too short or carry dead bytes.
         assert_eq!(total_size, 32);

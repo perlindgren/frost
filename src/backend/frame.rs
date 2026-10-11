@@ -246,6 +246,12 @@ pub(crate) enum Draw {
         /// The atlas's sampling filter, choosing the sampler the texture
         /// is bound with.
         filter: SpriteFilter,
+        /// Whether the map is lit by the frame's light field: `1.0` when
+        /// the node's `lit` flag is set — its tiles then multiply the
+        /// light mix and take occluders' shadows like any lit surface —
+        /// `0.0` when the map stays scenery in the old sense, drawn
+        /// exactly as it always was.
+        lit: f32,
         /// The pixel-space box over all the tile quads, as
         /// `([min_x, min_y], [max_x, max_y])` — the batch's own extent.
         bounds: ([f32; 2], [f32; 2]),
@@ -760,13 +766,15 @@ pub(crate) fn particle_instance(p: &Particle, px: f32, py: f32, size: f32, angle
 }
 
 /// Tile map batch uniform data, 32 bytes, matching the WGSL uniform-space
-/// layout of the `TileMapUniforms` struct: `size` (a vec2) @ 0 and
-/// `color` (a vec4) @ 16 (16 bytes, 16-byte aligned, leaving an 8-byte
-/// gap); the struct size rounds up to 32.
-pub(crate) fn tilemap_uniform_data(size: [f32; 2], color: Color) -> Vec<u8> {
+/// layout of the `TileMapUniforms` struct: `size` (a vec2) @ 0, `lit`
+/// (an f32) @ 8 — the gap the padding already held — and `color` (a
+/// vec4) @ 16 (16 bytes, 16-byte aligned); the struct size rounds up
+/// to 32.
+pub(crate) fn tilemap_uniform_data(size: [f32; 2], color: Color, lit: f32) -> Vec<u8> {
     let mut data = vec![0u8; 32];
     write_f32_at(&mut data, 0, size[0]);
     write_f32_at(&mut data, 4, size[1]);
+    write_f32_at(&mut data, 8, lit);
     write_f32_at(&mut data, 16, color.r);
     write_f32_at(&mut data, 20, color.g);
     write_f32_at(&mut data, 24, color.b);

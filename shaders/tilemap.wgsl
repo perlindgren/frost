@@ -15,8 +15,15 @@
 // quad's u-negative edge); and (r, g, b, a) — the tile's own color,
 // the batch color and node modulate riding the uniform instead. The
 // fragment stage multiplies texel, tint, and uniform together.
+//
+// The file is spliced onto the shared lighting vocabulary in
+// `lighting.wgsl`: when the node says `lit`, the light mix multiplies
+// the texel's picture per pixel, and occluders cast their shadows
+// across the floor — a map is scenery, and scenery is where a shadow
+// lands.
 struct TileMapUniforms {
     size: vec2<f32>, // surface size in pixels
+    lit: f32, // 1.0 when the map is lit by the frame's light field
     color: vec4<f32>, // the batch's base tint (already node-modulated)
 };
 
@@ -50,6 +57,19 @@ var tex: texture_2d<f32>;
 @group(0)
 @binding(3)
 var samp: sampler;
+
+// The frame's light and occluder fields: the shared vocabulary this
+// file is spliced onto reads them. The indices differ from the other
+// hosts' because this host's bindings 0..3 are already spoken.
+@group(0)
+@binding(4)
+var<storage, read>
+field: LightField;
+
+@group(0)
+@binding(5)
+var<storage, read>
+occluders: OccluderField;
 
 @vertex
 fn vs_main(
@@ -135,5 +155,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // like a sprite's tint and alpha: the texture's alpha carries through
     // multiplied, never tinted toward opacity.
     let tint = u.color * in.tint;
-    return vec4<f32>(t.rgb * tint.rgb, t.a * tint.a);
+    // The texel's own color times the tile's tint times the batch's —
+    // like a sprite's tint and alpha: the texture's alpha carries through
+    // multiplied, never tinted toward opacity. When the node is lit, the
+    // light mix multiplies that rgb — the same vocabulary the shape and
+    // sprite hosts speak, in the same top-left pixel space the fields
+    // are packed in; the mix never touches the alpha. A map carries no
+    // glow of its own: a glowing wall is a wall with a glow sprite on
+    // it, and one more shape is cheaper than one more field.
+    var rgb = t.rgb * tint.rgb;
+    if (u.lit > 0.5) {
+        rgb *= light_mix(in.position.xy);
+    }
+    return vec4<f32>(rgb, t.a * tint.a);
 }

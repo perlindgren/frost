@@ -1410,6 +1410,7 @@ impl<P: Process> Frost<P> {
     /// draw call. Same per-draw buffer rationale as
     /// [`Frost::primitive_uniform`] — and, unlike the particle batch,
     /// the tile map is never lit, so no light fields join the group.
+    #[allow(clippy::too_many_arguments)] // fields ride every lit pipeline alike
     fn tilemap_uniform(
         &self,
         pipeline: &RenderPipeline,
@@ -1417,6 +1418,8 @@ impl<P: Process> Frost<P> {
         uniform_data: &[u8],
         view: &TextureView,
         sampler: &Sampler,
+        field_buffer: &Buffer,
+        occluder_buffer: &Buffer,
     ) -> (Buffer, Buffer, BindGroup) {
         let device = &self.device;
         let uniform_buffer = device.create_buffer(&BufferDescriptor {
@@ -1461,6 +1464,22 @@ impl<P: Process> Frost<P> {
                 BindGroupEntry {
                     binding: 3,
                     resource: BindingResource::Sampler(sampler),
+                },
+                BindGroupEntry {
+                    binding: 4,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: field_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 5,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: occluder_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
                 },
             ],
         });
@@ -2080,6 +2099,7 @@ impl<P: Process> Frost<P> {
                         atlas_size,
                         atlas_generation,
                         filter,
+                        lit,
                         diagnostic,
                         ..
                     } => {
@@ -2109,6 +2129,7 @@ impl<P: Process> Frost<P> {
                         let uniform_data = tilemap_uniform_data(
                             [render_area[0] as f32, render_area[1] as f32],
                             color,
+                            lit,
                         );
                         let (_uniform, _instances, bind_group) = self.tilemap_uniform(
                             tilemap_pipeline,
@@ -2116,6 +2137,8 @@ impl<P: Process> Frost<P> {
                             &uniform_data,
                             &view,
                             &sampler,
+                            &field_buffer,
+                            &occluder_buffer,
                         );
                         pass.set_pipeline(tilemap_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);

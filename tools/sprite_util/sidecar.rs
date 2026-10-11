@@ -88,6 +88,7 @@ pub(crate) fn read_sprite(path: &std::path::Path) -> Result<Sprite, String> {
         .map(|doc| ron_tree::to_text_doc(&doc.header, &doc.root, &doc.trailer));
     Ok(Sprite {
         path: path.to_path_buf(),
+        doc: None,
         name,
         current: tex.clone(),
         saved_img: tex,

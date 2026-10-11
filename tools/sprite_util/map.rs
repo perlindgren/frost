@@ -1,78 +1,74 @@
-//! The tile-map desk: layers of cells, the brush and its
-//! dressing, erasing and the ghost.
+//! The tile-map desk: the brush and its dressing, erasing and
+//! the ghost. The facts this desk paints — tileset identities,
+//! layers, cells, and the file that carries them — live in
+//! `frost::map`, the format's home since the demo rung asked the
+//! world to read maps; what stays here is motor skill: gestures no
+//! file needs and no game should have to learn.
 // The subjects this one reads.
 use crate::art::asset_name;
 use crate::clip::*;
 use crate::layout::*;
 use crate::world::*;
-use frost::ron as ron_tree;
+pub(crate) use frost::map::{EMPTY_CELL, MapLayer, cell_in, cell_uv, tileset_names};
 
-/// A tileset's identity: the file's name and the cut made into it.
-/// The same PNG cut two ways is two tilesets — the same cell code
-/// carries different pictures under each — while name and cut alike is
-/// one tileset, whichever slot it sits on. By name (the file stem, not
-/// the path) because the identity must outlive slots, folders, and the
-/// filesystem itself: a shipped app names its embedded bytes exactly
-/// so, and a path would die at the binary's edge.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TilesetRef {
-    pub(crate) name: String,
-    pub(crate) rows: usize,
-    pub(crate) cols: usize,
+/// Where a sheet lives, resolved from the tileset document that
+/// names it — document-relative, the one dialect every reference in
+/// these files speaks: a sheet beside its document says just
+/// `"basic_tiles.png"`, and a document in `assets/sprites/` puts it
+/// in `assets/sprites/`. Same pair of operations the map's own tileset
+/// references ride in `open_map`: resolve, then join the directory.
+pub(crate) fn sheet_beside(doc: &std::path::Path, sheet_ref: &str) -> std::path::PathBuf {
+    let resolved = frost::map::resolve(&doc.to_string_lossy(), sheet_ref);
+    doc.parent()
+        .map(|dir| dir.join(&resolved))
+        .unwrap_or_else(|| std::path::PathBuf::from(&resolved))
 }
 
-impl TilesetRef {
-    /// The identity of a bench sprite: its name, and the atlas
-    /// declaration as the cut — a sprite with no declaration is one
-    /// whole cell, the cut every unpainted sprite secretly has.
-    pub(crate) fn of(sp: &Sprite) -> Self {
-        let (rows, cols) = sp.atlas.unwrap_or((1, 1));
-        Self {
-            name: asset_name(&sp.path),
-            rows,
-            cols,
-        }
+/// A tileset document on the desk's shelf: where it lives, and
+/// what it says. A map opens its documents onto the shelf and a map
+/// save writes them back — the document, not a sprite's momentary
+/// atlas panel, is the cut's memory and the cells' roles' home.
+#[derive(Clone, Debug)]
+pub(crate) struct ShelfTileset {
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) tileset: frost::tileset::Tileset,
+}
+
+/// The sprite a tileset cuts its pictures from, and the cut to
+/// dress it with: the shelf document's word when one speaks for
+/// the name (and the sheet it names must stand on the bench — a
+/// cut without its picture paints nothing), the sprite's own atlas
+/// declaration while the desk is still authoring the tileset and
+/// no document has been written yet.
+pub(crate) fn dressed<'a>(
+    name: &str,
+    shelf: &[ShelfTileset],
+    sprites: &'a [Sprite],
+) -> Option<(&'a Sprite, (usize, usize))> {
+    if let Some(entry) = shelf.iter().find(|e| e.tileset.name == name) {
+        let sheet = std::path::Path::new(&entry.tileset.sheet)
+            .file_stem()?
+            .to_string_lossy()
+            .into_owned();
+        let sp = sprites.iter().find(|sp| asset_name(&sp.path) == sheet)?;
+        return Some((sp, (entry.tileset.rows, entry.tileset.cols)));
     }
-
-    /// The bench sprite wearing this tileset — same name, same cut —
-    /// or `None` while it sits off the bench. The cut is part of the
-    /// match because one file cut two ways dresses two ways: name
-    /// alone would let the first same-path slot win, which is the
-    /// exact bug this type exists to kill.
-    pub(crate) fn sprite<'a>(&self, sprites: &'a [Sprite]) -> Option<&'a Sprite> {
-        sprites.iter().find(|sp| {
-            asset_name(&sp.path) == self.name
-                && sp.atlas.unwrap_or((1, 1)) == (self.rows, self.cols)
-        })
-    }
+    let sp = sprites.iter().find(|sp| asset_name(&sp.path) == name)?;
+    Some((sp, sp.atlas.unwrap_or((1, 1))))
 }
 
-/// One tileset's worth of painted cells, anchored on the map's origin:
-/// a grid of atlas-cell indices, `EMPTY_CELL` where nothing stands.
-/// A multi-tileset picture is several of these layers, each naming its
-/// tileset by name and cut — the desk paints one, the canvas shows
-/// them all.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct MapLayer {
-    /// The tileset the cells cut their pictures from. By identity,
-    /// because slots shift when sprites close and a map outlives that
-    /// shuffle — and the files it names outlive the folders too.
-    pub(crate) tileset: TilesetRef,
-    pub(crate) cols: usize,
-    pub(crate) rows: usize,
-    pub(crate) cells: Vec<u32>,
-    /// Each cell's orientation, painted with the cell and erased with
-    /// it: bit 0 flip-x, bit 1 flip-y, bits 2..3 clockwise quarter-
-    /// turns. The transform is the map's memory, not the brush's mood
-    /// — which is why it lives here, inside the layer, and rides the
-    /// undo road in every snapshot of the world.
-    pub(crate) tfms: Vec<u8>,
+/// A layer dressed for the canvas: its shape from the tileset it
+/// names — the shelf or the bench dressing it — or `None` while
+/// the tileset waits off both.
+pub(crate) fn layer_shape(
+    layer: &MapLayer,
+    shelf: &[ShelfTileset],
+    sprites: &[Sprite],
+) -> Option<frost::Shape> {
+    let (sp, (rows, cols)) = dressed(&layer.tileset, shelf, sprites)?;
+    let ts = frost::tileset::Tileset::new(layer.tileset.clone(), "", rows, cols);
+    layer.shape(&ts, Some(&sp.shape))
 }
-
-/// How many tileset cells the band shows at most; a bigger atlas waits
-/// for the band's own scrolling (a later step).
-/// A cell with nothing in it. Real atlas cells count from 0.
-pub(crate) const EMPTY_CELL: u32 = u32::MAX;
 
 /// The map a first click creates: 40 by 24 tiles at the origin — a
 /// generous field one canvas wide at 1:1 zoom. A map-size control is
@@ -88,130 +84,16 @@ pub(crate) const GHOST_Z: f32 = 2.6;
 /// The cursor ghost's opacity: a promise, not a commitment.
 pub(crate) const GHOST_A: f32 = 0.55;
 
-impl MapLayer {
-    pub(crate) fn blank(tileset: TilesetRef, cols: usize, rows: usize) -> Self {
-        Self {
-            tileset,
-            cols,
-            rows,
-            cells: vec![EMPTY_CELL; cols * rows],
-            tfms: vec![0; cols * rows],
-        }
-    }
-
-    /// The storage slot of grid column/row — the map's cells are
-    /// numbered from its top-left, while grid coordinates radiate
-    /// from the origin, which sits at the map's center.
-    pub(crate) fn at(&self, col: i32, row: i32) -> Option<usize> {
-        cell_in(col, row, self.cols, self.rows)
-            .then(|| (row + self.rows as i32 / 2) * self.cols as i32 + (col + self.cols as i32 / 2))
-            .map(|i| i as usize)
-    }
-
-    /// Paint over one cell — picture and orientation together; true
-    /// when the cell actually changed. A repaint that only turns the
-    /// tile IS a change; an eraser on an empty cell is not, whatever
-    /// orientation bits it carries.
-    pub(crate) fn set_cell(&mut self, col: i32, row: i32, cell: u32, tfm: u8) -> bool {
-        match self.at(col, row) {
-            Some(i) => {
-                let erased = cell == EMPTY_CELL;
-                let changed = self.cells[i] != cell || (!erased && self.tfms[i] != tfm);
-                if changed {
-                    self.cells[i] = cell;
-                    self.tfms[i] = if erased { 0 } else { tfm };
-                }
-                changed
-            }
-            _ => false,
-        }
-    }
-
-    /// The layer as a `TileMap` shape sharing the tileset's pixels —
-    /// or `None` when the tileset is closed (the layer waits for its
-    /// source to reopen) or holds nothing (an invisible layer asks
-    /// nothing of the renderer). Cells past the tileset's current
-    /// grid — one shrank since they were painted — are skipped.
-    pub(crate) fn shape(&self, tileset: Option<&Sprite>) -> Option<frost::Shape> {
-        let sp = tileset?;
-        let (data, width, height, generation) = match &sp.shape {
-            frost::Shape::Sprite {
-                data,
-                width,
-                height,
-                generation,
-                ..
-            } => (data.clone(), *width, *height, *generation),
-            _ => return None,
-        };
-        let (arows, acols) = sp.atlas.unwrap_or((1, 1));
-        let (tw, th) = (
-            width as f32 / acols.max(1) as f32,
-            height as f32 / arows.max(1) as f32,
-        );
-        let tiles: Vec<frost::Tile> = self
-            .cells
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &c)| {
-                (c != EMPTY_CELL && (c as usize) < arows * acols).then_some((i, c))
-            })
-            .map(|(i, c)| {
-                let gx = (i % self.cols) as f32 - self.cols as f32 / 2.0 + 0.5;
-                let gy = (i / self.cols) as f32 - self.rows as f32 / 2.0 + 0.5;
-                let t = self.tfms[i];
-                frost::Tile::new(
-                    [gx * tw, -gy * th],
-                    [tw, th],
-                    cell_uv(c as usize, arows, acols),
-                )
-                .transformed((t >> 2) & 3, t & 1 != 0, t & 2 != 0)
-            })
-            .collect();
-        if tiles.is_empty() {
-            return None;
-        }
-        let mut shape = frost::Shape::TileMap {
-            data,
-            width,
-            height,
-            generation,
-            filter: frost::SpriteFilter::Nearest,
-            tiles: Vec::new(),
-            clip: None,
-            color: frost::Color {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 1.0,
-            },
-        };
-        shape.set_tiles(tiles);
-        Some(shape)
-    }
-}
-
-/// Whether grid column/row lies on a `cols`-by-`rows` map centered on
-/// the origin. Even dimensions make the grid half-open on the right
-/// and bottom: it spans x in [-w/2, w/2) like the cells' own floors.
-pub(crate) fn cell_in(col: i32, row: i32, cols: usize, rows: usize) -> bool {
-    col + cols as i32 / 2 >= 0
-        && row + rows as i32 / 2 >= 0
-        && col + cols as i32 / 2 < cols as i32
-        && row + rows as i32 / 2 < rows as i32
-}
-
 /// The map-space point's grid cell: columns to the right, rows
 /// downward — the grid's rows run with the texture's, not the window's.
 pub(crate) fn grid_cell(mx: f32, my: f32, tw: f32, th: f32) -> (i32, i32) {
     (mx.div_euclid(tw) as i32, (-my).div_euclid(th) as i32)
 }
 
-/// The bounds the brush reaches with this tileset: its own layer if
-/// one exists, else the map a first click would create.
-pub(crate) fn paint_bounds(maps: &[MapLayer], tileset: &TilesetRef) -> (usize, usize) {
-    maps.iter()
-        .find(|m| &m.tileset == tileset)
+/// The bounds the brush reaches: the highlighted layer's own field,
+/// or the map a first click would create.
+pub(crate) fn paint_bounds(maps: &[MapLayer], at: usize) -> (usize, usize) {
+    maps.get(at)
         .map_or((MAP_COLS, MAP_ROWS), |m| (m.cols, m.rows))
 }
 
@@ -220,12 +102,13 @@ pub(crate) fn paint_bounds(maps: &[MapLayer], tileset: &TilesetRef) -> (usize, u
 /// can stand in for the eye.
 pub(crate) fn ghost_cells(
     clip: &Clip,
+    blk: &Block,
     col: i32,
     row: i32,
     cols: usize,
     rows: usize,
 ) -> Vec<(i32, i32, u32, u8)> {
-    clip_cells(clip, col, row)
+    block_cells(clip, blk, col, row)
         .into_iter()
         .filter(|(c, r, _, _)| cell_in(*c, *r, cols, rows))
         .collect()
@@ -264,22 +147,93 @@ pub(crate) fn desk_cell(
     ))
 }
 
+/// The paint's landing place is the highlighted layer — the one the
+/// strip chose, by position — never "the first layer whose name
+/// matches": two layers may wear one tileset, and the courtyard's do.
+/// Only an empty map summons a layer into being, a fresh field
+/// wearing the brush's tileset.
 pub(crate) fn paint_at(
     maps: &mut Vec<MapLayer>,
-    tileset: &TilesetRef,
+    at: usize,
+    tileset: &str,
     cell: usize,
     tfm: u8,
     col: i32,
     row: i32,
 ) -> bool {
-    let i = match maps.iter().position(|m| &m.tileset == tileset) {
-        Some(i) => i,
-        None => {
-            maps.push(MapLayer::blank(tileset.clone(), MAP_COLS, MAP_ROWS));
-            maps.len() - 1
-        }
+    if maps.is_empty() {
+        maps.push(MapLayer::blank(tileset, MAP_COLS, MAP_ROWS));
+    }
+    maps.get_mut(at)
+        .is_some_and(|m| m.set_cell(col, row, cell as u32, tfm))
+}
+
+/// The tile-map base a sprite's shape lends to a ghost: the very
+/// texture, emptied of placements, ready to wear tiles. A shape
+/// that is neither sprite nor tile map lends nothing — and the
+/// call site drops that sheet's ghost rather than hang an
+/// undressed sprite on the cursor. (`set_tiles` answers only to a
+/// tile map: handing it a bare sprite loses every placement in
+/// silence — the ghost that started this file's care.)
+pub(crate) fn ghost_base(shape: &frost::Shape) -> Option<frost::Shape> {
+    let base = match shape {
+        frost::Shape::Sprite {
+            data,
+            width,
+            height,
+            filter,
+            generation,
+            ..
+        } => frost::Shape::TileMap {
+            data: data.clone(),
+            width: *width,
+            height: *height,
+            generation: *generation,
+            filter: *filter,
+            tiles: Vec::new(),
+            clip: None,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+        },
+        frost::Shape::TileMap { .. } => shape.clone(),
+        _ => return None,
     };
-    maps[i].set_cell(col, row, cell as u32, tfm)
+    Some(base)
+}
+
+/// The bench's right-click: raise layer `i` one place in the draw
+/// stack — the top wraps under, so the stack cycles and nothing ever
+/// leaves it. Answers with where the moved layer came to rest, and
+/// where the highlight now stands: the highlight rides with its
+/// layer over its own move, and steps aside over everyone else's.
+pub(crate) fn raise_layer(
+    maps: &mut Vec<MapLayer>,
+    i: usize,
+    active: usize,
+) -> Option<(usize, usize)> {
+    let n = maps.len();
+    if n < 2 || i >= n {
+        return None;
+    }
+    if i + 1 == n {
+        let m = maps.remove(i);
+        maps.insert(0, m);
+        Some((0, if active == i { 0 } else { active + 1 }))
+    } else {
+        maps.swap(i, i + 1);
+        let a = if active == i {
+            i + 1
+        } else if active == i + 1 {
+            i
+        } else {
+            active
+        };
+        Some((i + 1, a))
+    }
 }
 
 /// The gesture table: what the pointer's modifiers mean as a dress
@@ -400,19 +354,6 @@ pub(crate) fn grid_step(cell: f32, zoom: f32) -> f32 {
     s
 }
 
-/// The atlas cell `idx`'s texture rectangle in a `rows`-by-`cols` grid,
-/// row-major, top-left origin like the PNG's own rows.
-pub(crate) fn cell_uv(idx: usize, rows: usize, cols: usize) -> [f32; 4] {
-    let (row, col) = ((idx / cols) as f32, (idx % cols) as f32);
-    let (rows, cols) = (rows as f32, cols as f32);
-    [
-        col / cols,
-        row / rows,
-        (col + 1.0) / cols,
-        (row + 1.0) / rows,
-    ]
-}
-
 /// The block's dress, byte-for-byte honest: composite the block's
 /// tiles into a real picture the same way the shader samples them,
 /// transform THAT with the image crate (the honest rotation and
@@ -490,11 +431,12 @@ mod the_block_dresses_like_the_picture {
         for p in img.pixels_mut() {
             *p = image::Rgba([0, 0, 0, 0]);
         }
-        for (i, c) in clip.cells.iter().enumerate() {
+        let blk = &clip.blocks[0];
+        for (i, c) in blk.cells.iter().enumerate() {
             if *c == EMPTY_CELL {
                 continue;
             }
-            let t = render_tile(atlas, ar, ac, *c, clip.tfms[i], tw, th);
+            let t = render_tile(atlas, ar, ac, *c, blk.tfms[i], tw, th);
             for y in 0..th {
                 for x in 0..tw {
                     img.put_pixel(
@@ -516,11 +458,13 @@ mod the_block_dresses_like_the_picture {
     /// tiles mixed, with a gap and three different tiles.
     fn demo_clip() -> Clip {
         Clip {
-            tileset: tref("wild"),
             cols: 3,
             rows: 2,
-            cells: vec![0, 1, 2, 3, 1, EMPTY_CELL],
-            tfms: vec![0, 1, 2, 4, 5, 7],
+            blocks: vec![Block {
+                layer: 0,
+                cells: vec![0, 1, 2, 3, 1, EMPTY_CELL],
+                tfms: vec![0, 1, 2, 4, 5, 7],
+            }],
         }
     }
 
@@ -561,396 +505,121 @@ mod the_block_dresses_like_the_picture {
         );
     }
 }
-/// The header every map file carries: the format, spoken to whoever
-/// opens it next.
-pub(crate) const MAP_FILE_HEADER: &str = "// sprite_util map file — painted cells for the tile-map desk.\n\
-// Each layer names its tileset by name and cut — (\"basic_tiles\", 2, 8)\n\
-// is that file with 2 rows and 8 columns of cells. Cells stand as\n\
-// (x, y, code, tfm) from the layer's top-left; an absent cell is\n\
-// empty, and empty cells are not written.";
 
-/// A small integer atom.
-fn num(text: &str) -> ron_tree::Val {
-    ron_tree::Val::Atom(text.to_string(), ron_tree::Kind::Num)
-}
-
-/// A parenthesised record of fields — named where named, positional
-/// where not.
-fn record(fields: Vec<(&str, ron_tree::Val)>) -> ron_tree::Val {
-    ron_tree::Val::Struct {
-        open: true,
-        head: String::new(),
-        curly: false,
-        fields: fields
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), ron_tree::Item::plain(v)))
-            .collect(),
-        tail: String::new(),
-    }
-}
-
-/// A bracketed list of values.
-fn list(items: Vec<ron_tree::Val>) -> ron_tree::Val {
-    ron_tree::Val::Seq {
-        open: true,
-        items: items.into_iter().map(ron_tree::Item::plain).collect(),
-        tail: String::new(),
-    }
-}
-
-/// The map file's root: every layer as one `layers:` list — each
-/// entry naming its tileset (name and cut), the layer's extent, and
-/// the cells that stand. Empty cells are never written: an absence
-/// written is a presence faked.
-pub(crate) fn map_value(maps: &[MapLayer]) -> ron_tree::Val {
-    record(vec![(
-        "layers",
-        list(
-            maps.iter()
-                .map(|m| {
-                    let cells = m
-                        .cells
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, c)| **c != EMPTY_CELL)
-                        .map(|(i, &c)| {
-                            record(vec![
-                                ("", num(&(i % m.cols).to_string())),
-                                ("", num(&(i / m.cols).to_string())),
-                                ("", num(&c.to_string())),
-                                ("", num(&m.tfms[i].to_string())),
-                            ])
-                        })
-                        .collect();
-                    record(vec![
-                        (
-                            "tileset",
-                            record(vec![
-                                (
-                                    "",
-                                    ron_tree::Val::Atom(
-                                        format!("\"{}\"", m.tileset.name),
-                                        ron_tree::Kind::Str,
-                                    ),
-                                ),
-                                ("", num(&m.tileset.rows.to_string())),
-                                ("", num(&m.tileset.cols.to_string())),
-                            ]),
-                        ),
-                        ("cols", num(&m.cols.to_string())),
-                        ("rows", num(&m.rows.to_string())),
-                        ("cells", list(cells)),
-                    ])
-                })
-                .collect(),
-        ),
-    )])
-}
-
-/// The named field of a record, if this is a record that has it.
-fn field<'v>(v: &'v ron_tree::Val, name: &str) -> Option<&'v ron_tree::Val> {
-    match v {
-        ron_tree::Val::Struct { fields, .. } => fields
-            .iter()
-            .find(|(k, _)| k == name)
-            .map(|(_, item)| &item.val),
-        _ => None,
-    }
-}
-
-/// The listed entries, if this is a list.
-fn entries(v: &ron_tree::Val) -> Option<&[ron_tree::Item]> {
-    match v {
-        ron_tree::Val::Seq { items, .. } => Some(items),
-        _ => None,
-    }
-}
-
-/// The nth entry of a positional record or a list — the dialect
-/// spells tuples as nameless records, and a hand-written list is
-/// read the same.
-fn pos(v: &ron_tree::Val, n: usize) -> Option<&ron_tree::Val> {
-    match v {
-        ron_tree::Val::Struct { fields, .. } => fields.get(n).map(|(_, it)| &it.val),
-        ron_tree::Val::Seq { items, .. } => items.get(n).map(|it| &it.val),
-        _ => None,
-    }
-}
-
-/// A bare number's text, if this is one.
-fn number(v: &ron_tree::Val) -> Option<&str> {
-    match v {
-        ron_tree::Val::Atom(s, ron_tree::Kind::Num) => Some(s),
-        _ => None,
-    }
-}
-
-/// A quoted string, unwrapped, if this is one.
-fn text(v: &ron_tree::Val) -> Option<&str> {
-    match v {
-        ron_tree::Val::Atom(s, ron_tree::Kind::Str) => Some(s.trim_matches('\"')),
-        _ => None,
-    }
-}
-
-/// The map file's layers: every readable entry read, every refused
-/// one named — the first so the status band can speak it, the rest
-/// so the count can stand behind it. Cells past their layer's extent
-/// or wearing an impossible transform are skipped where they lie,
-/// noted by their layer: a map opens as much as it can.
-pub(crate) fn map_of(root: &ron_tree::Val) -> (Vec<MapLayer>, Vec<String>) {
-    let mut layers = Vec::new();
-    let mut refused = Vec::new();
-    let Some(items) = field(root, "layers").and_then(entries) else {
-        refused.push("no `layers:` list".to_string());
-        return (layers, refused);
-    };
-    for (n, item) in items.iter().enumerate() {
-        let who = format!("layer {}", n + 1);
-        let cut = field(&item.val, "tileset");
-        let at = |n| cut.and_then(|t| pos(t, n));
-        let (Some(name), Some(trows), Some(tcols)) = (
-            at(0).and_then(text),
-            at(1)
-                .and_then(number)
-                .and_then(|v| v.parse::<usize>().ok())
-                .filter(|v| *v > 0),
-            at(2)
-                .and_then(number)
-                .and_then(|v| v.parse::<usize>().ok())
-                .filter(|v| *v > 0),
-        ) else {
-            refused.push(format!("{who} names no tileset as (\"name\", rows, cols)"));
-            continue;
-        };
-        let (Some(cols), Some(rows)) = (
-            field(&item.val, "cols")
-                .and_then(number)
-                .and_then(|v| v.parse::<usize>().ok())
-                .filter(|v| *v > 0),
-            field(&item.val, "rows")
-                .and_then(number)
-                .and_then(|v| v.parse::<usize>().ok())
-                .filter(|v| *v > 0),
-        ) else {
-            refused.push(format!("{who} says no honest extent"));
-            continue;
-        };
-        let mut layer = MapLayer::blank(
-            TilesetRef {
-                name: name.to_string(),
-                rows: trows,
-                cols: tcols,
-            },
-            cols,
-            rows,
-        );
-        let mut skipped = 0;
-        let Some(cells) = field(&item.val, "cells").and_then(entries) else {
-            refused.push(format!("{who} carries no `cells:` list"));
-            continue;
-        };
-        for cell in cells {
-            let ok = (|| {
-                let x = pos(&cell.val, 0).and_then(number)?.parse::<usize>().ok()?;
-                let y = pos(&cell.val, 1).and_then(number)?.parse::<usize>().ok()?;
-                let code = pos(&cell.val, 2).and_then(number)?.parse::<u32>().ok()?;
-                let tfm = pos(&cell.val, 3).and_then(number)?.parse::<u64>().ok()?;
-                (tfm < 16).then_some((x, y, code, tfm as u8))
-            })();
-            match ok {
-                Some((x, y, code, tfm)) if x < cols && y < rows => {
-                    layer.cells[y * cols + x] = code;
-                    layer.tfms[y * cols + x] = tfm;
-                }
-                _ => skipped += 1,
-            }
-        }
-        if skipped > 0 {
-            refused.push(format!("{who} skipped {skipped} unreadable cells"));
-        }
-        layers.push(layer);
-    }
-    (layers, refused)
-}
-
-/// A layer fixture's tileset: the stub sprites' name, cut 2 x 2 — the
-/// cut the `tileset` fixture declares.
-/// The tileset names a map asks for, first-spoken order, none
-/// twice. The guard's reader: an app's own test can assert every
-/// name its maps speak sits in the table it ships, so a forgotten
-/// `include_bytes!` dies at `cargo test`, not in the field. The
-/// cuts stay out on purpose — the name is the cargo question;
-/// the cut is the dressing question.
-pub(crate) fn tileset_names(layers: &[MapLayer]) -> Vec<&str> {
-    let mut names: Vec<&str> = Vec::new();
-    for layer in layers {
-        if !names.contains(&layer.tileset.name.as_str()) {
-            names.push(&layer.tileset.name);
-        }
-    }
-    names
-}
-
-/// The names a map asks for that the desk does not wear — waiting
-/// is decided by full identity, name and cut together, exactly as
-/// dressing is, and the cut that disagrees leaves the tileset
-/// waiting. What `open_map` names in its note: the guard's other
-/// face, the one the tool can answer at the opening.
-pub(crate) fn waiting_names<'a>(layers: &'a [MapLayer], sprites: &'a [Sprite]) -> Vec<&'a str> {
+/// The names a map asks for that neither the shelf nor the bench
+/// can dress — what `open_map` names in its note: the guard's
+/// other face, the one the tool can answer at the opening. A
+/// document whose sheet closed waits as much as a name nobody
+/// wears: half a dressing dresses nothing.
+pub(crate) fn waiting_names<'a>(
+    layers: &'a [MapLayer],
+    shelf: &[ShelfTileset],
+    sprites: &'a [Sprite],
+) -> Vec<&'a str> {
     let mut waiting: Vec<&'a str> = Vec::new();
     for layer in layers {
-        if layer.tileset.sprite(sprites).is_none()
-            && !waiting.contains(&layer.tileset.name.as_str())
+        if dressed(&layer.tileset, shelf, sprites).is_none()
+            && !waiting.contains(&layer.tileset.as_str())
         {
-            waiting.push(&layer.tileset.name);
+            waiting.push(&layer.tileset);
         }
     }
     waiting
 }
 
 #[cfg(test)]
-pub(crate) fn tref(name: &str) -> TilesetRef {
-    TilesetRef {
-        name: name.to_string(),
-        rows: 2,
-        cols: 2,
-    }
-}
-
-#[cfg(test)]
 mod tests {
+    /// The highlight decides where the brush lands, not the name:
+    /// two layers may wear one tileset, and the cell reaches only
+    /// the one standing under the highlight.
+    #[test]
+    fn the_highlighted_layer_takes_the_paint() {
+        let mut maps = vec![
+            MapLayer::blank("stones", 2, 2),
+            MapLayer::blank("stones", 2, 2),
+        ];
+        assert!(paint_at(&mut maps, 1, "stones", 3, 0, 0, 0));
+        // Read back by grid coordinate: the cells store from the
+        // map's top-left, while coordinates radiate from the center.
+        let here = maps[1].at(0, 0).unwrap();
+        assert_eq!(
+            maps[0].cells[here], EMPTY_CELL,
+            "the twin below keeps its field"
+        );
+        assert_eq!(maps[1].cells[here], 3);
+    }
+
+    /// One place up, the top wrapping under; the highlight rides
+    /// with its layer, and a stack of one has nowhere to go.
+    #[test]
+    fn raising_a_layer_cycles_the_stack() {
+        fn names(ms: &[MapLayer]) -> Vec<&str> {
+            ms.iter().map(|m| m.tileset.as_str()).collect()
+        }
+        let mut maps = vec![
+            MapLayer::blank("a", 2, 2),
+            MapLayer::blank("b", 2, 2),
+            MapLayer::blank("c", 2, 2),
+        ];
+        assert_eq!(raise_layer(&mut maps, 0, 0), Some((1, 1)));
+        assert_eq!(names(&maps), ["b", "a", "c"]);
+        assert_eq!(raise_layer(&mut maps, 2, 1), Some((0, 2)));
+        assert_eq!(names(&maps), ["c", "b", "a"]);
+        assert_eq!(raise_layer(&mut maps, 0, 2), Some((1, 2)));
+        assert_eq!(names(&maps), ["b", "c", "a"]);
+        let mut one = vec![MapLayer::blank("solo", 2, 2)];
+        assert_eq!(raise_layer(&mut one, 0, 0), None);
+    }
+    /// The seam `open_map` walks for every tileset it shelves: the
+    /// sheet reference is the document's word, resolved from the
+    /// document's own place — beside it when named bare, and up
+    /// through folders when the author shelves them apart.
+    #[test]
+    fn a_sheet_resolves_from_the_document_that_names_it() {
+        let beside = std::path::Path::new("/work/assets/sprites/basic_tiles.tileset.ron");
+        assert_eq!(
+            sheet_beside(beside, "basic_tiles.png"),
+            std::path::PathBuf::from("/work/assets/sprites/basic_tiles.png")
+        );
+        let apart = std::path::Path::new("/work/assets/tilesets/deep/yard.tileset.ron");
+        assert_eq!(
+            sheet_beside(apart, "../sheets/yard.png"),
+            std::path::PathBuf::from("/work/assets/tilesets/sheets/yard.png")
+        );
+    }
     use super::*;
 
-    /// Layers in, text out, text in: the file means exactly what the
-    /// canvas meant — identities, extents, cells, orientations alike.
+    /// One sheet, two documents: that is what two tilesets are now.
+    /// The wide document says 1 x 4 of the very same sheet the
+    /// sprite wears as 2 x 2 — and each name is dressed by its own
+    /// document's word, while a name neither shelf nor bench speaks
+    /// waits, and a document whose sheet closed waits likewise: a
+    /// cut without its picture paints nothing.
     #[test]
-    fn the_map_round_trips_through_text() {
-        let mut grass = MapLayer::blank(tref("grass"), 4, 2);
-        grass.set_cell(0, 0, 3, 0);
-        grass.set_cell(1, 0, 1, 7); // a turned, mirrored cell rides along
-        let mut stone = MapLayer::blank(
-            TilesetRef {
-                name: "stone".into(),
-                rows: 1,
-                cols: 4,
-            },
-            4,
-            2,
-        );
-        stone.set_cell(-1, 1, 2, 4);
-        let maps = vec![grass, stone];
-        let text = ron_tree::to_text_doc(MAP_FILE_HEADER, &map_value(&maps), "");
-        let back = ron_tree::parse_doc(&text).expect("the written file parses");
-        let (layers, refused) = map_of(&back.root);
-        assert!(refused.is_empty(), "refused: {refused:?}");
-        assert_eq!(layers, maps);
-    }
-
-    /// The file carries what stands, and nothing else: a layer with
-    /// three painted cells holds three entries, not a grid of zeros.
-    #[test]
-    fn an_empty_cell_is_never_written() {
-        let mut m = MapLayer::blank(tref("t"), 4, 2);
-        m.set_cell(-2, 0, 1, 0);
-        m.set_cell(-1, 0, 2, 0);
-        m.set_cell(0, 0, 3, 0);
-        let root = ron_tree::parse(&ron_tree::to_text(&map_value(&[m]))).unwrap();
-        let entry = entries(field(&root, "layers").unwrap()).unwrap();
-        let cells = field(&entry[0].val, "cells").unwrap();
-        assert_eq!(entries(cells).unwrap().len(), 3);
-    }
-
-    /// A file is read as far as it is honest: an entry that is not a
-    /// layer is refused by name, and its readable neighbours still
-    /// open.
-    #[test]
-    fn the_reader_names_what_it_refuses() {
-        let root = ron_tree::parse(
-            "(layers: [42, (tileset: (\"tiles\", 2, 2), cols: 2, rows: 2, cells: [(0, 0, 1, 0)])])",
-        )
-        .unwrap();
-        let (layers, refused) = map_of(&root);
-        assert_eq!(layers.len(), 1);
-        assert_eq!(refused.len(), 1);
-        assert!(refused[0].contains("layer 1"), "refused: {refused:?}");
-    }
-
-    /// Cells past their layer's extent, or wearing an impossible
-    /// transform, are skipped where they lie — noted, not fatal: the
-    /// layer opens as large as it means to be.
-    #[test]
-    fn a_cell_past_the_layer_is_skipped_not_fatal() {
-        let root = ron_tree::parse(
-            "(layers: [(tileset: (\"tiles\", 2, 2), cols: 2, rows: 2, cells: [(9, 9, 1, 0), (0, 0, 1, 0), (1, 1, 2, 99)])])",
-        )
-        .unwrap();
-        let (layers, refused) = map_of(&root);
-        assert_eq!(layers.len(), 1);
-        let painted = layers[0].cells.iter().filter(|&&c| c != EMPTY_CELL).count();
-        assert_eq!(painted, 1);
-        assert_eq!(refused.len(), 1);
-        assert!(refused[0].contains("2"), "refused: {refused:?}");
-    }
-
-    /// One PNG, cut two ways, is two tilesets: the layers must find
-    /// their own dresser even when the older identity — path alone —
-    /// would have dressed both from whichever slot came first. The
-    /// order below is that bug's trap, left in on purpose.
-    #[test]
-    fn one_file_cut_two_ways_stays_two_tilesets() {
-        let square = tileset("same.png"); // the fixture's 2 x 2 cut
-        let four = TilesetRef::of(&square);
-        let mut wide = tileset("same.png");
-        wide.atlas = Some((1, 4));
-        let sprites = vec![wide, square];
-        assert_eq!(
-            four,
-            TilesetRef {
-                name: "same".into(),
-                rows: 2,
-                cols: 2
-            }
-        );
-        assert_ne!(four, TilesetRef::of(&sprites[0]));
-        assert_eq!(four.sprite(&sprites).and_then(|sp| sp.atlas), Some((2, 2)));
-        let long = TilesetRef {
-            name: "same".into(),
-            rows: 1,
-            cols: 4,
+    fn one_sheet_two_documents_stay_two_tilesets() {
+        let sheet = tileset("same.png"); // the fixture wears 2 x 2
+        let wide = ShelfTileset {
+            path: "/shelf/wide.tileset.ron".into(),
+            tileset: frost::tileset::Tileset::new("wide", "same.png", 1, 4),
         };
-        assert_eq!(long.sprite(&sprites).and_then(|sp| sp.atlas), Some((1, 4)));
-        // And a cut nothing wears is nobody's sprite: it waits, as a
-        // closed tileset's layer waits, for its source to open.
-        assert!(
-            TilesetRef {
-                name: "same".into(),
-                rows: 4,
-                cols: 1
-            }
-            .sprite(&sprites)
-            .is_none()
+        let shelf = vec![wide];
+        let sprites = vec![sheet];
+        let (_, cut) = dressed("wide", &shelf, &sprites).expect("the sheet stands on the bench");
+        assert_eq!(cut, (1, 4), "the document says how its numbers cut");
+        let (_, cut) = dressed("same", &[], &sprites).expect("the name is on the bench");
+        assert_eq!(
+            cut,
+            (2, 2),
+            "authoring without a document wears the sprite's own claim"
         );
-    }
-
-    #[test]
-    fn the_transform_is_the_maps_memory() {
-        // What a cell was painted with stays with the cell: the same
-        // tile, unturned, is no change; the same tile turned is one
-        // the road remembers; and the eraser takes the bits down
-        // with the tile.
-        let mut m = MapLayer::blank(tref("t"), 4, 2);
-        // The cell at grid (1, 0) — and the storage slot its centered
-        // coordinates land in.
-        let slot = m.at(1, 0).expect("inside the map");
-        assert!(m.set_cell(1, 0, 3, 1 | (1 << 2))); // flip x, one turn
-        assert_eq!(m.tfms[slot], 1 | (1 << 2));
-        assert!(!m.set_cell(1, 0, 3, 1 | (1 << 2)), "nothing moved");
-        assert!(m.set_cell(1, 0, 3, 1 | (2 << 2)), "a turn is a change");
-        assert_eq!(m.tfms[slot], 1 | (2 << 2));
-        assert!(m.set_cell(1, 0, EMPTY_CELL, 0));
-        assert_eq!(m.tfms[slot], 0, "erasing clears the bits");
-        assert!(!m.set_cell(1, 0, EMPTY_CELL, 0), "twice empty is empty");
+        assert!(
+            dressed("tall", &shelf, &sprites).is_none(),
+            "nobody speaks tall"
+        );
+        assert!(
+            dressed("wide", &shelf, &[]).is_none(),
+            "the sheet closed; the cut alone paints nothing"
+        );
     }
 
     #[test]
@@ -1033,25 +702,6 @@ mod tests {
     }
 
     #[test]
-    fn a_layer_hands_the_renderer_its_cells_orientations() {
-        // The store decodes onto the tiles: bits out, flags in — and
-        // the size stays as authored, because the renderer, not the
-        // store, is what turns the extents.
-        let mut m = MapLayer::blank(tref("t"), 2, 2);
-        m.set_cell(-1, -1, 0, 1 | (3 << 2)); // flip x, three quarters cw
-        let sp = tileset("t.png");
-        let shape = m.shape(Some(&sp)).expect("one painted cell draws");
-        let frost::Shape::TileMap { tiles, .. } = shape else {
-            panic!("a tile map");
-        };
-        assert_eq!(tiles.len(), 1);
-        assert_eq!(tiles[0].rot, 3);
-        assert!(tiles[0].flip_x);
-        assert!(!tiles[0].flip_y);
-        assert_eq!(tiles[0].size, [2.0, 1.0]);
-    }
-
-    #[test]
     fn grid_cell_hands_the_stroke_the_same_cell_as_the_ghost() {
         // The i32 face of the snapping, used by the actual strokes:
         // floors, including through the negative side.
@@ -1069,30 +719,22 @@ mod tests {
         // clip_turn's counterclockwise arm; the drawn picture is the
         // oracle, so this test is the contract.
         let mut clip = Clip {
-            tileset: tref("basic_tiles"),
             cols: 2,
             rows: 1,
-            cells: vec![2, 3],
-            tfms: vec![0, 0],
+            blocks: vec![Block {
+                layer: 0,
+                cells: vec![2, 3],
+                tfms: vec![0, 0],
+            }],
         };
         clip_turn(&mut clip, false);
         assert_eq!((clip.cols, clip.rows), (1, 2), "the pair stands up");
-        assert_eq!(clip.cells, vec![3, 2], "cell 3 rides to the top");
-        assert_eq!(clip.tfms, vec![12, 12], "every tile turns counterclockwise");
-    }
-
-    #[test]
-    fn a_cell_uv_is_its_band_in_the_files_own_order() {
-        // The band convention the GPU bridge measures, pinned to the
-        // demo's own formula: a cell's uv counts from the file's top
-        // row — index 4 of a rack 2 wide × 3 deep is row 2, col 0,
-        // the bottom-left third of the atlas; index 1 is row 0,
-        // col 1, the top-right third. Bands counted from the bottom
-        // would render every multi-row tileset row-swapped, a bug
-        // only a real pixel can catch; this says the demo hands the
-        // bridge the formula the bridge proved.
-        assert_eq!(cell_uv(4, 3, 2), [0.0, 2.0 / 3.0, 0.5, 1.0]);
-        assert_eq!(cell_uv(1, 3, 2), [0.5, 0.0, 1.0, 1.0 / 3.0]);
+        assert_eq!(clip.blocks[0].cells, vec![3, 2], "cell 3 rides to the top");
+        assert_eq!(
+            clip.blocks[0].tfms,
+            vec![12, 12],
+            "every tile turns counterclockwise"
+        );
     }
 
     #[test]
@@ -1127,16 +769,22 @@ mod tests {
                 let d = dress_gesture(shift, ctrl, alt);
                 let brush = dress_brush(code, d);
                 let mut clip = Clip {
-                    tileset: tref("t"),
                     cols: 1,
                     rows: 1,
-                    cells: vec![1],
-                    tfms: vec![code],
+                    blocks: vec![Block {
+                        layer: 0,
+                        cells: vec![1],
+                        tfms: vec![code],
+                    }],
                 };
                 let mut sel = None;
                 dress_block(&mut clip, &mut sel, d);
-                assert_eq!(clip.tfms, vec![brush], "code {code}, gesture {d:?}");
-                assert_eq!(clip.cells, vec![1], "the lone cell stays put");
+                assert_eq!(
+                    clip.blocks[0].tfms,
+                    vec![brush],
+                    "code {code}, gesture {d:?}"
+                );
+                assert_eq!(clip.blocks[0].cells, vec![1], "the lone cell stays put");
             }
         }
     }
@@ -1147,16 +795,18 @@ mod tests {
         // can never show a cell the drop will skip — least of all
         // where the block hangs past a map edge.
         let clip = Clip {
-            tileset: tref("wild"),
             cols: 3,
             rows: 2,
-            cells: vec![0, 1, 2, 3, 1, EMPTY_CELL],
-            tfms: vec![0, 1, 2, 4, 5, 7],
+            blocks: vec![Block {
+                layer: 0,
+                cells: vec![0, 1, 2, 3, 1, EMPTY_CELL],
+                tfms: vec![0, 1, 2, 4, 5, 7],
+            }],
         };
-        let cells = clip_cells(&clip, 5, 7);
+        let cells = clip_cells(&clip, &[true], 5, 7);
         assert_eq!(cells.len(), 5, "the gap does not travel");
         assert!(
-            cells.iter().any(|(c, r, ..)| (*c, *r) == (5, 7)),
+            cells.iter().any(|(_, c, r, ..)| (*c, *r) == (5, 7)),
             "the anchor lands on the cursor"
         );
         // The rim: cursor at the map's right edge, cells hanging
@@ -1166,17 +816,17 @@ mod tests {
         // center (cell_in, not a hand-drawn range — the first
         // version of this test drew one, at 0..8, and failed honest:
         // the engine was right and the test was wrong).
-        let rim = clip_cells(&clip, 3, 0);
+        let rim = clip_cells(&clip, &[true], 3, 0);
         let fits = rim
             .iter()
-            .filter(|(c, r, _, _)| cell_in(*c, *r, 8, 8))
+            .filter(|(_, c, r, _, _)| cell_in(*c, *r, 8, 8))
             .count();
         assert!(
             fits > 0 && fits < rim.len(),
             "the rim really clips some cells"
         );
-        let mut maps = vec![MapLayer::blank(tref("wild"), 8, 8)];
-        let n = clip_paste(&mut maps, &clip, 3, 0) as usize;
+        let mut maps = vec![MapLayer::blank("wild", 8, 8)];
+        let n = clip_paste(&mut maps, &[true], &clip, 3, 0) as usize;
         assert_eq!(n, fits, "the promise and the drop agree at the edge");
         let written = (-4..4)
             .flat_map(|row| (-4..4).map(move |col| (col, row)))
@@ -1191,8 +841,8 @@ mod tests {
         // list, cut to the map — same cells, same order, same
         // dressings.
         assert_eq!(
-            ghost_cells(&clip, 3, 0, 8, 8),
-            clip_cells(&clip, 3, 0)
+            ghost_cells(&clip, &clip.blocks[0], 3, 0, 8, 8),
+            block_cells(&clip, &clip.blocks[0], 3, 0)
                 .into_iter()
                 .filter(|(c, r, _, _)| cell_in(*c, *r, 8, 8))
                 .collect::<Vec<_>>(),
@@ -1202,10 +852,7 @@ mod tests {
 
     #[test]
     fn the_selection_erase_sweeps_every_layer() {
-        let mut maps = vec![
-            MapLayer::blank(tref("a"), 4, 4),
-            MapLayer::blank(tref("b"), 4, 4),
-        ];
+        let mut maps = vec![MapLayer::blank("a", 4, 4), MapLayer::blank("b", 4, 4)];
         maps[0].set_cell(0, 0, 7, 1);
         maps[1].set_cell(1, 1, 9, 0);
         assert!(erase_rect(&mut maps, [0, 0, 1, 1]));
@@ -1219,44 +866,36 @@ mod tests {
         assert!(!erase_rect(&mut maps, [0, 0, 1, 1]));
     }
 
-    /// A map speaks each of its tilesets once, in the order it
-    /// first speaks them — whatever the cells hold, names are the
-    /// cargo question and the cargo list has no duplicates.
+    /// Waiting is the absence of a dressing: a document whose
+    /// sheet closed waits as much as a name nobody wears — and each
+    /// waits once, named, for the status band to speak.
     #[test]
-    fn the_map_names_its_tilesets_once_in_order() {
+    fn a_waiting_tileset_is_named_once() {
+        let moss_doc = ShelfTileset {
+            path: "/shelf/moss.tileset.ron".into(),
+            tileset: frost::tileset::Tileset::new("moss", "moss.png", 1, 4),
+        };
         let layers = vec![
-            MapLayer::blank(tref("grass"), 4, 2),
-            MapLayer::blank(tref("bug"), 4, 2),
-            MapLayer::blank(tref("grass"), 8, 2),
+            MapLayer::blank("grass", 4, 2),
+            MapLayer::blank("moss", 4, 2),
+            MapLayer::blank("bug", 4, 2),
+            MapLayer::blank("moss", 4, 2),
         ];
-        assert_eq!(tileset_names(&layers), ["grass", "bug"]);
-        assert!(
-            tileset_names(&[]).is_empty(),
-            "an empty map promises nothing"
-        );
-    }
-
-    /// Waiting is decided by full identity — a name the desk wears
-    /// at the wrong cut still waits, once and named — because
-    /// undressed layers wait for exactly what dressing needs.
-    #[test]
-    fn a_waiting_tileset_is_named_by_identity() {
-        let mut wrong_cut = tileset("moss.png");
-        wrong_cut.atlas = Some((1, 4));
-        let layers = vec![
-            MapLayer::blank(tref("grass"), 4, 2),
-            MapLayer::blank(tref("moss"), 4, 2),
-            MapLayer::blank(tref("bug"), 4, 2),
-            MapLayer::blank(tref("moss"), 4, 2),
-        ];
+        // The moss document speaks for the name, but moss.png is
+        // off the bench: half a dressing is a waiter.
         assert_eq!(
-            waiting_names(&layers, &[tileset("grass.png"), wrong_cut]),
+            waiting_names(
+                &layers,
+                std::slice::from_ref(&moss_doc),
+                &[tileset("grass.png")]
+            ),
             ["moss", "bug"],
-            "the disagreeing cut waits, and waits once"
+            "a closed sheet waits as much as a missing name, and waits once"
         );
         assert!(
             waiting_names(
                 &layers,
+                &[moss_doc],
                 &[
                     tileset("grass.png"),
                     tileset("moss.png"),
@@ -1264,7 +903,58 @@ mod tests {
                 ]
             )
             .is_empty(),
-            "a desk that wears every identity has no waiters"
+            "a desk wearing every sheet has no waiters"
+        );
+    }
+
+    /// A sprite's shape lends a ghost its texture — as a tile map.
+    /// The old bug slipped `set_tiles` onto the bare sprite, where it
+    /// did nothing: no placements, no dressing, no alpha. The base a
+    /// ghost gets must WEAR the tiles.
+    #[test]
+    fn the_ghost_base_wears_what_it_is_handed() {
+        use std::sync::Arc;
+        let sprite = frost::Shape::Sprite {
+            data: Arc::from(vec![0u8; 4 * 2 * 2]),
+            width: 2,
+            height: 2,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+            filter: frost::SpriteFilter::Nearest,
+            generation: 7,
+        };
+        let Some(mut base) = ghost_base(&sprite) else {
+            panic!("a sprite lends a base");
+        };
+        base.set_tiles(vec![frost::Tile::new(
+            [0.0, 0.0],
+            [1.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+        )]);
+        let frost::Shape::TileMap { tiles, .. } = &base else {
+            panic!("the base is a tile map");
+        };
+        assert_eq!(tiles.len(), 1, "the placement stuck");
+        // A tile map lends itself, whole.
+        assert!(ghost_base(&base).is_some());
+        // Anything else lends nothing.
+        assert!(
+            ghost_base(&frost::Shape::Circle {
+                center: [0.0, 0.0],
+                radius: 1.0,
+                color: frost::Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0
+                },
+            })
+            .is_none()
         );
     }
 }

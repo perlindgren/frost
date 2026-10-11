@@ -744,8 +744,11 @@ pub enum Shape {
     /// map can be enormous while only its visible window ever reaches
     /// the screen. `None` clips to nothing.
     ///
-    /// The map is not lit by the frame's light field (a tile map is
-    /// scenery, not a scene actor), and the atlas is sampled with
+    /// The map lights like every other surface when the node says
+    /// `lit`: the light field multiplies each tile's pixel and occluders
+    /// cast across the floor — a shadowed map is the point. An unlit
+    /// node draws it exactly as it always was. The atlas is sampled
+    /// with
     /// `filter` — [`SpriteFilter::Nearest`] by construction, since tile
     /// atlases are pixel art; [`Shape::set_filter`] changes it.
     TileMap {

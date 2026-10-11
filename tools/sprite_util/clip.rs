@@ -1,61 +1,83 @@
 //! The clipboard block: taking, dressing, trimming, and pasting
-//! a rectangle of cells.
+//! a rectangle of cells — from every layer you are looking at,
+//! back onto the very layers they came from.
+//!
+//! A copy reads the map as the eye sees it: every visible layer
+//! contributes its block, and the paste lays each block home to its
+//! own layer. Hidden layers keep their silence — neither copied nor
+//! pasted into. A block therefore belongs to a LAYER (its place on
+//! the bench), never to a tileset's name: two layers may wear one
+//! tileset, and the picture you painted on the second twin is the
+//! picture you copied.
+
 // The subjects this one reads.
 use crate::map::*;
 
-/// Paint one cell with the tileset's layer, creating the layer on the
-/// first stroke. True when a cell changed.
-/// A copied rectangle of the map, held on the desk: one tileset's
-/// cells and orientations, row-major from the top line. It dresses
-/// and pastes as one picture — a block is a brush made of tiles.
+/// One layer's share of the copied frame: its cells and orientations,
+/// row-major from the top line, and the place of the layer it came
+/// from.
 #[derive(Clone)]
-pub(crate) struct Clip {
-    pub(crate) tileset: TilesetRef,
-    pub(crate) cols: usize,
-    pub(crate) rows: usize,
+pub(crate) struct Block {
+    /// Where the layer stands on the bench — position, not name.
+    pub(crate) layer: usize,
     /// Row-major, top line first; `EMPTY_CELL` marks a gap.
     pub(crate) cells: Vec<u32>,
     pub(crate) tfms: Vec<u8>,
 }
 
-/// The copy of a selection rectangle: one tileset's view of the map,
-/// `EMPTY_CELL` wherever its layer was empty or off the edge.
+/// A copied rectangle of the map as seen: one block per layer that
+/// had a picture inside the frame. It dresses and pastes as one
+/// picture across all of them — a block is a brush made of tiles,
+/// and a clip is a stack made of blocks.
+#[derive(Clone)]
+pub(crate) struct Clip {
+    pub(crate) cols: usize,
+    pub(crate) rows: usize,
+    pub(crate) blocks: Vec<Block>,
+}
+
+/// The copy of a selection rectangle, taken as the visible layers
+/// show it: one block per looked-at layer that holds a picture
+/// inside the frame. A silent layer is not copied as emptiness;
+/// a frame no visible layer fills is no copy at all.
 pub(crate) fn clip_take(
     maps: &[MapLayer],
-    tileset: &TilesetRef,
+    visible: &[bool],
     c0: i32,
     r0: i32,
     cols: usize,
     rows: usize,
-) -> Clip {
-    let layer = maps.iter().find(|m| &m.tileset == tileset);
-    let mut cells = Vec::with_capacity(cols * rows);
-    let mut tfms = Vec::with_capacity(cols * rows);
-    for r in 0..rows {
-        for c in 0..cols {
-            let hit = layer.and_then(|m| {
-                m.at(c0 + c as i32, r0 + r as i32)
-                    .map(|i| (m.cells[i], m.tfms[i]))
-            });
-            match hit {
-                Some((cell, tfm)) => {
-                    cells.push(cell);
-                    tfms.push(tfm);
-                }
-                None => {
-                    cells.push(EMPTY_CELL);
-                    tfms.push(0);
+) -> Option<Clip> {
+    let mut blocks = Vec::new();
+    for (i, m) in maps.iter().enumerate() {
+        if !visible.get(i).copied().unwrap_or(true) {
+            continue;
+        }
+        let mut cells = Vec::with_capacity(cols * rows);
+        let mut tfms = Vec::with_capacity(cols * rows);
+        for r in 0..rows {
+            for c in 0..cols {
+                match m.at(c0 + c as i32, r0 + r as i32) {
+                    Some(idx) => {
+                        cells.push(m.cells[idx]);
+                        tfms.push(m.tfms[idx]);
+                    }
+                    None => {
+                        cells.push(EMPTY_CELL);
+                        tfms.push(0);
+                    }
                 }
             }
         }
+        if cells.iter().any(|c| *c != EMPTY_CELL) {
+            blocks.push(Block {
+                layer: i,
+                cells,
+                tfms,
+            });
+        }
     }
-    Clip {
-        tileset: tileset.clone(),
-        cols,
-        rows,
-        cells,
-        tfms,
-    }
+    (!blocks.is_empty()).then_some(Clip { cols, rows, blocks })
 }
 
 /// The block's anchor cell: as near the center as whole cells allow
@@ -65,14 +87,19 @@ pub(crate) fn clip_anchor(clip: &Clip) -> (i32, i32) {
     (((clip.cols - 1) / 2) as i32, ((clip.rows - 1) / 2) as i32)
 }
 
-/// Where a held block lands when the cursor drops it at `(col, row)`:
+/// Where one block lands when the cursor drops it at `(col, row)`:
 /// every non-empty cell, in absolute map coordinates, cursor-anchored
 /// on the block's anchor. The ghost previews this list (intersected
 /// with the map) and the paste writes it — one source, so the promise
 /// and the drop cannot disagree, at the edges or anywhere else.
-pub(crate) fn clip_cells(clip: &Clip, col: i32, row: i32) -> Vec<(i32, i32, u32, u8)> {
+pub(crate) fn block_cells(
+    clip: &Clip,
+    blk: &Block,
+    col: i32,
+    row: i32,
+) -> Vec<(i32, i32, u32, u8)> {
     let (ax, ay) = clip_anchor(clip);
-    clip.cells
+    blk.cells
         .iter()
         .enumerate()
         .filter(|(_, c)| **c != EMPTY_CELL)
@@ -81,68 +108,90 @@ pub(crate) fn clip_cells(clip: &Clip, col: i32, row: i32) -> Vec<(i32, i32, u32,
                 col + (i % clip.cols) as i32 - ax,
                 row + (i / clip.cols) as i32 - ay,
                 *c,
-                clip.tfms[i],
+                blk.tfms[i],
             )
         })
         .collect()
 }
 
-/// Turn the block a quarter: the arrangement rotates, and every tile
-/// turns with it EXACTLY as it would on its own — the very rule the
-/// brush obeys (`tfm_turn`): the turns count rides on, the tile's own
-/// flips ride along untouched. A block is a brush made of tiles, so
-/// dressing the block IS dressing each tile it holds; any other
-/// composition rule would make the block disagree with the single
-/// tile the picker just dressed.
+/// The whole drop, layer-tagged: every currently visible block, in
+/// each cell the drop writes, with the layer that receives it. A
+/// block hidden since the copy keeps to itself — the paste affects
+/// the layers you are looking at, and only those.
+pub(crate) fn clip_cells(
+    clip: &Clip,
+    visible: &[bool],
+    col: i32,
+    row: i32,
+) -> Vec<(usize, i32, i32, u32, u8)> {
+    clip.blocks
+        .iter()
+        .filter(|b| visible.get(b.layer).copied().unwrap_or(true))
+        .flat_map(|b| {
+            block_cells(clip, b, col, row)
+                .into_iter()
+                .map(move |(c, r, cell, tfm)| (b.layer, c, r, cell, tfm))
+        })
+        .collect()
+}
+
+/// Turn the clip a quarter: every block's arrangement rotates, and
+/// every tile turns with it EXACTLY as it would on its own — the very
+/// rule the brush obeys (`tfm_turn`). Dressing the clip IS dressing
+/// every block it holds; any other composition rule would make the
+/// stack disagree with the single tile the picker just dressed.
 pub(crate) fn clip_turn(clip: &mut Clip, cw: bool) {
     let (rows, cols) = (clip.rows, clip.cols);
-    let mut cells = vec![EMPTY_CELL; rows * cols];
-    let mut tfms = vec![0u8; rows * cols];
-    for r in 0..rows {
-        for c in 0..cols {
-            let (nr, nc) = if cw {
-                (c, rows - 1 - r)
-            } else {
-                (cols - 1 - c, r)
-            };
-            let at = nr * rows + nc;
-            cells[at] = clip.cells[r * cols + c];
-            tfms[at] = tfm_turn(clip.tfms[r * cols + c], cw);
+    for blk in &mut clip.blocks {
+        let mut cells = vec![EMPTY_CELL; rows * cols];
+        let mut tfms = vec![0u8; rows * cols];
+        for r in 0..rows {
+            for c in 0..cols {
+                let (nr, nc) = if cw {
+                    (c, rows - 1 - r)
+                } else {
+                    (cols - 1 - c, r)
+                };
+                let at = nr * rows + nc;
+                cells[at] = blk.cells[r * cols + c];
+                tfms[at] = tfm_turn(blk.tfms[r * cols + c], cw);
+            }
         }
+        blk.cells = cells;
+        blk.tfms = tfms;
     }
-    clip.cells = cells;
-    clip.tfms = tfms;
     clip.cols = rows;
     clip.rows = cols;
 }
 
-/// Mirror the block: the arrangement reverses along the axis and
-/// every tile mirrors with it — each through `tfm_flip_x`/
-/// `tfm_flip_y`, so an odd-turned tile pays on the other bit. Byte-
-/// equal to mirroring the block's rendered picture, per the golden
-/// test.
+/// Mirror the clip along an axis: every block's arrangement reverses
+/// and every tile mirrors with it, each through `tfm_flip_x`/
+/// `tfm_flip_y` — byte-equal to mirroring the rendered picture, per
+/// the golden test.
 pub(crate) fn clip_flip(clip: &mut Clip, x: bool) {
     let (rows, cols) = (clip.rows, clip.cols);
-    let mut cells = vec![EMPTY_CELL; rows * cols];
-    let mut tfms = vec![0u8; rows * cols];
-    for r in 0..rows {
-        for c in 0..cols {
-            let (nr, nc) = if x {
-                (r, cols - 1 - c)
-            } else {
-                (rows - 1 - r, c)
-            };
-            let at = nr * cols + nc;
-            cells[at] = clip.cells[r * cols + c];
-            tfms[at] = if x {
-                tfm_flip_x(clip.tfms[r * cols + c])
-            } else {
-                tfm_flip_y(clip.tfms[r * cols + c])
-            };
+    for blk in &mut clip.blocks {
+        let mut cells = vec![EMPTY_CELL; rows * cols];
+        let mut tfms = vec![0u8; rows * cols];
+        for r in 0..rows {
+            for c in 0..cols {
+                let (nr, nc) = if x {
+                    (r, cols - 1 - c)
+                } else {
+                    (rows - 1 - r, c)
+                };
+                let at = nr * cols + nc;
+                cells[at] = blk.cells[r * cols + c];
+                tfms[at] = if x {
+                    tfm_flip_x(blk.tfms[r * cols + c])
+                } else {
+                    tfm_flip_y(blk.tfms[r * cols + c])
+                };
+            }
         }
+        blk.cells = cells;
+        blk.tfms = tfms;
     }
-    clip.cells = cells;
-    clip.tfms = tfms;
 }
 
 /// The selection's frame turns with the block it frames: a turned
@@ -162,53 +211,55 @@ pub(crate) fn sel_turn(sel: [i32; 4]) -> [i32; 4] {
     [nc0, nr0, nc0 + h - 1, nr0 + w - 1]
 }
 
-/// Shrink a block to the rectangle that actually holds a picture.
-/// Empty margins would swing the picture far from the pivot on a
-/// turn and drop it nowhere near the cursor on a paste, so the desk
-/// trims on harvest. Returns the kept rectangle in old-frame
-/// coordinates (c0, r0, c1, r1), or None when the block is all gaps.
+/// Shrink the clip to the rectangle that actually holds a picture —
+/// the picture being every block's: the bounds are taken over the
+/// whole stack, so the blocks stay congruent and the frame still
+/// frames them all. Returns the kept rectangle in old-frame
+/// coordinates (c0, r0, c1, r1), or None when nothing holds anything.
 pub(crate) fn clip_trim(clip: &mut Clip) -> Option<(usize, usize, usize, usize)> {
     let (mut rmin, mut rmax, mut cmin, mut cmax) = (usize::MAX, 0usize, usize::MAX, 0usize);
-    for (i, c) in clip.cells.iter().enumerate() {
-        if *c != EMPTY_CELL {
-            let (r, col) = (i / clip.cols, i % clip.cols);
-            rmin = rmin.min(r);
-            rmax = rmax.max(r);
-            cmin = cmin.min(col);
-            cmax = cmax.max(col);
+    for blk in &clip.blocks {
+        for (i, c) in blk.cells.iter().enumerate() {
+            if *c != EMPTY_CELL {
+                let (r, col) = (i / clip.cols, i % clip.cols);
+                rmin = rmin.min(r);
+                rmax = rmax.max(r);
+                cmin = cmin.min(col);
+                cmax = cmax.max(col);
+            }
         }
     }
     if rmin > rmax {
         return None;
     }
     let (rows, cols) = (rmax - rmin + 1, cmax - cmin + 1);
-    let mut cells = Vec::with_capacity(rows * cols);
-    let mut tfms = Vec::with_capacity(rows * cols);
-    for r in rmin..=rmax {
-        for c in cmin..=cmax {
-            cells.push(clip.cells[r * clip.cols + c]);
-            tfms.push(clip.tfms[r * clip.cols + c]);
+    for blk in &mut clip.blocks {
+        let mut cells = Vec::with_capacity(rows * cols);
+        let mut tfms = Vec::with_capacity(rows * cols);
+        for r in rmin..=rmax {
+            for c in cmin..=cmax {
+                cells.push(blk.cells[r * clip.cols + c]);
+                tfms.push(blk.tfms[r * clip.cols + c]);
+            }
         }
+        blk.cells = cells;
+        blk.tfms = tfms;
     }
     clip.cols = cols;
     clip.rows = rows;
-    clip.cells = cells;
-    clip.tfms = tfms;
     Some((cmin, rmin, cmax, rmax))
 }
 
-/// Stamp the block with its anchor cell on `(col, row)`. Gaps skip —
-/// pasting lays tiles, it never erases; the eraser is its own verb.
-/// Returns the cells the stamp actually changed.
-/// Move the held block: cut the selection frame it was copied from,
-/// drop the block cursor-anchored at (col, row), and let the frame
-/// travel with the drop — the block's new home becomes its cut
-/// zone. Without a frame (held since the frame was released) there
-/// is nothing to cut and the move is a plain drop. Returns the cells
-/// written, whether the cut changed anything, and the frame's new
-/// box — the caller's one capture covers both halves.
+/// Move the held block: cut the selection frame where the blocks
+/// came from — the layers you see, and only those; what stood hidden
+/// stays where it stands — drop every block cursor-anchored at
+/// `(col, row)`, and let the frame travel with the drop. Without a
+/// frame (held since the frame was released) there is nothing to cut
+/// and the move is a plain drop. Returns the cells written, whether
+/// the cut changed anything, and the frame's new box.
 pub(crate) fn clip_move(
     maps: &mut Vec<MapLayer>,
+    visible: &[bool],
     clip: &Clip,
     sel: Option<[i32; 4]>,
     col: i32,
@@ -216,9 +267,29 @@ pub(crate) fn clip_move(
 ) -> (u32, bool, Option<[i32; 4]>) {
     let mut erased = false;
     if let Some(f) = sel {
-        erased = erase_rect(maps, f);
+        for &at in &clip
+            .blocks
+            .iter()
+            .filter(|b| visible.get(b.layer).copied().unwrap_or(true))
+            .map(|b| b.layer)
+            .collect::<Vec<_>>()
+        {
+            if let Some(m) = maps.get_mut(at) {
+                for r in f[1]..=f[3] {
+                    for c in f[0]..=f[2] {
+                        if let Some(i) = m.at(c, r)
+                            && m.cells[i] != EMPTY_CELL
+                        {
+                            m.cells[i] = EMPTY_CELL;
+                            m.tfms[i] = 0;
+                            erased = true;
+                        }
+                    }
+                }
+            }
+        }
     }
-    let n = clip_paste(maps, clip, col, row);
+    let n = clip_paste(maps, visible, clip, col, row);
     let (ax, ay) = clip_anchor(clip);
     let frame = [
         col - ax,
@@ -229,26 +300,43 @@ pub(crate) fn clip_move(
     (n, erased, Some(frame))
 }
 
-pub(crate) fn clip_paste(maps: &mut Vec<MapLayer>, clip: &Clip, col: i32, row: i32) -> u32 {
+/// Stamp every visible block with its anchor cell on `(col, row)`,
+/// each home to its own layer. Gaps skip — pasting lays tiles, it
+/// never erases; the eraser is its own verb. Returns the cells the
+/// stamp actually changed.
+pub(crate) fn clip_paste(
+    maps: &mut Vec<MapLayer>,
+    visible: &[bool],
+    clip: &Clip,
+    col: i32,
+    row: i32,
+) -> u32 {
     let mut n = 0;
-    for (c, r, cell, tfm) in clip_cells(clip, col, row) {
-        if paint_at(maps, &clip.tileset, cell as usize, tfm, c, r) {
+    for (at, c, r, cell, tfm) in clip_cells(clip, visible, col, row) {
+        // The block returns to its own layer, and speaks that
+        // layer's tileset: the paint dresses the layer it joins.
+        let Some(who) = maps.get(at).map(|m| m.tileset.clone()) else {
+            continue;
+        };
+        if paint_at(maps, at, &who, cell as usize, tfm, c, r) {
             n += 1;
         }
     }
     n
 }
 
-/// A block builder for the tests: one tileset, rows then cols,
+/// A block builder for the tests: one layer's block, rows then cols,
 /// row-major from the top line.
 #[cfg(test)]
 pub(crate) fn block(rows: usize, cols: usize, cells: &[u32], tfms: &[u8]) -> Clip {
     Clip {
-        tileset: tref("x"),
         cols,
         rows,
-        cells: cells.to_vec(),
-        tfms: tfms.to_vec(),
+        blocks: vec![Block {
+            layer: 0,
+            cells: cells.to_vec(),
+            tfms: tfms.to_vec(),
+        }],
     }
 }
 
@@ -266,14 +354,14 @@ mod tests {
         let mut c = block(1, 2, &[1, 2], &[0, 1]);
         clip_turn(&mut c, true);
         assert_eq!((c.rows, c.cols), (2, 1));
-        assert_eq!(c.cells, vec![1, 2]);
-        assert_eq!(c.tfms, vec![4, 5]);
+        assert_eq!(c.blocks[0].cells, vec![1, 2]);
+        assert_eq!(c.blocks[0].tfms, vec![4, 5]);
         // Back the other way and the block is exactly what it was —
         // the two turns are true inverses, tiles included.
         clip_turn(&mut c, false);
         assert_eq!((c.rows, c.cols), (1, 2));
-        assert_eq!(c.cells, vec![1, 2]);
-        assert_eq!(c.tfms, vec![0, 1]);
+        assert_eq!(c.blocks[0].cells, vec![1, 2]);
+        assert_eq!(c.blocks[0].tfms, vec![0, 1]);
     }
 
     #[test]
@@ -281,23 +369,57 @@ mod tests {
         let c = block(2, 2, &[1, 2, 3, EMPTY_CELL], &[0, 0, 1, 0]);
         let mut x = c.clone();
         clip_flip(&mut x, true);
-        assert_eq!(x.cells, vec![2, 1, EMPTY_CELL, 3]);
-        assert_eq!(x.tfms, vec![1, 1, 1, 0]);
+        assert_eq!(x.blocks[0].cells, vec![2, 1, EMPTY_CELL, 3]);
+        assert_eq!(x.blocks[0].tfms, vec![1, 1, 1, 0]);
         let mut y = c.clone();
         clip_flip(&mut y, false);
-        assert_eq!(y.cells, vec![3, EMPTY_CELL, 1, 2]);
-        assert_eq!(y.tfms, vec![3, 2, 2, 2]);
+        assert_eq!(y.blocks[0].cells, vec![3, EMPTY_CELL, 1, 2]);
+        assert_eq!(y.blocks[0].tfms, vec![3, 2, 2, 2]);
+    }
+
+    #[test]
+    fn a_dress_goes_through_every_block_at_once() {
+        // Two layers, one frame: the turn is the stack's, not the
+        // block's — both take it together, each tile dressed as if
+        // alone.
+        let mut c = Clip {
+            cols: 1,
+            rows: 2,
+            blocks: vec![
+                Block {
+                    layer: 0,
+                    cells: vec![1, 2],
+                    tfms: vec![0, 0],
+                },
+                Block {
+                    layer: 2,
+                    cells: vec![EMPTY_CELL, 7],
+                    tfms: vec![0, 1],
+                },
+            ],
+        };
+        clip_turn(&mut c, true);
+        assert_eq!((c.cols, c.rows), (2, 1));
+        // A column clockwise lies down with its foot to the right,
+        // every tile turned once — and the second block, a lone tile
+        // with a mirror, rides by the very same rule.
+        assert_eq!(c.blocks[0].cells, vec![2, 1]);
+        assert_eq!(c.blocks[0].tfms, vec![4, 4]);
+        assert_eq!(c.blocks[1].cells, vec![7, EMPTY_CELL]);
+        // The mirror turned is a turned mirror (5), and the empty
+        // slot's byte turns too — invisible, but never inconsistent.
+        assert_eq!(c.blocks[1].tfms, vec![5, 4]);
     }
 
     #[test]
     fn the_paste_anchors_the_block_on_the_cursor() {
-        let mut maps = vec![MapLayer::blank(tref("x"), 4, 4)];
+        let mut maps = vec![MapLayer::blank("x", 4, 4)];
         let c = block(2, 2, &[5, 5, 5, EMPTY_CELL], &[0, 0, 0, 0]);
         // Two across, two deep, one a gap: three cells land, the
         // anchor cell riding the cursor (gaps skip, never erase).
         // The map centers on the origin, so anchor the block near
         // home: cells ride (0,0) and its right and below.
-        assert_eq!(clip_paste(&mut maps, &c, 0, 0), 3);
+        assert_eq!(clip_paste(&mut maps, &[true], &c, 0, 0), 3);
         let m = &maps[0];
         for cell in [m.at(0, 0), m.at(1, 0), m.at(0, 1)] {
             assert_eq!(m.cells[cell.expect("inside")], 5);
@@ -305,15 +427,17 @@ mod tests {
         // A second paste on the same spot changes nothing, and past
         // the map's edge the stamp is polite: nothing written, no
         // panic, nothing counted.
-        assert_eq!(clip_paste(&mut maps, &c, 0, 0), 0);
-        assert_eq!(clip_paste(&mut maps, &c, 9, 9), 0);
+        assert_eq!(clip_paste(&mut maps, &[true], &c, 0, 0), 0);
+        assert_eq!(clip_paste(&mut maps, &[true], &c, 9, 9), 0);
     }
 
     #[test]
-    fn a_sloppy_frame_trims_to_the_picture() {
+    fn a_sloppy_frame_trims_to_the_whole_picture() {
         // The repro from the wild: a 4x3 frame dragged around a
         // two-tile domino. The block must BE the domino — empty
-        // margins only swing the picture away from every pivot.
+        // margins only swing the picture away from every pivot. And
+        // with two layers the trim keeps them congruent: the bounds
+        // are the stack's, the cut the same for every block.
         let mut c = block(
             3,
             4,
@@ -325,54 +449,94 @@ mod tests {
         );
         assert_eq!(clip_trim(&mut c), Some((1, 1, 2, 1)));
         assert_eq!((c.cols, c.rows), (2, 1));
-        assert_eq!(c.cells, vec![2, 3]);
+        assert_eq!(c.blocks[0].cells, vec![2, 3]);
         // An all-gap frame holds nothing to copy.
         let mut e = block(1, 2, &[EMPTY_CELL, EMPTY_CELL], &[0, 0]);
+        e.blocks.clear();
         assert_eq!(clip_trim(&mut e), None);
     }
 
-    // The `1 * 3 + 1` below is the row-major formula spelled out: cell
-    // (row 1, col 1) of a clip `c.cols` wide — `c.cols == 3` asserted
-    // above, and the asserted values placed at `set_cell(1, 1, …)`:
-    // `row × cols + col`, exactly the index into the flattened grid.
-    // Clippy reads the multiply-by-one as an identity operation and
-    // cannot know it is carrying the formula; reducing it to `4` (or even
-    // `3 + 1`) leaves an index whose shape no longer names its cell. The
+    // The `1 * 3 + 1` below is the row-major formula spelled out:
+    // cell (row 1, col 1) of a 3-wide frame — `row × cols + col`,
+    // exactly the index into the flattened grid. Clippy reads the
+    // multiply-by-one as an identity operation and cannot know it is
+    // carrying the formula; reducing it to `3` (or even `2 + 1`)
+    // leaves an index whose shape no longer names its cell. The
     // allow documents that, and marks why the expression stays.
     #[allow(clippy::identity_op)]
     #[test]
-    fn the_selection_copy_reads_one_tilesets_view() {
-        let mut maps = vec![
-            MapLayer::blank(tref("a"), 4, 4),
-            MapLayer::blank(tref("b"), 4, 4),
-        ];
+    fn the_selection_copy_reads_every_layer_you_look_at() {
+        let mut maps = vec![MapLayer::blank("a", 4, 4), MapLayer::blank("b", 4, 4)];
         maps[0].set_cell(1, 1, 7, 5);
         maps[1].set_cell(1, 1, 9, 0);
-        let c = clip_take(&maps, &tref("a"), 0, 0, 3, 2);
+        let c = clip_take(&maps, &[true, true], 0, 0, 3, 2).expect("a seen picture");
         assert_eq!((c.rows, c.cols), (2, 3));
-        // One tileset's view of the map: its own cell, not the layer
-        // painted above it; EMPTY on gaps and past the edge.
-        assert_eq!(c.cells[1 * 3 + 1], 7);
-        assert_eq!(c.tfms[1 * 3 + 1], 5);
-        assert_eq!(c.cells[0], EMPTY_CELL);
-        let d = clip_take(&maps, &tref("missing"), 0, 0, 2, 2);
-        assert!(d.cells.iter().all(|c| *c == EMPTY_CELL));
+        // Every looked-at layer speaks: each keeps its own cells,
+        // EMPTY wherever its layer was empty or off the edge.
+        assert_eq!(c.blocks.len(), 2);
+        assert_eq!(c.blocks[0].layer, 0);
+        assert_eq!(c.blocks[0].cells[1 * 3 + 1], 7);
+        assert_eq!(c.blocks[0].tfms[1 * 3 + 1], 5);
+        assert_eq!(c.blocks[1].layer, 1);
+        assert_eq!(c.blocks[1].cells[1 * 3 + 1], 9);
+    }
+
+    #[test]
+    fn a_hidden_layer_neither_copies_nor_receives() {
+        let mut maps = vec![MapLayer::blank("a", 4, 4), MapLayer::blank("b", 4, 4)];
+        maps[0].set_cell(0, 0, 1, 0);
+        maps[1].set_cell(-1, -1, 2, 0);
+        let c = clip_take(&maps, &[true, false], -2, -2, 4, 4).expect("a visible picture");
+        assert_eq!(
+            c.blocks.len(),
+            1,
+            "the hidden layer keeps its silence — not copied as emptiness"
+        );
+        assert_eq!(c.blocks[0].layer, 0);
+        let n = clip_paste(&mut maps, &[true, false], &c, 0, 0);
+        assert!(n > 0, "the visible layer takes the drop");
+        assert_eq!(
+            maps[1].cells.iter().filter(|c| **c != EMPTY_CELL).count(),
+            1,
+            "the hidden layer stands exactly as it stood"
+        );
+    }
+
+    #[test]
+    fn blocks_belong_to_layers_not_names() {
+        // Two layers, one tileset name — the courtyard's twins. The
+        // copy reads the layer painted, not the first twin: position,
+        // never name.
+        let mut maps = vec![
+            MapLayer::blank("twins", 4, 4),
+            MapLayer::blank("twins", 4, 4),
+        ];
+        maps[1].set_cell(0, 0, 9, 0);
+        let c = clip_take(&maps, &[true, true], -2, -2, 4, 4).expect("a seen picture");
+        assert_eq!(c.blocks.len(), 1);
+        assert_eq!(
+            c.blocks[0].layer, 1,
+            "the block names the layer painted, not the first twin"
+        );
+        assert_eq!(c.blocks[0].cells[2 * 4 + 2], 9);
     }
 
     #[test]
     fn a_move_cuts_the_frame_and_the_frame_travels() {
         let clip = Clip {
-            tileset: tref("wild"),
             cols: 3,
             rows: 2,
-            cells: vec![1, 2, 3, 4, 5, EMPTY_CELL],
-            tfms: vec![0, 0, 0, 0, 0, 0],
+            blocks: vec![Block {
+                layer: 0,
+                cells: vec![1, 2, 3, 4, 5, EMPTY_CELL],
+                tfms: vec![0, 0, 0, 0, 0, 0],
+            }],
         };
-        let mut maps = vec![MapLayer::blank(tref("wild"), 8, 8)];
+        let mut maps = vec![MapLayer::blank("wild", 8, 8)];
         for (c, r, cell) in [(-1, -1, 1), (0, -1, 2), (1, -1, 3), (-1, 0, 4), (0, 0, 5)] {
             maps[0].set_cell(c, r, cell, 0);
         }
-        let (n, erased, sel) = clip_move(&mut maps, &clip, Some([-1, -1, 1, 0]), 2, 2);
+        let (n, erased, sel) = clip_move(&mut maps, &[true], &clip, Some([-1, -1, 1, 0]), 2, 2);
         assert_eq!((n, erased), (5, true), "the cut lands and the drop lands");
         for (c, r) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (0, 0)] {
             assert_eq!(
@@ -392,14 +556,16 @@ mod tests {
     #[test]
     fn a_move_without_a_frame_is_a_plain_drop() {
         let clip = Clip {
-            tileset: tref("wild"),
             cols: 3,
             rows: 2,
-            cells: vec![1, 2, 3, 4, 5, EMPTY_CELL],
-            tfms: vec![0, 0, 0, 0, 0, 0],
+            blocks: vec![Block {
+                layer: 0,
+                cells: vec![1, 2, 3, 4, 5, EMPTY_CELL],
+                tfms: vec![0, 0, 0, 0, 0, 0],
+            }],
         };
-        let mut maps = vec![MapLayer::blank(tref("wild"), 8, 8)];
-        let (n, erased, sel) = clip_move(&mut maps, &clip, None, 0, 0);
+        let mut maps = vec![MapLayer::blank("wild", 8, 8)];
+        let (n, erased, sel) = clip_move(&mut maps, &[true], &clip, None, 0, 0);
         assert_eq!((n, erased), (5, false), "nothing to cut, all to drop");
         assert_eq!(
             sel,

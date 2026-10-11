@@ -1,130 +1,203 @@
 //! Startup asset loading for the `immortal` example.
 //!
 //! Every sprite, sound, and font the example uses is compiled into the
-//! binary in one [`Table`](frost::Table), named by file stem, so the
-//! example runs with no asset files on disk — in any working directory,
-//! and on targets without a file system. Development admits the loose
-//! `assets/` directories too, where a saved edit outranks its table
-//! entry — the same code, both worlds, no fork. [`Assets::load`] decodes
-//! it all in one place; `main` hands it to the plant node, the scene,
-//! and the `Demo`.
+//! binary in one [`Table`](frost::Table), keyed by root-relative path
+//! — the same words the asset documents speak — so the example runs
+//! with no asset files on disk, in any working directory, and on
+//! targets without a file system. Development admits the project
+//! root's loose files too, where a saved edit outranks its table
+//! entry — the same code, both worlds, no fork. The older call sites
+//! still speak short names, and [`key_of`] is the app's own
+//! housekeeping: a name maps to the table's one path of that stem,
+//! and an ambiguous name is a build error the app refuses to guess.
 
 /// The badge's tint alpha: a faint watermark behind the play field.
 const IMMORTALITY_ALPHA: f32 = 0.2;
 
-/// The shipped world: every asset by stem, every stem by bytes.
-/// The loose `assets/` directories shadow entries by the same name —
+/// The shipped world: every asset by path, every path by bytes — the
+/// key and the `include_bytes!` argument are the same string, so a
+/// document's reference and the build's cargo are one dialect. Loose
+/// files under the admitted root shadow entries by the same path —
 /// see [`frost::Assets`].
 const ASSETS: frost::Table = &[
-    ("gameplay", include_bytes!("../../assets/game/gameplay.ron")),
-    ("grass", include_bytes!("../../assets/sprites/grass.png")),
     (
-        "water_can_outline",
+        "assets/game/gameplay.ron",
+        include_bytes!("../../assets/game/gameplay.ron"),
+    ),
+    (
+        "assets/sprites/grass.png",
+        include_bytes!("../../assets/sprites/grass.png"),
+    ),
+    (
+        "assets/sprites/water_can_outline.png",
         include_bytes!("../../assets/sprites/water_can_outline.png"),
     ),
-    ("Spray1", include_bytes!("../../assets/sprites/Spray1.png")),
-    ("Spray2", include_bytes!("../../assets/sprites/Spray2.png")),
-    ("spade", include_bytes!("../../assets/sprites/spade.png")),
     (
-        "Tweezers",
+        "assets/sprites/Spray1.png",
+        include_bytes!("../../assets/sprites/Spray1.png"),
+    ),
+    (
+        "assets/sprites/Spray2.png",
+        include_bytes!("../../assets/sprites/Spray2.png"),
+    ),
+    (
+        "assets/sprites/spade.png",
+        include_bytes!("../../assets/sprites/spade.png"),
+    ),
+    (
+        "assets/sprites/Tweezers.png",
         include_bytes!("../../assets/sprites/Tweezers.png"),
     ),
     (
-        "Getingeye1",
+        "assets/sprites/Getingeye1.png",
         include_bytes!("../../assets/sprites/Getingeye1.png"),
     ),
     (
-        "Getingeye2",
+        "assets/sprites/Getingeye2.png",
         include_bytes!("../../assets/sprites/Getingeye2.png"),
     ),
-    ("Bug1a", include_bytes!("../../assets/sprites/Bug1a.png")),
-    ("Bug2a", include_bytes!("../../assets/sprites/Bug2a.png")),
-    ("Bug3a", include_bytes!("../../assets/sprites/Bug3a.png")),
     (
-        "Worm1_crop",
+        "assets/sprites/Bug1a.png",
+        include_bytes!("../../assets/sprites/Bug1a.png"),
+    ),
+    (
+        "assets/sprites/Bug2a.png",
+        include_bytes!("../../assets/sprites/Bug2a.png"),
+    ),
+    (
+        "assets/sprites/Bug3a.png",
+        include_bytes!("../../assets/sprites/Bug3a.png"),
+    ),
+    (
+        "assets/sprites/Worm1_crop.png",
         include_bytes!("../../assets/sprites/Worm1_crop.png"),
     ),
     (
-        "Worm2_crop",
+        "assets/sprites/Worm2_crop.png",
         include_bytes!("../../assets/sprites/Worm2_crop.png"),
     ),
-    ("Lice1", include_bytes!("../../assets/sprites/Lice1.png")),
-    ("Lice2", include_bytes!("../../assets/sprites/Lice2.png")),
-    ("items", include_bytes!("../../assets/sprites/items.png")),
     (
-        "held_items",
+        "assets/sprites/Lice1.png",
+        include_bytes!("../../assets/sprites/Lice1.png"),
+    ),
+    (
+        "assets/sprites/Lice2.png",
+        include_bytes!("../../assets/sprites/Lice2.png"),
+    ),
+    (
+        "assets/sprites/items.png",
+        include_bytes!("../../assets/sprites/items.png"),
+    ),
+    (
+        "assets/sprites/held_items.png",
         include_bytes!("../../assets/sprites/held_items.png"),
     ),
-    ("plant1", include_bytes!("../../assets/sprites/plant1.png")),
-    ("plant2", include_bytes!("../../assets/sprites/plant2.png")),
-    ("plant3", include_bytes!("../../assets/sprites/plant3.png")),
-    ("plant4", include_bytes!("../../assets/sprites/plant4.png")),
-    ("plant5", include_bytes!("../../assets/sprites/plant5.png")),
-    ("flower", include_bytes!("../../assets/sprites/flower.png")),
-    ("tomato", include_bytes!("../../assets/sprites/tomato.png")),
     (
-        "tomato_fg",
+        "assets/sprites/plant1.png",
+        include_bytes!("../../assets/sprites/plant1.png"),
+    ),
+    (
+        "assets/sprites/plant2.png",
+        include_bytes!("../../assets/sprites/plant2.png"),
+    ),
+    (
+        "assets/sprites/plant3.png",
+        include_bytes!("../../assets/sprites/plant3.png"),
+    ),
+    (
+        "assets/sprites/plant4.png",
+        include_bytes!("../../assets/sprites/plant4.png"),
+    ),
+    (
+        "assets/sprites/plant5.png",
+        include_bytes!("../../assets/sprites/plant5.png"),
+    ),
+    (
+        "assets/sprites/flower.png",
+        include_bytes!("../../assets/sprites/flower.png"),
+    ),
+    (
+        "assets/sprites/tomato.png",
+        include_bytes!("../../assets/sprites/tomato.png"),
+    ),
+    (
+        "assets/sprites/tomato_fg.png",
         include_bytes!("../../assets/sprites/tomato_fg.png"),
     ),
     (
-        "BasketBack",
+        "assets/sprites/BasketBack.png",
         include_bytes!("../../assets/sprites/BasketBack.png"),
     ),
     (
-        "BasketFront",
+        "assets/sprites/BasketFront.png",
         include_bytes!("../../assets/sprites/BasketFront.png"),
     ),
     (
-        "sustainable_immortality",
+        "assets/sprites/sustainable_immortality.png",
         include_bytes!("../../assets/sprites/sustainable_immortality.png"),
     ),
     (
-        "Leofont-Regular",
+        "assets/fonts/Leofont-Regular.ttf",
         include_bytes!("../../assets/fonts/Leofont-Regular.ttf"),
     ),
     (
-        "FiraCode-VariableFont_wght",
+        "assets/fonts/FiraCode-VariableFont_wght.ttf",
         include_bytes!("../../assets/fonts/FiraCode-VariableFont_wght.ttf"),
     ),
     (
-        "TjatterLow",
+        "assets/audio/TjatterLow.wav",
         include_bytes!("../../assets/audio/TjatterLow.wav"),
     ),
     (
-        "TjatterMid",
+        "assets/audio/TjatterMid.wav",
         include_bytes!("../../assets/audio/TjatterMid.wav"),
     ),
     (
-        "TjatterHigh",
+        "assets/audio/TjatterHigh.wav",
         include_bytes!("../../assets/audio/TjatterHigh.wav"),
     ),
     (
-        "bugs_plopp1",
+        "assets/audio/bugs_plopp1.wav",
         include_bytes!("../../assets/audio/bugs_plopp1.wav"),
     ),
     (
-        "bugs_plopp2",
+        "assets/audio/bugs_plopp2.wav",
         include_bytes!("../../assets/audio/bugs_plopp2.wav"),
     ),
     (
-        "bugs_plopp3",
+        "assets/audio/bugs_plopp3.wav",
         include_bytes!("../../assets/audio/bugs_plopp3.wav"),
     ),
-    ("Aj1", include_bytes!("../../assets/audio/Aj1.wav")),
-    ("Aj2", include_bytes!("../../assets/audio/Aj2.wav")),
-    ("Aj3", include_bytes!("../../assets/audio/Aj3.wav")),
-    ("Aj4", include_bytes!("../../assets/audio/Aj4.wav")),
     (
-        "bugsDeath",
+        "assets/audio/Aj1.wav",
+        include_bytes!("../../assets/audio/Aj1.wav"),
+    ),
+    (
+        "assets/audio/Aj2.wav",
+        include_bytes!("../../assets/audio/Aj2.wav"),
+    ),
+    (
+        "assets/audio/Aj3.wav",
+        include_bytes!("../../assets/audio/Aj3.wav"),
+    ),
+    (
+        "assets/audio/Aj4.wav",
+        include_bytes!("../../assets/audio/Aj4.wav"),
+    ),
+    (
+        "assets/audio/bugsDeath.wav",
         include_bytes!("../../assets/audio/bugsDeath.wav"),
     ),
     (
-        "WaterFlowSoft",
+        "assets/audio/WaterFlowSoft.wav",
         include_bytes!("../../assets/audio/WaterFlowSoft.wav"),
     ),
-    ("Spray", include_bytes!("../../assets/audio/Spray.wav")),
     (
-        "TomatoDrop",
+        "assets/audio/Spray.wav",
+        include_bytes!("../../assets/audio/Spray.wav"),
+    ),
+    (
+        "assets/audio/TomatoDrop.wav",
         include_bytes!("../../assets/audio/TomatoDrop.wav"),
     ),
 ];
@@ -255,11 +328,7 @@ impl Assets {
         let audio = frost::Audio::new().expect("failed to open the audio output device");
         // The resolver of this run: the table beneath, the loose
         // directories above it when this working directory has them.
-        let store = frost::Assets::embedded(ASSETS)
-            .with_dir("assets/sprites")
-            .with_dir("assets/audio")
-            .with_dir("assets/fonts")
-            .with_dir("assets/game");
+        let store = frost::Assets::embedded(ASSETS).with_dir(env!("CARGO_MANIFEST_DIR"));
         let mut immortality = sprite(&store, "sustainable_immortality");
         if let frost::Shape::Sprite { alpha, .. } = &mut immortality {
             *alpha = IMMORTALITY_ALPHA;
@@ -340,9 +409,32 @@ fn sound(store: &frost::Assets, name: &str) -> frost::Sound {
 
 /// The bytes a name means in one of its formats, with the house
 /// refusal: an asset the table forgot is a build error, not a
-/// missing picture.
+/// missing picture. The name is the app's own shorthand; the store
+/// hears only the path [`key_of`] finds for it.
 fn ask(store: &frost::Assets, name: &str, exts: &[&str]) -> std::borrow::Cow<'static, [u8]> {
     store
-        .asset(name, exts)
+        .asset(key_of(name), exts)
         .unwrap_or_else(|| panic!("the asset table does not carry '{name}'"))
+}
+
+/// The table's one path whose file stem is this name — the app's
+/// housekeeping over its own keys, not the resolver's guessing:
+/// a stem no entry wears, or two entries wearing one stem, are both
+/// build errors this example refuses at the first load rather than
+/// choices it would have to live with.
+fn key_of(name: &str) -> &'static str {
+    let found: Vec<&'static str> = ASSETS
+        .iter()
+        .map(|(path, _)| *path)
+        .filter(|path| {
+            std::path::Path::new(path)
+                .file_stem()
+                .is_some_and(|stem| stem == name)
+        })
+        .collect();
+    match found.as_slice() {
+        [one] => one,
+        [] => panic!("the asset table wears no '{name}'"),
+        many => panic!("the asset table wears {name} twice: {many:?} — a stem is one asset"),
+    }
 }

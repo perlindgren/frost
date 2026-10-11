@@ -360,6 +360,16 @@ fn main() {
             ..Default::default()
         })
     }));
+    children.extend((0..SLOTS).map(|_| {
+        // The layer numbers: shapeless until the tile-map desk
+        // wears the strip.
+        Box::new(frost::SceneNode::default())
+    }));
+    children.extend((0..GHOSTS_N).map(|_| {
+        // The block-ghosts: one per sheet among the held copy's
+        // blocks, shapeless until a drop is previewed.
+        Box::new(frost::SceneNode::default())
+    }));
 
     let scene = frost::Scene::new(frost::SceneNode {
         // Dark background; the node's transform is ignored.
@@ -400,12 +410,21 @@ fn main() {
             last_mouse: None,
             last_click: None,
             dir,
+            map_path: None,
             view: start_view,
             band_base: None,
             band_key: None,
             cell_shapes: Vec::new(),
             picked_cell: None,
+            hover_slot_key: None,
+            hover_label: None,
+            active_layer: 0,
+            layer_visible: Vec::new(),
+            layer_brush: Vec::new(),
+            was_digits: [false; 9],
+            benches: std::array::from_fn(|_| Bench::default()),
             maps: Vec::new(),
+            shelf: Vec::new(),
             paint: None,
             first_frame: true,
             undo_stack: Vec::new(),

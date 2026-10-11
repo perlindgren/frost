@@ -9,7 +9,6 @@ use frost::ron::{Kind, Val};
 /// The watched file's path, beside the shipped table entry of the
 /// same name: development sees the file, a shipped binary sees only
 /// the table — and watches a file that never answers.
-pub(crate) const GAMEPLAY_NAME: &str = "gameplay";
 pub(crate) const GAMEPLAY_FILE: &str = "assets/game/gameplay.ron";
 
 /// Everything the process asks the data for. A new number joins by
@@ -48,8 +47,8 @@ impl Config {
     /// itself in the log — the garden starts honest or not at all,
     /// and never over a silent miss.
     pub(crate) fn from_store(store: &frost::Assets) -> Self {
-        let Some(bytes) = store.bytes(GAMEPLAY_NAME) else {
-            log::warn!("config: the store answers nothing for '{GAMEPLAY_NAME}' — defaults stand");
+        let Some(bytes) = store.bytes(GAMEPLAY_FILE) else {
+            log::warn!("config: the store answers nothing for '{GAMEPLAY_FILE}' — defaults stand");
             return Self::default();
         };
         match frost::ron::parse(&String::from_utf8_lossy(&bytes)) {
@@ -61,7 +60,7 @@ impl Config {
                 config
             }
             Err(err) => {
-                log::warn!("config: '{GAMEPLAY_NAME}' is not RON ({err}) — defaults stand");
+                log::warn!("config: '{GAMEPLAY_FILE}' is not RON ({err}) — defaults stand");
                 Self::default()
             }
         }

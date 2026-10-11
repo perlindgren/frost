@@ -995,6 +995,7 @@ fn draw_node(
                         atlas_size: [*width, *height],
                         atlas_generation: *generation,
                         filter: *filter,
+                        lit: f32::from(node.lit),
                         bounds: (box_min, box_max),
                         clip: clip_px,
                         z: order,

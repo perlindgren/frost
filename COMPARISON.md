@@ -149,16 +149,23 @@ Status of each rung, updated as work lands. `[ ]` = claim, `[x]` = fact.
       next frame*) without a restart. The seam between watched and
       compiled is itself a test: disk assembles exactly what
       `include_str!` embedded. Checked 2026-10-10.
-- [ ] **The guard** — reader landed 2026-10-10, and it followed the
-      codec into the guest: `map::tileset_names` in sprite_util
-      (first-spoken order, none twice, cuts deliberately out — the
-      name is the cargo question), with its desk face
-      `waiting_names` (identity by name *and* cut, as dressing
-      decides) and `open_map` naming who waits instead of counting.
-      The app-side test — *the world ships every tileset it names* —
-      waits for the first app that ships a map; the half rung keeps
-      the box open until `include_bytes!` can die at `cargo test`
-      somewhere real.
+- [x] **The guard** — closed 2026-10-10, the same day it grew a
+      second level: the chain is three documents
+      (`map → tileset → sheet`, `frost::tileset` first-class, paths
+      document-relative, tables keyed by the same strings), and the
+      guard stands as `frost::map::guard_documents` — the whole cargo
+      question, every reference resolved and every link read, of
+      bytes and a closure, no filesystem, at `cargo test` time; the
+      desk opens maps through the same `resolve` the guard walks, and
+      `waiting_names` names who waits (a closed sheet's document
+      waits as much as a missing name). The app-side half landed with
+      the first app that ships a map: `examples/courtyard.rs` carries
+      `assets/maps/courtyard.map.ron`, its tileset, and its sheet in
+      one table, and its test asks `guard_documents` the whole chain
+      of that table — a forgotten `include_bytes!` now dies at
+      `cargo test` somewhere real. The demo's remaining rungs (the
+      lamp, the marble, the watchers, the telling) light a floor the
+      guard has certified.
 - [x] **The telling** — the told half landed 2026-10-10:
       `frost::Teller` — announce card in `target/frost/live/` (dies
       with the app, and the folder self-heals crashed authors *and*

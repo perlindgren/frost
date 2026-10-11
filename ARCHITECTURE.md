@@ -80,7 +80,7 @@ src/backend/tests/    Backend tests, one file per area (uniforms, scissor,
                       (sprites, tilemap, shadows) and say so when they can't
 shaders/*.wgsl        nine pipelines (line, polyline, circle, rectangle, shape,
                       sprite, particles, tilemap, blit) plus lighting.wgsl, the
-                      lighting vocabulary the three lit ones are built on
+                      lighting vocabulary the four lit ones are built on
 examples/             40 runnable demos, filed into folders (see table below)
 assets/               sprites/*.png (+ .pxo sidecars; immortal art, worm
                       crops, …), fonts/ (FiraCode Variable, JameGem08,
@@ -285,6 +285,17 @@ never count (`Diagnostics` excludes them like backgrounds).
   a sun; a scene may carry any number). `penumbra` is the light disk's radius:
   shadow rays sample it (nine taps, rotated per pixel), so shadows fade
   across an edge instead of dropping hard.
+- The tilemap was the one surface pipeline kept out of the vocabulary —
+  *scenery, not a scene actor*, its doc said — until a demo wanted a
+  shadow to fall on a tile floor and exposed what that phrase had been
+  silently conceding: the floor is exactly where a shadow falls. Maps
+  receive like everything else now: `SceneNode::lit` multiplies the
+  light mix per tile pixel and occluders cast across them. Pinned on
+  the GPU, not asserted in prose — the test paints one white map under
+  one lamp behind one declared wall and reads the bytes: bright on the
+  lamp's side, dark behind the wall, full brightness when the node
+  stays unlit. The flag is no tax; an unlit map draws exactly as it
+  always did, demo for demo.
 - Receivers opt in per node, flag applies to that shape only:
   `SceneNode::lit` multiplies the shape's color by `ambient + Σ lights +
   glow` per pixel; `SceneNode::glow` (a `Color`, alpha-scaled) is the shape's
@@ -1357,7 +1368,7 @@ polled at the head of `render` before the surface is even asked,
 because a saved shader should land whether or not a window is
 compositing. The seam is the batch: any touched file re-assembles
 *every* source from disk — which is how a `lighting.wgsl` edit
-reaches the three lit pipelines at once — validates the whole table
+reaches the four lit pipelines at once — validates the whole table
 through naga's parse and validator (the very two stages
 `create_shader_module` runs), and swaps only if all nine compile.
 A broken file refuses the batch: the old shaders stand, the log
@@ -1376,13 +1387,77 @@ names a map file asks for, so an app's own test can assert every one of
 them sits in its `ASSETS` table — a forgotten `include_bytes!` dies at
 `cargo test`, not in the field. The reader landed 2026-10-10, and the
 finding is *where*: not at the paragraph's guessed `frost::map`, but in
-the guest — the guard follows the codec, and the codec is the tool's
-dialect, so the engine stays map-blind and `map::tileset_names` lives in
-sprite_util beside the layers it reads. Its desk-side face
+the guest — the guard follows the codec, and that morning the codec
+was the tool's. The same day's next rung corrected the address: a demo
+must *boot* a map, and a format the world must read is not a tool's
+dialect but a file format, so the facts graduated to `frost::map` —
+identity, layers, cells, the codec, and the road from a layer to a
+`TileMap` shape. That is the paragraph's original guess, reached by
+the honest road: the guard moved with the codec, because it never
+followed anything else, and it now stands at the predicted post,
+`frost::map::tileset_names`. What stayed in the guest is motor skill
+that knows `Sprite` — `tref_of`, `dressed`, `layer_shape`, the brush,
+the ghost, the grid ladder — and the desk's verbs write and read maps
+through the engine's `to_text` and `from_text`: one codec, both ends
+of the tool's loop, which is what makes *edit in the desk, the world
+follows* honest rather than hopeful. Its desk-side face
 `waiting_names` decides waiting by full identity, name and cut together,
 exactly as dressing does, and `open_map` names the waiters in its note
 where it once counted them. The app-side pin needs an app that ships a
-map; none does yet — the box stays open, and the demo rung owes it. The
+map; none does yet — the box stays open, and the demo rung owes it.
+
+**The same day's second amendment: identity walks back to paths — the
+honest ones.** The professor's question was structural: *shouldn't a
+tileset be its own file, referring to a sprite sheet?* It should, and
+the pressure that proved it was the tile's own role — solidity had no
+home while a tileset was a way of wearing a sprite; it lived as pixel
+rectangles in the sheet's sidecar, with a grouping helper still owed
+to translate them into cell numbers. The old objection to paths — that
+shipped code resolving `CARGO_MANIFEST_DIR` at runtime is flaky —
+dissolved under inspection: nothing has to resolve anything at runtime.
+The root is an **input, never a question**: loose reading is opt-in
+(`with_dir`), the wasm store is table-only by cfg, and `env!` is a
+compile-time constant in dev code. So the chain became three documents
+where it had been two: `map → tileset → sheet`, with a **tileset as a
+first-class document** (`frost::tileset`: name, sheet, cut, and the
+cells' roles spoken *by cell number, in the tileset's own dialect* —
+the grouping helper retired unwritten). References are
+**document-relative** — the convention every browser and shader
+include already speaks — resolved by `frost::map::resolve`, a pure
+string operation whose inverse `relative` the desk writes with: the
+chain walks a folder of loose files and a shipped table of embedded
+bytes with the same arithmetic, and `guard_documents` asks the whole
+cargo question — map, every tileset it points at, every sheet every
+tileset cuts — of bytes and a closure, no filesystem in sight, at
+`cargo test` time. The table's keys are now the same strings the
+documents speak and the `include_bytes!` arguments name — key, embed
+and reference in one dialect — which also kills the stem days' real
+weakness: two `grass.png` in two folders were one name; they are two
+paths now. Case became a dialect *law*: paths are `/`-joined and
+case-exact, enforced by a `read_dir` walk that declines the forgiving
+filesystem's nod (`a_case_slip_refuses_rather_than_forges`), so dev
+and release refuse a wrong case at the same moment. Identity by speech
+survives the move: paths *find* documents, names *are* documents, and
+a desk that shelves `moss.tileset.ron` around a document that says
+`name: "grass"` says so. The map file's root now carries a `tilesets:`
+cargo list; a layer naming a document the cargo does not carry is a
+contradiction refused, not a partial map; the desk writes each
+tileset's document beside its sheet (`<stem>.tileset.ron`) *before*
+the map that points at them, and refuses a layer whose tileset can be
+neither found nor written. `waiting_names` keeps its post with new
+eyes: a shelf document whose sheet closed waits exactly as a name
+nobody wears — half a dressing dresses nothing. Immortal's 45 entries
+key by path; its `key_of` is housekeeping over *its own* table (a stem
+worn twice there is a build error the app refuses to guess), so call
+sites keep their names while the store hears only paths. And the
+guard's box? The reader moved one final post — `guard_documents` is
+the whole cargo question now, two levels deep — and the box stays
+open for the one thing it always waited on: the first app that ships
+a map, whose guard test is then `guard_documents` over its own table.
+That hour came the same evening: `examples/courtyard.rs` carries its
+map, tileset and sheet in one table and asks the guard the whole
+chain of it — the box closed, and the demo's remaining rungs (lamp,
+marble, watchers, telling) light a floor the guard has certified. The
 resolver core, the watcher tick, and the rebind-mid-swap semantics are
 still to be designed; this paragraph is the finding, not the plan. The
 engines this bet is made against, and the scoreboard tracking it, live in

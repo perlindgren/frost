@@ -209,7 +209,9 @@ pub use assets::{Assets, Table};
 #[cfg(not(target_arch = "wasm32"))]
 pub use tell::{Announcement, Teller, Tiding};
 pub use watch::Watch;
+pub mod map;
 pub mod ron;
+pub mod tileset;
 
 mod diagnostics;
 pub use diagnostics::{Diagnostics, DiagnosticsFlags};
