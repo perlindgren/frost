@@ -168,6 +168,13 @@ pub use winit::event::MouseButton;
 /// exposes.
 pub use winit::window::Window;
 
+/// The fullscreen state a window carries: [`Config::fullscreen`] requests
+/// one at startup, and [`Window::set_fullscreen`] swaps one in and out at
+/// runtime through [`Context::window`]. `Fullscreen::Borderless(None)` —
+/// the game's usual choice — fills the monitor the window sits on; on
+/// macOS that is the platform's native fullscreen Space.
+pub use winit::window::Fullscreen;
+
 /// The gamepad buttons and axes used to query the gamepads reported by
 /// [`Context::gamepads`], such as `Axis::LeftStickY` and `Button::South`,
 /// as gilrs names them.
@@ -556,6 +563,17 @@ pub struct Config {
     /// [`Context::expected_fps`] reports. When `false`, frames are
     /// presented as soon as they are rendered, uncapped.
     pub vsync: bool,
+    /// Open the window already fullscreen.
+    ///
+    /// `true` asks for [`Fullscreen::Borderless(None)`] at creation: the
+    /// window fills the display it lands on — on macOS the platform's
+    /// native fullscreen Space. The size requests still shape the frames
+    /// around the transition, and [`Config::render_size`] still fixes
+    /// what is rendered into it. The state is not locked: an app can
+    /// flip it mid-run through [`Window::set_fullscreen`] on
+    /// [`Context::window`]. Ignored on the web, where the canvas has no
+    /// window to fill.
+    pub fullscreen: bool,
     /// The window's initial inner size in logical pixels, `[width, height]`.
     ///
     /// Logical pixels are OS pixels: they equal physical pixels at 100%
@@ -671,11 +689,12 @@ pub struct Config {
 }
 
 impl Default for Config {
-    /// Vsync on, a resizable window, bilinear upscaling, and the
-    /// platform's default size.
+    /// Vsync on, windowed, a resizable window, bilinear upscaling, and
+    /// the platform's default size.
     fn default() -> Self {
         Self {
             vsync: true,
+            fullscreen: false,
             window_size: None,
             window_size_px: None,
             resizable: true,
@@ -730,6 +749,7 @@ pub fn run_configured<P: Process>(
         config.vsync,
         config.window_size,
         config.window_size_px,
+        config.fullscreen,
         config.resizable,
         config.render_size,
         config.blit_filter,
@@ -776,6 +796,7 @@ pub fn run_configured<P: Process>(
         config.vsync,
         config.window_size,
         config.window_size_px,
+        config.fullscreen,
         config.resizable,
         config.render_size,
         config.blit_filter,

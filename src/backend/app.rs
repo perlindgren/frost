@@ -77,6 +77,8 @@ pub(crate) struct Frost<P: Process> {
     /// The `Config`'s initial inner size in physical pixels; used once in
     /// `create_window`, and it wins over `window_size` there.
     window_size_px: Option<[u32; 2]>,
+    /// The `Config`'s fullscreen request; applied once in `create_window`.
+    fullscreen: bool,
     /// The `Config`'s resizability request; applied once in
     /// `attach_window`.
     resizable: bool,
@@ -265,6 +267,7 @@ impl<P: Process> Frost<P> {
         vsync: bool,
         window_size: Option<[u32; 2]>,
         window_size_px: Option<[u32; 2]>,
+        fullscreen: bool,
         resizable: bool,
         render_size: Option<[u32; 2]>,
         blit_filter: SpriteFilter,
@@ -427,6 +430,7 @@ impl<P: Process> Frost<P> {
             vsync,
             window_size,
             window_size_px,
+            fullscreen,
             resizable,
             render_size,
             blit_filter,
@@ -490,6 +494,7 @@ impl<P: Process> ApplicationHandler for Frost<P> {
             event_loop,
             self.window_size,
             self.window_size_px,
+            self.fullscreen,
         ));
     }
 

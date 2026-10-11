@@ -148,10 +148,14 @@ Player ant digs by walking into adjacent DIRT (one action, one budget).
 |---------------|---------------------------------------------------|
 | Arrows / WASD | move / collect / dig & move / chain shift         |
 | Shift+Arrow   | push first loose ant in that direction            |
+| Left click    | walk route to the clicked cell (walk-overs recruit; a click never digs) |
+| Shift+click   | push — the click aims, the dominant axis decides the shove |
+| Right click   | leave the last ant of the line behind             |
 | Space         | leave the last ant of the line behind             |
 | Z             | undo (full state stack)                           |
 | R             | restart hill                                      |
 | N / P         | next / previous hill (debug until menu)           |
+| F11           | fullscreen toggle                                 |
 | Esc or Q      | quit                                              |
 
 Undo is mandatory: deadlocks exist by design (the hill walls itself off

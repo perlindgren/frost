@@ -360,7 +360,7 @@ impl Game {
             return Err("an ant riding at the back stays aboard");
         }
         if tail_i > 0 && self.trail_target(tail_i - 1) == tail_cell {
-            return Err("the line is bunched — stretch it first");
+            return Err("the line is bunched  stretch it first");
         }
         self.push_undo();
         self.ants[id].state = AntState::Placed(tail_cell);

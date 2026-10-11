@@ -36,6 +36,9 @@ struct Core<P: Process> {
     /// The physical-pixel size request, carried for symmetry with the
     /// native config; `create_window` ignores it on the web.
     window_size_px: Option<[u32; 2]>,
+    /// The fullscreen request, carried for symmetry with the native
+    /// config; inert on the web, where the page owns the canvas.
+    fullscreen: bool,
     /// The resizability request; `set_resizable` is a no-op on the web,
     /// where the page owns the canvas size, but it is carried so
     /// `attach_window` runs the same code as native.
@@ -103,7 +106,15 @@ impl<P: Process> ApplicationHandler for WebFrost<P> {
             // one.
             let window_size = self.core.as_ref().and_then(|core| core.window_size);
             let window_size_px = self.core.as_ref().and_then(|core| core.window_size_px);
-            self.window = Some(create_window(event_loop, window_size, window_size_px));
+            // Fullscreen is a window concept; the canvas has none, so
+            // the web build passes the request off as `false` and
+            // `create_window` would ignore it either way.
+            self.window = Some(create_window(
+                event_loop,
+                window_size,
+                window_size_px,
+                false,
+            ));
         }
         if matches!(self.gpu, GpuInit::Idle) {
             // The async block owns its own `Instance` clone (a cheap
@@ -199,6 +210,7 @@ impl<P: Process> WebFrost<P> {
         vsync: bool,
         window_size: Option<[u32; 2]>,
         window_size_px: Option<[u32; 2]>,
+        fullscreen: bool,
         resizable: bool,
         render_size: Option<[u32; 2]>,
         blit_filter: SpriteFilter,
@@ -213,6 +225,7 @@ impl<P: Process> WebFrost<P> {
                 vsync,
                 window_size,
                 window_size_px,
+                fullscreen,
                 resizable,
                 render_size,
                 blit_filter,
@@ -278,6 +291,7 @@ impl<P: Process> WebFrost<P> {
             core.vsync,
             core.window_size,
             core.window_size_px,
+            core.fullscreen,
             core.resizable,
             core.render_size,
             core.blit_filter,

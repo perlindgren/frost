@@ -10,6 +10,8 @@ use winit::dpi::PhysicalPosition;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
+#[cfg(not(target_arch = "wasm32"))]
+use winit::window::Fullscreen;
 use winit::window::Window;
 
 /// The surface presentation mode for the user's vsync request: `AutoVsync`
@@ -43,6 +45,7 @@ pub(crate) fn create_window(
     event_loop: &ActiveEventLoop,
     window_size: Option<[u32; 2]>,
     window_size_px: Option<[u32; 2]>,
+    fullscreen: bool,
 ) -> Arc<Window> {
     let mut attributes = Window::default_attributes().with_title("frost");
     #[cfg(not(target_arch = "wasm32"))]
@@ -74,12 +77,21 @@ pub(crate) fn create_window(
             };
             attributes = attributes.with_inner_size(LogicalSize::new(size[0], size[1]));
         }
+        if fullscreen {
+            // Borderless on the monitor the window lands on: on macOS
+            // winit turns this into the platform's native fullscreen
+            // Space. The size request above still stands — it shapes the
+            // surface through the transition, and a later un-fullscreen
+            // returns the window to it.
+            attributes = attributes.with_fullscreen(Some(Fullscreen::Borderless(None)));
+        }
     }
     #[cfg(target_arch = "wasm32")]
     {
         use winit::platform::web::WindowAttributesExtWebSys;
 
         let _ = window_size_px;
+        let _ = fullscreen;
         let [width, height] = window_size.unwrap_or([900, 600]);
         attributes = attributes
             .with_append(true)
