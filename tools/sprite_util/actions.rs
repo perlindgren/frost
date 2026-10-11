@@ -176,6 +176,19 @@ pub(crate) const OPERATIONS_MENU: frost::Menu<'static> = frost::Menu {
     items: &[frost::MenuItem::new("Crop", "")],
 };
 
+/// The shape of a chosen list once the desk's law has read it:
+/// the one map allowed, the maps it refused, and the tilesets
+/// waiting to join — each already knowing which road it takes
+/// (document first, sheet second).
+pub(crate) struct Selection<'a> {
+    pub(crate) map: Option<&'a std::path::PathBuf>,
+    pub(crate) refused: usize,
+    pub(crate) tilesets: Vec<(
+        Option<&'a std::path::PathBuf>,
+        Option<&'a std::path::PathBuf>,
+    )>,
+}
+
 impl Demo {
     /// Open a sprite from `path`: load its texture, minimize the original
     /// to a slot thumbnail, and add it to the next free slot — which
@@ -218,9 +231,9 @@ impl Demo {
         let tileset = self.view == View::TileSet;
         let mut dialog = rfd::FileDialog::new()
             .set_title(if tileset {
-                "sprite_util: open a tile set"
+                "sprite_util: open tile sets"
             } else {
-                "sprite_util: open a sprite"
+                "sprite_util: open sprites"
             })
             .add_filter("PNG images", &["png"]);
         if tileset {
@@ -232,16 +245,48 @@ impl Demo {
         if let Some(window) = ctx.window() {
             dialog = dialog.set_parent(window);
         }
-        match dialog.pick_file() {
-            Some(path)
-                if path
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("ron")) =>
-            {
-                self.open_tileset_doc(ctx, path)
+        // Many at once: the dialog's list walks the same two roads,
+        // in the order they were chosen — sprites join the bench in
+        // a string of loads, each keeping its own verdict.
+        match dialog.pick_files() {
+            Some(paths) if !paths.is_empty() => {
+                for path in paths {
+                    if tileset
+                        && path
+                            .extension()
+                            .is_some_and(|e| e.eq_ignore_ascii_case("ron"))
+                    {
+                        self.open_tileset_doc(ctx, path);
+                    } else {
+                        self.load_sprite(ctx, path);
+                    }
+                }
             }
-            Some(path) => self.load_sprite(ctx, path),
-            None => self.status = String::from("open: canceled"),
+            _ => self.status = String::from("open: canceled"),
+        }
+    }
+
+    /// The map desk's sorting of a chosen list: the FIRST map (if
+    /// any) opens as the bench's one and only picture, every map
+    /// after it waits on disk — one map per bench is the desk's
+    /// law — and every tileset, document or sheet, keeps its chosen
+    /// order to join that picture as layers.
+    fn sort_selection(paths: &[std::path::PathBuf]) -> Selection<'_> {
+        let mut map = None;
+        let mut refused = 0;
+        let mut tilesets = Vec::new();
+        for path in paths {
+            match opened_road(path) {
+                Road::Map if map.is_none() => map = Some(path),
+                Road::Map => refused += 1,
+                Road::TilesetDoc => tilesets.push((Some(path), None)),
+                Road::Sheet => tilesets.push((None, Some(path))),
+            }
+        }
+        Selection {
+            map,
+            refused,
+            tilesets,
         }
     }
 
@@ -253,7 +298,7 @@ impl Demo {
     /// is what the bench shows.
     pub(crate) fn open_map_or_tileset(&mut self, ctx: &mut frost::Context) {
         let mut dialog = rfd::FileDialog::new()
-            .set_title("sprite_util: open a tile map or a tile set")
+            .set_title("sprite_util: open a tile map (one) and tile sets")
             .add_filter("RON documents", &["ron"])
             .add_filter("PNG images", &["png"]);
         let dir = self
@@ -269,14 +314,31 @@ impl Demo {
         if let Some(window) = ctx.window() {
             dialog = dialog.set_parent(window);
         }
-        let Some(target) = dialog.pick_file() else {
+        let Some(paths) = dialog.pick_files() else {
             self.status = String::from("open: canceled");
             return;
         };
-        match opened_road(&target) {
-            Road::Map => self.open_map_at(ctx, target),
-            Road::TilesetDoc => self.add_tileset_layer(ctx, Some(target), None),
-            Road::Sheet => self.add_tileset_layer(ctx, None, Some(target)),
+        if paths.is_empty() {
+            self.status = String::from("open: canceled");
+            return;
+        }
+        let sel = Self::sort_selection(&paths);
+        // The picture first — its layers replace the bench — then
+        // every tileset the choice carried, each growing an empty
+        // layer on the map that just opened (or the one already
+        // standing, if the choice carried no map).
+        if let Some(map) = sel.map {
+            self.open_map_at(ctx, map.clone());
+        }
+        for (doc, sheet) in sel.tilesets {
+            self.add_tileset_layer(ctx, doc.cloned(), sheet.cloned());
+        }
+        if sel.refused > 0 {
+            // The law speaks plainly when a choice breaks it.
+            self.status = format!(
+                "map: one at a time — {refused} left on disk",
+                refused = sel.refused
+            );
         }
     }
 
@@ -1325,6 +1387,44 @@ mod tests {
     /// The name tells which road a file takes on the map desk:
     /// `*.map.ron` is a map, any other RON a tileset document,
     /// a PNG a raw sheet.
+    /// The chosen list obeys the desk's law: the first map rules,
+    /// later maps wait, tilesets join in order — documents as
+    /// documents, sheets as sheets.
+    #[test]
+    fn one_map_rules_the_choice_and_tilesets_join_in_order() {
+        use std::path::PathBuf;
+        let paths: Vec<PathBuf> = [
+            "/m/b.map.ron",
+            "/t/forest.tileset.ron",
+            "/s/other.map.ron",
+            "/s/new_sheet.png",
+            "/t/yard.tileset.ron",
+        ]
+        .map(PathBuf::from)
+        .to_vec();
+        let sel = Demo::sort_selection(&paths);
+        assert_eq!(
+            sel.map.map(|p| p.to_path_buf()),
+            Some(PathBuf::from("/m/b.map.ron"))
+        );
+        assert_eq!(sel.refused, 1);
+        assert_eq!(
+            sel.tilesets,
+            vec![
+                (Some(&PathBuf::from("/t/forest.tileset.ron")), None),
+                (None, Some(&PathBuf::from("/s/new_sheet.png"))),
+                (Some(&PathBuf::from("/t/yard.tileset.ron")), None),
+            ]
+        );
+        // No map chosen: the current picture keeps its place, layers
+        // still join; only tilesets, none refused.
+        let only_tiles: Vec<PathBuf> = ["/t/a.tileset.ron", "/s/b.png"].map(PathBuf::from).to_vec();
+        let sel = Demo::sort_selection(&only_tiles);
+        assert!(sel.map.is_none());
+        assert_eq!(sel.refused, 0);
+        assert_eq!(sel.tilesets.len(), 2);
+    }
+
     #[test]
     fn the_name_tells_which_road_a_file_takes() {
         use std::path::Path;

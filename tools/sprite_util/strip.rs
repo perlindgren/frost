@@ -2,9 +2,12 @@
 // The subjects this one reads.
 use crate::journal::*;
 
-/// The strip's thumbnail pool: the most slots visible at once. A
-/// deeper rack rides behind the strip's scrollbar.
-pub(crate) const SLOTS: usize = 7;
+/// The strip's pool: the most plates a window can show at once,
+/// and the deepest plate the strip can ever dress. The census is
+/// generous on purpose — a wide window fills its floor with cells,
+/// and only a window wider than the pool (or a rack deeper than
+/// it) earns the scrollbar.
+pub(crate) const SLOTS: usize = 24;
 
 /// A slot's edge, in pixels.
 pub(crate) const SLOT: f32 = 100.0;
@@ -108,8 +111,11 @@ mod tests {
         let [cx1, _] = slot_center(1, w, h, 0.0);
         assert_eq!(cx1 - cx, SLOT + SLOT_GAP);
         // Each slot's center is its own; the gaps and the area above the
-        // strip belong to no slot.
-        for i in 0..SLOTS {
+        // strip belong to no slot. The walk goes as far as the window
+        // shows plates — an 800-wide floor, seven cells deep.
+        let shown = (strip_view(w, SLOTS).visible_px / (SLOT + SLOT_GAP)).round() as usize;
+        assert_eq!(shown, 7);
+        for i in 0..shown {
             let [x, y] = slot_center(i, w, h, 0.0);
             assert_eq!(slot_at([x, y], w, h, 0.0, i + 1), Some(i));
         }
@@ -130,11 +136,14 @@ mod tests {
         // in a wide window all show, and nobody needs the scrollbar...
         let wide = strip_view(1440.0, 3);
         assert_eq!(wide.scroll_max, 0.0);
-        // ...but the pool caps what one window can show, so the
-        // plate past the pool's end — the seventh sprite's, or the
-        // spare's — earns a scrollbar of exactly the overflow.
-        let tight = strip_view(1440.0, SLOTS + 1);
+        // ...but the window caps what it can show (thirteen plates
+        // at 1440), so the plate past the window's edge earns a
+        // scrollbar of exactly the overflow.
+        let shown = (strip_view(1440.0, 1).visible_px / (SLOT + SLOT_GAP)).round() as usize;
+        assert_eq!(shown, 13);
+        let tight = strip_view(1440.0, shown + 1);
         assert!(tight.scroll_max > 0.0);
+        assert!((tight.scroll_max - tight.pitch).abs() < 0.001);
     }
 
     #[test]
