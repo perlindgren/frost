@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Antifrost — loading…</title>
+<!-- Inline favicon: a bare `python -m http.server` has none, and the
+     browser's automatic /favicon.ico request would log a 404. -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='%23ff9a3c'/></svg>" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  html, body { margin: 0; height: 100%; background: #0a0710; overflow: hidden; }
+  canvas { display: block; }
+  /* The engine removes #fallback when the first frame lands, and
+     rewrites it in red if the GPU setup fails. */
+  #fallback {
+    position: fixed; inset: 0; display: grid; place-items: center;
+    color: #cbb8a0; font: 15px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: 0.12em;
+  }
+</style>
+</head>
+<body>
+<div id="fallback">warming the hill — build c5e8e510&hellip;</div>
+<script type="module">
+  // The ?v= tags are load-bearing: a page reload never refetches
+  // the wasm module — Firefox serves its cached copy of the fixed
+  // URL, which is how a stale module can haunt the page for days.
+  // Bump the tag every time web/build.sh rebuilds the package.
+  import init from "./pkg/antifrost.js?v=c5e8e510";
+  await init("./pkg/antifrost_bg.wasm?v=c5e8e510");
+</script>
+</body>
+</html>
