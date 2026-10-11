@@ -59,7 +59,9 @@ pub(crate) const BLIT_SHADER: &str = include_str!("../shaders/blit.wgsl");
 /// above, speakable at runtime. `App::wgsl` asks by these names;
 /// a watched file re-assembles every source that reads from it,
 /// which is how a `lighting.wgsl` edit reaches the four lit
-/// pipelines at once.
+/// pipelines at once. The live-reload table has no web counterpart
+/// (no file system in the browser), so it exists only natively.
+#[cfg(any(test, all(debug_assertions, not(target_arch = "wasm32"))))]
 pub(crate) const SOURCES: &[(&str, &[&str])] = &[
     ("line", &["line"]),
     ("polyline", &["polyline"]),
@@ -222,6 +224,36 @@ mod tests {
             .validate(&module)
             .unwrap_or_else(|err| panic!("{name} fails device-side validation: {err}"));
         }
+    }
+
+    /// The blit pass carries a substituted-const variant for linear
+    /// presentation surfaces: `App` replaces the placeholder `false`
+    /// with `true` at pipeline build time when the surface format has no
+    /// hardware sRGB encoding (a browser canvas without an sRGB format),
+    /// and the pass gamma-encodes instead. Both forms must be valid
+    /// WGSL — and the marker must be exactly the text the engine
+    /// replaces, or the substitution silently builds the dormant variant
+    /// and the web scene goes dark again.
+    #[test]
+    fn the_blit_gamma_variant_validates() {
+        const MARKER: &str = "/*@gamma@*/false";
+        assert_eq!(
+            BLIT_SHADER.matches(MARKER).count(),
+            1,
+            "the engine replaces exactly one {MARKER} placeholder"
+        );
+        // The same replacement the engine performs in `set_up_pipelines`.
+        let gamma = BLIT_SHADER.replace(MARKER, "true");
+        assert_ne!(gamma, BLIT_SHADER, "the replacement must land");
+        assert!(gamma.contains("const ENCODE_GAMMA: bool = true;"));
+        let module =
+            naga::front::wgsl::parse_str(&gamma).expect("the gamma blit variant must parse");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("the gamma blit variant must pass device-side validation");
     }
 
     /// The lighting vocabulary is shared, not copied. Each lit pipeline

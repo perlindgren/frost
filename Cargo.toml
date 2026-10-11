@@ -36,6 +36,10 @@ winit = "0.30.13"
 rodio = "0.22.2"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# Wall-clock access for `Rng::new` (`Date.now()`): `std::time` is not
+# implemented on wasm32-unknown-unknown and calling it aborts the module.
+# Already in the dependency graph via web-sys and winit.
+js-sys = "0.3"
 # Surfaces Rust panics in the browser console instead of the wasm module
 # dying silently; the web example installs it before anything else.
 console_error_panic_hook = "0.1"
@@ -43,6 +47,7 @@ console_error_panic_hook = "0.1"
 # `show_fallback`); already in the dependency graph via winit, so this adds
 # no new crate — just the features we use.
 web-sys = { version = "0.3", features = [
+    "console",
     "CssStyleDeclaration",
     "Document",
     "Element",
@@ -246,12 +251,6 @@ name = "text_input"
 path = "examples/text/text_input.rs"
 
 [dev-dependencies]
-# Cross-platform system clipboard for the `text_input` example's Ctrl-C /
-# Ctrl-V; winit 0.30 has no clipboard API of its own. A dev-dependency —
-# the engine never touches the clipboard, and `arboard` does not compile
-# for `wasm32-unknown-unknown`, so as a real dependency it would break
-# the wasm build of the library.
-arboard = "3.6.1"
 # Command line parsing for the `repeat` example (`--repeat_x`, `--repeat_y`).
 clap = { version = "4", features = ["derive"] }
 # Logger initialization for the examples and tests only; the library
@@ -266,6 +265,15 @@ naga = { version = "30.0.0", features = ["wgsl-in"] }
 # readable, comment-friendly text on disk.
 serde = { version = "1", features = ["derive"] }
 ron = "0.8"
+
+# Cross-platform system clipboard for the `text_input` example's Ctrl-C /
+# Ctrl-V; winit 0.30 has no clipboard API of its own. Gated to native
+# targets: `arboard` does not compile for `wasm32-unknown-unknown`, and a
+# plain dev-dependency is built for *every* example build — which would
+# break `cargo build --example <anything> --target wasm32-unknown-unknown`
+# (see web/build.sh). `text_input` itself is a native-only example.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+arboard = "3.6.1"
 
 # Diagnostics overlay: compiles the profiler HUD of the `antifrost`
 # example in (`--features diag`); the default build leaves it out of

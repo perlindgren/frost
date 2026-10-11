@@ -638,6 +638,9 @@ struct Demo {
     note_t: f32,
     frost_t: f32,
     frost_bit: bool,
+    /// The window/tab name is stamped once, on the first frame that has
+    /// a window to name.
+    title_set: bool,
     was: HashMap<KeyCode, bool>,
     was_mouse: HashMap<MouseButton, bool>,
     /// Click-walking: the directions left to walk toward the last
@@ -705,6 +708,7 @@ impl Demo {
             note_t: 0.0,
             frost_t: 0.0,
             frost_bit: false,
+            title_set: false,
             was: HashMap::new(),
             was_mouse: HashMap::new(),
             route: Vec::new(),
@@ -1936,6 +1940,15 @@ impl Process for Demo {
     fn process(&mut self, ctx: &mut Context, dt: f32) {
         #[cfg(feature = "diag")]
         self.diag.process(ctx, dt);
+        // Once, the window takes the game's own name: the engine opens
+        // every app under its generic default, and on the web winit
+        // carries a window title straight into the tab.
+        if !self.title_set
+            && let Some(window) = ctx.window()
+        {
+            window.set_title("Antifrost");
+            self.title_set = true;
+        }
         // F11 flips the window's fullscreen state — the runtime twin of
         // `Config::fullscreen`, reached through the engine's own window.
         if self.pressed(ctx, KeyCode::F11)
@@ -2126,7 +2139,7 @@ impl Process for Demo {
                 let praise: [&str; 3] = if game.level.par > 0 && game.moves <= game.level.par {
                     ["EXCELLENT", "PERFECT", "SUPER"]
                 } else {
-                    ["YOU DID IT", "GOOD JOB", "WELL DONE"]
+                    ["YOUR DID IT", "GOOD JOB", "WELL DONE"]
                 };
                 let pick = self.leaf_rng.in_range(0.0, 2.999) as usize;
                 let text = praise[pick].to_string();
@@ -2158,8 +2171,44 @@ impl Process for Demo {
     }
 }
 
+/// A browser has no stderr: route whatever log survives to the
+/// devtools console, and turn panics into console errors. (The crate
+/// compiles `log` calls out of release builds — `release_max_level_off`
+/// — and wasm builds are release builds, so in the shipped page this
+/// mostly catches panics; `web/index.html` carries a page-side probe
+/// for the rest.)
+#[cfg(target_arch = "wasm32")]
+fn init_logging() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        console_error_panic_hook::set_once();
+        struct Console;
+        impl log::Log for Console {
+            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                let line = format!("[{:?}] {}", record.level(), record.args());
+                web_sys::console::log_1(&line.into());
+            }
+            fn flush(&self) {}
+        }
+        static LOGGER: Console = Console;
+        if log::set_logger(&LOGGER).is_ok() {
+            log::set_max_level(log::LevelFilter::Info);
+        }
+    });
+}
+
 fn main() {
+    // Native logs to stderr; a browser has no stderr, so there the
+    // panic hook surfaces failures in the devtools console instead of
+    // the module dying silently.
+    #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
+    #[cfg(target_arch = "wasm32")]
+    init_logging();
     // One particle batch per leaf sheet, riding the identity transform so
     // the batches live in the window's user space, like every immediate
     // draw. A leaf PNG that fails to decode is a broken build: say so at

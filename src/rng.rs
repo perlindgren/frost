@@ -10,6 +10,7 @@
 //! run, or fix the stream with [`Rng::with_seed`] for reproducible
 //! simulations and tests.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A small splitmix64 pseudo-random number generator.
@@ -24,11 +25,23 @@ impl Rng {
     /// Seed from the clock: the nanoseconds since the Unix epoch, mixed
     /// with the golden-ratio constant so a degenerate clock still gives a
     /// healthy seed. Each run gets a different stream.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> Self {
         let t = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0);
+        Self(t ^ 0x9E37_79B9_7F4A_7C15)
+    }
+
+    /// Seed from the clock — the browser's wall clock on wasm, where
+    /// `std::time` is not implemented and calling it aborts the module.
+    /// `Date.now()` is milliseconds since the epoch; the golden-ratio
+    /// mix stands, and millisecond granularity is plenty for game-time
+    /// streams.
+    #[cfg(target_arch = "wasm32")]
+    pub fn new() -> Self {
+        let t = js_sys::Date::now() as u64;
         Self(t ^ 0x9E37_79B9_7F4A_7C15)
     }
 

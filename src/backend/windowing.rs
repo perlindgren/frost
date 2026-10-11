@@ -27,6 +27,32 @@ pub(crate) fn present_mode_for(vsync: bool) -> PresentMode {
     }
 }
 
+/// Upgrade the surface config to the sRGB flavour of its format when
+/// one is supported. The shaders write linear light and rely on the
+/// framebuffer to encode to sRGB on write — an `*UnormSrgb` surface
+/// does that in hardware, a plain `*Unorm` one does not, and a scene
+/// of linear values shown unencoded reads drastically dark. Platforms
+/// disagree on which flavour `get_default_config` picks first: Metal
+/// leads with the sRGB one, a browser canvas with the linear one —
+/// which is why the same game can look right on the desktop and dark
+/// in the browser. This makes the choice explicit and identical
+/// everywhere.
+pub(crate) fn prefer_srgb_format(
+    config: &mut wgpu::SurfaceConfiguration,
+    surface: &wgpu::Surface<'_>,
+    adapter: &wgpu::Adapter,
+) {
+    let want = match config.format {
+        wgpu::TextureFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8UnormSrgb,
+        wgpu::TextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8UnormSrgb,
+        format if format.is_srgb() => return, // already encoded
+        _ => return,                          // no sRGB twin of this format
+    };
+    if surface.get_capabilities(adapter).formats.contains(&want) {
+        config.format = want;
+    }
+}
+
 /// Creates the frost window and requests its first frame.
 ///
 /// `window_size` is the `Config`'s initial inner size in logical pixels

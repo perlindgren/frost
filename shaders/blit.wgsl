@@ -23,6 +23,25 @@ struct VsOut {
     @location(0) uv: vec2<f32>,
 };
 
+// The linear-surface fallback. An sRGB surface encodes gamma on
+// write in hardware and this pass stands down; where the window's
+// surface format is linear (a browser canvas may offer no sRGB
+// format — Firefox's WebGPU offers none — and the engine's format
+// preference then has nothing to prefer), the frame buffer holds raw
+// linear light, exactly what every shader writes, and without
+// encoding here it reaches the screen unconverted: a dark scene. The
+// literal `false` below is a placeholder — the engine substitutes
+// `true` when it builds this pipeline for a linear surface — and the
+// false form keeps the file valid, dormant WGSL on its own.
+const ENCODE_GAMMA: bool = /*@gamma@*/false;
+
+/// The exact sRGB transfer curve (IEC 61966-2-1), per channel.
+fn encode_srgb(c: vec3<f32>) -> vec3<f32> {
+    let lo = c * 12.92;
+    let hi = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(hi, lo, c < vec3<f32>(0.0031308));
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
     // Full-screen triangle in NDC — the same three vertices every
@@ -51,5 +70,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // The buffer was fully cleared before the frame was drawn into it, so
     // the sampled color always covers the pixel: no blending needed, the
     // pass writes it straight to the window.
-    return textureSample(frame_buf, frame_sampler, in.uv);
+    let c = textureSample(frame_buf, frame_sampler, in.uv);
+    if (ENCODE_GAMMA) {
+        return vec4<f32>(encode_srgb(c.rgb), c.a);
+    }
+    return c;
 }

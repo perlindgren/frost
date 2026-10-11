@@ -173,6 +173,15 @@ pub(crate) struct Frost<P: Process> {
     /// The surface format the current pipelines were built for; they are only
     /// rebuilt when this changes.
     format: Option<TextureFormat>,
+    /// True while the presentation surface stores raw linear values —
+    /// its format has no hardware sRGB encoding (a browser canvas may
+    /// offer no sRGB format, leaving `prefer_srgb_format` nothing to
+    /// prefer). The frame then always renders through the offscreen
+    /// buffer and the blit pass gamma-encodes on the way to the
+    /// window; the shaders' linear-light output has nowhere else to
+    /// become the encoded bytes a display expects. An sRGB surface
+    /// (`false`, every native surface so far) keeps the direct path.
+    linear_surface: bool,
     /// The watched shader directory, debug builds on filesystem
     /// targets only: `render` polls it, and a passing batch sets
     /// `format` to `None` so the pipelines rebuild by the same road
@@ -459,6 +468,7 @@ impl<P: Process> Frost<P> {
             sprite_resources: HashMap::new(),
             text_atlases: HashMap::new(),
             format: None,
+            linear_surface: false,
             #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             shaders: crate::shaders::Live::new(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders"),
@@ -745,6 +755,7 @@ impl<P: Process> Frost<P> {
         let mut config = surface
             .get_default_config(&self.adapter, pixel_size.0, pixel_size.1)
             .expect("no compatible surface format");
+        prefer_srgb_format(&mut config, &surface, &self.adapter);
         // The default config picks the first supported presentation mode;
         // apply the user's vsync request explicitly.
         config.present_mode = present_mode_for(self.vsync);
@@ -756,7 +767,9 @@ impl<P: Process> Frost<P> {
             config.format,
             config.present_mode
         );
-
+        // A surface without hardware sRGB puts the encoding on the
+        // blit pass (see `App::linear_surface` and `blit.wgsl`).
+        self.linear_surface = !config.format.is_srgb();
         self.set_up_pipelines(config.format);
         self.format = Some(config.format);
         self.surface = Some(surface);
@@ -783,6 +796,7 @@ impl<P: Process> Frost<P> {
         let mut config = surface
             .get_default_config(&self.adapter, pixel_size.0, pixel_size.1)
             .expect("no compatible surface format");
+        prefer_srgb_format(&mut config, surface, &self.adapter);
         config.present_mode = present_mode_for(self.vsync);
         surface.configure(&self.device, &config);
         log::info!(
@@ -795,6 +809,10 @@ impl<P: Process> Frost<P> {
         // Pipelines depend only on the surface format, not the size, so they
         // are rebuilt only if the format actually changed.
         if self.format != Some(config.format) {
+            self.linear_surface = !config.format.is_srgb();
+            // The offscreen buffer carries the old format: drop it, and
+            // the next frame rebuilds it against the new pipelines.
+            self.blit_target = None;
             self.set_up_pipelines(config.format);
             self.format = Some(config.format);
         }
@@ -993,10 +1011,17 @@ impl<P: Process> Frost<P> {
         // The fixed render size stretch: a full-screen sample of the
         // render target onto the surface. It replaces the surface pixel
         // instead of blending onto it — the buffer is the frame, not a
-        // layer over it.
+        // layer over it. On a linear surface the same pass carries the
+        // gamma encoding the surface's hardware would otherwise do
+        // (see `App::linear_surface`), by way of one const substituted
+        // into the shader at this exact moment.
+        let blit_source = match self.linear_surface {
+            false => Cow::Borrowed(self.wgsl("blit")),
+            true => Cow::Owned(self.wgsl("blit").replace("/*@gamma@*/false", "true")),
+        };
         let blit_module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("blit shaders"),
-            source: ShaderSource::Wgsl(Cow::Borrowed(self.wgsl("blit"))),
+            source: ShaderSource::Wgsl(blit_source),
         });
         self.blit_pipeline = Some(Self::create_pipeline(
             device,
@@ -1734,6 +1759,23 @@ impl<P: Process> Frost<P> {
                 // A cached target serves only while size and filter match;
                 // a runtime filter flip rebuilds the sampler once, on the
                 // frame that flips (or the next one that stretches).
+                let cached = self
+                    .blit_target
+                    .take()
+                    .filter(|t| t.size == size && t.filter == self.blit_filter);
+                match cached {
+                    Some(t) => Some(t),
+                    None => Some(self.new_blit_target(size)),
+                }
+            }
+            // A linear surface cannot encode the frame as it is written,
+            // so the frame is parked in the offscreen buffer — the same
+            // size and format the surface itself would hold — and the
+            // gamma-encoding blit pass carries it to the window. (The
+            // buffer is built lazily below when no render size asked
+            // for one.)
+            _ if self.linear_surface => {
+                let size = [surface_px.0, surface_px.1];
                 let cached = self
                     .blit_target
                     .take()
