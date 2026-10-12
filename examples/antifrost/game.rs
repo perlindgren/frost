@@ -96,7 +96,6 @@ pub enum Occ {
 #[derive(Clone)]
 struct Snap {
     tiles: Vec<Tile>,
-    digs_left: i32,
     player: Cell,
     history: VecDeque<Cell>,
     trail: Vec<usize>,
@@ -109,7 +108,6 @@ struct Snap {
 pub struct Game {
     pub level: Level,
     pub tiles: Vec<Tile>,
-    pub digs_left: i32,
     pub player: Cell,
     pub history: VecDeque<Cell>,
     /// Ant ids, head first. The head is nearest the player, the *last*
@@ -136,7 +134,6 @@ impl Game {
         Self {
             level,
             tiles,
-            digs_left: 0,
             player: Cell::new(0, 0),
             history: VecDeque::from([Cell::new(0, 0)]),
             trail: Vec::new(),
@@ -151,7 +148,6 @@ impl Game {
     pub fn start(level: Level) -> Self {
         let player = level.player_start;
         let mut game = Self::new(level);
-        game.digs_left = game.level.digs;
         game.player = player;
         game.history = VecDeque::from([player]);
         game
@@ -226,7 +222,6 @@ impl Game {
     fn snap(&self) -> Snap {
         Snap {
             tiles: self.tiles.clone(),
-            digs_left: self.digs_left,
             player: self.player,
             history: self.history.clone(),
             trail: self.trail.clone(),
@@ -238,7 +233,6 @@ impl Game {
 
     fn restore(&mut self, s: Snap) {
         self.tiles = s.tiles;
-        self.digs_left = s.digs_left;
         self.player = s.player;
         self.history = s.history;
         self.trail = s.trail;
@@ -388,12 +382,8 @@ impl Game {
     }
 
     fn dig_and_move(&mut self, d: Cell) -> Result<(), &'static str> {
-        if self.digs_left <= 0 {
-            return Err("no digs left this hill");
-        }
         self.push_undo();
         self.tiles[(d.row * self.level.cols as i32 + d.col) as usize] = Tile::Tunnel;
-        self.digs_left -= 1;
         self.walk(d);
         self.after_action("the line has nowhere to pack")
     }
@@ -489,8 +479,8 @@ mod tests {
         "###########",
     ];
 
-    fn game(rows: &[&str], digs: i32) -> Game {
-        Game::start(from_grid("test", rows, digs, 0).expect("valid test level"))
+    fn game(rows: &[&str]) -> Game {
+        Game::start(from_grid("test", rows, 0).expect("valid test level"))
     }
 
     fn walk(g: &mut Game, dirs: &[Dir]) {
@@ -501,7 +491,7 @@ mod tests {
 
     #[test]
     fn wake_lock_warms_r_and_the_ring_carries_the_win() {
-        let mut g = game(&FIRST_COLD, 0);
+        let mut g = game(&FIRST_COLD);
         g.move_player(Dir::Left).expect("collect r");
         assert_eq!(g.trail.len(), 1);
         walk(&mut g, &[Dir::Right; 3]); // across the bed: r one behind, still in line
@@ -528,7 +518,7 @@ mod tests {
         // re-enters history at an index an ant rests on. End beds are
         // push-only — the rule that reshapes every hill.
         let rows = ["#########", "#W..r@.R#", "#########"];
-        let mut g = game(&rows, 0);
+        let mut g = game(&rows);
         walk(&mut g, &[Dir::Left; 3]); // collect r
         walk(&mut g, &[Dir::Right; 5]); // stand on the bed itself
         assert_eq!(g.tile(g.player), Tile::Bed(AntColor::Red));
@@ -538,7 +528,7 @@ mod tests {
     #[test]
     fn dunk_push_locks_and_the_bed_turns_to_wall() {
         let rows = ["########", "#W@.rR.#", "########"];
-        let mut g = game(&rows, 0);
+        let mut g = game(&rows);
         g.move_player(Dir::Right).expect("step beside r");
         g.push(Dir::Right).expect("dunk r into its bed");
         assert!(
@@ -557,7 +547,7 @@ mod tests {
 
     #[test]
     fn leave_the_last_ant_behind_and_take_it_back() {
-        let mut g = game(&FIRST_COLD, 0);
+        let mut g = game(&FIRST_COLD);
         g.move_player(Dir::Left).expect("collect r");
         g.move_player(Dir::Right)
             .expect("retrace: the line packs in");
@@ -577,23 +567,25 @@ mod tests {
     }
 
     #[test]
-    fn digs_are_budgeted_and_the_line_follows_them() {
+    fn dirt_gives_way_freely_and_the_line_follows() {
         let rows = ["########", "#W....B#", "#@,,,b,#", "########"];
-        let mut g = game(&rows, 3);
-        walk(&mut g, &[Dir::Right; 4]); // three digs' worth of dirt, b just behind
+        let mut g = game(&rows);
+        walk(&mut g, &[Dir::Right; 5]); // four cells of dirt deep, b joined on the way
         assert_eq!(g.trail.len(), 1, "the stranded blue joined");
-        assert_eq!(g.digs_left, 0);
-        assert_eq!(g.move_player(Dir::Right), Err("no digs left this hill"));
         assert_eq!(
             g.trail_target(0),
-            Cell::new(4, 2),
-            "the line sits in the dug mouth"
+            Cell::new(5, 2),
+            "the line sits one behind the dug end"
+        );
+        assert!(
+            g.move_player(Dir::Right).is_err(),
+            "only rock still says no"
         );
     }
 
     #[test]
     fn undo_rolls_back_one_action() {
-        let mut g = game(&FIRST_COLD, 0);
+        let mut g = game(&FIRST_COLD);
         g.move_player(Dir::Left).expect("one step");
         assert_eq!(g.moves, 1);
         assert!(g.undo());

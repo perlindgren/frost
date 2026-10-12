@@ -223,6 +223,22 @@ const C_BG: Color = Color {
     b: 0.033,
     a: 1.0,
 };
+/// The verdict's two brights: par met flares yellow, par missed burns
+/// red. The splash word and the panel echo it keeps wear the same
+/// judgement.
+const C_PAR_MET: Color = Color {
+    r: 1.0,
+    g: 0.88,
+    b: 0.22,
+    a: 1.0,
+};
+const C_PAR_MISSED: Color = Color {
+    r: 1.0,
+    g: 0.32,
+    b: 0.24,
+    a: 1.0,
+};
+
 /// The night the lights replace: the ambient every lit pixel is floored
 /// at. This is how dark the dark is — the depth the ants' lamps cut.
 const C_NIGHT: Color = Color {
@@ -236,7 +252,10 @@ const C_NIGHT: Color = Color {
 /// reaches, and nine times the arithmetic is exactly what the frame
 /// budget cannot pay at 4K. Tile walls cast tile shadows.
 const LAMP_REACH: f32 = 2.6;
-const LAMP_PENUMBRA: f32 = 0.0;
+/// The lamp disk's radius when diffusion is bought: shadows fade
+/// across these pixels instead of dropping in one. The ladder below
+/// decides whether lamps sweep this disk with four rays or nine.
+const LAMP_PENUMBRA: f32 = 6.0;
 
 /// Lamps breathe — ants are alive, not night-lights, and the breath
 /// is meant to be *seen*. Asleep: a warm pool that swells and subsides,
@@ -438,6 +457,8 @@ struct Splash {
     t: f32,
     grow: f32,
     end: f32,
+    /// Par met or missed, decided at the spawn: yellow or red.
+    color: Color,
 }
 
 impl Splash {
@@ -577,30 +598,97 @@ enum Page {
     Game,
     Main,
     Settings,
+    /// The hill is won: the splash's verdict hangs over two rows,
+    /// next hill and retry hill — the only way a finished hill is
+    /// ever left.
+    Won,
 }
 
-/// Where the Escape key leads. The rule the menu keeps: from the hill,
-/// Escape opens the menu (which pauses); from the menu, Escape again
-/// quits — the double tap the request asked for. From settings it is a
-/// plain back step: quitting is the menu's own business, not a
-/// subpage's.
+/// Where the Escape key leads. The rule the menu keeps: from the hill
+/// Escape opens the menu, from the menu Escape hands the hill back,
+/// and from settings it is a plain back step. Escape never quits —
+/// leaving is the exit row's (and the window button's) alone, so the
+/// key that pauses is never the key that destroys.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Escape {
     ToMenu,
-    Exit,
+    Resume,
 }
 
 fn escape_nav(from: Page) -> Escape {
     match from {
         Page::Game => Escape::ToMenu,
-        Page::Main => Escape::Exit,
+        Page::Main => Escape::Resume,
         Page::Settings => Escape::ToMenu,
+        // Escape steps off the finished hill onto the menu; the
+        // resume row walks back to the won hill and its panel.
+        Page::Won => Escape::ToMenu,
+    }
+}
+
+/// The lamp-shadow ladder: what each lit pixel pays for occlusion.
+/// `None` registers no occluders at all — lamps light as if the hill
+/// were glass; `One` is the single hard ray; `Four` sweeps a balanced
+/// cross of the lamp's disk; `Nine` fills the 3x3 grid, the dense
+/// diffusion advanced hardware buys.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Shadow {
+    None,
+    One,
+    Four,
+    Nine,
+}
+
+impl Shadow {
+    fn label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::One => "1 light",
+            Self::Four => "4 light",
+            Self::Nine => "9 light",
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            Self::None => Self::One,
+            Self::One => Self::Four,
+            Self::Four => Self::Nine,
+            Self::Nine => Self::None,
+        }
+    }
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "none" => Some(Self::None),
+            "1 light" => Some(Self::One),
+            "4 light" => Some(Self::Four),
+            "9 light" => Some(Self::Nine),
+            _ => None,
+        }
+    }
+    /// The lamp disk, or zero for the hard single ray.
+    fn penumbra(self) -> f32 {
+        match self {
+            Self::None | Self::One => 0.0,
+            Self::Four | Self::Nine => LAMP_PENUMBRA,
+        }
+    }
+    /// The rung's tap count; only ever read for a lit disk.
+    fn taps(self) -> u32 {
+        match self {
+            Self::None | Self::One => 1,
+            Self::Four => 4,
+            Self::Nine => 9,
+        }
     }
 }
 
 /// The rows a menu page can answer to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Action {
+    /// Move to the next hill — the button N used to be.
+    Next,
+    /// Replay the hill now underfoot from its own beginning.
+    Retry,
     New,
     Resume,
     OpenSettings,
@@ -611,6 +699,7 @@ enum Action {
     Fullscreen,
     Quality,
     Leaves,
+    Shadows,
     /// Sliders: the press starts a drag, the release saves.
     Ambient,
     Light,
@@ -650,6 +739,13 @@ fn step_sel(sel: usize, n: usize, dir: i32) -> usize {
     } else {
         (sel + 1) % n
     }
+}
+
+/// Which row, if any, lives under a pointer: the one test the click,
+/// the highlight-follow, and any future pointer reader all share.
+fn row_under(rows: &[Row], p: [f32; 2]) -> Option<usize> {
+    rows.iter()
+        .position(|r| (p[0] - r.cx).abs() <= r.hw && (p[1] - r.cy).abs() <= r.hh)
 }
 
 /// A dragged slider, while the left button holds.
@@ -693,14 +789,15 @@ fn ambient_floor(t: f32) -> Color {
 }
 
 /// The stretch-pass quality tiers: the fixed buffer the hill renders
-/// into, from a quarter-HD buffer (cheap, soft) to native resolution
-/// (every pixel rendered, the expensive 4K experiment included). The
-/// default is High — the 1080p fixed buffer the demo shipped with;
-/// Ultra lifts the fix and lets the frame render at the display's own
-/// size.
+/// into, from a 720p buffer (cheap, soft) to native resolution (every
+/// pixel rendered, the expensive 4K experiment included). The old
+/// quarter-HD tier retired — the row's floor is now medium — and a
+/// file that still names `"low"` lands on that floor rather than
+/// failing. The default is High, the 1080p fixed buffer the demo
+/// shipped with; Ultra lifts the fix and lets the frame render at the
+/// display's own size.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Quality {
-    Low,
     Medium,
     High,
     Ultra,
@@ -709,34 +806,32 @@ enum Quality {
 impl Quality {
     fn size(self) -> Option<[u32; 2]> {
         match self {
-            Quality::Low => Some([960, 540]),
             Quality::Medium => Some([1280, 720]),
             Quality::High => Some([1920, 1080]),
             Quality::Ultra => None,
         }
     }
+    /// What the row and the file call the tier: the resolution it
+    /// promises, `native` for the tier that fixes none.
     fn label(self) -> &'static str {
         match self {
-            Quality::Low => "low",
-            Quality::Medium => "medium",
-            Quality::High => "high",
-            Quality::Ultra => "ultra",
+            Quality::Medium => "1280 x 720",
+            Quality::High => "1920 x 1080",
+            Quality::Ultra => "native",
         }
     }
     fn next(self) -> Quality {
         match self {
-            Quality::Low => Quality::Medium,
             Quality::Medium => Quality::High,
             Quality::High => Quality::Ultra,
-            Quality::Ultra => Quality::Low,
+            Quality::Ultra => Quality::Medium,
         }
     }
     fn parse(text: &str) -> Option<Quality> {
         Some(match text {
-            "low" => Quality::Low,
-            "medium" => Quality::Medium,
-            "high" => Quality::High,
-            "ultra" => Quality::Ultra,
+            "1280 x 720" => Quality::Medium,
+            "1920 x 1080" => Quality::High,
+            "native" => Quality::Ultra,
             _ => return None,
         })
     }
@@ -755,6 +850,8 @@ struct Settings {
     /// (the soft default).
     nearest: bool,
     fullscreen: bool,
+    /// The render buffer's size: the row shows the resolution it
+    /// names, `native` for none.
     quality: Quality,
     /// Ambient floor, on the [`ambient_floor`] slider: 50% is the
     /// night the game shipped with, 0% is the full dark, and 100%
@@ -764,6 +861,9 @@ struct Settings {
     /// doubled past 1.0 at the slider's far end.
     light: f32,
     leaves_lit: bool,
+    /// The weak-hardware answer to the light field, on a ladder:
+    /// lamps stay at every rung, and only the shadows' cost steps.
+    shadows: Shadow,
 }
 
 impl Default for Settings {
@@ -776,6 +876,7 @@ impl Default for Settings {
             ambient: 0.5,
             light: 1.0,
             leaves_lit: true,
+            shadows: Shadow::One,
         }
     }
 }
@@ -784,13 +885,10 @@ impl Settings {
     const FILE: &'static str = "antifrost.settings.ron";
 
     /// The file's text, in the crate's own Ron shape: flat, named,
-    /// and hand-parsable by `load_levels`' little parser. `v` versions
-    /// the file: v2 re-hinged the ambient slider (see [`parse`]), and
-    /// a v1 file's ambient migrates on the way in so nobody wakes to
-    /// a hill washed bright.
+    /// and hand-parsable by `load_levels`' little parser.
     fn text(&self) -> String {
         format!(
-            "(\n    v: 2,\n    vsync: {},\n    filter: \"{}\",\n    fullscreen: {},\n    quality: \"{}\",\n    ambient: {},\n    light: {},\n    leaves_lit: {},\n)\n",
+            "(\n    vsync: {},\n    filter: \"{}\",\n    fullscreen: {},\n    resolution: \"{}\",\n    ambient: {},\n    light: {},\n    leaves_lit: {},\n    shadows: \"{}\",\n)\n",
             self.vsync,
             if self.nearest { "nearest" } else { "linear" },
             self.fullscreen,
@@ -798,6 +896,7 @@ impl Settings {
             self.ambient,
             self.light,
             self.leaves_lit,
+            self.shadows.label(),
         )
     }
 
@@ -825,16 +924,7 @@ impl Settings {
                 .map(|v| v.clamp(lo, hi))
                 .unwrap_or(at)
         };
-        // v1 (the field absent) scaled the night directly and
-        // defaulted to 1.0 = the shipped look; v2 hinges that look on
-        // the slider's middle, so every v1 ambient maps onto half
-        // its own number — and a v1 file with no ambient at all reads
-        // as the v1 default it silently carried.
-        let v1 = match atom("v") {
-            Some(t) => t.parse::<i32>().unwrap_or(2) < 2,
-            None => true,
-        };
-        let ambient = number("ambient", if v1 { 1.0 } else { d.ambient }, 0.0, 1.0);
+        let ambient = number("ambient", d.ambient, 0.0, 1.0);
         Settings {
             vsync: boolean("vsync", d.vsync),
             nearest: match atom("filter") {
@@ -842,19 +932,23 @@ impl Settings {
                 _ => d.nearest,
             },
             fullscreen: boolean("fullscreen", d.fullscreen),
-            quality: atom("quality")
+            quality: atom("resolution")
                 .and_then(|t| Quality::parse(t.trim_matches('"')))
                 .unwrap_or(d.quality),
-            ambient: if v1 { ambient * 0.5 } else { ambient },
+            ambient,
             light: number("light", d.light, 0.0, 2.0),
             leaves_lit: boolean("leaves_lit", d.leaves_lit),
+            shadows: atom("shadows")
+                .and_then(|t| Shadow::parse(t.trim_matches('"')))
+                .unwrap_or(d.shadows),
         }
     }
 
     /// The launch folder's file, read whole; missing or unreadable
-    /// says default. A browser has no disc to keep settings on, so
-    /// there every launch opens on the defaults and the page itself
-    /// is the only session.
+    /// says default. The menu opens every launch regardless — the
+    /// file speaks the settings, not the opening page. A browser has
+    /// no disc to keep settings on, so there every launch speaks
+    /// default.
     #[cfg(not(target_arch = "wasm32"))]
     fn load() -> Settings {
         let path = std::env::current_dir().unwrap_or_default().join(Self::FILE);
@@ -885,6 +979,69 @@ impl Settings {
 
     #[cfg(target_arch = "wasm32")]
     fn save(&self) {}
+}
+
+/// Where the player's descent stands, kept in its own file beside the
+/// settings in the launch folder: which hill they last stood on. It
+/// is written wherever the hill moves — New Game, N, P — never on
+/// launch and never inside `load`, so starting the game leaves no
+/// fingerprint and a window-manager kill loses nothing newer than
+/// the hill entered. The file counts hills the way the HUD does,
+/// from one. A browser has no disc, and every web launch stands on
+/// the first hill.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+struct Progress {
+    hill: usize,
+}
+
+impl Progress {
+    const FILE: &'static str = "antifrost.progress.ron";
+
+    fn text(self) -> String {
+        format!("(\n    hill: {},\n)\n", self.hill + 1)
+    }
+
+    fn parse(src: &str) -> Progress {
+        let Ok(root) = frost::ron::parse(src) else {
+            return Progress::default();
+        };
+        let hill = match frost::ron::field(&root, "hill") {
+            Some(frost::ron::Val::Atom(text, _)) => {
+                text.trim_matches('"').parse::<usize>().unwrap_or(1)
+            }
+            _ => 1,
+        };
+        // One-based in the file, zero-based in the code — and nothing
+        // sits below the first hill.
+        Progress {
+            hill: hill.saturating_sub(1),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load() -> Progress {
+        let path = std::env::current_dir().unwrap_or_default().join(Self::FILE);
+        match std::fs::read_to_string(&path) {
+            Ok(src) => Progress::parse(&src),
+            Err(_) => Progress::default(),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn load() -> Progress {
+        Progress::default()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn save(self) {
+        let path = std::env::current_dir().unwrap_or_default().join(Self::FILE);
+        if let Err(err) = std::fs::write(&path, self.text()) {
+            log::warn!("antifrost: could not save {path:?}: {err}");
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn save(self) {}
 }
 
 struct Demo {
@@ -990,13 +1147,39 @@ struct Demo {
     /// The slider currently under the button, if any.
     drag: Option<Slider>,
     /// The highlighted row — what the arrow keys walk and Enter
-    /// presses. The mouse sets it on click; pages reset it to the
-    /// top row as they open.
+    /// presses. The one highlight there is: the pointer takes the
+    /// selection over when it moves onto a row, clicks press theirs
+    /// and take it too, and pages reset it to the top as they open.
     menu_sel: usize,
+    /// Where the pointer stood last menu frame, so motion can be
+    /// told from mere presence: a parked cursor must not out-vote
+    /// the arrow keys.
+    last_pointer: Option<[f32; 2]>,
+    /// The bench hourglass (`--bench`): a run length, the clock it
+    /// has accumulated, and the frames worth counting. None is the
+    /// game's own shape — play until told otherwise.
+    bench: Option<f32>,
+    bench_t: f32,
+    bench_frames: u32,
+    /// The overlay's breath: every menu — main, settings, the won
+    /// hill's panel — fades through this alpha rather than snapping.
+    menu_alpha: f32,
+    /// Which page the overlay paints: the live one while a menu is
+    /// up, and the last one held while the layer fades out.
+    menu_page: Page,
+    /// The verdict word and its bright, kept after the splash has
+    /// spun itself out: the won panel reads it in the strip above the
+    /// plate.
+    verdict: Option<(String, Color)>,
 }
 
 impl Demo {
-    fn new(ant_frames: Vec<frost::Shape>, soil: frost::Shape, settings: Settings) -> Self {
+    fn new(
+        ant_frames: Vec<frost::Shape>,
+        soil: frost::Shape,
+        settings: Settings,
+        start_hill: usize,
+    ) -> Self {
         // The soil texture doubles as the hill's tile atlas: one cell,
         // the whole sheet, every placement sampling all of it. A
         // photographic atlas wants bilinear, not the map's pixel-art
@@ -1063,8 +1246,17 @@ impl Demo {
             page: Page::Main,
             drag: None,
             menu_sel: 0,
+            last_pointer: None,
+            bench: None,
+            bench_t: 0.0,
+            bench_frames: 0,
+            menu_alpha: 0.0,
+            menu_page: Page::Main,
+            verdict: None,
         };
-        demo.load(0);
+        // The saved hill, wherever it lands — `load` folds indices
+        // past the last level back onto the set that exists.
+        demo.load(start_hill);
         demo
     }
 
@@ -1092,6 +1284,7 @@ impl Demo {
         self.zbloom.clear();
         self.splash = None;
         self.splash_done = false;
+        self.verdict = None;
         self.glides.clear();
         self.cam = start;
         self.route.clear();
@@ -1730,7 +1923,8 @@ impl Demo {
                 };
                 node.shape = Some(frost::Shape::Light {
                     light: frost::Light::point(col, intensity * self.settings.light, reach)
-                        .with_penumbra(LAMP_PENUMBRA),
+                        .with_penumbra(self.settings.shadows.penumbra())
+                        .with_shadow_taps(self.settings.shadows.taps()),
                 });
                 node.transform = Transform::translate(self.screen(g.at));
             }
@@ -1763,7 +1957,8 @@ impl Demo {
                         intensity * self.settings.light,
                         reach,
                     )
-                    .with_penumbra(LAMP_PENUMBRA),
+                    .with_penumbra(self.settings.shadows.penumbra())
+                    .with_shadow_taps(self.settings.shadows.taps()),
                 });
             } else {
                 node.shape = None;
@@ -1849,7 +2044,17 @@ impl Demo {
                 self.occ_boxes = merge_boxes(&tiles);
                 self.occ_key.clone_from(&tiles);
             }
-            for &(col_s, col_e, row0, row1) in &self.occ_boxes {
+            // Off, the field never learns of a single occluder: the
+            // packer hands every light an empty block, `occluded`
+            // answers without one record load, and the hill pays only
+            // for the lamps' arithmetic — the weak-hardware shape of
+            // this renderer, decided at the menu rather than in the
+            // shader.
+            for &(col_s, col_e, row0, row1) in self
+                .occ_boxes
+                .iter()
+                .filter(|_| self.settings.shadows != Shadow::None)
+            {
                 let [x0, y0] = self.screen(self.cell_px(game::Cell::new(col_s, row0)));
                 let [x1, y1] = self.screen(self.cell_px(game::Cell::new(col_e, row1)));
                 // Full cells, not drawn tiles: the hairline inset is a
@@ -1916,7 +2121,8 @@ impl Demo {
                         0.5 * self.settings.light,
                         TILE * ZOOM * 1.3,
                     )
-                    .with_penumbra(LAMP_PENUMBRA),
+                    .with_penumbra(self.settings.shadows.penumbra())
+                    .with_shadow_taps(self.settings.shadows.taps()),
                 });
                 node.transform = Transform::translate(self.screen(self.cell_px(*cell)));
             }
@@ -2081,7 +2287,7 @@ impl Demo {
             color, alpha: a, ..
         } = &mut shape
         {
-            *color = C_TEXT;
+            *color = s.color;
             *a = alpha;
         }
         ctx.scene().root.children.push(Box::new(SceneNode {
@@ -2093,6 +2299,50 @@ impl Demo {
         }));
     }
 
+    /// One banner row from measured pieces laid end to end, the whole
+    /// line centred as a string would be. The widths come from the
+    /// engine's shaping — measured additive, checked — so measure and
+    /// paint cannot drift apart. Runs carry no spaces: Barrfont's own
+    /// space is 7.5 px at 30, nearly invisible under small caps, so
+    /// every gap here is an explicit fraction of the size instead.
+    fn banner(
+        &self,
+        ctx: &mut Context,
+        cy: f32,
+        size: f32,
+        weight: f32,
+        runs: &[(&str, Color, f32)],
+    ) {
+        // Measured first, drawn after: the shaping asks the canvas
+        // read-only, the paint takes it back.
+        let widths: Vec<f32> = runs
+            .iter()
+            .map(|(t, _, _)| ctx.text_width(&self.font, t, size, weight))
+            .collect();
+        let total: f32 =
+            widths.iter().sum::<f32>() + runs.iter().map(|(_, _, gap)| gap * size).sum::<f32>();
+        let mut x = -total / 2.0;
+        for ((text, colour, gap), w) in runs.iter().zip(widths) {
+            let half = w / 2.0;
+            ctx.text(
+                x + half,
+                cy,
+                &self.font,
+                (*text).to_string(),
+                size,
+                weight,
+                // One over the veil's head (its base, below the plate
+                // and rows): the hill's record rides above the fade,
+                // fully lit while any menu is up — a simple z, where
+                // colours pushed past 1.0 would only meet the 8-bit
+                // buffer's clamp.
+                *colour,
+                UI + 10.5,
+            );
+            x += w + gap * size;
+        }
+    }
+
     fn draw_hud(&self, ctx: &mut Context) {
         let Some(game) = &self.game else { return };
         let (_, h) = ctx.size();
@@ -2100,38 +2350,41 @@ impl Demo {
         // so every separator in the game is spaces. And since text draws
         // centred on its point, everything centres: a doubled size can
         // never spill off an edge the way a left edge would.
-        ctx.text(
-            0.0,
-            h / 2.0 - 34.0,
-            &self.font,
-            format!(
-                "{}  hill {} of {}",
-                game.level.name,
-                self.idx + 1,
-                self.levels.len()
-            ),
-            34.0,
-            700.0,
-            C_TEXT,
-            UI,
-        );
-        ctx.text(
-            0.0,
-            h / 2.0 - 78.0,
-            &self.font,
-            format!(
-                "warm {} of {}   digs {}   moves {} of {}",
-                game.ants_asleep(),
-                game.ants.len(),
-                game.digs_left,
-                game.moves,
-                game.level.par
-            ),
-            30.0,
-            400.0,
-            C_TEXT,
-            UI,
-        );
+        // The banner counts in two tones, one pair bright: the
+        // numbers that judge the run — moves and par, the "10 of 10"
+        // of a perfect hill — stand out while every other word and
+        // number recedes to their side. And the pair speaks the
+        // splash's language already: while the run is on par, moves
+        // wears the yellow a perfect finish will bloom in; past it,
+        // the red the consolation words will. The verdict starts
+        // painting the picture one move at a time.
+        let on_par = game.level.par > 0 && game.moves <= game.level.par;
+        let moves_colour = if on_par { C_PAR_MET } else { C_PAR_MISSED };
+        let hill = (self.idx + 1).to_string();
+        let hills = self.levels.len().to_string();
+        let title: [(&str, Color, f32); 5] = [
+            (&game.level.name, C_DIM, 0.7),
+            ("hill", C_DIM, 0.5),
+            (&hill, C_DIM, 0.5),
+            ("of", C_DIM, 0.5),
+            (&hills, C_DIM, 0.0),
+        ];
+        self.banner(ctx, h / 2.0 - 34.0, 34.0, 700.0, &title);
+        let warm = game.ants_asleep().to_string();
+        let crew = game.ants.len().to_string();
+        let moves = game.moves.to_string();
+        let par = game.level.par.to_string();
+        let score: [(&str, Color, f32); 8] = [
+            ("warm", C_DIM, 0.5),
+            (&warm, C_DIM, 0.5),
+            ("of", C_DIM, 0.5),
+            (&crew, C_DIM, 1.6),
+            ("moves", C_DIM, 0.5),
+            (&moves, moves_colour, 0.5),
+            ("of", C_DIM, 0.5),
+            (&par, C_TEXT, 0.0),
+        ];
+        self.banner(ctx, h / 2.0 - 78.0, 30.0, 400.0, &score);
         ctx.text(
             0.0,
             -h / 2.0 + 26.0,
@@ -2146,7 +2399,7 @@ impl Demo {
             0.0,
             -h / 2.0 + 58.0,
             &self.font,
-            "space or right click detach   z undo   r restart   n p hills   escape menu",
+            "space or right click detach   z undo   r restart   escape menu",
             24.0,
             400.0,
             C_DIM,
@@ -2168,47 +2421,6 @@ impl Demo {
                     a,
                 },
                 UI + 1.0,
-            );
-        }
-        if game.won && self.splash.is_none() {
-            ctx.text(
-                0.0,
-                44.0,
-                &self.font,
-                "every ant is warm  winter may come",
-                52.0,
-                700.0,
-                C_TEXT,
-                UI + 2.0,
-            );
-            ctx.text(
-                0.0,
-                -8.0,
-                &self.font,
-                format!(
-                    "{} moves  par {}{}",
-                    game.moves,
-                    game.level.par,
-                    if self.frost_bit {
-                        "  the frost bit"
-                    } else {
-                        ""
-                    }
-                ),
-                30.0,
-                400.0,
-                C_DIM,
-                UI + 2.0,
-            );
-            ctx.text(
-                0.0,
-                -62.0,
-                &self.font,
-                "N  the next hill",
-                30.0,
-                400.0,
-                C_NOTE,
-                UI + 2.0,
             );
         }
     }
@@ -2275,13 +2487,15 @@ impl Demo {
         }
     }
 
-    /// New Game: the hill rebuilt from its own beginning. Every stat
+    /// New Game: the descent restarts at the first hill. Every stat
     /// the game keeps lives inside `Game::start`'s fresh state, and
     /// `load` already sweeps the extras the demo layers on top —
-    /// queued steps, drifting zs, the frost's claim, verdicts. Then
-    /// the page steps aside and the hill plays.
+    /// queued steps, drifting zs, the frost's claim, verdicts; the
+    /// saved progress is rewritten by the caller, which owns when
+    /// the disc learns of it. Then the page steps aside and the hill
+    /// plays.
     fn new_game(&mut self) {
-        self.load(self.idx);
+        self.load(0);
         self.page = Page::Game;
     }
 
@@ -2291,7 +2505,7 @@ impl Demo {
     /// user height: the block hangs from its top, and shrinks its
     /// stride on short windows (a 540p quality buffer still wears the
     /// whole menu).
-    fn menu_rows(&self, h: f32) -> Vec<Row> {
+    fn menu_rows(&self, page: Page, h: f32) -> Vec<Row> {
         let st = &self.settings;
         let mut rows: Vec<Row> = Vec::new();
         let short = h < 720.0;
@@ -2307,7 +2521,7 @@ impl Demo {
                 slider,
             })
         };
-        match self.page {
+        match page {
             Page::Game => {}
             Page::Main => {
                 let top = (h * 0.5 - 120.0).min(120.0);
@@ -2334,6 +2548,25 @@ impl Demo {
                     top - 3.0 * step,
                     240.0,
                     "exit".into(),
+                    None,
+                );
+            }
+            Page::Won => {
+                let top = (h * 0.5 - 120.0).min(120.0);
+                push(
+                    &mut rows,
+                    Action::Next,
+                    top,
+                    240.0,
+                    "next hill".into(),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::Retry,
+                    top - step,
+                    240.0,
+                    "retry hill".into(),
                     None,
                 );
             }
@@ -2372,7 +2605,7 @@ impl Demo {
                     Action::Quality,
                     top - 3.0 * step,
                     250.0,
-                    format!("quality   {}", st.quality.label()),
+                    format!("resolution   {}", st.quality.label()),
                     None,
                 );
                 push(
@@ -2388,7 +2621,7 @@ impl Demo {
                     Action::Light,
                     top - 5.0 * step,
                     MENU_TRACK_HALF + 12.0,
-                    format!("light effects   {}%", (st.light * 50.0).round() as i32),
+                    format!("light fx   {}%", (st.light * 50.0).round() as i32),
                     Some(st.light / 2.0),
                 );
                 push(
@@ -2401,8 +2634,16 @@ impl Demo {
                 );
                 push(
                     &mut rows,
-                    Action::Back,
+                    Action::Shadows,
                     top - 7.0 * step,
+                    250.0,
+                    format!("lamp shadows   {}", st.shadows.label()),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::Back,
+                    top - 8.0 * step,
                     250.0,
                     "back".into(),
                     None,
@@ -2437,7 +2678,7 @@ impl Demo {
         // points when the highlight stands on its row. The same
         // `menu_rows` list the mouse reads, so the two never diverge.
         let h = ctx.size().1;
-        let rows = self.menu_rows(h);
+        let rows = self.menu_rows(self.page, h);
         if !rows.is_empty() {
             self.menu_sel = self.menu_sel.min(rows.len() - 1);
             if self.pressed(ctx, KeyCode::ArrowUp) {
@@ -2470,30 +2711,38 @@ impl Demo {
                 self.menu_action(ctx, action);
             }
         }
+        // The pointer moving onto a row takes the highlight with it —
+        // motion only, so a cursor parked on `resume` cannot out-vote
+        // the arrow keys walking to `exit`. One row is ever lit.
+        if pointer != self.last_pointer
+            && let Some(p) = pointer
+            && let Some(i) = row_under(&rows, p)
+        {
+            self.menu_sel = i;
+        }
+        self.last_pointer = pointer;
         // The mouse's turn: a click presses its row's action and takes
         // the highlight with it.
         if !self.pressed_mouse(ctx, MouseButton::Left) {
             return;
         }
         let Some(p) = pointer else { return };
-        for (i, r) in rows.iter().enumerate() {
-            if (p[0] - r.cx).abs() <= r.hw && (p[1] - r.cy).abs() <= r.hh {
-                self.menu_sel = i;
-                match r.action {
-                    Action::Ambient | Action::Light => {
-                        self.drag = Some(match r.action {
-                            Action::Ambient => Slider::Ambient,
-                            _ => Slider::Light,
-                        });
-                        let frac = slide_value(p[0], MENU_TRACK_CX, MENU_TRACK_HALF);
-                        match r.action {
-                            Action::Ambient => self.settings.ambient = frac,
-                            _ => self.settings.light = frac * 2.0,
-                        }
+        if let Some(i) = row_under(&rows, p) {
+            let r = &rows[i];
+            self.menu_sel = i;
+            match r.action {
+                Action::Ambient | Action::Light => {
+                    self.drag = Some(match r.action {
+                        Action::Ambient => Slider::Ambient,
+                        _ => Slider::Light,
+                    });
+                    let frac = slide_value(p[0], MENU_TRACK_CX, MENU_TRACK_HALF);
+                    match r.action {
+                        Action::Ambient => self.settings.ambient = frac,
+                        _ => self.settings.light = frac * 2.0,
                     }
-                    action => self.menu_action(ctx, action),
                 }
-                return;
+                action => self.menu_action(ctx, action),
             }
         }
     }
@@ -2504,12 +2753,26 @@ impl Demo {
     /// except the sliders, which save on release.
     fn menu_action(&mut self, ctx: &mut Context, action: Action) {
         match action {
-            Action::New => self.new_game(),
+            Action::New => {
+                self.new_game();
+                Progress { hill: self.idx }.save();
+            }
             Action::Resume => self.page = Page::Game,
             Action::OpenSettings => {
                 self.page = Page::Settings;
                 self.drag = None;
                 self.menu_sel = 0;
+            }
+            Action::Next => {
+                self.load(self.idx + 1);
+                self.page = Page::Game;
+                // Standing on a new hill is the fact the progress
+                // file keeps — written the moment it's true.
+                Progress { hill: self.idx }.save();
+            }
+            Action::Retry => {
+                self.load(self.idx);
+                self.page = Page::Game;
             }
             Action::Exit => ctx.exit(),
             Action::Back => {
@@ -2543,6 +2806,7 @@ impl Demo {
                 ctx.set_render_size(self.settings.quality.size());
             }
             Action::Leaves => self.settings.leaves_lit = !self.settings.leaves_lit,
+            Action::Shadows => self.settings.shadows = self.settings.shadows.next(),
             Action::Ambient | Action::Light => return,
         }
         self.settings.save();
@@ -2554,6 +2818,10 @@ impl Demo {
     fn draw_menu(&self, ctx: &mut Context) {
         let (w, h) = ctx.size();
         let z = UI + 10.0;
+        // Everything the overlay owns breathes together — veil,
+        // plate, rows, verdict — through one alpha held by `process`.
+        let a = self.menu_alpha;
+        let fade = |c: Color| Color { a: c.a * a, ..c };
         ctx.rectangle(
             0.0,
             0.0,
@@ -2563,17 +2831,17 @@ impl Demo {
                 r: 0.012,
                 g: 0.014,
                 b: 0.022,
-                a: 0.72,
+                a: 0.72 * a,
             },
             z,
         );
-        let rows = self.menu_rows(h);
+        let rows = self.menu_rows(self.menu_page, h);
         if rows.is_empty() {
             return;
         }
         let top = rows.iter().map(|r| r.cy).fold(f32::MIN, f32::max);
         let bot = rows.iter().map(|r| r.cy).fold(f32::MAX, f32::min);
-        let wide = self.page == Page::Settings;
+        let wide = self.menu_page == Page::Settings;
         ctx.rectangle(
             0.0,
             (top + bot) / 2.0,
@@ -2583,11 +2851,22 @@ impl Demo {
                 r: 0.05,
                 g: 0.055,
                 b: 0.08,
-                a: 0.94,
+                a: 0.94 * a,
             },
             z + 1.0,
         );
-        let title = if wide { "SETTINGS" } else { "ANTIFROST" };
+        // The panel wears the hill it stands on: main and won pages
+        // both name their ground — the title answers the same banner
+        // the player has been reading all run. Settings is its own
+        // room and keeps its own sign.
+        let title: String = if wide {
+            "SETTINGS".to_string()
+        } else {
+            self.game
+                .as_ref()
+                .map_or("ANTIFROST", |g| g.level.name.as_str())
+                .to_string()
+        };
         ctx.text(
             0.0,
             top + 70.0,
@@ -2595,14 +2874,35 @@ impl Demo {
             title,
             52.0,
             700.0,
-            C_TEXT,
+            fade(C_TEXT),
             z + 2.0,
         );
-        let hover = ctx.mouse_position();
+        // The won hill's verdict: the word its splash just spoke,
+        // now read plainly in the strip between the HUD's band and
+        // the plate's top — verdict overhead, choices under foot.
+        if self.menu_page == Page::Won
+            && let Some((word, colour)) = &self.verdict
+        {
+            let plate_top = top + 130.0;
+            let band = h / 2.0 - 54.0;
+            ctx.text(
+                0.0,
+                (plate_top + band) / 2.0,
+                &self.font,
+                word.clone(),
+                64.0,
+                700.0,
+                fade(*colour),
+                z + 2.0,
+            );
+        }
+        // Exactly one row wears the highlight: the selected one. The
+        // pointer takes the selection over when it moves onto a row
+        // (see `menu_input`), so the mouse and the keys can never
+        // each light their own row — the two-glow state a separate
+        // hover used to allow.
         for (i, r) in rows.iter().enumerate() {
-            let hot = i == self.menu_sel
-                || hover
-                    .is_some_and(|p| (p[0] - r.cx).abs() <= r.hw && (p[1] - r.cy).abs() <= r.hh);
+            let hot = i == self.menu_sel;
             if hot {
                 ctx.rectangle(
                     r.cx,
@@ -2613,7 +2913,7 @@ impl Demo {
                         r: 1.0,
                         g: 1.0,
                         b: 1.0,
-                        a: 0.07,
+                        a: 0.07 * a,
                     },
                     z + 2.0,
                 );
@@ -2626,7 +2926,7 @@ impl Demo {
                     r.text.clone(),
                     30.0,
                     500.0,
-                    if hot { C_TEXT } else { C_DIM },
+                    if hot { fade(C_TEXT) } else { fade(C_DIM) },
                     z + 3.0,
                 ),
                 Some(frac) => {
@@ -2637,7 +2937,7 @@ impl Demo {
                         r.text.clone(),
                         30.0,
                         500.0,
-                        if hot { C_TEXT } else { C_DIM },
+                        if hot { fade(C_TEXT) } else { fade(C_DIM) },
                         z + 3.0,
                     );
                     ctx.rectangle(
@@ -2649,7 +2949,7 @@ impl Demo {
                             r: 0.35,
                             g: 0.36,
                             b: 0.42,
-                            a: 1.0,
+                            a,
                         },
                         z + 3.0,
                     );
@@ -2658,7 +2958,7 @@ impl Demo {
                         r.cy,
                         (frac * MENU_TRACK_HALF).max(0.5),
                         3.0,
-                        C_NOTE,
+                        fade(C_NOTE),
                         z + 3.0,
                     );
                     ctx.rectangle(
@@ -2666,7 +2966,7 @@ impl Demo {
                         r.cy,
                         5.0,
                         11.0,
-                        C_TEXT,
+                        fade(C_TEXT),
                         z + 3.0,
                     );
                 }
@@ -2677,6 +2977,40 @@ impl Demo {
 
 impl Process for Demo {
     fn process(&mut self, ctx: &mut Context, dt: f32) {
+        // The overlay breathes: toward one while a menu is up, toward
+        // zero when the hill takes the screen back. The page it
+        // paints follows the live page in, and holds the last one
+        // through the fade out, so closing a menu shows that menu
+        // leaving — never whatever page happens to be behind it.
+        let target = if self.page == Page::Game { 0.0 } else { 1.0 };
+        if target > 0.0 {
+            self.menu_page = self.page;
+        }
+        self.menu_alpha += (target - self.menu_alpha) * (1.0 - (-dt / 0.15).exp());
+        if (self.menu_alpha - target).abs() < 0.002 {
+            self.menu_alpha = target;
+        }
+        // The bench hourglass: seconds run and frames counted before
+        // anything else decides whether this frame is spent on the
+        // hill or the menu — every frame draws the same hill and
+        // light field either way, which is exactly what an A/B wants
+        // to weigh. The first two seconds warm the clocks and go
+        // uncounted.
+        if let Some(secs) = self.bench {
+            self.bench_t += dt;
+            if self.bench_t > 2.0 {
+                self.bench_frames += 1;
+            }
+            if self.bench_t >= secs + 2.0 {
+                let span = self.bench_t - 2.0;
+                log::info!(
+                    "antifrost: bench {:.1} fps over {:.0} s",
+                    self.bench_frames as f32 / span,
+                    span
+                );
+                ctx.exit();
+            }
+        }
         #[cfg(feature = "diag")]
         self.diag.process(ctx, dt);
         // Once, the window takes the game's own name: the engine opens
@@ -2705,8 +3039,9 @@ impl Process for Demo {
             self.settings.save();
         }
         // Escape answers its page: the hill yields to the menu, the
-        // menu yields to the desktop, settings step back to the menu.
-        // (`Config::escape_exits` is off — the demo owns this key.)
+        // menu hands the hill back, settings step back to the menu.
+        // Quitting belongs to the exit row alone. (`Config::escape_exits`
+        // is off — the demo owns this key.)
         if self.pressed(ctx, KeyCode::Escape) {
             match escape_nav(self.page) {
                 Escape::ToMenu => {
@@ -2714,7 +3049,7 @@ impl Process for Demo {
                     self.drag = None;
                     self.menu_sel = 0;
                 }
-                Escape::Exit => ctx.exit(),
+                Escape::Resume => self.page = Page::Game,
             }
         }
         // The night and the lamps answer to the settings every frame:
@@ -2760,14 +3095,11 @@ impl Process for Demo {
             let detach_click = click_right;
             let undo = self.pressed(ctx, KeyCode::KeyZ);
             let restart = self.pressed(ctx, KeyCode::KeyR);
-            let next = self.pressed(ctx, KeyCode::KeyN);
-            let prev = self.pressed(ctx, KeyCode::KeyP);
-            if next {
-                self.load(self.idx + 1);
-            }
-            if prev {
-                self.load(self.idx + self.levels.len().saturating_sub(1));
-            }
+            // N and P retired with their legend line: leaving a
+            // finished hill belongs to the won page's two rows,
+            // which answer to click and Enter alike — a control
+            // nothing mentions is a control that misfires in
+            // silence.
             // Shift+left-click is the pointer's push verb. The aim is
             // looked up before the game is handed out mutable — this
             // only reads.
@@ -2905,6 +3237,15 @@ impl Process for Demo {
             self.spin = None;
             self.player_face = s;
         }
+        // A won hill hands the player their two ways off it — but
+        // only after the splash has spun, held, and faded: the word
+        // comes first, then the panel and the verdict together.
+        if self.page == Page::Game && self.splash_done && self.game.as_ref().is_some_and(|g| g.won)
+        {
+            self.page = Page::Won;
+            self.drag = None;
+            self.menu_sel = 0;
+        }
         // The verdict: when the hill is won and has not yet been told
         // its own name, draw one from the hat — the praise tier reads
         // the par, the spin reads the dice.
@@ -2912,13 +3253,19 @@ impl Process for Demo {
             if !game.won {
                 self.splash_done = false;
             } else if self.splash.is_none() && !self.splash_done {
-                let praise: [&str; 3] = if game.level.par > 0 && game.moves <= game.level.par {
+                let hit = game.level.par > 0 && game.moves <= game.level.par;
+                // Same rule the banner paints by mid-run.
+                let colour = if hit { C_PAR_MET } else { C_PAR_MISSED };
+                let praise: [&str; 3] = if hit {
                     ["EXCELLENT", "PERFECT", "SUPER"]
                 } else {
                     ["YOUR DID IT", "GOOD JOB", "WELL DONE"]
                 };
                 let pick = self.leaf_rng.in_range(0.0, 2.999) as usize;
                 let text = praise[pick].to_string();
+                // The word outlives its spin: the won panel reads it,
+                // in the same bright the splash burned.
+                self.verdict = Some((text.clone(), colour));
                 let grow = self.leaf_rng.in_range(1.875, 2.55);
                 let end = self.leaf_rng.in_range(-45.0, 45.0) * std::f32::consts::FRAC_PI_4 / 45.0;
                 self.splash = Some(Splash {
@@ -2926,6 +3273,7 @@ impl Process for Demo {
                     t: 0.0,
                     grow,
                     end,
+                    color: colour,
                 });
             }
         }
@@ -2950,7 +3298,7 @@ impl Process for Demo {
         self.draw_ants(ctx, dt);
         self.draw_hud(ctx);
         self.draw_splash(ctx);
-        if self.page != Page::Game {
+        if self.menu_alpha > 0.002 {
             self.draw_menu(ctx);
         }
     }
@@ -2999,6 +3347,14 @@ struct Cli {
     /// which has no value to parse.
     #[arg(long, value_name = "on|off", value_parser = parse_on_off)]
     vsync: Option<bool>,
+
+    /// Run for SECONDS, log the mean frame rate, and quit on its own
+    /// — the A/B instrument the benchmarking notes ask of every
+    /// performance claim. Frames count only after the first two
+    /// seconds, so the clocks have time to wake; everything else the
+    /// launch decides, settings file included.
+    #[arg(long, value_name = "SECONDS")]
+    bench: Option<f32>,
 }
 
 /// clap's value parser for the vsync flag: `on`/`off`, any case.
@@ -3021,18 +3377,19 @@ fn main() {
     // The saved file speaks first, and the command line over it: a
     // deliberate `--vsync off` outranks yesterday's on. A browser has
     // no command line and no disc, so there the defaults stand.
-    let settings = {
-        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
-        let mut s = Settings::load();
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let cli: Cli = clap::Parser::parse();
-            if let Some(v) = cli.vsync {
-                s.vsync = v;
-            }
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    let mut settings = Settings::load();
+    let progress = Progress::load();
+    #[cfg(not(target_arch = "wasm32"))]
+    let bench = {
+        let cli: Cli = clap::Parser::parse();
+        if let Some(v) = cli.vsync {
+            settings.vsync = v;
         }
-        s
+        cli.bench
     };
+    #[cfg(target_arch = "wasm32")]
+    let bench = None;
     let vsync = settings.vsync;
     // Native logs to stderr; a browser has no stderr, so there the
     // panic hook surfaces failures in the devtools console instead of
@@ -3099,7 +3456,11 @@ fn main() {
     scene.ambient = C_NIGHT;
     if let Err(err) = frost::run_configured(
         scene,
-        Demo::new(ant_frames, soil, settings.clone()),
+        {
+            let mut d = Demo::new(ant_frames, soil, settings.clone(), progress.hill);
+            d.bench = bench;
+            d
+        },
         frost::Config {
             window_size: Some([1920, 1080]),
             // The hill opens full screen — when the saved file says
@@ -3147,7 +3508,7 @@ mod click_tests {
             .map(|png| ant_frame(png).expect("shipped ant frames bake"))
             .collect();
         let soil = frost::Shape::sprite_bytes(SOIL).expect("shipped soil bakes");
-        Demo::new(frames, soil, Settings::default())
+        Demo::new(frames, soil, Settings::default(), 0)
     }
 
     #[test]
@@ -3530,15 +3891,72 @@ mod menu_tests {
             .map(|png| ant_frame(png).expect("shipped ant frames bake"))
             .collect();
         let soil = frost::Shape::sprite_bytes(SOIL).expect("shipped soil bakes");
-        Demo::new(frames, soil, Settings::default())
+        Demo::new(frames, soil, Settings::default(), 0)
+    }
+
+    #[test]
+    fn the_progress_file_counts_hills_as_the_hud_does() {
+        assert_eq!(
+            Progress::default().text(),
+            "(\n    hill: 1,\n)\n",
+            "a player who never moved stands on the first hill"
+        );
+        let p = Progress::parse("(\n    hill: 3,\n)\n");
+        assert_eq!(p.hill, 2, "the file counts from one, the code from zero");
+        assert_eq!(Progress { hill: 1 }.text(), "(\n    hill: 2,\n)\n");
+        assert_eq!(
+            Progress::parse("garbage").hill,
+            0,
+            "a broken file means the first hill, not a failed launch"
+        );
+        assert_eq!(
+            Progress::parse("(\n    hill: 0,\n)\n").hill,
+            0,
+            "nothing sits below the first hill"
+        );
+    }
+
+    #[test]
+    fn the_game_opens_where_the_player_stood() {
+        let frames = ANT_FRAMES
+            .iter()
+            .map(|png| ant_frame(png).expect("shipped ant frames bake"))
+            .collect();
+        let soil = frost::Shape::sprite_bytes(SOIL).expect("shipped soil bakes");
+        let d = Demo::new(frames, soil, Settings::default(), 1);
+        assert_eq!(d.idx, 1, "the saved hill is the opened hill");
+        assert!(d.game.is_some(), "and it arrives with its game loaded");
+        let mut d = d;
+        d.new_game();
+        assert_eq!(d.idx, 0, "New Game restarts the descent at the first hill");
+    }
+
+    #[test]
+    fn one_row_lives_under_the_pointer() {
+        let d = demo();
+        let rows = d.menu_rows(d.page, 1080.0);
+        for (i, r) in rows.iter().enumerate() {
+            assert_eq!(
+                row_under(&rows, [r.cx, r.cy]),
+                Some(i),
+                "a row's own center answers to it alone"
+            );
+        }
+        let above = [rows[0].cx, rows[0].cy - rows[0].hh - 1.0];
+        assert_eq!(
+            row_under(&rows, above),
+            None,
+            "just clear of the top row is nobody's"
+        );
     }
 
     #[test]
     fn escape_walks_the_pages() {
-        // The hill yields to the menu; the menu yields to the desktop;
-        // settings step back rather than quit.
+        // The hill yields to the menu, the menu hands the hill back,
+        // settings step back — the key never quits, only the exit row
+        // does.
         assert_eq!(escape_nav(Page::Game), Escape::ToMenu);
-        assert_eq!(escape_nav(Page::Main), Escape::Exit);
+        assert_eq!(escape_nav(Page::Main), Escape::Resume);
         assert_eq!(escape_nav(Page::Settings), Escape::ToMenu);
     }
 
@@ -3577,6 +3995,7 @@ mod menu_tests {
             ambient: 0.25,
             light: 1.75,
             leaves_lit: false,
+            shadows: Shadow::Four,
         };
         assert_eq!(Settings::parse(&s.text()), s, "what is written is read");
     }
@@ -3590,7 +4009,7 @@ mod menu_tests {
         );
         // A half-known file keeps what it knows, defaults the rest,
         // and clamps what wandered off its range.
-        let s = Settings::parse("(v: 2, vsync: false, ambient: 9.0, bogus: 1)");
+        let s = Settings::parse("(vsync: false, ambient: 9.0, bogus: 1)");
         assert!(!s.vsync, "one line survived");
         assert_eq!(s.ambient, 1.0, "clamped back onto the slider's top");
         assert_eq!(s.quality, Quality::High, "the untouched rows stand");
@@ -3618,29 +4037,8 @@ mod menu_tests {
     }
 
     #[test]
-    fn a_v1_ambient_migrates_onto_the_new_slider() {
-        // The first cut of the file scaled the night directly and
-        // defaulted to 1.0 = the shipped look; v2 hinges that look on
-        // the middle. Old files keep their picture, explicit or
-        // absent, and a v2 file means exactly what it says.
-        let s = Settings::parse("(vsync: true, ambient: 1.0, light: 0.5)");
-        assert_eq!(s.ambient, 0.5, "the old full night reads as the new middle");
-        assert_eq!(s.light, 0.5, "the other rows are untouched");
-        let s = Settings::parse("(vsync: true)");
-        assert_eq!(
-            s.ambient, 0.5,
-            "a v1 file that never wrote an ambient meant the shipped night"
-        );
-        let s = Settings::parse("(v: 2, ambient: 1.0)");
-        assert_eq!(
-            s.ambient, 1.0,
-            "no dimming, written on purpose, survives untouched"
-        );
-    }
-
-    #[test]
     fn quality_tiers_round_trip() {
-        for q in [Quality::Low, Quality::Medium, Quality::High, Quality::Ultra] {
+        for q in [Quality::Medium, Quality::High, Quality::Ultra] {
             assert_eq!(
                 Quality::parse(q.label()),
                 Some(q),
@@ -3652,15 +4050,25 @@ mod menu_tests {
             Quality::Ultra,
             "the shipped tier steps up"
         );
-        assert_eq!(Quality::Ultra.next(), Quality::Low, "and the row cycles");
+        assert_eq!(Quality::Ultra.next(), Quality::Medium, "and the row cycles");
         assert_eq!(
             Quality::Ultra.size(),
             None,
-            "ultra is no fixed buffer at all"
+            "native is no fixed buffer at all"
         );
-        assert_eq!(Quality::Low.size(), Some([960, 540]));
+        assert_eq!(
+            Quality::Medium.size(),
+            Some([1280, 720]),
+            "720p is the floor"
+        );
+        assert_eq!(Quality::parse("bogus"), None, "unknown words name no tier");
+        let fresh = Settings::parse("(\n    resolution: \"1920 x 1080\",\n)\n");
+        assert_eq!(
+            fresh.quality,
+            Quality::High,
+            "the file speaks in resolutions"
+        );
     }
-
     #[test]
     fn a_slide_clamps_to_its_track() {
         assert_eq!(slide_value(-999.0, MENU_TRACK_CX, MENU_TRACK_HALF), 0.0);
@@ -3685,7 +4093,7 @@ mod menu_tests {
     fn the_settings_page_offers_every_setting() {
         let mut d = demo();
         d.page = Page::Settings;
-        let rows = d.menu_rows(1080.0);
+        let rows = d.menu_rows(d.page, 1080.0);
         let actions: Vec<Action> = rows.iter().map(|r| r.action).collect();
         for a in [
             Action::Vsync,
@@ -3709,7 +4117,11 @@ mod menu_tests {
     #[test]
     fn the_main_menu_is_the_four_rows_requested() {
         let d = demo();
-        let actions: Vec<Action> = d.menu_rows(1080.0).iter().map(|r| r.action).collect();
+        let actions: Vec<Action> = d
+            .menu_rows(d.page, 1080.0)
+            .iter()
+            .map(|r| r.action)
+            .collect();
         assert_eq!(
             actions,
             vec![
@@ -3719,5 +4131,20 @@ mod menu_tests {
                 Action::Exit
             ]
         );
+    }
+
+    #[test]
+    fn a_finished_hill_offers_next_and_retry() {
+        // The two ways off a won hill — and the only two: they hang
+        // under the verdict splash, not on the main menu.
+        let mut d = demo();
+        d.page = Page::Won;
+        let actions: Vec<Action> = d
+            .menu_rows(d.page, 1080.0)
+            .iter()
+            .map(|r| r.action)
+            .collect();
+        assert_eq!(actions, vec![Action::Next, Action::Retry]);
+        assert_eq!(escape_nav(Page::Won), Escape::ToMenu);
     }
 }

@@ -288,6 +288,15 @@ impl Canvas {
     ///
     /// Immediate text is never lit and never glows: it always draws at full
     /// `color`, so UI text stays readable over any scene.
+    /// How wide [`Canvas::text`] would lay `text`: the advance width in
+    /// user-space units, through the very shaping the draw will do —
+    /// so measure and paint agree. Enough to run mixed-colour pieces
+    /// end to end, or right-align without guessing. Zero for a font
+    /// that cannot be shaped.
+    pub fn text_width(&self, font: &Arc<[u8]>, text: &str, size: f32, weight: f32) -> f32 {
+        crate::text::layout(font, text, size, weight).map_or(0.0, |l| l.width)
+    }
+
     #[allow(clippy::too_many_arguments)] // immediate-mode draw call
     pub fn text(
         &mut self,
@@ -840,7 +849,15 @@ fn draw_node(
                     penumbra: light.penumbra.max(0.0) * px_scale,
                     dir: normalized_axis([tip[0] - origin[0], tip[1] - origin[1]]),
                     cos_half: half_angle_cosine(light.spread),
-                    feather: feather_band(light.spread, light.softness),
+                    feather: if light.spread >= std::f32::consts::TAU {
+                        // An omni light has no cone edge to feather —
+                        // the band is zero by construction — so the
+                        // slot carries the penumbra's tap count to the
+                        // shader instead, clamped to the grid's ends.
+                        light.shadow_taps.clamp(1, 9) as f32
+                    } else {
+                        feather_band(light.spread, light.softness)
+                    },
                     z: order,
                 })
             }
@@ -1890,6 +1907,8 @@ mod tests {
         assert_eq!(*penumbra, 0.0);
         assert_eq!(*dir, [1.0, 0.0]);
         assert_eq!(*cos_half, -1.0);
+        // The immediate API carries no tap knob: the slot stays zero,
+        // which the shader reads as the grid's full nine.
         assert_eq!(*feather, 0.0);
         assert_eq!(*z, 0.0);
     }
@@ -1954,6 +1973,8 @@ mod tests {
         assert_eq!(f32_at(&field.data, off + 32), 1.0);
         assert_eq!(f32_at(&field.data, off + 36), 0.0);
         assert_eq!(f32_at(&field.data, off + 40), -1.0);
+        // The immediate API carries no tap knob: the omni slot stays
+        // zero, which the shader reads as the grid's full nine.
         assert_eq!(f32_at(&field.data, off + 44), 0.0);
         // The scene's light second: user (-10, 0) -> pixel (40, 50), radius
         // 20, intensity 0.5, blue.
@@ -1966,7 +1987,9 @@ mod tests {
         assert_eq!(f32_at(&field.data, off + 32), 1.0);
         assert_eq!(f32_at(&field.data, off + 36), 0.0);
         assert_eq!(f32_at(&field.data, off + 40), -1.0);
-        assert_eq!(f32_at(&field.data, off + 44), 0.0);
+        // The omni feather slot carries the penumbra's tap count —
+        // the constructor's full grid unless a light asked otherwise.
+        assert_eq!(f32_at(&field.data, off + 44), 9.0);
     }
 
     #[test]
@@ -2026,7 +2049,8 @@ mod tests {
         assert_eq!(*penumbra, 0.0);
         assert_eq!(*dir, [1.0, 0.0]);
         assert_eq!(*cos_half, -1.0);
-        assert_eq!(*feather, 0.0);
+        // Omni node light: the feather slot is the tap grid's nine.
+        assert_eq!(*feather, 9.0);
         assert_eq!(*z, 3.0);
     }
 
@@ -2118,6 +2142,58 @@ mod tests {
     }
 
     #[test]
+    fn an_omni_light_carries_its_taps_where_a_cone_keeps_its_feather() {
+        // The omni feather slot is free by construction, so it carries
+        // the penumbra's tap count; a cone's slot belongs to its edge
+        // band and ignores taps entirely.
+        let white = Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        };
+        let omni = SceneNode {
+            shape: Some(Shape::Light {
+                light: Light::point(white, 1.0, 10.0)
+                    .with_penumbra(4.0)
+                    .with_shadow_taps(4),
+            }),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&omni, &mut draws);
+        let [
+            Draw::Light {
+                feather,
+                penumbra,
+                cos_half,
+                ..
+            },
+        ] = &draws[..]
+        else {
+            panic!("expected one light draw");
+        };
+        assert_eq!(*feather, 4.0, "the omni slot carries the taps");
+        assert!(*cos_half <= -1.0, "and the light is still omni");
+        assert!((*penumbra - 4.0).abs() < 1e-6, "penumbra rides through");
+
+        let half = std::f32::consts::FRAC_PI_4;
+        let cone = SceneNode {
+            shape: Some(Shape::Light {
+                light: Light::cone(white, 1.0, 10.0, 0.0, 2.0 * half, half * 0.5)
+                    .with_shadow_taps(4),
+            }),
+            ..Default::default()
+        };
+        let mut draws = Vec::new();
+        draw_one(&cone, &mut draws);
+        let [Draw::Light { feather, .. }] = &draws[..] else {
+            panic!("expected one light draw");
+        };
+        assert!(*feather != 4.0, "a cone's feather is its own band");
+    }
+
+    #[test]
     fn a_directional_light_records_the_sentinel_and_its_travel() {
         // A `Light::directional` aimed at user PI — travelling toward
         // -x: the record keeps the negative radius sentinel exactly (the
@@ -2173,7 +2249,8 @@ mod tests {
         assert!((dir[0] + 1.0).abs() < 1e-6);
         assert!(dir[1].abs() < 1e-6);
         assert!((cos_half + 1.0).abs() < 1e-6);
-        assert_eq!(*feather, 0.0);
+        // Omni by construction: the slot is the tap grid's full nine.
+        assert_eq!(*feather, 9.0);
     }
 
     #[test]

@@ -204,32 +204,6 @@ pub(crate) fn fit_bytes(fit: (f32, f32)) -> [u8; 16] {
 /// otherwise — `(1.0, 0.5625)` for a 16:9 buffer on a square surface,
 /// bars top and bottom included. The blit pass scales its triangle by
 /// exactly this, and the mouse mapping divides it back out.
-/// How hard the stretcher pulls: the physical pixels each fixed-buffer
-/// pixel becomes on its way to the screen. 1.0 whenever there is no
-/// stretch to speak of — no fixed buffer (the frame renders at the
-/// surface's own size), no surface yet, or a surface exactly the
-/// buffer's size. The content's own width (the letterboxed fraction
-/// of the surface, `fit`) over the buffer's width says it: with the
-/// aspect preserved, the width ratio is the height ratio. The
-/// diagnostics overlay divides its layout by this number, so the
-/// panel keeps its authored physical size through every quality tier
-/// — the pixels still go soft with the stretch (only rendering at the
-/// surface's own size fixes that), but they stop growing.
-pub(crate) fn content_upscale(
-    render_size: Option<[u32; 2]>,
-    surface: (u32, u32),
-    fit: (f32, f32),
-) -> f32 {
-    let Some([bw, bh]) = render_size else {
-        return 1.0;
-    };
-    if bw == 0 || bh == 0 || surface.0 == 0 || surface.1 == 0 {
-        return 1.0;
-    }
-    let k = fit.0 * surface.0 as f32 / bw as f32;
-    if k.is_finite() && k > 0.0 { k } else { 1.0 }
-}
-
 pub(crate) fn content_fit(render_size: Option<[u32; 2]>, surface: (u32, u32)) -> (f32, f32) {
     let Some([bw, bh]) = render_size else {
         return (1.0, 1.0);

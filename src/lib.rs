@@ -272,9 +272,6 @@ pub struct Context<'c> {
     /// The mouse wheel's vertical movement since the previous frame, in
     /// lines (see [`Context::mouse_wheel`]).
     mouse_wheel: f32,
-    /// The physical stretch this frame's fixed render buffer is carried
-    /// by (see [`Context::content_upscale`]); 1.0 without a stretch.
-    content_upscale: f32,
     /// The gamepad controller, or `None` when gilrs could not open the
     /// platform's input devices at startup (then no gamepad state exists).
     gilrs: Option<&'c gilrs::Gilrs>,
@@ -434,18 +431,6 @@ impl Context<'_> {
     /// own resolution.
     pub fn render_size(&self) -> Option<[u32; 2]> {
         *self.render_size
-    }
-
-    /// The physical stretch this frame is under: how many surface
-    /// pixels each pixel of a fixed [`Config::render_size`] buffer
-    /// becomes on screen — 2.0 when a 1080p frame fills a 4K window,
-    /// 1.0 whenever there is no stretch at all (no fixed buffer, or a
-    /// surface the buffer's own size). An overlay that wants to hold
-    /// its authored physical size across quality tiers — the
-    /// diagnostics panel — divides its layout by this; it cannot beat
-    /// the buffer's resolution, only the buffer's magnification.
-    pub fn content_upscale(&self) -> f32 {
-        self.content_upscale
     }
 
     /// Fixes the render size — or lifts the fix — mid-run: the runtime

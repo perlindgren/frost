@@ -19,8 +19,8 @@
 // pipeline. The 32-byte header holds the light count, 12 padding bytes,
 // and the scene's ambient color; the unsized array tail holds one 48-byte
 // record per light, in call order — (x, y, radius, intensity), then
-// (r, g, b, penumbra), then (dir_x, dir_y, cos_half, feather): the
-// light's color with its shadow penumbra radius in pixels, then the
+// (r, g, b, penumbra), then (dir_x, dir_y, cos_half, feather-or-taps):
+// the light's color with its shadow penumbra radius in pixels, then the
 // cone's unit axis, the cosine of its half opening angle, and the width
 // of its edge feather in cosine units (0.0 for a hard edge; omni lights
 // pass every gate). The CPU sizes the bound buffer
@@ -189,6 +189,15 @@ fn occluded(li: u32, l: vec2<f32>, p: vec2<f32>) -> bool {
 // space, scaled per pixel by the light's penumbra radius (the record's
 // `lc.w`). A light of physical size is a disk, not a mathematical point,
 // so every tap is its own shadow ray from a point of that disk.
+// The same disk sampled four times: the cross of axis points, the
+// balanced quarter of the grid for hardware that cannot pay nine.
+const SHADOW_TAPS4 = array<vec2<f32>, 4>(
+    vec2<f32>(-1.0, 0.0),
+    vec2<f32>(1.0, 0.0),
+    vec2<f32>(0.0, -1.0),
+    vec2<f32>(0.0, 1.0),
+);
+
 const SHADOW_TAPS = array<vec2<f32>, 9>(
     vec2<f32>(-1.0, -1.0),
     vec2<f32>(0.0, -1.0),
@@ -242,7 +251,7 @@ fn light_mix(p: vec2<f32>) -> vec3<f32> {
         // of cosine inside it — a soft edge in place of the hard cut.
         // The ramp needs d normalized; the light's own pixel keeps the
         // hard gate's answer above.
-        if (cone.w > 0.0 && len > 1e-4) {
+        if (cone.w > 0.0 && cone.z > -1.0 && len > 1e-4) {
             gate = smoothstep(cone.z, cone.z + cone.w, ad / len);
         }
         if (gate > 0.0) {
@@ -264,12 +273,27 @@ fn light_mix(p: vec2<f32>) -> vec3<f32> {
                 let sa = sin(ang);
                 let ca = cos(ang);
                 var lit = 0.0;
-                for (var t = 0u; t < 9u; t = t + 1u) {
-                    let o = SHADOW_TAPS[t] * lc.w;
+                // How many rays sweep the disk. Omni (and directional)
+                // lights carry the rung in the slot a cone uses for
+                // its feather: 0 is the full nine — every light that
+                // never named a rung — and 1..=9 walks that many of
+                // the grid, four of them from the balanced cross.
+                var taps = 9u;
+                if (cone.z <= -1.0 && cone.w > 0.0) {
+                    taps = clamp(u32(cone.w), 1u, 9u);
+                }
+                for (var t = 0u; t < taps; t = t + 1u) {
+                    // Branch, not select: both select arms evaluate, and
+                    // the four-cross must never be indexed past its four.
+                    var o = SHADOW_TAPS[t];
+                    if (taps <= 4u) {
+                        o = SHADOW_TAPS4[t];
+                    }
+                    o = o * lc.w;
                     let q = src + vec2<f32>(ca * o.x - sa * o.y, sa * o.x + ca * o.y);
                     lit += select(0.0, 1.0, !occluded(i, q, p));
                 }
-                v = lit / 9.0;
+                v = lit / f32(taps);
             } else {
                 // A point-sized light: the single ray from its position,
                 // the original hard shadow. Without this branch the

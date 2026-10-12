@@ -1698,11 +1698,6 @@ impl<P: Process> Frost<P> {
         // a different shape, in which case the content is letterboxed and
         // both the cursor mapping and the blit pass account for it.
         let fit = content_fit(self.render_size, surface_px);
-        // How hard this frame's fixed buffer is stretched to the screen.
-        // One consumer today: the diagnostics overlay, which divides its
-        // layout by it so the panel keeps its physical size while quality
-        // changes rescale everything else.
-        let content_upscale = content_upscale(self.render_size, surface_px, fit);
         let mut canvas = Canvas::new(user_size, user_scale);
         let now = now_millis();
         let dt = self
@@ -1752,7 +1747,6 @@ impl<P: Process> Frost<P> {
                 frame_draw_calls: self.frame_draw_calls,
                 frame_diagnostic_draw_calls: self.frame_diagnostic_draw_calls,
                 mouse_wheel: self.mouse_wheel,
-                content_upscale,
                 exit: &mut self.exit_requested,
                 keys_frozen: &mut self.keys_frozen,
                 close_requested: self.close_request,

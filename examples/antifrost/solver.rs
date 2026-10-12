@@ -104,7 +104,6 @@ fn cell_i(g: &Game, c: crate::game::Cell) -> u8 {
 fn encode(g: &Game) -> Vec<u8> {
     let mut v = Vec::with_capacity(48);
     v.push(cell_i(g, g.player));
-    v.push(g.digs_left as u8);
     v.push(g.won as u8);
     // Dug cells: one bit per dirt cell of the level.
     let mut mask: u8 = 0;
@@ -160,7 +159,6 @@ fn decode(level: &Level, e: &[u8]) -> Game {
     let cols = level.cols as i32;
     let cell = |v: u8| crate::game::Cell::new(v as i32 % cols, v as i32 / cols);
     g.player = cell(at(e, &mut i));
-    g.digs_left = at(e, &mut i) as i8 as i32;
     g.won = at(e, &mut i) != 0;
     let dirt: Vec<usize> = (0..level.tiles.len())
         .filter(|&t| level.tiles[t] == crate::level::Tile::Dirt)
@@ -378,7 +376,7 @@ mod tests {
             "#.........#",
             "###########",
         ];
-        let level = from_grid("first cold ring", &rows, 0, 0).expect("valid grid");
+        let level = from_grid("first cold ring", &rows, 0).expect("valid grid");
         let p = solution(&level, 200_000).expect("solvable");
         eprintln!("first cold ring: {} moves  {}", p.len(), glyphs(&p));
         assert_eq!(p.len(), 9, "drop r, dunk it, home — the shipped par");
@@ -389,7 +387,7 @@ mod tests {
         // The red ant is collectable, but its bed lies behind solid rock:
         // the hill can never win, and the search exhausts the space.
         let rows = ["######", "#W.@r#", "######", "#R####"];
-        let level = from_grid("probe", &rows, 0, 0).expect("valid grid");
+        let level = from_grid("probe", &rows, 0).expect("valid grid");
         let run = bfs(&level, 1_000_000);
         assert!(run.winner.is_none());
         assert!(!run.capped, "small hill should exhaust, not cap");
@@ -440,7 +438,7 @@ mod tests {
             "#...B,,.....W.#",
             "###############",
         ];
-        let level = from_grid("Ember Deep", &rows, 2, 0).expect("valid grid");
+        let level = from_grid("Ember Deep", &rows, 0).expect("valid grid");
         let glyphs = "rrrrrrrrrrrrllllllllllllddrrrrrrrrrrrruuuullllllllllllddrrrrrrrrrrrrddl";
         let route = parse(&glyphs);
         assert_eq!(route.len(), 71);
@@ -459,7 +457,7 @@ mod tests {
             "#.......#",
             "#########",
         ];
-        let level = from_grid("Mail Slot", &rows, 0, 0).expect("valid grid");
+        let level = from_grid("Mail Slot", &rows, 0).expect("valid grid");
         let route = super::hunt_route(&level, 200_000).expect("hunter should solve Mail Slot");
         eprintln!("hunter found {} moves: {}", route.len(), glyphs(&route));
         assert!(verify(&level, &route));
@@ -475,7 +473,7 @@ mod tests {
             "#@.......W#",
             "###########",
         ];
-        let level = from_grid("Deadfall", &rows, 0, 0).expect("valid grid");
+        let level = from_grid("Deadfall", &rows, 0).expect("valid grid");
         let glyphs = "UuUrdrUuUrdrUuUrdrUuUrrd";
         let route = parse(glyphs);
         assert_eq!(route.len(), 24);
@@ -493,7 +491,7 @@ mod tests {
             "#......Y..B.#",
             "#############",
         ];
-        let level = from_grid("Winter Quarters", &rows, 0, 0).expect("valid grid");
+        let level = from_grid("Winter Quarters", &rows, 0).expect("valid grid");
         let glyphs = "rrrrrrrrrrxxddddxlllluuuurlddrxLlLlLlLrrrrrrxLuu";
         let route = parse(glyphs);
         assert_eq!(route.len(), 48);
@@ -511,7 +509,7 @@ mod tests {
             "#@......#",
             "#########",
         ];
-        let level = from_grid("Ninefold", &rows, 0, 0).expect("valid grid");
+        let level = from_grid("Ninefold", &rows, 0).expect("valid grid");
         let glyphs = "rrrrrruuuuudddddllluuurddlulurdddllluuuuu";
         let route = parse(glyphs);
         assert_eq!(route.len(), 41);
@@ -529,7 +527,7 @@ mod tests {
             "#.y...g...#",
             "###########",
         ];
-        let level = from_grid("Hearth Row", &rows, 0, 0).expect("valid grid");
+        let level = from_grid("Hearth Row", &rows, 0).expect("valid grid");
         let glyphs = "ddrluuuurrrrxddxUddrrruuuulxRllllll";
         let route = parse(glyphs);
         assert_eq!(route.len(), 35);
@@ -547,7 +545,7 @@ mod tests {
             "#..r..g...#",
             "###########",
         ];
-        let level = from_grid("Ashfall", &rows, 0, 0).expect("valid grid");
+        let level = from_grid("Ashfall", &rows, 0).expect("valid grid");
         let glyphs = "ddrrrrrllllluurrrxrrrrrllluulllxlxxlddRrRrrrruxulxRrRdduurRllxRllll";
         let route = parse(glyphs);
         assert_eq!(route.len(), 67);
@@ -564,7 +562,7 @@ mod tests {
             "#..r.RgW#",
             "#########",
         ];
-        let level = from_grid("Slow Burn", &rows, 0, 0).expect("valid grid");
+        let level = from_grid("Slow Burn", &rows, 0).expect("valid grid");
         let glyphs = "rrrrrrddllllllddrrrrrlllllrrrrrr";
         let route = parse(glyphs);
         assert_eq!(route.len(), 32);
@@ -574,7 +572,7 @@ mod tests {
     #[test]
     fn key_round_trip_is_faithful() {
         let rows = ["#W..r@.R..#", "#.#######.#", "#.........#", "###########"];
-        let level = from_grid("ring probe", &rows, 0, 0).expect("valid grid");
+        let level = from_grid("ring probe", &rows, 0).expect("valid grid");
         let mut g = Game::start(level.clone());
         let mut seed: u32 = 0x1234_5678;
         let mut rnd = || {
@@ -587,7 +585,6 @@ mod tests {
             let enc2 = encode(&back);
             assert_eq!(enc, enc2, "key not stable at step {step}");
             assert_eq!(g.player, back.player, "player at step {step}");
-            assert_eq!(g.digs_left, back.digs_left, "digs at step {step}");
             assert_eq!(g.won, back.won, "won at step {step}");
             assert_eq!(g.tiles, back.tiles, "tiles at step {step}");
             assert_eq!(
@@ -609,7 +606,7 @@ mod tests {
     }
 
     /// Candidate hills under evaluation: par must be real before shipping.
-    /// Paste grids here (name, rows, digs, BFS state budget); the probe
+    /// Paste grids here (name, rows, BFS state budget); the probe
     /// prints the optimal path, its length, and the mechanics it uses.
     /// Every candidate so far has graduated: Forced Hand and Deep Cellar
     /// shipped at their BFS optima, Fourposter and The Stranded shipped
@@ -617,7 +614,7 @@ mod tests {
     #[test]
     #[ignore = "level design probe"]
     fn probe_candidate_hills() {
-        let candidates: [(&str, &[&str], i32, usize); 1] = [(
+        let candidates: [(&str, &[&str], usize); 1] = [(
             "Slow Burn",
             &[
                 "#########",
@@ -628,12 +625,11 @@ mod tests {
                 "#..r.RgW#",
                 "#########",
             ],
-            0,
             24_000_000,
         )];
 
-        for (name, rows, digs, cap) in candidates {
-            let level = from_grid(name, rows, digs, 0).expect("valid grid");
+        for (name, rows, cap) in candidates {
+            let level = from_grid(name, rows, 0).expect("valid grid");
             let t = std::time::Instant::now();
             let run = bfs(&level, cap);
             match run.winner {
@@ -680,7 +676,7 @@ mod tests {
             ],
         )];
         for (name, rows) in candidates {
-            let level = from_grid(name, rows, 0, 0).expect("valid grid");
+            let level = from_grid(name, rows, 0).expect("valid grid");
             let t = std::time::Instant::now();
             match super::hunt_route(&level, 150) {
                 Some(route) => {
@@ -860,7 +856,7 @@ mod dbg_trace {
     #[test]
     #[ignore = "trace"]
     fn dbg_routes() {
-        let cases: [(&str, &[&str], i32, &str); 10] = [
+        let cases: [(&str, &[&str], &str); 10] = [
             (
                 "Kindling",
                 &[
@@ -872,7 +868,6 @@ mod dbg_trace {
                     "#W.R..Y.#",
                     "#########",
                 ],
-                0,
                 "rrrrrlllllddrrrxrrrddlllllluuddrl",
             ),
             (
@@ -886,7 +881,6 @@ mod dbg_trace {
                     "#..y..G.#",
                     "#########",
                 ],
-                0,
                 "rrrrrruuxllllllddddrrrrrruuduuull",
             ),
             (
@@ -900,7 +894,6 @@ mod dbg_trace {
                     "#..G....#",
                     "#########",
                 ],
-                0,
                 "rrrrlxrrrllxddlluUulldxUuUrrUrruu",
             ),
             (
@@ -914,7 +907,6 @@ mod dbg_trace {
                     "#..r.RgW#",
                     "#########",
                 ],
-                0,
                 "rrrrrrddllllllddrrrrrrllllllrrrrrr",
             ),
             (
@@ -928,7 +920,6 @@ mod dbg_trace {
                     "#W..y.R.g.#",
                     "###########",
                 ],
-                0,
                 "rrrrrdddxdllrrrrxruuuulllddddlllll",
             ),
             (
@@ -942,7 +933,6 @@ mod dbg_trace {
                     "#.y...g...#",
                     "###########",
                 ],
-                0,
                 "ddrluuuurrrrxddxUddrrruuuulxRllllll",
             ),
             (
@@ -956,7 +946,6 @@ mod dbg_trace {
                     "#...r.g...#",
                     "###########",
                 ],
-                1,
                 "rrrrrddllrruuuulxxRrddrrrllluuRlllll",
             ),
             (
@@ -970,7 +959,6 @@ mod dbg_trace {
                     "#.......W.#",
                     "###########",
                 ],
-                0,
                 "ddrrrrrrrruuddxLuullllllllddrrrrrrrrddl",
             ),
             (
@@ -984,7 +972,6 @@ mod dbg_trace {
                     "#..r..g...#",
                     "###########",
                 ],
-                0,
                 "ddrrrrrllllluurrrxrrrrrllluulllxlxxlddRrRrrrruxulxRrRdduurRllxRllll",
             ),
             (
@@ -999,12 +986,11 @@ mod dbg_trace {
                     "#@......#",
                     "#########",
                 ],
-                0,
                 "rrrrrruuuuudddddllluuurddlulurdddllluuuuu",
             ),
         ];
-        for (name, rows, digs, gl) in cases {
-            let level = from_grid(name, &rows, digs, 0).expect("valid grid");
+        for (name, rows, gl) in cases {
+            let level = from_grid(name, &rows, 0).expect("valid grid");
             let route = parse(gl);
             let mut g = Game::start(level.clone());
             println!("== {name} ==");

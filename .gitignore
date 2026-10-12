@@ -7,3 +7,9 @@
 /antifrost-web.zip
 Cargo.lock
 **/.DS_Store
+
+# The game writes its own files where it launches from — settings the
+# moment one changes, progress whenever a hill moves. Per-machine
+# artifacts, never source.
+/antifrost.settings.ron
+/antifrost.progress.ron

@@ -23,7 +23,6 @@ fn context_reports_held_keys() {
             blit_filter: &mut blit_filter,
             vsync: &mut vsync,
             render_size: &mut None,
-            content_upscale: 1.0,
             window: None,
             expected_fps: None,
             mouse: None,
@@ -50,7 +49,6 @@ fn context_reports_held_keys() {
         blit_filter: &mut blit_filter,
         vsync: &mut vsync,
         render_size: &mut None,
-        content_upscale: 1.0,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -88,7 +86,6 @@ fn context_reports_typed_character_of_held_key() {
         blit_filter: &mut blit_filter,
         vsync: &mut vsync,
         render_size: &mut None,
-        content_upscale: 1.0,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -123,7 +120,6 @@ fn context_reports_mouse_position() {
         blit_filter: &mut blit_filter,
         vsync: &mut vsync,
         render_size: &mut None,
-        content_upscale: 1.0,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -148,7 +144,6 @@ fn context_reports_mouse_position() {
         blit_filter: &mut blit_filter,
         vsync: &mut vsync,
         render_size: &mut None,
-        content_upscale: 1.0,
         window: None,
         expected_fps: None,
         mouse: Some([12.0, -34.0]),
@@ -183,7 +178,6 @@ fn context_reports_held_mouse_button() {
             blit_filter: &mut blit_filter,
             vsync: &mut vsync,
             render_size: &mut None,
-            content_upscale: 1.0,
             window: None,
             expected_fps: None,
             mouse: None,
@@ -210,7 +204,6 @@ fn context_reports_held_mouse_button() {
         blit_filter: &mut blit_filter,
         vsync: &mut vsync,
         render_size: &mut None,
-        content_upscale: 1.0,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -245,7 +238,6 @@ fn context_reports_mouse_wheel_delta() {
         blit_filter: &mut blit_filter,
         vsync: &mut vsync,
         render_size: &mut None,
-        content_upscale: 1.0,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -279,7 +271,6 @@ fn context_reports_no_gamepads_without_gilrs() {
         blit_filter: &mut blit_filter,
         vsync: &mut vsync,
         render_size: &mut None,
-        content_upscale: 1.0,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -321,7 +312,6 @@ fn render_size_flips_mid_run() {
         blit_filter: &mut blit_filter,
         vsync: &mut vsync,
         render_size: &mut render_size,
-        content_upscale: 1.0,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -341,25 +331,4 @@ fn render_size_flips_mid_run() {
     assert_eq!(ctx.render_size(), None, "the fix lifts again");
     // The engine state the frame will render against really moved.
     assert_eq!(render_size, None);
-}
-
-#[test]
-fn upscale_tells_overlays_how_hard_the_stretcher_pulls() {
-    use crate::backend::windowing::content_upscale;
-    // No fixed buffer, no stretch: native pixels land one-for-one.
-    assert_eq!(content_upscale(None, (3840, 2160), (1.0, 1.0)), 1.0);
-    // The everyday fullscreen: a 1080p buffer carried to 4K, double.
-    assert_eq!(
-        content_upscale(Some([1920, 1080]), (3840, 2160), (1.0, 1.0)),
-        2.0
-    );
-    // Letterboxed (here: width-limited, bars above and below) — the
-    // content's own width is the fit fraction of the surface, and the
-    // stretch is that width over the buffer.
-    let k = content_upscale(Some([1920, 1080]), (1600, 1200), (1.0, 0.75));
-    assert!((k - 1600.0 / 1920.0).abs() < 1e-6, "shrunk below native");
-    // A surface that does not exist yet (or a buffer the surface's own
-    // size) is 1.0, and nonsense inputs never poison the divisor.
-    assert_eq!(content_upscale(Some([1920, 1080]), (0, 0), (1.0, 1.0)), 1.0);
-    assert_eq!(content_upscale(Some([0, 0]), (100, 100), (1.0, 1.0)), 1.0);
 }

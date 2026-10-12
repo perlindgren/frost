@@ -526,13 +526,6 @@ pub struct Diagnostics {
     /// Alt-4 toggle them by position among the enabled charts, top chart
     /// first, or [`Diagnostics::toggle_chart`] does.
     chart_on: Vec<bool>,
-    /// The stretch this frame's fixed render buffer is under (see
-    /// [`Context::content_upscale`]), read fresh each process: the
-    /// layout divides by it so the panel keeps its authored physical
-    /// size when a fixed render buffer is stretched to a bigger
-    /// window. Softness stays with the stretch — only the buffer's
-    /// absence cures that — but the panel stops growing with it.
-    upscale: f32,
     /// The overlay's display scale: every base dimension — [`SIZE`],
     /// [`MARGIN`], [`LINE_GAP`], [`GRAPH_W`], [`GRAPH_H`], [`GRAPH_GAP`],
     /// [`LINE_WIDTH`] — multiplied by it. Alt+'+' and Alt+'-' step it, or
@@ -758,7 +751,6 @@ impl Diagnostics {
             all_on: true,
             text_on: true,
             chart_on,
-            upscale: 1.0,
             scale: 1.0,
             prev_combos: [false; 8],
             prev_scaling_combo: false,
@@ -796,7 +788,7 @@ impl Diagnostics {
     /// text or the line was laid out at another display scale — the
     /// per-frame rebuild guard.
     fn refresh_line(&mut self, slot: LineSlot, text: String) {
-        let size = SIZE * self.scale / self.upscale;
+        let size = SIZE * self.scale;
         if self.line(slot).text == text && self.line(slot).size == size {
             return;
         }
@@ -994,10 +986,6 @@ impl Process for Diagnostics {
         // from the engine's total probe — one frame behind, so both
         // numbers describe the same completed frame.
         let t0 = now_millis();
-        // The stretcher's current strength, before any glyph re-bake or
-        // layout this frame reads it: quality changes flip it, and the
-        // panel meets the new frame already divided by it.
-        self.upscale = ctx.content_upscale();
         // The keyboard shortcuts, on press edges only so a held key
         // toggles once: Alt-0 the overlay as a whole, Alt-1..Alt-4 the
         // charts by position among the enabled ones (top chart first),
@@ -1125,7 +1113,7 @@ impl Process for Diagnostics {
         // included: `line_extent` was re-measured at the new font size
         // when the scale changed, and every laid-out line re-lays out on
         // its next refresh.
-        let scale = self.scale / self.upscale;
+        let scale = self.scale;
         let margin = MARGIN * scale;
         let line_gap = LINE_GAP * scale;
         let graph_w = GRAPH_W * scale;

@@ -463,6 +463,15 @@ pub struct Light {
     /// the occluder sits to the shadow — values around 20 and up give
     /// suns and stars shadows worth calling soft.
     pub penumbra: f32,
+    /// How many shadow rays a penumbra'd **omni** light sweeps through
+    /// its disk per lit pixel: 1..=9, taken from a grid ordered so the
+    /// first four are a balanced cross and all nine fill the 3×3.
+    /// Weak hardware trades diffusion for frame rate one ray at a
+    /// time; the default, 9, is the full grid. Ignored when
+    /// [`penumbra`](Self::penumbra) is zero — that is the single hard
+    /// ray by definition — and by cone and directional lights, whose
+    /// third uniform slot carries the cone's edge feather instead.
+    pub shadow_taps: u32,
 }
 
 impl Light {
@@ -483,6 +492,7 @@ impl Light {
             spread: std::f32::consts::TAU,
             softness: 0.0,
             penumbra: 0.0,
+            shadow_taps: 9,
         }
     }
 
@@ -512,6 +522,7 @@ impl Light {
             spread,
             softness,
             penumbra: 0.0,
+            shadow_taps: 9,
         }
     }
 
@@ -548,6 +559,7 @@ impl Light {
             spread: std::f32::consts::TAU,
             softness: 0.0,
             penumbra: 0.0,
+            shadow_taps: 9,
         }
     }
 
@@ -559,6 +571,15 @@ impl Light {
     /// is the hard point-light shadow.
     pub fn with_penumbra(mut self, radius: f32) -> Self {
         self.penumbra = radius.max(0.0);
+        self
+    }
+
+    /// Set the omni penumbra's tap count: see
+    /// [`shadow_taps`](Self::shadow_taps). Values clamp to 1..=9 as
+    /// they pack, so a request outside the grid simply buys its
+    /// nearest end.
+    pub fn with_shadow_taps(mut self, taps: u32) -> Self {
+        self.shadow_taps = taps;
         self
     }
 }

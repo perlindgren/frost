@@ -18,7 +18,6 @@
     levels: [
         (
             name: "First Warm",
-            digs: 0,
             par: 5,
             grid: [
                 "#######",
@@ -30,7 +29,6 @@
         ),
         (
             name: "Attunement",
-            digs: 0,
             par: 5,
             grid: [
                 "#########",
@@ -42,7 +40,6 @@
         ),
         (
             name: "First Cold",
-            digs: 0,
             par: 9,
             grid: [
                 "###########",
@@ -54,7 +51,6 @@
         ),
         (
             name: "Fire Escape",
-            digs: 0,
             par: 10,
             grid: [
                 "#########",
@@ -68,7 +64,6 @@
         ),
         (
             name: "Cheap Dig",
-            digs: 1,
             par: 10,
             grid: [
                 "#########",
@@ -82,7 +77,6 @@
         ),
         (
             name: "Second Lap",
-            digs: 0,
             par: 16,
             grid: [
                 "##########",
@@ -94,7 +88,6 @@
         ),
         (
             name: "Split Paths",
-            digs: 0,
             par: 17,
             grid: [
                 "###########",
@@ -106,7 +99,6 @@
         ),
         (
             name: "Soft Soil",
-            digs: 1,
             par: 18,
             grid: [
                 "###########",
@@ -119,7 +111,6 @@
         ),
         (
             name: "Double Errand",
-            digs: 0,
             par: 20,
             grid: [
                 "#########",
@@ -133,7 +124,6 @@
         ),
         (
             name: "Mail Slot",
-            digs: 0,
             par: 15,
             grid: [
                 "#########",
@@ -147,7 +137,6 @@
         ),
         (
             name: "Two Slots",
-            digs: 0,
             par: 29,
             grid: [
                 "##########",
@@ -161,7 +150,6 @@
         ),
         (
             name: "Ridgeway",
-            digs: 0,
             par: 22,
             grid: [
                 "#############",
@@ -175,7 +163,6 @@
         ),
         (
             name: "The Errand",
-            digs: 1,
             par: 22,
             grid: [
                 "#############",
@@ -189,7 +176,6 @@
         ),
         (
             name: "Doorway",
-            digs: 0,
             par: 22,
             grid: [
                 "###########",
@@ -203,7 +189,6 @@
         ),
         (
             name: "Two Ways Home",
-            digs: 0,
             par: 34,
             grid: [
                 "############",
@@ -217,7 +202,6 @@
         ),
         (
             name: "Pantry Row",
-            digs: 0,
             par: 34,
             grid: [
                 "###########",
@@ -231,7 +215,6 @@
         ),
         (
             name: "Cellar Row",
-            digs: 0,
             par: 36,
             grid: [
                 "###########",
@@ -245,7 +228,6 @@
         ),
         (
             name: "Three Cold Nights",
-            digs: 0,
             par: 41,
             grid: [
                 "#############",
@@ -259,7 +241,6 @@
         ),
         (
             name: "Full Beds",
-            digs: 0,
             par: 31,
             grid: [
                 "###########",
@@ -271,7 +252,6 @@
         ),
         (
             name: "Ring Toss",
-            digs: 0,
             par: 33,
             grid: [
                 "###########",
@@ -283,7 +263,6 @@
         ),
         (
             name: "Thimble",
-            digs: 0,
             par: 37,
             grid: [
                 "#########",
@@ -297,7 +276,6 @@
         ),
         (
             name: "Kindling",
-            digs: 0,
             par: 33,
             grid: [
                 "#########",
@@ -311,7 +289,6 @@
         ),
         (
             name: "Cupboard",
-            digs: 0,
             par: 33,
             grid: [
                 "#########",
@@ -325,7 +302,6 @@
         ),
         (
             name: "Soot Gate",
-            digs: 0,
             par: 33,
             grid: [
                 "#########",
@@ -339,7 +315,6 @@
         ),
         (
             name: "Slow Burn",
-            digs: 0,
             par: 32,
             grid: [
                 "#########",
@@ -353,7 +328,6 @@
         ),
         (
             name: "Pebble Gallery",
-            digs: 0,
             par: 34,
             grid: [
                 "###########",
@@ -367,7 +341,6 @@
         ),
         (
             name: "Hearth Row",
-            digs: 0,
             par: 35,
             grid: [
                 "###########",
@@ -381,7 +354,6 @@
         ),
         (
             name: "Emberlight",
-            digs: 1,
             par: 36,
             grid: [
                 "###########",
@@ -395,7 +367,6 @@
         ),
         (
             name: "Tinder Row",
-            digs: 0,
             par: 39,
             grid: [
                 "###########",
@@ -409,7 +380,6 @@
         ),
         (
             name: "Ninefold",
-            digs: 0,
             par: 41,
             grid: [
                 "#########",
@@ -424,7 +394,6 @@
         ),
         (
             name: "Deadfall",
-            digs: 0,
             par: 24,
             grid: [
                 "###########",
@@ -437,7 +406,6 @@
         ),
         (
             name: "Winter Quarters",
-            digs: 0,
             par: 48,
             grid: [
                 "#############",
@@ -451,7 +419,6 @@
         ),
         (
             name: "Deep Cellar",
-            digs: 0,
             par: 51,
             grid: [
                 "#############",
@@ -465,7 +432,6 @@
         ),
         (
             name: "Ashfall",
-            digs: 0,
             par: 67,
             grid: [
                 "###########",
@@ -479,7 +445,6 @@
         ),
         (
             name: "Ember Deep",
-            digs: 2,
             par: 71,
             grid: [
                 "###############",

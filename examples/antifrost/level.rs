@@ -24,7 +24,6 @@ pub struct Level {
     pub rows: usize,
     /// Row-major from the top-left corner (row 0 is the top row).
     pub tiles: Vec<Tile>,
-    pub digs: i32,
     pub par: i32,
     pub player_start: crate::game::Cell,
     /// Wild ant spawns with their color.
@@ -48,7 +47,7 @@ fn color_of(c: char) -> Option<AntColor> {
 
 /// Build a level from grid rows, validating shape, pairing and reach of
 /// beds/ants. Returns `Err(reason)` so a bad level is refused, not half-read.
-pub fn from_grid(name: &str, rows: &[&str], digs: i32, par: i32) -> Result<Level, String> {
+pub fn from_grid(name: &str, rows: &[&str], par: i32) -> Result<Level, String> {
     if rows.is_empty() {
         return Err(format!("{name}: no rows"));
     }
@@ -125,7 +124,6 @@ pub fn from_grid(name: &str, rows: &[&str], digs: i32, par: i32) -> Result<Level
         cols: width,
         rows: rows.len(),
         tiles,
-        digs,
         par,
         player_start,
         wild,
@@ -151,7 +149,7 @@ fn number(val: &Val) -> Option<i32> {
     }
 }
 
-/// Load the `( levels: [ (name:, digs:, par:, grid: [...]), .. ] )` document.
+/// Load the `( levels: [ (name:, par:, grid: [...]), .. ] )` document.
 /// Bad levels are refused loudly and skipped.
 pub fn load_levels(src: &str) -> Vec<Level> {
     let mut levels = Vec::new();
@@ -174,7 +172,6 @@ pub fn load_levels(src: &str) -> Vec<Level> {
         } else {
             name
         };
-        let digs = field(level, "digs").and_then(number).unwrap_or(0);
         let par = field(level, "par").and_then(number).unwrap_or(0);
         let Some(grid) = field(level, "grid") else {
             log::error!("{name}: no grid");
@@ -186,7 +183,7 @@ pub fn load_levels(src: &str) -> Vec<Level> {
             .filter_map(|(_, v)| unquote(v))
             .collect();
         let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
-        match from_grid(&name, &refs, digs, par) {
+        match from_grid(&name, &refs, par) {
             Ok(level) => levels.push(level),
             Err(reason) => log::error!("refused level: {reason}"),
         }
