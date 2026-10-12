@@ -119,6 +119,7 @@ binary:
 | RX 7900 XTX (RADV NAVI31) | ~120 | ~4× the iGPU; the cap is host-side (CPU/submit or compositor pacing — not chased) |
 | llvmpipe (16-core CPU) | ~18 | the accidental baseline from trap (c) |
 | iGPU, fixed 1080p buffer (`Config::render_size`) | **57–59** | same 4K fullscreen, 2.1× — and a clean attribution, below |
+| iGPU, 1080p + discard-before-lighting shaders | **73–75** | [`sprite.wgsl`](../shaders/sprite.wgsl)/[`particles.wgsl`](../shaders/particles.wgsl) skip the light loop for exactly-zero-alpha fragments; +26 % |
 
 Follow-up the same day: antifrost switched to
 [`Config::render_size`](../src/lib.rs) at 1920×1080 with the stretch pass

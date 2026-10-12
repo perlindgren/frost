@@ -54,6 +54,34 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     // Sample the quad's [0, 1] uv remapped into the texture sub-rectangle it
     // covers; for a whole-texture sprite the remap is the identity.
     let t = textureSample(tex, samp, mix(u.uv_rect.xy, u.uv_rect.zw, uv));
+    // The final alpha: the texture's own, scaled by the sprite's alpha and
+    // the tint's. Computed here, before the lights, for one exact reason:
+    // a fragment that would blend (rgb, 0) is the blend equation's
+    // identity, so discarding it changes no pixel of the attachment — and
+    // the whole per-fragment light loop (every light's falloff, every
+    // occlusion walk) is skipped along with it. PNG margins are exactly
+    // zero, so every transparent texel of a padded sprite takes this exit;
+    // an epsilon would be an image change dressed as an optimization, so
+    // the test is exact. The sample deliberately sits above the discard:
+    // WGSL derives mip levels from the surviving threads of each 2x2 quad,
+    // and discarding before the fetch would poison the survivors'
+    // derivatives. Note what this does NOT recover: the texel fetch and
+    // the rasterized slot are spent; only the arithmetic after them is.
+    //
+    // For tile-based targets (mobile tilers under WebGL, Apple's own
+    // tiles): some drivers keep whole-draw fast paths that a program
+    // containing `discard` can opt out of, fire or no fire. The classic
+    // companion penalty — early-depth demotion — is a non-event here
+    // because frost renders with no depth attachment at all, and desktop
+    // tilers and immediate renderers run this alpha-masked pattern as
+    // bread and butter; but if a tiler ever measures slower with the
+    // discard than without, the answer is to revert this block, not to
+    // rework it. Phone and tablet targets are outside the current
+    // audience; a field report from one is the reason this note exists.
+    let alpha = t.a * u.alpha * u.tint.a;
+    if (alpha == 0.0) {
+        discard;
+    }
     // The tinted texture color, multiplied by the light mix when the
     // sprite is lit; the lights never touch the alpha. The sprite's own
     // glow joins the mix as a floor of self-light: rgb scaled by its
@@ -66,5 +94,5 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     // Emit the color, scaled by the sprite's alpha and the tint's own
     // alpha, and composited over the existing attachment via alpha
     // blending.
-    return vec4<f32>(rgb, t.a * u.alpha * u.tint.a);
+    return vec4<f32>(rgb, alpha);
 }

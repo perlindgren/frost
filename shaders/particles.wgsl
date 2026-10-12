@@ -94,6 +94,18 @@ fn vs_main(
     return out;
 }
 
+// The particle's lit color: the batch's base tint times the particle's
+// own tint, run through the light mix when the batch is lit. Shared by
+// both emit branches below so the multiply order — and with it the exact
+// emitted value — lives in one place.
+fn light_rgb(tinted: vec3<f32>, at: vec2<f32>) -> vec3<f32> {
+    var rgb = tinted;
+    if (u.lit > 0.5) {
+        rgb *= light_mix(at);
+    }
+    return rgb;
+}
+
 @fragment
 fn fs_main(
     @builtin(position) frag_coord: vec4<f32>,
@@ -107,39 +119,55 @@ fn fs_main(
     let s = sin(extra.x);
     let unrot = mat2x2<f32>(c, -s, s, c);
     let off = unrot * (frag_coord.xy - inst.xy);
-    // The particle's color: the batch's base tint times its own tint,
-    // multiplied by the light mix when the batch is lit; the alpha is
-    // additionally scaled by its remaining life fraction, and the lights
-    // never touch it.
-    var rgb = u.color.rgb * extra.yzw;
-    if (u.lit > 0.5) {
-        rgb *= light_mix(frag_coord.xy);
-    }
+    // The particle's alpha, scaled by its remaining life fraction; the
+    // lights never touch it. Resolved — with the branch's own coverage or
+    // texture alpha — *before* any lighting, and a fragment whose final
+    // alpha is exactly zero discards: such a fragment is the blend
+    // equation's identity, and discarding it skips the whole per-fragment
+    // light loop (every light's falloff, every occlusion walk) that the
+    // leaf sheets and snow deck spend over their transparent margins.
+    // The test is exact zero, not an epsilon — an epsilon would be an
+    // image change dressed as an optimization. The sprite branch samples
+    // above its discard on purpose: mip derivatives come from the
+    // surviving threads of each 2x2 quad. Tile-based targets carry the
+    // same caveat recorded in sprite.wgsl — drivers may drop whole-draw
+    // fast paths for programs containing `discard`, and while the no-depth
+    // attachment rules out the classic early-depth demotion, a measured
+    // tiler regression is an answer to revert this, not to rework it.
     let alpha = u.color.a * inst.w;
-    var coverage: f32;
     if (u.misc.x < 0.5) {
         // A circle with the particle's size as its radius.
         let d = length(off) - inst.z;
-        coverage = 1.0 - smoothstep(-0.75, 0.75, d);
+        let a = (1.0 - smoothstep(-0.75, 0.75, d)) * alpha;
+        if (a == 0.0) {
+            discard;
+        }
+        // Emit the tinted color and coverage; composited over the
+        // existing attachment via alpha blending.
+        return vec4<f32>(light_rgb(u.color.rgb * extra.yzw, frag_coord.xy), a);
     } else if (u.misc.x < 1.5) {
         // A rectangle with half-extents (size, size * the shape's
         // height/width factor): the same SDF as shape.wgsl's branch.
         let q = abs(off) - vec2<f32>(inst.z, inst.z * u.misc.y);
         let d = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0);
-        coverage = 1.0 - smoothstep(-0.75, 0.75, d);
-    } else {
-        // A sprite: the whole texture, centered on the particle, filling
-        // the quad exactly.
-        let uv = off / (2.0 * inst.z * vec2<f32>(1.0, u.misc.y)) + vec2<f32>(0.5);
-        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-            return vec4<f32>(0.0);
+        let a = (1.0 - smoothstep(-0.75, 0.75, d)) * alpha;
+        if (a == 0.0) {
+            discard;
         }
-        let t = textureSample(tex, samp, uv);
-        // The texture's own alpha multiplies the particle's alpha, like a
-        // Shape::Sprite.
-        return vec4<f32>(t.rgb * rgb, t.a * alpha);
+        return vec4<f32>(light_rgb(u.color.rgb * extra.yzw, frag_coord.xy), a);
     }
-    // Emit the tinted color and coverage; composited over the existing
-    // attachment via alpha blending.
-    return vec4<f32>(rgb, coverage * alpha);
+    // A sprite: the whole texture, centered on the particle, filling
+    // the quad exactly.
+    let uv = off / (2.0 * inst.z * vec2<f32>(1.0, u.misc.y)) + vec2<f32>(0.5);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return vec4<f32>(0.0);
+    }
+    let t = textureSample(tex, samp, uv);
+    // The texture's own alpha multiplies the particle's alpha, like a
+    // Shape::Sprite.
+    let a = t.a * alpha;
+    if (a == 0.0) {
+        discard;
+    }
+    return vec4<f32>(t.rgb * light_rgb(u.color.rgb * extra.yzw, frag_coord.xy), a);
 }
