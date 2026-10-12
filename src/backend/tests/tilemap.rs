@@ -712,14 +712,23 @@ fn a_shadow_falls_on_a_lit_map() {
         feather: 0.0,
         z: 1.0,
     };
-    let lights = crate::backend::frame::pack_light_field(&[light], black());
+    let lights = crate::backend::frame::pack_light_field(std::slice::from_ref(&light), black());
     let wall = crate::canvas::Occluder {
         world: crate::objects::Transform::identity(),
         center: [64.0, 64.0],
         half: [6.0, 28.0],
         polygon: None,
     };
-    let occluders = crate::backend::frame::pack_occluder_field(&[], &[wall]);
+    // Same draw list as the light field above: the occluder pack keys
+    // its per-light table by the lights among these draws, and the
+    // shader indexes that table by the light field's own order. (With
+    // no light in the pack there is no table at all — the tail is the
+    // master list, which nothing may read while a light exists.)
+    let occluders = crate::backend::frame::pack_occluder_field(
+        std::slice::from_ref(&light),
+        &[wall],
+        [SPAN as f32, SPAN as f32],
+    );
     let px = |shot: &[u8], x: u32, y: u32| shot[4 * (y * SPAN + x) as usize];
     let (left, right) = (24, 104);
 

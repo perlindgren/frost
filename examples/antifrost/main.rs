@@ -655,6 +655,12 @@ struct Demo {
     /// weather, swelling toward `N_MAX` as the frost deepens.
     leaves_active: usize,
     leaf_t: f32,
+    /// The hill's shadow cache: the solid-cell list as of the last
+    /// merge, and the merged rectangles (cell-space spans, both ends
+    /// inclusive) that list earned. Recomputed only when the cells
+    /// change — see the occluder block in `draw`.
+    occ_key: Vec<(i32, i32, bool)>,
+    occ_boxes: Vec<(i32, i32, i32, i32)>,
 }
 
 impl Demo {
@@ -719,6 +725,8 @@ impl Demo {
             leaves_seeded: false,
             leaves_active: N_LEAVES,
             leaf_t: 0.0,
+            occ_key: Vec::new(),
+            occ_boxes: Vec::new(),
         };
         demo.load(0);
         demo
@@ -1487,41 +1495,59 @@ impl Demo {
         // the same shadow its tiles ever did — the tile hairlines that
         // used to leak a thread of light measure a pixel, and a merged
         // edge is invisible against the row it belongs to.
+        //
+        // The merge itself is cached on the cell list: the hill is
+        // static between digs, so the run scan, the sort, and the walk
+        // re-run only when the cells actually change. What every frame
+        // does instead is re-pack the cached rectangles into screen
+        // space — the camera pan forces fresh pixel-space boxes either
+        // way, but packing cached runs is arithmetic where merging is
+        // search, and the frames between digs are the overwhelming
+        // majority of the game.
         {
             let ts = TILE * ZOOM;
-            let mut runs: Vec<(i32, i32, i32)> = Vec::new();
-            let mut i = 0;
-            while i < tiles.len() {
-                let (row, col_s, _) = tiles[i];
-                let mut col_e = col_s;
-                let mut j = i + 1;
-                while j < tiles.len() && tiles[j].0 == row && tiles[j].1 == col_e + 1 {
-                    col_e = tiles[j].1;
-                    j += 1;
+            if tiles != self.occ_key {
+                let mut runs: Vec<(i32, i32, i32)> = Vec::new();
+                let mut i = 0;
+                while i < tiles.len() {
+                    let (row, col_s, _) = tiles[i];
+                    let mut col_e = col_s;
+                    let mut j = i + 1;
+                    while j < tiles.len() && tiles[j].0 == row && tiles[j].1 == col_e + 1 {
+                        col_e = tiles[j].1;
+                        j += 1;
+                    }
+                    runs.push((col_s, col_e, row));
+                    i = j;
                 }
-                runs.push((col_s, col_e, row));
-                i = j;
+                // Sorted by span, then row, so a stack of equal spans — the
+                // frame's sides, a pile's flank — sits adjacent in line for
+                // the upward merge. A row-major scan could never see it: a
+                // row with two runs puts the other column's run between the
+                // stack's own links, and the stack stayed one box per row,
+                // leaking a hairline of light through every seam it drew.
+                runs.sort_unstable();
+                let mut boxes: Vec<(i32, i32, i32, i32)> = Vec::new();
+                let mut k = 0;
+                while k < runs.len() {
+                    let (col_s, col_e, row0) = runs[k];
+                    let mut row1 = row0;
+                    let mut m = k + 1;
+                    while m < runs.len()
+                        && runs[m].0 == col_s
+                        && runs[m].1 == col_e
+                        && runs[m].2 == row1 + 1
+                    {
+                        row1 = runs[m].2;
+                        m += 1;
+                    }
+                    boxes.push((col_s, col_e, row0, row1));
+                    k = m;
+                }
+                self.occ_key.clone_from(&tiles);
+                self.occ_boxes = boxes;
             }
-            // Sorted by span, then row, so a stack of equal spans — the
-            // frame's sides, a pile's flank — sits adjacent in line for
-            // the upward merge. A row-major scan could never see it: a
-            // row with two runs puts the other column's run between the
-            // stack's own links, and the stack stayed one box per row,
-            // leaking a hairline of light through every seam it drew.
-            runs.sort_unstable();
-            let mut k = 0;
-            while k < runs.len() {
-                let (col_s, col_e, row0) = runs[k];
-                let mut row1 = row0;
-                let mut m = k + 1;
-                while m < runs.len()
-                    && runs[m].0 == col_s
-                    && runs[m].1 == col_e
-                    && runs[m].2 == row1 + 1
-                {
-                    row1 = runs[m].2;
-                    m += 1;
-                }
+            for &(col_s, col_e, row0, row1) in &self.occ_boxes {
                 let [x0, y0] = self.screen(self.cell_px(game::Cell::new(col_s, row0)));
                 let [x1, y1] = self.screen(self.cell_px(game::Cell::new(col_e, row1)));
                 // Full cells, not drawn tiles: the hairline inset is a
@@ -1532,7 +1558,6 @@ impl Demo {
                     [0.0, 0.0],
                     [((x1 - x0) + ts) * 0.5, ((y0 - y1) + ts) * 0.5],
                 );
-                k = m;
             }
         }
         {

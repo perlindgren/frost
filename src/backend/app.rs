@@ -1640,11 +1640,14 @@ impl<P: Process> Frost<P> {
         self.field_buffer.clone()
     }
 
-    /// The frame's occluder field buffer, grown to hold the header plus
-    /// `count` occluder records when the buffer is still too small. Same
-    /// grow-only rationale as [`Frost::field_buffer_for`].
-    fn occluder_buffer_for(&mut self, count: u32) -> Buffer {
-        let size = occluder_field_buffer_size(count);
+    /// The frame's occluder field buffer, grown to hold this frame's
+    /// packed bytes when the buffer is still too small. The packer's
+    /// output is the ground truth — per-light blocks, duplicated records
+    /// and polygon planes all vary — so the size follows `bytes`, floored
+    /// at the WGSL minimum binding size. Same grow-only rationale as
+    /// [`Frost::field_buffer_for`].
+    fn occluder_buffer_for(&mut self, bytes: usize) -> Buffer {
+        let size = (bytes.max(OCCLUDER_FIELD_BUFFER_MIN)) as u64;
         if size > self.occluder_buffer.size() {
             self.occluder_buffer = self.device.create_buffer(&BufferDescriptor {
                 label: Some("occluder field buffer"),
@@ -1791,9 +1794,16 @@ impl<P: Process> Frost<P> {
 
         // The frame's occluder field: the flagged rectangle shapes packed in
         // call order, then the occluders the app declared this frame with
-        // `Canvas::occluder`. Same grow-only buffer as the light field.
-        let occluders = pack_occluder_field(&draws, &canvas.occluders);
-        let occluder_buffer = self.occluder_buffer_for(occluders.count);
+        // `Canvas::occluder`, cut into per-light blocks culled against the
+        // user-space window — the same pixel space the shaders ray through
+        // and the occluders were declared in. Same grow-only buffer as the
+        // light field, sized by the packed bytes.
+        let occluders = pack_occluder_field(
+            &draws,
+            &canvas.occluders,
+            [user_size.0 as f32, user_size.1 as f32],
+        );
+        let occluder_buffer = self.occluder_buffer_for(occluders.data.len());
         self.queue
             .write_buffer(&occluder_buffer, 0, &occluders.data);
 

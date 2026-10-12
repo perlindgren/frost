@@ -120,6 +120,18 @@ binary:
 | llvmpipe (16-core CPU) | ~18 | the accidental baseline from trap (c) |
 | iGPU, fixed 1080p buffer (`Config::render_size`) | **57–59** | same 4K fullscreen, 2.1× — and a clean attribution, below |
 | iGPU, 1080p + discard-before-lighting shaders | **73–75** | [`sprite.wgsl`](../shaders/sprite.wgsl)/[`particles.wgsl`](../shaders/particles.wgsl) skip the light loop for exactly-zero-alpha fragments; +26 % |
+| iGPU, 1080p + per-light occluder sublists | **73–75** | the occluder field split into per-light blocks (hull/SAT cull); **no change here, deliberately reported** — antifrost's density (tens of lights, tens of merged boxes, single-ray walks ending at the first blocker) sits below where the old global walk hurt; the feature bounds how that cost grows with `lights × occluders`, it does not shave this scene |
+
+Where the cull *does* show: the density bench
+(`cargo test --lib occluder_walk_density_bench -- --ignored --nocapture`,
+[shadows.rs](../src/backend/tests/shadows.rs)) paints a 64² lit sheet under
+24 lamps with a 240-box field most of whose walls sit off-screen, once with
+per-light blocks (6 records each) and once with every block holding every
+record the region could still see (108 each — the old global walk). The
+iGPU frame: **2.48 ms → 0.24 ms, 10.4×**; llvmpipe: 54.9 → 2.2 ms, 24.8×.
+Read it as the growth curve, not as a demo win: at antifrost's density both
+numbers are noise against the 13.5 ms frame, and the feature's job is that
+the first number stays that way as the world fills up.
 
 Follow-up the same day: antifrost switched to
 [`Config::render_size`](../src/lib.rs) at 1920×1080 with the stretch pass
@@ -144,3 +156,38 @@ rate and half the floor of the pre-measurement guess (45–100 fps).
 Blended layers, not triangle setup, set the pace — and on a 4K@60 panel
 vsync cannot rescue a 28 fps hill: expect ~25–28 fps on an uneven
 2–3-vblank cadence with vsync on.
+
+## 5. Proving an optimization pays
+
+A shipped demo that runs at the same frame rate before and after an
+optimization proves only that nothing got worse. So the house rule, set
+the day the per-light occluder sublists landed: **every optimization
+arrives with a bench that confirms its gain, not just a measurement that
+denies its regression.** The pattern that worked, in full:
+
+- **A/B the mechanism, not the demo.** Build the two fields (or buffers,
+  or vertex counts) the old and new scheme would produce for one scene,
+  and paint them through the same pipeline on the same device — the only
+  difference between the two timings is what the change altered. The
+  occluder bench ([`shadows.rs`](../src/backend/tests/shadows.rs),
+  `occluder_walk_density_bench`, `#[ignore]`d and run by hand) packs one
+  occluder field with the real viewport and one with a million-pixel
+  viewport, so every block holds every record: the old global walk, byte
+  for byte, same shader, same fragments.
+- **Synthesize the density that stresses it.** If the shipping scene sits
+  below the threshold where the old cost hurt, the bench raises the
+  scene, not the claim: 24 lights, a 240-box field, most of it
+  off-screen. The demo's "no change" and the bench's "10.4× on the
+  iGPU" are then both honest numbers — one is the present, the other the
+  growth curve — and the doc table says so in those words.
+- **Time it where it counts.** Warm up untimed, time each frame with a
+  `PollType::wait_indefinitely()` drain between submit and stamp, run
+  each scheme twice and report the second pass. Software rasters confirm
+  the mechanism cheaply (24.8× under llvmpipe) but overweight shader
+  ALU; the hardware number is the one that ships in the sentence (10.4×
+  on the iGPU).
+- **Keep the simulation honest about itself.** The bench's "global"
+  field held 108 of the 240 boxes per block, not all of them — the
+  million-pixel viewport is a quadrant, and the old field would have
+  walked more. Say so next to the ratio, and the ratio is read as the
+  floor it is.

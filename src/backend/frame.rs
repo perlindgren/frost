@@ -917,21 +917,17 @@ pub(crate) fn pack_light_field(draws: &[Draw], ambient: Color) -> LightField {
     LightField { count, data }
 }
 
-/// The byte size of the occluder field's header: the occluder `count` (a
-/// u32) and 12 padding bytes.
+/// The byte size of the occluder field's header: the record `count` (a
+/// u32 — every record the field holds, counting the per-light copies, so
+/// it can exceed the number of occluders the app declared), the frame's
+/// light `count` (a u32 — the length of the per-light range table), and
+/// 8 padding bytes.
 pub(crate) const OCCLUDER_FIELD_HEADER: usize = 16;
 
 /// The minimum size of the occluder field buffer in bytes: the header
 /// plus one `vec4`, the same WGSL minimum binding size as
 /// [`LIGHT_FIELD_BUFFER_MIN`].
 pub(crate) const OCCLUDER_FIELD_BUFFER_MIN: usize = OCCLUDER_FIELD_HEADER + 16;
-
-/// The size of the occluder field buffer in bytes for `count` occluders:
-/// the header plus one record per occluder, never below
-/// [`OCCLUDER_FIELD_BUFFER_MIN`].
-pub(crate) fn occluder_field_buffer_size(count: u32) -> u64 {
-    (OCCLUDER_FIELD_HEADER + count as usize * OCCLUDER_RECORD).max(OCCLUDER_FIELD_BUFFER_MIN) as u64
-}
 
 /// The byte size of one occluder record: three `vec4<f32>`s — the inverse
 /// transform's linear part, column-major; the inverse transform's
@@ -949,34 +945,204 @@ pub(crate) const OCCLUDER_PLANE: usize = 16;
 /// The frame's occluder field, packed little-endian for the GPU's storage
 /// buffer.
 ///
-/// The layout is a [`OCCLUDER_FIELD_HEADER`]-byte header — the occluder
-/// `count` at bytes `0..4`, 12 padding bytes — followed by one
-/// record per occluder, in call order: a `(m00, m10, m01, m11)` `vec4`, the
-/// inverse of the occluder's world transform, column-major (pixel space to the
-/// occluder's local space), then a `(tx, ty, cx, cy)` `vec4`, the inverse
-/// transform's translation and the box's local center, then a `(hx, hy,
-/// planes, 0)` `vec4`, the box's local half-extents and the number of
-/// [`OCCLUDER_PLANE`]-byte half-planes that follow it — zero for a box, and for
-/// a polygon the edges that bound it, each an outward unit normal and its
-/// offset in the occluder's own space.
+/// The layout is a [`OCCLUDER_FIELD_HEADER`]-byte header — the record
+/// `count` at bytes `0..4`, the frame's light count at `4..8`, 8 padding
+/// bytes — followed by a range table of one `vec4` per light, `(start,
+/// end, 0, 0)` in `vec4` units measured from the tail's start: the light's
+/// own run of occluder records. Records follow the table as one contiguous
+/// block per light, each block in master order (painted occluders as
+/// declared, then the app's), and an occluder that can shadow more than one
+/// light is copied into each of their blocks.
 ///
-/// Records are therefore variable length, `3 + planes` `vec4`s apiece, and a
-/// shader walks them with a running offset rather than `3 * i`. It already
-/// visits every occluder in order — the first blocker ends the search — so the
-/// walk costs nothing it was not paying anyway, and in exchange a box keeps
-/// the exact 48 bytes it had before. The records line up with the unsized WGSL
-/// `array<vec4<f32>>` tail of the field's storage struct, so `data` can be
-/// bound as-is.
+/// Each record is what it always was: a `(m00, m10, m01, m11)` `vec4`, the
+/// inverse of the occluder's world transform, column-major (pixel space to
+/// the occluder's local space), then a `(tx, ty, cx, cy)` `vec4`, the
+/// inverse transform's translation and the box's local center, then a
+/// `(hx, hy, planes, 0)` `vec4`, the box's local half-extents and the
+/// number of [`OCCLUDER_PLANE`]-byte half-planes that follow it — zero for
+/// a box, and for a polygon the edges that bound it.
+///
+/// Records are therefore variable length, `3 + planes` `vec4`s apiece, and
+/// a shader walks a light's block with a running offset rather than
+/// `3 * i`. A light's block holds exactly the occluders whose world bounds
+/// reach its rays at all (see [`pack_occluder_field`]), so a fragment's
+/// walk reads only records that could plausibly stand between its light and
+/// its pixel; a block can also be empty, which answers "unoccluded" with
+/// zero loads. The data line up with the unsized WGSL `array<vec4<f32>>`
+/// tail of the field's storage struct, so `data` can be bound as-is.
 pub(crate) struct OccluderField {
-    /// The number of occluders packed — the header's `count`.
+    /// The number of occluder records the field holds — every light's
+    /// block included, so it can exceed the number of occluders packed.
+    /// The frame path sizes buffers by the packed bytes and never reads
+    /// it; the field-layout tests do.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub count: u32,
-    /// The packed bytes: a 16-byte header plus one record per occluder, each
-    /// [`OCCLUDER_RECORD`] bytes plus one [`OCCLUDER_PLANE`] per edge.
+    /// The frame's light count — the header's table length. Read from
+    /// the header bytes by the shader and the tests, from this field by
+    /// the tests alone.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub lights: u32,
+    /// The packed bytes: a 16-byte header, one `vec4` of range per light,
+    /// then the per-light blocks of records, each [`OCCLUDER_RECORD`] bytes
+    /// plus one [`OCCLUDER_PLANE`] per edge.
     pub data: Vec<u8>,
 }
 
+/// The reach of a directional light's parallel shadow rays, in pixels:
+/// the distance the virtual source sits back along the light's axis from
+/// each pixel. Mirrors `SHADOW_RANGE` in `shaders/lighting.wgsl` — the
+/// CPU needs it to bound the region those rays sweep, and
+/// `shadow_range_mirrors_the_shader` keeps the two values tied.
+pub(crate) const SHADOW_RANGE: f32 = 1500.0;
+
+/// One occluder's packed record with the fact the light cull needs beside
+/// it: its world-space axis-aligned bounds, derived from the very same
+/// inputs as its record.
+struct OccRecord {
+    bytes: Vec<u8>,
+    bounds: [f32; 4],
+}
+
+/// The world-space AABB of the occluder whose local box (`center`, `half`)
+/// rides `world`: the transformed center plus the transform's absolute
+/// columns acting on the half-extents — the axis-aligned superset every
+/// rotated or mirrored box lives inside.
+fn occ_world_bounds(world: &Transform, center: &[f32; 2], half: &[f32; 2]) -> [f32; 4] {
+    let c = world.apply(*center);
+    let ex = (world.m[0][0] * half[0]).abs() + (world.m[0][1] * half[1]).abs();
+    let ey = (world.m[1][0] * half[0]).abs() + (world.m[1][1] * half[1]).abs();
+    [c[0] - ex, c[1] - ey, c[0] + ex, c[1] + ey]
+}
+
+/// Builds one master record — bytes, plane count, world bounds — and pushes
+/// it; a transform that cannot invert collapses the box to a line or point,
+/// occludes nothing, and earns no record.
+fn push_master(
+    master: &mut Vec<OccRecord>,
+    world: &Transform,
+    center: &[f32; 2],
+    half: &[f32; 2],
+    planes: &[[f32; 4]],
+) {
+    let mut bytes = Vec::with_capacity(OCCLUDER_RECORD + planes.len() * OCCLUDER_PLANE);
+    let mut cursor = 0usize;
+    if write_occluder_record(&mut bytes, &mut cursor, world, center, half, planes) != 1 {
+        return;
+    }
+    master.push(OccRecord {
+        bytes,
+        bounds: occ_world_bounds(world, center, half),
+    });
+}
+
+/// The region a light's shadow rays can ever traverse, given that only
+/// pixels inside the viewport ask the question. Every light-to-pixel
+/// segment lies inside the convex hull of the light and the window — so an
+/// occluder whose bounds miss that hull blocks nothing in this frame and
+/// need never be walked. A directional light's rays are parallel, sweeping
+/// the window back along the axis by [`SHADOW_RANGE`]; the axis-aligned
+/// box around that parallelogram is the conservative region.
+enum RayRegion {
+    Hull(Vec<[f32; 2]>),
+    Bounds([f32; 4]),
+}
+
+fn region_hits(region: &RayRegion, bounds: &[f32; 4]) -> bool {
+    match region {
+        RayRegion::Bounds(r) => {
+            r[0] <= bounds[2] && bounds[0] <= r[2] && r[1] <= bounds[3] && bounds[1] <= r[3]
+        }
+        RayRegion::Hull(hull) => aabb_hull_overlap(bounds, hull),
+    }
+}
+
+/// The convex hull of the light's position and the whole window — five
+/// points, so Andrew's monotone chain is more than enough and no
+/// cleverness is warranted. The window is the fragment coordinate's
+/// rectangle, `(0, 0)` to the viewport's size — the space the packer's
+/// lights, occluders and pixels all share by the time a `Draw` arrives.
+fn light_window_hull(l: [f32; 2], viewport: [f32; 2]) -> Vec<[f32; 2]> {
+    let (w, h) = (viewport[0], viewport[1]);
+    let mut pts = vec![[0.0, 0.0], [w, 0.0], [w, h], [0.0, h], l];
+    pts.sort_by(|a, b| {
+        a[0].partial_cmp(&b[0])
+            .unwrap_or(core::cmp::Ordering::Equal)
+            .then(
+                a[1].partial_cmp(&b[1])
+                    .unwrap_or(core::cmp::Ordering::Equal),
+            )
+    });
+    pts.dedup_by(|a, b| a[0] == b[0] && a[1] == b[1]);
+    let cross = |o: &[f32; 2], a: &[f32; 2], b: &[f32; 2]| {
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
+    let mut lower: Vec<[f32; 2]> = Vec::new();
+    for p in &pts {
+        while lower.len() >= 2 && cross(&lower[lower.len() - 2], &lower[lower.len() - 1], p) <= 0.0
+        {
+            lower.pop();
+        }
+        lower.push(*p);
+    }
+    let mut upper: Vec<[f32; 2]> = Vec::new();
+    for p in pts.iter().rev() {
+        while upper.len() >= 2 && cross(&upper[upper.len() - 2], &upper[upper.len() - 1], p) <= 0.0
+        {
+            upper.pop();
+        }
+        upper.push(*p);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    if lower.is_empty() {
+        // Every point coincided (a zero viewport at the light): the
+        // "hull" is that point, and the overlap test still reads it.
+        return pts;
+    }
+    lower
+}
+
+/// Separating-axis overlap of an axis-aligned box and a convex polygon:
+/// the box's own two axes plus every edge normal, each project-and-compare.
+/// A hairline of tolerance keeps touching — as opposed to cleanly
+/// separated — shapes in, which is the conservative direction: a false
+/// "overlap" costs one walked record, a false "separated" loses a shadow.
+fn aabb_hull_overlap(a: &[f32; 4], hull: &[[f32; 2]]) -> bool {
+    if hull.is_empty() {
+        return true;
+    }
+    let corners = [[a[0], a[1]], [a[2], a[1]], [a[2], a[3]], [a[0], a[3]]];
+    let mut axes = vec![[1.0f32, 0.0], [0.0, 1.0]];
+    for i in 0..hull.len() {
+        let (u, v) = (hull[i], hull[(i + 1) % hull.len()]);
+        let n = [-(v[1] - u[1]), v[0] - u[0]];
+        if n[0] * n[0] + n[1] * n[1] > 1e-12 {
+            axes.push(n);
+        }
+    }
+    axes.iter().all(|n| {
+        let mut amin = f32::MAX;
+        let mut amax = f32::MIN;
+        for c in &corners {
+            let d = c[0] * n[0] + c[1] * n[1];
+            amin = amin.min(d);
+            amax = amax.max(d);
+        }
+        let mut hmin = f32::MAX;
+        let mut hmax = f32::MIN;
+        for c in hull {
+            let d = c[0] * n[0] + c[1] * n[1];
+            hmin = hmin.min(d);
+            hmax = hmax.max(d);
+        }
+        amin <= hmax + 1e-6 && hmin - 1e-6 <= amax
+    })
+}
+
 /// Packs the frame's occluder field: the occluding shapes it drew, then the
-/// occluders the app declared.
+/// occluders the app declared, cut into per-light blocks of everything each
+/// light's rays can ever touch.
 ///
 /// Painted rectangles and circles flagged `occludes` come first, in call order
 /// — a circle as the polygon cut from it, since a curved edge has to be told to
@@ -989,12 +1155,32 @@ pub(crate) struct OccluderField {
 /// other. A shape whose world transform cannot be inverted is skipped (it
 /// collapses to a line or a point and occludes nothing), and every other draw
 /// is ignored.
-pub(crate) fn pack_occluder_field(draws: &[Draw], declared: &[Occluder]) -> OccluderField {
-    let mut count = 0u32;
-    // Records are variable length, so the next one's address is carried
-    // rather than computed from the count.
-    let mut cursor = OCCLUDER_FIELD_HEADER;
-    let mut data = vec![0u8; OCCLUDER_FIELD_HEADER];
+///
+/// That master list is then culled per light: an occluder enters a light's
+/// block when its world bounds overlap the region that light's shadow rays
+/// sweep (see [`RayRegion`]) — conservative by construction, since every
+/// segment from a light to a pixel inside `viewport` lies inside the region,
+/// so what the cull drops could never have blocked a visible pixel. The
+/// fragment shader walks only its own light's block, which turns the
+/// per-pixel cost from `lights × all-occluders` into `lights ×
+/// near-occluders`; the safety property is pinned by
+/// `the_cull_keeps_every_occluder_that_could_block` in
+/// `backend/tests/fields.rs`.
+///
+/// The lights cut here are the `Draw::Light`s of `draws` — the frame must
+/// pack the light field and the occluder field from the same draw list,
+/// because the shader indexes the range table by the light field's order.
+/// A pack holding no light holds no table: its tail is the master list,
+/// the pre-per-light layout intact, which nothing may read while a light
+/// exists anywhere.
+pub(crate) fn pack_occluder_field(
+    draws: &[Draw],
+    declared: &[Occluder],
+    viewport: [f32; 2],
+) -> OccluderField {
+    // The master list: every occluder once, each record's bytes with its
+    // world bounds beside them.
+    let mut master: Vec<OccRecord> = Vec::new();
     for draw in draws {
         let Draw::Shape {
             world,
@@ -1019,27 +1205,21 @@ pub(crate) fn pack_occluder_field(draws: &[Draw], declared: &[Occluder]) -> Occl
         // transform is: it occludes nothing — and no polygon can be cut from
         // it, so passing it on would trade a silent no-op for a panic in the
         // frame path, which is the worse of the two by a wide margin.
-        let disc = match *kind {
-            1.0 => None,
+        match *kind {
+            1.0 => push_master(&mut master, world, center, params, &[]),
             0.0 if params[0] > 0.0 && params[0].is_finite() => {
-                Some(Convex::disc(*center, params[0]))
-            }
-            _ => continue,
-        };
-        count += match disc {
-            None => write_occluder_record(&mut data, &mut cursor, world, center, params, &[]),
-            Some(polygon) => {
+                let polygon = Convex::disc(*center, params[0]);
                 let bounds = polygon.bounds_as_box();
-                write_occluder_record(
-                    &mut data,
-                    &mut cursor,
+                push_master(
+                    &mut master,
                     world,
                     &bounds.center,
                     &bounds.half,
                     polygon.planes(),
-                )
+                );
             }
-        };
+            _ => continue,
+        }
     }
     for o in declared {
         // A box brings no edges; a polygon brings its own, already in the
@@ -1048,11 +1228,90 @@ pub(crate) fn pack_occluder_field(draws: &[Draw], declared: &[Occluder]) -> Occl
             Some(polygon) => polygon.planes(),
             None => &[],
         };
-        count +=
-            write_occluder_record(&mut data, &mut cursor, &o.world, &o.center, &o.half, planes);
+        push_master(&mut master, &o.world, &o.center, &o.half, planes);
+    }
+    // The lights, in the order the light field packed them — the shader
+    // indexes the table by that same order.
+    let lights: Vec<&Draw> = draws
+        .iter()
+        .filter(|draw| matches!(draw, Draw::Light { .. }))
+        .collect();
+    // Header and range table first, so the blocks can start at a known
+    // offset; every record spans whole vec4s, so byte and vec4 addresses
+    // divide exactly.
+    let mut data = vec![0u8; OCCLUDER_FIELD_HEADER + lights.len() * 16];
+    let mut cursor = data.len();
+    let mut count = 0u32;
+    // The shader's array index 0 is the tail's start — the byte right
+    // past the header — so ranges are counted in vec4s from there, not
+    // from the buffer's front.
+    let tail = OCCLUDER_FIELD_HEADER;
+    if lights.is_empty() {
+        // No lights: the shader asks no occlusion questions, so there are
+        // no blocks to fill and no table to index — but the field keeps
+        // the master list, byte for byte as it was packed. It costs the
+        // rare lightless frame what it always cost, and the field-layout
+        // tests keep reading the list they always read.
+        for record in &master {
+            let span = record.bytes.len();
+            data.resize(cursor + span, 0);
+            data[cursor..cursor + span].copy_from_slice(&record.bytes);
+            cursor += span;
+            count += 1;
+        }
+    }
+    for (i, light) in lights.iter().enumerate() {
+        let Draw::Light {
+            pos, radius, dir, ..
+        } = *light
+        else {
+            unreachable!("filtered to lights")
+        };
+        let region = if *radius < 0.0 {
+            let (dx, dy) = (-dir[0] * SHADOW_RANGE, -dir[1] * SHADOW_RANGE);
+            let corners = [
+                [0.0, 0.0],
+                [viewport[0], 0.0],
+                [viewport[0], viewport[1]],
+                [0.0, viewport[1]],
+            ];
+            let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+            for c in corners
+                .into_iter()
+                .chain(corners.into_iter().map(|c| [c[0] + dx, c[1] + dy]))
+            {
+                b[0] = b[0].min(c[0]);
+                b[1] = b[1].min(c[1]);
+                b[2] = b[2].max(c[0]);
+                b[3] = b[3].max(c[1]);
+            }
+            RayRegion::Bounds(b)
+        } else {
+            RayRegion::Hull(light_window_hull(*pos, viewport))
+        };
+        let start = ((cursor - tail) / 16) as f32;
+        for record in &master {
+            if !region_hits(&region, &record.bounds) {
+                continue;
+            }
+            let span = record.bytes.len();
+            data.resize(cursor + span, 0);
+            data[cursor..cursor + span].copy_from_slice(&record.bytes);
+            cursor += span;
+            count += 1;
+        }
+        let end = ((cursor - tail) / 16) as f32;
+        let off = OCCLUDER_FIELD_HEADER + i * 16;
+        write_f32_at(&mut data, off, start);
+        write_f32_at(&mut data, off + 4, end);
     }
     data[0..4].copy_from_slice(&count.to_le_bytes());
-    OccluderField { count, data }
+    data[4..8].copy_from_slice(&(lights.len() as u32).to_le_bytes());
+    OccluderField {
+        count,
+        lights: lights.len() as u32,
+        data,
+    }
 }
 
 /// Writes one occluder record at `cursor` — its half-planes included —

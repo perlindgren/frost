@@ -33,20 +33,27 @@ struct LightField {
 };
 
 // The frame's occluder field: one global storage buffer shared by every lit
-// pipeline. The 16-byte header holds the occluder count and 12 padding
-// bytes; the unsized array tail holds one 48-byte record per occluder, in
-// call order — (m00, m10, m01, m11), the inverse of the occluder's world
+// pipeline. The 16-byte header holds the record count and the frame's light
+// count, then 8 padding bytes; the unsized array tail opens with a range
+// table — one (start, end, _, _) vec4 per light, in vec4 units from the
+// tail's start — and after the table runs one contiguous block of occluder
+// records per light: exactly those whose world bounds reach some ray that
+// light fires at a visible pixel, so a walk over a light's block can never
+// miss a blocker its own rays could meet. Each record is the shape it
+// always was — (m00, m10, m01, m11), the inverse of the occluder's world
 // transform, column-major (pixel space to the occluder's local space), then
 // (tx, ty, cx, cy), the inverse transform's translation and the box's local
 // center, then (hx, hy, planes, 0), the box's local half-extents and the count
 // of half-planes that follow the record — zero for a box, and for a convex
 // polygon one (n.x, n.y, c, _) vec4 per edge, its outward unit normal and the
 // offset it sits at, both in the occluder's own space. Records are therefore
-// variable length, `3 + planes` vec4s apiece. The CPU sizes the bound buffer to
-// fit the frame's occluders.
+// variable length, `3 + planes` vec4s apiece. The CPU sizes the bound buffer
+// to fit the frame's lights and blocks; an occluder that can shadow several
+// lights is copied into every block that can use it.
 struct OccluderField {
     count: u32,
-    pad: array<u32, 3>,
+    lights: u32,
+    pad: array<u32, 2>,
     occluders: array<vec4<f32>>,
 };
 
@@ -95,15 +102,24 @@ fn clip_planes(base: u32, planes: u32, ll: vec2<f32>, lp: vec2<f32>) -> bool {
 // was shipped with, clipped against that same interval.
 //
 // Records vary in length, so the walk carries an offset rather than multiplying
-// an index: it already visited the occluders in order, since the first blocker
+// an index: it walks the light's own block in order, since the first blocker
 // ends the search, and in exchange a box keeps the exact 48 bytes it had before
 // polygons existed. A box carries no edges and the slabs are the whole shape; a
 // polygon's half-extents are the box *around* it, so the slabs become the cheap
 // reject in front of its edges, which is worth having at up to sixteen clips a
 // ray, nine rays a pixel, per light.
-fn occluded(l: vec2<f32>, p: vec2<f32>) -> bool {
-    var base = 0u;
-    for (var i = 0u; i < occluders.count; i++) {
+fn occluded(li: u32, l: vec2<f32>, p: vec2<f32>) -> bool {
+    // Walk only the light's own block: the range table's `start..end` for
+    // light `li`, in vec4 units from the tail's start. The packer put into
+    // that block every occluder whose bounds reach this light's rays at a
+    // visible pixel, and only those — so an empty block answers "nothing
+    // stands in the way" without a single record load, and a full one is
+    // the walk the global field used to demand of every light, narrowed
+    // to the records that could honestly block this ray.
+    let range = occluders.occluders[li];
+    var base = u32(range.x);
+    let end = u32(range.y);
+    while (base < end) {
         let rec = occluders.occluders[base + 2u];
         let edges = u32(rec.z);
         let m = occluders.occluders[base];
@@ -251,7 +267,7 @@ fn light_mix(p: vec2<f32>) -> vec3<f32> {
                 for (var t = 0u; t < 9u; t = t + 1u) {
                     let o = SHADOW_TAPS[t] * lc.w;
                     let q = src + vec2<f32>(ca * o.x - sa * o.y, sa * o.x + ca * o.y);
-                    lit += select(0.0, 1.0, !occluded(q, p));
+                    lit += select(0.0, 1.0, !occluded(i, q, p));
                 }
                 v = lit / 9.0;
             } else {
@@ -259,7 +275,7 @@ fn light_mix(p: vec2<f32>) -> vec3<f32> {
                 // the original hard shadow. Without this branch the
                 // default above would stand and the light would ignore
                 // every occluder.
-                v = select(0.0, 1.0, !occluded(src, p));
+                v = select(0.0, 1.0, !occluded(i, src, p));
             }
             c += lc.rgb * l.w * f * f * v * gate;
         }

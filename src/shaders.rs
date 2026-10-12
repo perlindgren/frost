@@ -558,11 +558,14 @@ mod tests {
     }
 
     /// The member offsets WGSL assigns to `OccluderField` must match the
-    /// CPU-side packer in `pack_occluder_field`: u32 @0, array<u32, 3> @4 —
-    /// the 16-byte header — and the occluder array tail at 16. The tail must
-    /// be an unsized (dynamic) array: its length comes from the bound
-    /// buffer, so the CPU can hold any occluder count. This is the GPU-side
-    /// mirror of the packer's offset tests in backend/tests/fields.rs.
+    /// CPU-side packer in `pack_occluder_field`: u32 @0 (the record
+    /// count), u32 @4 (the light count), array<u32, 2> @8 — the 16-byte
+    /// header together — and the occluder array tail at 16, where the
+    /// per-light range table starts and the record blocks follow it. The
+    /// tail must be an unsized (dynamic) array: its length comes from the
+    /// bound buffer, so the CPU can hold any table and any block layout.
+    /// This is the GPU-side mirror of the packer's offset tests in
+    /// backend/tests/fields.rs.
     #[test]
     fn occluder_field_header_offsets_match_the_packer() {
         let module = naga::front::wgsl::parse_str(SHAPE_SHADER)
@@ -587,7 +590,7 @@ mod tests {
             ),
             _ => unreachable!("OccluderField must be a struct"),
         };
-        assert_eq!(offsets, [0, 4, 16]);
+        assert_eq!(offsets, [0, 4, 8, 16]);
         // Naga books a dynamic array's footprint as one element (its
         // creation-time minimum), so the span is the 16-byte header plus
         // one 16-byte vec4 — wgpu's minimum binding size for the struct.
@@ -603,6 +606,29 @@ mod tests {
             } => {}
             other => panic!("the OccluderField tail should be a dynamic array, got {other:?}"),
         }
+    }
+
+    /// The CPU cull bounds a directional light's swept region with the
+    /// same reach the shader runs its parallel shadow rays back by: if
+    /// the two `SHADOW_RANGE`s ever drift, the packer would cull
+    /// occluders the rays still reach — a lost shadow, silently. The
+    /// shader's constant is parsed out of its own text rather than
+    /// restated, so the pin cannot rot alongside a typo.
+    #[test]
+    fn shadow_range_mirrors_the_shader() {
+        let text = crate::backend::SHADOW_RANGE.to_string();
+        let marker = "const SHADOW_RANGE: f32 = ";
+        let line = SHAPE_SHADER
+            .lines()
+            .find(|l| l.starts_with(marker))
+            .expect("lighting.wgsl declares SHADOW_RANGE");
+        let value = line
+            .trim_start_matches(marker)
+            .trim_end_matches(';')
+            .trim_end_matches(".0")
+            .parse::<f32>()
+            .expect("SHADOW_RANGE parses as a float");
+        assert_eq!(value.to_string(), text, "the two SHADOW_RANGEs drifted");
     }
 
     /// The watched table mirrors the compiled consts: a file read

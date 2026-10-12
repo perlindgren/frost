@@ -72,7 +72,9 @@ fn box_in_pixels(world: &Transform, center: [f32; 2], half: [f32; 2]) -> Oriente
 /// compositing arithmetic between the shadow answer and the byte.
 fn paint(draws: &[Draw], declared: &[Occluder]) -> Option<Vec<u8>> {
     let lights = pack_light_field(draws, black());
-    let occluders = pack_occluder_field(draws, declared);
+    // The harness window is the SPAN-square target: the per-light cull
+    // bounds every ray region by exactly the pixels this test reads back.
+    let occluders = pack_occluder_field(draws, declared, [SPAN as f32, SPAN as f32]);
 
     let instance = Instance::default();
     let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
@@ -809,5 +811,310 @@ fn a_painted_circle_and_a_declared_one_shadow_alike() {
         checked > (SPAN * SPAN) as usize / 2,
         "only {checked} of {} pixels sat away from the shadow edge",
         SPAN * SPAN
+    );
+}
+
+/// A density bench, run by hand: what the per-light occluder sublists
+/// actually buy, measured on pixels rather than argued.
+///
+/// The scene has the shape of a real world seen through a small camera: a
+/// lit sheet over the whole window, `LIGHTS` lamps scattered inside it,
+/// and a field of boxes — a `COLS` × `ROWS` grid — on a plane many times
+/// the window, most of them far off-screen. The second pack passes a
+/// viewport a million pixels on a side: every box then overlaps every
+/// light's region, every block holds every record, and the walk is exactly
+/// the global one the field used to be — the same records, the same
+/// pipeline, the same fragments, only longer blocks. The difference
+/// between the two timings is the walk's share of this scene; if they do
+/// not differ, the walk is not what a frame on this machine pays for, and
+/// that answer is the bench's to give too.
+///
+/// ```text
+/// cargo test --lib occluder_walk_density_bench -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "a timing bench: run by hand with --ignored --nocapture"]
+fn occluder_walk_density_bench() {
+    use std::time::Instant;
+
+    const LIGHTS: usize = 24;
+    const COLS: usize = 24;
+    const ROWS: usize = 10;
+    // Eight timed frames each, after one untimed warm-up; under software
+    // rasters the global walk makes this a slow bench, and on real
+    // hardware more frames only sharpen the means.
+    const FRAMES: usize = 8;
+
+    // The lit sheet: bigger than the window, every pixel deep inside it.
+    let surface = Draw::Shape {
+        world: Transform::identity(),
+        center: [SPAN as f32 / 2.0, SPAN as f32 / 2.0],
+        params: [SPAN as f32, SPAN as f32],
+        kind: 1.0,
+        aa: 1.0,
+        color: objects::Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        },
+        glow: black(),
+        lit: 1.0,
+        occludes: 0.0,
+        z: 0.0,
+        diagnostic: false,
+    };
+    let mut draws = vec![surface];
+    for i in 0..LIGHTS {
+        draws.push(Draw::Light {
+            pos: [((i * 37) % 49) as f32 + 8.0, ((i * 53) % 49) as f32 + 8.0],
+            radius: 40.0,
+            intensity: 1.0,
+            color: objects::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            penumbra: 0.0,
+            dir: [1.0, 0.0],
+            cos_half: -1.0,
+            feather: 0.0,
+            z: 0.0,
+        });
+    }
+    // The field of boxes, on a grid centered well outside the window.
+    let declared: Vec<Occluder> = (0..COLS)
+        .flat_map(|col| (0..ROWS).map(move |row| (col, row)))
+        .map(|(col, row)| Occluder {
+            world: Transform::identity(),
+            center: [col as f32 * 64.0 - 352.0, row as f32 * 64.0 - 256.0],
+            half: [6.0, 6.0],
+            polygon: None,
+        })
+        .collect();
+
+    let lights = pack_light_field(&draws, black());
+    let culled = pack_occluder_field(&draws, &declared, [SPAN as f32, SPAN as f32]);
+    let global = pack_occluder_field(&draws, &declared, [1e9, 1e9]);
+    assert!(
+        culled.data.len() < global.data.len(),
+        "this cast must give the cull something to cut: {} bytes kept of {}",
+        culled.data.len(),
+        global.data.len(),
+    );
+    let block_spans = |field: &OccluderField| -> (usize, usize) {
+        let one = |i: usize, at: usize| {
+            f32::from_le_bytes(
+                field.data
+                    [OCCLUDER_FIELD_HEADER + i * 16 + at..OCCLUDER_FIELD_HEADER + i * 16 + at + 4]
+                    .try_into()
+                    .unwrap(),
+            ) as usize
+        };
+        let spans: Vec<usize> = (0..field.lights as usize)
+            .map(|i| one(i, 4) - one(i, 0))
+            .collect();
+        (*spans.iter().min().unwrap(), *spans.iter().max().unwrap())
+    };
+    let (c_min, c_max) = block_spans(&culled);
+    let (g_min, g_max) = block_spans(&global);
+
+    let instance = Instance::default();
+    let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
+        eprintln!("density bench: no adapter on this machine — the bench goes unmeasured!");
+        return;
+    };
+    eprintln!("density bench on {}", adapter.get_info().name);
+    let (device, queue) =
+        block_on(adapter.request_device(&DeviceDescriptor::default())).expect("a device");
+
+    let buffer = |label: &str, bytes: &[u8]| {
+        device.create_buffer_init(&BufferInitDescriptor {
+            label: Some(label),
+            contents: bytes,
+            usage: BufferUsages::STORAGE,
+        })
+    };
+    let light_buffer = buffer("bench lights", &lights.data);
+    let culled_buffer = buffer("bench occluders culled", &culled.data);
+    let global_buffer = buffer("bench occluders global", &global.data);
+
+    let module = device.create_shader_module(ShaderModuleDescriptor {
+        label: Some("density bench"),
+        source: ShaderSource::Wgsl(Cow::Borrowed(SHAPE_SHADER)),
+    });
+    let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+        label: Some("density bench pipeline"),
+        layout: None,
+        vertex: VertexState {
+            module: &module,
+            entry_point: Some("vs_main"),
+            compilation_options: PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        fragment: Some(FragmentState {
+            module: &module,
+            entry_point: Some("fs_main"),
+            compilation_options: PipelineCompilationOptions::default(),
+            targets: &[Some(ColorTargetState {
+                format: TextureFormat::Rgba8Unorm,
+                blend: Some(BlendState::ALPHA_BLENDING),
+                write_mask: ColorWrites::ALL,
+            })],
+        }),
+        primitive: PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+
+    let Draw::Shape {
+        world,
+        center,
+        params,
+        kind,
+        aa,
+        color,
+        glow,
+        lit,
+        ..
+    } = &draws[0]
+    else {
+        unreachable!("the sheet leads the list")
+    };
+    let uniform = device.create_buffer_init(&BufferInitDescriptor {
+        label: Some("bench uniform"),
+        contents: &shape_uniform_data(
+            world.invert().expect("a sheet"),
+            *center,
+            *params,
+            *kind,
+            *aa,
+            *color,
+            *glow,
+            *lit,
+        ),
+        usage: BufferUsages::UNIFORM,
+    });
+    let bind = |occ: &Buffer| {
+        device.create_bind_group(&BindGroupDescriptor {
+            label: Some("bench bind"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &uniform,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &light_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: occ,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+            ],
+        })
+    };
+    let bind_culled = bind(&culled_buffer);
+    let bind_global = bind(&global_buffer);
+
+    let target = device.create_texture(&TextureDescriptor {
+        label: Some("bench target"),
+        size: Extent3d {
+            width: SPAN,
+            height: SPAN,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format: TextureFormat::Rgba8Unorm,
+        usage: TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = target.create_view(&TextureViewDescriptor::default());
+
+    let timed = |b: &BindGroup, label: &str| -> f64 {
+        let (mut best, mut total) = (f64::MAX, 0.0f64);
+        for frame in 0..=FRAMES {
+            let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
+            {
+                let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("bench pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Clear(wgpu::Color {
+                                r: 0.0,
+                                g: 0.0,
+                                b: 0.0,
+                                a: 0.0,
+                            }),
+                            store: StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, b, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            let started = Instant::now();
+            queue.submit([encoder.finish()]);
+            let _ = device.poll(PollType::wait_indefinitely());
+            let ms = started.elapsed().as_secs_f64() * 1_000.0;
+            if frame > 0 {
+                total += ms;
+                best = best.min(ms);
+            }
+        }
+        let mean = total / FRAMES as f64;
+        eprintln!("  {label}: {mean:.2} ms/frame mean, {best:.2} ms best");
+        mean
+    };
+
+    // Two passes each, so neither scheme's number carries the warm-up the
+    // other did not; the second pass of each is the one reported.
+    let _ = timed(&bind_global, "(warm) global walk  ");
+    let _ = timed(&bind_culled, "(warm) per-light   ");
+    eprintln!(
+        "density bench: {} lights, {} occluders, {FRAMES} timed frames",
+        LIGHTS,
+        declared.len()
+    );
+    eprintln!(
+        "  blocks per light: culled {}..{} vec4s, global {}..{}; fields {} vs {} bytes",
+        c_min,
+        c_max,
+        g_min,
+        g_max,
+        culled.data.len(),
+        global.data.len(),
+    );
+    let old = timed(&bind_global, "global walk      ");
+    let now = timed(&bind_culled, "per-light blocks ");
+    eprintln!(
+        "  this scene's walk share: {old:.2} -> {now:.2} ms/frame, {}×",
+        if now > 0.0 { old / now } else { 0.0 },
     );
 }

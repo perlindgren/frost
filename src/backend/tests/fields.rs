@@ -10,6 +10,10 @@ fn field_f32(data: &[u8], offset: usize) -> f32 {
     f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
 }
 
+/// The window the packer culls against in these fixtures: a familiar
+/// 128², the size the GPU harnesses paint at.
+const VIEW: [f32; 2] = [128.0, 128.0];
+
 #[test]
 fn light_field_packs_an_empty_header_with_the_ambient() {
     // No lights: just the 32-byte header Ã¢â‚¬â€ count 0, 12 padding bytes, the
@@ -176,11 +180,21 @@ fn occluder_field_packs_an_empty_header() {
             z: 0.0,
         }],
         &[],
+        [128.0, 128.0],
     );
+    // One light, no occluders: header (record count 0, light count 1, 8
+    // padding bytes), then the range table's single entry — a block that
+    // starts where it ends, at the tail's vec4 1, right after the table.
+    // No records anywhere; the shader's walk of this light is one table
+    // load and no records.
     assert_eq!(field.count, 0);
-    assert_eq!(field.data.len(), OCCLUDER_FIELD_HEADER);
+    assert_eq!(field.lights, 1);
+    assert_eq!(field.data.len(), OCCLUDER_FIELD_HEADER + 16);
     assert_eq!(u32::from_le_bytes(field.data[0..4].try_into().unwrap()), 0);
-    assert_eq!(&field.data[4..16], &[0u8; 12]);
+    assert_eq!(u32::from_le_bytes(field.data[4..8].try_into().unwrap()), 1);
+    assert_eq!(&field.data[8..16], &[0u8; 8]);
+    assert_eq!(field_f32(&field.data, 16), 1.0);
+    assert_eq!(field_f32(&field.data, 20), 1.0);
 }
 
 #[test]
@@ -257,7 +271,11 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
         occludes: 1.0,
         z: 0.0,
     };
-    let field = pack_occluder_field(&[translated, unflagged, rotated, sprite, degenerate], &[]);
+    let field = pack_occluder_field(
+        &[translated, unflagged, rotated, sprite, degenerate],
+        &[],
+        VIEW,
+    );
     assert_eq!(field.count, 2);
     assert_eq!(
         field.data.len(),
@@ -332,7 +350,7 @@ fn occluder_field_appends_declared_occluders_after_the_drawn_ones() {
             polygon: None,
         },
     ];
-    let field = pack_occluder_field(&[drawn], &declared);
+    let field = pack_occluder_field(&[drawn], &declared, VIEW);
     assert_eq!(field.count, 3);
     assert_eq!(
         field.data.len(),
@@ -386,7 +404,7 @@ fn occluder_field_skips_a_declared_occluder_it_cannot_invert() {
             polygon: None,
         },
     ];
-    let field = pack_occluder_field(&[], &declared);
+    let field = pack_occluder_field(&[], &declared, VIEW);
     assert_eq!(field.count, 1);
     assert_eq!(field.data.len(), OCCLUDER_FIELD_HEADER + OCCLUDER_RECORD);
     assert_eq!(field_f32(&field.data, OCCLUDER_FIELD_HEADER + 16), -7.0);
@@ -409,14 +427,15 @@ fn field_buffer_sizes_floor_at_the_wgsl_minimum_binding_size() {
         light_field_buffer_size(3),
         (LIGHT_FIELD_HEADER + 3 * LIGHT_RECORD) as u64
     );
-    assert_eq!(
-        occluder_field_buffer_size(0),
-        OCCLUDER_FIELD_BUFFER_MIN as u64
-    );
-    assert_eq!(
-        occluder_field_buffer_size(1),
-        (OCCLUDER_FIELD_HEADER + OCCLUDER_RECORD) as u64
-    );
+    // The occluder field has no count-based size any more — per-light
+    // blocks and duplicated records make the packed bytes the ground
+    // truth — but the floor still rules: app.rs sizes the buffer at the
+    // data length rounded up to the same minimum, and the emptiest pack
+    // is a bare header, well below it.
+    let empty = pack_occluder_field(&[], &[], VIEW);
+    assert_eq!(empty.data.len(), OCCLUDER_FIELD_HEADER);
+    let buffer_size = (empty.data.len().max(OCCLUDER_FIELD_BUFFER_MIN)) as u64;
+    assert_eq!(buffer_size, OCCLUDER_FIELD_BUFFER_MIN as u64);
 }
 
 #[test]
@@ -460,7 +479,7 @@ fn a_polygon_record_carries_its_edges_and_the_next_record_follows_them() {
             polygon: None,
         },
     ];
-    let field = pack_occluder_field(&[], &declared);
+    let field = pack_occluder_field(&[], &declared, VIEW);
     assert_eq!(field.count, 3);
     assert_eq!(
         field.data.len(),
@@ -528,7 +547,7 @@ fn a_flagged_circle_is_packed_as_the_polygon_cut_from_it() {
         z: 0.0,
     };
     let want = Convex::disc([3.0, -4.0], radius);
-    let field = pack_occluder_field(&[painted], &[]);
+    let field = pack_occluder_field(&[painted], &[], VIEW);
     assert_eq!(field.count, 1);
     assert_eq!(
         field.data.len(),
@@ -575,7 +594,7 @@ fn a_painted_circle_without_a_usable_radius_casts_nothing_instead_of_panicking()
         z: 0.0,
     };
     for radius in [0.0, -4.0, f32::NAN, f32::INFINITY] {
-        let field = pack_occluder_field(&[bare(radius)], &[]);
+        let field = pack_occluder_field(&[bare(radius)], &[], VIEW);
         assert_eq!(
             field.count, 0,
             "a circle of radius {radius} should be skipped, not packed"
@@ -587,6 +606,233 @@ fn a_painted_circle_without_a_usable_radius_casts_nothing_instead_of_panicking()
         );
     }
     // While the real one beside them still stands.
-    let field = pack_occluder_field(&[bare(0.0), bare(6.0)], &[]);
+    let field = pack_occluder_field(&[bare(0.0), bare(6.0)], &[], VIEW);
     assert_eq!(field.count, 1, "only the usable circle reaches the field");
+}
+
+/// A lamp drawn the way the packer reads one.
+fn cull_light(pos: [f32; 2], radius: f32, dir: [f32; 2]) -> Draw {
+    Draw::Light {
+        pos,
+        radius,
+        intensity: 1.0,
+        color: black(),
+        penumbra: 0.0,
+        dir,
+        cos_half: -1.0,
+        feather: 0.0,
+        z: 0.0,
+    }
+}
+
+/// A declared box at `center`, standing still.
+fn cull_box(center: [f32; 2], half: f32) -> Occluder {
+    Occluder {
+        world: Transform::identity(),
+        center,
+        half: [half, half],
+        polygon: None,
+    }
+}
+
+/// The shared cast: three lights — a lamp inside the window, a lamp off
+/// its right edge, and a sun shining up through the window from far
+/// below — and six occluders spread across the plane: two inside, one at
+/// the top-right corner, one far below in the sun's beam, a disc among
+/// the winners, and one far off to the right where no ray of this frame
+/// ever travels.
+fn cull_cast() -> (Vec<Draw>, Vec<Occluder>) {
+    let draws = vec![
+        cull_light([-40.0, -30.0], 60.0, [1.0, 0.0]),
+        cull_light([300.0, 0.0], 40.0, [1.0, 0.0]),
+        cull_light([0.0, 0.0], -1.0, [0.0, 1.0]),
+    ];
+    let disc = Occluder {
+        world: Transform::identity(),
+        center: [20.0, -10.0],
+        half: [5.0, 5.0],
+        polygon: Some(Convex::disc([20.0, -10.0], 5.0)),
+    };
+    let declared = vec![
+        cull_box([0.0, 0.0], 8.0),
+        cull_box([-30.0, -20.0], 8.0),
+        cull_box([55.0, 55.0], 6.0),
+        cull_box([0.0, -800.0], 6.0),
+        disc,
+        cull_box([300.0, 0.0], 8.0),
+    ];
+    (draws, declared)
+}
+
+/// The occluders' world bounds, restated from the cast: with identity
+/// transforms these are the boxes themselves (and the disc's bounds).
+fn cull_bounds() -> Vec<[f32; 4]> {
+    [
+        ([0.0, 0.0], 8.0),
+        ([-30.0, -20.0], 8.0),
+        ([55.0, 55.0], 6.0),
+        ([0.0, -800.0], 6.0),
+        ([20.0, -10.0], 5.0),
+        ([300.0, 0.0], 8.0),
+    ]
+    .into_iter()
+    .map(|(c, h)| [c[0] - h, c[1] - h, c[0] + h, c[1] + h])
+    .collect()
+}
+
+/// Byte ranges of the records packed between the field's tail-relative
+/// `vec4` range `start..end`.
+fn block_records(field: &OccluderField, start: u32, end: u32) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut base = start as usize;
+    while base < end as usize {
+        let off = OCCLUDER_FIELD_HEADER + base * 16;
+        // `rec.z` holds the plane count as a float, exactly as the shader
+        // reads it back with `u32(rec.z)`.
+        let planes = field_f32(&field.data, off + 40) as u32;
+        let span = OCCLUDER_RECORD + planes as usize * OCCLUDER_PLANE;
+        out.push((off, span));
+        base += 3 + planes as usize;
+    }
+    out
+}
+
+/// The records of a lightless pack — the master list, table-free: with
+/// no table to skip it starts at the tail's first vec4 and runs to the
+/// end of the field.
+fn master_records(field: &OccluderField) -> Vec<(usize, usize)> {
+    let end = ((field.data.len() - OCCLUDER_FIELD_HEADER) / 16) as u32;
+    block_records(field, 0, end)
+}
+
+/// Whether the open segment `(l, p)` passes through the box `b` the way
+/// the shader counts a block: a positive interval that reaches into
+/// (0, 1).
+fn seg_blocks(l: [f32; 2], p: [f32; 2], b: &[f32; 4]) -> bool {
+    let d = [p[0] - l[0], p[1] - l[1]];
+    let (mut tmin, mut tmax) = (0.0f32, 1.0f32);
+    for axis in 0..2 {
+        let (lo, hi) = (b[axis], b[axis + 2]);
+        if d[axis].abs() > 1e-9 {
+            let t1 = (lo - l[axis]) / d[axis];
+            let t2 = (hi - l[axis]) / d[axis];
+            tmin = tmin.max(t1.min(t2));
+            tmax = tmax.min(t1.max(t2));
+        } else if l[axis] < lo || l[axis] > hi {
+            return false;
+        }
+    }
+    tmax > tmin && tmax > 0.0 && tmin < 1.0
+}
+
+/// The safety property of the per-light cull: an occluder a light's block
+/// dropped must be one that light could never have needed — for every
+/// pixel of the window, its light-to-pixel segment misses the occluder's
+/// world bounds entirely. The GPU walk only ever sees the block, so this
+/// is the whole argument that culling cannot lose a shadow, and it is the
+/// reason `pack_occluder_field` is allowed to exist.
+#[test]
+fn the_cull_keeps_every_occluder_that_could_block() {
+    let (draws, declared) = cull_cast();
+    let field = pack_occluder_field(&draws, &declared, VIEW);
+    let master = pack_occluder_field(&[], &declared, VIEW);
+    let masters = master_records(&master);
+    assert_eq!(masters.len(), declared.len(), "the master list is the cast");
+    let bounds = cull_bounds();
+    let mut saw_an_exclusion = false;
+    for (li, light) in draws.iter().enumerate() {
+        let Draw::Light {
+            pos, radius, dir, ..
+        } = light
+        else {
+            unreachable!("the cast is all lights")
+        };
+        let (start, end) = (
+            field_f32(&field.data, OCCLUDER_FIELD_HEADER + li * 16) as u32,
+            field_f32(&field.data, OCCLUDER_FIELD_HEADER + li * 16 + 4) as u32,
+        );
+        let kept: Vec<(usize, usize)> = block_records(&field, start, end);
+        for (k, m) in masters.iter().enumerate() {
+            let present = kept
+                .iter()
+                .any(|(off, span)| field.data[*off..*off + *span] == master.data[m.0..m.0 + m.1]);
+            if present {
+                continue;
+            }
+            saw_an_exclusion = true;
+            // Culled: then no visible pixel ever needed it. Pixels on a
+            // dense grid across the window, plus its exact corners.
+            let mut xs: Vec<f32> = (0..=16).map(|i| i as f32 * 8.0).collect();
+            xs.extend([0.0, 128.0]);
+            let mut ys: Vec<f32> = (0..=16).map(|i| i as f32 * 8.0).collect();
+            ys.extend([0.0, 128.0]);
+            for x in &xs {
+                for y in &ys {
+                    let p = [*x, *y];
+                    let l = if *radius < 0.0 {
+                        [p[0] - dir[0] * SHADOW_RANGE, p[1] - dir[1] * SHADOW_RANGE]
+                    } else {
+                        *pos
+                    };
+                    assert!(
+                        !seg_blocks(l, p, &bounds[k]),
+                        "light {li} culled occluder {k}, yet its ray to {p:?} blocks there",
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        saw_an_exclusion,
+        "the cast must give the cull something to do"
+    );
+}
+
+/// The field walks like its header says it should: the table starts at
+/// the tail's first vec4, blocks run back to back in light order with no
+/// gaps or overlaps, every block's records advance by exactly their plane
+/// counts, the record total matches the header, and each block is an
+/// in-order subsequence of the master list.
+#[test]
+fn the_range_table_and_blocks_walk_their_documented_layout() {
+    let (draws, declared) = cull_cast();
+    let field = pack_occluder_field(&draws, &declared, VIEW);
+    let master = pack_occluder_field(&[], &declared, VIEW);
+    let masters = master_records(&master);
+    assert_eq!(field.lights as usize, draws.len());
+    // The table is the tail's first `lights` vec4s; records start right
+    // after it.
+    let mut expected_start = field.lights as usize;
+    let mut total = 0usize;
+    let mut prev_end = None;
+    for li in 0..field.lights as usize {
+        let start = field_f32(&field.data, OCCLUDER_FIELD_HEADER + li * 16) as usize;
+        let end = field_f32(&field.data, OCCLUDER_FIELD_HEADER + li * 16 + 4) as usize;
+        assert_eq!(start, expected_start, "block {li} starts where it must");
+        assert!(end >= start, "block {li} is a range");
+        if let Some(prev) = prev_end {
+            assert_eq!(start, prev, "blocks are contiguous");
+        }
+        let recs = block_records(&field, start as u32, end as u32);
+        total += recs.len();
+        // An in-order subsequence of the master list, byte for byte.
+        let mut next = 0usize;
+        let mut last = -1isize;
+        for (off, span) in &recs {
+            let found = masters[next..].iter().position(|m| {
+                m.1 == *span && master.data[m.0..m.0 + m.1] == field.data[*off..*off + *span]
+            });
+            let Some(rel) = found else {
+                panic!("block {li} holds a record the master list does not");
+            };
+            assert!((next + rel) as isize > last, "order within a block holds");
+            last = (next + rel) as isize;
+            next += rel + 1;
+        }
+        prev_end = Some(end);
+        expected_start = end;
+    }
+    let end_of_tail = (field.data.len() - OCCLUDER_FIELD_HEADER) / 16;
+    assert_eq!(prev_end, Some(end_of_tail), "the last block ends the tail");
+    assert_eq!(total, field.count as usize, "the header counts its records");
 }
