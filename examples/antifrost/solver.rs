@@ -1009,7 +1009,6 @@ mod dbg_trace {
             let mut g = Game::start(level.clone());
             println!("== {name} ==");
             let mut dead = false;
-            let mut last_locks = 0usize;
             for (n, a) in route.iter().enumerate() {
                 let before_trail = g.trail.len();
                 let before_locks = g

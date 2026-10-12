@@ -256,6 +256,10 @@ pub struct Context<'c> {
     /// The engine's live vsync state, mutable so a running app can flip
     /// the presentation mode (see [`Context::set_vsync`]).
     vsync: &'c mut bool,
+    /// The engine's live fixed render size, mutable so a running app can
+    /// change the quality of the stretch pass (see
+    /// [`Context::set_render_size`]).
+    render_size: &'c mut Option<[u32; 2]>,
     /// The window this frame is drawn into, or `None` before the window
     /// exists.
     window: Option<&'c Window>,
@@ -268,6 +272,9 @@ pub struct Context<'c> {
     /// The mouse wheel's vertical movement since the previous frame, in
     /// lines (see [`Context::mouse_wheel`]).
     mouse_wheel: f32,
+    /// The physical stretch this frame's fixed render buffer is carried
+    /// by (see [`Context::content_upscale`]); 1.0 without a stretch.
+    content_upscale: f32,
     /// The gamepad controller, or `None` when gilrs could not open the
     /// platform's input devices at startup (then no gamepad state exists).
     gilrs: Option<&'c gilrs::Gilrs>,
@@ -419,6 +426,44 @@ impl Context<'_> {
     /// changes what the app reports, not what the compositor does.
     pub fn set_vsync(&mut self, on: bool) {
         *self.vsync = on;
+    }
+
+    /// The fixed render size this frame is being drawn into — the live
+    /// state behind [`Config::render_size`] (which [`Self::set_render_size`]
+    /// changes at runtime). `None` means the frame renders at the window's
+    /// own resolution.
+    pub fn render_size(&self) -> Option<[u32; 2]> {
+        *self.render_size
+    }
+
+    /// The physical stretch this frame is under: how many surface
+    /// pixels each pixel of a fixed [`Config::render_size`] buffer
+    /// becomes on screen — 2.0 when a 1080p frame fills a 4K window,
+    /// 1.0 whenever there is no stretch at all (no fixed buffer, or a
+    /// surface the buffer's own size). An overlay that wants to hold
+    /// its authored physical size across quality tiers — the
+    /// diagnostics panel — divides its layout by this; it cannot beat
+    /// the buffer's resolution, only the buffer's magnification.
+    pub fn content_upscale(&self) -> f32 {
+        self.content_upscale
+    }
+
+    /// Fixes the render size — or lifts the fix — mid-run: the runtime
+    /// sibling of [`Config::render_size`], and the lever behind a
+    /// "quality" setting. `Some([w, h])` renders every frame into a
+    /// buffer of exactly those physical pixels and stretches it over the
+    /// window through the blit filter ([`Self::set_blit_filter`]); `None`
+    /// returns to rendering at the window's own resolution.
+    ///
+    /// The change lands the way a window resize lands, one frame late:
+    /// this frame is already measured against the old size, and the next
+    /// renders through the new one — its offscreen buffer is built on
+    /// demand, the old one retires, and [`Canvas::size`] starts reporting
+    /// the new user space. An app that lays itself out from `ctx.size()`
+    /// each frame needs no notice of the switch; a window shaped unlike
+    /// the buffer letterboxes, as it always does under a fixed size.
+    pub fn set_render_size(&mut self, size: Option<[u32; 2]>) {
+        *self.render_size = size;
     }
 
     /// The frame rate this app is expected to run at, in frames per second.

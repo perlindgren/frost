@@ -1,0 +1,10 @@
+(
+    v: 2,
+    vsync: true,
+    filter: "nearest",
+    fullscreen: true,
+    quality: "high",
+    ambient: 0.7503125,
+    light: 1.4999999,
+    leaves_lit: true,
+)
