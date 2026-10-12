@@ -253,6 +253,9 @@ pub struct Context<'c> {
     /// The engine's live stretch filter, mutable so a running app can flip
     /// it (see [`Context::set_blit_filter`]).
     blit_filter: &'c mut SpriteFilter,
+    /// The engine's live vsync state, mutable so a running app can flip
+    /// the presentation mode (see [`Context::set_vsync`]).
+    vsync: &'c mut bool,
     /// The window this frame is drawn into, or `None` before the window
     /// exists.
     window: Option<&'c Window>,
@@ -398,11 +401,31 @@ impl Context<'_> {
         *self.blit_filter = filter;
     }
 
+    /// Whether frames are presented in sync with the display's vertical
+    /// blank ("vsync") — the live state behind [`Config::vsync`], which
+    /// [`Self::set_vsync`] flips at runtime.
+    pub fn vsync(&self) -> bool {
+        *self.vsync
+    }
+
+    /// Turns vsync on or off mid-run: the mid-session sibling of setting
+    /// [`Config::vsync`] at startup. The flag flips with the call — from
+    /// here the app is uncapped (`false`) or pinned (`true`) — while the
+    /// swap chain takes the frame's end to agree: this frame still
+    /// presents at the old mode, and the next presents at the new one,
+    /// which is when [`Self::expected_fps`] starts reporting the change.
+    /// In the browser the page owns the presentation cadence — every
+    /// frame rides the browser's tick either way — so there the flip
+    /// changes what the app reports, not what the compositor does.
+    pub fn set_vsync(&mut self, on: bool) {
+        *self.vsync = on;
+    }
+
     /// The frame rate this app is expected to run at, in frames per second.
     ///
-    /// `Some(fps)` when [`Config::vsync`] is on and winit reports the
-    /// refresh rate of the monitor the window sits on: with vsync, frames
-    /// are presented once per vertical blank, at exactly that rate.
+    /// `Some(fps)` when vsync is on (see [`Self::vsync`]) and winit reports
+    /// the refresh rate of the monitor the window sits on: with vsync,
+    /// frames are presented once per vertical blank, at exactly that rate.
     /// `None` when vsync is off (presentation is uncapped, so there is no
     /// expected rate) or the refresh rate is unknown — the latter happens
     /// on some displays and in the browser.
@@ -562,6 +585,10 @@ pub struct Config {
     /// frame rate is capped at the display's refresh rate — the rate
     /// [`Context::expected_fps`] reports. When `false`, frames are
     /// presented as soon as they are rendered, uncapped.
+    ///
+    /// This is the startup request; a running app can flip it (see
+    /// [`Context::set_vsync`]), and the [`Diagnostics`] overlay answers
+    /// Alt-V with exactly that.
     pub vsync: bool,
     /// Open the window already fullscreen.
     ///

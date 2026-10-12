@@ -6,7 +6,8 @@
 //! is a stack, and the tunnels are the shuffle device. Every ant asleep
 //! in its bed, yourself included, before the first frost.
 //!
-//! Run: `RUST_LOG=info cargo run --example antifrost`
+//! Run: `RUST_LOG=info cargo run --example antifrost` — add
+//! `-- --vsync off` to uncap the frame rate.
 //! Rules: `examples/antifrost/DESIGN.md`
 
 mod game;
@@ -612,8 +613,9 @@ struct Demo {
     /// The giant ground sprite, rebuilt per hill: its punched hole must
     /// match the hill's rectangle, and the span it is drawn across.
     ground: Option<(frost::Shape, [f32; 2])>,
-    /// The engine's diagnostics overlay: window size, FPS, frame time,
-    /// processing times, draw calls, with Alt-0..Alt-T shortcuts.
+    /// The engine's diagnostics overlay: window size with the vsync
+    /// readout, FPS, frame time, processing times, draw calls, with
+    /// Alt-0..Alt-V shortcuts.
     /// The profiler HUD, compiled in only with `--features diag`.
     #[cfg(feature = "diag")]
     diag: Diagnostics,
@@ -1030,8 +1032,15 @@ impl Demo {
         };
         if !self.leaves_seeded {
             self.leaves_seeded = true;
+            // The deck deals all eighty, but the calm-weather ledger
+            // draws only the first thirty — so seed on the *drawn* lane
+            // grid, not the deck's size. Seeding `lane of N_MAX` put the
+            // visible thirty at the sky's left 3/8; the modulo fills
+            // every drawn lane three times over, so the open frame is
+            // wide even before the storm calls in the rest (who are
+            // re-dealt on activation anyway).
             self.leaves = (0..N_MAX)
-                .map(|lane| Leaf::fresh(lane, N_MAX, &sky, &mut self.leaf_rng))
+                .map(|lane| Leaf::fresh(lane % N_LEAVES, N_LEAVES, &sky, &mut self.leaf_rng))
                 .collect();
             // Scatter the first volley through the air, so the hill
             // opens already in autumn rather than waiting for a fall.
@@ -2201,7 +2210,45 @@ fn init_logging() {
     });
 }
 
+/// The command line's arguments.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(clap::Parser)]
+struct Cli {
+    /// Present frames in sync with the display's vertical blank. `off`
+    /// uncaps the frame rate — the hill has the headroom (the experiment
+    /// hit 200 fps), but the cadence judders, so vsync stays on unless
+    /// this flag says otherwise.
+    ///
+    /// An `Option`: a bare `bool` field is clap's zero-arg `--flag`,
+    /// which has no value to parse.
+    #[arg(long, value_name = "on|off", value_parser = parse_on_off)]
+    vsync: Option<bool>,
+}
+
+/// clap's value parser for the vsync flag: `on`/`off`, any case.
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_on_off(s: &str) -> Result<bool, String> {
+    if s.eq_ignore_ascii_case("on") {
+        Ok(true)
+    } else if s.eq_ignore_ascii_case("off") {
+        Ok(false)
+    } else {
+        Err(format!("expected `on` or `off`, got `{s}`"))
+    }
+}
+
 fn main() {
+    // The hill's pin: vsync keeps presentation on the display's cadence.
+    // A browser has no command line, so the packaged build keeps the
+    // default; native can hand the uncapped experiment to the caller
+    // with `--vsync off`.
+    #[cfg(target_arch = "wasm32")]
+    let vsync = true;
+    #[cfg(not(target_arch = "wasm32"))]
+    let vsync = {
+        let cli: Cli = clap::Parser::parse();
+        cli.vsync.unwrap_or(true)
+    };
     // Native logs to stderr; a browser has no stderr, so there the
     // panic hook surfaces failures in the devtools console instead of
     // the module dying silently.
@@ -2273,9 +2320,20 @@ fn main() {
             // The hill opens full screen; F11 flips to the windowed
             // size above, and again back.
             fullscreen: true,
-            // Vsync stays on (the default): the vsync-off experiment hit
-            // 200 fps with heavy judder, so the pipeline has headroom
-            // and the display's cadence is the right pin.
+            // The hill always renders at 1080p and lets the stretch pass
+            // carry it to the window or the display: this is a small,
+            // cozy game for modest hardware, and the 4K-native experiment
+            // cost ~35 ms a frame on a modern iGPU — most of it per-pixel
+            // lighting arithmetic that the fixed buffer simply never
+            // pays. A window the buffer's own size skips both the buffer
+            // and the stretch pass, so windowed 1080p costs nothing
+            // extra; Alt-F flips the stretch between bilinear (the soft,
+            // default carry) and nearest.
+            render_size: Some([1920, 1080]),
+            // Vsync on unless the command line says otherwise: the
+            // vsync-off experiment hit 200 fps with heavy judder, so
+            // the display's cadence stays the default pin.
+            vsync,
             ..Default::default()
         },
     ) {
@@ -2335,5 +2393,40 @@ mod click_tests {
         );
         assert_eq!(aim(1, 1), Some(game::Dir::Up), "straight up the shaft");
         assert_eq!(aim(1, 3), None, "aimed at your own feet, nobody shoves");
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod cli_tests {
+    use super::*;
+
+    fn vsync_of(args: &[&str]) -> bool {
+        <Cli as clap::Parser>::parse_from(std::iter::once("antifrost").chain(args.iter().copied()))
+            .vsync
+            .unwrap_or(true)
+    }
+
+    #[test]
+    fn vsync_defaults_to_on() {
+        assert!(
+            vsync_of(&[]),
+            "no flag: the display's cadence stays the pin"
+        );
+    }
+
+    #[test]
+    fn vsync_flag_toggles_either_way() {
+        assert!(!vsync_of(&["--vsync", "off"]), "off uncaps the frame rate");
+        assert!(vsync_of(&["--vsync", "on"]), "on is spellable out loud");
+        assert!(
+            !vsync_of(&["--vsync", "OFF"]),
+            "case is not part of the deal"
+        );
+    }
+
+    #[test]
+    fn any_other_vsync_value_is_rejected() {
+        let err = <Cli as clap::Parser>::try_parse_from(["antifrost", "--vsync", "maybe"]);
+        assert!(err.is_err(), "the flag speaks on or off, nothing else");
     }
 }

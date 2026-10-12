@@ -13,6 +13,7 @@ fn context_reports_held_keys() {
     let mouse_buttons = HashSet::new();
     {
         let mut blit_filter = SpriteFilter::Linear;
+        let mut vsync = true;
         let ctx = Context {
             frame_diagnostic_draw_calls: 0,
             canvas: &mut canvas,
@@ -20,6 +21,7 @@ fn context_reports_held_keys() {
             keys: &keys,
             typed: &typed,
             blit_filter: &mut blit_filter,
+            vsync: &mut vsync,
             window: None,
             expected_fps: None,
             mouse: None,
@@ -36,6 +38,7 @@ fn context_reports_held_keys() {
     }
     keys.insert(KeyCode::KeyW);
     let mut blit_filter = SpriteFilter::Linear;
+    let mut vsync = true;
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
@@ -43,6 +46,7 @@ fn context_reports_held_keys() {
         keys: &keys,
         typed: &typed,
         blit_filter: &mut blit_filter,
+        vsync: &mut vsync,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -70,6 +74,7 @@ fn context_reports_typed_character_of_held_key() {
     typed.insert(KeyCode::Minus, '+');
     let mouse_buttons = HashSet::new();
     let mut blit_filter = SpriteFilter::Linear;
+    let mut vsync = true;
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
@@ -77,6 +82,7 @@ fn context_reports_typed_character_of_held_key() {
         keys: &keys,
         typed: &typed,
         blit_filter: &mut blit_filter,
+        vsync: &mut vsync,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -101,6 +107,7 @@ fn context_reports_mouse_position() {
     let typed = HashMap::new();
     let mouse_buttons = HashSet::new();
     let mut blit_filter = SpriteFilter::Linear;
+    let mut vsync = true;
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
@@ -108,6 +115,7 @@ fn context_reports_mouse_position() {
         keys: &keys,
         typed: &typed,
         blit_filter: &mut blit_filter,
+        vsync: &mut vsync,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -122,6 +130,7 @@ fn context_reports_mouse_position() {
     };
     assert_eq!(ctx.mouse_position(), None);
     let mut blit_filter = SpriteFilter::Linear;
+    let mut vsync = true;
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
@@ -129,6 +138,7 @@ fn context_reports_mouse_position() {
         keys: &keys,
         typed: &typed,
         blit_filter: &mut blit_filter,
+        vsync: &mut vsync,
         window: None,
         expected_fps: None,
         mouse: Some([12.0, -34.0]),
@@ -153,6 +163,7 @@ fn context_reports_held_mouse_button() {
     let mut mouse_buttons = HashSet::new();
     {
         let mut blit_filter = SpriteFilter::Linear;
+        let mut vsync = true;
         let ctx = Context {
             frame_diagnostic_draw_calls: 0,
             canvas: &mut canvas,
@@ -160,6 +171,7 @@ fn context_reports_held_mouse_button() {
             keys: &keys,
             typed: &typed,
             blit_filter: &mut blit_filter,
+            vsync: &mut vsync,
             window: None,
             expected_fps: None,
             mouse: None,
@@ -176,6 +188,7 @@ fn context_reports_held_mouse_button() {
     }
     mouse_buttons.insert(MouseButton::Left);
     let mut blit_filter = SpriteFilter::Linear;
+    let mut vsync = true;
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
@@ -183,6 +196,7 @@ fn context_reports_held_mouse_button() {
         keys: &keys,
         typed: &typed,
         blit_filter: &mut blit_filter,
+        vsync: &mut vsync,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -207,6 +221,7 @@ fn context_reports_mouse_wheel_delta() {
     let typed = HashMap::new();
     let mouse_buttons = HashSet::new();
     let mut blit_filter = SpriteFilter::Linear;
+    let mut vsync = true;
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
@@ -214,6 +229,7 @@ fn context_reports_mouse_wheel_delta() {
         keys: &keys,
         typed: &typed,
         blit_filter: &mut blit_filter,
+        vsync: &mut vsync,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -237,6 +253,7 @@ fn context_reports_no_gamepads_without_gilrs() {
     let typed = HashMap::new();
     let mouse_buttons = HashSet::new();
     let mut blit_filter = SpriteFilter::Linear;
+    let mut vsync = true;
     let ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
@@ -244,6 +261,7 @@ fn context_reports_no_gamepads_without_gilrs() {
         keys: &keys,
         typed: &typed,
         blit_filter: &mut blit_filter,
+        vsync: &mut vsync,
         window: None,
         expected_fps: None,
         mouse: None,

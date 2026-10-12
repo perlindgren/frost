@@ -15,9 +15,9 @@ use wgpu::{
     Instance, MipmapFilterMode, MultisampleState, PipelineCompilationOptions, PrimitiveState,
     Queue, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline,
     RenderPipelineDescriptor, Sampler, SamplerDescriptor, ShaderModule, ShaderModuleDescriptor,
-    ShaderSource, StoreOp, Surface, SurfaceTexture, TexelCopyBufferLayout, TexelCopyTextureInfo,
-    TextureAspect, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
-    TextureViewDescriptor, VertexState,
+    ShaderSource, StoreOp, Surface, SurfaceConfiguration, SurfaceTexture, TexelCopyBufferLayout,
+    TexelCopyTextureInfo, TextureAspect, TextureDescriptor, TextureDimension, TextureFormat,
+    TextureUsages, TextureView, TextureViewDescriptor, VertexState,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -69,8 +69,14 @@ pub(crate) struct Frost<P: Process> {
     queue: Queue,
     /// The user's vsync request; maps to the surface's presentation mode
     /// (`PresentMode::AutoVsync` / `AutoNoVsync`) when the surface is
-    /// (re)configured.
+    /// (re)configured. `Context::set_vsync` flips it mid-run; the frame
+    /// that finds it disagreeing with `surface_vsync` reconfigures the
+    /// swap chain (see `apply_vsync_change`).
     vsync: bool,
+    /// The vsync state the surface was last configured with; the mirror
+    /// that makes a `Context::set_vsync` flip visible exactly once (see
+    /// `apply_vsync_change`).
+    surface_vsync: bool,
     /// The `Config`'s initial window inner size in logical pixels, or
     /// `None` for the platform default; used once in `create_window`.
     window_size: Option<[u32; 2]>,
@@ -437,6 +443,7 @@ impl<P: Process> Frost<P> {
             device,
             queue,
             vsync,
+            surface_vsync: vsync,
             window_size,
             window_size_px,
             fullscreen,
@@ -731,16 +738,9 @@ impl<P: Process> Frost<P> {
 
         // With vsync, presentation runs once per vertical blank, so the
         // expected frame rate is the refresh rate of the monitor the window
-        // sits on, as winit reports it (unknown on some displays and in the
-        // browser). Without vsync there is no expected rate at all.
-        self.expected_fps = if self.vsync {
-            window
-                .current_monitor()
-                .and_then(|monitor| monitor.refresh_rate_millihertz())
-                .map(|millihertz| millihertz as f32 / 1000.0)
-        } else {
-            None
-        };
+        // sits on; without vsync there is no expected rate at all (see
+        // `refresh_expected_fps`).
+        self.refresh_expected_fps(&window);
 
         // An `Arc<Window>` is passed by value to `create_surface`, so the
         // resulting `Surface` is 'static without borrowing `self.window`. We
@@ -760,6 +760,7 @@ impl<P: Process> Frost<P> {
         // apply the user's vsync request explicitly.
         config.present_mode = present_mode_for(self.vsync);
         surface.configure(&self.device, &config);
+        self.surface_vsync = self.vsync;
         log::info!(
             "surface configured at {}x{}, format {:?}, present_mode {:?}",
             config.width,
@@ -788,24 +789,25 @@ impl<P: Process> Frost<P> {
         )
     }
 
-    fn resize(&mut self) {
-        let Some(surface) = self.surface.as_ref() else {
-            return;
-        };
+    /// Reconfigures the swap chain at the window's current size: format
+    /// negotiation, the presentation mode the user's vsync request maps
+    /// to, the configure itself, and the pipeline rebuild a surface-format
+    /// change requires. Shared by the resize path and a runtime vsync flip
+    /// (see `apply_vsync_change`); returns the configuration the surface
+    /// now runs with, or `None` while no surface exists.
+    fn reconfigure_surface(&mut self) -> Option<SurfaceConfiguration> {
         let pixel_size = self.pixel_size();
-        let mut config = surface
-            .get_default_config(&self.adapter, pixel_size.0, pixel_size.1)
-            .expect("no compatible surface format");
-        prefer_srgb_format(&mut config, surface, &self.adapter);
-        config.present_mode = present_mode_for(self.vsync);
-        surface.configure(&self.device, &config);
-        log::info!(
-            "window resized to {}x{} ({}x{} px)",
-            self.logical_size.0,
-            self.logical_size.1,
-            config.width,
-            config.height
-        );
+        let config = {
+            let surface = self.surface.as_ref()?;
+            let mut config = surface
+                .get_default_config(&self.adapter, pixel_size.0, pixel_size.1)
+                .expect("no compatible surface format");
+            prefer_srgb_format(&mut config, surface, &self.adapter);
+            config.present_mode = present_mode_for(self.vsync);
+            surface.configure(&self.device, &config);
+            config
+        };
+        self.surface_vsync = self.vsync;
         // Pipelines depend only on the surface format, not the size, so they
         // are rebuilt only if the format actually changed.
         if self.format != Some(config.format) {
@@ -815,6 +817,57 @@ impl<P: Process> Frost<P> {
             self.blit_target = None;
             self.set_up_pipelines(config.format);
             self.format = Some(config.format);
+        }
+        Some(config)
+    }
+
+    fn resize(&mut self) {
+        let Some(config) = self.reconfigure_surface() else {
+            return;
+        };
+        log::info!(
+            "window resized to {}x{} ({}x{} px)",
+            self.logical_size.0,
+            self.logical_size.1,
+            config.width,
+            config.height
+        );
+    }
+
+    /// The frame rate vsync promises: with vsync on, the refresh rate of
+    /// the monitor the window sits on, as winit reports it (unknown on
+    /// some displays and in the browser); with vsync off, no expected
+    /// rate at all — presentation is uncapped (see `Context::expected_fps`).
+    fn refresh_expected_fps(&mut self, window: &Window) {
+        self.expected_fps = if self.vsync {
+            window
+                .current_monitor()
+                .and_then(|monitor| monitor.refresh_rate_millihertz())
+                .map(|millihertz| millihertz as f32 / 1000.0)
+        } else {
+            None
+        };
+    }
+
+    /// Makes the swap chain follow a mid-run vsync flip: `Context::set_vsync`
+    /// moves the flag — the process holds a `Context`, not the surface —
+    /// and the frame whose process moved it applies the change right after
+    /// its present, so the flip lands between frames: this frame goes out
+    /// at the old mode, the next at the new one. The `surface_vsync` mirror
+    /// makes every other frame a no-op.
+    fn apply_vsync_change(&mut self) {
+        if self.surface_vsync == self.vsync {
+            return;
+        }
+        if self.reconfigure_surface().is_some() {
+            log::info!(
+                "vsync turned {} (present mode {:?})",
+                if self.vsync { "on" } else { "off" },
+                present_mode_for(self.vsync)
+            );
+        }
+        if let Some(window) = self.window.clone() {
+            self.refresh_expected_fps(&window);
         }
     }
 
@@ -1677,6 +1730,7 @@ impl<P: Process> Frost<P> {
                 keys,
                 typed,
                 blit_filter: &mut self.blit_filter,
+                vsync: &mut self.vsync,
                 // The window is attached before the first frame renders, so
                 // this is `Some` for every frame the process sees; the
                 // `Option` is the type the field has before attach.
@@ -2255,6 +2309,11 @@ impl<P: Process> Frost<P> {
         self.frame_diagnostic_draw_calls = diagnostic_draws;
         self.queue.present(output);
         log::trace!("render: frame presented");
+        // A `Context::set_vsync` in this frame's process moved the user's
+        // vsync request; this frame presented at the old mode, so the swap
+        // chain reconfigures now — between frames — and the next frame
+        // goes out at the new one. A no-op on every frame that saw no flip.
+        self.apply_vsync_change();
     }
 
     /// Acquires the current surface texture.

@@ -1,6 +1,8 @@
 //! Diagnostics overlay: a small HUD pinned to the window's top-left corner,
 //! reporting the frame state as left-aligned lines and scrolling graphs —
-//! the window size on top (`800x600`, always shown), and, for each
+//! the window size on top (`800x600`, always shown, with the vsync
+//! readout riding to its right when enabled — `800x600  VSync: on`),
+//! and, for each
 //! statistic enabled in the overlay's [`DiagnosticsFlags`], a readout line
 //! and a scrolling ten-second strip chart beneath the lines: the smoothed
 //! frame rate (`FPS 58`, orange) and the current frame time
@@ -64,10 +66,12 @@
 //! The overlay also answers to keyboard shortcuts, read from the engine's
 //! key state every frame: Alt-0 toggles the overlay as a whole, Alt-1..
 //! Alt-4 toggle the charts by position among the enabled ones (top chart
-//! first), Alt-T toggles the readout lines, and Alt-F flips the engine's
+//! first), Alt-T toggles the readout lines, Alt-F flips the engine's
 //! stretch filter between bilinear and nearest (see the scaling line and
-//! [`crate::Context::set_blit_filter`]); Alt+'+' and Alt+'-' — the
-//! keys that type those signs wherever the user's layout puts them, the
+//! [`crate::Context::set_blit_filter`]), and Alt-V flips vsync (see the
+//! vsync readout on the size line and [`crate::Context::set_vsync`]);
+//! Alt+'+' and Alt+'-' — the keys that
+//! type those signs wherever the user's layout puts them, the
 //! numpad pair included — grow
 //! or shrink the whole overlay — every dimension at once, the font,
 //! margins, gaps, and chart panels, stepped by a quarter of the current
@@ -137,7 +141,8 @@ const LINE_GAP: f32 = 6.0;
 /// the font's metrics (both bundled fonts report degenerate ones —
 /// Leofont's ascent plus descent is about a pixel at 32 px, Fira Code's
 /// about two) is a stable extent for the lines.
-const PROBE: &str = "0123456789.x/ FPS FT PROC APP DRAW ms Scaling: Linear Nearest ()";
+const PROBE: &str =
+    "0123456789.x/ FPS FT PROC APP DRAW ms Scaling: Linear Nearest () VSync: on off";
 
 /// The readout lines' vertical extent in pixels at a font size of `size`:
 /// the highest ink top minus the lowest ink bottom over [`PROBE`], so no
@@ -296,7 +301,8 @@ const REF_COLOR: Color = Color {
 const LINE_WIDTH: f32 = 1.5;
 
 /// Which of the overlay's statistics to display: the frame rate, the frame
-/// time, the processing time, and the GPU draw-call count.
+/// time, the processing time, and the GPU draw-call count, plus the vsync
+/// readout riding on the window-size line.
 ///
 /// A flag enables the statistic's readout line and its chart together; the
 /// processing-time flag also enables the app-time line, since the app's
@@ -332,9 +338,14 @@ impl DiagnosticsFlags {
     /// Alt-F flips between bilinear and nearest. A readout line only — it
     /// has no chart.
     pub const SCALING: Self = Self(1 << 4);
+    /// The vsync readout: `VSync: on` to the right of the window-size line
+    /// (the resolution it caps rides on the same line), which Alt-V flips
+    /// (see [`crate::Context::set_vsync`]). Part of the size line, not a
+    /// line of its own, and it has no chart.
+    pub const VSYNC: Self = Self(1 << 5);
 
     /// Every statistic.
-    pub const ALL: Self = Self(0b11111);
+    pub const ALL: Self = Self(0b111111);
 
     /// No statistic — the window-size line alone, no charts.
     pub const NONE: Self = Self(0);
@@ -412,8 +423,9 @@ impl std::ops::BitOrAssign for DiagnosticsFlags {
 /// Alt-1..Alt-4 the charts by position among the enabled ones, Alt-T the
 /// readout lines, or the [`Self::toggle_all`], [`Self::toggle_chart`], and
 /// [`Self::toggle_text`] methods — and the layout reflows around whatever
-/// is hidden. Alt-F flips the engine's stretch filter (the scaling line),
-/// acting on the [`crate::Context`] rather than on the overlay. The
+/// is hidden. Alt-F flips the engine's stretch filter (the scaling line)
+/// and Alt-V flips vsync (the readout on the size line), both acting on
+/// the [`crate::Context`] rather than on the overlay. The
 /// overlay also scales as a whole — Alt+'+' and Alt+'-'
 /// step it, [`Self::set_scale`] sets it — every dimension following, the
 /// font included.
@@ -527,13 +539,19 @@ pub struct Diagnostics {
     /// the scaling toggle, separate from `prev_combos` because it acts on
     /// the engine (through `Context`), not on the overlay's own state.
     prev_scaling_combo: bool,
+    /// Whether Alt-V was held last frame — the press edge detector for
+    /// the vsync flip, kept out of `prev_combos` for the same reason as
+    /// `prev_scaling_combo`: it acts on the engine, not on the overlay.
+    prev_vsync_combo: bool,
 }
 
-/// The readout's line slots, in append order: the window-size line first,
-/// then the scaling line when enabled, then the enabled statistic lines.
+/// The readout's line slots, in append order: the window-size line first
+/// (the vsync readout rides to its right when enabled), then the scaling
+/// line when enabled, then the enabled statistic lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LineSlot {
-    /// The window-size line, always shown.
+    /// The window-size line, always shown; the vsync readout (enabled
+    /// with the vsync flag) rides on the same line, to the right.
     Size,
     /// The scaling line (enabled with the scaling flag).
     Scaling,
@@ -736,6 +754,7 @@ impl Diagnostics {
             scale: 1.0,
             prev_combos: [false; 8],
             prev_scaling_combo: false,
+            prev_vsync_combo: false,
         })
     }
 
@@ -934,6 +953,17 @@ impl Diagnostics {
         edge
     }
 
+    /// The press edge of the vsync flip: reports `true` once, on the
+    /// frame `held` (Alt-V) goes from released to held — holding and
+    /// releasing report nothing. Like [`Self::scaling_press`], the caller
+    /// performs the action — flipping vsync through the `Context` — since
+    /// the edge detector shares nothing with the overlay's display state.
+    fn vsync_press(&mut self, held: bool) -> bool {
+        let edge = held && !self.prev_vsync_combo;
+        self.prev_vsync_combo = held;
+        edge
+    }
+
     /// Hides the node for overlay slot `slot`: its shape is cleared,
     /// leaving a bare pivot that draws nothing, until the matching toggle
     /// shows it again and `place` restores the shape. A node the demo
@@ -1012,6 +1042,18 @@ impl Process for Diagnostics {
                 SpriteFilter::Nearest => SpriteFilter::Linear,
             };
             ctx.set_blit_filter(next);
+        }
+        // Alt-V flips vsync — on the press edge like the rest, and out of
+        // `apply_key_edges` because it acts on the engine through the
+        // `Context` (see [`crate::Context::set_vsync`]): the flag flips
+        // now, the swap chain reconfigures at this frame's end, and the
+        // readout on the size line names the new mode in the same frame.
+        // The shortcut is live whether or not the readout or the overlay
+        // is visible.
+        let vsync_combo = alt && ctx.key_down(KeyCode::KeyV);
+        if self.vsync_press(vsync_combo) {
+            let next = !ctx.vsync();
+            ctx.set_vsync(next);
         }
         // The engine's own probes of the last completed frame: its CPU
         // work, its total GPU draw calls, and the draw calls this overlay's
@@ -1092,12 +1134,23 @@ impl Process for Diagnostics {
             // app pixel per screen pixel, the case with nothing to say,
             // keeps the line bare.
             let physical = ctx.window().map(|wnd| wnd.inner_size());
-            let size_text = match physical {
+            let mut size_text = match physical {
                 Some(px) if (px.width, px.height) != (w as u32, h as u32) => {
                     format!("{}x{} ({}x{})", w as u32, h as u32, px.width, px.height)
                 }
                 _ => format!("{}x{}", w as u32, h as u32),
             };
+            // The vsync readout rides to the right of the resolution it
+            // caps (`1920x1080  VSync: on`), Alt-V flipping it. The mode
+            // is the engine's live state: the swap chain agrees with a
+            // frame's delay, the readout does not wait for it.
+            if self.flags.contains(DiagnosticsFlags::VSYNC) {
+                size_text.push_str(if ctx.vsync() {
+                    "  VSync: on"
+                } else {
+                    "  VSync: off"
+                });
+            }
             self.refresh_line(LineSlot::Size, size_text);
             if self.flags.contains(DiagnosticsFlags::SCALING) {
                 self.refresh_line(
@@ -1287,6 +1340,7 @@ mod tests {
         assert!(flags.contains(DiagnosticsFlags::DRAW));
         assert!(!flags.contains(DiagnosticsFlags::FT));
         assert!(!flags.contains(DiagnosticsFlags::PROC));
+        assert!(!flags.contains(DiagnosticsFlags::VSYNC));
         assert!(
             flags
                 .insert(DiagnosticsFlags::FT)
@@ -1300,6 +1354,7 @@ mod tests {
         let all = DiagnosticsFlags::all();
         assert!(all.contains(flags));
         assert!(!flags.contains(all));
+        assert!(all.contains(DiagnosticsFlags::VSYNC));
     }
 
     /// A real TrueType font, embedded so the toggle tests can construct an
@@ -1354,6 +1409,33 @@ mod tests {
         // Released, then pressed again: a fresh edge.
         assert!(!d.scaling_press(false));
         assert!(d.scaling_press(true));
+    }
+
+    #[test]
+    fn vsync_edge_fires_once_per_press() {
+        let mut d = overlay();
+        // Released: never an edge.
+        assert!(!d.vsync_press(false));
+        // Alt-V goes down: one edge.
+        assert!(d.vsync_press(true));
+        // Held across frames: silent — one flip per press.
+        assert!(!d.vsync_press(true));
+        // Released, then pressed again: a fresh edge.
+        assert!(!d.vsync_press(false));
+        assert!(d.vsync_press(true));
+    }
+
+    /// The vsync readout rides on the size line, so its characters belong
+    /// to the probe alphabet that fixes the lines' extent: a label change
+    /// that adds a character must extend `PROBE` too, or the new glyph's
+    /// ink could overshoot the measured extent.
+    #[test]
+    fn probe_covers_the_vsync_readout() {
+        for text in ["VSync: on", "VSync: off"] {
+            for c in text.chars() {
+                assert!(PROBE.contains(c), "`{c}` of {text:?} missing from PROBE");
+            }
+        }
     }
 
     #[test]
@@ -1442,6 +1524,8 @@ mod tests {
             "61",
             "1920x1080",
             "1920x1080 (3840x2160)",
+            "1920x1080  VSync: on",
+            "1920x1080 (3840x2160)  VSync: off",
             "Scaling: Linear",
             "Scaling: Nearest",
             "FPS 60",
