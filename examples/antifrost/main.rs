@@ -602,6 +602,12 @@ enum Page {
     /// next hill and retry hill — the only way a finished hill is
     /// ever left.
     Won,
+    /// The two control pages: plain lists answering the menu rows
+    /// of the same names. Any row on them steps back to the menu —
+    /// they are reading material, and reading ends when you press
+    /// anything.
+    Keyboard,
+    Mouse,
 }
 
 /// Where the Escape key leads. The rule the menu keeps: from the hill
@@ -620,6 +626,7 @@ fn escape_nav(from: Page) -> Escape {
         Page::Game => Escape::ToMenu,
         Page::Main => Escape::Resume,
         Page::Settings => Escape::ToMenu,
+        Page::Keyboard | Page::Mouse => Escape::ToMenu,
         // Escape steps off the finished hill onto the menu; the
         // resume row walks back to the won hill and its panel.
         Page::Won => Escape::ToMenu,
@@ -703,6 +710,9 @@ enum Action {
     /// Sliders: the press starts a drag, the release saves.
     Ambient,
     Light,
+    /// The control pages of the menu: keyboard, mouse.
+    Keyboard,
+    Mouse,
 }
 
 /// One laid-out menu row: a clickable rectangle (centre and half
@@ -800,6 +810,7 @@ fn ambient_floor(t: f32) -> Color {
 enum Quality {
     Medium,
     High,
+    VeryHigh,
     Ultra,
 }
 
@@ -808,6 +819,7 @@ impl Quality {
         match self {
             Quality::Medium => Some([1280, 720]),
             Quality::High => Some([1920, 1080]),
+            Quality::VeryHigh => Some([2560, 1440]),
             Quality::Ultra => None,
         }
     }
@@ -817,13 +829,15 @@ impl Quality {
         match self {
             Quality::Medium => "1280 x 720",
             Quality::High => "1920 x 1080",
+            Quality::VeryHigh => "2560 x 1440",
             Quality::Ultra => "native",
         }
     }
     fn next(self) -> Quality {
         match self {
             Quality::Medium => Quality::High,
-            Quality::High => Quality::Ultra,
+            Quality::High => Quality::VeryHigh,
+            Quality::VeryHigh => Quality::Ultra,
             Quality::Ultra => Quality::Medium,
         }
     }
@@ -831,6 +845,7 @@ impl Quality {
         Some(match text {
             "1280 x 720" => Quality::Medium,
             "1920 x 1080" => Quality::High,
+            "2560 x 1440" => Quality::VeryHigh,
             "native" => Quality::Ultra,
             _ => return None,
         })
@@ -2569,31 +2584,14 @@ impl Demo {
             (&par, C_TEXT, 0.0),
         ];
         self.banner(ctx, h / 2.0 - 78.0, 30.0, 400.0, &score);
-        ctx.text(
-            0.0,
-            -h / 2.0 + 26.0,
-            &self.font,
-            "arrows or click walk   shift arrows or shift click push",
-            24.0,
-            400.0,
-            C_DIM,
-            UI,
-        );
-        ctx.text(
-            0.0,
-            -h / 2.0 + 58.0,
-            &self.font,
-            "space or right click detach   z undo   r restart   escape menu",
-            24.0,
-            400.0,
-            C_DIM,
-            UI,
-        );
+        // The old bottom banner is gone: the controls are read in
+        // the menu (settings, keyboard, mouse), not footnoted on the
+        // hill. Notes take its floor-side seat.
         if self.note_t > 0.0 {
             let a = (self.note_t / 0.6).min(1.0);
             ctx.text(
                 0.0,
-                -h / 2.0 + 106.0,
+                -h / 2.0 + 26.0,
                 &self.font,
                 self.note.clone(),
                 30.0,
@@ -2638,7 +2636,10 @@ impl Demo {
         }
         let top = rows.iter().map(|r| r.cy).fold(f32::MIN, f32::max);
         let bot = rows.iter().map(|r| r.cy).fold(f32::MAX, f32::min);
-        let wide = self.menu_page == Page::Settings;
+        let wide = matches!(
+            self.menu_page,
+            Page::Settings | Page::Keyboard | Page::Mouse
+        );
         ctx.rectangle(
             0.0,
             (top + bot) / 2.0,
@@ -2656,13 +2657,15 @@ impl Demo {
         // both name their ground — the title answers the same banner
         // the player has been reading all run. Settings is its own
         // room and keeps its own sign.
-        let title: String = if wide {
-            "SETTINGS".to_string()
-        } else {
-            self.game
+        let title: String = match self.menu_page {
+            Page::Settings => "SETTINGS".to_string(),
+            Page::Keyboard => "KEYBOARD".to_string(),
+            Page::Mouse => "MOUSE".to_string(),
+            _ => self
+                .game
                 .as_ref()
                 .map_or("ANTIFROST", |g| g.level.name.as_str())
-                .to_string()
+                .to_string(),
         };
         ctx.text(
             0.0,
@@ -2680,8 +2683,12 @@ impl Demo {
         if self.menu_page == Page::Won
             && let Some((word, colour)) = &self.verdict
         {
+            // The plate's top and the score banner's bottom are
+            // 92 units apart by the won page's hang (see
+            // `menu_rows`); the word owns the middle of that
+            // strip, full size, every window height.
             let plate_top = top + 130.0;
-            let band = h / 2.0 - 54.0;
+            let band = h / 2.0 - 93.0;
             ctx.text(
                 0.0,
                 (plate_top + band) / 2.0,
@@ -2799,6 +2806,14 @@ impl Demo {
                 self.page = Page::Game;
             }
             Action::Exit => ctx.exit(),
+            Action::Keyboard => {
+                self.page = Page::Keyboard;
+                self.menu_sel = 0;
+            }
+            Action::Mouse => {
+                self.page = Page::Mouse;
+                self.menu_sel = 0;
+            }
             Action::Back => {
                 self.page = Page::Main;
                 self.menu_sel = 0;
@@ -2970,15 +2985,39 @@ impl Demo {
                 );
                 push(
                     &mut rows,
-                    Action::Exit,
+                    Action::Keyboard,
                     top - 3.0 * step,
+                    240.0,
+                    "keyboard".into(),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::Mouse,
+                    top - 4.0 * step,
+                    240.0,
+                    "mouse".into(),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::Exit,
+                    top - 5.0 * step,
                     240.0,
                     "exit".into(),
                     None,
                 );
             }
             Page::Won => {
-                let top = (h * 0.5 - 120.0).min(120.0);
+                // The won page hangs lower than its siblings: the
+                // 315-unit drop leaves a constant 92-unit strip —
+                // plate top to the HUD's lowest banner (the score,
+                // h/2 - 78 with a 30-unit body: bottom at h/2 - 93)
+                // — and the verdict, at its full 64, is centred in
+                // that strip at any window height. The old 120-unit
+                // hang made the strip negative at 720p, and the
+                // word lay across both banners.
+                let top = (h * 0.5 - 315.0).min(120.0);
                 push(
                     &mut rows,
                     Action::Next,
@@ -3039,7 +3078,7 @@ impl Demo {
                     Action::Ambient,
                     top - 4.0 * step,
                     MENU_TRACK_HALF + 12.0,
-                    format!("ambient   {}%", (st.ambient * 100.0).round() as i32),
+                    format!("ambient   {}", (st.ambient * 100.0).round() as i32),
                     Some(st.ambient),
                 );
                 push(
@@ -3047,7 +3086,7 @@ impl Demo {
                     Action::Light,
                     top - 5.0 * step,
                     MENU_TRACK_HALF + 12.0,
-                    format!("light fx   {}%", (st.light * 50.0).round() as i32),
+                    format!("light fx   {}", (st.light * 50.0).round() as i32),
                     Some(st.light / 2.0),
                 );
                 push(
@@ -3074,6 +3113,52 @@ impl Demo {
                     "back".into(),
                     None,
                 );
+            }
+            Page::Keyboard => {
+                // Lists the keyboard's whole vocabulary. Every row is
+                // the way out: these pages are read, not used.
+                let top = (h * 0.5 - 120.0).min(120.0);
+                for (i, line) in [
+                    "wasd or arrows to move",
+                    "space to detach",
+                    "shift wasd or arrows to push",
+                    "z to undo",
+                    "r to reset level",
+                    "back",
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    push(
+                        &mut rows,
+                        Action::Back,
+                        top - i as f32 * step,
+                        280.0,
+                        line.to_string(),
+                        None,
+                    );
+                }
+            }
+            Page::Mouse => {
+                let top = (h * 0.5 - 120.0).min(120.0);
+                for (i, line) in [
+                    "left click to move",
+                    "right click to detach",
+                    "shift click to push",
+                    "back",
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    push(
+                        &mut rows,
+                        Action::Back,
+                        top - i as f32 * step,
+                        280.0,
+                        line.to_string(),
+                        None,
+                    );
+                }
             }
         }
         rows
@@ -4299,7 +4384,12 @@ mod menu_tests {
 
     #[test]
     fn quality_tiers_round_trip() {
-        for q in [Quality::Medium, Quality::High, Quality::Ultra] {
+        for q in [
+            Quality::Medium,
+            Quality::High,
+            Quality::VeryHigh,
+            Quality::Ultra,
+        ] {
             assert_eq!(
                 Quality::parse(q.label()),
                 Some(q),
@@ -4308,7 +4398,7 @@ mod menu_tests {
         }
         assert_eq!(
             Quality::High.next(),
-            Quality::Ultra,
+            Quality::VeryHigh,
             "the shipped tier steps up"
         );
         assert_eq!(Quality::Ultra.next(), Quality::Medium, "and the row cycles");
@@ -4351,6 +4441,66 @@ mod menu_tests {
     }
 
     #[test]
+    fn the_control_pages_list_the_controls_in_font_safe_words() {
+        let mut d = demo();
+        for (page, firsts) in [
+            (
+                Page::Keyboard,
+                &[
+                    "wasd or arrows to move",
+                    "space to detach",
+                    "shift wasd or arrows to push",
+                    "z to undo",
+                    "r to reset level",
+                ][..],
+            ),
+            (
+                Page::Mouse,
+                &[
+                    "left click to move",
+                    "right click to detach",
+                    "shift click to push",
+                ][..],
+            ),
+        ] {
+            d.page = page;
+            let rows = d.menu_rows(d.page, 720.0);
+            let texts: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
+            for want in firsts {
+                assert!(texts.contains(want), "{page:?} must list {want:?}");
+            }
+            assert_eq!(texts.last(), Some(&"back"), "every list ends the way out");
+            for t in texts {
+                assert!(
+                    t.chars().all(|c| c.is_ascii_alphanumeric() || c == ' '),
+                    "{t:?} must wear only glyphs the font owns"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn escape_leaves_the_control_pages_for_the_menu() {
+        assert_eq!(escape_nav(Page::Keyboard), Escape::ToMenu);
+        assert_eq!(escape_nav(Page::Mouse), Escape::ToMenu);
+    }
+
+    #[test]
+    fn the_six_menu_rows_hang_inside_seven_twenty() {
+        // The bottom row of the main menu must land above the
+        // plate's own bottom edge — the plate's bottom is 130 under
+        // centre, the frame's is h/2 under it.
+        let d = demo();
+        let rows = d.menu_rows(d.page, 720.0);
+        assert_eq!(rows.len(), 6);
+        let lowest = rows.iter().map(|r| r.cy).fold(f32::MAX, f32::min);
+        assert!(
+            lowest >= 130.0 - 360.0,
+            "the last row escaped the plate: {lowest}"
+        );
+    }
+
+    #[test]
     fn the_settings_page_offers_every_setting() {
         let mut d = demo();
         d.page = Page::Settings;
@@ -4376,7 +4526,7 @@ mod menu_tests {
     }
 
     #[test]
-    fn the_main_menu_is_the_four_rows_requested() {
+    fn the_main_menu_is_the_six_rows_requested() {
         let d = demo();
         let actions: Vec<Action> = d
             .menu_rows(d.page, 1080.0)
@@ -4389,8 +4539,27 @@ mod menu_tests {
                 Action::New,
                 Action::Resume,
                 Action::OpenSettings,
-                Action::Exit
+                Action::Keyboard,
+                Action::Mouse,
+                Action::Exit,
             ]
+        );
+    }
+
+    #[test]
+    fn the_won_page_hangs_low_enough_for_its_verdict() {
+        // At 720 the verdict's strip runs from the plate's top
+        // (top + 130) to the score banner's bottom (h/2 - 93) and
+        // must hold the full 64-unit word clear of both.
+        let mut d = demo();
+        d.page = Page::Won;
+        let rows = d.menu_rows(d.page, 720.0);
+        let plate_top = rows.iter().map(|r| r.cy).fold(f32::MIN, f32::max) + 130.0;
+        let band = 720.0 / 2.0 - 93.0;
+        assert!(
+            band - plate_top >= 64.0 + 16.0,
+            "the strip holds only {}",
+            band - plate_top
         );
     }
 

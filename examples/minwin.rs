@@ -5,10 +5,10 @@
 //! By default the window opens free and the keys drive it:
 //!
 //! * `R` — the resolution ladder: `1280 x 720` → `1920 x 1080` →
-//!   `native`, cycling. A fixed rung resizes the window to exactly
-//!   its pixels (1:1) and takes the resize handle away; `native`
-//!   gives the handle back and letterboxes the page to 16:9 inside
-//!   whatever shape the window ends up.
+//!   `2560 x 1440` → `native`, cycling. A fixed rung resizes the
+//!   window to exactly its pixels (1:1) and takes the resize handle
+//!   away; `native` gives the handle back and letterboxes the page
+//!   to 16:9 inside whatever shape the window ends up.
 //! * `F` — fullscreen on/off.
 //! * `Q` — quit.
 //!
@@ -78,6 +78,7 @@ const C_BG: Color = Color {
 enum Rung {
     Pixels720,
     Pixels1080,
+    Pixels1440,
     Native,
 }
 
@@ -86,13 +87,15 @@ impl Rung {
         match self {
             Self::Pixels720 => "1280 x 720",
             Self::Pixels1080 => "1920 x 1080",
+            Self::Pixels1440 => "2560 x 1440",
             Self::Native => "native",
         }
     }
     fn next(self) -> Self {
         match self {
             Self::Pixels720 => Self::Pixels1080,
-            Self::Pixels1080 => Self::Native,
+            Self::Pixels1080 => Self::Pixels1440,
+            Self::Pixels1440 => Self::Native,
             Self::Native => Self::Pixels720,
         }
     }
@@ -102,6 +105,7 @@ impl Rung {
         match self {
             Self::Pixels720 => Some([1280, 720]),
             Self::Pixels1080 => Some([1920, 1080]),
+            Self::Pixels1440 => Some([2560, 1440]),
             Self::Native => None,
         }
     }
@@ -165,6 +169,14 @@ impl Probe {
     /// Exactly antifrost's policy: free (hints included), request
     /// the buffer's own physical pixels, pin min/max to them, drop
     /// the handle; native frees the hints and keeps the handle.
+    /// Land on a rung: the buffer follows, then the window. The
+    /// `R` key speaks only through here.
+    fn set_rung(&mut self, ctx: &mut Context, rung: Rung) {
+        self.rung = rung;
+        ctx.set_render_size(rung.size());
+        self.apply_window_policy(ctx);
+    }
+
     fn apply_window_policy(&mut self, ctx: &mut Context) {
         let Some(window) = ctx.window() else {
             return;
@@ -469,9 +481,8 @@ impl Process for Probe {
         }
 
         if self.pressed(ctx, KeyCode::KeyR) {
-            self.rung = self.rung.next();
-            ctx.set_render_size(self.rung.size());
-            self.apply_window_policy(ctx);
+            let next = self.rung.next();
+            self.set_rung(ctx, next);
         }
         if self.pressed(ctx, KeyCode::KeyF) {
             self.fullscreen = !self.fullscreen;
@@ -529,6 +540,7 @@ fn main() {
             font: Arc::from(GAME_FONT),
             was: HashMap::new(),
             rung,
+
             fullscreen: false,
             expect: None,
             move_queued: false,
