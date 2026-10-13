@@ -1044,6 +1044,16 @@ impl Progress {
     fn save(self) {}
 }
 
+/// The largest 16:9 box inside a window: native mode's view. A
+/// fixed tier needs no fitting — its buffer *is* 16:9 and the engine
+/// letterboxes the stretch to the window's aspect — but at native
+/// the window is whatever the user dragged, so the game lays itself
+/// out in this box and lets black bars frame what's left over.
+fn fit_16x9(w: f32, h: f32) -> (f32, f32) {
+    let vw = w.min(h * 16.0 / 9.0);
+    (vw, vw * 9.0 / 16.0)
+}
+
 struct Demo {
     levels: Vec<level::Level>,
     idx: usize,
@@ -1171,6 +1181,23 @@ struct Demo {
     /// spun itself out: the won panel reads it in the strip above the
     /// plate.
     verdict: Option<(String, Color)>,
+    /// The window takes its first shape on the first frame the
+    /// engine's handle exists: the OS will not size a window that
+    /// has not been born yet.
+    window_policy_pending: bool,
+    /// Diagnostic clock for `--resize-probe`: cycles the real
+    /// resolution row once on a timer, so the window's answer can
+    /// be read from the log without a hand on the mouse.
+    resize_probe: Option<f32>,
+    /// A press that arrived while a move was in flight: one move
+    /// on screen at a time, and the newest rung always gets its
+    /// turn — queued pressed, applied resolved.
+    window_move_queued: bool,
+    /// A fixed tier's size request, with the frames waited so far:
+    /// if the window is not at the requested size within about a
+    /// second, the compositor has its own plans — and the game says
+    /// so, once, instead of failing silently forever.
+    window_expect: Option<(u32, u32, u32)>,
 }
 
 impl Demo {
@@ -1253,6 +1280,10 @@ impl Demo {
             menu_alpha: 0.0,
             menu_page: Page::Main,
             verdict: None,
+            window_policy_pending: true,
+            resize_probe: None,
+            window_expect: None,
+            window_move_queued: false,
         };
         // The saved hill, wherever it lands — `load` folds indices
         // past the last level back onto the set that exists.
@@ -1424,7 +1455,7 @@ impl Demo {
     /// distance per second. Frame-rate exact, since `ease` integrates
     /// the decay over `dt` rather than assuming a tick.
     fn update_camera(&mut self, ctx: &Context, dt: f32) {
-        let (w, h) = ctx.size();
+        let (w, h) = self.view(ctx);
         let ease = 1.0 - (-(dt / CAM_EASE_TAU)).exp();
         // The dead zone is measured in screen pixels, so its world half-
         // extent shrinks as the view magnifies: at 4× a quarter-window
@@ -1538,7 +1569,7 @@ impl Demo {
     /// batches are rebuilt whole — with thirty particles, incremental
     /// bookkeeping would only be a place to hide bugs.
     fn update_leaves(&mut self, ctx: &mut Context, dt: f32) {
-        let (w, h) = ctx.size();
+        let (w, h) = self.view(ctx);
         // The canopy's parallax: the batches ride a node offset, so the
         // leaves' own space shows the window shifted by `-off` — spawn,
         // wrap, and ground all live in that space, which keeps every
@@ -2255,7 +2286,7 @@ impl Demo {
     /// heartbeat at full size; then the fade to the hill's own words.
     fn draw_splash(&self, ctx: &mut Context) {
         let Some(s) = &self.splash else { return };
-        let (w, _) = ctx.size();
+        let (w, _) = self.view(ctx);
         let k = (s.t / s.grow).min(1.0);
         let e = k * k * (3.0 - 2.0 * k);
         // The word is baked once, at one fixed size, and the growth
@@ -2343,9 +2374,162 @@ impl Demo {
         }
     }
 
+    /// The rectangle the game lays itself out in. See [`fit_16x9`]:
+    /// a fixed tier's canvas size already *is* the 16:9 view (the
+    /// engine letterboxes the stretch itself); native fits it in.
+    fn view(&self, ctx: &Context) -> (f32, f32) {
+        let (w, h) = ctx.size();
+        if self.settings.quality.size().is_some() {
+            (w, h)
+        } else {
+            fit_16x9(w, h)
+        }
+    }
+
+    /// Black bars from the view's edge to the window's, above
+    /// everything the game owns. Nothing draws outside the view, so
+    /// the bars only ever cover the backdrop and the backdrop's
+    /// darkness — they frame the picture and touch nothing else.
+    fn draw_letterbox(&self, ctx: &mut Context) {
+        let (w, h) = ctx.size();
+        let (vw, vh) = self.view(ctx);
+        let black = Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        };
+        let z = UI + 20.0;
+        if w - vw > 0.5 {
+            let d = (w - vw) / 4.0;
+            ctx.rectangle(-(vw + w) / 4.0, 0.0, d, h / 2.0, black, z);
+            ctx.rectangle((vw + w) / 4.0, 0.0, d, h / 2.0, black, z);
+        }
+        if h - vh > 0.5 {
+            let d = (h - vh) / 4.0;
+            ctx.rectangle(0.0, (vh + h) / 4.0, w / 2.0, d, black, z);
+            ctx.rectangle(0.0, -(vh + h) / 4.0, w / 2.0, d, black, z);
+        }
+    }
+
+    /// Bring the OS window to what the tier and the fullscreen flag
+    /// ask for. A fixed windowed tier gets a window of exactly the
+    /// buffer's pixels and no resize handle — picture and window are
+    /// one rectangle, and the 16:9 question never comes up. Native
+    /// takes the resize handle back: the user drags any shape, and
+    /// [`fit_16x9`] keeps the game a 16:9 picture inside it.
+    /// Fullscreen leaves the window to the display and the engine's
+    /// letterboxed stretch to keep 16:9 on non-16:9 monitors.
+    fn apply_window_policy(&mut self, ctx: &mut Context) {
+        let Some(window) = ctx.window() else {
+            return;
+        };
+        log::info!(
+            "window policy: ask {:?} (before {}x{}, fullscreen {})",
+            self.settings.quality.size(),
+            window.inner_size().width,
+            window.inner_size().height,
+            self.settings.fullscreen,
+        );
+        // One move on screen at a time: a press during an in-flight
+        // move re-aims it when that move resolves — half-moves
+        // stacking up mid-flight is what flickered.
+        if self.window_expect.is_some() {
+            self.window_move_queued = true;
+            log::info!("window policy: move in flight, re-aim queued");
+            return;
+        }
+        // Touch fullscreen only when the ask differs from the
+        // state: winit rewrites the window's whole state list on
+        // every call (X11 especially), and states it does not know
+        // — like KWin's tile atom — die in the rewrite. KWin
+        // notices its tile was yanked and retiles: the window
+        // jumps to a size nobody asked for.
+        if self.settings.fullscreen {
+            window.set_resizable(true);
+            window.set_min_inner_size(None::<frost::PhysicalSize<u32>>);
+            window.set_max_inner_size(None::<frost::PhysicalSize<u32>>);
+            if window.fullscreen().is_none() {
+                window.set_fullscreen(Some(frost::Fullscreen::Borderless(None)));
+            }
+            self.window_expect = None;
+        } else {
+            if window.fullscreen().is_some() {
+                window.set_fullscreen(None);
+            }
+            match self.settings.quality.size() {
+                Some([w, h]) => {
+                    // Unlock (hints and all), then move: pin min/max
+                    // to the rung — on Wayland that clamp is the
+                    // engine, since winit's request never leaves the
+                    // app — and lock (set_resizable(false)) only on
+                    // arrival, because locking pins to the CURRENT
+                    // size and would stomp the new one wherever the
+                    // request lands asynchronously.
+                    window.set_resizable(true);
+                    window.set_min_inner_size(None::<frost::PhysicalSize<u32>>);
+                    window.set_max_inner_size(None::<frost::PhysicalSize<u32>>);
+                    // The request is the mover: X11 directly,
+                    // Wayland through the surface geometry winit
+                    // sends with it — KWin honours a geometry
+                    // change on a mapped window. A configure that
+                    // then matches our wish is swallowed by
+                    // winit's dedup, so never trust events alone
+                    // to follow the window: the engine's frame
+                    // loop checks its size against the surface's
+                    // belief every frame (see app.rs).
+                    let got = window.request_inner_size(frost::PhysicalSize::new(w, h));
+                    window.set_min_inner_size(Some(frost::PhysicalSize::new(w, h)));
+                    window.set_max_inner_size(Some(frost::PhysicalSize::new(w, h)));
+                    self.window_expect = Some((w, h, 0));
+                    log::info!(
+                        "window policy: asked {w}x{h} ({got:?}, local {}x{})",
+                        window.inner_size().width,
+                        window.inner_size().height,
+                    );
+                }
+                None => {
+                    window.set_resizable(true);
+                    window.set_min_inner_size(None::<frost::PhysicalSize<u32>>);
+                    window.set_max_inner_size(None::<frost::PhysicalSize<u32>>);
+                    self.window_expect = None;
+                }
+            }
+        }
+    }
+
+    /// Shift+left-click: the push verb for the pointing hand. A push
+    /// runs along one straight line, so the click supplies no
+    /// destination — it supplies an aim. The dominant axis from the
+    /// player to the clicked cell is the direction the arrow would have
+    /// been, had Shift turned it. Aiming at your own feet shoves nobody.
+    fn aimed_push(&self, at: [f32; 2]) -> Option<game::Dir> {
+        let game = self.game.as_ref()?;
+        if game.won {
+            return None;
+        }
+        let goal = self.cell_at_screen(at);
+        let dx = goal.col - game.player.col;
+        let dy = goal.row - game.player.row;
+        if dx == 0 && dy == 0 {
+            return None;
+        }
+        Some(if dx.abs() >= dy.abs() {
+            if dx > 0 {
+                game::Dir::Right
+            } else {
+                game::Dir::Left
+            }
+        } else if dy > 0 {
+            game::Dir::Down
+        } else {
+            game::Dir::Up
+        })
+    }
+
     fn draw_hud(&self, ctx: &mut Context) {
         let Some(game) = &self.game else { return };
-        let (_, h) = ctx.size();
+        let (_, h) = self.view(ctx);
         // Barrfont carries letters, digits and spaces — nothing else —
         // so every separator in the game is spaces. And since text draws
         // centred on its point, everything centres: a doubled size can
@@ -2424,399 +2608,12 @@ impl Demo {
             );
         }
     }
-    /// Shift+left-click: the push verb for the pointing hand. A push
-    /// runs along one straight line, so the click supplies no
-    /// destination — it supplies an aim. The dominant axis from the
-    /// player to the clicked cell is the direction the arrow would have
-    /// been, had Shift turned it. Aiming at your own feet shoves nobody.
-    fn aimed_push(&self, at: [f32; 2]) -> Option<game::Dir> {
-        let game = self.game.as_ref()?;
-        if game.won {
-            return None;
-        }
-        let goal = self.cell_at_screen(at);
-        let dx = goal.col - game.player.col;
-        let dy = goal.row - game.player.row;
-        if dx == 0 && dy == 0 {
-            return None;
-        }
-        Some(if dx.abs() >= dy.abs() {
-            if dx > 0 {
-                game::Dir::Right
-            } else {
-                game::Dir::Left
-            }
-        } else if dy > 0 {
-            game::Dir::Down
-        } else {
-            game::Dir::Up
-        })
-    }
-
-    /// Click-walking, one step per completed glide: the queen waits for
-    /// each hop to land before the next click-step starts, so a long
-    /// click route reads as the same walk the keys make, not a slide.
-    /// Any refusal — a line that packed into the way, a sleeper claimed,
-    /// the hill sleeping — ends the route right there.
-    fn walk_the_route(&mut self) {
-        if self.route.is_empty()
-            || self.spin.is_some()
-            || !closer(self.player_at, self.player_target)
-        {
-            return;
-        }
-        // A reversal of the travelling direction is a turn, not a
-        // step: spin in place and leave the direction queued — the
-        // route resumes the instant the about-face lands.
-        let dir = self.route[0];
-        let to = face_of(dir);
-        if self.face[0] * to[0] + self.face[1] * to[1] < -0.99 {
-            self.spin = Some(to);
-            return;
-        }
-        let Some(game) = &mut self.game else {
-            return;
-        };
-        if game.won {
-            self.route.clear();
-            return;
-        }
-        self.route.remove(0);
-        if game.move_player(dir).is_err() {
-            self.route.clear();
-        }
-    }
-
-    /// New Game: the descent restarts at the first hill. Every stat
-    /// the game keeps lives inside `Game::start`'s fresh state, and
-    /// `load` already sweeps the extras the demo layers on top —
-    /// queued steps, drifting zs, the frost's claim, verdicts; the
-    /// saved progress is rewritten by the caller, which owns when
-    /// the disc learns of it. Then the page steps aside and the hill
-    /// plays.
-    fn new_game(&mut self) {
-        self.load(0);
-        self.page = Page::Game;
-    }
-
-    /// The rows of the page currently up, laid out in user space —
-    /// the list the pointer hit-tests and the paint draws, so a click
-    /// can never miss the picture it answers to. `h` is the window's
-    /// user height: the block hangs from its top, and shrinks its
-    /// stride on short windows (a 540p quality buffer still wears the
-    /// whole menu).
-    fn menu_rows(&self, page: Page, h: f32) -> Vec<Row> {
-        let st = &self.settings;
-        let mut rows: Vec<Row> = Vec::new();
-        let short = h < 720.0;
-        let step = if short { 46.0 } else { 58.0 };
-        let push = |rows: &mut Vec<Row>, action, cy, hw, text: String, slider: Option<f32>| {
-            rows.push(Row {
-                action,
-                cx: if slider.is_some() { MENU_TRACK_CX } else { 0.0 },
-                cy,
-                hw,
-                hh: 24.0,
-                text,
-                slider,
-            })
-        };
-        match page {
-            Page::Game => {}
-            Page::Main => {
-                let top = (h * 0.5 - 120.0).min(120.0);
-                push(&mut rows, Action::New, top, 240.0, "new game".into(), None);
-                push(
-                    &mut rows,
-                    Action::Resume,
-                    top - step,
-                    240.0,
-                    "resume game".into(),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::OpenSettings,
-                    top - 2.0 * step,
-                    240.0,
-                    "settings".into(),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Exit,
-                    top - 3.0 * step,
-                    240.0,
-                    "exit".into(),
-                    None,
-                );
-            }
-            Page::Won => {
-                let top = (h * 0.5 - 120.0).min(120.0);
-                push(
-                    &mut rows,
-                    Action::Next,
-                    top,
-                    240.0,
-                    "next hill".into(),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Retry,
-                    top - step,
-                    240.0,
-                    "retry hill".into(),
-                    None,
-                );
-            }
-            Page::Settings => {
-                let top = (h * 0.5 - 120.0).min(236.0);
-                let on = |b: bool| if b { "on" } else { "off" };
-                push(
-                    &mut rows,
-                    Action::Vsync,
-                    top,
-                    250.0,
-                    format!("vsync   {}", on(st.vsync)),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Filter,
-                    top - step,
-                    250.0,
-                    format!(
-                        "filter   {}",
-                        if st.nearest { "nearest" } else { "bilinear" }
-                    ),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Fullscreen,
-                    top - 2.0 * step,
-                    250.0,
-                    format!("fullscreen   {}", on(st.fullscreen)),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Quality,
-                    top - 3.0 * step,
-                    250.0,
-                    format!("resolution   {}", st.quality.label()),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Ambient,
-                    top - 4.0 * step,
-                    MENU_TRACK_HALF + 12.0,
-                    format!("ambient   {}%", (st.ambient * 100.0).round() as i32),
-                    Some(st.ambient),
-                );
-                push(
-                    &mut rows,
-                    Action::Light,
-                    top - 5.0 * step,
-                    MENU_TRACK_HALF + 12.0,
-                    format!("light fx   {}%", (st.light * 50.0).round() as i32),
-                    Some(st.light / 2.0),
-                );
-                push(
-                    &mut rows,
-                    Action::Leaves,
-                    top - 6.0 * step,
-                    250.0,
-                    format!("leaf lighting   {}", on(st.leaves_lit)),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Shadows,
-                    top - 7.0 * step,
-                    250.0,
-                    format!("lamp shadows   {}", st.shadows.label()),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Back,
-                    top - 8.0 * step,
-                    250.0,
-                    "back".into(),
-                    None,
-                );
-            }
-        }
-        rows
-    }
-
-    /// The menu's input pass. A slider owns the button from the press
-    /// on the track until it lifts — dragging previews live, and only
-    /// the release writes the disc. Any other row answers its press at
-    /// once.
-    fn menu_input(&mut self, ctx: &mut Context) {
-        let pointer = ctx.mouse_position();
-        if let Some(sl) = self.drag {
-            if ctx.mouse_button_down(MouseButton::Left) {
-                if let Some([x, _]) = pointer {
-                    let frac = slide_value(x, MENU_TRACK_CX, MENU_TRACK_HALF);
-                    match sl {
-                        Slider::Ambient => self.settings.ambient = frac,
-                        Slider::Light => self.settings.light = frac * 2.0,
-                    }
-                }
-            } else {
-                self.drag = None;
-                self.settings.save();
-            }
-        }
-        // The keyboard's turn: arrows walk the rows, Enter presses
-        // the highlighted one, and left/right nudge a slider by five
-        // points when the highlight stands on its row. The same
-        // `menu_rows` list the mouse reads, so the two never diverge.
-        let h = ctx.size().1;
-        let rows = self.menu_rows(self.page, h);
-        if !rows.is_empty() {
-            self.menu_sel = self.menu_sel.min(rows.len() - 1);
-            if self.pressed(ctx, KeyCode::ArrowUp) {
-                self.menu_sel = step_sel(self.menu_sel, rows.len(), -1);
-            }
-            if self.pressed(ctx, KeyCode::ArrowDown) {
-                self.menu_sel = step_sel(self.menu_sel, rows.len(), 1);
-            }
-            let nudge = match (
-                self.pressed(ctx, KeyCode::ArrowLeft),
-                self.pressed(ctx, KeyCode::ArrowRight),
-            ) {
-                (true, false) => Some(-1.0),
-                (false, true) => Some(1.0),
-                _ => None,
-            };
-            if let Some(dir) = nudge
-                && rows[self.menu_sel].slider.is_some()
-            {
-                match rows[self.menu_sel].action {
-                    Action::Ambient => {
-                        self.settings.ambient = (self.settings.ambient + dir * 0.05).clamp(0.0, 1.0)
-                    }
-                    _ => self.settings.light = (self.settings.light + dir * 0.10).clamp(0.0, 2.0),
-                }
-                self.settings.save();
-            }
-            if self.pressed(ctx, KeyCode::Enter) || self.pressed(ctx, KeyCode::NumpadEnter) {
-                let action = rows[self.menu_sel].action;
-                self.menu_action(ctx, action);
-            }
-        }
-        // The pointer moving onto a row takes the highlight with it —
-        // motion only, so a cursor parked on `resume` cannot out-vote
-        // the arrow keys walking to `exit`. One row is ever lit.
-        if pointer != self.last_pointer
-            && let Some(p) = pointer
-            && let Some(i) = row_under(&rows, p)
-        {
-            self.menu_sel = i;
-        }
-        self.last_pointer = pointer;
-        // The mouse's turn: a click presses its row's action and takes
-        // the highlight with it.
-        if !self.pressed_mouse(ctx, MouseButton::Left) {
-            return;
-        }
-        let Some(p) = pointer else { return };
-        if let Some(i) = row_under(&rows, p) {
-            let r = &rows[i];
-            self.menu_sel = i;
-            match r.action {
-                Action::Ambient | Action::Light => {
-                    self.drag = Some(match r.action {
-                        Action::Ambient => Slider::Ambient,
-                        _ => Slider::Light,
-                    });
-                    let frac = slide_value(p[0], MENU_TRACK_CX, MENU_TRACK_HALF);
-                    match r.action {
-                        Action::Ambient => self.settings.ambient = frac,
-                        _ => self.settings.light = frac * 2.0,
-                    }
-                }
-                action => self.menu_action(ctx, action),
-            }
-        }
-    }
-
-    /// A row's answer: the page rows turn the page, the setting rows
-    /// flip the engine the moment they move, and everything the disc
-    /// should remember is written before the click is even over —
-    /// except the sliders, which save on release.
-    fn menu_action(&mut self, ctx: &mut Context, action: Action) {
-        match action {
-            Action::New => {
-                self.new_game();
-                Progress { hill: self.idx }.save();
-            }
-            Action::Resume => self.page = Page::Game,
-            Action::OpenSettings => {
-                self.page = Page::Settings;
-                self.drag = None;
-                self.menu_sel = 0;
-            }
-            Action::Next => {
-                self.load(self.idx + 1);
-                self.page = Page::Game;
-                // Standing on a new hill is the fact the progress
-                // file keeps — written the moment it's true.
-                Progress { hill: self.idx }.save();
-            }
-            Action::Retry => {
-                self.load(self.idx);
-                self.page = Page::Game;
-            }
-            Action::Exit => ctx.exit(),
-            Action::Back => {
-                self.page = Page::Main;
-                self.menu_sel = 0;
-            }
-            Action::Vsync => {
-                self.settings.vsync = !self.settings.vsync;
-                ctx.set_vsync(self.settings.vsync);
-            }
-            Action::Filter => {
-                self.settings.nearest = !self.settings.nearest;
-                ctx.set_blit_filter(if self.settings.nearest {
-                    SpriteFilter::Nearest
-                } else {
-                    SpriteFilter::Linear
-                });
-            }
-            Action::Fullscreen => {
-                self.settings.fullscreen = !self.settings.fullscreen;
-                if let Some(window) = ctx.window() {
-                    window.set_fullscreen(if self.settings.fullscreen {
-                        Some(frost::Fullscreen::Borderless(None))
-                    } else {
-                        None
-                    });
-                }
-            }
-            Action::Quality => {
-                self.settings.quality = self.settings.quality.next();
-                ctx.set_render_size(self.settings.quality.size());
-            }
-            Action::Leaves => self.settings.leaves_lit = !self.settings.leaves_lit,
-            Action::Shadows => self.settings.shadows = self.settings.shadows.next(),
-            Action::Ambient | Action::Light => return,
-        }
-        self.settings.save();
-    }
 
     /// The menu itself. The hill dims behind it, paused and visible —
     /// the point of Resume is that you can see what you are taking
     /// back — and the hovered row lifts a whisper of white.
     fn draw_menu(&self, ctx: &mut Context) {
-        let (w, h) = ctx.size();
+        let (w, h) = self.view(ctx);
         let z = UI + 10.0;
         // Everything the overlay owns breathes together — veil,
         // plate, rows, verdict — through one alpha held by `process`.
@@ -2973,6 +2770,360 @@ impl Demo {
             }
         }
     }
+
+    /// A row's answer: the page rows turn the page, the setting rows
+    /// flip the engine the moment they move, and everything the disc
+    /// should remember is written before the click is even over —
+    /// except the sliders, which save on release.
+    fn menu_action(&mut self, ctx: &mut Context, action: Action) {
+        match action {
+            Action::New => {
+                self.new_game();
+                Progress { hill: self.idx }.save();
+            }
+            Action::Resume => self.page = Page::Game,
+            Action::OpenSettings => {
+                self.page = Page::Settings;
+                self.drag = None;
+                self.menu_sel = 0;
+            }
+            Action::Next => {
+                self.load(self.idx + 1);
+                self.page = Page::Game;
+                // Standing on a new hill is the fact the progress
+                // file keeps — written the moment it's true.
+                Progress { hill: self.idx }.save();
+            }
+            Action::Retry => {
+                self.load(self.idx);
+                self.page = Page::Game;
+            }
+            Action::Exit => ctx.exit(),
+            Action::Back => {
+                self.page = Page::Main;
+                self.menu_sel = 0;
+            }
+            Action::Vsync => {
+                self.settings.vsync = !self.settings.vsync;
+                ctx.set_vsync(self.settings.vsync);
+            }
+            Action::Filter => {
+                self.settings.nearest = !self.settings.nearest;
+                ctx.set_blit_filter(if self.settings.nearest {
+                    SpriteFilter::Nearest
+                } else {
+                    SpriteFilter::Linear
+                });
+            }
+            Action::Fullscreen => {
+                self.settings.fullscreen = !self.settings.fullscreen;
+                self.apply_window_policy(ctx);
+            }
+            Action::Quality => {
+                self.settings.quality = self.settings.quality.next();
+                ctx.set_render_size(self.settings.quality.size());
+                self.apply_window_policy(ctx);
+            }
+            Action::Leaves => self.settings.leaves_lit = !self.settings.leaves_lit,
+            Action::Shadows => self.settings.shadows = self.settings.shadows.next(),
+            Action::Ambient | Action::Light => return,
+        }
+        self.settings.save();
+    }
+
+    /// The menu's input pass. A slider owns the button from the press
+    /// on the track until it lifts — dragging previews live, and only
+    /// the release writes the disc. Any other row answers its press at
+    /// once.
+    fn menu_input(&mut self, ctx: &mut Context) {
+        let pointer = ctx.mouse_position();
+        if let Some(sl) = self.drag {
+            if ctx.mouse_button_down(MouseButton::Left) {
+                if let Some([x, _]) = pointer {
+                    let frac = slide_value(x, MENU_TRACK_CX, MENU_TRACK_HALF);
+                    match sl {
+                        Slider::Ambient => self.settings.ambient = frac,
+                        Slider::Light => self.settings.light = frac * 2.0,
+                    }
+                }
+            } else {
+                self.drag = None;
+                self.settings.save();
+            }
+        }
+        // The keyboard's turn: arrows walk the rows, Enter presses
+        // the highlighted one, and left/right nudge a slider by five
+        // points when the highlight stands on its row. The same
+        // `menu_rows` list the mouse reads, so the two never diverge.
+        let h = self.view(ctx).1;
+        let rows = self.menu_rows(self.page, h);
+        if !rows.is_empty() {
+            self.menu_sel = self.menu_sel.min(rows.len() - 1);
+            if self.pressed(ctx, KeyCode::ArrowUp) {
+                self.menu_sel = step_sel(self.menu_sel, rows.len(), -1);
+            }
+            if self.pressed(ctx, KeyCode::ArrowDown) {
+                self.menu_sel = step_sel(self.menu_sel, rows.len(), 1);
+            }
+            let nudge = match (
+                self.pressed(ctx, KeyCode::ArrowLeft),
+                self.pressed(ctx, KeyCode::ArrowRight),
+            ) {
+                (true, false) => Some(-1.0),
+                (false, true) => Some(1.0),
+                _ => None,
+            };
+            if let Some(dir) = nudge
+                && rows[self.menu_sel].slider.is_some()
+            {
+                match rows[self.menu_sel].action {
+                    Action::Ambient => {
+                        self.settings.ambient = (self.settings.ambient + dir * 0.05).clamp(0.0, 1.0)
+                    }
+                    _ => self.settings.light = (self.settings.light + dir * 0.10).clamp(0.0, 2.0),
+                }
+                self.settings.save();
+            }
+            if self.pressed(ctx, KeyCode::Enter) || self.pressed(ctx, KeyCode::NumpadEnter) {
+                let action = rows[self.menu_sel].action;
+                self.menu_action(ctx, action);
+            }
+        }
+        // The pointer moving onto a row takes the highlight with it —
+        // motion only, so a cursor parked on `resume` cannot out-vote
+        // the arrow keys walking to `exit`. One row is ever lit.
+        if pointer != self.last_pointer
+            && let Some(p) = pointer
+            && let Some(i) = row_under(&rows, p)
+        {
+            self.menu_sel = i;
+        }
+        self.last_pointer = pointer;
+        // The mouse's turn: a click presses its row's action and takes
+        // the highlight with it.
+        if !self.pressed_mouse(ctx, MouseButton::Left) {
+            return;
+        }
+        let Some(p) = pointer else { return };
+        if let Some(i) = row_under(&rows, p) {
+            let r = &rows[i];
+            self.menu_sel = i;
+            match r.action {
+                Action::Ambient | Action::Light => {
+                    self.drag = Some(match r.action {
+                        Action::Ambient => Slider::Ambient,
+                        _ => Slider::Light,
+                    });
+                    let frac = slide_value(p[0], MENU_TRACK_CX, MENU_TRACK_HALF);
+                    match r.action {
+                        Action::Ambient => self.settings.ambient = frac,
+                        _ => self.settings.light = frac * 2.0,
+                    }
+                }
+                action => self.menu_action(ctx, action),
+            }
+        }
+    }
+
+    /// The rows of the page currently up, laid out in user space —
+    /// the list the pointer hit-tests and the paint draws, so a click
+    /// can never miss the picture it answers to. `h` is the window's
+    /// user height: the block hangs from its top, and shrinks its
+    /// stride on short windows (a 540p quality buffer still wears the
+    /// whole menu).
+    fn menu_rows(&self, page: Page, h: f32) -> Vec<Row> {
+        let st = &self.settings;
+        let mut rows: Vec<Row> = Vec::new();
+        let short = h < 720.0;
+        let step = if short { 46.0 } else { 58.0 };
+        let push = |rows: &mut Vec<Row>, action, cy, hw, text: String, slider: Option<f32>| {
+            rows.push(Row {
+                action,
+                cx: if slider.is_some() { MENU_TRACK_CX } else { 0.0 },
+                cy,
+                hw,
+                hh: 24.0,
+                text,
+                slider,
+            })
+        };
+        match page {
+            Page::Game => {}
+            Page::Main => {
+                let top = (h * 0.5 - 120.0).min(120.0);
+                push(&mut rows, Action::New, top, 240.0, "new game".into(), None);
+                push(
+                    &mut rows,
+                    Action::Resume,
+                    top - step,
+                    240.0,
+                    "resume game".into(),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::OpenSettings,
+                    top - 2.0 * step,
+                    240.0,
+                    "settings".into(),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::Exit,
+                    top - 3.0 * step,
+                    240.0,
+                    "exit".into(),
+                    None,
+                );
+            }
+            Page::Won => {
+                let top = (h * 0.5 - 120.0).min(120.0);
+                push(
+                    &mut rows,
+                    Action::Next,
+                    top,
+                    240.0,
+                    "next hill".into(),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::Retry,
+                    top - step,
+                    240.0,
+                    "retry hill".into(),
+                    None,
+                );
+            }
+            Page::Settings => {
+                let top = (h * 0.5 - 120.0).min(236.0);
+                let on = |b: bool| if b { "on" } else { "off" };
+                push(
+                    &mut rows,
+                    Action::Vsync,
+                    top,
+                    250.0,
+                    format!("vsync   {}", on(st.vsync)),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::Filter,
+                    top - step,
+                    250.0,
+                    format!(
+                        "filter   {}",
+                        if st.nearest { "nearest" } else { "bilinear" }
+                    ),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::Fullscreen,
+                    top - 2.0 * step,
+                    250.0,
+                    format!("fullscreen   {}", on(st.fullscreen)),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::Quality,
+                    top - 3.0 * step,
+                    250.0,
+                    format!("resolution   {}", st.quality.label()),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::Ambient,
+                    top - 4.0 * step,
+                    MENU_TRACK_HALF + 12.0,
+                    format!("ambient   {}%", (st.ambient * 100.0).round() as i32),
+                    Some(st.ambient),
+                );
+                push(
+                    &mut rows,
+                    Action::Light,
+                    top - 5.0 * step,
+                    MENU_TRACK_HALF + 12.0,
+                    format!("light fx   {}%", (st.light * 50.0).round() as i32),
+                    Some(st.light / 2.0),
+                );
+                push(
+                    &mut rows,
+                    Action::Leaves,
+                    top - 6.0 * step,
+                    250.0,
+                    format!("leaf lighting   {}", on(st.leaves_lit)),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::Shadows,
+                    top - 7.0 * step,
+                    250.0,
+                    format!("lamp shadows   {}", st.shadows.label()),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::Back,
+                    top - 8.0 * step,
+                    250.0,
+                    "back".into(),
+                    None,
+                );
+            }
+        }
+        rows
+    }
+
+    /// New Game: the descent restarts at the first hill. Every stat
+    /// the game keeps lives inside `Game::start`'s fresh state, and
+    /// `load` already sweeps the extras the demo layers on top —
+    /// queued steps, drifting zs, the frost's claim, verdicts; the
+    /// saved progress is rewritten by the caller, which owns when
+    /// the disc learns of it. Then the page steps aside and the hill
+    /// plays.
+    fn new_game(&mut self) {
+        self.load(0);
+        self.page = Page::Game;
+    }
+
+    /// Click-walking, one step per completed glide: the queen waits for
+    /// each hop to land before the next click-step starts, so a long
+    /// click route reads as the same walk the keys make, not a slide.
+    /// Any refusal — a line that packed into the way, a sleeper claimed,
+    /// the hill sleeping — ends the route right there.
+    fn walk_the_route(&mut self) {
+        if self.route.is_empty()
+            || self.spin.is_some()
+            || !closer(self.player_at, self.player_target)
+        {
+            return;
+        }
+        // A reversal of the travelling direction is a turn, not a
+        // step: spin in place and leave the direction queued — the
+        // route resumes the instant the about-face lands.
+        let dir = self.route[0];
+        let to = face_of(dir);
+        if self.face[0] * to[0] + self.face[1] * to[1] < -0.99 {
+            self.spin = Some(to);
+            return;
+        }
+        let Some(game) = &mut self.game else {
+            return;
+        };
+        if game.won {
+            self.route.clear();
+            return;
+        }
+        self.route.remove(0);
+        if game.move_player(dir).is_err() {
+            self.route.clear();
+        }
+    }
 }
 
 impl Process for Demo {
@@ -2989,6 +3140,84 @@ impl Process for Demo {
         self.menu_alpha += (target - self.menu_alpha) * (1.0 - (-dt / 0.15).exp());
         if (self.menu_alpha - target).abs() < 0.002 {
             self.menu_alpha = target;
+        }
+        if self.window_policy_pending {
+            self.window_policy_pending = false;
+            self.apply_window_policy(ctx);
+        }
+        // A window the compositor owns — tiled or snapped, by KWin's
+        // tiling editor or a window rule — re-asserts its own
+        // geometry no matter what the game asks for, and says so
+        // only through configure events. Watch those events: if the
+        // window is not at the requested size within about a second,
+        // say the quiet part aloud. The letterbox keeps the game
+        // 16:9 and playable in whatever size survives.
+        if let Some((w, h, waited)) = self.window_expect
+            && let Some(window) = ctx.window()
+        {
+            {
+                let size = window.inner_size();
+                if size.width.abs_diff(w) < 2 && size.height.abs_diff(h) < 2 {
+                    // Arrived: pin again (idempotent where the
+                    // compositor obeyed, curative where a lock or
+                    // hint stomped wandered) and only now take the
+                    // handle — locked to a size that exists.
+                    let px = frost::PhysicalSize::new(w, h);
+                    window.set_min_inner_size(Some(px));
+                    window.set_max_inner_size(Some(px));
+                    window.set_resizable(false);
+                    self.window_expect = None;
+                } else if waited > 60 {
+                    self.window_expect = None;
+                    println!(
+                        "antifrost: asked the window for {w}x{h}, it stayed {}x{} \u{2014} \
+                         the window is likely tiled or snapped by the desktop (or pinned by \
+                         a window rule); remove it from its tile to let the tier resize it. \
+                         The game letterboxes to 16:9 either way.",
+                        size.width, size.height,
+                    );
+                } else {
+                    self.window_expect = Some((w, h, waited + 1));
+                }
+            }
+        }
+        if self.window_move_queued && self.window_expect.is_none() {
+            self.window_move_queued = false;
+            self.apply_window_policy(ctx);
+        }
+        if let Some(clock) = self.resize_probe {
+            let t = clock + dt;
+            self.resize_probe = Some(t);
+            // Edge-triggered, every one: a range check on a 60 Hz
+            // clock is a six-frame window, and six resize requests
+            // on Wayland — where configures land asynchronously —
+            // is six fights to watch in the log instead of one
+            // answer. Each threshold crosses exactly once.
+            if clock < 2.5 && t >= 2.5 {
+                log::info!("resize probe: cycling the real quality row");
+                self.settings.quality = self.settings.quality.next();
+                ctx.set_render_size(self.settings.quality.size());
+                self.apply_window_policy(ctx);
+            }
+            // High's `next` is native — which asks for no resize —
+            // so the probe cycles twice: unlock at High's exit, and
+            // the real 1080 -> 720 request at the next row.
+            if clock < 4.5 && t >= 4.5 {
+                log::info!("resize probe: cycling the real quality row again");
+                self.settings.quality = self.settings.quality.next();
+                ctx.set_render_size(self.settings.quality.size());
+                self.apply_window_policy(ctx);
+            }
+            if clock < 7.0 && t >= 7.0 {
+                if let Some(window) = ctx.window() {
+                    log::info!(
+                        "resize probe: settled at {}x{}",
+                        window.inner_size().width,
+                        window.inner_size().height,
+                    );
+                }
+                self.resize_probe = None;
+            }
         }
         // The bench hourglass: seconds run and frames counted before
         // anything else decides whether this frame is spent on the
@@ -3301,6 +3530,7 @@ impl Process for Demo {
         if self.menu_alpha > 0.002 {
             self.draw_menu(ctx);
         }
+        self.draw_letterbox(ctx);
     }
 }
 
@@ -3355,6 +3585,12 @@ struct Cli {
     /// launch decides, settings file included.
     #[arg(long, value_name = "SECONDS")]
     bench: Option<f32>,
+
+    /// Cycle the resolution row once on a timer, logging the window's
+    /// size before, answered, and settled — the diagnostic for
+    /// "did the window actually move". Not a feature; a probe.
+    #[arg(long)]
+    resize_probe: bool,
 }
 
 /// clap's value parser for the vsync flag: `on`/`off`, any case.
@@ -3381,15 +3617,15 @@ fn main() {
     let mut settings = Settings::load();
     let progress = Progress::load();
     #[cfg(not(target_arch = "wasm32"))]
-    let bench = {
+    let (bench, resize_probe) = {
         let cli: Cli = clap::Parser::parse();
         if let Some(v) = cli.vsync {
             settings.vsync = v;
         }
-        cli.bench
+        (cli.bench, cli.resize_probe)
     };
     #[cfg(target_arch = "wasm32")]
-    let bench = None;
+    let (bench, resize_probe) = (None, false);
     let vsync = settings.vsync;
     // Native logs to stderr; a browser has no stderr, so there the
     // panic hook surfaces failures in the devtools console instead of
@@ -3459,10 +3695,18 @@ fn main() {
         {
             let mut d = Demo::new(ant_frames, soil, settings.clone(), progress.hill);
             d.bench = bench;
+            d.resize_probe = resize_probe.then_some(0.0);
             d
         },
         frost::Config {
-            window_size: Some([1920, 1080]),
+            // A fixed tier asks for its own pixels *physically*, so
+            // the window opens as an exact 1:1 copy of the buffer at
+            // any display scaling, and comes up un-resizable for the
+            // same reason; native opens logical, resizable, and lets
+            // the letterbox hold the aspect.
+            window_size: settings.quality.size().map_or(Some([1920, 1080]), |_| None),
+            window_size_px: settings.quality.size(),
+            resizable: settings.quality.size().is_none(),
             // The hill opens full screen — when the saved file says
             // to; F11 and the menu's row flip it mid-run either way.
             fullscreen: settings.fullscreen,
@@ -3499,6 +3743,23 @@ fn main() {
 #[cfg(test)]
 mod click_tests {
     use super::*;
+
+    #[test]
+    fn the_native_view_keeps_the_window_when_it_is_already_wide_enough() {
+        // Exact 16:9 passes through untouched: no bars to draw.
+        assert_eq!(fit_16x9(1920.0, 1080.0), (1920.0, 1080.0));
+        // A wide window loses height to bars; a tall one loses width.
+        let (w, h) = fit_16x9(1600.0, 1000.0);
+        assert_eq!((w, h), (1600.0, 900.0));
+        let (w, h) = fit_16x9(1000.0, 1000.0);
+        assert_eq!((w, h), (1000.0, 562.5));
+        // The box is always 16:9 and always inside the window.
+        for (ww, hh) in [(800.0, 600.0), (2560.0, 1080.0), (400.0, 900.0)] {
+            let (vw, vh) = fit_16x9(ww, hh);
+            assert!((vw / vh - 16.0 / 9.0).abs() < 1e-3, "{ww}x{hh}");
+            assert!(vw <= ww + 1e-3 && vh <= hh + 1e-3, "{ww}x{hh}");
+        }
+    }
 
     /// A `Demo` is pure CPU work until `run_configured`: asset bake,
     /// level load, route math — all testable headless.
