@@ -76,13 +76,13 @@
 - Install bare bones `llama`:
 - Run in one terminal:
 
-````shell
+```shell
 .\llama.exe serve -hf unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M --parallel 1 "-ngl" all "-fa" on "-c" 98304 "-ctk" q8_0 "-ctv" q8_0
-``
-  - `-fa` flash attention (needed for context quantization)
-  - `-ctx` q8_0 quantization
-  - `-c` context size
-  - `-ctv` ...not sure
+
+or
+ .\llama.exe serve -hf unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M --parallel 1 "-ngl" all "-fa" on "-c" 131072 "-ctk" q4_0 "-ctv" q4_0 --kv-unified --batch-size 4096 --ubatch-size 1024 --cache-prompt --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-draft-n-min 2  --spec-draft-n-max 4 --cache-reuse 64 --temp 0.15 --top-p 0.9
+```
+ 
 
 Alternative settings for speculation:
 

@@ -12,7 +12,8 @@ use wgpu::{
     Adapter, AddressMode, BindGroup, BindGroupDescriptor, BindGroupEntry, BindingResource, Buffer,
     BufferBinding, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
     CommandEncoderDescriptor, CurrentSurfaceTexture, Device, Extent3d, FilterMode, FragmentState,
-    Instance, MipmapFilterMode, MultisampleState, PipelineCompilationOptions, PrimitiveState,
+    Instance, MipmapFilterMode, MultisampleState, PipelineCompilationOptions, PresentMode,
+    PrimitiveState,
     Queue, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline,
     RenderPipelineDescriptor, Sampler, SamplerDescriptor, ShaderModule, ShaderModuleDescriptor,
     ShaderSource, StoreOp, Surface, SurfaceConfiguration, SurfaceTexture, TexelCopyBufferLayout,
@@ -768,6 +769,37 @@ impl<P: Process> Frost<P> {
             config.format,
             config.present_mode
         );
+        // The `Auto*` modes resolve inside wgpu to the first concrete mode
+        // the backend advertises, so the line above can say `AutoNoVsync`
+        // while the swap chain actually runs vsync'd. Mirror that rule here
+        // and log the mode the swap chain will actually run in.
+        let caps = surface.get_capabilities(&self.adapter);
+        let resolved = match config.present_mode {
+            PresentMode::AutoVsync => [PresentMode::FifoRelaxed, PresentMode::Fifo]
+                .into_iter()
+                .find(|m| caps.present_modes.contains(m))
+                .unwrap_or(PresentMode::Fifo),
+            PresentMode::AutoNoVsync => [
+                PresentMode::Immediate,
+                PresentMode::Mailbox,
+                PresentMode::Fifo,
+            ]
+            .into_iter()
+            .find(|m| caps.present_modes.contains(m))
+            .unwrap_or(PresentMode::Fifo),
+            other => other,
+        };
+        log::info!(
+            "surface present modes: {:?}, resolved: {:?}{}",
+            caps.present_modes,
+            resolved,
+            if config.present_mode == PresentMode::AutoNoVsync && resolved != PresentMode::Immediate
+            {
+                " (vsync off but NOT uncapped)"
+            } else {
+                ""
+            }
+        );
         // A surface without hardware sRGB puts the encoding on the
         // blit pass (see `App::linear_surface` and `blit.wgsl`).
         self.linear_surface = !config.format.is_srgb();
@@ -880,9 +912,12 @@ impl<P: Process> Frost<P> {
     /// code path at all), so the lock rides on the resize events
     /// themselves: the corrected request re-enters the handler within
     /// tolerance and the loop stops, while a compositor that declines the
-    /// request (Wayland may, fullscreen does) simply keeps the letterbox
-    /// the blit already draws. Maximizing is the user asking for a
-    /// specific rectangle, so it goes unfought.
+    /// request (Wayland may) simply keeps the letterbox the blit already
+    /// draws. Maximizing and fullscreen are the user asking for a
+    /// specific rectangle (the work area, the whole display), so they go
+    /// unfought — the guard is what keeps a Windows borderless-fullscreen
+    /// window from answering a size request by resizing itself out of the
+    /// monitor rectangle.
     fn snap_aspect(&mut self, size: PhysicalSize<u32>) {
         let prev = std::mem::replace(&mut self.last_resized_px, (size.width, size.height));
         let Some(render) = self.render_size else {
@@ -897,7 +932,15 @@ impl<P: Process> Frost<P> {
         let Some(window) = self.window.as_ref() else {
             return;
         };
-        if window.is_maximized() {
+        // Maximizing and fullscreen are the user asking for a specific
+        // rectangle (the work area, the whole display), so they go
+        // unfought: the window keeps the shape it was given and the
+        // letterbox the blit draws copes. The guard matters on Windows,
+        // where a borderless-fullscreen window answers a size request by
+        // actually resizing itself out of the monitor rectangle — the
+        // "fullscreen doesn't fill the screen" symptom — while a Wayland
+        // compositor simply declines the request.
+        if window.is_maximized() || window.fullscreen().is_some() {
             return;
         }
         let (w, h) = (size.width as f64, size.height as f64);
