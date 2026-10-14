@@ -316,9 +316,12 @@ fn report_modes(ctx: &Context) {
         return;
     };
     let name = monitor.name().unwrap_or_else(|| "a display".to_owned());
+    // Two decimals because the list distinguishes 60.00 from 59.94 and
+    // 48.00 from 47.95 — the drop-frame rates, separate modes that round
+    // to the same figure at one decimal and would then look like repeats.
     let live = monitor
         .refresh_rate_millihertz()
-        .map(|millihertz| format!("{:.1} Hz live", millihertz as f32 / 1000.0))
+        .map(|millihertz| format!("{:.2} Hz live", millihertz as f32 / 1000.0))
         .unwrap_or_else(|| "live rate unknown".to_owned());
     println!("{name}: {live}");
     let mut modes: Vec<_> = monitor.video_modes().collect();
@@ -343,7 +346,7 @@ fn report_modes(ctx: &Context) {
     for mode in &modes {
         let size = mode.size();
         println!(
-            "  {:>5} x {:<5} {:>7.1} Hz  {}-bit",
+            "  {:>5} x {:<5} {:>7.2} Hz  {}-bit",
             size.width,
             size.height,
             mode.refresh_rate_millihertz() as f32 / 1000.0,
@@ -472,7 +475,7 @@ impl frost::Process for Demo {
             .window()
             .and_then(|window| window.current_monitor())
             .and_then(|monitor| monitor.refresh_rate_millihertz())
-            .map(|millihertz| format!("{:.1} Hz", millihertz as f32 / 1000.0))
+            .map(|millihertz| format!("{:.2} Hz", millihertz as f32 / 1000.0))
             .unwrap_or_else(|| "unknown".to_owned());
         // Top-right, clear of the diagnostics HUD pinned top-left.
         self.ui.panel(
