@@ -1201,10 +1201,10 @@ Each module's `mod tests` holds the tests that pin its subject. The
 |              | RON-subset parser (`frost::ron`: comments, enums, maps,             |
 |              | escapes; line-numbered errors); `assets/ron/garden.ron` sample      |
 | vrr          | the pacing instrument: keys, never the mouse (pointer motion        |
-|              | re-clocks a macOS display to its ceiling), driving a target rate    |
-|              | the loop meets on an absolute deadline; Target, Actual and Mode     |
-|              | read back together; `0` runs free; `--modes` lists the panel's      |
-|              | modes. See *Frame pacing and variable refresh* below.               |
+|              | re-clocks the display to its ceiling under ProMotion), driving a    |
+|              | target rate the loop meets on an absolute deadline; Target, Actual  |
+|              | and Mode read back together; `0` runs free; `--modes` lists the     |
+|              | panel's modes. See *Frame pacing and variable refresh* below.       |
 
 `cursor.rs` is the most complete reference demo: `CAN_IMAGE [331,247]` scaled
 to 100 px, a 90° CCW tilt tween (0.5 s, rebuilt on press/release edges),
@@ -1281,16 +1281,26 @@ scan with nothing slipping. And it scanned at 90 for a 90 target though
 compositor walks, which is why enumerating them says what the panel can be
 *pinned* to and nothing about what it will *choose*. What a low lock costs is
 dwell, and dwell is the smear: a clean 48 blurs like 48, because what smears is
-the frame's lifetime, not the panel's refresh. One remainder untested: pointer
-motion re-clocks this panel to its maximum, so a reading taken a second after
-touching anything may catch the panel on its way back down — the likeliest
-account of an early ±1 at a 60 target that now reads ±0.1 — and the settle time
-is worth measuring before any of this is relied on in a setting screen.
+the frame's lifetime, not the panel's refresh. One remainder, half settled:
+pointer motion re-clocks this panel to its maximum, and that turns out to be a
+ProMotion effect rather than a compositor one — brisk movement at a pinned 60
+changes nothing — so the only thing it can disturb is the chase, and a reading
+taken a second after touching anything may still catch the panel on its way
+back down. That remains the likeliest account of an early ±1 at a 60 target
+that now reads ±0.1, and the settle time behind it is still unmeasured.
 
-*A pinned mode is the opposite bargain: it does not chase.* The menu for
+*A pinned mode is the opposite bargain: it does not chase, and it does not
+listen.* The menu for
 pinning is short — `--modes` offers 120.00, 60.00, 59.94, 50.00, 48.00 and
 47.95 on the built-in panel, with no 30 and no 24 — and none of it is a
-promise about what the panel will scan at on its own. On a fixed 60 the
+promise about what the panel will scan at on its own. Run with the pacer stood
+down and the latch on, a pinned 60 holds 60.0 exactly and does not flinch at
+the pointer, which is as deterministic a presentation as an app can arrange
+here: the display is the whole clock, the app owes nothing to it, and a missed
+frame costs exactly one frame with no debt left to repay. Every burden moves
+onto the frame's own tail, so the budget that matters is the worst frame in a
+minute rather than the median one, which is what the overlay's envelope of
+maximums is for. On a fixed 60 the
 clean paces are its divisors, 60, 30, 20 and 15, and 50 sits at 1.2 scans a
 frame and judders hard — the same 50 that locks cleanly one setting away, which
 is the cleanest demonstration that the ladder and the chase are different

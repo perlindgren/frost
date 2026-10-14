@@ -27,11 +27,13 @@
 //!
 //! Keys, not widgets, because the pointer is the one input this
 //! instrument cannot trust. Pointer motion is compositor work, and the
-//! window server clocks the *whole display* up to its maximum for it:
-//! measured on an M4 MacBook driving an ASUS PG42UQ, dragging the old
-//! slider pumped the panel to 120 Hz while the app itself went on
-//! presenting at its target. A control you reach with the mouse is a
-//! control that changes the thing it is set to measure. So: set a
+//! window server clocks the *whole display* up to its maximum for it — when
+//! there is a higher rate to jump to: measured on an M4 MacBook driving an
+//! ASUS PG42UQ, dragging the old slider pumped the panel to 120 Hz while the
+//! app itself went on presenting at its target, and on the built-in panel
+//! under ProMotion the same happens; at a pinned 60 there is nowhere to go,
+//! and the same motion changes nothing. A control you reach with the mouse is
+//! a control that changes the thing it is set to measure. So: set a
 //! target, take your hand off the mouse, and read the panel a second
 //! later.
 //!
