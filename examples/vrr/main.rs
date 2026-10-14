@@ -10,7 +10,9 @@
 //! observe how the display's VRR (G-SYNC / FreeSync) behaves at
 //! different frame rates — especially below the monitor's refresh rate,
 //! where the panel's FPS and frame-time charts show the pacing, and the
-//! tearing (or lack of it) is visible on the rotating body.
+//! tearing (or lack of it) is visible on the body, which crosses the
+//! window at a constant speed so that an uneven frame interval shows as an
+//! uneven stride.
 //!
 //! `0` stands the pacer down altogether, which is the only way to tell a
 //! limit this demo imposes from one the machine imposes: a free run that
@@ -101,6 +103,12 @@ const REPEAT_EVERY: f32 = 0.05;
 /// measuring the display and measuring the sleep call. Spinning the last
 /// millisecond costs a core's attention and buys the interval back.
 const SPIN_TAIL: Duration = Duration::from_millis(1);
+
+/// How fast the body crosses the window, in pixels a second. Slow enough to
+/// follow with the eye, quick enough that a stride is a handful of pixels
+/// at a hundred and twenty fps — so a frame that arrives late doesn't just
+/// arrive late, it visibly leaps.
+const STRIDE_PX_PER_S: f32 = 500.0;
 
 /// One key read as edges rather than as a level: `true` on the frame the
 /// key goes down, then once every [`REPEAT_EVERY`] seconds after it has
@@ -258,8 +266,10 @@ struct Demo {
     /// it a reading of what it managed, so its own error sits next to the
     /// panel's readout of the same thing.
     meter: RateMeter,
-    /// The body's accumulated rotation.
-    angle: f32,
+    /// The body's place along its sweep, pixels from the centre.
+    travel: f32,
+    /// Which end of the sweep the body is heading for.
+    heading: f32,
 }
 
 impl Default for Demo {
@@ -284,7 +294,8 @@ impl Default for Demo {
             report_modes: false,
             last_frame: None,
             meter: RateMeter::default(),
-            angle: 0.0,
+            travel: 0.0,
+            heading: 1.0,
         }
     }
 }
@@ -555,11 +566,30 @@ impl frost::Process for Demo {
 
         self.diag.process(ctx, dt);
 
-        // The body spins at one radian per second of frame time, so it
-        // visibly slows as the target rate drops.
-        self.angle += dt;
+        // The body crosses the window at a constant speed and turns round
+        // at the edges. Constant velocity is the whole point: a long frame
+        // leaves a visibly longer stride and a short one a shorter, so a
+        // hitch in the cadence is a leap rather than a feeling. A sine
+        // sweep would ease through the turns and smooth away the very thing
+        // being looked for, and the rotation this replaces aliased outright
+        // — a square looks the same three times in a turn.
+        let span = (w / 2.0 - 90.0).max(60.0);
+        self.travel += self.heading * STRIDE_PX_PER_S * dt;
+        if self.travel > span {
+            // Bounce the overshoot back rather than parking the body at the
+            // edge for the rest of the frame: a stall of the demo's own
+            // making is precisely the artifact being watched for.
+            self.travel = span - (self.travel - span);
+            self.heading = -1.0;
+        } else if self.travel < -span {
+            self.travel = -span + (-span - self.travel);
+            self.heading = 1.0;
+        }
+        // Only for the pathological frame — the engine clamps `dt` at a
+        // second, which at this speed overshoots the sweep twice over.
+        self.travel = self.travel.clamp(-span, span);
         if let Some(body) = ctx.scene().root.children.get_mut(0) {
-            body.transform = Transform::rotate(self.angle);
+            body.transform = Transform::translate([self.travel, 0.0]);
         }
     }
 }
