@@ -35,6 +35,18 @@ winit = "0.30.13"
 # `src/lib.rs`, so wasm builds never compile rodio.
 rodio = "0.22.2"
 
+[target.'cfg(unix)'.dependencies]
+# Process liveness for the telling: `kill(pid, 0)` asks whether a pid
+# answers without touching the process, which is how a stale card — a
+# crashed app — is told from a running one (src/tell.rs). Through the
+# crate rather than a hand-written `extern` block for the upstream
+# `pid_t`: `kill` reads a negative pid as a whole process *group*, so
+# the u32→pid_t widening is a question the type should answer. Gated to
+# unix — there are no processes to probe in the browser (the module is
+# itself `cfg`-gated out of the wasm build), and Windows has no
+# signal-zero to ask (see the `alive` arms in src/tell.rs).
+libc = "0.2"
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Wall-clock access for `Rng::new` (`Date.now()`): `std::time` is not
 # implemented on wasm32-unknown-unknown and calling it aborts the module.

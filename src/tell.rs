@@ -280,11 +280,20 @@ fn prune(dir: &Path, me: u32) {
 
 #[cfg(unix)]
 fn alive(pid: u32) -> bool {
-    unsafe extern "C" {
-        fn kill(pid: i32, sig: i32) -> i32;
-    }
+    // A number that does not fit a `pid_t` is no process of ours.
+    // `kill` reads a negative pid as a whole process *group*, and
+    // every platform's pid ceiling sits far below `i32::MAX` — so a
+    // pid past the ceiling, which no real process ever reports, is
+    // answered as gone rather than aimed at somebody's group.
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
     // Signal 0: the whole question, asked without touching anyone.
-    unsafe { kill(pid as i32, 0) == 0 }
+    // SAFETY: `kill` takes two integers and answers with one — no
+    // pointers, no lifetimes, nothing to alias — and POSIX defines
+    // signal 0 as the error-checking form that delivers nothing, so
+    // the call cannot reach past the answer it asks for.
+    unsafe { libc::kill(pid, 0) == 0 }
 }
 
 #[cfg(windows)]
