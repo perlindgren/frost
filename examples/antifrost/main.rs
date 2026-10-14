@@ -7,7 +7,9 @@
 //! in its bed, yourself included, before the first frost.
 //!
 //! Run: `RUST_LOG=info cargo run --example antifrost` — add
-//! `-- --vsync off` to uncap the frame rate.
+//! `-- --vsync off` to uncap the frame rate. Vsync starts on: the
+//! present is refresh-synced (`Fifo`), which is what lets the display
+//! engage VRR; off presents with tearing (`Immediate`) and bypasses it.
 //! Rules: `examples/antifrost/DESIGN.md`
 
 mod game;
@@ -3655,8 +3657,9 @@ fn init_logging() {
 struct Cli {
     /// Present frames in sync with the display's vertical blank. `off`
     /// uncaps the frame rate — the hill has the headroom (the experiment
-    /// hit 200 fps), but the cadence judders, so vsync stays on unless
-    /// this flag says otherwise.
+    /// hit 200 fps), but the cadence judders, and the tearing present
+    /// (`Immediate`) bypasses VRR, so vsync stays on unless this flag
+    /// says otherwise.
     ///
     /// An `Option`: a bare `bool` field is clap's zero-arg `--flag`,
     /// which has no value to parse.
@@ -3691,10 +3694,11 @@ fn parse_on_off(s: &str) -> Result<bool, String> {
 }
 
 fn main() {
-    // The hill's pin: vsync keeps presentation on the display's cadence.
-    // A browser has no command line, so the packaged build keeps the
-    // default; native can hand the uncapped experiment to the caller
-    // with `--vsync off`.
+    // The hill's pin: vsync keeps the present refresh-synced (`Fifo`),
+    // which is what lets the display engage VRR; off tears (`Immediate`)
+    // and bypasses it. A browser has no command line, so the packaged
+    // build keeps the default; native can hand the uncapped experiment
+    // to the caller with `--vsync off`.
     // The saved file speaks first, and the command line over it: a
     // deliberate `--vsync off` outranks yesterday's on. A browser has
     // no command line and no disc, so there the defaults stand.
@@ -3814,8 +3818,9 @@ fn main() {
             // menu, and the menu — and only the menu — quits.
             escape_exits: false,
             // Vsync on unless the command line says otherwise: the
-            // vsync-off experiment hit 200 fps with heavy judder, so
-            // the display's cadence stays the default pin.
+            // vsync-off experiment hit 200 fps with heavy judder, and
+            // the tearing present bypasses VRR, so the refresh-synced
+            // cadence stays the default pin.
             vsync,
             ..Default::default()
         },
