@@ -89,8 +89,7 @@ impl Demo {
     /// deadline is tracked on the wall clock, not on the engine's `dt`,
     /// because sleeping here inflates the next frame's `dt`.
     fn pace(&mut self) {
-        let target =
-            std::time::Duration::from_secs_f64(1.0 / self.target_fps.max(0.001) as f64);
+        let target = std::time::Duration::from_secs_f64(1.0 / self.target_fps.max(0.001) as f64);
         let now = Instant::now();
         if let Some(last) = self.last_frame {
             let elapsed = now.saturating_duration_since(last);
@@ -123,16 +122,15 @@ impl frost::Process for Demo {
                     "vrr",
                     &[
                         Col::auto(Align::Left),         // the labels, hugging
-                        Col::stretch(1.0, Align::Left),  // the track, filling
-                        Col::auto(Align::Right),         // the value, right
+                        Col::stretch(1.0, Align::Left), // the track, filling
+                        Col::auto(Align::Right),        // the value, right
                     ],
                     |ui, ctx| {
                         ui.label(ctx, "Target");
                         ui.slider_track(ctx, "Target", &mut self.target_fps, 1.0, 240.0);
                         ui.readout(ctx, &format!("{:.0} fps", self.target_fps));
                         vsync_changed = ui.checkbox(ctx, "VSync", &mut self.vsync);
-                        fullscreen_changed =
-                            ui.checkbox(ctx, "Fullscreen", &mut self.fullscreen);
+                        fullscreen_changed = ui.checkbox(ctx, "Fullscreen", &mut self.fullscreen);
                     },
                 );
             },
@@ -145,26 +143,25 @@ impl frost::Process for Demo {
         if self.vsync != ctx.vsync() {
             self.vsync = ctx.vsync();
         }
-        if fullscreen_changed {
-            if let Some(window) = ctx.window() {
-                window.set_fullscreen(if self.fullscreen {
-                    Some(frost::Fullscreen::Borderless(None))
-                } else {
-                    None
-                });
-            }
+        if fullscreen_changed && let Some(window) = ctx.window() {
+            window.set_fullscreen(if self.fullscreen {
+                Some(frost::Fullscreen::Borderless(None))
+            } else {
+                None
+            });
         }
         // F11 flips the window's fullscreen state — the runtime twin of
         // `Config::fullscreen`, reached through the engine's own window.
         let f11 = ctx.key_down(KeyCode::F11);
-        if f11 && !self.f11_down {
-            if let Some(window) = ctx.window() {
-                window.set_fullscreen(if window.fullscreen().is_some() {
-                    None
-                } else {
-                    Some(frost::Fullscreen::Borderless(None))
-                });
-            }
+        if f11
+            && !self.f11_down
+            && let Some(window) = ctx.window()
+        {
+            window.set_fullscreen(if window.fullscreen().is_some() {
+                None
+            } else {
+                Some(frost::Fullscreen::Borderless(None))
+            });
         }
         self.f11_down = f11;
         // The window is the source of truth: the checkbox and F11 steer
