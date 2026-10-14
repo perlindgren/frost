@@ -182,6 +182,42 @@ fn rung_below(from: f32) -> f32 {
         .unwrap_or(from)
 }
 
+/// How long a rate window stays open before its count becomes the
+/// reading: long enough that a handful of jittered frames cannot move it,
+/// short enough that a key press looks answered at once.
+const RATE_WINDOW: f32 = 0.5;
+
+/// The rate actually being held, counted as frames across a window rather
+/// than averaged from the instantaneous rates. The difference is not
+/// academic: a cadence alternating 7.5 ms and 9.2 ms frames runs at exactly
+/// 120 fps, while averaging its instantaneous rates reads about 121,
+/// because a short frame carries more rate than a long one carries lack of
+/// it. An instrument reading above the ceiling vsync is holding it to is
+/// measuring its own arithmetic.
+#[derive(Default)]
+struct RateMeter {
+    /// Frames since the window opened.
+    frames: u32,
+    /// Seconds of frame time accumulated in the window.
+    seconds: f32,
+    /// The last closed window's rate, which is the number on the panel.
+    fps: f32,
+}
+
+impl RateMeter {
+    /// Puts one frame's `dt` into the open window, closing and publishing
+    /// the window once it holds [`RATE_WINDOW`] seconds of them.
+    fn tick(&mut self, dt: f32) {
+        self.frames += 1;
+        self.seconds += dt;
+        if self.seconds >= RATE_WINDOW {
+            self.fps = self.frames as f32 / self.seconds;
+            self.frames = 0;
+            self.seconds = 0.0;
+        }
+    }
+}
+
 /// The demo's state: the widget layer, the diagnostics overlay, and the
 /// values the keys drive.
 struct Demo {
@@ -218,10 +254,10 @@ struct Demo {
     /// The deadline the last frame paced to — a schedule, not a
     /// measurement, which is the whole point of the pacer.
     last_frame: Option<Instant>,
-    /// The rate actually being held, smoothed. An instrument that sets a
-    /// target owes it a reading of what it managed, so its own error sits
-    /// next to the panel's readout of the same thing.
-    actual_fps: f32,
+    /// The rate actually being held. An instrument that sets a target owes
+    /// it a reading of what it managed, so its own error sits next to the
+    /// panel's readout of the same thing.
+    meter: RateMeter,
     /// The body's accumulated rotation.
     angle: f32,
 }
@@ -247,7 +283,7 @@ impl Default for Demo {
             cursor_hidden: false,
             report_modes: false,
             last_frame: None,
-            actual_fps: 0.0,
+            meter: RateMeter::default(),
             angle: 0.0,
         }
     }
@@ -377,12 +413,7 @@ impl frost::Process for Demo {
         // carries the sleep, the frame's work, and the previous frame's
         // wait for its present — which is precisely the interval a
         // display with variable refresh is following.
-        if dt > 0.0 {
-            // A tenth of the way each frame: quick enough to settle in a
-            // second at the rates that matter, slow enough that one
-            // spiked frame does not drag the reading with it.
-            self.actual_fps += (1.0 / dt - self.actual_fps) * 0.1;
-        }
+        self.meter.tick(dt);
 
         self.ui.begin(ctx);
         // Keys before the panel, so what the panel reads out this frame
@@ -497,7 +528,7 @@ impl frost::Process for Demo {
                         ui.label(ctx, "Pacing");
                         ui.readout(ctx, pacing);
                         ui.label(ctx, "Actual");
-                        ui.readout(ctx, &format!("{:.1} fps", self.actual_fps));
+                        ui.readout(ctx, &format!("{:.1} fps", self.meter.fps));
                         ui.label(ctx, "Mode");
                         ui.readout(ctx, &mode);
                         ui.label(ctx, "VSync");
@@ -644,5 +675,28 @@ mod tests {
         assert_eq!(rung_below(24.0), 24.0);
         assert_eq!(rung_above(300.0), 300.0, "past the top, hold");
         assert_eq!(rung_below(1.0), 1.0, "below the bottom, hold");
+    }
+
+    /// A cadence of long and short frames that averages to the panel's
+    /// rate must read the panel's rate. Counting frames across a window
+    /// does; averaging the instantaneous rates reads about 121 for the same
+    /// stream, which is how this was first noticed — a reading above the
+    /// ceiling that vsync was demonstrably holding the loop to.
+    #[test]
+    fn a_bumpy_cadence_reports_its_true_rate() {
+        let mut meter = RateMeter::default();
+        // 7.5 ms and 9.17 ms, pair for pair exactly one twentieth of the
+        // interval a 120 fps cadence would spend on two frames.
+        let short = 1.0 / 133.333_3;
+        let long = 2.0 / 120.0 - short;
+        for _ in 0..300 {
+            meter.tick(short);
+            meter.tick(long);
+        }
+        assert!(
+            (meter.fps - 120.0).abs() < 0.5,
+            "a true 120 fps read {}",
+            meter.fps
+        );
     }
 }
