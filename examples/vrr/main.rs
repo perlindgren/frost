@@ -513,11 +513,13 @@ impl frost::Process for Demo {
             "shown"
         };
         let pacing = if self.pacing { "on" } else { "free" };
-        // The rate the system believes this monitor is running at — a
-        // second opinion beside the panel's own counter, and the two
-        // disagree informatively: on a ProMotion display the mode moves for
-        // content reasons with the app looking on, and a reading of it
-        // turns that from faith into observation.
+        // The *mode* the system reports for the monitor the window is on,
+        // which is not the rate being scanned: under ProMotion this figure
+        // is the ceiling, and the scan shows instead in `Actual`, where a
+        // band of ±0.1 fps is one frame per scan with nothing slipping and
+        // a wider one is frames shared out between scans. Two rows, two
+        // questions: what the panel was told, and what the app was allowed
+        // to do.
         let mode = ctx
             .window()
             .and_then(|window| window.current_monitor())

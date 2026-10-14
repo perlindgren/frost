@@ -1261,25 +1261,48 @@ a 120 Hz mode it drifts in and out of step, and free at the 289 measured above,
 289 ÷ 120 being 2.4, the surviving frames advance two, then three, then two, an
 irregular beat with no common divisor to settle it. Every frame correct, the
 selection a lottery. Running free is worth it only while the rate stays *under*
-the mode, where a variable-refresh panel could follow it, and here no panel is
-following at all: free run is a probe, not a way to play.
+the mode, where something might follow it — and on a Mac something does, in its
+mode-stepping way, but never above the panel's maximum and never for a loop
+running unlatched: free run is a probe, not a way to play.
 
-*What is left on a Mac is the mode, not the clock.* ProMotion's range is
-driven off content by the system and addressed by no app — System Settings
-offers ProMotion or a fixed rate, and `system_profiler` prints no rate at all
-for the built-in panel — but the mode list is reachable, and the built-in's
-six rates are 120.00, 60.00, 59.94, 50.00, 48.00 and 47.95, with no 30 and no
-24. On a fixed 60 the clean paces are its divisors, 60, 30, 20 and 15, and 50
-judders hard at 1.2 scans a frame while sitting exact on the 50.00 mode — the
-Mac's whole rule, in other words: **when the pace is not a divisor of the
-mode, change the mode rather than the pace.** Only
-`Fullscreen::Exclusive(video_mode)` sets one, and winit asserts its way
+*ProMotion follows the app, and the proof is in the width of the band.* An
+earlier paragraph here had the built-in's rate driven off content with the app
+looking on, and that had the causality backwards: no API lets an app *name* a
+rate — System Settings offers ProMotion or a fixed rate, `system_profiler`
+prints nothing at all for the built-in panel — yet under ProMotion the panel
+chases the rate the app presents at and locks to it, one scan per frame.
+Targets of 48, 50, 60, 90 and 120 each hold that lock; 45 and 40 are refused,
+clamped to a floor of 48 scans, and judder at 1.07 and 1.2 scans a frame. The
+tell is the width of the reading, not its value: ±0.1 fps is the half-second
+rate window closing a fraction early, while ±1 is a slipped scan — one slip at
+a 90 target would drag the reading to 88 — so a ±0.1 band means one frame per
+scan with nothing slipping. And it scanned at 90 for a 90 target though
+`--modes` lists no 90: the modes CoreGraphics publishes are not the ladder the
+compositor walks, which is why enumerating them says what the panel can be
+*pinned* to and nothing about what it will *choose*. What a low lock costs is
+dwell, and dwell is the smear: a clean 48 blurs like 48, because what smears is
+the frame's lifetime, not the panel's refresh. One remainder untested: pointer
+motion re-clocks this panel to its maximum, so a reading taken a second after
+touching anything may catch the panel on its way back down — the likeliest
+account of an early ±1 at a 60 target that now reads ±0.1 — and the settle time
+is worth measuring before any of this is relied on in a setting screen.
+
+*A pinned mode is the opposite bargain: it does not chase.* The menu for
+pinning is short — `--modes` offers 120.00, 60.00, 59.94, 50.00, 48.00 and
+47.95 on the built-in panel, with no 30 and no 24 — and none of it is a
+promise about what the panel will scan at on its own. On a fixed 60 the
+clean paces are its divisors, 60, 30, 20 and 15, and 50 sits at 1.2 scans a
+frame and judders hard — the same 50 that locks cleanly one setting away, which
+is the cleanest demonstration that the ladder and the chase are different
+mechanisms. So for a pinned mode the old rule stands: **when the pace is not a
+divisor of the mode, change the mode rather than the pace**, and only
+`Fullscreen::Exclusive(video_mode)` sets one, with winit asserting its way
 through the call, so an engine that ever does this enumerates first and never
-guesses a rate. Measured on the M4 Max with the PG42UQ and the built-in panel
-over the 14th of 2026-10 into the 15th; the LG 48CX under Windows 11 still
-wants re-running with the corrected pacer, its substance — windowed VRR, the
-latch on capping at max, the latch off uncapped and followed — expected to
-survive at better numbers.
+guesses. Measured on the M4 Max with the PG42UQ and the built-in panel over the
+14th of 2026-10 into the 15th; the LG 48CX under Windows 11 still wants
+re-running with the corrected pacer, its substance — windowed VRR, the latch on
+capping at max, the latch off uncapped and followed — expected to survive at
+better numbers.
 
 ## Load-bearing invariants (don't break these)
 
