@@ -168,6 +168,9 @@ pub use winit::event::MouseButton;
 /// exposes.
 pub use winit::window::Window;
 
+/// A physical-pixel size, for apps that ask the window for an exact
+/// buffer's worth of it (see [`Window::request_inner_size`]).
+pub use winit::dpi::PhysicalSize;
 /// The fullscreen state a window carries: [`Config::fullscreen`] requests
 /// one at startup, and [`Window::set_fullscreen`] swaps one in and out at
 /// runtime through [`Context::window`]. `Fullscreen::Borderless(None)` —

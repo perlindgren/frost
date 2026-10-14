@@ -1,0 +1,11 @@
+# benchsuite baseline — one name and median fps per line
+fill-1080p 2136.9
+lamps-4 385.6
+lamps-10 173.8
+lamps-40 46.9
+lamps-40-static 46.9
+occluders-10 29.4
+occluders-100 15.4
+taps-1 16.1
+taps-4 4.2
+taps-9 1.8

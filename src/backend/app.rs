@@ -24,6 +24,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
+
 use winit::keyboard::{NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
@@ -101,6 +102,15 @@ pub(crate) struct Frost<P: Process> {
     /// continuous per-frame rendering.
     window: Option<Arc<Window>>,
     logical_size: (u32, u32),
+    /// A corrected shape the aspect lock asked for, carried from
+    /// the resize event to the frame loop: winit treats a request
+    /// made during `Resized` as a geometry restamp with no resize
+    /// request (state.rs), which would stamp the corrected fiction
+    /// as the window's geometry while the real window stays where
+    /// the compositor has it — and the compositor lays title-bar
+    /// buttons against geometry. The frame loop asks for ordinary
+    /// moves.
+    aspect_pending: Option<(u32, u32)>,
     /// The client size seen by the last `Resized` event, physical pixels;
     /// the baseline [`Self::snap_aspect`] measures the drag against.
     /// `(0, 0)` until the first resize lands.
@@ -454,6 +464,7 @@ impl<P: Process> Frost<P> {
             window_id: None,
             window: None,
             logical_size: (0, 0),
+            aspect_pending: None,
             last_resized_px: (0, 0),
             scale: 1.0,
             surface: None,
@@ -973,12 +984,11 @@ impl<P: Process> Frost<P> {
             return;
         }
         log::debug!("aspect lock: {w}x{h} → {w2}x{h2}");
-        // The return value reports a size applied immediately on the
         // platforms that do; every platform that applies the request
         // (and the ones that only deliver it, or decline it outright,
         // leaving the letterbox to cope) reports through `Resized`,
         // which is where our own state follows.
-        let _ = window.request_inner_size(PhysicalSize::new(w2, h2));
+        self.aspect_pending = Some((w2, h2));
     }
 
     /// A pipeline's shader text as it stands this frame: the live
@@ -1703,6 +1713,16 @@ impl<P: Process> Frost<P> {
     }
 
     fn render(&mut self) {
+        // Truth before events. winit's configure dedup drops a
+        // compositor configure that matches a wish we already sent
+        // through `request_inner_size` (source: `new_size !=
+        // self.inner_size()`), so a `Resized` event is not owed to
+        // us for every real move — yet the window HAS moved, and a
+        // surface behind it is a stretched picture inside a
+        // correct frame. Every frame therefore starts by checking
+        // the window's reported size against the surface's belief
+        // and reconfigures on disagreement; events stay the fast
+        // path, the loop stops trusting them alone.
         // The shader tier, first among equals: one poll per frame —
         // ten stats — before the surface is even asked, so a saved
         // shader lands whether or not a window is compositing. A
@@ -1711,6 +1731,23 @@ impl<P: Process> Frost<P> {
         #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
         if self.shaders.poll() {
             self.format = None;
+        }
+        if let Some(window) = self.window.clone() {
+            if let Some((w2, h2)) = self.aspect_pending.take() {
+                let _ = window.request_inner_size(PhysicalSize::new(w2, h2));
+            }
+            let size = window.inner_size();
+            if size.width > 0 && size.height > 0 {
+                let scale = (self.scale as f64).max(0.01);
+                let logical = (
+                    (size.width as f64 / scale).max(1.0).round() as u32,
+                    (size.height as f64 / scale).max(1.0).round() as u32,
+                );
+                if logical != self.logical_size && self.surface.is_some() {
+                    self.logical_size = logical;
+                    self.resize();
+                }
+            }
         }
         let (output, reconfigure) = self.acquire_frame();
         if reconfigure {
