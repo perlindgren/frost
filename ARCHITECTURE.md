@@ -1200,12 +1200,77 @@ Each module's `mod tests` holds the tests that pin its subject. The
 |              | weight 700, values at 500; reads through the crate's own            |
 |              | RON-subset parser (`frost::ron`: comments, enums, maps,             |
 |              | escapes; line-numbered errors); `assets/ron/garden.ron` sample      |
+| vrr          | the pacing instrument: keys, never the mouse (pointer motion        |
+|              | re-clocks a macOS display to its ceiling), driving a target rate    |
+|              | the loop meets on an absolute deadline; Target, Actual and Mode     |
+|              | read back together; `0` runs free; `--modes` lists the panel's      |
+|              | modes. See *Frame pacing and variable refresh* below.               |
 
 `cursor.rs` is the most complete reference demo: `CAN_IMAGE [331,247]` scaled
 to 100 px, a 90° CCW tilt tween (0.5 s, rebuilt on press/release edges),
 spout at image px (0,25), a 120/s emission accumulator, semi-implicit water
 droplets under gravity 420, life-fraction alpha, and a splitmix64 `Rng` for
 spread/life/size randomization.
+
+## Frame pacing and variable refresh (examples/vrr)
+
+*The instrument measures itself first.* vrr drives a target frame rate
+through the keys and nothing else: the slider is gone because pointer
+motion is compositor work, and dragging it on an M4 Max driving an ASUS
+PG42UQ pumped the panel to 120 Hz while the app went on presenting at its
+target — a control reached with the mouse is a control that changes the
+thing it is set to measure. The panel reads the target beside the rate
+actually held and the mode the system reports, because an instrument that
+cannot see its own error is only guessing, and this guess had been lying.
+The old pacer re-anchored each deadline on the instant its sleep woke, and
+macOS wakes a coalesced timer about three milliseconds late, so the
+overshoot was written into every frame after it: measured, a 120 fps target
+ran 100.7 and a 60 target ran 51.2. An absolute schedule with a
+one-millisecond spin tail lands within 0.3 % of the request, which makes
+every macOS refresh reading taken before it a reading of the loop's own
+shortfall rather than the display's. Counting frames across a window matters
+as much as pacing them: averaging instantaneous rates reads 121.2 for a
+cadence that is exactly 120, because short frames carry more rate than long
+ones carry lack of it — and that was the number first noticed as impossible,
+sitting above a ceiling vsync was visibly enforcing.
+
+*What the swap chain can ask for is settled from the vendored source.* The
+Metal backend advertises `[Fifo, Immediate]` and its `configure` calls
+`unreachable!` on anything else, so `AutoVsync` resolves to `Fifo` and
+`FifoRelaxed` — the mode that means *present by my deadline* — does not
+exist there at all; DX12 advertises `[Mailbox, Fifo, Immediate]` with `Fifo`
+becoming `SyncInterval = 1`. The same word with different owners of the
+scanout: DXGI stretches the refresh to the game's deadline, Metal latches to
+a cadence WindowServer chose, and the engine asks for variable refresh in
+neither case.
+
+*VRR engages on macOS anyway*, measured — at `Fifo`, with vsync on, and only
+inside a native fullscreen Space (winit's `toggleFullScreen:`, a window in a
+Space of its own rather than a large borderless window). There the panel's
+counter follows the app's rate and wanders a few hertz around it while the
+body glides, which is the display's sampling and the server's ramp rather
+than the app's cadence: read the average, never the instantaneous figure.
+Above the mode nothing the app wants matters — free at any target, the chain
+holds 120.1 — while with vsync off the loop runs genuinely uncapped, 289 fps
+into a 120 Hz mode, so macOS offers the latency of running free and refuses
+its cadence.
+
+*What is left on a Mac is the mode, not the clock.* ProMotion's range is
+driven off content by the system and addressed by no app — System Settings
+offers ProMotion or a fixed rate, and `system_profiler` prints no rate at all
+for the built-in panel — but the mode list is reachable, and the built-in's
+six rates are 120.00, 60.00, 59.94, 50.00, 48.00 and 47.95, with no 30 and no
+24. On a fixed 60 the clean paces are its divisors, 60, 30, 20 and 15, and 50
+judders hard at 1.2 scans a frame while sitting exact on the 50.00 mode — the
+Mac's whole rule, in other words: **when the pace is not a divisor of the
+mode, change the mode rather than the pace.** Only
+`Fullscreen::Exclusive(video_mode)` sets one, and winit asserts its way
+through the call, so an engine that ever does this enumerates first and never
+guesses a rate. Measured on the M4 Max with the PG42UQ and the built-in panel
+over the 14th of 2026-10 into the 15th; the LG 48CX under Windows 11 still
+wants re-running with the corrected pacer, its substance — windowed VRR, the
+latch on capping at max, the latch off uncapped and followed — expected to
+survive at better numbers.
 
 ## Load-bearing invariants (don't break these)
 
