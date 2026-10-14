@@ -1253,7 +1253,16 @@ than the app's cadence: read the average, never the instantaneous figure.
 Above the mode nothing the app wants matters — free at any target, the chain
 holds 120.1 — while with vsync off the loop runs genuinely uncapped, 289 fps
 into a 120 Hz mode, so macOS offers the latency of running free and refuses
-its cadence.
+its cadence. *And the refusal is worse than the cadence it refuses*: held at
+the mode with the latch on, the box glides, and unlatched at that same rate it
+stutters badly. Nothing ties the app's clock to the display's once the latch is
+off, so every scanout catches a frame at an arbitrary phase — paced at 120 into
+a 120 Hz mode it drifts in and out of step, and free at the 289 measured above,
+289 ÷ 120 being 2.4, the surviving frames advance two, then three, then two, an
+irregular beat with no common divisor to settle it. Every frame correct, the
+selection a lottery. Running free is worth it only while the rate stays *under*
+the mode, where a variable-refresh panel could follow it, and here no panel is
+following at all: free run is a probe, not a way to play.
 
 *What is left on a Mac is the mode, not the clock.* ProMotion's range is
 driven off content by the system and addressed by no app — System Settings

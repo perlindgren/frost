@@ -18,9 +18,12 @@
 //! limit this demo imposes from one the machine imposes: a free run that
 //! still lands near the panel's own rate was never uncapped, whatever the
 //! settings claim. It is a probe and not a way to play — it pins a core at
-//! full tilt, tears above the ceiling the way any uncapped run does, and
-//! leaves its own overlay a visible share of every frame. An arrow brings
-//! the pace back, at whatever rate it lands the target on.
+//! full tilt, leaves its own overlay a visible share of every frame, and
+//! above the ceiling it looks *worse* than the capped rate, not freer: the
+//! unlatched display samples whichever frame is newest, so which frames are
+//! seen is a matter of phase rather than of cadence, and a measured 289 into
+//! a 120 Hz mode advances two frames per scan, then three, then two. An
+//! arrow brings the pace back, at whatever rate it lands the target on.
 //!
 //! Keys, not widgets, because the pointer is the one input this
 //! instrument cannot trust. Pointer motion is compositor work, and the
@@ -33,14 +36,16 @@
 //! later.
 //!
 //! The app starts with vsync on, because VRR only engages with a
-//! non-tearing present. With vsync off the swap chain presents with
-//! tearing (`PresentMode::Immediate`), which waits on nothing, so the
-//! display never drops to match the frame rate. With vsync on (`Fifo`),
-//! the present is refresh-synced, and when the pacing brings the frame
-//! rate below the monitor's refresh rate, the display engages VRR and
-//! drops its refresh rate to match. Press `v` — or Alt-V in the
-//! diagnostics overlay — to compare: with vsync off the same paced rate
-//! tears instead of engaging VRR.
+//! non-tearing present. With vsync off the swap chain presents without
+//! waiting (`PresentMode::Immediate`), so nothing ties its clock to the
+//! display's, and the display never drops to match the frame rate. With
+//! vsync on (`Fifo`), the present is refresh-synced, and when the pacing
+//! brings the frame rate below the monitor's refresh rate, the display
+//! engages VRR and drops its refresh rate to match. Press `v` — or Alt-V in
+//! the diagnostics overlay — to compare: unlatched at the panel's own rate
+//! the box no longer shares a clock with the scanout, and windowed that
+//! reads as stutter rather than as the clean horizontal tear the word
+//! suggests, the compositor sampling the layer whole at an arbitrary phase.
 //!
 //! `f` swaps the window in and out of borderless fullscreen — F11 too,
 //! but a Mac keyboard gives F11 to Mission Control unless `fn` is held,
