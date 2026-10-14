@@ -12,6 +12,14 @@
 //! where the panel's FPS and frame-time charts show the pacing, and the
 //! tearing (or lack of it) is visible on the rotating body.
 //!
+//! `0` stands the pacer down altogether, which is the only way to tell a
+//! limit this demo imposes from one the machine imposes: a free run that
+//! still lands near the panel's own rate was never uncapped, whatever the
+//! settings claim. It is a probe and not a way to play — it pins a core at
+//! full tilt, tears above the ceiling the way any uncapped run does, and
+//! leaves its own overlay a visible share of every frame. An arrow brings
+//! the pace back, at whatever rate it lands the target on.
+//!
 //! Keys, not widgets, because the pointer is the one input this
 //! instrument cannot trust. Pointer motion is compositor work, and the
 //! window server clocks the *whole display* up to its maximum for it:
@@ -144,6 +152,8 @@ struct Keys {
     higher: Press,
     /// `[`: the previous rung.
     lower: Press,
+    /// `0`: stand the pacer down, or bring it back.
+    free: Press,
     /// `v`: vsync. Alt-V is the overlay's, not this one's.
     vsync: Press,
     /// `f`, and F11: fullscreen.
@@ -180,6 +190,12 @@ struct Demo {
     diag: frost::Diagnostics,
     /// The target frame rate in frames per second, set by the keys.
     target_fps: f32,
+    /// Whether the pacer is running. Stood down with `0`, the loop runs as
+    /// fast as the machine and the presentation chain let it, which is the
+    /// only way to tell a limit this demo set from a limit the chain
+    /// imposes: a free run that still lands near the panel's rate was never
+    /// uncapped, however the settings read.
+    pacing: bool,
     /// Whether vsync is on, toggled by `v` and mirrored from the engine
     /// (the overlay's Alt-V can flip it behind our back).
     vsync: bool,
@@ -218,6 +234,7 @@ impl Default for Demo {
             ui,
             diag,
             target_fps: 60.0,
+            pacing: true,
             vsync: true,
             fullscreen: false,
             keys: Keys::default(),
@@ -236,6 +253,15 @@ impl Demo {
     /// the engine's `dt`: sleeping inflates `dt`, and a schedule built
     /// from an inflated ruler inflates with it.
     fn pace(&mut self) {
+        if !self.pacing {
+            // Nothing to wait for. The anchor keeps moving with the clock
+            // all the same, so bringing the pacer back picks up from this
+            // frame instead of paying back every interval the free run
+            // never asked for — a burst of catch-up frames the moment the
+            // resume key is let go is an artifact, not a measurement.
+            self.last_frame = Some(Instant::now());
+            return;
+        }
         let interval = Duration::from_secs_f64(1.0 / self.target_fps.max(0.001) as f64);
         let now = Instant::now();
         let Some(previous) = self.last_frame else {
@@ -294,23 +320,37 @@ impl frost::Process for Demo {
         // mouse-driven control here is a control that moves the
         // measurement. Held keys step on [`Press`]'s repeat, so a walk
         // from 120 down to 30 is one press and a breath.
-        if self.keys.faster.tick(ctx.key_down(KeyCode::ArrowUp), dt) {
+        // Alt-V is the overlay's vsync, Alt-F its scaling combo and Alt-0
+        // its scale reset, and Alt often types the same plain character —
+        // leave the pairs alone together or two toggles cancel inside one
+        // frame.
+        let alt = ctx.key_down(KeyCode::AltLeft) || ctx.key_down(KeyCode::AltRight);
+        let faster = self.keys.faster.tick(ctx.key_down(KeyCode::ArrowUp), dt);
+        let slower = self.keys.slower.tick(ctx.key_down(KeyCode::ArrowDown), dt);
+        let higher = self.keys.higher.tick(ctx.char_down(']'), dt);
+        let lower = self.keys.lower.tick(ctx.char_down('['), dt);
+        // Any rate key doubles as the way back from a free run, and the
+        // target it lands on is the one the pacer resumes at — so there is
+        // no state a visitor can get stranded in.
+        if faster || slower || higher || lower {
+            self.pacing = true;
+        }
+        if faster {
             self.target_fps += 1.0;
         }
-        if self.keys.slower.tick(ctx.key_down(KeyCode::ArrowDown), dt) {
+        if slower {
             self.target_fps -= 1.0;
         }
         self.target_fps = self.target_fps.clamp(MIN_TARGET, MAX_TARGET);
-        if self.keys.higher.tick(ctx.char_down(']'), dt) {
+        if higher {
             self.target_fps = rung_above(self.target_fps);
         }
-        if self.keys.lower.tick(ctx.char_down('['), dt) {
+        if lower {
             self.target_fps = rung_below(self.target_fps);
         }
-        // Alt-V is the overlay's vsync and Alt-F its scaling combo, and
-        // Alt often types the same plain character — leave the pairs
-        // alone together or two toggles cancel inside one frame.
-        let alt = ctx.key_down(KeyCode::AltLeft) || ctx.key_down(KeyCode::AltRight);
+        if self.keys.free.tick(!alt && ctx.char_down('0'), dt) {
+            self.pacing = !self.pacing;
+        }
         if self.keys.vsync.tick(!alt && ctx.char_down('v'), dt) {
             self.vsync = !self.vsync;
             ctx.set_vsync(self.vsync);
@@ -351,6 +391,7 @@ impl frost::Process for Demo {
         } else {
             "shown"
         };
+        let pacing = if self.pacing { "on" } else { "free" };
         // Top-right, clear of the diagnostics HUD pinned top-left.
         self.ui.panel(
             ctx,
@@ -368,6 +409,8 @@ impl frost::Process for Demo {
                     |ui, ctx| {
                         ui.label(ctx, "Target");
                         ui.readout(ctx, &format!("{:.0} fps", self.target_fps));
+                        ui.label(ctx, "Pacing");
+                        ui.readout(ctx, pacing);
                         ui.label(ctx, "Actual");
                         ui.readout(ctx, &format!("{:.1} fps", self.actual_fps));
                         ui.label(ctx, "VSync");
@@ -383,6 +426,7 @@ impl frost::Process for Demo {
                 // line up on their own without a second table.
                 ui.label(ctx, "↑/↓     one fps at a time");
                 ui.label(ctx, "[ / ]   a standard rate");
+                ui.label(ctx, "0       run free; arrows resume");
                 ui.label(ctx, "v       vsync");
                 ui.label(ctx, "f       fullscreen");
                 ui.label(ctx, "c       the cursor");
@@ -445,5 +489,61 @@ fn main() {
     ) {
         log::error!("frost failed: {err}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// With the pacer stood down, `pace` must neither wait nor bank the
+    /// intervals it skipped: an instrument that owes up its skipped frames
+    /// fires a burst the moment the pace comes back, and the thing under
+    /// test would then be the pacer's bookkeeping rather than the display.
+    #[test]
+    fn a_free_run_neither_waits_nor_owes() {
+        let mut demo = Demo {
+            target_fps: 10.0,
+            pacing: false,
+            ..Default::default()
+        };
+        let started = Instant::now();
+        for _ in 0..50 {
+            demo.pace();
+        }
+        let free = started.elapsed();
+        // Fifty frames at a hundred milliseconds each would be five
+        // seconds of waiting. A free run owes none of it.
+        assert!(
+            free < Duration::from_millis(200),
+            "free run waited {free:?}"
+        );
+
+        // And the frame that brings the pace back waits one interval, not
+        // the fifty it never spent.
+        demo.pacing = true;
+        let started = Instant::now();
+        demo.pace();
+        let resumed = started.elapsed();
+        assert!(
+            resumed < Duration::from_millis(200),
+            "resuming paid back {resumed:?} of catch-up, not one interval"
+        );
+        assert!(
+            resumed > Duration::from_millis(50),
+            "the resumed frame did not pace at all: {resumed:?}"
+        );
+    }
+
+    /// The ladder is the instrument's useful range, so its rungs must be
+    /// climbable in both directions from anywhere in it, and must not run
+    /// off either end.
+    #[test]
+    fn the_ladder_climbs_and_does_not_run_off() {
+        assert_eq!(rung_below(rung_above(60.0)), 60.0);
+        assert_eq!(rung_above(144.0), 144.0);
+        assert_eq!(rung_below(24.0), 24.0);
+        assert_eq!(rung_above(300.0), 300.0, "past the top, hold");
+        assert_eq!(rung_below(1.0), 1.0, "below the bottom, hold");
     }
 }
