@@ -1,9 +1,12 @@
 //! A minimal VRR (variable refresh rate) demo.
 //!
-//! The keyboard sets the target frame rate; the frame loop blocks
-//! (sleeps) between frames until the target interval has elapsed, so the
-//! app presents at exactly that rate. With the diagnostics overlay
-//! running, this makes it easy to
+//! The keyboard sets the target frame rate; the frame loop waits on an
+//! absolute deadline until the target interval has elapsed, so the app
+//! presents at that rate rather than at the rate plus whatever the wait
+//! cost. The panel reads out the target and the rate actually held
+//! beside it, because the gap between the two is itself a measurement —
+//! and because a pacing instrument that cannot see its own error is only
+//! guessing. With the diagnostics overlay running, this makes it easy to
 //! observe how the display's VRR (G-SYNC / FreeSync) behaves at
 //! different frame rates — especially below the monitor's refresh rate,
 //! where the panel's FPS and frame-time charts show the pacing, and the
@@ -51,7 +54,7 @@
 //! cargo run --example vrr
 //! ```
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use frost::{Align, Col, Color, Context, KeyCode, Scene, SceneNode, Shape, Transform};
 
@@ -80,6 +83,15 @@ const LADDER: [f32; 12] = [
 /// after the finger lifts.
 const REPEAT_AFTER: f32 = 0.35;
 const REPEAT_EVERY: f32 = 0.05;
+
+/// How close to the pacing deadline the pacer stops sleeping and starts
+/// watching the clock instead. `thread::sleep` wakes a millisecond or
+/// more late — the timer is coalesced with everyone else's — and at 120
+/// fps a millisecond is an eighth of the interval. That error is what
+/// the panel would be following, and it is the difference between
+/// measuring the display and measuring the sleep call. Spinning the last
+/// millisecond costs a core's attention and buys the interval back.
+const SPIN_TAIL: Duration = Duration::from_millis(1);
 
 /// One key read as edges rather than as a level: `true` on the frame the
 /// key goes down, then once every [`REPEAT_EVERY`] seconds after it has
@@ -181,8 +193,13 @@ struct Demo {
     /// see is a pointer you move, and moving it is the one thing that
     /// pulls the display off the app's cadence.
     cursor_hidden: bool,
-    /// When the previous frame's pacing finished, for the next deadline.
+    /// The deadline the last frame paced to — a schedule, not a
+    /// measurement, which is the whole point of the pacer.
     last_frame: Option<Instant>,
+    /// The rate actually being held, smoothed. An instrument that sets a
+    /// target owes it a reading of what it managed, so its own error sits
+    /// next to the panel's readout of the same thing.
+    actual_fps: f32,
     /// The body's accumulated rotation.
     angle: f32,
 }
@@ -206,27 +223,48 @@ impl Default for Demo {
             keys: Keys::default(),
             cursor_hidden: false,
             last_frame: None,
+            actual_fps: 0.0,
             angle: 0.0,
         }
     }
 }
 
 impl Demo {
-    /// Block until the target frame interval has elapsed since the
-    /// previous frame's pacing finished, so the pace-to-pace interval —
-    /// and thus the present interval — matches the target rate. The
-    /// deadline is tracked on the wall clock, not on the engine's `dt`,
-    /// because sleeping here inflates the next frame's `dt`.
+    /// Block until the next deadline on an absolute schedule, so the
+    /// interval between frames is the target interval rather than the
+    /// target plus whatever the sleep cost. Wall clock throughout, not
+    /// the engine's `dt`: sleeping inflates `dt`, and a schedule built
+    /// from an inflated ruler inflates with it.
     fn pace(&mut self) {
-        let target = std::time::Duration::from_secs_f64(1.0 / self.target_fps.max(0.001) as f64);
+        let interval = Duration::from_secs_f64(1.0 / self.target_fps.max(0.001) as f64);
         let now = Instant::now();
-        if let Some(last) = self.last_frame {
-            let elapsed = now.saturating_duration_since(last);
-            if elapsed < target {
-                std::thread::sleep(target - elapsed);
+        let Some(previous) = self.last_frame else {
+            self.last_frame = Some(now);
+            return;
+        };
+        let mut deadline = previous + interval;
+        if deadline < now {
+            // The frame's own work blew the schedule. Re-sync to now
+            // rather than owe a catch-up frame: blowing one deadline
+            // should cost one long frame, not buy a hurry-up one after
+            // it — a burst is exactly the artifact this instrument is
+            // here to look for, and inventing one would be dishonest.
+            deadline = now;
+        }
+        if let Some(remaining) = deadline.checked_duration_since(now) {
+            if remaining > SPIN_TAIL {
+                std::thread::sleep(remaining - SPIN_TAIL);
+            }
+            while Instant::now() < deadline {
+                std::hint::spin_loop();
             }
         }
-        self.last_frame = Some(Instant::now());
+        // The anchor is the deadline, not the moment of waking. Set from
+        // the wake-up, every millisecond of sleep overshoot is written
+        // into the next deadline as well, and the target is then quietly
+        // never met: 8.3 ms asked for at a 120 fps request becomes 9.1 in
+        // practice, and the panel faithfully tracks the error.
+        self.last_frame = Some(deadline);
     }
 }
 
@@ -234,6 +272,17 @@ impl frost::Process for Demo {
     fn process(&mut self, ctx: &mut Context, dt: f32) {
         // Block first, so the UI and the scene update at the target rate.
         self.pace();
+        // And read back what that actually produced. `dt` is the interval
+        // between successive frames of the engine's own loop, so it
+        // carries the sleep, the frame's work, and the previous frame's
+        // wait for its present — which is precisely the interval a
+        // display with variable refresh is following.
+        if dt > 0.0 {
+            // A tenth of the way each frame: quick enough to settle in a
+            // second at the rates that matter, slow enough that one
+            // spiked frame does not drag the reading with it.
+            self.actual_fps += (1.0 / dt - self.actual_fps) * 0.1;
+        }
 
         self.ui.begin(ctx);
         // Keys before the panel, so what the panel reads out this frame
@@ -319,6 +368,8 @@ impl frost::Process for Demo {
                     |ui, ctx| {
                         ui.label(ctx, "Target");
                         ui.readout(ctx, &format!("{:.0} fps", self.target_fps));
+                        ui.label(ctx, "Actual");
+                        ui.readout(ctx, &format!("{:.1} fps", self.actual_fps));
                         ui.label(ctx, "VSync");
                         ui.readout(ctx, if self.vsync { "on" } else { "off" });
                         ui.label(ctx, "Fullscreen");
