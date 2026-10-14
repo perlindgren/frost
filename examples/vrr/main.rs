@@ -60,6 +60,7 @@
 //!
 //! ```text
 //! cargo run --example vrr
+//! cargo run --example vrr -- --modes   # report the display's modes, then stop
 //! ```
 
 use std::time::{Duration, Instant};
@@ -209,6 +210,11 @@ struct Demo {
     /// see is a pointer you move, and moving it is the one thing that
     /// pulls the display off the app's cadence.
     cursor_hidden: bool,
+    /// Set by `--modes`: report the display's video modes on the first
+    /// frame, then leave. A frame rather than before the window exists,
+    /// because the mode list hangs off the window's monitor, and that is
+    /// not a thing until the window is.
+    report_modes: bool,
     /// The deadline the last frame paced to — a schedule, not a
     /// measurement, which is the whole point of the pacer.
     last_frame: Option<Instant>,
@@ -239,6 +245,7 @@ impl Default for Demo {
             fullscreen: false,
             keys: Keys::default(),
             cursor_hidden: false,
+            report_modes: false,
             last_frame: None,
             actual_fps: 0.0,
             angle: 0.0,
@@ -294,8 +301,72 @@ impl Demo {
     }
 }
 
+/// Print every video mode of the monitor the window landed on, with its
+/// refresh rate, and say which rate is live. This is the list that answers
+/// "can this panel be driven at 50 Hz?" — a question worth more on macOS
+/// than it looks, because the swap chain cannot ask for a variable refresh
+/// there, and the way to an exact cadence at a low frame rate is instead to
+/// match the display's own mode to it. Which modes exist at all is the
+/// panel's business, so it is read out rather than assumed.
+fn report_modes(ctx: &Context) {
+    use std::cmp::Reverse;
+
+    let Some(monitor) = ctx.window().and_then(|window| window.current_monitor()) else {
+        println!("no monitor for the window yet");
+        return;
+    };
+    let name = monitor.name().unwrap_or_else(|| "a display".to_owned());
+    let live = monitor
+        .refresh_rate_millihertz()
+        .map(|millihertz| format!("{:.1} Hz live", millihertz as f32 / 1000.0))
+        .unwrap_or_else(|| "live rate unknown".to_owned());
+    println!("{name}: {live}");
+    let mut modes: Vec<_> = monitor.video_modes().collect();
+    let listed = modes.len();
+    // Highest refresh first — on a ProMotion panel the list is long, and
+    // the interesting end is the top.
+    modes.sort_by_key(|mode| {
+        let size = mode.size();
+        (
+            Reverse(mode.refresh_rate_millihertz()),
+            Reverse(size.width),
+            Reverse(size.height),
+            Reverse(mode.bit_depth()),
+        )
+    });
+    // A mode is its picture, not its pixel format: the same size and rate
+    // arrive several times over per colour format, and the repeats are
+    // noise in a list meant to be read.
+    modes.dedup_by(|a, b| {
+        a.size() == b.size() && a.refresh_rate_millihertz() == b.refresh_rate_millihertz()
+    });
+    for mode in &modes {
+        let size = mode.size();
+        println!(
+            "  {:>5} x {:<5} {:>7.1} Hz  {}-bit",
+            size.width,
+            size.height,
+            mode.refresh_rate_millihertz() as f32 / 1000.0,
+            mode.bit_depth(),
+        );
+    }
+    if listed != modes.len() {
+        println!(
+            "  ({} modes listed, {} distinct sizes and rates)",
+            listed,
+            modes.len()
+        );
+    }
+}
+
 impl frost::Process for Demo {
     fn process(&mut self, ctx: &mut Context, dt: f32) {
+        if self.report_modes {
+            self.report_modes = false;
+            report_modes(ctx);
+            ctx.exit();
+            return;
+        }
         // Block first, so the UI and the scene update at the target rate.
         self.pace();
         // And read back what that actually produced. `dt` is the interval
@@ -392,6 +463,17 @@ impl frost::Process for Demo {
             "shown"
         };
         let pacing = if self.pacing { "on" } else { "free" };
+        // The rate the system believes this monitor is running at — a
+        // second opinion beside the panel's own counter, and the two
+        // disagree informatively: on a ProMotion display the mode moves for
+        // content reasons with the app looking on, and a reading of it
+        // turns that from faith into observation.
+        let mode = ctx
+            .window()
+            .and_then(|window| window.current_monitor())
+            .and_then(|monitor| monitor.refresh_rate_millihertz())
+            .map(|millihertz| format!("{:.1} Hz", millihertz as f32 / 1000.0))
+            .unwrap_or_else(|| "unknown".to_owned());
         // Top-right, clear of the diagnostics HUD pinned top-left.
         self.ui.panel(
             ctx,
@@ -413,6 +495,8 @@ impl frost::Process for Demo {
                         ui.readout(ctx, pacing);
                         ui.label(ctx, "Actual");
                         ui.readout(ctx, &format!("{:.1} fps", self.actual_fps));
+                        ui.label(ctx, "Mode");
+                        ui.readout(ctx, &mode);
                         ui.label(ctx, "VSync");
                         ui.readout(ctx, if self.vsync { "on" } else { "off" });
                         ui.label(ctx, "Fullscreen");
@@ -478,12 +562,24 @@ fn main() {
         ..Default::default()
     };
 
+    // `--modes` is a question about the display rather than about the
+    // demo, so it asks for as small a window as it can and leaves at once.
+    let report_modes = std::env::args().any(|arg| arg == "--modes");
+    let demo = Demo {
+        report_modes,
+        ..Default::default()
+    };
+
     if let Err(err) = frost::run_configured(
         scene,
-        Demo::default(),
+        demo,
         frost::Config {
             vsync: true,
-            window_size: Some([1100, 700]),
+            window_size: Some(if report_modes {
+                [320, 200]
+            } else {
+                [1100, 700]
+            }),
             ..Default::default()
         },
     ) {
