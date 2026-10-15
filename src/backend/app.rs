@@ -3,7 +3,11 @@ use std::collections::{HashMap, HashSet};
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::future::Future;
-#[cfg(not(target_arch = "wasm32"))]
+// Ungated since the uniform arena: the bind group layouts the arena needs are
+// built on every target, so the type the window sizes carry is no longer a
+// native-only import. It was gated when nothing on wasm asked for a binding
+// size, and the wasm check — which no cargo hook runs — is how that came back
+// to bite (docs/benchmarking.md §1, trap (a)'s cousin).
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll, Waker};
