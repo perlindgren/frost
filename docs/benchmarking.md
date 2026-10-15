@@ -108,6 +108,40 @@ If a `--gpu`/power-preference knob is ever wanted, that single
    Steady middle seconds are the number; the first second carries warm-up
    and the last truncates at the buffer boundary.
 
+4. **Ask the machine whether it is fit to be measured.** Every number in this
+   file was taken on a machine that was also a working computer, and its own
+   moods move results by more than most of the changes being measured — the
+   two identical builds that read 82 and 36 fps are the cautionary tale above.
+   [`tools/noisefloor`](../tools/noisefloor/) is the witness:
+
+   ```sh
+   cargo run --release -p noisefloor -- --seconds 10 && <the bench>
+   ```
+
+   It reports two readings from one thread — how late a 1 ms wake lands above
+   that machine's own median, and how long a fixed quantum of arithmetic runs
+   relative to its own median — and exits 1 when either is too loud, so
+   `noisefloor && <bench>` reads as it looks. `benchsuite` carries the same
+   witness through a whole run and, when the floor is too loud, prints its
+   numbers and exits **3**: no verdict, and no `--save-baseline` either,
+   because a poisoned baseline is worse than a missing one. The two
+   `draw_cost` benches print the line and carry on, since a bench has no
+   baseline to fail and someone is reading its output anyway.
+
+   What it is good at is measured, not hoped at, and its range is narrower
+   than one would like. On the 14-core M4 Max, nothing running and four gzip
+   streams both read 0.15 ms of excess lateness and a 2.0× quantum spread;
+   twenty and forty spinners oversubscribing the cores read 0.36 and 0.32 ms,
+   2.9× and 2.6×; sixty — four times oversubscribed — read 3.23 ms and 3.7×
+   and tripped both gates. **Below that it is blind, and largely correctly
+   so**: with cores to spare, one thread genuinely is not being rationed, so a
+   laptop with a browser and a chat client open is not a run the canary can
+   disqualify. The proof of the limitation is in §6, where a span measured
+   while its owner was using the machine cost 3.66 ms against 2.87 ms
+   unattended, under a floor the instrument had no objection to. Read the
+   printed `worst` with your own eyes: a stall rare enough to fall outside a
+   p99 is not rare enough to fall outside a frame budget.
+
 ## 4. The campaign's numbers (2026-10-12)
 
 antifrost, native 3840×2160 fullscreen, `--vsync off`, same debug-flipped
@@ -186,6 +220,15 @@ denies its regression.** The pattern that worked, in full:
   the mechanism cheaply (24.8× under llvmpipe) but overweight shader
   ALU; the hardware number is the one that ships in the sentence (10.4×
   on the iGPU).
+- **Say what the weather was.** Both benches below print a noise floor line
+  beside their numbers (§3 step 4). Read it before believing the
+  milliseconds, because the two do not travel alike: the ratio between
+  schemes is steady — 8.45×, 13.85×, 17.89× on the charger one evening and
+  8.19×, 14.05×, 17.41× on the same machine two hours later, and 25.2×
+  against 23.8× at the margin across a battery swap — while the absolute
+  microseconds under them move ten percent or more with whatever the machine
+  is doing. Quote the ratio, condition the milliseconds, and rerun when the
+  line says too loud.
 - **Keep the simulation honest about itself.** The bench's "global"
   field held 108 of the 240 boxes per block, not all of them — the
   million-pixel viewport is a quadrant, and the old field would have

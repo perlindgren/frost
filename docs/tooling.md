@@ -147,6 +147,28 @@ left unfixed deliberately: a lint sweep across 48 demos is its own change, with
 its own review, and it should not ride into a packaging commit where a broken
 demonstration would be blamed on the workspace.
 
+## The second tool is a probe, and it runs the dependency the other way
+
+`tools/noisefloor` is the second workspace member, and it passes this
+document's test for a tool in the negative: it demonstrates no API, edits no
+asset, and hosts no UI. It answers one question — *how busy was this machine
+while that number was being taken?* — and the answer is the product
+(docs/benchmarking.md §3 step 4).
+
+The inversion is deliberate. It depends on nothing, not even `frost`, and
+`frost`'s benches depend on **it**, as a dev-dependency so it cannot reach a
+downstream tree. Two reasons. A measurement and the witness of it have to
+travel together: a script beside the repository drifts from the benches it was
+written for, and a `#[cfg(test)]` module inside the engine invites someone to
+have the canary measure engine machinery, at which point an instrument that
+borrows its subject's dependencies measures those. And as a package it gets the
+lint coverage the section above is about, which a third example would not.
+
+Its gate is deliberately weak and says so where the thresholds live: fourfold
+CPU oversubscription is what it takes, a browser and a chat client are
+invisible to it, and it exits 3 from `benchsuite` to decline a verdict rather
+than to deliver one.
+
 ## Games come too, later, one at a time
 
 The games follow the same road — `dogs_name` and `immortal` as workspace

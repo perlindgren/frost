@@ -909,14 +909,19 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **346 lib tests + 3 integration tests (`tests/`) + 7 doctests**
-passing, `cargo build` (lib + the `sprite_util` tool) clean. The tool's 81
+Baseline: **392 lib tests + 3 integration tests (`tests/`) + 7 doctests**
+passing, `cargo build` (lib + the `sprite_util` and `noisefloor` tools) clean.
+The tool's 93
 tests — 68 that moved with `examples/sprite_util.rs`, each living in the
 subject module it pins, the asset-path guard, the three
 authored-shapes overlay tests, and the nine that pin the status band's
 log (capture by change, the cap, the window and thumb arithmetic, the
 dock's geometry) — ride along in the same
-`cargo test` now that it is a binary target. Notable test areas:
+`cargo test` now that it is a binary target. So does `noisefloor`'s 7 plus a
+doctest, which pin the percentile ranks, the two gate readings, and that a
+live canary wakes and reports — never *how late* the machine was allowed to
+be, because that is the quantity it exists to hand back rather than one it
+may assert. Notable test areas:
 
 - `src/shaders.rs` — naga parse + device-side validation (the
   `Validator` stage wgpu runs in `create_shader_module` — this is what
