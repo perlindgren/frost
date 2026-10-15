@@ -320,6 +320,26 @@ const GLOW_PER_LAMP: f32 = 0.55;
 /// surrounds it.
 const BLOOM_STRENGTH: f32 = 1.0;
 
+/// The color the queen's blaze aims at: the amber of her lamp, kept further
+/// from white than the lamp itself is.
+///
+/// The ants run their tuck-in flare to `hue × 2.4 + 0.9`, which for a red ant
+/// lands lopsided — 3.1 / 1.6 / 1.5 — and so stays *red* through a blur. Run the
+/// same `+ 0.9` on her amber and it lands at 1 : 0.9 : 0.75, which is a white
+/// ball with a tan edge: brightness that spreads, the mistake her flat white
+/// tint used to make on its own. This keeps the amber warm instead, and she
+/// starts the flash from white, so what changes on the bed is her hue and not
+/// merely how much of her there is.
+///
+/// The halo's hue is derived from the tint, so the burst warms along with the
+/// blaze and needs no knob of its own.
+const CROWN_BLAZE: Color = Color {
+    r: 2.6,
+    g: 1.15,
+    b: 0.35,
+    a: 1.0,
+};
+
 /// The corner arc's control arm, in tile lengths: at 90° the hop bends
 /// into a quarter-circle of roughly this reach; smaller cuts tighter.
 const HOP_ARC_K: f32 = 0.55;
@@ -405,6 +425,20 @@ fn lamp_core(c: Color) -> Color {
         g: c.g + (1.0 - c.g) * 0.35,
         b: c.b + (1.0 - c.b) * 0.35,
         a: c.a,
+    }
+}
+
+/// A flare's mix in the tint: `k` of the way from `from` to `toward`.
+///
+/// One function because the ants and their queen flash the same way — held at
+/// full for a heartbeat as the flare drains, then faded — and a blaze that
+/// differs between them would be read as a bug in whichever one moved less.
+fn blaze(from: Color, toward: Color, k: f32) -> Color {
+    Color {
+        r: from.r + (toward.r - from.r) * k,
+        g: from.g + (toward.g - from.g) * k,
+        b: from.b + (toward.b - from.b) * k,
+        a: 1.0,
     }
 }
 
@@ -2282,16 +2316,16 @@ impl Demo {
                 // the blaze a heartbeat before it dims.
                 let dim = shade(col, 0.55);
                 let k = (self.landing.get(&id).copied().unwrap_or(0.0) * 1.7).min(1.0);
-                if k > 0.0 {
+                blaze(
+                    dim,
                     Color {
-                        r: dim.r + (col.r * 2.4 + 0.9 - dim.r) * k,
-                        g: dim.g + (col.g * 2.4 + 0.9 - dim.g) * k,
-                        b: dim.b + (col.b * 2.4 + 0.9 - dim.b) * k,
+                        r: col.r * 2.4 + 0.9,
+                        g: col.g * 2.4 + 0.9,
+                        b: col.b * 2.4 + 0.9,
                         a: 1.0,
-                    }
-                } else {
-                    dim
-                }
+                    },
+                    k,
+                )
             } else if matches!(game.ants[id].state, game::AntState::Wild(_)) {
                 shade(col, 0.88)
             } else {
@@ -2365,14 +2399,21 @@ impl Demo {
             shadowed.order = 1.48;
             // The queen carries a lamp of her own — the breath written on her
             // node above — so she wears the same ember and the same halo as
-            // any ant, at her light's own strength.
+            // any ant, at her light's own strength. And she flashes on the bed
+            // like one: her spike always reached her lamp and never her pixels,
+            // which is why her tuck-in lit the snow and left her out of it. The
+            // same hold-then-drain curve the ants ride, on the amber.
             let queen = &mut root.children[LEAVES.len() + player];
             self.put_ant(
                 queen,
                 frame,
                 at,
                 self.player_face,
-                ant_color(game::AntColor::White),
+                blaze(
+                    ant_color(game::AntColor::White),
+                    CROWN_BLAZE,
+                    (self.player_home.unwrap_or(0.0) * 1.7).min(1.0),
+                ),
                 lamps[n],
             );
             queen.order = 1.5;
