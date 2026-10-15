@@ -1166,6 +1166,7 @@ fn a_frame_of_every_kind_packs_into_the_arena_too() {
                 uv_rect: [0.0, 0.0, 1.0, 1.0],
                 emission: off,
                 glow: None,
+                additive: false,
                 lit: 0.0,
                 z: 0.0,
                 diagnostic: false,

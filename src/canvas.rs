@@ -788,6 +788,7 @@ fn draw_node(
                 alpha: *alpha,
                 emission: node.emission.mul(modulate),
                 glow: node.glow.map(|g| g.mul(modulate)),
+                additive: node.additive,
                 uv_rect: [0.0, 0.0, 1.0, 1.0],
                 lit: f32::from(node.lit),
                 z: order,
@@ -1445,6 +1446,9 @@ fn expand_text_list(
                         // pass on to every quad.
                         emission,
                         glow,
+                        // Glyphs are coverage itself: an additive glyph would
+                        // brighten the page it is written on.
+                        additive: false,
                         lit,
                         z,
                         diagnostic,

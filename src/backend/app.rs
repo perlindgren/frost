@@ -170,6 +170,10 @@ pub(crate) struct Frost<P: Process> {
     rect_pipeline: Option<RenderPipeline>,
     shape_pipeline: Option<RenderPipeline>,
     sprite_pipeline: Option<RenderPipeline>,
+    /// The same sprite shader blended additively, for the draws whose nodes ask
+    /// to add their light instead of covering with it. See
+    /// [`ADDITIVE_BLEND`].
+    sprite_additive_pipeline: Option<RenderPipeline>,
     particle_pipeline: Option<RenderPipeline>,
     /// The tile map pipeline: one instanced quad per tile, sampling the
     /// batch's atlas through per-instance UV bounds.
@@ -475,6 +479,46 @@ pub(crate) fn shape_layouts(device: &Device, label: &'static str) -> PipelineLay
 /// them against each other when the pipeline is built, which is every
 /// frame of every test, and a binding that moves or changes type fails
 /// there rather than painting anything wrong.
+/// How an additive draw lands in the two attachments: its light is added,
+/// scaled by its own alpha, and its alpha is added too.
+///
+/// The house rule about what the two channels mean still holds — rgb is
+/// radiance, alpha is coverage, the blend does the rest — and only the last
+/// clause changes its reading. Coverage here is not how much of the world
+/// the fragment hides but how much light it deposits, which is what an
+/// authored glow sprite is drawn out of: a ramp that fades to nothing at its
+/// edge has to *add* its falloff to the wall behind it, because a wall
+/// covered by a dark bell is a wall with a hole in it rather than a wall in
+/// lamp-light. It applies to both attachments for the same reason the alpha
+/// rule does — the frame's color and the emissive channel are composited on
+/// one set of terms — so one sprite is at once the visible core of a source
+/// and the light the chain goes on to blur.
+///
+/// Alpha adds with a factor of one rather than `SrcAlpha`, so coverage
+/// accumulates in step with the light it is describing instead of being
+/// squared on the way in. A frame's alpha can therefore pass 1.0 under a
+/// glow; it is written to the window, where it clamps, and nothing inside
+/// the engine reads it.
+///
+/// This is not [`wgpu::BlendState::ADDITIVE`], which adds with a source
+/// factor of one and so assumes rgb that has been premultiplied by alpha
+/// already. Frost's textures carry straight alpha — the ramp lives in the
+/// alpha channel and the rgb beside it stays the lamp's color at full — so
+/// the ramp has to scale the rgb in the blend or the transparent border of a
+/// glow sprite adds a square of light around it.
+pub(crate) const ADDITIVE_BLEND: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::SrcAlpha,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
 pub(crate) fn sprite_layouts(device: &Device) -> (BindGroupLayout, PipelineLayout) {
     let bind = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: Some("sprite bind group layout"),
@@ -744,6 +788,7 @@ impl<P: Process> Frost<P> {
             rect_pipeline: None,
             shape_pipeline: None,
             sprite_pipeline: None,
+            sprite_additive_pipeline: None,
             particle_pipeline: None,
             tilemap_pipeline: None,
             blit_pipeline: None,
@@ -1362,7 +1407,7 @@ impl<P: Process> Frost<P> {
             emissive,
             Some(&line_layout),
             "line pipeline",
-            true,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
         ));
 
         let polyline_module = device.create_shader_module(ShaderModuleDescriptor {
@@ -1376,7 +1421,7 @@ impl<P: Process> Frost<P> {
             emissive,
             Some(&polyline_layout),
             "polyline pipeline",
-            true,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
         ));
 
         let circle_module = device.create_shader_module(ShaderModuleDescriptor {
@@ -1390,7 +1435,7 @@ impl<P: Process> Frost<P> {
             emissive,
             Some(&circle_layout),
             "circle pipeline",
-            true,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
         ));
 
         let rect_module = device.create_shader_module(ShaderModuleDescriptor {
@@ -1404,7 +1449,7 @@ impl<P: Process> Frost<P> {
             emissive,
             Some(&rect_layout),
             "rectangle pipeline",
-            true,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
         ));
 
         let shape_module = device.create_shader_module(ShaderModuleDescriptor {
@@ -1418,7 +1463,7 @@ impl<P: Process> Frost<P> {
             emissive,
             Some(&shape_layout),
             "shape pipeline",
-            true,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
         ));
 
         let sprite_module = device.create_shader_module(ShaderModuleDescriptor {
@@ -1437,7 +1482,23 @@ impl<P: Process> Frost<P> {
             emissive,
             Some(&sprite_pipeline_layout),
             "sprite pipeline",
-            true,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+        ));
+        // The one variant the renderer carries, because it is the one thing a
+        // scene cannot draw without: an authored glow. Same shader, same bind
+        // group layout — a glow sprite's bind group is the ordinary sprite's,
+        // which is why the two share the texture cache and the bind cache
+        // below — and a different answer to how its light lands. Blend states
+        // are baked into a pipeline, so opting out of coverage costs a second
+        // pipeline rather than a second uniform field.
+        self.sprite_additive_pipeline = Some(Self::create_pipeline(
+            device,
+            &sprite_module,
+            format,
+            emissive,
+            Some(&sprite_pipeline_layout),
+            "sprite additive pipeline",
+            Some(ADDITIVE_BLEND),
         ));
 
         let particles_module = device.create_shader_module(ShaderModuleDescriptor {
@@ -1451,7 +1512,7 @@ impl<P: Process> Frost<P> {
             emissive,
             None,
             "particle pipeline",
-            true,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
         ));
 
         let tilemap_module = device.create_shader_module(ShaderModuleDescriptor {
@@ -1465,7 +1526,7 @@ impl<P: Process> Frost<P> {
             emissive,
             None,
             "tilemap pipeline",
-            true,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
         ));
 
         // The fixed render size stretch: a full-screen sample of the
@@ -1492,16 +1553,19 @@ impl<P: Process> Frost<P> {
             None,
             None,
             "blit pipeline",
-            false,
+            None,
         ));
     }
 
     /// Builds a render pipeline for a shader with no vertex buffers
     /// (full-screen triangles, or instanced quads generated in the vertex
     /// shader), one bind group at group 0, and a single color target —
-    /// alpha-blended when `blend` (every draw of the scene itself),
-    /// replaced otherwise (the fixed-render-size stretch, whose source is
-    /// the finished frame).
+    /// blended as `blend` says, or replaced outright when it is `None` (the
+    /// fixed-render-size stretch, whose source is the finished frame). Scene
+    /// pipelines pass [`wgpu::BlendState::ALPHA_BLENDING`] or
+    /// [`ADDITIVE_BLEND`]; the two differ in one clause of one sentence,
+    /// and which of them a draw gets is decided by its node's `additive` flag
+    /// here rather than by anything the shader says.
     /// Builds a scene pipeline. `emissive` is the frame's emissive target
     /// format, `Some` exactly when the scene shaders are asked for their second
     /// output: a pipeline declaring one target cannot draw into a pass offering
@@ -1515,9 +1579,9 @@ impl<P: Process> Frost<P> {
         emissive: Option<TextureFormat>,
         layout: Option<&PipelineLayout>,
         label: &str,
-        blend: bool,
+        blend: Option<wgpu::BlendState>,
     ) -> RenderPipeline {
-        let blend_state = blend.then_some(wgpu::BlendState::ALPHA_BLENDING);
+        let blend_state = blend;
         let mut targets = vec![Some(ColorTargetState {
             format,
             blend: blend_state,
@@ -2556,6 +2620,7 @@ impl<P: Process> Frost<P> {
             Some(rect_pipeline),
             Some(shape_pipeline),
             Some(sprite_pipeline),
+            Some(sprite_additive_pipeline),
             Some(particle_pipeline),
             Some(tilemap_pipeline),
         ) = (
@@ -2569,6 +2634,7 @@ impl<P: Process> Frost<P> {
             self.rect_pipeline.clone(),
             self.shape_pipeline.clone(),
             self.sprite_pipeline.clone(),
+            self.sprite_additive_pipeline.clone(),
             self.particle_pipeline.clone(),
             self.tilemap_pipeline.clone(),
         )
@@ -2746,6 +2812,7 @@ impl<P: Process> Frost<P> {
                         texture_size,
                         filter,
                         generation,
+                        additive,
                         diagnostic,
                         // The rest of the sprite — its box, tint, opacity,
                         // emission and sub-rectangle — reached the arena in the
@@ -2787,8 +2854,17 @@ impl<P: Process> Frost<P> {
                         // bilinear and nearest-neighbor draws of one
                         // image share the texture and split only here.
                         let sampler = self.sampler_for(filter);
+                        // The flag chooses a pipeline, not a bind group: the two
+                        // share one layout, so an additive sprite reuses the
+                        // cached bind group of an ordinary one from the same
+                        // image without either knowing about it.
+                        let pipeline = if additive {
+                            &sprite_additive_pipeline
+                        } else {
+                            &sprite_pipeline
+                        };
                         let bind_group = self.sprite_bind_group(
-                            &sprite_pipeline,
+                            pipeline,
                             key,
                             matches!(filter, SpriteFilter::Linear),
                             &view,
@@ -2796,7 +2872,7 @@ impl<P: Process> Frost<P> {
                             &field_buffer,
                             &occluder_buffer,
                         );
-                        pass.set_pipeline(&sprite_pipeline);
+                        pass.set_pipeline(pipeline);
                         // The one number that is still per-draw, and it is a
                         // u32: where this draw's bytes landed in the arena.
                         pass.set_bind_group(0, &bind_group, &[self.arena_offsets[i]]);

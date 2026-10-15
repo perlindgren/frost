@@ -7,6 +7,7 @@
 //! shared [`black`] helper; every test keeps the name it had when the
 //! suite was a single file.
 
+mod blend;
 pub(crate) mod bloom;
 mod camera;
 mod config;

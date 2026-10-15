@@ -1275,6 +1275,35 @@ pub struct SceneNode {
     /// rides the composed modulate as emission does, so fading a node fades its
     /// halo with it.
     pub glow: Option<Color>,
+    /// Whether this node adds its light to the frame instead of covering what
+    /// is behind it.
+    ///
+    /// The house rule is that rgb is radiance, alpha is coverage, and the blend
+    /// does the rest — which is why an opaque wall drawn over a lamp takes the
+    /// lamp's glow away along with its color. This field opts out of the second
+    /// half: the alpha stops meaning how much of the world the sprite hides and
+    /// starts meaning how much light it deposits, so a soft radial ramp lands as
+    /// a lamp's glow instead of as a dark bell over the wall behind it. Both
+    /// attachments take it that way — the frame's color and the emissive channel
+    /// — which is what lets one authored sprite be a lamp's visible core and the
+    /// thing the bloom chain blurs, from one asset and one tint.
+    ///
+    /// It belongs to artwork rather than to lighting, because a glow's falloff
+    /// *is* its content: a blob the engine synthesizes has to invent one, and
+    /// every engine that has shipped such a blob has heard about it. What this
+    /// still does not do is light anything. A glow that illuminates the room
+    /// needs a [`Shape::Light`](crate::Shape::Light) beside it and the two
+    /// agreeing by hand, as they do everywhere else in the tree.
+    ///
+    /// Coverage adds as well, so a frame's alpha can pass 1.0 under a glow. The
+    /// frame's alpha goes on to the window, where it clamps, and nothing inside
+    /// the engine reads it.
+    ///
+    /// The default, `false`, is the ordinary covering draw. Sprites are the only
+    /// kind that can ask: a shape is hard-edged, and an additive hard edge is a
+    /// bright disc, which the emission channel already draws without needing a
+    /// second rule.
+    pub additive: bool,
     /// The shape this node draws, in its own local space, if any.
     pub shape: Option<Shape>,
     /// The child nodes, positioned in this node's coordinate space.
@@ -1310,6 +1339,7 @@ impl Default for SceneNode {
                 a: 0.0,
             },
             glow: None,
+            additive: false,
             shape: None,
             children: Vec::new(),
             diagnostic: false,

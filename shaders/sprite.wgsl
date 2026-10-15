@@ -114,7 +114,10 @@ fn shade(frag_coord: vec4<f32>) -> Shaded {
         rgb += rgb * u.emission.rgb * u.emission.a;
     }
     // The color, scaled by the sprite's alpha and the tint's own alpha,
-    // composited over the existing attachment by alpha blending.
+    // composited over the existing attachment by alpha blending — unless the
+    // pipeline is the additive one the `additive` node flag selects, which adds
+    // what follows instead of covering with it. Same two channels, same meaning,
+    // and this file cannot tell the two apart.
     //
     // What it puts out is the emission the light mix got, before the lights
     // touched it — the tinted texel times the light it hands out, in the hue in

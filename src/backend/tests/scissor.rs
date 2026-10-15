@@ -172,6 +172,7 @@ fn sprite_scissor_is_the_texture_box_plus_aa_band() {
         diagnostic: false,
         emission: black(),
         glow: None,
+        additive: false,
         world: Transform::translate([50.0, 50.0]),
         data: Arc::new([0u8; 16]),
         size: [40.0, 20.0],
@@ -200,6 +201,7 @@ fn sprite_scissor_under_rotation() {
         diagnostic: false,
         emission: black(),
         glow: None,
+        additive: false,
         world: Transform::rotate(std::f32::consts::FRAC_PI_4)
             .compose(&Transform::translate([50.0, 50.0])),
         data: Arc::new([0u8; 16]),

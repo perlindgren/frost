@@ -199,10 +199,10 @@ building the `Context` (physical y-down → user y-up).
   under itself (a dim neutral gray by default; see "Lighting" below).
   `Scene::visit()` updates the root subtree and every layer subtree.
 - `SceneNode` — a `transform` + `scale` + `modulate` + `order`, an optional
-  `shape`, and `children`. All four are **relative to the parent**. Three
-  per-node lighting flags (`lit`, `occludes`, `emission`) join them; unlike these
-  four they apply to the node's own shape only and never propagate (see
-  "Lighting" below):
+  `shape`, and `children`. All four are **relative to the parent**. Five
+  per-node lighting flags (`lit`, `occludes`, `emission`, `glow`, `additive`)
+  join them; unlike these four they apply to the node's own shape only and never
+  propagate (see "Lighting" below):
   - transform/scale: `local = scale(node.scale).compose(&node.transform)`,
     `world = local.compose(&parent)`. **Scale is innermost** — it applies to the
     node's own shape *and* composes onto descendants.
@@ -432,7 +432,14 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
   by one rule the shaders state once: **rgb is radiance, alpha is coverage, the
   blend does the rest.** That is what makes an opaque shape drawn over a lamp
   take the lamp's glow away, a translucent one only dim it, and a fragment that
-  covers nothing change nothing. Shapes and sprites carry emission; lines,
+  covers nothing change nothing. One pipeline answers differently, and it is the
+  only variant the renderer carries: the sprite pipeline's additive twin, chosen
+  for a node flagged `additive`. Its rgb is added, scaled by its own alpha, and
+  its coverage adds too, so an authored glow sprite deposits its falloff instead
+  of cutting a bell-shaped hole in the light behind it. Nothing about the two
+  channels changes and the shader cannot tell which pipeline it was drawn with —
+  only the arithmetic the blend performs differs.
+  Shapes and sprites carry emission; lines,
   rectangles, particles and tile maps write zero radiance at their own coverage
   — which is what makes them occlude glow rather than punch holes in it.
   Emission does two jobs at once — it is the surface's own color, and it is what

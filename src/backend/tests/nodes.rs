@@ -13,6 +13,7 @@ fn node_scale_applies_to_the_shape_and_its_subtree() {
         diagnostic: false,
         emission: black(),
         glow: None,
+        additive: false,
         // Scale 2x in x only; the transform still positions the node.
         transform: Transform::translate([10.0, 0.0]),
         scale: [2.0, 1.0],
@@ -29,6 +30,7 @@ fn node_scale_applies_to_the_shape_and_its_subtree() {
             diagnostic: false,
             emission: black(),
             glow: None,
+            additive: false,
             transform: Transform::translate([1.0, 0.0]),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -81,6 +83,7 @@ fn node_order_accumulates_down_the_tree_like_the_transform() {
         diagnostic: false,
         emission: black(),
         glow: None,
+        additive: false,
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: WHITE,
@@ -96,6 +99,7 @@ fn node_order_accumulates_down_the_tree_like_the_transform() {
             diagnostic: false,
             emission: black(),
             glow: None,
+            additive: false,
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -111,6 +115,7 @@ fn node_order_accumulates_down_the_tree_like_the_transform() {
                 diagnostic: false,
                 emission: black(),
                 glow: None,
+                additive: false,
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -148,6 +153,7 @@ fn node_modulate_multiplies_into_the_shape_and_its_subtree() {
         diagnostic: false,
         emission: black(),
         glow: None,
+        additive: false,
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: Color {
@@ -168,6 +174,7 @@ fn node_modulate_multiplies_into_the_shape_and_its_subtree() {
             diagnostic: false,
             emission: black(),
             glow: None,
+            additive: false,
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: Color {
@@ -225,6 +232,7 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
         diagnostic: false,
         emission: black(),
         glow: None,
+        additive: false,
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: Color {
@@ -256,6 +264,7 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
         diagnostic: false,
         emission: black(),
         glow: None,
+        additive: false,
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: Color {

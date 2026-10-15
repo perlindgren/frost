@@ -104,7 +104,6 @@ pub(crate) enum Draw {
         /// which is what every scene in the tree asks for today; see
         /// [`crate::SceneNode::glow`].
         glow: Option<Color>,
-
         /// Whether the shape is lit by the frame's light field: `1.0` when
         /// the node's `lit` flag is set, `0.0` when unlit.
         lit: f32,
@@ -172,7 +171,10 @@ pub(crate) enum Draw {
         /// which is what every scene in the tree asks for today; see
         /// [`crate::SceneNode::glow`].
         glow: Option<Color>,
-
+        /// Whether this sprite adds its light instead of covering what is
+        /// behind it: the node's flag, which picks the pipeline rather than a
+        /// byte of the uniform. See [`crate::SceneNode::additive`].
+        additive: bool,
         /// Whether the sprite is lit by the frame's light field: `1.0` when
         /// the node's `lit` flag is set, `0.0` when unlit. Glyph quads
         /// expanded from a lit text block are lit too.
@@ -308,7 +310,6 @@ pub(crate) enum Draw {
         /// which is what every scene in the tree asks for today; see
         /// [`crate::SceneNode::glow`].
         glow: Option<Color>,
-
         /// Whether the text is lit by the frame's light field: `1.0` when
         /// the node's `lit` flag is set, `0.0` when unlit; the flag is
         /// passed on to every glyph quad the block expands into.
