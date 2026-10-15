@@ -191,3 +191,77 @@ denies its regression.** The pattern that worked, in full:
   million-pixel viewport is a quadrant, and the old field would have
   walked more. Say so next to the ratio, and the ratio is read as the
   floor it is.
+
+## 6. What a draw call costs the CPU (2026-10-15, Apple M4 Max)
+
+The ask was fewer draw calls, "to reduce CPU load — the GPU burden should
+stay essentially the same". The GPU part is right and worth saying first: a
+frame's pixels do not care which buffer its uniforms arrived from. What the
+change bought is the other half — **the count did not fall; the cost of each
+call did.** Nothing here is batched or instanced; a 243-call frame still
+issues 243 calls.
+
+Measured on the M4 Max through Metal, in a release build
+(`cargo test --release --lib draw_cost -- --ignored --nocapture`), with the
+bench of §5's shape: the two schemes paint the same scene through the same
+shaders on the same device, warmed up untimed, each frame drained with
+`PollType::wait_indefinitely()`, three passes, the last one reported.
+This is a layout test — a uniform buffer and bind group per draw, against one
+arena of runs with dynamic offsets, plus a third scheme that pools the
+per-draw buffers and reuses them.
+
+Glyph quads over 1600×1600, ms/frame:
+
+```text
+  draws    per draw    arena    pooled    arena ratio
+     243      2.065    0.294     0.922        7.01x
+    1000      7.941    0.535     3.912       14.83x
+    2000     15.707    0.840     7.835       18.70x
+```
+
+Marginal cost per draw, which is the number that generalises — the averages
+above carry the frame's fixed fill: **7.7 µs** a draw per-draw, **7.8 µs** for
+the pooled scheme's un-avoidable `write_buffer` half of it measured at 3.9 µs,
+and **0.31 µs** with the arena. Pooling loses because the copy survives; it is
+over half the cost, which is the finding that decided the design.
+
+The same bench over a frame that cycles line, polyline, circle, rectangle,
+shape and glyph, into 960×720:
+
+```text
+  draws    per draw    arena   bytes packed    ratio
+     243      5.765    2.947        145,968    1.96x
+    1000     18.094   12.014        597,792    1.51x
+    2000     36.616   24.923      1,195,808    1.47x
+```
+
+Far narrower, and the polyline is talking: one part in six of this frame
+carries its whole point list — 2080 bytes — and those bytes cross the bus
+either way. Marginal per draw here: 18.5 µs against 12.9, so the arena still
+removes 5.6 µs of the 18.5. Read the glyph table as a text-heavy frame and
+this one as its opposite; a real frame is between them, weighted by how much
+of it is two kilobytes of chart.
+
+In situ, unbenchmarked, the same story in object counts. The engine's own
+trace over 548 frames of the diagnostics overlay: **16.4 bind groups and 16.0
+buffers created per frame** before, **1.5 and 0.02** after. The engine's 243-call
+frame in the `vrr` demo therefore carries somewhere near 1.8 ms of this CPU
+work — 243 × 7.7 µs — against the 4.6 ms the overlay's `PROC` stat measures
+for that frame; the two are different clocks over overlapping spans, so read
+that as the same order of magnitude and not as a subtraction.
+
+**The 7900 XTX row is unrun.** §4's campaign numbers are that machine's, and
+these are not a reproduction of them: no AMD figure is claimed here, and the
+ratio may not travel — a driver's per-object cost is exactly the kind of thing
+that differs between backends.
+
+**What is not measured here, because it was not done:** one instanced draw per
+run of adjacent same-texture draws, which is the change that would lower the
+*count*. It was sketched and parked. Two reasons: glyphs are drawn as quads
+whose edges are anti-aliased by the sprite shader's own path, and a batched
+instance path redraws those edges from a different model, so the text changes
+appearance — a decision for the owner of the look, not for a CPU budget; and
+WebGPU leaves the order of primitives within one draw undefined, so a batch
+would rely on an ordering the spec does not promise. The painter-order
+blending of adjacent runs is the other reason batching has to be careful: only
+*consecutive* same-texture draws may ever merge.
