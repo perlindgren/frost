@@ -954,3 +954,537 @@ fn a_uniform_per_draw_versus_an_arena() {
         );
     }
 }
+
+/// The same question asked of a frame that draws everything, not only glyphs.
+///
+/// The bench above measures the mechanism on sprite quads. This one walks a
+/// frame that cycles through every kind the arena took over — a line, a
+/// polyline, a circle, a rectangle, a shape, a glyph — because those are the
+/// draws whose buffer and bind group the engine no longer builds per draw, and
+/// because a polyline's uniform is sixty-five times a rectangle's, which is
+/// what the arena's variable-width runs exist for: a fixed slot sized for the
+/// polyline would carry two kilobytes of padding on every other kind.
+///
+/// The draws are the engine's own [`Draw`] values and its bytes come from the
+/// engine's own [`uniform_bytes`], and the arena walk here is the render
+/// loop's walk — so this measures the packing the frame actually does, not an
+/// imitation of it. The two schemes are the render loop's two shapes: a
+/// buffer, a write and a bind group per draw, or one arena, one write, and one
+/// bind group per pipeline.
+#[test]
+#[ignore = "a timing bench: run by hand with --ignored --nocapture"]
+fn a_frame_of_every_kind_packs_into_the_arena_too() {
+    use crate::backend::app::{block_on, shape_layouts, slot_layouts, sprite_layouts};
+    use crate::backend::frame::{
+        CIRCLE_UNIFORM_BYTES, Draw, LINE_UNIFORM_BYTES, POLYLINE_UNIFORM_BYTES, RECT_UNIFORM_BYTES,
+        SHAPE_UNIFORM_BYTES, SPRITE_UNIFORM_BYTES, uniform_bytes,
+    };
+    use crate::objects::{Color, SpriteFilter, Transform};
+    use crate::shaders::{
+        CIRCLE_SHADER, LINE_SHADER, POLYLINE_SHADER, RECT_SHADER, SHAPE_SHADER, SPRITE_SHADER,
+    };
+    use std::borrow::Cow;
+    use std::num::NonZeroU64;
+    use std::sync::Arc;
+    use std::time::Instant;
+    use wgpu::*;
+
+    const WARM: usize = 12;
+    const PASSES: usize = 3;
+    const FRAMES: usize = 30;
+
+    let grey = Color {
+        r: 0.7,
+        g: 0.7,
+        b: 0.7,
+        a: 1.0,
+    };
+    let off = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    };
+    /// One kind of draw per slot of the cycle, with the uniform size and the
+    /// bindings that follow the uniform in its bind group: none for the plain
+    /// kinds, the two frame fields for a shape, and the image, the sampler and
+    /// the fields for a sprite.
+    struct Kind {
+        name: &'static str,
+        source: &'static str,
+        uniform: u64,
+        fields: bool,
+        image: bool,
+    }
+    let kinds = [
+        Kind {
+            name: "line",
+            source: LINE_SHADER,
+            uniform: LINE_UNIFORM_BYTES,
+            fields: false,
+            image: false,
+        },
+        Kind {
+            name: "polyline",
+            source: POLYLINE_SHADER,
+            uniform: POLYLINE_UNIFORM_BYTES,
+            fields: false,
+            image: false,
+        },
+        Kind {
+            name: "circle",
+            source: CIRCLE_SHADER,
+            uniform: CIRCLE_UNIFORM_BYTES,
+            fields: false,
+            image: false,
+        },
+        Kind {
+            name: "rectangle",
+            source: RECT_SHADER,
+            uniform: RECT_UNIFORM_BYTES,
+            fields: false,
+            image: false,
+        },
+        Kind {
+            name: "shape",
+            source: SHAPE_SHADER,
+            uniform: SHAPE_UNIFORM_BYTES,
+            fields: true,
+            image: false,
+        },
+        Kind {
+            name: "sprite",
+            source: SPRITE_SHADER,
+            uniform: SPRITE_UNIFORM_BYTES,
+            fields: true,
+            image: true,
+        },
+    ];
+    // One white sheet, shared by every sprite in the frame the way an atlas is
+    // shared by every glyph.
+    let sheet: Arc<[u8]> = vec![255u8; 16 * 16 * 4].into();
+    let count_of = |kind: usize, i: usize| -> Draw {
+        let x = ((i % 40) as f32 + 0.5) * 22.0;
+        let y = ((i / 40) as f32 + 0.5) * 30.0;
+        match kind {
+            0 => Draw::Line {
+                a: [x, y],
+                b: [x + 20.0, y + 26.0],
+                width: 2.0,
+                color: grey,
+                z: 0.0,
+                diagnostic: false,
+            },
+            1 => Draw::Polyline {
+                points: (0..8)
+                    .map(|p| [x + p as f32 * 4.0, y + (p % 2) as f32 * 6.0])
+                    .collect(),
+                width: 2.0,
+                color: grey,
+                z: 0.0,
+                diagnostic: false,
+            },
+            2 => Draw::Circle {
+                center: [x, y],
+                radius: 10.0,
+                color: grey,
+                z: 0.0,
+                diagnostic: false,
+            },
+            3 => Draw::Rectangle {
+                center: [x, y],
+                extent: [12.0, 16.0],
+                color: grey,
+                z: 0.0,
+                diagnostic: false,
+            },
+            4 => Draw::Shape {
+                world: Transform::translate([x, y]),
+                center: [0.0, 0.0],
+                params: [10.0, 10.0],
+                kind: 0.0,
+                aa: 1.0,
+                color: grey,
+                glow: off,
+                lit: 0.0,
+                occludes: 0.0,
+                z: 0.0,
+                diagnostic: false,
+            },
+            _ => Draw::Sprite {
+                world: Transform::translate([x, y]),
+                data: Arc::clone(&sheet),
+                generation: 0,
+                size: [20.0, 26.0],
+                texture_size: [16, 16],
+                filter: SpriteFilter::Linear,
+                aa: 0.0,
+                tint: grey,
+                alpha: 1.0,
+                uv_rect: [0.0, 0.0, 1.0, 1.0],
+                glow: off,
+                lit: 0.0,
+                z: 0.0,
+                diagnostic: false,
+            },
+        }
+    };
+
+    let instance = Instance::default();
+    let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
+        eprintln!("GPU bridge: no adapter on this machine — nothing to measure!");
+        return;
+    };
+    let Ok((device, queue)) = block_on(adapter.request_device(&DeviceDescriptor::default())) else {
+        eprintln!("GPU bridge: no device on this machine — nothing to measure!");
+        return;
+    };
+    let stride = {
+        let align = device.limits().min_uniform_buffer_offset_alignment as u64;
+        SPRITE_UNIFORM_BYTES.max(align).next_multiple_of(align)
+    };
+
+    // One sampler and one field buffer for the shape and sprite bindings,
+    // beside the sheet the draws already share.
+    let atlas = device.create_texture(&TextureDescriptor {
+        label: Some("mixed atlas"),
+        size: Extent3d {
+            width: 16,
+            height: 16,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format: TextureFormat::Rgba8UnormSrgb,
+        usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        TexelCopyTextureInfo {
+            texture: &atlas,
+            mip_level: 0,
+            origin: Origin3d::default(),
+            aspect: TextureAspect::All,
+        },
+        &sheet,
+        TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(16 * 4),
+            rows_per_image: Some(16),
+        },
+        Extent3d {
+            width: 16,
+            height: 16,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = atlas.create_view(&TextureViewDescriptor::default());
+    let sampler = device.create_sampler(&SamplerDescriptor::default());
+    let fields = device.create_buffer(&BufferDescriptor {
+        label: Some("mixed fields"),
+        size: 48,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&fields, 0, &[0u8; 48]);
+
+    let target = device.create_texture(&TextureDescriptor {
+        label: Some("mixed target"),
+        size: Extent3d {
+            width: 960,
+            height: 720,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format: TextureFormat::Rgba8Unorm,
+        usage: TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let target_view = target.create_view(&TextureViewDescriptor::default());
+
+    fn pipeline(
+        device: &Device,
+        source: &str,
+        layout: Option<&PipelineLayout>,
+        label: &str,
+    ) -> RenderPipeline {
+        let module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some(label),
+            source: ShaderSource::Wgsl(Cow::Borrowed(source)),
+        });
+        device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some(label),
+            layout,
+            vertex: VertexState {
+                module: &module,
+                entry_point: Some("vs_main"),
+                compilation_options: PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(FragmentState {
+                module: &module,
+                entry_point: Some("fs_main"),
+                compilation_options: PipelineCompilationOptions::default(),
+                targets: &[Some(ColorTargetState {
+                    format: TextureFormat::Rgba8Unorm,
+                    blend: Some(BlendState::ALPHA_BLENDING),
+                    write_mask: ColorWrites::ALL,
+                })],
+            }),
+            primitive: PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+    // The per-draw scheme derives its layouts from the shaders; the arena's
+    // layouts are the engine's own, because a dynamic offset has nowhere to go
+    // in a derived one.
+    let plain: Vec<RenderPipeline> = kinds
+        .iter()
+        .map(|k| pipeline(&device, k.source, None, k.name))
+        .collect();
+    let arena_pipelines: Vec<RenderPipeline> = kinds
+        .iter()
+        .map(|k| {
+            let layout = if k.image {
+                sprite_layouts(&device).1
+            } else if k.fields {
+                shape_layouts(&device, k.name)
+            } else {
+                slot_layouts(&device, k.name, k.uniform)
+            };
+            pipeline(&device, k.source, Some(&layout), k.name)
+        })
+        .collect();
+
+    // The bind group entries, in the order the shaders bind them: the uniform,
+    // then the image and sampler for a sprite, then the two frame fields. A
+    // function rather than a closure because its lifetime — the entries borrow
+    // the buffers they name — is one a closure cannot state.
+    fn entries<'a>(
+        uniform: &'a Buffer,
+        kind: &Kind,
+        view: &'a TextureView,
+        sampler: &'a Sampler,
+        fields: &'a Buffer,
+    ) -> Vec<BindGroupEntry<'a>> {
+        let mut entries = vec![BindGroupEntry {
+            binding: 0,
+            resource: BindingResource::Buffer(BufferBinding {
+                buffer: uniform,
+                offset: 0,
+                size: None,
+            }),
+        }];
+        let mut next = 1;
+        if kind.image {
+            entries.push(BindGroupEntry {
+                binding: next,
+                resource: BindingResource::TextureView(view),
+            });
+            entries.push(BindGroupEntry {
+                binding: next + 1,
+                resource: BindingResource::Sampler(sampler),
+            });
+            next += 2;
+        }
+        if kind.fields {
+            entries.push(BindGroupEntry {
+                binding: next,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: fields,
+                    offset: 0,
+                    size: None,
+                }),
+            });
+            entries.push(BindGroupEntry {
+                binding: next + 1,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: fields,
+                    offset: 0,
+                    size: None,
+                }),
+            });
+        }
+        entries
+    }
+
+    for count in [243usize, 1000, 2000] {
+        let draws: Vec<Draw> = (0..count).map(|i| count_of(i % kinds.len(), i)).collect();
+        // Per draw, as the engine used to do it: a buffer for the draw's own
+        // bytes, a write into it, and a bind group built around both.
+        let frame_per_draw = || -> CommandEncoder {
+            let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
+            {
+                let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("mixed per-draw"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: &target_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Clear(wgpu::Color::BLACK),
+                            store: StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                for (i, draw) in draws.iter().enumerate() {
+                    let kind = &kinds[i % kinds.len()];
+                    let bytes = uniform_bytes(draw).expect("every kind here has a uniform");
+                    let buffer = device.create_buffer(&BufferDescriptor {
+                        label: Some("mixed uniform"),
+                        size: bytes.len() as u64,
+                        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    queue.write_buffer(&buffer, 0, &bytes);
+                    let pipeline = &plain[i % kinds.len()];
+                    let entries = entries(&buffer, kind, &view, &sampler, &fields);
+                    let bind = device.create_bind_group(&BindGroupDescriptor {
+                        label: Some("mixed bind"),
+                        layout: &pipeline.get_bind_group_layout(0),
+                        entries: &entries,
+                    });
+                    pass.set_pipeline(pipeline);
+                    pass.set_bind_group(0, &bind, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+            }
+            encoder
+        };
+
+        // The arena: the render loop's own walk — pack each draw's bytes into
+        // an aligned run, remember where it landed, upload the whole frame
+        // once, and hand every draw an offset into the one bind group its
+        // pipeline shares with the draws of its kind.
+        let mut arena = device.create_buffer(&BufferDescriptor {
+            label: Some("mixed arena"),
+            size: stride,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut packed: Vec<u8> = Vec::new();
+        let mut offsets: Vec<u32> = Vec::new();
+        for draw in draws.iter() {
+            let bytes = uniform_bytes(draw).expect("every kind here has a uniform");
+            let at = (packed.len() as u64).next_multiple_of(stride);
+            packed.resize(at as usize, 0);
+            packed.extend_from_slice(&bytes);
+            offsets.push(at as u32);
+        }
+        if arena.size() < packed.len() as u64 {
+            arena = device.create_buffer(&BufferDescriptor {
+                label: Some("mixed arena"),
+                size: (packed.len() as u64).next_multiple_of(stride),
+                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        let binds: Vec<BindGroup> = kinds
+            .iter()
+            .enumerate()
+            .map(|(k, kind)| {
+                // Same entries as the per-draw scheme, except the first: a
+                // dynamic offset slides the *bound window*, so the arena is
+                // bound one run wide — exactly what the engine binds.
+                let mut entries = entries(&arena, kind, &view, &sampler, &fields);
+                entries[0].resource = BindingResource::Buffer(BufferBinding {
+                    buffer: &arena,
+                    offset: 0,
+                    size: NonZeroU64::new(kind.uniform),
+                });
+                device.create_bind_group(&BindGroupDescriptor {
+                    label: Some("mixed arena bind"),
+                    layout: &arena_pipelines[k].get_bind_group_layout(0),
+                    entries: &entries,
+                })
+            })
+            .collect();
+        let frame_arena = || -> CommandEncoder {
+            let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
+            queue.write_buffer(&arena, 0, &packed);
+            {
+                let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("mixed arena"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: &target_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Clear(wgpu::Color::BLACK),
+                            store: StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                for (i, at) in offsets.iter().enumerate() {
+                    let k = i % kinds.len();
+                    pass.set_pipeline(&arena_pipelines[k]);
+                    pass.set_bind_group(0, &binds[k], &[*at]);
+                    pass.draw(0..3, 0..1);
+                }
+            }
+            encoder
+        };
+
+        let run = |label: &str, arena_scheme: bool, drain: bool| -> f64 {
+            let one = || {
+                let encoder = if arena_scheme {
+                    frame_arena()
+                } else {
+                    frame_per_draw()
+                };
+                queue.submit(Some(encoder.finish()));
+            };
+            for _ in 0..WARM {
+                one();
+                if drain {
+                    let _ = device.poll(PollType::wait_indefinitely());
+                }
+            }
+            let _ = device.poll(PollType::wait_indefinitely());
+            let mut last = 0.0;
+            for _ in 0..PASSES {
+                let t = Instant::now();
+                for _ in 0..FRAMES {
+                    one();
+                    if drain {
+                        let _ = device.poll(PollType::wait_indefinitely());
+                    }
+                }
+                if !drain {
+                    let _ = device.poll(PollType::wait_indefinitely());
+                }
+                last = t.elapsed().as_secs_f64() * 1000.0 / f64::from(FRAMES as u32);
+            }
+            eprintln!(
+                "draws {count:>5}  {label:<9} {:<7} {:>7.3} ms/frame",
+                if drain { "frame" } else { "submit" },
+                last,
+            );
+            last
+        };
+        let a_frame = run("per-draw", false, true);
+        let b_frame = run("arena", true, true);
+        let a_submit = run("per-draw", false, false);
+        let b_submit = run("arena", true, false);
+        eprintln!(
+            "           vs per-draw: arena {:.2}x frame / {:.2}x submit (bytes packed {:>7})",
+            a_frame / b_frame.max(0.001),
+            a_submit / b_submit.max(0.001),
+            packed.len(),
+        );
+    }
+}

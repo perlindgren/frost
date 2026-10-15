@@ -535,7 +535,7 @@ fn write_f32_at(data: &mut [u8], offset: usize, value: f32) {
 /// 32 (the next member is aligned to its own alignment, so the f32 follows
 /// the vec4 without a gap); the struct size rounds up to 48.
 pub(crate) fn line_uniform_data(a: [f32; 2], b: [f32; 2], color: Color, width: f32) -> Vec<u8> {
-    let mut data = vec![0u8; 48];
+    let mut data = vec![0u8; LINE_UNIFORM_BYTES as usize];
     write_f32_at(&mut data, 0, a[0]);
     write_f32_at(&mut data, 4, a[1]);
     write_f32_at(&mut data, 8, b[0]);
@@ -563,7 +563,7 @@ pub(crate) const POLYLINE_MAX_POINTS: usize = 128;
 /// the struct size rounds up to 2080. Points beyond the first
 /// [`POLYLINE_MAX_POINTS`] are not packed.
 pub(crate) fn polyline_uniform_data(points: &[[f32; 2]], color: Color, width: f32) -> Vec<u8> {
-    let mut data = vec![0u8; 2080];
+    let mut data = vec![0u8; POLYLINE_UNIFORM_BYTES as usize];
     let count = points.len().min(POLYLINE_MAX_POINTS);
     for (i, p) in points.iter().take(count).enumerate() {
         write_f32_at(&mut data, i * 16, p[0]);
@@ -584,7 +584,7 @@ pub(crate) fn polyline_uniform_data(points: &[[f32; 2]], color: Color, width: f3
 /// `radius` @ 32 (the next member is aligned to its own alignment, so the
 /// f32 follows the vec4 without a gap); the struct size rounds up to 48.
 pub(crate) fn circle_uniform_data(center: [f32; 2], color: Color, radius: f32) -> Vec<u8> {
-    let mut data = vec![0u8; 48];
+    let mut data = vec![0u8; CIRCLE_UNIFORM_BYTES as usize];
     write_f32_at(&mut data, 0, center[0]);
     write_f32_at(&mut data, 4, center[1]);
     write_f32_at(&mut data, 16, color.r);
@@ -605,7 +605,7 @@ pub(crate) fn rect_uniform_data(center: [f32; 2], extent: [f32; 2], color: Color
         .chain(color.channels().iter())
         .flat_map(|f| f.to_le_bytes())
         .collect();
-    data.resize(32, 0);
+    data.resize(RECT_UNIFORM_BYTES as usize, 0);
     data
 }
 
@@ -633,7 +633,7 @@ pub(crate) fn shape_uniform_data(
     glow: Color,
     lit: f32,
 ) -> Vec<u8> {
-    let mut data = vec![0u8; 96];
+    let mut data = vec![0u8; SHAPE_UNIFORM_BYTES as usize];
     let m = to_local.m;
     // mat2x2: 16 bytes total, vec2 columns with an 8-byte stride.
     write_f32_at(&mut data, 0, m[0][0]);
@@ -662,6 +662,90 @@ pub(crate) fn shape_uniform_data(
     write_f32_at(&mut data, 88, glow.b);
     write_f32_at(&mut data, 92, glow.a);
     data
+}
+
+/// The uniform size of each draw kind in bytes: the size of that pipeline's
+/// WGSL uniform struct, and the width of the window its bind group binds in
+/// the frame's uniform arena. Each packer asserts its output is this long, so
+/// the WGSL struct, the bind group layout and the packed bytes are three
+/// names for one number — a window smaller than the struct is a validation
+/// error when the bind group is built, and a packer longer than its slot
+/// overruns into the next draw's parameters, which is what the assertions are
+/// for. See [`SPRITE_UNIFORM_BYTES`], the same fact for sprites.
+pub(crate) const LINE_UNIFORM_BYTES: u64 = 48;
+/// See [`LINE_UNIFORM_BYTES`]. A polyline's uniform is the whole point list,
+/// which is why the arena's slots are not one fixed size.
+pub(crate) const POLYLINE_UNIFORM_BYTES: u64 = 2080;
+/// See [`LINE_UNIFORM_BYTES`].
+pub(crate) const CIRCLE_UNIFORM_BYTES: u64 = 48;
+/// See [`LINE_UNIFORM_BYTES`].
+pub(crate) const RECT_UNIFORM_BYTES: u64 = 32;
+/// See [`LINE_UNIFORM_BYTES`].
+pub(crate) const SHAPE_UNIFORM_BYTES: u64 = 96;
+
+/// The uniform bytes one draw needs, or `None` when the draw has none — a
+/// background, a light, a particle batch or tilemap that carries its
+/// parameters in storage buffers — or when its transform has collapsed and
+/// the draw is skipped.
+///
+/// Every uniform in the frame is packed here, once, before the render pass.
+/// That is the point of the function: the draw arms hold no uniform code at
+/// all, so the bytes a draw reads and the bytes the packer wrote cannot come
+/// apart — the failure the engine's per-draw buffers used to buy their way
+/// out of by construction. A kind whose uniform changes shape is a change
+/// here, in the packer, and in that pipeline's layout, and the assertions
+/// above and the arena's bind group layout are where getting it wrong shows.
+#[allow(clippy::too_many_arguments)] // uniform writer: one argument per WGSL member
+pub(crate) fn uniform_bytes(draw: &Draw) -> Option<Vec<u8>> {
+    match draw {
+        Draw::Line {
+            a, b, width, color, ..
+        } => Some(line_uniform_data(*a, *b, *color, *width)),
+        Draw::Polyline {
+            points,
+            width,
+            color,
+            ..
+        } => Some(polyline_uniform_data(points, *color, *width)),
+        Draw::Circle {
+            center,
+            radius,
+            color,
+            ..
+        } => Some(circle_uniform_data(*center, *color, *radius)),
+        Draw::Rectangle {
+            center,
+            extent,
+            color,
+            ..
+        } => Some(rect_uniform_data(*center, *extent, *color)),
+        Draw::Shape {
+            world,
+            center,
+            params,
+            kind,
+            aa,
+            color,
+            glow,
+            lit,
+            ..
+        } => world
+            .invert()
+            .map(|inv| shape_uniform_data(inv, *center, *params, *kind, *aa, *color, *glow, *lit)),
+        Draw::Sprite {
+            world,
+            size,
+            tint,
+            alpha,
+            glow,
+            lit,
+            uv_rect,
+            ..
+        } => world
+            .invert()
+            .map(|inv| sprite_uniform_data(inv, *size, *tint, *alpha, *glow, *lit, *uv_rect)),
+        _ => None,
+    }
 }
 
 /// The size of a sprite's uniform in bytes: the `SpriteUniforms` WGSL

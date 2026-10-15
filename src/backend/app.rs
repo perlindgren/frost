@@ -181,10 +181,10 @@ pub(crate) struct Frost<P: Process> {
     /// evicted right after the text is expanded; a sprite buffer's stale
     /// entry is evicted lazily, when a new buffer recycles its address.
     sprite_resources: HashMap<(u64, u64), TextureView>,
-    /// The sprite draws' uniforms, all of them, in one buffer: draw *i* of
-    /// the frame's draw list owns the slot at `i * arena_stride`, the frame
-    /// uploads the whole thing once, and each draw slides the bind group's
-    /// 96-byte window to its own slot with a dynamic offset.
+    /// The frame's uniforms, all of them, in one buffer: every draw that has a
+    /// uniform owns a run of it, the frame uploads the whole thing once, and
+    /// each draw slides its pipeline's bind group window to its own run with a
+    /// dynamic offset.
     ///
     /// This exists because a uniform buffer and a bind group per draw is the
     /// dearest CPU cost a frame pays: measured on an Apple M4 Max in a
@@ -196,12 +196,20 @@ pub(crate) struct Frost<P: Process> {
     ///
     /// The buffer is grow-only and reused between frames, so the only work
     /// a frame does here is one `write_buffer` of the bytes it already built.
-    /// It never needs to shrink: an idle slot is bytes nobody reads.
-    sprite_arena: Option<Buffer>,
-    /// Bytes per arena slot: the device's uniform-offset alignment (256 on
-    /// every backend so far) at least a sprite uniform's 96 bytes, since a
-    /// dynamic offset must be a multiple of that alignment.
+    /// It never needs to shrink: an idle run is bytes nobody reads.
+    uniform_arena: Option<Buffer>,
+    /// Byte alignment of an arena run: the device's uniform-offset alignment
+    /// (256 on every backend so far), since a dynamic offset must be a
+    /// multiple of it. Runs are padded up to this width, not fixed at it — a
+    /// polyline's 2080 bytes and a rectangle's 32 sit side by side, each
+    /// paying for its own uniform rather than for the largest one.
     arena_stride: u64,
+    /// Where each draw's bytes are: one offset per entry of the frame's draw
+    /// list, written by the arena walk before the pass and read by the draw
+    /// itself. Offsets are data rather than arithmetic repeated on both sides
+    /// of the pass because the runs are not one size — only the walk that
+    /// packed them can say where a draw landed.
+    arena_offsets: Vec<u32>,
     /// The sprite bind groups this engine has built, one per atlas and
     /// sampling filter: the arena's window, the texture, the sampler and the
     /// two frame fields, all of which outlive a frame. A draw's own bytes
@@ -209,9 +217,14 @@ pub(crate) struct Frost<P: Process> {
     /// these are worth keeping — a frame with three images builds three, not
     /// one per draw. Cleared when the arena or a field buffer is rebuilt.
     sprite_binds: HashMap<(u64, u64, bool), BindGroup>,
+    /// The bind groups for the pipelines whose entire per-draw state is one
+    /// uniform — line, polyline, circle, rectangle, and shape, which adds the
+    /// two frame fields — keyed by the pipeline's label. Same reasoning as
+    /// `sprite_binds`: the offset changes per draw, the group does not.
+    prim_binds: HashMap<&'static str, BindGroup>,
     /// The frame's arena bytes, assembled here and uploaded once, kept
     /// between frames for its capacity alone.
-    sprite_staging: Vec<u8>,
+    arena_staging: Vec<u8>,
     /// The rasterized glyph atlas for each distinct `(font, size, weight)`
     /// triple, keyed by the font buffer's pointer, the size's bits and the
     /// weight's bits. Kept between
@@ -313,6 +326,86 @@ pub(crate) struct Frost<P: Process> {
     /// itself and refreshed as its events are drained in `about_to_wait`.
     gilrs: Option<Gilrs>,
     process: P,
+}
+
+/// A bind group layout and pipeline layout for a pipeline whose entire
+/// per-draw state is one uniform: that uniform, reached by a dynamic offset
+/// and bound `size` bytes wide, which is the width of the arena run the draw
+/// owns — so a draw reads its own parameters and nothing past them.
+///
+/// Written out rather than derived for the same reason as [`sprite_layouts`],
+/// and by the same argument: an auto layout reads the shader's
+/// `var<uniform>` as a fixed binding and leaves a dynamic offset nowhere to
+/// go. wgpu validates the pair against the shader when the pipeline is built,
+/// which happens on every frame of every test, so a uniform that changes size
+/// or a binding that moves fails there.
+pub(crate) fn slot_layouts(device: &Device, label: &'static str, size: u64) -> PipelineLayout {
+    let bind = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some(label),
+        entries: &[BindGroupLayoutEntry {
+            binding: 0,
+            visibility: ShaderStages::FRAGMENT,
+            ty: BindingType::Buffer {
+                ty: BufferBindingType::Uniform,
+                has_dynamic_offset: true,
+                min_binding_size: NonZeroU64::new(size),
+            },
+            count: None,
+        }],
+    });
+    device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some(label),
+        bind_group_layouts: &[Some(&bind)],
+        immediate_size: 0,
+    })
+}
+
+/// The shape pipeline's layout: the arena window above, plus the two frame
+/// fields it reads for lighting at bindings 1 and 2, which are shape.wgsl's
+/// own. The fields are bound whole — a storage buffer takes no dynamic offset,
+/// and there is one of each per frame — so a shape's bind group is shared by
+/// every shape in the frame even though the uniform inside it is not.
+pub(crate) fn shape_layouts(device: &Device, label: &'static str) -> PipelineLayout {
+    let bind = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some(label),
+        entries: &[
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: NonZeroU64::new(SHAPE_UNIFORM_BYTES),
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+    device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some(label),
+        bind_group_layouts: &[Some(&bind)],
+        immediate_size: 0,
+    })
 }
 
 /// The sprite pipeline's bind group layout and pipeline layout, written
@@ -601,14 +694,16 @@ impl<P: Process> Frost<P> {
             field_buffer,
             occluder_buffer,
             sprite_resources: HashMap::new(),
-            sprite_arena: None,
+            uniform_arena: None,
+            arena_offsets: Vec::new(),
+            prim_binds: HashMap::new(),
             // A dynamic offset must be a multiple of this alignment, and a
             // slot must hold the uniform: 96 bytes rounded up to a multiple
             // of the alignment, which is 256 on every backend measured so
             // far.
             arena_stride,
             sprite_binds: HashMap::new(),
-            sprite_staging: Vec::new(),
+            arena_staging: Vec::new(),
             text_atlases: HashMap::new(),
             format: None,
             linear_surface: false,
@@ -1137,10 +1232,18 @@ impl<P: Process> Frost<P> {
         }
     }
 
-    /// Creates the shared line and circle pipelines. Uniform buffers and bind
-    /// groups are created per draw call, see `primitive_uniform`.
+    /// Creates the shared pipelines. The five whose per-draw state is one
+    /// uniform get hand-written layouts, because their uniforms arrive from
+    /// the frame's arena by dynamic offset; the rest are derived. The layouts
+    /// are dropped as soon as the pipelines exist — a pipeline hands its bind
+    /// group layout back to the draws that need it.
     fn set_up_pipelines(&mut self, format: TextureFormat) {
         let device = &self.device;
+        let line_layout = slot_layouts(device, "line pipeline", LINE_UNIFORM_BYTES);
+        let polyline_layout = slot_layouts(device, "polyline pipeline", POLYLINE_UNIFORM_BYTES);
+        let circle_layout = slot_layouts(device, "circle pipeline", CIRCLE_UNIFORM_BYTES);
+        let rect_layout = slot_layouts(device, "rectangle pipeline", RECT_UNIFORM_BYTES);
+        let shape_layout = shape_layouts(device, "shape pipeline");
 
         let line_module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("line shaders"),
@@ -1150,7 +1253,7 @@ impl<P: Process> Frost<P> {
             device,
             &line_module,
             format,
-            None,
+            Some(&line_layout),
             "line pipeline",
             true,
         ));
@@ -1163,7 +1266,7 @@ impl<P: Process> Frost<P> {
             device,
             &polyline_module,
             format,
-            None,
+            Some(&polyline_layout),
             "polyline pipeline",
             true,
         ));
@@ -1176,7 +1279,7 @@ impl<P: Process> Frost<P> {
             device,
             &circle_module,
             format,
-            None,
+            Some(&circle_layout),
             "circle pipeline",
             true,
         ));
@@ -1189,7 +1292,7 @@ impl<P: Process> Frost<P> {
             device,
             &rect_module,
             format,
-            None,
+            Some(&rect_layout),
             "rectangle pipeline",
             true,
         ));
@@ -1202,7 +1305,7 @@ impl<P: Process> Frost<P> {
             device,
             &shape_module,
             format,
-            None,
+            Some(&shape_layout),
             "shape pipeline",
             true,
         ));
@@ -1411,43 +1514,6 @@ impl<P: Process> Frost<P> {
         }
     }
 
-    /// Creates the uniform buffer for one draw call plus its bind group.
-    ///
-    /// One buffer per draw call is required: `write_buffer` copies are flushed
-    /// as a batch *before any draw executes*, so a buffer shared between draws
-    /// would make every draw read the last-written parameters. The buffer and
-    /// bind group may be dropped as soon as the command buffer is submitted;
-    /// wgpu keeps them alive until the GPU is finished with them.
-    fn primitive_uniform(
-        &self,
-        pipeline: &RenderPipeline,
-        label: &str,
-        data: &[u8],
-    ) -> (Buffer, BindGroup) {
-        let device = &self.device;
-        let buffer = device.create_buffer(&BufferDescriptor {
-            label: Some(label),
-            size: data.len() as u64,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.queue.write_buffer(&buffer, 0, data);
-        let layout = pipeline.get_bind_group_layout(0);
-        let bind_group = device.create_bind_group(&BindGroupDescriptor {
-            label: Some(label),
-            layout: &layout,
-            entries: &[BindGroupEntry {
-                binding: 0,
-                resource: BindingResource::Buffer(BufferBinding {
-                    buffer: &buffer,
-                    offset: 0,
-                    size: None,
-                }),
-            }],
-        });
-        (buffer, bind_group)
-    }
-
     /// Creates the sprite's texture, view and sampler for one image.
     ///
     /// The pixels arrive as tightly packed RGBA8 bytes (one per texel), so
@@ -1507,19 +1573,27 @@ impl<P: Process> Frost<P> {
         }
     }
 
-    /// Evicts a stale entry from the sprite texture cache: two live
-    /// buffers can never share an address, so a cache entry at the same
-    /// pointer with a different generation belongs to a freed buffer whose
-    /// address the new one has recycled, and its texture is dead weight.
-    /// An associated function (not a method) so the render loop can call
-    /// it while it still holds the immutable pipeline borrows.
-    fn evict_recycled_buffer(resources: &mut HashMap<(u64, u64), TextureView>, key: (u64, u64)) {
-        if let Some(stale) = resources
+    /// Evicts a stale entry from the sprite texture cache, and the cached
+    /// bind groups that bind it: two live buffers can never share an address,
+    /// so a cache entry at the same pointer with a different generation
+    /// belongs to a freed buffer whose address the new one has recycled, and
+    /// its texture is dead weight.
+    ///
+    /// The bind groups are not an optional second sweep. A bind group keeps
+    /// the texture it binds alive, so a cached group for an image that is gone
+    /// would hold its texture — and the arena behind it — for the rest of the
+    /// run. A demo that hands the engine a fresh image every frame, as the
+    /// diagnostics overlay does, grows both caches one entry per frame
+    /// otherwise; the eviction is what bounds them by the images in play.
+    fn evict_recycled_buffer(&mut self, key: (u64, u64)) {
+        if let Some(stale) = self
+            .sprite_resources
             .iter()
             .find(|(k, _)| k.0 == key.0)
             .map(|(k, _)| *k)
         {
-            resources.remove(&stale);
+            self.sprite_resources.remove(&stale);
+            self.sprite_binds.retain(|bind, _| bind.0 != stale.0);
         }
     }
 
@@ -1693,57 +1767,84 @@ impl<P: Process> Frost<P> {
         (uniform_buffer, instance_buffer, bind_group)
     }
 
-    /// The shape draw's per-draw uniform buffer and bind group: the uniform
-    /// at binding 0, the frame's light field at binding 1, and the frame's
-    /// occluder field at binding 2. Shapes are light receivers, so the
-    /// fields are bound even for an unlit shape — the shader's `lit` guard
-    /// lives in the uniform, not the binding.
-    fn shape_uniform(
-        &self,
+    /// The bind group for one pipeline whose per-draw state is one uniform: a
+    /// window of the arena as wide as that pipeline's uniform, plus — for the
+    /// shape pipeline, which lights itself — the frame's two fields.
+    ///
+    /// One per pipeline, built on the frame's first draw that needs it and kept
+    /// for every draw after, and for the frames after: the arena, the fields and
+    /// the layout all outlive a frame, and what changes per draw is the dynamic
+    /// offset, which is a u32 rather than an allocation. A frame of two hundred
+    /// chart segments builds this once. Cleared when the arena or a field buffer
+    /// is rebuilt, because those are the buffers it holds.
+    ///
+    /// `label` is the pipeline's own label, which is what the cache keys on: one
+    /// pipeline, one group, no key to keep in step with anything.
+    #[allow(clippy::too_many_arguments)]
+    fn slot_bind_group(
+        &mut self,
+        label: &'static str,
         pipeline: &RenderPipeline,
-        label: &str,
-        data: &[u8],
+        uniform: u64,
+        fields: bool,
         field_buffer: &Buffer,
         occluder_buffer: &Buffer,
-    ) -> (Buffer, BindGroup) {
-        let uniform_buffer = self.device.create_buffer(&BufferDescriptor {
-            label: Some(label),
-            size: data.len() as u64,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.queue.write_buffer(&uniform_buffer, 0, data);
-        let bind_group = self.device.create_bind_group(&BindGroupDescriptor {
-            label: Some(label),
-            layout: &pipeline.get_bind_group_layout(0),
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::Buffer(BufferBinding {
-                        buffer: &uniform_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Buffer(BufferBinding {
-                        buffer: field_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-                BindGroupEntry {
-                    binding: 2,
-                    resource: BindingResource::Buffer(BufferBinding {
-                        buffer: occluder_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-            ],
-        });
-        (uniform_buffer, bind_group)
+    ) -> BindGroup {
+        if let Some(bind_group) = self.prim_binds.get(label) {
+            return bind_group.clone();
+        }
+        let layout = pipeline.get_bind_group_layout(0);
+        let arena = self
+            .uniform_arena
+            .clone()
+            .expect("a frame that draws primitives built the arena before the pass");
+        // A zero-byte uniform would bind no window at all, and the draw would
+        // then read the arena from its offset to its end.
+        debug_assert!(uniform > 0, "{label} has no uniform to bind");
+        let window = BindGroupEntry {
+            binding: 0,
+            // One run of the arena, not the arena: a dynamic offset slides
+            // the *bound window*, so a group that bound the whole buffer
+            // could only ever be offset by zero.
+            resource: BindingResource::Buffer(BufferBinding {
+                buffer: &arena,
+                offset: 0,
+                size: NonZeroU64::new(uniform),
+            }),
+        };
+        let bind_group = if fields {
+            self.device.create_bind_group(&BindGroupDescriptor {
+                label: Some(label),
+                layout: &layout,
+                entries: &[
+                    window,
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::Buffer(BufferBinding {
+                            buffer: field_buffer,
+                            offset: 0,
+                            size: None,
+                        }),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::Buffer(BufferBinding {
+                            buffer: occluder_buffer,
+                            offset: 0,
+                            size: None,
+                        }),
+                    },
+                ],
+            })
+        } else {
+            self.device.create_bind_group(&BindGroupDescriptor {
+                label: Some(label),
+                layout: &layout,
+                entries: &[window],
+            })
+        };
+        self.prim_binds.insert(label, bind_group.clone());
+        bind_group
     }
 
     /// The bind group for one sprite image at one sampling filter: the
@@ -1774,9 +1875,9 @@ impl<P: Process> Frost<P> {
         }
         let layout = pipeline.get_bind_group_layout(0);
         let arena = self
-            .sprite_arena
+            .uniform_arena
             .clone()
-            .expect("the frame's sprite draws built the arena before the pass");
+            .expect("a frame that draws sprites built the arena before the pass");
         let bind_group = self.device.create_bind_group(&BindGroupDescriptor {
             label: Some("sprite bind"),
             layout: &layout,
@@ -1836,9 +1937,10 @@ impl<P: Process> Frost<P> {
                 usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            // The cached sprite bind groups bind the buffer that was just
-            // replaced; they go with it and are rebuilt on the next draw.
+            // The cached bind groups bind the buffer that was just replaced;
+            // they go with it and are rebuilt on the next draw.
             self.sprite_binds.clear();
+            self.prim_binds.clear();
         }
         self.field_buffer.clone()
     }
@@ -1861,6 +1963,7 @@ impl<P: Process> Frost<P> {
             // As in [`Frost::field_buffer_for`]: the cached bind groups hold
             // the buffer that was just replaced.
             self.sprite_binds.clear();
+            self.prim_binds.clear();
         }
         self.occluder_buffer.clone()
     }
@@ -2008,6 +2111,9 @@ impl<P: Process> Frost<P> {
         for atlas in self.text_atlases.values_mut() {
             if let Some(stale) = atlas.take_stale_key() {
                 self.sprite_resources.remove(&stale);
+                // And the bind groups that bind the old texture, for the same
+                // reason as in [`Frost::evict_recycled_buffer`].
+                self.sprite_binds.retain(|bind, _| bind.0 != stale.0);
             }
         }
 
@@ -2041,70 +2147,65 @@ impl<P: Process> Frost<P> {
         self.queue
             .write_buffer(&occluder_buffer, 0, &occluders.data);
 
-        // The sprite uniforms, one buffer and one upload for the frame.
+        // The frame's uniforms: one walk, one buffer, one upload.
         //
-        // Draw *i* of the frame's draw list owns the arena slot at
-        // `i * arena_stride`, so the draw loop needs nothing but its own
-        // index to find its bytes, and the two walks cannot fall out of step:
-        // the slot belongs to a position, not to a count of sprites that made
-        // it this far. A sprite whose transform has collapsed keeps a slot
-        // nobody reads, because the loop still skips it.
+        // Every draw that has a uniform gets a run of the arena — its own
+        // bytes, starting on the device's uniform-offset alignment, as wide as
+        // that pipeline's uniform struct — plus the byte offset of its run,
+        // recorded by position in the draw list so the draw can reach it with
+        // nothing but its index. The offsets are data computed once here
+        // rather than arithmetic repeated in the pass below, because the runs
+        // are not one size: a polyline's uniform is sixty-five times a
+        // rectangle's, and a fixed slot would carry two kilobytes for every
+        // other draw in the frame to serve the one that needs them.
         //
-        // Only the span between the first sprite and the last is uploaded —
-        // a frame of four thousand line segments and a dozen glyph quads does
-        // not carry three thousand slots of zeroes through the bus.
+        // The bytes come from [`uniform_bytes`], the one place that knows how
+        // a draw becomes bytes; the arms below bind and draw, and nothing
+        // else. A draw that is skipped — culled by the scissor, or collapsed
+        // by a degenerate transform — keeps a run nobody reads.
         let stride = self.arena_stride;
-        let slots = draws.len();
-        let first = draws.iter().position(|d| matches!(d, Draw::Sprite { .. }));
-        let last = draws
-            .iter()
-            .rev()
-            .position(|d| matches!(d, Draw::Sprite { .. }));
-        if let (Some(first), Some(last)) = (first, last) {
-            let last = slots - 1 - last;
-            let arena = match &self.sprite_arena {
-                Some(buffer) if buffer.size() >= (slots as u64) * stride => buffer.clone(),
+        let mut staging = std::mem::take(&mut self.arena_staging);
+        staging.clear();
+        let mut offsets = std::mem::take(&mut self.arena_offsets);
+        offsets.clear();
+        for draw in draws.iter() {
+            if let Some(bytes) = uniform_bytes(draw) {
+                let at = (staging.len() as u64).next_multiple_of(stride);
+                staging.resize(at as usize, 0);
+                staging.extend_from_slice(&bytes);
+                offsets.push(at as u32);
+            } else {
+                // No uniform to find: the draw carries its own parameters some
+                // other way, or is not drawn at all.
+                offsets.push(0);
+            }
+        }
+        if !staging.is_empty() {
+            let arena = match &self.uniform_arena {
+                Some(buffer) if buffer.size() >= staging.len() as u64 => buffer.clone(),
                 _ => {
                     let buffer = self.device.create_buffer(&BufferDescriptor {
-                        label: Some("sprite uniform arena"),
-                        size: (slots as u64).max(1) * stride,
+                        label: Some("uniform arena"),
+                        size: (staging.len() as u64).next_multiple_of(stride),
                         usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
                         mapped_at_creation: false,
                     });
-                    self.sprite_arena = Some(buffer.clone());
+                    self.uniform_arena = Some(buffer.clone());
                     // The cached bind groups bind the arena that just went
                     // away; they are built again on the next draw.
                     self.sprite_binds.clear();
+                    self.prim_binds.clear();
                     buffer
                 }
             };
-            let span = (last - first + 1) * stride as usize;
-            let mut staging = std::mem::take(&mut self.sprite_staging);
-            staging.clear();
-            staging.resize(span, 0);
-            for (i, draw) in draws.iter().enumerate().take(last + 1).skip(first) {
-                if let Draw::Sprite {
-                    world,
-                    size,
-                    tint,
-                    alpha,
-                    glow,
-                    lit,
-                    uv_rect,
-                    ..
-                } = draw
-                    && let Some(inv) = world.invert()
-                {
-                    let bytes =
-                        sprite_uniform_data(inv, *size, *tint, *alpha, *glow, *lit, *uv_rect);
-                    let at = (i - first) * stride as usize;
-                    staging[at..at + bytes.len()].copy_from_slice(&bytes);
-                }
-            }
-            self.queue
-                .write_buffer(&arena, (first as u64) * stride, &staging);
-            self.sprite_staging = staging;
+            // One upload for the frame. Every `write_buffer` copy lands before
+            // any draw executes — the fact the engine used to answer with a
+            // buffer per draw — and the runs are what makes it a fact worth
+            // living with: a draw can only ever be pointed at its own bytes.
+            self.queue.write_buffer(&arena, 0, &staging);
         }
+        self.arena_staging = staging;
+        self.arena_offsets = offsets;
 
         // The frame's destination: the swapchain texture — or, in fixed
         // render size mode when the surface is not already exactly that
@@ -2248,81 +2349,70 @@ impl<P: Process> Frost<P> {
                 // A fresh uniform buffer (and bind group) per draw call, since
                 // all write_buffer copies complete before any draw executes.
                 match draw {
-                    Draw::Line {
-                        a,
-                        b,
-                        width,
-                        color,
-                        diagnostic,
-                        ..
-                    } => {
-                        let (_buffer, bind_group) = self.primitive_uniform(
+                    // Every parameter of the line went into the arena with
+                    // the rest of the frame; the arm only says where.
+                    Draw::Line { diagnostic, .. } => {
+                        let bind_group = self.slot_bind_group(
+                            "line pipeline",
                             &line_pipeline,
-                            "line uniforms",
-                            &line_uniform_data(a, b, color, width),
+                            LINE_UNIFORM_BYTES,
+                            false,
+                            &field_buffer,
+                            &occluder_buffer,
                         );
                         pass.set_pipeline(&line_pipeline);
-                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.set_bind_group(0, &bind_group, &[self.arena_offsets[i]]);
                         draw_calls += 1;
                         if diagnostic {
                             diagnostic_draws += 1;
                         }
                         pass.draw(0..3, 0..1);
                     }
-                    Draw::Polyline {
-                        points,
-                        width,
-                        color,
-                        diagnostic,
-                        ..
-                    } => {
-                        let (_buffer, bind_group) = self.primitive_uniform(
+                    Draw::Polyline { diagnostic, .. } => {
+                        let bind_group = self.slot_bind_group(
+                            "polyline pipeline",
                             &polyline_pipeline,
-                            "polyline uniforms",
-                            &polyline_uniform_data(&points, color, width),
+                            POLYLINE_UNIFORM_BYTES,
+                            false,
+                            &field_buffer,
+                            &occluder_buffer,
                         );
                         pass.set_pipeline(&polyline_pipeline);
-                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.set_bind_group(0, &bind_group, &[self.arena_offsets[i]]);
                         draw_calls += 1;
                         if diagnostic {
                             diagnostic_draws += 1;
                         }
                         pass.draw(0..3, 0..1);
                     }
-                    Draw::Circle {
-                        center,
-                        radius,
-                        color,
-                        diagnostic,
-                        ..
-                    } => {
-                        let (_buffer, bind_group) = self.primitive_uniform(
+                    Draw::Circle { diagnostic, .. } => {
+                        let bind_group = self.slot_bind_group(
+                            "circle pipeline",
                             &circle_pipeline,
-                            "circle uniforms",
-                            &circle_uniform_data(center, color, radius),
+                            CIRCLE_UNIFORM_BYTES,
+                            false,
+                            &field_buffer,
+                            &occluder_buffer,
                         );
                         pass.set_pipeline(&circle_pipeline);
-                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.set_bind_group(0, &bind_group, &[self.arena_offsets[i]]);
                         draw_calls += 1;
                         if diagnostic {
                             diagnostic_draws += 1;
                         }
                         pass.draw(0..3, 0..1);
                     }
-                    Draw::Rectangle {
-                        center,
-                        extent,
-                        color,
-                        diagnostic,
-                        ..
-                    } => {
-                        let (_buffer, bind_group) = self.primitive_uniform(
+                    Draw::Rectangle { diagnostic, .. } => {
+                        let bind_group = self.slot_bind_group(
+                            "rectangle pipeline",
                             &rect_pipeline,
-                            "rectangle uniforms",
-                            &rect_uniform_data(center, extent, color),
+                            RECT_UNIFORM_BYTES,
+                            false,
+                            &field_buffer,
+                            &occluder_buffer,
                         );
                         pass.set_pipeline(&rect_pipeline);
-                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.set_bind_group(0, &bind_group, &[self.arena_offsets[i]]);
                         draw_calls += 1;
                         if diagnostic {
                             diagnostic_draws += 1;
@@ -2330,31 +2420,25 @@ impl<P: Process> Frost<P> {
                         pass.draw(0..3, 0..1);
                     }
                     Draw::Shape {
-                        world,
-                        center,
-                        params,
-                        kind,
-                        aa,
-                        color,
-                        glow,
-                        lit,
-                        diagnostic,
-                        ..
+                        world, diagnostic, ..
                     } => {
-                        let Some(inv) = world.invert() else {
+                        if world.invert().is_none() {
                             // Degenerate transform; the shape collapses to a
-                            // line or a point and its inverse does not exist.
+                            // line or a point and its inverse does not exist —
+                            // which is also why [`uniform_bytes`] left this
+                            // draw's run empty.
                             continue;
-                        };
-                        let (_buffer, bind_group) = self.shape_uniform(
+                        }
+                        let bind_group = self.slot_bind_group(
+                            "shape pipeline",
                             &shape_pipeline,
-                            "shape uniforms",
-                            &shape_uniform_data(inv, center, params, kind, aa, color, glow, lit),
+                            SHAPE_UNIFORM_BYTES,
+                            true,
                             &field_buffer,
                             &occluder_buffer,
                         );
                         pass.set_pipeline(&shape_pipeline);
-                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.set_bind_group(0, &bind_group, &[self.arena_offsets[i]]);
                         draw_calls += 1;
                         if diagnostic {
                             diagnostic_draws += 1;
@@ -2395,7 +2479,7 @@ impl<P: Process> Frost<P> {
                                 // buffer's address: evict the stale entry
                                 // before inserting, so it can never serve
                                 // pixels to a live buffer.
-                                Self::evict_recycled_buffer(&mut self.sprite_resources, key);
+                                self.evict_recycled_buffer(key);
                                 let view = self.sprite_texture(
                                     &data,
                                     [texture_size[0] as f32, texture_size[1] as f32],
@@ -2419,9 +2503,8 @@ impl<P: Process> Frost<P> {
                         );
                         pass.set_pipeline(&sprite_pipeline);
                         // The one number that is still per-draw, and it is a
-                        // u32: the draw's own slot in the arena, slid into
-                        // the bind group's 96-byte window.
-                        pass.set_bind_group(0, &bind_group, &[(i as u64 * stride) as u32]);
+                        // u32: where this draw's bytes landed in the arena.
+                        pass.set_bind_group(0, &bind_group, &[self.arena_offsets[i]]);
                         draw_calls += 1;
                         if diagnostic {
                             diagnostic_draws += 1;
@@ -2460,10 +2543,7 @@ impl<P: Process> Frost<P> {
                                 let view = match self.sprite_resources.get(&key) {
                                     Some(view) => view.clone(),
                                     None => {
-                                        Self::evict_recycled_buffer(
-                                            &mut self.sprite_resources,
-                                            key,
-                                        );
+                                        self.evict_recycled_buffer(key);
                                         let view = self.sprite_texture(
                                             &image,
                                             [sprite_size[0] as f32, sprite_size[1] as f32],
@@ -2537,7 +2617,7 @@ impl<P: Process> Frost<P> {
                         let view = match self.sprite_resources.get(&key) {
                             Some(view) => view.clone(),
                             None => {
-                                Self::evict_recycled_buffer(&mut self.sprite_resources, key);
+                                self.evict_recycled_buffer(key);
                                 let view = self.sprite_texture(
                                     &atlas_data,
                                     [atlas_size[0] as f32, atlas_size[1] as f32],
