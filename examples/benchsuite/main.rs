@@ -54,6 +54,12 @@
 //! judging itself; with a baseline present (file or `--baseline`)
 //! each line becomes `name base -> now (+x%)` and the exit code is 1
 //! if any scenario fell more than 5 % below its baseline.
+//!
+//! Every run also prints a **noise floor** line — how late a wake landed
+//! and how long a fixed quantum of arithmetic took, sampled throughout
+//! (`tools/noisefloor`) — and a run whose floor is too loud prints its
+//! numbers and exits **3** without judging or saving a baseline. A machine
+//! that is busy being something else is allowed to report, not to conclude.
 
 use std::path::PathBuf;
 
@@ -264,6 +270,11 @@ struct Suite {
     results: Vec<(&'static str, f32)>,
     baseline: Vec<(String, f32)>,
     save: Option<PathBuf>,
+    /// The witness, awake from before the first scenario to after the last.
+    /// `Option` because it is handed in at construction and taken once at the
+    /// verdict; nothing else may look at it, and a taken canary must not be
+    /// reportable twice.
+    canary: Option<noisefloor::Canary>,
     done: bool,
 }
 
@@ -320,9 +331,30 @@ impl Process for Suite {
 impl Suite {
     fn finish(&mut self, ctx: &mut Context) {
         self.done = true;
+        let floor = self
+            .canary
+            .take()
+            .expect("started beside the app, reported once")
+            .report();
         let medians = medians(&self.results);
         for (name, fps) in &medians {
             println!("benchsuite: {name} median {:.1} fps", fps);
+        }
+        // The weather, printed after the numbers and before any verdict on
+        // them, which is the order a reader needs it in.
+        println!("benchsuite: noise floor {floor}");
+        if floor.too_loud() && (self.save.is_some() || !self.baseline.is_empty()) {
+            // Refusing here protects both halves of the comparison. Judging a
+            // loud run against a quiet baseline invents a regression; writing
+            // a loud run *as* a baseline invents one that lasts until someone
+            // next notices — and a poisoned baseline is worse than a missing
+            // one, because a missing one is obvious. Exit 3 says "this run
+            // measured, and declined to conclude"; 1 stays reserved for a real
+            // regression, so a script can tell them apart.
+            println!(
+                "benchsuite: too loud to judge or to save a baseline — the numbers above are                  the machine's mood, not its speed; see tools/noisefloor"
+            );
+            std::process::exit(3);
         }
         if let Some(path) = &self.save {
             match std::fs::write(path, serialize(&medians)) {
@@ -492,6 +524,7 @@ fn main() {
             results: Vec::new(),
             baseline,
             save: cli.save_baseline,
+            canary: Some(noisefloor::Canary::start()),
             done: false,
         },
         Config {

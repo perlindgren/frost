@@ -65,10 +65,15 @@ pub const BURN_EVERY: u64 = 10;
 /// machine alone sleeps a fifth of a millisecond late at this cadence and a
 /// Windows box would differ again, and a threshold that quietly means
 /// "whichever OS is nicer to sleep on" judges nothing. Measured excess, idle
-/// and at four load levels here, has sat between 0.08 and 0.62 ms; two is a
-/// machine that is late on purpose. Note what this gate is *not*: it is a
-/// hitch detector, and an interference rare enough to fall outside a p99 has to
-/// be read off [`NoiseFloor::worst_ms`] by eye instead.
+/// and at every load level short of fourfold oversubscription, has sat between
+/// 0.08 and 0.62 ms; two is a machine that is late on purpose. That is the
+/// whole calibration — the quietest and loudest rows of the table on
+/// [`BURN_SPREAD`] are 0.15 and 3.23 here, with this limit between them and
+/// room on both sides, which is more than the burn gate can claim.
+///
+/// Note what this gate is *not*: it is a hitch detector, and an interference
+/// rare enough to fall outside a p99 has to be read off [`NoiseFloor::worst_ms`]
+/// by eye instead.
 pub const WAKE_EXCESS_LIMIT_MS: f64 = 2.0;
 
 /// How much worse a burn quantum's 99th percentile may be than its own median
@@ -76,18 +81,31 @@ pub const WAKE_EXCESS_LIMIT_MS: f64 = 2.0;
 /// contention shows in the spread first: one interrupted quantum costs a whole
 /// scheduler slice, several times its own length.
 ///
-/// The measurements behind the number, six seconds of quanta per row on the
-/// 14-core M4 Max this develops on: nothing running 1.8× to 2.5×, eight
-/// spinners 1.8×, four gzip streams 2.0× to 2.2×, and twenty spinners
-/// oversubscribing the cores 2.9× and 3.2× on two runs. So this is a detector
-/// of *severe* rationing, set above the loudest quiet reading rather than
-/// below the loudest loud one: the failure directions are not equal, because a
-/// declined judgment costs a rerun while a false `REGRESSED` costs an afternoon
-/// of believing a slowdown that was weather. A machine at 2.6× passes, and that
-/// is the instrument's honest limitation, not a bug to tune away — with cores to
-/// spare, one thread really is not being rationed, whatever the load average
-/// says.
-pub const BURN_SPREAD: f64 = 3.0;
+/// The measurements behind it, six to eight seconds of quanta per row on the
+/// 14-core M4 Max this develops on, wake excess quoted alongside because the
+/// two readings turn out to move together:
+///
+/// ```text
+///   nothing running                  excess 0.15 ms   spread 2.1x - 2.9x
+///   8 spinners (cores to spare)      excess 0.15 ms   spread 1.8x
+///   4 gzip streams                   excess 0.15 ms   spread 2.0x
+///   20 spinners (1.4x oversubscribed)  excess 0.36 ms   spread 2.9x
+///   40 spinners (2.9x)               excess 0.32 ms   spread 2.6x
+///   60 spinners (4.3x)               excess 3.23 ms   spread 3.7x   LOUD
+/// ```
+///
+/// Read that honestly: this is a detector of gross conditions, and four times
+/// oversubscription is what it takes. A laptop with a browser, a chat client
+/// and a backup running is invisible to it — and largely invisible to the
+/// encode span it exists to protect, which is the real reason the numbers are
+/// flat rather than a flaw to tune away. The threshold sits just above the
+/// loudest quiet reading (2.9x) rather than below the quietest loud one (3.7x)
+/// deliberately: a false decline costs a rerun, a false pass costs nothing,
+/// and a false `REGRESSED` costs an afternoon of believing a slowdown that was
+/// weather. The wake gate below is the one with measured margin on both sides;
+/// this is the backstop for cores being rationed without the scheduler being
+/// late, which is what a quantum measures and a wake cannot.
+pub const BURN_SPREAD: f64 = 3.5;
 
 /// The fixed quantum: a dependency chain of fused multiply-adds, which no
 /// optimiser can vectorise (each result feeds the next) and which a core
