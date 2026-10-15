@@ -385,9 +385,18 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
   shader (no vertex buffer), one `@binding(0)` uniform (plus texture + sampler
   for sprites, plus an instance buffer for particles), alpha blending, no
   depth. `present_mode_for(vsync)` maps to `AutoVsync`/`AutoNoVsync`.
-- **One fresh uniform buffer per draw call** — required because
-  `queue.write_buffer` copies are flushed as a batch *before any draw
-  executes*, so a shared buffer would make every draw read the last parameters.
+- **One uniform arena per frame.** Every uniform the frame draws with is
+  packed before the render pass by `frame::uniform_bytes` into aligned runs of
+  one grow-only buffer, uploaded in a single `queue.write_buffer`, and reaches
+  its draw as a dynamic offset into that pipeline's bind group — of which the
+  frame builds one per image and pipeline, not one per draw. The old rule it
+  replaces was a real one: `write_buffer` copies all land *before any draw
+  executes*, so a buffer shared at one offset would make every draw read the
+  last parameters. Sharing it in *runs* is what makes the fact survivable.
+  Particle batches and tile maps keep their per-draw buffers, because the bulk
+  of what they pass is a storage buffer of instance data, not a uniform.
+  Measured: 7.7 µs of CPU per draw per-draw against 0.31 µs with the arena, on
+  an Apple M4 Max ([`docs/benchmarking.md`](docs/benchmarking.md) §6).
 - Sprite textures are `Rgba8UnormSrgb` (samples land in linear space; sRGB
   blending matches authored colors), linear-filtered, clamp-to-edge.
 - The shape/sprite shaders evaluate an **SDF in the object's local space**: the
@@ -1326,7 +1335,15 @@ better numbers.
    shader sources must stay equal, or scissor boxes stop covering every pixel
    the shaders can write.
 4. **`Tween` has no re-target** — rebuild on edges.
-5. **Per-draw uniform buffers** are mandatory (write_buffer batch semantics).
+5. **One uniform arena per frame** (the `write_buffer` batch semantics are why
+   it is one arena and not one buffer per draw). The contract has two halves
+   that must agree: each pipeline that reads a uniform has a hand-written bind
+   group layout — `has_dynamic_offset: true`, `min_binding_size` equal to the
+   `*_UNIFORM_BYTES` constant beside its packer in `frame.rs` — and that packer
+   allocates its buffer at the same length. A uniform that outgrows its
+   constant fails at bind-group creation, a layout that stops matching its
+   shader fails when the pipeline is built, and every test frame builds every
+   pipeline.
 6. **Sprite/atlas texture sharing** is keyed by the `Arc<[u8]>` pointer plus
    the buffer's generation (0 for static images, bumped by `text::Atlas` on
    every repack) — the pixel buffer must be the same allocation (clone the

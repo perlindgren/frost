@@ -1604,8 +1604,12 @@ impl<P: Process> Frost<P> {
     /// sampled texture and sampler — the batch's image for a sprite batch,
     /// the 1x1 placeholder for the SDF kinds — at bindings 2 and 3, the
     /// frame's light field at binding 4, and the frame's occluder field at
-    /// binding 5. Same per-draw buffer rationale as
-    /// [`Frost::primitive_uniform`].
+    /// binding 5.
+    ///
+    /// This batch is the frame's remaining per-draw allocation, and deliberately
+    /// so: what a batch passes is a storage buffer of instance data — one record
+    /// per particle, a different length every frame — and the arena that carries
+    /// every *uniform* in the frame has nothing to do with it.
     // The bind-group entries are deliberately flat: each takes the
     // per-draw resources it binds, and the frame fields grow with the
     // lighting features.
@@ -1688,9 +1692,11 @@ impl<P: Process> Frost<P> {
     /// Creates the uniform buffer (batch tint and surface size), the
     /// instance buffer (three `vec4`s per tile), and the four-entry bind
     /// group (uniform, instances, atlas view, sampler) for one tile-map
-    /// draw call. Same per-draw buffer rationale as
-    /// [`Frost::primitive_uniform`] — and, unlike the particle batch,
-    /// the tile map is never lit, so no light fields join the group.
+    /// draw call. Like the particle batch, this is one of the frame's two
+    /// remaining per-draw allocations: three `vec4`s per tile ride a storage
+    /// buffer, which is where the batch's bytes actually are. And, unlike the
+    /// particle batch, the tile map is never lit, so no light fields join the
+    /// group.
     #[allow(clippy::too_many_arguments)] // fields ride every lit pipeline alike
     fn tilemap_uniform(
         &self,
@@ -2346,8 +2352,9 @@ impl<P: Process> Frost<P> {
                     continue;
                 };
                 pass.set_scissor_rect(x, y, w, h);
-                // A fresh uniform buffer (and bind group) per draw call, since
-                // all write_buffer copies complete before any draw executes.
+                // No uniform is built here: the frame packed them all before
+                // the pass, and an arm that needed one takes its offset out of
+                // `arena_offsets` and slides its pipeline's bind group to it.
                 match draw {
                     // Every parameter of the line went into the arena with
                     // the rest of the frame; the arm only says where.
@@ -2562,8 +2569,8 @@ impl<P: Process> Frost<P> {
                         // index buffer expands every instance into a tight
                         // quad, and the fragment stage evaluates the batch's
                         // shape per pixel. The batch's uniform and instance
-                        // data get fresh per-draw buffers, the same
-                        // rationale as `primitive_uniform`.
+                        // data are this draw's own buffers: see
+                        // [`Frost::particle_uniform`].
                         let uniform_data = particles_uniform_data(
                             [render_area[0] as f32, render_area[1] as f32],
                             color,
