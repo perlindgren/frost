@@ -210,6 +210,20 @@ This is a layout test — a uniform buffer and bind group per draw, against one
 arena of runs with dynamic offsets, plus a third scheme that pools the
 per-draw buffers and reuses them.
 
+**The conditioning, because it is not a footnote here:** built-in display only,
+no external panel, on battery — at 14% charge for the in-demo numbers. That
+matters far more to a number measured in frames than to one measured in
+milliseconds. `benchsuite --only fill-1080p,lamps-10` run in that state reads
+**90.0 and 88.9 fps**, against §4's 2136.9 and 173.8 for the same scenarios:
+two workloads a universe apart in GPU work, both held to the same ~90, so what
+that reading measures is the display's pacing and not the machine. It is also
+why the uncapped demo read *slower* than the capped one — a swap chain asking
+for `AutoNoVsync` on this panel follows the drawable cadence the panel settled
+on, and ProMotion settles low when nothing pins it, 90 being one of its locked
+rates. The encode spans below are timed inside the process with `Instant`, both
+sides interleaved in the same power state, so their ratio survives the battery;
+the absolute milliseconds are conditioned, and a plugged-in re-read is owed.
+
 Glyph quads over 1600×1600, ms/frame:
 
 ```text
