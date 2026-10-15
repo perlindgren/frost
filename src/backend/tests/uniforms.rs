@@ -53,7 +53,8 @@ fn shape_uniform_bytes_follow_the_wgsl_layout() {
     // (vec2 columns, stride 8), so `to_local` spans 0..16 with column 0
     // at 0 and column 1 at 8; `translation` @ 16; `center` @ 24;
     // `params` @ 32; vec4<f32> (16 bytes, 16-byte aligned) `color` @ 48
-    // (spanning 48..64); `misc` vec2 @ 64; `emission` vec4 @ 80; struct size 96.
+    // (spanning 48..64); `misc` vec2 @ 64; `emission` vec4 @ 80; `glow` vec4
+    // @ 96; struct size 112.
     let inv = Transform::translate([1.5, -2.5]).invert().unwrap();
     let data = shape_uniform_data(
         inv,
@@ -73,6 +74,15 @@ fn shape_uniform_bytes_follow_the_wgsl_layout() {
             b: 0.7,
             a: 0.8,
         },
+        // Distinct from the emission on purpose: the point of this test is the
+        // offsets, and a glow that happened to equal the emission would let a
+        // writer that ignores the field pass.
+        Some(Color {
+            r: 0.55,
+            g: 0.65,
+            b: 0.75,
+            a: 0.9,
+        }),
         1.0,
     );
 
@@ -100,7 +110,8 @@ fn shape_uniform_bytes_follow_the_wgsl_layout() {
     // The vec4's alpha channel follows its RGB channels at byte 60, and
     // the `misc` vec2 begins at byte 64: `aa` at 64, `kind` at 68; the lit
     // flag takes the slot at 72; the 16-byte-aligned emission vec4 follows at
-    // 80 (spanning 80..96, so the struct is 96 bytes).
+    // 80 (spanning 80..96) and the glow vec4 at 96 (96..112, so the struct is
+    // 112 bytes).
     assert_eq!(f32_at(60), 0.4);
     assert_eq!(f32_at(64), 0.25);
     assert_eq!(f32_at(68), 1.0);
@@ -109,7 +120,11 @@ fn shape_uniform_bytes_follow_the_wgsl_layout() {
     assert_eq!(f32_at(84), 0.6);
     assert_eq!(f32_at(88), 0.7);
     assert_eq!(f32_at(92), 0.8);
-    assert_eq!(data.len(), 96);
+    assert_eq!(f32_at(96), 0.55);
+    assert_eq!(f32_at(100), 0.65);
+    assert_eq!(f32_at(104), 0.75);
+    assert_eq!(f32_at(108), 0.9);
+    assert_eq!(data.len(), 112);
 }
 
 #[test]
@@ -120,8 +135,8 @@ fn sprite_uniform_bytes_follow_the_wgsl_layout() {
     // @ 8), `translation` @ 16, `size` @ 24, the tint vec4 (16 bytes,
     // 16-byte aligned) @ 32 spanning 32..48, the scalar alpha @ 48, the
     // scalar lit @ 52, the `uv_rect` vec4 (16-byte aligned) @ 64 spanning
-    // 64..80, and the emission vec4 (16-byte aligned) @ 80 spanning 80..96;
-    // the struct size is 96.
+    // 64..80, the emission vec4 (16-byte aligned) @ 80 spanning 80..96, and
+    // the glow vec4 @ 96 spanning 96..112; the struct size is 112.
     let inv = Transform::translate([1.5, -2.5]).invert().unwrap();
     let data = sprite_uniform_data(
         inv,
@@ -139,10 +154,16 @@ fn sprite_uniform_bytes_follow_the_wgsl_layout() {
             b: 0.8,
             a: 0.9,
         },
+        Some(Color {
+            r: 0.65,
+            g: 0.75,
+            b: 0.85,
+            a: 0.95,
+        }),
         1.0,
         [0.25, 0.5, 0.75, 1.0],
     );
-    assert_eq!(data.len(), 96);
+    assert_eq!(data.len(), 112);
 
     let f32_at = |off: usize| f32::from_le_bytes(data[off..off + 4].try_into().unwrap());
     // `to_local` is the identity matrix (inverting a pure translation
@@ -173,9 +194,55 @@ fn sprite_uniform_bytes_follow_the_wgsl_layout() {
     assert_eq!(f32_at(68), 0.5);
     assert_eq!(f32_at(72), 0.75);
     assert_eq!(f32_at(76), 1.0);
-    // The emission vec4 follows the uv_rect, 16-byte aligned at 80 (80..96).
+    // The emission vec4 follows the uv_rect, 16-byte aligned at 80 (80..96),
+    // and the glow vec4 follows the emission at 96 (96..112).
     assert_eq!(f32_at(80), 0.6);
     assert_eq!(f32_at(84), 0.7);
     assert_eq!(f32_at(88), 0.8);
     assert_eq!(f32_at(92), 0.9);
+    assert_eq!(f32_at(96), 0.65);
+    assert_eq!(f32_at(100), 0.75);
+    assert_eq!(f32_at(104), 0.85);
+    assert_eq!(f32_at(108), 0.95);
+}
+
+/// A draw that asks for no separate glow gets its emission written into the
+/// glow slot as well: the `None` case is resolved here rather than in the
+/// shader, so a scene that wants nothing new ends up with the bytes it always
+/// had, and the emissive entry point reads one vec4 and knows nothing about
+/// the split.
+#[test]
+fn no_glow_means_the_emission_is_written_twice() {
+    let inv = Transform::translate([1.5, -2.5]).invert().unwrap();
+    let emission = Color {
+        r: 0.5,
+        g: 0.6,
+        b: 0.7,
+        a: 0.8,
+    };
+    let one = |glow: Option<Color>| {
+        shape_uniform_data(
+            inv,
+            [7.0, 8.0],
+            [9.0, 10.0],
+            1.0,
+            0.25,
+            Color {
+                r: 0.1,
+                g: 0.2,
+                b: 0.3,
+                a: 0.4,
+            },
+            emission,
+            glow,
+            1.0,
+        )
+    };
+    let unset = one(None);
+    assert_eq!(
+        &unset[80..96],
+        &unset[96..112],
+        "the glow slot should hold the emission when no glow was asked for"
+    );
+    assert_eq!(unset, one(Some(emission)));
 }

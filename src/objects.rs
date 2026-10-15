@@ -1255,6 +1255,26 @@ pub struct SceneNode {
     ///
     /// The default — black — is off.
     pub emission: Color,
+    /// The color of the light this node hands to the glow, when its halo should
+    /// be a different color from the surface that throws it.
+    ///
+    /// [`emission`](Self::emission) does two jobs at once: it is the surface's
+    /// own color in the frame, and it is what the bloom chain reads, so a lamp's
+    /// core and its halo always arrive in the same hue. This field takes the
+    /// second job — set, the emissive channel carries this color instead while
+    /// the surface keeps its own, which is what lets a filament read white
+    /// while the room it glows into goes amber.
+    ///
+    /// It is a multiplier on the same pixels emission multiplies: the channel
+    /// holds `texture × glow`, so like emission it can take a channel away and
+    /// cannot supply one the artwork does not have. And like emission it lights
+    /// no neighbour; that takes a [`Shape::Light`](crate::Shape::Light) child.
+    ///
+    /// The default, `None`, is "the glow is the emission" — how every scene in
+    /// the tree looks, and the only behaviour there was before this field. It
+    /// rides the composed modulate as emission does, so fading a node fades its
+    /// halo with it.
+    pub glow: Option<Color>,
     /// The shape this node draws, in its own local space, if any.
     pub shape: Option<Shape>,
     /// The child nodes, positioned in this node's coordinate space.
@@ -1289,6 +1309,7 @@ impl Default for SceneNode {
                 b: 0.0,
                 a: 0.0,
             },
+            glow: None,
             shape: None,
             children: Vec::new(),
             diagnostic: false,

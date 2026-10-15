@@ -799,16 +799,20 @@ pub struct Config {
     /// switch, and not an HDR output, just the intermediate the frame is drawn
     /// into before it is folded down to the window, and
     /// emission in the scene to bloom — a node's own
-    /// [`SceneNode::emission`](crate::SceneNode::emission), or a sprite's.
+    /// [`SceneNode::emission`](crate::SceneNode::emission), or a sprite's. The
+    /// halo may be a different color from the surface throwing it; that is
+    /// [`SceneNode::glow`](crate::SceneNode::glow).
     /// Where the frame buffer clips at 1.0, asking for bloom changes nothing
     /// and says so once in the log.
     ///
-    /// What it costs: nine render passes, measured +0.21 ms at a 1920×1080
-    /// buffer and +0.5 ms at 4112×2572 on an M4 Max, plus the emissive target the
-    /// chain reads (§9 and §11 of the benchmarking notes). Twenty-five draw
-    /// calls' worth, which is why the default is off and why asking for no glow
-    /// on a frame is free: at zero strength the chain declines to run rather than
-    /// computing a picture no one reads.
+    /// What it costs: twelve render passes — four levels, each a downsample and
+    /// two blurs. Measured +0.21 ms at a 1920×1080 buffer and +0.5 ms at
+    /// 4112×2572 on an M4 Max, plus the emissive target the chain reads; both
+    /// figures are the three-level chain, and the level since then buys width
+    /// for what a pass costs (§9, §11 and §12 of the benchmarking notes).
+    /// Twenty-five to thirty draw calls' worth, which is why the default is off
+    /// and why asking for no glow on a frame is free: at zero strength the chain
+    /// declines to run rather than computing a picture no one reads.
     ///
     /// This is the initial strength; [`Context::set_bloom`](crate::Context::set_bloom)
     /// is the live version. A run that starts here with `0.0` can still ask for a

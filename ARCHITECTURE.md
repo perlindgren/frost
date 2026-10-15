@@ -435,9 +435,16 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
   covers nothing change nothing. Shapes and sprites carry emission; lines,
   rectangles, particles and tile maps write zero radiance at their own coverage
   — which is what makes them occlude glow rather than punch holes in it.
+  Emission does two jobs at once — it is the surface's own color, and it is what
+  the chain reads — so a lamp's core and its halo have always arrived in the
+  same hue. `SceneNode::glow` takes the second job away from it: set, the
+  emissive attachment carries that color instead and the surface keeps its own,
+  which is how a filament reads white while the room it glows into goes amber.
+  Unset — every scene in the tree, and every draw the tests build — the two
+  fields hold the same bytes and the frame is what it was, bit for bit.
   It costs about 1% of a 4K frame (§8 of the benchmarking notes) and is pinned
-  by the `emission` test — the number it holds is `color × emission`, with no
-  light field in it, and still unclamped at three times white.
+  by the `emission` test — the number it holds is `color × glow`, with no light
+  field in it, and still unclamped at three times white.
 - **Bloom is what reads it, when the app asks.** `Config::bloom` (0.0, off)
   thresholds the emissive target with a soft knee, folds it into four levels
   each half the last, blurs each across and down with a thirteen-tap Gaussian

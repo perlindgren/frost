@@ -107,6 +107,7 @@ fn shape_scissor_under_non_uniform_scale() {
     let draw = Draw::Shape {
         diagnostic: false,
         emission: black(),
+        glow: None,
         world: Transform::scale([2.0, 1.0]),
         center: [25.0, 50.0],
         params: [10.0, 0.0],
@@ -130,6 +131,7 @@ fn shape_scissor_under_rotation() {
     let draw = Draw::Shape {
         diagnostic: false,
         emission: black(),
+        glow: None,
         world: Transform::rotate(std::f32::consts::FRAC_PI_4),
         center,
         params: [10.0, 0.0],
@@ -150,6 +152,7 @@ fn off_screen_shape_has_no_scissor() {
     let draw = Draw::Shape {
         diagnostic: false,
         emission: black(),
+        glow: None,
         world: Transform::identity(),
         center: [-200.0, -200.0],
         params: [10.0, 0.0],
@@ -168,6 +171,7 @@ fn sprite_scissor_is_the_texture_box_plus_aa_band() {
     let draw = Draw::Sprite {
         diagnostic: false,
         emission: black(),
+        glow: None,
         world: Transform::translate([50.0, 50.0]),
         data: Arc::new([0u8; 16]),
         size: [40.0, 20.0],
@@ -195,6 +199,7 @@ fn sprite_scissor_under_rotation() {
     let draw = Draw::Sprite {
         diagnostic: false,
         emission: black(),
+        glow: None,
         world: Transform::rotate(std::f32::consts::FRAC_PI_4)
             .compose(&Transform::translate([50.0, 50.0])),
         data: Arc::new([0u8; 16]),

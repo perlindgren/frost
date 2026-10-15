@@ -31,6 +31,7 @@ const SPAN: u32 = 64;
 /// placed and sampled in pixels with no transform arithmetic in the way.
 fn plate(at: [f32; 2], color: objects::Color, emission: objects::Color, lit: bool) -> Draw {
     Draw::Shape {
+        glow: None,
         world: Transform::identity(),
         center: at,
         // Half-extents, and a rectangle: `misc.y` 1.0 (see shape.wgsl).
@@ -216,6 +217,7 @@ fn paint(
                 aa,
                 color,
                 emission,
+                glow,
                 lit,
                 ..
             } = draw
@@ -226,7 +228,7 @@ fn paint(
             let uniform = device.create_buffer_init(&BufferInitDescriptor {
                 label: Some("emission uniform"),
                 contents: &shape_uniform_data(
-                    inv, *center, *params, *kind, *aa, *color, *emission, *lit,
+                    inv, *center, *params, *kind, *aa, *color, *emission, *glow, *lit,
                 ),
                 usage: BufferUsages::UNIFORM,
             });

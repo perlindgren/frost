@@ -67,6 +67,7 @@ fn background_node_sorts_to_the_back_and_keeps_its_color() {
     canvas.draw_scene(&Scene::new(SceneNode {
         diagnostic: false,
         emission: black(),
+        glow: None,
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: WHITE,
@@ -81,6 +82,7 @@ fn background_node_sorts_to_the_back_and_keeps_its_color() {
         children: vec![Box::new(SceneNode {
             diagnostic: false,
             emission: black(),
+            glow: None,
             // Transformed on purpose: the background must ignore it.
             transform: Transform::translate([50.0, 50.0]),
             scale: [1.0, 1.0],
@@ -134,6 +136,7 @@ fn layers_are_hard_draw_partitions() {
                 root: SceneNode {
                     diagnostic: false,
                     emission: black(),
+                    glow: None,
                     // High local z, but the layer's low order still puts
                     // it behind every group with a higher order.
                     transform: Transform::identity(),
@@ -162,6 +165,7 @@ fn layers_are_hard_draw_partitions() {
                 root: SceneNode {
                     diagnostic: false,
                     emission: black(),
+                    glow: None,
                     // Low local z, but the layer's high order still puts
                     // it on top.
                     transform: Transform::identity(),
@@ -215,6 +219,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                 root: SceneNode {
                     diagnostic: false,
                     emission: black(),
+                    glow: None,
                     transform: Transform::identity(),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
@@ -227,6 +232,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                         Box::new(SceneNode {
                             diagnostic: false,
                             emission: black(),
+                            glow: None,
                             transform: Transform::identity(),
                             scale: [1.0, 1.0],
                             modulate: WHITE,
@@ -248,6 +254,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                         Box::new(SceneNode {
                             diagnostic: false,
                             emission: black(),
+                            glow: None,
                             transform: Transform::identity(),
                             scale: [1.0, 1.0],
                             modulate: WHITE,
@@ -276,6 +283,7 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                 root: SceneNode {
                     diagnostic: false,
                     emission: black(),
+                    glow: None,
                     transform: Transform::identity(),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
@@ -343,6 +351,7 @@ fn the_base_group_paints_first_at_equal_order() {
             root: SceneNode {
                 diagnostic: false,
                 emission: black(),
+                glow: None,
                 // Negative local z, but the base group is declared
                 // before the layer, so at the equal order 0.0 it still
                 // paints first.
@@ -390,6 +399,7 @@ fn a_background_in_a_higher_layer_sets_the_clear_color() {
         root: SceneNode {
             diagnostic: false,
             emission: black(),
+            glow: None,
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -413,6 +423,7 @@ fn a_background_in_a_higher_layer_sets_the_clear_color() {
             root: SceneNode {
                 diagnostic: false,
                 emission: black(),
+                glow: None,
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,

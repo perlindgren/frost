@@ -46,6 +46,7 @@ fn expand_text_splices_glyph_sprites_in_place() {
         Draw::Text {
             diagnostic: false,
             emission: black(),
+            glow: None,
             world: Transform::identity(),
             font: font.clone(),
             text: "hi".to_string(),
@@ -130,6 +131,7 @@ fn expand_text_reuses_the_atlas_across_frames() {
         canvas.draws = vec![Draw::Text {
             diagnostic: false,
             emission: black(),
+            glow: None,
             world: Transform::identity(),
             font: font.clone(),
             text: "hello world".to_string(),
@@ -174,6 +176,7 @@ fn expand_text_packs_glyphs_first_seen_on_a_later_frame() {
         canvas.draws = vec![Draw::Text {
             diagnostic: false,
             emission: black(),
+            glow: None,
             world: Transform::identity(),
             font: font.clone(),
             text: text.to_string(),
@@ -229,6 +232,7 @@ fn expand_text_at_density_2_bakes_at_the_physical_size_and_lays_out_logically() 
         canvas.draws = vec![Draw::Text {
             diagnostic: false,
             emission: black(),
+            glow: None,
             world: Transform::identity(),
             font: font.clone(),
             text: "hi".to_string(),
@@ -296,6 +300,7 @@ fn expand_text_big_letters_keep_every_glyph() {
     canvas.draws = vec![Draw::Text {
         diagnostic: false,
         emission: black(),
+        glow: None,
         world: Transform::identity(),
         font: font.clone(),
         text: word.to_string(),

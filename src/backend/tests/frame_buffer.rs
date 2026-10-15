@@ -89,6 +89,7 @@ fn float_and_srgb_frame_buffers_agree_where_the_window_can_tell() {
             tint,
             1.0,
             off,
+            None,
             0.0,
             [0.0, 0.0, 1.0, 1.0],
         )

@@ -17,6 +17,7 @@ fn a_camera_anchors_the_view_to_its_node() {
             root: SceneNode {
                 diagnostic: false,
                 emission: black(),
+                glow: None,
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -28,6 +29,7 @@ fn a_camera_anchors_the_view_to_its_node() {
                     Box::new(SceneNode {
                         diagnostic: false,
                         emission: black(),
+                        glow: None,
                         // A circle at the camera's position.
                         transform: Transform::translate([10.0, -4.0]),
                         scale: [1.0, 1.0],
@@ -50,6 +52,7 @@ fn a_camera_anchors_the_view_to_its_node() {
                     Box::new(SceneNode {
                         diagnostic: false,
                         emission: black(),
+                        glow: None,
                         // The camera: a shapeless pivot at the circle's
                         // position.
                         transform: Transform::translate([10.0, -4.0]),
@@ -88,6 +91,7 @@ fn layer_speed_scales_the_camera_motion() {
         root: SceneNode {
             diagnostic: false,
             emission: black(),
+            glow: None,
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -99,6 +103,7 @@ fn layer_speed_scales_the_camera_motion() {
             children: vec![Box::new(SceneNode {
                 diagnostic: false,
                 emission: black(),
+                glow: None,
                 transform: Transform::translate([10.0, 0.0]),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -119,6 +124,7 @@ fn layer_speed_scales_the_camera_motion() {
                 root: SceneNode {
                     diagnostic: false,
                     emission: black(),
+                    glow: None,
                     transform: Transform::translate([10.0, 0.0]),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
@@ -147,6 +153,7 @@ fn layer_speed_scales_the_camera_motion() {
                 root: SceneNode {
                     diagnostic: false,
                     emission: black(),
+                    glow: None,
                     transform: Transform::translate([10.0, 0.0]),
                     scale: [1.0, 1.0],
                     modulate: WHITE,
@@ -203,6 +210,7 @@ fn the_camera_rotation_turns_the_view() {
         root: SceneNode {
             diagnostic: false,
             emission: black(),
+            glow: None,
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -214,6 +222,7 @@ fn the_camera_rotation_turns_the_view() {
                 Box::new(SceneNode {
                     diagnostic: false,
                     emission: black(),
+                    glow: None,
                     // A circle ten units to the camera's right.
                     transform: Transform::translate([10.0, 0.0]),
                     scale: [1.0, 1.0],
@@ -236,6 +245,7 @@ fn the_camera_rotation_turns_the_view() {
                 Box::new(SceneNode {
                     diagnostic: false,
                     emission: black(),
+                    glow: None,
                     // The camera, rotated a quarter turn: it turns the
                     // view rather than moving it.
                     transform: Transform::rotate(std::f32::consts::FRAC_PI_2),
@@ -276,6 +286,7 @@ fn a_missing_camera_path_renders_without_a_camera() {
         root: SceneNode {
             diagnostic: false,
             emission: black(),
+            glow: None,
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -286,6 +297,7 @@ fn a_missing_camera_path_renders_without_a_camera() {
             children: vec![Box::new(SceneNode {
                 diagnostic: false,
                 emission: black(),
+                glow: None,
                 transform: Transform::translate([10.0, 0.0]),
                 scale: [1.0, 1.0],
                 modulate: WHITE,

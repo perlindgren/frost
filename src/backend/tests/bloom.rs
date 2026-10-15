@@ -154,6 +154,7 @@ fn paint_two_pictures_to_look_at() {
                 b: 0.0,
                 a: 0.0,
             },
+            glow: None,
             lit: 0.0,
             occludes: 0.0,
             z: 0.0,
@@ -165,4 +166,82 @@ fn paint_two_pictures_to_look_at() {
     ];
     frame(&scene, 0.0, 0.0, Some("/tmp/frost_scene_off.ppm"), None);
     frame(&scene, 1.0, 0.0, Some("/tmp/frost_scene_on.ppm"), None);
+}
+
+/// The two colors of a node stay separate: `SceneNode::glow` is the color of
+/// the light as the chain sees it, and the surface keeps its own emission.
+///
+/// A plate that emits amber is asked to glow cold. Two things have to be true
+/// at once, and they are the whole reason the second field exists: with the
+/// chain off the picture is byte for byte the picture the emission alone paints
+/// — the field is never read by the color the eye lands on — and with the chain
+/// on, the light beside the plate changes hue. A field that leaked into the
+/// frame, or did nothing at all, fails one of the two.
+#[test]
+fn a_split_glow_colours_the_halo_and_not_the_surface() {
+    let amber = objects::Color {
+        r: 1.0,
+        g: 0.55,
+        b: 0.15,
+        a: 2.0,
+    };
+    let cold = objects::Color {
+        r: 0.2,
+        g: 0.5,
+        b: 2.0,
+        a: 2.0,
+    };
+    let plate = |glow: Option<objects::Color>| Draw::Shape {
+        world: Transform::identity(),
+        center: [MIDDLE, MIDDLE],
+        params: [6.0, 6.0],
+        kind: 1.0,
+        aa: 1.0,
+        color: objects::Color {
+            r: 0.9,
+            g: 0.9,
+            b: 0.9,
+            a: 1.0,
+        },
+        emission: amber,
+        glow,
+        lit: 0.0,
+        occludes: 0.0,
+        z: 0.0,
+        diagnostic: false,
+    };
+    let at = |x: u32, y: u32| usize::try_from(y * SPAN + x).expect("in frame");
+    let (own, beside) = (at(32, 32), at(46, 32));
+
+    let warm_flat = frame(&[plate(None)], 0.0, 0.0, None, None).expect("a frame");
+    let cold_flat = frame(&[plate(Some(cold))], 0.0, 0.0, None, None).expect("a frame");
+    assert_eq!(
+        warm_flat[own], cold_flat[own],
+        "the glow field reached the surface: a split glow is allowed to change \
+         only the light the chain carries"
+    );
+
+    let warm = frame(&[plate(None)], 1.0, 0.0, None, None).expect("a frame");
+    let chilly = frame(&[plate(Some(cold))], 1.0, 0.0, None, None).expect("a frame");
+    // Both frames must actually glow, or the hue comparison below is vacuous.
+    let glow = |p: &[[f32; 3]]| p[beside][0] + p[beside][1] + p[beside][2];
+    assert!(
+        glow(&warm) > 1e-3 && glow(&chilly) > 1e-3,
+        "neither frame glowed: {:.5} and {:.5}",
+        glow(&warm),
+        glow(&chilly)
+    );
+    // The amber glow is reddest; the cold one bluest. The ratio, not the level:
+    // the two are free to differ in brightness, since the channels asked for
+    // different amounts of light.
+    let hue = |p: &[[f32; 3]]| (p[beside][2] - p[beside][0]) / glow(p);
+    assert!(
+        hue(&warm) < -0.1 && hue(&chilly) > 0.1,
+        "the halo kept the surface's hue: amber {:?}, cold {:?}, beside-pixel \
+         {:?} against {:?}",
+        hue(&warm),
+        hue(&chilly),
+        warm[beside],
+        chilly[beside]
+    );
 }

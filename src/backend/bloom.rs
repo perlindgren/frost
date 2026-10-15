@@ -468,7 +468,7 @@ impl Bloom {
         // the glow down to zero and left the chain standing ready — and since
         // the present pass branches on those same three zeros, every pass here
         // would compute a picture nothing reads. Passes are what this chain
-        // costs, so skipping nine of them is the entire cost of the off state.
+        // costs, so skipping all of them is the entire cost of the off state.
         if self.levels.is_empty() || self.weights == [0.0; LEVELS] {
             return;
         }

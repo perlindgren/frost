@@ -175,6 +175,7 @@ fn an_arena_slot_keeps_two_draws_apart() {
             tint,
             1.0,
             off,
+            None,
             0.0,
             [0.0, 0.0, 1.0, 1.0],
         )
@@ -470,6 +471,7 @@ fn a_uniform_per_draw_versus_an_arena() {
                     white,
                     1.0,
                     off,
+                    None,
                     0.0,
                     uv,
                 );
@@ -1145,6 +1147,7 @@ fn a_frame_of_every_kind_packs_into_the_arena_too() {
                 aa: 1.0,
                 color: grey,
                 emission: off,
+                glow: None,
                 lit: 0.0,
                 occludes: 0.0,
                 z: 0.0,
@@ -1162,6 +1165,7 @@ fn a_frame_of_every_kind_packs_into_the_arena_too() {
                 alpha: 1.0,
                 uv_rect: [0.0, 0.0, 1.0, 1.0],
                 emission: off,
+                glow: None,
                 lit: 0.0,
                 z: 0.0,
                 diagnostic: false,

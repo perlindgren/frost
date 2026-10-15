@@ -98,6 +98,13 @@ pub(crate) enum Draw {
         /// modulate: added to the light mix that multiplies the color, so
         /// the shape keeps a floor of light in the dark. Black = off.
         emission: Color,
+        /// How the glow sees this node's light: the color the emissive channel
+        /// carries instead of the emission's, when an app wants a halo in a
+        /// different hue from the surface throwing it. `None` is "the emission",
+        /// which is what every scene in the tree asks for today; see
+        /// [`crate::SceneNode::glow`].
+        glow: Option<Color>,
+
         /// Whether the shape is lit by the frame's light field: `1.0` when
         /// the node's `lit` flag is set, `0.0` when unlit.
         lit: f32,
@@ -159,6 +166,13 @@ pub(crate) enum Draw {
         /// color, so the sprite keeps a floor of light in the dark.
         /// Black = off.
         emission: Color,
+        /// How the glow sees this node's light: the color the emissive channel
+        /// carries instead of the emission's, when an app wants a halo in a
+        /// different hue from the surface throwing it. `None` is "the emission",
+        /// which is what every scene in the tree asks for today; see
+        /// [`crate::SceneNode::glow`].
+        glow: Option<Color>,
+
         /// Whether the sprite is lit by the frame's light field: `1.0` when
         /// the node's `lit` flag is set, `0.0` when unlit. Glyph quads
         /// expanded from a lit text block are lit too.
@@ -288,6 +302,13 @@ pub(crate) enum Draw {
         /// The node's self-emission, already multiplied with the composed
         /// modulate; passed on to every glyph quad the block expands into.
         emission: Color,
+        /// How the glow sees this node's light: the color the emissive channel
+        /// carries instead of the emission's, when an app wants a halo in a
+        /// different hue from the surface throwing it. `None` is "the emission",
+        /// which is what every scene in the tree asks for today; see
+        /// [`crate::SceneNode::glow`].
+        glow: Option<Color>,
+
         /// Whether the text is lit by the frame's light field: `1.0` when
         /// the node's `lit` flag is set, `0.0` when unlit; the flag is
         /// passed on to every glyph quad the block expands into.
@@ -620,8 +641,9 @@ pub(crate) fn rect_uniform_data(center: [f32; 2], extent: [f32; 2], color: Color
 /// the Rust matrix element-for-element and `m * p + t` in the shader
 /// reproduces `Transform::apply`), `translation` @ 16, `center` @ 24,
 /// `params` @ 32, `color` @ 48 (a vec4<f32>, spanning 48..64), `misc` @ 64
-/// (aa @ 64, kind @ 68), `lit` @ 72, and `emission` @ 80 (a vec4<f32>, spanning
-/// 80..96); the struct size is 96.
+/// (aa @ 64, kind @ 68), `lit` @ 72, `emission` @ 80 (a vec4<f32>, spanning
+/// 80..96), and `glow` @ 96 (a vec4<f32>, spanning 96..112); the struct size is
+/// 112.
 #[allow(clippy::too_many_arguments)] // uniform writer: one argument per WGSL member
 pub(crate) fn shape_uniform_data(
     to_local: Transform,
@@ -631,6 +653,7 @@ pub(crate) fn shape_uniform_data(
     aa: f32,
     color: Color,
     emission: Color,
+    glow: Option<Color>,
     lit: f32,
 ) -> Vec<u8> {
     let mut data = vec![0u8; SHAPE_UNIFORM_BYTES as usize];
@@ -656,12 +679,25 @@ pub(crate) fn shape_uniform_data(
     write_f32_at(&mut data, 68, kind);
     write_f32_at(&mut data, 72, lit);
     // The emission vec4: 16-byte aligned, so it starts at 80 and spans 80..96,
-    // growing the struct to 96 bytes.
+    // and the glow vec4 follows it at 96..112.
     write_f32_at(&mut data, 80, emission.r);
     write_f32_at(&mut data, 84, emission.g);
     write_f32_at(&mut data, 88, emission.b);
     write_f32_at(&mut data, 92, emission.a);
+    write_glow(&mut data, 96, glow, emission);
     data
+}
+
+/// Writes the glow vec4, resolving `None` on this side of the driver: the
+/// emissive entry point in every shader reads one vec4 and knows nothing about
+/// whether an app split the two colors apart, so a scene that asks for nothing
+/// new pays nothing new at draw time.
+fn write_glow(data: &mut [u8], at: usize, glow: Option<Color>, emission: Color) {
+    let glow = glow.unwrap_or(emission);
+    write_f32_at(data, at, glow.r);
+    write_f32_at(data, at + 4, glow.g);
+    write_f32_at(data, at + 8, glow.b);
+    write_f32_at(data, at + 12, glow.a);
 }
 
 /// The uniform size of each draw kind in bytes: the size of that pipeline's
@@ -681,7 +717,7 @@ pub(crate) const CIRCLE_UNIFORM_BYTES: u64 = 48;
 /// See [`LINE_UNIFORM_BYTES`].
 pub(crate) const RECT_UNIFORM_BYTES: u64 = 32;
 /// See [`LINE_UNIFORM_BYTES`].
-pub(crate) const SHAPE_UNIFORM_BYTES: u64 = 96;
+pub(crate) const SHAPE_UNIFORM_BYTES: u64 = 112;
 
 /// The uniform bytes one draw needs, or `None` when the draw has none — a
 /// background, a light, a particle batch or tilemap that carries its
@@ -727,10 +763,13 @@ pub(crate) fn uniform_bytes(draw: &Draw) -> Option<Vec<u8>> {
             aa,
             color,
             emission,
+            glow,
             lit,
             ..
         } => world.invert().map(|inv| {
-            shape_uniform_data(inv, *center, *params, *kind, *aa, *color, *emission, *lit)
+            shape_uniform_data(
+                inv, *center, *params, *kind, *aa, *color, *emission, *glow, *lit,
+            )
         }),
         Draw::Sprite {
             world,
@@ -738,12 +777,13 @@ pub(crate) fn uniform_bytes(draw: &Draw) -> Option<Vec<u8>> {
             tint,
             alpha,
             emission,
+            glow,
             lit,
             uv_rect,
             ..
-        } => world
-            .invert()
-            .map(|inv| sprite_uniform_data(inv, *size, *tint, *alpha, *emission, *lit, *uv_rect)),
+        } => world.invert().map(|inv| {
+            sprite_uniform_data(inv, *size, *tint, *alpha, *emission, *glow, *lit, *uv_rect)
+        }),
         _ => None,
     }
 }
@@ -753,22 +793,24 @@ pub(crate) fn uniform_bytes(draw: &Draw) -> Option<Vec<u8>> {
 /// the arena's bind group layout, and the window every sprite bind group
 /// binds. It is an arena slot's payload, so a sprite uniform that grows
 /// past it is caught at pipeline creation rather than as a wrong pixel.
-pub(crate) const SPRITE_UNIFORM_BYTES: u64 = 96;
+pub(crate) const SPRITE_UNIFORM_BYTES: u64 = 112;
 
-/// Sprite uniform data, 80 bytes, matching the WGSL uniform-space layout of
+/// Sprite uniform data, 112 bytes, matching the WGSL uniform-space layout of
 /// the `SpriteUniforms` Wgsl struct. The mat2x2 column packing is the same
 /// as in [`shape_uniform_data`]; `translation` sits at @ 16, `size` (a
 /// vec2) at @ 24, the tint `vec4` at @ 32 (16 bytes, 16-byte aligned,
 /// spanning 32..48), the scalar `alpha` (4-byte aligned) at @ 48, the
 /// scalar `lit` (4-byte aligned) at @ 52, the `uv_rect` `vec4` (16-byte
-/// aligned) at @ 64, and the emission `vec4` at @ 80 (spanning 80..96); the
-/// struct size is 96.
+/// aligned) at @ 64, the emission `vec4` at @ 80 (spanning 80..96), and the
+/// glow `vec4` at @ 96 (spanning 96..112); the struct size is 112.
+#[allow(clippy::too_many_arguments)] // uniform writer: one argument per WGSL member
 pub(crate) fn sprite_uniform_data(
     to_local: Transform,
     size: [f32; 2],
     tint: Color,
     alpha: f32,
     emission: Color,
+    glow: Option<Color>,
     lit: f32,
     uv_rect: [f32; 4],
 ) -> Vec<u8> {
@@ -797,11 +839,12 @@ pub(crate) fn sprite_uniform_data(
     write_f32_at(&mut data, 72, uv_rect[2]);
     write_f32_at(&mut data, 76, uv_rect[3]);
     // The emission vec4: 16-byte aligned, so it follows the uv_rect at 80 and
-    // spans 80..96, growing the struct to 96 bytes.
+    // spans 80..96, and the glow vec4 follows that at 96..112.
     write_f32_at(&mut data, 80, emission.r);
     write_f32_at(&mut data, 84, emission.g);
     write_f32_at(&mut data, 88, emission.b);
     write_f32_at(&mut data, 92, emission.a);
+    write_glow(&mut data, 96, glow, emission);
     data
 }
 

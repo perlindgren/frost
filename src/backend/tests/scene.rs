@@ -12,6 +12,7 @@ fn draw_scene_composes_transforms_down_the_tree() {
     let scene = Scene::new(SceneNode {
         diagnostic: false,
         emission: black(),
+        glow: None,
         transform: Transform::translate([10.0, 0.0]),
         scale: [1.0, 1.0],
         modulate: WHITE,
@@ -26,6 +27,7 @@ fn draw_scene_composes_transforms_down_the_tree() {
         children: vec![Box::new(SceneNode {
             diagnostic: false,
             emission: black(),
+            glow: None,
             transform: Transform::scale_uniform(2.0),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -36,6 +38,7 @@ fn draw_scene_composes_transforms_down_the_tree() {
             children: vec![Box::new(SceneNode {
                 diagnostic: false,
                 emission: black(),
+                glow: None,
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -90,6 +93,7 @@ fn draw_scene_rotates_a_translated_child() {
     let scene = Scene::new(SceneNode {
         diagnostic: false,
         emission: black(),
+        glow: None,
         transform: Transform::rotate(std::f32::consts::FRAC_PI_2),
         scale: [1.0, 1.0],
         modulate: WHITE,
@@ -100,6 +104,7 @@ fn draw_scene_rotates_a_translated_child() {
         children: vec![Box::new(SceneNode {
             diagnostic: false,
             emission: black(),
+            glow: None,
             transform: Transform::translate([10.0, 0.0]),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -138,6 +143,7 @@ fn scene_shape_at_user_origin_lands_at_window_center() {
     let scene = Scene::new(SceneNode {
         diagnostic: false,
         emission: black(),
+        glow: None,
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: WHITE,
@@ -174,6 +180,7 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
     let scene = Scene::new(SceneNode {
         diagnostic: false,
         emission: black(),
+        glow: None,
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: WHITE,

@@ -205,6 +205,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     let translated = Draw::Shape {
         diagnostic: false,
         emission: black(),
+        glow: None,
         world: Transform::translate([10.0, 20.0]),
         center: [3.0, -4.0],
         params: [5.0, 2.0],
@@ -218,6 +219,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     let rotated = Draw::Shape {
         diagnostic: false,
         emission: black(),
+        glow: None,
         world: Transform::rotate(std::f32::consts::FRAC_PI_2),
         center: [1.0, 2.0],
         params: [4.0, 6.0],
@@ -231,6 +233,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     let unflagged = Draw::Shape {
         diagnostic: false,
         emission: black(),
+        glow: None,
         world: Transform::identity(),
         center: [0.0, 0.0],
         params: [1.0, 1.0],
@@ -246,6 +249,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     let sprite = Draw::Shape {
         diagnostic: false,
         emission: black(),
+        glow: None,
         world: Transform::identity(),
         center: [0.0, 0.0],
         params: [1.0, 0.0],
@@ -261,6 +265,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     let degenerate = Draw::Shape {
         diagnostic: false,
         emission: black(),
+        glow: None,
         world: Transform::scale([0.0, 1.0]),
         center: [0.0, 0.0],
         params: [1.0, 1.0],
@@ -326,6 +331,7 @@ fn occluder_field_appends_declared_occluders_after_the_drawn_ones() {
     let drawn = Draw::Shape {
         diagnostic: false,
         emission: black(),
+        glow: None,
         world: Transform::identity(),
         center: [0.0, 0.0],
         params: [10.0, 10.0],
@@ -536,6 +542,7 @@ fn a_flagged_circle_is_packed_as_the_polygon_cut_from_it() {
     let painted = Draw::Shape {
         diagnostic: false,
         emission: black(),
+        glow: None,
         world: Transform::translate([10.0, 20.0]),
         center: [3.0, -4.0],
         params: [radius, radius],
@@ -583,6 +590,7 @@ fn a_painted_circle_without_a_usable_radius_casts_nothing_instead_of_panicking()
     let bare = |radius: f32| Draw::Shape {
         diagnostic: false,
         emission: black(),
+        glow: None,
         world: Transform::identity(),
         center: [0.0, 0.0],
         params: [radius, radius],

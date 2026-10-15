@@ -7,6 +7,10 @@ struct ShapeUniforms {
     misc: vec2<f32>, // x: anti-alias band (local units), y: kind (0.0 circle, 1.0 rectangle)
     lit: f32, // 1.0 when the shape is lit by the frame's light field
     emission: vec4<f32>, // own light: rgb, scaled by a, added to the light mix
+    // The same light as the glow sees it. Equal to `emission` unless the app
+    // asked for a halo in a different hue from the surface, in which case this
+    // is the one the emissive attachment carries.
+    glow: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -96,9 +100,13 @@ fn shade(frag_coord: vec4<f32>) -> Shaded {
     // with no emission writes zero radiance rather than nothing, which is what
     // makes it an occluder of glow instead of a hole in it.
     //
-    // The glow stays in the shape's own hue: emission scaled by the surface's
-    // color, exactly as the light mix scales it.
-    let glow = u.color.rgb * u.emission.rgb * u.emission.a;
+    // The glow is the light this surface hands out, scaled by its own color
+    // exactly as the light mix scales it — so it arrives in a hue made of both,
+    // and an app that wants a halo unlike the surface asks for it with `glow`.
+    // The unset case never reaches here: the CPU writes the emission into that
+    // slot too, so a scene that split nothing behaves as if the field never
+    // existed.
+    let glow = u.color.rgb * u.glow.rgb * u.glow.a;
     return Shaded(vec4<f32>(rgb, a), vec4<f32>(glow, a));
 }
 

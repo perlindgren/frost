@@ -327,6 +327,7 @@ impl Canvas {
                 b: 0.0,
                 a: 1.0,
             },
+            glow: None,
             lit: 0.0,
             z,
             // An immediate canvas draw is not owned by any scene node.
@@ -714,6 +715,7 @@ fn draw_node(
                 aa,
                 color: color.mul(modulate),
                 emission: node.emission.mul(modulate),
+                glow: node.glow.map(|g| g.mul(modulate)),
                 lit: f32::from(node.lit),
                 occludes: f32::from(node.occludes),
                 z: order,
@@ -731,6 +733,7 @@ fn draw_node(
                 aa,
                 color: color.mul(modulate),
                 emission: node.emission.mul(modulate),
+                glow: node.glow.map(|g| g.mul(modulate)),
                 lit: f32::from(node.lit),
                 occludes: f32::from(node.occludes),
                 z: order,
@@ -784,6 +787,7 @@ fn draw_node(
                 tint: color.mul(modulate),
                 alpha: *alpha,
                 emission: node.emission.mul(modulate),
+                glow: node.glow.map(|g| g.mul(modulate)),
                 uv_rect: [0.0, 0.0, 1.0, 1.0],
                 lit: f32::from(node.lit),
                 z: order,
@@ -808,6 +812,7 @@ fn draw_node(
                 color: color.mul(modulate),
                 alpha: *alpha,
                 emission: node.emission.mul(modulate),
+                glow: node.glow.map(|g| g.mul(modulate)),
                 lit: f32::from(node.lit),
                 z: order,
                 diagnostic: node.diagnostic,
@@ -1335,6 +1340,7 @@ fn expand_text_list(
                 color,
                 alpha,
                 emission,
+                glow,
                 lit,
                 z,
                 diagnostic,
@@ -1435,9 +1441,10 @@ fn expand_text_list(
                         alpha,
                         uv_rect,
                         // The glyphs are the text node's own pixels: its
-                        // `lit` flag, `emission`, and diagnostic marker pass on
-                        // to every quad.
+                        // `lit` flag, `emission`, `glow`, and diagnostic marker
+                        // pass on to every quad.
                         emission,
+                        glow,
                         lit,
                         z,
                         diagnostic,
@@ -2391,6 +2398,82 @@ mod tests {
                 a: 1.0,
             }
         );
+    }
+
+    #[test]
+    fn a_nodes_glow_rides_the_modulate_and_can_stay_unset() {
+        // The second color of the pair composes exactly as the emission does,
+        // so a node fading out takes its halo with it — and left unset it stays
+        // unset down to the draw, which is where the uniform writer decides the
+        // halo is the emission after all.
+        let white = Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        };
+        let node_with = |g: Option<Color>| SceneNode {
+            emission: Color {
+                r: 1.0,
+                g: 0.4,
+                b: 0.0,
+                a: 1.0,
+            },
+            glow: g,
+            shape: Some(Shape::Circle {
+                center: [0.0, 0.0],
+                radius: 4.0,
+                color: white,
+            }),
+            ..Default::default()
+        };
+        let half_cyan = Color {
+            r: 0.5,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        };
+        let mut draws = Vec::new();
+        draw_node(
+            pixel_map(),
+            &node_with(Some(Color {
+                r: 0.2,
+                g: 0.4,
+                b: 1.0,
+                a: 1.0,
+            })),
+            &Transform::identity(),
+            0.0,
+            half_cyan,
+            &mut draws,
+        );
+        let [Draw::Shape { glow, .. }] = &draws[..] else {
+            panic!("expected one shape draw, got {draws:?}")
+        };
+        assert_eq!(
+            *glow,
+            Some(Color {
+                r: 0.1,
+                g: 0.4,
+                b: 1.0,
+                a: 1.0,
+            }),
+            "the glow should ride the composed modulate, as the emission does"
+        );
+
+        let mut unset = Vec::new();
+        draw_node(
+            pixel_map(),
+            &node_with(None),
+            &Transform::identity(),
+            0.0,
+            half_cyan,
+            &mut unset,
+        );
+        let [Draw::Shape { glow, .. }] = &unset[..] else {
+            panic!("expected one shape draw, got {unset:?}")
+        };
+        assert_eq!(*glow, None, "an unset glow must stay unset");
     }
 
     #[test]

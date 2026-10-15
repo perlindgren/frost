@@ -191,6 +191,7 @@ fn paint(draws: &[Draw], declared: &[Occluder]) -> Option<Vec<u8>> {
                 aa,
                 color,
                 emission,
+                glow,
                 lit,
                 ..
             } = draw
@@ -203,7 +204,7 @@ fn paint(draws: &[Draw], declared: &[Occluder]) -> Option<Vec<u8>> {
             let uniform = device.create_buffer_init(&BufferInitDescriptor {
                 label: Some("shadow bridge uniform"),
                 contents: &shape_uniform_data(
-                    inv, *center, *params, *kind, *aa, *color, *emission, *lit,
+                    inv, *center, *params, *kind, *aa, *color, *emission, *glow, *lit,
                 ),
                 usage: BufferUsages::UNIFORM,
             });
@@ -321,6 +322,7 @@ fn the_gpu_shadows_exactly_where_the_cpu_says() {
             a: 1.0,
         },
         emission: black(),
+        glow: None,
         lit: 1.0,
         occludes: 0.0,
         z: 0.0,
@@ -341,6 +343,7 @@ fn the_gpu_shadows_exactly_where_the_cpu_says() {
             a: 0.0,
         },
         emission: black(),
+        glow: None,
         lit: 0.0,
         occludes: 1.0,
         z: 1.0,
@@ -494,6 +497,7 @@ fn a_disc_shadows_the_gpu_the_way_the_cpu_says_it_should() {
             a: 1.0,
         },
         emission: black(),
+        glow: None,
         lit: 1.0,
         occludes: 0.0,
         z: 0.0,
@@ -688,6 +692,7 @@ fn a_painted_circle_and_a_declared_one_shadow_alike() {
             a: 1.0,
         },
         emission: black(),
+        glow: None,
         lit: 1.0,
         occludes: 0.0,
         z: 0.0,
@@ -740,6 +745,7 @@ fn a_painted_circle_and_a_declared_one_shadow_alike() {
             a: 0.0,
         },
         emission: black(),
+        glow: None,
         lit: 0.0,
         occludes: 1.0,
         z: 0.0,
@@ -859,6 +865,7 @@ fn occluder_walk_density_bench() {
             a: 1.0,
         },
         emission: black(),
+        glow: None,
         lit: 1.0,
         occludes: 0.0,
         z: 0.0,
@@ -978,6 +985,7 @@ fn occluder_walk_density_bench() {
         aa,
         color,
         emission,
+        glow,
         lit,
         ..
     } = &draws[0]
@@ -994,6 +1002,7 @@ fn occluder_walk_density_bench() {
             *aa,
             *color,
             *emission,
+            *glow,
             *lit,
         ),
         usage: BufferUsages::UNIFORM,
