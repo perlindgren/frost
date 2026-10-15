@@ -211,18 +211,19 @@ arena of runs with dynamic offsets, plus a third scheme that pools the
 per-draw buffers and reuses them.
 
 **The conditioning, because it is not a footnote here:** built-in display only,
-no external panel, on battery — at 14% charge for the in-demo numbers. That
-matters far more to a number measured in frames than to one measured in
-milliseconds. `benchsuite --only fill-1080p,lamps-10` run in that state reads
-**90.0 and 88.9 fps**, against §4's 2136.9 and 173.8 for the same scenarios:
-two workloads a universe apart in GPU work, both held to the same ~90, so what
-that reading measures is the display's pacing and not the machine. It is also
-why the uncapped demo read *slower* than the capped one — a swap chain asking
-for `AutoNoVsync` on this panel follows the drawable cadence the panel settled
-on, and ProMotion settles low when nothing pins it, 90 being one of its locked
-rates. The encode spans below are timed inside the process with `Instant`, both
-sides interleaved in the same power state, so their ratio survives the battery;
-the absolute milliseconds are conditioned, and a plugged-in re-read is owed.
+no external panel. The first pass ran on battery at 14%; the re-read came the
+same evening on the charger, and power state turned out to be close to
+irrelevant for the millisecond tables. It mattered for one claim, which is why
+it is spelled out. `benchsuite --only fill-1080p,lamps-10` reads **90.0 and
+88.9 fps** on battery and **89.7 and 91.9** on AC, against §4's 2136.9 and
+173.8: two workloads a universe apart in GPU work, pinned to the same ~90 in
+both power states. So that ceiling is the present path, not the battery and not
+the machine — and not the present mode either, since Fifo and `AutoNoVsync`
+agree within their jitter there, 85.4 and 92.1 fps inside the same minute. The
+same window has also been timed at exactly 120.0, which is ProMotion moving
+between its locked rates underneath the app rather than anything the engine
+does. Read it as: on this Mac the fps column of any bench is the display's, and
+the drained millisecond tables below are the machine's.
 
 Glyph quads over 1600×1600, ms/frame:
 
@@ -238,6 +239,26 @@ above carry the frame's fixed fill: **7.7 µs** a draw per-draw, **7.8 µs** for
 the pooled scheme's un-avoidable `write_buffer` half of it measured at 3.9 µs,
 and **0.31 µs** with the arena. Pooling loses because the copy survives; it is
 over half the cost, which is the finding that decided the design.
+
+Re-run on the charger, and this time with `--test-threads=1` — the two
+`draw_cost` benches share a process and contend for the GPU when cargo runs
+them side by side, which inflates every row and is worth knowing before
+trusting a number out of a bare `draw_cost` run:
+
+```text
+  draws    per draw    arena    pooled    arena ratio
+     243      2.252    0.267     0.910        8.45x
+    1000      7.602    0.549     3.892       13.85x
+    2000     16.556    0.925     7.732       17.89x
+```
+
+Marginals **9.0 µs**, **3.8 µs**, **0.38 µs** against the battery run's 7.7,
+3.9, 0.31. The absolute microseconds moved with the machine; the ratio between
+the schemes did not — per-draw over arena is **25.2×** on battery and **23.8×**
+on AC. The mixed bench agrees, 1.46×/1.50×/1.55× against 1.96×/1.51×/1.47×,
+marginal 18.1 µs against 11.2, the polyline keeping its share either way. That
+is the pair worth quoting: the marginal, and the ratio between schemes. Not a
+frame time.
 
 The same bench over a frame that cycles line, polyline, circle, rectangle,
 shape and glyph, into 960×720:
@@ -283,6 +304,13 @@ with different bind groups, where the bench exercised one; treat the bench as
 the mechanism and this as the frame. And the instrumentation is not in the
 tree — it is two lines and a counter, applied by hand whenever the number is
 wanted again.
+
+The re-read on AC, with the machine in use, came out **3.66 ms and 0.91 ms**,
+4.0×. Slower on both sides with more power available, because the host was busy
+with a person on it — so the demo's multiplier is a property of the moment, and
+these two drained benches are the durable measurement. What did not move is the
+shape: about a third of a microsecond per draw with the arena, wherever the
+machine happens to be.
 
 **The 7900 XTX row is unrun.** §4's campaign numbers are that machine's, and
 these are not a reproduction of them: no AMD figure is claimed here, and the
