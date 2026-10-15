@@ -23,7 +23,8 @@
 //!
 //! The hall is also where the two look knobs get their workout, because it is
 //! the scene in the tree that has light past white in it. The frame starts in
-//! bloom and folded; **B** turns the glow off and on, **T** the fold:
+//! bloom and folded; **B** turns the glow off and on, **T** the fold, and **D**
+//! dims the hall itself in three steps.
 //!
 //! ```text
 //! cargo run --example eyes
@@ -38,6 +39,16 @@
 //! knee a headroom of 0.15 puts at 0.85, so it is byte for byte the same room
 //! whether the fold is on or off, while the eyes' cores, which pass 1.0 on the
 //! peak of every pulse, arrive as amber instead of as white.
+//!
+//! **D** is there because the question "would the glow be more striking in a
+//! darker hall" has a measured answer, and it is: more striking, by ratio and
+//! not by amount. Taking the room's light away changes not one bit of what the
+//! glow adds — the emissive channel has no light term in it — but the same
+//! added light is a lift of seventy percent on a wall at 0.03 and of ten percent
+//! on one at 0.28, which is the difference between a halo and a rumour. The
+//! darkest step is deliberately not black: the wide levels of the chain lift
+//! every pixel in the frame a little, and in a hall that is nearly black that
+//! lift is what you see first.
 
 /// The eyes' texture: a ~200x180 RGBA sprite — black outline, amber
 /// iris, pale sclera — which the emission shows through: emission rides the
@@ -95,6 +106,30 @@ const EYE_EMISSION: frost::Color = frost::Color {
 /// starts lighting the room instead of the eye.
 const BLOOM_STRENGTH: f32 = 1.6;
 const HEADROOM: f32 = 0.15;
+
+/// The hall's ambient floor, as authored — [`ROOM`] scales it along with the
+/// lamp, so a dimmed hall is dimmer everywhere and not just under the light.
+const AMBIENT: frost::Color = frost::Color {
+    r: 0.04,
+    g: 0.04,
+    b: 0.06,
+    a: 1.0,
+};
+
+/// The room's lighting levels, on `D`. The lamp goes to nothing at the last
+/// step and the ambient to a fifth, because the point is to see the glow
+/// against a room rather than against a wall: an emissive surface's reach is a
+/// ratio, and a bright hall is a busy denominator. The walls are unlit, so the
+/// room's geometry survives its own lights going out, and the eyes' cores do
+/// too — a lit node is `texture * (ambient + light + emission)`, and only two
+/// of those three terms are on this key.
+///
+/// The last step keeps some ambient rather than going black for a reason
+/// measured this session: the chain's wide levels lift every pixel of the frame
+/// by about 0.008 of radiance, which is 3% of a lit room and thirty percent of
+/// a nearly black one. Below here the haze is the effect, and the glow is
+/// whatever is left of it.
+const ROOM: [(f32, f32); 3] = [(1.0, 1.0), (0.5, 0.5), (0.0, 0.2)];
 
 /// The lamp's reach, in pixels, and its strength: deliberately low —
 /// the hall should feel dark, and the eyes should clearly outshine it.
@@ -188,6 +223,9 @@ struct Eyes {
     bloom_held: bool,
     tone_on: bool,
     tone_held: bool,
+    /// Which of [`ROOM`]'s lighting levels the hall is at.
+    room: usize,
+    room_held: bool,
 }
 
 impl frost::Process for Eyes {
@@ -221,6 +259,27 @@ impl frost::Process for Eyes {
         }
         ctx.set_bloom(if self.bloom_on { BLOOM_STRENGTH } else { 0.0 });
         ctx.set_tone_map(if self.tone_on { HEADROOM } else { 0.0 });
+
+        // The room's own light, on the same footing as the look knobs: it is
+        // the denominator the glow is judged against, and it is the one thing
+        // in here that dims the hall without touching what the eyes emit.
+        if pressed(ctx, frost::KeyCode::KeyD, &mut self.room_held) {
+            self.room = (self.room + 1) % ROOM.len();
+            log::info!("room level {} of {}", self.room, ROOM.len() - 1);
+        }
+        let (lamp, ambient) = ROOM[self.room];
+        let scene = ctx.scene();
+        for node in &mut scene.root.children {
+            if let Some(frost::Shape::Light { light }) = &mut node.shape {
+                light.intensity = LAMP_INTENSITY * lamp;
+            }
+        }
+        scene.ambient = frost::Color {
+            r: AMBIENT.r * ambient,
+            g: AMBIENT.g * ambient,
+            b: AMBIENT.b * ambient,
+            a: AMBIENT.a,
+        };
 
         log::trace!("process: t {} eyes {}", self.t, self.eyes.len());
     }
@@ -327,13 +386,8 @@ fn main() {
         wall([280.0, -40.0], [24.0, 170.0], -0.35),
     ]);
     // Far below the lamp's reach, so unlit corners read as the void the
-    // eyes own.
-    scene.ambient = frost::Color {
-        r: 0.04,
-        g: 0.04,
-        b: 0.06,
-        a: 1.0,
-    };
+    // eyes own — and the process scales it with the lamp when `D` dims the hall.
+    scene.ambient = AMBIENT;
 
     match frost::run_configured(
         scene,
