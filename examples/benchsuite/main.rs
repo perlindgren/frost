@@ -352,7 +352,7 @@ impl Suite {
             // measured, and declined to conclude"; 1 stays reserved for a real
             // regression, so a script can tell them apart.
             println!(
-                "benchsuite: too loud to judge or to save a baseline — the numbers above are                  the machine's mood, not its speed; see tools/noisefloor"
+                "benchsuite: too loud to judge or to save a baseline — these numbers are the machine's mood, not its speed; see tools/noisefloor"
             );
             std::process::exit(3);
         }

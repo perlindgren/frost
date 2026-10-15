@@ -381,7 +381,7 @@ impl Weather {
         eprintln!("draw cost [{}]: noise floor {floor}", self.label);
         if floor.too_loud() {
             eprintln!(
-                "draw cost [{}]: too loud to judge by — the ratios travel, these milliseconds                  do not; run it again when the machine is yours",
+                "draw cost [{}]: too loud to judge by — the ratios travel, these milliseconds do not",
                 self.label
             );
         }
