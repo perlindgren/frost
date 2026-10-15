@@ -787,12 +787,12 @@ pub struct Config {
     /// How much the frame's bright light bleeds into its neighbours: bloom.
     ///
     /// `0.0` (the default) leaves the frame exactly as the shaders wrote it.
-    /// Above that, the frame's own emission is blurred at three widths and
+    /// Above that, the frame's own emission is blurred at four widths and
     /// added back over it, so a lamp lights the pixels around it and a bright
     /// window stops being a picture of brightness and starts being one. The
     /// number is a multiplier on the effect, not on the light: 0.5 is a
-    /// restrained glow, 1.0 is the whole effect at the balance its three levels
-    /// are weighted for, and past that the glow starts eating the frame.
+    /// restrained glow, 1.0 is the whole effect at the balance its levels are
+    /// weighted for, and past that the glow starts eating the frame.
     ///
     /// What it takes: a frame buffer that can hold radiance past 1.0, which the
     /// engine gives a frame wherever the adapter offers `Rgba16Float` — not a

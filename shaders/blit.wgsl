@@ -13,20 +13,22 @@ var frame_sampler: sampler;
 struct BlitUniforms {
     fit: vec2<f32>, // content extent as a fraction of the surface; (1, 1) fills it
     pad: vec2<f32>,
-    // One weight per bloom level — coarse to fine — already multiplied by the
+    // One weight per bloom level — fine to coarse — already multiplied by the
     // user's strength, so all zero is how "no bloom" reaches this shader.
-    bloom: vec3<f32>,
-    // How much of the display range light above white gets, in a fraction of
-    // that range: 0.0 is "clip, as before". See `fold_highlights`.
+    // Sized for `bloom::LEVELS`, which is at most four while this is a vec4;
+    // `fit_bytes` asserts it.
+    bloom: vec4<f32>,
+    // Padded out so `tone` lands on a fresh 16-byte boundary, which is where a
+    // vec4 leaves the struct.
     tone: f32,
 };
 
 @group(0) @binding(2)
 var<uniform> u: BlitUniforms;
 
-// The three blurred emissive levels, coarse last. Three bindings rather than
-// one array: a `texture_2d_array` would need all its layers the same size, and
-// the whole point is that they are not.
+// The blurred emissive levels, coarse last. One binding each rather than one
+// array: a `texture_2d_array` would need all its layers the same size, and the
+// whole point is that they are not.
 @group(0) @binding(3)
 var bloom0: texture_2d<f32>;
 
@@ -37,6 +39,9 @@ var bloom1: texture_2d<f32>;
 var bloom2: texture_2d<f32>;
 
 @group(0) @binding(6)
+var bloom3: texture_2d<f32>;
+
+@group(0) @binding(7)
 var bloom_sampler: sampler;
 
 struct VsOut {
@@ -135,10 +140,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // it reads a uniform, but the derivative-based forms cannot know that, and
     // the level is 0 anyway — these are the chain's own resolutions, not a mip
     // chain to choose from.
-    if (any(u.bloom != vec3<f32>(0.0))) {
+    if (any(u.bloom != vec4<f32>(0.0))) {
         c += textureSampleLevel(bloom0, bloom_sampler, in.uv, 0.0) * u.bloom.x;
         c += textureSampleLevel(bloom1, bloom_sampler, in.uv, 0.0) * u.bloom.y;
         c += textureSampleLevel(bloom2, bloom_sampler, in.uv, 0.0) * u.bloom.z;
+        c += textureSampleLevel(bloom3, bloom_sampler, in.uv, 0.0) * u.bloom.w;
     }
     // Last, after every light has been added, because it is the total that has
     // to fit the display — and before the transfer curve, which is not a

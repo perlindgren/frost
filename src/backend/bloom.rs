@@ -33,10 +33,21 @@ use wgpu::{
 };
 
 /// How far the chain goes down: halves of the frame's linear size, so a 4K
-/// frame ends at 480×270. Three is roughly where a glow stops reading as a halo
-/// around the lamp and starts reading as the room being lit by it; a fourth
-/// level costs nearly nothing and mostly makes the whole frame grey.
-pub(crate) const LEVELS: usize = 3;
+/// frame ends at 480×270 and its glow reaches some 85 pixels out.
+///
+/// This is the chain's only width control. The other candidate — taking the
+/// blur's taps further apart — was tried and measured, and it is a trap: the
+/// kernel is thirteen taps in six fetches, so widening the step undersamples
+/// it, and the taps show through as rings. A small bright dot's fall-off,
+/// measured straight outward, is monotone at the current step, has a bump 6
+/// pixels out at 1.5× the step, two bumps at 2×, and at 3× has no shape at all
+/// — fog rather than a halo. Levels are the way to go wider: each is a halving
+/// of an already-averaged texture, so its taps stay well sampled however far
+/// down it sits, and the reach grows geometrically. The cost is three more
+/// passes, which at this adapter's fixed cost per pass is around a twentieth of
+/// a millisecond; the risk, which [`WEIGHTS`] is what holds down, is the whole
+/// frame lifting instead of the halo growing.
+pub(crate) const LEVELS: usize = 4;
 
 /// Radiance under this contributes nothing to the glow, and [`KNEE`] decides
 /// how widely the band above it arrives. Below 1.0 on purpose: an emission
@@ -56,7 +67,23 @@ const KNEE: f32 = 0.4;
 /// frame of bloom cannot double the frame's brightness. The fine level leads
 /// because it is the one that still holds the lamp's shape; the coarse ones are
 /// the haze, and too much haze reads as a dirty lens.
-const WEIGHTS: [f32; LEVELS] = [0.5, 0.3, 0.2];
+///
+/// The fine level took the whole cost of the fourth level, down from `0.5`,
+/// which buys a little reach and takes back a little of the wash: a black patch
+/// inside a bright plate measured +0.625 of radiance handed back into it before
+/// this rebalance and +0.556 after, at the same strength. That wash — a source
+/// adding its own light back onto its own face — is what reads as the glow
+/// blurring the thing that glows.
+///
+/// Flatter balances were tried for width and are not the lever they look like.
+/// `[0.32, 0.26, 0.22, 0.20]` moved a point halo's brightness 20 pixels out
+/// from 10 to 11 eighths of full scale, because the pyramid *averages* on the
+/// way down: a coarse level holds the mean radiance of its footprint, so a
+/// small source contributes almost nothing to the wide levels however much they
+/// are weighted, and a big one contributes nearly all of it. Width therefore
+/// comes from source size and from how many levels there are, not from how the
+/// weights are balanced.
+const WEIGHTS: [f32; LEVELS] = [0.40, 0.28, 0.20, 0.12];
 
 /// The three numbers the present pass reads for one request. Kept apart from
 /// both the chain and the shader because it is the one piece of this that is
@@ -67,11 +94,7 @@ fn weights_for(strength: f32, can_bloom: bool) -> [f32; LEVELS] {
     if !can_bloom || strength <= 0.0 {
         return [0.0; LEVELS];
     }
-    [
-        WEIGHTS[0] * strength,
-        WEIGHTS[1] * strength,
-        WEIGHTS[2] * strength,
-    ]
+    WEIGHTS.map(|weight| weight * strength)
 }
 
 /// One level: two textures — the one the level is read from and the scratch the
@@ -312,11 +335,7 @@ impl Bloom {
             source = &levels[level_index].fine_view;
         }
         self.levels = levels;
-        self.views = [
-            self.levels[0].fine_view.clone(),
-            self.levels[1].fine_view.clone(),
-            self.levels[2].fine_view.clone(),
-        ];
+        self.views = std::array::from_fn(|i| self.levels[i].fine_view.clone());
         self.weights = weights_for(self.strength, self.can_bloom);
         self._uniforms = uniforms;
     }
@@ -394,7 +413,7 @@ impl Bloom {
             levels: Vec::new(),
             pipelines,
             sampler,
-            views: [view.clone(), view.clone(), view],
+            views: std::array::from_fn(|_| view.clone()),
             weights: weights_for(strength, can_bloom),
             strength,
             can_bloom,
@@ -489,7 +508,7 @@ impl Bloom {
 
 /// The chain's uniform: source texel size, threshold (negative to skip), knee,
 /// blur step. 32 bytes, written once when the chain is built and never again —
-/// which is what keeps nine passes a frame from costing any staging.
+/// which is what keeps twelve passes a frame from costing any staging.
 fn bloom_bytes(texel: [f32; 2], threshold: f32, knee: f32, spread: [f32; 2]) -> [u8; 32] {
     let mut b = [0u8; 32];
     b[0..4].copy_from_slice(&texel[0].to_le_bytes());
@@ -527,7 +546,7 @@ mod tests {
     #[test]
     fn only_a_real_request_gets_a_weight() {
         assert_eq!(weights_for(1.0, true), WEIGHTS);
-        assert_eq!(weights_for(0.5, true), [0.25, 0.15, 0.1]);
+        assert_eq!(weights_for(0.5, true), [0.20, 0.14, 0.10, 0.06]);
         assert_eq!(weights_for(0.0, true), [0.0; LEVELS]);
         assert_eq!(weights_for(-1.0, true), [0.0; LEVELS]);
         assert_eq!(weights_for(1.0, false), [0.0; LEVELS]);

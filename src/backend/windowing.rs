@@ -3,6 +3,8 @@
 //! and the letterbox fit the blit pass stretches content with.
 
 use std::sync::Arc;
+
+use crate::backend::bloom::LEVELS;
 use wgpu::PresentMode;
 use winit::dpi::LogicalSize;
 #[cfg(not(target_arch = "wasm32"))]
@@ -188,16 +190,24 @@ pub(crate) fn fit_into_monitor(size: [u32; 2], avail: [u32; 2]) -> [u32; 2] {
     ]
 }
 
-/// Packs a letterbox fit into the blit uniform's 16 bytes: two floats of
-/// extent followed by the struct's padding.
-pub(crate) fn fit_bytes(fit: (f32, f32), bloom: [f32; 3], tone: f32) -> [u8; 32] {
-    let mut bytes = [0u8; 32];
+/// Packs the present pass's whole uniform: two floats of letterbox fit, the
+/// struct's padding, one bloom weight per level, and the tone-map headroom.
+/// Forty-eight bytes, because a `vec4` of weights pushes the last field past
+/// the old thirty-second — which is a reminder that this function and
+/// `blit.wgsl`'s `BlitUniforms` are one layout written in two languages.
+pub(crate) fn fit_bytes(fit: (f32, f32), bloom: [f32; LEVELS], tone: f32) -> [u8; 48] {
+    // The present pass reads the weights as a `vec4`, so a fifth level would
+    // need the shader widened with it rather than silently overrunning.
+    const {
+        assert!(LEVELS <= 4, "blit.wgsl holds four bloom weights");
+    }
+    let mut bytes = [0u8; 48];
     bytes[0..4].copy_from_slice(&fit.0.to_le_bytes());
     bytes[4..8].copy_from_slice(&fit.1.to_le_bytes());
     for (i, w) in bloom.iter().enumerate() {
         bytes[16 + i * 4..20 + i * 4].copy_from_slice(&w.to_le_bytes());
     }
-    bytes[28..32].copy_from_slice(&tone.to_le_bytes());
+    bytes[32..36].copy_from_slice(&tone.to_le_bytes());
     bytes
 }
 
@@ -295,38 +305,42 @@ mod tests {
 
     #[test]
     fn fit_bytes_writes_the_two_extents_and_pads() {
-        let bytes = fit_bytes((0.5, 0.25), [0.0; 3], 0.0);
+        let bytes = fit_bytes((0.5, 0.25), [0.0; LEVELS], 0.0);
         assert_eq!(f32::from_le_bytes(bytes[0..4].try_into().unwrap()), 0.5);
         assert_eq!(f32::from_le_bytes(bytes[4..8].try_into().unwrap()), 0.25);
         assert_eq!(&bytes[8..16], &[0u8; 8]);
-        assert_eq!(&bytes[16..28], &[0u8; 12]);
-        assert_eq!(&bytes[28..], &[0u8; 4]);
+        assert_eq!(&bytes[16..32], &[0u8; 16]);
+        assert_eq!(&bytes[32..], &[0u8; 16]);
     }
 
-    /// The bloom weights ride in the same 32 bytes as the letterbox fit, at
+    /// The bloom weights ride in the same bytes as the letterbox fit, at
     /// offset 16, where `blit.wgsl`'s `BlitUniforms::bloom` reads them. The
     /// layout is shared by a WGSL struct and a byte-packer in another file, so
     /// it is worth one test that says where each thing lands.
     #[test]
     fn the_bloom_weights_land_after_the_padding() {
-        let bytes = fit_bytes((1.0, 1.0), [0.5, 0.3, 0.2], 0.0);
+        let bytes = fit_bytes((1.0, 1.0), [0.5, 0.3, 0.2, 0.1], 0.0);
         let f = |r: std::ops::Range<usize>| f32::from_le_bytes(bytes[r].try_into().unwrap());
-        assert_eq!((f(16..20), f(20..24), f(24..28)), (0.5, 0.3, 0.2));
-        assert_eq!(f(28..32), 0.0);
+        assert_eq!(
+            (f(16..20), f(20..24), f(24..28), f(28..32)),
+            (0.5, 0.3, 0.2, 0.1)
+        );
+        assert_eq!(f(32..36), 0.0);
     }
 
-    /// The tone-map headroom lands at offset 28, the last field of the struct,
-    /// which is also the only place in these 32 bytes that was padding. Same
-    /// reason the weights needed a test: two files agree on this layout by
-    /// agreement and nothing checks them but this.
+    /// The tone-map headroom lands at offset 32, the last field of the struct,
+    /// pushed there by the fourth bloom weight. Same reason the weights needed
+    /// a test: two files agree on this layout by agreement and nothing checks
+    /// them but this — and this one is the test that moved when the chain grew
+    /// a level, which is exactly the failure it exists to catch.
     #[test]
     fn the_headroom_lands_at_the_end() {
-        let bytes = fit_bytes((1.0, 1.0), [0.0; 3], 0.15);
+        let bytes = fit_bytes((1.0, 1.0), [0.0; LEVELS], 0.15);
         assert_eq!(
-            f32::from_le_bytes(bytes[28..32].try_into().unwrap()),
+            f32::from_le_bytes(bytes[32..36].try_into().unwrap()),
             0.15,
-            "blit.wgsl reads `tone` at offset 28"
+            "blit.wgsl reads `tone` at offset 32"
         );
-        assert_eq!(&bytes[16..28], &[0u8; 12]);
+        assert_eq!(&bytes[16..32], &[0u8; 16]);
     }
 }

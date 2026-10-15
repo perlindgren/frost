@@ -439,23 +439,28 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
   by the `emission` test — the number it holds is `color × emission`, with no
   light field in it, and still unclamped at three times white.
 - **Bloom is what reads it, when the app asks.** `Config::bloom` (0.0, off)
-  thresholds the emissive target with a soft knee, folds it into three levels
+  thresholds the emissive target with a soft knee, folds it into four levels
   each half the last, blurs each across and down with a thirteen-tap Gaussian
-  folded into six bilinear fetches, and hands the three to the blit pass, which
-  adds them — weighted 0.5 / 0.3 / 0.2, scaled by strength — in linear space,
+  folded into six bilinear fetches, and hands the four to the blit pass, which
+  adds them — weighted 0.40 / 0.28 / 0.20 / 0.12, scaled by strength — in linear space,
   before the encode to the window's format. Two things the tests hold onto: a
   frame with no emission comes back *bit-identical*, because it adds exactly
   zero at every pixel, and the glow falls off (measured eight to one between
   five pixels out and twenty-one), because a glow that is uniform across the
-  frame is a haze, not a glow. The chain is nine render passes and costs
+  frame is a haze, not a glow. The chain was nine render passes and costs
   **+0.21 ms** at antifrost's default 1920×1080 buffer, **+0.5 ms** at a
   4112×2572 one: part of it is overhead a pass carries whatever it draws into —
   six more passes over the same texels measured +0.10 ms — and part is fill,
   which is why the kernel is wide and iterated once instead of narrow and run
   twice (§9 of the benchmarking notes, and §11 for the correction this session
-  made to how the size half of that was measured). No look is decided by any of this: the threshold, the knee, the three
-  weights and the three levels are four numbers to argue with, all of them at
-  the top of `bloom.rs`, and every one of them is a guess today.
+  made to how the size half of that was measured). The chain has since grown a
+  fourth level, which is twelve passes and about a third more chain than was
+  measured — call it +0.07 ms at 1920×1080 by the same per-pass law, though
+  that one is arithmetic on a measurement rather than a measurement; §12 has
+  the reason levels are the width control and what the fourth did and did not
+  change. No look is decided by any of this: the threshold, the knee, the four
+  weights and the level count are four numbers to argue with, all of them at the
+  top of `bloom.rs`, and every one of them is a guess today.
   `Context::set_bloom` is the live version of the strength, and the strength is
   what decides whether the chain runs at all: at zero the present pass already
   ignores the levels, so `Bloom::run` declines and the off state costs no passes

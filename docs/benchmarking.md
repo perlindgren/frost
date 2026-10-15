@@ -456,8 +456,8 @@ commands are assembled" to "the GPU says it is done with them", medians of
 difference from §7 and §8, and it matters: those rows were *attachments*, which
 cost per pixel, and they were nearly free. This one is *passes*, and it is not.
 
-The chain is nine render passes — three levels, each with a downsample and a
-blur across and down. Level 0 is a quarter of the window, level 1 a sixteenth,
+The chain was nine render passes — three levels, each with a downsample and a
+blur across and down. (§12 added a fourth level, so it is twelve now.) Level 0 is a quarter of the window, level 1 a sixteenth,
 level 2 a sixty-fourth, and each is written three times, so the whole chain
 touches about as many pixels as one frame does. That is the theory; this is what
 it costs at the buffer antifrost actually ships with — 1920×1080, because the
@@ -497,7 +497,8 @@ caught it, printing the extent of the texture being built, was written this
 session and printed 1920×1080 for a run that had been recorded as 3840×2160. So
 the flat-cost claim was never tested, and the honest reading of the two bullets
 above is a fixed part and a growing part: roughly 0.15 ms of nine passes' cost is
-there whatever they draw into, and the rest scales with the frame.
+there whatever they draw into, and the rest scales with the frame. Every figure
+in this section belongs to the three-level chain; §12 has the fourth.
 
 The shape of the conclusion did not change, only its strength: a pass carries
 ~16 µs before it draws a thing, so
@@ -607,3 +608,72 @@ errors and no warnings.
 Still open, and this session is the reason: the size sweep for bloom with a quiet
 machine — three sizes, paired, is the experiment that would replace §9's two-bullet
 reconstruction with a curve — and the 7900 XTX row of both sections.
+
+## 12. Making the glow wider (2026-10-16, Apple M4 Max)
+
+Not a timing section: this one is about what actually moves the width of the
+halo, because "the bloom is too subtle" turned out to be two separate asks — more
+brightness, which is the app's strength, and more reach, which is the engine's —
+and the obvious lever for the second one is a trap. Measured with the present
+harness, which renders a real frame and reads pixels back, in a 64×64 buffer,
+with a three-pixel dot and two larger shapes for company. Readings are eighths
+of full scale from the window texture, straight outward from the dot.
+
+**Widening the blur's step is worse than not doing it.** The kernel is thirteen
+taps folded into six bilinear fetches, so its taps are what the step spaces
+apart, and they are sparse enough that spacing them shows through. Fall-off
+profile by multiple of the current step:
+
+| step | profile, 2 to 27 px out | shape |
+| --- | --- | --- |
+| 1.0 | 45 42 41 38 33 29 28 25 20 17 15 14 … 6 | monotone |
+| 1.5 | 47 43 38 36 **39 40** 37 33 29 27 28 28 … | a bump at +6 px |
+| 2.0 | 46 45 40 35 29 29 **32 35 37** 35 31 27 23 22 **24 25 26** … | two bumps |
+| 3.0 | 20 22 24 25 24 23 20 18 17 17 17 18 19 20 22 22 … | no shape at all |
+
+Those bumps are rings around the source: the taps arriving individually instead
+of as a kernel. At three times the step there is no halo left to speak of, just
+a flat lift — fog, not glow. So `spread` stays where it is, and the finding is
+written next to it in `bloom.rs`, because reaching for the step is the first
+thing anyone tries.
+
+**Levels are the width control, and they were one short.** A level is a halving
+of an already-averaged texture, so its taps stay well sampled however far down it
+sits; the chain went from three levels to four. Before and after, same scene,
+same strength:
+
+| | 2 | 5 | 8 | 11 | 14 | 17 | 20 | 23 | 26 | px out |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| three levels | 45 | 38 | 28 | 20 | 15 | 14 | 13 | 11 | 8 | |
+| four levels | 41 | 35 | 27 | 20 | 16 | 14 | 13 | 12 | 9 | |
+
+The rim gives a little and the tail takes it — +25% at 26 pixels out — and the
+profile stays monotone, which is the whole reason for choosing levels over step.
+The rim's giving is not a loss: the fine level is also what adds a source's light
+back onto its own face. A black patch inside a bright plate had +0.625 of
+radiance handed back into it before this change and +0.556 after, at the same
+strength, and a wider patch went +0.290 to +0.276. That fill-back is what people
+describe as the glow blurring the thing that glows, and it lives almost entirely
+in the fine level.
+
+**The weights are not a width control, which was the surprise.** Moving the
+balance outward — `[0.32, 0.26, 0.22, 0.20]` against `[0.40, 0.28, 0.20, 0.12]` —
+changed the tail 20 pixels out from 10 to 11 and left the frame's overall
+brightness where it was. The pyramid averages on the way down, so a coarse level
+holds the *mean* radiance of its footprint: a small source contributes almost
+nothing to the wide levels no matter how they are weighted, and a large one
+contributes nearly all of it. Hence the rule worth remembering about this chain,
+and the reason a small emissive sprite in a big window will never be given a
+great halo by any set of numbers here — **reach in frost's bloom belongs to big
+sources.** The eyes in the lighting demo are 40 to 80 pixels wide, which is why
+the fourth level shows up there at all.
+
+**What it costs, and what that figure is.** Twelve passes where nine were
+measured at +0.21 ms at 1920×1080 (§9). Three more of the same, at the same fixed
+cost per pass, says about +0.07 ms — that is arithmetic performed on a
+measurement, not a measurement, and it is the only number in this document that
+is not one. The paired A/B method of §11 cannot compare two level counts inside
+one binary, since the count is baked into the textures the chain builds, and this
+session's machine was loaded. It goes on the open list with the size sweep.
+Everything else here is the harness and a pixel readback, and 408 lib tests are
+unchanged by the change, including the one that holds the glow's fall-off.

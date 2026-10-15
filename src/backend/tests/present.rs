@@ -79,7 +79,7 @@ pub(crate) fn frame(
     strength: f32,
     tone: f32,
     dump: Option<&str>,
-    override_weights: Option<[f32; 3]>,
+    override_weights: Option<[f32; crate::backend::bloom::LEVELS]>,
 ) -> Option<Vec<[f32; 3]>> {
     let ambient = objects::Color {
         r: 0.0,
@@ -326,7 +326,7 @@ pub(crate) fn frame(
     });
     let fit_buffer = device.create_buffer(&BufferDescriptor {
         label: Some("bloom fit"),
-        size: 32,
+        size: 48,
         usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -372,6 +372,15 @@ pub(crate) fn frame(
             },
             BindGroupEntry {
                 binding: 6,
+                resource: BindingResource::TextureView(&bloom.views[3]),
+            },
+            // These entries are the engine's own, copied: `App::blit_bind_group`
+            // builds the same seven-and-a-sampler shape and cannot be called
+            // from here without an `App`. wgpu counts the entries against the
+            // layout the shader generated, so when the chain grows a level this
+            // block has to grow with it and the count mismatch is the error.
+            BindGroupEntry {
+                binding: 7,
                 resource: BindingResource::Sampler(&bloom.sampler),
             },
         ],

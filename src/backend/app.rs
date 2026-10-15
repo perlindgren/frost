@@ -1621,6 +1621,10 @@ impl<P: Process> Frost<P> {
                 },
                 BindGroupEntry {
                     binding: 6,
+                    resource: BindingResource::TextureView(&bloom.views[3]),
+                },
+                BindGroupEntry {
+                    binding: 7,
                     resource: BindingResource::Sampler(&bloom.sampler),
                 },
             ],
@@ -1704,14 +1708,18 @@ impl<P: Process> Frost<P> {
         // frame if it ever ran before the per-frame write.
         let fit_buffer = self.device.create_buffer(&BufferDescriptor {
             label: Some("blit fit"),
-            size: 32,
+            size: 48,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         self.queue.write_buffer(
             &fit_buffer,
             0,
-            &fit_bytes((1.0, 1.0), [0.0; 3], self.tone_map),
+            &fit_bytes(
+                (1.0, 1.0),
+                [0.0; crate::backend::bloom::LEVELS],
+                self.tone_map,
+            ),
         );
         let bind_group = self.blit_bind_group(&view, &sampler, &fit_buffer, &bloom);
         log::info!(
@@ -2961,8 +2969,8 @@ impl<P: Process> Frost<P> {
         // from the clear around it). The surface needs no clear when
         // rendering direct.
         if let (Some(t), Some(blit_pipeline)) = (target.as_ref(), self.blit_pipeline.as_ref()) {
-            // Nine small passes before the frame leaves for the window: the
-            // emissive target in, three blurred levels out, which the stretch
+            // A dozen small passes before the frame leaves for the window: the
+            // emissive target in, four blurred levels out, which the stretch
             // below adds back as it samples. A dormant chain has no levels, so
             // this draws nothing at all when the app asked for no bloom.
             t.bloom.run(&mut encoder);

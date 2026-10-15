@@ -1239,7 +1239,7 @@ pub struct SceneNode {
     /// [`Shape::Light`] child node. Spill is **bloom**, an effect of the
     /// renderer over bright pixels rather than a property of a node: where
     /// the app asks for it ([`Config::bloom`](crate::Config::bloom)) it is
-    /// this field's brightness, blurred at three widths and added back over
+    /// this field's brightness, blurred at four widths and added back over
     /// the frame.
     ///
     /// The color's `a` scales the emission (rgb times `a`), so fading it in
