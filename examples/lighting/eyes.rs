@@ -81,11 +81,19 @@ const EYE_EMISSION: frost::Color = frost::Color {
 
 /// The glow's strength and the fold's headroom: the two numbers this example
 /// exists to let you look at, both live on `B` and `T` rather than fixed,
-/// because the comparison is the point and it is free. 0.7 is a restrained
-/// glow — at 1.0 the chain adds the whole effect at the balance its three
-/// levels are weighted for, and past that it starts eating the frame. 0.15
-/// reserves fifteen percent of the display range for everything above white.
-const BLOOM_STRENGTH: f32 = 0.7;
+/// because the comparison is the point and it is free. 0.15 reserves fifteen
+/// percent of the display range for everything above white.
+///
+/// The strength is deliberately past the restrained end. The chain spreads a
+/// source over a fixed number of pixels — about six at the fine level, twelve
+/// and twenty-four at the coarser ones — and an eye here is forty to eighty
+/// pixels wide in a sixteen-hundred-pixel window, so the halo lands close on a
+/// small thing and reads as a smudge at the restrained end. Rendered at the
+/// eyes' own emission, five pixels out measured 11, 16 and 21 eighths of full
+/// scale at strengths 0.7, 1.4 and 2.8: the middle is the first that looks like
+/// a glow rather than a smudge, and there is room above it before the halo
+/// starts lighting the room instead of the eye.
+const BLOOM_STRENGTH: f32 = 1.6;
 const HEADROOM: f32 = 0.15;
 
 /// The lamp's reach, in pixels, and its strength: deliberately low —
