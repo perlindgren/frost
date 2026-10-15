@@ -1,0 +1,13 @@
+# The measurement's witness. Its own package for the same reason
+# `sprite_util` is one (docs/tooling.md): a tool belongs beside the engine,
+# not in `examples/`. The difference is that this tool is a *probe* rather
+# than an editor, and `frost`'s own benches read it as a dev-dependency so
+# the witness cannot drift from what it is witnessing. It depends on
+# nothing: the canary is a sleep loop and a sort, which is the whole point —
+# an instrument that borrows its subject's dependencies measures those.
+[package]
+name = "noisefloor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]

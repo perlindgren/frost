@@ -9,9 +9,14 @@ edition = "2024"
 # below. `cargo build`/`cargo test` from this directory still cover both:
 # with a root package, cargo's default would be the root package alone, so
 # the members are named explicitly.
+#
+# `noisefloor` runs the relationship the other way: it needs nothing, and
+# `frost`'s benches read it as a dev-dependency, so the witness of a
+# measurement travels with the measurement instead of drifting away from it
+# in some other package.
 [workspace]
-members = ["tools/sprite_util"]
-default-members = [".", "tools/sprite_util"]
+members = ["tools/sprite_util", "tools/noisefloor"]
+default-members = [".", "tools/sprite_util", "tools/noisefloor"]
 # Edition 2024 implies resolver 3; stated explicitly so the workspace
 # resolver cannot drift from the packages' editions.
 resolver = "3"
@@ -286,6 +291,10 @@ ron = "0.12"
 # (see web/build.sh). `text_input` itself is a native-only example.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 arboard = "3.6.1"
+# The noise floor the benches report alongside their numbers
+# (tools/noisefloor). Native-only for the arboard reason above — the canary
+# measures a scheduler, and a browser tab does not have the one being judged.
+noisefloor = { path = "tools/noisefloor" }
 
 # Diagnostics overlay: compiles the profiler HUD of the `antifrost`
 # example in (`--features diag`); the default build leaves it out of
