@@ -1832,7 +1832,7 @@ impl Demo {
         // ember, so the lamp it casts always has a face to stand on
         // even at the very floor of the ambient.
         node.lit = true;
-        node.glow = shade(tint, 0.45);
+        node.emission = shade(tint, 0.45);
         node.order = order;
     }
 
@@ -2061,7 +2061,7 @@ impl Demo {
                 a: 1.0,
             };
             // Lit but not occluding: a lamp near the edge throws its
-            // glow onto the surrounding ground through the border
+            // emission onto the surrounding ground through the border
             // hairlines, and the frame's own shadows do the rest.
             node.lit = true;
             node.order = -0.4;
@@ -2158,7 +2158,7 @@ impl Demo {
         // The beds are the hill's beacons: each carries a faint light
         // of its own colour — enough to find across a dark room and to
         // aim a push by, never enough to light one. They burn always:
-        // a taken bed keeps glowing, the target outlives the ant.
+        // a taken bed stays self-lit, the target outlives the ant.
         {
             let base = LEAVES.len() + game.ants.len() * 2 + 4;
             for (i, (cell, color)) in game.level.beds.iter().enumerate() {
@@ -2705,7 +2705,7 @@ impl Demo {
         // Exactly one row wears the highlight: the selected one. The
         // pointer takes the selection over when it moves onto a row
         // (see `menu_input`), so the mouse and the keys can never
-        // each light their own row — the two-glow state a separate
+        // each light their own row — the two-emission state a separate
         // hover used to allow.
         for (i, r) in rows.iter().enumerate() {
             let hot = i == self.menu_sel;

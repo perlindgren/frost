@@ -391,7 +391,7 @@ fn the_sprite_paints_what_the_contract_promise() {
                 size,
                 tint,
                 alpha,
-                glow,
+                emission,
                 lit,
                 uv_rect,
                 ..
@@ -403,7 +403,9 @@ fn the_sprite_paints_what_the_contract_promise() {
             let inv = world.invert().expect("a non-degenerate world");
             let uniform = device.create_buffer_init(&BufferInitDescriptor {
                 label: Some("sprite bridge uniform"),
-                contents: &sprite_uniform_data(inv, *size, *tint, *alpha, *glow, *lit, *uv_rect),
+                contents: &sprite_uniform_data(
+                    inv, *size, *tint, *alpha, *emission, *lit, *uv_rect,
+                ),
                 usage: BufferUsages::UNIFORM,
             });
             let bind = device.create_bind_group(&BindGroupDescriptor {

@@ -3,7 +3,7 @@
 Ten demos of frost's lighting system: the `frost::Light` record, the
 `Shape::Light` scene node, the immediate `ctx.light` / `ctx.light_cone`
 calls, and the three node flags that make a surface take part in it —
-`lit`, `occludes`, and `glow`.
+`lit`, `occludes`, and `emission`.
 
 | Example | What it shows | Run with |
 |---|---|---|
@@ -15,8 +15,8 @@ calls, and the three node flags that make a surface take part in it —
 | `dawn` | a full day (64-second loop) under one `Light::directional`: the sun's color, strength, direction of travel, the sky, and the scene's ambient all slide together; parallel shadows sweep from dawn spears to noon stubs | `cargo run --example dawn` |
 | `near_sun` | the same day told by a *near* sun — a point light translated to the visible disk every frame — so shadows fan out from the disk like spokes on a wheel instead of lying parallel | `cargo run --example near_sun` |
 | `twostars` | a binary star system: two directional lights, each aimed, colored, and orbiting at its own rate; every lit pixel receives both, and every occluder cuts each of them separately | `cargo run --example twostars` |
-| `eyes` | a tour of node-level `glow` — a surface's own emission: glowing eyes that burn inside a wall's shadow, because glow is never shadowed | `cargo run --example eyes` |
-| `eyes_light` | `eyes`' companion: the larger eyes carry a `Shape::Light` child node, so their light spills onto the room — and gets cut off at the walls — while their glow keeps burning | `cargo run --example eyes_light` |
+| `eyes` | a tour of node-level `emission` — a surface's own emission: self-lit eyes that burn inside a wall's shadow, because emission is never shadowed | `cargo run --example eyes` |
+| `eyes_light` | `eyes`' companion: the larger eyes carry a `Shape::Light` child node, so their light spills onto the room — and gets cut off at the walls — while their emission keeps burning | `cargo run --example eyes_light` |
 
 The ten files sit in this folder rather than at the examples' top level,
 so each one is declared explicitly in `Cargo.toml` (cargo only
@@ -29,13 +29,13 @@ stays at the top level, since its topic is collision.
 Every lit receiver's pixel is shaded per frame as
 
 ```text
-pixel = color * (ambient + lights + glow)
+pixel = color * (ambient + lights + emission)
 ```
 
 where `ambient` is the scene's ambient color (`Scene::ambient` — the floor
 of light when no light reaches), `lights` is the sum of the
 contributions of every light in the frame, each falling off with distance
-(point and cone) or not at all (directional), and `glow` is the node's own
+(point and cone) or not at all (directional), and `emission` is the node's own
 emission. The three node flags opt a surface in:
 
 - **`lit: true`** — the node's own shape is shaded by that mix. It does
@@ -51,12 +51,12 @@ emission. The three node flags opt a surface in:
   the shadow of wherever it actually sits. A wall can be `lit: true,
   occludes: true` at once — lit on its own surface and still blocking
   what lies behind it (`occlusion`'s walls).
-- **`glow: Color`** — the node's self-emission, added to the mix, so the
+- **`emission: Color`** — the node's self-emission, added to the mix, so the
   surface stays visible in the dark while lights still add on top. It
   requires `lit` (an unlit shape is already drawn in full), lights only
   the surface itself — it never spills onto neighbors and is never
   shadowed — and is scaled by the composed modulate. The color's `a`
-  scales the emission (rgb times `a`), so fading a glow is an alpha ramp
+  scales the emission (rgb times `a`), so fading it is an alpha ramp
   on the color. Black (the default) is off.
 
 ## Kinds of light
@@ -139,11 +139,11 @@ does with the cursor, and what `lighting` does with its chasing light.
   every lit pixel sits on; `cone`, `eyes`, and `eyes_light` set it low so
   unlit regions read as near-black and the lights are what reveals the
   room, while `dawn` and `twostars` slide it with the sky.
-- **Glow vs. light, side by side.** `eyes` proves the receiver half: the
-  eyes burn inside the wall's shadow because glow is never shadowed.
+- **Emission vs. light, side by side.** `eyes` proves the receiver half: the
+  eyes burn inside the wall's shadow because emission is never shadowed.
   `eyes_light` adds the emitter half to the same hall: the lamp-eye's
   pool of light sweeps the floor and gets cut off at the wall, feathered
-  by its penumbra, while the glow-only eye keeps burning — "glow is the
+  by its penumbra, while the emission-only eye keeps burning — "emission is the
   surface; the child light is the neighborhood."
 - **A particle batch can be a lit receiver.** `lighting`'s ember plume
   is a `Shape::Particles` node with `lit: true`, so every ember is

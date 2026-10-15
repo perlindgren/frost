@@ -1,22 +1,22 @@
-//! Glowing eyes drifting through a dark hall: a tour of the node-level
-//! [`glow`](frost::SceneNode::glow) — a surface's own emission.
+//! Self-lit eyes drifting through a dark hall: a tour of the node-level
+//! [`emission`](frost::SceneNode::emission) — a surface's own emission.
 //!
 //! The hall is a lit backdrop, a few lit panels, and an occluder wall,
 //! all under one dim lamp near the center — just enough light to read
 //! the room. The eyes are `Getingeye1.png` sprites with `lit: true` and
-//! a warm glow, so each is drawn as
-//! `texture * (ambient + lamp + glow)`: the lamp shapes them where it
-//! reaches, and the glow is the floor of light that keeps them burning
-//! where it does not. Each eye breathes its glow in and out on its own
+//! a warm emission, so each is drawn as
+//! `texture * (ambient + lamp + emission)`: the lamp shapes them where it
+//! reaches, and the emission is the floor of light that keeps them burning
+//! where it does not. Each eye breathes its emission in and out on its own
 //! slow pulse.
 //!
-//! Glow is receiver-side self-light, and the hall is built to show what
-//! that means. Glow does not light the room around an eye, and it is
+//! Emission is receiver-side self-light, and the hall is built to show what
+//! that means. Emission does not light the room around an eye, and it is
 //! never shadowed: send an eye behind the wall, into the lamp's shadow,
 //! and it keeps burning at full strength while the wall and everything
 //! behind it drop to the ambient floor. (To light the neighborhood too,
 //! an emitter would need a real [`Shape::Light`](frost::Shape::Light)
-//! child node — glow is only the surface's own pixels.)
+//! child node — emission is only the surface's own pixels.)
 //!
 //! The eyes wander on their own smooth-curved headings, flip to face
 //! where they are going, and bounce off the window edges. Run with:
@@ -26,7 +26,7 @@
 //! ```
 
 /// The eyes' texture: a ~200x180 RGBA sprite — black outline, amber
-/// iris, pale sclera — which the glow shows through: emission rides the
+/// iris, pale sclera — which the emission shows through: emission rides the
 /// texture, so the ink stays dark and the iris burns.
 const EYE: &str = "assets/sprites/Getingeye1.png";
 
@@ -56,9 +56,9 @@ const LAMP: frost::Color = frost::Color {
     a: 1.0,
 };
 
-/// The eyes' glow: the sprite's own amber, pushed past full so the
+/// The eyes' emission: the sprite's own amber, pushed past full so the
 /// pulse can dim from over-bright down to a dying ember.
-const EYE_GLOW: frost::Color = frost::Color {
+const EYE_EMISSION: frost::Color = frost::Color {
     r: 1.0,
     g: 0.55,
     b: 0.15,
@@ -77,7 +77,7 @@ const MAX_SPEED: f32 = 105.0;
 const TURN: f32 = 1.3;
 
 /// One eye's state: where it is, where it is heading, and the phases of
-/// its wander curve and glow pulse.
+/// its wander curve and emission pulse.
 struct Eye {
     pos: [f32; 2],
     heading: f32,
@@ -88,8 +88,8 @@ struct Eye {
     wander_b: f32,
     phase_a: f32,
     phase_b: f32,
-    /// The glow pulse: `sin(t * pulse_freq + pulse_phase)` breathes the
-    /// glow's alpha between a dying ember and an over-bright flare.
+    /// The emission pulse: `sin(t * pulse_freq + pulse_phase)` breathes the
+    /// emission's alpha between a dying ember and an over-bright flare.
     pulse_freq: f32,
     pulse_phase: f32,
     /// Sprite scale (the texture is ~200 px wide; eyes are smaller than
@@ -101,7 +101,7 @@ struct Eye {
 impl Eye {
     /// Advances one eye: the heading drifts on its wander curve, the eye
     /// walks and bounces off the window edges, flips to face its
-    /// travel, and breathes its glow.
+    /// travel, and breathes its emission.
     fn step(&mut self, t: f32, dt: f32, limit_x: f32, limit_y: f32) {
         let margin = self.scale * 100.0;
         let (lx, ly) = (limit_x - margin, limit_y - margin);
@@ -125,13 +125,13 @@ impl Eye {
         self.facing = if self.heading.cos() >= 0.0 { 1.0 } else { -1.0 };
     }
 
-    /// The glow for this instant: the amber's alpha breathing on the
+    /// The emission for this instant: the amber's alpha breathing on the
     /// pulse — `0.15..1.15`, embers to flare.
-    fn glow_at(&self, t: f32) -> frost::Color {
+    fn emission_at(&self, t: f32) -> frost::Color {
         let pulse = (t * self.pulse_freq + self.pulse_phase).sin();
         frost::Color {
             a: 0.65 + 0.5 * pulse,
-            ..EYE_GLOW
+            ..EYE_EMISSION
         }
     }
 }
@@ -151,13 +151,13 @@ impl frost::Process for Eyes {
         let (limit_x, limit_y) = (w / 2.0, h / 2.0);
 
         // The eyes ride the root's leading children — one transform,
-        // scale, and glow write each.
+        // scale, and emission write each.
         for (i, eye) in self.eyes.iter_mut().enumerate() {
             eye.step(self.t, dt, limit_x, limit_y);
             let node = &mut ctx.scene().root.children[i];
             node.transform = frost::Transform::translate(eye.pos);
             node.scale = [eye.scale * eye.facing, eye.scale];
-            node.glow = eye.glow_at(self.t);
+            node.emission = eye.emission_at(self.t);
         }
 
         log::trace!("process: t {} eyes {}", self.t, self.eyes.len());
@@ -173,7 +173,7 @@ fn hash(i: usize, salt: usize) -> f32 {
 }
 
 /// A wall node: unlit, so it draws in its own color, occluding — and
-/// the thing the eyes prove their glow against.
+/// the thing the eyes prove their emission against.
 fn wall(center: [f32; 2], extent: [f32; 2], tilt: f32) -> Box<frost::SceneNode> {
     Box::new(frost::SceneNode {
         transform: frost::Transform::rotate(tilt).compose(&frost::Transform::translate(center)),
@@ -221,7 +221,7 @@ fn main() {
             Box::new(frost::SceneNode {
                 order: 1.0,
                 lit: true,
-                glow: EYE_GLOW,
+                emission: EYE_EMISSION,
                 shape: Some(eye.clone()),
                 ..Default::default()
             })

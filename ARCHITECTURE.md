@@ -200,7 +200,7 @@ building the `Context` (physical y-down → user y-up).
   `Scene::visit()` updates the root subtree and every layer subtree.
 - `SceneNode` — a `transform` + `scale` + `modulate` + `order`, an optional
   `shape`, and `children`. All four are **relative to the parent**. Three
-  per-node lighting flags (`lit`, `occludes`, `glow`) join them; unlike these
+  per-node lighting flags (`lit`, `occludes`, `emission`) join them; unlike these
   four they apply to the node's own shape only and never propagate (see
   "Lighting" below):
   - transform/scale: `local = scale(node.scale).compose(&node.transform)`,
@@ -296,11 +296,18 @@ never count (`Diagnostics` excludes them like backgrounds).
   lamp's side, dark behind the wall, full brightness when the node
   stays unlit. The flag is no tax; an unlit map draws exactly as it
   always did, demo for demo.
+- **Vocabulary, because the word was wrong once.** `SceneNode::emission` is a
+  surface's own light. **Bloom** is the renderer spilling bright pixels onto
+  their neighbours — an effect of the frame, not a property of a node — and
+  frost does not have it yet. The field was `SceneNode::glow` until
+  2026-10-15: a name that promised the second thing and delivered the first,
+  renamed the week bloom was scheduled rather than after it landed, so nobody
+  wrote code on top of the ambiguity.
 - Receivers opt in per node, flag applies to that shape only:
   `SceneNode::lit` multiplies the shape's color by `ambient + Σ lights +
-  glow` per pixel; `SceneNode::glow` (a `Color`, alpha-scaled) is the shape's
-  own emission — visible in the dark, never shadowed, never spilling onto
-  neighbors (attach a `Shape::Light` child for that); `SceneNode::occludes`
+  emission` per pixel; `SceneNode::emission` (a `Color`, alpha-scaled) is the
+  shape's own emission — visible in the dark, never shadowed, never spilling
+  onto neighbors (attach a `Shape::Light` child for that); `SceneNode::occludes`
   makes a shape's transformed silhouette block every light's path to pixels
   behind it — a shadow caster. A wall can be `lit + occludes` at once. A
   painted rectangle reaches the field as itself and a painted circle as the
@@ -400,7 +407,7 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
 - **Frames render into a float buffer where the machine offers one.** The
   scene writes linear light, and an 8-bit sRGB buffer rounds it on the way in
   and clips whatever the lights summed past 1.0 — a lamp's core, two lights
-  landing on one pixel, a glow at full strength. `float_target` asks the
+  landing on one pixel, an emission pushed past white. `float_target` asks the
   adapter once whether `Rgba16Float` can be an attachment *and* a blit source;
   where it can, every scene pipeline is built against that format and the
   frame lands in a float buffer that the blit pass carries to the window, so
@@ -1093,7 +1100,7 @@ Each module's `mod tests` holds the tests that pin its subject. The
 | authored_hall| a dark brick hall whose shadows and collisions come                 |
 |              | from `brick.ron`, baked once at load: one `Baked`                   |
 |              | rides every brick — occluders declared per instance                 |
-|              | cut glow and the mouse-aimed torch beam into shadows,               |
+|              | cut the light and the mouse-aimed torch beam into shadows,              |
 |              | the baked solids bounce the player with the sidecar's               |
 |              | own restitution (`docs/authored-shapes.md`)                         |
 | lighting     | a lit floor, a lit ball with an ember plume, three lights sweeping  |
@@ -1110,7 +1117,7 @@ Each module's `mod tests` holds the tests that pin its subject. The
 | occlusion    | lit panels behind tall occluder walls, one lamp orbiting through    |
 |              | them: hard vs. penumbra shadows                                     |
 | twostars     | a planet under two stars: two directional lights, both on stage     |
-| eyes         | glowing eyes drifting through the dark — a tour of `SceneNode::glow`|
+| eyes         | self-lit eyes drifting through the dark — a tour of `SceneNode::emission`|
 | eyes_light   | the companion: some eyes are real emitters (`Shape::Light` too)     |
 | particles    | a `ParticleSystem` fountain with life-fraction alpha               |
 | fountains    | three overlapping fountains + a full-screen waterfall, each one    |

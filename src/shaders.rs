@@ -326,7 +326,7 @@ mod tests {
             _ => unreachable!("ShapeUniforms must be a struct"),
         };
         // `lit` rides in the 4 bytes the struct already padded after `misc`;
-        // the 16-byte-aligned `glow` vec4 follows at 80.
+        // the 16-byte-aligned `emission` vec4 follows at 80.
         assert_eq!(offsets, [0, 16, 24, 32, 48, 64, 72, 80]);
         // The struct's total size must equal the CPU-side buffer length,
         // otherwise the buffer would be too short or carry dead bytes.
@@ -361,7 +361,7 @@ mod tests {
             _ => unreachable!("SpriteUniforms must be a struct"),
         };
         // `lit` rides in the padding the struct already kept between
-        // `alpha` and the 16-byte-aligned `uv_rect`; `glow` follows the
+        // `alpha` and the 16-byte-aligned `uv_rect`; `emission` follows the
         // uv_rect at 80.
         assert_eq!(offsets, [0, 16, 24, 32, 48, 52, 64, 80]);
         // The struct's total size must equal the CPU-side buffer length,

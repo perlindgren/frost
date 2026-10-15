@@ -1,25 +1,25 @@
 //! The `eyes` example's companion: some eyes are real *emitters*.
 //!
-//! Same dark hall, same wandering glowing eyes — but the larger eyes
+//! Same dark hall, same wandering self-lit eyes — but the larger eyes
 //! carry a `Shape::Light` point light as a **child node**, riding the
 //! eye's transform exactly as the torch rides the square in `cone.rs`.
 //! Those eyes now do both halves of the emitter story:
 //!
-//! * their surface glows (the receiver-side `glow`, unshadowable,
+//! * their surface emits (the receiver-side `emission`, unshadowable,
 //!   local — see the `eyes` example), and
 //! * their light spills onto the room: it sweeps across the backdrop
 //!   and the colored panels as they wander, its own shadows cut by the
 //!   walls — with a penumbra, so those shadows have soft edges.
 //!
-//! Watch a lamp-eye and a glow-only eye pass the same wall. The
-//! glow-only eye keeps burning while the wall's shadow swallows
+//! Watch a lamp-eye and an emission-only eye pass the same wall. The
+//! emission-only eye keeps burning while the wall's shadow swallows
 //! everything behind it; the lamp-eye, however, cannot shine through
 //! its own wall — the pool of light it drags across the floor cuts off
-//! at the occluder, feathered by its penumbra. Glow is the surface;
+//! at the occluder, feathered by its penumbra. Emission is the surface;
 //! the child light is the neighborhood.
 //!
 //! The pulse each eye breathes drives both halves together: as an eye
-//! flares, its glow and the pool of light it casts over the room
+//! flares, its emission and the pool of light it casts over the room
 //! brighten in lockstep. Run with:
 //!
 //! ```text
@@ -80,11 +80,11 @@ const LAMP: frost::Color = frost::Color {
 const LAMP_RADIUS: f32 = 520.0;
 const LAMP_INTENSITY: f32 = 0.8;
 
-/// The eyes' glow and the light their child node casts: the same
+/// The eyes' emission and the light their child node casts: the same
 /// amber, so an eye and the pool it drags over the room read as one
-/// source. The glow pushes past full so the pulse can over-brighten;
+/// source. The emission pushes past full so the pulse can over-brighten;
 /// the penumbra softens the shadows the eye-light casts.
-const EYE_GLOW: frost::Color = frost::Color {
+const EYE_COLOR: frost::Color = frost::Color {
     r: 1.0,
     g: 0.55,
     b: 0.15,
@@ -100,7 +100,7 @@ const MAX_SPEED: f32 = 105.0;
 const TURN: f32 = 1.3;
 
 /// One eye's state: where it is, where it is heading, the phases of
-/// its wander curve and glow pulse, and whether it carries a light.
+/// its wander curve and emission pulse, and whether it carries a light.
 #[derive(Default)]
 struct Eye {
     pos: [f32; 2],
@@ -113,7 +113,7 @@ struct Eye {
     phase_a: f32,
     phase_b: f32,
     /// The pulse this eye breathes, recomputed each step and read by
-    /// both the glow and (for lamp-eyes) the child light's intensity.
+    /// both the emission and (for lamp-eyes) the child light's intensity.
     pulse_freq: f32,
     pulse_phase: f32,
     pulse: f32,
@@ -152,12 +152,12 @@ impl Eye {
         self.facing = if self.heading.cos() >= 0.0 { 1.0 } else { -1.0 };
     }
 
-    /// The glow for this instant: the amber's alpha breathing on the
+    /// The emission for this instant: the amber's alpha breathing on the
     /// pulse — embers to flare.
-    fn glow(&self) -> frost::Color {
+    fn emission(&self) -> frost::Color {
         frost::Color {
             a: 0.65 + 0.5 * self.pulse,
-            ..EYE_GLOW
+            ..EYE_COLOR
         }
     }
 
@@ -166,7 +166,7 @@ impl Eye {
     /// brightens exactly when the eye itself flares.
     fn light(&self) -> frost::Light {
         frost::Light::point(
-            EYE_GLOW,
+            EYE_COLOR,
             (0.5 + 0.55 * self.pulse).max(0.05),
             EYE_LIGHT_RADIUS,
         )
@@ -189,14 +189,14 @@ impl frost::Process for EyesLight {
         let (limit_x, limit_y) = (w / 2.0, h / 2.0);
 
         // The eyes ride the root's leading children — one transform,
-        // scale, and glow write each, and a light write for the
+        // scale, and emission write each, and a light write for the
         // lamp-eyes, whose light is their first child node.
         for (i, eye) in self.eyes.iter_mut().enumerate() {
             eye.step(self.t, dt, limit_x, limit_y);
             let node = &mut ctx.scene().root.children[i];
             node.transform = frost::Transform::translate(eye.pos);
             node.scale = [eye.scale * eye.facing, eye.scale];
-            node.glow = eye.glow();
+            node.emission = eye.emission();
             if eye.lamp {
                 // The light rides the parent: only its content changes,
                 // the parenting places and pulses it along with the eye.
@@ -287,14 +287,14 @@ fn main() {
             let mut node = frost::SceneNode {
                 order: 1.0,
                 lit: true,
-                glow: EYE_GLOW,
+                emission: EYE_COLOR,
                 shape: Some(eye_sprite.clone()),
                 ..Default::default()
             };
             if eye.lamp {
                 node.children.push(Box::new(frost::SceneNode {
                     shape: Some(frost::Shape::Light {
-                        light: frost::Light::point(EYE_GLOW, 0.5, EYE_LIGHT_RADIUS)
+                        light: frost::Light::point(EYE_COLOR, 0.5, EYE_LIGHT_RADIUS)
                             .with_penumbra(EYE_PENUMBRA),
                     }),
                     ..Default::default()

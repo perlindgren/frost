@@ -204,7 +204,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     // call order.
     let translated = Draw::Shape {
         diagnostic: false,
-        glow: black(),
+        emission: black(),
         world: Transform::translate([10.0, 20.0]),
         center: [3.0, -4.0],
         params: [5.0, 2.0],
@@ -217,7 +217,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     };
     let rotated = Draw::Shape {
         diagnostic: false,
-        glow: black(),
+        emission: black(),
         world: Transform::rotate(std::f32::consts::FRAC_PI_2),
         center: [1.0, 2.0],
         params: [4.0, 6.0],
@@ -230,7 +230,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     };
     let unflagged = Draw::Shape {
         diagnostic: false,
-        glow: black(),
+        emission: black(),
         world: Transform::identity(),
         center: [0.0, 0.0],
         params: [1.0, 1.0],
@@ -245,7 +245,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     // has nothing to pack that into — the declare channel is for this.
     let sprite = Draw::Shape {
         diagnostic: false,
-        glow: black(),
+        emission: black(),
         world: Transform::identity(),
         center: [0.0, 0.0],
         params: [1.0, 0.0],
@@ -260,7 +260,7 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     // shape occludes nothing.
     let degenerate = Draw::Shape {
         diagnostic: false,
-        glow: black(),
+        emission: black(),
         world: Transform::scale([0.0, 1.0]),
         center: [0.0, 0.0],
         params: [1.0, 1.0],
@@ -325,7 +325,7 @@ fn occluder_field_appends_declared_occluders_after_the_drawn_ones() {
     // drawn one first, the declared ones in declaration order.
     let drawn = Draw::Shape {
         diagnostic: false,
-        glow: black(),
+        emission: black(),
         world: Transform::identity(),
         center: [0.0, 0.0],
         params: [10.0, 10.0],
@@ -535,7 +535,7 @@ fn a_flagged_circle_is_packed_as_the_polygon_cut_from_it() {
     let radius = 12.0;
     let painted = Draw::Shape {
         diagnostic: false,
-        glow: black(),
+        emission: black(),
         world: Transform::translate([10.0, 20.0]),
         center: [3.0, -4.0],
         params: [radius, radius],
@@ -582,7 +582,7 @@ fn a_painted_circle_without_a_usable_radius_casts_nothing_instead_of_panicking()
     // the run over a pixel nobody can see.
     let bare = |radius: f32| Draw::Shape {
         diagnostic: false,
-        glow: black(),
+        emission: black(),
         world: Transform::identity(),
         center: [0.0, 0.0],
         params: [radius, radius],

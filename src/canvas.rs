@@ -286,8 +286,8 @@ impl Canvas {
     /// from it) to keep every block sharing one cached glyph atlas — per
     /// (font, size, weight): a font drawn at two weights caches two atlases.
     ///
-    /// Immediate text is never lit and never glows: it always draws at full
-    /// `color`, so UI text stays readable over any scene.
+    /// Immediate text is never lit and emits nothing: it always draws at
+    /// full `color`, so UI text stays readable over any scene.
     /// How wide [`Canvas::text`] would lay `text`: the advance width in
     /// user-space units, through the very shaping the draw will do —
     /// so measure and paint agree. Enough to run mixed-colour pieces
@@ -321,7 +321,7 @@ impl Canvas {
             color,
             alpha: 1.0,
             // UI text emits nothing and takes no light: full `color`.
-            glow: Color {
+            emission: Color {
                 r: 0.0,
                 g: 0.0,
                 b: 0.0,
@@ -713,7 +713,7 @@ fn draw_node(
                 kind: 0.0,
                 aa,
                 color: color.mul(modulate),
-                glow: node.glow.mul(modulate),
+                emission: node.emission.mul(modulate),
                 lit: f32::from(node.lit),
                 occludes: f32::from(node.occludes),
                 z: order,
@@ -730,7 +730,7 @@ fn draw_node(
                 kind: 1.0,
                 aa,
                 color: color.mul(modulate),
-                glow: node.glow.mul(modulate),
+                emission: node.emission.mul(modulate),
                 lit: f32::from(node.lit),
                 occludes: f32::from(node.occludes),
                 z: order,
@@ -783,7 +783,7 @@ fn draw_node(
                 aa,
                 tint: color.mul(modulate),
                 alpha: *alpha,
-                glow: node.glow.mul(modulate),
+                emission: node.emission.mul(modulate),
                 uv_rect: [0.0, 0.0, 1.0, 1.0],
                 lit: f32::from(node.lit),
                 z: order,
@@ -807,7 +807,7 @@ fn draw_node(
                 weight: *weight,
                 color: color.mul(modulate),
                 alpha: *alpha,
-                glow: node.glow.mul(modulate),
+                emission: node.emission.mul(modulate),
                 lit: f32::from(node.lit),
                 z: order,
                 diagnostic: node.diagnostic,
@@ -1334,7 +1334,7 @@ fn expand_text_list(
                 weight,
                 color,
                 alpha,
-                glow,
+                emission,
                 lit,
                 z,
                 diagnostic,
@@ -1435,9 +1435,9 @@ fn expand_text_list(
                         alpha,
                         uv_rect,
                         // The glyphs are the text node's own pixels: its
-                        // `lit` flag, `glow`, and diagnostic marker pass on
+                        // `lit` flag, `emission`, and diagnostic marker pass on
                         // to every quad.
-                        glow,
+                        emission,
                         lit,
                         z,
                         diagnostic,
@@ -2342,12 +2342,12 @@ mod tests {
     }
 
     #[test]
-    fn a_nodes_glow_reaches_its_shape_draw() {
-        // The node's glow rides to the draw multiplied by the composed
+    fn a_nodes_emission_reaches_its_shape_draw() {
+        // The node's emission rides to the draw multiplied by the composed
         // modulate, exactly like the shape's own color.
         let node = SceneNode {
             lit: true,
-            glow: Color {
+            emission: Color {
                 r: 0.5,
                 g: 0.2,
                 b: 0.0,
@@ -2379,11 +2379,11 @@ mod tests {
             },
             &mut draws,
         );
-        let [Draw::Shape { glow, .. }] = &draws[..] else {
+        let [Draw::Shape { emission, .. }] = &draws[..] else {
             panic!("expected one shape draw, got {draws:?}")
         };
         assert_eq!(
-            *glow,
+            *emission,
             Color {
                 r: 0.25,
                 g: 0.2,

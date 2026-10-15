@@ -55,7 +55,7 @@ const HORIZON: f32 = -260.0;
 /// The visible sun: a core disk and two halo rings. Unlit, so they
 /// burn in their own color whatever the light field says — a face has
 /// no business being in shadow. The rings' alpha stacks over the dark
-/// sky into a glow, and the sun's color carries through them: a red
+/// sky into emission, and the sun's color carries through them: a red
 /// dawn sun haloed in red.
 const SUN_RADIUS: f32 = 42.0;
 

@@ -15,7 +15,7 @@
 //!
 //! A directional light has no position — so where you draw its source
 //! is yours to stage. Here each star's face is an unlit core disk with
-//! two halo rings (alpha stacked into a glow), walked around a true
+//! two halo rings (alpha stacked into emission), walked around a true
 //! circle fitted to the window: riding the very angle the shadows fall
 //! along, they rise and set behind the planet and the plain, transit
 //! its face, and drag their shadow families around with them, always

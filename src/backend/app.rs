@@ -259,7 +259,7 @@ pub(crate) struct Frost<P: Process> {
     ///
     /// The scene already writes linear light, and an 8-bit sRGB surface
     /// rounds it on the way in: a value over 1.0 — a lamp's core, two
-    /// lights landing on one pixel, a glow at full strength — clips before
+    /// lights landing on one pixel, an emission pushed past white — clips
     /// anything downstream can see it, and every blend composites values
     /// that were already rounded. A float buffer holds the overshoot and
     /// blends without rounding, which is what the lighting model was
@@ -2510,7 +2510,7 @@ impl<P: Process> Frost<P> {
                         generation,
                         diagnostic,
                         // The rest of the sprite — its box, tint, opacity,
-                        // glow and sub-rectangle — reached the arena in the
+                        // emission and sub-rectangle — reached the arena in the
                         // pre-pass; the draw carries only the offset.
                         ..
                     } => {

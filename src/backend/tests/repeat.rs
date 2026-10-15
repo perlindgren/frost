@@ -14,7 +14,7 @@ fn repeat_layer_scene(repeat: [f32; 2]) -> Scene {
             repeat,
             root: SceneNode {
                 diagnostic: false,
-                glow: black(),
+                emission: black(),
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -90,7 +90,7 @@ fn repeat_offsets_follow_the_camera() {
     let scene = Scene {
         root: SceneNode {
             diagnostic: false,
-            glow: black(),
+            emission: black(),
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -176,7 +176,7 @@ fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
     let scene = Scene {
         root: SceneNode {
             diagnostic: false,
-            glow: black(),
+            emission: black(),
             transform: Transform::identity(),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -202,7 +202,7 @@ fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
             repeat: [100.0, 0.0],
             root: SceneNode {
                 diagnostic: false,
-                glow: black(),
+                emission: black(),
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -264,7 +264,7 @@ fn an_object_wider_than_its_repeat_aborts() {
             repeat: [100.0, 0.0],
             root: SceneNode {
                 diagnostic: false,
-                glow: black(),
+                emission: black(),
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,

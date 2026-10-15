@@ -65,7 +65,7 @@ fn box_in_pixels(world: &Transform, center: [f32; 2], half: [f32; 2]) -> Oriente
 /// `shape_uniform_data`, and hand back the red channel of every pixel.
 ///
 /// The scene is built so the red byte *is* the light mix: the surface is
-/// white, unglowing and lit, the light is white at intensity 1 with a radius
+/// white, no emission, lit — the light is white at intensity 1 with a radius
 /// that barely falls off across 64 pixels, and the ambient is black. A pixel
 /// the shadow test blocks therefore reads 0; one it does not reads most of
 /// full scale. Nothing else in the frame can write a pixel, so there is no
@@ -190,7 +190,7 @@ fn paint(draws: &[Draw], declared: &[Occluder]) -> Option<Vec<u8>> {
                 kind,
                 aa,
                 color,
-                glow,
+                emission,
                 lit,
                 ..
             } = draw
@@ -203,7 +203,7 @@ fn paint(draws: &[Draw], declared: &[Occluder]) -> Option<Vec<u8>> {
             let uniform = device.create_buffer_init(&BufferInitDescriptor {
                 label: Some("shadow bridge uniform"),
                 contents: &shape_uniform_data(
-                    inv, *center, *params, *kind, *aa, *color, *glow, *lit,
+                    inv, *center, *params, *kind, *aa, *color, *emission, *lit,
                 ),
                 usage: BufferUsages::UNIFORM,
             });
@@ -306,7 +306,7 @@ fn the_gpu_shadows_exactly_where_the_cpu_says() {
     // derive its box from the very transform the packer is handed, or the two
     // sides would be answering about different rectangles.
     let crate_world = Transform::identity();
-    // The lit surface: white, unglowing, lit, and far larger than the target,
+    // The lit surface: white, no emission, lit, and far larger than the target,
     // so every pixel sits deep inside it and no anti-aliased edge is in play.
     let surface = Draw::Shape {
         world: Transform::identity(),
@@ -320,7 +320,7 @@ fn the_gpu_shadows_exactly_where_the_cpu_says() {
             b: 1.0,
             a: 1.0,
         },
-        glow: black(),
+        emission: black(),
         lit: 1.0,
         occludes: 0.0,
         z: 0.0,
@@ -340,7 +340,7 @@ fn the_gpu_shadows_exactly_where_the_cpu_says() {
             b: 1.0,
             a: 0.0,
         },
-        glow: black(),
+        emission: black(),
         lit: 0.0,
         occludes: 1.0,
         z: 1.0,
@@ -493,7 +493,7 @@ fn a_disc_shadows_the_gpu_the_way_the_cpu_says_it_should() {
             b: 1.0,
             a: 1.0,
         },
-        glow: black(),
+        emission: black(),
         lit: 1.0,
         occludes: 0.0,
         z: 0.0,
@@ -687,7 +687,7 @@ fn a_painted_circle_and_a_declared_one_shadow_alike() {
             b: 1.0,
             a: 1.0,
         },
-        glow: black(),
+        emission: black(),
         lit: 1.0,
         occludes: 0.0,
         z: 0.0,
@@ -739,7 +739,7 @@ fn a_painted_circle_and_a_declared_one_shadow_alike() {
             b: 0.0,
             a: 0.0,
         },
-        glow: black(),
+        emission: black(),
         lit: 0.0,
         occludes: 1.0,
         z: 0.0,
@@ -858,7 +858,7 @@ fn occluder_walk_density_bench() {
             b: 1.0,
             a: 1.0,
         },
-        glow: black(),
+        emission: black(),
         lit: 1.0,
         occludes: 0.0,
         z: 0.0,
@@ -977,7 +977,7 @@ fn occluder_walk_density_bench() {
         kind,
         aa,
         color,
-        glow,
+        emission,
         lit,
         ..
     } = &draws[0]
@@ -993,7 +993,7 @@ fn occluder_walk_density_bench() {
             *kind,
             *aa,
             *color,
-            *glow,
+            *emission,
             *lit,
         ),
         usage: BufferUsages::UNIFORM,

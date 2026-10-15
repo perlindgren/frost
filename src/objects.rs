@@ -1198,7 +1198,7 @@ pub struct SceneNode {
     /// Whether the node's own shape is lit by the frame's light field: when
     /// true, the shape's color is multiplied, per pixel, by the scene's
     /// ambient color plus the contribution of every light at that pixel,
-    /// plus the node's own [`glow`](Self::glow).
+    /// plus the node's own [`emission`](Self::emission).
     ///
     /// Unlike the transform, scale, modulate, and order, the flag does not
     /// propagate to the children: it applies to this node's own shape only,
@@ -1226,19 +1226,26 @@ pub struct SceneNode {
     /// The node's own emission: a floor of self-light added to the light
     /// mix that multiplies the shape's color, so the surface stays visible
     /// in the dark while lights still add on top of it:
-    /// `pixel = color * (ambient + lights + glow)`.
+    /// `pixel = color * (ambient + lights + emission)`.
     ///
     /// Like [`SceneNode::lit`] (which it requires — an unlit shape draws
-    /// its color in full already), the glow applies to this node's own
-    /// shape only, does not propagate to children, and is multiplied by
-    /// the composed modulate. It lights only the surface itself: glowing
-    /// never spills onto neighbors, and a glow is never shadowed — to
-    /// light the surroundings too, attach a [`Shape::Light`] child node.
+    /// its color in full already), the emission applies to this node's own
+    /// shape only, does not propagate to children, and is multiplied by the
+    /// composed modulate. It lights the surface and nothing else: emission
+    /// never spills onto neighbors, and nothing shadows it — to light the
+    /// surroundings as well, attach a [`Shape::Light`] child node. Spill is
+    /// **bloom**, an effect of the renderer over bright pixels rather than a
+    /// property of a node, and frost has no bloom yet.
     ///
-    /// The default — black — is off. The color's `a` scales the emission
-    /// (rgb times `a`), so fading a glow in and out only needs an alpha
-    /// ramp.
-    pub glow: Color,
+    /// The color's `a` scales the emission (rgb times `a`), so fading it in
+    /// and out needs only an alpha ramp. Its channels are not clamped: over
+    /// 1.0 asks for more light than a display can show, and the frame buffer
+    /// keeps the overshoot rather than clipping it, which is the room a later
+    /// pass — bloom, a tone map — needs to work with. Until such a pass
+    /// exists, anything past 1.0 reaches the screen as plain white.
+    ///
+    /// The default — black — is off.
+    pub emission: Color,
     /// The shape this node draws, in its own local space, if any.
     pub shape: Option<Shape>,
     /// The child nodes, positioned in this node's coordinate space.
@@ -1257,7 +1264,7 @@ pub struct SceneNode {
 
 impl Default for SceneNode {
     /// An identity node: identity transform, no scale, a white modulate,
-    /// order `0.0`, no lighting, no occlusion, no glow, no shape, and no
+    /// order `0.0`, no lighting, no occlusion, no emission, no shape, and no
     /// children.
     fn default() -> Self {
         Self {
@@ -1267,7 +1274,7 @@ impl Default for SceneNode {
             order: 0.0,
             lit: false,
             occludes: false,
-            glow: Color {
+            emission: Color {
                 r: 0.0,
                 g: 0.0,
                 b: 0.0,

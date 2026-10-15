@@ -12,7 +12,7 @@
 //! it, per instance and per frame:
 //!
 //! * [`frost::Baked::declare_occluders`] under each brick's transform, so
-//!   every brick cuts its shadow out of the player's torch-glow — the
+//!   every brick cuts its shadow out of the player's torch-emission — the
 //!   sprites themselves are *not* marked `occludes`, the silhouette is
 //!   the authored rectangles', not the pictures';
 //! * and the baked solids, translated to each brick, are what the player
@@ -61,8 +61,8 @@ const EDGE_BOUNCE: f32 = 0.0;
 /// The player's light pool: small, dim and warm — a nightlight under
 /// the torch, so the hall outside the beam is dark and the bricks'
 /// shadows read against it.
-const GLOW_RADIUS: f32 = 240.0;
-const GLOW_INTENSITY: f32 = 1.0;
+const LAMP_RADIUS: f32 = 240.0;
+const LAMP_INTENSITY: f32 = 1.0;
 
 /// The torch's falloff extent, in pixels.
 const TORCH_RADIUS: f32 = 420.0;
@@ -265,7 +265,7 @@ impl frost::Process for Demo {
             b: 0.6,
             a: 1.0,
         };
-        ctx.light(self.pos[0], self.pos[1], warm, GLOW_INTENSITY, GLOW_RADIUS);
+        ctx.light(self.pos[0], self.pos[1], warm, LAMP_INTENSITY, LAMP_RADIUS);
         if let Some(aim) = ctx.mouse_position() {
             let dx = aim[0] - self.pos[0];
             let dy = aim[1] - self.pos[1];
@@ -312,7 +312,7 @@ fn main() {
     // process on its first frame, when the window's real size is known
     // — every brick then declares and collides against this one bake.
     let mut scene = frost::Scene::new(frost::SceneNode {
-        // The beyond: darker than the darkest floor the glow can
+        // The beyond: darker than the darkest floor the emission can
         // reach, so a shadow is a hole in the room, not a dimmer
         // room.
         shape: Some(frost::Shape::Background {
@@ -327,7 +327,7 @@ fn main() {
             Box::new(frost::SceneNode {
                 // The lit square the process drives as `children[0]`,
                 // on top of the room's scenery by its `order` — and a
-                // *receiver*: it is the light's glow on this square,
+                // *receiver*: it is the light's emission on this square,
                 // and on the backdrop, that makes the room a lit one.
                 order: 1.0,
                 lit: true,
@@ -364,7 +364,7 @@ fn main() {
     });
 
     // A low ambient floor: at the default gray the room would read
-    // fully lit and the glow — and the shadows the bricks cut out of
+    // fully lit and the emission — and the shadows the bricks cut out of
     // it — would reveal nothing.
     scene.ambient = frost::Color {
         r: 0.05,

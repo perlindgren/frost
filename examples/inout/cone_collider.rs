@@ -8,7 +8,7 @@
 //! right strafing) and the right stick's left and right turns; a stick
 //! inside the [`DEADZONE`] reads as no input, so keys and stick mix freely.
 //! It carries the same two lights as `cone.rs`, as child nodes of its scene
-//! node: a small omni point light (radius [`GLOW_RADIUS`]) pinned to its
+//! node: a small omni point light (radius [`LAMP_RADIUS`]) pinned to its
 //! center, and a torch — a cone light (radius [`TORCH_RADIUS`], full
 //! opening angle [`TORCH_SPREAD`]) mounted on the square's front face and
 //! aimed along its local +x, so its rotation sweeps the beam across the
@@ -48,10 +48,10 @@
 const PLAYER_HALF: [f32; 2] = [16.0, 16.0];
 
 /// The point light's falloff extent, in pixels: the player's own dim pool.
-const GLOW_RADIUS: f32 = 50.0;
+const LAMP_RADIUS: f32 = 50.0;
 
 /// The point light's strength.
-const GLOW_INTENSITY: f32 = 1.2;
+const LAMP_INTENSITY: f32 = 1.2;
 
 /// The torch's falloff extent, in pixels.
 const TORCH_RADIUS: f32 = 300.0;
@@ -103,7 +103,7 @@ const PLAYER: frost::Color = frost::Color {
 };
 
 /// The pool light's color: a warm white.
-const GLOW: frost::Color = frost::Color {
+const LAMP: frost::Color = frost::Color {
     r: 1.0,
     g: 0.90,
     b: 0.72,
@@ -401,9 +401,9 @@ fn main() {
             Box::new(frost::SceneNode {
                 // The pool light at the square's own center: a light node,
                 // so it is never drawn — it just rides the parent, keeping
-                // its omni glow pinned to the player.
+                // its omni emission pinned to the player.
                 shape: Some(frost::Shape::Light {
-                    light: frost::Light::point(GLOW, GLOW_INTENSITY, GLOW_RADIUS)
+                    light: frost::Light::point(LAMP, LAMP_INTENSITY, LAMP_RADIUS)
                         .with_penumbra(SHADOW_PENUMBRA),
                 }),
                 ..Default::default()

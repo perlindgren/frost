@@ -11,7 +11,7 @@ fn draw_scene_composes_transforms_down_the_tree() {
     let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene::new(SceneNode {
         diagnostic: false,
-        glow: black(),
+        emission: black(),
         transform: Transform::translate([10.0, 0.0]),
         scale: [1.0, 1.0],
         modulate: WHITE,
@@ -25,7 +25,7 @@ fn draw_scene_composes_transforms_down_the_tree() {
         }),
         children: vec![Box::new(SceneNode {
             diagnostic: false,
-            glow: black(),
+            emission: black(),
             transform: Transform::scale_uniform(2.0),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -35,7 +35,7 @@ fn draw_scene_composes_transforms_down_the_tree() {
             shape: None,
             children: vec![Box::new(SceneNode {
                 diagnostic: false,
-                glow: black(),
+                emission: black(),
                 transform: Transform::identity(),
                 scale: [1.0, 1.0],
                 modulate: WHITE,
@@ -89,7 +89,7 @@ fn draw_scene_rotates_a_translated_child() {
     let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene::new(SceneNode {
         diagnostic: false,
-        glow: black(),
+        emission: black(),
         transform: Transform::rotate(std::f32::consts::FRAC_PI_2),
         scale: [1.0, 1.0],
         modulate: WHITE,
@@ -99,7 +99,7 @@ fn draw_scene_rotates_a_translated_child() {
         shape: None,
         children: vec![Box::new(SceneNode {
             diagnostic: false,
-            glow: black(),
+            emission: black(),
             transform: Transform::translate([10.0, 0.0]),
             scale: [1.0, 1.0],
             modulate: WHITE,
@@ -137,7 +137,7 @@ fn scene_shape_at_user_origin_lands_at_window_center() {
     let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene::new(SceneNode {
         diagnostic: false,
-        glow: black(),
+        emission: black(),
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: WHITE,
@@ -173,7 +173,7 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
     let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = Scene::new(SceneNode {
         diagnostic: false,
-        glow: black(),
+        emission: black(),
         transform: Transform::identity(),
         scale: [1.0, 1.0],
         modulate: WHITE,
@@ -201,7 +201,7 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
             aa,
             tint,
             alpha,
-            glow,
+            emission,
             uv_rect,
             lit,
             z,
@@ -219,8 +219,8 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
     assert!((*aa - AA_BAND).abs() < 1e-6);
     assert_eq!(*tint, black());
     assert_eq!(*alpha, 1.0);
-    // The node carries no glow: it packs as black.
-    assert_eq!(*glow, black());
+    // The node carries no emission: it packs as black.
+    assert_eq!(*emission, black());
     assert_eq!(*uv_rect, [0.0, 0.0, 1.0, 1.0]);
     // The node is unlit, so the flag packs as 0.0.
     assert_eq!(*lit, 0.0);

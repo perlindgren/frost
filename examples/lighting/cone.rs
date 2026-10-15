@@ -6,7 +6,7 @@
 //! both *child nodes* of the player's scene node, so they ride its position
 //! and turn with it for free:
 //!
-//! * a small omni point light (radius [`GLOW_RADIUS`]) at the square's
+//! * a small omni point light (radius [`LAMP_RADIUS`]) at the square's
 //!   center — the dim pool that always surrounds the player, so it never
 //!   fully vanishes, and
 //! * a torch: a cone light (radius [`TORCH_RADIUS`], full opening angle
@@ -41,10 +41,10 @@
 const PLAYER_HALF: [f32; 2] = [16.0, 16.0];
 
 /// The point light's falloff extent, in pixels: the player's own dim pool.
-const GLOW_RADIUS: f32 = 50.0;
+const LAMP_RADIUS: f32 = 50.0;
 
 /// The point light's strength.
-const GLOW_INTENSITY: f32 = 1.2;
+const LAMP_INTENSITY: f32 = 1.2;
 
 /// The torch's falloff extent, in pixels.
 const TORCH_RADIUS: f32 = 400.0;
@@ -91,7 +91,7 @@ const PLAYER: frost::Color = frost::Color {
 };
 
 /// The pool light's color: a warm white.
-const GLOW: frost::Color = frost::Color {
+const LAMP: frost::Color = frost::Color {
     r: 1.0,
     g: 0.90,
     b: 0.72,
@@ -262,9 +262,9 @@ fn main() {
             Box::new(frost::SceneNode {
                 // The pool light at the square's own center: a light node,
                 // so it is never drawn — it just rides the parent, keeping
-                // its omni glow pinned to the player.
+                // its omni emission pinned to the player.
                 shape: Some(frost::Shape::Light {
-                    light: frost::Light::point(GLOW, GLOW_INTENSITY, GLOW_RADIUS)
+                    light: frost::Light::point(LAMP, LAMP_INTENSITY, LAMP_RADIUS)
                         .with_penumbra(SHADOW_PENUMBRA),
                 }),
                 ..Default::default()

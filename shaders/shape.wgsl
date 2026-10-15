@@ -6,7 +6,7 @@ struct ShapeUniforms {
     color: vec4<f32>,
     misc: vec2<f32>, // x: anti-alias band (local units), y: kind (0.0 circle, 1.0 rectangle)
     lit: f32, // 1.0 when the shape is lit by the frame's light field
-    glow: vec4<f32>, // self-emission: rgb, scaled by a, added to the light mix
+    emission: vec4<f32>, // own light: rgb, scaled by a, added to the light mix
 };
 
 @group(0) @binding(0)
@@ -52,13 +52,13 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     }
     let alpha = 1.0 - smoothstep(-u.misc.x, u.misc.x, d);
     // The shape's color, multiplied by the light mix when the shape is
-    // lit; the lights never touch the alpha. The shape's own glow joins
+    // lit; the lights never touch the alpha. The shape's own emission joins
     // the mix as a floor of self-light: rgb scaled by its alpha, added
-    // even where the light field is black — a lit, glowing surface is
+    // even where the light field is black — a lit, emissive surface is
     // never fully dark, and lights still add on top.
     var rgb = u.color.rgb;
     if (u.lit > 0.5) {
-        rgb *= light_mix(frag_coord.xy) + u.glow.rgb * u.glow.a;
+        rgb *= light_mix(frag_coord.xy) + u.emission.rgb * u.emission.a;
     }
     // Emit the shape's color and coverage; composited over the existing
     // attachment via alpha blending.

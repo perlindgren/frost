@@ -161,8 +161,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // light mix multiplies that rgb — the same vocabulary the shape and
     // sprite hosts speak, in the same top-left pixel space the fields
     // are packed in; the mix never touches the alpha. A map carries no
-    // glow of its own: a glowing wall is a wall with a glow sprite on
-    // it, and one more shape is cheaper than one more field.
+    // emission of its own: a self-lit wall is a wall with an emissive sprite
+    // on it, and one more shape is cheaper than one more field.
     var rgb = t.rgb * tint.rgb;
     if (u.lit > 0.5) {
         rgb *= light_mix(in.position.xy);

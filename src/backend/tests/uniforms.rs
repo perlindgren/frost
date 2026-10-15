@@ -53,7 +53,7 @@ fn shape_uniform_bytes_follow_the_wgsl_layout() {
     // (vec2 columns, stride 8), so `to_local` spans 0..16 with column 0
     // at 0 and column 1 at 8; `translation` @ 16; `center` @ 24;
     // `params` @ 32; vec4<f32> (16 bytes, 16-byte aligned) `color` @ 48
-    // (spanning 48..64); `misc` vec2 @ 64; `glow` vec4 @ 80; struct size 96.
+    // (spanning 48..64); `misc` vec2 @ 64; `emission` vec4 @ 80; struct size 96.
     let inv = Transform::translate([1.5, -2.5]).invert().unwrap();
     let data = shape_uniform_data(
         inv,
@@ -99,7 +99,7 @@ fn shape_uniform_bytes_follow_the_wgsl_layout() {
     assert_eq!(f32_at(56), 0.3);
     // The vec4's alpha channel follows its RGB channels at byte 60, and
     // the `misc` vec2 begins at byte 64: `aa` at 64, `kind` at 68; the lit
-    // flag takes the slot at 72; the 16-byte-aligned glow vec4 follows at
+    // flag takes the slot at 72; the 16-byte-aligned emission vec4 follows at
     // 80 (spanning 80..96, so the struct is 96 bytes).
     assert_eq!(f32_at(60), 0.4);
     assert_eq!(f32_at(64), 0.25);
@@ -120,7 +120,7 @@ fn sprite_uniform_bytes_follow_the_wgsl_layout() {
     // @ 8), `translation` @ 16, `size` @ 24, the tint vec4 (16 bytes,
     // 16-byte aligned) @ 32 spanning 32..48, the scalar alpha @ 48, the
     // scalar lit @ 52, the `uv_rect` vec4 (16-byte aligned) @ 64 spanning
-    // 64..80, and the glow vec4 (16-byte aligned) @ 80 spanning 80..96;
+    // 64..80, and the emission vec4 (16-byte aligned) @ 80 spanning 80..96;
     // the struct size is 96.
     let inv = Transform::translate([1.5, -2.5]).invert().unwrap();
     let data = sprite_uniform_data(
@@ -173,7 +173,7 @@ fn sprite_uniform_bytes_follow_the_wgsl_layout() {
     assert_eq!(f32_at(68), 0.5);
     assert_eq!(f32_at(72), 0.75);
     assert_eq!(f32_at(76), 1.0);
-    // The glow vec4 follows the uv_rect, 16-byte aligned at 80 (80..96).
+    // The emission vec4 follows the uv_rect, 16-byte aligned at 80 (80..96).
     assert_eq!(f32_at(80), 0.6);
     assert_eq!(f32_at(84), 0.7);
     assert_eq!(f32_at(88), 0.8);
