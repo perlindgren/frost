@@ -504,3 +504,30 @@ Against the frame it is asked to fit into: 0.21 ms is 1.9% of a 90 Hz budget
 (11.1 ms) and 2.9% of 60 Hz's. It is not free, and unlike §8's attachment it is
 not a rounding error — which is the right reason for `Config::bloom` to be off
 until an app asks for it.
+
+## 10. What a tone map costs (2026-10-16, Apple M4 Max)
+
+Same instrument again, same antifrost at a 3840×2160 buffer, medians of ~4700
+frames per run, runs interleaved. The tone map is a handful of arithmetic ops
+in the stretch pass — one `max`, one branch, a divide — so this is the row that
+says what *computation* costs here, after §9 said what passes cost.
+
+| config | median |
+|---|---|
+| nothing extra | 1.070 / 1.061 |
+| headroom 0.15 | 1.073 / 1.083 / 1.067 |
+| headroom 0.15 + bloom | 1.279 (bloom alone: 1.263) |
+
+The apparent difference is **+0.007 ms**, and the run-to-run spread within each
+group is ±0.011 ms, which is wider than the difference. The honest report is
+that this instrument cannot see a tone map at all, and the three runs with the
+headroom on straddle the two without it.
+
+That is not luck, it is the shape of the work: nine extra render passes cost
++0.21 ms (§9) because every one of them costs about 16 µs whatever it draws,
+while forty million extra arithmetic ops across one pass cost nothing, because
+the pass was waiting on memory anyway. The rule this leaves for the present
+path — the only place a per-pixel look effect can live without a pass of its
+own — is that arithmetic is free and texture reads are not: bloom's fold costs
+three samples per pixel and is the reason that branch is there, and the tone
+map's six extra lines are not measurable next to it.

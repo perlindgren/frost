@@ -455,6 +455,27 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
   notes). No look is decided by any of this: the threshold, the knee, the three
   weights and the three levels are four numbers to argue with, all of them at
   the top of `bloom.rs`, and every one of them is a guess today.
+- **The tone map folds light above white into the display's range, and nothing
+  else.** `Config::tone_map` (0.0, off) is a *headroom*: the share of the display
+  range handed to light above white. Below the knee at `1 - headroom` the curve
+  is the identity with matching slope, and that choice is the whole design — it
+  means no tone map in the engine can change how an ordinary pixel looks, and the
+  test asserts exactly that as bit-equality rather than tolerance. Above the knee
+  the curve is rational, approaching white as 1/x, evaluated on the pixel's
+  brightest channel and scaled back over all three so a light keeps its colour on
+  the way in. (The exponential shoulder it was written instead of reaches white
+  so fast that a lamp at 2.0 and a lamp at 20.0 arrive as the same pixel, and the
+  difference between those two is most of what an over-bright frame has to say.)
+  What it buys and what it charges are the same number: at a headroom of 0.15
+  display white itself lands at 0.925, and everything from 1.0 to 16 of radiance
+  arrives inside the last three percent of the display's range — nothing clips,
+  hue survives, order survives, and the separation between bright things is paid
+  for out of the room they were given. A filmic curve buys that separation the
+  other way round, by remapping the whole tone scale and with it the whole look,
+  which is a look decision and is not made here. It runs last in the present
+  pass, after the bloom is added, so the total is what fits the display; its cost
+  is the one number in this whole area that cannot be measured, +0.007 ms at 4K
+  against a ±0.01 ms drift (§10 of the benchmarking notes).
 - Sprite textures are `Rgba8UnormSrgb` (samples land in linear space; sRGB
   blending matches authored colors), linear-filtered, clamp-to-edge.
 - The shape/sprite shaders evaluate an **SDF in the object's local space**: the
@@ -967,7 +988,7 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **401 lib tests + 3 integration tests (`tests/`) + 7 doctests**
+Baseline: **406 lib tests + 3 integration tests (`tests/`) + 7 doctests**
 passing, `cargo build` (lib + the `sprite_util` and `noisefloor` tools) clean.
 The tool's 93
 tests — 68 that moved with `examples/sprite_util.rs`, each living in the

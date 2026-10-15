@@ -16,7 +16,9 @@ struct BlitUniforms {
     // One weight per bloom level — coarse to fine — already multiplied by the
     // user's strength, so all zero is how "no bloom" reaches this shader.
     bloom: vec3<f32>,
-    _pad: f32,
+    // How much of the display range light above white gets, in a fraction of
+    // that range: 0.0 is "clip, as before". See `fold_highlights`.
+    tone: f32,
 };
 
 @group(0) @binding(2)
@@ -84,6 +86,40 @@ fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
     return out;
 }
 
+/// Fold the range above the display into the top of it, so that a lamp three
+/// times brighter than white arrives as a lamp and not as a white disc with
+/// no colour and no gradient left in it.
+///
+/// `headroom` is the share of the display range handed to light above white.
+/// Below the knee at `1 - headroom` the curve is the identity and its slope
+/// there is 1.0, which is the whole point of that choice: an ordinary pixel,
+/// authored against a screen and never meant to go past it, is left exactly
+/// where the artist put it, and only the band just under white pays anything.
+/// The price of reserving the top of the range is that display white itself
+/// lands at `1 - headroom / 2` — the headroom is not free, and no curve makes
+/// it so; a tone map trades brightness for highlight detail and that is the
+/// trade, stated in one number.
+///
+/// Above the knee the curve is rational, approaching white as 1/x. That is
+/// deliberate: an exponential shoulder — the other obvious shape — gets to
+/// white so fast that a lamp at 2.0 and a lamp at 20.0 come out the same
+/// pixel, and the difference between those two lamps is most of what an
+/// over-bright frame has to say.
+///
+/// The fold is applied to the brightest channel and the ratio is what the
+/// pixel is scaled by, so a light keeps its colour on the way in. Folding each
+/// channel on its own drains the saturation out of every highlight in the
+/// frame, which is the first thing a bad tone map shows.
+fn fold_highlights(c: vec3<f32>, headroom: f32) -> vec3<f32> {
+    let knee = 1.0 - headroom;
+    let br = max(c.r, max(c.g, c.b));
+    if (br <= knee) {
+        return c;
+    }
+    let folded = 1.0 - (headroom * headroom) / (headroom + br - knee);
+    return c * (folded / br);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // The buffer was fully cleared before the frame was drawn into it, so
@@ -103,6 +139,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         c += textureSampleLevel(bloom0, bloom_sampler, in.uv, 0.0) * u.bloom.x;
         c += textureSampleLevel(bloom1, bloom_sampler, in.uv, 0.0) * u.bloom.y;
         c += textureSampleLevel(bloom2, bloom_sampler, in.uv, 0.0) * u.bloom.z;
+    }
+    // Last, after every light has been added, because it is the total that has
+    // to fit the display — and before the transfer curve, which is not a
+    // mapping of brightness in the sense this one is.
+    if (u.tone > 0.0) {
+        c = vec4<f32>(fold_highlights(c.rgb, u.tone), c.a);
     }
     if (ENCODE_GAMMA) {
         return vec4<f32>(encode_srgb(c.rgb), c.a);

@@ -126,6 +126,12 @@ pub(crate) struct Frost<P: Process> {
     /// is read when the frame buffer is built — asking for bloom mid-run is not
     /// a thing, which is the same rule `render_size` lives by.
     bloom: f32,
+    /// The headroom the app asked for (`Config::tone_map`): the share of the
+    /// display range kept for light above white, zero for none. Like bloom it
+    /// is read once, when the frame buffer is built, and it reaches the shader
+    /// through the stretch pass's own uniform rather than deciding a pipeline,
+    /// because unlike bloom it needs no textures to hold a working set.
+    tone_map: f32,
     #[allow(dead_code)]
     window_id: Option<WindowId>,
     /// The winit window (shared), kept so we can call `request_redraw` for
@@ -538,6 +544,7 @@ impl<P: Process> Frost<P> {
         render_size: Option<[u32; 2]>,
         blit_filter: SpriteFilter,
         bloom: f32,
+        tone_map: f32,
         escape_exits: bool,
         close_exits: bool,
         scene: Scene,
@@ -712,6 +719,7 @@ impl<P: Process> Frost<P> {
             render_size,
             blit_filter,
             bloom,
+            tone_map,
             window_id: None,
             window: None,
             logical_size: (0, 0),
@@ -1623,8 +1631,11 @@ impl<P: Process> Frost<P> {
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        self.queue
-            .write_buffer(&fit_buffer, 0, &fit_bytes((1.0, 1.0), [0.0; 3]));
+        self.queue.write_buffer(
+            &fit_buffer,
+            0,
+            &fit_bytes((1.0, 1.0), [0.0; 3], self.tone_map),
+        );
         let bind_group = self.device.create_bind_group(&BindGroupDescriptor {
             label: Some("blit bind group"),
             layout: &self
@@ -2888,8 +2899,11 @@ impl<P: Process> Frost<P> {
             // below adds back as it samples. A dormant chain has no levels, so
             // this draws nothing at all when the app asked for no bloom.
             t.bloom.run(&mut encoder);
-            self.queue
-                .write_buffer(&t.fit_buffer, 0, &fit_bytes(fit, t.bloom.weights));
+            self.queue.write_buffer(
+                &t.fit_buffer,
+                0,
+                &fit_bytes(fit, t.bloom.weights, self.tone_map),
+            );
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("blit pass"),
                 color_attachments: &[Some(RenderPassColorAttachment {

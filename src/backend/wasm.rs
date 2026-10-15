@@ -51,6 +51,8 @@ struct Core<P: Process> {
     blit_filter: SpriteFilter,
     /// The glow the app asked for (see `Config::bloom`).
     bloom: f32,
+    /// The tone-map headroom the app asked for (see `Config::tone_map`).
+    tone_map: f32,
     /// Whether Escape, on its own, ends the app (see
     /// `Config::escape_exits`).
     escape_exits: bool,
@@ -217,6 +219,7 @@ impl<P: Process> WebFrost<P> {
         render_size: Option<[u32; 2]>,
         blit_filter: SpriteFilter,
         bloom: f32,
+        tone_map: f32,
         escape_exits: bool,
         close_exits: bool,
     ) -> Self {
@@ -233,6 +236,7 @@ impl<P: Process> WebFrost<P> {
                 render_size,
                 blit_filter,
                 bloom,
+                tone_map,
                 escape_exits,
                 close_exits,
             }),
@@ -300,6 +304,7 @@ impl<P: Process> WebFrost<P> {
             core.render_size,
             core.blit_filter,
             core.bloom,
+            core.tone_map,
             core.escape_exits,
             core.close_exits,
             core.scene,

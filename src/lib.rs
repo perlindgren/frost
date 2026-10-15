@@ -751,6 +751,34 @@ pub struct Config {
     /// a draw call at 1080p on a laptop; not free at 4K on an integrated GPU,
     /// and the second full-resolution target is the part that hurts there.
     pub bloom: f32,
+    /// How much of the display's range is reserved for light *above* white:
+    /// the tone map's headroom.
+    ///
+    /// A frame buffer can hold 4.0 of radiance and a display cannot show it,
+    /// so without a tone map the choice is made for you at the surface, and it
+    /// is clipping — a lamp at 4.0 and a lamp at 1.1 both arrive as white, and
+    /// the halo bloom just laid around them flattens with them. Asking for
+    /// `0.15` reserves fifteen percent of the display range for everything
+    /// above white and folds that everything into it in order, so the two lamps
+    /// stay two different brightnesses and each keeps the colour it was
+    /// authored with. The cost is stated once, in the shader: display white
+    /// itself lands about half a headroom lower, so an ordinary frame comes out
+    /// very slightly dimmed by the room its brightest pixels were given. `0.0`,
+    /// the default, clips exactly as it always did.
+    ///
+    /// What the number does, worked out for `0.15`: the knee lands at 0.85,
+    /// display white comes back at 0.925, four times white at 0.993, and
+    /// sixteen times white at 0.999 — the whole over-white range of a scene
+    /// living inside the last few percent of what a display can show. That is
+    /// the trade this knob is, and it is a decision rather than a setting: a
+    /// bigger headroom separates bright lamps further at the price of dimming
+    /// every bright pixel in the frame, and no value of it makes the room
+    /// free.
+    ///
+    /// Where the surface does show values past 1.0 — [`Config::hdr_frames`] on
+    /// a display that will — this normally wants to stay `0.0`, because there
+    /// the overshoot is not a problem to fold away; it is the point.
+    pub tone_map: f32,
     /// Whether the Escape key, on its own, ends the application.
     ///
     /// True is the classic convenience: every app closes at a keypress.
@@ -783,6 +811,7 @@ impl Default for Config {
             render_size: None,
             blit_filter: SpriteFilter::Linear,
             bloom: 0.0,
+            tone_map: 0.0,
             escape_exits: true,
             close_exits: true,
         }
@@ -837,6 +866,7 @@ pub fn run_configured<P: Process>(
         config.render_size,
         config.blit_filter,
         config.bloom,
+        config.tone_map,
         config.escape_exits,
         config.close_exits,
         scene,
@@ -885,6 +915,7 @@ pub fn run_configured<P: Process>(
         config.render_size,
         config.blit_filter,
         config.bloom,
+        config.tone_map,
         config.escape_exits,
         config.close_exits,
     );

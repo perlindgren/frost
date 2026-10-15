@@ -190,13 +190,14 @@ pub(crate) fn fit_into_monitor(size: [u32; 2], avail: [u32; 2]) -> [u32; 2] {
 
 /// Packs a letterbox fit into the blit uniform's 16 bytes: two floats of
 /// extent followed by the struct's padding.
-pub(crate) fn fit_bytes(fit: (f32, f32), bloom: [f32; 3]) -> [u8; 32] {
+pub(crate) fn fit_bytes(fit: (f32, f32), bloom: [f32; 3], tone: f32) -> [u8; 32] {
     let mut bytes = [0u8; 32];
     bytes[0..4].copy_from_slice(&fit.0.to_le_bytes());
     bytes[4..8].copy_from_slice(&fit.1.to_le_bytes());
     for (i, w) in bloom.iter().enumerate() {
         bytes[16 + i * 4..20 + i * 4].copy_from_slice(&w.to_le_bytes());
     }
+    bytes[28..32].copy_from_slice(&tone.to_le_bytes());
     bytes
 }
 
@@ -294,11 +295,12 @@ mod tests {
 
     #[test]
     fn fit_bytes_writes_the_two_extents_and_pads() {
-        let bytes = fit_bytes((0.5, 0.25), [0.0; 3]);
+        let bytes = fit_bytes((0.5, 0.25), [0.0; 3], 0.0);
         assert_eq!(f32::from_le_bytes(bytes[0..4].try_into().unwrap()), 0.5);
         assert_eq!(f32::from_le_bytes(bytes[4..8].try_into().unwrap()), 0.25);
         assert_eq!(&bytes[8..16], &[0u8; 8]);
         assert_eq!(&bytes[16..28], &[0u8; 12]);
+        assert_eq!(&bytes[28..], &[0u8; 4]);
     }
 
     /// The bloom weights ride in the same 32 bytes as the letterbox fit, at
@@ -307,9 +309,24 @@ mod tests {
     /// it is worth one test that says where each thing lands.
     #[test]
     fn the_bloom_weights_land_after_the_padding() {
-        let bytes = fit_bytes((1.0, 1.0), [0.5, 0.3, 0.2]);
+        let bytes = fit_bytes((1.0, 1.0), [0.5, 0.3, 0.2], 0.0);
         let f = |r: std::ops::Range<usize>| f32::from_le_bytes(bytes[r].try_into().unwrap());
         assert_eq!((f(16..20), f(20..24), f(24..28)), (0.5, 0.3, 0.2));
-        assert_eq!(&bytes[28..], &[0u8; 4]);
+        assert_eq!(f(28..32), 0.0);
+    }
+
+    /// The tone-map headroom lands at offset 28, the last field of the struct,
+    /// which is also the only place in these 32 bytes that was padding. Same
+    /// reason the weights needed a test: two files agree on this layout by
+    /// agreement and nothing checks them but this.
+    #[test]
+    fn the_headroom_lands_at_the_end() {
+        let bytes = fit_bytes((1.0, 1.0), [0.0; 3], 0.15);
+        assert_eq!(
+            f32::from_le_bytes(bytes[28..32].try_into().unwrap()),
+            0.15,
+            "blit.wgsl reads `tone` at offset 28"
+        );
+        assert_eq!(&bytes[16..28], &[0u8; 12]);
     }
 }

@@ -1250,8 +1250,8 @@ pub struct SceneNode {
     /// handing some of its light to the pixels around it — so a lamp meant to
     /// light a room is written past 1.0 and one meant merely to be seen is
     /// not. With bloom off, a value past 1.0 still reaches the screen as
-    /// plain white; only a tone map would say otherwise, and frost does not
-    /// have one yet.
+    /// plain white; [`tone_map`](crate::Config::tone_map) is what would say
+    /// otherwise.
     ///
     /// The default — black — is off.
     pub emission: Color,
