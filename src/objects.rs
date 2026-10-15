@@ -1223,15 +1223,17 @@ pub struct SceneNode {
     /// carry both flags: a `lit: true, occludes: true` wall is lit on its
     /// own surface and still blocks the light from what lies behind it.
     pub occludes: bool,
-    /// The node's own emission: a floor of self-light added to the light
-    /// mix that multiplies the shape's color, so the surface stays visible
-    /// in the dark while lights still add on top of it:
-    /// `pixel = color * (ambient + lights + emission)`.
+    /// The node's own emission: light the surface puts out, multiplied into
+    /// its own color, so a surface stays visible in the dark and lights add
+    /// on top of it rather than being its only source of brightness:
+    /// `pixel = color * (ambient + lights + emission)` when [`SceneNode::lit`],
+    /// `pixel = color * (1 + emission)` when it is not.
     ///
-    /// Like [`SceneNode::lit`] (which it requires — an unlit shape draws
-    /// its color in full already), the emission applies to this node's own
-    /// shape only, does not propagate to children, and is multiplied by the
-    /// composed modulate. It lights the surface and nothing else: emission
+    /// Unlike [`SceneNode::lit`], this does not care whether any light
+    /// reaches the surface — an emissive node glows in a scene with no
+    /// lights at all, and glows the same amount inside a beam. Like `lit`,
+    /// it applies to this node's own shape only, does not propagate to
+    /// children, and is multiplied by the composed modulate. It lights the surface and nothing else: emission
     /// never spills onto neighbors, and nothing shadows it — to light the
     /// surroundings as well, attach a [`Shape::Light`] child node. Spill is
     /// **bloom**, an effect of the renderer over bright pixels rather than a

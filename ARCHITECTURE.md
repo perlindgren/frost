@@ -306,8 +306,9 @@ never count (`Diagnostics` excludes them like backgrounds).
 - Receivers opt in per node, flag applies to that shape only:
   `SceneNode::lit` multiplies the shape's color by `ambient + Σ lights +
   emission` per pixel; `SceneNode::emission` (a `Color`, alpha-scaled) is the
-  shape's own emission — visible in the dark, never shadowed, never spilling
-  onto neighbors (attach a `Shape::Light` child for that); `SceneNode::occludes`
+  shape's own emission — visible in the dark, whether or not any light reaches
+  it, never shadowed, never spilling onto neighbors (attach a `Shape::Light`
+  child for that); `SceneNode::occludes`
   makes a shape's transformed silhouette block every light's path to pixels
   behind it — a shadow caster. A wall can be `lit + occludes` at once. A
   painted rectangle reaches the field as itself and a painted circle as the

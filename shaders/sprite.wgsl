@@ -83,13 +83,16 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
         discard;
     }
     // The tinted texture color, multiplied by the light mix when the
-    // sprite is lit; the lights never touch the alpha. The sprite's own
-    // emission joins the mix as a floor of self-light: rgb scaled by its
-    // alpha, added even where the light field is black — an emissive sprite
-    // is visible in the dark, and lights still add on top.
+    // sprite is lit, and by its own emission either way — see the note in
+    // shape.wgsl: emission is what a surface puts out, so it needs no light
+    // field to be seen. The lights never touch the alpha, the self-light
+    // stays in the sprite's own hue, and the branches are two because
+    // select would evaluate light_mix for every unlit sprite too.
     var rgb = t.rgb * u.tint.rgb;
     if (u.lit > 0.5) {
         rgb *= light_mix(frag_coord.xy) + u.emission.rgb * u.emission.a;
+    } else {
+        rgb += rgb * u.emission.rgb * u.emission.a;
     }
     // Emit the color, scaled by the sprite's alpha and the tint's own
     // alpha, and composited over the existing attachment via alpha

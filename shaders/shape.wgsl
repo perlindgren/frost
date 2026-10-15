@@ -51,14 +51,22 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
         d = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0);
     }
     let alpha = 1.0 - smoothstep(-u.misc.x, u.misc.x, d);
-    // The shape's color, multiplied by the light mix when the shape is
-    // lit; the lights never touch the alpha. The shape's own emission joins
-    // the mix as a floor of self-light: rgb scaled by its alpha, added
-    // even where the light field is black — a lit, emissive surface is
-    // never fully dark, and lights still add on top.
+    // The shape's color, multiplied by the light mix when it is lit, and
+    // by its own emission either way: emission is light the surface puts
+    // out, not light that has to reach it, so an unlit shape glows exactly
+    // as a lit one does. The lights never touch the alpha. Self-light stays
+    // in the shape's own hue — rgb scaled by the emission's alpha — and
+    // past 1.0 it is an overshoot the float frame buffer keeps for a later
+    // pass to find.
+    //
+    // Two branches, not a select: select's arguments are both evaluated, so
+    // folding this would make every unlit shape on screen run the light loop
+    // it is not lit by. The lit branch is the old expression unchanged.
     var rgb = u.color.rgb;
     if (u.lit > 0.5) {
         rgb *= light_mix(frag_coord.xy) + u.emission.rgb * u.emission.a;
+    } else {
+        rgb += rgb * u.emission.rgb * u.emission.a;
     }
     // Emit the shape's color and coverage; composited over the existing
     // attachment via alpha blending.
