@@ -1,6 +1,7 @@
 //! The backend's unit tests, split by topic into the sibling modules:
 //! scissor, transform, scene, nodes, context, particles, uniforms,
-//! fields, layers, camera, repeat, sprites, text, tilemap and config.
+//! fields, layers, camera, repeat, sprites, text, tilemap, draw cost
+//! and config.
 //!
 //! Each module imports the backend's public items and this module's
 //! shared [`black`] helper; every test keeps the name it had when the
@@ -9,6 +10,7 @@
 mod camera;
 mod config;
 mod context;
+mod draw_cost;
 mod fields;
 mod layers;
 mod nodes;

@@ -3,21 +3,25 @@ use std::collections::{HashMap, HashSet};
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::future::Future;
-use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
+use std::num::NonZeroU64;
+use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll, Waker};
 
 use gilrs::{EventType, Gilrs};
 use wgpu::{
-    Adapter, AddressMode, BindGroup, BindGroupDescriptor, BindGroupEntry, BindingResource, Buffer,
-    BufferBinding, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
-    CommandEncoderDescriptor, CurrentSurfaceTexture, Device, Extent3d, FilterMode, FragmentState,
-    Instance, MipmapFilterMode, MultisampleState, PipelineCompilationOptions, PresentMode,
-    PrimitiveState, Queue, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline,
-    RenderPipelineDescriptor, Sampler, SamplerDescriptor, ShaderModule, ShaderModuleDescriptor,
-    ShaderSource, StoreOp, Surface, SurfaceConfiguration, SurfaceTexture, TexelCopyBufferLayout,
-    TexelCopyTextureInfo, TextureAspect, TextureDescriptor, TextureDimension, TextureFormat,
-    TextureUsages, TextureView, TextureViewDescriptor, VertexState,
+    Adapter, AddressMode, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
+    BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, Buffer,
+    BufferBinding, BufferBindingType, BufferDescriptor, BufferUsages, ColorTargetState,
+    ColorWrites, CommandEncoderDescriptor, CurrentSurfaceTexture, Device, Extent3d, FilterMode,
+    FragmentState, Instance, MipmapFilterMode, MultisampleState, PipelineCompilationOptions,
+    PipelineLayout, PipelineLayoutDescriptor, PresentMode, PrimitiveState, Queue,
+    RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor,
+    Sampler, SamplerBindingType, SamplerDescriptor, ShaderModule, ShaderModuleDescriptor,
+    ShaderSource, ShaderStages, StoreOp, Surface, SurfaceConfiguration, SurfaceTexture,
+    TexelCopyBufferLayout, TexelCopyTextureInfo, TextureAspect, TextureDescriptor,
+    TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView,
+    TextureViewDescriptor, TextureViewDimension, VertexState,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -177,6 +181,37 @@ pub(crate) struct Frost<P: Process> {
     /// evicted right after the text is expanded; a sprite buffer's stale
     /// entry is evicted lazily, when a new buffer recycles its address.
     sprite_resources: HashMap<(u64, u64), TextureView>,
+    /// The sprite draws' uniforms, all of them, in one buffer: draw *i* of
+    /// the frame's draw list owns the slot at `i * arena_stride`, the frame
+    /// uploads the whole thing once, and each draw slides the bind group's
+    /// 96-byte window to its own slot with a dynamic offset.
+    ///
+    /// This exists because a uniform buffer and a bind group per draw is the
+    /// dearest CPU cost a frame pays: measured on an Apple M4 Max in a
+    /// release build, 6.9 microseconds a draw against 0.4 with the arena — a
+    /// 243-draw frame of glyph quads went from 2.1 ms to 0.3 ms. (A pool of
+    /// buffers reused across frames was measured too, and lands in between
+    /// at 3.4 microseconds a draw: the per-draw `write_buffer` survives, and
+    /// it is half the cost. See the `draw_cost` bench.)
+    ///
+    /// The buffer is grow-only and reused between frames, so the only work
+    /// a frame does here is one `write_buffer` of the bytes it already built.
+    /// It never needs to shrink: an idle slot is bytes nobody reads.
+    sprite_arena: Option<Buffer>,
+    /// Bytes per arena slot: the device's uniform-offset alignment (256 on
+    /// every backend so far) at least a sprite uniform's 96 bytes, since a
+    /// dynamic offset must be a multiple of that alignment.
+    arena_stride: u64,
+    /// The sprite bind groups this engine has built, one per atlas and
+    /// sampling filter: the arena's window, the texture, the sampler and the
+    /// two frame fields, all of which outlive a frame. A draw's own bytes
+    /// arrive through the dynamic offset, so unlike the old per-draw groups
+    /// these are worth keeping — a frame with three images builds three, not
+    /// one per draw. Cleared when the arena or a field buffer is rebuilt.
+    sprite_binds: HashMap<(u64, u64, bool), BindGroup>,
+    /// The frame's arena bytes, assembled here and uploaded once, kept
+    /// between frames for its capacity alone.
+    sprite_staging: Vec<u8>,
     /// The rasterized glyph atlas for each distinct `(font, size, weight)`
     /// triple, keyed by the font buffer's pointer, the size's bits and the
     /// weight's bits. Kept between
@@ -280,6 +315,79 @@ pub(crate) struct Frost<P: Process> {
     process: P,
 }
 
+/// The sprite pipeline's bind group layout and pipeline layout, written
+/// out instead of derived. The reason is binding 0: the frame's uniform
+/// arena is reached by a *dynamic offset*, and an auto layout reads the
+/// shader's `var<uniform>` as a fixed one, leaving the offset nowhere to
+/// go. Every other entry is sprite.wgsl's own — the image, the sampler,
+/// and the two frame fields, all fragment-stage — copied one for one, so
+/// the pair is only correct while it matches the file; wgpu validates
+/// them against each other when the pipeline is built, which is every
+/// frame of every test, and a binding that moves or changes type fails
+/// there rather than painting anything wrong.
+pub(crate) fn sprite_layouts(device: &Device) -> (BindGroupLayout, PipelineLayout) {
+    let bind = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some("sprite bind group layout"),
+        entries: &[
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    // A sprite uniform, and no less: the bound window is
+                    // what the offset slides, so this is also the only
+                    // part of the arena a draw can read.
+                    min_binding_size: NonZeroU64::new(SPRITE_UNIFORM_BYTES),
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Texture {
+                    sample_type: TextureSampleType::Float { filterable: true },
+                    view_dimension: TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 3,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 4,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+    let pipeline = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some("sprite pipeline layout"),
+        bind_group_layouts: &[Some(&bind)],
+        immediate_size: 0,
+    });
+    (bind, pipeline)
+}
+
 impl<P: Process> Frost<P> {
     /// The app's initial state: the GPU is ready, but there is no window
     /// and no surface yet — `attach_window` creates both.
@@ -339,6 +447,15 @@ impl<P: Process> Frost<P> {
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+
+        // A sprite uniform slot must hold the uniform (96 bytes) and start on
+        // a multiple of the device's uniform-offset alignment, because a
+        // dynamic offset must be aligned: 256 bytes on every backend
+        // measured so far.
+        let arena_stride = {
+            let align = device.limits().min_uniform_buffer_offset_alignment as u64;
+            SPRITE_UNIFORM_BYTES.max(align).next_multiple_of(align)
+        };
 
         // The particle pipeline's bind group always carries a texture and a
         // sampler: a sprite batch binds its image, and the SDF kinds —
@@ -484,6 +601,14 @@ impl<P: Process> Frost<P> {
             field_buffer,
             occluder_buffer,
             sprite_resources: HashMap::new(),
+            sprite_arena: None,
+            // A dynamic offset must be a multiple of this alignment, and a
+            // slot must hold the uniform: 96 bytes rounded up to a multiple
+            // of the alignment, which is 256 on every backend measured so
+            // far.
+            arena_stride,
+            sprite_binds: HashMap::new(),
+            sprite_staging: Vec::new(),
             text_atlases: HashMap::new(),
             format: None,
             linear_surface: false,
@@ -1025,6 +1150,7 @@ impl<P: Process> Frost<P> {
             device,
             &line_module,
             format,
+            None,
             "line pipeline",
             true,
         ));
@@ -1037,6 +1163,7 @@ impl<P: Process> Frost<P> {
             device,
             &polyline_module,
             format,
+            None,
             "polyline pipeline",
             true,
         ));
@@ -1049,6 +1176,7 @@ impl<P: Process> Frost<P> {
             device,
             &circle_module,
             format,
+            None,
             "circle pipeline",
             true,
         ));
@@ -1061,6 +1189,7 @@ impl<P: Process> Frost<P> {
             device,
             &rect_module,
             format,
+            None,
             "rectangle pipeline",
             true,
         ));
@@ -1073,6 +1202,7 @@ impl<P: Process> Frost<P> {
             device,
             &shape_module,
             format,
+            None,
             "shape pipeline",
             true,
         ));
@@ -1081,10 +1211,16 @@ impl<P: Process> Frost<P> {
             label: Some("sprite shaders"),
             source: ShaderSource::Wgsl(Cow::Borrowed(self.wgsl("sprite"))),
         });
+        // The one pipeline with a hand-written layout, for the arena's
+        // dynamic offset. The layout is dropped once the pipeline exists:
+        // `RenderPipeline::get_bind_group_layout` hands it back to the draws
+        // that need it.
+        let (_sprite_bind_layout, sprite_pipeline_layout) = sprite_layouts(device);
         self.sprite_pipeline = Some(Self::create_pipeline(
             device,
             &sprite_module,
             format,
+            Some(&sprite_pipeline_layout),
             "sprite pipeline",
             true,
         ));
@@ -1097,6 +1233,7 @@ impl<P: Process> Frost<P> {
             device,
             &particles_module,
             format,
+            None,
             "particle pipeline",
             true,
         ));
@@ -1109,6 +1246,7 @@ impl<P: Process> Frost<P> {
             device,
             &tilemap_module,
             format,
+            None,
             "tilemap pipeline",
             true,
         ));
@@ -1132,6 +1270,7 @@ impl<P: Process> Frost<P> {
             device,
             &blit_module,
             format,
+            None,
             "blit pipeline",
             false,
         ));
@@ -1147,12 +1286,13 @@ impl<P: Process> Frost<P> {
         device: &Device,
         module: &ShaderModule,
         format: TextureFormat,
+        layout: Option<&PipelineLayout>,
         label: &str,
         blend: bool,
     ) -> RenderPipeline {
         device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some(label),
-            layout: None,
+            layout,
             vertex: VertexState {
                 module,
                 entry_point: Some("vs_main"),
@@ -1383,74 +1523,6 @@ impl<P: Process> Frost<P> {
         }
     }
 
-    /// Creates the uniform buffer and five-entry bind group (uniform,
-    /// texture view, sampler, light field, occluder field) for one sprite
-    /// draw call. Same per-draw buffer rationale as
-    /// [`Frost::primitive_uniform`].
-    // The bind-group entries are deliberately flat: each takes the
-    // per-draw resources it binds, and the frame fields grow with the
-    // lighting features.
-    #[allow(clippy::too_many_arguments)]
-    fn sprite_uniform(
-        &self,
-        pipeline: &RenderPipeline,
-        label: &str,
-        view: &TextureView,
-        sampler: &Sampler,
-        data: &[u8],
-        field_buffer: &Buffer,
-        occluder_buffer: &Buffer,
-    ) -> (Buffer, BindGroup) {
-        let device = &self.device;
-        let buffer = device.create_buffer(&BufferDescriptor {
-            label: Some(label),
-            size: data.len() as u64,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.queue.write_buffer(&buffer, 0, data);
-        let layout = pipeline.get_bind_group_layout(0);
-        let bind_group = device.create_bind_group(&BindGroupDescriptor {
-            label: Some(label),
-            layout: &layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::Buffer(BufferBinding {
-                        buffer: &buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::TextureView(view),
-                },
-                BindGroupEntry {
-                    binding: 2,
-                    resource: BindingResource::Sampler(sampler),
-                },
-                BindGroupEntry {
-                    binding: 3,
-                    resource: BindingResource::Buffer(BufferBinding {
-                        buffer: field_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-                BindGroupEntry {
-                    binding: 4,
-                    resource: BindingResource::Buffer(BufferBinding {
-                        buffer: occluder_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-            ],
-        });
-        (buffer, bind_group)
-    }
-
     /// Creates the per-draw buffers and bind group for one particle batch:
     /// the batch's uniform (the surface size, the base color, and the shape
     /// kind and aspect) at binding 0, the packed per-particle instance data
@@ -1674,6 +1746,82 @@ impl<P: Process> Frost<P> {
         (uniform_buffer, bind_group)
     }
 
+    /// The bind group for one sprite image at one sampling filter: the
+    /// arena's 96-byte window, the image, the sampler, and the frame's two
+    /// fields.
+    ///
+    /// One per image per filter, built on the frame's first draw that needs
+    /// it and kept for the ones after — and across frames, since nothing in
+    /// the group changes between them. A frame of two hundred glyph quads off
+    /// one atlas builds this once; what stays per-draw is the dynamic offset
+    /// that slides the uniform window, which is a u32 and not an allocation.
+    /// The group is dropped when the arena or a field buffer is rebuilt,
+    /// because those are the buffers it holds.
+    #[allow(clippy::too_many_arguments)]
+    fn sprite_bind_group(
+        &mut self,
+        pipeline: &RenderPipeline,
+        texture: (u64, u64),
+        linear: bool,
+        view: &TextureView,
+        sampler: &Sampler,
+        field_buffer: &Buffer,
+        occluder_buffer: &Buffer,
+    ) -> BindGroup {
+        let key = (texture.0, texture.1, linear);
+        if let Some(bind_group) = self.sprite_binds.get(&key) {
+            return bind_group.clone();
+        }
+        let layout = pipeline.get_bind_group_layout(0);
+        let arena = self
+            .sprite_arena
+            .clone()
+            .expect("the frame's sprite draws built the arena before the pass");
+        let bind_group = self.device.create_bind_group(&BindGroupDescriptor {
+            label: Some("sprite bind"),
+            layout: &layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    // One slot of the arena, not the arena: a dynamic offset
+                    // slides the *bound window*, so a group that bound the
+                    // whole buffer could only ever be offset by zero.
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: &arena,
+                        offset: 0,
+                        size: NonZeroU64::new(SPRITE_UNIFORM_BYTES),
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::TextureView(view),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::Sampler(sampler),
+                },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: field_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 4,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: occluder_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+            ],
+        });
+        self.sprite_binds.insert(key, bind_group.clone());
+        bind_group
+    }
+
     /// The frame's light field buffer, grown to hold the header plus
     /// `count` light records when the buffer is still too small. The
     /// buffer only ever grows: its size is the peak light count so far
@@ -1688,6 +1836,9 @@ impl<P: Process> Frost<P> {
                 usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            // The cached sprite bind groups bind the buffer that was just
+            // replaced; they go with it and are rebuilt on the next draw.
+            self.sprite_binds.clear();
         }
         self.field_buffer.clone()
     }
@@ -1707,6 +1858,9 @@ impl<P: Process> Frost<P> {
                 usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            // As in [`Frost::field_buffer_for`]: the cached bind groups hold
+            // the buffer that was just replaced.
+            self.sprite_binds.clear();
         }
         self.occluder_buffer.clone()
     }
@@ -1887,6 +2041,71 @@ impl<P: Process> Frost<P> {
         self.queue
             .write_buffer(&occluder_buffer, 0, &occluders.data);
 
+        // The sprite uniforms, one buffer and one upload for the frame.
+        //
+        // Draw *i* of the frame's draw list owns the arena slot at
+        // `i * arena_stride`, so the draw loop needs nothing but its own
+        // index to find its bytes, and the two walks cannot fall out of step:
+        // the slot belongs to a position, not to a count of sprites that made
+        // it this far. A sprite whose transform has collapsed keeps a slot
+        // nobody reads, because the loop still skips it.
+        //
+        // Only the span between the first sprite and the last is uploaded —
+        // a frame of four thousand line segments and a dozen glyph quads does
+        // not carry three thousand slots of zeroes through the bus.
+        let stride = self.arena_stride;
+        let slots = draws.len();
+        let first = draws.iter().position(|d| matches!(d, Draw::Sprite { .. }));
+        let last = draws
+            .iter()
+            .rev()
+            .position(|d| matches!(d, Draw::Sprite { .. }));
+        if let (Some(first), Some(last)) = (first, last) {
+            let last = slots - 1 - last;
+            let arena = match &self.sprite_arena {
+                Some(buffer) if buffer.size() >= (slots as u64) * stride => buffer.clone(),
+                _ => {
+                    let buffer = self.device.create_buffer(&BufferDescriptor {
+                        label: Some("sprite uniform arena"),
+                        size: (slots as u64).max(1) * stride,
+                        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    self.sprite_arena = Some(buffer.clone());
+                    // The cached bind groups bind the arena that just went
+                    // away; they are built again on the next draw.
+                    self.sprite_binds.clear();
+                    buffer
+                }
+            };
+            let span = (last - first + 1) * stride as usize;
+            let mut staging = std::mem::take(&mut self.sprite_staging);
+            staging.clear();
+            staging.resize(span, 0);
+            for (i, draw) in draws.iter().enumerate().take(last + 1).skip(first) {
+                if let Draw::Sprite {
+                    world,
+                    size,
+                    tint,
+                    alpha,
+                    glow,
+                    lit,
+                    uv_rect,
+                    ..
+                } = draw
+                    && let Some(inv) = world.invert()
+                {
+                    let bytes =
+                        sprite_uniform_data(inv, *size, *tint, *alpha, *glow, *lit, *uv_rect);
+                    let at = (i - first) * stride as usize;
+                    staging[at..at + bytes.len()].copy_from_slice(&bytes);
+                }
+            }
+            self.queue
+                .write_buffer(&arena, (first as u64) * stride, &staging);
+            self.sprite_staging = staging;
+        }
+
         // The frame's destination: the swapchain texture — or, in fixed
         // render size mode when the surface is not already exactly that
         // size, the offscreen buffer the blit pass stretches over the
@@ -1953,19 +2172,23 @@ impl<P: Process> Frost<P> {
             Some(particle_pipeline),
             Some(tilemap_pipeline),
         ) = (
-            self.line_pipeline.as_ref(),
-            self.polyline_pipeline.as_ref(),
-            self.circle_pipeline.as_ref(),
-            self.rect_pipeline.as_ref(),
-            self.shape_pipeline.as_ref(),
-            self.sprite_pipeline.as_ref(),
-            self.particle_pipeline.as_ref(),
-            self.tilemap_pipeline.as_ref(),
+            // Owned handles, not borrows of `self`: a wgpu handle is an
+            // `Arc`, so the clone is a refcount, and the frame needs the
+            // freedom to call `&mut self` between the draws — the sprite
+            // bind groups are built, and cached, from inside the loop.
+            self.line_pipeline.clone(),
+            self.polyline_pipeline.clone(),
+            self.circle_pipeline.clone(),
+            self.rect_pipeline.clone(),
+            self.shape_pipeline.clone(),
+            self.sprite_pipeline.clone(),
+            self.particle_pipeline.clone(),
+            self.tilemap_pipeline.clone(),
         )
         else {
             return;
         };
-        let Some(particle_index_buffer) = &self.particle_index_buffer else {
+        let Some(particle_index_buffer) = self.particle_index_buffer.clone() else {
             return;
         };
 
@@ -2012,7 +2235,10 @@ impl<P: Process> Frost<P> {
             // write. The viewport is left at the full target, so the
             // shaders' pixel coordinates stay absolute.
             let render_area = frame_area;
-            for draw in draws {
+            // The index is the arena slot: see the pre-pass above. The list
+            // moves into the loop, as it did — by value, so the arms keep
+            // owning their draw's data.
+            for (i, draw) in draws.into_iter().enumerate() {
                 let Some([x, y, w, h]) = draw.scissor_rect(render_area) else {
                     // Fully outside the surface, or a background (which
                     // became the clear color); nothing to draw.
@@ -2031,11 +2257,11 @@ impl<P: Process> Frost<P> {
                         ..
                     } => {
                         let (_buffer, bind_group) = self.primitive_uniform(
-                            line_pipeline,
+                            &line_pipeline,
                             "line uniforms",
                             &line_uniform_data(a, b, color, width),
                         );
-                        pass.set_pipeline(line_pipeline);
+                        pass.set_pipeline(&line_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         draw_calls += 1;
                         if diagnostic {
@@ -2051,11 +2277,11 @@ impl<P: Process> Frost<P> {
                         ..
                     } => {
                         let (_buffer, bind_group) = self.primitive_uniform(
-                            polyline_pipeline,
+                            &polyline_pipeline,
                             "polyline uniforms",
                             &polyline_uniform_data(&points, color, width),
                         );
-                        pass.set_pipeline(polyline_pipeline);
+                        pass.set_pipeline(&polyline_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         draw_calls += 1;
                         if diagnostic {
@@ -2071,11 +2297,11 @@ impl<P: Process> Frost<P> {
                         ..
                     } => {
                         let (_buffer, bind_group) = self.primitive_uniform(
-                            circle_pipeline,
+                            &circle_pipeline,
                             "circle uniforms",
                             &circle_uniform_data(center, color, radius),
                         );
-                        pass.set_pipeline(circle_pipeline);
+                        pass.set_pipeline(&circle_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         draw_calls += 1;
                         if diagnostic {
@@ -2091,11 +2317,11 @@ impl<P: Process> Frost<P> {
                         ..
                     } => {
                         let (_buffer, bind_group) = self.primitive_uniform(
-                            rect_pipeline,
+                            &rect_pipeline,
                             "rectangle uniforms",
                             &rect_uniform_data(center, extent, color),
                         );
-                        pass.set_pipeline(rect_pipeline);
+                        pass.set_pipeline(&rect_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         draw_calls += 1;
                         if diagnostic {
@@ -2121,13 +2347,13 @@ impl<P: Process> Frost<P> {
                             continue;
                         };
                         let (_buffer, bind_group) = self.shape_uniform(
-                            shape_pipeline,
+                            &shape_pipeline,
                             "shape uniforms",
                             &shape_uniform_data(inv, center, params, kind, aa, color, glow, lit),
                             &field_buffer,
                             &occluder_buffer,
                         );
-                        pass.set_pipeline(shape_pipeline);
+                        pass.set_pipeline(&shape_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         draw_calls += 1;
                         if diagnostic {
@@ -2138,23 +2364,24 @@ impl<P: Process> Frost<P> {
                     Draw::Sprite {
                         world,
                         data,
-                        size,
                         texture_size,
                         filter,
-                        tint,
-                        alpha,
-                        glow,
-                        lit,
-                        uv_rect,
                         generation,
                         diagnostic,
+                        // The rest of the sprite — its box, tint, opacity,
+                        // glow and sub-rectangle — reached the arena in the
+                        // pre-pass; the draw carries only the offset.
                         ..
                     } => {
-                        let Some(inv) = world.invert() else {
+                        if world.invert().is_none() {
                             // Degenerate transform; the sprite collapses to a
                             // line or a point and its inverse does not exist.
+                            // The inverse itself went into the arena, and the
+                            // pre-pass left this draw's slot untouched for the
+                            // very same question asked of the same transform,
+                            // which is why the two walks cannot drift apart.
                             continue;
-                        };
+                        }
                         // Look up the GPU resources for this image, creating
                         // them on first use. Two sprites from the same file
                         // share one texture, so the image is uploaded once
@@ -2181,17 +2408,20 @@ impl<P: Process> Frost<P> {
                         // bilinear and nearest-neighbor draws of one
                         // image share the texture and split only here.
                         let sampler = self.sampler_for(filter);
-                        let (_buffer, bind_group) = self.sprite_uniform(
-                            sprite_pipeline,
-                            "sprite uniforms",
+                        let bind_group = self.sprite_bind_group(
+                            &sprite_pipeline,
+                            key,
+                            matches!(filter, SpriteFilter::Linear),
                             &view,
                             &sampler,
-                            &sprite_uniform_data(inv, size, tint, alpha, glow, lit, uv_rect),
                             &field_buffer,
                             &occluder_buffer,
                         );
-                        pass.set_pipeline(sprite_pipeline);
-                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.set_pipeline(&sprite_pipeline);
+                        // The one number that is still per-draw, and it is a
+                        // u32: the draw's own slot in the arena, slid into
+                        // the bind group's 96-byte window.
+                        pass.set_bind_group(0, &bind_group, &[(i as u64 * stride) as u32]);
                         draw_calls += 1;
                         if diagnostic {
                             diagnostic_draws += 1;
@@ -2262,7 +2492,7 @@ impl<P: Process> Frost<P> {
                             lit,
                         );
                         let (_uniform, _instances, bind_group) = self.particle_uniform(
-                            particle_pipeline,
+                            &particle_pipeline,
                             &data,
                             &uniform_data,
                             &view,
@@ -2270,7 +2500,7 @@ impl<P: Process> Frost<P> {
                             &field_buffer,
                             &occluder_buffer,
                         );
-                        pass.set_pipeline(particle_pipeline);
+                        pass.set_pipeline(&particle_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         pass.set_index_buffer(
                             particle_index_buffer.slice(..),
@@ -2323,7 +2553,7 @@ impl<P: Process> Frost<P> {
                             lit,
                         );
                         let (_uniform, _instances, bind_group) = self.tilemap_uniform(
-                            tilemap_pipeline,
+                            &tilemap_pipeline,
                             &data,
                             &uniform_data,
                             &view,
@@ -2331,7 +2561,7 @@ impl<P: Process> Frost<P> {
                             &field_buffer,
                             &occluder_buffer,
                         );
-                        pass.set_pipeline(tilemap_pipeline);
+                        pass.set_pipeline(&tilemap_pipeline);
                         pass.set_bind_group(0, &bind_group, &[]);
                         // The shared unit-quad index buffer — the very
                         // one the particle batch walks.

@@ -664,6 +664,13 @@ pub(crate) fn shape_uniform_data(
     data
 }
 
+/// The size of a sprite's uniform in bytes: the `SpriteUniforms` WGSL
+/// struct, and the number three places must agree on — the packer below,
+/// the arena's bind group layout, and the window every sprite bind group
+/// binds. It is an arena slot's payload, so a sprite uniform that grows
+/// past it is caught at pipeline creation rather than as a wrong pixel.
+pub(crate) const SPRITE_UNIFORM_BYTES: u64 = 96;
+
 /// Sprite uniform data, 80 bytes, matching the WGSL uniform-space layout of
 /// the `SpriteUniforms` Wgsl struct. The mat2x2 column packing is the same
 /// as in [`shape_uniform_data`]; `translation` sits at @ 16, `size` (a
@@ -681,7 +688,7 @@ pub(crate) fn sprite_uniform_data(
     lit: f32,
     uv_rect: [f32; 4],
 ) -> Vec<u8> {
-    let mut data = vec![0u8; 96];
+    let mut data = vec![0u8; SPRITE_UNIFORM_BYTES as usize];
     let m = to_local.m;
     // mat2x2: 16 bytes total, vec2 columns with an 8-byte stride.
     write_f32_at(&mut data, 0, m[0][0]);
