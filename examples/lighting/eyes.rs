@@ -274,31 +274,23 @@ impl frost::Process for Eyes {
             node.scale = [eye.scale * eye.facing, eye.scale];
             let light = eye.emission_at(self.t);
             node.emission = light;
-            // The glow under it adds the light — paler than the iris, because a
-            // source reads whiter than the light it throws — and `glow` is what
-            // decides the hue the chain blurs, so the amber the eye burns in is
-            // what spills into the hall.
+            // The glow under it rides the same pulse through its modulate, which
+            // multiplies the tint (so the seen light dims), the `glow` color (so
+            // the halo dims) and the coverage (so both do). Off, the alpha goes
+            // to zero, the shader discards at zero coverage, and the hall is the
+            // picture it was.
             if let Some(halo) = node.children.first_mut() {
-                halo.emission = frost::Color {
-                    r: light.r,
-                    g: (light.g + 0.3).min(1.0),
-                    b: (light.b + 0.3).min(1.0),
-                    a: light.a,
-                };
-                halo.glow = Some(light);
-                halo.modulate = if self.glow_on {
-                    frost::Color {
+                halo.modulate = frost::Color {
+                    a: if self.glow_on {
+                        GLOW_LIGHT * light.a
+                    } else {
+                        0.0
+                    },
+                    ..frost::Color {
                         r: 1.0,
                         g: 1.0,
                         b: 1.0,
                         a: 1.0,
-                    }
-                } else {
-                    frost::Color {
-                        r: 0.0,
-                        g: 0.0,
-                        b: 0.0,
-                        a: 0.0,
                     }
                 };
             }
@@ -352,6 +344,48 @@ fn hash(i: usize, salt: usize) -> f32 {
     ((x ^ (x >> 16)) as u32 % 1000) as f32 / 1000.0
 }
 
+/// The authored glow's reach: 3.2 times its 64 px texture, which puts the edge
+/// of the light a little past the iris rather than across the hall.
+const GLOW_REACH: f32 = 3.2;
+
+/// How much light it ever lays down: the peak of the ramp, as a fraction of the
+/// frame's white, at the top of a pulse. That is 0.40 of radiance at the centre,
+/// 0.17 a quarter of the way out and 0.05 halfway — against walls that sit
+/// between 0.03 and 0.28 and an eye core near 1.2, so the light reads as the
+/// brightest thing in the room without arriving as a searchlight.
+const GLOW_LIGHT: f32 = 0.35;
+
+/// The color of the light that is *seen*: a warm pale, whiter than the amber it
+/// throws.
+///
+/// The tint rather than an [`emission`](frost::SceneNode::emission), which is the
+/// one lesson the first version of this glow had to learn. Emission is added to
+/// what the surface already shows — `rgb += rgb × emission` — so a sprite keeps
+/// laying down its full color at zero emission, and this one burned between 1.15
+/// and 2.15 whatever its eye was doing. As a tint the ramp is the whole of the
+/// light, and the pulse takes it down to the five hundredths it asks for at the
+/// bottom of a breath.
+const GLOW_CORE: frost::Color = frost::Color {
+    r: 1.0,
+    g: 0.75,
+    b: 0.45,
+    a: 1.0,
+};
+
+/// The color of the same light as the chain sees it: the eye's amber, written
+/// past full so the top of a pulse clears the bloom threshold at 0.8 and the
+/// bottom, at 0.16, does not even reach the knee. The halo breathes with the eye
+/// instead of sitting in the room.
+///
+/// This is the one place in the tree where the two colors are genuinely apart:
+/// the node emits nothing at all and asks for a halo anyway.
+const GLOW_HALO: frost::Color = frost::Color {
+    r: 1.0,
+    g: 0.55,
+    b: 0.15,
+    a: 3.0,
+};
+
 /// The authored glow: a 64×64 texture, white rgb throughout, its alpha carrying
 /// a radial falloff of `(1 − d)³` in the distance from the centre.
 ///
@@ -384,34 +418,32 @@ fn glow_texture() -> std::sync::Arc<[u8]> {
     std::sync::Arc::from(pixels.into_boxed_slice())
 }
 
-/// The glow that hangs under each eye: the falloff above, drawn at five times
-/// its size — the eye's texture is ~200 px wide and this one 64, so the light
-/// reaches about a third again past the iris — adding rather than covering, and
-/// lighting nothing.
+/// The glow that hangs under each eye: the falloff above, drawn at a little over
+/// three times its size — the eye's texture is ~200 px wide and this one 64, so
+/// the light spans about the eye itself and stops there — adding rather than
+/// covering, and lighting nothing.
 ///
 /// It is a *child* of an eye, which is what makes it follow the eye around with no
 /// second position to keep: a child's transform is relative to its parent, so the
 /// glow inherits the walk, the scale and even the facing flip, and the process has
 /// one node per eye to write. `lit` stays off — the light field is the lamp's
-/// business — and the emission and `glow` colors are written every frame from the
-/// eye's own pulse.
+/// business — and its colors are fixed: what moves each frame is the strength, on
+/// the modulate, from the eye's own pulse.
 fn glow_node() -> Box<frost::SceneNode> {
     Box::new(frost::SceneNode {
         shape: Some(frost::Shape::Sprite {
             data: glow_texture(),
             width: 64,
             height: 64,
-            color: frost::Color {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 1.0,
-            },
+            color: GLOW_CORE,
             alpha: 1.0,
             filter: frost::SpriteFilter::Linear,
             generation: 0,
         }),
-        scale: [5.0, 5.0],
+        // No emission: the tint carries the seen light and `glow` carries the
+        // halo, which is the whole point of the two being separate fields.
+        glow: Some(GLOW_HALO),
+        scale: [GLOW_REACH, GLOW_REACH],
         additive: true,
         order: 0.9,
         ..Default::default()
