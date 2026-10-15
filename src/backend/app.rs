@@ -835,7 +835,13 @@ impl<P: Process> ApplicationHandler for Frost<P> {
     ) {
         match event {
             WindowEvent::KeyboardInput { event, .. } => {
-                log::info!("key event: {event:?}");
+                // Debug, not info: this arrives for every press, every release
+                // and every auto-repeat the OS sends while a key is held, and it
+                // dumps the whole event struct — a held key is dozens of lines a
+                // second, which makes `RUST_LOG=info` unreadable for anyone
+                // looking for the handful of things worth knowing at that level.
+                // Everything else at info here is a once-per-run fact.
+                log::debug!("key event: {event:?}");
                 // Track the held physical keys so `Context::key_down` can
                 // report them to the process on the next frame.
                 if let PhysicalKey::Code(code) = event.physical_key {
