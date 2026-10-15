@@ -33,8 +33,24 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(positions[i], 0.0, 1.0);
 }
 
-@fragment
-fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
+/// What `shade` worked out: the pixel as composited, and the light the surface
+/// puts out. Carries no `@location`s because an ordinary function may return
+/// this but not the IO form below, which only an entry point may.
+struct Shaded {
+    color: vec4<f32>,
+    emissive: vec4<f32>,
+};
+
+/// The scene's two-output form: only `fs_emissive` writes the second one, and
+/// the engine picks between the entry points by whether its frame buffer can
+/// hold a value past 1.0 at all — an entry point may not call another, so both
+/// are thin and the work lives in `shade`.
+struct SceneOut {
+    @location(0) color: vec4<f32>,
+    @location(1) emissive: vec4<f32>,
+};
+
+fn shade(frag_coord: vec4<f32>) -> Shaded {
     // Convert the fragment's pixel coordinate into the shape's local space
     // (the inverse of its world transform), then evaluate the signed
     // distance there, so rotation and scaling apply for free. The matrix
@@ -68,7 +84,32 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     } else {
         rgb += rgb * u.emission.rgb * u.emission.a;
     }
-    // Emit the shape's color and coverage; composited over the existing
-    // attachment via alpha blending.
-    return vec4<f32>(rgb, alpha * u.color.a);
+    // The shape's color and coverage, composited over the existing
+    // attachment by alpha blending.
+    let a = alpha * u.color.a;
+    // The rule every scene shader follows, and the reason the emissive target
+    // is blended like the color one: rgb is the radiance this fragment puts
+    // out, alpha is the coverage the color is composited at, and the blend
+    // does the arithmetic. A fragment that covers nothing (alpha 0) therefore
+    // changes nothing; an opaque wall drawn over a lamp takes the lamp's glow
+    // away exactly as it takes its color; a translucent one mixes. And a shape
+    // with no emission writes zero radiance rather than nothing, which is what
+    // makes it an occluder of glow instead of a hole in it.
+    //
+    // The glow stays in the shape's own hue: emission scaled by the surface's
+    // color, exactly as the light mix scales it.
+    let glow = u.color.rgb * u.emission.rgb * u.emission.a;
+    return Shaded(vec4<f32>(rgb, a), vec4<f32>(glow, a));
 }
+
+@fragment
+fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
+    return shade(frag_coord).color;
+}
+
+@fragment
+fn fs_emissive(@builtin(position) frag_coord: vec4<f32>) -> SceneOut {
+    let s = shade(frag_coord);
+    return SceneOut(s.color, s.emissive);
+}
+

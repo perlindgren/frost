@@ -226,6 +226,47 @@ mod tests {
         }
     }
 
+    /// Every scene shader offers both fragment entry points; the blit offers
+    /// one.
+    ///
+    /// `App::create_pipeline` picks `fs_emissive` for all eight scene
+    /// pipelines when the frame carries an emissive target and `fs_main`
+    /// otherwise, so a shader missing either form fails at pipeline creation
+    /// on the first frame — on whichever machine happened to ask for the
+    /// variant it forgot to write. The entry points are the pipeline's contract
+    /// with the shader, so the contract is checked here rather than left to
+    /// the driver to discover.
+    #[test]
+    fn every_scene_shader_offers_both_fragment_entry_points() {
+        let has = |source: &str, entry: &str| {
+            let module = naga::front::wgsl::parse_str(source)
+                .unwrap_or_else(|err| panic!("{source} is not valid WGSL: {err}"));
+            module
+                .entry_points
+                .iter()
+                .any(|ep| ep.stage == naga::ShaderStage::Fragment && ep.name == entry)
+        };
+        for (name, source) in all_shaders() {
+            if name == "blit.wgsl" {
+                assert!(
+                    has(source, "fs_main"),
+                    "{name} lost the entry point the blit pipeline asks for"
+                );
+                assert!(
+                    !has(source, "fs_emissive"),
+                    "{name} has an emissive output the window can never show"
+                );
+                continue;
+            }
+            for entry in ["fs_main", "fs_emissive"] {
+                assert!(
+                    has(source, entry),
+                    "{name} is missing {entry}: the engine builds every scene                      pipeline in both forms, with one target and with two"
+                );
+            }
+        }
+    }
+
     /// The blit pass carries a substituted-const variant for linear
     /// presentation surfaces: `App` replaces the placeholder `false`
     /// with `true` at pipeline build time when the surface format has no

@@ -411,3 +411,39 @@ report a difference that isn't there. The float path writes twice the bytes of
 the target and adds one pass over the window, so on a GPU short on fill — the
 610M at 4K in §4's table, already down at 27 fps — this is the row that might
 move, and nobody has run it there yet.
+
+## 8. What an unread target costs (2026-10-15, Apple M4 Max)
+
+The emissive attachment — the scene's second color output, §7's float buffer
+holding what each surface puts out — landed before anything reads it. That
+order is deliberate: the cost of a look nobody has argued about yet is worth
+knowing while it is still cheap to walk back, and one full-resolution
+half-float clear and write per frame is exactly the kind of thing that stops
+looking free the moment a phone is involved.
+
+Same recipe as §7 — the drained encode span, two configurations of one binary
+interleaved (a temporary env knob, since a second build would have moved more
+than the attachment), 9 s per cell at `--vsync off`:
+
+| scene | one target | two targets | difference |
+|---|---|---|---|
+| antifrost, 3840×2160 fullscreen | 1.044 / 1.044 ms | 1.056 / 1.050 ms | +0.6% to +1.1% |
+| vrr, 3200×2400 physical window | 1.973 / 1.884 ms | 2.039 / 1.984 ms | inside the drift |
+
+Four to five thousand frames per cell. At 4K both emissive runs sit above both
+single-target runs, so the direction is real, and the size is about a hundredth
+of a millisecond — a third of the §7 float buffer's own noise floor, and much
+less than one frame in sixty at any frame rate this machine is asked to hold.
+On the windowed scene the pair-to-pair drift (0.09 ms) is the same size as the
+apparent effect, which is the honest way to report that this instrument cannot
+see it.
+
+What the money buys per frame: 33 MB cleared to black, then read-modify-written
+by whatever the scene draws — 8 bytes per pixel blended, where the color target
+already pays that for itself. A GPU short on fill pays it twice, and this is
+the second row after §7's that would move on the 610M; both stay unrun there.
+
+When bloom arrives and reads this target, the question changes shape: the cost
+then is the downsample chain, which runs at a quarter or an eighth of the
+window and should cost a fraction of what the attachment does. If it doesn't,
+this table is the baseline to compare against.

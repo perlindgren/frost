@@ -106,12 +106,7 @@ fn light_rgb(tinted: vec3<f32>, at: vec2<f32>) -> vec3<f32> {
     return rgb;
 }
 
-@fragment
-fn fs_main(
-    @builtin(position) frag_coord: vec4<f32>,
-    @location(0) inst: vec4<f32>,
-    @location(1) extra: vec4<f32>,
-) -> @location(0) vec4<f32> {
+fn shade(frag_coord: vec4<f32>, inst: vec4<f32>, extra: vec4<f32>) -> vec4<f32> {
     // The fragment's offset from the particle's center, rotated back into
     // the shape's own frame, so rotation applies for free. In that frame
     // the texture's top row always sits at the negative y edge.
@@ -170,4 +165,28 @@ fn fs_main(
         discard;
     }
     return vec4<f32>(t.rgb * light_rgb(u.color.rgb * extra.yzw, frag_coord.xy), a);
+}
+
+/// The scene's two-output form: the pixel as composited, and the light the
+/// surface puts out. Only `fs_emissive` writes the second one, and the engine
+/// picks between the entry points by whether its frame buffer can hold a value
+/// past 1.0 at all — an entry point may not call another, so both are thin and
+/// the work lives in `shade`.
+struct SceneOut {
+    @location(0) color: vec4<f32>,
+    @location(1) emissive: vec4<f32>,
+};
+
+@fragment
+fn fs_main(@builtin(position) frag_coord: vec4<f32>, @location(0) inst: vec4<f32>, @location(1) extra: vec4<f32>,) -> @location(0) vec4<f32> {
+    return shade(frag_coord, inst, extra);
+}
+
+@fragment
+fn fs_emissive(@builtin(position) frag_coord: vec4<f32>, @location(0) inst: vec4<f32>, @location(1) extra: vec4<f32>,) -> SceneOut {
+    let s = shade(frag_coord, inst, extra);
+    // Particles carry no emission of their own yet, so one drawn over a lamp
+    // dims the lamp's glow by the particle's coverage — a gap to close, not a
+    // design.
+    return SceneOut(s, vec4<f32>(0.0, 0.0, 0.0, s.a));
 }

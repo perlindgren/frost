@@ -70,6 +70,13 @@ struct BlitTarget {
     /// holding it makes the target's ownership obvious.
     _texture: wgpu::Texture,
     view: TextureView,
+    /// The frame's emissive target, present exactly when the scene pipelines
+    /// carry a second output: the same size as `view`, the same float format,
+    /// and holding what each surface puts out rather than what the lights
+    /// made of it. Nothing reads it yet — bloom will — but it is drawn into
+    /// and cleared with every frame, because a target nobody writes is a
+    /// second full-res allocation spent for a look that never arrived.
+    emissive: Option<(wgpu::Texture, TextureView)>,
     /// The 16-byte letterbox fit (`vec2` + padding), rewritten by `render`
     /// whenever the surface's aspect may have moved.
     fit_buffer: Buffer,
@@ -1269,6 +1276,15 @@ impl<P: Process> Frost<P> {
     /// surface configuration (to build the pipelines against the right
     /// target) and again whenever the buffer is built, so both answers come
     /// from the same question.
+    /// Whether the frame carries an emissive target. It is the float frame
+    /// buffer's own question, asked separately because a machine that clips at
+    /// 1.0 on every store has no use for a second output whose useful range
+    /// starts above 1.0 — and one more full-resolution texture is not a thing
+    /// to hand out for nothing.
+    fn emissive_target(adapter: &Adapter) -> Option<TextureFormat> {
+        Self::float_target(adapter)
+    }
+
     fn float_target(adapter: &Adapter) -> Option<TextureFormat> {
         let wants = TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING;
         let caps = adapter.get_texture_format_features(TextureFormat::Rgba16Float);
@@ -1284,6 +1300,13 @@ impl<P: Process> Frost<P> {
         // the only one that writes the window, and it alone keeps the
         // surface's format. The two differ exactly when `hdr_frames` is set.
         let format = Self::float_target(&self.adapter).unwrap_or(surface_format);
+        // The emissive target rides with the float frame buffer: a second
+        // output whose useful range *starts* above 1.0 has nothing to say on a
+        // machine that clips at 1.0 on every store, and one more full-res
+        // texture is not a thing to hand out for nothing. Same question as
+        // `format`, same answer — and `BlitTarget` builds the texture against
+        // it, so the pipelines and the pass cannot disagree.
+        let emissive = Self::emissive_target(&self.adapter);
         let line_layout = slot_layouts(device, "line pipeline", LINE_UNIFORM_BYTES);
         let polyline_layout = slot_layouts(device, "polyline pipeline", POLYLINE_UNIFORM_BYTES);
         let circle_layout = slot_layouts(device, "circle pipeline", CIRCLE_UNIFORM_BYTES);
@@ -1298,6 +1321,7 @@ impl<P: Process> Frost<P> {
             device,
             &line_module,
             format,
+            emissive,
             Some(&line_layout),
             "line pipeline",
             true,
@@ -1311,6 +1335,7 @@ impl<P: Process> Frost<P> {
             device,
             &polyline_module,
             format,
+            emissive,
             Some(&polyline_layout),
             "polyline pipeline",
             true,
@@ -1324,6 +1349,7 @@ impl<P: Process> Frost<P> {
             device,
             &circle_module,
             format,
+            emissive,
             Some(&circle_layout),
             "circle pipeline",
             true,
@@ -1337,6 +1363,7 @@ impl<P: Process> Frost<P> {
             device,
             &rect_module,
             format,
+            emissive,
             Some(&rect_layout),
             "rectangle pipeline",
             true,
@@ -1350,6 +1377,7 @@ impl<P: Process> Frost<P> {
             device,
             &shape_module,
             format,
+            emissive,
             Some(&shape_layout),
             "shape pipeline",
             true,
@@ -1368,6 +1396,7 @@ impl<P: Process> Frost<P> {
             device,
             &sprite_module,
             format,
+            emissive,
             Some(&sprite_pipeline_layout),
             "sprite pipeline",
             true,
@@ -1381,6 +1410,7 @@ impl<P: Process> Frost<P> {
             device,
             &particles_module,
             format,
+            emissive,
             None,
             "particle pipeline",
             true,
@@ -1394,6 +1424,7 @@ impl<P: Process> Frost<P> {
             device,
             &tilemap_module,
             format,
+            emissive,
             None,
             "tilemap pipeline",
             true,
@@ -1418,6 +1449,9 @@ impl<P: Process> Frost<P> {
             device,
             &blit_module,
             surface_format,
+            // The window holds one image, not two: the emissive target stops
+            // at the frame buffer.
+            None,
             None,
             "blit pipeline",
             false,
@@ -1430,14 +1464,37 @@ impl<P: Process> Frost<P> {
     /// alpha-blended when `blend` (every draw of the scene itself),
     /// replaced otherwise (the fixed-render-size stretch, whose source is
     /// the finished frame).
+    /// Builds a scene pipeline. `emissive` is the frame's emissive target
+    /// format, `Some` exactly when the scene shaders are asked for their second
+    /// output: a pipeline declaring one target cannot draw into a pass offering
+    /// two (measured, not assumed — wgpu rejects the mismatch as an
+    /// incompatible-attachment error), so the count and the entry point change
+    /// together and the pass has to agree with both.
     fn create_pipeline(
         device: &Device,
         module: &ShaderModule,
         format: TextureFormat,
+        emissive: Option<TextureFormat>,
         layout: Option<&PipelineLayout>,
         label: &str,
         blend: bool,
     ) -> RenderPipeline {
+        let blend_state = blend.then_some(wgpu::BlendState::ALPHA_BLENDING);
+        let mut targets = vec![Some(ColorTargetState {
+            format,
+            blend: blend_state,
+            write_mask: ColorWrites::ALL,
+        })];
+        if let Some(format) = emissive {
+            // Blended on the same terms as the color target, which is what
+            // makes the rule the shaders state work: radiance in rgb, coverage
+            // in alpha, and a fragment that covers nothing changes nothing.
+            targets.push(Some(ColorTargetState {
+                format,
+                blend: blend_state,
+                write_mask: ColorWrites::ALL,
+            }));
+        }
         device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some(label),
             layout,
@@ -1449,13 +1506,13 @@ impl<P: Process> Frost<P> {
             },
             fragment: Some(FragmentState {
                 module,
-                entry_point: Some("fs_main"),
+                entry_point: Some(if emissive.is_some() {
+                    "fs_emissive"
+                } else {
+                    "fs_main"
+                }),
                 compilation_options: PipelineCompilationOptions::default(),
-                targets: &[Some(ColorTargetState {
-                    format,
-                    blend: blend.then_some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: ColorWrites::ALL,
-                })],
+                targets: &targets,
             }),
             primitive: PrimitiveState::default(),
             depth_stencil: None,
@@ -1495,6 +1552,28 @@ impl<P: Process> Frost<P> {
             view_formats: &[],
         });
         let view = texture.create_view(&TextureViewDescriptor::default());
+        // The emissive target, on the same condition the pipelines were built
+        // with: it exists where the frame buffer can hold a value past 1.0,
+        // nowhere else. Sampled usage now costs nothing and is what bloom will
+        // need from it later.
+        let emissive = Self::emissive_target(&self.adapter).map(|format| {
+            let texture = self.device.create_texture(&TextureDescriptor {
+                label: Some("emissive target"),
+                size: Extent3d {
+                    width: size[0].max(1),
+                    height: size[1].max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format,
+                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&TextureViewDescriptor::default());
+            (texture, view)
+        });
         // The user's upscaling choice (`Config::blit_filter`), applied to
         // both axes: bilinear smooths the stretch, nearest keeps texels
         // whole for the pixel-art look.
@@ -1558,6 +1637,7 @@ impl<P: Process> Frost<P> {
             filter: self.blit_filter,
             _texture: texture,
             view,
+            emissive,
             fit_buffer,
             bind_group,
         }
@@ -2318,6 +2398,23 @@ impl<P: Process> Frost<P> {
             Some(t) => &t.view,
             None => &surface_view,
         };
+        // The scene's second attachment, when the frame buffer has one. It is
+        // cleared to black rather than to the frame's clear color: nothing
+        // emits a background, and the clear color is a color, not a light.
+        let emissive_attachment =
+            target
+                .as_ref()
+                .and_then(|t| t.emissive.as_ref())
+                .map(|(_, view)| RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: StoreOp::Store,
+                    },
+                });
+        let two_attachments = emissive_attachment.is_some();
 
         let (
             Some(line_pipeline),
@@ -2352,6 +2449,27 @@ impl<P: Process> Frost<P> {
         // The frame's clear color: the last background node in paint order,
         // or the default when the frame has none.
         let clear = clear_color(&draws);
+        // One attachment normally, two when the frame buffer carries emissive:
+        // a pipeline declaring two outputs cannot draw into a pass offering one
+        // any more than the other way round, so this slice's length is decided
+        // by the same flag that chose the pipelines' entry points.
+        let scene_attachments = [
+            Some(RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: clear.r as f64,
+                        g: clear.g as f64,
+                        b: clear.b as f64,
+                        a: clear.a as f64,
+                    }),
+                    store: StoreOp::Store,
+                },
+            }),
+            emissive_attachment,
+        ];
 
         let mut encoder = self
             .device
@@ -2366,20 +2484,7 @@ impl<P: Process> Frost<P> {
         {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: None,
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: clear.r as f64,
-                            g: clear.g as f64,
-                            b: clear.b as f64,
-                            a: clear.a as f64,
-                        }),
-                        store: StoreOp::Store,
-                    },
-                })],
+                color_attachments: &scene_attachments[..if two_attachments { 2 } else { 1 }],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,

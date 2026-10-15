@@ -140,8 +140,7 @@ fn vs_main(
     return out;
 }
 
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn shade(in: VertexOutput) -> vec4<f32> {
     // The tile's slice of the atlas: the quad's 0..1 run stretched
     // between the cell's UV bounds. v flips on the way: the quad's
     // v runs bottom-up (the v-negative corner is the quad's LOW edge
@@ -168,4 +167,27 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         rgb *= light_mix(in.position.xy);
     }
     return vec4<f32>(rgb, t.a * tint.a);
+}
+
+/// The scene's two-output form: the pixel as composited, and the light the
+/// surface puts out. Only `fs_emissive` writes the second one, and the engine
+/// picks between the entry points by whether its frame buffer can hold a value
+/// past 1.0 at all — an entry point may not call another, so both are thin and
+/// the work lives in `shade`.
+struct SceneOut {
+    @location(0) color: vec4<f32>,
+    @location(1) emissive: vec4<f32>,
+};
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return shade(in);
+}
+
+@fragment
+fn fs_emissive(in: VertexOutput) -> SceneOut {
+    let s = shade(in);
+    // A tile map carries no emission of its own (see the note above): at the
+    // tile's coverage it erases or dims what it covers.
+    return SceneOut(s, vec4<f32>(0.0, 0.0, 0.0, s.a));
 }

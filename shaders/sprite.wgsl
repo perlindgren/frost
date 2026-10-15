@@ -39,8 +39,24 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(positions[i], 0.0, 1.0);
 }
 
-@fragment
-fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
+/// What `shade` worked out: the pixel as composited, and the light the surface
+/// puts out. Carries no `@location`s because an ordinary function may return
+/// this but not the IO form below, which only an entry point may.
+struct Shaded {
+    color: vec4<f32>,
+    emissive: vec4<f32>,
+};
+
+/// The scene's two-output form: only `fs_emissive` writes the second one, and
+/// the engine picks between the entry points by whether its frame buffer can
+/// hold a value past 1.0 at all — an entry point may not call another, so both
+/// are thin and the work lives in `shade`.
+struct SceneOut {
+    @location(0) color: vec4<f32>,
+    @location(1) emissive: vec4<f32>,
+};
+
+fn shade(frag_coord: vec4<f32>) -> Shaded {
     // Convert the fragment's pixel coordinate into the sprite's local space
     // (the inverse of its world transform), where the sprite is centered at
     // the origin and extends by `size / 2` along each axis. Local +y is "up"
@@ -49,7 +65,7 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     let p = u.to_local * frag_coord.xy + u.translation;
     let uv = vec2<f32>(p.x / u.size.x, -p.y / u.size.y) + vec2<f32>(0.5);
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-        return vec4<f32>(0.0);
+        return Shaded(vec4<f32>(0.0), vec4<f32>(0.0));
     }
     // Sample the quad's [0, 1] uv remapped into the texture sub-rectangle it
     // covers; for a whole-texture sprite the remap is the identity.
@@ -94,8 +110,25 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     } else {
         rgb += rgb * u.emission.rgb * u.emission.a;
     }
-    // Emit the color, scaled by the sprite's alpha and the tint's own
-    // alpha, and composited over the existing attachment via alpha
-    // blending.
-    return vec4<f32>(rgb, alpha);
+    // The color, scaled by the sprite's alpha and the tint's own alpha,
+    // composited over the existing attachment by alpha blending.
+    //
+    // What it puts out is the emission the light mix got, before the lights
+    // touched it — the tinted texel times the emission — carried at the same
+    // coverage as the color, so the blend composites both the same way. See
+    // the rule in shape.wgsl.
+    let glow = t.rgb * u.tint.rgb * u.emission.rgb * u.emission.a;
+    return Shaded(vec4<f32>(rgb, alpha), vec4<f32>(glow, alpha));
 }
+
+@fragment
+fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
+    return shade(frag_coord).color;
+}
+
+@fragment
+fn fs_emissive(@builtin(position) frag_coord: vec4<f32>) -> SceneOut {
+    let s = shade(frag_coord);
+    return SceneOut(s.color, s.emissive);
+}
+

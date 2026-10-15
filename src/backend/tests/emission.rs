@@ -48,15 +48,48 @@ fn plate(at: [f32; 2], color: objects::Color, emission: objects::Color, lit: boo
     }
 }
 
+/// The half-float a `Rgba16Float` target stores, widened. A readback of a
+/// float target arrives as 16-bit channels, and the alternative — asking for
+/// `Rgba32Float`, which no adapter here will blend without a feature — would
+/// test a format the engine never allocates.
+fn half_to_f32(bits: u16) -> f32 {
+    let sign = u32::from(bits & 0x8000) << 16;
+    let exponent = (bits >> 10) & 0x1f;
+    let fraction = u32::from(bits & 0x3ff);
+    let bits = match exponent {
+        0 => sign,
+        0x1f => sign | 0x7f80_0000 | (fraction << 13),
+        e => sign | ((u32::from(e) + 127 - 15) << 23) | (fraction << 13),
+    };
+    f32::from_bits(bits)
+}
+
+/// Which of the two outputs to bring back.
+#[derive(Clone, Copy)]
+enum Read {
+    Color,
+    Emissive,
+}
+
 /// Paint `draws` over a black clear with `ambient` as the whole light field,
-/// and hand back the target's raw bytes.
+/// and hand back one target's raw bytes.
 ///
-/// The target is `Rgba8Unorm`, not the surface's `Rgba8UnormSrgb`: what this
-/// module checks is the arithmetic a shader performs, and an unorm target
-/// stores exactly `round(value × 255)` with no transfer curve to undo first.
-/// Values past 1.0 still clamp, because the store does — which is one of the
-/// things under test.
-fn paint(draws: &[Draw], ambient: objects::Color) -> Option<Vec<u8>> {
+/// `format` and `paired` are the two knobs the engine sets together in
+/// production and this test sets apart: an 8-bit unorm target stores exactly
+/// `round(value × 255)` with no transfer curve to undo, which is what the
+/// single-target checks want, and a 32-bit float pair is what the two-output
+/// entry point needs, because radiance past 1.0 has to survive the store to be
+/// worth checking. Paired means the pipeline is built with both outputs and
+/// `fs_emissive` as its fragment entry — the same coupling the real pipelines
+/// get from one `Option` (`wgpu` refuses a one-target pipeline in a
+/// two-attachment pass, so the two cannot be chosen independently).
+fn paint(
+    draws: &[Draw],
+    ambient: objects::Color,
+    format: TextureFormat,
+    paired: bool,
+    read: Read,
+) -> Option<Vec<u8>> {
     let lights = pack_light_field(draws, ambient);
     let occluders = pack_occluder_field(draws, &[] as &[Occluder], [SPAN as f32, SPAN as f32]);
 
@@ -97,6 +130,19 @@ fn paint(draws: &[Draw], ambient: objects::Color) -> Option<Vec<u8>> {
     });
     // `layout: None` derives the bind group layout from the shader's own
     // bindings, so this test cannot drift from the uniform's real shape.
+    let target_state = ColorTargetState {
+        format,
+        blend: Some(BlendState::ALPHA_BLENDING),
+        write_mask: ColorWrites::ALL,
+    };
+    let targets = [
+        Some(target_state),
+        paired.then_some(ColorTargetState {
+            format,
+            blend: Some(BlendState::ALPHA_BLENDING),
+            write_mask: ColorWrites::ALL,
+        }),
+    ];
     let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
         label: Some("emission pipeline"),
         layout: None,
@@ -108,13 +154,9 @@ fn paint(draws: &[Draw], ambient: objects::Color) -> Option<Vec<u8>> {
         },
         fragment: Some(FragmentState {
             module: &module,
-            entry_point: Some("fs_main"),
+            entry_point: Some(if paired { "fs_emissive" } else { "fs_main" }),
             compilation_options: PipelineCompilationOptions::default(),
-            targets: &[Some(ColorTargetState {
-                format: TextureFormat::Rgba8Unorm,
-                blend: Some(BlendState::ALPHA_BLENDING),
-                write_mask: ColorWrites::ALL,
-            })],
+            targets: &targets[..if paired { 2 } else { 1 }],
         }),
         primitive: PrimitiveState::default(),
         depth_stencil: None,
@@ -123,38 +165,58 @@ fn paint(draws: &[Draw], ambient: objects::Color) -> Option<Vec<u8>> {
         cache: None,
     });
 
-    let target = device.create_texture(&TextureDescriptor {
-        label: Some("emission target"),
-        size: Extent3d {
-            width: SPAN,
-            height: SPAN,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: TextureDimension::D2,
-        format: TextureFormat::Rgba8Unorm,
-        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
+    let new_target = |label: &str| {
+        device.create_texture(&TextureDescriptor {
+            label: Some(label),
+            size: Extent3d {
+                width: SPAN,
+                height: SPAN,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        })
+    };
+    let target = new_target("emission target");
+    let emissive_target = paired.then(|| new_target("emission second target"));
+    let clear_ops = Operations {
+        load: LoadOp::Clear(wgpu::Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        }),
+        store: StoreOp::Store,
+    };
+    let color_view = target.create_view(&TextureViewDescriptor::default());
+    let emissive_view = emissive_target
+        .as_ref()
+        .map(|t| t.create_view(&TextureViewDescriptor::default()));
+    let attachments = [
+        Some(RenderPassColorAttachment {
+            view: &color_view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: clear_ops,
+        }),
+        emissive_view
+            .as_ref()
+            .map(|view| RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: clear_ops,
+            }),
+    ];
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
     {
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("emission pass"),
-            color_attachments: &[Some(RenderPassColorAttachment {
-                view: &target.create_view(&TextureViewDescriptor::default()),
-                depth_slice: None,
-                resolve_target: None,
-                ops: Operations {
-                    load: LoadOp::Clear(wgpu::Color {
-                        r: 0.0,
-                        g: 0.0,
-                        b: 0.0,
-                        a: 0.0,
-                    }),
-                    store: StoreOp::Store,
-                },
-            })],
+            color_attachments: &attachments[..if paired { 2 } else { 1 }],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
@@ -219,15 +281,28 @@ fn paint(draws: &[Draw], ambient: objects::Color) -> Option<Vec<u8>> {
         }
     }
 
+    // A half-float target holds twice the bytes per pixel, and the copy's row
+    // stride has to say so; 64 pixels of either format is already a multiple of
+    // the 256-byte stride the copy demands.
+    let texel: u32 = match format {
+        TextureFormat::Rgba16Float => 8,
+        _ => 4,
+    };
     let readback = device.create_buffer(&BufferDescriptor {
         label: Some("emission readback"),
-        size: u64::from(SPAN) * u64::from(SPAN) * 4,
+        size: u64::from(SPAN) * u64::from(SPAN) * u64::from(texel),
         usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
+    let source = match read {
+        Read::Color => &target,
+        Read::Emissive => emissive_target
+            .as_ref()
+            .expect("reading the emissive target asks for a paired paint"),
+    };
     encoder.copy_texture_to_buffer(
         TexelCopyTextureInfo {
-            texture: &target,
+            texture: source,
             mip_level: 0,
             origin: Origin3d::default(),
             aspect: TextureAspect::All,
@@ -236,7 +311,7 @@ fn paint(draws: &[Draw], ambient: objects::Color) -> Option<Vec<u8>> {
             buffer: &readback,
             layout: TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(SPAN * 4),
+                bytes_per_row: Some(SPAN * texel),
                 rows_per_image: Some(SPAN),
             },
         },
@@ -311,7 +386,13 @@ fn emission_is_what_a_surface_puts_out_not_what_reaches_it() {
         b: 0.2,
         a: 1.0,
     };
-    let Some(shot) = paint(&draws, ambient) else {
+    let Some(shot) = paint(
+        &draws,
+        ambient,
+        TextureFormat::Rgba8Unorm,
+        false,
+        Read::Color,
+    ) else {
         return;
     };
 
@@ -359,5 +440,98 @@ fn emission_is_what_a_surface_puts_out_not_what_reaches_it() {
         pixel(&shot, flat),
         pixel(&shot, self_lit),
         "every plate read the same pixel: the plates are not where they were placed"
+    );
+}
+
+/// The same four plates again, painted through the two-output entry point into
+/// float targets, this time reading the emissive one.
+///
+/// What the second target holds is the whole point of the exercise, and it is
+/// not the lit pixel: it is what each surface puts out, before the lights had
+/// their say, in a form that can exceed 1.0. The three checks below are the
+/// three ways that could go wrong — carrying the composited color instead,
+/// letting the light field into a value that has nothing to do with it, and
+/// clamping the overshoot that the target exists to keep.
+#[test]
+fn the_emissive_target_holds_what_the_surfaces_put_out() {
+    let amber = objects::Color {
+        r: 0.4,
+        g: 0.2,
+        b: 0.1,
+        a: 1.0,
+    };
+    let white = |a: f32| objects::Color {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+        a,
+    };
+    let flat = [16.0, 16.0];
+    let self_lit = [48.0, 16.0];
+    let lit_and_self_lit = [16.0, 48.0];
+    let past_white = [48.0, 48.0];
+    let draws = [
+        plate(flat, amber, black(), false),
+        plate(self_lit, amber, white(0.5), false),
+        plate(lit_and_self_lit, amber, white(1.0), true),
+        plate(past_white, amber, white(2.0), false),
+    ];
+    let ambient = objects::Color {
+        r: 0.2,
+        g: 0.2,
+        b: 0.2,
+        a: 1.0,
+    };
+    let Some(shot) = paint(
+        &draws,
+        ambient,
+        // The production format: whatever the second target is checked for,
+        // it has to be true of the half-float the engine actually allocates.
+        TextureFormat::Rgba16Float,
+        true,
+        Read::Emissive,
+    ) else {
+        return;
+    };
+    let glow = |at: [f32; 2]| {
+        let i = ((at[1] as usize) * SPAN as usize + at[0] as usize) * 8;
+        [
+            half_to_f32(u16::from_le_bytes(shot[i..i + 2].try_into().unwrap())),
+            half_to_f32(u16::from_le_bytes(shot[i + 2..i + 4].try_into().unwrap())),
+            half_to_f32(u16::from_le_bytes(shot[i + 4..i + 6].try_into().unwrap())),
+        ]
+    };
+    let close =
+        |got: [f32; 3], want: [f32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 0.01);
+
+    // A surface that emits nothing writes zero, and the zero is what keeps a
+    // plate drawn later from inheriting the glow of one drawn under it.
+    assert!(
+        close(glow(flat), [0.0, 0.0, 0.0]),
+        "a plate with no emission wrote {:?} into the emissive target",
+        glow(flat)
+    );
+    // The radiance, in the surface's own hue: the plate's color times the
+    // emission, with its alpha as the strength.
+    assert!(
+        close(glow(self_lit), [0.2, 0.1, 0.05]),
+        "the emissive target should hold color * emission, got {:?}",
+        glow(self_lit)
+    );
+    // The lit plate glows the same amount as it would in the dark: the ambient
+    // is in the composited color (0.48, 0.24, 0.12 — the single-target test
+    // above checks exactly that) and it is not in this one.
+    assert!(
+        close(glow(lit_and_self_lit), [0.4, 0.2, 0.1]),
+        "the light field leaked into the emissive target: got {:?}, which is the composited color",
+        glow(lit_and_self_lit)
+    );
+    // And past 1.0 the number is still there, whole. This is the whole reason
+    // the target is float: 0.8 of radiance is not white yet, and an 8-bit or
+    // clamped target would have thrown the difference away at the store.
+    assert!(
+        close(glow(past_white), [0.8, 0.4, 0.2]),
+        "the float target should keep an emission of 2.0 unclamped, got {:?}",
+        glow(past_white)
     );
 }

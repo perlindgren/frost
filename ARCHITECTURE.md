@@ -422,6 +422,23 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
   against 1.042 ms (§7 of the benchmarking notes). What the buffer buys is the
   right to *keep* a value above 1.0 — worth something to a bloom bright-pass or
   a tone map, and nothing at all until something reads it.
+- **The scene writes what it emits into a second target.** Where the frame
+  buffer can hold a value past 1.0, every scene pipeline is built with two
+  color outputs — the shaders' `fs_emissive` entry point instead of `fs_main`,
+  chosen by the same `Option` that builds the texture, because a pipeline
+  declaring one target cannot draw into a pass offering two (measured; wgpu
+  rejects the mismatch). The composited pixel goes to the first, the light the
+  surface puts out to the second, and both are alpha-blended on the same terms
+  by one rule the shaders state once: **rgb is radiance, alpha is coverage, the
+  blend does the rest.** That is what makes an opaque shape drawn over a lamp
+  take the lamp's glow away, a translucent one only dim it, and a fragment that
+  covers nothing change nothing. Shapes and sprites carry emission; lines,
+  rectangles, particles and tile maps write zero radiance at their own coverage
+  — which is what makes them occlude glow rather than punch holes in it.
+  **Nothing reads the target yet.** It costs about 1% of a 4K frame
+  (§8 of the benchmarking notes) and is pinned by the `emission` test — the
+  number it holds is `color × emission`, with no light field in it, and still
+  unclamped at three times white.
 - Sprite textures are `Rgba8UnormSrgb` (samples land in linear space; sRGB
   blending matches authored colors), linear-filtered, clamp-to-edge.
 - The shape/sprite shaders evaluate an **SDF in the object's local space**: the
@@ -934,7 +951,7 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **393 lib tests + 3 integration tests (`tests/`) + 7 doctests**
+Baseline: **396 lib tests + 3 integration tests (`tests/`) + 7 doctests**
 passing, `cargo build` (lib + the `sprite_util` and `noisefloor` tools) clean.
 The tool's 93
 tests — 68 that moved with `examples/sprite_util.rs`, each living in the
