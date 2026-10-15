@@ -274,6 +274,7 @@ const BREATH_SLEEP_RATE: f32 = 0.22;
 const BREATH_LAMP_BASE: f32 = 1.4;
 const BREATH_CALM_AMP: f32 = 0.6;
 const BREATH_WORK_AMP: f32 = 1.25;
+
 const BREATH_CALM_RATE: f32 = 0.45;
 const BREATH_WORK_RATE: f32 = 1.15;
 /// Exertion time constants: up brisk, down gradual.
@@ -281,6 +282,34 @@ const BREATH_UP_TAU: f32 = 0.4;
 const BREATH_DOWN_TAU: f32 = 2.6;
 /// A full-speed ant's hop, in px per second, saturates exertion.
 const BREATH_FULL_SPEED: f32 = 520.0;
+
+/// The ember an ant's own shell keeps when its lamp is down to nothing. The
+/// reason the ember exists at all — a lamp always has a face to stand on, even
+/// at the very floor of the ambient — holds for a dormant hill too, and the
+/// floor is where a tucked-in ant still reads as a body and not a lump.
+const EMBER_FLOOR: f32 = 0.24;
+
+/// And the part of the ember that breathes: the shell rides the lamp it stands
+/// on, so the pulse the snow reads arrives on the ant in the same beat rather
+/// than on a second clock to keep in step. Tuned so that the calm base lands on
+/// the 0.45 the hill shipped with — 0.64 at the top of a working pulse, 0.32 in
+/// the dorm — which is the whole trick: the shipped look is the middle of the
+/// new range, not something it replaced.
+const EMBER_PER_LAMP: f32 = 0.15;
+
+/// The halo per lamp: what the bloom chain gets to blur, over and above the
+/// shell's own color. Not one to one with the light's brightness, because the
+/// emissive channel is the sprite's pixels times its tint times this — the
+/// cuticle is paid for twice — so at this number the top of a working pulse
+/// clears the chain's threshold of 0.8, the calm base sits at the bottom of its
+/// knee, and a sleeping ant stays under it. The hill glows where it is awake.
+const GLOW_PER_LAMP: f32 = 0.55;
+
+/// The glow's own strength, which the menu's `lamp glow` row switches between
+/// this and nothing. A step under the eyes hall's 1.6: that scene has two
+/// emitters in it and a hill has dozens, and a halo is judged against what
+/// surrounds it.
+const BLOOM_STRENGTH: f32 = 1.0;
 
 /// The corner arc's control arm, in tile lengths: at 90° the hop bends
 /// into a quarter-circle of roughly this reach; smaller cuts tighter.
@@ -353,6 +382,21 @@ fn shade(mut c: Color, k: f32) -> Color {
     c.g *= k;
     c.b *= k;
     c
+}
+
+/// The white in an ant's light: its own hue pulled a third of the way to full
+/// white, which is how a lamp reads as a source rather than as a coloured wash.
+///
+/// One function because two places ask for it — the light node's color and the
+/// halo the shell throws — and two spellings of the same 0.35 is how a lamp and
+/// its glow start agreeing by accident and then stop.
+fn lamp_core(c: Color) -> Color {
+    Color {
+        r: c.r + (1.0 - c.r) * 0.35,
+        g: c.g + (1.0 - c.g) * 0.35,
+        b: c.b + (1.0 - c.b) * 0.35,
+        a: c.a,
+    }
 }
 
 fn closer(a: [f32; 2], b: [f32; 2]) -> bool {
@@ -708,6 +752,8 @@ enum Action {
     Fullscreen,
     Quality,
     Leaves,
+    /// The halo the ants throw, on and off.
+    Glow,
     Shadows,
     /// Sliders: the press starts a drag, the release saves.
     Ambient,
@@ -877,6 +923,11 @@ struct Settings {
     /// Lamp strength, as a fraction of the shipped intensities —
     /// doubled past 1.0 at the slider's far end.
     light: f32,
+    /// The halo the ants' lamps throw: the bloom chain's twelve passes, spent
+    /// only while this row is on — at zero strength the engine declines to run
+    /// the chain rather than computing a picture no one reads, so this is the
+    /// weak hardware's rung as much as it is a look.
+    lamp_glow: bool,
     leaves_lit: bool,
     /// The weak-hardware answer to the light field, on a ladder:
     /// lamps stay at every rung, and only the shadows' cost steps.
@@ -892,6 +943,7 @@ impl Default for Settings {
             quality: Quality::High,
             ambient: 0.5,
             light: 1.0,
+            lamp_glow: true,
             leaves_lit: true,
             shadows: Shadow::One,
         }
@@ -905,13 +957,14 @@ impl Settings {
     /// and hand-parsable by `load_levels`' little parser.
     fn text(&self) -> String {
         format!(
-            "(\n    vsync: {},\n    filter: \"{}\",\n    fullscreen: {},\n    resolution: \"{}\",\n    ambient: {},\n    light: {},\n    leaves_lit: {},\n    shadows: \"{}\",\n)\n",
+            "(\n    vsync: {},\n    filter: \"{}\",\n    fullscreen: {},\n    resolution: \"{}\",\n    ambient: {},\n    light: {},\n    lamp_glow: {},\n    leaves_lit: {},\n    shadows: \"{}\",\n)\n",
             self.vsync,
             if self.nearest { "nearest" } else { "linear" },
             self.fullscreen,
             self.quality.label(),
             self.ambient,
             self.light,
+            self.lamp_glow,
             self.leaves_lit,
             self.shadows.label(),
         )
@@ -954,6 +1007,7 @@ impl Settings {
                 .unwrap_or(d.quality),
             ambient,
             light: number("light", d.light, 0.0, 2.0),
+            lamp_glow: boolean("lamp_glow", d.lamp_glow),
             leaves_lit: boolean("leaves_lit", d.leaves_lit),
             shadows: atom("shadows")
                 .and_then(|t| Shadow::parse(t.trim_matches('"')))
@@ -1812,7 +1866,7 @@ impl Demo {
         at: [f32; 2],
         face: [f32; 2],
         tint: Color,
-        order: f32,
+        lamp: f32,
     ) {
         let shape = &self.ant_frames[frame];
         node.shape = Some(shape.clone());
@@ -1830,10 +1884,19 @@ impl Demo {
         node.modulate = tint;
         // An ant is not only lit by the night — it carries its own
         // ember, so the lamp it casts always has a face to stand on
-        // even at the very floor of the ambient.
+        // even at the very floor of the ambient. And the ember breathes
+        // with that lamp: the same number the light node was just given,
+        // scaled down, which is why one pulse crosses the snow and the
+        // ant together and why the `light fx` slider takes the glow with
+        // it when it takes the lamps down.
         node.lit = true;
-        node.emission = shade(tint, 0.45);
-        node.order = order;
+        node.emission = shade(tint, EMBER_FLOOR + EMBER_PER_LAMP * lamp);
+        // The halo is the light's color, not the shell's — the core a lamp
+        // throws rather than the cuticle it came from, so an ant's glow is a
+        // whiter, warmer thing than the ant. It rides the same number, and at
+        // no lamp it is black, which the blend answers exactly as it answers
+        // no halo at all: the dark copy under the player asks for neither.
+        node.glow = Some(shade(lamp_core(tint), GLOW_PER_LAMP * lamp));
     }
 
     fn draw_ants(&mut self, ctx: &mut Context, dt: f32) {
@@ -1933,10 +1996,15 @@ impl Demo {
         // out — and the tuck-in spike burns loud over it. The player
         // is an ant too, and the queen's bed is her target: same
         // breath, same flare.
+        // Every lamp's strength for this frame, in the units the light nodes
+        // get — index `game.ants.len()` is the player's, who is an ant too.
+        // The shells read it back below, because an ember and a halo are the
+        // breath the snow already sees, not a second pulse to keep in step.
+        let mut lamps = vec![0.0; game.ants.len() + 1];
         {
             let reach = TILE * ZOOM * LAMP_REACH;
             let base = LEAVES.len() + game.ants.len() + 2;
-            for id in 0..game.ants.len() {
+            for (id, lamp) in lamps[..game.ants.len()].iter_mut().enumerate() {
                 let node = &mut ctx.scene().root.children[base + id];
                 let Some(g) = self.glides.get(&id) else {
                     node.shape = None;
@@ -1960,21 +2028,16 @@ impl Demo {
                     node.shape = None;
                     continue;
                 }
-                let c = ant_color(game.ants[id].color);
                 // A little white in the core, the ant's own hue in the
                 // throw of it.
-                let col = Color {
-                    r: c.r + (1.0 - c.r) * 0.35,
-                    g: c.g + (1.0 - c.g) * 0.35,
-                    b: c.b + (1.0 - c.b) * 0.35,
-                    a: 1.0,
-                };
+                let col = lamp_core(ant_color(game.ants[id].color));
                 node.shape = Some(frost::Shape::Light {
                     light: frost::Light::point(col, intensity * self.settings.light, reach)
                         .with_penumbra(self.settings.shadows.penumbra())
                         .with_shadow_taps(self.settings.shadows.taps()),
                 });
                 node.transform = Transform::translate(self.screen(g.at));
+                *lamp = intensity * self.settings.light;
             }
             // The player breathes with the rest: a working pulse on
             // the walk, the queen's bed a loud spike, and then the
@@ -2012,6 +2075,7 @@ impl Demo {
                 node.shape = None;
             }
             node.transform = Transform::translate(self.screen(self.player_at));
+            lamps[game.ants.len()] = intensity.max(0.0) * self.settings.light;
         }
         // The map as a window, in two sprites. Behind: the far
         // background — the map's own rectangle, plus the one slack its
@@ -2194,7 +2258,7 @@ impl Demo {
                 node.order = 0.05;
             }
         }
-        for id in 0..game.ants.len() {
+        for (id, &lamp) in lamps[..game.ants.len()].iter().enumerate() {
             let Some(g) = self.glides.get(&id) else {
                 continue;
             };
@@ -2233,7 +2297,8 @@ impl Demo {
             let rf = self.render_face.entry(id).or_insert(want_face);
             *rf = turn_toward(*rf, want_face, TURN_RATE * dt);
             let rf = *rf;
-            self.put_ant(node, frame_of(g.anim, asleep), at, rf, col, z);
+            self.put_ant(node, frame_of(g.anim, asleep), at, rf, col, lamp);
+            node.order = z;
         }
         // The zs: one born at each breath's crest, adrift and growing
         // from a small z to a full Z, wandering one way and then the
@@ -2274,8 +2339,9 @@ impl Demo {
             let back = n;
             let player = n + 1;
             let at = self.screen(self.player_at);
+            let shadowed = &mut root.children[LEAVES.len() + back];
             self.put_ant(
-                &mut root.children[LEAVES.len() + back],
+                shadowed,
                 frame,
                 [at[0] + 1.5 * ZOOM, at[1] - 1.5 * ZOOM],
                 self.player_face,
@@ -2285,16 +2351,22 @@ impl Demo {
                     b: 0.04,
                     a: 1.0,
                 },
-                1.48,
+                0.0,
             );
+            shadowed.order = 1.48;
+            // The queen carries a lamp of her own — the breath written on her
+            // node above — so she wears the same ember and the same halo as
+            // any ant, at her light's own strength.
+            let queen = &mut root.children[LEAVES.len() + player];
             self.put_ant(
-                &mut root.children[LEAVES.len() + player],
+                queen,
                 frame,
                 at,
                 self.player_face,
                 ant_color(game::AntColor::White),
-                1.5,
+                lamps[n],
             );
+            queen.order = 1.5;
         }
     }
 
@@ -2842,6 +2914,7 @@ impl Demo {
                 self.apply_window_policy(ctx);
             }
             Action::Leaves => self.settings.leaves_lit = !self.settings.leaves_lit,
+            Action::Glow => self.settings.lamp_glow = !self.settings.lamp_glow,
             Action::Shadows => self.settings.shadows = self.settings.shadows.next(),
             Action::Ambient | Action::Light => return,
         }
@@ -3038,7 +3111,10 @@ impl Demo {
                 );
             }
             Page::Settings => {
-                let top = (h * 0.5 - 120.0).min(236.0);
+                // Ten rows now that the glow has a rung of its own, which is
+                // sixteen pixels more than the page used to carry: hung higher
+                // so the `back` row still clears a 540p window's bottom edge.
+                let top = (h * 0.5 - 104.0).min(252.0);
                 let on = |b: bool| if b { "on" } else { "off" };
                 push(
                     &mut rows,
@@ -3093,8 +3169,16 @@ impl Demo {
                 );
                 push(
                     &mut rows,
-                    Action::Leaves,
+                    Action::Glow,
                     top - 6.0 * step,
+                    250.0,
+                    format!("lamp glow   {}", on(st.lamp_glow)),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::Leaves,
+                    top - 7.0 * step,
                     250.0,
                     format!("leaf lighting   {}", on(st.leaves_lit)),
                     None,
@@ -3102,7 +3186,7 @@ impl Demo {
                 push(
                     &mut rows,
                     Action::Shadows,
-                    top - 7.0 * step,
+                    top - 8.0 * step,
                     250.0,
                     format!("lamp shadows   {}", st.shadows.label()),
                     None,
@@ -3110,7 +3194,7 @@ impl Demo {
                 push(
                     &mut rows,
                     Action::Back,
-                    top - 8.0 * step,
+                    top - 9.0 * step,
                     250.0,
                     "back".into(),
                     None,
@@ -3232,6 +3316,15 @@ impl Process for Demo {
             self.window_policy_pending = false;
             self.apply_window_policy(ctx);
         }
+        // The glow, like the rest of the look: written every frame, so the
+        // menu's row answers on the next one. This is the only place the
+        // strength is decided, and at zero the chain declines to run at all —
+        // the row does not hide the halo, it stops paying for it.
+        ctx.set_bloom(if self.settings.lamp_glow {
+            BLOOM_STRENGTH
+        } else {
+            0.0
+        });
         // A window the compositor owns — tiled or snapped, by KWin's
         // tiling editor or a window rule — re-asserts its own
         // geometry no matter what the game asks for, and says so
@@ -3817,6 +3910,14 @@ fn main() {
             // The hill owns its Escape from here on: it opens the
             // menu, and the menu — and only the menu — quits.
             escape_exits: false,
+            // The hill is lit by its own ants, so the glow starts with them
+            // rather than arriving on the frame after the settings load: the
+            // live write above keeps it in step from there on.
+            bloom: if settings.lamp_glow {
+                BLOOM_STRENGTH
+            } else {
+                0.0
+            },
             // Vsync on unless the command line says otherwise: the
             // vsync-off experiment hit 200 fps with heavy judder, and
             // the tearing present bypasses VRR, so the refresh-synced
@@ -4345,6 +4446,7 @@ mod menu_tests {
             quality: Quality::Ultra,
             ambient: 0.25,
             light: 1.75,
+            lamp_glow: false,
             leaves_lit: false,
             shadows: Shadow::Four,
         };
