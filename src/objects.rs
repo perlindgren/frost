@@ -1303,6 +1303,14 @@ pub struct SceneNode {
     /// kind that can ask: a shape is hard-edged, and an additive hard edge is a
     /// bright disc, which the emission channel already draws without needing a
     /// second rule.
+    ///
+    /// Nothing in the tree asks for it yet; the pipeline it selects is exercised
+    /// by the `blend` tests and by nothing else so far. It went into the eyes hall
+    /// as an authored glow and came back cleaner without one — an iris quad is
+    /// already a drawn falloff, so a sprite underneath it is a second and wider
+    /// light on the same source. What still wants it is a scene whose light is
+    /// *not* the shape of whatever throws it: a lantern whose bulb is a dark
+    /// fixture, say, or a window the room is lit through.
     pub additive: bool,
     /// The shape this node draws, in its own local space, if any.
     pub shape: Option<Shape>,
