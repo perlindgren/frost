@@ -397,6 +397,23 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
   of what they pass is a storage buffer of instance data, not a uniform.
   Measured: 7.7 µs of CPU per draw per-draw against 0.31 µs with the arena, on
   an Apple M4 Max ([`docs/benchmarking.md`](docs/benchmarking.md) §6).
+- **Frames render into a float buffer where the machine offers one.** The
+  scene writes linear light, and an 8-bit sRGB buffer rounds it on the way in
+  and clips whatever the lights summed past 1.0 — a lamp's core, two lights
+  landing on one pixel, a glow at full strength. `float_target` asks the
+  adapter once whether `Rgba16Float` can be an attachment *and* a blit source;
+  where it can, every scene pipeline is built against that format and the
+  frame lands in a float buffer that the blit pass carries to the window, so
+  the 8-bit clamp happens once, at the end, instead of at every store. Only the
+  blit pipeline is built against the surface format — the two disagreeing is a
+  validation error on every frame, which is why the question gets asked in one
+  function. **It changes nothing you can see**, and that was measured rather
+  than argued: the two buffers agree on every pixel of a plain blend and move
+  at most one 8-bit step on the pixels under twenty stacked washes (the
+  `frame_buffer` test), and the 4K demo's drained encode span is 1.044 ms
+  against 1.042 ms (§7 of the benchmarking notes). What the buffer buys is the
+  right to *keep* a value above 1.0 — worth something to a bloom bright-pass or
+  a tone map, and nothing at all until something reads it.
 - Sprite textures are `Rgba8UnormSrgb` (samples land in linear space; sRGB
   blending matches authored colors), linear-filtered, clamp-to-edge.
 - The shape/sprite shaders evaluate an **SDF in the object's local space**: the
@@ -909,7 +926,7 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **392 lib tests + 3 integration tests (`tests/`) + 7 doctests**
+Baseline: **393 lib tests + 3 integration tests (`tests/`) + 7 doctests**
 passing, `cargo build` (lib + the `sprite_util` and `noisefloor` tools) clean.
 The tool's 93
 tests — 68 that moved with `examples/sprite_util.rs`, each living in the

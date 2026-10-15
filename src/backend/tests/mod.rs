@@ -12,6 +12,7 @@ mod config;
 mod context;
 mod draw_cost;
 mod fields;
+mod frame_buffer;
 mod layers;
 mod nodes;
 mod particles;

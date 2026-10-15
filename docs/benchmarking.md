@@ -370,3 +370,44 @@ WebGPU leaves the order of primitives within one draw undefined, so a batch
 would rely on an ordering the spec does not promise. The painter-order
 blending of adjacent runs is the other reason batching has to be careful: only
 *consecutive* same-texture draws may ever merge.
+
+## 7. What the float frame buffer costs (2026-10-15, Apple M4 Max)
+
+Stage one of the high-dynamic-range work: the scene renders into
+`Rgba16Float`, and the blit pass carries it to the window, where the frame gets
+clamped and quantised to 8 bits. The claim being tested is the uncomfortable
+one — that this changes nothing the eye can see — so it was tested twice, once
+per pixel and once per frame.
+
+**Per pixel** ([`frame_buffer`](../src/backend/tests/frame_buffer.rs), the same
+draws through the same shader into both attachments): an opaque base, a
+translucent pane, a pane over a pane, and two lights stacked on one pixel all
+come out **bit-identical, 0 of 4096 pixels**. Twenty successive 5% washes — the
+one case where a store that rounds can accumulate — move **14% of pixels by
+exactly 1/255**, none by more. A base at 2.4, out of an 8-bit buffer's reach
+entirely, reaches the window as the same `[255, 255, 212]` from both paths.
+
+Two predictions died in that measurement, and they are recorded so nobody
+re-derives them. First, that the old buffer composited in encoded space: it did
+not — hardware decodes an sRGB attachment before blending, so the 8-bit buffer
+was only ever rounding what it *stored*, never warping what it composited.
+Second, that values above 1.0 would start behaving differently: with a clamp at
+the end, a value clamped at the attachment and a value clamped at the window
+are the same pixel. The float buffer's range is kept, not shown, until a pass
+reads it — which is why it precedes bloom rather than following it.
+
+**Per frame**, the drained encode span of §1's recipe — encode, submit,
+`PollType::wait_indefinitely()` — on two builds, interleaved:
+
+| scene | 8-bit surface | float buffer |
+|---|---|---|
+| antifrost, 3840×2160 fullscreen, `--vsync off` | 1.044 / 1.042 ms | 1.045 / 1.043 ms |
+| vrr, 1600×1200 windowed, `--vsync off` | 1.417 / 1.834 ms | 1.462 / 1.791 ms |
+
+Four to five thousand frames per cell. At 4K the difference is 0.1%, well
+inside the pair-to-pair spread of the same binary; on the light scene the drift
+between pairs (0.4 ms) is eight times the effect, which is the honest way to
+report a difference that isn't there. The float path writes twice the bytes of
+the target and adds one pass over the window, so on a GPU short on fill — the
+610M at 4K in §4's table, already down at 27 fps — this is the row that might
+move, and nobody has run it there yet.

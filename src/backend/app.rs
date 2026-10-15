@@ -46,13 +46,15 @@ use crate::objects::*;
 use crate::text;
 use crate::{Canvas, Context, KeyCode, Process};
 
-/// The offscreen render target of fixed render size mode (see
-/// `Config::render_size`): a texture of the requested size that the frame
-/// renders into, paired with its blit bind group (the texture as shader
-/// source, the sampler — `Config::blit_filter` — that stretches it, and
-/// the letterbox fit uniform), so the stretch pass is a `set_bind_group`
-/// and three vertices. The blit samples the surface format directly, so
-/// the stretch never re-encodes colors.
+/// The frame's offscreen target: the texture the scene renders into,
+/// paired with the pass that carries it to the window (the texture as
+/// shader source, the sampler — `Config::blit_filter` — that stretches it,
+/// and the letterbox fit uniform), so the stretch is a `set_bind_group` and
+/// three vertices. Two reasons for one: fixed render size mode (see
+/// `Config::render_size`), where the buffer is smaller or larger than the
+/// window, and the float frame buffer ([`Frost::hdr_frames`]), where the
+/// window cannot hold what the shaders write. The blit samples the buffer
+/// and writes the surface, so neither end re-encodes what the other encoded.
 struct BlitTarget {
     /// The size this target was built for; a surface of exactly this size
     /// renders to directly and leaves the target unused.
@@ -141,9 +143,9 @@ pub(crate) struct Frost<P: Process> {
     /// `Config::render_size`); unused when the frame renders at the
     /// window's own resolution.
     blit_pipeline: Option<RenderPipeline>,
-    /// The offscreen render target for fixed render size mode, built on the
-    /// first frame that needs one: a surface already exactly the render
-    /// size skips both the buffer and the stretch pass.
+    /// The frame's offscreen target, built on the first frame that needs
+    /// one: absent only when the frame renders at the window's own size
+    /// *and* the surface can hold the frame itself.
     blit_target: Option<BlitTarget>,
     /// The index buffer for particle batches: one quad per instance
     /// (`[0, 1, 2, 2, 1, 3]`), created once and shared by every batched
@@ -253,6 +255,19 @@ pub(crate) struct Frost<P: Process> {
     /// become the encoded bytes a display expects. An sRGB surface
     /// (`false`, every native surface so far) keeps the direct path.
     linear_surface: bool,
+    /// Whether frames render into a float buffer instead of the surface.
+    ///
+    /// The scene already writes linear light, and an 8-bit sRGB surface
+    /// rounds it on the way in: a value over 1.0 — a lamp's core, two
+    /// lights landing on one pixel, a glow at full strength — clips before
+    /// anything downstream can see it, and every blend composites values
+    /// that were already rounded. A float buffer holds the overshoot and
+    /// blends without rounding, which is what the lighting model was
+    /// written assuming. The cost is one more pass over the window per
+    /// frame and twice the bytes of the target, so it is taken only where
+    /// the adapter offers `Rgba16Float` as an attachment; where it does
+    /// not, frames go to the surface directly, exactly as before.
+    hdr_frames: bool,
     /// The watched shader directory, debug builds on filesystem
     /// targets only: `render` polls it, and a passing batch sets
     /// `format` to `None` so the pipelines rebuild by the same road
@@ -714,6 +729,7 @@ impl<P: Process> Frost<P> {
             text_atlases: HashMap::new(),
             format: None,
             linear_surface: false,
+            hdr_frames: false,
             #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             shaders: crate::shaders::Live::new(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders"),
@@ -1040,6 +1056,7 @@ impl<P: Process> Frost<P> {
         // A surface without hardware sRGB puts the encoding on the
         // blit pass (see `App::linear_surface` and `blit.wgsl`).
         self.linear_surface = !config.format.is_srgb();
+        self.hdr_frames = Self::float_target(&self.adapter).is_some();
         self.set_up_pipelines(config.format);
         self.format = Some(config.format);
         self.surface = Some(surface);
@@ -1081,6 +1098,7 @@ impl<P: Process> Frost<P> {
         // are rebuilt only if the format actually changed.
         if self.format != Some(config.format) {
             self.linear_surface = !config.format.is_srgb();
+            self.hdr_frames = Self::float_target(&self.adapter).is_some();
             // The offscreen buffer carries the old format: drop it, and
             // the next frame rebuilds it against the new pipelines.
             self.blit_target = None;
@@ -1244,8 +1262,28 @@ impl<P: Process> Frost<P> {
     /// the frame's arena by dynamic offset; the rest are derived. The layouts
     /// are dropped as soon as the pipelines exist — a pipeline hands its bind
     /// group layout back to the draws that need it.
-    fn set_up_pipelines(&mut self, format: TextureFormat) {
+    /// The format a frame renders into, when the machine offers one:
+    /// `Rgba16Float` if the adapter will take it as a render attachment
+    /// *and* let the blit sample it, `None` if not — and then frames go to
+    /// the surface itself, which is what they have always done. Asked at
+    /// surface configuration (to build the pipelines against the right
+    /// target) and again whenever the buffer is built, so both answers come
+    /// from the same question.
+    fn float_target(adapter: &Adapter) -> Option<TextureFormat> {
+        let wants = TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING;
+        let caps = adapter.get_texture_format_features(TextureFormat::Rgba16Float);
+        caps.allowed_usages
+            .contains(wants)
+            .then_some(TextureFormat::Rgba16Float)
+    }
+
+    fn set_up_pipelines(&mut self, surface_format: TextureFormat) {
         let device = &self.device;
+        // The scene renders into the frame buffer, so every pipeline that
+        // draws the scene is built against *that* format; the blit pass is
+        // the only one that writes the window, and it alone keeps the
+        // surface's format. The two differ exactly when `hdr_frames` is set.
+        let format = Self::float_target(&self.adapter).unwrap_or(surface_format);
         let line_layout = slot_layouts(device, "line pipeline", LINE_UNIFORM_BYTES);
         let polyline_layout = slot_layouts(device, "polyline pipeline", POLYLINE_UNIFORM_BYTES);
         let circle_layout = slot_layouts(device, "circle pipeline", CIRCLE_UNIFORM_BYTES);
@@ -1379,7 +1417,7 @@ impl<P: Process> Frost<P> {
         self.blit_pipeline = Some(Self::create_pipeline(
             device,
             &blit_module,
-            format,
+            surface_format,
             None,
             "blit pipeline",
             false,
@@ -1435,9 +1473,13 @@ impl<P: Process> Frost<P> {
     /// once (the target survives resizes; only the requested size rebuilds
     /// it), and dropped whenever the surface itself becomes that size.
     fn new_blit_target(&mut self, size: [u32; 2]) -> BlitTarget {
-        let format = self
-            .format
-            .expect("a surface is attached before the first frame renders");
+        // The same question the pipelines were built against: a buffer in
+        // one format with pipelines compiled for another is a validation
+        // error on every frame, so the answer must come from one place.
+        let format = Self::float_target(&self.adapter).unwrap_or_else(|| {
+            self.format
+                .expect("a surface is attached before the first frame renders")
+        });
         let texture = self.device.create_texture(&TextureDescriptor {
             label: Some("render target"),
             size: Extent3d {
@@ -2245,13 +2287,14 @@ impl<P: Process> Frost<P> {
                     None => Some(self.new_blit_target(size)),
                 }
             }
-            // A linear surface cannot encode the frame as it is written,
-            // so the frame is parked in the offscreen buffer — the same
-            // size and format the surface itself would hold — and the
-            // gamma-encoding blit pass carries it to the window. (The
-            // buffer is built lazily below when no render size asked
-            // for one.)
-            _ if self.linear_surface => {
+            // A surface that cannot hold the frame as the shaders wrote it
+            // gets the frame carried to it: a linear surface has no hardware
+            // encoding, so the gamma pass supplies one, and an 8-bit surface
+            // cannot hold what the lights summed past 1.0. Either way the
+            // frame is parked in the offscreen buffer, at the window's own
+            // size, and the blit pass writes it down. (The buffer is built
+            // lazily below when no render size asked for one.)
+            _ if self.linear_surface || self.hdr_frames => {
                 let size = [surface_px.0, surface_px.1];
                 let cached = self
                     .blit_target
