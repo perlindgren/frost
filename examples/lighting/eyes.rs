@@ -19,11 +19,25 @@
 //! child node — emission is only the surface's own pixels.)
 //!
 //! The eyes wander on their own smooth-curved headings, flip to face
-//! where they are going, and bounce off the window edges. Run with:
+//! where they are going, and bounce off the window edges.
+//!
+//! The hall is also where the two look knobs get their workout, because it is
+//! the scene in the tree that has light past white in it. The frame starts in
+//! bloom and folded; **B** turns the glow off and on, **T** the fold:
 //!
 //! ```text
 //! cargo run --example eyes
 //! ```
+//!
+//! What each one can and cannot do here follows from what it is, and the keys
+//! are there to see exactly that. The glow spills the eyes' amber into the dark
+//! around them — emission is what the chain reads, and this hall has nothing
+//! else emissive, so the eyes are the only thing that blooms. The fold touches
+//! the pixels that were already too bright for the display and nothing else:
+//! the backdrop under the lamp comes to about a third of white, far under the
+//! knee a headroom of 0.15 puts at 0.85, so it is byte for byte the same room
+//! whether the fold is on or off, while the eyes' cores, which pass 1.0 on the
+//! peak of every pulse, arrive as amber instead of as white.
 
 /// The eyes' texture: a ~200x180 RGBA sprite — black outline, amber
 /// iris, pale sclera — which the emission shows through: emission rides the
@@ -64,6 +78,15 @@ const EYE_EMISSION: frost::Color = frost::Color {
     b: 0.15,
     a: 1.0,
 };
+
+/// The glow's strength and the fold's headroom: the two numbers this example
+/// exists to let you look at, both live on `B` and `T` rather than fixed,
+/// because the comparison is the point and it is free. 0.7 is a restrained
+/// glow — at 1.0 the chain adds the whole effect at the balance its three
+/// levels are weighted for, and past that it starts eating the frame. 0.15
+/// reserves fifteen percent of the display range for everything above white.
+const BLOOM_STRENGTH: f32 = 0.7;
+const HEADROOM: f32 = 0.15;
 
 /// The lamp's reach, in pixels, and its strength: deliberately low —
 /// the hall should feel dark, and the eyes should clearly outshine it.
@@ -136,11 +159,27 @@ impl Eye {
     }
 }
 
-/// The demo: all the eyes, and the clock their wander and pulses run on.
+/// Whether `key` was pressed since the last frame. The context reports the
+/// held state, which is what a movement wants and not what a toggle wants, so
+/// the example remembers last frame's held state itself and looks for the step
+/// up: one press, one change, however long the key is held.
+fn pressed(ctx: &frost::Context, key: frost::KeyCode, held: &mut bool) -> bool {
+    let down = ctx.key_down(key);
+    let rose = down && !*held;
+    *held = down;
+    rose
+}
+
+/// The demo: all the eyes, the clock their wander and pulses run on, and the
+/// two look knobs with the held state each needs to notice a press.
 #[derive(Default)]
 struct Eyes {
     eyes: Vec<Eye>,
     t: f32,
+    bloom_on: bool,
+    bloom_held: bool,
+    tone_on: bool,
+    tone_held: bool,
 }
 
 impl frost::Process for Eyes {
@@ -159,6 +198,21 @@ impl frost::Process for Eyes {
             node.scale = [eye.scale * eye.facing, eye.scale];
             node.emission = eye.emission_at(self.t);
         }
+
+        // The two knobs, read every frame so a held key cannot repeat them,
+        // then written every frame: both are per-frame values the engine reads
+        // out of the stretch pass's uniform, so writing the same number back is
+        // not a change of any kind and costs nothing.
+        if pressed(ctx, frost::KeyCode::KeyB, &mut self.bloom_held) {
+            self.bloom_on = !self.bloom_on;
+            log::info!("bloom {}", if self.bloom_on { "on" } else { "off" });
+        }
+        if pressed(ctx, frost::KeyCode::KeyT, &mut self.tone_held) {
+            self.tone_on = !self.tone_on;
+            log::info!("tone map {}", if self.tone_on { "on" } else { "off" });
+        }
+        ctx.set_bloom(if self.bloom_on { BLOOM_STRENGTH } else { 0.0 });
+        ctx.set_tone_map(if self.tone_on { HEADROOM } else { 0.0 });
 
         log::trace!("process: t {} eyes {}", self.t, self.eyes.len());
     }
@@ -273,11 +327,18 @@ fn main() {
         a: 1.0,
     };
 
-    match frost::run(
+    match frost::run_configured(
         scene,
         Eyes {
             eyes,
+            bloom_on: true,
+            tone_on: true,
             ..Eyes::default()
+        },
+        frost::Config {
+            bloom: BLOOM_STRENGTH,
+            tone_map: HEADROOM,
+            ..Default::default()
         },
     ) {
         Ok(()) => {}

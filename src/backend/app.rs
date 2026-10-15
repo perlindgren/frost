@@ -2499,6 +2499,11 @@ impl<P: Process> Frost<P> {
                     let (format, size) = (t.format, t.size);
                     t.bloom
                         .build(&self.device, &self.queue, format, size, &view);
+                    // Worth a line in the log: this frame is carrying something
+                    // no other frame carries, and an app that wonders at the one
+                    // slow frame on the moment it asks for a glow should not have
+                    // to know there are chains in here to find it.
+                    log::info!("bloom chain built for a {0}x{1} frame", size[0], size[1]);
                     t.bind_group =
                         self.blit_bind_group(&t.view, &t.sampler, &t.fit_buffer, &t.bloom);
                 }

@@ -15,7 +15,7 @@ calls, and the three node flags that make a surface take part in it —
 | `dawn` | a full day (64-second loop) under one `Light::directional`: the sun's color, strength, direction of travel, the sky, and the scene's ambient all slide together; parallel shadows sweep from dawn spears to noon stubs | `cargo run --example dawn` |
 | `near_sun` | the same day told by a *near* sun — a point light translated to the visible disk every frame — so shadows fan out from the disk like spokes on a wheel instead of lying parallel | `cargo run --example near_sun` |
 | `twostars` | a binary star system: two directional lights, each aimed, colored, and orbiting at its own rate; every lit pixel receives both, and every occluder cuts each of them separately | `cargo run --example twostars` |
-| `eyes` | a tour of node-level `emission` — a surface's own emission: self-lit eyes that burn inside a wall's shadow, because emission is never shadowed | `cargo run --example eyes` |
+| `eyes` | a tour of node-level `emission` — a surface's own emission: self-lit eyes that burn inside a wall's shadow, because emission is never shadowed; the hall is also the one scene in the tree with light past white in it, so it carries the two renderer-wide looks — press `B` to take the glow off the eyes and `T` to take the tone map off the pixels that were too bright for the display | `cargo run --example eyes` |
 | `eyes_light` | `eyes`' companion: the larger eyes carry a `Shape::Light` child node, so their light spills onto the room — and gets cut off at the walls — while their emission keeps burning | `cargo run --example eyes_light` |
 
 The ten files sit in this folder rather than at the examples' top level,
