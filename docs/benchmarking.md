@@ -244,11 +244,31 @@ of it is two kilobytes of chart.
 
 In situ, unbenchmarked, the same story in object counts. The engine's own
 trace over 548 frames of the diagnostics overlay: **16.4 bind groups and 16.0
-buffers created per frame** before, **1.5 and 0.02** after. The engine's 243-call
-frame in the `vrr` demo therefore carries somewhere near 1.8 ms of this CPU
-work — 243 × 7.7 µs — against the 4.6 ms the overlay's `PROC` stat measures
-for that frame; the two are different clocks over overlapping spans, so read
-that as the same order of magnitude and not as a subtraction.
+buffers created per frame** before, **1.5 and 0.02** after.
+
+And the number the change was for, measured in the demo that asked it. The
+`vrr` demo's frame — 243 draw calls, the diagnostics overlay included — with
+two temporary lines in `render()`: an `Instant` before
+`create_command_encoder`, and an average printed every 60 frames just after
+`queue.submit`. Two release binaries, one from each side of the change, run
+interleaved three times for eight seconds each, medians of the last three
+60-frame windows of each run:
+
+```text
+  per draw    2.870   2.998   2.831 ms/frame
+  arena       0.331   0.294   0.327 ms/frame
+```
+
+**2.87 ms to 0.33 ms, 8.8×**, in the span that covers the encode and the
+submit and nothing else. Three things to keep in mind while reading it. It is
+2.5 ms of CPU per frame in a demo that also spends about 4.6 ms in the app's
+own `process` — the overlay's `PROC` stat — so this is roughly a third of the
+frame's CPU time, not most of it. It is larger than the 243 × 7.7 µs the bench
+predicts (1.8 ms), because a real frame spreads its calls over six pipelines
+with different bind groups, where the bench exercised one; treat the bench as
+the mechanism and this as the frame. And the instrumentation is not in the
+tree — it is two lines and a counter, applied by hand whenever the number is
+wanted again.
 
 **The 7900 XTX row is unrun.** §4's campaign numbers are that machine's, and
 these are not a reproduction of them: no AMD figure is claimed here, and the
