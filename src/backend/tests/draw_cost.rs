@@ -353,9 +353,45 @@ fn an_arena_slot_keeps_two_draws_apart() {
     assert_eq!(pixel(4, 60), [0, 0, 0, 0], "outside both boxes");
 }
 
+/// The weather the bench ran in, printed beside the numbers it qualifies.
+///
+/// A millisecond with no condition on it is an anecdote. What survives a busy
+/// host is the *ratio* between schemes — 25.2x per-draw-over-arena measured on
+/// battery, 23.8x on the charger, the absolute milliseconds drifting around
+/// them — and the only way a reader months from now can tell which kind of
+/// number they are holding is if the bench said so at the time it was taken.
+/// This is not a gate: a bench has no baseline to fail, and `--ignored` means
+/// someone is already reading the output.
+struct Weather {
+    canary: noisefloor::Canary,
+    /// Which bench, so the line says what it qualifies.
+    label: &'static str,
+}
+
+impl Weather {
+    fn start(label: &'static str) -> Self {
+        Self {
+            canary: noisefloor::Canary::start(),
+            label,
+        }
+    }
+
+    fn report(self) {
+        let floor = self.canary.report();
+        eprintln!("draw cost [{}]: noise floor {floor}", self.label);
+        if floor.too_loud() {
+            eprintln!(
+                "draw cost [{}]: too loud to judge by — the ratios travel, these milliseconds                  do not; run it again when the machine is yours",
+                self.label
+            );
+        }
+    }
+}
+
 #[test]
 #[ignore = "a timing bench: run by hand with --ignored --nocapture"]
 fn a_uniform_per_draw_versus_an_arena() {
+    let weather = Weather::start("glyph quads, 1600x1600");
     use crate::backend::app::block_on;
     use crate::backend::frame::{SPRITE_UNIFORM_BYTES, sprite_uniform_data};
     use crate::objects::{Color, Transform};
@@ -953,6 +989,8 @@ fn a_uniform_per_draw_versus_an_arena() {
             a_submit / c_submit.max(0.001),
         );
     }
+
+    weather.report();
 }
 
 /// The same question asked of a frame that draws everything, not only glyphs.
@@ -974,6 +1012,7 @@ fn a_uniform_per_draw_versus_an_arena() {
 #[test]
 #[ignore = "a timing bench: run by hand with --ignored --nocapture"]
 fn a_frame_of_every_kind_packs_into_the_arena_too() {
+    let weather = Weather::start("every kind, 960x720");
     use crate::backend::app::{block_on, shape_layouts, slot_layouts, sprite_layouts};
     use crate::backend::frame::{
         CIRCLE_UNIFORM_BYTES, Draw, LINE_UNIFORM_BYTES, POLYLINE_UNIFORM_BYTES, RECT_UNIFORM_BYTES,
@@ -1487,4 +1526,6 @@ fn a_frame_of_every_kind_packs_into_the_arena_too() {
             packed.len(),
         );
     }
+
+    weather.report();
 }
