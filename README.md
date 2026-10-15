@@ -28,7 +28,10 @@ $env:RUST_LOG="info"; cargo run --example gizmos
 ## Repository hooks
 
 The versioned hooks in `.githooks/` gate commits (fmt + clippy) and pushes
-(tests), but git only runs them once this clone points at them — the
+(tests, plus a `wasm32-unknown-unknown` check of the web target — every other
+gate compiles the host target only, so a `cfg`-gated import in the backend
+walks through all of them and breaks `web/build.sh` later). Git runs them only
+once this clone points at them — the
 trigger is a per-clone setting, never cloned itself. After every fresh
 clone, once:
 

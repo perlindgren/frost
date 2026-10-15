@@ -1,7 +1,17 @@
 #!/bin/sh
 # pre-push hook: run the full test suite before allowing a push.
-# Aborts the push if cargo test or cargo test --examples fails.
-# Pushes that include the main branch force-pass (tests are skipped).
+# Aborts the push if cargo test or cargo test --examples fails, or if the web
+# target no longer compiles.
+#
+# The web check is here because nothing else covers it. `cargo fmt`,
+# `cargo clippy --all-targets` and `cargo test` all run for the host target, so
+# a `cfg(not(target_arch = "wasm32"))` in the backend — an import that an
+# optimization started to need on every target, for instance — walks through the
+# whole gate and takes `web/build.sh` down afterwards. That has happened: the
+# uniform arena's NonZeroU64 import (164679f) sat broken across six commits
+# until someone ran the check by hand.
+#
+# Pushes that include the main branch force-pass (tests are skipped), as ever.
 
 fail() {
     printf 'pre-push: %s failed - push aborted.\n' "$*" >&2
@@ -26,5 +36,23 @@ cargo test || fail 'cargo test'
 
 printf 'pre-push: running `cargo test --examples`...\n'
 cargo test --examples || fail 'cargo test --examples'
+
+# The web target shares the library and nothing else, so it gets its own line
+# rather than hiding inside the host's. One grace, announced rather than
+# silent: a clone without the target installed is warned and let through,
+# because `rustup target add` wants a network that box may not have, and a push
+# blocked there has checked nothing either.
+wasm_target=wasm32-unknown-unknown
+if rustup target list --installed 2>/dev/null | grep -q "^${wasm_target}\$"; then
+    printf 'pre-push: checking the web target (%s)...\n' "$wasm_target"
+    cargo check --quiet --example antifrost --target "$wasm_target" ||
+        fail 'cargo check for wasm32 (the web target)'
+elif command -v rustup >/dev/null 2>&1; then
+    printf 'pre-push: WARNING: %s is not installed - the web target was NOT checked.\n' \
+        "$wasm_target" >&2
+    printf 'pre-push:          close the hole with: rustup target add %s\n' "$wasm_target" >&2
+else
+    printf 'pre-push: WARNING: no rustup on PATH - the web target was NOT checked.\n' >&2
+fi
 
 exit 0
