@@ -448,13 +448,20 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
   zero at every pixel, and the glow falls off (measured eight to one between
   five pixels out and twenty-one), because a glow that is uniform across the
   frame is a haze, not a glow. The chain is nine render passes and costs
-  **+0.21 ms at 4K**, nearly all of it per-pass overhead rather than fill —
-  six more passes over the same texels measured +0.10 ms, and the same chain at
-  a quarter-size buffer cost the same, which is why the kernel is wide and
-  iterated once instead of narrow and run twice (§9 of the benchmarking
-  notes). No look is decided by any of this: the threshold, the knee, the three
+  **+0.21 ms** at antifrost's default 1920×1080 buffer, **+0.5 ms** at a
+  4112×2572 one: part of it is overhead a pass carries whatever it draws into —
+  six more passes over the same texels measured +0.10 ms — and part is fill,
+  which is why the kernel is wide and iterated once instead of narrow and run
+  twice (§9 of the benchmarking notes, and §11 for the correction this session
+  made to how the size half of that was measured). No look is decided by any of this: the threshold, the knee, the three
   weights and the three levels are four numbers to argue with, all of them at
   the top of `bloom.rs`, and every one of them is a guess today.
+  `Context::set_bloom` is the live version of the strength, and the strength is
+  what decides whether the chain runs at all: at zero the present pass already
+  ignores the levels, so `Bloom::run` declines and the off state costs no passes
+  — an app may toggle a glow per frame. Asking for a glow on a frame that was
+  built without a chain builds one there and then, for about 0.1 ms of texture
+  and bind-group bookkeeping that does not grow with the window (§11).
 - **The tone map folds light above white into the display's range, and nothing
   else.** `Config::tone_map` (0.0, off) is a *headroom*: the share of the display
   range handed to light above white. Below the knee at `1 - headroom` the curve
@@ -474,8 +481,16 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
   other way round, by remapping the whole tone scale and with it the whole look,
   which is a look decision and is not made here. It runs last in the present
   pass, after the bloom is added, so the total is what fits the display; its cost
-  is the one number in this whole area that cannot be measured, +0.007 ms at 4K
-  against a ±0.01 ms drift (§10 of the benchmarking notes).
+  is the one number in this whole area that cannot be measured — +0.007 ms against
+  a ±0.01 ms drift, and a paired per-frame instrument that is blind to it at three
+  buffer sizes too (§10, §11 of the benchmarking notes).
+  `Context::set_tone_map` is the live version, and being one float in a uniform
+  the present pass rewrites every frame, changing it costs nothing and lands the
+  frame it is asked on — which is what lets an app pick a headroom per shot rather
+  than per program. It is still one number for the whole window: there is no
+  per-layer fold, because the fold happens once over the composed frame, and
+  keeping an interface out of it would need a subtree that renders into a buffer
+  of its own, which the scene tree cannot express today.
 - Sprite textures are `Rgba8UnormSrgb` (samples land in linear space; sRGB
   blending matches authored colors), linear-filtered, clamp-to-edge.
 - The shape/sprite shaders evaluate an **SDF in the object's local space**: the
@@ -988,7 +1003,7 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **406 lib tests + 3 integration tests (`tests/`) + 7 doctests**
+Baseline: **408 lib tests + 3 integration tests (`tests/`) + 7 doctests**
 passing, `cargo build` (lib + the `sprite_util` and `noisefloor` tools) clean.
 The tool's 93
 tests — 68 that moved with `examples/sprite_util.rs`, each living in the

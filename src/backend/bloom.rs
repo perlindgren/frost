@@ -58,6 +58,22 @@ const KNEE: f32 = 0.4;
 /// the haze, and too much haze reads as a dirty lens.
 const WEIGHTS: [f32; LEVELS] = [0.5, 0.3, 0.2];
 
+/// The three numbers the present pass reads for one request. Kept apart from
+/// both the chain and the shader because it is the one piece of this that is
+/// arithmetic rather than GPU work, and the two cases it has to get right —
+/// no strength asked for, and nothing to read — are the two a caller can only
+/// discover by asking for a glow it will not get.
+fn weights_for(strength: f32, can_bloom: bool) -> [f32; LEVELS] {
+    if !can_bloom || strength <= 0.0 {
+        return [0.0; LEVELS];
+    }
+    [
+        WEIGHTS[0] * strength,
+        WEIGHTS[1] * strength,
+        WEIGHTS[2] * strength,
+    ]
+}
+
 /// One level: two textures — the one the level is read from and the scratch the
 /// horizontal blur lands in — plus the three bind groups that write them.
 struct Level {
@@ -104,6 +120,14 @@ pub(crate) struct Bloom {
     /// how "no bloom" reaches the shader, whose branch on it keeps the three
     /// samples off the frame entirely.
     pub(crate) weights: [f32; LEVELS],
+    /// What the app is asking for right now: `Config::bloom` at startup,
+    /// [`Context::set_bloom`](crate::Context::set_bloom) afterwards. Kept
+    /// because the weights are derived from it, and it can change under us.
+    strength: f32,
+    /// Whether there is an emissive target to read at all. False on a frame
+    /// buffer that clips at 1.0, and then no amount of asking builds a chain —
+    /// the strength is remembered and the weights stay zero.
+    can_bloom: bool,
     /// The passes' uniforms, one each, written once here and never again. Held
     /// because a bind group keeps its buffers alive but the chain wants to say
     /// how much it weighs.
@@ -139,9 +163,33 @@ impl Bloom {
             Self::pipeline(device, &module, format, "bloom downsample", "fs_down"),
             Self::pipeline(device, &module, format, "bloom blur", "fs_blur"),
         ];
-        let Some(emissive) = emissive.filter(|_| strength > 0.0) else {
-            return Self::dormant(device, queue, format, pipelines, sampler, strength);
-        };
+        // The two questions are separate and stay separate from here on: is
+        // there anything to read, and is the app asking. A chain with nothing
+        // to read never wakes up, whatever the strength does later.
+        let can_bloom = emissive.is_some();
+        let mut this = Self::dormant(
+            device, queue, format, pipelines, sampler, strength, can_bloom,
+        );
+        if let Some(emissive) = emissive.filter(|_| strength > 0.0) {
+            this.build(device, queue, format, extent, emissive);
+        }
+        this
+    }
+
+    /// Builds the levels, or rebuilds them against a new extent. This is what
+    /// an app wakes when it asks for bloom at runtime ([`Context::set_bloom`])
+    /// on a frame that was built without a chain: the pipelines and the sampler
+    /// already exist, so what it costs is the six textures, the nine bind
+    /// groups and their uniforms — and the frame that pays for it is the frame
+    /// that asked.
+    pub(crate) fn build(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        format: TextureFormat,
+        extent: [u32; 2],
+        emissive: &TextureView,
+    ) {
         let mut levels: Vec<Level> = Vec::with_capacity(LEVELS);
         let mut uniforms = Vec::with_capacity(LEVELS * 3);
         // What the next level reads: the emissive target at the top of the
@@ -200,7 +248,7 @@ impl Bloom {
                         },
                         BindGroupEntry {
                             binding: 1,
-                            resource: BindingResource::Sampler(&sampler),
+                            resource: BindingResource::Sampler(&self.sampler),
                         },
                         BindGroupEntry {
                             binding: 2,
@@ -217,7 +265,7 @@ impl Bloom {
             };
             let down = bind(
                 "bloom downsample bind",
-                &pipelines[0],
+                &self.pipelines[0],
                 source,
                 // The threshold rides at the top of the chain only: below it
                 // the bright parts have already been chosen, and thresholding
@@ -236,7 +284,7 @@ impl Bloom {
             // to see it: the glow leans.
             let across = bind(
                 "bloom blur across bind",
-                &pipelines[1],
+                &self.pipelines[1],
                 &fine_view,
                 bloom_bytes(texel, -1.0, KNEE, [texel[0], 0.0]),
             );
@@ -245,7 +293,7 @@ impl Bloom {
             // thing about this chain.
             let along = bind(
                 "bloom blur along bind",
-                &pipelines[1],
+                &self.pipelines[1],
                 &scratch_view,
                 bloom_bytes(texel, -1.0, KNEE, [0.0, texel[1]]),
             );
@@ -263,24 +311,32 @@ impl Bloom {
             // next level reads the `fine` view that just moved into `levels`.
             source = &levels[level_index].fine_view;
         }
-        let views = [
-            levels[0].fine_view.clone(),
-            levels[1].fine_view.clone(),
-            levels[2].fine_view.clone(),
+        self.levels = levels;
+        self.views = [
+            self.levels[0].fine_view.clone(),
+            self.levels[1].fine_view.clone(),
+            self.levels[2].fine_view.clone(),
         ];
-        let weights = [
-            WEIGHTS[0] * strength,
-            WEIGHTS[1] * strength,
-            WEIGHTS[2] * strength,
-        ];
-        Self {
-            levels,
-            pipelines,
-            sampler,
-            views,
-            weights,
-            _uniforms: uniforms,
-        }
+        self.weights = weights_for(self.strength, self.can_bloom);
+        self._uniforms = uniforms;
+    }
+
+    /// Asks for a different strength. Free, because the strength reaches the
+    /// shader as three numbers in a uniform the present pass rewrites every
+    /// frame anyway; what it cannot do is build a chain that was never
+    /// possible, which is what [`Self::needs_building`] is for. Zero is not just
+    /// an invisible glow: it parks [`Self::run`] as well, so an app that asks
+    /// for no bloom on a frame pays no bloom passes for it.
+    pub(crate) fn set_strength(&mut self, strength: f32) {
+        self.strength = strength;
+        self.weights = weights_for(strength, self.can_bloom);
+    }
+
+    /// Whether the app is asking for a glow this chain has no levels to make.
+    /// The caller's job then is [`Self::build`], and it needs the emissive
+    /// view and the extent, which belong to the frame buffer, not to us.
+    pub(crate) fn needs_building(&self) -> bool {
+        self.can_bloom && self.strength > 0.0 && self.levels.is_empty()
     }
 
     /// A chain that does nothing, for a frame with no float target or an app
@@ -294,6 +350,7 @@ impl Bloom {
         pipelines: [RenderPipeline; 2],
         sampler: Sampler,
         strength: f32,
+        can_bloom: bool,
     ) -> Self {
         let texture = device.create_texture(&TextureDescriptor {
             label: Some("bloom placeholder"),
@@ -328,7 +385,7 @@ impl Bloom {
             },
         );
         let view = texture.create_view(&TextureViewDescriptor::default());
-        if strength > 0.0 {
+        if strength > 0.0 && !can_bloom {
             log::info!(
                 "bloom asked for at {strength} on a frame buffer that clips at 1.0: ignored"
             );
@@ -338,7 +395,9 @@ impl Bloom {
             pipelines,
             sampler,
             views: [view.clone(), view.clone(), view],
-            weights: [0.0; LEVELS],
+            weights: weights_for(strength, can_bloom),
+            strength,
+            can_bloom,
             _uniforms: Vec::new(),
         }
     }
@@ -385,6 +444,15 @@ impl Bloom {
     /// Runs the chain: emissive in, three blurred levels out, nine full-screen
     /// passes over a third of one frame's pixels. Does nothing when dormant.
     pub(crate) fn run(&self, encoder: &mut CommandEncoder) {
+        // Nothing to make, two ways over: no levels to make it from, and no
+        // weight to put the result anywhere. The second is the app that turned
+        // the glow down to zero and left the chain standing ready — and since
+        // the present pass branches on those same three zeros, every pass here
+        // would compute a picture nothing reads. Passes are what this chain
+        // costs, so skipping nine of them is the entire cost of the off state.
+        if self.levels.is_empty() || self.weights == [0.0; LEVELS] {
+            return;
+        }
         for level in &self.levels {
             let passes = [
                 (&self.pipelines[0], &level.down, &level.fine_view),
@@ -449,6 +517,21 @@ mod tests {
         assert_eq!((f(8..12), f(12..16)), (0.8, 0.4));
         assert_eq!((f(16..20), f(20..24)), (0.001, 0.002));
         assert_eq!(&b[24..], &[0u8; 8]);
+    }
+
+    /// The two ways a request produces no light are the two a caller cannot see
+    /// for itself: asking for nothing, and asking on a frame buffer that keeps
+    /// nothing above white. Both have to come back as three exact zeros, because
+    /// zero is what the present pass branches on to skip its three samples —
+    /// anything else, a negative strength included, pays for samples of black.
+    #[test]
+    fn only_a_real_request_gets_a_weight() {
+        assert_eq!(weights_for(1.0, true), WEIGHTS);
+        assert_eq!(weights_for(0.5, true), [0.25, 0.15, 0.1]);
+        assert_eq!(weights_for(0.0, true), [0.0; LEVELS]);
+        assert_eq!(weights_for(-1.0, true), [0.0; LEVELS]);
+        assert_eq!(weights_for(1.0, false), [0.0; LEVELS]);
+        assert_eq!(weights_for(0.3, false), [0.0; LEVELS]);
     }
 
     /// The weights sum to the frame they are added to: at a strength of 1.0 the

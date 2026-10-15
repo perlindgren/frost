@@ -460,7 +460,12 @@ The chain is nine render passes — three levels, each with a downsample and a
 blur across and down. Level 0 is a quarter of the window, level 1 a sixteenth,
 level 2 a sixty-fourth, and each is written three times, so the whole chain
 touches about as many pixels as one frame does. That is the theory; this is what
-it costs at a 3840×2160 buffer:
+it costs at the buffer antifrost actually ships with — 1920×1080, because the
+default quality setting fixes `render_size` there. (A `Config::window_size` of
+1920×1080 logical on this machine's built-in display puts the *surface* at
+4112×2572; a row further down measures that size. An earlier version of this
+section said 3840×2160, which was an assumption about the display scale factor
+and never a measurement.)
 
 | chain | bloom off | bloom on | delta |
 |---|---|---|---|
@@ -471,17 +476,31 @@ it costs at a 3840×2160 buffer:
 The bloom-off medians drift 0.025 ms across the four runs, which is the noise
 floor here; the deltas are five to twelve times that, so they are real.
 
-**The cost is the passes, not the pixels.** Two pieces of evidence, and the
-second one is the surprising one:
+**A render pass costs something of its own, and the pixels cost something on
+top.** Two pieces of evidence:
 
-- Six extra passes over the same textures cost +0.09 to +0.11 ms, about 16 µs
-  per pass.
-- Running the same 15-pass chain against a **quarter-size buffer** (1920×1080
-  instead of 3840×2160) cost the same: 1.058 / 1.065 off, 1.364 / 1.368 on,
-  +0.31 ms. A fourth of the texels, the same bill.
+- Six extra passes over the same textures at the same size cost +0.09 to
+  +0.11 ms, about 16 µs per pass. This one holds: same session, same buffer,
+  same everything but the pass count.
+- The bigger buffer costs more. Nine passes over a 4112×2572 buffer measured
+  **+0.500 and +0.571 ms** in two independent runs (§11's paired method),
+  against +0.19 to +0.21 ms at 1920×1080 above. Five times the pixels, about
+  two and a half times the bill.
 
-On this adapter a render pass costs roughly 16 µs of that span whatever it draws
-into. That is not shader time and it does not shrink when the textures do, so
+A correction, because the first version of this section got the second point
+backwards. It claimed the same chain against a quarter-size buffer cost the same
+— a fourth of the texels, the same bill — and the two runs really did agree to
+within 0.005 ms. They agreed because they were *the same size*: the scratch knob
+that was supposed to shrink the buffer set `render_size` to 1920×1080, which is
+what the default quality setting already sets it to. The check that would have
+caught it, printing the extent of the texture being built, was written this
+session and printed 1920×1080 for a run that had been recorded as 3840×2160. So
+the flat-cost claim was never tested, and the honest reading of the two bullets
+above is a fixed part and a growing part: roughly 0.15 ms of nine passes' cost is
+there whatever they draw into, and the rest scales with the frame.
+
+The shape of the conclusion did not change, only its strength: a pass carries
+~16 µs before it draws a thing, so
 the shape of a cheap chain is *few passes with wide kernels inside them*, not
 many cheap ones. It is why `bloom.wgsl` folds thirteen Gaussian taps into six
 bilinear fetches and blurs once: measured, the wide-kernel nine-pass chain is
@@ -507,7 +526,8 @@ until an app asks for it.
 
 ## 10. What a tone map costs (2026-10-16, Apple M4 Max)
 
-Same instrument again, same antifrost at a 3840×2160 buffer, medians of ~4700
+Same instrument again, same antifrost at its default 1920×1080 buffer, medians
+of ~4700
 frames per run, runs interleaved. The tone map is a handful of arithmetic ops
 in the stretch pass — one `max`, one branch, a divide — so this is the row that
 says what *computation* costs here, after §9 said what passes cost.
@@ -531,3 +551,59 @@ path — the only place a per-pixel look effect can live without a pass of its
 own — is that arithmetic is free and texture reads are not: bloom's fold costs
 three samples per pixel and is the reason that branch is there, and the tone
 map's six extra lines are not measurable next to it.
+
+## 11. Turning the look knobs at runtime (2026-10-16, Apple M4 Max)
+
+`Context::set_bloom` and `Context::set_tone_map` make the two look values live,
+which raises a cost question the startup versions never had: what does a frame
+pay for *asking* — for a glow that its own chain cannot make yet — and can the
+difference between the two states be measured at all on this machine?
+
+**A better instrument, first.** §9 and §10 compared whole runs, which is only as
+good as the machine's concentration. This time the toggle is one frame on, one
+frame off, inside one process, and the number is the median of the differences
+between adjacent frames. Slow drift in load cancels; the machine can be doing
+what it likes as long as it does it to both halves. It is also the first
+instrument here that measures the two states as an app actually meets them: with
+the strength at zero the chain does not run at all, so the "off" frames below
+pay no bloom passes, which is what an app toggling the glow on and off gets.
+
+**The wake, measured eight times**: six textures, nine bind groups, their
+uniforms and a fresh blit bind group, on the one frame that asks.
+
+| buffer | chain | rebind |
+|---|---|---|
+| 960×540 | 0.099 / 0.206 / 0.439 ms | 0.008 / 0.016 / 0.022 ms |
+| 1920×1080 | 1.086 ms | 0.034 ms |
+| 4112×2572 | 0.115 / 0.126 / 0.130 / 0.465 ms | 0.009 / 0.010 / 0.009 / 0.027 ms |
+
+Median about 0.13 ms, and nothing in the table grows with the buffer: the cost
+is bookkeeping, not texels, and 4112×2572 is no more expensive to ask for than
+960×540. The spread is the machine (§9's numbers and these were not taken on the
+same kind of day — see below), but even the worst observation is an eighth of a
+60 Hz frame. Building a chain mid-run is not a thing to design around.
+
+**The look deltas, paired.** At 4112×2572, nine bloom passes: **+0.500 and
++0.571 ms** in two independent runs (41 and 51 pairs). The tone map, same
+method, three buffer sizes: **−0.018, +0.054, +0.103 ms**, against interquartile
+ranges of ±0.15 to ±0.40 ms. §10 could not see a tone map with a cruder
+instrument and four thousand frames; this one cannot see it either, which is the
+same answer from a better method, and the more interesting claim from §10 —
+that per-pixel arithmetic in the present pass is free next to a texture read —
+survives it.
+
+**Conditions, because they mattered.** This session the machine was not quiet:
+load average 2.2–2.6 throughout, and the same binary that reported a 1.05 ms
+median frame in §9 reported 3.5–8 ms here, six to eight times slower, at the same
+settings. Absolute spans are therefore not comparable between sections, and no
+new absolute span is quoted above — only paired differences and the wake, which
+is CPU-side bookkeeping. One arm (bloom at 960×540) reported a +8.8 ms paired
+median, which is eight times the whole frame it was measured inside and is
+certainly not a bloom cost; I have no explanation for it, and the honest handling
+is to report that the arm exists and to leave it out of the conclusion rather than
+to re-run until it agrees. Thousands of toggled frames produced no validation
+errors and no warnings.
+
+Still open, and this session is the reason: the size sweep for bloom with a quiet
+machine — three sizes, paired, is the experiment that would replace §9's two-bullet
+reconstruction with a curve — and the 7900 XTX row of both sections.

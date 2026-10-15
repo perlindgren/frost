@@ -263,6 +263,12 @@ pub struct Context<'c> {
     /// change the quality of the stretch pass (see
     /// [`Context::set_render_size`]).
     render_size: &'c mut Option<[u32; 2]>,
+    /// The engine's live bloom strength, mutable so a running app can turn the
+    /// glow up, down, or on (see [`Context::set_bloom`]).
+    bloom: &'c mut f32,
+    /// The engine's live tone-map headroom, mutable so a running app can change
+    /// what it does with light above white (see [`Context::set_tone_map`]).
+    tone_map: &'c mut f32,
     /// The window this frame is drawn into, or `None` before the window
     /// exists.
     window: Option<&'c Window>,
@@ -434,6 +440,55 @@ impl Context<'_> {
     /// own resolution.
     pub fn render_size(&self) -> Option<[u32; 2]> {
         *self.render_size
+    }
+
+    /// How much the frame's bright light bleeds into its neighbours: the live
+    /// strength behind [`Config::bloom`], which [`Self::set_bloom`] changes at
+    /// runtime. `0.0` is no glow.
+    pub fn bloom(&self) -> f32 {
+        *self.bloom
+    }
+
+    /// Turns the glow up, down, or on, mid-run: the mid-session sibling of
+    /// setting [`Config::bloom`] at startup.
+    ///
+    /// The strength itself costs nothing: it is three numbers in a uniform the
+    /// stretch pass rewrites every frame, so a change lands on the frame that
+    /// asks for it. What does cost is asking for a glow *at all* on a run that
+    /// started without one. If the frame buffer can hold a value past 1.0 — the
+    /// same condition that gives it an emissive target — then the first frame to
+    /// see a non-zero strength builds the chain, six textures and nine bind
+    /// groups, and pays for that on its own frame; §11 of the benchmarking notes
+    /// measures the hitch. Where the buffer clips at 1.0 there is nothing for a
+    /// chain to read: the strength records faithfully, says so in the log once,
+    /// and shows its effect the moment a float buffer ever runs.
+    pub fn set_bloom(&mut self, strength: f32) {
+        *self.bloom = strength;
+    }
+
+    /// How much of the display's range is reserved for light above white: the
+    /// live value behind [`Config::tone_map`], which [`Self::set_tone_map`]
+    /// changes at runtime. `0.0` clips.
+    pub fn tone_map(&self) -> f32 {
+        *self.tone_map
+    }
+
+    /// Reserves room above display white, or takes it away: the mid-session
+    /// sibling of setting [`Config::tone_map`] at startup.
+    ///
+    /// This one has no cost and no delay — the headroom is a single float in a
+    /// uniform the stretch pass rewrites every frame — which is what makes it
+    /// sane to drive from the frame's own content: a shot with a sun in it and
+    /// the menu that follows it can ask for different headrooms on consecutive
+    /// frames, and each gets what it asked for.
+    ///
+    /// It is one number for the whole window, and there is deliberately no
+    /// per-layer version of it: the fold happens once, over the composed frame,
+    /// so an interface and the world behind it are folded together. Keeping them
+    /// apart needs a subtree that renders into a buffer of its own, which the
+    /// scene tree cannot express today.
+    pub fn set_tone_map(&mut self, headroom: f32) {
+        *self.tone_map = headroom;
     }
 
     /// Fixes the render size — or lifts the fix — mid-run: the runtime
@@ -739,17 +794,27 @@ pub struct Config {
     /// restrained glow, 1.0 is the whole effect at the balance its three levels
     /// are weighted for, and past that the glow starts eating the frame.
     ///
-    /// What it takes: a frame buffer that can hold radiance past 1.0, which is
-    /// whatever the adapter offers `Rgba16Float` on (see `App::hdr_frames`),
-    /// and emission in the scene to bloom — a node's own
+    /// What it takes: a frame buffer that can hold radiance past 1.0, which the
+    /// engine gives a frame wherever the adapter offers `Rgba16Float` — not a
+    /// switch, and not an HDR output, just the intermediate the frame is drawn
+    /// into before it is folded down to the window, and
+    /// emission in the scene to bloom — a node's own
     /// [`SceneNode::emission`](crate::SceneNode::emission), or a sprite's.
     /// Where the frame buffer clips at 1.0, asking for bloom changes nothing
     /// and says so once in the log.
     ///
-    /// What it costs: nine full-screen passes over about a third of one
-    /// frame's pixels, plus the emissive target the chain reads. Small next to
-    /// a draw call at 1080p on a laptop; not free at 4K on an integrated GPU,
-    /// and the second full-resolution target is the part that hurts there.
+    /// What it costs: nine render passes, measured +0.21 ms at a 1920×1080
+    /// buffer and +0.5 ms at 4112×2572 on an M4 Max, plus the emissive target the
+    /// chain reads (§9 and §11 of the benchmarking notes). Twenty-five draw
+    /// calls' worth, which is why the default is off and why asking for no glow
+    /// on a frame is free: at zero strength the chain declines to run rather than
+    /// computing a picture no one reads.
+    ///
+    /// This is the initial strength; [`Context::set_bloom`](crate::Context::set_bloom)
+    /// is the live version. A run that starts here with `0.0` can still ask for a
+    /// glow later, and pays for the chain's six textures and nine bind groups on
+    /// the frame that asks — about 0.1 ms, once, and the same whatever the window
+    /// size (§11).
     pub bloom: f32,
     /// How much of the display's range is reserved for light *above* white:
     /// the tone map's headroom.
@@ -775,9 +840,15 @@ pub struct Config {
     /// every bright pixel in the frame, and no value of it makes the room
     /// free.
     ///
-    /// Where the surface does show values past 1.0 — [`Config::hdr_frames`] on
-    /// a display that will — this normally wants to stay `0.0`, because there
-    /// the overshoot is not a problem to fold away; it is the point.
+    /// Where a frame is ever shown on a surface that carries values past 1.0 —
+    /// which frost cannot ask a display for today, so this is a note for whoever
+    /// adds it — this normally wants to stay `0.0`, because there the overshoot
+    /// is not a problem to fold away; it is the point.
+    /// This is the initial headroom; [`Context::set_tone_map`](crate::Context::set_tone_map)
+    /// is the live version. Changing it costs nothing — one float in a uniform the
+    /// stretch pass rewrites every frame — so the value that suits a shot with a
+    /// sun in it and the value that suits the menu after it do not have to be the
+    /// same number, and neither has to wait for a restart.
     pub tone_map: f32,
     /// Whether the Escape key, on its own, ends the application.
     ///

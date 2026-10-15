@@ -270,14 +270,23 @@ pub(crate) fn frame(
 
     // The chain itself, and the present pass that adds it back: the same two
     // pieces of the engine, in the same order, at the same sizes.
-    let bloom = Bloom::new(
+    // Built the way the engine builds it now, which is not the way `Bloom::new`
+    // reads if you only want a chain: it comes up dormant and is woken by the
+    // strength this frame asks for. Every bloom and tone test in the tree
+    // therefore runs the same path a mid-run `Context::set_bloom` takes, and a
+    // wake that produced an empty chain would darken every one of them.
+    let mut bloom = Bloom::new(
         &device,
         &queue,
         float,
         [SPAN, SPAN],
         Some(&emissive_view),
-        strength,
+        0.0,
     );
+    bloom.set_strength(strength);
+    if bloom.needs_building() {
+        bloom.build(&device, &queue, float, [SPAN, SPAN], &emissive_view);
+    }
     bloom.run(&mut encoder);
 
     let blit_module = device.create_shader_module(ShaderModuleDescriptor {

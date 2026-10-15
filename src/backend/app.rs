@@ -85,6 +85,14 @@ struct BlitTarget {
     bloom: Bloom,
     /// The 16-byte letterbox fit (`vec2` + padding), rewritten by `render`
     /// whenever the surface's aspect may have moved.
+    /// The format the frame buffer was built in, which is the format every
+    /// bloom level is built in too. Stored because a chain woken later has to
+    /// match it, and the answer that decides it (`float_target`) depends on the
+    /// adapter, not on the frame.
+    format: TextureFormat,
+    /// The stretch pass's own sampler, kept for the same reason the bind group
+    /// is: a chain woken mid-run rebinds it rather than making a second one.
+    sampler: Sampler,
     fit_buffer: Buffer,
     bind_group: BindGroup,
 }
@@ -121,16 +129,19 @@ pub(crate) struct Frost<P: Process> {
     /// The filter the stretch pass samples the render buffer with when its
     /// size differs from the surface (see `Config::blit_filter`).
     blit_filter: SpriteFilter,
-    /// The glow the app asked for (`Config::bloom`): a strength, zero for
-    /// none. It decides whether the frame carries a bloom chain at all, and it
-    /// is read when the frame buffer is built — asking for bloom mid-run is not
-    /// a thing, which is the same rule `render_size` lives by.
+    /// The glow the app asked for (`Config::bloom`, live through
+    /// [`Context::set_bloom`](crate::Context::set_bloom)): a strength, zero
+    /// for none. It is read every frame, so turning a glow on or off mid-run is
+    /// one assignment; what is not free is asking for a glow on a frame that
+    /// was built without a chain, which the render path pays for on that frame.
     bloom: f32,
-    /// The headroom the app asked for (`Config::tone_map`): the share of the
-    /// display range kept for light above white, zero for none. Like bloom it
-    /// is read once, when the frame buffer is built, and it reaches the shader
-    /// through the stretch pass's own uniform rather than deciding a pipeline,
-    /// because unlike bloom it needs no textures to hold a working set.
+    /// The headroom the app asked for (`Config::tone_map`, live through
+    /// [`Context::set_tone_map`](crate::Context::set_tone_map)): the share of
+    /// the display range kept for light above white, zero for none. It reaches
+    /// the shader through the stretch pass's own uniform, which is rewritten
+    /// every frame, so asking for a different headroom costs nothing and lands
+    /// immediately — unlike [`Self::bloom`], which may have to build the chain
+    /// that a glow is made of before the number means anything.
     tone_map: f32,
     #[allow(dead_code)]
     window_id: Option<WindowId>,
@@ -1550,6 +1561,66 @@ impl<P: Process> Frost<P> {
     /// sampler. Built once per size change, which for a fixed size means
     /// once (the target survives resizes; only the requested size rebuilds
     /// it), and dropped whenever the surface itself becomes that size.
+    /// The stretch pass's bind group: this target's frame view and sampler, its
+    /// fit uniform, and the three bloom levels. It has exactly one shape,
+    /// dormant chain or not, because the weights in the fit uniform are what
+    /// decide whether the three samples happen — which is why [`Bloom`] hands
+    /// over one black texel three times when it has nothing else to hand over.
+    /// Built here rather than inline because a chain woken mid-run has to rebind
+    /// its new textures into the same slot, and two copies of eleven bindings is
+    /// how that goes wrong.
+    fn blit_bind_group(
+        &self,
+        view: &TextureView,
+        sampler: &Sampler,
+        fit_buffer: &Buffer,
+        bloom: &Bloom,
+    ) -> BindGroup {
+        self.device.create_bind_group(&BindGroupDescriptor {
+            label: Some("blit bind group"),
+            layout: &self
+                .blit_pipeline
+                .as_ref()
+                .expect("the blit pipeline is built with the surface")
+                .get_bind_group_layout(0),
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(sampler),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: fit_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                // The bloom levels, bound whether or not there is bloom to show.
+                BindGroupEntry {
+                    binding: 3,
+                    resource: BindingResource::TextureView(&bloom.views[0]),
+                },
+                BindGroupEntry {
+                    binding: 4,
+                    resource: BindingResource::TextureView(&bloom.views[1]),
+                },
+                BindGroupEntry {
+                    binding: 5,
+                    resource: BindingResource::TextureView(&bloom.views[2]),
+                },
+                BindGroupEntry {
+                    binding: 6,
+                    resource: BindingResource::Sampler(&bloom.sampler),
+                },
+            ],
+        })
+    }
+
     fn new_blit_target(&mut self, size: [u32; 2]) -> BlitTarget {
         // The same question the pipelines were built against: a buffer in
         // one format with pipelines compiled for another is a validation
@@ -1636,53 +1707,7 @@ impl<P: Process> Frost<P> {
             0,
             &fit_bytes((1.0, 1.0), [0.0; 3], self.tone_map),
         );
-        let bind_group = self.device.create_bind_group(&BindGroupDescriptor {
-            label: Some("blit bind group"),
-            layout: &self
-                .blit_pipeline
-                .as_ref()
-                .expect("the blit pipeline is built with the surface")
-                .get_bind_group_layout(0),
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(&view),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Sampler(&sampler),
-                },
-                BindGroupEntry {
-                    binding: 2,
-                    resource: BindingResource::Buffer(BufferBinding {
-                        buffer: &fit_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-                // The bloom levels, bound whether or not there is bloom to
-                // show: this bind group has one shape, and the weights in the
-                // fit uniform below are what decide whether the samples
-                // happen. `Bloom` hands over a black texel when it has nothing
-                // else to hand over.
-                BindGroupEntry {
-                    binding: 3,
-                    resource: BindingResource::TextureView(&bloom.views[0]),
-                },
-                BindGroupEntry {
-                    binding: 4,
-                    resource: BindingResource::TextureView(&bloom.views[1]),
-                },
-                BindGroupEntry {
-                    binding: 5,
-                    resource: BindingResource::TextureView(&bloom.views[2]),
-                },
-                BindGroupEntry {
-                    binding: 6,
-                    resource: BindingResource::Sampler(&bloom.sampler),
-                },
-            ],
-        });
+        let bind_group = self.blit_bind_group(&view, &sampler, &fit_buffer, &bloom);
         log::info!(
             "fixed render size: frames render to a {}x{} buffer, stretched to the window with {:?} sampling",
             size[0],
@@ -1696,6 +1721,8 @@ impl<P: Process> Frost<P> {
             view,
             emissive,
             bloom,
+            format,
+            sampler,
             fit_buffer,
             bind_group,
         }
@@ -2264,6 +2291,8 @@ impl<P: Process> Frost<P> {
                 blit_filter: &mut self.blit_filter,
                 vsync: &mut self.vsync,
                 render_size: &mut self.render_size,
+                bloom: &mut self.bloom,
+                tone_map: &mut self.tone_map,
                 // The window is attached before the first frame renders, so
                 // this is `Some` for every frame the process sees; the
                 // `Option` is the type the field has before attach.
@@ -2411,7 +2440,7 @@ impl<P: Process> Frost<P> {
         let surface_view = output
             .texture
             .create_view(&TextureViewDescriptor::default());
-        let target = match self.render_size {
+        let mut target = match self.render_size {
             Some(size) if size != [surface_px.0, surface_px.1] => {
                 // A cached target serves only while size and filter match;
                 // a runtime filter flip rebuilds the sampler once, on the
@@ -2448,6 +2477,33 @@ impl<P: Process> Frost<P> {
                 None
             }
         };
+        // The look knobs are live, and both land on the frame that asked for
+        // them: `Context::set_bloom` and `Context::set_tone_map` write these
+        // two floats, the stretch pass reads them out of its uniform every
+        // frame, and neither needed a pipeline to be rebuilt to get here.
+        //
+        // Bloom is the one with a cost attached. An app that started without a
+        // glow and asks for one mid-scene wakes the chain here, on the frame
+        // that asked — the alternative is a frame that quietly draws no glow
+        // while waiting for someone else to notice. A chain whose frame buffer
+        // clips at 1.0 has nothing to read and stays asleep whatever the
+        // strength says; that is `can_bloom`, not this branch's problem.
+        if let Some(t) = target.as_mut() {
+            t.bloom.set_strength(self.bloom);
+            if t.bloom.needs_building() {
+                // `needs_building` means `can_bloom`, and `can_bloom` came from
+                // this same option being `Some`, so there is no `None` case
+                // here in practice — and the frame that found one anyway should
+                // still be drawn, just without the glow it cannot have.
+                if let Some(view) = t.emissive.as_ref().map(|(_, view)| view.clone()) {
+                    let (format, size) = (t.format, t.size);
+                    t.bloom
+                        .build(&self.device, &self.queue, format, size, &view);
+                    t.bind_group =
+                        self.blit_bind_group(&t.view, &t.sampler, &t.fit_buffer, &t.bloom);
+                }
+            }
+        }
         let frame_area = match &target {
             Some(t) => [t.size[0], t.size[1]],
             None => [output.texture.width(), output.texture.height()],
