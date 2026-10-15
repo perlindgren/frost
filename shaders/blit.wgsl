@@ -13,10 +13,29 @@ var frame_sampler: sampler;
 struct BlitUniforms {
     fit: vec2<f32>, // content extent as a fraction of the surface; (1, 1) fills it
     pad: vec2<f32>,
+    // One weight per bloom level — coarse to fine — already multiplied by the
+    // user's strength, so all zero is how "no bloom" reaches this shader.
+    bloom: vec3<f32>,
+    _pad: f32,
 };
 
 @group(0) @binding(2)
 var<uniform> u: BlitUniforms;
+
+// The three blurred emissive levels, coarse last. Three bindings rather than
+// one array: a `texture_2d_array` would need all its layers the same size, and
+// the whole point is that they are not.
+@group(0) @binding(3)
+var bloom0: texture_2d<f32>;
+
+@group(0) @binding(4)
+var bloom1: texture_2d<f32>;
+
+@group(0) @binding(5)
+var bloom2: texture_2d<f32>;
+
+@group(0) @binding(6)
+var bloom_sampler: sampler;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -70,7 +89,21 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // The buffer was fully cleared before the frame was drawn into it, so
     // the sampled color always covers the pixel: no blending needed, the
     // pass writes it straight to the window.
-    let c = textureSample(frame_buf, frame_sampler, in.uv);
+    var c = textureSample(frame_buf, frame_sampler, in.uv);
+    // Bloom is light, so it joins in the frame's own linear space, before any
+    // encoding: added after the transfer curve it would be summed in a space
+    // where doubling a number does not double its brightness, and a
+    // threshold-then-encode order is how bloom ends up eating the darks.
+    //
+    // `SampleLevel` rather than `Sample`: the branch below is uniform because
+    // it reads a uniform, but the derivative-based forms cannot know that, and
+    // the level is 0 anyway — these are the chain's own resolutions, not a mip
+    // chain to choose from.
+    if (any(u.bloom != vec3<f32>(0.0))) {
+        c += textureSampleLevel(bloom0, bloom_sampler, in.uv, 0.0) * u.bloom.x;
+        c += textureSampleLevel(bloom1, bloom_sampler, in.uv, 0.0) * u.bloom.y;
+        c += textureSampleLevel(bloom2, bloom_sampler, in.uv, 0.0) * u.bloom.z;
+    }
     if (ENCODE_GAMMA) {
         return vec4<f32>(encode_srgb(c.rgb), c.a);
     }

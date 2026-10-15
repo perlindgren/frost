@@ -729,6 +729,28 @@ pub struct Config {
     /// crawl while resizing — which is precisely the trade pixel purists
     /// make on purpose.
     pub blit_filter: SpriteFilter,
+    /// How much the frame's bright light bleeds into its neighbours: bloom.
+    ///
+    /// `0.0` (the default) leaves the frame exactly as the shaders wrote it.
+    /// Above that, the frame's own emission is blurred at three widths and
+    /// added back over it, so a lamp lights the pixels around it and a bright
+    /// window stops being a picture of brightness and starts being one. The
+    /// number is a multiplier on the effect, not on the light: 0.5 is a
+    /// restrained glow, 1.0 is the whole effect at the balance its three levels
+    /// are weighted for, and past that the glow starts eating the frame.
+    ///
+    /// What it takes: a frame buffer that can hold radiance past 1.0, which is
+    /// whatever the adapter offers `Rgba16Float` on (see `App::hdr_frames`),
+    /// and emission in the scene to bloom — a node's own
+    /// [`SceneNode::emission`](crate::SceneNode::emission), or a sprite's.
+    /// Where the frame buffer clips at 1.0, asking for bloom changes nothing
+    /// and says so once in the log.
+    ///
+    /// What it costs: nine full-screen passes over about a third of one
+    /// frame's pixels, plus the emissive target the chain reads. Small next to
+    /// a draw call at 1080p on a laptop; not free at 4K on an integrated GPU,
+    /// and the second full-resolution target is the part that hurts there.
+    pub bloom: f32,
     /// Whether the Escape key, on its own, ends the application.
     ///
     /// True is the classic convenience: every app closes at a keypress.
@@ -749,8 +771,8 @@ pub struct Config {
 }
 
 impl Default for Config {
-    /// Vsync on, windowed, a resizable window, bilinear upscaling, and
-    /// the platform's default size.
+    /// Vsync on, windowed, a resizable window, bilinear upscaling, no bloom,
+    /// and the platform's default size.
     fn default() -> Self {
         Self {
             vsync: true,
@@ -760,6 +782,7 @@ impl Default for Config {
             resizable: true,
             render_size: None,
             blit_filter: SpriteFilter::Linear,
+            bloom: 0.0,
             escape_exits: true,
             close_exits: true,
         }
@@ -813,6 +836,7 @@ pub fn run_configured<P: Process>(
         config.resizable,
         config.render_size,
         config.blit_filter,
+        config.bloom,
         config.escape_exits,
         config.close_exits,
         scene,
@@ -860,6 +884,7 @@ pub fn run_configured<P: Process>(
         config.resizable,
         config.render_size,
         config.blit_filter,
+        config.bloom,
         config.escape_exits,
         config.close_exits,
     );

@@ -447,3 +447,60 @@ When bloom arrives and reads this target, the question changes shape: the cost
 then is the downsample chain, which runs at a quarter or an eighth of the
 window and should cost a fraction of what the attachment does. If it doesn't,
 this table is the baseline to compare against.
+
+## 9. What bloom costs (2026-10-16, Apple M4 Max)
+
+Same instrument as §8: antifrost with `--vsync off`, the span from "the frame's
+commands are assembled" to "the GPU says it is done with them", medians of
+4300–5100 frames, bloom-off and bloom-on runs interleaved in pairs. One
+difference from §7 and §8, and it matters: those rows were *attachments*, which
+cost per pixel, and they were nearly free. This one is *passes*, and it is not.
+
+The chain is nine render passes — three levels, each with a downsample and a
+blur across and down. Level 0 is a quarter of the window, level 1 a sixteenth,
+level 2 a sixty-fourth, and each is written three times, so the whole chain
+touches about as many pixels as one frame does. That is the theory; this is what
+it costs at a 3840×2160 buffer:
+
+| chain | bloom off | bloom on | delta |
+|---|---|---|---|
+| 3 levels, 5-tap blur run twice (15 passes) | 1.044 / 1.053 | 1.348 / 1.348 | **+0.30 ms** |
+| 3 levels, 5-tap blur once (9 passes) | 1.069 | 1.263 | **+0.19 ms** |
+| 3 levels, 13-tap blur once (9 passes) | 1.057 | 1.263 | **+0.21 ms** |
+
+The bloom-off medians drift 0.025 ms across the four runs, which is the noise
+floor here; the deltas are five to twelve times that, so they are real.
+
+**The cost is the passes, not the pixels.** Two pieces of evidence, and the
+second one is the surprising one:
+
+- Six extra passes over the same textures cost +0.09 to +0.11 ms, about 16 µs
+  per pass.
+- Running the same 15-pass chain against a **quarter-size buffer** (1920×1080
+  instead of 3840×2160) cost the same: 1.058 / 1.065 off, 1.364 / 1.368 on,
+  +0.31 ms. A fourth of the texels, the same bill.
+
+On this adapter a render pass costs roughly 16 µs of that span whatever it draws
+into. That is not shader time and it does not shrink when the textures do, so
+the shape of a cheap chain is *few passes with wide kernels inside them*, not
+many cheap ones. It is why `bloom.wgsl` folds thirteen Gaussian taps into six
+bilinear fetches and blurs once: measured, the wide-kernel nine-pass chain is
++0.21 ms where the narrow-kernel fifteen-pass one is +0.30 ms, and the wider
+kernel is the *better-looking* of the two. A second blur iteration widens the
+glow by √2 for +0.10 ms; a 13-tap kernel widens it by more for three extra
+fetches.
+
+Two honest caveats. antifrost has nothing emissive in it, so every one of those
+passes read black and wrote black: the +0.21 ms above is what bloom costs when
+it does nothing, which is the worst case and the one a game will hit on the
+frames where nothing is bright. Skipping the chain when nothing emitted would
+need either a readback or a CPU-side hint about what the scene contains, and
+neither is built. Second, this is fill-bound work measured on the machine with
+the most fill here; §7 and §8 both note that the 7900 XTX row is unrun, and a
+lower-end GPU pays for attachments *and* passes, so the same chain on the 610M
+is expected to look worse than this table does, not the same.
+
+Against the frame it is asked to fit into: 0.21 ms is 1.9% of a 90 Hz budget
+(11.1 ms) and 2.9% of 60 Hz's. It is not free, and unlike §8's attachment it is
+not a rounding error — which is the right reason for `Config::bloom` to be off
+until an app asks for it.

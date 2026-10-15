@@ -1233,18 +1233,25 @@ pub struct SceneNode {
     /// reaches the surface — an emissive node glows in a scene with no
     /// lights at all, and glows the same amount inside a beam. Like `lit`,
     /// it applies to this node's own shape only, does not propagate to
-    /// children, and is multiplied by the composed modulate. It lights the surface and nothing else: emission
-    /// never spills onto neighbors, and nothing shadows it — to light the
-    /// surroundings as well, attach a [`Shape::Light`] child node. Spill is
-    /// **bloom**, an effect of the renderer over bright pixels rather than a
-    /// property of a node, and frost has no bloom yet.
+    /// children, and is multiplied by the composed modulate. It lights the surface
+    /// and nothing else: emission never spills onto neighbors, and nothing
+    /// shadows it — to light the surroundings as well, attach a
+    /// [`Shape::Light`] child node. Spill is **bloom**, an effect of the
+    /// renderer over bright pixels rather than a property of a node: where
+    /// the app asks for it ([`Config::bloom`](crate::Config::bloom)) it is
+    /// this field's brightness, blurred at three widths and added back over
+    /// the frame.
     ///
     /// The color's `a` scales the emission (rgb times `a`), so fading it in
     /// and out needs only an alpha ramp. Its channels are not clamped: over
     /// 1.0 asks for more light than a display can show, and the frame buffer
-    /// keeps the overshoot rather than clipping it, which is the room a later
-    /// pass — bloom, a tone map — needs to work with. Until such a pass
-    /// exists, anything past 1.0 reaches the screen as plain white.
+    /// keeps the overshoot rather than clipping it. That overshoot is exactly
+    /// what bloom is built to find — its threshold is where "bright" starts
+    /// handing some of its light to the pixels around it — so a lamp meant to
+    /// light a room is written past 1.0 and one meant merely to be seen is
+    /// not. With bloom off, a value past 1.0 still reaches the screen as
+    /// plain white; only a tone map would say otherwise, and frost does not
+    /// have one yet.
     ///
     /// The default — black — is off.
     pub emission: Color,

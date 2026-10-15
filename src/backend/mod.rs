@@ -9,6 +9,7 @@
 //! renders them one scissored draw call at a time to the window's surface.
 
 mod app;
+mod bloom;
 pub(crate) use app::*;
 
 mod frame;

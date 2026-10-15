@@ -38,6 +38,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use crate::backend::bloom::Bloom;
 use crate::backend::frame::*;
 #[cfg(target_arch = "wasm32")]
 use crate::backend::wasm::hide_fallback;
@@ -77,6 +78,11 @@ struct BlitTarget {
     /// and cleared with every frame, because a target nobody writes is a
     /// second full-res allocation spent for a look that never arrived.
     emissive: Option<(wgpu::Texture, TextureView)>,
+    /// The bloom chain: this target's emissive target, blurred at three
+    /// widths, ready for the stretch pass to add back. Dormant — one black
+    /// texel and weights of zero — when there is no bloom to do; the present
+    /// pass binds its three textures either way, so this is never absent.
+    bloom: Bloom,
     /// The 16-byte letterbox fit (`vec2` + padding), rewritten by `render`
     /// whenever the surface's aspect may have moved.
     fit_buffer: Buffer,
@@ -115,6 +121,11 @@ pub(crate) struct Frost<P: Process> {
     /// The filter the stretch pass samples the render buffer with when its
     /// size differs from the surface (see `Config::blit_filter`).
     blit_filter: SpriteFilter,
+    /// The glow the app asked for (`Config::bloom`): a strength, zero for
+    /// none. It decides whether the frame carries a bloom chain at all, and it
+    /// is read when the frame buffer is built — asking for bloom mid-run is not
+    /// a thing, which is the same rule `render_size` lives by.
+    bloom: f32,
     #[allow(dead_code)]
     window_id: Option<WindowId>,
     /// The winit window (shared), kept so we can call `request_redraw` for
@@ -526,6 +537,7 @@ impl<P: Process> Frost<P> {
         resizable: bool,
         render_size: Option<[u32; 2]>,
         blit_filter: SpriteFilter,
+        bloom: f32,
         escape_exits: bool,
         close_exits: bool,
         scene: Scene,
@@ -699,6 +711,7 @@ impl<P: Process> Frost<P> {
             resizable,
             render_size,
             blit_filter,
+            bloom,
             window_id: None,
             window: None,
             logical_size: (0, 0),
@@ -1574,6 +1587,18 @@ impl<P: Process> Frost<P> {
             let view = texture.create_view(&TextureViewDescriptor::default());
             (texture, view)
         });
+        // The chain that turns the emissive target into a glow, sized against
+        // this buffer. Built here, not lazily, because its levels are fractions
+        // of this extent and a resized buffer is a new buffer: the chain's life
+        // is exactly the target's.
+        let bloom = Bloom::new(
+            &self.device,
+            &self.queue,
+            format,
+            size,
+            emissive.as_ref().map(|(_, view)| view),
+            self.bloom,
+        );
         // The user's upscaling choice (`Config::blit_filter`), applied to
         // both axes: bilinear smooths the stretch, nearest keeps texels
         // whole for the pixel-art look.
@@ -1594,12 +1619,12 @@ impl<P: Process> Frost<P> {
         // frame if it ever ran before the per-frame write.
         let fit_buffer = self.device.create_buffer(&BufferDescriptor {
             label: Some("blit fit"),
-            size: 16,
+            size: 32,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         self.queue
-            .write_buffer(&fit_buffer, 0, &fit_bytes((1.0, 1.0)));
+            .write_buffer(&fit_buffer, 0, &fit_bytes((1.0, 1.0), [0.0; 3]));
         let bind_group = self.device.create_bind_group(&BindGroupDescriptor {
             label: Some("blit bind group"),
             layout: &self
@@ -1624,6 +1649,27 @@ impl<P: Process> Frost<P> {
                         size: None,
                     }),
                 },
+                // The bloom levels, bound whether or not there is bloom to
+                // show: this bind group has one shape, and the weights in the
+                // fit uniform below are what decide whether the samples
+                // happen. `Bloom` hands over a black texel when it has nothing
+                // else to hand over.
+                BindGroupEntry {
+                    binding: 3,
+                    resource: BindingResource::TextureView(&bloom.views[0]),
+                },
+                BindGroupEntry {
+                    binding: 4,
+                    resource: BindingResource::TextureView(&bloom.views[1]),
+                },
+                BindGroupEntry {
+                    binding: 5,
+                    resource: BindingResource::TextureView(&bloom.views[2]),
+                },
+                BindGroupEntry {
+                    binding: 6,
+                    resource: BindingResource::Sampler(&bloom.sampler),
+                },
             ],
         });
         log::info!(
@@ -1638,6 +1684,7 @@ impl<P: Process> Frost<P> {
             _texture: texture,
             view,
             emissive,
+            bloom,
             fit_buffer,
             bind_group,
         }
@@ -2836,7 +2883,13 @@ impl<P: Process> Frost<P> {
         // from the clear around it). The surface needs no clear when
         // rendering direct.
         if let (Some(t), Some(blit_pipeline)) = (target.as_ref(), self.blit_pipeline.as_ref()) {
-            self.queue.write_buffer(&t.fit_buffer, 0, &fit_bytes(fit));
+            // Nine small passes before the frame leaves for the window: the
+            // emissive target in, three blurred levels out, which the stretch
+            // below adds back as it samples. A dormant chain has no levels, so
+            // this draws nothing at all when the app asked for no bloom.
+            t.bloom.run(&mut encoder);
+            self.queue
+                .write_buffer(&t.fit_buffer, 0, &fit_bytes(fit, t.bloom.weights));
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("blit pass"),
                 color_attachments: &[Some(RenderPassColorAttachment {

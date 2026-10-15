@@ -48,22 +48,6 @@ fn plate(at: [f32; 2], color: objects::Color, emission: objects::Color, lit: boo
     }
 }
 
-/// The half-float a `Rgba16Float` target stores, widened. A readback of a
-/// float target arrives as 16-bit channels, and the alternative — asking for
-/// `Rgba32Float`, which no adapter here will blend without a feature — would
-/// test a format the engine never allocates.
-fn half_to_f32(bits: u16) -> f32 {
-    let sign = u32::from(bits & 0x8000) << 16;
-    let exponent = (bits >> 10) & 0x1f;
-    let fraction = u32::from(bits & 0x3ff);
-    let bits = match exponent {
-        0 => sign,
-        0x1f => sign | 0x7f80_0000 | (fraction << 13),
-        e => sign | ((u32::from(e) + 127 - 15) << 23) | (fraction << 13),
-    };
-    f32::from_bits(bits)
-}
-
 /// Which of the two outputs to bring back.
 #[derive(Clone, Copy)]
 enum Read {

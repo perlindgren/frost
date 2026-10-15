@@ -54,6 +54,10 @@ pub(crate) const TILEMAP_SHADER: &str = concat!(
 /// The fixed-render-size stretch (blit) shader source.
 pub(crate) const BLIT_SHADER: &str = include_str!("../shaders/blit.wgsl");
 
+/// The bloom chain: threshold, tent downsample and separable Gaussian, three
+/// levels deep. One file, two entry points, three passes per level.
+pub(crate) const BLOOM_SHADER: &str = include_str!("../shaders/bloom.wgsl");
+
 /// The shader table: each pipeline's source by name, and the files
 /// its text is assembled from, in order — the shape of the consts
 /// above, speakable at runtime. `App::wgsl` asks by these names;
@@ -180,8 +184,8 @@ mod tests {
     use super::*;
     use crate::backend::{LIGHT_FIELD_BUFFER_MIN, OCCLUDER_FIELD_BUFFER_MIN};
 
-    /// The nine shader sources with their file names.
-    fn all_shaders() -> [(&'static str, &'static str); 9] {
+    /// The ten shader sources with their file names.
+    fn all_shaders() -> [(&'static str, &'static str); 10] {
         [
             ("line.wgsl", LINE_SHADER),
             ("polyline.wgsl", POLYLINE_SHADER),
@@ -192,10 +196,11 @@ mod tests {
             ("particles.wgsl", PARTICLES_SHADER),
             ("tilemap.wgsl", TILEMAP_SHADER),
             ("blit.wgsl", BLIT_SHADER),
+            ("bloom.wgsl", BLOOM_SHADER),
         ]
     }
 
-    /// All nine shaders parse as valid WGSL.
+    /// All ten shaders parse as valid WGSL.
     #[test]
     fn all_shaders_parse_as_wgsl() {
         for (name, source) in all_shaders() {
@@ -204,7 +209,7 @@ mod tests {
         }
     }
 
-    /// All nine shaders must pass naga's *validator*, not just its parser.
+    /// All ten shaders must pass naga's *validator*, not just its parser.
     /// Parsing only proves the WGSL is syntactically valid; the validator is
     /// the second stage wgpu runs inside `Device::create_shader_module`, and
     /// it enforces the address-space layout rules the parser never checks —
@@ -247,22 +252,44 @@ mod tests {
                 .any(|ep| ep.stage == naga::ShaderStage::Fragment && ep.name == entry)
         };
         for (name, source) in all_shaders() {
-            if name == "blit.wgsl" {
-                assert!(
-                    has(source, "fs_main"),
-                    "{name} lost the entry point the blit pipeline asks for"
-                );
-                assert!(
-                    !has(source, "fs_emissive"),
-                    "{name} has an emissive output the window can never show"
-                );
-                continue;
-            }
-            for entry in ["fs_main", "fs_emissive"] {
-                assert!(
-                    has(source, entry),
-                    "{name} is missing {entry}: the engine builds every scene                      pipeline in both forms, with one target and with two"
-                );
+            match name {
+                // Two of the ten are drawn outside the scene pass, into targets
+                // of their own, so the two-entry-point rule is not theirs: they
+                // need the entry points their own pipelines ask for. Named
+                // rather than inferred, so a shader added to `all_shaders`
+                // cannot slip through unclassified.
+                "blit.wgsl" => {
+                    assert!(
+                        has(source, "fs_main"),
+                        "{name} lost the entry point the blit pipeline asks for"
+                    );
+                    assert!(
+                        !has(source, "fs_emissive"),
+                        "{name} has an emissive output the window can never show"
+                    );
+                }
+                "bloom.wgsl" => {
+                    for entry in ["fs_down", "fs_blur"] {
+                        assert!(
+                            has(source, entry),
+                            "{name} lost the entry point the {entry} pass asks for"
+                        );
+                    }
+                    assert!(
+                        !has(source, "fs_emissive"),
+                        "{name} has an emissive output no bloom target reads"
+                    );
+                }
+                _ => {
+                    for entry in ["fs_main", "fs_emissive"] {
+                        assert!(
+                            has(source, entry),
+                            "{name} is missing {entry}: the engine builds every \
+                             scene pipeline in both forms, with one target and \
+                             with two"
+                        );
+                    }
+                }
             }
         }
     }

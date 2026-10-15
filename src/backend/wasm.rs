@@ -49,6 +49,8 @@ struct Core<P: Process> {
     render_size: Option<[u32; 2]>,
     /// The stretch pass's resampling filter (see `Config::blit_filter`).
     blit_filter: SpriteFilter,
+    /// The glow the app asked for (see `Config::bloom`).
+    bloom: f32,
     /// Whether Escape, on its own, ends the app (see
     /// `Config::escape_exits`).
     escape_exits: bool,
@@ -214,6 +216,7 @@ impl<P: Process> WebFrost<P> {
         resizable: bool,
         render_size: Option<[u32; 2]>,
         blit_filter: SpriteFilter,
+        bloom: f32,
         escape_exits: bool,
         close_exits: bool,
     ) -> Self {
@@ -229,6 +232,7 @@ impl<P: Process> WebFrost<P> {
                 resizable,
                 render_size,
                 blit_filter,
+                bloom,
                 escape_exits,
                 close_exits,
             }),
@@ -295,6 +299,7 @@ impl<P: Process> WebFrost<P> {
             core.resizable,
             core.render_size,
             core.blit_filter,
+            core.bloom,
             core.escape_exits,
             core.close_exits,
             core.scene,

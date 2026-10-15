@@ -435,10 +435,26 @@ root subtree, mixed) plus one list per explicit layer (`layer_draws`,
   covers nothing change nothing. Shapes and sprites carry emission; lines,
   rectangles, particles and tile maps write zero radiance at their own coverage
   — which is what makes them occlude glow rather than punch holes in it.
-  **Nothing reads the target yet.** It costs about 1% of a 4K frame
-  (§8 of the benchmarking notes) and is pinned by the `emission` test — the
-  number it holds is `color × emission`, with no light field in it, and still
-  unclamped at three times white.
+  It costs about 1% of a 4K frame (§8 of the benchmarking notes) and is pinned
+  by the `emission` test — the number it holds is `color × emission`, with no
+  light field in it, and still unclamped at three times white.
+- **Bloom is what reads it, when the app asks.** `Config::bloom` (0.0, off)
+  thresholds the emissive target with a soft knee, folds it into three levels
+  each half the last, blurs each across and down with a thirteen-tap Gaussian
+  folded into six bilinear fetches, and hands the three to the blit pass, which
+  adds them — weighted 0.5 / 0.3 / 0.2, scaled by strength — in linear space,
+  before the encode to the window's format. Two things the tests hold onto: a
+  frame with no emission comes back *bit-identical*, because it adds exactly
+  zero at every pixel, and the glow falls off (measured eight to one between
+  five pixels out and twenty-one), because a glow that is uniform across the
+  frame is a haze, not a glow. The chain is nine render passes and costs
+  **+0.21 ms at 4K**, nearly all of it per-pass overhead rather than fill —
+  six more passes over the same texels measured +0.10 ms, and the same chain at
+  a quarter-size buffer cost the same, which is why the kernel is wide and
+  iterated once instead of narrow and run twice (§9 of the benchmarking
+  notes). No look is decided by any of this: the threshold, the knee, the three
+  weights and the three levels are four numbers to argue with, all of them at
+  the top of `bloom.rs`, and every one of them is a guess today.
 - Sprite textures are `Rgba8UnormSrgb` (samples land in linear space; sRGB
   blending matches authored colors), linear-filtered, clamp-to-edge.
 - The shape/sprite shaders evaluate an **SDF in the object's local space**: the
@@ -951,7 +967,7 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **396 lib tests + 3 integration tests (`tests/`) + 7 doctests**
+Baseline: **401 lib tests + 3 integration tests (`tests/`) + 7 doctests**
 passing, `cargo build` (lib + the `sprite_util` and `noisefloor` tools) clean.
 The tool's 93
 tests — 68 that moved with `examples/sprite_util.rs`, each living in the
