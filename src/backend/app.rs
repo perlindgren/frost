@@ -10,6 +10,9 @@ use std::future::Future;
 // to bite (docs/benchmarking.md §1, trap (a)'s cousin).
 use std::num::NonZeroU64;
 use std::sync::Arc;
+// `block_on`'s machinery, and `block_on` is native-only for the reason on its
+// own doc comment; ungated, these three were dead imports on the web target.
+#[cfg(not(target_arch = "wasm32"))]
 use std::task::{Context as TaskContext, Poll, Waker};
 
 use gilrs::{EventType, Gilrs};
