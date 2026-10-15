@@ -23,8 +23,9 @@
 //!
 //! The hall is also where the two look knobs get their workout, because it is
 //! the scene in the tree that has light past white in it. The frame starts in
-//! bloom and folded; **B** turns the glow off and on, **T** the fold, and **D**
-//! dims the hall itself in three steps.
+//! bloom and folded; **B** turns the glow off and on, **T** the fold, **D** dims
+//! the hall itself in three steps, and **G** takes away the lamp-light hanging
+//! under each eye.
 //!
 //! ```text
 //! cargo run --example eyes
@@ -49,6 +50,25 @@
 //! darkest step is deliberately not black: the wide levels of the chain lift
 //! every pixel in the frame a little, and in a hall that is nearly black that
 //! lift is what you see first.
+//!
+//! Under every eye is an authored glow: a soft radial sprite that *adds* its
+//! light to the frame instead of covering the room with it
+//! ([`additive`](frost::SceneNode::additive)). It exists because a light cannot be
+//! seen. `Shape::Light` brightens the walls and writes no pixels at all, so it has
+//! no glow to lose, and the only things that can bloom are things the scene draws
+//! — which is why, before this sprite, the amber the hall blurred was the shape of
+//! an iris quad. The sprite gives that light a shape drawn on purpose: a falloff
+//! whose curve is written in this file where it can be argued with, and a `glow`
+//! color of its own, so the source can read paler than the amber it throws.
+//!
+//! **G** takes those glows away, and what is left is the hall exactly as it was —
+//! every pixel the same, with the sprite still submitted and discarded at zero
+//! coverage. That is the honest shape of the feature: the eyes burn and bloom
+//! whether or not anything is drawn to look like lamp-light, and what the sprite
+//! adds is falloff and hue rather than light. It adds instead of covering because
+//! a glow that covers is a bell-shaped hole in the light behind it — a falloff
+//! drawn the ordinary way over a lit wall comes out a dark ellipse with a bright
+//! middle, which is the opposite of the thing being painted.
 
 /// The eyes' texture: a ~200x180 RGBA sprite — black outline, amber
 /// iris, pale sclera — which the emission shows through: emission rides the
@@ -226,6 +246,9 @@ struct Eyes {
     /// Which of [`ROOM`]'s lighting levels the hall is at.
     room: usize,
     room_held: bool,
+    /// Whether the authored glows are hanging under the eyes.
+    glow_on: bool,
+    glow_held: bool,
 }
 
 impl frost::Process for Eyes {
@@ -235,6 +258,13 @@ impl frost::Process for Eyes {
         let (w, h) = ctx.size();
         let (limit_x, limit_y) = (w / 2.0, h / 2.0);
 
+        // Read before the eyes are written, so the glows go out on the press
+        // rather than a frame later.
+        if pressed(ctx, frost::KeyCode::KeyG, &mut self.glow_held) {
+            self.glow_on = !self.glow_on;
+            log::info!("authored glows {}", if self.glow_on { "on" } else { "off" });
+        }
+
         // The eyes ride the root's leading children — one transform,
         // scale, and emission write each.
         for (i, eye) in self.eyes.iter_mut().enumerate() {
@@ -242,7 +272,36 @@ impl frost::Process for Eyes {
             let node = &mut ctx.scene().root.children[i];
             node.transform = frost::Transform::translate(eye.pos);
             node.scale = [eye.scale * eye.facing, eye.scale];
-            node.emission = eye.emission_at(self.t);
+            let light = eye.emission_at(self.t);
+            node.emission = light;
+            // The glow under it adds the light — paler than the iris, because a
+            // source reads whiter than the light it throws — and `glow` is what
+            // decides the hue the chain blurs, so the amber the eye burns in is
+            // what spills into the hall.
+            if let Some(halo) = node.children.first_mut() {
+                halo.emission = frost::Color {
+                    r: light.r,
+                    g: (light.g + 0.3).min(1.0),
+                    b: (light.b + 0.3).min(1.0),
+                    a: light.a,
+                };
+                halo.glow = Some(light);
+                halo.modulate = if self.glow_on {
+                    frost::Color {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 1.0,
+                        a: 1.0,
+                    }
+                } else {
+                    frost::Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    }
+                };
+            }
         }
 
         // The two knobs, read every frame so a held key cannot repeat them,
@@ -291,6 +350,72 @@ fn hash(i: usize, salt: usize) -> f32 {
     let x = ((i + 1) * 374761393 + salt * 668265263) as u64;
     let x = (x ^ (x >> 13)).wrapping_mul(1274126177);
     ((x ^ (x >> 16)) as u32 % 1000) as f32 / 1000.0
+}
+
+/// The authored glow: a 64×64 texture, white rgb throughout, its alpha carrying
+/// a radial falloff of `(1 − d)³` in the distance from the centre.
+///
+/// This is the piece the engine deliberately does not have. A
+/// [`Shape::Light`](frost::Shape::Light) lights the room and covers no pixels, so
+/// nothing in the light field can ever bloom; a blob the engine synthesized would
+/// have to invent this curve, and a glow's falloff *is* its content. So the curve
+/// lives in the scene that asks for it, where it can be argued with, and the
+/// texture is generated rather than shipped — no binary whose author nobody
+/// remembers.
+///
+/// `(1 − d)³` is the flattest of the ordinary falloffs at both ends: its slope
+/// vanishes at the middle, which gives the core no visible edge, and at the rim,
+/// which leaves no line where the glow runs out. The rgb is white because frost's
+/// sprites are straight-alpha — the additive blend scales rgb by the alpha on the
+/// way in, so the ramp in alpha *is* the falloff, and the tint beside it stays the
+/// lamp's own color at full strength.
+fn glow_texture() -> std::sync::Arc<[u8]> {
+    const SIDE: usize = 64;
+    let mut pixels = Vec::with_capacity(SIDE * SIDE * 4);
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            let dx = (x as f32 + 0.5) / SIDE as f32 * 2.0 - 1.0;
+            let dy = (y as f32 + 0.5) / SIDE as f32 * 2.0 - 1.0;
+            let d = (dx * dx + dy * dy).sqrt().min(1.0);
+            let a = (1.0 - d).powi(3);
+            pixels.extend_from_slice(&[255, 255, 255, (a * 255.0) as u8]);
+        }
+    }
+    std::sync::Arc::from(pixels.into_boxed_slice())
+}
+
+/// The glow that hangs under each eye: the falloff above, drawn at five times
+/// its size — the eye's texture is ~200 px wide and this one 64, so the light
+/// reaches about a third again past the iris — adding rather than covering, and
+/// lighting nothing.
+///
+/// It is a *child* of an eye, which is what makes it follow the eye around with no
+/// second position to keep: a child's transform is relative to its parent, so the
+/// glow inherits the walk, the scale and even the facing flip, and the process has
+/// one node per eye to write. `lit` stays off — the light field is the lamp's
+/// business — and the emission and `glow` colors are written every frame from the
+/// eye's own pulse.
+fn glow_node() -> Box<frost::SceneNode> {
+    Box::new(frost::SceneNode {
+        shape: Some(frost::Shape::Sprite {
+            data: glow_texture(),
+            width: 64,
+            height: 64,
+            color: frost::Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+            filter: frost::SpriteFilter::Linear,
+            generation: 0,
+        }),
+        scale: [5.0, 5.0],
+        additive: true,
+        order: 0.9,
+        ..Default::default()
+    })
 }
 
 /// A wall node: unlit, so it draws in its own color, occluding — and
@@ -344,6 +469,7 @@ fn main() {
                 lit: true,
                 emission: EYE_EMISSION,
                 shape: Some(eye.clone()),
+                children: vec![glow_node()],
                 ..Default::default()
             })
         })
@@ -395,6 +521,7 @@ fn main() {
             eyes,
             bloom_on: true,
             tone_on: true,
+            glow_on: true,
             ..Eyes::default()
         },
         frost::Config {

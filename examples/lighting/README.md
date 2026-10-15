@@ -15,7 +15,7 @@ calls, and the three node flags that make a surface take part in it —
 | `dawn` | a full day (64-second loop) under one `Light::directional`: the sun's color, strength, direction of travel, the sky, and the scene's ambient all slide together; parallel shadows sweep from dawn spears to noon stubs | `cargo run --example dawn` |
 | `near_sun` | the same day told by a *near* sun — a point light translated to the visible disk every frame — so shadows fan out from the disk like spokes on a wheel instead of lying parallel | `cargo run --example near_sun` |
 | `twostars` | a binary star system: two directional lights, each aimed, colored, and orbiting at its own rate; every lit pixel receives both, and every occluder cuts each of them separately | `cargo run --example twostars` |
-| `eyes` | a tour of node-level `emission` — a surface's own emission: self-lit eyes that burn inside a wall's shadow, because emission is never shadowed; the hall is also the one scene in the tree with light past white in it, so it carries the two renderer-wide looks — press `B` to take the glow off the eyes, `T` to take the tone map off the pixels that were too bright for the display, and `D` to dim the hall itself — the glow's own light does not change at all, only what it lands on | `cargo run --example eyes` |
+| `eyes` | a tour of node-level `emission` — a surface's own emission: self-lit eyes that burn inside a wall's shadow, because emission is never shadowed; the hall is also the one scene in the tree with light past white in it, so it carries the two renderer-wide looks — press `B` to take the glow off the eyes, `T` to take the tone map off the pixels that were too bright for the display, and `D` to dim the hall itself — the glow's own light does not change at all, only what it lands on — and `G` to take away the authored glows: a soft radial sprite under each eye that *adds* its light to the frame instead of covering the room with it, since a `Shape::Light` cannot be seen and a falloff drawn the ordinary way is a dark bell with a bright middle | `cargo run --example eyes` |
 | `eyes_light` | `eyes`' companion: the larger eyes carry a `Shape::Light` child node, so their light spills onto the room — and gets cut off at the walls — while their emission keeps burning | `cargo run --example eyes_light` |
 
 The ten files sit in this folder rather than at the examples' top level,
@@ -144,7 +144,11 @@ does with the cursor, and what `lighting` does with its chasing light.
   `eyes_light` adds the emitter half to the same hall: the lamp-eye's
   pool of light sweeps the floor and gets cut off at the wall, feathered
   by its penumbra, while the emission-only eye keeps burning — "emission is the
-  surface; the child light is the neighborhood."
+  surface; the child light is the neighborhood." Between those two sits the third
+  thing, on `G` in `eyes`: an authored glow, a sprite whose node is flagged
+  `additive` so its light is added rather than covered, which is the only way to
+  make *seen* light that is not the shape of whatever emitted it — and whose
+  `glow` color sends the halo off in a different hue from the core.
 - **A particle batch can be a lit receiver.** `lighting`'s ember plume
   is a `Shape::Particles` node with `lit: true`, so every ember is
   shaded by the same light field as the floor and the ball.
