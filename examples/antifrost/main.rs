@@ -303,6 +303,15 @@ const EMBER_PER_LAMP: f32 = 0.15;
 /// cuticle is paid for twice — so at this number the top of a working pulse
 /// clears the chain's threshold of 0.8, the calm base sits at the bottom of its
 /// knee, and a sleeping ant stays under it. The hill glows where it is awake.
+///
+/// The one place it overshoots is the one place worth overshooting: a tuck-in
+/// lands a flare of three lamps on the sleep breath and the queen's bed four and
+/// a half, so bedding an ant puts its halo nearly three times where the calm base
+/// sits, five times for her, and drains that back over `LAND_FLASH`. The burst is
+/// the same flare the lamp has always thrown at the snow, at last with a face to
+/// stand on. Red ants read loudest for a reason of arithmetic: their hue is
+/// lopsided enough that a blur of it stays red, where the yellow and the queen
+/// spend their light in two channels and three and wash toward white instead.
 const GLOW_PER_LAMP: f32 = 0.55;
 
 /// The glow's own strength, which the menu's `lamp glow` row switches between
