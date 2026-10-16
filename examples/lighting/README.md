@@ -1,6 +1,6 @@
 # Lighting examples
 
-Ten demos of frost's lighting system: the `frost::Light` record, the
+Eleven demos of frost's lighting system: the `frost::Light` record, the
 `Shape::Light` scene node, the immediate `ctx.light` / `ctx.light_cone`
 calls, and the three node flags that make a surface take part in it —
 `lit`, `occludes`, and `emission`.
@@ -15,8 +15,9 @@ calls, and the three node flags that make a surface take part in it —
 | `dawn` | a full day (64-second loop) under one `Light::directional`: the sun's color, strength, direction of travel, the sky, and the scene's ambient all slide together; parallel shadows sweep from dawn spears to noon stubs | `cargo run --example dawn` |
 | `near_sun` | the same day told by a *near* sun — a point light translated to the visible disk every frame — so shadows fan out from the disk like spokes on a wheel instead of lying parallel | `cargo run --example near_sun` |
 | `twostars` | a binary star system: two directional lights, each aimed, colored, and orbiting at its own rate; every lit pixel receives both, and every occluder cuts each of them separately | `cargo run --example twostars` |
-| `eyes` | a tour of node-level `emission` — a surface's own emission: self-lit eyes that burn inside a wall's shadow, because emission is never shadowed; the hall is also the one scene in the tree with light past white in it, so it carries the two renderer-wide looks — press `B` to take the glow off the eyes, `T` to take the tone map off the pixels that were too bright for the display, and `D` to dim the hall itself — the glow's own light does not change at all, only what it lands on | `cargo run --example eyes` |
+| `eyes` | a tour of node-level `emission` — a surface's own emission: self-lit eyes that burn inside a wall's shadow, because emission is never shadowed; the hall is also the first scene in the tree with light past white in it, so it carries the two renderer-wide looks — press `B` to take the glow off the eyes, `T` to take the tone map off the pixels that were too bright for the display, and `D` to dim the hall itself — the glow's own light does not change at all, only what it lands on | `cargo run --example eyes` |
 | `eyes_light` | `eyes`' companion: the larger eyes carry a `Shape::Light` child node, so their light spills onto the room — and gets cut off at the walls — while their emission keeps burning | `cargo run --example eyes_light` |
+| `eyes_light_bloom` | both halls in one, with the glow and the fold on: watch a lamp-eye walk behind a wall and its pool of light stops at the wall while its halo does not, because the bloom chain reads the emissive channel and that channel has no shadow term in it — so a halo hangs over floor its own light never reaches; `B`, `T` and `D` as in `eyes` | `cargo run --example eyes_light_bloom` |
 
 The ten files sit in this folder rather than at the examples' top level,
 so each one is declared explicitly in `Cargo.toml` (cargo only
@@ -136,7 +137,7 @@ does with the cursor, and what `lighting` does with its chasing light.
   lights are, so you can always see where they are — while the backdrop
   and panels are lit receivers the beam plays over.
 - **A low ambient makes a dark scene.** `Scene::ambient` is the floor
-  every lit pixel sits on; `cone`, `eyes`, and `eyes_light` set it low so
+  every lit pixel sits on; `cone` and the `eyes` halls set it low so
   unlit regions read as near-black and the lights are what reveals the
   room, while `dawn` and `twostars` slide it with the sky.
 - **Emission vs. light, side by side.** `eyes` proves the receiver half: the
@@ -144,7 +145,11 @@ does with the cursor, and what `lighting` does with its chasing light.
   `eyes_light` adds the emitter half to the same hall: the lamp-eye's
   pool of light sweeps the floor and gets cut off at the wall, feathered
   by its penumbra, while the emission-only eye keeps burning — "emission is the
-  surface; the child light is the neighborhood."
+  surface; the child light is the neighborhood." `eyes_light_bloom` puts the glow
+  on top of that pair, and the two come visibly apart: behind the wall the lamp-eye's
+  pool is gone and its halo is not, because the chain reads the emissive channel,
+  which has no light term and no shadow term in it. The same hall shows the rule's
+  other half — a bright *pool* never blooms, however much light lands on it.
 - **A particle batch can be a lit receiver.** `lighting`'s ember plume
   is a `Shape::Particles` node with `lit: true`, so every ember is
   shaded by the same light field as the floor and the ball.

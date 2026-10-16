@@ -131,6 +131,10 @@ name = "eyes_light"
 path = "examples/lighting/eyes_light.rs"
 
 [[example]]
+name = "eyes_light_bloom"
+path = "examples/lighting/eyes_light_bloom.rs"
+
+[[example]]
 name = "occlusion"
 path = "examples/lighting/occlusion.rs"
 

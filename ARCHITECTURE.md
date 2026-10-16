@@ -1208,6 +1208,8 @@ Each module's `mod tests` holds the tests that pin its subject. The
 | twostars     | a planet under two stars: two directional lights, both on stage     |
 | eyes         | self-lit eyes drifting through the dark — a tour of `SceneNode::emission`|
 | eyes_light   | the companion: some eyes are real emitters (`Shape::Light` too)     |
+| eyes_light_bloom | both halls with the glow and the fold on: a lamp-eye's halo   |
+|              | crosses the wall its own light cannot                                 |
 | particles    | a `ParticleSystem` fountain with life-fraction alpha               |
 | fountains    | three overlapping fountains + a full-screen waterfall, each one    |
 |              | CPU-simulated batch (one instanced draw per `Shape::Particles` node)  |
