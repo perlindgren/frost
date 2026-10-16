@@ -164,6 +164,19 @@ pub(crate) struct Frost<P: Process> {
     last_resized_px: (u32, u32),
     scale: f32,
     surface: Option<Surface<'static>>,
+    /// The current spell of frames the surface would not hand over: the
+    /// reason first seen, and how many frames it has cost.
+    ///
+    /// A surface that will not answer is ordinary — a fullscreen transition
+    /// loses it for seconds at a stretch — and it is worth one line, not one
+    /// per frame. Measured: three seconds of a macOS fullscreen exit printed
+    /// 9,420 identical lines, which is an hour of log in an afternoon and
+    /// buries the handful of lines that actually explain the pause.
+    surface_gone: Option<(&'static str, u32)>,
+    /// The last size the resize line spoke about, so a window told its own
+    /// size twice by a chatty compositor does not report that it resized
+    /// twice. The work `resize` does is not skipped, only the sentence.
+    resize_logged: (u32, u32, u32, u32),
     line_pipeline: Option<RenderPipeline>,
     polyline_pipeline: Option<RenderPipeline>,
     circle_pipeline: Option<RenderPipeline>,
@@ -782,6 +795,8 @@ impl<P: Process> Frost<P> {
             last_resized_px: (0, 0),
             scale: 1.0,
             surface: None,
+            surface_gone: None,
+            resize_logged: (0, 0, 0, 0),
             line_pipeline: None,
             polyline_pipeline: None,
             circle_pipeline: None,
@@ -1202,13 +1217,22 @@ impl<P: Process> Frost<P> {
         let Some(config) = self.reconfigure_surface() else {
             return;
         };
-        log::info!(
-            "window resized to {}x{} ({}x{} px)",
+        let size = (
             self.logical_size.0,
             self.logical_size.1,
             config.width,
-            config.height
+            config.height,
         );
+        if size != self.resize_logged {
+            self.resize_logged = size;
+            log::info!(
+                "window resized to {}x{} ({}x{} px)",
+                self.logical_size.0,
+                self.logical_size.1,
+                config.width,
+                config.height
+            );
+        }
     }
 
     /// The frame rate vsync promises: with vsync on, the refresh rate of
@@ -3099,25 +3123,55 @@ impl<P: Process> Frost<P> {
     /// Acquires the current surface texture.
     ///
     /// Returns the texture and whether the surface should be reconfigured
-    /// because it is only suboptimal.
-    fn acquire_frame(&self) -> (Option<SurfaceTexture>, bool) {
+    /// because it is only suboptimal. A frame that gets no texture is counted
+    /// rather than announced; see [`Self::surface_gone`].
+    fn acquire_frame(&mut self) -> (Option<SurfaceTexture>, bool) {
         let Some(surface) = self.surface.as_ref() else {
             return (None, false);
         };
         match surface.get_current_texture() {
-            CurrentSurfaceTexture::Success(tex) => (Some(tex), false),
+            CurrentSurfaceTexture::Success(tex) => {
+                self.surface_back();
+                (Some(tex), false)
+            }
             CurrentSurfaceTexture::Suboptimal(tex) => {
+                // Its own line each time, flood-risk included: unlike the two
+                // below, this one is followed by a reconfigure, so a repeat is
+                // a machine doing something and not merely waiting.
                 log::info!("suboptimal surface texture, reconfiguring");
+                self.surface_back();
                 (Some(tex), true)
             }
             CurrentSurfaceTexture::Timeout => {
-                log::info!("surface timeout, skipping frame");
+                self.surface_gone("surface timeout");
                 (None, false)
             }
             _ => {
-                log::info!("no surface texture available, skipping frame");
+                self.surface_gone("no surface texture available");
                 (None, false)
             }
+        }
+    }
+
+    /// Note one frame the surface would not give, and say so only if this is
+    /// the spell's first: the first frame is news, the two-thousand-and-first
+    /// is the same news, and the useful part — how long it lasted — is not
+    /// knowable until it ends.
+    fn surface_gone(&mut self, why: &'static str) {
+        match &mut self.surface_gone {
+            Some((_, frames)) => *frames += 1,
+            None => {
+                log::info!("{why}, skipping frames");
+                self.surface_gone = Some((why, 1));
+            }
+        }
+    }
+
+    /// And note the frame that did get one, which is where the spell's length
+    /// is finally worth printing.
+    fn surface_back(&mut self) {
+        if let Some((why, frames)) = self.surface_gone.take() {
+            log::info!("surface back after {frames} skipped frames ({why})");
         }
     }
 }
