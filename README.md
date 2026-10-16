@@ -30,7 +30,12 @@ $env:RUST_LOG="info"; cargo run --example gizmos
 The versioned hooks in `.githooks/` gate commits (fmt + clippy) and pushes
 (tests, plus a `wasm32-unknown-unknown` check of the web target — every other
 gate compiles the host target only, so a `cfg`-gated import in the backend
-walks through all of them and breaks `web/build.sh` later). Git runs them only
+walks through all of them and breaks `web/build.sh` later). Two passings
+through are part of the design, each announced when it happens: a push that
+touches `main` skips the tests outright, and a clone without the wasm target
+installed is warned where the web check would have run — the gate checks what
+the machine can check, and never fails a push it has not actually checked.
+Git runs them only
 once this clone points at them — the
 trigger is a per-clone setting, never cloned itself. After every fresh
 clone, once:
