@@ -108,10 +108,15 @@ scene-editing is the coupling this refuses.
 
 Status of each rung, updated as work lands. `[ ]` = claim, `[x]` = fact.
 
-- [x] **Asset names** — `TilesetRef { name, rows, cols }` landed;
-      `one_file_cut_two_ways_stays_two_tilesets` pins the dress (the
-      path-only identity it replaced dressed both cuts from the first
-      same-path slot — the bug the test's slot order keeps as a trap).
+- [x] **Asset names** — identity arrived as `TilesetRef { name, rows,
+      cols }` and was amended the same night into a walk of documents:
+      `map → tileset → sheet`, references document-relative and
+      case-exact (`frost::map::resolve`), key, embed and reference in
+      one dialect, and `guard_documents` asks the whole cargo question
+      — map, every tileset, every sheet — of bytes at test time. The
+      dress is pinned by `a_layer_wears_only_the_tileset_it_names`;
+      the path-identity it replaced dressed both cuts from the first
+      same-path slot — the bug that started the walk.
       Checked 2026-10-10.
 - [x] **Map file** — `.map.ron` codec landed: sparse cells (empties are
       never written), tileset identity stamped per layer, round-trip and
