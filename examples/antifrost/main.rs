@@ -1168,6 +1168,68 @@ fn fit_16x9(w: f32, h: f32) -> (f32, f32) {
     (vw, vw * 9.0 / 16.0)
 }
 
+/// A fixed tier's claim on the window's size, and the record of how
+/// that claim is being answered.
+///
+/// The claim outlives its own arrival, which is not the obvious design and
+/// is the whole point of the type. Measured on macOS, coming out of a
+/// fullscreen exit: the request landed — the engine logged the window at
+/// 1920×1080 — and then the desktop resized it away twice more, to 1600×1144
+/// and then to 1600×900, a second and a half later, during a stretch where
+/// the surface was gone and the game was not even running its frames. A
+/// policy that stopped caring the moment the size appeared left the window
+/// exactly there: pinned by nothing, holding neither the tier's pixels nor
+/// the aspect those pixels were chosen for.
+///
+/// So arrival starts a tail of quiet frames instead of ending the watch, and
+/// any deviation during it re-asks. Both bounds are there because the other
+/// answer is worse: a desktop that truly owns this window's geometry — a
+/// tile, a snap, a window rule — gets argued with a bounded number of times
+/// and then told about, rather than forever.
+#[derive(Clone, Copy)]
+struct TierAsk {
+    /// The pixels the tier asked for, which fix the aspect too: one
+    /// promise, not two.
+    w: u32,
+    h: u32,
+    /// Frames since the window was last at those pixels.
+    off: u32,
+    /// Frames it has spent there. `CALM_HOLD` of them and the tier stands
+    /// on its own.
+    calm: u32,
+    /// Asks made in all, counted so the give-up can say how many times it
+    /// knocked.
+    asks: u32,
+}
+
+impl TierAsk {
+    /// Frames spent at the asked size before the move counts as over: half
+    /// a second of a window sitting still. Until then a press queues
+    /// behind it — one move on screen at a time — and after that the tail
+    /// keeps watching in the background and a new press simply replaces the
+    /// ask.
+    const SETTLED: u32 = 30;
+    /// How long the tail runs: five seconds of the window holding still,
+    /// long past anything a compositor might still be doing about a window
+    /// it just left fullscreen.
+    const HOLD: u32 = 300;
+    /// Frames off-size before the desktop is declared the owner of this
+    /// window's geometry, and total asks before the same verdict on a
+    /// window that keeps being moved back.
+    const PATIENCE: u32 = 150;
+    const PATIENCE_ASKS: u32 = 8;
+    /// Frames between asks: six requests in six frames on a compositor
+    /// that answers configures asynchronously is six fights in the log
+    /// instead of one answer.
+    const CADENCE: u32 = 15;
+
+    /// Whether this ask still has a move in flight — off-size, or arrived
+    /// too recently for the desktop to be done with the window.
+    fn in_flight(&self) -> bool {
+        self.off > 0 || self.calm < Self::SETTLED
+    }
+}
+
 struct Demo {
     levels: Vec<level::Level>,
     idx: usize,
@@ -1307,11 +1369,10 @@ struct Demo {
     /// on screen at a time, and the newest rung always gets its
     /// turn — queued pressed, applied resolved.
     window_move_queued: bool,
-    /// A fixed tier's size request, with the frames waited so far:
-    /// if the window is not at the requested size within about a
-    /// second, the compositor has its own plans — and the game says
-    /// so, once, instead of failing silently forever.
-    window_expect: Option<(u32, u32, u32)>,
+    /// A fixed tier's standing claim on the window's size — the ask, and
+    /// how the asking is going. See [`TierAsk`] for why it keeps asking
+    /// after it has arrived.
+    window_expect: Option<TierAsk>,
     /// Frames the window's fullscreen state has disagreed with the
     /// settings row. The desktop can move that state on its own — a
     /// green button, a window rule, a shortcut the WM answers itself —
@@ -2570,6 +2631,14 @@ impl Demo {
     /// [`fit_16x9`] keeps the game a 16:9 picture inside it.
     /// Fullscreen leaves the window to the display and the engine's
     /// letterboxed stretch to keep 16:9 on non-16:9 monitors.
+    /// Whether the window is mid-move: a tier's ask that is either off-size or
+    /// arrived so recently the desktop may still be dragging the window. One
+    /// move on screen at a time, so a press during one queues behind it —
+    /// behind the *move*, not behind the tail that keeps watching it.
+    fn in_flight(&self) -> bool {
+        self.window_expect.as_ref().is_some_and(TierAsk::in_flight)
+    }
+
     fn apply_window_policy(&mut self, ctx: &mut Context) {
         let Some(window) = ctx.window() else {
             return;
@@ -2584,7 +2653,7 @@ impl Demo {
         // One move on screen at a time: a press during an in-flight
         // move re-aims it when that move resolves — half-moves
         // stacking up mid-flight is what flickered.
-        if self.window_expect.is_some() {
+        if self.in_flight() {
             self.window_move_queued = true;
             log::info!("window policy: move in flight, re-aim queued");
             return;
@@ -2631,7 +2700,13 @@ impl Demo {
                     let got = window.request_inner_size(frost::PhysicalSize::new(w, h));
                     window.set_min_inner_size(Some(frost::PhysicalSize::new(w, h)));
                     window.set_max_inner_size(Some(frost::PhysicalSize::new(w, h)));
-                    self.window_expect = Some((w, h, 0));
+                    self.window_expect = Some(TierAsk {
+                        w,
+                        h,
+                        off: 0,
+                        calm: 0,
+                        asks: 1,
+                    });
                     log::info!(
                         "window policy: asked {w}x{h} ({got:?}, local {}x{})",
                         window.inner_size().width,
@@ -3406,7 +3481,7 @@ impl Process for Demo {
         // gesture the desktop made on its own should not outlive the run.
         if let Some(window) = ctx.window() {
             let state = window.fullscreen().is_some();
-            if state == self.settings.fullscreen || self.window_expect.is_some() {
+            if state == self.settings.fullscreen || self.in_flight() {
                 self.fullscreen_drift = 0;
             } else {
                 self.fullscreen_drift += 1;
@@ -3420,22 +3495,55 @@ impl Process for Demo {
                 }
             }
         }
-        if let Some((w, h, waited)) = self.window_expect
+        if let Some(ask) = self.window_expect
             && let Some(window) = ctx.window()
         {
             {
+                let TierAsk {
+                    w,
+                    h,
+                    off,
+                    calm,
+                    asks,
+                } = ask;
                 let size = window.inner_size();
-                if size.width.abs_diff(w) < 2 && size.height.abs_diff(h) < 2 {
-                    // Arrived: pin again (idempotent where the
-                    // compositor obeyed, curative where a lock or
-                    // hint stomped wandered) and only now take the
-                    // handle — locked to a size that exists.
+                let at_tier = size.width.abs_diff(w) < 2 && size.height.abs_diff(h) < 2;
+                if at_tier && calm == 0 {
+                    // Arrived, and only now take the handle: locking pins to
+                    // the *current* size, so locking before arrival is how you
+                    // pin a window to the wrong one. Idempotent where the
+                    // compositor obeyed the hints, curative where a stomp left
+                    // them off.
                     let px = frost::PhysicalSize::new(w, h);
                     window.set_min_inner_size(Some(px));
                     window.set_max_inner_size(Some(px));
                     window.set_resizable(false);
-                    self.window_expect = None;
-                } else if waited > 150 {
+                    self.window_expect = Some(TierAsk {
+                        w,
+                        h,
+                        off: 0,
+                        calm: 1,
+                        asks,
+                    });
+                } else if at_tier {
+                    self.window_expect = if calm + 1 >= TierAsk::HOLD {
+                        log::info!(
+                            "window policy: {}x{} held for {} seconds, the tier stands",
+                            w,
+                            h,
+                            TierAsk::HOLD / 60,
+                        );
+                        None
+                    } else {
+                        Some(TierAsk {
+                            w,
+                            h,
+                            off,
+                            calm: calm + 1,
+                            asks,
+                        })
+                    };
+                } else if off > TierAsk::PATIENCE || asks > TierAsk::PATIENCE_ASKS {
                     self.window_expect = None;
                     println!(
                         "antifrost: asked the window for {w}x{h} {} times, it stayed {}x{} \u{2014} \
@@ -3443,9 +3551,7 @@ impl Process for Demo {
                          rule, or a fullscreen exit that restored the shape the window had \
                          before it went in. Take it out of the tile, or set the row back to \
                          native and let the letterbox hold the 16:9.",
-                        waited / 15,
-                        size.width,
-                        size.height,
+                        asks, size.width, size.height,
                     );
                 } else {
                     // Not there yet, so ask again rather than only watch. One
@@ -3459,11 +3565,11 @@ impl Process for Demo {
                     // until it arrives — which is the same order the policy
                     // uses, because locking pins to the current size and the
                     // current size is exactly what is wrong.
-                    if waited % 15 == 14 {
+                    if off % TierAsk::CADENCE == TierAsk::CADENCE - 1 {
                         window.set_min_inner_size(None::<frost::PhysicalSize<u32>>);
                         window.set_max_inner_size(None::<frost::PhysicalSize<u32>>);
                         let again = window.request_inner_size(frost::PhysicalSize::new(w, h));
-                        if waited == 14 {
+                        if off == TierAsk::CADENCE - 1 {
                             // Once, not on every re-ask. The line is there to
                             // say the first ask was answered by something other
                             // than the window arriving; the asks after it are
@@ -3476,11 +3582,21 @@ impl Process for Demo {
                             );
                         }
                     }
-                    self.window_expect = Some((w, h, waited + 1));
+                    self.window_expect = Some(TierAsk {
+                        w,
+                        h,
+                        off: off + 1,
+                        calm: 0,
+                        asks: if off % TierAsk::CADENCE == TierAsk::CADENCE - 1 {
+                            asks + 1
+                        } else {
+                            asks
+                        },
+                    });
                 }
             }
         }
-        if self.window_move_queued && self.window_expect.is_none() {
+        if self.window_move_queued && !self.in_flight() {
             self.window_move_queued = false;
             self.apply_window_policy(ctx);
         }
@@ -3570,20 +3686,17 @@ impl Process for Demo {
             self.title_set = true;
         }
         // F11 flips the window's fullscreen state — the runtime twin of
-        // `Config::fullscreen`, reached through the engine's own window.
-        if self.pressed(ctx, KeyCode::F11)
-            && let Some(window) = ctx.window()
-        {
-            if window.fullscreen().is_some() {
-                window.set_fullscreen(None);
-            } else {
-                window.set_fullscreen(Some(frost::Fullscreen::Borderless(None)));
-            }
-            // The window moved, so the saved setting follows it: F11
-            // and the menu's fullscreen row steer the same state, and
-            // whichever one moved, the disc remembers it.
-            self.settings.fullscreen = window.fullscreen().is_some();
-            self.settings.save();
+        // `Config::fullscreen` — and it is the menu's row and nothing else, the
+        // one action with the one policy behind it. That is not tidiness: the key
+        // used to toggle the window's state by hand and stop there, which left a
+        // window coming *out* of fullscreen at whatever shape the desktop had
+        // saved for it, with no tier size asked for and no lock to hold the 16:9,
+        // and a window going *in* still pinned min-to-max at the tier it was
+        // about to outgrow. Both directions were the policy's business, and the
+        // key had quietly taken itself out of it. The disc still remembers the
+        // move, because the row's own save is at the end of the action.
+        if self.pressed(ctx, KeyCode::F11) {
+            self.menu_action(ctx, Action::Fullscreen);
         }
         // Escape answers its page: the hill yields to the menu, the
         // menu hands the hill back, settings step back to the menu.
