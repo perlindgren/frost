@@ -38,7 +38,7 @@ winit = "0.30.13"
 # must stay buildable for `wasm32-unknown-unknown` (see `text_web`), and the
 # audio module itself is `#[cfg(not(target_arch = "wasm32"))]`-gated in
 # `src/lib.rs`, so wasm builds never compile rodio.
-rodio = "0.22.2"
+rodio = "0.23.0"
 
 [target.'cfg(unix)'.dependencies]
 # Process liveness for the telling: `kill(pid, 0)` asks whether a pid
@@ -294,7 +294,7 @@ ron = "0.12"
 # break `cargo build --example <anything> --target wasm32-unknown-unknown`
 # (see web/build.sh). `text_input` itself is a native-only example.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-arboard = "3.6.1"
+arboard = "3.7.0"
 # The noise floor the benches report alongside their numbers
 # (tools/noisefloor). Native-only for the arboard reason above — the canary
 # measures a scheduler, and a browser tab does not have the one being judged.

@@ -10,7 +10,7 @@
 #
 # The wasm-bindgen CLI must exactly match the wasm-bindgen crate in
 # Cargo.lock — install once with:
-#   cargo install wasm-bindgen-cli --version 0.2.128
+#   cargo install wasm-bindgen-cli --version 0.2.129
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
