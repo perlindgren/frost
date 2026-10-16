@@ -674,6 +674,52 @@ cost per pass, says about +0.07 ms — that is arithmetic performed on a
 measurement, not a measurement, and it is the only number in this document that
 is not one. The paired A/B method of §11 cannot compare two level counts inside
 one binary, since the count is baked into the textures the chain builds, and this
-session's machine was loaded. It goes on the open list with the size sweep.
+session's machine was loaded. It goes on the open list with the size sweep. (A
+game-side reading of the whole twelve-pass chain arrived later the same day and is
+§13; it is not the paired one asked for here, and does not retire this sentence.)
 Everything else here is the harness and a pixel readback, and 408 lib tests are
 unchanged by the change, including the one that holds the glow's fall-off.
+
+## 13. What the glow costs in the game (2026-10-16, Apple M4 Max)
+
+antifrost grew an ants' glow and a settings row — `Settings › lamp glow` — that
+switches the chain between 1.0 and nothing. It shipped quoting twelve render passes
+and no number; here is the number, in the game that ships the row.
+
+§3's instrument rather than §9's: the release binary built with
+`debug-assertions=true` and `diag`, run uncapped (`--vsync off`) with `--bench 12`
+so it exits on its own, at the buffer the hill fixes itself to (1920×1080,
+`Quality::High`). The reading is a frame's whole cadence — frames counted per
+wall-clock second out of the `frame presented` trace lines, medians of the steady
+middle seconds, first and last second dropped. That is coarser than §9's command
+span and a different quantity: it carries present pacing and everything else a frame
+is made of, and it is the one a player feels as frame rate. `noisefloor` read 0.06 ms
+of excess lateness and a 1.3× quantum spread before the runs, so the machine was fit
+to be measured and says so.
+
+| chain | pair 1 | pair 2 | pair 3 | median | spread |
+| --- | --- | --- | --- | --- | --- |
+| off | 9.76 | 9.71 | 9.62 | **9.71 ms** | 0.14 ms |
+| twelve passes at strength 1.0 | 10.10 | 10.10 | 10.00 | **10.10 ms** | 0.10 ms |
+
+**+0.39 ms a frame**, two and three-quarter times the off side's own spread, four
+percent of the frame it runs in. Pairs were interleaved off/on, off/on, off/on, and
+that is not decoration: the first attempt at this was a debug build reading 97 fps
+and then 88 fps from two *identical* settings, which is a drift the interleaving
+strangles and a debug build's scene traversal otherwise passes off as the cost of a
+render pass. The on side came back 10.10 / 10.10 / 10.00.
+
+Two readings of the chain now exist and they do not have to agree. §9's +0.21 ms is
+the span from a frame's commands assembled to the GPU done with them, in a frame
+whose whole span was 1.05 ms; this one is 9.7 ms of everything. Both put the chain
+at a fraction of a millisecond per pass, and this is the number the row quotes.
+
+**This does not retire §12's prediction.** Subtracting a nine-pass span from a
+twelve-pass whole frame is arithmetic between two instruments, which is the thing
+this document has argued against all day. The paired comparison still wants two
+binaries built at different `LEVELS`, and the prediction stays the only figure here
+that is not a measurement.
+
+**What is still not measured**: any of it in a browser. antifrost also runs there,
+the chain's twelve passes have never been looked at on WebGPU, and a phone-class
+iGPU is the hardware the row exists for. That is the honest reason the row is a row.

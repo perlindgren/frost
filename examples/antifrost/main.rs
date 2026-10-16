@@ -970,6 +970,12 @@ struct Settings {
     /// only while this row is on — at zero strength the engine declines to run
     /// the chain rather than computing a picture no one reads, so this is the
     /// weak hardware's rung as much as it is a look.
+    ///
+    /// Measured, at the buffer the hill fixes itself to: +0.39 ms a frame
+    /// against a frame that is 9.71 ms there, interleaved pairs, the machine's
+    /// own noise floor a quarter of that (§13 of the benchmarking notes). Never
+    /// measured in a browser, which is the other place this game runs and the
+    /// reason the rung exists at all.
     lamp_glow: bool,
     leaves_lit: bool,
     /// The weak-hardware answer to the light field, on a ladder:
