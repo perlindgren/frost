@@ -349,7 +349,7 @@ pub fn used(p: &[Act]) -> String {
     let mut u = String::new();
     for (tag, want) in [
         ("walk", p.iter().any(|a| matches!(a, Act::Move(_)))),
-        ("bed", p.iter().any(|a| *a == Act::Detach)),
+        ("bed", p.contains(&Act::Detach)),
         ("push", p.iter().any(|a| matches!(a, Act::Push(_)))),
     ] {
         if want {
