@@ -1312,6 +1312,16 @@ struct Demo {
     /// second, the compositor has its own plans — and the game says
     /// so, once, instead of failing silently forever.
     window_expect: Option<(u32, u32, u32)>,
+    /// Frames the window's fullscreen state has disagreed with the
+    /// settings row. The desktop can move that state on its own — a
+    /// green button, a window rule, a shortcut the WM answers itself —
+    /// and the only news of it is the state, so the state is polled,
+    /// the way the size is. The count is the grace, and it is a
+    /// second's worth on purpose: it has to outlive both a compositor
+    /// round trip and macOS's fullscreen animation, because acting
+    /// sooner would mean the game yanking the window out of an
+    /// entrance the desktop was still drawing.
+    fullscreen_drift: u32,
 }
 
 impl Demo {
@@ -1397,6 +1407,7 @@ impl Demo {
             window_policy_pending: true,
             resize_probe: None,
             window_expect: None,
+            fullscreen_drift: 0,
             window_move_queued: false,
         };
         // The saved hill, wherever it lands — `load` folds indices
@@ -3379,9 +3390,36 @@ impl Process for Demo {
         // tiling editor or a window rule — re-asserts its own
         // geometry no matter what the game asks for, and says so
         // only through configure events. Watch those events: if the
-        // window is not at the requested size within about a second,
-        // say the quiet part aloud. The letterbox keeps the game
-        // 16:9 and playable in whatever size survives.
+        // window is not at the requested size, re-ask, and say the
+        // quiet part aloud if it never comes. The letterbox keeps the
+        // game 16:9 and playable in whatever size survives.
+        //
+        // First the state the row is written against. Leaving fullscreen is
+        // the case that bites: an exit the desktop makes on its own leaves the
+        // row saying `on` while the window sits windowed, at the size the
+        // desktop saved before it went fullscreen — and no policy ever runs
+        // again, because the game believes its own row, so the tier's pixels
+        // and the pin that holds the aspect both stay off. Adopt what the
+        // window says and let the policy answer to *that*: the size comes
+        // back, the lock comes back, and the row tells the truth instead of
+        // the one the player pressed an hour ago. Not saved to the file — a
+        // gesture the desktop made on its own should not outlive the run.
+        if let Some(window) = ctx.window() {
+            let state = window.fullscreen().is_some();
+            if state == self.settings.fullscreen || self.window_expect.is_some() {
+                self.fullscreen_drift = 0;
+            } else {
+                self.fullscreen_drift += 1;
+                if self.fullscreen_drift == 60 {
+                    log::info!(
+                        "window policy: the desktop has it {}fullscreen, the row said otherwise",
+                        if state { "" } else { "out of " },
+                    );
+                    self.settings.fullscreen = state;
+                    self.apply_window_policy(ctx);
+                }
+            }
+        }
         if let Some((w, h, waited)) = self.window_expect
             && let Some(window) = ctx.window()
         {
@@ -3397,16 +3435,47 @@ impl Process for Demo {
                     window.set_max_inner_size(Some(px));
                     window.set_resizable(false);
                     self.window_expect = None;
-                } else if waited > 60 {
+                } else if waited > 150 {
                     self.window_expect = None;
                     println!(
-                        "antifrost: asked the window for {w}x{h}, it stayed {}x{} \u{2014} \
-                         the window is likely tiled or snapped by the desktop (or pinned by \
-                         a window rule); remove it from its tile to let the tier resize it. \
-                         The game letterboxes to 16:9 either way.",
-                        size.width, size.height,
+                        "antifrost: asked the window for {w}x{h} {} times, it stayed {}x{} \u{2014} \
+                         the desktop is keeping its own geometry: a tile or a snap, a window \
+                         rule, or a fullscreen exit that restored the shape the window had \
+                         before it went in. Take it out of the tile, or set the row back to \
+                         native and let the letterbox hold the 16:9.",
+                        waited / 15,
+                        size.width,
+                        size.height,
                     );
                 } else {
+                    // Not there yet, so ask again rather than only watch. One
+                    // ask is a bet that the first request still stands, and
+                    // two ordinary things take that bet away: an exit from
+                    // fullscreen restores the window's old shape *after* the
+                    // request made in the same breath as `set_fullscreen(None)`,
+                    // and a min/max pin left at the tier's size while the
+                    // window sits somewhere else is a hint the compositor has
+                    // no reason to obey. So unlock, ask, and leave it unlocked
+                    // until it arrives — which is the same order the policy
+                    // uses, because locking pins to the current size and the
+                    // current size is exactly what is wrong.
+                    if waited % 15 == 14 {
+                        window.set_min_inner_size(None::<frost::PhysicalSize<u32>>);
+                        window.set_max_inner_size(None::<frost::PhysicalSize<u32>>);
+                        let again = window.request_inner_size(frost::PhysicalSize::new(w, h));
+                        if waited == 14 {
+                            // Once, not on every re-ask. The line is there to
+                            // say the first ask was answered by something other
+                            // than the window arriving; the asks after it are
+                            // that same fact repeated.
+                            log::info!(
+                                "window policy: still {}x{}, not the {w}x{h} asked \
+                                 for — re-asking ({again:?})",
+                                size.width,
+                                size.height,
+                            );
+                        }
+                    }
                     self.window_expect = Some((w, h, waited + 1));
                 }
             }
@@ -3438,12 +3507,31 @@ impl Process for Demo {
                 ctx.set_render_size(self.settings.quality.size());
                 self.apply_window_policy(ctx);
             }
+            // Cycling the rung is not the whole question. A windowed tier's
+            // size is asked for in the same breath as the fullscreen exit, and
+            // a compositor that answers the exit second wins: the window comes
+            // back at whatever shape it saved before it went in, which is the
+            // one thing the row is supposed to rule out. So the probe goes in,
+            // comes out, and says what survived — with the tier named, so the
+            // log answers whether the window agrees without anyone counting
+            // pixels on a screen.
             if clock < 7.0 && t >= 7.0 {
+                log::info!("resize probe: into fullscreen");
+                self.settings.fullscreen = true;
+                self.apply_window_policy(ctx);
+            }
+            if clock < 9.0 && t >= 9.0 {
+                log::info!("resize probe: out of fullscreen");
+                self.settings.fullscreen = false;
+                self.apply_window_policy(ctx);
+            }
+            if clock < 12.0 && t >= 12.0 {
                 if let Some(window) = ctx.window() {
                     log::info!(
-                        "resize probe: settled at {}x{}",
+                        "resize probe: settled at {}x{}, tier asks {:?}",
                         window.inner_size().width,
                         window.inner_size().height,
+                        self.settings.quality.size(),
                     );
                 }
                 self.resize_probe = None;
