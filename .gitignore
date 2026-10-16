@@ -2,10 +2,12 @@
 # Only the wasm build output is disposable (web/build.sh regenerates
 # it); the page and the web scripts beside it are source — keep them
 # tracked so any machine can `rustup target add wasm32-unknown-unknown
-# && cargo install wasm-bindgen-cli --version 0.2.128 && ./web/build.sh`.
+# && cargo install wasm-bindgen-cli --version 0.2.129 && ./web/build.sh`.
 /web/pkg/
 /antifrost-web.zip
-Cargo.lock
+# Cargo.lock is tracked: the wasm-bindgen CLI must match the crate the
+# lock resolves (see web/build.sh), examples want reproducible builds,
+# and a resolver's opinion is cheap to version and expensive to re-guess.
 **/.DS_Store
 
 # The game writes its own files where it launches from — settings the
