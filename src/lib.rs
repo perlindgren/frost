@@ -452,8 +452,8 @@ impl Context<'_> {
     /// Turns the glow up, down, or on, mid-run: the mid-session sibling of
     /// setting [`Config::bloom`] at startup.
     ///
-    /// The strength itself costs nothing: it is three numbers in a uniform the
-    /// stretch pass rewrites every frame, so a change lands on the frame that
+    /// The strength itself costs nothing: it is the preset's weights in a uniform
+    /// the stretch pass rewrites every frame, so a change lands on the frame that
     /// asks for it. What does cost is asking for a glow *at all* on a run that
     /// started without one. If the frame buffer can hold a value past 1.0 — the
     /// same condition that gives it an emissive target — then the first frame to

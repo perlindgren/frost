@@ -1,22 +1,31 @@
-//! The bloom chain: the emissive target in, three blurred levels out.
+//! The bloom chain: the emissive target in, blurred levels out — how many
+//! is the preset's length, not a fact about this file.
 //!
-//! Three levels, each half the linear size of the one above, each made of
-//! three full-screen passes — a tent downsample, then a separable Gaussian
-//! across and down. Each step down is a quarter of the area, so the whole
-//! chain costs about a third of one full-resolution pass however big the window
-//! is, and the widest glow is the cheapest of the three — the opposite of what
-//! one wide blur at full resolution costs.
+//! Each level is half the linear size of the one above, each made of three
+//! full-screen passes — a tent downsample, then a separable Gaussian across
+//! and down. Each step down is a quarter of the area, so the whole chain
+//! costs about a third of one full-resolution pass however big the window
+//! is, and the widest glow is the cheapest of them — the opposite of what
+//! one wide blur at full resolution costs. Depth is what buys width: the
+//! same kernel one level down covers twice the screen, so reach grows
+//! geometrically while the added level costs a quarter of the one above
+//! it, down to [`MAX_LEVELS`], where the frame is small enough to blur
+//! for free and the uniform stops having room.
 //!
 //! The levels come out *separate* rather than accumulated into one, because
-//! the present pass wants them separate: a glow's width is a look, and three
-//! weights chosen where the frame is composited are easier to reason about than
-//! one blur radius chosen where it is generated. [`Bloom::weights`] carries them
-//! to `blit.wgsl`, already multiplied by the user's strength.
+//! the present pass wants them separate: a glow's width is a look, and one
+//! weight per level chosen where the frame is composited is easier to reason
+//! about than one blur radius chosen where it is generated. [`Bloom::weights`]
+//! carries them to `blit.wgsl`, already multiplied by the user's strength —
+//! and its length is the chain's depth, so a wider glow is a longer preset,
+//! and levels a preset does not ask for are never built, never run, never
+//! sampled.
 //!
 //! Nothing here knows what bloom is for. It takes a texture of radiance and
-//! returns the same picture smeared at three scales; the engine hands it the
-//! emissive target ([`crate::SceneNode::emission`]) and the present pass adds
-//! the result back. Change either end and this module does not notice.
+//! returns the same picture smeared at the preset's scales; the engine hands
+//! it the emissive target ([`crate::SceneNode::emission`]) and the present
+//! pass adds the result back. Change either end and this module does not
+//! notice.
 //!
 //! [`crate::SceneNode::emission`]: crate::SceneNode::emission
 
@@ -32,22 +41,29 @@ use wgpu::{
     TextureViewDescriptor, VertexState,
 };
 
-/// How far the chain goes down: halves of the frame's linear size, so a 4K
-/// frame ends at 480×270 and its glow reaches some 85 pixels out.
+/// How wide the plumbing goes, as opposed to how wide the glow is: the
+/// present pass's uniform, bindings and weight vector are all sized for this
+/// many levels, and the shipped preset's length — `WEIGHTS.len()` — decides
+/// how many of them are built, run and sampled. Six is where the frame runs
+/// out of useful resolution to blur (a 4K frame bottoms out at 60×34), and
+/// where `blit.wgsl`'s weight array stops — `fit_bytes` asserts the cap so a
+/// seventh level has to widen the shader and the uniform knowingly, not by
+/// overrunning them.
 ///
-/// This is the chain's only width control. The other candidate — taking the
-/// blur's taps further apart — was tried and measured, and it is a trap: the
-/// kernel is thirteen taps in six fetches, so widening the step undersamples
-/// it, and the taps show through as rings. A small bright dot's fall-off,
-/// measured straight outward, is monotone at the current step, has a bump 6
-/// pixels out at 1.5× the step, two bumps at 2×, and at 3× has no shape at all
-/// — fog rather than a halo. Levels are the way to go wider: each is a halving
-/// of an already-averaged texture, so its taps stay well sampled however far
-/// down it sits, and the reach grows geometrically. The cost is three more
-/// passes, which at this adapter's fixed cost per pass is around a twentieth of
-/// a millisecond; the risk, which [`WEIGHTS`] is what holds down, is the whole
-/// frame lifting instead of the halo growing.
-pub(crate) const LEVELS: usize = 4;
+/// Depth is the chain's width dial. The other candidate — taking the blur's
+/// taps further apart — was tried and measured, and it is a trap: the kernel
+/// is thirteen taps in six fetches, so widening the step undersamples it, and
+/// the taps show through as rings. A small bright dot's fall-off, measured
+/// straight outward, is monotone at the current step, has a bump 6 pixels out
+/// at 1.5× the step, two bumps at 2×, and at 3× has no shape at all — fog
+/// rather than a halo. Levels are the way to go wider: each is a halving of
+/// an already-averaged texture, so its taps stay well sampled however far
+/// down it sits, and the reach grows geometrically — doubled by every level
+/// the preset adds, whose three passes cost around a twentieth of a
+/// millisecond at this adapter's fixed cost per pass. The risk of depth,
+/// which [`WEIGHTS`] is what holds down, is the whole frame lifting instead
+/// of the halo growing.
+pub(crate) const MAX_LEVELS: usize = 6;
 
 /// Radiance under this contributes nothing to the glow, and [`KNEE`] decides
 /// how widely the band above it arrives. Below 1.0 on purpose: an emission
@@ -63,10 +79,12 @@ const THRESHOLD: f32 = 0.8;
 /// little, and nothing jumps between the two.
 const KNEE: f32 = 0.4;
 
-/// What each level adds to the window, fine to coarse, summing to 1 so that a
-/// frame of bloom cannot double the frame's brightness. The fine level leads
-/// because it is the one that still holds the lamp's shape; the coarse ones are
-/// the haze, and too much haze reads as a dirty lens.
+/// What each level adds to the window, fine to coarse — the shipped preset,
+/// whose length *is* the chain's depth: four weights, four levels, twelve
+/// passes deciding how far the light travels. Summing to 1 so that a frame of
+/// bloom cannot double the frame's brightness; the fine level leads because
+/// it is the one that still holds the lamp's shape, and the coarse ones are
+/// the haze — too much haze reads as a dirty lens.
 ///
 /// The fine level took the whole cost of the fourth level, down from `0.5`,
 /// which buys a little reach and takes back a little of the wash: a black patch
@@ -82,19 +100,32 @@ const KNEE: f32 = 0.4;
 /// small source contributes almost nothing to the wide levels however much they
 /// are weighted, and a big one contributes nearly all of it. Width therefore
 /// comes from source size and from how many levels there are, not from how the
-/// weights are balanced.
-const WEIGHTS: [f32; LEVELS] = [0.40, 0.28, 0.20, 0.12];
+/// weights are balanced — which is why a wider look is a longer preset rather
+/// than a flatter one, and why a `dormant`-length `[0.0; MAX_LEVELS]` answer
+/// from [`weights_for`] means "past the preset's end, nothing".
+const WEIGHTS: &[f32] = &[0.40, 0.28, 0.20, 0.12];
 
-/// The three numbers the present pass reads for one request. Kept apart from
-/// both the chain and the shader because it is the one piece of this that is
-/// arithmetic rather than GPU work, and the two cases it has to get right —
-/// no strength asked for, and nothing to read — are the two a caller can only
-/// discover by asking for a glow it will not get.
-fn weights_for(strength: f32, can_bloom: bool) -> [f32; LEVELS] {
-    if !can_bloom || strength <= 0.0 {
-        return [0.0; LEVELS];
+const _: () = assert!(
+    WEIGHTS.len() <= MAX_LEVELS,
+    "the preset outgrew the plumbing"
+);
+
+/// The numbers the present pass reads for one request, the preset scaled by
+/// strength and padded to the plumbing's width — so the levels a preset does
+/// not ask for arrive as the same zeros that "no bloom" travels on, and the
+/// shader's per-level guards never fetch a bound black texel by accident. Kept
+/// apart from both the chain and the shader because it is the one piece of this
+/// that is arithmetic rather than GPU work, and the two cases it has to get
+/// right — no strength asked for, and nothing to read — are the two a caller
+/// can only discover by asking for a glow it will not get.
+fn weights_for(strength: f32, can_bloom: bool) -> [f32; MAX_LEVELS] {
+    let mut weights = [0.0; MAX_LEVELS];
+    if can_bloom && strength > 0.0 {
+        for (weight, base) in weights.iter_mut().zip(WEIGHTS) {
+            *weight = *base * strength;
+        }
     }
-    WEIGHTS.map(|weight| weight * strength)
+    weights
 }
 
 /// One level: two textures — the one the level is read from and the scratch the
@@ -122,12 +153,12 @@ struct Level {
 ///
 /// It lives and dies with the target: the levels are fractions of its extent, so
 /// a resize means a new chain, not a scaled one. A chain with no bloom to do is
-/// still a `Bloom` ([`Bloom::dormant`]), because the present pass binds three
-/// bloom textures whatever the answer is; what differs is whether its weights
-/// are zero, which is what keeps the samples out of the frame.
+/// still a `Bloom` ([`Bloom::dormant`]), because the present pass binds
+/// [`MAX_LEVELS`] bloom textures whatever the answer is; what differs is whether
+/// its weights are zero, which is what keeps the samples out of the frame.
 pub(crate) struct Bloom {
-    /// The levels, fine first. Empty when dormant, which is how `run` knows to
-    /// draw nothing.
+    /// The levels, fine first — as many as the preset asks for. Empty when
+    /// dormant, which is how `run` knows to draw nothing.
     levels: Vec<Level>,
     /// `[downsample, blur]`, in that order.
     pipelines: [RenderPipeline; 2],
@@ -136,13 +167,17 @@ pub(crate) struct Bloom {
     /// frame's edge samples outside it constantly, and a wrapping edge drags
     /// the far side of the picture around it.
     pub(crate) sampler: Sampler,
-    /// What the present pass binds, fine first: the three levels, or one black
-    /// texel bound three times.
-    pub(crate) views: [TextureView; LEVELS],
-    /// The present pass's weights, strength already multiplied in: all zero is
-    /// how "no bloom" reaches the shader, whose branch on it keeps the three
-    /// samples off the frame entirely.
-    pub(crate) weights: [f32; LEVELS],
+    /// What the present pass binds, fine first: the built levels, then one
+    /// black texel for every slot the preset left empty — up to the plumbing's
+    /// width, so the bind group has one shape whatever the chain decided.
+    pub(crate) views: [TextureView; MAX_LEVELS],
+    /// The black texel's view, kept beside the levels so a woken chain can pad
+    /// its own empty slots the way [`Bloom::dormant`] pads them all.
+    black: TextureView,
+    /// The present pass's weights, strength already multiplied in and padded
+    /// with zeros past the preset's end: all zero is how "no bloom" reaches the
+    /// shader, whose per-level guards on it keep the samples off the frame.
+    pub(crate) weights: [f32; MAX_LEVELS],
     /// What the app is asking for right now: `Config::bloom` at startup,
     /// [`Context::set_bloom`](crate::Context::set_bloom) afterwards. Kept
     /// because the weights are derived from it, and it can change under us.
@@ -202,9 +237,9 @@ impl Bloom {
     /// Builds the levels, or rebuilds them against a new extent. This is what
     /// an app wakes when it asks for bloom at runtime ([`Context::set_bloom`])
     /// on a frame that was built without a chain: the pipelines and the sampler
-    /// already exist, so what it costs is the six textures, the nine bind
-    /// groups and their uniforms — and the frame that pays for it is the frame
-    /// that asked.
+    /// already exist, so what it costs is the two textures, three bind groups
+    /// and their uniforms per level the preset asks for — and the frame that
+    /// pays for it is the frame that asked.
     pub(crate) fn build(
         &mut self,
         device: &Device,
@@ -213,14 +248,15 @@ impl Bloom {
         extent: [u32; 2],
         emissive: &TextureView,
     ) {
-        let mut levels: Vec<Level> = Vec::with_capacity(LEVELS);
-        let mut uniforms = Vec::with_capacity(LEVELS * 3);
+        let depth = WEIGHTS.len();
+        let mut levels: Vec<Level> = Vec::with_capacity(depth);
+        let mut uniforms = Vec::with_capacity(depth * 3);
         // What the next level reads: the emissive target at the top of the
         // chain, this level's blurred result below that. Blurred, not raw —
         // the light is chosen once, at the top.
         let mut source = emissive;
         let mut source_extent = extent;
-        for level_index in 0..LEVELS {
+        for level_index in 0..depth {
             let extent = [(source_extent[0] / 2).max(1), (source_extent[1] / 2).max(1)];
             let new = |label: &str| {
                 device.create_texture(&TextureDescriptor {
@@ -335,14 +371,20 @@ impl Bloom {
             source = &levels[level_index].fine_view;
         }
         self.levels = levels;
-        self.views = std::array::from_fn(|i| self.levels[i].fine_view.clone());
+        // Built levels first, the black texel after: the bind group is always
+        // `MAX_LEVELS` wide, and the weights say the same thing the views do.
+        let mut views = std::array::from_fn(|_| self.black.clone());
+        for (view, level) in views.iter_mut().zip(&self.levels) {
+            *view = level.fine_view.clone();
+        }
+        self.views = views;
         self.weights = weights_for(self.strength, self.can_bloom);
         self._uniforms = uniforms;
     }
 
     /// Asks for a different strength. Free, because the strength reaches the
-    /// shader as three numbers in a uniform the present pass rewrites every
-    /// frame anyway; what it cannot do is build a chain that was never
+    /// shader as the preset's numbers in a uniform the present pass rewrites
+    /// every frame anyway; what it cannot do is build a chain that was never
     /// possible, which is what [`Self::needs_building`] is for. Zero is not just
     /// an invisible glow: it parks [`Self::run`] as well, so an app that asks
     /// for no bloom on a frame pays no bloom passes for it.
@@ -359,9 +401,9 @@ impl Bloom {
     }
 
     /// A chain that does nothing, for a frame with no float target or an app
-    /// that asked for no bloom. The present pass still binds three textures, so
-    /// three exist — one black texel, three times — and the weights are zero, so
-    /// nothing looks at them.
+    /// that asked for no bloom. The present pass still binds `MAX_LEVELS`
+    /// textures, so that many exist — one black texel, `MAX_LEVELS` times — and
+    /// the weights are zero, so nothing looks at them.
     fn dormant(
         device: &Device,
         queue: &Queue,
@@ -414,6 +456,7 @@ impl Bloom {
             pipelines,
             sampler,
             views: std::array::from_fn(|_| view.clone()),
+            black: view,
             weights: weights_for(strength, can_bloom),
             strength,
             can_bloom,
@@ -460,16 +503,17 @@ impl Bloom {
         })
     }
 
-    /// Runs the chain: emissive in, three blurred levels out, nine full-screen
-    /// passes over a third of one frame's pixels. Does nothing when dormant.
+    /// Runs the chain: emissive in, one blurred level per preset weight out,
+    /// three full-screen passes per level over about a third of one frame's
+    /// pixels. Does nothing when dormant.
     pub(crate) fn run(&self, encoder: &mut CommandEncoder) {
         // Nothing to make, two ways over: no levels to make it from, and no
         // weight to put the result anywhere. The second is the app that turned
         // the glow down to zero and left the chain standing ready — and since
-        // the present pass branches on those same three zeros, every pass here
-        // would compute a picture nothing reads. Passes are what this chain
-        // costs, so skipping all of them is the entire cost of the off state.
-        if self.levels.is_empty() || self.weights == [0.0; LEVELS] {
+        // the present pass branches on those same zeros, every pass here would
+        // compute a picture nothing reads. Passes are what this chain costs, so
+        // skipping all of them is the entire cost of the off state.
+        if self.levels.is_empty() || self.weights.iter().all(|w| *w == 0.0) {
             return;
         }
         for level in &self.levels {
@@ -508,7 +552,7 @@ impl Bloom {
 
 /// The chain's uniform: source texel size, threshold (negative to skip), knee,
 /// blur step. 32 bytes, written once when the chain is built and never again —
-/// which is what keeps twelve passes a frame from costing any staging.
+/// which is what keeps the chain's passes a frame from costing any staging.
 fn bloom_bytes(texel: [f32; 2], threshold: f32, knee: f32, spread: [f32; 2]) -> [u8; 32] {
     let mut b = [0u8; 32];
     b[0..4].copy_from_slice(&texel[0].to_le_bytes());
@@ -540,33 +584,48 @@ mod tests {
 
     /// The two ways a request produces no light are the two a caller cannot see
     /// for itself: asking for nothing, and asking on a frame buffer that keeps
-    /// nothing above white. Both have to come back as three exact zeros, because
-    /// zero is what the present pass branches on to skip its three samples —
-    /// anything else, a negative strength included, pays for samples of black.
+    /// nothing above white. Both have to come back as exact zeros across the
+    /// whole plumbing, because zero is what the present pass branches on to skip
+    /// its samples — anything else, a negative strength included, pays for
+    /// samples of black. And the levels past the preset's end must be zero at a
+    /// real strength too: they bind a black texel, and a stray nonzero there
+    /// would be the one fetch the guard was built to keep off the frame.
     #[test]
     fn only_a_real_request_gets_a_weight() {
-        assert_eq!(weights_for(1.0, true), WEIGHTS);
-        assert_eq!(weights_for(0.5, true), [0.20, 0.14, 0.10, 0.06]);
-        assert_eq!(weights_for(0.0, true), [0.0; LEVELS]);
-        assert_eq!(weights_for(-1.0, true), [0.0; LEVELS]);
-        assert_eq!(weights_for(1.0, false), [0.0; LEVELS]);
-        assert_eq!(weights_for(0.3, false), [0.0; LEVELS]);
+        assert_eq!(weights_for(1.0, true), [0.40, 0.28, 0.20, 0.12, 0.0, 0.0]);
+        assert_eq!(weights_for(0.5, true), [0.20, 0.14, 0.10, 0.06, 0.0, 0.0]);
+        assert_eq!(weights_for(0.0, true), [0.0; MAX_LEVELS]);
+        assert_eq!(weights_for(-1.0, true), [0.0; MAX_LEVELS]);
+        assert_eq!(weights_for(1.0, false), [0.0; MAX_LEVELS]);
+        assert_eq!(weights_for(0.3, false), [0.0; MAX_LEVELS]);
+        assert!(
+            weights_for(1.0, true)[WEIGHTS.len()..]
+                .iter()
+                .all(|w| *w == 0.0)
+        );
     }
 
     /// The weights sum to the frame they are added to: at a strength of 1.0 the
     /// chain returns roughly the light it was given, spread out, rather than
-    /// tripling it.
+    /// tripling it. The length is the chain's depth, so it is pinned here as
+    /// well as everywhere else.
     #[test]
     fn the_levels_add_up_to_one_light() {
         let sum: f32 = WEIGHTS.iter().sum();
         assert!(
             (sum - 1.0).abs() < 1e-6,
-            "the three levels add to {sum}, which would change the frame's \
-             total brightness at a strength of 1.0"
+            "the {} levels add to {sum}, which would change the frame's \
+             total brightness at a strength of 1.0",
+            WEIGHTS.len()
         );
         assert!(
             WEIGHTS.windows(2).all(|w| w[0] > w[1]),
             "the fine level should lead: {WEIGHTS:?}"
+        );
+        assert!(
+            !WEIGHTS.is_empty() && WEIGHTS.len() <= MAX_LEVELS,
+            "the preset must fit the plumbing: {} weights, {MAX_LEVELS} slots",
+            WEIGHTS.len()
         );
     }
 }

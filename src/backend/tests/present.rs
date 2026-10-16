@@ -80,7 +80,7 @@ pub(crate) fn frame(
     strength: f32,
     tone: f32,
     dump: Option<&str>,
-    override_weights: Option<[f32; crate::backend::bloom::LEVELS]>,
+    override_weights: Option<[f32; crate::backend::bloom::MAX_LEVELS]>,
 ) -> Option<Vec<[f32; 3]>> {
     let ambient = objects::Color {
         r: 0.0,
@@ -328,7 +328,7 @@ pub(crate) fn frame(
     });
     let fit_buffer = device.create_buffer(&BufferDescriptor {
         label: Some("bloom fit"),
-        size: 48,
+        size: 64,
         usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -340,52 +340,41 @@ pub(crate) fn frame(
     queue.write_buffer(&fit_buffer, 0, &fit);
     let window = new_target("bloom window", TextureUsages::empty());
     let window_view = window.create_view(&TextureViewDescriptor::default());
+    let mut entries = vec![
+        BindGroupEntry {
+            binding: 0,
+            resource: BindingResource::TextureView(&frame_view),
+        },
+        BindGroupEntry {
+            binding: 1,
+            resource: BindingResource::Sampler(&sampler),
+        },
+        BindGroupEntry {
+            binding: 2,
+            resource: BindingResource::Buffer(BufferBinding {
+                buffer: &fit_buffer,
+                offset: 0,
+                size: None,
+            }),
+        },
+    ];
+    entries.extend(bloom.views.iter().enumerate().map(|(i, v)| BindGroupEntry {
+        binding: 3 + i as u32,
+        resource: BindingResource::TextureView(v),
+    }));
+    // These entries are the engine's own, copied: `App::blit_bind_group`
+    // builds the same shape and cannot be called from here without an
+    // `App`. wgpu counts the entries against the layout the shader generated,
+    // so when the plumbing widens this block has to widen with it and the
+    // count mismatch is the error.
+    entries.push(BindGroupEntry {
+        binding: 3 + crate::backend::bloom::MAX_LEVELS as u32,
+        resource: BindingResource::Sampler(&bloom.sampler),
+    });
     let bind = device.create_bind_group(&BindGroupDescriptor {
         label: Some("bloom present bind"),
         layout: &blit_pipeline.get_bind_group_layout(0),
-        entries: &[
-            BindGroupEntry {
-                binding: 0,
-                resource: BindingResource::TextureView(&frame_view),
-            },
-            BindGroupEntry {
-                binding: 1,
-                resource: BindingResource::Sampler(&sampler),
-            },
-            BindGroupEntry {
-                binding: 2,
-                resource: BindingResource::Buffer(BufferBinding {
-                    buffer: &fit_buffer,
-                    offset: 0,
-                    size: None,
-                }),
-            },
-            BindGroupEntry {
-                binding: 3,
-                resource: BindingResource::TextureView(&bloom.views[0]),
-            },
-            BindGroupEntry {
-                binding: 4,
-                resource: BindingResource::TextureView(&bloom.views[1]),
-            },
-            BindGroupEntry {
-                binding: 5,
-                resource: BindingResource::TextureView(&bloom.views[2]),
-            },
-            BindGroupEntry {
-                binding: 6,
-                resource: BindingResource::TextureView(&bloom.views[3]),
-            },
-            // These entries are the engine's own, copied: `App::blit_bind_group`
-            // builds the same seven-and-a-sampler shape and cannot be called
-            // from here without an `App`. wgpu counts the entries against the
-            // layout the shader generated, so when the chain grows a level this
-            // block has to grow with it and the count mismatch is the error.
-            BindGroupEntry {
-                binding: 7,
-                resource: BindingResource::Sampler(&bloom.sampler),
-            },
-        ],
+        entries: &entries,
     });
     {
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {

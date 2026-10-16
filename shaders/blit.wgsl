@@ -13,14 +13,17 @@ var frame_sampler: sampler;
 struct BlitUniforms {
     fit: vec2<f32>, // content extent as a fraction of the surface; (1, 1) fills it
     pad: vec2<f32>,
-    // One weight per bloom level — fine to coarse — already multiplied by the
-    // user's strength, so all zero is how "no bloom" reaches this shader.
-    // Sized for `bloom::LEVELS`, which is at most four while this is a vec4;
-    // `fit_bytes` asserts it.
-    bloom: vec4<f32>,
-    // Padded out so `tone` lands on a fresh 16-byte boundary, which is where a
-    // vec4 leaves the struct.
-    tone: f32,
+    // One weight per bloom slot — fine to coarse — already multiplied by the
+    // user's strength, so all zero is how "no bloom" reaches this shader, and
+    // the slots past the preset's length are zero the same way: bound to a
+    // black texel, guarded away from ever being fetched. Two `vec4`s rather
+    // than an `array<f32, 6>` because a uniform's array stride must be a
+    // multiple of 16 — six floats get a vec4's stride each either way, and
+    // only this shape says so honestly. Holds `bloom::MAX_LEVELS` weights,
+    // at most six; `fit_bytes` asserts it.
+    bloom_a: vec4<f32>, // levels 0..4, fine first
+    bloom_b: vec4<f32>, // levels 4..6; z and w are the vec4's own padding
+    tone: f32, // lands at 48, where the second vec4 leaves the struct
 };
 
 @group(0) @binding(2)
@@ -42,6 +45,12 @@ var bloom2: texture_2d<f32>;
 var bloom3: texture_2d<f32>;
 
 @group(0) @binding(7)
+var bloom4: texture_2d<f32>;
+
+@group(0) @binding(8)
+var bloom5: texture_2d<f32>;
+
+@group(0) @binding(9)
 var bloom_sampler: sampler;
 
 struct VsOut {
@@ -136,15 +145,29 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // where doubling a number does not double its brightness, and a
     // threshold-then-encode order is how bloom ends up eating the darks.
     //
-    // `SampleLevel` rather than `Sample`: the branch below is uniform because
+    // `SampleLevel` rather than `Sample`: each guard below is uniform because
     // it reads a uniform, but the derivative-based forms cannot know that, and
     // the level is 0 anyway — these are the chain's own resolutions, not a mip
-    // chain to choose from.
-    if (any(u.bloom != vec4<f32>(0.0))) {
-        c += textureSampleLevel(bloom0, bloom_sampler, in.uv, 0.0) * u.bloom.x;
-        c += textureSampleLevel(bloom1, bloom_sampler, in.uv, 0.0) * u.bloom.y;
-        c += textureSampleLevel(bloom2, bloom_sampler, in.uv, 0.0) * u.bloom.z;
-        c += textureSampleLevel(bloom3, bloom_sampler, in.uv, 0.0) * u.bloom.w;
+    // chain to choose from. One guard per level rather than one for the lot:
+    // a tight preset's empty slots hold zeros, and a zero's fetch is exactly
+    // the work there is nothing left to save.
+    if (u.bloom_a.x != 0.0) {
+        c += textureSampleLevel(bloom0, bloom_sampler, in.uv, 0.0) * u.bloom_a.x;
+    }
+    if (u.bloom_a.y != 0.0) {
+        c += textureSampleLevel(bloom1, bloom_sampler, in.uv, 0.0) * u.bloom_a.y;
+    }
+    if (u.bloom_a.z != 0.0) {
+        c += textureSampleLevel(bloom2, bloom_sampler, in.uv, 0.0) * u.bloom_a.z;
+    }
+    if (u.bloom_a.w != 0.0) {
+        c += textureSampleLevel(bloom3, bloom_sampler, in.uv, 0.0) * u.bloom_a.w;
+    }
+    if (u.bloom_b.x != 0.0) {
+        c += textureSampleLevel(bloom4, bloom_sampler, in.uv, 0.0) * u.bloom_b.x;
+    }
+    if (u.bloom_b.y != 0.0) {
+        c += textureSampleLevel(bloom5, bloom_sampler, in.uv, 0.0) * u.bloom_b.y;
     }
     // Last, after every light has been added, because it is the total that has
     // to fit the display — and before the transfer curve, which is not a

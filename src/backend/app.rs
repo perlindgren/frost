@@ -78,10 +78,10 @@ struct BlitTarget {
     /// and cleared with every frame, because a target nobody writes is a
     /// second full-res allocation spent for a look that never arrived.
     emissive: Option<(wgpu::Texture, TextureView)>,
-    /// The bloom chain: this target's emissive target, blurred at three
-    /// widths, ready for the stretch pass to add back. Dormant — one black
+    /// The bloom chain: this target's emissive target, blurred once per preset
+    /// level, ready for the stretch pass to add back. Dormant — one black
     /// texel and weights of zero — when there is no bloom to do; the present
-    /// pass binds its three textures either way, so this is never absent.
+    /// pass binds the plumbing's full width either way, so this is never absent.
     bloom: Bloom,
     /// The 16-byte letterbox fit (`vec2` + padding), rewritten by `render`
     /// whenever the surface's aspect may have moved.
@@ -1656,13 +1656,13 @@ impl<P: Process> Frost<P> {
     /// once (the target survives resizes; only the requested size rebuilds
     /// it), and dropped whenever the surface itself becomes that size.
     /// The stretch pass's bind group: this target's frame view and sampler, its
-    /// fit uniform, and the three bloom levels. It has exactly one shape,
-    /// dormant chain or not, because the weights in the fit uniform are what
-    /// decide whether the three samples happen — which is why [`Bloom`] hands
-    /// over one black texel three times when it has nothing else to hand over.
-    /// Built here rather than inline because a chain woken mid-run has to rebind
-    /// its new textures into the same slot, and two copies of eleven bindings is
-    /// how that goes wrong.
+    /// fit uniform, and the bloom levels. It has exactly one shape,
+    /// dormant chain or shallow chain or not, because the weights in the fit
+    /// uniform are what decide whether each sample happens — which is why
+    /// [`Bloom`] hands over [`MAX_LEVELS`] views always, one black texel
+    /// standing in for every slot the preset left empty. Built here rather than
+    /// inline because a chain woken mid-run has to rebind its new textures into
+    /// the same slot, and two copies of a dozen bindings is how that goes wrong.
     fn blit_bind_group(
         &self,
         view: &TextureView,
@@ -1670,6 +1670,34 @@ impl<P: Process> Frost<P> {
         fit_buffer: &Buffer,
         bloom: &Bloom,
     ) -> BindGroup {
+        let mut entries = vec![
+            BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::TextureView(view),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: BindingResource::Sampler(sampler),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: fit_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            },
+        ];
+        // The bloom levels, bound whether or not there is bloom to show, one
+        // binding each: the shader's bindings are numbered from this side too.
+        entries.extend(bloom.views.iter().enumerate().map(|(i, v)| BindGroupEntry {
+            binding: 3 + i as u32,
+            resource: BindingResource::TextureView(v),
+        }));
+        entries.push(BindGroupEntry {
+            binding: 3 + crate::backend::bloom::MAX_LEVELS as u32,
+            resource: BindingResource::Sampler(&bloom.sampler),
+        });
         self.device.create_bind_group(&BindGroupDescriptor {
             label: Some("blit bind group"),
             layout: &self
@@ -1677,45 +1705,7 @@ impl<P: Process> Frost<P> {
                 .as_ref()
                 .expect("the blit pipeline is built with the surface")
                 .get_bind_group_layout(0),
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(view),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Sampler(sampler),
-                },
-                BindGroupEntry {
-                    binding: 2,
-                    resource: BindingResource::Buffer(BufferBinding {
-                        buffer: fit_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-                // The bloom levels, bound whether or not there is bloom to show.
-                BindGroupEntry {
-                    binding: 3,
-                    resource: BindingResource::TextureView(&bloom.views[0]),
-                },
-                BindGroupEntry {
-                    binding: 4,
-                    resource: BindingResource::TextureView(&bloom.views[1]),
-                },
-                BindGroupEntry {
-                    binding: 5,
-                    resource: BindingResource::TextureView(&bloom.views[2]),
-                },
-                BindGroupEntry {
-                    binding: 6,
-                    resource: BindingResource::TextureView(&bloom.views[3]),
-                },
-                BindGroupEntry {
-                    binding: 7,
-                    resource: BindingResource::Sampler(&bloom.sampler),
-                },
-            ],
+            entries: &entries,
         })
     }
 
@@ -1796,7 +1786,7 @@ impl<P: Process> Frost<P> {
         // frame if it ever ran before the per-frame write.
         let fit_buffer = self.device.create_buffer(&BufferDescriptor {
             label: Some("blit fit"),
-            size: 48,
+            size: 64,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1805,7 +1795,7 @@ impl<P: Process> Frost<P> {
             0,
             &fit_bytes(
                 (1.0, 1.0),
-                [0.0; crate::backend::bloom::LEVELS],
+                [0.0; crate::backend::bloom::MAX_LEVELS],
                 self.tone_map,
             ),
         );

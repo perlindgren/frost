@@ -54,8 +54,8 @@ pub(crate) const TILEMAP_SHADER: &str = concat!(
 /// The fixed-render-size stretch (blit) shader source.
 pub(crate) const BLIT_SHADER: &str = include_str!("../shaders/blit.wgsl");
 
-/// The bloom chain: threshold, tent downsample and separable Gaussian, three
-/// levels deep. One file, two entry points, three passes per level.
+/// The bloom chain: threshold, tent downsample and separable Gaussian, one
+/// level per preset weight. One file, two entry points, three passes per level.
 pub(crate) const BLOOM_SHADER: &str = include_str!("../shaders/bloom.wgsl");
 
 /// The shader table: each pipeline's source by name, and the files
