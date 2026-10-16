@@ -1269,7 +1269,7 @@ Each module's `mod tests` holds the tests that pin its subject. The
 |              | regaining one hit every 5 s, a louse two hits every 10 s (lice start|
 |              | at two health), both capped at six, a white pip above the bug per hit|
 |              | it can still take; a bug reaching its park spot while another bug is|
-|              | within 50 px of it chatters - a random tjatter clip (TjatterLow/Mid/|
+|              | within 50 px of it chatters - a random chatter clip (ChatterLow/Mid/|
 |              | High.wav) plays - and the killing blow starts the two-phase death:  |
 |              | over 0.5 s it bounces up off the grass, flipping upside down in the |
 |              | air (y scale to fully inverted, position/growth/facing/frame frozen),|

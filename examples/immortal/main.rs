@@ -227,9 +227,9 @@
 //! recovers with the spraying.
 //!
 //! A bug that reaches its destination while another bug is on the grass
-//! within 50 px of it chatters: the swarm picks one of the three tjatter
-//! clips — `assets/audio/TjatterLow.wav`, `TjatterMid.wav`, and
-//! `TjatterHigh.wav` — at random, and the demo plays it through
+//! within 50 px of it chatters: the swarm picks one of the three chatter
+//! clips — `assets/audio/ChatterLow.wav`, `ChatterMid.wav`, and
+//! `ChatterHigh.wav` — at random, and the demo plays it through
 //! [`frost::Audio`].
 //!
 //! Every bug that pops up out of the grass — a batch spawn or a respawn
@@ -960,7 +960,7 @@ struct Demo {
     /// matching child of the worms node (root's [`CHILD_WORMS`] child).
     worms: worms::Worms,
     /// The audio output and every clip the demo plays, decoded once at
-    /// startup: the swarm's tjatter, plopp, and Ouch arrays, and the
+    /// startup: the swarm's chatter, plopp, and Ouch arrays, and the
     /// singles — the bug death, the watering loop, the spray hiss, and
     /// the tomato drop — all playing through its device.
     sounds: Sounds,
@@ -1837,14 +1837,14 @@ impl Demo {
 
     /// Plays the bugs' last step's arrival sounds: a bug that just
     /// reached its destination while another bug was on the grass nearby
-    /// plays one of the tjatter clips, the swarm's random pick, and a bug
+    /// plays one of the chatter clips, the swarm's random pick, and a bug
     /// that just came up out of the grass — a batch spawn or a respawn —
     /// plays one of the plopp clips.
     fn play_bug_events(&mut self, events: &bugs::StepEvents) {
-        for clip in &events.tjatters {
+        for clip in &events.chatters {
             self.sounds
                 .device
-                .play_once(&self.sounds.tjatters[*clip], None);
+                .play_once(&self.sounds.chatters[*clip], None);
         }
         for clip in &events.plops {
             self.sounds

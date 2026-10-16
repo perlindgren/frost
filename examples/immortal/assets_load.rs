@@ -145,16 +145,16 @@ const ASSETS: frost::Table = &[
         include_bytes!("../../assets/fonts/FiraCode-VariableFont_wght.ttf"),
     ),
     (
-        "assets/audio/TjatterLow.wav",
-        include_bytes!("../../assets/audio/TjatterLow.wav"),
+        "assets/audio/ChatterLow.wav",
+        include_bytes!("../../assets/audio/ChatterLow.wav"),
     ),
     (
-        "assets/audio/TjatterMid.wav",
-        include_bytes!("../../assets/audio/TjatterMid.wav"),
+        "assets/audio/ChatterMid.wav",
+        include_bytes!("../../assets/audio/ChatterMid.wav"),
     ),
     (
-        "assets/audio/TjatterHigh.wav",
-        include_bytes!("../../assets/audio/TjatterHigh.wav"),
+        "assets/audio/ChatterHigh.wav",
+        include_bytes!("../../assets/audio/ChatterHigh.wav"),
     ),
     (
         "assets/audio/bugs_plopp1.wav",
@@ -204,17 +204,17 @@ const ASSETS: frost::Table = &[
 
 /// The audio output and every clip the example plays: the device, opened
 /// once at startup, and the clips it plays through — the swarm's random
-/// picks, the tjatter, plopp, and Ouch arrays, and the named singles: the
+/// picks, the chatter, plopp, and Ouch arrays, and the named singles: the
 /// bug death, the watering loop, the spray hiss, and the tomato drop.
 pub struct Sounds {
     /// The audio output, opened once at startup; every clip plays through
     /// it.
     pub device: frost::Audio,
-    /// The three bug tjatter clips (low, mid, high), decoded once at
+    /// The three bug chatter clips (low, mid, high), decoded once at
     /// startup; a bug that reaches its destination while another bug is
     /// on the grass within 50 px of it chatters on one of them, the
     /// swarm's random pick.
-    pub tjatters: [frost::Sound; 3],
+    pub chatters: [frost::Sound; 3],
     /// The three bug plopp clips (1, 2, 3), decoded once at startup; a
     /// bug that pops up out of the grass — a batch spawn or a respawn —
     /// plops on one of them, the swarm's random pick.
@@ -367,10 +367,10 @@ impl Assets {
             diag_font: ask(&store, "FiraCode-VariableFont_wght", &["ttf"]),
             sounds: Sounds {
                 device: audio,
-                tjatters: [
-                    sound(&store, "TjatterLow"),
-                    sound(&store, "TjatterMid"),
-                    sound(&store, "TjatterHigh"),
+                chatters: [
+                    sound(&store, "ChatterLow"),
+                    sound(&store, "ChatterMid"),
+                    sound(&store, "ChatterHigh"),
                 ],
                 plops: [
                     sound(&store, "bugs_plopp1"),

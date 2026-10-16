@@ -31,8 +31,8 @@
 //! growing gets its own batch.
 //!
 //! A bug that reaches its destination while another bug is on the grass
-//! within [TJATTER_RANGE] of it chatters: [Bugs::step] reports the index
-//! of one of the three tjatter clips (low, mid, high) for that frame, and
+//! within [CHATTER_RANGE] of it chatters: [Bugs::step] reports the index
+//! of one of the three chatter clips (low, mid, high) for that frame, and
 //! the demo plays it through [`frost::Audio`].
 //!
 //! Every bug that pops up out of the grass — a batch spawn or a respawn
@@ -96,12 +96,12 @@ const GROW_TIME: f32 = 0.75;
 /// Distance from the park target at which a bug stops walking, in px.
 const ARRIVE: f32 = 4.0;
 /// How close another bug must be to an arriving bug's destination for the
-/// arrival to trigger a tjatter, in px.
+/// arrival to trigger a chatter, in px.
 ///
 /// A plant's three park spots sit `BUG_SIZE * 0.9` apart (about 36 px)
 /// with up to 10 px of combined jitter, so this covers every sibling
 /// spot while the next-nearest sibling stays at least about 62 px away.
-const TJATTER_RANGE: f32 = 50.0;
+const CHATTER_RANGE: f32 = 50.0;
 /// Walking-speed dead band for the facing flip, in px/s.
 ///
 /// It is above the parked sway's top speed (≈5.2) and below the slowest
@@ -271,7 +271,7 @@ struct Bug {
     /// the bug has earned another hit of health (see [Bug::hits]).
     parked: f32,
     /// Whether the bug has already reached its destination this life:
-    /// set on the frame it first parks, so the arrival tjatter (see
+    /// set on the frame it first parks, so the arrival chatter (see
     /// [Bugs::step]) fires exactly once per bug — also for a bug that
     /// parks from its very first grown frame.
     arrived: bool,
@@ -474,10 +474,10 @@ impl From<&Bug> for BugState {
 #[derive(Default)]
 pub struct StepEvents {
     /// One entry per bug that reached its destination this frame while
-    /// another bug was on the grass within [TJATTER_RANGE] of it: index
-    /// 0 for the low tjatter clip, 1 for the mid, 2 for the high, picked
+    /// another bug was on the grass within [CHATTER_RANGE] of it: index
+    /// 0 for the low chatter clip, 1 for the mid, 2 for the high, picked
     /// at random by the swarm.
-    pub tjatters: Vec<usize>,
+    pub chatters: Vec<usize>,
     /// One entry per bug that popped up out of the grass this frame — a
     /// batch spawn or a respawn: index 0, 1 or 2 into the three plopp
     /// clips (`bugs_plopp1.wav`, `bugs_plopp2.wav`, `bugs_plopp3.wav`),
@@ -566,12 +566,12 @@ impl Bugs {
     /// ([step_bug]): its hit cooldown runs down, and it counts down its
     /// respawn delay, ticks its death clock, grows out of the grass, or
     /// walks and parks ([step_move]); the arrivals are checked against
-    /// the whole swarm's end-of-frame positions ([arrival_tjatters]).
+    /// the whole swarm's end-of-frame positions ([arrival_chatters]).
     ///
     /// Returns the [StepEvents] for this frame: the indices of the
-    /// tjatter clips to play (one per bug that reached its destination
+    /// chatter clips to play (one per bug that reached its destination
     /// this frame while another bug was on the grass within
-    /// [TJATTER_RANGE] of its destination: index 0 for the low clip, 1
+    /// [CHATTER_RANGE] of its destination: index 0 for the low clip, 1
     /// for the mid, 2 for the high) and the indices of the plopp clips
     /// to play (one per bug that popped up out of the grass this frame —
     /// a batch spawn or a respawn: index 0, 1 or 2), each picked at
@@ -594,15 +594,15 @@ impl Bugs {
         self.spawn_batches(anchors, alive, &mut plops);
 
         // The bugs that reach their destination this frame, with their
-        // destinations: the arrival tjatter check runs after the loop,
+        // destinations: the arrival chatter check runs after the loop,
         // against the whole swarm's end-of-frame positions.
         let mut arrivals: Vec<(usize, [f32; 2])> = Vec::new();
         for i in 0..self.bugs.len() {
             self.step_bug(i, dt, anchors, &mut plops, &mut arrivals);
         }
 
-        let tjatters = self.arrival_tjatters(&arrivals);
-        StepEvents { tjatters, plops }
+        let chatters = self.arrival_chatters(&arrivals);
+        StepEvents { chatters, plops }
     }
 
     /// Deliver each newly living plant that has not yet been batched its
@@ -834,26 +834,26 @@ impl Bugs {
         (next, dist)
     }
 
-    /// The arrival tjatter check, against the whole swarm's end-of-frame
-    /// positions: an arrival chatters — a random tjatter clip — only if
+    /// The arrival chatter check, against the whole swarm's end-of-frame
+    /// positions: an arrival chatters — a random chatter clip — only if
     /// another bug is on the grass at its destination: anything that is
     /// not dying and not sitting out a respawn delay, within
-    /// [TJATTER_RANGE] of it.
-    fn arrival_tjatters(&mut self, arrivals: &[(usize, [f32; 2])]) -> Vec<usize> {
-        let mut tjatters = Vec::new();
+    /// [CHATTER_RANGE] of it.
+    fn arrival_chatters(&mut self, arrivals: &[(usize, [f32; 2])]) -> Vec<usize> {
+        let mut chatters = Vec::new();
         for &(i, dest) in arrivals {
             let company = self.bugs.iter().enumerate().any(|(j, b)| {
                 j != i && b.dying.is_none() && b.respawn.is_none() && {
                     let dx = b.pos[0] - dest[0];
                     let dy = b.pos[1] - dest[1];
-                    dx * dx + dy * dy <= TJATTER_RANGE * TJATTER_RANGE
+                    dx * dx + dy * dy <= CHATTER_RANGE * CHATTER_RANGE
                 }
             });
             if company {
-                tjatters.push((self.rng.next_f32() * 3.0) as usize);
+                chatters.push((self.rng.next_f32() * 3.0) as usize);
             }
         }
-        tjatters
+        chatters
     }
 
     /// Land one mist hit at `p`: every live bug within half the rendered
@@ -1722,8 +1722,8 @@ mod tests {
     }
 
     /// A bug that reaches its destination while another bug is on the
-    /// grass within [TJATTER_RANGE] of it chatters: [Bugs::step] reports
-    /// exactly one tjatter clip index (0, 1 or 2) for the frame and
+    /// grass within [CHATTER_RANGE] of it chatters: [Bugs::step] reports
+    /// exactly one chatter clip index (0, 1 or 2) for the frame and
     /// nothing on the frame after, when no bug arrives; a bug that parks
     /// with every other bug far away chatters nothing.
     #[test]
@@ -1769,14 +1769,14 @@ mod tests {
         let events = bugs.step(dt, &ANCHORS, &ALIVE);
         assert!(bugs.bugs[1].arrived, "bug 1 never reached its destination");
         assert!(
-            events.tjatters.is_empty(),
+            events.chatters.is_empty(),
             "a lone arrival chattered: {:?}",
-            events.tjatters
+            events.chatters
         );
 
         // Bug 0 lands exactly on its spot: bug 1's park spot is 36 px
-        // away, inside [TJATTER_RANGE] — the arrival chatters once, on a
-        // clip within the tjatter range.
+        // away, inside [CHATTER_RANGE] — the arrival chatters once, on a
+        // clip within the chatter range.
         let b0 = &mut bugs.bugs[0];
         b0.pos = [
             ANCHORS[b0.home][0] + b0.idle[0],
@@ -1785,23 +1785,23 @@ mod tests {
         let events = bugs.step(dt, &ANCHORS, &ALIVE);
         assert!(bugs.bugs[0].arrived, "bug 0 never reached its destination");
         assert_eq!(
-            events.tjatters.len(),
+            events.chatters.len(),
             1,
             "the arrival chattered {} times, not once",
-            events.tjatters.len()
+            events.chatters.len()
         );
         assert!(
-            (0..3).contains(&events.tjatters[0]),
-            "clip index {:?} left the tjatter range",
-            events.tjatters
+            (0..3).contains(&events.chatters[0]),
+            "clip index {:?} left the chatter range",
+            events.chatters
         );
 
         // The next frame nobody arrives: nothing plays.
         let events = bugs.step(dt, &ANCHORS, &ALIVE);
         assert!(
-            events.tjatters.is_empty(),
+            events.chatters.is_empty(),
             "a parked bug chattered again: {:?}",
-            events.tjatters
+            events.chatters
         );
 
         // And a bug that parks with no company chatters nothing.
@@ -1816,9 +1816,9 @@ mod tests {
             "the lone bug never reached its destination"
         );
         assert!(
-            events.tjatters.is_empty(),
+            events.chatters.is_empty(),
             "a bug that parks alone chattered: {:?}",
-            events.tjatters
+            events.chatters
         );
     }
 
@@ -1860,7 +1860,7 @@ mod tests {
                 "the plopp clip index {clip:?} left its range"
             );
         }
-        assert!(events.tjatters.is_empty(), "growing bugs chattered");
+        assert!(events.chatters.is_empty(), "growing bugs chattered");
 
         // The next step pops up nothing: no plopp.
         let events = bugs.step(dt, &ANCHORS, &ALIVE);
