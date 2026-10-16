@@ -59,6 +59,59 @@ Real numbers come only from `cargo run --release --example
 benchsuite` in the user's terminal (`benchsuite.baseline` is such a
 number).
 
+## The float/sRGB frame-buffer test measures the driver's store
+
+**Symptom.** There, `cargo test` fails
+`float_and_srgb_frame_buffers_agree_where_the_window_can_tell`: the
+stacked washes differ by 3/255 (deterministically, every run) and
+1,792 pixels outside the wash differ by one step, where the
+calibrated box passes both inside zero and one step. The panic
+first names the wash bound; fix that one and the outside bound
+fails too, so measure both before arguing about either.
+
+**Cause.** Not the engine. The test stacks twenty 5% washes into an
+8-bit sRGB attachment, so every blend step re-encodes linear→sRGB
+and rounds, and the precision of that store conversion is the
+implementation's own — the spec fixes the curve, not its rounding.
+Both bounds are measurements of the calibrated GPU's fixed-function
+unit. llvmpipe converts on the CPU: one code off the reference
+curve on a single store, three codes accumulated across the
+twenty.
+
+**Evidence.** The sandbox, without `/dev/dri`: wgpu answers
+`llvmpipe (LLVM 23.1.1, 256 bits)`. Worst inside the wash 3/255 at
+(4, 36); outside, the worst is 1/255 — the 1,792 base pixels where
+a lone opaque store rounds one code away from the test's own
+encode — and every blended region lands identical. The 411
+sibling tests pass.
+
+**What we do.** The test asks `adapter.get_info()` which adapter
+answered and holds two bounds per kind: a GPU must agree bit for
+bit outside the wash and within one step inside; a CPU rasterizer
+gets one step outside (measured) and four inside (measured three,
+plus margin). The over-range clamp and the "the wash still
+exercises rounding" pins stay exact for every adapter. Timing on
+llvmpipe remains fiction as above — this whitelists precision,
+not speed.
+
+**The probe behind the numbers.**
+`backend/tests/srgb_envelope.rs` (ignored; run it by hand like the
+rest of the probes) measures the adapter's whole 8-bit sRGB
+envelope. On llvmpipe it reports: the sampler-fetch→store round
+trip is exact for all 256 codes — the driver's decode and encode
+tables are one another's inverse, which is the contract the engine
+actually lives on; the unpack table sits up to 0.0012 linear off
+the ideal (0.34 of a local code step); the pack curve deviates up
+to a rounding-tie distance of 0.125 of a step, which is where its
+one-step-per-255 disagreements with the ideal curve, and with the
+test's f32 reference, come from. Read those numbers as this
+driver's signature: the probe asserts round-trip exactness,
+two-step monotone breaks, and exact endpoints — properties no
+implementation error excuses — and prints curve distances rather
+than pinning them, because the spec bounds the curve's shape, not
+whose rounding a driver picks. A future CI that pins exact bytes
+is pinning one driver's opinion except at the endpoints.
+
 ## winit power preference
 
 `RequestAdapterOptions::default()` is `LowPower`. On this box that

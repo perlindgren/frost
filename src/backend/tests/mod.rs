@@ -1,7 +1,8 @@
 //! The backend's unit tests, split by topic into the sibling modules:
 //! scissor, transform, scene, nodes, context, particles, uniforms,
 //! fields, layers, camera, repeat, sprites, text, tilemap, draw cost,
-//! emission, bloom, the present harness, tone map, frame buffer and config.
+//! emission, bloom, the present harness, tone map, frame buffer, the
+//! sRGB envelope probe and config.
 //!
 //! Each module imports the backend's public items and this module's
 //! shared [`black`] helper; every test keeps the name it had when the
@@ -25,6 +26,7 @@ mod scene;
 mod scissor;
 mod shadows;
 mod sprites;
+mod srgb_envelope;
 mod text;
 mod tilemap;
 mod tonemap;
