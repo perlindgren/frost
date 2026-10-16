@@ -239,8 +239,8 @@
 //! [`frost::Audio`].
 //!
 //! Every time the mist drops a bug's health, the bug cries out: the
-//! swarm picks one of the four Aj clips — `assets/audio/Aj1.wav`,
-//! `Aj2.wav`, `Aj3.wav`, and `Aj4.wav` — at random, and the demo plays
+//! swarm picks one of the four Ouch clips — `assets/audio/Ouch1.wav`,
+//! `Ouch2.wav`, `Ouch3.wav`, and `Ouch4.wav` — at random, and the demo plays
 //! it through [`frost::Audio`].
 //!
 //! Every time the mist takes a bug's health to zero, the bug dies: the
@@ -960,7 +960,7 @@ struct Demo {
     /// matching child of the worms node (root's [`CHILD_WORMS`] child).
     worms: worms::Worms,
     /// The audio output and every clip the demo plays, decoded once at
-    /// startup: the swarm's tjatter, plopp, and Aj arrays, and the
+    /// startup: the swarm's tjatter, plopp, and Ouch arrays, and the
     /// singles — the bug death, the watering loop, the spray hiss, and
     /// the tomato drop — all playing through its device.
     sounds: Sounds,
@@ -2139,7 +2139,7 @@ impl Demo {
     /// after its hit cooldown, and a hit that empties the counter starts
     /// the bounce-then-evaporate death. A bug at its park spot regains
     /// one hit of health every 5 seconds, up to six. The water can's
-    /// drops never touch the bugs. Every wound cries out on one of the Aj
+    /// drops never touch the bugs. Every wound cries out on one of the Ouch
     /// clips, the swarm's random pick, and every killing blow plays the
     /// bug death clip.
     fn spray_hits(&mut self) {

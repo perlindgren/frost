@@ -169,20 +169,20 @@ const ASSETS: frost::Table = &[
         include_bytes!("../../assets/audio/bugs_plopp3.wav"),
     ),
     (
-        "assets/audio/Aj1.wav",
-        include_bytes!("../../assets/audio/Aj1.wav"),
+        "assets/audio/Ouch1.wav",
+        include_bytes!("../../assets/audio/Ouch1.wav"),
     ),
     (
-        "assets/audio/Aj2.wav",
-        include_bytes!("../../assets/audio/Aj2.wav"),
+        "assets/audio/Ouch2.wav",
+        include_bytes!("../../assets/audio/Ouch2.wav"),
     ),
     (
-        "assets/audio/Aj3.wav",
-        include_bytes!("../../assets/audio/Aj3.wav"),
+        "assets/audio/Ouch3.wav",
+        include_bytes!("../../assets/audio/Ouch3.wav"),
     ),
     (
-        "assets/audio/Aj4.wav",
-        include_bytes!("../../assets/audio/Aj4.wav"),
+        "assets/audio/Ouch4.wav",
+        include_bytes!("../../assets/audio/Ouch4.wav"),
     ),
     (
         "assets/audio/bugsDeath.wav",
@@ -204,7 +204,7 @@ const ASSETS: frost::Table = &[
 
 /// The audio output and every clip the example plays: the device, opened
 /// once at startup, and the clips it plays through — the swarm's random
-/// picks, the tjatter, plopp, and Aj arrays, and the named singles: the
+/// picks, the tjatter, plopp, and Ouch arrays, and the named singles: the
 /// bug death, the watering loop, the spray hiss, and the tomato drop.
 pub struct Sounds {
     /// The audio output, opened once at startup; every clip plays through
@@ -219,7 +219,7 @@ pub struct Sounds {
     /// bug that pops up out of the grass — a batch spawn or a respawn —
     /// plops on one of them, the swarm's random pick.
     pub plops: [frost::Sound; 3],
-    /// The four bug Aj clips (1 to 4), decoded once at startup; every
+    /// The four bug Ouch clips (1 to 4), decoded once at startup; every
     /// time the mist drops a bug's health the bug cries out on one of
     /// them, the swarm's random pick.
     pub ajs: [frost::Sound; 4],
@@ -378,10 +378,10 @@ impl Assets {
                     sound(&store, "bugs_plopp3"),
                 ],
                 ajs: [
-                    sound(&store, "Aj1"),
-                    sound(&store, "Aj2"),
-                    sound(&store, "Aj3"),
-                    sound(&store, "Aj4"),
+                    sound(&store, "Ouch1"),
+                    sound(&store, "Ouch2"),
+                    sound(&store, "Ouch3"),
+                    sound(&store, "Ouch4"),
                 ],
                 death: sound(&store, "bugsDeath"),
                 pour: sound(&store, "WaterFlowSoft"),

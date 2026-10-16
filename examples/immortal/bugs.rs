@@ -41,8 +41,8 @@
 //! that frame, and the demo plays it through [`frost::Audio`].
 //!
 //! Every time the mist drops a bug's health, the bug cries out:
-//! [Bugs::hit_at] reports the index of one of the four Aj clips
-//! (`Aj1.wav`, `Aj2.wav`, `Aj3.wav`, `Aj4.wav`) for the wound, and the
+//! [Bugs::hit_at] reports the index of one of the four Ouch clips
+//! (`Ouch1.wav`, `Ouch2.wav`, `Ouch3.wav`, `Ouch4.wav`) for the wound, and the
 //! demo plays it through [`frost::Audio`].
 //!
 //! Every time the mist takes a bug's health to zero, the bug dies:
@@ -491,7 +491,7 @@ pub struct StepEvents {
 #[derive(Default)]
 pub struct HitEvents {
     /// One entry per bug whose health the hit dropped: index 0 to 3 into
-    /// the four Aj clips (`Aj1.wav`, `Aj2.wav`, `Aj3.wav`, `Aj4.wav`),
+    /// the four Ouch clips (`Ouch1.wav`, `Ouch2.wav`, `Ouch3.wav`, `Ouch4.wav`),
     /// picked at random by the swarm.
     pub ajs: Vec<usize>,
     /// How many bugs the hit killed: a bug whose health the hit took to
@@ -862,8 +862,8 @@ impl Bugs {
     /// Dying and respawning bugs take no more hits, and a wounded bug
     /// takes its next hit only after its [HIT_COOLDOWN] has run out
     /// ([Bug::hit_cooldown]). Returns the [HitEvents] for this hit: one
-    /// Aj clip index per bug whose health the hit dropped (index 0 to 3
-    /// into the four Aj clips, `Aj1.wav` to `Aj4.wav`, each picked at
+    /// Ouch clip index per bug whose health the hit dropped (index 0 to 3
+    /// into the four Ouch clips, `Ouch1.wav` to `Ouch4.wav`, each picked at
     /// random by the swarm), so the number of bugs hit is the length of
     /// its [HitEvents::ajs], and how many of those it killed is its
     /// [HitEvents::deaths].
@@ -885,7 +885,7 @@ impl Bugs {
                     bug.dying = Some(0.0);
                     deaths += 1;
                 }
-                // The wound cries out: a random Aj clip.
+                // The wound cries out: a random Ouch clip.
                 ajs.push((self.rng.next_f32() * 4.0) as usize);
             }
         }
@@ -1374,7 +1374,7 @@ mod tests {
         let hit = bugs.hit_at(bugs.bugs[farthest].pos);
         let hits = hit.ajs.len();
         assert!(hits >= 1);
-        // Each wound cries out on one of the four Aj clips.
+        // Each wound cries out on one of the four Ouch clips.
         assert!(hit.ajs.iter().all(|&c| c < 4));
         let initial = bugs.bugs.len();
         // The farthest bug plus any sibling that wandered into the mist —
