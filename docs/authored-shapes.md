@@ -179,14 +179,14 @@ markers are precisely where the two would part company. One parser, always.
 
 **Keyed by tile id, when tiles have a file.** `tiles: { 3: [...], 17: [...] }`
 was agreed over a positional list, and it stays right — a map edit that inserts
-a column must not silently move every shape in the level. But it cannot be built
-now, because tile maps have *no file format at all*: `MapLayer`
-([`:271`](../tools/sprite_util/main.rs#L271)) holds `cells: Vec<u32>` indexed by a
-row-major formula
-([`at`, `:4220`](../tools/sprite_util/main.rs#L4220)) and lives only in memory and
-in undo snapshots. Keyed tile shapes arrive *with* the map format, as its second
-key — inventing one to hold the other would smuggle a format decision in through
-the back door.
+a column must not silently move every shape in the level. What it waited on
+arrived 2026-10-10: tile maps *have* a file format — `.map.ron` through
+[`frost::map`](../src/map.rs), sparse cells, tilesets carried by
+document-relative path, the whole cargo certified by `guard_documents` — and
+`courtyard` ships one. The keyed shapes are still unbuilt, and the paragraph's
+forecast held only halfway: the format landed without the second key it was
+supposed to bring. The back door this paragraph guarded is an open door — the
+shapes are now a decision owed to a format that no longer waits for anything.
 
 ## Tilesets, and what a tool can promise
 
