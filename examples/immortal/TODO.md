@@ -10,7 +10,7 @@
 - Sound effects 
     - ketchup blobs 
     - Tomatoes falling to ground
-    - Bees swarming
+    - Wasps swarming
     - Tomatoes chatting
 
 - Music 
@@ -18,7 +18,7 @@
 
 - Tomato Flower -> Tomatoes (ripe) -> Rotten -> Fall down
 
-- Bees Swarming 
+- Wasps Swarming 
 
 - Bugs attacking root of tree, bugs climbing 
 

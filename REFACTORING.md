@@ -48,7 +48,7 @@ public API change anywhere.
 ## The one big remaining candidate: `examples/immortal/main.rs` — DONE
 
 Immortal already splits its simulations into sibling modules (`bugs`,
-`plant`, `worms`, `fall`, `vipers`); main.rs has since shed its three
+`plant`, `worms`, `fall`, `wasps`); main.rs has since shed its three
 biggest remaining systems (branch `refactor/immortal-split`, merged):
 
 1. **`tools.rs`** (~1,076 lines): the `Tool` enum, per-tool transforms

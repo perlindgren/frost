@@ -74,7 +74,7 @@
 //! exactly once, in plant order, regardless of how many bugs survive, so
 //! the population climbs 3, 6, …, 18 over the first 75 seconds; a killed
 //! bug is gone from the grass for a few seconds, so the population dips
-//! and recovers with the spraying. Like the vipers module, no random
+//! and recovers with the spraying. Like the wasps module, no random
 //! crate is needed — the engine's [frost::Rng], seeded from the clock,
 //! decides spawn points, speeds, wobbles and respawn delays.
 
@@ -86,7 +86,7 @@ use frost::{Rng, SceneNode};
 /// stepped and laid out against that pool by [Bugs::layout].
 pub const BUGS_PER_PLANT: usize = 3;
 
-/// Rendered bug width in user-space px (the bees are 25 px wide).
+/// Rendered bug width in user-space px (the wasps are 25 px wide).
 const BUG_SIZE: f32 = 40.0;
 /// Rendered louse width in user-space px: a louse is a third smaller
 /// than a bug.

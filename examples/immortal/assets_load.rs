@@ -267,10 +267,10 @@ pub struct Assets {
     pub spade: frost::Shape,
     /// The tweezers, the active-tool sprite for `Tool::Tweezers`.
     pub tweezers: frost::Shape,
-    /// The two viper frames: the swarm's shape swaps between them at most
+    /// The two wasp frames: the swarm's shape swaps between them at most
     /// once per wingbeat change.
-    pub viper1: frost::Shape,
-    pub viper2: frost::Shape,
+    pub wasp1: frost::Shape,
+    pub wasp2: frost::Shape,
     /// The three bug walk frames: a slot's shape swaps when its bug's walk
     /// frame changes.
     pub bug1: frost::Shape,
@@ -341,8 +341,8 @@ impl Assets {
             spray2: sprite(&store, "Spray2"),
             spade: sprite(&store, "spade"),
             tweezers: sprite(&store, "Tweezers"),
-            viper1: sprite(&store, "Waspeye1"),
-            viper2: sprite(&store, "Waspeye2"),
+            wasp1: sprite(&store, "Waspeye1"),
+            wasp2: sprite(&store, "Waspeye2"),
             bug1: sprite(&store, "Bug1a"),
             bug2: sprite(&store, "Bug2a"),
             bug3: sprite(&store, "Bug3a"),

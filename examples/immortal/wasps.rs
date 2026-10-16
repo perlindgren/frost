@@ -1,6 +1,6 @@
-//! A swarm of thirty vipers — one per plant layer — buzzing around the
+//! A swarm of thirty wasps — one per plant layer — buzzing around the
 //! flower bench, the row of plants on the grass, concurrently with the
-//! tools and the plants themselves. Each viper orbits the segment its
+//! tools and the plants themselves. Each wasp orbits the segment its
 //! layer spawned it — the midpoint of that segment along the static,
 //! fully grown chain, the sway left out — at its own radius, speed, and
 //! height, breathing its radius and bobbing vertically, so the swarm
@@ -8,51 +8,51 @@
 //! formation.
 //!
 //! The swarm is not all in the air at once: each fully grown plant layer
-//! spawns one viper, so the swarm grows layer by layer as the bench
-//! grows. Viper `i` is the `(i % LAYERS)`-th layer's viper of plant
+//! spawns one wasp, so the swarm grows layer by layer as the bench
+//! grows. Wasp `i` is the `(i % LAYERS)`-th layer's wasp of plant
 //! `i / LAYERS`, and it exists only once its own plant's layer has fully
 //! grown — the plants grow concurrently, each on its own clock, so each
-//! plant's vipers come up independently, each circling its own segment,
+//! plant's wasps come up independently, each circling its own segment,
 //! rather than as one global prefix in swarm order.
 //!
 //! The sprites are `Waspeye1.png` and `Waspeye2.png`, two frames of a
-//! viper flying to the right. The swarm is driven by a [`Vipers`] value:
-//! `new` builds the thirty bees from a deterministic schedule of the bee
+//! wasp flying to the right. The swarm is driven by a [`Wasps`] value:
+//! `new` builds the thirty wasps from a deterministic schedule of the wasp
 //! index, so each run looks the same and no random crate is needed,
 //! `step` advances the swarm by `dt` seconds around the plants' root
 //! joints given the grown-layer count per plant, and `layout` lays the
-//! bees out in a node whose children — in swarm order — are the thirty
-//! bee nodes.
+//! wasps out in a node whose children — in swarm order — are the thirty
+//! wasp nodes.
 //!
-//! A bee's facing comes from the sign of its velocity's x: the sprite is
-//! drawn unflipped while the bee flies to the right and is flipped about
+//! A wasp's facing comes from the sign of its velocity's x: the sprite is
+//! drawn unflipped while the wasp flies to the right and is flipped about
 //! its center — a negative x scale — while it flies to the left, with a
 //! small dead band so the flip does not chatter at the orbit's side
 //! points, where the horizontal speed crosses zero. The two frames
-//! alternate at each bee's own wingbeat rate, so the swarm flaps out of
+//! alternate at each wasp's own wingbeat rate, so the swarm flaps out of
 //! phase with itself.
 
-/// The swarm size: thirty bees, one per plant layer — five per plant
+/// The swarm size: thirty wasps, one per plant layer — five per plant
 /// across the six-plant bench, all in the air once the bench is fully
 /// grown.
 pub const N: usize = 30;
 
 /// The layers each plant has, in chain order: the swarm has
-/// [LAYERS] × six = [N] vipers, and viper `i` belongs to plant
+/// [LAYERS] × six = [N] wasps, and wasp `i` belongs to plant
 /// `i / LAYERS`, the plant whose layer spawned it.
 pub const LAYERS: usize = 5;
 
-/// The rendered width of a bee, in pixels; the height follows the
+/// The rendered width of a wasp, in pixels; the height follows the
 /// sprite's own aspect ratio.
 const BEE_SIZE: f32 = 25.0;
 
 /// The golden ratio's fractional part, the deterministic "random"
-/// generator: `frac(i * GOLDEN)` spreads the bees' parameters over their
+/// generator: `frac(i * GOLDEN)` spreads the wasps' parameters over their
 /// ranges without a random crate.
 const GOLDEN: f32 = 0.618_034;
 
 /// The golden angle, in radians: the orbit phase step between
-/// neighbours, so no two bees start at the same point of their orbits.
+/// neighbours, so no two wasps start at the same point of their orbits.
 const GOLDEN_ANGLE: f32 = 2.399_963_1;
 
 /// The orbit's tilt: the orbit is an ellipse, its vertical extent
@@ -60,7 +60,7 @@ const GOLDEN_ANGLE: f32 = 2.399_963_1;
 /// from the side.
 const TILT: f32 = 0.45;
 
-/// The velocity dead band, in pixels per second: below this, a bee keeps
+/// The velocity dead band, in pixels per second: below this, a wasp keeps
 /// its current facing, so the sprite does not flip back and forth as the
 /// horizontal speed crosses zero at the orbit's side points.
 const FACING_EPS: f32 = 4.0;
@@ -70,32 +70,32 @@ fn frac(x: f32) -> f32 {
     x - x.floor()
 }
 
-/// One bee of the swarm.
+/// One wasp of the swarm.
 #[derive(Default)]
-struct Bee {
-    /// The bee's current position in user space, y up.
+struct Wasp {
+    /// The wasp's current position in user space, y up.
     pos: [f32; 2],
-    /// The bee's velocity in user-space pixels per second, from the last
+    /// The wasp's velocity in user-space pixels per second, from the last
     /// step: the sign of its x is the facing.
     vel: [f32; 2],
-    /// The facing: `1.0` while the bee flies to the right, `-1.0` while
+    /// The facing: `1.0` while the wasp flies to the right, `-1.0` while
     /// it flies to the left; the sprite is flipped about its center for
     /// the left.
     facing: f32,
-    /// Whether the bee has been spawned — its plant layer has fully
+    /// Whether the wasp has been spawned — its plant layer has fully
     /// grown — and placed at least once: until then its `pos` is a dummy
     /// and its velocity is synthetic, and its slot draws nothing.
     placed: bool,
     /// The wingbeat clock, in beats: it advances by `flap_speed * dt` and
     /// the frame is its integer part modulo 2.
     flap: f32,
-    /// The frame the bee currently shows: 0 or 1.
+    /// The frame the wasp currently shows: 0 or 1.
     frame: u8,
-    /// The frame last laid out on the bee's node, so the shape swap — a
+    /// The frame last laid out on the wasp's node, so the shape swap — a
     /// cheap `Arc` clone — happens at most once per wingbeat change.
     shown: u8,
-    /// The plant the bee orbits, in bench order: the plant whose layer
-    /// spawned the bee — `i / LAYERS` — fixed on the bee's first step.
+    /// The plant the wasp orbits, in bench order: the plant whose layer
+    /// spawned the wasp — `i / LAYERS` — fixed on the wasp's first step.
     home: usize,
     /// The orbit phase, in radians.
     phase: f32,
@@ -104,7 +104,7 @@ struct Bee {
     /// The orbit's radius, in pixels, before the wobble.
     radius: f32,
     /// The height, in pixels, of the orbit's center above the midpoint
-    /// of the segment that spawned the bee.
+    /// of the segment that spawned the wasp.
     hover: f32,
     /// The wobble's frequency, in radians per second: the radius breathes
     /// by ±15 % at this rate.
@@ -117,14 +117,14 @@ struct Bee {
     flap_speed: f32,
 }
 
-/// A swarm of thirty vipers — one per plant layer — buzzing around the
+/// A swarm of thirty wasps — one per plant layer — buzzing around the
 /// flower bench.
 #[derive(Default)]
-pub struct Vipers {
-    /// The thirty bees, in swarm order: bee `i` rides child `i` of the
-    /// vipers node and is the `(i % LAYERS)`-th layer's viper of plant
+pub struct Wasps {
+    /// The thirty wasps, in swarm order: wasp `i` rides child `i` of the
+    /// wasps node and is the `(i % LAYERS)`-th layer's wasp of plant
     /// `i / LAYERS`.
-    bees: [Bee; N],
+    wasps: [Wasp; N],
     /// The swarm's clock, in seconds.
     t: f32,
     /// The uniform scale that fits the sprite's width to `BEE_SIZE`
@@ -132,24 +132,24 @@ pub struct Vipers {
     scale: f32,
 }
 
-/// One bee's snapshot state: every field of the [Bee] except the shape-
-/// swap cache — the frame its node last showed, which [Vipers::layout]
-/// re-derives from the bee's own frame.
+/// One wasp's snapshot state: every field of the [Wasp] except the shape-
+/// swap cache — the frame its node last showed, which [Wasps::layout]
+/// re-derives from the wasp's own frame.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
-pub struct BeeState {
-    /// The bee's position, in user space, y up.
+pub struct WaspState {
+    /// The wasp's position, in user space, y up.
     pub pos: [f32; 2],
-    /// The bee's velocity, in user-space pixels per second.
+    /// The wasp's velocity, in user-space pixels per second.
     pub vel: [f32; 2],
     /// The facing: 1.0 flying right, -1.0 flying left.
     pub facing: f32,
-    /// Whether the bee has been placed at least once.
+    /// Whether the wasp has been placed at least once.
     pub placed: bool,
     /// The wingbeat clock, in beats.
     pub flap: f32,
-    /// The frame the bee currently shows: 0 or 1.
+    /// The frame the wasp currently shows: 0 or 1.
     pub frame: u8,
-    /// The plant the bee orbits, in bench order.
+    /// The plant the wasp orbits, in bench order.
     pub home: usize,
     /// The orbit phase, in radians.
     pub phase: f32,
@@ -169,53 +169,53 @@ pub struct BeeState {
     pub flap_speed: f32,
 }
 
-/// The swarm's snapshot state: its bees and its clock. The sprite's fit
+/// The swarm's snapshot state: its wasps and its clock. The sprite's fit
 /// scale is left out: it is derived from the sprite.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
-pub struct VipersState {
-    /// The thirty bees, in swarm order.
-    pub bees: Vec<BeeState>,
+pub struct WaspsState {
+    /// The thirty wasps, in swarm order.
+    pub wasps: Vec<WaspState>,
     /// The swarm's clock, in seconds.
     pub t: f32,
 }
 
-impl From<&Vipers> for VipersState {
-    fn from(swarm: &Vipers) -> Self {
-        VipersState {
-            bees: swarm.bees.iter().map(BeeState::from).collect(),
+impl From<&Wasps> for WaspsState {
+    fn from(swarm: &Wasps) -> Self {
+        WaspsState {
+            wasps: swarm.wasps.iter().map(WaspState::from).collect(),
             t: swarm.t,
         }
     }
 }
 
-impl From<&Bee> for BeeState {
-    fn from(bee: &Bee) -> Self {
-        BeeState {
-            pos: bee.pos,
-            vel: bee.vel,
-            facing: bee.facing,
-            placed: bee.placed,
-            flap: bee.flap,
-            frame: bee.frame,
-            home: bee.home,
-            phase: bee.phase,
-            omega: bee.omega,
-            radius: bee.radius,
-            hover: bee.hover,
-            wob: bee.wob,
-            bob_amp: bee.bob_amp,
-            bob_freq: bee.bob_freq,
-            flap_speed: bee.flap_speed,
+impl From<&Wasp> for WaspState {
+    fn from(wasp: &Wasp) -> Self {
+        WaspState {
+            pos: wasp.pos,
+            vel: wasp.vel,
+            facing: wasp.facing,
+            placed: wasp.placed,
+            flap: wasp.flap,
+            frame: wasp.frame,
+            home: wasp.home,
+            phase: wasp.phase,
+            omega: wasp.omega,
+            radius: wasp.radius,
+            hover: wasp.hover,
+            wob: wasp.wob,
+            bob_amp: wasp.bob_amp,
+            bob_freq: wasp.bob_freq,
+            flap_speed: wasp.flap_speed,
         }
     }
 }
 
-impl Bee {
-    /// Rebuilds the bee from its snapshot state: the shape-swap cache
-    /// starts stale, so [Vipers::layout] re-syncs the bee's node on the
+impl Wasp {
+    /// Rebuilds the wasp from its snapshot state: the shape-swap cache
+    /// starts stale, so [Wasps::layout] re-syncs the wasp's node on the
     /// next frame.
-    fn from_state(s: &BeeState) -> Bee {
-        Bee {
+    fn from_state(s: &WaspState) -> Wasp {
+        Wasp {
             pos: s.pos,
             vel: s.vel,
             facing: s.facing,
@@ -236,34 +236,34 @@ impl Bee {
     }
 }
 
-impl Vipers {
-    /// The swarm's snapshot state (see [VipersState]).
-    pub fn state(&self) -> VipersState {
-        VipersState::from(self)
+impl Wasps {
+    /// The swarm's snapshot state (see [WaspsState]).
+    pub fn state(&self) -> WaspsState {
+        WaspsState::from(self)
     }
 
-    /// Restores the swarm from a snapshot: the bees and the clock — the
+    /// Restores the swarm from a snapshot: the wasps and the clock — the
     /// sprite's fit scale is kept.
-    pub fn restore(&mut self, state: &VipersState) {
-        for (bee, s) in self.bees.iter_mut().zip(state.bees.iter()) {
-            *bee = Bee::from_state(s);
+    pub fn restore(&mut self, state: &WaspsState) {
+        for (wasp, s) in self.wasps.iter_mut().zip(state.wasps.iter()) {
+            *wasp = Wasp::from_state(s);
         }
         self.t = state.t;
     }
 }
 
-impl Vipers {
+impl Wasps {
     /// Builds the swarm from the sprite's texture size, with the swarm
-    /// clock at zero: the bees' parameters are a deterministic schedule
-    /// of the bee index through `GOLDEN`, so every run looks the same and
+    /// clock at zero: the wasps' parameters are a deterministic schedule
+    /// of the wasp index through `GOLDEN`, so every run looks the same and
     /// no random crate is needed.
     pub fn new(size: [f32; 2]) -> Self {
-        Vipers {
-            bees: std::array::from_fn(|i| {
+        Wasps {
+            wasps: std::array::from_fn(|i| {
                 let f = frac(i as f32 * GOLDEN);
                 let f2 = frac(f * 7.0 + 0.31);
                 let f3 = frac(f * 13.0 + 0.71);
-                Bee {
+                Wasp {
                     facing: 1.0,
                     // Stagger the wingbeats across the swarm.
                     flap: f * 2.0,
@@ -276,11 +276,11 @@ impl Vipers {
                     bob_amp: 6.0 + 8.0 * f2,
                     bob_freq: 1.6 + 1.4 * f3,
                     flap_speed: 5.0 + 4.0 * f,
-                    ..Bee::default()
+                    ..Wasp::default()
                 }
             }),
             scale: BEE_SIZE / size[0],
-            ..Vipers::default()
+            ..Wasps::default()
         }
     }
 
@@ -291,97 +291,97 @@ impl Vipers {
     ///
     /// `grown` is the count of fully grown layers per plant, in bench
     /// order. The swarm is not all in the air at once — each fully grown
-    /// layer spawns one viper, and viper `i` orbits the midpoint of the
-    /// segment that spawned it, `centers[i / LAYERS][i % LAYERS]`. A viper
+    /// layer spawns one wasp, and wasp `i` orbits the midpoint of the
+    /// segment that spawned it, `centers[i / LAYERS][i % LAYERS]`. A wasp
     /// exists only when its own plant's layer has fully grown —
-    /// `grown[i / LAYERS] > i % LAYERS` — so the plants' vipers come up
+    /// `grown[i / LAYERS] > i % LAYERS` — so the plants' wasps come up
     /// independently, each circling its own segment, rather than as one
     /// global prefix in swarm order.
     ///
-    /// Each bee's orbit is an ellipse around the midpoint of the segment
+    /// Each wasp's orbit is an ellipse around the midpoint of the segment
     /// that spawned it, lifted by its `hover` height: the orbit angle
     /// advances at its own `omega`, the radius breathes by ±15 % at its
     /// own wobble rate, and a slow vertical bob rides on top, so no two
-    /// bees trace the same path. The velocity is the difference to the
+    /// wasps trace the same path. The velocity is the difference to the
     /// last position, and the facing follows its x with a dead band, so
-    /// the sprite flips only when the bee is clearly flying one way or
+    /// the sprite flips only when the wasp is clearly flying one way or
     /// the other.
     pub fn step(&mut self, dt: f32, centers: &[[[f32; 2]; LAYERS]], grown: &[usize]) {
         self.t += dt;
         let t = self.t;
-        for (i, bee) in self.bees.iter_mut().enumerate() {
+        for (i, wasp) in self.wasps.iter_mut().enumerate() {
             let home = (i / LAYERS) % centers.len();
             let layer = i % LAYERS;
-            // The viper exists only once its own plant's layer has fully
+            // The wasp exists only once its own plant's layer has fully
             // grown — not on the swarm's global prefix.
             if grown.get(home).copied().unwrap_or(0) <= layer {
                 continue;
             }
-            if !bee.placed {
-                bee.home = home;
+            if !wasp.placed {
+                wasp.home = home;
             }
-            let a = bee.phase + t * bee.omega;
-            let r = bee.radius * (0.85 + 0.15 * (t * bee.wob + 2.0 * bee.phase).sin());
+            let a = wasp.phase + t * wasp.omega;
+            let r = wasp.radius * (0.85 + 0.15 * (t * wasp.wob + 2.0 * wasp.phase).sin());
             let [cx, cy] = centers[home][layer];
             let pos = [
                 cx + a.cos() * r,
-                cy + bee.hover
+                cy + wasp.hover
                     + a.sin() * r * TILT
-                    + bee.bob_amp * (t * bee.bob_freq + 3.0 * bee.phase).sin(),
+                    + wasp.bob_amp * (t * wasp.bob_freq + 3.0 * wasp.phase).sin(),
             ];
             // The velocity from the last step, or a synthetic rightward
             // one on the very first step, when there is no last step.
-            let vel = if bee.placed && dt > 0.0 {
-                [(pos[0] - bee.pos[0]) / dt, (pos[1] - bee.pos[1]) / dt]
+            let vel = if wasp.placed && dt > 0.0 {
+                [(pos[0] - wasp.pos[0]) / dt, (pos[1] - wasp.pos[1]) / dt]
             } else {
-                [bee.omega * bee.radius, 0.0]
+                [wasp.omega * wasp.radius, 0.0]
             };
             if vel[0] < -FACING_EPS {
-                bee.facing = -1.0;
+                wasp.facing = -1.0;
             } else if vel[0] > FACING_EPS {
-                bee.facing = 1.0;
+                wasp.facing = 1.0;
             }
-            bee.flap += dt * bee.flap_speed;
-            bee.frame = ((bee.flap as u32) % 2) as u8;
-            bee.pos = pos;
-            bee.vel = vel;
-            bee.placed = true;
+            wasp.flap += dt * wasp.flap_speed;
+            wasp.frame = ((wasp.flap as u32) % 2) as u8;
+            wasp.pos = pos;
+            wasp.vel = vel;
+            wasp.placed = true;
         }
     }
 
     /// Lays the swarm out in `node`, whose children — in swarm order —
-    /// are the thirty bee nodes: each spawned bee's transform carries it
+    /// are the thirty wasp nodes: each spawned wasp's transform carries it
     /// to its position, its scale fits the sprite to `BEE_SIZE` and flips
     /// it about its center while it flies to the left, and its shape swaps
     /// between the two frames — cheap `Arc` clones — at most once per
-    /// wingbeat change. The unspawned slots are cleared, so a viper that
+    /// wingbeat change. The unspawned slots are cleared, so a wasp that
     /// no layer has spawned yet never draws.
     pub fn layout(&mut self, node: &mut frost::SceneNode, frames: [&frost::Shape; 2]) {
-        for (bee, child) in self.bees.iter_mut().zip(&mut node.children) {
-            if !bee.placed {
+        for (wasp, child) in self.wasps.iter_mut().zip(&mut node.children) {
+            if !wasp.placed {
                 child.shape = None;
                 continue;
             }
-            child.transform = frost::Transform::translate(bee.pos);
-            child.scale = [bee.facing * self.scale, self.scale];
-            if bee.shown != bee.frame {
-                child.shape = Some(frames[bee.frame as usize].clone());
-                bee.shown = bee.frame;
+            child.transform = frost::Transform::translate(wasp.pos);
+            child.scale = [wasp.facing * self.scale, self.scale];
+            if wasp.shown != wasp.frame {
+                child.shape = Some(frames[wasp.frame as usize].clone());
+                wasp.shown = wasp.frame;
             }
         }
     }
 
-    /// Each bee's facing — +1.0 flying right (the near side of its orbit,
+    /// Each wasp's facing — +1.0 flying right (the near side of its orbit,
     /// the lower half, where it moves with the screen) and −1.0 flying
     /// left (the far side, the upper half) — for the scene's depth scheme:
-    /// a placed bee's order is its segment's order plus this facing, so the
+    /// a placed wasp's order is its segment's order plus this facing, so the
     /// near half of an orbit rides one unit above its segment and the far
     /// half one below it. The unspawned slots read 0.0; they draw nothing,
     /// so their order is moot.
     pub fn facings(&self) -> [f32; N] {
         std::array::from_fn(|i| {
-            if self.bees[i].placed {
-                self.bees[i].facing
+            if self.wasps[i].placed {
+                self.wasps[i].facing
             } else {
                 0.0
             }
@@ -437,112 +437,112 @@ mod tests {
         }
     }
 
-    /// The swarm is not all in the air at once: a viper exists only once
+    /// The swarm is not all in the air at once: a wasp exists only once
     /// its own plant's layer has fully grown, so stepping with `grown`
-    /// places exactly the bees whose plant's layer count passes their
-    /// layer index, and bee `i` homes to the plant whose layer spawned it
+    /// places exactly the wasps whose plant's layer count passes their
+    /// layer index, and wasp `i` homes to the plant whose layer spawned it
     /// — `i / LAYERS`.
     #[test]
-    fn a_grown_layer_spawns_its_own_viper() {
+    fn a_grown_layer_spawns_its_own_wasp() {
         let c = centers();
-        let mut v = Vipers::new([100.0, 90.0]);
+        let mut v = Wasps::new([100.0, 90.0]);
 
         // No layer is grown yet: nothing steps, nothing is placed.
         v.step(0.05, &c, &[0, 0, 0, 0, 0, 0]);
-        assert!(v.bees.iter().all(|b| !b.placed));
+        assert!(v.wasps.iter().all(|b| !b.placed));
 
-        // Plant 0's first layer finishes: viper 0 spawns on plant 0.
+        // Plant 0's first layer finishes: wasp 0 spawns on plant 0.
         v.step(0.05, &c, &[1, 0, 0, 0, 0, 0]);
-        assert!(v.bees[0].placed);
-        assert_eq!(v.bees[0].home, 0);
-        assert!(!v.bees[1].placed);
+        assert!(v.wasps[0].placed);
+        assert_eq!(v.wasps[0].home, 0);
+        assert!(!v.wasps[1].placed);
 
         // All of plant 0's layers, then plant 1's first: the homes
         // follow the layer order, five per plant.
         v.step(0.05, &c, &[5, 1, 0, 0, 0, 0]);
         for i in 0..6 {
-            assert!(v.bees[i].placed, "bee {i} was not spawned");
-            assert_eq!(v.bees[i].home, i / LAYERS, "bee {i} homes wrong");
+            assert!(v.wasps[i].placed, "wasp {i} was not spawned");
+            assert_eq!(v.wasps[i].home, i / LAYERS, "wasp {i} homes wrong");
         }
-        assert!(!v.bees[6].placed, "bee 6 spawned early");
+        assert!(!v.wasps[6].placed, "wasp 6 spawned early");
 
         // The bench is fully grown: all thirty are in the air, and an
         // over-supplied count cannot place a ghost.
         v.step(0.05, &c, &[5, 5, 5, 5, 5, 5]);
-        for (i, bee) in v.bees.iter().enumerate() {
-            assert!(bee.placed, "bee {i} never spawned");
-            assert_eq!(bee.home, i / LAYERS, "bee {i} homes wrong");
+        for (i, wasp) in v.wasps.iter().enumerate() {
+            assert!(wasp.placed, "wasp {i} never spawned");
+            assert_eq!(wasp.home, i / LAYERS, "wasp {i} homes wrong");
         }
     }
 
-    /// A viper exists on its own plant's schedule, not the swarm's global
-    /// prefix: a later plant's grown layers spawn its own vipers even when
-    /// an earlier plant has none, and each viper circles its own segment.
+    /// A wasp exists on its own plant's schedule, not the swarm's global
+    /// prefix: a later plant's grown layers spawn its own wasps even when
+    /// an earlier plant has none, and each wasp circles its own segment.
     #[test]
-    fn vipers_spawn_on_their_own_plants() {
+    fn wasps_spawn_on_their_own_plants() {
         let c = centers();
-        let mut v = Vipers::new([100.0, 90.0]);
+        let mut v = Wasps::new([100.0, 90.0]);
 
         // Plant 2 has two layers grown, but plant 0 and 1 have none:
-        // only plant 2's vipers exist — the global prefix (vipers 0-1)
+        // only plant 2's wasps exist — the global prefix (wasps 0-1)
         // must NOT spawn.
         v.step(0.05, &c, &[0, 0, 2, 0, 0, 0]);
         assert!(
-            !v.bees[0].placed,
-            "viper 0 (plant 0) spawned on a global prefix"
+            !v.wasps[0].placed,
+            "wasp 0 (plant 0) spawned on a global prefix"
         );
         assert!(
-            !v.bees[1].placed,
-            "viper 1 (plant 0) spawned on a global prefix"
+            !v.wasps[1].placed,
+            "wasp 1 (plant 0) spawned on a global prefix"
         );
         assert!(
-            !v.bees[5].placed,
-            "viper 5 (plant 1) spawned on a global prefix"
+            !v.wasps[5].placed,
+            "wasp 5 (plant 1) spawned on a global prefix"
         );
-        assert!(v.bees[10].placed, "viper 10 (plant 2 layer 0) missing");
-        assert_eq!(v.bees[10].home, 2, "viper 10 homes to plant 2");
-        assert!(v.bees[11].placed, "viper 11 (plant 2 layer 1) missing");
-        assert_eq!(v.bees[11].home, 2, "viper 11 homes to plant 2");
+        assert!(v.wasps[10].placed, "wasp 10 (plant 2 layer 0) missing");
+        assert_eq!(v.wasps[10].home, 2, "wasp 10 homes to plant 2");
+        assert!(v.wasps[11].placed, "wasp 11 (plant 2 layer 1) missing");
+        assert_eq!(v.wasps[11].home, 2, "wasp 11 homes to plant 2");
         assert!(
-            !v.bees[12].placed,
-            "viper 12 (plant 2 layer 2) spawned early"
+            !v.wasps[12].placed,
+            "wasp 12 (plant 2 layer 2) spawned early"
         );
     }
 
-    /// A spawned viper circles the segment that spawned it: its position
+    /// A spawned wasp circles the segment that spawned it: its position
     /// stays within its breathing radius of that segment's midpoint, and
     /// at the midpoint's height plus the hover — not at the home plant's
     /// root joint.
     #[test]
-    fn a_viper_orbits_its_own_segment() {
+    fn a_wasp_orbits_its_own_segment() {
         let c = centers();
-        let mut v = Vipers::new([100.0, 90.0]);
+        let mut v = Wasps::new([100.0, 90.0]);
         v.step(0.05, &c, &[5, 5, 5, 5, 5, 5]);
-        for (i, bee) in v.bees.iter().enumerate() {
+        for (i, wasp) in v.wasps.iter().enumerate() {
             let [cx, cy] = c[i / LAYERS][i % LAYERS];
             // The radius breathes by ±15 %, so the horizontal distance
             // from the orbit center never exceeds the nominal radius.
-            let dx = (bee.pos[0] - cx).abs();
+            let dx = (wasp.pos[0] - cx).abs();
             assert!(
-                dx <= bee.radius + 1e-3,
-                "bee {i} drifted {dx} px sideways from its segment's midpoint"
+                dx <= wasp.radius + 1e-3,
+                "wasp {i} drifted {dx} px sideways from its segment's midpoint"
             );
             // And the vertical distance from the midpoint is the hover
             // plus at most the tilted radius and the bob.
-            let dy = (bee.pos[1] - (cy + bee.hover)).abs();
+            let dy = (wasp.pos[1] - (cy + wasp.hover)).abs();
             assert!(
-                dy <= bee.radius * TILT + bee.bob_amp + 1e-3,
-                "bee {i} drifted {dy} px vertically from its segment's midpoint"
+                dy <= wasp.radius * TILT + wasp.bob_amp + 1e-3,
+                "wasp {i} drifted {dy} px vertically from its segment's midpoint"
             );
         }
     }
 
     /// `layout` draws only the spawned prefix: unspawned slots stay
-    /// shapeless, so a viper that no layer has spawned yet never shows.
+    /// shapeless, so a wasp that no layer has spawned yet never shows.
     #[test]
     fn layout_keeps_unspawned_slots_empty() {
         let f = frame();
-        let mut v = Vipers::new([100.0, 90.0]);
+        let mut v = Wasps::new([100.0, 90.0]);
         let mut node = frost::SceneNode {
             children: (0..N)
                 .map(|_| Box::new(frost::SceneNode::default()))
@@ -553,10 +553,10 @@ mod tests {
         v.step(0.05, &centers(), &[3, 0, 0, 0, 0, 0]);
         v.layout(&mut node, [&f, &f]);
         for i in 0..3 {
-            assert!(node.children[i].shape.is_some(), "bee {i} is invisible");
+            assert!(node.children[i].shape.is_some(), "wasp {i} is invisible");
         }
         for (i, child) in node.children.iter().enumerate().skip(3) {
-            assert!(child.shape.is_none(), "unspawned bee {i} drew");
+            assert!(child.shape.is_none(), "unspawned wasp {i} drew");
         }
     }
 }

@@ -85,7 +85,7 @@ examples/             40 runnable demos, filed into folders (see table below)
 assets/               sprites/*.png (+ .pxo sidecars; immortal art, worm
                       crops, …), fonts/ (FiraCode Variable, JameGem08,
                       Leofont + licenses), audio/*.wav (swoof, waterflow,
-                      bug/viper clips, …), sprites/plant1..5.ron (the
+                      bug/wasp clips, …), sprites/plant1..5.ron (the
                       immortal plant's anchor files), ron/garden.ron
                       (ron_view)
 tests/                integration tests over the dogs_name flipbook art
@@ -1258,7 +1258,7 @@ Each module's `mod tests` holds the tests that pin its subject. The
 |              | the tweezers stay inert until pinch frames exist;                   |
 |              | plants grow one at a time, each slice opening its flowers once fully|
 |              | grown (the four lower slices' spawn points, the top slice bearing   |
-|              | none, populated with `flower.png`); one viper per fully grown plant |
+|              | none, populated with `flower.png`); one wasp per fully grown plant  |
 |              | layer orbits the row; bug and louse swarms pop up out of the grass in|
 |              | batches of three per plant each (the bugs module is generic over a  |
 |              | Species: the lice of Lice1/Lice2.png are smaller, untinted, left-   |

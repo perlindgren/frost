@@ -72,7 +72,7 @@
 //! joint while the joint itself still lands exactly on the anchor. The
 //! [`layer_midpoints`] function gives the five layer-segment midpoints
 //! along the static, fully grown chain — the sway left out — for the
-//! vipers' orbit centers.
+//! wasps' orbit centers.
 
 use super::tomato::{TOMATO_GROW_TIME, TOMATO_MAX_SCALE, Tomato, tomato_leaf_offset};
 

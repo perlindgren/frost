@@ -149,7 +149,7 @@ pub fn build(assets: &Assets) -> frost::Scene {
                 // it lets go, and the process lays each fall out on its
                 // child until it lands. The group carries no shape or
                 // scale of its own; it sits under the held panel, the
-                // bees, and the bugs, so the fallen fruit paints on top
+                // wasps, and the bugs, so the fallen fruit paints on top
                 // of the grass and the plants, below everything else.
                 ..Default::default()
             }),
@@ -185,14 +185,14 @@ pub fn build(assets: &Assets) -> frost::Scene {
                 ..Default::default()
             }),
             Box::new(frost::SceneNode {
-                // The vipers' swarm around the flower bench: one child per
-                // bee, in swarm order; the process lays each spawned
-                // bee's pose, flip, and wingbeat frame out on its child
+                // The wasps' swarm around the flower bench: one child per
+                // wasp, in swarm order; the process lays each spawned
+                // wasp's pose, flip, and wingbeat frame out on its child
                 // every frame, and the unspawned slots — the ones no plant
                 // layer has spawned yet — never draw. The group carries no
                 // shape or scale of its own. It sits under the tool node,
-                // so the cursor paints above the bees.
-                children: (0..vipers::N)
+                // so the cursor paints above the wasps.
+                children: (0..wasps::N)
                     .map(|_| Box::new(frost::SceneNode::default()))
                     .collect(),
                 ..Default::default()
@@ -242,7 +242,7 @@ pub fn build(assets: &Assets) -> frost::Scene {
                 // on this same node; the stored tool is mirrored in the
                 // held panel's right cell instead. It sits under the basket,
                 // the badge, and the held-fruit node, so the cursor paints
-                // above the panel, the plants, the bees, and the bugs, and
+                // above the panel, the plants, the wasps, and the bugs, and
                 // the carried fruit paints above the cursor.
                 order: zorder::UI,
                 ..Default::default()

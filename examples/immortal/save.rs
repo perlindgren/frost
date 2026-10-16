@@ -14,7 +14,7 @@
 //! randomizer — so a reloaded game continues the exact same random
 //! streams, and the demo's clock, the tools and their poses, the plants
 //! and their water reserves, the fallen fruit, the basket's fruit, the
-//! bugs, the lice, the vipers, and the worms.
+//! bugs, the lice, the wasps, and the worms.
 //!
 //! The format is versioned: [VERSION] names the layout this build reads,
 //! and [load] rejects a file written by any other version, so a future
@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Fly, Pick, Tool, WateredPlant, bugs,
     fall::{Fall, FallPhase},
-    plant, vipers, worms,
+    plant, wasps, worms,
 };
 
 /// The snapshot format's version: the layout this build reads and writes.
@@ -126,8 +126,8 @@ pub struct Snapshot {
     pub bugs: bugs::BugsState,
     /// The louse swarm's state.
     pub lice: bugs::BugsState,
-    /// The vipers' swarm state.
-    pub vipers: vipers::VipersState,
+    /// The wasps' swarm state.
+    pub wasps: wasps::WaspsState,
     /// The worms' swarm state.
     pub worms: worms::WormsState,
 }

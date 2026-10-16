@@ -142,8 +142,8 @@ mod tests {
     }
 
     #[test]
-    fn viper_offset_stays_in_band() {
-        // A viper rides one unit above its segment's order on the near side
+    fn wasp_offset_stays_in_band() {
+        // A wasp rides one unit above its segment's order on the near side
         // of its orbit (flying right) and one below on the far side (flying
         // left); the offset never pushes it across a band boundary, at any
         // window height.

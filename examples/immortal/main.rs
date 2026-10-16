@@ -178,16 +178,16 @@
 //! in square halves of `DRY_BLINK` real seconds — so a withering
 //! plant's meter draws the eye.
 //!
-//! A swarm of thirty vipers buzzes around the flower bench — the row of
-//! plants — concurrently with everything else, through the [`vipers`]
-//! module: one viper per plant layer, and the swarm is not all in the air
-//! at once — each fully grown layer spawns its own viper, so the swarm
-//! grows five by five as the bench does, with every viper orbiting the
+//! A swarm of thirty wasps buzzes around the flower bench — the row of
+//! plants — concurrently with everything else, through the [`wasps`]
+//! module: one wasp per plant layer, and the swarm is not all in the air
+//! at once — each fully grown layer spawns its own wasp, so the swarm
+//! grows five by five as the bench does, with every wasp orbiting the
 //! segment its layer spawned it, at that segment's midpoint along the
-//! static, fully grown chain — the sway left out. Each viper flies at its
+//! static, fully grown chain — the sway left out. Each wasp flies at its
 //! own radius, speed, and height above the midpoint, and the two frames,
 //! `assets/sprites/Waspeye1.png` and `assets/sprites/Waspeye2.png`,
-//! alternate at its own wingbeat rate — the sprite is a viper flying to
+//! alternate at its own wingbeat rate — the sprite is a wasp flying to
 //! the right, flipped about its center while it flies to the left.
 //!
 //! A swarm of bugs waddles across the grass in step with the plants —
@@ -320,7 +320,7 @@ mod scene;
 mod tomato;
 mod tools;
 pub(crate) use tools::*;
-mod vipers;
+mod wasps;
 mod worms;
 mod zorder;
 
@@ -364,7 +364,7 @@ const LICE_N: usize = bugs::BUGS_PER_PLANT * PLANT_POS.len();
 /// The scene root's children, in draw order — the order in which `main`
 /// builds them in the scene: the grass underlay, the items panel, the
 /// plants group, the fallen-fruit container, the held-items panel, the
-/// vipers group, the bugs group, the worms group, the active tool, the
+/// wasps group, the bugs group, the worms group, the active tool, the
 /// basket, the immortality badge, the carried fruit, and the game-over
 /// overlay. The root node itself is the dark ground background.
 const CHILD_GRASS: usize = 0;
@@ -372,7 +372,7 @@ const CHILD_ITEMS: usize = 1;
 const CHILD_PLANTS: usize = 2;
 const CHILD_FALLEN_FRUIT: usize = 3;
 const CHILD_HELD: usize = 4;
-const CHILD_VIPERS: usize = 5;
+const CHILD_WASPS: usize = 5;
 const CHILD_BUGS: usize = 6;
 const CHILD_LICE: usize = 7;
 const CHILD_WORMS: usize = 8;
@@ -728,8 +728,8 @@ fn nearest_free_slot(
 
 /// `Waspeye1.png` and `Waspeye2.png`'s texture size in pixels: both
 /// frames are the same size, and the swarm fits that width to the
-/// rendered bee width inside the [`vipers`] module.
-const VIPER_IMAGE: [f32; 2] = [198.0, 179.0];
+/// rendered wasp width inside the [`wasps`] module.
+const WASP_IMAGE: [f32; 2] = [198.0, 179.0];
 
 /// A tomato plant and its water reserve, kept together: the growth clock
 /// is paced by the reserve — the growth runs at its slowed pace while the
@@ -859,11 +859,11 @@ struct Demo {
     /// The tweezers' shape, carried but still inert: no second frame to
     /// pinch with yet.
     tweezers: frost::Shape,
-    /// The two viper frames, loaded once: `viper1` the first wingbeat
-    /// frame and `viper2` the second; the swarm's bee nodes swap between
+    /// The two wasp frames, loaded once: `wasp1` the first wingbeat
+    /// frame and `wasp2` the second; the swarm's wasp nodes swap between
     /// them as cheap `Arc` clones.
-    viper1: frost::Shape,
-    viper2: frost::Shape,
+    wasp1: frost::Shape,
+    wasp2: frost::Shape,
     /// The three bug walk frames, loaded once; the swarm's bug nodes swap
     /// between them as cheap `Arc` clones.
     bug1: frost::Shape,
@@ -937,13 +937,13 @@ struct Demo {
     /// so the first frame — after the chrome has laid the basket out —
     /// drops one ripe tomato on the basket's floor and clears the flag.
     basket_seed: bool,
-    /// The swarm of vipers buzzing around the flower bench — the row of
+    /// The swarm of wasps buzzing around the flower bench — the row of
     /// plants — in parallel with the tool system and the plants: one
-    /// viper per fully grown plant layer, so the swarm grows as the bench
+    /// wasp per fully grown plant layer, so the swarm grows as the bench
     /// does; stepped every frame with the number of fully grown layers
     /// and the layer-segment midpoints, and laid out on the matching
-    /// child of the vipers node (root's [`CHILD_VIPERS`] child).
-    vipers: vipers::Vipers,
+    /// child of the wasps node (root's [`CHILD_WASPS`] child).
+    wasps: wasps::Wasps,
     /// The swarm of bugs waddling to the plants: three spawn each time a
     /// plant starts growing, and the swarm steps and lays them out on the
     /// matching child of the bugs node (root's [`CHILD_BUGS`] child).
@@ -1046,7 +1046,7 @@ impl frost::Process for Demo {
     /// the demo's clock ticks; the chrome fits the window and the
     /// plants' anchors lift off the grass stretch; the basket takes its
     /// starting tomato on the first frame; the planted plants grow on
-    /// their water; the vipers and the bugs step, and their arrival
+    /// their water; the wasps and the bugs step, and their arrival
     /// sounds play; the input's edges are handled; the seed tomato's
     /// flight steps and settles; the tomatoes are kept out of the
     /// basket's walls; the plants are laid out; the overgrown fruits drop
@@ -1129,7 +1129,7 @@ impl frost::Process for Demo {
             }
         }
 
-        self.step_vipers(ctx, dt, &anchors);
+        self.step_wasps(ctx, dt, &anchors);
         self.step_worms(ctx, dt, &anchors);
 
         let (events, lice_events) = self.step_bugs(ctx, dt, &anchors, &started);
@@ -1449,8 +1449,8 @@ impl Demo {
             spray2: assets.spray2,
             spade: assets.spade,
             tweezers: assets.tweezers,
-            viper1: assets.viper1,
-            viper2: assets.viper2,
+            wasp1: assets.wasp1,
+            wasp2: assets.wasp2,
             // Three bugs per plant, each plant's batch exactly once: the
             // population climbs 3, 6, …, 18 over the first 75 seconds; a
             // killed bug pops back up at its spawn spot after a random 5
@@ -1497,7 +1497,7 @@ impl Demo {
             }),
             slices,
             basket_seed: true,
-            vipers: vipers::Vipers::new(VIPER_IMAGE),
+            wasps: wasps::Wasps::new(WASP_IMAGE),
             cell_fly: None,
             // The game-over overlay opens with the demo: the bench is
             // bare, so the player sees it over the whole window until the
@@ -1531,7 +1531,7 @@ impl Demo {
     /// held-items panel, the basket, and the immortality badge — into
     /// whatever size the window has, and returns the plants' root joints
     /// in user space, where the grass stretch maps each `PLANT_POS`
-    /// pixel: the plants stay glued to them, and the vipers' orbit
+    /// pixel: the plants stay glued to them, and the wasps' orbit
     /// centers lift off them.
     fn layout_chrome(
         &mut self,
@@ -1582,7 +1582,7 @@ impl Demo {
 
         // The plants' root joints in user space, where the grass stretch
         // maps each `PLANT_POS` pixel: the plants stay glued to them, and
-        // the vipers' orbit centers lift off them.
+        // the wasps' orbit centers lift off them.
         PLANT_POS.map(|pos| {
             [
                 pos[0] * w / GRASS_SIZE[0] - w / 2.0,
@@ -1757,16 +1757,16 @@ impl Demo {
         )
     }
 
-    /// Buzzes the vipers around the flower bench, in parallel with
-    /// everything else: one viper per fully grown layer, so the swarm
-    /// grows as the bench does — each viper exists only once its own
-    /// plant's layer has fully grown — and each viper circles the segment
+    /// Buzzes the wasps around the flower bench, in parallel with
+    /// everything else: one wasp per fully grown layer, so the swarm
+    /// grows as the bench does — each wasp exists only once its own
+    /// plant's layer has fully grown — and each wasp circles the segment
     /// its layer spawned it, at that segment's midpoint along the static,
     /// fully grown chain, the sway left out, lifted to its plant's anchor
     /// at the fit scale.
-    fn step_vipers(&mut self, ctx: &mut frost::Context, dt: f32, anchors: &[[f32; 2]]) {
-        let vipers_node = &mut ctx.scene().root.children[CHILD_VIPERS];
-        let centers: [[[f32; 2]; vipers::LAYERS]; PLANT_POS.len()] = std::array::from_fn(|i| {
+    fn step_wasps(&mut self, ctx: &mut frost::Context, dt: f32, anchors: &[[f32; 2]]) {
+        let wasps_node = &mut ctx.scene().root.children[CHILD_WASPS];
+        let centers: [[[f32; 2]; wasps::LAYERS]; PLANT_POS.len()] = std::array::from_fn(|i| {
             self.plants[i].plant.layer_midpoints().map(|m| {
                 [
                     anchors[i][0] + m[0] * PLANT_SCALE,
@@ -1774,25 +1774,24 @@ impl Demo {
                 ]
             })
         });
-        // The grown-layer count per plant, in bench order: each viper
+        // The grown-layer count per plant, in bench order: each wasp
         // exists on its own plant's schedule, not a global swarm prefix.
         let grown: [usize; PLANT_POS.len()] =
             std::array::from_fn(|i| self.plants[i].plant.grown_layers());
-        self.vipers.step(dt, &centers, &grown);
-        self.vipers
-            .layout(vipers_node, [&self.viper1, &self.viper2]);
-        // The depth, per frame: each viper rides one unit above its
+        self.wasps.step(dt, &centers, &grown);
+        self.wasps.layout(wasps_node, [&self.wasp1, &self.wasp2]);
+        // The depth, per frame: each wasp rides one unit above its
         // segment's order on the near side of its orbit — flying right,
         // the lower half, where it moves with the screen — and one below
         // it on the far side, flying left. The segment's own order is the
         // plant's root, in the ground band, for the ground layer, and the
         // plant's upper band for the stalk layers — keyed to the bench
-        // slot, so the front plants' vipers ride the front band and never
+        // slot, so the front plants' wasps ride the front band and never
         // dip into the ground band.
-        let facings = self.vipers.facings();
-        for (i, child) in vipers_node.children.iter_mut().enumerate() {
-            let home = i / vipers::LAYERS;
-            let layer = i % vipers::LAYERS;
+        let facings = self.wasps.facings();
+        for (i, child) in wasps_node.children.iter_mut().enumerate() {
+            let home = i / wasps::LAYERS;
+            let layer = i % wasps::LAYERS;
             let seg_z = if layer == 0 {
                 zorder::ground(anchors[home][1])
             } else {
@@ -1827,7 +1826,7 @@ impl Demo {
 
     /// Steps the worms' swarm, in parallel with everything else: the
     /// worms live in the convex hull of the plants' root anchors, so the
-    /// same `anchors` the bugs and vipers step from feeds them, and the
+    /// same `anchors` the bugs and wasps step from feeds them, and the
     /// swarm lays itself out on the matching child of the worms node
     /// (root's [`CHILD_WORMS`] child).
     fn step_worms(&mut self, ctx: &mut frost::Context, dt: f32, anchors: &[[f32; 2]]) {
@@ -2269,7 +2268,7 @@ impl Demo {
         // The swarms start empty again: all three layouts leave their
         // stale children frozen, so the swarms are rebuilt, not just
         // re-stepped.
-        self.vipers = vipers::Vipers::new(VIPER_IMAGE);
+        self.wasps = wasps::Wasps::new(WASP_IMAGE);
         self.bugs = bugs::Bugs::new(&[&self.bug1, &self.bug2, &self.bug3], bugs::Species::bug());
         self.lice = bugs::Bugs::new(&[&self.lice1, &self.lice2], bugs::Species::louse());
         self.worms = worms::Worms::new([&self.worm1, &self.worm2]);
@@ -2418,7 +2417,7 @@ impl Demo {
             falls: self.falls.iter().map(save::FallState::from).collect(),
             bugs: self.bugs.state(),
             lice: self.lice.state(),
-            vipers: self.vipers.state(),
+            wasps: self.wasps.state(),
             worms: self.worms.state(),
         }
     }
@@ -2464,7 +2463,7 @@ impl Demo {
         self.falls = snapshot.falls.iter().copied().map(Fall::from).collect();
         self.bugs.restore(&snapshot.bugs);
         self.lice.restore(&snapshot.lice);
-        self.vipers.restore(&snapshot.vipers);
+        self.wasps.restore(&snapshot.wasps);
         self.worms.restore(&snapshot.worms);
         // All three random streams resume from the snapshot's states.
         self.rng.set_state(snapshot.seed);
@@ -3557,8 +3556,7 @@ mod tests {
         demo.plants[0].dryness = 0.5;
         demo.plants[0].plant.step(5.0);
         demo.plants[0].plant.age(2.0);
-        demo.vipers
-            .step(1.0, &[[[0.0, 0.0]; vipers::LAYERS]; 1], &[]);
+        demo.wasps.step(1.0, &[[[0.0, 0.0]; wasps::LAYERS]; 1], &[]);
         demo.worms
             .step(1.0, &[[100.0, 100.0], [200.0, 100.0], [150.0, 200.0]]);
         let seed_before = demo.rng.state();
@@ -3616,7 +3614,7 @@ mod tests {
         );
         // The swarms and all three random streams resume exactly where
         // they were.
-        assert_eq!(demo.vipers.state(), snapshot.vipers);
+        assert_eq!(demo.wasps.state(), snapshot.wasps);
         assert_eq!(demo.bugs.state(), snapshot.bugs);
         assert_eq!(demo.worms.state(), snapshot.worms);
         assert_eq!(demo.rng.state(), snapshot.seed);
