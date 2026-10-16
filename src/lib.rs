@@ -205,12 +205,6 @@ pub use bake::*;
 mod shapes;
 pub use shapes::*;
 
-/// The crate's own RON subset: a dependency-free parser, tree model and
-/// lossless writer (comments and verbatim atoms ride through the tree),
-/// consumed by the `ron_view` and `sprite_util` examples — and by
-/// anything else that must read a `.ron` file back out unchanged. Kept
-/// namespaced because its names (`Val`, `Item`, `Doc`, `parse`…) are a
-/// format's vocabulary, not the engine's.
 pub mod assets;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tell;
@@ -220,6 +214,12 @@ pub use assets::{Assets, Table};
 pub use tell::{Announcement, Teller, Tiding};
 pub use watch::Watch;
 pub mod map;
+/// The crate's own RON subset: a dependency-free parser, tree model and
+/// lossless writer (comments and verbatim atoms ride through the tree),
+/// consumed by the `ron_view` and `sprite_util` examples — and by
+/// anything else that must read a `.ron` file back out unchanged. Kept
+/// namespaced because its names (`Val`, `Item`, `Doc`, `parse`…) are a
+/// format's vocabulary, not the engine's.
 pub mod ron;
 pub mod tileset;
 
