@@ -1022,8 +1022,9 @@ button clicks, a checkbox toggles, a slider's value changes.
 
 ## Testing
 
-Baseline: **408 lib tests + 3 integration tests (`tests/`) + 7 doctests**
-passing, `cargo build` (lib + the `sprite_util` and `noisefloor` tools) clean.
+Baseline: **412 lib tests + 3 integration tests (`tests/`) + 7 doctests**
+passing — six ignored probe tests ride beside the lib count —
+`cargo build` (lib + the `sprite_util` and `noisefloor` tools) clean.
 The tool's 93
 tests — 68 that moved with `examples/sprite_util.rs`, each living in the
 subject module it pins, the asset-path guard, the three
@@ -1828,10 +1829,11 @@ cargo build              # expect EXIT 0; covers the lib AND the tool —
 cargo build --examples   # expect EXIT 0; no longer covers the tool
 cargo build -p sprite_util   # expect EXIT 0; the tool on its own, now in
                                # tools/sprite_util/ as its own package
-cargo test               # expect 346 lib + 3 integration + 7 doctests
-                           # + 81 sprite_util (the tool's unit tests run
-                           # here now: a binary target is tested by default)
-cargo test --examples    # expect 126 passed (unit tests inside the examples,
+cargo test               # expect 412 lib (plus six ignored probes) + 3 integration
+                           # + 7 doctests + 93 sprite_util + 7 noisefloor
+                           # (the tools' unit tests run here now: a binary
+                           # target is tested by default)
+cargo test --examples    # expect 195 passed (unit tests inside the examples,
                            # centipede's rig included; ron_view/view.rs compiles
                            # into both ron_view and sprite_util, so its 2 fold
                            # tests run twice; the parser tests run in the lib;
