@@ -15,7 +15,7 @@
 //! plant's vipers come up independently, each circling its own segment,
 //! rather than as one global prefix in swarm order.
 //!
-//! The sprites are `Getingeye1.png` and `Getingeye2.png`, two frames of a
+//! The sprites are `Waspeye1.png` and `Waspeye2.png`, two frames of a
 //! viper flying to the right. The swarm is driven by a [`Vipers`] value:
 //! `new` builds the thirty bees from a deterministic schedule of the bee
 //! index, so each run looks the same and no random crate is needed,

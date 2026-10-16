@@ -3,7 +3,7 @@
 //!
 //! The hall is a lit backdrop, a few lit panels, and an occluder wall,
 //! all under one dim lamp near the center — just enough light to read
-//! the room. The eyes are `Getingeye1.png` sprites with `lit: true` and
+//! the room. The eyes are `Waspeye1.png` sprites with `lit: true` and
 //! a warm emission, so each is drawn as
 //! `texture * (ambient + lamp + emission)`: the lamp shapes them where it
 //! reaches, and the emission is the floor of light that keeps them burning
@@ -53,7 +53,7 @@
 /// The eyes' texture: a ~200x180 RGBA sprite — black outline, amber
 /// iris, pale sclera — which the emission shows through: emission rides the
 /// texture, so the ink stays dark and the iris burns.
-const EYE: &str = "assets/sprites/Getingeye1.png";
+const EYE: &str = "assets/sprites/Waspeye1.png";
 
 /// The backdrop's color: a cold slate, dim enough that under the lamp
 /// only its middle reads as a room at all.
@@ -315,7 +315,7 @@ fn main() {
 
     let root = std::env!("CARGO_MANIFEST_DIR");
     let eye = frost::Shape::sprite(format!("{root}/{EYE}"))
-        .expect("failed to load assets/sprites/Getingeye1.png");
+        .expect("failed to load assets/sprites/Waspeye1.png");
 
     // Six eyes, each with its own place, wander curve, pulse, and size.
     let eyes = (0..6)

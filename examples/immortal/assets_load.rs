@@ -49,12 +49,12 @@ const ASSETS: frost::Table = &[
         include_bytes!("../../assets/sprites/Tweezers.png"),
     ),
     (
-        "assets/sprites/Getingeye1.png",
-        include_bytes!("../../assets/sprites/Getingeye1.png"),
+        "assets/sprites/Waspeye1.png",
+        include_bytes!("../../assets/sprites/Waspeye1.png"),
     ),
     (
-        "assets/sprites/Getingeye2.png",
-        include_bytes!("../../assets/sprites/Getingeye2.png"),
+        "assets/sprites/Waspeye2.png",
+        include_bytes!("../../assets/sprites/Waspeye2.png"),
     ),
     (
         "assets/sprites/Bug1a.png",
@@ -341,8 +341,8 @@ impl Assets {
             spray2: sprite(&store, "Spray2"),
             spade: sprite(&store, "spade"),
             tweezers: sprite(&store, "Tweezers"),
-            viper1: sprite(&store, "Getingeye1"),
-            viper2: sprite(&store, "Getingeye2"),
+            viper1: sprite(&store, "Waspeye1"),
+            viper2: sprite(&store, "Waspeye2"),
             bug1: sprite(&store, "Bug1a"),
             bug2: sprite(&store, "Bug2a"),
             bug3: sprite(&store, "Bug3a"),

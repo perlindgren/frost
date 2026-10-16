@@ -40,7 +40,7 @@
 
 /// The eyes' texture, shared with the `eyes` examples: black outline,
 /// amber iris, pale sclera.
-const EYE: &str = "assets/sprites/Getingeye1.png";
+const EYE: &str = "assets/sprites/Waspeye1.png";
 
 /// The backdrop's color: a cold slate, dim enough to read as a room
 /// only where a light reaches it.
@@ -357,7 +357,7 @@ fn main() {
 
     let root = std::env!("CARGO_MANIFEST_DIR");
     let eye_sprite = frost::Shape::sprite(format!("{root}/{EYE}"))
-        .expect("failed to load assets/sprites/Getingeye1.png");
+        .expect("failed to load assets/sprites/Waspeye1.png");
 
     // Six eyes: every other one is a lamp-eye — larger, and carrying
     // the child light. Keeping both kinds on stage is what lets one

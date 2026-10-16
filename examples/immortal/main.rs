@@ -186,7 +186,7 @@
 //! segment its layer spawned it, at that segment's midpoint along the
 //! static, fully grown chain — the sway left out. Each viper flies at its
 //! own radius, speed, and height above the midpoint, and the two frames,
-//! `assets/sprites/Getingeye1.png` and `assets/sprites/Getingeye2.png`,
+//! `assets/sprites/Waspeye1.png` and `assets/sprites/Waspeye2.png`,
 //! alternate at its own wingbeat rate — the sprite is a viper flying to
 //! the right, flipped about its center while it flies to the left.
 //!
@@ -726,7 +726,7 @@ fn nearest_free_slot(
         .min_by(|a, b| dist2(p, anchors[*a]).total_cmp(&dist2(p, anchors[*b])))
 }
 
-/// `Getingeye1.png` and `Getingeye2.png`'s texture size in pixels: both
+/// `Waspeye1.png` and `Waspeye2.png`'s texture size in pixels: both
 /// frames are the same size, and the swarm fits that width to the
 /// rendered bee width inside the [`vipers`] module.
 const VIPER_IMAGE: [f32; 2] = [198.0, 179.0];

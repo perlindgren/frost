@@ -1570,7 +1570,8 @@ above it by stem, and one request answering both worlds — immortal's
 produced: **a name is the full request only when the format is
 known** — the sprite directories keep their `.ron` sidecars beside
 the PNGs, and `Getingeye1.ron` shadowed its own sprite's bytes until
-the ask learned to name its formats (`asset(name, exts)`); name and
+the ask learned to name its formats (`asset(name, exts)`) — the sprite
+is `Waspeye1` now, and the finding stands under either name; name and
 format together dress an ask, exactly as name and cut identify a
 tileset. The watcher (mtime → decode → rebind) remains the tiers' to
 raise; today's resolver reads loose files when asked.
@@ -1828,7 +1829,7 @@ That pairing is the whole law in one sentence: a fetch that must squash a
 dozen texels into one pixel and is granted four samples changes which
 four every frame, but only artwork with fine detail to lose can show it —
 every frame's wrong four average to the same answer where the art is
-soft, so `Getingeye1`'s glow scales cleanly at `0.22 + 0.2·hash` while
+soft, so `Waspeye1`'s glow scales cleanly at `0.22 + 0.2·hash` while
 detail-carrying sprites shimmer and motion makes the shimmer crawl. The
 witnesses minify knowingly: the centipede scales its `250×448` legs to
 `BODY_SPAN`, a fifth of the window's height, rotating every foot; the
