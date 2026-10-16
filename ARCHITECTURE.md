@@ -1821,30 +1821,37 @@ state), write only documents, and one watched-file mechanism carries
 every word in both directions.
 
 **Sprite minification: an invoice on file, unpaid on purpose.** Observed
-rather than derived — the centipede's legs and the drifting glow-eyes
-(`dogs_name`, `eyes`, `eyes_light_bloom`) flicker as they move. It is the
-law the bloom chain obeys from its first pass: a fetch that must squash a
-dozen texels of detail into one pixel and is granted four samples changes
-which four every frame, and motion makes the shimmer crawl. Both scenes
-minify knowingly — the centipede scales its `250×448` legs to
-`BODY_SPAN`, a fifth of the window's height, and rotates every foot;
-the eyes draw the ~200-px `Getingeye1` at `0.22 + 0.2·hash`. Neither is a
-bloom failure: the chain blurs what it is given, and its own
-pyramid-averaging keeps the wide halo calm while the fetch-aliased
-radiance dances in the fine core — the fetch sits upstream of both
-passes, and the fetch law is not a ledger bloom can settle. When a design
-truly wants minification, the fix is Godot's move cut to frost's size: a
-mip pyramid built at load for sprites that declare they shrink,
-`mip_level_count` grown to match, and no change to `sprite.wgsl` at all —
-its `textureSample` already asks which level fits the quad (the
-discard-quad comment guards exactly that question's derivatives); it can
-today answer only 0. Two debts come with the pyramid, and neither is new
-to this house: the averaging must happen in linear space — a box filter
-over sRGB codes is exactly the mistake the sRGB envelope probe exists to
-keep out of the frame — and the third-of-a-texture's memory, paid per
-shrinking sprite rather than per engine. Until a design pays them, the
-integer-scaling discipline holds: the shipped look minifies nothing, and
-the invoice stays on file rather than lost.
+rather than derived — the centipede's legs (`dogs_name`) and the garden's
+wasps (`immortal`'s bugs) flicker as they move, and the drifting glow-eyes
+(`eyes`) — the scene that minifies almost as hard — flicker not at all.
+That pairing is the whole law in one sentence: a fetch that must squash a
+dozen texels into one pixel and is granted four samples changes which
+four every frame, but only artwork with fine detail to lose can show it —
+every frame's wrong four average to the same answer where the art is
+soft, so `Getingeye1`'s glow scales cleanly at `0.22 + 0.2·hash` while
+detail-carrying sprites shimmer and motion makes the shimmer crawl. The
+witnesses minify knowingly: the centipede scales its `250×448` legs to
+`BODY_SPAN`, a fifth of the window's height, rotating every foot; the
+wasp is drawn 40 px wide — `species.size / w` at `BUG_SIZE` — from a
+258-px `Bug1a`, bobbing on its gait's scale as it walks, and the lice a
+gentler 2× at `LICE_SIZE`. Neither flicker is a bloom failure: the chain
+blurs what it is given, and its own pyramid-averaging keeps the wide halo
+calm while the fetch-aliased radiance dances in the fine core — the fetch
+sits upstream of both passes, and the fetch law is not a ledger bloom can
+settle. When a design truly wants minification, the fix is Godot's move
+cut to frost's size: a mip pyramid built at load for sprites that declare
+they shrink, `mip_level_count` grown to match, and no change to
+`sprite.wgsl` at all — its `textureSample` already asks which level fits
+the quad (the discard-quad comment guards exactly that question's
+derivatives); it can today answer only 0. Two debts come with the
+pyramid, and neither is new to this house: the averaging must happen in
+linear space — a box filter over sRGB codes is exactly the mistake the
+sRGB envelope probe exists to keep out of the frame — and the
+third-of-a-texture's memory, paid per shrinking sprite rather than per
+engine, and asked of none the eye's art would decline. Until a design
+pays them, the integer-scaling discipline holds: the shipped look
+minifies nothing that shows it, and the invoice stays on file rather than
+lost.
 
 
 ## Verification loop
