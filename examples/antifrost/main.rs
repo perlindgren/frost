@@ -47,6 +47,15 @@ const LEVELS: &str = include_str!("levels.ron");
 /// hill's edge read as earth instead of as a screen.
 const SOIL: &[u8] = include_bytes!("assets/sprites/soil.png");
 
+/// The slab the menu panels are cut from: one 16:9 band taken from
+/// the garden's granite photo (the user's own `stone.png`, 3024×4032)
+/// and baked down — cropped at 1440 wide, then darkened to a third in
+/// the same offline pass, so a panel made of it reads as stone in a
+/// dim room and never competes with the words on it. The face keeps
+/// the moss and the lichen: an anthill hung on a real stone should
+/// say so.
+const STONE: &[u8] = include_bytes!("assets/sprites/stone_menu.png");
+
 /// The bed, the user's own sprite: laid square on the bed's cell,
 /// tinted nothing, lit like everything else that lives in the hill.
 const BED: &[u8] = include_bytes!("assets/sprites/bed.png");
@@ -365,6 +374,15 @@ const C_DIM: Color = Color {
     r: 0.62,
     g: 0.55,
     b: 0.45,
+    a: 1.0,
+};
+/// The colour of a row with no road left in it: the others' warm
+/// grey sunk below the dim one, so a `next` with nothing to lead to
+/// reads spent, not merely unselected.
+const C_MUTE: Color = Color {
+    r: 0.33,
+    g: 0.30,
+    b: 0.27,
     a: 1.0,
 };
 const C_NOTE: Color = Color {
@@ -703,6 +721,11 @@ enum Page {
     /// anything.
     Keyboard,
     Mouse,
+    /// The ledger: one row per warm hill — number, name, best run,
+    /// and a minimap of the hill itself — a list that can outgrow
+    /// the plate, so the window slides with the selection and the
+    /// wheel, and a row walked is a door back onto that hill.
+    Progress,
 }
 
 /// Where the Escape key leads. The rule the menu keeps: from the hill
@@ -722,6 +745,9 @@ fn escape_nav(from: Page) -> Escape {
         Page::Main => Escape::Resume,
         Page::Settings => Escape::ToMenu,
         Page::Keyboard | Page::Mouse => Escape::ToMenu,
+        // The ledger is read, not lived in: Escape steps off it onto
+        // the menu like everywhere else.
+        Page::Progress => Escape::ToMenu,
         // Escape steps off the finished hill onto the menu; the
         // resume row walks back to the won hill and its panel.
         Page::Won => Escape::ToMenu,
@@ -810,6 +836,10 @@ enum Action {
     /// The control pages of the menu: keyboard, mouse.
     Keyboard,
     Mouse,
+    /// The ledger page, and one of its hill rows: a hill row replays
+    /// the hill it names — the ledger is a door, not a museum.
+    OpenProgress,
+    Hill(usize),
 }
 
 /// One laid-out menu row: a clickable rectangle (centre and half
@@ -853,6 +883,64 @@ fn step_sel(sel: usize, n: usize, dir: i32) -> usize {
 fn row_under(rows: &[Row], p: [f32; 2]) -> Option<usize> {
     rows.iter()
         .position(|r| (p[0] - r.cx).abs() <= r.hw && (p[1] - r.cy).abs() <= r.hh)
+}
+
+/// The progress list's hang from the plate's top, shared by layout,
+/// input and paint like every other menu geometry.
+fn progress_top_y(h: f32) -> f32 {
+    (h * 0.5 - 104.0).min(252.0)
+}
+
+/// The progress list's row stride: wider than the settings step,
+/// because each row wears a minimap as tall as its text is not. The
+/// maps own this stride — a card leaves two points of a step to
+/// its neighbour, never more — and a further step is affordable
+/// because the plate holds the same ten hills at a full-height
+/// window either way.
+fn progress_step(h: f32) -> f32 {
+    if h < 720.0 { 54.0 } else { 68.0 }
+}
+
+/// How many hill rows fit between the hang and the window's floor —
+/// the `back` row aside, which is pinned under the last visible row
+/// and so never scrolls out of reach.
+fn progress_fits(h: f32) -> usize {
+    let low = -h * 0.5 + 96.0;
+    (((progress_top_y(h) - low) / progress_step(h)).floor() as usize).max(1)
+}
+
+/// The progress page's plate half-width and its column edges, settled
+/// once against measured ink rather than guesswork: every width below
+/// was laid out by the engine's own text shaper in the shipped
+/// Barrfont at the ledger's size (30, weight 500). The widest authored
+/// hill name — "Three Cold Nights" — is 370.0, and since
+/// [`MOVES_CAP`] guarantees no score wider than "999 moves" at 199.2,
+/// the name column gets a real budget (372.0) and the score column is
+/// right-aligned, so long names and long scores can never reach each
+/// other. The map card caps at 235.0 wide by the cell's own limits.
+/// Every gutter below is at least 20 points, and
+/// `the_ledger_columns_never_touch` holds all of it: a wider name
+/// than the budget, or a shrunken plate, fails the test instead of
+/// painting a collision.
+const PROGRESS_PLATE: f32 = 473.0;
+/// The hill-number column's left edge.
+const PROGRESS_NUM_X: f32 = -459.0;
+/// The name column's left edge: a 20-point gutter past the widest
+/// two-digit hill number.
+const PROGRESS_NAME_X: f32 = -391.0;
+/// The score column's right edge — scores right-align, so the name
+/// column always owns its full budget.
+const PROGRESS_SCORE_R: f32 = 206.0;
+/// The map column's centre: a 20-point gutter past the score's right
+/// edge, plus the widest possible card.
+const PROGRESS_MAP_CX: f32 = 344.0;
+
+/// Whether the ledger's window has more descent above it (an up mark)
+/// and below it (a down mark). Barrfont carries letters and a space
+/// and nothing else — no arrow glyph to spend — so the marks are
+/// drawn chevrons, and they answer only this: is something hidden?
+fn progress_marks(total: usize, top: usize, visible: usize) -> (bool, bool) {
+    (top > 0, top + visible < total)
 }
 
 /// A dragged slider, while the left button holds.
@@ -1095,24 +1183,84 @@ impl Settings {
     }
 }
 
+/// The highest move count a hill ever reports. The game itself
+/// counts past it without stopping the player; the number is the
+/// display's, and a display that must fit a table needs a ceiling:
+/// "999 moves" is the widest score row the ledger can ever paint, so
+/// the progress page's columns are settled against it once and for
+/// all.
+const MOVES_CAP: i32 = 999;
+
 /// Where the player's descent stands, kept under its own name beside
 /// the settings — a file in the launch folder on the desktop, a key in
-/// the browser's memory on the web: which hill they last stood on. It
-/// is written wherever the hill moves — New Game, N, P — never on
-/// launch and never inside `load`, so starting the game leaves no
-/// fingerprint and a window-manager kill loses nothing newer than
-/// the hill entered. The file counts hills the way the HUD does,
-/// from one.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+/// the browser's memory on the web: which hill they last stood on,
+/// how deep they ever got (the progress page's list grows down to
+/// here and never back), and the ledger the page reads — every hill
+/// they warmed, in the fewest moves they ever warmed it. It is
+/// written wherever the hill moves — New Game, N, P — and wherever a
+/// hill is won, never on launch and never inside `load`, so starting
+/// the game leaves no fingerprint and a window-manager kill loses
+/// nothing newer than the hill entered or the hill finished. The file
+/// counts hills the way the HUD does, from one; each score is a
+/// quoted pair, `"hill moves"`, so the hand-written parser stays a
+/// walk down two atoms and nothing more.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
 struct Progress {
     hill: usize,
+    /// The deepest hill ever stood on. It only ever grows: walking
+    /// back to replay a shallow hill un-stands nowhere.
+    reached: usize,
+    /// Warm hills and their best runs, `(hill, moves)`, zero-based in
+    /// the code and sorted by hill; an unwarmed hill owns no entry.
+    scores: Vec<(usize, i32)>,
 }
 
 impl Progress {
     const FILE: &'static str = "antifrost.progress.ron";
 
-    fn text(self) -> String {
-        format!("(\n    hill: {},\n)\n", self.hill + 1)
+    /// The player now stands on `hill`: the resume point moves there
+    /// and the depth of the descent is asked to remember it, forever
+    /// if it is a new low.
+    fn stood(&mut self, hill: usize) {
+        self.hill = hill;
+        self.reached = self.reached.max(hill);
+    }
+
+    fn text(&self) -> String {
+        let mut text = format!(
+            "(\n    hill: {},\n    reached: {},\n    scores: [",
+            self.hill + 1,
+            self.reached + 1
+        );
+        if self.scores.is_empty() {
+            text.push_str("],\n)\n");
+        } else {
+            for (hill, moves) in &self.scores {
+                text.push_str(&format!("\n        \"{} {}\",", hill + 1, moves));
+            }
+            text.push_str("\n    ],\n)\n");
+        }
+        text
+    }
+
+    /// A hill just finished: the run joins the ledger, and the ledger
+    /// keeps the truth it always keeps — one entry per hill, the
+    /// fewest moves of any attempt. A warm hill was stood on, so the
+    /// descent's depth takes note of it too.
+    fn record(&mut self, hill: usize, moves: i32) {
+        // The ledger writes a number, so the number has an upper
+        // limit: a hill stays winnable past it and the game keeps
+        // counting itself, but the ledger — and every layout that
+        // trusts its width — sees `MOVES_CAP` at the most.
+        let moves = moves.min(MOVES_CAP);
+        self.reached = self.reached.max(hill);
+        match self.scores.iter_mut().find(|(h, _)| *h == hill) {
+            Some(entry) => entry.1 = entry.1.min(moves),
+            None => {
+                self.scores.push((hill, moves));
+                self.scores.sort();
+            }
+        }
     }
 
     fn parse(src: &str) -> Progress {
@@ -1125,10 +1273,64 @@ impl Progress {
             }
             _ => 1,
         };
+        let reached = match frost::ron::field(&root, "reached") {
+            Some(frost::ron::Val::Atom(text, _)) => {
+                text.trim_matches('"').parse::<usize>().unwrap_or(1)
+            }
+            // A file from before the descent kept its depth says no
+            // more than where it stands: the stood-on hill is the
+            // deepest it ever named.
+            _ => hill,
+        };
+        // The ledger survives what a hand may not: entries out of
+        // order fold to sorted, a hill named twice keeps its better
+        // number, and garbage in the list is simply not a score.
+        // A file from before the ledger carries no `scores` at all —
+        // which is no scores, not a broken file.
+        let mut scores: Vec<(usize, i32)> = match frost::ron::field(&root, "scores") {
+            Some(frost::ron::Val::Seq { items, .. }) => items
+                .iter()
+                .filter_map(|item| match &item.val {
+                    frost::ron::Val::Atom(text, _) => {
+                        let mut pair = text.trim_matches('"').split_whitespace();
+                        let hill = pair.next()?.parse::<usize>().ok()?.checked_sub(1)?;
+                        let moves = pair.next()?.parse::<i32>().ok()?;
+                        // The file's scores pass the same turnstile
+                        // the record does: the cap holds whatever
+                        // hand went to the keyboard after the game.
+                        Some((hill, moves.clamp(0, MOVES_CAP)))
+                    }
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        scores.sort();
+        scores.dedup_by(|a, b| {
+            if a.0 == b.0 {
+                // `a` is the entry being dropped; it dies passing its
+                // better number on to the one that stays.
+                b.1 = b.1.min(a.1);
+                true
+            } else {
+                false
+            }
+        });
         // One-based in the file, zero-based in the code — and nothing
-        // sits below the first hill.
+        // sits below the first hill. The depth of the descent is at
+        // least the hill it stands on and at least the deepest warm
+        // hill: a warm hill was stood on by definition, which folds
+        // the pre-`reached` files (a score deeper than the standing
+        // hill) onto the truth they already carry.
+        let hill = hill.saturating_sub(1);
+        let reached = reached
+            .saturating_sub(1)
+            .max(hill)
+            .max(scores.iter().map(|(h, _)| *h).max().unwrap_or(0));
         Progress {
-            hill: hill.saturating_sub(1),
+            hill,
+            reached,
+            scores,
         }
     }
 
@@ -1138,7 +1340,7 @@ impl Progress {
             .unwrap_or_default()
     }
 
-    fn save(self) {
+    fn save(&self) {
         if let Err(err) = frost::store::save(Self::FILE, &self.text()) {
             log::warn!("antifrost: could not save {:?}: {err}", Self::FILE);
         }
@@ -1259,6 +1461,14 @@ struct Demo {
     tile_atlas: frost::Shape,
     /// The bed sprite, laid square on every bed's cell.
     bed: frost::Shape,
+    /// The stone slab the menu panels are cut from, held as a tile
+    /// map: a panel is one placement of the whole texture, sized to
+    /// the plate's rectangle, so the stone is the panel's face and
+    /// never spills past it. An `Option` where the bed is not: a
+    /// slab that failed to decode should leave the menu on its plain
+    /// plate, not cost the player the game at launch. Decodes once,
+    /// for the game's life.
+    slab: Option<frost::Shape>,
     /// The giant ground sprite, rebuilt per hill: its punched hole must
     /// match the hill's rectangle, and the span it is drawn across.
     ground: Option<(frost::Shape, [f32; 2])>,
@@ -1328,6 +1538,25 @@ struct Demo {
     /// told from mere presence: a parked cursor must not out-vote
     /// the arrow keys.
     last_pointer: Option<[f32; 2]>,
+    /// The live ledger: the disc's scores, plus every hill won since
+    /// the game opened. Written when a hill moves and when a hill is
+    /// won — the same law the file keeps from the outside.
+    progress: Progress,
+    /// The first hill row the progress page shows: the window that
+    /// slides as the selection (or the wheel) walks past its edges.
+    progress_top: usize,
+    /// When the last frame beat, in milliseconds on the browser's
+    /// clock. The stutter sentinel's only memory: half a second of
+    /// silence between beats is worth a line in the console, and a
+    /// machine the developer cannot see becomes a machine they can
+    /// read. 0.0 before the first frame, so the opening gap — the
+    /// shader compiles and first paint — never reports itself.
+    last_beat: f64,
+    /// The progress page's minimap atlas: one white pixel. Every
+    /// cell of every hill is a placement of that pixel, so one node
+    /// — one instanced draw — paints all the maps, each cell's hue
+    /// carried by its own tint.
+    minimap_atlas: Arc<[u8]>,
     /// The bench hourglass (`--bench`): a run length, the clock it
     /// has accumulated, and the frames worth counting. None is the
     /// game's own shape — play until told otherwise.
@@ -1377,7 +1606,7 @@ impl Demo {
         ant_frames: Vec<frost::Shape>,
         soil: frost::Shape,
         settings: Settings,
-        start_hill: usize,
+        progress: Progress,
     ) -> Self {
         // The soil texture doubles as the hill's tile atlas: one cell,
         // the whole sheet, every placement sampling all of it. A
@@ -1388,6 +1617,18 @@ impl Demo {
             frost::Shape::tilemap_bytes(SOIL).expect("shipped soil bakes as an atlas");
         tile_atlas.set_filter(SpriteFilter::Linear);
         let bed = frost::Shape::sprite_bytes(BED).expect("shipped bed sprite decodes");
+        // The slab decodes once here, for the game's whole life; if
+        // the shipped bytes ever fail to decode, the `Option` keeps
+        // that a plainer plate, not a lost launch. Linear filtering:
+        // the plate shows the stone whole and stretched, and a photo
+        // stretched wants smoothing, not nearest's staircase.
+        let slab = match frost::Shape::tilemap_bytes(STONE) {
+            Ok(mut shape) => {
+                shape.set_filter(SpriteFilter::Linear);
+                Some(shape)
+            }
+            Err(_) => None,
+        };
         let levels = level::load_levels(LEVELS);
         if levels.is_empty() {
             log::error!("antifrost: no levels loaded");
@@ -1414,6 +1655,7 @@ impl Demo {
             soil,
             tile_atlas,
             bed,
+            slab,
             ground: None,
             #[cfg(feature = "diag")]
             diag: Diagnostics::from_bytes(DIAG_FONT, DiagnosticsFlags::all()).unwrap_or_else(
@@ -1446,6 +1688,10 @@ impl Demo {
             drag: None,
             menu_sel: 0,
             last_pointer: None,
+            progress,
+            progress_top: 0,
+            last_beat: 0.0,
+            minimap_atlas: Arc::from([255u8, 255, 255, 255].as_slice()),
             bench: None,
             bench_t: 0.0,
             bench_frames: 0,
@@ -1460,8 +1706,84 @@ impl Demo {
         };
         // The saved hill, wherever it lands — `load` folds indices
         // past the last level back onto the set that exists.
+        let start_hill = demo.progress.hill;
         demo.load(start_hill);
         demo
+    }
+
+    /// How far the descent has reached: the deepest hill ever stood
+    /// on — `reached` carries that across runs, and it never walks
+    /// back — clamped to the hills that exist. The progress page
+    /// lists this many hills.
+    fn progressed(&self) -> usize {
+        if self.levels.is_empty() {
+            return 0;
+        }
+        self.progress.reached.min(self.levels.len() - 1) + 1
+    }
+
+    /// Whether the ledger says a hill's run is done to par: warmed,
+    /// and the best met par — the exact yellow of the score column,
+    /// so the ledger's order, the `next` key, and a row's ink can
+    /// only ever read one rule. An unwarmed hill owns no perfect run.
+    fn perfect(&self, hill: usize) -> bool {
+        self.progress
+            .scores
+            .iter()
+            .find(|(h, _)| *h == hill)
+            .is_some_and(|(_, moves)| {
+                let par = self.levels.get(hill).map_or(0, |l| l.par);
+                !(par > 0 && *moves > par)
+            })
+    }
+
+    /// The hill that `next` leads to, in the descent's own order of
+    /// owing. A freshly unlocked hill — one below the deepest ever
+    /// stood on, never walked — is the run no ledger row can offer,
+    /// so while the player stands at the frontier of the descent it
+    /// answers first. From shallower ground, `next` leads to the
+    /// nearest hill ahead, wrapping through the shallow ones, that
+    /// has no perfect run to its name; the hill the player stands on
+    /// is not among them, because `retry` is the key that redoes a
+    /// hill and `next` is the key that moves on. Nothing owed and no
+    /// new hill below: the descent has nothing left to owe, and
+    /// `next` is simply the next hill, wrapping, as it always was.
+    fn next_hill(&self) -> usize {
+        if self.levels.is_empty() {
+            return self.idx;
+        }
+        let last = self.levels.len() - 1;
+        let deepest = self.progress.reached.min(last);
+        if self.idx >= deepest && deepest < last {
+            return deepest + 1;
+        }
+        for step in 1..=deepest {
+            let i = (self.idx + step) % (deepest + 1);
+            if !self.perfect(i) {
+                return i;
+            }
+        }
+        if deepest < last {
+            return deepest + 1;
+        }
+        (self.idx + 1) % self.levels.len()
+    }
+
+    /// Whether `next` has a hill left to lead to: a never-walked
+    /// one below the frontier of the descent, or an owed one
+    /// anywhere but underfoot — the hill the player stands on is
+    /// `retry`'s business, not `next`'s. When the one owed hill is
+    /// the one underfoot there is nowhere left to move on to, and
+    /// the row for `next` wears grey and answers no action. A fully
+    /// perfected descent owes nothing at all, and reads the same.
+    fn next_owed(&self) -> bool {
+        if self.levels.is_empty() {
+            return false;
+        }
+        if self.progress.reached < self.levels.len() - 1 {
+            return true;
+        }
+        (1..self.levels.len()).any(|step| !self.perfect((self.idx + step) % self.levels.len()))
     }
 
     fn load(&mut self, idx: usize) {
@@ -2772,7 +3094,7 @@ impl Demo {
         self.banner(ctx, h / 2.0 - 34.0, 34.0, 700.0, &title);
         let warm = game.ants_asleep().to_string();
         let crew = game.ants.len().to_string();
-        let moves = game.moves.to_string();
+        let moves = game.moves.min(MOVES_CAP).to_string();
         let par = game.level.par.to_string();
         let score: [(&str, Color, f32); 8] = [
             ("warm", C_DIM, 0.5),
@@ -2837,22 +3159,60 @@ impl Demo {
         }
         let top = rows.iter().map(|r| r.cy).fold(f32::MIN, f32::max);
         let bot = rows.iter().map(|r| r.cy).fold(f32::MAX, f32::min);
-        let wide = matches!(
-            self.menu_page,
-            Page::Settings | Page::Keyboard | Page::Mouse
-        );
+        // The plate is as wide as its page's widest claim: the ledger
+        // spends a number, a name, a score, and a map, so it takes
+        // the widest hall of any page on the menu.
+        let plate_hw = match self.menu_page {
+            Page::Progress => PROGRESS_PLATE,
+            Page::Settings | Page::Keyboard | Page::Mouse => 380.0,
+            _ => 300.0,
+        };
+        // The panel is cut from the slab: one placement of the whole
+        // stone at the plate's own size — stretched to whatever
+        // rectangle the page hangs, and the moss and lichen do not
+        // mind. Where the slab failed to decode, the plate is still
+        // the plain ink slab it always was.
+        let (pcx, pcy) = (0.0, (top + bot) / 2.0);
+        let (phw, phh) = (plate_hw, (top - bot) / 2.0 + 130.0);
+        let mut cut = false;
+        if let Some(slab) = &self.slab {
+            let mut panel = slab.clone();
+            if let frost::Shape::TileMap { tiles, .. } = &mut panel {
+                tiles.push(frost::Tile::new(
+                    [pcx, pcy],
+                    [2.0 * phw, 2.0 * phh],
+                    [0.0, 0.0, 1.0, 1.0],
+                ));
+                ctx.scene().root.children.push(Box::new(SceneNode {
+                    order: z + 1.0,
+                    modulate: Color {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 1.0,
+                        a,
+                    },
+                    shape: Some(panel),
+                    ..Default::default()
+                }));
+                cut = true;
+            }
+        }
+        // The panel's own night: once it was the plate itself, and on
+        // stone it is a shade — the slab was baked at a third of its
+        // daylight, and all this shade has left to do is settle the
+        // white lichen behind the words.
         ctx.rectangle(
-            0.0,
-            (top + bot) / 2.0,
-            if wide { 380.0 } else { 300.0 },
-            (top - bot) / 2.0 + 130.0,
+            pcx,
+            pcy,
+            phw,
+            phh,
             Color {
                 r: 0.05,
                 g: 0.055,
                 b: 0.08,
-                a: 0.94 * a,
+                a: (if cut { 0.45 } else { 0.94 }) * a,
             },
-            z + 1.0,
+            z + 1.25,
         );
         // The panel wears the hill it stands on: main and won pages
         // both name their ground — the title answers the same banner
@@ -2862,6 +3222,7 @@ impl Demo {
             Page::Settings => "SETTINGS".to_string(),
             Page::Keyboard => "KEYBOARD".to_string(),
             Page::Mouse => "MOUSE".to_string(),
+            Page::Progress => "PROGRESS".to_string(),
             _ => self
                 .game
                 .as_ref()
@@ -2908,6 +3269,10 @@ impl Demo {
         // hover used to allow.
         for (i, r) in rows.iter().enumerate() {
             let hot = i == self.menu_sel;
+            // A row with no road left in it: `next` greys when the
+            // hill underfoot is all the descent still owes — the
+            // same rule the key obeys, asked at the same lip.
+            let mute = matches!(r.action, Action::Next) && !self.next_owed();
             if hot {
                 ctx.rectangle(
                     r.cx,
@@ -2918,10 +3283,14 @@ impl Demo {
                         r: 1.0,
                         g: 1.0,
                         b: 1.0,
-                        a: 0.07 * a,
+                        a: (if mute { 0.03 } else { 0.07 }) * a,
                     },
                     z + 2.0,
                 );
+            }
+            if let Action::Hill(hill) = r.action {
+                self.draw_ledger_row(ctx, r, hill, hot, z, a);
+                continue;
             }
             match r.slider {
                 None => ctx.text(
@@ -2931,7 +3300,13 @@ impl Demo {
                     r.text.clone(),
                     30.0,
                     500.0,
-                    if hot { fade(C_TEXT) } else { fade(C_DIM) },
+                    if mute {
+                        fade(C_MUTE)
+                    } else if hot {
+                        fade(C_TEXT)
+                    } else {
+                        fade(C_DIM)
+                    },
                     z + 3.0,
                 ),
                 Some(frac) => {
@@ -2977,6 +3352,247 @@ impl Demo {
                 }
             }
         }
+        // The maps beside the ledger's rows, in one instanced node:
+        // every cell of every visible hill is a tinted placement of
+        // one white pixel, and the node's clip cuts the column to
+        // the plate — scroll and all of it rides together.
+        if self.menu_page == Page::Progress {
+            self.draw_minimaps(ctx, &rows, h, z, a);
+            self.draw_progress_marks(ctx, &rows, h, z, a);
+        }
+    }
+
+    /// One ledger row: the hill's number, its name, and — for a hill
+    /// the colony warmed — its best run in the par's own colour
+    /// language (the yellow a met par wears, the red a missed one).
+    /// A hill stood on but not finished keeps its score column
+    /// empty: the ledger writes nothing it has not been given. The
+    /// runs sit in columns rather than the HUD's one centred
+    /// sentence: this is a list to scan, not a banner to read.
+    fn draw_ledger_row(&self, ctx: &mut Context, r: &Row, hill: usize, hot: bool, z: f32, a: f32) {
+        let score = self
+            .progress
+            .scores
+            .iter()
+            .find(|(h, _)| *h == hill)
+            .map(|(_, m)| *m);
+        let (name, par) = self
+            .levels
+            .get(hill)
+            .map_or(("hill", 0), |l| (l.name.as_str(), l.par));
+        // Measured first, drawn after: the columns are left edges,
+        // and text draws centred, so every run needs its own width
+        // before any of it reaches the canvas.
+        let num = (hill + 1).to_string();
+        let w_num = ctx.text_width(&self.font, &num, 30.0, 500.0);
+        let w_name = ctx.text_width(&self.font, name, 30.0, 500.0);
+        let fade = |c: Color| Color { a: c.a * a, ..c };
+        let ink = if hot { fade(C_TEXT) } else { fade(C_DIM) };
+        let cy = r.cy - 10.0;
+        ctx.text(
+            PROGRESS_NUM_X + w_num / 2.0,
+            cy,
+            &self.font,
+            num,
+            30.0,
+            500.0,
+            ink,
+            z + 3.0,
+        );
+        ctx.text(
+            PROGRESS_NAME_X + w_name / 2.0,
+            cy,
+            &self.font,
+            name,
+            30.0,
+            500.0,
+            ink,
+            z + 3.0,
+        );
+        let Some(moves) = score else { return };
+        // The score wears its judgement always and never the
+        // highlight's: the best run at or under par — perfect — is
+        // yellow, a best that still overshot par is red, the same
+        // full hue on every row lit or unlit. The page's own fade
+        // is the only hand on either. Right-aligned at the column's
+        // edge — a list of numbers reads up its right side.
+        let colour = if par > 0 && moves > par {
+            C_PAR_MISSED
+        } else {
+            C_PAR_MET
+        };
+        let score_text = format!("{moves} moves");
+        let w_score = ctx.text_width(&self.font, &score_text, 30.0, 500.0);
+        ctx.text(
+            PROGRESS_SCORE_R - w_score / 2.0,
+            cy,
+            &self.font,
+            score_text,
+            30.0,
+            500.0,
+            fade(colour),
+            z + 3.0,
+        );
+    }
+
+    /// Every minimap the page shows, in one tile-map node: a one-
+    /// pixel white atlas tinted per cell — rock, dirt, open tunnel,
+    /// and every bed in its ant's own colour. The maps are the
+    /// authored hills themselves, tile for tile: the ledger keeps no
+    /// picture, because the hill already is one.
+    fn draw_minimaps(&self, ctx: &mut Context, rows: &[Row], h: f32, z: f32, a: f32) {
+        let mut map = frost::Shape::TileMap {
+            data: self.minimap_atlas.clone(),
+            width: 1,
+            height: 1,
+            // One atlas for the game's whole life, behind one Arc: the
+            // texture cache's (pointer, generation) identity never
+            // changes, so the pixel uploads once and never again.
+            generation: 0,
+            filter: SpriteFilter::Nearest,
+            tiles: Vec::new(),
+            clip: Some([
+                PROGRESS_MAP_CX - 126.0,
+                -h * 0.5 + 70.0,
+                PROGRESS_MAP_CX + 126.0,
+                progress_top_y(h) + 46.0,
+            ]),
+            color: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+        };
+        for r in rows {
+            let Action::Hill(hill) = r.action else {
+                continue;
+            };
+            let Some(level) = self.levels.get(hill) else {
+                continue;
+            };
+            let (cols, rows_n) = (level.cols as f32, level.rows as f32);
+            // The cell answers to both bounds: the map is at most
+            // 225 wide — that budget is what holds the card and the
+            // column gutters honest — and never taller than the row
+            // stride minus its breathing room, so maps of neighbouring
+            // rows cannot touch even at the short-window stride.
+            let cell = ((progress_step(h) - 12.0) / rows_n)
+                .min(225.0 / cols)
+                .min(5.6);
+            // The card centres on the row itself — the selection band
+            // spans ±24 about `r.cy` — not on the row's text, which
+            // sits ten low for its baseline. An earlier draft stole
+            // four of those points for the baseline too, and the maps
+            // read a touch sunken in their rows.
+            let (cx, cy) = (PROGRESS_MAP_CX, r.cy);
+            // The dark card first, so the tiles land on it: a map
+            // reads as a framed thing beside its row, not as spill.
+            ctx.rectangle(
+                cx,
+                cy,
+                cols * cell / 2.0 + 5.0,
+                rows_n * cell / 2.0 + 5.0,
+                Color {
+                    r: 0.02,
+                    g: 0.022,
+                    b: 0.03,
+                    a: 0.9 * a,
+                },
+                z + 1.2,
+            );
+            for (i, t) in level.tiles.iter().enumerate() {
+                let (row, col) = (i / level.cols, i % level.cols);
+                let tint = match t {
+                    level::Tile::Rock => Color {
+                        r: 0.30,
+                        g: 0.27,
+                        b: 0.25,
+                        a: 1.0,
+                    },
+                    level::Tile::Dirt => Color {
+                        r: 0.46,
+                        g: 0.34,
+                        b: 0.22,
+                        a: 1.0,
+                    },
+                    level::Tile::Tunnel => Color {
+                        r: 0.05,
+                        g: 0.05,
+                        b: 0.06,
+                        a: 1.0,
+                    },
+                    level::Tile::Bed(c) => ant_color(*c),
+                };
+                let mut tile = frost::Tile::new(
+                    [
+                        cx + (col as f32 - (cols - 1.0) / 2.0) * cell,
+                        cy + ((rows_n - 1.0) / 2.0 - row as f32) * cell,
+                    ],
+                    [cell, cell],
+                    [0.0, 0.0, 1.0, 1.0],
+                );
+                tile.color = tint;
+                map.push_tile(tile);
+            }
+        }
+        ctx.scene().root.children.push(Box::new(SceneNode {
+            order: z + 1.5,
+            modulate: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a,
+            },
+            shape: Some(map),
+            ..Default::default()
+        }));
+    }
+
+    /// The marks that make the descent visibly longer than the window:
+    /// a chevron above the first row while hills wait out of sight
+    /// above, and one below the last visible row while more wait
+    /// below, in the gap the pinned `back` shares. Barrfont carries
+    /// letters and a space and nothing else, so the arrows are drawn
+    /// as two short strokes meeting at a tip — each one a polyline
+    /// node, riding the page's fade. They sit in the inter-row gaps,
+    /// where no text reaches: a row's glyphs stand 25 off its centre
+    /// and a mark 11 off its own, and the gaps are wider than both.
+    fn draw_progress_marks(&self, ctx: &mut Context, rows: &[Row], h: f32, z: f32, a: f32) {
+        let hills = rows
+            .iter()
+            .filter(|r| matches!(r.action, Action::Hill(_)))
+            .count();
+        let (up, down) = progress_marks(self.progressed(), self.progress_top, hills);
+        if !up && !down {
+            return;
+        }
+        let chevron = |cy: f32, tip: f32, ctx: &mut Context| {
+            ctx.scene().root.children.push(Box::new(SceneNode {
+                order: z + 3.0,
+                modulate: Color {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a,
+                },
+                shape: Some(frost::Shape::Polyline {
+                    points: vec![[-15.0, -tip * 0.55], [0.0, tip], [15.0, -tip * 0.55]],
+                    width: 5.0,
+                    color: C_TEXT,
+                }),
+                transform: Transform::translate([0.0, cy]),
+                ..Default::default()
+            }));
+        };
+        let top = progress_top_y(h);
+        let step = progress_step(h);
+        if up {
+            chevron(top + step * 0.42, 8.0, ctx);
+        }
+        if down {
+            chevron(top - (hills as f32 - 0.5) * step, -8.0, ctx);
+        }
     }
 
     /// A row's answer: the page rows turn the page, the setting rows
@@ -2987,7 +3603,8 @@ impl Demo {
         match action {
             Action::New => {
                 self.new_game();
-                Progress { hill: self.idx }.save();
+                self.progress.stood(self.idx);
+                self.progress.save();
             }
             Action::Resume => self.page = Page::Game,
             Action::OpenSettings => {
@@ -2995,16 +3612,41 @@ impl Demo {
                 self.drag = None;
                 self.menu_sel = 0;
             }
+            Action::OpenProgress => {
+                self.page = Page::Progress;
+                self.menu_sel = 0;
+                self.progress_top = 0;
+            }
             Action::Next => {
-                self.load(self.idx + 1);
+                // The greyed row answers nothing, whichever key or
+                // click called it: the hill underfoot is all the
+                // descent still owes, and `next` leads nowhere new.
+                if !self.next_owed() {
+                    return;
+                }
+                // Not the next hill number — the next owed hill: the
+                // freshly unlocked one at the frontier, else the
+                // nearest without a perfect run. `next_hill` says it
+                // at length; this is the same key's short hand.
+                let next = self.next_hill();
+                self.load(next);
                 self.page = Page::Game;
                 // Standing on a new hill is the fact the progress
                 // file keeps — written the moment it's true.
-                Progress { hill: self.idx }.save();
+                self.progress.stood(self.idx);
+                self.progress.save();
             }
             Action::Retry => {
                 self.load(self.idx);
                 self.page = Page::Game;
+            }
+            Action::Hill(n) => {
+                // A ledger row is a door: walking back into a warmed
+                // hill is a hill moved, and the file says so.
+                self.load(n);
+                self.page = Page::Game;
+                self.progress.stood(self.idx);
+                self.progress.save();
             }
             Action::Exit => ctx.exit(),
             Action::Keyboard => {
@@ -3076,11 +3718,51 @@ impl Demo {
         let rows = self.menu_rows(self.page, h);
         if !rows.is_empty() {
             self.menu_sel = self.menu_sel.min(rows.len() - 1);
-            if self.pressed(ctx, KeyCode::ArrowUp) {
-                self.menu_sel = step_sel(self.menu_sel, rows.len(), -1);
+            // The ledger leans: at its window's edges the arrow keys
+            // slide the window over the hills instead of wrapping —
+            // and the wheel drags the window directly, lines for
+            // lines. Every other page keeps the plain walk.
+            let up = self.pressed(ctx, KeyCode::ArrowUp);
+            let down = self.pressed(ctx, KeyCode::ArrowDown);
+            if self.page == Page::Progress {
+                let hills = rows.len() - 1; // the pinned back row aside
+                let more = self.progressed() > self.progress_top + hills;
+                if up && self.menu_sel == 0 && self.progress_top > 0 {
+                    self.progress_top -= 1;
+                } else if down && self.menu_sel + 1 == hills && more {
+                    self.progress_top += 1;
+                } else {
+                    // The plain walk: within the window the arrows
+                    // do what they do everywhere else, and the wrap
+                    // — the only way off either end without leaning
+                    // — comes home to the ledger's own top.
+                    let wrapped =
+                        (up && self.menu_sel == 0) || (down && self.menu_sel + 1 == rows.len());
+                    if up {
+                        self.menu_sel = step_sel(self.menu_sel, rows.len(), -1);
+                    }
+                    if down {
+                        self.menu_sel = step_sel(self.menu_sel, rows.len(), 1);
+                    }
+                    if wrapped {
+                        self.progress_top = 0;
+                    }
+                }
+            } else {
+                if up {
+                    self.menu_sel = step_sel(self.menu_sel, rows.len(), -1);
+                }
+                if down {
+                    self.menu_sel = step_sel(self.menu_sel, rows.len(), 1);
+                }
             }
-            if self.pressed(ctx, KeyCode::ArrowDown) {
-                self.menu_sel = step_sel(self.menu_sel, rows.len(), 1);
+            if self.page == Page::Progress {
+                let wheel = ctx.mouse_wheel();
+                if wheel != 0.0 {
+                    let last = self.progressed().saturating_sub(progress_fits(h));
+                    let top = self.progress_top as i32 - wheel.round() as i32;
+                    self.progress_top = top.clamp(0, last as i32) as usize;
+                }
             }
             let nudge = match (
                 self.pressed(ctx, KeyCode::ArrowLeft),
@@ -3187,8 +3869,16 @@ impl Demo {
                 );
                 push(
                     &mut rows,
-                    Action::Keyboard,
+                    Action::OpenProgress,
                     top - 3.0 * step,
+                    240.0,
+                    "progress".into(),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::Keyboard,
+                    top - 4.0 * step,
                     240.0,
                     "keyboard".into(),
                     None,
@@ -3196,7 +3886,7 @@ impl Demo {
                 push(
                     &mut rows,
                     Action::Mouse,
-                    top - 4.0 * step,
+                    top - 5.0 * step,
                     240.0,
                     "mouse".into(),
                     None,
@@ -3204,7 +3894,7 @@ impl Demo {
                 push(
                     &mut rows,
                     Action::Exit,
-                    top - 5.0 * step,
+                    top - 6.0 * step,
                     240.0,
                     "exit".into(),
                     None,
@@ -3373,6 +4063,52 @@ impl Demo {
                     );
                 }
             }
+            Page::Progress => {
+                // The descent, cut to its window and ordered by the
+                // work it still owes: hills not yet perfected come
+                // first in hill order, the perfected ones follow in
+                // hill order, so the top of the list is always the
+                // run still to earn and the clean sweeps settle to
+                // the bottom. A hill stood on but not warmed owns no
+                // run — and no run is no perfect run — so it leads
+                // with the imperfect. `perfect` is the exact
+                // negation of the score's red, so a hill's place in
+                // the order and its colour can never disagree. The
+                // `back` row stays pinned under the last visible one,
+                // where it can never scroll out of reach; the window
+                // and the scroll marks count rows, and a reorder
+                // moves hills between them, never a row out.
+                let top = progress_top_y(h);
+                let pstep = progress_step(h);
+                let total = self.progressed();
+                let mut order: Vec<usize> = (0..total).collect();
+                order.sort_by_key(|&i| (self.perfect(i), i));
+                let start = self.progress_top.min(total);
+                let n = progress_fits(h).min(total - start);
+                for (row, &i) in order[start..start + n].iter().enumerate() {
+                    let name = self.levels.get(i).map_or("hill", |l| l.name.as_str());
+                    let score = match self.progress.scores.iter().find(|(h, _)| *h == i) {
+                        Some((_, moves)) => format!("   {moves} moves"),
+                        None => String::new(),
+                    };
+                    push(
+                        &mut rows,
+                        Action::Hill(i),
+                        top - row as f32 * pstep,
+                        PROGRESS_PLATE - 12.0,
+                        format!("{name}{score}"),
+                        None,
+                    );
+                }
+                push(
+                    &mut rows,
+                    Action::Back,
+                    top - n as f32 * pstep,
+                    240.0,
+                    "back".to_string(),
+                    None,
+                );
+            }
         }
         rows
     }
@@ -3422,10 +4158,30 @@ impl Demo {
             self.route.clear();
         }
     }
+
+    /// Beat the clock, and tell the console when too long a silence
+    /// came before the beat. The engine clamps `dt` at one second — a
+    /// stall arrives as an ordinary big frame — so the stutter ledger
+    /// rides the wall clock instead: half a second of silence gets one
+    /// line. A long frame reports as it happens; a hard hang leaves
+    /// its last beat behind as the stopped heart, and the difference
+    /// between the two is the diagnosis a machine across the room
+    /// — or across the house — otherwise never gives up.
+    fn beat(&mut self) {
+        let now = now_ms();
+        if self.last_beat > 0.0 {
+            let gap = (now - self.last_beat) / 1000.0;
+            if gap >= 0.5 {
+                report_gap(gap, self.page);
+            }
+        }
+        self.last_beat = now;
+    }
 }
 
 impl Process for Demo {
     fn process(&mut self, ctx: &mut Context, dt: f32) {
+        self.beat();
         // The overlay breathes: toward one while a menu is up, toward
         // zero when the hill takes the screen back. The page it
         // paints follows the live page in, and holds the last one
@@ -3830,11 +4586,15 @@ impl Process for Demo {
                     }
                 }
             }
-            // The player is an ant, and the queen's bed is her target:
-            // standing on it tucks her in like any ant — spike, then
-            // dark. Stepping off (undo, stubbornness) relights the lamp.
+            // The player is an ant, and the queen's bed is her target —
+            // but reaching it is not yet home: standing on the white
+            // bed with the colony still awake is a cell she stands on,
+            // and her lamp keeps working like on any other. The tuck-in
+            // — spike, then dark, head to the ceiling — waits for every
+            // other ant to be asleep, which is exactly the moment the
+            // hill calls won.
             self.player_home = match game.tile(game.player) {
-                level::Tile::Bed(game::AntColor::White) => {
+                level::Tile::Bed(game::AntColor::White) if game.won => {
                     Some(self.player_home.unwrap_or(1.0).max(0.0))
                 }
                 _ => None,
@@ -3900,6 +4660,7 @@ impl Process for Demo {
         // The verdict: when the hill is won and has not yet been told
         // its own name, draw one from the hat — the praise tier reads
         // the par, the spin reads the dice.
+        let mut scored = None;
         if let Some(game) = &self.game {
             if !game.won {
                 self.splash_done = false;
@@ -3926,7 +4687,17 @@ impl Process for Demo {
                     end,
                     color: colour,
                 });
+                scored = Some((self.idx, game.moves));
             }
+        }
+        // A finished hill joins the ledger on the tick it finishes —
+        // the same tick that first spoke its verdict. The hill itself
+        // has not moved, so only the score's line changes in the
+        // file; a kill before this point lost an unfinished run, and
+        // that is exactly what the ledger is for.
+        if let Some((hill, moves)) = scored {
+            self.progress.record(hill, moves);
+            self.progress.save();
         }
         if let Some(s) = &mut self.splash {
             s.t += dt;
@@ -3984,6 +4755,38 @@ fn init_logging() {
             log::set_max_level(log::LevelFilter::Info);
         }
     });
+}
+
+/// Milliseconds on the wall clock: the browser's own clock in the
+/// page, epoch milliseconds on the desktop — one shape for the beat
+/// sentinel, whichever side of the wire it keeps time on.
+#[cfg(target_arch = "wasm32")]
+fn now_ms() -> f64 {
+    js_sys::Date::now()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn now_ms() -> f64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64() * 1000.0)
+}
+
+/// One stutter line, said where the line lands: the devtools console
+/// on the web — where `log` calls have been compiled out of the
+/// release build the page ships — and the ordinary log on the
+/// desktop, where they have not.
+#[cfg(target_arch = "wasm32")]
+fn report_gap(gap: f64, page: Page) {
+    web_sys::console::warn_1(
+        &format!("antifrost: {gap:.2} s since the last frame ({page:?} up)").into(),
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn report_gap(gap: f64, page: Page) {
+    log::warn!("{gap:.2} s since the last frame ({page:?} up)");
 }
 
 /// The command line's arguments.
@@ -4117,7 +4920,7 @@ fn main() {
     if let Err(err) = frost::run_configured(
         scene,
         {
-            let mut d = Demo::new(ant_frames, soil, settings.clone(), progress.hill);
+            let mut d = Demo::new(ant_frames, soil, settings.clone(), progress);
             d.bench = bench;
             d.resize_probe = resize_probe.then_some(0.0);
             d
@@ -4202,7 +5005,7 @@ mod click_tests {
             .map(|png| ant_frame(png).expect("shipped ant frames bake"))
             .collect();
         let soil = frost::Shape::sprite_bytes(SOIL).expect("shipped soil bakes");
-        Demo::new(frames, soil, Settings::default(), 0)
+        Demo::new(frames, soil, Settings::default(), Progress::default())
     }
 
     #[test]
@@ -4585,19 +5388,32 @@ mod menu_tests {
             .map(|png| ant_frame(png).expect("shipped ant frames bake"))
             .collect();
         let soil = frost::Shape::sprite_bytes(SOIL).expect("shipped soil bakes");
-        Demo::new(frames, soil, Settings::default(), 0)
+        Demo::new(frames, soil, Settings::default(), Progress::default())
     }
 
     #[test]
     fn the_progress_file_counts_hills_as_the_hud_does() {
         assert_eq!(
             Progress::default().text(),
-            "(\n    hill: 1,\n)\n",
-            "a player who never moved stands on the first hill"
+            "(\n    hill: 1,\n    reached: 1,\n    scores: [],\n)\n",
+            "a player who never moved stands on the first hill, ledger empty"
         );
         let p = Progress::parse("(\n    hill: 3,\n)\n");
         assert_eq!(p.hill, 2, "the file counts from one, the code from zero");
-        assert_eq!(Progress { hill: 1 }.text(), "(\n    hill: 2,\n)\n");
+        assert_eq!(p.reached, 2, "a pre-depth file adopts its standing hill");
+        assert!(
+            p.scores.is_empty(),
+            "a file from before the ledger is no scores, not a broken file"
+        );
+        assert_eq!(
+            Progress {
+                hill: 1,
+                reached: 1,
+                ..Default::default()
+            }
+            .text(),
+            "(\n    hill: 2,\n    reached: 2,\n    scores: [],\n)\n"
+        );
         assert_eq!(
             Progress::parse("garbage").hill,
             0,
@@ -4611,13 +5427,43 @@ mod menu_tests {
     }
 
     #[test]
+    fn the_ledger_keeps_the_best_run_of_every_warm_hill() {
+        let mut p = Progress::default();
+        p.record(2, 40);
+        p.record(0, 55);
+        p.record(2, 34);
+        p.record(2, 41);
+        assert_eq!(
+            p.scores,
+            vec![(0, 55), (2, 34)],
+            "sorted, one entry per hill, the fewest moves kept"
+        );
+        let back = Progress::parse(&p.text());
+        assert_eq!(back, p, "the ledger round-trips through the file");
+        // And it reads back a hand-written list the same way it reads
+        // its own: quoted pairs counting hills from one, out-of-order
+        // folds to sorted, a hill named twice keeps its better number.
+        let p =
+            Progress::parse("(\n    hill: 4,\n    scores: [\"3 31\", \"1 47\", \"3 29\"],\n)\n");
+        assert_eq!(p.scores, vec![(0, 47), (2, 29)]);
+    }
+
+    #[test]
     fn the_game_opens_where_the_player_stood() {
         let frames = ANT_FRAMES
             .iter()
             .map(|png| ant_frame(png).expect("shipped ant frames bake"))
             .collect();
         let soil = frost::Shape::sprite_bytes(SOIL).expect("shipped soil bakes");
-        let d = Demo::new(frames, soil, Settings::default(), 1);
+        let d = Demo::new(
+            frames,
+            soil,
+            Settings::default(),
+            Progress {
+                hill: 1,
+                ..Default::default()
+            },
+        );
         assert_eq!(d.idx, 1, "the saved hill is the opened hill");
         assert!(d.game.is_some(), "and it arrives with its game loaded");
         let mut d = d;
@@ -4832,20 +5678,276 @@ mod menu_tests {
     fn escape_leaves_the_control_pages_for_the_menu() {
         assert_eq!(escape_nav(Page::Keyboard), Escape::ToMenu);
         assert_eq!(escape_nav(Page::Mouse), Escape::ToMenu);
+        assert_eq!(escape_nav(Page::Progress), Escape::ToMenu);
     }
 
     #[test]
-    fn the_six_menu_rows_hang_inside_seven_twenty() {
+    fn the_seven_menu_rows_hang_inside_seven_twenty() {
         // The bottom row of the main menu must land above the
         // plate's own bottom edge — the plate's bottom is 130 under
         // centre, the frame's is h/2 under it.
         let d = demo();
         let rows = d.menu_rows(d.page, 720.0);
-        assert_eq!(rows.len(), 6);
+        assert_eq!(rows.len(), 7);
         let lowest = rows.iter().map(|r| r.cy).fold(f32::MAX, f32::min);
         assert!(
             lowest >= 130.0 - 360.0,
             "the last row escaped the plate: {lowest}"
+        );
+    }
+
+    /// The ledger's columns, held apart by measured ink: these four
+    /// budgets are the real widths of the widest things a row can
+    /// carry, laid out by the engine's shaper in the shipped Barrfont
+    /// at the ledger's size — the longest authored name (370.0,
+    /// "Three Cold Nights"), the fullest score the moves cap allows
+    /// (199.2, "999 moves"), a two-digit hill number (46.3), and the
+    /// card that the cell's own caps can never grow past (190.0). If a
+    /// new hill out-owns this ink, the first assertion fails here
+    /// rather than painting a collision.
+    #[test]
+    fn the_ledger_columns_never_touch() {
+        const NUM: f32 = 48.0;
+        const NAME: f32 = 372.0;
+        const SCORE: f32 = 205.0;
+        const CARD: f32 = 235.0;
+        assert!(
+            PROGRESS_NUM_X + NUM + 20.0 <= PROGRESS_NAME_X,
+            "the number column must hand off to the name with room"
+        );
+        assert!(
+            PROGRESS_NAME_X + NAME + 20.0 <= PROGRESS_SCORE_R - SCORE,
+            "the widest name must stop short of the shortest score's left edge"
+        );
+        assert!(
+            PROGRESS_SCORE_R + 20.0 <= PROGRESS_MAP_CX - CARD / 2.0,
+            "the score must stop short of the map card"
+        );
+        assert!(
+            PROGRESS_MAP_CX + CARD / 2.0 + 10.0 <= PROGRESS_PLATE,
+            "the map card must sit inside the plate"
+        );
+        assert!(
+            PROGRESS_PLATE <= 480.0,
+            "the plate must fit the half-width of the smallest window the game lays out for"
+        );
+    }
+
+    #[test]
+    fn the_ledger_marks_more_above_and_below() {
+        // Nothing hidden at the top of a short descent...
+        assert_eq!(progress_marks(3, 0, 3), (false, false));
+        // ...a mark below while hills wait out of sight...
+        assert_eq!(progress_marks(20, 0, 12), (false, true));
+        // ...marks both ways mid-descent...
+        assert_eq!(progress_marks(20, 5, 12), (true, true));
+        // ...and only above once the bottom row is in the window.
+        assert_eq!(progress_marks(20, 8, 12), (true, false));
+    }
+
+    #[test]
+    fn the_ledger_never_writes_more_than_the_cap() {
+        let mut p = Progress::default();
+        p.record(0, 1234);
+        assert_eq!(
+            p.scores,
+            vec![(0, MOVES_CAP)],
+            "a wandering win records the cap, not the wander"
+        );
+        p.record(0, 940);
+        assert_eq!(p.scores, vec![(0, 940)], "and a better run still beats it");
+        let p = Progress::parse(&format!(
+            "(\n    hill: 1,\n    scores: [\"1 {}\"],\n)\n",
+            MOVES_CAP + 235
+        ));
+        assert_eq!(
+            p.scores,
+            vec![(0, MOVES_CAP)],
+            "the file passes the same door"
+        );
+    }
+
+    #[test]
+    fn the_progress_page_is_a_window_over_the_descent() {
+        let mut d = demo();
+        d.page = Page::Progress;
+        // Even with nothing warm, the hill you stand on owns a row.
+        let rows = d.menu_rows(d.page, 1080.0);
+        assert_eq!(
+            rows.first().map(|r| r.action),
+            Some(Action::Hill(0)),
+            "the first hill is stood on, so it is listed"
+        );
+        assert_eq!(rows.last().map(|r| r.action), Some(Action::Back));
+        for hill in 0..20 {
+            d.progress.record(hill, 30 + hill as i32);
+        }
+        let fits = progress_fits(1080.0);
+        let rows = d.menu_rows(d.page, 1080.0);
+        assert_eq!(
+            rows.len(),
+            fits + 1,
+            "the window shows its plate-full of hills and pins back under them"
+        );
+        assert_eq!(
+            rows.last().map(|r| r.action),
+            Some(Action::Back),
+            "and the way out rides below the last visible row"
+        );
+        d.progress_top = 10;
+        let rows = d.menu_rows(d.page, 1080.0);
+        assert_eq!(
+            rows.first().map(|r| r.action),
+            Some(Action::Hill(10)),
+            "slide the window and its rows come with it"
+        );
+        let lowest = rows.iter().map(|r| r.cy).fold(f32::MAX, f32::min);
+        assert!(
+            lowest >= progress_top_y(1080.0) - fits as f32 * progress_step(1080.0) - 0.01,
+            "the pinned back row escaped its place: {lowest}"
+        );
+    }
+
+    #[test]
+    fn a_stood_on_hill_is_listed_even_unwarmed() {
+        let mut d = demo();
+        d.page = Page::Progress;
+        d.load(2); // three hills stood on, none warmed.
+        d.progress.stood(2);
+        let rows = d.menu_rows(d.page, 1080.0);
+        assert_eq!(
+            rows.iter().map(|r| r.action).collect::<Vec<_>>(),
+            vec![
+                Action::Hill(0),
+                Action::Hill(1),
+                Action::Hill(2),
+                Action::Back
+            ],
+            "the descent lists every hill reached, warm or not"
+        );
+        assert!(
+            !rows[0].text.contains("moves"),
+            "an unwarmed hill keeps its score column empty"
+        );
+        d.progress.record(1, 40);
+        let rows = d.menu_rows(d.page, 1080.0);
+        assert!(
+            rows[1].text.contains("40 moves"),
+            "a warmed hill wears its run"
+        );
+        assert!(
+            !rows[2].text.contains("moves"),
+            "and its neighbours keep their word"
+        );
+    }
+
+    #[test]
+    fn the_ledger_owes_the_imperfect_runs_first() {
+        let mut d = demo();
+        d.page = Page::Progress;
+        d.load(5);
+        d.progress.stood(5); // six hills, none warmed yet.
+        // Perfect the 2nd and 4th (their pars are 5 and 10), overshoot
+        // the 5th, and leave the 1st, 3rd and 6th unwarmed.
+        d.progress.record(1, 3);
+        d.progress.record(3, 8);
+        d.progress.record(4, 30);
+        let rows = d.menu_rows(d.page, 1080.0);
+        assert_eq!(
+            rows.iter().map(|r| r.action).collect::<Vec<_>>(),
+            vec![
+                Action::Hill(0),
+                Action::Hill(2),
+                Action::Hill(4),
+                Action::Hill(5),
+                Action::Hill(1),
+                Action::Hill(3),
+                Action::Back,
+            ],
+            "the owed runs lead in hill order — the unwarmed with the \
+             over-par — and the perfected follow in their own hill order"
+        );
+    }
+
+    #[test]
+    fn next_leads_the_owed_hill_or_the_new_one() {
+        let mut d = demo();
+        // Warm the first two hills and stand on the deepest: at the
+        // frontier of the descent, the never-walked hill below
+        // answers first, whatever the hills behind may owe.
+        d.load(2);
+        d.progress.stood(2);
+        d.progress.record(0, 1);
+        d.progress.record(1, 1);
+        assert_eq!(
+            d.next_hill(),
+            3,
+            "at the frontier of the descent, the never-walked hill below answers first"
+        );
+        // Walk down to the sixth hill and back to the first, leaving
+        // the third unwarmed: from shallow ground `next` leads to the
+        // nearest owed hill ahead, not past it to the new one.
+        d.load(5);
+        d.progress.stood(5);
+        for hill in 3..6 {
+            d.progress.record(hill, 1);
+        }
+        d.load(0);
+        assert_eq!(d.next_hill(), 2, "the hill still owed ahead leads");
+        // Warm that one too, and the walked ground holds nothing to
+        // owe: the new hill below takes the key.
+        d.progress.record(2, 1);
+        d.load(1);
+        assert_eq!(
+            d.next_hill(),
+            6,
+            "nothing owed on walked ground: the new hill below answers"
+        );
+        // And when the whole authored descent is perfect, `next` is
+        // what it always was: the plain next hill, wrapping.
+        for hill in 0..d.levels.len() {
+            d.progress.record(hill, 1);
+        }
+        assert_eq!(
+            d.next_hill(),
+            2,
+            "a perfected descent: `next` just moves on"
+        );
+    }
+
+    #[test]
+    fn next_greys_when_the_hill_underfoot_is_all_that_is_owed() {
+        // A player who never moved has whole hills still to walk:
+        // the key is wide awake.
+        assert!(demo().next_owed());
+        let mut d = demo();
+        let last = d.levels.len() - 1;
+        // Walk the whole descent and perfect every hill but the
+        // third. With that one hill underfoot, `next` leads nowhere
+        // the player is not already standing — and greys.
+        d.load(last);
+        d.progress.stood(last);
+        for hill in 0..d.levels.len() {
+            if hill != 2 {
+                d.progress.record(hill, 1);
+            }
+        }
+        d.load(2);
+        assert!(
+            !d.next_owed(),
+            "the only owed hill is the one underfoot: `next` is spent"
+        );
+        // Step aside to a perfected hill and the owed one waits
+        // ahead again — the grey is the hill's, not the page's.
+        d.load(3);
+        assert!(d.next_owed(), "from perfected ground the owed hill waits");
+        // Warm the last owed hill and the descent owes nothing; a
+        // perfected `next` has nowhere to move on to either.
+        d.load(2);
+        d.progress.record(2, 1);
+        assert!(
+            !d.next_owed(),
+            "a perfected descent leaves `next` nothing to lead to"
         );
     }
 
@@ -4875,7 +5977,7 @@ mod menu_tests {
     }
 
     #[test]
-    fn the_main_menu_is_the_six_rows_requested() {
+    fn the_main_menu_is_the_seven_rows_requested() {
         let d = demo();
         let actions: Vec<Action> = d
             .menu_rows(d.page, 1080.0)
@@ -4888,6 +5990,7 @@ mod menu_tests {
                 Action::New,
                 Action::Resume,
                 Action::OpenSettings,
+                Action::OpenProgress,
                 Action::Keyboard,
                 Action::Mouse,
                 Action::Exit,
