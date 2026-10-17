@@ -1064,51 +1064,39 @@ impl Settings {
         }
     }
 
-    /// The launch folder's file, read whole; missing or unreadable
-    /// says default. The menu opens every launch regardless — the
-    /// file speaks the settings, not the opening page. A browser has
-    /// no disc to keep settings on, so there every launch speaks
-    /// default.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// The kept text, read back; missing or unreadable says default.
+    /// The menu opens every launch regardless — the file speaks the
+    /// settings, not the opening page. On the desktop the keeping is a
+    /// file beside the launch folder; in a browser, its own memory of
+    /// this site — `frost::store` answers for both worlds.
     fn load() -> Settings {
-        let path = std::env::current_dir().unwrap_or_default().join(Self::FILE);
-        match std::fs::read_to_string(&path) {
-            Ok(src) => Settings::parse(&src),
-            Err(_) => {
-                log::info!("antifrost: no {:?} yet — defaults", path);
+        match frost::store::load(Self::FILE) {
+            Some(src) => Settings::parse(&src),
+            None => {
+                log::info!("antifrost: no {:?} yet — defaults", Self::FILE);
                 Settings::default()
             }
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
-    fn load() -> Settings {
-        Settings::default()
-    }
-
-    /// Write the file where the game was launched from. Failure is a
-    /// logged shrug, never a popped frame: a read-only folder costs
-    /// persistence, not the game.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Keep the settings under the file's name, wherever this runs.
+    /// Failure is a logged shrug, never a popped frame: a read-only
+    /// folder, or a private window, costs persistence, not the game.
     fn save(&self) {
-        let path = std::env::current_dir().unwrap_or_default().join(Self::FILE);
-        if let Err(err) = std::fs::write(&path, self.text()) {
-            log::warn!("antifrost: could not save {path:?}: {err}");
+        if let Err(err) = frost::store::save(Self::FILE, &self.text()) {
+            log::warn!("antifrost: could not save {:?}: {err}", Self::FILE);
         }
     }
-
-    #[cfg(target_arch = "wasm32")]
-    fn save(&self) {}
 }
 
-/// Where the player's descent stands, kept in its own file beside the
-/// settings in the launch folder: which hill they last stood on. It
+/// Where the player's descent stands, kept under its own name beside
+/// the settings — a file in the launch folder on the desktop, a key in
+/// the browser's memory on the web: which hill they last stood on. It
 /// is written wherever the hill moves — New Game, N, P — never on
 /// launch and never inside `load`, so starting the game leaves no
 /// fingerprint and a window-manager kill loses nothing newer than
 /// the hill entered. The file counts hills the way the HUD does,
-/// from one. A browser has no disc, and every web launch stands on
-/// the first hill.
+/// from one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 struct Progress {
     hill: usize,
@@ -1138,30 +1126,17 @@ impl Progress {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn load() -> Progress {
-        let path = std::env::current_dir().unwrap_or_default().join(Self::FILE);
-        match std::fs::read_to_string(&path) {
-            Ok(src) => Progress::parse(&src),
-            Err(_) => Progress::default(),
-        }
+        frost::store::load(Self::FILE)
+            .map(|src| Progress::parse(&src))
+            .unwrap_or_default()
     }
 
-    #[cfg(target_arch = "wasm32")]
-    fn load() -> Progress {
-        Progress::default()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     fn save(self) {
-        let path = std::env::current_dir().unwrap_or_default().join(Self::FILE);
-        if let Err(err) = std::fs::write(&path, self.text()) {
-            log::warn!("antifrost: could not save {path:?}: {err}");
+        if let Err(err) = frost::store::save(Self::FILE, &self.text()) {
+            log::warn!("antifrost: could not save {:?}: {err}", Self::FILE);
         }
     }
-
-    #[cfg(target_arch = "wasm32")]
-    fn save(self) {}
 }
 
 /// The largest 16:9 box inside a window: native mode's view. A
@@ -4051,7 +4026,7 @@ fn main() {
     // to the caller with `--vsync off`.
     // The saved file speaks first, and the command line over it: a
     // deliberate `--vsync off` outranks yesterday's on. A browser has
-    // no command line and no disc, so there the defaults stand.
+    // no command line, so there its own memory of yesterday stands.
     #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut settings = Settings::load();
     let progress = Progress::load();

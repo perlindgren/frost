@@ -71,6 +71,10 @@ web-sys = { version = "0.3", features = [
     "HtmlElement",
     "Node",
     "Performance",
+    # The browser's own memory for the store module (src/store.rs): the
+    # per-origin `localStorage` a web build keeps its saves and settings
+    # in, where the native store keeps files.
+    "Storage",
     "Window",
 ] }
 

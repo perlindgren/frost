@@ -206,6 +206,10 @@ mod shapes;
 pub use shapes::*;
 
 pub mod assets;
+/// Text kept under a name until the next launch: a file beside the
+/// launch folder on the desktop, the browser's `localStorage` on the
+/// web — one request, two worlds, as in [`assets`].
+pub mod store;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tell;
 pub mod watch;

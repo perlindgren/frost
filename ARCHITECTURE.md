@@ -1590,6 +1590,14 @@ equivalent reloads scripts; the numbers that make the game *play*
 the way it plays live in its scene files, behind an editor. Here the
 crown jewel is a file and a watch.
 
+Keeping landed 2026-10-17 as `frost::store` (src/store.rs): text kept
+under a name until the next launch — `Assets` turned around, the same
+two worlds answering one request. A file beside the launch folder on
+the desktop, the browser's `localStorage` on the web; antifrost's
+settings and progress retired their cfg twin pairs, the web build's
+silent no-op and its four dead-code warnings went with them, and the
+browser now remembers the hill it last stood on.
+
 The media tier climbed next, and it asked nothing of the engine:
 the texture cache has keyed textures by `(pointer, generation)`
 since the first frame, so new bytes were always a new texture
