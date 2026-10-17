@@ -5,6 +5,15 @@
 //! is close to proof — and the returned path is re-applied to a fresh
 //! game before it leaves `solution()`, making the proof airtight. The
 //! BFS depth of a win is the true optimum: the `par` the HUD shows.
+//!
+//! Why not IDA*, asked properly: it would fix BFS's memory wall, but
+//! only an ADMISSIBLE heuristic may prune an optimality search, and
+//! this game defeats every distance heuristic. Collecting an ant
+//! re-slots it along the existing history deque — a free teleport to
+//! a cell the player passed long ago, costing one action — so no
+//! per-ant distance can bound the moves remaining. The hills beyond
+//! BFS are therefore hunted, not proved, and every hunted route is
+//! trusted only through `verify`.
 
 use crate::game::{AntState, Dir, Game};
 use crate::level::Level;
@@ -217,7 +226,15 @@ fn push_node(run: &mut Run, e: &[u8], parent: u32, act: Act) -> u32 {
     run.meta.len() as u32 - 1
 }
 
-pub fn bfs(level: &Level, max_states: usize) -> Run {
+/// One BFS run, expanding no deeper than `max_depth` — `usize::MAX`
+/// for "prove me everything". A finite bound turns BFS from solver
+/// into CERTIFIER: BFS expands level by level, so a found win is at
+/// minimum depth (reaching it exhausted every shallower layer), and
+/// an exhaustion WITHOUT a win up to the bound proves no win that
+/// short exists. Hand the bound one below a known route and these
+/// two facts bracket a proof of optimality — which is exactly what
+/// `solve` does with the hunter's route.
+pub fn bfs(level: &Level, max_states: usize, max_depth: usize) -> Run {
     let start = Game::start(level.clone());
     let start_enc = encode(&start);
     let mut seen: FoldSet = FoldSet::default();
@@ -274,6 +291,14 @@ pub fn bfs(level: &Level, max_states: usize) -> Run {
             if capped {
                 log::info!("solver: {max_states} states reached at depth {depth}");
             }
+            return run;
+        }
+        if depth >= max_depth {
+            // The bound is reached with children still queued: this is
+            // an EXHAUSTION within the depth, not a cap. The caller
+            // reads a clean stop as "no win this short", which is the
+            // certificate `solve` asks for. A win exactly at the bound
+            // was found by the loop above, so it is not missed.
             return run;
         }
         frontier = next;
@@ -334,8 +359,58 @@ pub fn verify(level: &Level, p: &[Act]) -> bool {
 /// The optimal solution (BFS depth = optimum), verified by replay, or
 /// `None` if the cap stopped the search before any win.
 pub fn solution(level: &Level, max_states: usize) -> Option<Vec<Act>> {
-    let run = bfs(level, max_states);
+    let run = bfs(level, max_states, usize::MAX);
     run.winner.map(|_| path(&run)).filter(|p| verify(level, p))
+}
+
+/// What the unified solver leaves behind: the shortest route anyone
+/// found — always replay-verified — and whether its length is PROVEN
+/// unbeatable or merely the best a beam walked.
+pub struct Solved {
+    pub route: Vec<Act>,
+    pub proven: bool,
+}
+
+/// One door, two minds.
+///
+/// The beam goes first: it finds a route fast where BFS cannot get a
+/// foothold, and — the reason to unite them — its length is exactly
+/// the bound a proof needs. Bounding BFS one below the hunted route
+/// turns it from solver into CERTIFIER. A BFS win at or below the
+/// bound is shorter and OPTIMAL (BFS expands level by level, so
+/// reaching it exhausted every shallower layer); a BFS EXHAUSTION
+/// with no win below the bound proves the hunted route unbeatable.
+/// Both verdicts demand the real game replay the route, and neither
+/// is claimed if BFS hit its state cap first — a cap is silence, not
+/// proof. When the beam finds nothing at all, BFS runs unbounded as
+/// the honest fallback: any win it reaches is proven optimal, and a
+/// capped nothing means the hill has not spoken.
+pub fn solve(level: &Level, max_states: usize) -> Option<Solved> {
+    if let Some(route) = hunt_route(level, 150) {
+        // Certify: no win shorter than the route, explored to its end.
+        let run = bfs(level, max_states, route.len().saturating_sub(1));
+        let shorter = run.winner.map(|_| path(&run)).filter(|p| verify(level, p));
+        if let Some(shorter) = shorter {
+            return Some(Solved {
+                route: shorter,
+                proven: true,
+            });
+        }
+        // No shorter win, BFS did not cap, and the route really wins:
+        // the hunt is optimal. Anything else — a cap, or a route the
+        // game will not replay — is an unproven best, never a proof.
+        let proven = run.winner.is_none() && !run.capped && verify(level, &route);
+        return Some(Solved { route, proven });
+    }
+    // The beam never reached the summit: plain BFS, whose win is proven.
+    let run = bfs(level, max_states, usize::MAX);
+    run.winner
+        .map(|_| path(&run))
+        .filter(|p| verify(level, p))
+        .map(|route| Solved {
+            route,
+            proven: true,
+        })
 }
 
 /// `lrdLURx…` action string for eprintln.
@@ -388,7 +463,7 @@ mod tests {
         // the hill can never win, and the search exhausts the space.
         let rows = ["######", "#W.@r#", "######", "#R####"];
         let level = from_grid("probe", &rows, 0).expect("valid grid");
-        let run = bfs(&level, 1_000_000);
+        let run = bfs(&level, 1_000_000, usize::MAX);
         assert!(run.winner.is_none());
         assert!(!run.capped, "small hill should exhaust, not cap");
     }
@@ -399,7 +474,7 @@ mod tests {
         for level in crate::level::load_levels(crate::LEVELS) {
             let name = level.name.clone();
             let t = std::time::Instant::now();
-            let run = bfs(&level, 24_000_000);
+            let run = bfs(&level, 24_000_000, usize::MAX);
             if run.winner.is_none() && !run.capped {
                 panic!("{name}: UNSOLVABLE — a shipped hill must be winnable");
             }
@@ -415,18 +490,23 @@ mod tests {
                         glyphs(&p)
                     );
                 }
-                None => eprintln!("{name}: par {} = verified route (cap hit)", level.par),
+                None => eprintln!(
+                    "{name}: par {} — cap hit, no proof here; the hand_route_wins_* tests replay the route every run",
+                    level.par
+                ),
             }
             eprintln!("  {:?}", t.elapsed());
         }
     }
 
     /// BFS caps out on four trail ants (the history key is honest, so the
-    /// space is enormous); this hand route is the shipped par and is
-    /// replay-verified against the real game. Blue peels mid-dig in the
-    /// low gallery, yellow just past its bed in the same run, green on
-    /// the lapped upper ring, and red last — in the middle corridor's
-    /// wake, one step from the way home.
+    /// space is enormous); this is the route the hunter retook at 100k
+    /// width — it beat the five-lap 71 that had outlived every hunt
+    /// before it. One big loop: gather on the middle row, a three-move
+    /// juggle beds RED at the start, then each long ride peels one ant
+    /// in its wake — BLUE along the bottom ride west, YELLOW then
+    /// GREEN along the top ride east — and one step onto W after the
+    /// east-shaft descent ends the hill.
     #[test]
     fn hand_route_wins_ember_deep() {
         let rows = [
@@ -439,9 +519,9 @@ mod tests {
             "###############",
         ];
         let level = from_grid("Ember Deep", &rows, 0).expect("valid grid");
-        let glyphs = "rrrrrrrrrrrrllllllllllllddrrrrrrrrrrrruuuullllllllllllddrrrrrrrrrrrrddl";
+        let glyphs = "rrrrrlllxrlrrrrrrrrrrddlllllllllllluuuurrrrrrrrrrrrddddl";
         let route = parse(&glyphs);
-        assert_eq!(route.len(), 71);
+        assert_eq!(route.len(), 56);
         assert!(verify(&level, &route), "the hand route must win");
     }
 
@@ -480,6 +560,12 @@ mod tests {
         assert!(verify(&level, &route), "the hand route must win");
     }
 
+    /// The 100k hunt's 47 — one shorter than the freight route it
+    /// replaced, and shaped differently: GREEN wakes on the first
+    /// descent's ride, a drop-and-shove leaves an ant in the east
+    /// shaft, a two-step juggle beds RED mid-hill, YELLOW wakes one
+    /// step after being stood on, and BLUE comes home off a down-up
+    /// beat at the east shaft — then straight up it to W.
     #[test]
     fn hand_route_wins_winter_quarters() {
         let rows = [
@@ -492,9 +578,9 @@ mod tests {
             "#############",
         ];
         let level = from_grid("Winter Quarters", &rows, 0).expect("valid grid");
-        let glyphs = "rrrrrrrrrrxxddddxlllluuuurlddrxLlLlLlLrrrrrrxLuu";
+        let glyphs = "rrrrrrddrrrruxDullllddllllllxrrrrrrddrrrruduuuu";
         let route = parse(glyphs);
-        assert_eq!(route.len(), 48);
+        assert_eq!(route.len(), 47);
         assert!(verify(&level, &route), "the hand route must win");
     }
     #[test]
@@ -510,9 +596,10 @@ mod tests {
             "#########",
         ];
         let level = from_grid("Ninefold", &rows, 0).expect("valid grid");
-        let glyphs = "rrrrrruuuuudddddllluuurddlulurdddllluuuuu";
+        // The paper route was 41; the tunnel-aware hunt found 35.
+        let glyphs = "rrrrrruuuuudddddlluuulldrddllluuuuu";
         let route = parse(glyphs);
-        assert_eq!(route.len(), 41);
+        assert_eq!(route.len(), 35);
         assert!(verify(&level, &route), "ninefold route must win");
     }
 
@@ -546,9 +633,11 @@ mod tests {
             "###########",
         ];
         let level = from_grid("Ashfall", &rows, 0).expect("valid grid");
-        let glyphs = "ddrrrrrllllluurrrxrrrrrllluulllxlxxlddRrRrrrruxulxRrRdduurRllxRllll";
+        // Ten moves off the old hunt's 67: the tunnel-aware score saw
+        // the gallery the Manhattan beam walked past.
+        let glyphs = "ddrrrrrxuurrrllluullllxxxlddddrrrrruuuuxlxRrRdurRllxRllll";
         let route = parse(glyphs);
-        assert_eq!(route.len(), 67);
+        assert_eq!(route.len(), 57);
         assert!(verify(&level, &route), "ashfall route must win");
     }
     #[test]
@@ -567,6 +656,55 @@ mod tests {
         let route = parse(glyphs);
         assert_eq!(route.len(), 32);
         assert!(verify(&level, &route), "slow burn route must win");
+    }
+
+    #[test]
+    fn hand_route_wins_deep_cellar() {
+        // The hole the re-hunt closed: Deep Cellar shipped with par
+        // 51 but no route test at all — the suite could not replay
+        // its own number. This route replays it, asked of the
+        // SHIPPED hill (not a grid copy) so par and route are tied:
+        // if the par moves without a route to match, this test says
+        // so. The player's own 48 still beats the route — the hunt
+        // has not found it, only proven 51 replayable.
+        let level = crate::level::load_levels(crate::LEVELS)
+            .into_iter()
+            .find(|l| l.name == "Deep Cellar")
+            .expect("the shipped hill");
+        let glyphs = "rrrrruurrxrrdxUuUddlllluuuulllxlxxlddrrrrruulxRllll";
+        let route = parse(glyphs);
+        assert_eq!(
+            route.len(),
+            level.par as usize,
+            "par and route move together"
+        );
+        assert!(verify(&level, &route), "deep cellar route must win");
+    }
+
+    /// The unified door must be able to SAY proven, not only hunted:
+    /// on hills small enough for BFS to settle below the hunted
+    /// route, `solve` owes a proof AT par. Without this the proven
+    /// branch ships unexercised — and a proof path no one walks is a
+    /// proof path no one checked.
+    #[test]
+    fn the_unified_door_proves_the_hills_bfs_can_settle() {
+        for name in ["First Warm", "First Cold", "Mail Slot", "Ridgeway"] {
+            let level = crate::level::load_levels(crate::LEVELS)
+                .into_iter()
+                .find(|l| l.name == name)
+                .expect("a shipped hill");
+            let sol = super::solve(&level, 4_000_000).expect("these hills yield");
+            assert!(
+                sol.proven,
+                "{name}: BFS settles this, so solve owes a proof"
+            );
+            assert_eq!(
+                sol.route.len(),
+                level.par as usize,
+                "{name}: a proof at the wrong length is no proof"
+            );
+            assert!(verify(&level, &sol.route), "{name}: replay");
+        }
     }
 
     #[test]
@@ -631,7 +769,7 @@ mod tests {
         for (name, rows, cap) in candidates {
             let level = from_grid(name, rows, 0).expect("valid grid");
             let t = std::time::Instant::now();
-            let run = bfs(&level, cap);
+            let run = bfs(&level, cap, usize::MAX);
             match run.winner {
                 Some(_) => {
                     let p = path(&run);
@@ -694,25 +832,140 @@ mod tests {
             }
         }
     }
+
+    /// The unproven seven, put through the UNIFIED solver (`solve`).
+    /// Run with `--ignored --nocapture`: each hill prints the route
+    /// the door settled on, whether that route is now PROVEN optimal
+    /// or merely the best hunted, its length beside the shipped par,
+    /// and the replay verdict. Two events retune a hill: a route
+    /// SHORTER than par (the par drops, the `hand_route_wins_*` test
+    /// takes the new glyph) or a route turning PROVEN (the hill
+    /// leaves the unproven seven).
+    #[test]
+    #[ignore = "solve the unproven seven, hunting and proving"]
+    fn hunt_the_unproven_seven() {
+        let seven = [
+            "Hearth Row",
+            "Ninefold",
+            "Deadfall",
+            "Winter Quarters",
+            "Deep Cellar",
+            "Ashfall",
+            "Ember Deep",
+        ];
+        for level in crate::level::load_levels(crate::LEVELS) {
+            if !seven.contains(&level.name.as_str()) {
+                continue;
+            }
+            let t = std::time::Instant::now();
+            match super::solve(&level, 24_000_000) {
+                Some(sol) => {
+                    let verdict = if sol.proven { "PROVEN" } else { "hunted" };
+                    let flag = if sol.route.len() == level.par as usize {
+                        String::new()
+                    } else {
+                        format!("  << par is {}!", level.par)
+                    };
+                    eprintln!(
+                        "{}: {verdict} {} moves (par {})  [{}]  {}  ({:?}){flag}",
+                        level.name,
+                        sol.route.len(),
+                        level.par,
+                        used(&sol.route),
+                        glyphs(&sol.route),
+                        t.elapsed()
+                    );
+                    assert!(
+                        verify(&level, &sol.route),
+                        "{}: solved route does not replay!",
+                        level.name
+                    );
+                }
+                None => {
+                    eprintln!(
+                        "{}: NO ROUTE (par {})  ({:?})",
+                        level.name,
+                        level.par,
+                        t.elapsed()
+                    )
+                }
+            }
+        }
+    }
 }
 
-/// Route hunter for hills BFS cannot settle (four-ant trails). Layered
-/// beam search over the REAL state machine: expand a frontier one ply,
-/// score children by depth + 8 x heuristic (each ant's distance to its
-/// bed, plus a doubled pull toward W once the colony sleeps), keep the
-/// best `width` of them. Two honest compromises:
-///
-/// - the within-layer dedup key DROPS the history deque. That is not
-///   sound for optimality (history gates packing legality), but this
-///   tool never claims optimality: every route it returns must pass
-///   `verify` before it means anything. A dropped merge can only make
-///   the hunter miss routes, never invent one.
-/// - a finite width can miss solutions that route through bad-looking
-///   middles. Widen the beam or try again; the answer is trusted only
-///   via replay anyway.
-pub fn hunt_route(level: &Level, max_depth: usize) -> Option<Vec<Act>> {
-    use std::collections::HashSet;
+/// The beam's two minds. The sharp score floods the tunnels: for
+/// each bed, BFS distance through everything the hill's FIXED rock
+/// allows — dirt counts as walkable, because dirt yields to a dig
+/// and the relaxation prices that dig at nothing. Rock is the only
+/// wall that never moves, so one field per bed serves every state of
+/// every run. The naive score is Manhattan, which walks through
+/// walls — worse at estimating, yet Ember Deep proved it keeps roads
+/// the sharp score prunes: a beam is not monotone in heuristic
+/// quality, and the sharper estimate ranks a needed bad-looking
+/// middle (the lapped ring, the dig past the bed) too confidently
+/// out of the beam. So the hunter asks both, sharp first.
+fn sharp_score(level: &Level) -> impl Fn(&Game) -> i32 + '_ {
+    use std::collections::VecDeque;
+    let fields: Vec<Vec<i32>> = level
+        .beds
+        .iter()
+        .map(|(from, _)| {
+            let mut d = vec![-1i32; level.tiles.len()];
+            let start = from.row as usize * level.cols + from.col as usize;
+            d[start] = 0;
+            let mut q = VecDeque::from([start]);
+            while let Some(c) = q.pop_front() {
+                let (r, k) = ((c / level.cols) as i32, (c % level.cols) as i32);
+                for (dr, dk) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    let (nr, nk) = (r + dr, k + dk);
+                    if nr < 0 || nk < 0 || nr as usize >= level.rows || nk as usize >= level.cols {
+                        continue;
+                    }
+                    let n = nr as usize * level.cols + nk as usize;
+                    if d[n] == -1 && level.tiles[n] != crate::level::Tile::Rock {
+                        d[n] = d[c] + 1;
+                        q.push_back(n);
+                    }
+                }
+            }
+            d
+        })
+        .collect();
+    let bed_idx = |c: crate::game::AntColor| {
+        level
+            .beds
+            .iter()
+            .position(|(_, k)| *k == c)
+            .expect("every ant has a bed")
+    };
+    move |g: &Game| -> i32 {
+        let dist = |color: crate::game::AntColor, at: crate::game::Cell| -> i32 {
+            let d = fields[bed_idx(color)][at.row as usize * level.cols + at.col as usize];
+            // Rock-sealed is a broken hill, not a hard one: a huge
+            // score just sends the hunter looking elsewhere.
+            if d < 0 { 9_999 } else { d }
+        };
+        let mut s = 0;
+        for (i, &id) in g.trail.iter().enumerate() {
+            s += dist(g.ants[id].color, g.trail_target(i));
+        }
+        for a in &g.ants {
+            if let AntState::Wild(c) | AntState::Placed(c) = a.state {
+                s += dist(a.color, c);
+            }
+        }
+        if g.ants
+            .iter()
+            .all(|a| matches!(a.state, AntState::Asleep(_)))
+        {
+            s += 2 * dist(crate::game::AntColor::White, g.player);
+        }
+        s
+    }
+}
 
+fn naive_score(level: &Level) -> impl Fn(&Game) -> i32 + '_ {
     let bed = |c: crate::game::AntColor| -> crate::game::Cell {
         *level
             .beds
@@ -723,7 +976,7 @@ pub fn hunt_route(level: &Level, max_depth: usize) -> Option<Vec<Act>> {
     };
     let man =
         |a: crate::game::Cell, b: crate::game::Cell| (a.col - b.col).abs() + (a.row - b.row).abs();
-    let h = |g: &Game| -> i32 {
+    move |g: &Game| -> i32 {
         let mut s = 0;
         for (i, &id) in g.trail.iter().enumerate() {
             s += man(g.trail_target(i), bed(g.ants[id].color));
@@ -740,7 +993,49 @@ pub fn hunt_route(level: &Level, max_depth: usize) -> Option<Vec<Act>> {
             s += 2 * man(g.player, bed(crate::game::AntColor::White));
         }
         s
-    };
+    }
+}
+
+/// Route hunter for hills BFS cannot settle (four-ant trails). Layered
+/// beam search over the REAL state machine: expand a frontier one ply,
+/// score children by depth + 8 x heuristic, keep the best `width` of
+/// them — sharp score first, naive score if that beam loses the road
+/// (the two minds, above). Two honest compromises:
+///
+/// - the within-layer dedup key DROPS the history deque. That is not
+///   sound for optimality (history gates packing legality), but this
+///   tool never claims optimality: every route it returns must pass
+///   `verify` before it means anything. A dropped merge can only make
+///   the hunter miss routes, never invent one.
+/// - a finite width can miss solutions that route through bad-looking
+///   middles. Widen the beam or try again; the answer is trusted only
+///   via replay anyway.
+/// How many candidates the beam carries per layer. Cost is linear in
+/// this — ~2.4 s per layer per 30k measured — and it buys recall:
+/// 30k retook Ninefold and Ashfall but LOST Ember Deep's road (the
+/// sharper score ranked the route's bad-looking middle out of a thin
+/// beam, and the naive score at 30k did not re-find it either).
+/// 100k triples the sweep cost (~20 min per hill per score when a
+/// hill truly fails) to give that road a wider lane.
+pub const BEAM_WIDTH: usize = 100_000;
+
+pub fn hunt_route(level: &Level, max_depth: usize) -> Option<Vec<Act>> {
+    let sharp = sharp_score(level);
+    if let Some(route) = beam(level, max_depth, BEAM_WIDTH, &sharp) {
+        return Some(route);
+    }
+    let naive = naive_score(level);
+    beam(level, max_depth, BEAM_WIDTH, &naive)
+}
+
+fn beam(
+    level: &Level,
+    max_depth: usize,
+    width: usize,
+    h: &dyn Fn(&Game) -> i32,
+) -> Option<Vec<Act>> {
+    use std::collections::HashSet;
+
     // History-free state sketch: player, trail order, every ant's state.
     let sketch = |g: &Game| -> Vec<u8> {
         let mut v = Vec::with_capacity(24);
@@ -775,7 +1070,6 @@ pub fn hunt_route(level: &Level, max_depth: usize) -> Option<Vec<Act>> {
         act: Option<Act>,
         f: i64,
     }
-    let width = 30_000usize;
     let start = Game::start(level.clone());
     let mut arena: Vec<Node> = vec![Node {
         f: -(8 * h(&start) as i64),
@@ -838,6 +1132,14 @@ pub fn hunt_route(level: &Level, max_depth: usize) -> Option<Vec<Act>> {
             }
         }
         next.sort_by_key(|&n| (arena[n].f, n));
+        // The cut nodes are never re-expanded, so nothing would ever
+        // drop their Game otherwise — the same O(nodes x Game) memory
+        // wall the frontier-drop fought, accumulating per layer and
+        // 3.3x heavier at 100k width. Free the games the cut keeps
+        // nothing of; parent/act survive for reconstruction.
+        for &n in &next[width.min(next.len())..] {
+            arena[n].game = None;
+        }
         next.truncate(width);
         frontier = next;
         if frontier.is_empty() {
@@ -1066,6 +1368,53 @@ mod dbg_trace {
                     g.player.row,
                 );
             }
+        }
+    }
+
+    /// Per-move narration of the two routes this session retook
+    /// (Ninefold, Ashfall), so the walkthrough prose is written from
+    /// what the game actually does, not a reading of the glyph string.
+    /// Traces the SHIPPED grids at their SHIPPED par route.
+    #[test]
+    #[ignore = "narrate changed routes"]
+    fn narrate_changed_routes() {
+        let glyphs = [
+            (
+                "Winter Quarters",
+                "rrrrrrddrrrruxDullllddllllllxrrrrrrddrrrruduuuu",
+            ),
+            (
+                "Ember Deep",
+                "rrrrrlllxrlrrrrrrrrrrddlllllllllllluuuurrrrrrrrrrrrddddl",
+            ),
+        ];
+        for (name, gl) in glyphs {
+            let level = crate::level::load_levels(crate::LEVELS)
+                .into_iter()
+                .find(|l| l.name == name)
+                .expect("shipped hill");
+            let mut g = Game::start(level.clone());
+            println!(
+                "== {name} par {} ==\nstart player=({},{})",
+                level.par, g.player.col, g.player.row
+            );
+            for (n, act) in parse(gl).into_iter().enumerate() {
+                let ok = apply(&mut g, act);
+                let note = g.take_note().unwrap_or("");
+                let asleep = g.ants_asleep();
+                println!(
+                    "  m{n:>2} {} ok={ok} player=({},{}) asleep={asleep} trail={}  {note}",
+                    act.glyph(),
+                    g.player.col,
+                    g.player.row,
+                    g.trail.len(),
+                );
+                if g.won {
+                    println!("  m{n}: WIN");
+                    break;
+                }
+            }
+            assert!(verify(&level, &parse(gl)), "{name}: route must replay");
         }
     }
 }
