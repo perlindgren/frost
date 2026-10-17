@@ -4,15 +4,27 @@
 // uppercase `W R Y G B` beds (W is the player's), lowercase `r y g b` wild ants.
 //
 // Par policy: twenty-eight hills carry their BFS optimum — found by
-// exhaustive search, so no shorter win exists (solver::tests::
-// solve_all_shipped re-proves it every run). Seven hills — the five
-// four-ant runs Deadfall, Winter Quarters, Deep Cellar, Ashfall,
-// Ember Deep, plus Hearth Row and Ninefold — have spaces or
-// lock-timings that outrun any cap we can carry, so their pars are
-// routes that the `solver::tests::hand_route_wins_*` tests replay move
-// by move: beatable, not claimed unbeatable. `solver::hunt_route` (a
-// layered beam search) is what finds most of those routes; Ninefold
-// was worked out by hand on paper and proven by the same replay.
+// exhaustive search, so no shorter win exists. That optimum is asserted
+// by `solver::tests::solve_all_shipped`, which is `#[ignore]`d because
+// a full re-solve outruns a test session's patience: it runs on demand
+// (`cargo test --example antifrost --release -- --ignored`) and no
+// shipped par moves without it. The replay that DOES run every test is
+// the second proof of the same twenty-eight (a found win is replayed
+// move by move against the real game). Seven hills — the five four-ant
+// runs Deadfall, Winter Quarters, Deep Cellar, Ashfall, Ember Deep,
+// plus Hearth Row and Ninefold — have spaces or lock-timings that
+// outrun any cap we can carry, so their pars are routes that the
+// `solver::tests::hand_route_wins_*` tests replay move by move in
+// every run: beatable, not claimed unbeatable. `solver::hunt_route`
+// (a layered beam search — sharp tunnel distances first, naive
+// Manhattan as a second mind, `BEAM_WIDTH` 100k) re-hunts all seven
+// at once under `solver::tests::hunt_the_unproven_seven`, now through
+// the unified `solver::solve`: beam finds a route, bounded BFS tries
+// to certify it — no cert has stuck yet, but two routes retimed:
+// Ninefold's hand-worked 41 fell to a hunted 35 and Ashfall's 67 to
+// 57 at the sharper score; Winter Quarters' 48 and Ember Deep's 71 —
+// the last one unbeaten through three hunt generations — both fell
+// when the beam widened to 100k (to 47 and 56).
 
 (
     levels: [
@@ -380,7 +392,7 @@
         ),
         (
             name: "Ninefold",
-            par: 41,
+            par: 35,
             grid: [
                 "#########",
                 "#W.....r#",
@@ -406,7 +418,7 @@
         ),
         (
             name: "Winter Quarters",
-            par: 48,
+            par: 47,
             grid: [
                 "#############",
                 "#@b..g..y.rW#",
@@ -432,7 +444,7 @@
         ),
         (
             name: "Ashfall",
-            par: 67,
+            par: 57,
             grid: [
                 "###########",
                 "#W.R.Y.G.B#",
@@ -445,7 +457,7 @@
         ),
         (
             name: "Ember Deep",
-            par: 71,
+            par: 56,
             grid: [
                 "###############",
                 "#..Y.....G....#",

@@ -4,10 +4,13 @@ Every sequence below is taken straight from the solver's replayed
 output: for twenty-eight hills it is the **BFS optimum** (proven
 minimal); for seven — the five four-ant runs (Deadfall, Winter
 Quarters, Deep Cellar, Ashfall, Ember Deep) plus Hearth Row and
-Ninefold — it is a **verified route**: found by the beam hunter
-(Ninefold was solved on paper), replayed move by move every test run,
-not claimed minimal. If any route ever stopped winning, the audit
-would fail the build.
+Ninefold — it is a **verified route**: found by the route hunter,
+replayed move by move every test run, not claimed minimal. The hunter
+got sharper mid-season (tunnel distances replaced Manhattan) and
+wider (beam 30k → 100k), and the seven retuned under it: Ninefold
+41 → 35, Ashfall 67 → 57, Winter Quarters 48 → 47, Ember Deep
+71 → 56; the paper route is history. If any route ever stopped
+winning, the audit would fail the build.
 
 **Legend:** `← → ↑ ↓` arrow keys (WASD works too) · `⇧→` hold Shift + arrow
 = **push** · `␣` Space = **leave the last ant behind** · digging is not a
@@ -333,19 +336,20 @@ g, and the trail follows with r onto R and y onto Y on the *two
 following moves* — a triple finish, one move each. Then duck to your
 bed.
 
-## 30. Ninefold — par 41 (verified route; optimality unknown by design)
+## 30. Ninefold — par 35 (verified route; optimality unknown by design)
 
-    →×6  ↑×5  ↓×5  ←×3  ↑×3  →  ↓↓  ←  ↑  ←  ↑  →  ↓×3  ←×3  ↑×5
+    →×6  ↑×5  ↓×5  ←×2  ↑×3  ← ←  ↓  →  ↓↓  ←×3  ↑×5
 
-The room with no door — except r's bed. Take r off the top corridor,
-walk the whole outer ring down to the bottom row, and enter the room
-*through* r's own bed tile: y and g are waiting inside. One small loop
-in the room delivers g in the deep wake and y on the bed by the door,
-and the step back out over the threshold walks r onto R — the door
-falls asleep locked behind the colony. Bottom row west, shaft up, onto
-W. The only hill in the set that neither the solver nor the beam ever
-found on its own: this one was solved on paper, and the replay test is
-its proof.
+The room with no door — except the one under G. Fetch r from the far
+top corner by the right shaft and carry it all the way back down; then
+walk the bottom row, turn up at the room's right-hand column, and step
+in **onto G**: the room opens from its bed, not from r's. One sweep
+closes it: collect g, one step onto Y, and g rides your wake onto G;
+down and over onto y and it lands on Y the same beat; two steps down —
+over the R tile and out — and r, still trailing, tucks onto R. The
+line is empty eight moves before you ever turn for home; west along the
+bottom, up the west shaft, onto W. The hunter retook this hill from
+paper at the tunnel-aware score: 41 fell to 35.
 
 ## 31. Deadfall — par 24 (verified route; optimality unknown by design)
 
@@ -361,32 +365,37 @@ back down (↓) and sidestep to the next ant (→ →). Same beat four times,
 two steps home. The four-ant colony is terrifying until you notice
 none of it is ever attached to you.
 
-## 32. Winter Quarters — par 48 (verified route; optimality unknown by design)
+## 32. Winter Quarters — par 47 (verified route; optimality unknown by design)
 
-    →×10  ␣␣  ↓×4  ␣  ←×4  ↑×4  → ← ↓↓ →  ␣  ⇧← ← ⇧← ← ⇧← ← ⇧←  →×6  ␣  ⇧←  ↑ ↑
+    →×6  ↓×2  →×4  ↑  ␣  ⇧↓  ↑  ←×4  ↓×2  ←×6  ␣  →×6  ↓×2  →×4
+    ↑  ↓  ↑×4
 
-The colony as freight, unloaded in three drops:
+The freight route this replaces — three drops and a shove parade —
+stood at 48 until the beam widened; the retake is one move shorter
+and trades the whole parade for wake-locks:
 
-1. `→×10` — the ridge sweep: all four ants (b, g, y, r) fall in behind
-   you, ending standing on the W tile. Nobody is ready yet.
-2. `␣␣ ↓×4 ␣` — leave the tail behind, twice, up on the ridge; climb
-   down the east shaft; leave one more at the bottom.
-3. `←×4` — walk west along the south row: the last ant in line rests
-   on **B** and the colony's first sleep happens mid-stride.
-4. `↑×4 → ← ↓↓ → ␣` — ride the middle shaft up to the ridge where two
-   parked ants rejoin the line, do a one-step shuffle, and leave the
-   tail on the middle corridor.
-5. `(⇧← ←)×3 ⇧←` — the shove parade: push, step into the gap, push
-   again, four times west along the corridor, each shove delivering
-   one parked ant toward its bed — r lands on R.
-6. `→×6 ␣ ⇧←` — run back east, leave the last ant behind with one
-   space-key, and shove it home into G. Colony asleep.
-7. `↑↑` — one shaft up, onto W. Warm.
+1. `→×6 ↓×2 →×4` — sweep the ridge collecting b and g, down the east
+   shaft, east along the middle row: the ride beds **green on G** in
+   your wake — the first sleep on move 12, no shoving anywhere.
+2. `↑ ␣ ⇧↓ ↑` — the shaft trick: climb one, leave the trailing ant
+   behind, **shove it down the east shaft**, climb back up. It waits
+   in the shaft where you will need it.
+3. `←×4 ↓×2 ←×6` — re-cross the map to the west end dragging what
+   you can; the packed line is still the wrong order, still nothing
+   sleeps.
+4. `␣ →` — the two-step juggle: leave the ant, step back — and
+   **red tucks onto R** behind you, second sleep.
+5. `→×6 ↓×2 →×4 ↑ ↓` — collect the survivor, walk it over **Y** and
+   step off: yellow wakes where it stood. Then one step down the east
+   shaft wakes the ant you shoved there earlier — **blue home on B**,
+   four sleeps and exactly one shove in the whole hill.
+6. `↑×4` — up the east shaft, onto W.
 
-Every bed you close is a wall for what comes next: the route keeps
-re-reading the map with one fewer open door.
+The lesson the shove parade taught still stands — every bed you close
+is a wall for what comes next — but the wide beam found you can let
+the wake do almost all of the deliveries.
 
-## 33. Deep Cellar — par 51 (verified route; optimality unknown by design)
+## 33. Deep Cellar — par 51 (verified route; the ledger's own 48 says the true optimum is lower — bring the route)
 
     →×5  ↑↑ →→ ␣ →→ ↓ ␣  ⇧↑ ↑ ⇧↑  ↓↓ ←×4  ↑×4  ←×3  ␣ ← ␣␣
     ← ↓↓ →×5 ↑↑  ← ␣ ⇧→  ←×4
@@ -416,39 +425,71 @@ ridge wall:
    let it fall back asleep **in your wake**, landing on R; the last
    step onto W ends the hill.
 
-## 34. Ashfall — par 67 (verified route; optimality unknown by design)
+*This 51 is the route the suite can replay — not a record. The ledger
+already holds a 48 on this hill: a shorter route exists, walked by
+hand, and until its key sequence reaches the suite the par stays at
+the verifiable 51. The solver's BFS caps before it can prove either
+way; the optimum is somewhere at or below 48.*
 
-    ↓↓  →×5  ←×5  ↑↑  →×3  ␣  →×5  ←×3  ↑↑  ←×3  ␣  ←  ␣␣  ←  ↓↓  ⇧→  →  ⇧→  →×4  ↑  ␣  ↑  ←  ␣  ⇧→  →  ⇧→  ↓↓  ↑↑  →  ⇧→  ←←  ␣  ⇧→  ←×4
+## 34. Ashfall — par 57 (verified route; optimality unknown by design)
 
-The second four-ant run, every bed in the ridge. The colony is
-collected in two armfuls — r and g from the floor, y and b from the
-middle corridor's east end — and carried up once. Everything in the
-long middle is logistics: drops and eastward shoves re-stack the trail
-into bed order on the ridge. Then the harvest: the final west walk
-peels b onto B at the east end, and g, y and r follow, one after
-another, into the last eight moves of the hill — each in your wake,
-each one step closer to W. Winter Quarters' lesson, done at length.
+    ↓↓  →×5  ␣  ↑↑  →×3  ←×3  ↑↑  ←×4  ␣␣␣  ←  ↓×4  →×5  ↑×4  ␣  ←  ␣
+    ⇧→  →  ⇧→  ↓  ↑  →  ⇧→  ←←  ␣  ⇧→  ←×4
 
-## 35. Ember Deep — par 71 (verified route; optimality unknown by design)
+The second four-ant run, every bed in the ridge — retaken from a
+hunted 67 at the tunnel-aware score: ten moves fell out, and the
+shape of the ending changed. Collected in two armfuls like always:
+dive the west shaft and gather r and g along the floor (`↓↓ →×5`);
+leave g behind (`␣` — it re-joins later); up the middle shaft, take y
+and b at the east end of the middle row; wheel west, up to the ridge,
+and walk the bed row dragging the whole line — wrong order, nothing
+sleeps — then `␣␣␣` and leave all three parked in a row behind you on
+the ridge. **Parked is not sleeping**: one of them is sitting on its
+own bed and does not know it yet.
 
-    →×12  ←×12  ↓×2  →×12  ↑×4  ←×12  ↓×2  →×12  ↓×2  ←
+Down the west shaft, back along the floor past g, up to the ridge, and
+the harvest is all hand-delivery now, not wake: two shoves walk an ant
+east along the row (`⇧→ → ⇧→`), a down-up beat brings the trailing
+line along, and a shove lands **blue into the corner B** — the colony's
+first sleep, delivered by hand. Two steps back, drop what you are
+dragging, one more shove: **green home on G**. Then the walk west
+finishes it: the step off Y releases the yellow that has been parked
+on its bed for thirty moves — it was home the whole time; one step
+more picks up the red parked on R, and the next westward step drops it
+back asleep **in your wake** — the First Cold beat, one last time —
+and the last step is W.
 
-Five laps, each peeling one or two ants off the tail:
+## 35. Ember Deep — par 56 (verified route; optimality unknown by design)
 
-1. `→×12` — collect **all four** (r, y, g, b fall in behind you).
-2. `←×12` — return lap; the packed line just follows you home.
-3. `↓×2 →×12` — the bottom gallery: two digs in a row open the dirt
-   ahead, you cross **B** — and b, at the tail, rests on it: first sleep.
-4. `↑×4 ←×12` — up the east shaft and along the top row: **g peels onto
-   G, then y onto Y**, both in your wake.
-5. `↓×2 →×12 ↓×2 ←` — down, back along the middle row so **r lands on
-   R** at your heels, then down to the W bed. Colony asleep, you warm.
+    →×5  ←×3  ␣  →  ←  →×10  ↓×2  ←×12  ↑×4  →×12  ↓×4  ←
+
+The hill of five laps, until the wide beam found the one lap. Collect
+r and y (`→×5`), wheel back, and open with the smallest juggle in the
+set: drop **yellow** (`␣` — the last ant collected is the one at the
+back of the line), one step east, one step west — and **red tucks
+onto R** in your wake before the hill has really started. Then keep
+collecting east (g, then b) and commit to the loop: `↓×2 ←×12` the
+whole bottom row west — two digs where dirt blocks the gallery — and
+**blue wakes on B** mid-ride. `↑×4` up the west shaft, and the climb
+re-collects the yellow you parked near the start; `→×12` the
+whole top row east: **yellow peels onto Y, then green onto G**, both
+in your wake, one after the other, on a single straight walk. `↓×4`
+down the east shaft, one step west onto W. Colony asleep, you warm —
+and the only keys the far half of the hill needs are arrows.
+
+The 71 this replaces outlived three hunt generations — the Manhattan
+beam, the sharp beam at 30k, the sharp-then-naive retry at 30k. What
+it could not outlive was width: the route's middle (a long ride away
+from every bed, three ants dragging, trusting the loop to peel them)
+is exactly what a thin beam ranks out. The replay test carries both
+verdicts' remains; this glyph is the current best.
 
 ---
 
 *Sequences regenerate from the solver: `cargo test --release --example
 antifrost solve_all_shipped -- --ignored --nocapture` prints the
-twenty-eight BFS-optimal hills, and `hunt_candidate_hills -- --ignored
---nocapture` regenerates the beam-found routes
-(`l r u d` walks, `L R U D` pushes, `x` Space); this file is that
-output with the glyphs read as keystrokes.*
+twenty-eight BFS-optimal hills, and `hunt_the_unproven_seven -- --ignored
+--nocapture` runs the seven through the unified door — beam first,
+BFS certifier after — printing each route and its PROVEN-or-hunted
+verdict (`l r u d` walks, `L R U D` pushes, `x` Space); this file is
+that output with the glyphs read as keystrokes.*
