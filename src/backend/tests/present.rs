@@ -395,7 +395,8 @@ pub(crate) fn frame(
         });
         pass.set_pipeline(&blit_pipeline);
         pass.set_bind_group(0, &bind, &[]);
-        pass.draw(0..3, 0..1);
+        // The letterbox quad's six vertices, as `render` draws them.
+        pass.draw(0..6, 0..1);
     }
 
     let readback = device.create_buffer(&BufferDescriptor {

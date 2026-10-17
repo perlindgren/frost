@@ -217,7 +217,7 @@ pub(crate) fn fit_bytes(fit: (f32, f32), bloom: [f32; MAX_LEVELS], tone: f32) ->
 /// is centered: `(1.0, 1.0)` when there is no fixed buffer or the aspects
 /// match (the picture covers the window), and a letterbox fraction
 /// otherwise — `(1.0, 0.5625)` for a 16:9 buffer on a square surface,
-/// bars top and bottom included. The blit pass scales its triangle by
+/// bars top and bottom included. The blit pass scales its quad by
 /// exactly this, and the mouse mapping divides it back out.
 pub(crate) fn content_fit(render_size: Option<[u32; 2]>, surface: (u32, u32)) -> (f32, f32) {
     let Some([bw, bh]) = render_size else {

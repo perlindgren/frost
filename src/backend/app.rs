@@ -1782,7 +1782,7 @@ impl<P: Process> Frost<P> {
         });
         // The letterbox fit uniform, seeded to fill the window; `render`
         // rewrites it every frame. A zero-initialized buffer would draw the
-        // triangle at zero size, so the (1, 1) seed matters for the first
+        // quad at zero size, so the (1, 1) seed matters for the first
         // frame if it ever ran before the per-frame write.
         let fit_buffer = self.device.create_buffer(&BufferDescriptor {
             label: Some("blit fit"),
@@ -3054,9 +3054,9 @@ impl<P: Process> Frost<P> {
             }
         }
         // Fixed render size mode: stretch the buffer over the window — one
-        // full-screen triangle, one bilinear sample per window pixel, scaled
-        // down to the letterbox rectangle when the shapes differ (black bars
-        // from the clear around it). The surface needs no clear when
+        // letterbox quad, one bilinear sample per window pixel, scaled down
+        // to the content rectangle when the shapes differ (black bars from
+        // the clear around it). The surface needs no clear when
         // rendering direct.
         if let (Some(t), Some(blit_pipeline)) = (target.as_ref(), self.blit_pipeline.as_ref()) {
             // A dozen small passes before the frame leaves for the window: the
@@ -3087,7 +3087,7 @@ impl<P: Process> Frost<P> {
             });
             pass.set_pipeline(blit_pipeline);
             pass.set_bind_group(0, &t.bind_group, &[]);
-            pass.draw(0..3, 0..1);
+            pass.draw(0..6, 0..1);
         }
         // Put the target back for the next frame — or leave `self` empty,
         // so a surface that has since resized to exactly the render size
