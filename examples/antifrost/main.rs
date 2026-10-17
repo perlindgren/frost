@@ -211,13 +211,16 @@ const LEAF_Z: f32 = 1.8;
 /// the zoomed world.
 const LEAF_SIZE: (f32, f32) = (24.0, 48.0);
 
-/// How the canopy drifts against the camera: 0.5 means the leaves slide
-/// across the window at half the speed the world pans. No depth claim —
-/// a real depth story would scale them too — just the eye-candy drift a
-/// parallax layer with `speed: 0.5` would give, done on the batch nodes
-/// directly because the leaf z (above the board, under the HUD) only
-/// exists inside the base draw group, where `Layer`s cannot land.
-const LEAF_PARALLAX: f32 = 0.5;
+/// How the canopy drifts against the camera: the leaves hang in front
+/// of the whole world, so they must sweep past it — below 1.0 the
+/// board and the backdrop overtake the layer that covers them, and the
+/// eye reads the foreground sliding backwards against everything it
+/// hides. 1.3 sits clearly in front of the board's 1.0 and the
+/// backdrop's 0.85; spawn, wrap and ground all live in the window
+/// `off` defines, so the ledger holds at any factor. Done on the batch
+/// nodes directly because the leaf z (above the board, under the HUD)
+/// only exists inside the base draw group, where `Layer`s cannot land.
+const LEAF_PARALLAX: f32 = 1.3;
 
 const C_BG: Color = Color {
     r: 0.045,
@@ -659,7 +662,10 @@ impl Leaf {
             sprite,
             pos: [
                 -sky.w / 2.0 - sky.off[0] + lane_w * (lane as f32 + 0.5 + rng.in_range(-0.4, 0.4)),
-                sky.h / 2.0 - sky.off[1] + rng.in_range(24.0, 140.0),
+                // The band's low end clears the fattest leaf's half-height
+                // (`size` is a half-width), so nothing hangs into the window
+                // and pops at birth.
+                sky.h / 2.0 - sky.off[1] + rng.in_range(LEAF_SIZE.1, 140.0),
             ],
             fall: rng.in_range(38.0, 92.0),
             sway: rng.in_range(26.0, 85.0),
@@ -1826,8 +1832,12 @@ impl Demo {
             } else if leaf.pos[0] < -w / 2.0 - off[0] - m {
                 // Taken by the gale: the flake walks back onto the
                 // windward edge, anywhere along the reach and at its
-                // own height — drift and feed stay even.
-                leaf.pos[0] = w / 2.0 - off[0] + m + self.leaf_rng.in_range(0.0, reach + m);
+                // own height — drift and feed stay even. The landing
+                // stays under the edge that wraps the other way: a
+                // range reaching past it would hand the flake straight
+                // back, ping-ponging between margins instead of
+                // walking in.
+                leaf.pos[0] = w / 2.0 - off[0] + self.leaf_rng.in_range(0.0, m + reach);
             }
             // Past the bottom and the leaf is simply gone — recycled to
             // its lane above the window. No pile, no fade.
