@@ -1371,6 +1371,27 @@ impl Progress {
         }
     }
 
+    /// A won hill's whole deposit: the number, and the walk that
+    /// earned it. The ledger keeps its law — fewest moves — and the
+    /// walk rides only the number it walks: every new best carries
+    /// its walk in, and a hill whose number predates the recordings
+    /// backfills its walk when a run ties that number. A tie over an
+    /// existing walk changes nothing (the elder walk walks the same
+    /// number, and churn would lie about novelty); a worse run
+    /// carries nothing anywhere.
+    fn record_run(&mut self, hill: usize, moves: i32, glyphs: &str) {
+        let improved = self.record(hill, moves);
+        let walked = moves.min(MOVES_CAP);
+        let keeps = self
+            .scores
+            .iter()
+            .find(|(h, _)| *h == hill)
+            .is_some_and(|(_, m)| *m == walked);
+        if keeps && (improved || self.route_of(hill).is_none()) {
+            self.remember(hill, glyphs);
+        }
+    }
+
     fn parse(src: &str) -> Progress {
         let Ok(root) = frost::ron::parse(src) else {
             return Progress::default();
@@ -5061,9 +5082,7 @@ impl Process for Demo {
                 .as_ref()
                 .map(|g| encode_run(&g.log))
                 .unwrap_or_default();
-            if self.progress.record(hill, moves) {
-                self.progress.remember(hill, &route);
-            }
+            self.progress.record_run(hill, moves, &route);
             self.progress.save();
         }
         if let Some(s) = &mut self.splash {
@@ -5857,31 +5876,59 @@ mod menu_tests {
     #[test]
     fn the_walk_changes_only_when_the_score_does() {
         let mut p = Progress::default();
-        assert!(p.record(1, 50), "a hill's first score is its first best");
-        p.remember(1, "rrrddd");
-        assert!(!p.record(1, 52), "a worse run improves nothing");
+        p.record_run(1, 50, "rrrddd");
         assert_eq!(
             p.route_of(1),
             Some("rrrddd"),
-            "so its walk stays the elder's"
+            "a first win deposits number and walk"
         );
-        assert!(p.record(1, 44), "and a better run does");
-        p.remember(1, "rrdd");
+        p.record_run(1, 52, "ddd");
+        assert_eq!(p.scores, vec![(1, 50)], "a worse run moves no number");
+        assert_eq!(
+            p.route_of(1),
+            Some("rrrddd"),
+            "and carries no walk anywhere"
+        );
+        p.record_run(1, 50, "uuu");
+        assert_eq!(
+            p.route_of(1),
+            Some("rrrddd"),
+            "a tie over a kept walk leaves the elder in"
+        );
+        p.record_run(1, 44, "rrdd");
         assert_eq!(
             p.route_of(1),
             Some("rrdd"),
-            "the better score carries a new walk in"
+            "a better score carries a new walk in"
         );
-        let back = Progress::parse(&p.text());
+        // A hill whose number predates the recordings backfills its
+        // walk on a tie — and only on a tie, because the walk that
+        // joins the ledger must walk exactly the count it joins.
+        let mut old = Progress::parse("(\n    hill: 2,\n    scores: [\"2 40\"],\n)\n");
         assert_eq!(
-            back, p,
-            "numbers and routes round-trip through the file together"
+            old.route_of(1),
+            None,
+            "the old file has scores and no walks"
         );
-        assert!(
-            Progress::parse("(\n    hill: 2,\n    scores: [\"2 40\"],\n)\n")
-                .route_of(1)
-                .is_none(),
-            "a file from before the replays has scores but no walks"
+        old.record_run(1, 41, "ldu");
+        assert_eq!(
+            old.route_of(1),
+            None,
+            "a run worse than the old number records nothing"
+        );
+        old.record_run(1, 40, "ruru");
+        assert_eq!(old.route_of(1), Some("ruru"), "the tie backfills the walk");
+        assert_eq!(old.scores, vec![(1, 40)], "and the number does not move");
+        old.record_run(1, 40, "dud");
+        assert_eq!(
+            old.route_of(1),
+            Some("ruru"),
+            "the elder backfill keeps its seat"
+        );
+        let back = Progress::parse(&old.text());
+        assert_eq!(
+            back, old,
+            "numbers and routes round-trip through the file together"
         );
     }
 
