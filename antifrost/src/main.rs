@@ -15,7 +15,7 @@
 #[cfg(test)]
 use antifrost::settings::Quality;
 use antifrost::{
-    LEVELS, game,
+    HILLS_V2, LEVELS, game,
     ledger::{MOVES_CAP, Progress},
     level,
     route::{Replay, decode_run, encode_run},
@@ -1210,7 +1210,10 @@ impl Demo {
             }
             Err(_) => None,
         };
-        let levels = level::load_levels(LEVELS);
+        // The descent, then the searched wing. A short-wake hill is the same
+        // game with a shorter memory, so one menu carries both physics.
+        let mut levels = level::load_levels(LEVELS);
+        levels.extend(level::load_levels(HILLS_V2));
         if levels.is_empty() {
             log::error!("antifrost: no levels loaded");
         }
@@ -2673,13 +2676,19 @@ impl Demo {
         let moves_colour = if on_par { C_PAR_MET } else { C_PAR_MISSED };
         let hill = (self.idx + 1).to_string();
         let hills = self.levels.len().to_string();
-        let title: [(&str, Color, f32); 5] = [
+        let mut title: Vec<(&str, Color, f32)> = vec![
             (&game.level.name, C_DIM, 0.7),
             ("hill", C_DIM, 0.5),
             (&hill, C_DIM, 0.5),
             ("of", C_DIM, 0.5),
             (&hills, C_DIM, 0.0),
         ];
+        // A short-wake hill plays differently — the line sits at your heels
+        // instead of trailing the road you walked — and the difference is
+        // invisible for exactly one move, the first collect. Say it once.
+        if game.level.wake == game::Wake::Short {
+            title.push(("short wake", C_DIM, 1.4));
+        }
         self.banner(ctx, h / 2.0 - 34.0, 34.0, 700.0, &title);
         let warm = game.ants_asleep().to_string();
         let crew = game.ants.len().to_string();

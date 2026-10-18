@@ -174,6 +174,10 @@ W R Y G B = empty bed of that color (W = the player's own bed)
 r y g b   = one wild ant of that color
 ```
 
+A hill may also carry `wake: "short"` — a second physics, not a second map.
+Omitted means `long`, which is every hill above. §12 is what the other
+setting is, and why anyone would want it.
+
 ## 9. The shipped hills (thirty-five, in teaching order)
 
 1. **First Warm** — the push as first verb: one dunk, one step home.
@@ -377,3 +381,89 @@ does the same for hills only the beam can crack.
   the line" is obvious at a glance?
 - Should riding ants (line compressed onto the player) lock in on a bed
   under the player's feet? Currently yes; verify it reads as intended.
+
+## 12. The short wake — a physics you can prove
+
+Everything in §4 happens twice in this game, under one of two wakes, and a
+hill says which it wants with `wake: "long"` (default, all the hills above) or
+`wake: "short"` (the five in `hills_v2.ron`).
+
+**The rule.** A line remembers as many steps as it has ants, and a new
+recruit takes the place *nearest the player* rather than the deepest one.
+Concretely: rank *i* of a line of *k* rests on the cell the player passed
+*k − i* steps ago, and the wake behind the player is trimmed to *k + 1*
+cells. The line is therefore a snake of its own depth, sitting at the
+player's heels, instead of a thread stretched back along the whole route.
+
+**What that does not change.** Nothing else. Pushing and dunking, the
+tail-only peel, the leave-behind, digging, bed-walls, auto-lock, jam
+veto, undo — all identical, all in the same functions. A player who knows
+the descent knows these five; the wake is one dial in the same rules,
+not a second game.
+
+**What it buys is one property:** no action can carry an ant further than
+one cell. A walk carries the line one cell; a U-turn shifts it one cell;
+a collect relocates an ant exactly the one step from the cell it stood on
+to the cell the player left; a leave-behind moves nothing. That is the
+property every distance bound quietly assumes, and it is the property the
+long wake breaks: there, a collect *re-slots* an ant down a road walked
+long ago — a free teleport of any length for one action — so a wild ant
+three cells from its bed can be warm on the next move, and one action can
+then warm the whole line behind it. `the_wake_bound_lies_under_a_long_wake`
+holds the long wake to that fact (a state worth two moves that any
+distance bound prices at three), and
+`no_short_wake_action_moves_an_ant_further_than_one_cell` holds the short
+wake to its side of the same line by walking every legal action six deep.
+
+**The bound.** With one cell per action, the farthest thing still owed is
+a true floor on the moves left. `solver::wake_bound` takes the *max* over:
+the walk home; each ant's own chain — reach it, then bed it, then walk the
+bed's bed to `W`; and a route term, the cheapest walk from the player's
+cell through every owed bed ending at `W`. Max, never sum: one walk moves
+the whole line, so a sum charges the same step to several ants at once
+(that sum is `sharp_score`, and it stays a beam ranker — it is measured
+inadmissible, not merely suspected). Dunk slack is the one liberty: a bed
+the dunk could fill needs a visit *within two cells*, not a standing
+visit, so each leg gives up two cells at each dunkable end — except `W`,
+which nobody dunks.
+
+**The search.** `solver::ida_star` iterates the bound, and clones the game
+once per depth rather than making and unmaking moves: `apply` clears the
+undo stack (`forget_history`), so there is nothing to unmake. It keeps no
+closed set, which also means it cannot suffer the hash-collision false
+`PROVEN` that BFS's 64-bit fold can. Optimality needs admissibility alone;
+consistency would only save re-walks, and the route term is *not*
+consistent — warming a bed removes its slack, and a graph with less slack
+is not a metric, so the bound can rise on a delivery. That is visible as
+thresholds re-walking ground they covered; it costs time, never a wrong answer.
+
+**The five hills.** Par increases; so does the gap between what the hill
+costs and what the bound says it must cost (`par − h0`), which is the
+number that actually governs how hard the *proof* is:
+
+| hill | par | h0 | par − h0 | IDA\* nodes | BFS states | teaches |
+|---|---|---|---|---|---|---|
+| First Light | 6 | 4 | 2 | 80 | 2,675 | the wake lock itself |
+| The Alcove | 11 | 6 | 5 | 1,959 | 12,060 | the one bed the wake cannot reach |
+| Heel Marks | 14 | 9 | 5 | 5,019 | 363,928 | the stack, in bunk order |
+| Two Warm Walls | 25 | 15 | 10 | 6,658,401 | 2,536,039 | beds as walls, on the way out |
+| Ash Hall | 40 | 29 | 11 | 488,837,943 | not at the suite's cap | all of it, with the leave-behind |
+
+The first four are settled by both searches and the pars agree, so each is
+optimum twice over from two unrelated directions; `Ash Hall` is settled by
+IDA\* alone at the memory a test session carries (given a four-hundred-
+million-state arena BFS finds forty too, and finds it slowly). That is the
+difference worth having: on the tight hills IDA\* proves the answer two
+hundred times cheaper than walking the hill (Heel Marks, five thousand
+nodes against three hundred and sixty-four thousand states), and on the
+hill that outruns the cap it is the only search that answers at all — same
+proof, a path's worth of memory. Under the long wake neither scales: the
+same game with h ≡ 0 is a tree of 1.3e13 nodes on a hill BFS settles in
+76,887 states (`Ring Toss`), which is the wall these five do not have to
+lean on.
+
+**For authoring.** Two knobs, and only one of them is the par. `par` is
+what a player pays; `par − h0` is what a prover pays. Long rock corridors
+with the beds lying on the walk home keep the second small — long *dirt*
+does not, because the relaxation prices a dig at nothing and the bound
+shrinks with it.

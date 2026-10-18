@@ -493,3 +493,86 @@ twenty-eight BFS-optimal hills, and `hunt_the_unproven_seven -- --ignored
 BFS certifier after — printing each route and its PROVEN-or-hunted
 verdict (`l r u d` walks, `L R U D` pushes, `x` Space); this file is
 that output with the glyphs read as keystrokes.*
+
+---
+
+# The searched wing — five hills with `wake: "short"`
+
+The five hills in `hills_v2.ron` play by one different rule: the line
+remembers only as many steps as it has ants, so it sits at your heels
+instead of stretching back along the whole route (`DESIGN.md` §12).
+Everything else — push, dunk, park, dig, peel, bed-wall — is the game you
+already know, and every route below is a number two searches agree on:
+IDA\* proves it from the distance bound, BFS settles the hill again from
+the other direction. Regenerate with `cargo test --release -p antifrost
+--lib solve_all_short_wake -- --ignored --nocapture` (both searches) and
+`walk_the_searched_wing -- --ignored --nocapture` (the move-by-move
+transcript these pages were written from).
+
+## First Light — par 6
+
+    ↑  →  ↑  →  →  ↓
+
+Six moves, and the wing's whole idea in one of them. `↑` collects r; `→`
+and `↑` walk you *onto* R at (4,1) — a bed is a floor tile right up until
+someone warms it; `→` steps off it east, and the ant at your heels falls
+into the cell you just left. Peeled, warm, and two steps down to W. Under
+this wake "step off the bed" is the delivery; you never carry an ant to
+its bunk, you only ever uncover it.
+
+## The Alcove — par 11
+
+    ↑  →×5  ←  ←  ␣  ⇧→  ↓
+
+Y waits at the end of a dead-end pocket at (8,2), and that is a problem:
+a wake lock needs a cell to step *off* into, and there is none — the far
+side is rock. Walk in to the pocket's mouth, back out to (6,2), `␣` puts
+the ant down on the corridor floor, and `⇧→` pushes it into Y. The dunk is
+the only verb that reaches a bed with no far side; `↓` and you are home on
+a hill that taught one new verb with ten moves of walking.
+
+## Heel Marks — par 14
+
+    ←  ↑  ←  ↑  →×4  ↓  ↑  →  ↑  ↓  ↓
+
+Two ants, two bunks, and a line that peels exactly one ant at a time, so
+this is two errands and the only real choice is their order. Each errand
+has the same shape: collect, climb onto the bed, step off **toward the
+middle** — r onto R at (2,1) by move 5, then the walk east along row 1 for
+y at (6,2), up onto Y at (7,1), step off east and it peels at move 12.
+`↓×2` to W. Fourteen is the optimum, and what the search is choosing
+between is which ant walks which lap.
+
+## Two Warm Walls — par 25
+
+    ←×3  ↑  ←  ↑  →×8  ↓  →  ↑  ←×5  ↓×3
+
+The top row's two ends are the two bunks and your own bed is under the
+middle of the floor, so the hill is a shuttle with no shortcuts: west to r
+at (2,2), up onto R, step off east — peel at (1,1), and R is a wall from
+then on. Then `→×8` all the way east along the row, `↓` for y, `→↑` up
+onto Y at (10,1), step off west — peel at (10,1), and the row is walled at
+both ends. `←×5` back to the middle and `↓×3` down the shaft to W. Twenty-
+five moves of straight walking, and the only thing to get right is that a
+bed is warmed by the step *after* you stand on it, so every delivery is
+made backwards.
+
+## Ash Hall — par 40
+
+    →×4  ↓  ←←  ↓×4  →  ␣  ⇧←  →×8  ⇧↑  ↑↑  ←←  ␣  ↑↑  →  ↓↓  →  ↓↓  ←×4
+
+Everything the wing teaches, in one hill, with three ants to sort. `→×4 ↓`
+takes y at (5,2); `←← ↓×4` walks the west shaft down, collecting g at
+(3,4) on the way, and the bottom row opens at (4,6). `␣` parks g at
+(3,6) and `⇧←` pushes it west into G — the row is one cell wide, so the
+ant you parked is also the only thing standing between you and the rest of
+the hill; a parked ant is a packing problem and a key at once. `→×8` east
+along the bottom to (12,6), under the notch b is sitting in; `⇧↑ ↑↑`
+pushes it up and you collect it at (12,4), and now your line holds y (from
+move 5) with b behind it — but b's bunk is under your feet and y's is at
+(10,2), so `←← ␣` parks b at (11,4) and `↑↑` walks onto Y. `→` steps off
+east and y peels. `↓↓` back down to the parked b, take it again, `→ ↓↓`
+ride the notch down to B at (12,6), `←` steps off west and blue peels;
+`←×3` more and you are in W. The leave-behind is the whole hill: the ant
+you need next is never the one at your heels, and the only way to reorder
+a stack is to put it down.

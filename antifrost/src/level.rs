@@ -6,6 +6,10 @@
 //! - `.` tunnel                      - `@` player start
 //! - Uppercase `W R Y G B`: empty bed of that color (`W` = player's bed)
 //! - lowercase `r y g b`: one wild ant of that color, born stranded
+//!
+//! Keys: `name`, `par`, `grid`, and the optional `wake` — `"long"` (the
+//! shipped physics, the default) or `"short"` (the line remembers only as
+//! far as it is deep, which is what lets `solver::ida_star` prove a par).
 
 use frost::ron::{self, Kind, Val};
 
@@ -30,9 +34,38 @@ pub struct Level {
     pub wild: Vec<(crate::game::Cell, crate::game::AntColor)>,
     /// The dedicated bed cell of every bed color (a fixed, tiny list).
     pub beds: Vec<(crate::game::Cell, crate::game::AntColor)>,
+    /// How far the line remembers the walk — the hill's physics. Omitted
+    /// by every shipped hill, which means `Wake::Long`; a hill written
+    /// for the searched rules says `wake: "short"`.
+    pub wake: crate::game::Wake,
 }
 
-use crate::game::{AntColor, Cell};
+use crate::game::{AntColor, Cell, Wake};
+
+/// Read a `wake:` atom: `"long"` (the shipped physics, also the default)
+/// or `"short"` (the searched one). Anything else refuses the hill —
+/// guessing a physics for an authored puzzle is how a par starts lying.
+fn wake_of(val: &Val) -> Result<Wake, String> {
+    let text = match val {
+        Val::Atom(text, Kind::Str) => text
+            .trim_start_matches('"')
+            .trim_end_matches('"')
+            .to_ascii_lowercase(),
+        _ => return Err("wake must be \"long\" or \"short\"".to_string()),
+    };
+    match text.as_str() {
+        "long" => Ok(Wake::Long),
+        "short" => Ok(Wake::Short),
+        other => Err(format!("unknown wake '{other}'")),
+    }
+}
+
+/// Build a level from grid rows, validating shape, pairing and reach of
+/// beds/ants. Returns `Err(reason)` so a bad level is refused, not half-read.
+/// Shorthand for the shipped physics; see `from_grid_wake`.
+pub fn from_grid(name: &str, rows: &[&str], par: i32) -> Result<Level, String> {
+    from_grid_wake(name, rows, par, Wake::Long)
+}
 
 fn color_of(c: char) -> Option<AntColor> {
     match c.to_ascii_lowercase() {
@@ -45,9 +78,9 @@ fn color_of(c: char) -> Option<AntColor> {
     }
 }
 
-/// Build a level from grid rows, validating shape, pairing and reach of
-/// beds/ants. Returns `Err(reason)` so a bad level is refused, not half-read.
-pub fn from_grid(name: &str, rows: &[&str], par: i32) -> Result<Level, String> {
+/// Build a level under a declared wake. The grid means the same thing
+/// under both: the wake is a rule about the line, not about the stone.
+pub fn from_grid_wake(name: &str, rows: &[&str], par: i32, wake: Wake) -> Result<Level, String> {
     if rows.is_empty() {
         return Err(format!("{name}: no rows"));
     }
@@ -128,6 +161,7 @@ pub fn from_grid(name: &str, rows: &[&str], par: i32) -> Result<Level, String> {
         player_start,
         wild,
         beds,
+        wake,
     })
 }
 
@@ -183,7 +217,19 @@ pub fn load_levels(src: &str) -> Vec<Level> {
             .filter_map(|(_, v)| unquote(v))
             .collect();
         let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
-        match from_grid(&name, &refs, par) {
+        // The wake is optional; an unreadable one refuses the hill rather
+        // than guessing which physics the authored par was proved under.
+        let wake = match field(level, "wake") {
+            Some(val) => match wake_of(val) {
+                Ok(w) => w,
+                Err(reason) => {
+                    log::error!("refused level {name}: {reason}");
+                    continue;
+                }
+            },
+            None => crate::game::Wake::Long,
+        };
+        match from_grid_wake(&name, &refs, par, wake) {
             Ok(level) => levels.push(level),
             Err(reason) => log::error!("refused level: {reason}"),
         }

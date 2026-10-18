@@ -1,0 +1,114 @@
+// Antifrost — the searched wing: five hills written for the short wake.
+//
+// Legend: `#` rock, `,` dirt, `.` tunnel, `@` player start,
+// uppercase `W R Y G B` beds (W is the player's), lowercase `r y g b` wild ants.
+//
+// Every hill here carries `wake: "short"`, which is a different physics,
+// not a different map: the line remembers only as many steps as it has
+// ants, and a new recruit takes the place nearest the player instead of the
+// deepest one. The wake lock, the last-in-first-warm peel, the bunching, the
+// leave-behind, the dunk and the bed-walls all still apply — what changes is
+// that no action can carry an ant further than one cell, and therefore the
+// farthest thing still owed a place is a true lower bound on the moves left.
+//
+// That is the whole point of the wing. Under the long wake of the hills
+// above, a collect re-slots an ant down a road walked long ago, so no
+// distance bounds the moves remaining, IDA* has nothing to prune on, and a
+// par can only be had by walking the hill exhaustively — which is why seven
+// of them are still "beatable, not claimed unbeatable". Here the
+// bound holds, so `solver::ida_star` proves these five instead of hunting
+// them: par is the optimum, and the proof costs a path's memory rather than
+// a layer's.
+//
+// Par policy: all five carry their IDA* optimum. The first four are also
+// settled by exhaustive BFS as a cross-check, so those pars are numbers two
+// independent searches agree on; the fifth outruns the arena a test session
+// carries, and IDA* is what proves it. `solver::tests::solve_all_short_wake`
+// re-runs both (it is `#[ignore]`d for the usual patience reason); the tests
+// that DO run every session replay these five routes move by move and check
+// the bound never once overshoots along them.
+//
+// The five are a ladder. `First Light` is the wake itself: step off a bed
+// and the ant at your heels falls into it. `The Alcove` adds the one bed the
+// wake can never reach, which has to be dunked. `Heel Marks` is the stack —
+// whoever was picked up last is warmed first, so the two bunks are visited
+// in the order that says so. `Two Warm Walls` makes two of the beds into
+// walls on the way out, so the hill's own answers block it. `Ash Hall` is
+// all of it at once on a longer road — three ants, a wall down the middle,
+// a bunk in a pocket that only the dunk reaches, and the leave-behind as the
+// only way to sort the line.
+//
+// `Ash Hall` is also the argument for the whole wing. Its optimum is forty
+// moves; exhaustive BFS needs an arena of four hundred million states to
+// settle it, which is not a thing a test session — let alone a pocket — can
+// carry, and at the cap this suite runs under BFS simply does not answer.
+// IDA* answers, in a path's worth of memory, because `wake_bound` is telling
+// the truth about how far is left. Same proof, two currencies.
+
+(
+    levels: [
+        (
+            name: "First Light",
+            wake: "short",
+            par: 6,
+            grid: [
+                "#########",
+                "#...R...#",
+                "#..r..W.#",
+                "#..@....#",
+                "#########",
+            ],
+        ),
+        (
+            name: "The Alcove",
+            wake: "short",
+            par: 11,
+            grid: [
+                "##########",
+                "#......###",
+                "#..y....Y#",
+                "#..@..W###",
+                "##########",
+            ],
+        ),
+        (
+            name: "Heel Marks",
+            wake: "short",
+            par: 14,
+            grid: [
+                "##########",
+                "#.R....Y.#",
+                "#..r..y..#",
+                "#...@...W#",
+                "##########",
+            ],
+        ),
+        (
+            name: "Two Warm Walls",
+            wake: "short",
+            par: 25,
+            grid: [
+                "############",
+                "#R........Y#",
+                "#.r......y.#",
+                "#....@.....#",
+                "#####W######",
+            ],
+        ),
+        (
+            name: "Ash Hall",
+            wake: "short",
+            par: 40,
+            grid: [
+                "##############",
+                "#@.....#.....#",
+                "#....y.#..Y..#",
+                "#......#.....#",
+                "#..g...#.....#",
+                "#......#####b#",
+                "#.G.....W...B#",
+                "##############",
+            ],
+        ),
+    ],
+)

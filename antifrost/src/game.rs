@@ -4,10 +4,32 @@
 //! `history` is a deque whose front is the player's current cell. A move
 //! onto the cell directly behind the player pops the front (a U-turn
 //! slides the packed line), every other move pushes a new front. Trail
-//! ant `i` (0 = head, collected first, nearest the player) sits at
-//! `history[min(i + 1, len - 1)]` — when the history runs out, ants
+//! ant `i` rests at `history[slot(i)]` — when the history runs out, ants
 //! *ride* at the player's cell. Collecting appends to the tail, and the
 //! tail may be left behind (detach) to shuffle the stack.
+//!
+//! **How far back that history reaches is a rule a hill declares**
+//! (`Level::wake`, see `Wake`), and it is the one rule that decides
+//! whether the hill can be searched optimally at all:
+//!
+//! - `Wake::Long` — the shipped physics. The line remembers up to
+//!   `MAX_HISTORY` steps and slot `i` is `history[min(i + 1, len - 1)]`,
+//!   so the head is nearest and the tail deepest. A collect therefore
+//!   re-slots the recruited ant into deep history: one action moves it
+//!   several cells along a road walked long ago.
+//! - `Wake::Short` — the searched physics. The memory is only as long as
+//!   the line (`trail.len() + 1` cells) and slot `i` is
+//!   `history[min(trail.len() - i, len - 1)]`, which puts the newest
+//!   recruit nearest the player and the veterans deepest. Then *every ant
+//!   moves at most one cell per action*: the walk carries each one cell, a
+//!   U-turn shifts each one cell, a collect relocates its ant the single
+//!   step from the cell it stood on to the cell the player left, and the
+//!   leave-behind does not move its ant at all. That is exactly the
+//!   property `solver::wake_bound` needs to be a true lower bound, which
+//!   is what makes IDA* sound here and inadmissible under a long wake.
+//!
+//! Everything else is shared: LIFO order, the bunching, the jam veto,
+//! the dunk, the dig, the bed-walls.
 //!
 //! **Lock-in is automatic**: whenever the *tail* ant of the line — the
 //! last one collected — comes to rest on its own bed, walking there in
@@ -29,6 +51,27 @@ use std::collections::VecDeque;
 
 /// History longer than this is pruned at the back; no trail is that deep.
 const MAX_HISTORY: usize = 512;
+
+/// How far back the line remembers the player's walk. This one rule is
+/// the whole difference between the two physics a hill may declare, and
+/// it is the reason one of them can be searched with a heuristic and the
+/// other can only be searched exhaustively.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum Wake {
+    /// The shipped physics: the line rides the player's whole path, up to
+    /// `MAX_HISTORY` cells back. A collect re-slots the recruited ant
+    /// into deep history — a free teleport along a road walked long ago —
+    /// so no distance bounds the moves remaining, and a hill's state is a
+    /// *path* rather than a board.
+    Long,
+    /// The searched physics: the line remembers only as many steps as it
+    /// has ants, and a new recruit takes the place nearest the player
+    /// instead of the deepest one. Then **every ant moves at most one
+    /// cell per action** — the property a distance bound needs — while
+    /// the wake lock, the LIFO peel, the bunching, the leave-behind
+    /// shuffle, the dunk and the bed-walls all carry over untouched.
+    Short,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct Cell {
@@ -131,8 +174,10 @@ pub struct Game {
     pub tiles: Vec<Tile>,
     pub player: Cell,
     pub history: VecDeque<Cell>,
-    /// Ant ids, head first. The head is nearest the player, the *last*
-    /// entry is the tail — the only ant detach can release.
+    /// Ant ids, head first (the head was collected first). The *last*
+    /// entry is the tail — the only ant that peels or can be left behind.
+    /// Which end stands nearest the player is the wake rule's business:
+    /// the head under `Wake::Long`, the tail under `Wake::Short`.
     pub trail: Vec<usize>,
     pub ants: Vec<Ant>,
     pub moves: i32,
@@ -205,11 +250,36 @@ impl Game {
         matches!(self.tile(c), Tile::Tunnel | Tile::Bed(_))
     }
 
-    /// The cell trail ant `i` currently occupies (history-clamped).
+    /// How many cells of the player's walk the line may remember. A short
+    /// wake keeps exactly the line's own depth plus the player's cell, so
+    /// the whole state stays a board: no ant can be re-slotted further
+    /// than the line is deep.
+    fn wake_limit(&self) -> usize {
+        match self.level.wake {
+            Wake::Long => MAX_HISTORY,
+            Wake::Short => self.trail.len() + 1,
+        }
+    }
+
+    /// The history slot where trail rank `i` (head first, head collected
+    /// first) comes to rest. Under a long wake the head is nearest the
+    /// player and the tail deepest; under a short wake it is the reverse,
+    /// so the newest recruit — which is always the peelable tail — stands
+    /// at the player's heels and the veterans trail behind it.
+    fn slot(&self, i: usize) -> usize {
+        let depth = match self.level.wake {
+            Wake::Long => i + 1,
+            Wake::Short => self.trail.len() - i,
+        };
+        depth.min(self.history.len() - 1)
+    }
+
+    /// The cell trail ant `i` currently occupies (wake-clamped: a line
+    /// deeper than its memory bunches onto the last remembered cell,
+    /// which is what `detach` refuses to untangle).
     pub fn trail_target(&self, i: usize) -> Cell {
-        let idx = (i + 1).min(self.history.len() - 1);
         self.history
-            .get(idx)
+            .get(self.slot(i))
             .copied()
             .expect("history is never empty")
     }
@@ -441,13 +511,14 @@ impl Game {
         self.after_action("the line has nowhere to pack")
     }
 
-    /// Move the player and slide the history: U-turn pops, else push.
+    /// Move the player and slide the history: U-turn pops, else push, and
+    /// the back is pruned to what this hill's wake allows.
     fn walk(&mut self, d: Cell) {
         if self.history.len() >= 2 && self.history.get(1) == Some(&d) {
             self.history.pop_front();
         } else {
             self.history.push_front(d);
-            if self.history.len() > MAX_HISTORY {
+            if self.history.len() > self.wake_limit() {
                 self.history.pop_back();
             }
         }
@@ -519,7 +590,7 @@ fn warm_note(color: AntColor) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::level::from_grid;
+    use crate::level::{from_grid, from_grid_wake};
 
     /// The new tutorial ring: `r` warms in the player's wake as they pass
     /// the bed, and the warm bed then walls off the top corridor — home
@@ -534,6 +605,165 @@ mod tests {
 
     fn game(rows: &[&str]) -> Game {
         Game::start(from_grid("test", rows, 0).expect("valid test level"))
+    }
+
+    /// The same authored shape, under the searched physics.
+    fn short_game(rows: &[&str]) -> Game {
+        Game::start(from_grid_wake("test", rows, 0, Wake::Short).expect("valid test level"))
+    }
+
+    /// Where an ant stands right now, however it is standing.
+    fn standing(g: &Game, id: usize) -> Cell {
+        match g.ants[id].state {
+            AntState::Wild(c) | AntState::Placed(c) | AntState::Asleep(c) => c,
+            AntState::Trail => g
+                .trail
+                .iter()
+                .position(|&t| t == id)
+                .map(|rank| g.trail_target(rank))
+                .expect("a trail ant holds a rank"),
+        }
+    }
+
+    /// The rule the whole search leans on, stated where the rules live.
+    /// Under a short wake a recruit takes the cell the player just left —
+    /// one step from where it stood, not a jump down a road walked long
+    /// ago — and every later move carries each ant exactly one cell.
+    #[test]
+    fn a_short_wake_recruit_takes_the_cell_the_player_left() {
+        let mut g = short_game(&FIRST_COLD);
+        g.move_player(Dir::Left).expect("collect r");
+        assert_eq!(
+            standing(&g, 0),
+            g.player,
+            "a fresh recruit rides at the player, its own cell behind it"
+        );
+        g.move_player(Dir::Right).expect("step back out");
+        assert_eq!(
+            standing(&g, 0),
+            Cell::new(4, 1),
+            "it falls in at the heels: the cell the player left, one step from where it stood"
+        );
+        g.move_player(Dir::Right).expect("toward the bed");
+        assert_eq!(standing(&g, 0), Cell::new(5, 1), "one cell per move");
+        g.move_player(Dir::Right).expect("onto the bed");
+        assert_eq!(
+            g.ants_asleep(),
+            0,
+            "the player is standing on it, not the ant"
+        );
+        g.move_player(Dir::Right).expect("step off it");
+        assert_eq!(
+            g.ants_asleep(),
+            1,
+            "stepping off leaves the tail resting on its bed, which is the wake lock"
+        );
+    }
+
+    /// The other half of the same rule: the memory is the line's depth, so
+    /// a long walk never stores a long path. The oldest ant trails exactly
+    /// as far behind as the line is deep, however far the hill has been
+    /// walked — which is what makes a hill a board instead of a route.
+    #[test]
+    fn a_short_wake_line_remembers_only_its_own_depth() {
+        let rows = ["#############", "#@r.y..Y.R.W#", "#############"];
+        let mut g = short_game(&rows);
+        g.move_player(Dir::Right).expect("collect r");
+        g.move_player(Dir::Right).expect("between them");
+        g.move_player(Dir::Right).expect("collect y");
+        assert_eq!(g.trail.len(), 2);
+        for _ in 0..3 {
+            g.move_player(Dir::Right).expect("walk the corridor");
+        }
+        assert_eq!(g.player, Cell::new(7, 1));
+        assert_eq!(
+            standing(&g, 1),
+            Cell::new(6, 1),
+            "the newest recruit is nearest, at the player's heels"
+        );
+        assert_eq!(
+            standing(&g, 0),
+            Cell::new(5, 1),
+            "the veteran trails one cell deeper, carried along one cell at a time"
+        );
+        assert!(
+            g.history.len() <= g.trail.len() + 1,
+            "the wake is no longer than the line: {} cells remembered for {} ants",
+            g.history.len(),
+            g.trail.len()
+        );
+        assert_eq!(
+            g.player.col - standing(&g, 0).col,
+            g.trail.len() as i32,
+            "the oldest ant sits at the line's own depth, not at the start of a long walk"
+        );
+    }
+
+    /// The load-bearing property, checked rather than asserted in prose:
+    /// no legal action — walk, U-turn, collect, dunk, leave-behind, dig —
+    /// moves any ant further than one cell. Every distance bound in
+    /// `solver::wake_bound` is a claim about exactly this; a hill where it
+    /// failed would make that bound a lie and IDA*'s answers untrustworthy.
+    #[test]
+    fn no_short_wake_action_moves_an_ant_further_than_one_cell() {
+        let rows = [
+            "#########",
+            "#.r.Y..,#",
+            "#..@..y.#",
+            "#.R...W.#",
+            "#########",
+        ];
+        let level = from_grid_wake("one cell", &rows, 0, Wake::Short).expect("valid test level");
+        let acts = [
+            Act::Move(Dir::Left),
+            Act::Move(Dir::Right),
+            Act::Move(Dir::Up),
+            Act::Move(Dir::Down),
+            Act::Push(Dir::Left),
+            Act::Push(Dir::Right),
+            Act::Push(Dir::Up),
+            Act::Push(Dir::Down),
+            Act::Detach,
+        ];
+        let mut seen = 0usize;
+        // Depth first over every legal action to a small depth, undoing
+        // each on the way out so the hill is walked from every side.
+        fn dive(g: &mut Game, acts: &[Act], depth: usize, seen: &mut usize) {
+            if depth == 0 {
+                return;
+            }
+            for a in acts {
+                let ids: Vec<usize> = (0..g.ants.len()).collect();
+                let was: Vec<Cell> = ids.iter().map(|&id| standing(g, id)).collect();
+                if g.act(*a).is_err() {
+                    continue;
+                }
+                *seen += 1;
+                for (k, &id) in ids.iter().enumerate() {
+                    let now = standing(g, id);
+                    let steps = (now.col - was[k].col).abs() + (now.row - was[k].row).abs();
+                    assert!(
+                        steps <= 1,
+                        "{a:?} moved ant {id} {} cells from {:?} to {:?}: {:?}",
+                        steps,
+                        was[k],
+                        now,
+                        g.trail
+                            .iter()
+                            .map(|&t| (t, standing(g, t)))
+                            .collect::<Vec<_>>()
+                    );
+                }
+                dive(g, acts, depth - 1, seen);
+                assert!(g.undo(), "the hill must give the action back");
+            }
+        }
+        let mut g = Game::start(level);
+        dive(&mut g, &acts, 6, &mut seen);
+        assert!(
+            seen > 2_000,
+            "a thin walk proves nothing: {seen} actions tried"
+        );
     }
 
     fn walk(g: &mut Game, dirs: &[Dir]) {
