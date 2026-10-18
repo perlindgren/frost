@@ -20,14 +20,14 @@
 </style>
 </head>
 <body>
-<div id="fallback">warming the hill — build d262e3ca&hellip;</div>
+<div id="fallback">warming the hill — build 3fcadbac&hellip;</div>
 <script type="module">
   // The ?v= tags are load-bearing: a page reload never refetches
   // the wasm module — Firefox serves its cached copy of the fixed
   // URL, which is how a stale module can haunt the page for days.
   // Bump the tag every time web/build.sh rebuilds the package.
-  import init from "./pkg/antifrost.js?v=d262e3ca";
-  await init("./pkg/antifrost_bg.wasm?v=d262e3ca");
+  import init from "./pkg/antifrost.js?v=3fcadbac";
+  await init("./pkg/antifrost_bg.wasm?v=3fcadbac");
 </script>
 </body>
 </html>
