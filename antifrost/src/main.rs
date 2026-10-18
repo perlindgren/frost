@@ -6,17 +6,21 @@
 //! is a stack, and the tunnels are the shuffle device. Every ant asleep
 //! in its bed, yourself included, before the first frost.
 //!
-//! Run: `RUST_LOG=info cargo run --example antifrost` — add
+//! Run: `RUST_LOG=info cargo run -p antifrost` — add
 //! `-- --vsync off` to uncap the frame rate. Vsync starts on: the
 //! present is refresh-synced (`Fifo`), which is what lets the display
 //! engage VRR; off presents with tearing (`Immediate`) and bypasses it.
-//! Rules: `examples/antifrost/DESIGN.md`
+//! Rules: `antifrost/DESIGN.md`
 
-mod game;
-mod level;
 #[cfg(test)]
-mod solver;
-
+use antifrost::settings::Quality;
+use antifrost::{
+    LEVELS, game,
+    ledger::{MOVES_CAP, Progress},
+    level,
+    route::{Replay, decode_run, encode_run},
+    settings::{Settings, Shadow},
+};
 use frost::{
     Color, Context, KeyCode, MouseButton, Particle, ParticleShape, ParticleSystem, Process, Rng,
     Scene, SceneNode, SpriteFilter, Tile, Transform,
@@ -28,7 +32,7 @@ use std::sync::Arc;
 
 /// The hill's own voice: Barrfont for every word the game draws —
 /// notes, HUD, win screen, the sleepy "z"s.
-const GAME_FONT: &[u8] = include_bytes!("assets/fonts/Barrfont-Regular.ttf");
+const GAME_FONT: &[u8] = include_bytes!("../assets/fonts/Barrfont-Regular.ttf");
 /// Diagnostics alone keeps Fira Code: the overlay is an instrument
 /// panel, not a signpost, and its numbers want a coding face.
 #[cfg(feature = "diag")]
@@ -41,11 +45,10 @@ const DIAG_FONT: &[u8] = include_bytes!("../../assets/fonts/FiraCode-VariableFon
 /// cut into it. Eye candy; no geology is implied.
 const DEEP_PARALLAX: f32 = 0.85;
 
-const LEVELS: &str = include_str!("levels.ron");
 /// The backdrop: one soil texture stretched cover-first across the window,
 /// under every tile. The hairline gaps between tiles and the void past the
 /// hill's edge read as earth instead of as a screen.
-const SOIL: &[u8] = include_bytes!("assets/sprites/soil.png");
+const SOIL: &[u8] = include_bytes!("../assets/sprites/soil.png");
 
 /// The slab the menu panels are cut from: one 16:9 band taken from
 /// the garden's granite photo (the user's own `stone.png`, 3024×4032)
@@ -54,11 +57,11 @@ const SOIL: &[u8] = include_bytes!("assets/sprites/soil.png");
 /// dim room and never competes with the words on it. The face keeps
 /// the moss and the lichen: an anthill hung on a real stone should
 /// say so.
-const STONE: &[u8] = include_bytes!("assets/sprites/stone_menu.png");
+const STONE: &[u8] = include_bytes!("../assets/sprites/stone_menu.png");
 
 /// The bed, the user's own sprite: laid square on the bed's cell,
 /// tinted nothing, lit like everything else that lives in the hill.
-const BED: &[u8] = include_bytes!("assets/sprites/bed.png");
+const BED: &[u8] = include_bytes!("../assets/sprites/bed.png");
 
 const TILE: f32 = 44.0;
 
@@ -88,18 +91,18 @@ const CAM_DEAD: f32 = 0.25;
 /// the wind starts dealing it into the hand, and by double par the
 /// sky plays nothing else.
 const LEAVES: [&[u8]; 12] = [
-    include_bytes!("assets/sprites/leaf1.png"),
-    include_bytes!("assets/sprites/leaf2.png"),
-    include_bytes!("assets/sprites/leaf3.png"),
-    include_bytes!("assets/sprites/leaf4.png"),
-    include_bytes!("assets/sprites/leaf5.png"),
-    include_bytes!("assets/sprites/leaf6.png"),
-    include_bytes!("assets/sprites/leaf7.png"),
-    include_bytes!("assets/sprites/leaf8.png"),
-    include_bytes!("assets/sprites/leaf9.png"),
-    include_bytes!("assets/sprites/leaf10.png"),
-    include_bytes!("assets/sprites/leaf11.png"),
-    include_bytes!("assets/sprites/snow_flake.png"),
+    include_bytes!("../assets/sprites/leaf1.png"),
+    include_bytes!("../assets/sprites/leaf2.png"),
+    include_bytes!("../assets/sprites/leaf3.png"),
+    include_bytes!("../assets/sprites/leaf4.png"),
+    include_bytes!("../assets/sprites/leaf5.png"),
+    include_bytes!("../assets/sprites/leaf6.png"),
+    include_bytes!("../assets/sprites/leaf7.png"),
+    include_bytes!("../assets/sprites/leaf8.png"),
+    include_bytes!("../assets/sprites/leaf9.png"),
+    include_bytes!("../assets/sprites/leaf10.png"),
+    include_bytes!("../assets/sprites/leaf11.png"),
+    include_bytes!("../assets/sprites/snow_flake.png"),
 ];
 
 /// The snowflake's slot in `LEAVES` — never dealt as a leaf.
@@ -109,10 +112,10 @@ const SNOW_SHEET: usize = LEAVES.len() - 1;
 /// top-down like the board reads it. The sheets are large (~970 px wide),
 /// so they are baked down before upload, not scaled at draw time.
 const ANT_FRAMES: [&[u8]; 4] = [
-    include_bytes!("assets/sprites/ant1.png"),
-    include_bytes!("assets/sprites/ant2.png"),
-    include_bytes!("assets/sprites/ant3.png"),
-    include_bytes!("assets/sprites/ant4.png"),
+    include_bytes!("../assets/sprites/ant1.png"),
+    include_bytes!("../assets/sprites/ant2.png"),
+    include_bytes!("../assets/sprites/ant3.png"),
+    include_bytes!("../assets/sprites/ant4.png"),
 ];
 
 /// Baked frame texture width in pixels. The originals are ~970 px wide;
@@ -266,10 +269,6 @@ const C_NIGHT: Color = Color {
 /// reaches, and nine times the arithmetic is exactly what the frame
 /// budget cannot pay at 4K. Tile walls cast tile shadows.
 const LAMP_REACH: f32 = 2.6;
-/// The lamp disk's radius when diffusion is bought: shadows fade
-/// across these pixels instead of dropping in one. The ladder below
-/// decides whether lamps sweep this disk with four rays or nine.
-const LAMP_PENUMBRA: f32 = 6.0;
 
 /// Lamps breathe — ants are alive, not night-lights, and the breath
 /// is meant to be *seen*. Asleep: a warm pool that swells and subsides,
@@ -476,62 +475,6 @@ fn face_of(dir: game::Dir) -> [f32; 2] {
         game::Dir::Up => [0.0, 1.0],
         game::Dir::Down => [0.0, -1.0],
     }
-}
-
-/// The ledger's route alphabet, borrowed from the walkthrough:
-/// `lrud` walks, `LRUD` shoves, `x` leaves an ant behind. One string
-/// is one recorded best run, and one replay is that string walked
-/// back through the hill.
-fn glyph_of(a: game::Act) -> char {
-    use game::{Act, Dir};
-    match a {
-        Act::Move(Dir::Left) => 'l',
-        Act::Move(Dir::Right) => 'r',
-        Act::Move(Dir::Up) => 'u',
-        Act::Move(Dir::Down) => 'd',
-        Act::Push(Dir::Left) => 'L',
-        Act::Push(Dir::Right) => 'R',
-        Act::Push(Dir::Up) => 'U',
-        Act::Push(Dir::Down) => 'D',
-        Act::Detach => 'x',
-    }
-}
-
-fn encode_run(acts: &[game::Act]) -> String {
-    acts.iter().map(|a| glyph_of(*a)).collect()
-}
-
-/// Every glyph or nothing: a recording with a stray letter in it is
-/// not a route, and the ledger pretends it never heard of it.
-fn decode_run(s: &str) -> Option<Vec<game::Act>> {
-    use game::{Act, Dir};
-    s.chars()
-        .map(|c| {
-            Some(match c {
-                'l' => Act::Move(Dir::Left),
-                'r' => Act::Move(Dir::Right),
-                'u' => Act::Move(Dir::Up),
-                'd' => Act::Move(Dir::Down),
-                'L' => Act::Push(Dir::Left),
-                'R' => Act::Push(Dir::Right),
-                'U' => Act::Push(Dir::Up),
-                'D' => Act::Push(Dir::Down),
-                'x' => Act::Detach,
-                _ => return None,
-            })
-        })
-        .collect()
-}
-
-/// A recorded best run, walked back through the hill. The live game
-/// *is* the showing's current frame — `shown` actions of `acts` have
-/// been applied to it — so everything that paints a hill keeps
-/// painting one; stepping back rebuilds the hill from its own
-/// beginning through one fewer action.
-struct Replay {
-    acts: Vec<game::Act>,
-    shown: usize,
-    playing: bool,
 }
 
 /// Per-ant pixel glide: where it is drawn, where it is heading.
@@ -810,62 +753,6 @@ fn escape_nav(from: Page) -> Escape {
     }
 }
 
-/// The lamp-shadow ladder: what each lit pixel pays for occlusion.
-/// `None` registers no occluders at all — lamps light as if the hill
-/// were glass; `One` is the single hard ray; `Four` sweeps a balanced
-/// cross of the lamp's disk; `Nine` fills the 3x3 grid, the dense
-/// diffusion advanced hardware buys.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Shadow {
-    None,
-    One,
-    Four,
-    Nine,
-}
-
-impl Shadow {
-    fn label(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::One => "1 light",
-            Self::Four => "4 light",
-            Self::Nine => "9 light",
-        }
-    }
-    fn next(self) -> Self {
-        match self {
-            Self::None => Self::One,
-            Self::One => Self::Four,
-            Self::Four => Self::Nine,
-            Self::Nine => Self::None,
-        }
-    }
-    fn parse(text: &str) -> Option<Self> {
-        match text {
-            "none" => Some(Self::None),
-            "1 light" => Some(Self::One),
-            "4 light" => Some(Self::Four),
-            "9 light" => Some(Self::Nine),
-            _ => None,
-        }
-    }
-    /// The lamp disk, or zero for the hard single ray.
-    fn penumbra(self) -> f32 {
-        match self {
-            Self::None | Self::One => 0.0,
-            Self::Four | Self::Nine => LAMP_PENUMBRA,
-        }
-    }
-    /// The rung's tap count; only ever read for a lit disk.
-    fn taps(self) -> u32 {
-        match self {
-            Self::None | Self::One => 1,
-            Self::Four => 4,
-            Self::Nine => 9,
-        }
-    }
-}
-
 /// The rows a menu page can answer to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Action {
@@ -1038,469 +925,6 @@ fn ambient_floor(t: f32) -> Color {
         }
     }
 }
-
-/// The stretch-pass quality tiers: the fixed buffer the hill renders
-/// into, from a 720p buffer (cheap, soft) to native resolution (every
-/// pixel rendered, the expensive 4K experiment included). The old
-/// quarter-HD tier retired — the row's floor is now medium — and a
-/// file that still names `"low"` lands on that floor rather than
-/// failing. The default is High, the 1080p fixed buffer the demo
-/// shipped with; Ultra lifts the fix and lets the frame render at the
-/// display's own size.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Quality {
-    Medium,
-    High,
-    VeryHigh,
-    Ultra,
-}
-
-impl Quality {
-    fn size(self) -> Option<[u32; 2]> {
-        match self {
-            Quality::Medium => Some([1280, 720]),
-            Quality::High => Some([1920, 1080]),
-            Quality::VeryHigh => Some([2560, 1440]),
-            Quality::Ultra => None,
-        }
-    }
-    /// What the row and the file call the tier: the resolution it
-    /// promises, `native` for the tier that fixes none.
-    fn label(self) -> &'static str {
-        match self {
-            Quality::Medium => "1280 x 720",
-            Quality::High => "1920 x 1080",
-            Quality::VeryHigh => "2560 x 1440",
-            Quality::Ultra => "native",
-        }
-    }
-    fn next(self) -> Quality {
-        match self {
-            Quality::Medium => Quality::High,
-            Quality::High => Quality::VeryHigh,
-            Quality::VeryHigh => Quality::Ultra,
-            Quality::Ultra => Quality::Medium,
-        }
-    }
-    fn parse(text: &str) -> Option<Quality> {
-        Some(match text {
-            "1280 x 720" => Quality::Medium,
-            "1920 x 1080" => Quality::High,
-            "2560 x 1440" => Quality::VeryHigh,
-            "native" => Quality::Ultra,
-            _ => return None,
-        })
-    }
-}
-
-/// The player's preferences, live in memory and — on native — on disc
-/// beside the launch folder. Every field reaches the frame the same
-/// way: vsync, filter, fullscreen, and quality flip the engine the
-/// moment the row moves; ambient, light, and leaf lighting are read
-/// by the draw each frame, so the settings page previews them live
-/// behind the panel.
-#[derive(Clone, Debug, PartialEq)]
-struct Settings {
-    vsync: bool,
-    /// The stretch filter: nearest (crisp pixel blocks) or bilinear
-    /// (the soft default).
-    nearest: bool,
-    fullscreen: bool,
-    /// The render buffer's size: the row shows the resolution it
-    /// names, `native` for none.
-    quality: Quality,
-    /// Ambient floor, on the [`ambient_floor`] slider: 50% is the
-    /// night the game shipped with, 0% is the full dark, and 100%
-    /// floors every pixel at full bright — no dimming at all.
-    ambient: f32,
-    /// Lamp strength, as a fraction of the shipped intensities —
-    /// doubled past 1.0 at the slider's far end.
-    light: f32,
-    /// The halo the ants' lamps throw: the bloom chain's twelve passes, spent
-    /// only while this row is on — at zero strength the engine declines to run
-    /// the chain rather than computing a picture no one reads, so this is the
-    /// weak hardware's rung as much as it is a look.
-    ///
-    /// Measured, at the buffer the hill fixes itself to: +0.39 ms a frame
-    /// against a frame that is 9.71 ms there, interleaved pairs, the machine's
-    /// own noise floor a quarter of that (§13 of the benchmarking notes). Never
-    /// measured in a browser, which is the other place this game runs and the
-    /// reason the rung exists at all.
-    lamp_glow: bool,
-    leaves_lit: bool,
-    /// The weak-hardware answer to the light field, on a ladder:
-    /// lamps stay at every rung, and only the shadows' cost steps.
-    shadows: Shadow,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Settings {
-            vsync: true,
-            nearest: false,
-            fullscreen: true,
-            quality: Quality::High,
-            ambient: 0.5,
-            light: 1.0,
-            lamp_glow: true,
-            leaves_lit: true,
-            shadows: Shadow::One,
-        }
-    }
-}
-
-impl Settings {
-    const FILE: &'static str = "antifrost.settings.ron";
-
-    /// The file's text, in the crate's own Ron shape: flat, named,
-    /// and hand-parsable by `load_levels`' little parser.
-    fn text(&self) -> String {
-        format!(
-            "(\n    vsync: {},\n    filter: \"{}\",\n    fullscreen: {},\n    resolution: \"{}\",\n    ambient: {},\n    light: {},\n    lamp_glow: {},\n    leaves_lit: {},\n    shadows: \"{}\",\n)\n",
-            self.vsync,
-            if self.nearest { "nearest" } else { "linear" },
-            self.fullscreen,
-            self.quality.label(),
-            self.ambient,
-            self.light,
-            self.lamp_glow,
-            self.leaves_lit,
-            self.shadows.label(),
-        )
-    }
-
-    /// Parse the file's text over the defaults: an unknown name, an
-    /// unreadable value, or a whole garbage file loses that one
-    /// setting, not the launch.
-    fn parse(src: &str) -> Settings {
-        let d = Settings::default();
-        let Ok(root) = frost::ron::parse(src) else {
-            return d;
-        };
-        let val = |name: &str| frost::ron::field(&root, name);
-        let atom = |name: &str| match val(name) {
-            Some(frost::ron::Val::Atom(text, _)) => Some(text.as_str()),
-            _ => None,
-        };
-        let boolean = |name: &str, at: bool| match atom(name) {
-            Some("true") => true,
-            Some("false") => false,
-            _ => at,
-        };
-        let number = |name: &str, at: f32, lo: f32, hi: f32| {
-            atom(name)
-                .and_then(|t| t.parse::<f32>().ok())
-                .map(|v| v.clamp(lo, hi))
-                .unwrap_or(at)
-        };
-        let ambient = number("ambient", d.ambient, 0.0, 1.0);
-        Settings {
-            vsync: boolean("vsync", d.vsync),
-            nearest: match atom("filter") {
-                Some(t) => t.trim_matches('"') == "nearest",
-                _ => d.nearest,
-            },
-            fullscreen: boolean("fullscreen", d.fullscreen),
-            quality: atom("resolution")
-                .and_then(|t| Quality::parse(t.trim_matches('"')))
-                .unwrap_or(d.quality),
-            ambient,
-            light: number("light", d.light, 0.0, 2.0),
-            lamp_glow: boolean("lamp_glow", d.lamp_glow),
-            leaves_lit: boolean("leaves_lit", d.leaves_lit),
-            shadows: atom("shadows")
-                .and_then(|t| Shadow::parse(t.trim_matches('"')))
-                .unwrap_or(d.shadows),
-        }
-    }
-
-    /// The kept text, read back; missing or unreadable says default.
-    /// The menu opens every launch regardless — the file speaks the
-    /// settings, not the opening page. On the desktop the keeping is a
-    /// file beside the launch folder; in a browser, its own memory of
-    /// this site — `frost::store` answers for both worlds.
-    fn load() -> Settings {
-        match frost::store::load(Self::FILE) {
-            Some(src) => Settings::parse(&src),
-            None => {
-                log::info!("antifrost: no {:?} yet — defaults", Self::FILE);
-                Settings::default()
-            }
-        }
-    }
-
-    /// Keep the settings under the file's name, wherever this runs.
-    /// Failure is a logged shrug, never a popped frame: a read-only
-    /// folder, or a private window, costs persistence, not the game.
-    fn save(&self) {
-        if let Err(err) = frost::store::save(Self::FILE, &self.text()) {
-            log::warn!("antifrost: could not save {:?}: {err}", Self::FILE);
-        }
-    }
-}
-
-/// The highest move count a hill ever reports. The game itself
-/// counts past it without stopping the player; the number is the
-/// display's, and a display that must fit a table needs a ceiling:
-/// "999 moves" is the widest score row the ledger can ever paint, so
-/// the progress page's columns are settled against it once and for
-/// all.
-const MOVES_CAP: i32 = 999;
-
-/// Where the player's descent stands, kept under its own name beside
-/// the settings — a file in the launch folder on the desktop, a key in
-/// the browser's memory on the web: which hill they last stood on,
-/// how deep they ever got (the progress page's list grows down to
-/// here and never back), and the ledger the page reads — every hill
-/// they warmed, in the fewest moves they ever warmed it. It is
-/// written wherever the hill moves — New Game, N, P — and wherever a
-/// hill is won, never on launch and never inside `load`, so starting
-/// the game leaves no fingerprint and a window-manager kill loses
-/// nothing newer than the hill entered or the hill finished. The file
-/// counts hills the way the HUD does, from one; each score is a
-/// quoted pair, `"hill moves"`, so the hand-written parser stays a
-/// walk down two atoms and nothing more.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
-struct Progress {
-    hill: usize,
-    /// The deepest hill ever stood on. It only ever grows: walking
-    /// back to replay a shallow hill un-stands nowhere.
-    reached: usize,
-    /// Warm hills and their best runs, `(hill, moves)`, zero-based in
-    /// the code and sorted by hill; an unwarmed hill owns no entry.
-    scores: Vec<(usize, i32)>,
-    /// The walk that earned each best, `(hill, glyphs)`, in the
-    /// walkthrough's alphabet — the routes the *player* ran, never a
-    /// solver's. A hill owns at most one, and it changes only when a
-    /// better score does, so a route always shows how its number was
-    /// honestly earned.
-    routes: Vec<(usize, String)>,
-}
-
-impl Progress {
-    const FILE: &'static str = "antifrost.progress.ron";
-
-    /// The player now stands on `hill`: the resume point moves there
-    /// and the depth of the descent is asked to remember it, forever
-    /// if it is a new low.
-    fn stood(&mut self, hill: usize) {
-        self.hill = hill;
-        self.reached = self.reached.max(hill);
-    }
-
-    fn text(&self) -> String {
-        let mut text = format!(
-            "(\n    hill: {},\n    reached: {},\n    scores: [",
-            self.hill + 1,
-            self.reached + 1
-        );
-        if self.scores.is_empty() {
-            text.push_str("],\n");
-        } else {
-            for (hill, moves) in &self.scores {
-                text.push_str(&format!("\n        \"{} {}\",", hill + 1, moves));
-            }
-            text.push_str("\n    ],\n");
-        }
-        // The routes ride the same file: a number and the walk that
-        // earned it belong on the same shelf.
-        text.push_str("    routes: [");
-        if self.routes.is_empty() {
-            text.push_str("],\n)\n");
-        } else {
-            for (hill, glyphs) in &self.routes {
-                text.push_str(&format!("\n        \"{} {}\",", hill + 1, glyphs));
-            }
-            text.push_str("\n    ],\n)\n");
-        }
-        text
-    }
-
-    /// A hill just finished: the run joins the ledger, and the ledger
-    /// keeps the truth it always keeps — one entry per hill, the
-    /// fewest moves of any attempt. A warm hill was stood on, so the
-    /// descent's depth takes note of it too. The answer says whether
-    /// this run *is* the new best — the walk that earns a number is
-    /// the walk worth remembering.
-    fn record(&mut self, hill: usize, moves: i32) -> bool {
-        // The ledger writes a number, so the number has an upper
-        // limit: a hill stays winnable past it and the game keeps
-        // counting itself, but the ledger — and every layout that
-        // trusts its width — sees `MOVES_CAP` at the most.
-        let moves = moves.min(MOVES_CAP);
-        self.reached = self.reached.max(hill);
-        match self.scores.iter_mut().find(|(h, _)| *h == hill) {
-            Some(entry) => {
-                if moves < entry.1 {
-                    entry.1 = moves;
-                    true
-                } else {
-                    false
-                }
-            }
-            None => {
-                self.scores.push((hill, moves));
-                self.scores.sort();
-                true
-            }
-        }
-    }
-
-    /// The best run's own walk, when the ledger keeps one for `hill`.
-    fn route_of(&self, hill: usize) -> Option<&str> {
-        self.routes
-            .iter()
-            .find(|(h, _)| *h == hill)
-            .map(|(_, g)| g.as_str())
-    }
-
-    /// The walk that earned the best number, into the ledger's
-    /// keeping. Only letters a hill could walk are kept: a hand at
-    /// the file may change a score, but it cannot write a route the
-    /// game would ever show.
-    fn remember(&mut self, hill: usize, glyphs: &str) {
-        if glyphs.is_empty() || decode_run(glyphs).is_none() {
-            return;
-        }
-        match self.routes.iter_mut().find(|(h, _)| *h == hill) {
-            Some(entry) => entry.1 = glyphs.to_string(),
-            None => {
-                self.routes.push((hill, glyphs.to_string()));
-                self.routes.sort();
-            }
-        }
-    }
-
-    /// A won hill's whole deposit: the number, and the walk that
-    /// earned it. The ledger keeps its law — fewest moves — and the
-    /// walk rides only the number it walks: every new best carries
-    /// its walk in, and a hill whose number predates the recordings
-    /// backfills its walk when a run ties that number. A tie over an
-    /// existing walk changes nothing (the elder walk walks the same
-    /// number, and churn would lie about novelty); a worse run
-    /// carries nothing anywhere.
-    fn record_run(&mut self, hill: usize, moves: i32, glyphs: &str) {
-        let improved = self.record(hill, moves);
-        let walked = moves.min(MOVES_CAP);
-        let keeps = self
-            .scores
-            .iter()
-            .find(|(h, _)| *h == hill)
-            .is_some_and(|(_, m)| *m == walked);
-        if keeps && (improved || self.route_of(hill).is_none()) {
-            self.remember(hill, glyphs);
-        }
-    }
-
-    fn parse(src: &str) -> Progress {
-        let Ok(root) = frost::ron::parse(src) else {
-            return Progress::default();
-        };
-        let hill = match frost::ron::field(&root, "hill") {
-            Some(frost::ron::Val::Atom(text, _)) => {
-                text.trim_matches('"').parse::<usize>().unwrap_or(1)
-            }
-            _ => 1,
-        };
-        let reached = match frost::ron::field(&root, "reached") {
-            Some(frost::ron::Val::Atom(text, _)) => {
-                text.trim_matches('"').parse::<usize>().unwrap_or(1)
-            }
-            // A file from before the descent kept its depth says no
-            // more than where it stands: the stood-on hill is the
-            // deepest it ever named.
-            _ => hill,
-        };
-        // The ledger survives what a hand may not: entries out of
-        // order fold to sorted, a hill named twice keeps its better
-        // number, and garbage in the list is simply not a score.
-        // A file from before the ledger carries no `scores` at all —
-        // which is no scores, not a broken file.
-        let mut scores: Vec<(usize, i32)> = match frost::ron::field(&root, "scores") {
-            Some(frost::ron::Val::Seq { items, .. }) => items
-                .iter()
-                .filter_map(|item| match &item.val {
-                    frost::ron::Val::Atom(text, _) => {
-                        let mut pair = text.trim_matches('"').split_whitespace();
-                        let hill = pair.next()?.parse::<usize>().ok()?.checked_sub(1)?;
-                        let moves = pair.next()?.parse::<i32>().ok()?;
-                        // The file's scores pass the same turnstile
-                        // the record does: the cap holds whatever
-                        // hand went to the keyboard after the game.
-                        Some((hill, moves.clamp(0, MOVES_CAP)))
-                    }
-                    _ => None,
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
-        scores.sort();
-        scores.dedup_by(|a, b| {
-            if a.0 == b.0 {
-                // `a` is the entry being dropped; it dies passing its
-                // better number on to the one that stays.
-                b.1 = b.1.min(a.1);
-                true
-            } else {
-                false
-            }
-        });
-        // One-based in the file, zero-based in the code — and nothing
-        // sits below the first hill. The depth of the descent is at
-        // least the hill it stands on and at least the deepest warm
-        // hill: a warm hill was stood on by definition, which folds
-        // the pre-`reached` files (a score deeper than the standing
-        // hill) onto the truth they already carry.
-        let hill = hill.saturating_sub(1);
-        let reached = reached
-            .saturating_sub(1)
-            .max(hill)
-            .max(scores.iter().map(|(h, _)| *h).max().unwrap_or(0));
-        // The routes read themselves the same forgiving way: a file
-        // from before replays carries none, a hill named twice keeps
-        // the first walk mentioned, and any string the hill could not
-        // walk is not a route at all.
-        let mut routes: Vec<(usize, String)> = match frost::ron::field(&root, "routes") {
-            Some(frost::ron::Val::Seq { items, .. }) => items
-                .iter()
-                .filter_map(|item| match &item.val {
-                    frost::ron::Val::Atom(text, _) => {
-                        let mut pair = text.trim_matches('"').split_whitespace();
-                        let hill = pair.next()?.parse::<usize>().ok()?.checked_sub(1)?;
-                        let glyphs = pair.next()?;
-                        if pair.next().is_some() || decode_run(glyphs).is_none() {
-                            return None;
-                        }
-                        Some((hill, glyphs.to_string()))
-                    }
-                    _ => None,
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
-        routes.sort();
-        routes.dedup_by(|a, b| a.0 == b.0);
-        Progress {
-            hill,
-            reached,
-            scores,
-            routes,
-        }
-    }
-
-    fn load() -> Progress {
-        frost::store::load(Self::FILE)
-            .map(|src| Progress::parse(&src))
-            .unwrap_or_default()
-    }
-
-    fn save(&self) {
-        if let Err(err) = frost::store::save(Self::FILE, &self.text()) {
-            log::warn!("antifrost: could not save {:?}: {err}", Self::FILE);
-        }
-    }
-}
-
 /// The largest 16:9 box inside a window: native mode's view. A
 /// fixed tier needs no fitting — its buffer *is* 16:9 and the engine
 /// letterboxes the stretch to the window's aspect — but at native
@@ -5714,7 +5138,7 @@ mod merge_tests {
     #[test]
     fn the_fixpoint_cut_is_measured_not_claimed() {
         // Every shipped hill, as the cache will see it.
-        let levels = level::load_levels(include_str!("levels.ron"));
+        let levels = level::load_levels(include_str!("../levels.ron"));
         let mut shipped_gain = 0usize;
         for lvl in &levels {
             let tiles: Vec<(i32, i32, bool)> = (0..lvl.rows as i32)
@@ -6248,6 +5672,7 @@ mod menu_tests {
     /// new hill out-owns this ink, the first assertion fails here
     /// rather than painting a collision.
     #[test]
+    #[allow(clippy::assertions_on_constants)] // constant-on-constant is the point: these are layout guards over `const` widths, and the test earns its keep the day one of them moves
     fn the_ledger_columns_never_touch() {
         const NUM: f32 = 48.0;
         const NAME: f32 = 372.0;

@@ -15,9 +15,9 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-cargo build --example antifrost --target wasm32-unknown-unknown --release
+cargo build -p antifrost --target wasm32-unknown-unknown --release
 wasm-bindgen --target web --out-dir web/pkg \
-    target/wasm32-unknown-unknown/release/examples/antifrost.wasm
+    target/wasm32-unknown-unknown/release/antifrost.wasm
 # Stamp index.html's module URLs with the new wasm's hash: browsers
 # cache the wasm at its fixed URL and a page reload never refetches
 # it, so every build must arrive under a fresh query string.

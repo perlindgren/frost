@@ -15,8 +15,8 @@ edition = "2024"
 # measurement travels with the measurement instead of drifting away from it
 # in some other package.
 [workspace]
-members = ["tools/sprite_util", "tools/noisefloor"]
-default-members = [".", "tools/sprite_util", "tools/noisefloor"]
+members = ["antifrost", "tools/sprite_util", "tools/noisefloor"]
+default-members = [".", "antifrost", "tools/sprite_util", "tools/noisefloor"]
 # Edition 2024 implies resolver 3; stated explicitly so the workspace
 # resolver cannot drift from the packages' editions.
 resolver = "3"
@@ -303,9 +303,3 @@ arboard = "3.7.0"
 # (tools/noisefloor). Native-only for the arboard reason above — the canary
 # measures a scheduler, and a browser tab does not have the one being judged.
 noisefloor = { path = "tools/noisefloor" }
-
-# Diagnostics overlay: compiles the profiler HUD of the `antifrost`
-# example in (`--features diag`); the default build leaves it out of
-# the binary entirely, not merely hidden.
-[features]
-diag = []

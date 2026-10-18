@@ -1,0 +1,41 @@
+# Ember Hill — the game built on the frost engine. It left example-hood
+# when it outgrew a single file: a game of its own package, the engine a
+# dependency like any consumer's, and the whole app representative of
+# how an application is built on frost (see ../ARCHITECTURE.md).
+[package]
+name = "antifrost"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+frost = { path = ".." }
+# The app logs through the same facade the engine uses — the app picks
+# the messages, the binary picks the sink (stderr, or the console).
+log = "0.4.34"
+# Sprite geometry read straight from the PNGs (ant frames, soil tiles)
+# to place them by their true pixels; same narrowed feature set as the
+# engine's.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# The diagnostics overlay HUD compiles in with `--features diag`; the
+# default build leaves it out of the binary entirely, not merely hidden.
+[features]
+diag = []
+
+# Native only: the command line (`--vsync off`, `--bench`) and stderr
+# logging. Both are cfg-stripped from the wasm build, which has neither
+# a terminal nor a command line.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11.11"
+
+# Browser only: the panic hook that surfaces failures in the devtools
+# console, and the console itself for the module's log lines and the
+# fallback page's sad news.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+# Wall-clock for the beat sentinel (`now_ms`): `std::time` is not
+# implemented on wasm32-unknown-unknown, so the frame-gap monitor takes
+# epoch milliseconds from the page's own clock.
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console"] }

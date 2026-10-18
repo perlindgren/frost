@@ -1,6 +1,6 @@
 #!/bin/sh
 # pre-push hook: run the full test suite before allowing a push.
-# Aborts the push if cargo test or cargo test --examples fails, or if the web
+# Aborts the push if cargo test or cargo test -p antifrost fails, or if the web
 # target no longer compiles.
 #
 # The web check is here because nothing else covers it. `cargo fmt`,
@@ -34,8 +34,8 @@ fi
 printf 'pre-push: running `cargo test`...\n'
 cargo test || fail 'cargo test'
 
-printf 'pre-push: running `cargo test --examples`...\n'
-cargo test --examples || fail 'cargo test --examples'
+printf 'pre-push: running `cargo test -p antifrost`...\n'
+cargo test -p antifrost || fail 'cargo test -p antifrost'
 
 # The web target shares the library and nothing else, so it gets its own line
 # rather than hiding inside the host's. One grace, announced rather than
@@ -45,7 +45,7 @@ cargo test --examples || fail 'cargo test --examples'
 wasm_target=wasm32-unknown-unknown
 if rustup target list --installed 2>/dev/null | grep -q "^${wasm_target}\$"; then
     printf 'pre-push: checking the web target (%s)...\n' "$wasm_target"
-    cargo check --quiet --example antifrost --target "$wasm_target" ||
+    cargo check --quiet -p antifrost --target "$wasm_target" ||
         fail 'cargo check for wasm32 (the web target)'
 elif command -v rustup >/dev/null 2>&1; then
     printf 'pre-push: WARNING: %s is not installed - the web target was NOT checked.\n' \

@@ -25,7 +25,7 @@ feature stops applying, at full optimization:
 
 ```sh
 cargo build --release --config 'profile.release.debug-assertions=true' \
-    --example antifrost --features diag
+    -p antifrost --features diag
 ```
 
 (A plain debug build also speaks, but measures the debug build's CPU, not
@@ -73,7 +73,7 @@ If a `--gpu`/power-preference knob is ever wanted, that single
 
    ```sh
    cargo build --release --config 'profile.release.debug-assertions=true' \
-       --example antifrost --features diag
+       -p antifrost --features diag
    ```
 
 2. **Run uncapped from your session** (`--vsync off` is the demo's flag;
@@ -83,7 +83,7 @@ If a `--gpu`/power-preference knob is ever wanted, that single
    ```sh
    XDG_RUNTIME_DIR=/run/user/$UID WAYLAND_DISPLAY=wayland-0 \
    RUST_LOG=trace timeout 14 \
-       ./target/release/examples/antifrost --vsync off > bench.log 2>&1
+       ./target/release/antifrost --vsync off > bench.log 2>&1
    ```
 
    The window opens fullscreen on the connected display — by the user's

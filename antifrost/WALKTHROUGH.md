@@ -486,8 +486,8 @@ verdicts' remains; this glyph is the current best.
 
 ---
 
-*Sequences regenerate from the solver: `cargo test --release --example
-antifrost solve_all_shipped -- --ignored --nocapture` prints the
+*Sequences regenerate from the solver: `cargo test --release -p
+antifrost --lib solve_all_shipped -- --ignored --nocapture` prints the
 twenty-eight BFS-optimal hills, and `hunt_the_unproven_seven -- --ignored
 --nocapture` runs the seven through the unified door — beam first,
 BFS certifier after — printing each route and its PROVEN-or-hunted

@@ -20,7 +20,7 @@ touch "$STAMP"
 trap 'rm -f "$STAMP"' EXIT
 
 while :; do
-    if [[ -n "$(find src shaders examples/antifrost Cargo.toml Cargo.lock \
+    if [[ -n "$(find src shaders antifrost Cargo.toml Cargo.lock \
                   -newer "$STAMP" -print -quit 2>/dev/null)" ]]; then
         ./web/build.sh
         touch "$STAMP"

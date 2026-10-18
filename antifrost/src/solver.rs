@@ -520,7 +520,7 @@ mod tests {
         ];
         let level = from_grid("Ember Deep", &rows, 0).expect("valid grid");
         let glyphs = "rrrrrlllxrlrrrrrrrrrrddlllllllllllluuuurrrrrrrrrrrrddddl";
-        let route = parse(&glyphs);
+        let route = parse(glyphs);
         assert_eq!(route.len(), 56);
         assert!(verify(&level, &route), "the hand route must win");
     }
@@ -1010,6 +1010,7 @@ fn naive_score(level: &Level) -> impl Fn(&Game) -> i32 + '_ {
 /// - a finite width can miss solutions that route through bad-looking
 ///   middles. Widen the beam or try again; the answer is trusted only
 ///   via replay anyway.
+///
 /// How many candidates the beam carries per layer. Cost is linear in
 /// this — ~2.4 s per layer per 30k measured — and it buys recall:
 /// 30k retook Ninefold and Ashfall but LOST Ember Deep's road (the
@@ -1150,7 +1151,6 @@ fn beam(
 }
 
 #[cfg(test)]
-
 mod dbg_trace {
     use super::*;
     use crate::level::from_grid;
@@ -1292,7 +1292,7 @@ mod dbg_trace {
             ),
         ];
         for (name, rows, gl) in cases {
-            let level = from_grid(name, &rows, 0).expect("valid grid");
+            let level = from_grid(name, rows, 0).expect("valid grid");
             let route = parse(gl);
             let mut g = Game::start(level.clone());
             println!("== {name} ==");

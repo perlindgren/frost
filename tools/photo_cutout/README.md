@@ -2,7 +2,7 @@
 
 Turns photos of pine-needle letters/digits on white paper into clean
 transparent sprites. Born in the antifrost hill-puzzle jam; extracted
-the 30-sprite set in `examples/antifrost/assets/sprites/` (the `leaf*`
+the 30-sprite set in `antifrost/assets/sprites/` (the `leaf*`
 and `ant*` sprites are unrelated).
 
 ## Usage

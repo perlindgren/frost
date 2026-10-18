@@ -159,6 +159,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "antifrost"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "console_error_panic_hook",
+ "env_logger",
+ "frost",
+ "image",
+ "js-sys",
+ "log",
+ "web-sys",
+]
+
+[[package]]
 name = "arboard"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
