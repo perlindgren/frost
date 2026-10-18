@@ -62,6 +62,27 @@ pub enum Dir {
     Down,
 }
 
+/// One action as the player spends it — the ledger's replay alphabet.
+/// The three verbs the hill answers to, in the order the input hands
+/// them over: a walk (collect, dig, U-turn and chain-shift are the
+/// walk's own outcomes), a shove, and leaving an ant behind.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Act {
+    Move(Dir),
+    Push(Dir),
+    Detach,
+}
+
+impl Act {
+    /// The direction a walk or shove aims; leaving behind aims nowhere.
+    pub fn dir(self) -> Option<Dir> {
+        match self {
+            Act::Move(d) | Act::Push(d) => Some(d),
+            Act::Detach => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AntColor {
     White, // the player's color
@@ -118,6 +139,15 @@ pub struct Game {
     pub won: bool,
     undo: Vec<Snap>,
     note: Option<&'static str>,
+    /// The run's own record, one entry per counted action: the ledger's
+    /// replay reads the hill back through this. It is the undo stack's
+    /// twin — every `Ok` action appends, every undo pops — so
+    /// `log.len() == moves` whenever `record` is on.
+    pub log: Vec<Act>,
+    /// Whether the hill is being *played* (set once by the menu) rather
+    /// than searched: a search's games never record, so the solver's
+    /// millions of clones stay exactly as cheap as they were.
+    pub record: bool,
 }
 
 impl Game {
@@ -142,6 +172,8 @@ impl Game {
             won: false,
             undo: Vec::new(),
             note: None,
+            log: Vec::new(),
+            record: false,
         }
     }
 
@@ -252,10 +284,31 @@ impl Game {
             Some(s) => {
                 self.restore(s);
                 self.note = None;
+                // The log is the undo stack's twin: what the hill took
+                // back, the record forgot.
+                if self.record {
+                    self.log.pop();
+                }
                 true
             }
             None => false,
         }
+    }
+
+    /// The recording entrance for a player's action: the same three
+    /// verbs, but a played hill writes down what it accepted. The
+    /// solver never comes through here, and a refused action joins
+    /// nothing — a wall costs no move and leaves no glyph.
+    pub fn act(&mut self, a: Act) -> Result<(), &'static str> {
+        let outcome = match a {
+            Act::Move(d) => self.move_player(d),
+            Act::Push(d) => self.push(d),
+            Act::Detach => self.detach(),
+        };
+        if outcome.is_ok() && self.record {
+            self.log.push(a);
+        }
+        outcome
     }
 
     // ------------------------------------------------------------------
@@ -592,6 +645,44 @@ mod tests {
         assert_eq!(g.moves, 0);
         assert_eq!(g.player, Cell::new(5, 1));
         assert!(!g.undo(), "nothing older to undo");
+    }
+
+    #[test]
+    fn a_search_never_records() {
+        // The solver's games never set `record`, so the log stays
+        // empty however many actions they take: the ledger is a
+        // player's memory, and a clone's empty log costs a clone
+        // nothing.
+        let mut g = game(&FIRST_COLD);
+        assert!(!g.record, "a fresh hill records nothing by default");
+        g.act(Act::Move(Dir::Left)).expect("collect red");
+        g.act(Act::Detach).expect("leave it behind");
+        assert_eq!(g.moves, 2, "the hill counted both actions");
+        assert!(g.log.is_empty(), "but the record stayed shut");
+    }
+
+    #[test]
+    fn a_played_hill_records_its_walk_one_glyph_per_move() {
+        let mut g = game(&FIRST_COLD);
+        g.record = true;
+        // Collect red, leave it behind, then a refusal at the wall.
+        g.act(Act::Move(Dir::Left)).expect("collect red");
+        g.act(Act::Detach).expect("stretch the line, drop red");
+        assert!(g.act(Act::Move(Dir::Up)).is_err(), "row zero is rock");
+        assert_eq!(
+            g.log,
+            vec![Act::Move(Dir::Left), Act::Detach],
+            "the walk, the shove-free leave-behind, and the wall that joined nothing"
+        );
+        assert_eq!(
+            g.log.len() as i32,
+            g.moves,
+            "the log is the undo stack's twin"
+        );
+        // Undo forgets exactly the action it rolled back.
+        g.undo();
+        assert_eq!(g.log, vec![Act::Move(Dir::Left)]);
+        assert_eq!(g.log.len() as i32, g.moves);
     }
 
     #[test]

@@ -478,6 +478,62 @@ fn face_of(dir: game::Dir) -> [f32; 2] {
     }
 }
 
+/// The ledger's route alphabet, borrowed from the walkthrough:
+/// `lrud` walks, `LRUD` shoves, `x` leaves an ant behind. One string
+/// is one recorded best run, and one replay is that string walked
+/// back through the hill.
+fn glyph_of(a: game::Act) -> char {
+    use game::{Act, Dir};
+    match a {
+        Act::Move(Dir::Left) => 'l',
+        Act::Move(Dir::Right) => 'r',
+        Act::Move(Dir::Up) => 'u',
+        Act::Move(Dir::Down) => 'd',
+        Act::Push(Dir::Left) => 'L',
+        Act::Push(Dir::Right) => 'R',
+        Act::Push(Dir::Up) => 'U',
+        Act::Push(Dir::Down) => 'D',
+        Act::Detach => 'x',
+    }
+}
+
+fn encode_run(acts: &[game::Act]) -> String {
+    acts.iter().map(|a| glyph_of(*a)).collect()
+}
+
+/// Every glyph or nothing: a recording with a stray letter in it is
+/// not a route, and the ledger pretends it never heard of it.
+fn decode_run(s: &str) -> Option<Vec<game::Act>> {
+    use game::{Act, Dir};
+    s.chars()
+        .map(|c| {
+            Some(match c {
+                'l' => Act::Move(Dir::Left),
+                'r' => Act::Move(Dir::Right),
+                'u' => Act::Move(Dir::Up),
+                'd' => Act::Move(Dir::Down),
+                'L' => Act::Push(Dir::Left),
+                'R' => Act::Push(Dir::Right),
+                'U' => Act::Push(Dir::Up),
+                'D' => Act::Push(Dir::Down),
+                'x' => Act::Detach,
+                _ => return None,
+            })
+        })
+        .collect()
+}
+
+/// A recorded best run, walked back through the hill. The live game
+/// *is* the showing's current frame — `shown` actions of `acts` have
+/// been applied to it — so everything that paints a hill keeps
+/// painting one; stepping back rebuilds the hill from its own
+/// beginning through one fewer action.
+struct Replay {
+    acts: Vec<game::Act>,
+    shown: usize,
+    playing: bool,
+}
+
 /// Per-ant pixel glide: where it is drawn, where it is heading.
 /// One hop's path: a cubic between two cells whose control arms lie
 /// along the directions of travel at either end. Entering and leaving
@@ -1213,6 +1269,12 @@ struct Progress {
     /// Warm hills and their best runs, `(hill, moves)`, zero-based in
     /// the code and sorted by hill; an unwarmed hill owns no entry.
     scores: Vec<(usize, i32)>,
+    /// The walk that earned each best, `(hill, glyphs)`, in the
+    /// walkthrough's alphabet — the routes the *player* ran, never a
+    /// solver's. A hill owns at most one, and it changes only when a
+    /// better score does, so a route always shows how its number was
+    /// honestly earned.
+    routes: Vec<(usize, String)>,
 }
 
 impl Progress {
@@ -1233,10 +1295,21 @@ impl Progress {
             self.reached + 1
         );
         if self.scores.is_empty() {
-            text.push_str("],\n)\n");
+            text.push_str("],\n");
         } else {
             for (hill, moves) in &self.scores {
                 text.push_str(&format!("\n        \"{} {}\",", hill + 1, moves));
+            }
+            text.push_str("\n    ],\n");
+        }
+        // The routes ride the same file: a number and the walk that
+        // earned it belong on the same shelf.
+        text.push_str("    routes: [");
+        if self.routes.is_empty() {
+            text.push_str("],\n)\n");
+        } else {
+            for (hill, glyphs) in &self.routes {
+                text.push_str(&format!("\n        \"{} {}\",", hill + 1, glyphs));
             }
             text.push_str("\n    ],\n)\n");
         }
@@ -1246,8 +1319,10 @@ impl Progress {
     /// A hill just finished: the run joins the ledger, and the ledger
     /// keeps the truth it always keeps — one entry per hill, the
     /// fewest moves of any attempt. A warm hill was stood on, so the
-    /// descent's depth takes note of it too.
-    fn record(&mut self, hill: usize, moves: i32) {
+    /// descent's depth takes note of it too. The answer says whether
+    /// this run *is* the new best — the walk that earns a number is
+    /// the walk worth remembering.
+    fn record(&mut self, hill: usize, moves: i32) -> bool {
         // The ledger writes a number, so the number has an upper
         // limit: a hill stays winnable past it and the game keeps
         // counting itself, but the ledger — and every layout that
@@ -1255,10 +1330,43 @@ impl Progress {
         let moves = moves.min(MOVES_CAP);
         self.reached = self.reached.max(hill);
         match self.scores.iter_mut().find(|(h, _)| *h == hill) {
-            Some(entry) => entry.1 = entry.1.min(moves),
+            Some(entry) => {
+                if moves < entry.1 {
+                    entry.1 = moves;
+                    true
+                } else {
+                    false
+                }
+            }
             None => {
                 self.scores.push((hill, moves));
                 self.scores.sort();
+                true
+            }
+        }
+    }
+
+    /// The best run's own walk, when the ledger keeps one for `hill`.
+    fn route_of(&self, hill: usize) -> Option<&str> {
+        self.routes
+            .iter()
+            .find(|(h, _)| *h == hill)
+            .map(|(_, g)| g.as_str())
+    }
+
+    /// The walk that earned the best number, into the ledger's
+    /// keeping. Only letters a hill could walk are kept: a hand at
+    /// the file may change a score, but it cannot write a route the
+    /// game would ever show.
+    fn remember(&mut self, hill: usize, glyphs: &str) {
+        if glyphs.is_empty() || decode_run(glyphs).is_none() {
+            return;
+        }
+        match self.routes.iter_mut().find(|(h, _)| *h == hill) {
+            Some(entry) => entry.1 = glyphs.to_string(),
+            None => {
+                self.routes.push((hill, glyphs.to_string()));
+                self.routes.sort();
             }
         }
     }
@@ -1327,10 +1435,35 @@ impl Progress {
             .saturating_sub(1)
             .max(hill)
             .max(scores.iter().map(|(h, _)| *h).max().unwrap_or(0));
+        // The routes read themselves the same forgiving way: a file
+        // from before replays carries none, a hill named twice keeps
+        // the first walk mentioned, and any string the hill could not
+        // walk is not a route at all.
+        let mut routes: Vec<(usize, String)> = match frost::ron::field(&root, "routes") {
+            Some(frost::ron::Val::Seq { items, .. }) => items
+                .iter()
+                .filter_map(|item| match &item.val {
+                    frost::ron::Val::Atom(text, _) => {
+                        let mut pair = text.trim_matches('"').split_whitespace();
+                        let hill = pair.next()?.parse::<usize>().ok()?.checked_sub(1)?;
+                        let glyphs = pair.next()?;
+                        if pair.next().is_some() || decode_run(glyphs).is_none() {
+                            return None;
+                        }
+                        Some((hill, glyphs.to_string()))
+                    }
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        routes.sort();
+        routes.dedup_by(|a, b| a.0 == b.0);
         Progress {
             hill,
             reached,
             scores,
+            routes,
         }
     }
 
@@ -1507,6 +1640,9 @@ struct Demo {
     /// Click-walking: the directions left to walk toward the last
     /// clicked cell, one issued per completed glide.
     route: Vec<game::Dir>,
+    /// A best run being shown rather than played: `Some` while a hill
+    /// replays itself, with its own keys and its own pace.
+    replay: Option<Replay>,
     leaf_rng: Rng,
     leaves: Vec<Leaf>,
     leaves_seeded: bool,
@@ -1676,6 +1812,7 @@ impl Demo {
             was: HashMap::new(),
             was_mouse: HashMap::new(),
             route: Vec::new(),
+            replay: None,
             leaf_rng: Rng::default(),
             leaves: Vec::new(),
             leaves_seeded: false,
@@ -1800,6 +1937,13 @@ impl Demo {
             std::process::exit(1);
         }));
         self.game = Some(game::Game::start(level));
+        // A hill entered is a hill played, and a played hill keeps
+        // its own record: the walk is as much the player's as the
+        // number it earns. (A showing switches this back off.)
+        if let Some(g) = &mut self.game {
+            g.record = true;
+        }
+        self.replay = None;
         self.player_at = start;
         self.player_target = start;
         self.player_hop = Hop::flat(start, HOP);
@@ -3128,6 +3272,36 @@ impl Demo {
                 UI + 1.0,
             );
         }
+        // A showing names itself and its keys: this is not a run,
+        // and the count it keeps is the recording's own feet. It
+        // takes the note's floor-side seat, standing a line higher
+        // when a note is also up — a showing can end on one.
+        if let Some(rep) = &self.replay {
+            let tail = if rep.playing {
+                "space holds"
+            } else if rep.shown < rep.acts.len() {
+                "space resumes"
+            } else {
+                "the run is done"
+            };
+            let line = format!(
+                "replay · {} of {} · ← → step · {} · esc back",
+                rep.shown,
+                rep.acts.len(),
+                tail
+            );
+            let seat = if self.note_t > 0.0 { 60.0 } else { 26.0 };
+            ctx.text(
+                0.0,
+                -h / 2.0 + seat,
+                &self.font,
+                line,
+                30.0,
+                600.0,
+                C_NOTE,
+                UI + 1.0,
+            );
+        }
     }
 
     /// The menu itself. The hill dims behind it, paused and visible —
@@ -3787,6 +3961,16 @@ impl Demo {
                 let action = rows[self.menu_sel].action;
                 self.menu_action(ctx, action);
             }
+            // Tab turns the highlighted ledger row over: its recorded
+            // best run replays itself at the click walker's pace.
+            // A hill without a recording stays as it was — that row
+            // is a door to playing, not yet to showing.
+            if self.page == Page::Progress
+                && self.pressed(ctx, KeyCode::Tab)
+                && let Some(&Action::Hill(h)) = rows.get(self.menu_sel).map(|r| &r.action)
+            {
+                self.start_replay(h);
+            }
         }
         // The pointer moving onto a row takes the highlight with it —
         // motion only, so a cursor parked on `resume` cannot out-vote
@@ -4154,8 +4338,141 @@ impl Demo {
             return;
         }
         self.route.remove(0);
-        if game.move_player(dir).is_err() {
+        if game.act(game::Act::Move(dir)).is_err() {
             self.route.clear();
+        }
+    }
+
+    /// Tab over a ledger row: the hill opens on its own best run.
+    /// Nothing is stood on and nothing is scored — a showing, not a
+    /// walking — and the hill it opens on records nothing either.
+    fn start_replay(&mut self, hill: usize) {
+        let Some(glyphs) = self.progress.route_of(hill).map(str::to_owned) else {
+            return;
+        };
+        let Some(acts) = decode_run(&glyphs) else {
+            return;
+        };
+        if acts.is_empty() {
+            return;
+        }
+        self.load(hill);
+        // The ledger remembers the deed, never the showing of it.
+        if let Some(g) = &mut self.game {
+            g.record = false;
+        }
+        self.replay = Some(Replay {
+            acts,
+            shown: 0,
+            playing: true,
+        });
+        self.page = Page::Game;
+    }
+
+    /// The showing's pace is the click walker's law — one action per
+    /// landed glide — so a recorded run plays at exactly the speed a
+    /// hand on the mouse would walk it.
+    fn replay_tick(&mut self) {
+        if !self.replay.as_ref().is_some_and(|r| r.playing) {
+            return;
+        }
+        if self.spin.is_some() || !closer(self.player_at, self.player_target) {
+            return;
+        }
+        self.replay_step(false);
+    }
+
+    /// Apply the next recorded action. `now` is the arrow key's hand:
+    /// it never waits for the glide to land and turns without the
+    /// spin ceremony — stepping is inspection, not choreography.
+    fn replay_step(&mut self, now: bool) {
+        let Some(a) = self
+            .replay
+            .as_ref()
+            .and_then(|r| r.acts.get(r.shown).copied())
+        else {
+            return; // the run has already arrived
+        };
+        if let Some(to) = a.dir().map(face_of)
+            && self.face[0] * to[0] + self.face[1] * to[1] < -0.99
+        {
+            // The recorded walker about-faced once; a playing run
+            // about-faces the way the player did, live.
+            if now {
+                self.face = to;
+                self.spin = None;
+            } else {
+                self.spin = Some(to);
+                return;
+            }
+        }
+        let Some(game) = &mut self.game else {
+            return;
+        };
+        if game.act(a).is_err() {
+            // The hill has moved under the recording — a level redone
+            // since the run was earned, or a hand in the ledger file.
+            // The showing stops where the truth stops, and says so.
+            if let Some(rep) = &mut self.replay {
+                rep.playing = false;
+            }
+            self.note = "the recording ends where the hill has changed".to_string();
+            self.note_t = 2.6;
+            return;
+        }
+        if matches!(a, game::Act::Push(_)) {
+            // A shove turns the pusher without carrying it, so the
+            // glide that would set the facing never comes — the same
+            // law the player's own shoves obey.
+            if let Some(d) = a.dir() {
+                self.face = face_of(d);
+            }
+        }
+        if let Some(rep) = &mut self.replay {
+            rep.shown += 1;
+            if rep.shown >= rep.acts.len() {
+                rep.playing = false; // the run has arrived; it holds
+            }
+        }
+    }
+
+    /// The right arrow: one action forward, playing or held — a hand
+    /// on the wheel takes the wheel, and the glide still animates
+    /// under the step like under any other.
+    fn replay_advance(&mut self) {
+        if let Some(rep) = &mut self.replay {
+            rep.playing = false;
+        }
+        self.replay_step(true);
+    }
+
+    /// The left arrow: one action back. The hill is rebuilt from its
+    /// own beginning through one fewer action — cheap at these
+    /// lengths, and the only rewind that can promise exactness.
+    fn replay_retreat(&mut self) {
+        let Some(rep) = &self.replay else { return };
+        if rep.shown == 0 {
+            return;
+        }
+        let n = rep.shown - 1;
+        let acts = rep.acts.clone();
+        let Some(level) = self.levels.get(self.idx) else {
+            return;
+        };
+        let mut g = game::Game::start(level.clone());
+        for &a in acts.iter().take(n) {
+            if g.act(a).is_err() {
+                break; // the drift that stopped the showing stops here too
+            }
+        }
+        if let Some(d) = acts.iter().take(n).rev().find_map(|a| a.dir()) {
+            self.face = face_of(d);
+        }
+        self.spin = None;
+        self.game = Some(g);
+        if let Some(rep) = &mut self.replay {
+            rep.shown = n;
+            rep.playing = false;
         }
     }
 
@@ -4450,13 +4767,24 @@ impl Process for Demo {
         // Quitting belongs to the exit row alone. (`Config::escape_exits`
         // is off — the demo owns this key.)
         if self.pressed(ctx, KeyCode::Escape) {
-            match escape_nav(self.page) {
-                Escape::ToMenu => {
-                    self.page = Page::Main;
-                    self.drag = None;
-                    self.menu_sel = 0;
+            if self.replay.is_some() {
+                // Stepping off a showing returns to the ledger it
+                // came from, and the hill is wiped back to its own
+                // beginning: nobody resumes a run they only watched.
+                let hill = self.idx;
+                self.replay = None;
+                self.load(hill);
+                self.page = Page::Progress;
+                self.drag = None;
+            } else {
+                match escape_nav(self.page) {
+                    Escape::ToMenu => {
+                        self.page = Page::Main;
+                        self.drag = None;
+                        self.menu_sel = 0;
+                    }
+                    Escape::Resume => self.page = Page::Game,
                 }
-                Escape::Resume => self.page = Page::Game,
             }
         }
         // The night and the lamps answer to the settings every frame:
@@ -4478,7 +4806,25 @@ impl Process for Demo {
         if ctx.vsync() != self.settings.vsync {
             self.settings.vsync = ctx.vsync();
         }
-        if self.game.is_some() && self.page == Page::Game {
+        // During a showing the keys belong to the audience: space
+        // holds and resumes the run, ← and → step it one action at a
+        // time. The hill's own verbs all wait for the next visitor.
+        if self.game.is_some() && self.page == Page::Game && self.replay.is_some() {
+            if self.pressed(ctx, KeyCode::Space)
+                && let Some(rep) = &mut self.replay
+                // Past the last step there is nothing to resume:
+                // the pause key keeps its peace at the end.
+                && (rep.playing || rep.shown < rep.acts.len())
+            {
+                rep.playing = !rep.playing;
+            }
+            if self.pressed(ctx, KeyCode::ArrowRight) {
+                self.replay_advance();
+            }
+            if self.pressed(ctx, KeyCode::ArrowLeft) {
+                self.replay_retreat();
+            }
+        } else if self.game.is_some() && self.page == Page::Game {
             let shift = ctx.key_down(KeyCode::ShiftLeft) || ctx.key_down(KeyCode::ShiftRight);
             let mut action: Option<(game::Dir, bool)> = None;
             for (key, dir) in [
@@ -4519,13 +4865,17 @@ impl Process for Demo {
                 if restart {
                     let level = game.level.clone();
                     *game = game::Game::start(level);
+                    // A restarted hill is played again, so it records
+                    // again; the old walk was a worse walk anyway.
+                    game.record = true;
                     self.route.clear();
+                    self.replay = None;
                 } else if undo {
                     game.undo();
                     self.route.clear();
                 } else if (detach || detach_click) && !game.won {
                     self.route.clear();
-                    let _ = game.detach();
+                    let _ = game.act(game::Act::Detach);
                 } else if let Some(dir) = push_aim.filter(|_| !game.won) {
                     // The shove itself is the game's; the pusher faces
                     // the aim like the keys do, and a push — like the
@@ -4533,7 +4883,7 @@ impl Process for Demo {
                     // refusal says why, in the game's own words.
                     self.route.clear();
                     self.face = face_of(dir);
-                    if let Err(why) = game.push(dir) {
+                    if let Err(why) = game.act(game::Act::Push(dir)) {
                         self.note = why.to_string();
                         self.note_t = 1.6;
                     }
@@ -4543,7 +4893,7 @@ impl Process for Demo {
                         // A push never moves the pusher, so no glide will
                         // carry its facing — turn by hand.
                         self.face = face_of(dir);
-                        let _ = game.push(dir);
+                        let _ = game.act(game::Act::Push(dir));
                     } else if self.spin.is_none() {
                         // The keyboard's 180 obeys the route's law:
                         // about-face in place, then walk.
@@ -4551,7 +4901,7 @@ impl Process for Demo {
                         if self.face[0] * to[0] + self.face[1] * to[1] < -0.99 {
                             self.spin = Some(to);
                         } else {
-                            let _ = game.move_player(dir);
+                            let _ = game.act(game::Act::Move(dir));
                         }
                     }
                 }
@@ -4650,8 +5000,13 @@ impl Process for Demo {
         }
         // A won hill hands the player their two ways off it — but
         // only after the splash has spun, held, and faded: the word
-        // comes first, then the panel and the verdict together.
-        if self.page == Page::Game && self.splash_done && self.game.as_ref().is_some_and(|g| g.won)
+        // comes first, then the panel and the verdict together. A
+        // showing that ends in a warm hill is not a win: it is an
+        // ending — the audience keeps the ledger's silence.
+        if self.page == Page::Game
+            && self.replay.is_none()
+            && self.splash_done
+            && self.game.as_ref().is_some_and(|g| g.won)
         {
             self.page = Page::Won;
             self.drag = None;
@@ -4664,7 +5019,7 @@ impl Process for Demo {
         if let Some(game) = &self.game {
             if !game.won {
                 self.splash_done = false;
-            } else if self.splash.is_none() && !self.splash_done {
+            } else if self.replay.is_none() && self.splash.is_none() && !self.splash_done {
                 let hit = game.level.par > 0 && game.moves <= game.level.par;
                 // Same rule the banner paints by mid-run.
                 let colour = if hit { C_PAR_MET } else { C_PAR_MISSED };
@@ -4696,7 +5051,19 @@ impl Process for Demo {
         // file; a kill before this point lost an unfinished run, and
         // that is exactly what the ledger is for.
         if let Some((hill, moves)) = scored {
-            self.progress.record(hill, moves);
+            // The number and the walk that earned it enter the ledger
+            // together, and only together: a route changes hands only
+            // when its score does, so Tab always shows the very run
+            // behind the number. (A capped number may be shorter than
+            // its true walk — the replay keeps the truth of it.)
+            let route = self
+                .game
+                .as_ref()
+                .map(|g| encode_run(&g.log))
+                .unwrap_or_default();
+            if self.progress.record(hill, moves) {
+                self.progress.remember(hill, &route);
+            }
             self.progress.save();
         }
         if let Some(s) = &mut self.splash {
@@ -4709,7 +5076,13 @@ impl Process for Demo {
         self.refresh(dt);
         self.update_camera(ctx, dt);
         if self.page == Page::Game {
-            self.walk_the_route();
+            // One walker per frame: the audience's showing owns the
+            // hill, or the player's own click route does.
+            if self.replay.is_some() {
+                self.replay_tick();
+            } else {
+                self.walk_the_route();
+            }
         }
         // The menu takes the pointer whole while it is up.
         if self.page != Page::Game {
@@ -5395,7 +5768,7 @@ mod menu_tests {
     fn the_progress_file_counts_hills_as_the_hud_does() {
         assert_eq!(
             Progress::default().text(),
-            "(\n    hill: 1,\n    reached: 1,\n    scores: [],\n)\n",
+            "(\n    hill: 1,\n    reached: 1,\n    scores: [],\n    routes: [],\n)\n",
             "a player who never moved stands on the first hill, ledger empty"
         );
         let p = Progress::parse("(\n    hill: 3,\n)\n");
@@ -5405,6 +5778,10 @@ mod menu_tests {
             p.scores.is_empty(),
             "a file from before the ledger is no scores, not a broken file"
         );
+        assert!(
+            p.routes.is_empty(),
+            "a file from before the routes is no routes either"
+        );
         assert_eq!(
             Progress {
                 hill: 1,
@@ -5412,7 +5789,7 @@ mod menu_tests {
                 ..Default::default()
             }
             .text(),
-            "(\n    hill: 2,\n    reached: 2,\n    scores: [],\n)\n"
+            "(\n    hill: 2,\n    reached: 2,\n    scores: [],\n    routes: [],\n)\n"
         );
         assert_eq!(
             Progress::parse("garbage").hill,
@@ -5446,6 +5823,124 @@ mod menu_tests {
         let p =
             Progress::parse("(\n    hill: 4,\n    scores: [\"3 31\", \"1 47\", \"3 29\"],\n)\n");
         assert_eq!(p.scores, vec![(0, 47), (2, 29)]);
+    }
+
+    #[test]
+    fn a_route_is_walkable_or_it_is_nothing() {
+        let run = [
+            game::Act::Move(game::Dir::Left),
+            game::Act::Move(game::Dir::Down),
+            game::Act::Push(game::Dir::Up),
+            game::Act::Detach,
+        ];
+        let glyphs = encode_run(&run);
+        assert_eq!(
+            glyphs, "ldUx",
+            "walks lowercase, shoves uppercase, leave-behind x"
+        );
+        assert_eq!(decode_run(&glyphs).as_deref(), Some(&run[..]));
+        assert_eq!(
+            decode_run("ldU!x"),
+            None,
+            "one stray letter is not a route with a typo — it is not a route"
+        );
+        // And the ledger keeps only walks: a hand may write a number,
+        // but it cannot plant a route the hill could never show.
+        let mut p = Progress::default();
+        p.remember(0, "qzzling");
+        assert!(
+            p.routes.is_empty(),
+            "unwalkable glyphs are refused at the door"
+        );
+    }
+
+    #[test]
+    fn the_walk_changes_only_when_the_score_does() {
+        let mut p = Progress::default();
+        assert!(p.record(1, 50), "a hill's first score is its first best");
+        p.remember(1, "rrrddd");
+        assert!(!p.record(1, 52), "a worse run improves nothing");
+        assert_eq!(
+            p.route_of(1),
+            Some("rrrddd"),
+            "so its walk stays the elder's"
+        );
+        assert!(p.record(1, 44), "and a better run does");
+        p.remember(1, "rrdd");
+        assert_eq!(
+            p.route_of(1),
+            Some("rrdd"),
+            "the better score carries a new walk in"
+        );
+        let back = Progress::parse(&p.text());
+        assert_eq!(
+            back, p,
+            "numbers and routes round-trip through the file together"
+        );
+        assert!(
+            Progress::parse("(\n    hill: 2,\n    scores: [\"2 40\"],\n)\n")
+                .route_of(1)
+                .is_none(),
+            "a file from before the replays has scores but no walks"
+        );
+    }
+
+    #[test]
+    fn a_showing_walks_its_recorded_run_and_scores_nothing() {
+        let mut d = demo();
+        d.load(0);
+        // A hand walks a short run on First Warm, exactly as the keys
+        // would: right, right, up from the start cell (1,3).
+        {
+            let g = d.game.as_mut().expect("a hill stands loaded");
+            for a in [
+                game::Act::Move(game::Dir::Right),
+                game::Act::Move(game::Dir::Right),
+                game::Act::Move(game::Dir::Up),
+            ] {
+                g.act(a).expect("legal on First Warm");
+            }
+        }
+        let walked = d.game.as_ref().expect("still loaded");
+        assert_eq!(walked.log.len(), 3, "the played hill wrote its walk down");
+        d.progress.remember(0, &encode_run(&walked.log));
+        let scores_before = d.progress.scores.clone();
+        // Now the ledger shows it back.
+        d.start_replay(0);
+        assert_eq!(d.page, Page::Game, "the showing opens on the hill");
+        assert!(
+            !d.game.as_ref().expect("replaying").record,
+            "a showing records nothing"
+        );
+        for _ in 0..3 {
+            d.replay_advance();
+        }
+        let shown = d.game.as_ref().expect("still replaying");
+        assert_eq!(
+            shown.player,
+            game::Cell::new(3, 2),
+            "the walk lands where it was walked"
+        );
+        assert_eq!(shown.moves, 3);
+        assert_eq!(d.replay.as_ref().expect("shown").shown, 3);
+        assert!(
+            !d.replay.as_ref().expect("arrived").playing,
+            "the run holds at its end"
+        );
+        // And the wheel runs backwards exactly: the hill rebuilt from
+        // its beginning, one action short.
+        d.replay_retreat();
+        let back = d.game.as_ref().expect("still replaying");
+        assert_eq!(
+            back.player,
+            game::Cell::new(3, 3),
+            "one step back, one cell back"
+        );
+        assert_eq!(back.moves, 2);
+        // The audience scored nothing: the ledger never shifted, and
+        // the won page never claimed the hill.
+        assert_eq!(d.progress.scores, scores_before, "a showing is not a run");
+        assert_eq!(d.page, Page::Game, "no verdict for a spectator");
     }
 
     #[test]
