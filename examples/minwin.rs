@@ -45,8 +45,9 @@ use frost::{
     Color, Config, Context, KeyCode, Process, Scene, SceneNode, Shape, Window, run_configured,
 };
 
-/// The hill's own voice, borrowed for the probe.
-const GAME_FONT: &[u8] = include_bytes!("antifrost/assets/fonts/Barrfont-Regular.ttf");
+/// The probe's own voice: an engine font, same as the text examples —
+/// what the probe mirrors is the hill's window requests, not its ink.
+const GAME_FONT: &[u8] = include_bytes!("../assets/fonts/JameGem08_2026-Regular.ttf");
 
 const C_WHITE: Color = Color {
     r: 1.0,

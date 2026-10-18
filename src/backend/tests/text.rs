@@ -289,7 +289,11 @@ fn expand_text_big_letters_keep_every_glyph() {
     let font: Arc<[u8]> = Arc::from(
         std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/examples/antifrost/assets/fonts/Barrfont-Regular.ttf"
+            // The engine's own copy of the pathological font: this is
+            // a metrics fixture, and a test of the atlas budget cannot
+            // live at the mercy of a game package's asset tree. The
+            // game keeps its copy where the game keeps its ink.
+            "/assets/fonts/Barrfont-Regular.ttf"
         ))
         .expect("splash font should be readable"),
     );
