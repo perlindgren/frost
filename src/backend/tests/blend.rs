@@ -211,6 +211,7 @@ fn paint(additive: bool) -> Option<Painting> {
                 emission,
                 None,
                 0.0,
+                objects::LightLayers::default(),
                 [0.0, 0.0, 1.0, 1.0],
             ),
             usage: BufferUsages::UNIFORM,

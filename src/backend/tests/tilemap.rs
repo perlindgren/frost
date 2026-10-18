@@ -3,7 +3,7 @@
 
 use super::black;
 use crate::backend::frame::{Draw, tilemap_instance, tilemap_uniform_data};
-use crate::objects::{Color, SpriteFilter};
+use crate::objects::{Color, LightLayers, SpriteFilter};
 use std::sync::Arc;
 
 fn rgba(r: f32, g: f32, b: f32, a: f32) -> Color {
@@ -26,6 +26,8 @@ fn map_draw(bounds: ([f32; 2], [f32; 2]), clip: Option<([f32; 2], [f32; 2])>) ->
         clip,
         z: 1.0,
         diagnostic: false,
+
+        lit_layers: LightLayers::default(),
     }
 }
 
@@ -93,14 +95,24 @@ fn tilemap_instances_pack_four_vec4s() {
 }
 #[test]
 fn tilemap_uniforms_layout_is_size_lit_then_color() {
-    // vec2 @ 0, lit @ 8, vec4 @ 16 — 32 bytes, the WGSL-mirrored layout
-    // pinned by the shaders test.
-    let data = tilemap_uniform_data([1440.0, 810.0], rgba(1.0, 0.5, 0.0, 0.25), 1.0);
+    // vec2 @ 0, lit @ 8, lit_layers @ 12, vec4 @ 16 — 32 bytes, the
+    // WGSL-mirrored layout pinned by the shaders test.
+    let data = tilemap_uniform_data(
+        [1440.0, 810.0],
+        rgba(1.0, 0.5, 0.0, 0.25),
+        1.0,
+        LightLayers::layer(4),
+    );
     assert_eq!(data.len(), 32);
     let f = |offset: usize| f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
     assert_eq!(f(0), 1440.0);
     assert_eq!(f(4), 810.0);
     assert_eq!(f(8), 1.0, "lit rides the padding gap");
+    // The layer mask takes the rest of the gap, as raw bits.
+    assert_eq!(
+        u32::from_le_bytes(data[12..16].try_into().unwrap()),
+        LightLayers::layer(4).bits()
+    );
     assert_eq!(f(16), 1.0);
     assert_eq!(f(20), 0.5);
     assert_eq!(f(24), 0.0);
@@ -294,7 +306,12 @@ impl Gpu {
         );
         let uniform = self.device.create_buffer_init(&BufferInitDescriptor {
             label: Some("bridge uniform"),
-            contents: &tilemap_uniform_data([SPAN as f32, SPAN as f32], color, lit),
+            contents: &tilemap_uniform_data(
+                [SPAN as f32, SPAN as f32],
+                color,
+                lit,
+                LightLayers::default(),
+            ),
             usage: BufferUsages::UNIFORM,
         });
         // The spliced pipeline declares the two fields; wgpu demands
@@ -711,6 +728,8 @@ fn a_shadow_falls_on_a_lit_map() {
         cos_half: -1.0,
         feather: 0.0,
         z: 1.0,
+
+        layers: LightLayers::default(),
     };
     let lights = crate::backend::frame::pack_light_field(std::slice::from_ref(&light), black());
     let wall = crate::canvas::Occluder {
@@ -718,6 +737,8 @@ fn a_shadow_falls_on_a_lit_map() {
         center: [64.0, 64.0],
         half: [6.0, 28.0],
         polygon: None,
+
+        layers: LightLayers::default(),
     };
     // Same draw list as the light field above: the occluder pack keys
     // its per-light table by the lights among these draws, and the

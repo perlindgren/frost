@@ -101,7 +101,13 @@ fn background_node_sorts_to_the_back_and_keeps_its_color() {
                 },
             }),
             children: vec![],
+
+            lit_layers: LightLayers::default(),
+            occludes_layers: LightLayers::default(),
         })],
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     }));
     canvas.draws.sort_by(|a, b| {
         a.z()
@@ -159,6 +165,9 @@ fn layers_are_hard_draw_partitions() {
                         },
                     }),
                     children: vec![],
+
+                    lit_layers: LightLayers::default(),
+                    occludes_layers: LightLayers::default(),
                 },
             },
             Layer {
@@ -189,6 +198,9 @@ fn layers_are_hard_draw_partitions() {
                         },
                     }),
                     children: vec![],
+
+                    lit_layers: LightLayers::default(),
+                    occludes_layers: LightLayers::default(),
                 },
             },
         ],
@@ -256,6 +268,9 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                                 },
                             }),
                             children: vec![],
+
+                            lit_layers: LightLayers::default(),
+                            occludes_layers: LightLayers::default(),
                         }),
                         Box::new(SceneNode {
                             diagnostic: false,
@@ -279,8 +294,14 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                                 },
                             }),
                             children: vec![],
+
+                            lit_layers: LightLayers::default(),
+                            occludes_layers: LightLayers::default(),
                         }),
                     ],
+
+                    lit_layers: LightLayers::default(),
+                    occludes_layers: LightLayers::default(),
                 },
             },
             Layer {
@@ -309,6 +330,9 @@ fn within_a_layer_the_local_z_ordering_applies_and_z_does_not_leak_across_layers
                         },
                     }),
                     children: vec![],
+
+                    lit_layers: LightLayers::default(),
+                    occludes_layers: LightLayers::default(),
                 },
             },
         ],
@@ -381,6 +405,9 @@ fn the_base_group_paints_first_at_equal_order() {
                     },
                 }),
                 children: vec![],
+
+                lit_layers: LightLayers::default(),
+                occludes_layers: LightLayers::default(),
             },
         }],
         ambient: AMBIENT,
@@ -425,6 +452,9 @@ fn a_background_in_a_higher_layer_sets_the_clear_color() {
                 },
             }),
             children: vec![],
+
+            lit_layers: LightLayers::default(),
+            occludes_layers: LightLayers::default(),
         },
         layers: vec![Layer {
             order: 1.0,
@@ -450,6 +480,9 @@ fn a_background_in_a_higher_layer_sets_the_clear_color() {
                     },
                 }),
                 children: vec![],
+
+                lit_layers: LightLayers::default(),
+                occludes_layers: LightLayers::default(),
             },
         }],
         ambient: AMBIENT,

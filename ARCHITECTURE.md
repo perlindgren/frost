@@ -328,11 +328,39 @@ never count (`Diagnostics` excludes them like backgrounds).
   keeps the round `Circle` and its exact normal.
 - The backend packs the frame into two **storage buffers** bound to every
   draw: the light field (32-byte header — count and the scene's ambient —
-  plus one 48-byte record per light) and the occluder field (16-byte header
+  plus one 64-byte record per light) and the occluder field (16-byte header
   plus a 48-byte record per occluder, each followed by one 16-byte half-plane
   per edge of a polygon). Both start at their binding minimum and grow
   only to the peak count, so a lighter frame writes a shorter slice into the
   same buffer; the shaders read ambient and the lists from these fields.
+- **Light layers.** A `LightLayers(u32)` set — 32 named layers, plain
+  bitmasks — filters *who lights whom* without touching draw order (that
+  remains `Layer` and `SceneNode::order`'s). Three ends wear a set: a
+  `Light::layers` is the set it shines on, a `SceneNode::lit_layers` is the
+  set a lit surface listens to, and an occluder's set — `SceneNode::occludes_layers`
+  for a painted shape, `Canvas::occluder_layers` /
+  `Canvas::occluder_polygon_layers` for a declared one — answers the
+  receiver's question, not the light's. A light reaches a receiver when
+  `light.layers.intersects(receiver.lit_layers)`; and — the half that looks
+  asymmetric until you picture it — an occluder's shadow lands on a receiver
+  when `occluder.layers.intersects(receiver.lit_layers)`, *regardless of
+  which light the shadow is cut from*. The filter asks "whose surfaces do I
+  shadow", so one wall can shade the far background it stands in front of
+  while the tilemap floor it stands on, lit from a different layer, never
+  notices it. Ambient belongs to no layer and always applies.
+  Every set defaults to `LightLayers::default()` — the set holding only
+  layer 0 — and every light constructor seeds layer 0, so a scene that
+  names no layers is one layer-0 world and behaves exactly as it did before
+  layers existed; the antifrost far background is the first real user,
+  shadowed by the tiles' declared occluders on a layer the tiles themselves
+  do not listen on. The wire carries the sets as raw bits through
+  `f32::from_bits`, read back with `bitcast<u32>` — a mask is never a float
+  to do arithmetic on, and every set from `NONE` to `ALL` round-trips exact:
+  the light record grew to four vec4s whose last is `(layers, 0, 0, 0)`,
+  the occluder record's second vec4 took its zero padding slot —
+  `(hx, hy, planes, layers)` — and each receiver's uniform gained one
+  `lit_layers` f32 in padding it already had (`shape` @76, `sprite` @56,
+  `particles` @44, `tilemap` @12; no struct grew a byte).
 
 ## The draw list (src/backend/frame.rs)
 

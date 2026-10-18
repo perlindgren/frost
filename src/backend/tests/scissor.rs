@@ -1,4 +1,4 @@
-﻿//! Scissor rects for every draw kind: the padded boxes, the AA band, the off-screen and clamped cases.
+//! Scissor rects for every draw kind: the padded boxes, the AA band, the off-screen and clamped cases.
 
 use super::super::*;
 use super::*;
@@ -117,6 +117,9 @@ fn shape_scissor_under_non_uniform_scale() {
         lit: 0.0,
         occludes: 0.0,
         z: 0.0,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     // The local box (25 Ã‚Â± 10.375, 50 Ã‚Â± 10.375) stretches to
     // x: [29.25, 70.75] and y: [39.625, 60.375].
@@ -141,6 +144,9 @@ fn shape_scissor_under_rotation() {
         lit: 0.0,
         occludes: 0.0,
         z: 0.0,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     // The Ã‚Â±10.75 box rotated 45Ã‚Â° has half-extent 10.75 * sqrt(2), so the
     // axis-aligned box is [34.797, 65.203] on both axes.
@@ -162,6 +168,9 @@ fn off_screen_shape_has_no_scissor() {
         lit: 0.0,
         occludes: 0.0,
         z: 0.0,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     assert_eq!(draw.scissor_rect([100, 100]), None);
 }
@@ -185,6 +194,8 @@ fn sprite_scissor_is_the_texture_box_plus_aa_band() {
         lit: 0.0,
         generation: 0,
         z: 0.0,
+
+        lit_layers: LightLayers::default(),
     };
     // The box is (50 Ã‚Â± 20.75, 50 Ã‚Â± 10.75), i.e. [29.25, 70.75] on x and
     // [39.25, 60.75] on y.
@@ -215,6 +226,8 @@ fn sprite_scissor_under_rotation() {
         lit: 0.0,
         generation: 0,
         z: 0.0,
+
+        lit_layers: LightLayers::default(),
     };
     assert_eq!(draw.scissor_rect([100, 100]), Some([27, 27, 46, 46]));
 }

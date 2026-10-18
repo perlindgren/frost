@@ -56,6 +56,8 @@ fn expand_text_splices_glyph_sprites_in_place() {
             alpha: 0.9,
             lit: 1.0,
             z: 1.0,
+
+            lit_layers: LightLayers::default(),
         },
         Draw::Circle {
             diagnostic: false,
@@ -146,6 +148,8 @@ fn expand_text_reuses_the_atlas_across_frames() {
             alpha: 1.0,
             lit: 0.0,
             z: 0.0,
+
+            lit_layers: LightLayers::default(),
         }];
         canvas.expand_text(&mut atlases);
         let Draw::Sprite { data, .. } = &canvas.draws[0] else {
@@ -191,6 +195,8 @@ fn expand_text_packs_glyphs_first_seen_on_a_later_frame() {
             alpha: 1.0,
             lit: 0.0,
             z: 0.0,
+
+            lit_layers: LightLayers::default(),
         }];
         canvas.expand_text(&mut atlases);
         canvas.draws.len()
@@ -242,6 +248,8 @@ fn expand_text_at_density_2_bakes_at_the_physical_size_and_lays_out_logically() 
             alpha: 1.0,
             lit: 0.0,
             z: 0.0,
+
+            lit_layers: LightLayers::default(),
         }];
         canvas.expand_text(&mut atlases);
         canvas
@@ -314,6 +322,8 @@ fn expand_text_big_letters_keep_every_glyph() {
         alpha: 1.0,
         lit: 1.0,
         z: 0.0,
+
+        lit_layers: LightLayers::default(),
     }];
     let mut atlases: HashMap<(u64, u32, u32), text::Atlas> = HashMap::new();
     canvas.expand_text(&mut atlases);

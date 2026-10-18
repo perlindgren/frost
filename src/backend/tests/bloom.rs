@@ -8,7 +8,7 @@
 use super::present::{MIDDLE, SPAN, frame, lamp, lamp_at};
 use crate::backend::frame::Draw;
 use crate::objects;
-use crate::objects::Transform;
+use crate::objects::{LightLayers, Transform};
 
 /// Light arrives where the lamp is not, and thins out as it goes.
 ///
@@ -159,6 +159,9 @@ fn paint_two_pictures_to_look_at() {
             occludes: 0.0,
             z: 0.0,
             diagnostic: false,
+
+            lit_layers: LightLayers::default(),
+            occludes_layers: LightLayers::default(),
         },
         lamp_at([14.0, 20.0], 0.4),
         lamp_at([32.0, 20.0], 1.5),
@@ -209,6 +212,9 @@ fn a_split_glow_colours_the_halo_and_not_the_surface() {
         occludes: 0.0,
         z: 0.0,
         diagnostic: false,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     let at = |x: u32, y: u32| usize::try_from(y * SPAN + x).expect("in frame");
     let (own, beside) = (at(32, 32), at(46, 32));

@@ -393,9 +393,10 @@ mod tests {
             ),
             _ => unreachable!("ShapeUniforms must be a struct"),
         };
-        // `lit` rides in the 4 bytes the struct already padded after `misc`;
-        // the 16-byte-aligned `emission` vec4 follows at 80 and `glow` at 96.
-        assert_eq!(offsets, [0, 16, 24, 32, 48, 64, 72, 80, 96]);
+        // `lit` rides in the 4 bytes the struct already padded after `misc`,
+        // `lit_layers` takes the next 4 — the rest of that padding — and the
+        // 16-byte-aligned `emission` vec4 follows at 80, `glow` at 96.
+        assert_eq!(offsets, [0, 16, 24, 32, 48, 64, 72, 76, 80, 96]);
         // The struct's total size must equal the CPU-side buffer length,
         // otherwise the buffer would be too short or carry dead bytes.
         assert_eq!(total_size, 112);
@@ -404,7 +405,7 @@ mod tests {
     /// The member offsets WGSL assigns to `SpriteUniforms` must match the
     /// CPU-side uniform writer in `sprite_uniform_data` (mat2x2 @0, vec2 @16,
     /// vec2 @24, vec4 @32 — 16 bytes, 16-byte aligned — f32 @48, f32 @52,
-    /// vec4 @64, vec4 @80 and vec4 @96; 112 bytes total). This is the GPU-side mirror of
+    /// f32 @56, vec4 @64, vec4 @80 and vec4 @96; 112 bytes total). This is the GPU-side mirror of
     /// `sprite_uniform_bytes_follow_the_wgsl_layout` in backend.rs, so a
     /// layout drift on either side fails a test.
     #[test]
@@ -428,10 +429,10 @@ mod tests {
             ),
             _ => unreachable!("SpriteUniforms must be a struct"),
         };
-        // `lit` rides in the padding the struct already kept between
-        // `alpha` and the 16-byte-aligned `uv_rect`; `emission` follows the
-        // uv_rect at 80 and `glow` follows the emission at 96.
-        assert_eq!(offsets, [0, 16, 24, 32, 48, 52, 64, 80, 96]);
+        // `lit` and `lit_layers` ride in the padding the struct already kept
+        // between `alpha` and the 16-byte-aligned `uv_rect`; `emission`
+        // follows the uv_rect at 80 and `glow` follows the emission at 96.
+        assert_eq!(offsets, [0, 16, 24, 32, 48, 52, 56, 64, 80, 96]);
         // The struct's total size must equal the CPU-side buffer length,
         // otherwise the buffer would be too short or carry dead bytes.
         assert_eq!(total_size, 112);
@@ -439,9 +440,9 @@ mod tests {
 
     /// The member offsets WGSL assigns to `ParticlesUniforms` must match the
     /// CPU-side uniform writer in `particles_uniform_data` (vec2 @0, vec4 @16
-    /// — 16 bytes, 16-byte aligned — vec2 @32, f32 @40, 48 bytes total).
-    /// This is the GPU-side mirror of the writer, so a layout drift on either
-    /// side fails a test.
+    /// — 16 bytes, 16-byte aligned — vec2 @32, f32 @40, f32 @44, 48 bytes
+    /// total). This is the GPU-side mirror of the writer, so a layout drift
+    /// on either side fails a test.
     #[test]
     fn particles_uniform_offsets_match_the_cpu_layout() {
         let module = naga::front::wgsl::parse_str(PARTICLES_SHADER)
@@ -465,8 +466,9 @@ mod tests {
             ),
             _ => unreachable!("ParticlesUniforms must be a struct"),
         };
-        // `lit` rides in the 4 bytes the struct already padded after `misc`.
-        assert_eq!(offsets, [0, 16, 32, 40]);
+        // `lit` and `lit_layers` ride in the 8 bytes the struct already
+        // padded after `misc`.
+        assert_eq!(offsets, [0, 16, 32, 40, 44]);
         // The struct's total size must equal the CPU-side buffer length,
         // otherwise the buffer would be too short or carry dead bytes.
         assert_eq!(total_size, 48);
@@ -474,7 +476,8 @@ mod tests {
 
     /// The member offsets WGSL assigns to `TileMapUniforms` must match the
     /// CPU-side uniform writer in `tilemap_uniform_data` (vec2 @0, lit
-    /// (f32) @8 — the byte the padding gap already held — vec4 @16,
+    /// (f32) @8 and lit_layers (f32) @12 — the bytes the padding gap
+    /// already held — vec4 @16,
     /// 16-byte aligned; 32 bytes total). This is the GPU-side mirror of
     /// the writer, so a layout drift on either side fails a test.
     #[test]
@@ -498,7 +501,7 @@ mod tests {
             ),
             _ => unreachable!("TileMapUniforms must be a struct"),
         };
-        assert_eq!(offsets, [0, 8, 16]);
+        assert_eq!(offsets, [0, 8, 12, 16]);
         // The struct's total size must equal the CPU-side buffer length,
         // otherwise the buffer would be too short or carry dead bytes.
         assert_eq!(total_size, 32);

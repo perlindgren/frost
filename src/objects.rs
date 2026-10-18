@@ -386,6 +386,104 @@ impl Tile {
     }
 }
 
+/// A set of light layers: the 32-layer bitmask a [`Light`] emits on, a
+/// [`SceneNode::lit_layers`] receiver receives from, and a
+/// [`SceneNode::occludes_layers`] occluder shadows on.
+///
+/// Light layers are a filter, not a depth: they decide *which* lights reach
+/// *which* surfaces, never the draw order — that belongs to [`Layer`] and
+/// [`SceneNode::order`]. A light reaches a receiver when their sets share a
+/// layer; a shadow lands on a receiver when the occluder's set and the
+/// receiver's `lit_layers` share a layer. Layers are the cheap answer to
+/// lighting scenes that should not light each other: a tilemap whose own
+/// tiles must not shadow each other, a sky nothing occludes, a HUD the
+/// scene's lamps never touch.
+///
+/// The default is the set holding only **layer 0** — the set every light,
+/// receiver, and occluder starts on — so a scene that names no layers is
+/// one big layer-0 world and behaves exactly as it did before layers
+/// existed. Anything written `..Default::default()` (or left out of a
+/// [`SceneNode`] literal) is on layer 0.
+///
+/// This is the struct-literal pattern: set a layer only where the scene
+/// asks for the filter, and let every other node take the default.
+///
+/// [`Layer`]: crate::objects::Layer
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LightLayers(u32);
+
+impl Default for LightLayers {
+    /// The default set: layer 0 alone.
+    fn default() -> Self {
+        Self::layer(0)
+    }
+}
+
+impl LightLayers {
+    /// The empty set: light that reaches nothing, shadows that land
+    /// nowhere. Useful to mute one end of the filter without dropping the
+    /// node's `lit`/`occludes` flag.
+    pub const NONE: Self = Self(0);
+    /// Every one of the 32 layers: a light shining on all receivers, an
+    /// occluder shadowing all of them.
+    pub const ALL: Self = Self(u32::MAX);
+
+    /// The set holding exactly one layer. The layer number wraps every 32
+    /// (`layer(0) == layer(32)`), so it never panics; numbers past 31 are
+    /// still reachable but share a bit with their lower twins.
+    #[must_use]
+    pub const fn layer(n: u32) -> Self {
+        Self(1u32 << (n % 32))
+    }
+
+    /// This set's raw bits: bit `n` is layer `n`. The bit layout is the
+    /// wire format the backend packs; apps rarely need it, but tests and
+    /// serializing scene formats like to name bits directly.
+    #[must_use]
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// A set from raw bits, the inverse of [`bits`](Self::bits).
+    #[must_use]
+    pub const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+
+    /// The union of two sets: every layer either holds.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Whether the two sets share at least one layer — the question the
+    /// renderer asks of a light and a receiver, and of an occluder and the
+    /// receiver its shadow would land on.
+    #[must_use]
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    /// Whether `n` names a layer this set holds.
+    #[must_use]
+    pub const fn contains(self, n: u32) -> bool {
+        self.0 & (1u32 << (n % 32)) != 0
+    }
+}
+
+impl std::ops::BitOr for LightLayers {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        self.union(rhs)
+    }
+}
+
+impl std::ops::BitOrAssign for LightLayers {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
 /// A light source: the color, strength, falloff extent, and cone of a
 /// light, held by a [`Shape::Light`] node.
 ///
@@ -472,6 +570,16 @@ pub struct Light {
     /// ray by definition — and by cone and directional lights, whose
     /// third uniform slot carries the cone's edge feather instead.
     pub shadow_taps: u32,
+    /// The light layers this light shines on: it reaches every receiver
+    /// whose [`SceneNode::lit_layers`] shares a layer with this set.
+    ///
+    /// The default — [`LightLayers::default()`], layer 0 alone — is the
+    /// one world every pre-layer scene shares. A lamp meant to light both
+    /// the scenery and a surface the scenery must not shadow (a tilemap
+    /// lighting the tiles *and* the far wall behind them) joins the two
+    /// sets with [`union`](LightLayers::union) or `|`; see the lighting
+    /// amendment in `ARCHITECTURE.md`.
+    pub layers: LightLayers,
 }
 
 impl Light {
@@ -493,6 +601,7 @@ impl Light {
             softness: 0.0,
             penumbra: 0.0,
             shadow_taps: 9,
+            layers: LightLayers::default(),
         }
     }
 
@@ -523,6 +632,7 @@ impl Light {
             softness,
             penumbra: 0.0,
             shadow_taps: 9,
+            layers: LightLayers::default(),
         }
     }
 
@@ -560,6 +670,7 @@ impl Light {
             softness: 0.0,
             penumbra: 0.0,
             shadow_taps: 9,
+            layers: LightLayers::default(),
         }
     }
 
@@ -580,6 +691,15 @@ impl Light {
     /// nearest end.
     pub fn with_shadow_taps(mut self, taps: u32) -> Self {
         self.shadow_taps = taps;
+        self
+    }
+
+    /// The same light shining on a set of [`LightLayers`]: it reaches every
+    /// receiver whose [`SceneNode::lit_layers`] shares a layer with
+    /// `layers`. See [`Light::layers`].
+    #[must_use]
+    pub fn with_layers(mut self, layers: LightLayers) -> Self {
+        self.layers = layers;
         self
     }
 }
@@ -1205,6 +1325,16 @@ pub struct SceneNode {
     /// and each child keeps its own. `false` (the default) draws the shape
     /// unlit, exactly as before.
     pub lit: bool,
+    /// The light layers this node's shape receives from when [`lit`](Self::lit)
+    /// is set: a [`Light`] reaches this surface when the light's
+    /// [`Light::layers`] and this set share at least one layer.
+    ///
+    /// The default — [`LightLayers::default()`], layer 0 — holds every
+    /// light that names no layers, which is every light of every scene
+    /// written before layers existed: leaving this field out of a node
+    /// literal keeps the old behavior exactly. It rides the same
+    /// node-only, non-propagating rule as `lit`.
+    pub lit_layers: LightLayers,
     /// Whether the node's own shape occludes the frame's lights: when true
     /// the shape's silhouette blocks the light's path to every lit pixel
     /// behind it, casting a shadow — a rectangle as itself, a circle as the
@@ -1223,6 +1353,21 @@ pub struct SceneNode {
     /// carry both flags: a `lit: true, occludes: true` wall is lit on its
     /// own surface and still blocks the light from what lies behind it.
     pub occludes: bool,
+    /// The light layers this node's shadow lands on: the occluder cuts a
+    /// lit pixel's light only when this set and the *receiver*'s
+    /// [`lit_layers`](Self::lit_layers) share at least one layer. The
+    /// filter answers "whose surfaces do I shadow", not "which lights do I
+    /// block" — the same wall can shadow the far wall behind it while the
+    /// floor it stands on, lit from a different layer, sees no shadow
+    /// from it at all.
+    ///
+    /// The default — [`LightLayers::default()`], layer 0 — shadows every
+    /// receiver that names no layers, which is every receiver of every
+    /// scene written before layers existed. It matters only when
+    /// [`occludes`](Self::occludes) is set; declared occluders take their
+    /// set through
+    /// [`Canvas::occluder_layers`](crate::Canvas::occluder_layers).
+    pub occludes_layers: LightLayers,
     /// The node's own emission: light the surface puts out, multiplied into
     /// its own color, so a surface stays visible in the dark and lights add
     /// on top of it rather than being its only source of brightness:
@@ -1339,7 +1484,9 @@ impl Default for SceneNode {
             modulate: WHITE,
             order: 0.0,
             lit: false,
+            lit_layers: LightLayers::default(),
             occludes: false,
+            occludes_layers: LightLayers::default(),
             emission: Color {
                 r: 0.0,
                 g: 0.0,
@@ -1582,5 +1729,41 @@ mod tests {
         );
         // `Scene::new` carries the same default.
         assert_eq!(Scene::new(SceneNode::default()).ambient, ambient);
+    }
+
+    #[test]
+    fn light_layers_default_to_layer_zero() {
+        // The default is the one world every pre-layer scene shares —
+        // and a layer number past 31 wraps back onto the same set, so
+        // counting never escapes it.
+        assert_eq!(LightLayers::default(), LightLayers::layer(0));
+        assert_eq!(LightLayers::layer(32), LightLayers::layer(0));
+        assert_eq!(LightLayers::default().bits(), 1);
+        assert!(LightLayers::default().contains(0));
+        assert!(!LightLayers::default().contains(1));
+        // A node that names no layers receives and shadows on layer 0,
+        // which is what keeps a pre-layer scene behaving exactly as it
+        // did before layers existed.
+        assert_eq!(SceneNode::default().lit_layers, LightLayers::default());
+        assert_eq!(SceneNode::default().occludes_layers, LightLayers::default());
+    }
+
+    #[test]
+    fn light_layers_union_intersects_and_contains() {
+        let two_and_seven = LightLayers::layer(2) | LightLayers::layer(7);
+        assert!(two_and_seven.intersects(LightLayers::layer(7)));
+        assert!(!two_and_seven.intersects(LightLayers::layer(0)));
+        assert!(two_and_seven.contains(2) && two_and_seven.contains(7));
+        assert!(!two_and_seven.contains(3));
+        assert_eq!(
+            two_and_seven.union(LightLayers::layer(0)),
+            LightLayers::from_bits(0b1000_0101)
+        );
+        // The raw bits round-trip through `from_bits`, and the two ends
+        // of the filter behave as the renderer expects: the empty set
+        // shares a layer with nothing, `ALL` with everything.
+        assert_eq!(LightLayers::from_bits(two_and_seven.bits()), two_and_seven);
+        assert!(!LightLayers::NONE.intersects(LightLayers::ALL));
+        assert!(LightLayers::ALL.intersects(two_and_seven));
     }
 }

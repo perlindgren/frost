@@ -22,8 +22,8 @@ use antifrost::{
     settings::{Settings, Shadow},
 };
 use frost::{
-    Color, Context, KeyCode, MouseButton, Particle, ParticleShape, ParticleSystem, Process, Rng,
-    Scene, SceneNode, SpriteFilter, Tile, Transform,
+    Color, Context, KeyCode, LightLayers, MouseButton, Particle, ParticleShape, ParticleSystem,
+    Process, Rng, Scene, SceneNode, SpriteFilter, Tile, Transform,
 };
 #[cfg(feature = "diag")]
 use frost::{Diagnostics, DiagnosticsFlags};
@@ -44,6 +44,13 @@ const DIAG_FONT: &[u8] = include_bytes!("../../assets/fonts/FiraCode-VariableFon
 /// that scrolls with the board at 1.0, and the tunnels are the windows
 /// cut into it. Eye candy; no geology is implied.
 const DEEP_PARALLAX: f32 = 0.85;
+
+/// The one layer the hill's tile occluders shadow. Receivers listen on it
+/// by choice: only the far background joins the set, so the merged cell
+/// boxes darken the sky behind the hill while the tiles themselves — lit on
+/// plain layer 0 like everything else — never throw a shadow on each other
+/// or on an ant.
+const BG_SHADOW_LAYER: LightLayers = LightLayers::layer(1);
 
 /// The backdrop: one soil texture stretched cover-first across the window,
 /// under every tile. The hairline gaps between tiles and the void past the
@@ -2127,6 +2134,11 @@ impl Demo {
                 a: 1.0,
             };
             node.lit = true;
+            // The deep parallax sheet listens on the shadow layer beside
+            // the default one: the lamps still reach it (layer 0 is in the
+            // set), and it is the only surface the hill's tile shadows land
+            // on (see [`BG_SHADOW_LAYER`]).
+            node.lit_layers = LightLayers::default() | BG_SHADOW_LAYER;
             node.order = -0.5;
         }
         if let Some((shape, span)) = &self.ground {
@@ -2188,11 +2200,18 @@ impl Demo {
                 let [x1, y1] = self.screen(self.cell_px(game::Cell::new(col_e, row1)));
                 // Full cells, not drawn tiles: the hairline inset is a
                 // detail of the grain, while the hill's body is solid
-                // to the grid — so the shadow must be too.
-                ctx.occluder(
+                // to the grid — so the shadow must be too. And the
+                // shadow goes only where [`BG_SHADOW_LAYER`] reaches:
+                // the merged boxes darken the far background behind the
+                // hill, never the tiles that cast them, never an ant
+                // walking beside them — a wall that shades the sky it
+                // stands against while the floor it stands on sees no
+                // shadow at all is exactly the hill's demand.
+                ctx.occluder_layers(
                     Transform::translate([(x0 + x1) * 0.5, (y0 + y1) * 0.5]),
                     [0.0, 0.0],
                     [((x1 - x0) + ts) * 0.5, ((y0 - y1) + ts) * 0.5],
+                    BG_SHADOW_LAYER,
                 );
             }
         }

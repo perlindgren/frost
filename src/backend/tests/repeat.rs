@@ -34,6 +34,9 @@ fn repeat_layer_scene(repeat: [f32; 2]) -> Scene {
                     },
                 }),
                 children: vec![],
+
+                lit_layers: LightLayers::default(),
+                occludes_layers: LightLayers::default(),
             },
         }],
         ambient: AMBIENT,
@@ -106,6 +109,9 @@ fn repeat_offsets_follow_the_camera() {
                 transform: Transform::translate([60.0, 0.0]),
                 ..Default::default()
             })],
+
+            lit_layers: LightLayers::default(),
+            occludes_layers: LightLayers::default(),
         },
         ambient: AMBIENT,
         camera: Some(NodePath {
@@ -196,6 +202,9 @@ fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
                 transform: Transform::translate([145.0, 0.0]),
                 ..Default::default()
             })],
+
+            lit_layers: LightLayers::default(),
+            occludes_layers: LightLayers::default(),
         },
         ambient: AMBIENT,
         camera: Some(NodePath {
@@ -228,6 +237,9 @@ fn an_object_crossing_a_tile_boundary_is_split_without_aborting() {
                     },
                 }),
                 children: vec![],
+
+                lit_layers: LightLayers::default(),
+                occludes_layers: LightLayers::default(),
             },
         }],
     };
@@ -292,6 +304,9 @@ fn an_object_wider_than_its_repeat_aborts() {
                     },
                 }),
                 children: vec![],
+
+                lit_layers: LightLayers::default(),
+                occludes_layers: LightLayers::default(),
             },
         }],
         ..repeat_layer_scene([0.0, 0.0])
