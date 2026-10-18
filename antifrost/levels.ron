@@ -1,15 +1,15 @@
-// Antifrost — thirty-five hills for the cold season.
+// Antifrost — fifty hills for the cold season.
 //
 // Legend: `#` rock, `,` dirt, `.` tunnel, `@` player start,
 // uppercase `W R Y G B` beds (W is the player's), lowercase `r y g b` wild ants.
 //
-// Par policy: twenty-eight hills carry their BFS optimum — found by
+// Par policy: forty-three hills carry their BFS optimum — found by
 // exhaustive search, so no shorter win exists. That optimum is asserted
 // by `solver::tests::solve_all_shipped`, which is `#[ignore]`d because
 // a full re-solve outruns a test session's patience: it runs on demand
 // (`cargo test --example antifrost --release -- --ignored`) and no
 // shipped par moves without it. The replay that DOES run every test is
-// the second proof of the same twenty-eight (a found win is replayed
+// the second proof of the same forty-three (a found win is replayed
 // move by move against the real game). Seven hills — the five four-ant
 // runs Deadfall, Winter Quarters, Deep Cellar, Ashfall, Ember Deep,
 // plus Hearth Row and Ninefold — have spaces or lock-timings that
@@ -25,6 +25,14 @@
 // 57 at the sharper score; Winter Quarters' 48 and Ember Deep's 71 —
 // the last one unbeaten through three hunt generations — both fell
 // when the beam widened to 100k (to 47 and 56).
+
+//
+// The last fifteen are the shuffle wing — Side Bunk through Pushing
+// Hands, all three-ant, all built to one brief: the line is a stack,
+// and these hills punish whoever forgets it. Twelve of them unload it
+// (their shortest routes drop ants into bunks and pick them up again);
+// three — Wrong Bunks, Thimble Row, Pushing Hands — answer the stack
+// with the dunk instead, which is the same lesson read backwards.
 
 (
     levels: [
@@ -466,6 +474,201 @@
                 "#.###########.#",
                 "#...B,,.....W.#",
                 "###############",
+            ],
+        ),
+        (
+            name: "Side Bunk",
+            par: 20,
+            grid: [
+                "#########",
+                "#W..R...#",
+                "#.#.#.#.#",
+                "#@r.y.g.#",
+                "#.#.#.#.#",
+                "#...Y.G.#",
+                "#########",
+            ],
+        ),
+        (
+            name: "Lower Deck",
+            par: 25,
+            grid: [
+                "##########",
+                "#W..Y.R.G#",
+                "#.######.#",
+                "#@......r#",
+                "#.#####..#",
+                "#.y..g...#",
+                "##########",
+            ],
+        ),
+        (
+            name: "Graveyard Shift",
+            par: 26,
+            grid: [
+                "##########",
+                "#W.G.Y.R.#",
+                "#.######.#",
+                "#@......r#",
+                "#.#####..#",
+                "#.y..g...#",
+                "##########",
+            ],
+        ),
+        (
+            name: "Wrong Bunks",
+            par: 26,
+            grid: [
+                "###########",
+                "#W....G...#",
+                "#.#######.#",
+                "#@.r.R..g.#",
+                "#.#######.#",
+                "#.....Y.y.#",
+                "###########",
+            ],
+        ),
+        (
+            name: "Lower Bunks",
+            par: 28,
+            grid: [
+                "##########",
+                "#W..R.Y.G#",
+                "#.######.#",
+                "#@......r#",
+                "#.#####..#",
+                "#.y..g...#",
+                "##########",
+            ],
+        ),
+        (
+            name: "Thimble Row",
+            par: 29,
+            grid: [
+                "#########",
+                "#@...#G.#",
+                "#.####.##",
+                "#W.RrY..#",
+                "#.####.##",
+                "#..y.g..#",
+                "#########",
+            ],
+        ),
+        (
+            name: "Warm Wall",
+            par: 31,
+            grid: [
+                "###########",
+                "#W.r...y.g#",
+                "#.#####.#.#",
+                "#@......R.#",
+                "#.#####.#.#",
+                "#G....Y...#",
+                "###########",
+            ],
+        ),
+        (
+            name: "Clothesline",
+            par: 33,
+            grid: [
+                "###########",
+                "#@.r....yG#",
+                "#.#######.#",
+                "#......R..#",
+                "#.#####.#.#",
+                "#W....Y.g.#",
+                "###########",
+            ],
+        ),
+        (
+            name: "Bobby Pin",
+            par: 34,
+            grid: [
+                "###########",
+                "#W.......g#",
+                "#.#######.#",
+                "#@..y..r..#",
+                "#.#######.#",
+                "#Y..G..R..#",
+                "###########",
+            ],
+        ),
+        (
+            name: "Windy Day",
+            par: 34,
+            grid: [
+                "###########",
+                "#@.g.....y#",
+                "#.#######.#",
+                "#..Y..R.,.#",
+                "#.#####.#.#",
+                "#W....G.r.#",
+                "###########",
+            ],
+        ),
+        (
+            name: "Clothespins",
+            par: 36,
+            grid: [
+                "###########",
+                "#@.r.....g#",
+                "#.#######.#",
+                "#..Y..R...#",
+                "#.#####.#.#",
+                "#W....G.y.#",
+                "###########",
+            ],
+        ),
+        (
+            name: "Turnstile",
+            par: 36,
+            grid: [
+                "###########",
+                "#@.......R#",
+                "#.#######.#",
+                "#.r.G...y.#",
+                "#.#######.#",
+                "#W....Y..g#",
+                "###########",
+            ],
+        ),
+        (
+            name: "Bunkhouse",
+            par: 37,
+            grid: [
+                "###########",
+                "#W.r.y.g..#",
+                "#.#######.#",
+                "#..G.R..Y.#",
+                "#.#######.#",
+                "#@........#",
+                "###########",
+            ],
+        ),
+        (
+            name: "Hairpin",
+            par: 39,
+            grid: [
+                "###########",
+                "#W.......g#",
+                "#.#######.#",
+                "#@..r..y..#",
+                "#.#######.#",
+                "#G..R..Y..#",
+                "###########",
+            ],
+        ),
+        (
+            name: "Pushing Hands",
+            par: 39,
+            grid: [
+                "###########",
+                "#@.......G#",
+                "#.#######.#",
+                "#.r.Y...g.#",
+                "#.#######.#",
+                "#W....R..y#",
+                "###########",
             ],
         ),
     ],

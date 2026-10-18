@@ -174,7 +174,7 @@ W R Y G B = empty bed of that color (W = the player's own bed)
 r y g b   = one wild ant of that color
 ```
 
-## 9. The shipped hills (thirty-five, in teaching order)
+## 9. The shipped hills (fifty, in teaching order)
 
 1. **First Warm** — the push as first verb: one dunk, one step home.
    Par 5, BFS optimum.
@@ -331,6 +331,48 @@ r y g b   = one wild ant of that color
     continuous walk where the colony peels off b→g→y→r, each lock in
     your wake, none of them where the naive walk would drop them.
     Par 71, replay-verified route (four trail ants outrun BFS).
+
+    Then fifteen more — the shuffle wing, all three-ant, all built to
+    one brief: the line is a stack, and these hills punish whoever
+    forgets it. Every par below is a proven BFS optimum, and every
+    optimal route IS the lesson: `x` marks a drop, capitals a shove.
+
+36. **Side Bunk** — the wing's opening: bunks in the shafts, and the
+    tail will not turn the corner itself. One drop, one dunk.
+    Par 20.
+37. **Lower Deck** — the bunk row's beds reshuffled; one clean carry
+    locks the wrong ant, so the shortest walk parks one and collects
+    it again. Par 25.
+38. **Graveyard Shift** — the colony on one side, the bunks lined up
+    wrong on the other: the stack unloads twice and is gathered twice
+    over. Par 26.
+39. **Wrong Bunks** — the R bunk stands mid-corridor: a loaded stack
+    can never walk itself through the red bed, so red never boards a
+    carry at all — the route shoves it home. Par 26.
+40. **Lower Bunks** — three beds in a row the carry cannot bend:
+    two drops, three pickups, one continuous errand. Par 28.
+41. **Thimble Row** — bunks in pockets; a loaded stack cannot be
+    dragged into them. One drop, two dunks. Par 29.
+42. **Warm Wall** — a wall of shafts; the tail locks one bunk too
+    early unless the stack unloads for it first. Par 31.
+43. **Clothesline** — the beds hang under the carry line; the tail
+    walks past its own empty bed without sleeping and must come back.
+    Par 33.
+44. **Bobby Pin** — bunks on the return leg: unload on the way in,
+    dunk round the corner, collect what you parked. Par 34.
+45. **Windy Day** — a dirt pocket to park in and the windiest line in
+    the wing: three drops, a shove, five handings-over. Par 34.
+46. **Clothespins** — the same hall with the beds off the path: three
+    drops, five collections. Par 36.
+47. **Turnstile** — the beds past each other round a tight turn; two
+    drops and two shoves feed the stack through. Par 36.
+48. **Bunkhouse** — the wing's textbook: one ant parked mid-hill and
+    collected again on the last errand. Par 37.
+49. **Hairpin** — the long pin: the right order only exists after a
+    whole loop, and the middle ant is parked for the ride. Par 39.
+50. **Pushing Hands** — the exam the wing was built for: no bunk is
+    reachable by carrying at all; the stack wants one thing and three
+    shoves answer it. Par 39.
 
 ### Difficulty policy (solver-gated)
 
