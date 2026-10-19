@@ -107,11 +107,20 @@ pub(crate) enum Draw {
         /// Whether the shape is lit by the frame's light field: `1.0` when
         /// the node's `lit` flag is set, `0.0` when unlit.
         lit: f32,
+        /// The light layers the shape receives from: matched per light
+        /// against the light's own set, and per occluder against the
+        /// occluder's (see [`Light::layers`] and
+        /// [`SceneNode::occludes_layers`]).
+        lit_layers: LightLayers,
         /// Whether the shape occludes the frame's lights: `1.0` when the
         /// node's `occludes` flag is set, `0.0` when it casts no shadow.
         /// Rectangles (kind `1.0`) and circles (kind `0.0`) reach the
         /// occluder field, a circle as the polygon inscribed in it.
         occludes: f32,
+        /// The light layers the shape's shadow lands on, packed into its
+        /// occluder record (see [`SceneNode::occludes_layers`]). Read by
+        /// the field only when `occludes` is set.
+        occludes_layers: LightLayers,
         z: f32,
         /// Whether the draw was produced by a [`crate::Diagnostics`]
         /// overlay node: the overlay tags the nodes it appends to the
@@ -179,6 +188,9 @@ pub(crate) enum Draw {
         /// the node's `lit` flag is set, `0.0` when unlit. Glyph quads
         /// expanded from a lit text block are lit too.
         lit: f32,
+        /// The light layers the sprite receives from, as on
+        /// [`Draw::Shape`]; glyph quads carry their text node's set.
+        lit_layers: LightLayers,
         z: f32,
         /// Whether the draw was produced by a [`crate::Diagnostics`]
         /// overlay node: the overlay tags the nodes it appends to the
@@ -223,6 +235,8 @@ pub(crate) enum Draw {
         /// Whether the batch is lit by the frame's light field: `1.0` when
         /// the node's `lit` flag is set, `0.0` when unlit.
         lit: f32,
+        /// The light layers the batch receives from, as on [`Draw::Shape`].
+        lit_layers: LightLayers,
         z: f32,
         /// Whether the draw was produced by a [`crate::Diagnostics`]
         /// overlay node: the overlay tags the nodes it appends to the
@@ -268,6 +282,10 @@ pub(crate) enum Draw {
         /// `0.0` when the map stays scenery in the old sense, drawn
         /// exactly as it always was.
         lit: f32,
+        /// The light layers the map receives from, as on [`Draw::Shape`]:
+        /// a tilemap whose tiles must not shadow each other is lit from
+        /// a layer its own occluders do not name.
+        lit_layers: LightLayers,
         /// The pixel-space box over all the tile quads, as
         /// `([min_x, min_y], [max_x, max_y])` — the batch's own extent.
         bounds: ([f32; 2], [f32; 2]),
@@ -314,6 +332,9 @@ pub(crate) enum Draw {
         /// the node's `lit` flag is set, `0.0` when unlit; the flag is
         /// passed on to every glyph quad the block expands into.
         lit: f32,
+        /// The light layers the text receives from, passed on to every
+        /// glyph quad as `lit` is.
+        lit_layers: LightLayers,
         z: f32,
         /// Whether the text was laid out by a [`crate::Diagnostics`]
         /// overlay node: the overlay tags the nodes it appends to the
@@ -360,6 +381,10 @@ pub(crate) enum Draw {
         /// radians inside it. `0.0` — and every omni light — keeps the
         /// hard gate above.
         feather: f32,
+        /// The light layers this light shines on: the shader folds it
+        /// against each receiver's `lit_layers`, and the light contributes
+        /// only where the sets share a layer (see [`Light::layers`]).
+        layers: LightLayers,
         z: f32,
     },
 }
@@ -642,7 +667,8 @@ pub(crate) fn rect_uniform_data(center: [f32; 2], extent: [f32; 2], color: Color
 /// the Rust matrix element-for-element and `m * p + t` in the shader
 /// reproduces `Transform::apply`), `translation` @ 16, `center` @ 24,
 /// `params` @ 32, `color` @ 48 (a vec4<f32>, spanning 48..64), `misc` @ 64
-/// (aa @ 64, kind @ 68), `lit` @ 72, `emission` @ 80 (a vec4<f32>, spanning
+/// (aa @ 64, kind @ 68), `lit` @ 72, `lit_layers` (the receiver's layer
+/// mask through `f32::from_bits`) @ 76, `emission` @ 80 (a vec4<f32>, spanning
 /// 80..96), and `glow` @ 96 (a vec4<f32>, spanning 96..112); the struct size is
 /// 112.
 #[allow(clippy::too_many_arguments)] // uniform writer: one argument per WGSL member
@@ -656,6 +682,7 @@ pub(crate) fn shape_uniform_data(
     emission: Color,
     glow: Option<Color>,
     lit: f32,
+    lit_layers: LightLayers,
 ) -> Vec<u8> {
     let mut data = vec![0u8; SHAPE_UNIFORM_BYTES as usize];
     let m = to_local.m;
@@ -679,6 +706,11 @@ pub(crate) fn shape_uniform_data(
     write_f32_at(&mut data, 64, aa);
     write_f32_at(&mut data, 68, kind);
     write_f32_at(&mut data, 72, lit);
+    // The receiver's layer mask, raw bits in the padding slot between
+    // `lit` and the 16-byte-aligned `emission`: the shader
+    // `bitcast<u32>`s it back to fold against every light's and every
+    // occluder's set.
+    write_f32_at(&mut data, 76, f32::from_bits(lit_layers.bits()));
     // The emission vec4: 16-byte aligned, so it starts at 80 and spans 80..96,
     // and the glow vec4 follows it at 96..112.
     write_f32_at(&mut data, 80, emission.r);
@@ -766,10 +798,20 @@ pub(crate) fn uniform_bytes(draw: &Draw) -> Option<Vec<u8>> {
             emission,
             glow,
             lit,
+            lit_layers,
             ..
         } => world.invert().map(|inv| {
             shape_uniform_data(
-                inv, *center, *params, *kind, *aa, *color, *emission, *glow, *lit,
+                inv,
+                *center,
+                *params,
+                *kind,
+                *aa,
+                *color,
+                *emission,
+                *glow,
+                *lit,
+                *lit_layers,
             )
         }),
         Draw::Sprite {
@@ -780,10 +822,21 @@ pub(crate) fn uniform_bytes(draw: &Draw) -> Option<Vec<u8>> {
             emission,
             glow,
             lit,
+            lit_layers,
             uv_rect,
             ..
         } => world.invert().map(|inv| {
-            sprite_uniform_data(inv, *size, *tint, *alpha, *emission, *glow, *lit, *uv_rect)
+            sprite_uniform_data(
+                inv,
+                *size,
+                *tint,
+                *alpha,
+                *emission,
+                *glow,
+                *lit,
+                *lit_layers,
+                *uv_rect,
+            )
         }),
         _ => None,
     }
@@ -801,7 +854,9 @@ pub(crate) const SPRITE_UNIFORM_BYTES: u64 = 112;
 /// as in [`shape_uniform_data`]; `translation` sits at @ 16, `size` (a
 /// vec2) at @ 24, the tint `vec4` at @ 32 (16 bytes, 16-byte aligned,
 /// spanning 32..48), the scalar `alpha` (4-byte aligned) at @ 48, the
-/// scalar `lit` (4-byte aligned) at @ 52, the `uv_rect` `vec4` (16-byte
+/// scalar `lit` (4-byte aligned) at @ 52, the scalar `lit_layers` (the
+/// receiver's layer mask through `f32::from_bits`) at @ 56, the `uv_rect`
+/// `vec4` (16-byte
 /// aligned) at @ 64, the emission `vec4` at @ 80 (spanning 80..96), and the
 /// glow `vec4` at @ 96 (spanning 96..112); the struct size is 112.
 #[allow(clippy::too_many_arguments)] // uniform writer: one argument per WGSL member
@@ -813,6 +868,7 @@ pub(crate) fn sprite_uniform_data(
     emission: Color,
     glow: Option<Color>,
     lit: f32,
+    lit_layers: LightLayers,
     uv_rect: [f32; 4],
 ) -> Vec<u8> {
     let mut data = vec![0u8; SPRITE_UNIFORM_BYTES as usize];
@@ -835,6 +891,9 @@ pub(crate) fn sprite_uniform_data(
     write_f32_at(&mut data, 44, tint.a);
     write_f32_at(&mut data, 48, alpha);
     write_f32_at(&mut data, 52, lit);
+    // The receiver's layer mask, raw bits in the padding before the
+    // 16-byte-aligned uv_rect.
+    write_f32_at(&mut data, 56, f32::from_bits(lit_layers.bits()));
     write_f32_at(&mut data, 64, uv_rect[0]);
     write_f32_at(&mut data, 68, uv_rect[1]);
     write_f32_at(&mut data, 72, uv_rect[2]);
@@ -852,7 +911,8 @@ pub(crate) fn sprite_uniform_data(
 /// Particle batch uniform data, 48 bytes, matching the WGSL uniform-space
 /// layout of the `ParticlesUniforms` Wgsl struct: `size` (a vec2) @ 0,
 /// `color` (a vec4) @ 16 (16 bytes, 16-byte aligned, leaving an 8-byte
-/// gap), `misc` (a vec2: the shape's kind and aspect) @ 32, and `lit` @ 40;
+/// gap), `misc` (a vec2: the shape's kind and aspect) @ 32, `lit` @ 40, and
+/// `lit_layers` (the receiver's layer mask through `f32::from_bits`) @ 44;
 /// the struct size rounds up to 48.
 pub(crate) fn particles_uniform_data(
     size: [f32; 2],
@@ -860,6 +920,7 @@ pub(crate) fn particles_uniform_data(
     kind: f32,
     aspect: f32,
     lit: f32,
+    lit_layers: LightLayers,
 ) -> Vec<u8> {
     let mut data = vec![0u8; 48];
     write_f32_at(&mut data, 0, size[0]);
@@ -871,6 +932,7 @@ pub(crate) fn particles_uniform_data(
     write_f32_at(&mut data, 32, kind);
     write_f32_at(&mut data, 36, aspect);
     write_f32_at(&mut data, 40, lit);
+    write_f32_at(&mut data, 44, f32::from_bits(lit_layers.bits()));
     data
 }
 
@@ -902,14 +964,22 @@ pub(crate) fn particle_instance(p: &Particle, px: f32, py: f32, size: f32, angle
 
 /// Tile map batch uniform data, 32 bytes, matching the WGSL uniform-space
 /// layout of the `TileMapUniforms` struct: `size` (a vec2) @ 0, `lit`
-/// (an f32) @ 8 — the gap the padding already held — and `color` (a
+/// (an f32) @ 8, `lit_layers` (the receiver's layer mask through
+/// `f32::from_bits`) @ 12 — the gap the padding already held — and
+/// `color` (a
 /// vec4) @ 16 (16 bytes, 16-byte aligned); the struct size rounds up
 /// to 32.
-pub(crate) fn tilemap_uniform_data(size: [f32; 2], color: Color, lit: f32) -> Vec<u8> {
+pub(crate) fn tilemap_uniform_data(
+    size: [f32; 2],
+    color: Color,
+    lit: f32,
+    lit_layers: LightLayers,
+) -> Vec<u8> {
     let mut data = vec![0u8; 32];
     write_f32_at(&mut data, 0, size[0]);
     write_f32_at(&mut data, 4, size[1]);
     write_f32_at(&mut data, 8, lit);
+    write_f32_at(&mut data, 12, f32::from_bits(lit_layers.bits()));
     write_f32_at(&mut data, 16, color.r);
     write_f32_at(&mut data, 20, color.g);
     write_f32_at(&mut data, 24, color.b);
@@ -961,11 +1031,15 @@ pub(crate) fn tilemap_instance(
 /// 12 padding bytes, and the scene's ambient color (a `vec4`).
 pub(crate) const LIGHT_FIELD_HEADER: usize = 32;
 
-/// The byte size of one light record: three `vec4<f32>`s —
-/// `(x, y, radius, intensity)`, `(r, g, b, penumbra)`, and
-/// `(dir_x, dir_y, cos_half, feather)`, the last two vec4s carrying the
-/// light's shadow disk and cone (see [`Draw::Light`]).
-pub(crate) const LIGHT_RECORD: usize = 48;
+/// The byte size of one light record: four `vec4<f32>`s —
+/// `(x, y, radius, intensity)`, `(r, g, b, penumbra)`,
+/// `(dir_x, dir_y, cos_half, feather)`, and `(layers, 0, 0, 0)`, the last
+/// two vec4s carrying the light's shadow disk and cone (see
+/// [`Draw::Light`]). The fourth vec4's x is the light's `LightLayers` bit
+/// mask, its bits read with `bitcast<u32>` by the shader (the value is the
+/// mask's raw bits through `f32::from_bits`, not a number to do
+/// arithmetic on); its other components are padding.
+pub(crate) const LIGHT_RECORD: usize = 64;
 
 /// The minimum size of the light field buffer in bytes: the header plus
 /// one `vec4`. The WGSL field ends in an unsized `array<vec4<f32>>`, and
@@ -989,8 +1063,9 @@ pub(crate) fn light_field_buffer_size(count: u32) -> u64 {
 /// at bytes `0..4`, 12 padding bytes, the scene's ambient color channels at
 /// bytes `16..32` — followed by one [`LIGHT_RECORD`]-byte record per light,
 /// in call order: a `(x, y, radius, intensity)` `vec4`, an
-/// `(r, g, b, penumbra)` `vec4`, and a `(dir_x, dir_y, cos_half, feather)`
-/// `vec4` carrying the cone.
+/// `(r, g, b, penumbra)` `vec4`, a `(dir_x, dir_y, cos_half, feather)`
+/// `vec4` carrying the cone, and a `(layers, 0, 0, 0)` `vec4` whose x is
+/// the light's [`LightLayers`] bit mask through `f32::from_bits`.
 /// The records line up with the unsized WGSL
 /// `array<vec4<f32>>` tail of the field's storage struct, so `data` can be
 /// bound as-is.
@@ -1028,6 +1103,7 @@ pub(crate) fn pack_light_field(draws: &[Draw], ambient: Color) -> LightField {
             dir,
             cos_half,
             feather,
+            layers,
             ..
         } = draw
         {
@@ -1046,6 +1122,11 @@ pub(crate) fn pack_light_field(draws: &[Draw], ambient: Color) -> LightField {
             write_f32_at(&mut data, off + 36, dir[1]);
             write_f32_at(&mut data, off + 40, *cos_half);
             write_f32_at(&mut data, off + 44, *feather);
+            // The fourth vec4's x: the layer mask's raw bits, which the
+            // shader reads back with `bitcast<u32>`. It rides as bits, not
+            // as a float value: every one of the 2^32 masks, `ALL`
+            // included, round-trips exact.
+            data[off + 48..off + 52].copy_from_slice(&layers.bits().to_le_bytes());
             record += 1;
         }
     }
@@ -1093,9 +1174,12 @@ pub(crate) const OCCLUDER_PLANE: usize = 16;
 /// inverse of the occluder's world transform, column-major (pixel space to
 /// the occluder's local space), then a `(tx, ty, cx, cy)` `vec4`, the
 /// inverse transform's translation and the box's local center, then a
-/// `(hx, hy, planes, 0)` `vec4`, the box's local half-extents and the
+/// `(hx, hy, planes, layers)` `vec4`, the box's local half-extents, the
 /// number of [`OCCLUDER_PLANE`]-byte half-planes that follow it — zero for
-/// a box, and for a polygon the edges that bound it.
+/// a box, and for a polygon the edges that bound it — and the occluder's
+/// [`LightLayers`] bit mask through `f32::from_bits`, the padding slot
+/// polygon records already carried: the shader skips a record whose mask
+/// shares no layer with the receiver evaluating the light.
 ///
 /// Records are therefore variable length, `3 + planes` `vec4`s apiece, and
 /// a shader walks a light's block with a running offset rather than
@@ -1158,10 +1242,11 @@ fn push_master(
     center: &[f32; 2],
     half: &[f32; 2],
     planes: &[[f32; 4]],
+    layers: LightLayers,
 ) {
     let mut bytes = Vec::with_capacity(OCCLUDER_RECORD + planes.len() * OCCLUDER_PLANE);
     let mut cursor = 0usize;
-    if write_occluder_record(&mut bytes, &mut cursor, world, center, half, planes) != 1 {
+    if write_occluder_record(&mut bytes, &mut cursor, world, center, half, planes, layers) != 1 {
         return;
     }
     master.push(OccRecord {
@@ -1397,6 +1482,7 @@ pub(crate) fn pack_occluder_field(
             params,
             kind,
             occludes,
+            occludes_layers,
             ..
         } = draw
         else {
@@ -1415,7 +1501,7 @@ pub(crate) fn pack_occluder_field(
         // it, so passing it on would trade a silent no-op for a panic in the
         // frame path, which is the worse of the two by a wide margin.
         match *kind {
-            1.0 => push_master(&mut master, world, center, params, &[]),
+            1.0 => push_master(&mut master, world, center, params, &[], *occludes_layers),
             0.0 if params[0] > 0.0 && params[0].is_finite() => {
                 let polygon = Convex::disc(*center, params[0]);
                 let bounds = polygon.bounds_as_box();
@@ -1425,6 +1511,7 @@ pub(crate) fn pack_occluder_field(
                     &bounds.center,
                     &bounds.half,
                     polygon.planes(),
+                    *occludes_layers,
                 );
             }
             _ => continue,
@@ -1437,7 +1524,7 @@ pub(crate) fn pack_occluder_field(
             Some(polygon) => polygon.planes(),
             None => &[],
         };
-        push_master(&mut master, &o.world, &o.center, &o.half, planes);
+        push_master(&mut master, &o.world, &o.center, &o.half, planes, o.layers);
     }
     // The lights, in the order the light field packed them — the shader
     // indexes the table by that same order.
@@ -1521,6 +1608,7 @@ fn write_occluder_record(
     center: &[f32; 2],
     half: &[f32; 2],
     planes: &[[f32; 4]],
+    layers: LightLayers,
 ) -> u32 {
     let Some(inverse) = world.invert() else {
         return 0;
@@ -1541,10 +1629,14 @@ fn write_occluder_record(
     write_f32_at(data, off + 24, center[0]);
     write_f32_at(data, off + 28, center[1]);
     // vec4 2: the box's local half-extents, then the edge count — the
-    // component that was padding before polygons, and still zero for a box.
+    // component that was padding before polygons, and still zero for a box
+    // — then the layer mask's raw bits, in the slot that was the vec4's
+    // zero padding: the shader `bitcast<u32>`s it back and skips the
+    // record for receivers whose light layers it does not name.
     write_f32_at(data, off + 32, half[0]);
     write_f32_at(data, off + 36, half[1]);
     write_f32_at(data, off + 40, planes.len() as f32);
+    data[off + 44..off + 48].copy_from_slice(&layers.bits().to_le_bytes());
     // And the edges themselves, in the occluder's own space: each an outward
     // unit normal and the offset it sits at, ready to clip a ray against
     // without a normalisation or a square root on the way.

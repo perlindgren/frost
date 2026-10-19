@@ -24,7 +24,7 @@
 fn float_and_srgb_frame_buffers_agree_where_the_window_can_tell() {
     use crate::backend::app::{block_on, sprite_layouts};
     use crate::backend::frame::{SPRITE_UNIFORM_BYTES, sprite_uniform_data};
-    use crate::objects::{Color, Transform};
+    use crate::objects::{Color, LightLayers, Transform};
     use crate::shaders::SPRITE_SHADER;
     use std::borrow::Cow;
     use std::num::NonZeroU64;
@@ -119,6 +119,7 @@ fn float_and_srgb_frame_buffers_agree_where_the_window_can_tell() {
             off,
             None,
             0.0,
+            LightLayers::default(),
             [0.0, 0.0, 1.0, 1.0],
         )
     };

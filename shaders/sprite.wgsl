@@ -5,6 +5,10 @@ struct SpriteUniforms {
     tint: vec4<f32>, // multiplied with every sampled pixel
     alpha: f32, // multiplied with the texture's own alpha
     lit: f32, // 1.0 when the sprite is lit by the frame's light field
+    // The receiver's light-layer mask — raw bits shipped through
+    // f32::from_bits on the CPU and read back with bitcast<u32>; the light
+    // loop folds it against every light's and every occluder's set.
+    lit_layers: f32,
     uv_rect: vec4<f32>, // [min_x, min_y, max_x, max_y] sub-rect of the texture
     emission: vec4<f32>, // own light: rgb, scaled by a, added to the light mix
     // The same light as the glow sees it: equal to `emission` unless the app
@@ -109,7 +113,7 @@ fn shade(frag_coord: vec4<f32>) -> Shaded {
     // select would evaluate light_mix for every unlit sprite too.
     var rgb = t.rgb * u.tint.rgb;
     if (u.lit > 0.5) {
-        rgb *= light_mix(frag_coord.xy) + u.emission.rgb * u.emission.a;
+        rgb *= light_mix(frag_coord.xy, bitcast<u32>(u.lit_layers)) + u.emission.rgb * u.emission.a;
     } else {
         rgb += rgb * u.emission.rgb * u.emission.a;
     }

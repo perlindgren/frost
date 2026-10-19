@@ -30,6 +30,12 @@ pub(crate) struct Occluder {
     /// half-planes [`Convex`] holds, in the same local space as `center` and
     /// `half`. `None` is the box.
     pub(crate) polygon: Option<Convex>,
+    /// The light layers this occluder's shadow lands on, matched against
+    /// each receiver's [`SceneNode::lit_layers`]. The
+    /// [`Canvas::occluder`] constructors keep it at
+    /// [`LightLayers::default()`] (layer 0); [`Canvas::occluder_layers`]
+    /// and [`Canvas::occluder_polygon_layers`] name the set.
+    pub(crate) layers: LightLayers,
 }
 
 /// The drawing surface for a frame, reachable through the [`crate::Context`] passed
@@ -186,6 +192,7 @@ impl Canvas {
             // scene-node property, and the diagnostic marker is — no
             // scene node owns this batch.
             lit: 0.0,
+            lit_layers: LightLayers::default(),
             z,
             diagnostic: false,
         });
@@ -236,12 +243,32 @@ impl Canvas {
     /// remains the app's own [`crate::Collider`], the same box built from the
     /// same transform and asked a different question.
     pub fn occluder(&mut self, world: Transform, center: [f32; 2], half: [f32; 2]) {
+        self.occluder_layers(world, center, half, LightLayers::default());
+    }
+
+    /// Declares a box occluder whose shadow lands only on receivers lit
+    /// from one of `layers`: the occluder cuts a lit pixel's light only
+    /// when `layers` and that receiver's
+    /// [`lit_layers`](SceneNode::lit_layers) share a layer. This is how a
+    /// wall shadows the far background while the floor it stands on —
+    /// lit from another layer — sees no shadow from it.
+    ///
+    /// See [`Canvas::occluder`] for everything else; the set changes only
+    /// who the shadow falls on.
+    pub fn occluder_layers(
+        &mut self,
+        world: Transform,
+        center: [f32; 2],
+        half: [f32; 2],
+        layers: LightLayers,
+    ) {
         let to_pixel = world.compose(&self.user_to_pixel());
         self.occluders.push(Occluder {
             world: to_pixel,
             center,
             half: [half[0].max(0.0), half[1].max(0.0)],
             polygon: None,
+            layers,
         });
     }
 
@@ -263,6 +290,18 @@ impl Canvas {
     ///
     /// Like the box form, this casts shadows only; it stops no body.
     pub fn occluder_polygon(&mut self, world: Transform, polygon: &Convex) {
+        self.occluder_polygon_layers(world, polygon, LightLayers::default());
+    }
+
+    /// Declares a convex polygon occluder whose shadow lands only on
+    /// receivers lit from one of `layers`, the polygon sibling of
+    /// [`Canvas::occluder_layers`].
+    pub fn occluder_polygon_layers(
+        &mut self,
+        world: Transform,
+        polygon: &Convex,
+        layers: LightLayers,
+    ) {
         let to_pixel = world.compose(&self.user_to_pixel());
         let bounds = polygon.bounds_as_box();
         self.occluders.push(Occluder {
@@ -270,6 +309,7 @@ impl Canvas {
             center: bounds.center,
             half: bounds.half,
             polygon: Some(*polygon),
+            layers,
         });
     }
 
@@ -329,6 +369,7 @@ impl Canvas {
             },
             glow: None,
             lit: 0.0,
+            lit_layers: LightLayers::default(),
             z,
             // An immediate canvas draw is not owned by any scene node.
             diagnostic: false,
@@ -404,6 +445,9 @@ impl Canvas {
             cos_half: half_angle_cosine(spread),
             // The immediate-mode cone has no softness knob: hard edge.
             feather: 0.0,
+            // Immediate-mode lights shine on layer 0: the layers a light
+            // names come from its `Light` struct, and this API has none.
+            layers: LightLayers::default(),
             // The light is never drawn, so its draw order is irrelevant.
             z: 0.0,
         });
@@ -717,7 +761,9 @@ fn draw_node(
                 emission: node.emission.mul(modulate),
                 glow: node.glow.map(|g| g.mul(modulate)),
                 lit: f32::from(node.lit),
+                lit_layers: node.lit_layers,
                 occludes: f32::from(node.occludes),
+                occludes_layers: node.occludes_layers,
                 z: order,
                 diagnostic: node.diagnostic,
             }),
@@ -735,7 +781,9 @@ fn draw_node(
                 emission: node.emission.mul(modulate),
                 glow: node.glow.map(|g| g.mul(modulate)),
                 lit: f32::from(node.lit),
+                lit_layers: node.lit_layers,
                 occludes: f32::from(node.occludes),
+                occludes_layers: node.occludes_layers,
                 z: order,
                 diagnostic: node.diagnostic,
             }),
@@ -791,6 +839,7 @@ fn draw_node(
                 additive: node.additive,
                 uv_rect: [0.0, 0.0, 1.0, 1.0],
                 lit: f32::from(node.lit),
+                lit_layers: node.lit_layers,
                 z: order,
                 diagnostic: node.diagnostic,
             }),
@@ -815,6 +864,7 @@ fn draw_node(
                 emission: node.emission.mul(modulate),
                 glow: node.glow.map(|g| g.mul(modulate)),
                 lit: f32::from(node.lit),
+                lit_layers: node.lit_layers,
                 z: order,
                 diagnostic: node.diagnostic,
             }),
@@ -864,6 +914,7 @@ fn draw_node(
                     } else {
                         feather_band(light.spread, light.softness)
                     },
+                    layers: light.layers,
                     z: order,
                 })
             }
@@ -937,6 +988,7 @@ fn draw_node(
                         sprite_size,
                         sprite_generation,
                         lit: f32::from(node.lit),
+                        lit_layers: node.lit_layers,
                         z: order,
                         diagnostic: node.diagnostic,
                     })
@@ -1019,6 +1071,7 @@ fn draw_node(
                         atlas_generation: *generation,
                         filter: *filter,
                         lit: f32::from(node.lit),
+                        lit_layers: node.lit_layers,
                         bounds: (box_min, box_max),
                         clip: clip_px,
                         z: order,
@@ -1343,6 +1396,7 @@ fn expand_text_list(
                 emission,
                 glow,
                 lit,
+                lit_layers,
                 z,
                 diagnostic,
             } => {
@@ -1443,13 +1497,14 @@ fn expand_text_list(
                         uv_rect,
                         // The glyphs are the text node's own pixels: its
                         // `lit` flag, `emission`, `glow`, and diagnostic marker
-                        // pass on to every quad.
+                        // pass on to every quad — its light layers with them.
                         emission,
                         glow,
                         // Glyphs are coverage itself: an additive glyph would
                         // brighten the page it is written on.
                         additive: false,
                         lit,
+                        lit_layers,
                         z,
                         diagnostic,
                     });
@@ -1897,6 +1952,7 @@ mod tests {
                 dir,
                 cos_half,
                 feather,
+                layers,
                 z,
             },
         ] = &canvas.draws[..]
@@ -1922,6 +1978,9 @@ mod tests {
         // which the shader reads as the grid's full nine.
         assert_eq!(*feather, 0.0);
         assert_eq!(*z, 0.0);
+        // The immediate API carries no layers knob either: the draw
+        // shines on layer 0, like every light that names none.
+        assert_eq!(*layers, LightLayers::default());
     }
 
     #[test]
@@ -2039,6 +2098,7 @@ mod tests {
                 dir,
                 cos_half,
                 feather,
+                layers,
                 z,
             },
         ] = &draws[..]
@@ -2062,6 +2122,8 @@ mod tests {
         assert_eq!(*cos_half, -1.0);
         // Omni node light: the feather slot is the tap grid's nine.
         assert_eq!(*feather, 9.0);
+        // A `Light::point` names no layers: the draw shines on layer 0.
+        assert_eq!(*layers, LightLayers::default());
         assert_eq!(*z, 3.0);
     }
 

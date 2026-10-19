@@ -9,8 +9,8 @@ fn particles_uniform_bytes_follow_the_wgsl_layout() {
     // uniform-space layout of `ParticlesUniforms`, so a reorder of the
     // WGSL struct is caught here. `size` (a vec2) spans 0..8; the
     // 16-byte-aligned `color` vec4 starts at 16, so bytes 8..16 are
-    // padding; `misc` (a vec2) starts at 32; `lit` sits at 40; the struct
-    // spans 48 bytes.
+    // padding; `misc` (a vec2) starts at 32; `lit` sits at 40, and the
+    // layer mask takes the padding slot at 44; the struct spans 48 bytes.
     let data = particles_uniform_data(
         [1280.0, 720.0],
         Color {
@@ -22,6 +22,7 @@ fn particles_uniform_bytes_follow_the_wgsl_layout() {
         2.0,
         1.5,
         1.0,
+        LightLayers::layer(1) | LightLayers::layer(7),
     );
     assert_eq!(data.len(), 48);
 
@@ -36,11 +37,16 @@ fn particles_uniform_bytes_follow_the_wgsl_layout() {
     assert_eq!(f32_at(20), 0.2);
     assert_eq!(f32_at(24), 0.3);
     assert_eq!(f32_at(28), 0.4);
-    // `misc` carries the shape's kind and aspect at 32 and 36, and the
-    // lit flag takes the struct's final slot at 40.
+    // `misc` carries the shape's kind and aspect at 32 and 36, the
+    // lit flag takes the slot at 40, and the layer mask rides the padding
+    // slot at 44 as raw bits — read back bit-exact, never as a float.
     assert_eq!(f32_at(32), 2.0);
     assert_eq!(f32_at(36), 1.5);
     assert_eq!(f32_at(40), 1.0);
+    assert_eq!(
+        u32::from_le_bytes(data[44..48].try_into().unwrap()),
+        LightLayers::layer(1).bits() | LightLayers::layer(7).bits()
+    );
 }
 
 #[test]
@@ -53,7 +59,8 @@ fn shape_uniform_bytes_follow_the_wgsl_layout() {
     // (vec2 columns, stride 8), so `to_local` spans 0..16 with column 0
     // at 0 and column 1 at 8; `translation` @ 16; `center` @ 24;
     // `params` @ 32; vec4<f32> (16 bytes, 16-byte aligned) `color` @ 48
-    // (spanning 48..64); `misc` vec2 @ 64; `emission` vec4 @ 80; `glow` vec4
+    // (spanning 48..64); `misc` vec2 @ 64; `lit` @ 72; `lit_layers` @ 76;
+    // `emission` vec4 @ 80; `glow` vec4
     // @ 96; struct size 112.
     let inv = Transform::translate([1.5, -2.5]).invert().unwrap();
     let data = shape_uniform_data(
@@ -84,6 +91,7 @@ fn shape_uniform_bytes_follow_the_wgsl_layout() {
             a: 0.9,
         }),
         1.0,
+        LightLayers::layer(2) | LightLayers::layer(31),
     );
 
     let f32_at = |off: usize| f32::from_le_bytes(data[off..off + 4].try_into().unwrap());
@@ -109,13 +117,19 @@ fn shape_uniform_bytes_follow_the_wgsl_layout() {
     assert_eq!(f32_at(56), 0.3);
     // The vec4's alpha channel follows its RGB channels at byte 60, and
     // the `misc` vec2 begins at byte 64: `aa` at 64, `kind` at 68; the lit
-    // flag takes the slot at 72; the 16-byte-aligned emission vec4 follows at
+    // flag takes the slot at 72, and the layer mask its own slot at 76 —
+    // read back as raw bits, never as a float; the 16-byte-aligned emission
+    // vec4 follows at
     // 80 (spanning 80..96) and the glow vec4 at 96 (96..112, so the struct is
     // 112 bytes).
     assert_eq!(f32_at(60), 0.4);
     assert_eq!(f32_at(64), 0.25);
     assert_eq!(f32_at(68), 1.0);
     assert_eq!(f32_at(72), 1.0);
+    assert_eq!(
+        u32::from_le_bytes(data[76..80].try_into().unwrap()),
+        LightLayers::layer(2).bits() | LightLayers::layer(31).bits()
+    );
     assert_eq!(f32_at(80), 0.5);
     assert_eq!(f32_at(84), 0.6);
     assert_eq!(f32_at(88), 0.7);
@@ -134,7 +148,8 @@ fn sprite_uniform_bytes_follow_the_wgsl_layout() {
     // test does: the mat2x2 `<f32>` spans 0..16 (column 0 @ 0, column 1
     // @ 8), `translation` @ 16, `size` @ 24, the tint vec4 (16 bytes,
     // 16-byte aligned) @ 32 spanning 32..48, the scalar alpha @ 48, the
-    // scalar lit @ 52, the `uv_rect` vec4 (16-byte aligned) @ 64 spanning
+    // scalar lit @ 52, the scalar lit_layers @ 56 (raw mask bits), the
+    // `uv_rect` vec4 (16-byte aligned) @ 64 spanning
     // 64..80, the emission vec4 (16-byte aligned) @ 80 spanning 80..96, and
     // the glow vec4 @ 96 spanning 96..112; the struct size is 112.
     let inv = Transform::translate([1.5, -2.5]).invert().unwrap();
@@ -161,6 +176,7 @@ fn sprite_uniform_bytes_follow_the_wgsl_layout() {
             a: 0.95,
         }),
         1.0,
+        LightLayers::ALL,
         [0.25, 0.5, 0.75, 1.0],
     );
     assert_eq!(data.len(), 112);
@@ -186,10 +202,15 @@ fn sprite_uniform_bytes_follow_the_wgsl_layout() {
     // right after the tint, and the lit flag follows at 52.
     assert_eq!(f32_at(48), 0.75);
     assert_eq!(f32_at(52), 1.0);
-    // Bytes 56..64 are the struct's alignment padding (zeroed by the
+    // The layer mask takes the slot at 56 as raw bits — every layer set,
+    // which only round-trips exact because it rides as bits.
+    assert_eq!(
+        u32::from_le_bytes(data[56..60].try_into().unwrap()),
+        LightLayers::ALL.bits()
+    );
+    // Bytes 60..64 are the struct's alignment padding (zeroed by the
     // `vec![0u8; 96]` init), so the 16-byte-aligned uv_rect starts at 64;
     // a whole-texture sprite passes the identity rect.
-    assert_eq!(f32_at(56), 0.0);
     assert_eq!(f32_at(64), 0.25);
     assert_eq!(f32_at(68), 0.5);
     assert_eq!(f32_at(72), 0.75);
@@ -236,6 +257,7 @@ fn no_glow_means_the_emission_is_written_twice() {
             emission,
             glow,
             1.0,
+            LightLayers::default(),
         )
     };
     let unset = one(None);

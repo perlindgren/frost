@@ -54,8 +54,17 @@ fn draw_scene_composes_transforms_down_the_tree() {
                     color: black(),
                 }),
                 children: vec![],
+
+                lit_layers: LightLayers::default(),
+                occludes_layers: LightLayers::default(),
             })],
+
+            lit_layers: LightLayers::default(),
+            occludes_layers: LightLayers::default(),
         })],
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     });
     canvas.draw_scene(&scene);
     let [
@@ -122,7 +131,13 @@ fn draw_scene_rotates_a_translated_child() {
                 color: black(),
             }),
             children: vec![],
+
+            lit_layers: LightLayers::default(),
+            occludes_layers: LightLayers::default(),
         })],
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     });
     canvas.draw_scene(&scene);
     let [
@@ -162,6 +177,9 @@ fn scene_shape_at_user_origin_lands_at_window_center() {
             color: black(),
         }),
         children: vec![],
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     });
     canvas.draw_scene(&scene);
     let [
@@ -204,6 +222,9 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
             generation: 0,
         }),
         children: vec![],
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     });
     canvas.draw_scene(&scene);
     let [

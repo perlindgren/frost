@@ -2906,6 +2906,7 @@ impl<P: Process> Frost<P> {
                         sprite_size,
                         sprite_generation,
                         lit,
+                        lit_layers,
                         diagnostic,
                         ..
                     } => {
@@ -2955,6 +2956,7 @@ impl<P: Process> Frost<P> {
                             kind,
                             aspect,
                             lit,
+                            lit_layers,
                         );
                         let (_uniform, _instances, bind_group) = self.particle_uniform(
                             &particle_pipeline,
@@ -2986,6 +2988,7 @@ impl<P: Process> Frost<P> {
                         atlas_generation,
                         filter,
                         lit,
+                        lit_layers,
                         diagnostic,
                         ..
                     } => {
@@ -3016,6 +3019,7 @@ impl<P: Process> Frost<P> {
                             [render_area[0] as f32, render_area[1] as f32],
                             color,
                             lit,
+                            lit_layers,
                         );
                         let (_uniform, _instances, bind_group) = self.tilemap_uniform(
                             &tilemap_pipeline,

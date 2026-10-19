@@ -193,6 +193,7 @@ fn paint(draws: &[Draw], declared: &[Occluder]) -> Option<Vec<u8>> {
                 emission,
                 glow,
                 lit,
+                lit_layers,
                 ..
             } = draw
             else {
@@ -204,7 +205,16 @@ fn paint(draws: &[Draw], declared: &[Occluder]) -> Option<Vec<u8>> {
             let uniform = device.create_buffer_init(&BufferInitDescriptor {
                 label: Some("shadow bridge uniform"),
                 contents: &shape_uniform_data(
-                    inv, *center, *params, *kind, *aa, *color, *emission, *glow, *lit,
+                    inv,
+                    *center,
+                    *params,
+                    *kind,
+                    *aa,
+                    *color,
+                    *emission,
+                    *glow,
+                    *lit,
+                    *lit_layers,
                 ),
                 usage: BufferUsages::UNIFORM,
             });
@@ -327,6 +337,9 @@ fn the_gpu_shadows_exactly_where_the_cpu_says() {
         occludes: 0.0,
         z: 0.0,
         diagnostic: false,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     // A painted crate: invisible (alpha 0, so it composites nothing) and a
     // shadow caster all the same, since the field is built from the flag.
@@ -348,6 +361,9 @@ fn the_gpu_shadows_exactly_where_the_cpu_says() {
         occludes: 1.0,
         z: 1.0,
         diagnostic: false,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     let lamp = [10.0, 32.5];
     let light = Draw::Light {
@@ -369,6 +385,8 @@ fn the_gpu_shadows_exactly_where_the_cpu_says() {
         cos_half: -1.0,
         feather: 0.0,
         z: 0.0,
+
+        layers: LightLayers::default(),
     };
     let draws = [light, surface, crate_box];
 
@@ -498,6 +516,8 @@ fn a_lamp_lights_no_further_than_its_radius() {
         cos_half: -1.0,
         feather: 0.0,
         z: 0.0,
+
+        layers: LightLayers::default(),
     };
     let surface = Draw::Shape {
         world: Transform::identity(),
@@ -517,6 +537,9 @@ fn a_lamp_lights_no_further_than_its_radius() {
         occludes: 0.0,
         z: 0.0,
         diagnostic: false,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     // A crate close enough that its shadow falls inside the bright core
     // of the lamp's reach, and far enough that the shadow's far half and
@@ -541,6 +564,9 @@ fn a_lamp_lights_no_further_than_its_radius() {
         occludes: 1.0,
         z: 1.0,
         diagnostic: false,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     let draws = [light, surface, crate_box];
 
@@ -673,6 +699,9 @@ fn a_disc_shadows_the_gpu_the_way_the_cpu_says_it_should() {
         occludes: 0.0,
         z: 0.0,
         diagnostic: false,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     let lamp = [8.0, 8.5];
     let light = Draw::Light {
@@ -690,6 +719,8 @@ fn a_disc_shadows_the_gpu_the_way_the_cpu_says_it_should() {
         cos_half: -1.0,
         feather: 0.0,
         z: 0.0,
+
+        layers: LightLayers::default(),
     };
     let draws = [light, surface];
 
@@ -868,6 +899,9 @@ fn a_painted_circle_and_a_declared_one_shadow_alike() {
         occludes: 0.0,
         z: 0.0,
         diagnostic: false,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     let lamp = [8.0, 8.5];
     let light = Draw::Light {
@@ -885,6 +919,8 @@ fn a_painted_circle_and_a_declared_one_shadow_alike() {
         cos_half: -1.0,
         feather: 0.0,
         z: 0.0,
+
+        layers: LightLayers::default(),
     };
     // Painted, turned and placed in the same way a node would be, and drawn
     // invisible: this is about the shadow it casts, not the pixels it covers.
@@ -921,6 +957,9 @@ fn a_painted_circle_and_a_declared_one_shadow_alike() {
         occludes: 1.0,
         z: 0.0,
         diagnostic: false,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
 
     let painted = match paint(&[light.clone(), surface.clone(), caster], &[]) {
@@ -991,6 +1030,134 @@ fn a_painted_circle_and_a_declared_one_shadow_alike() {
     );
 }
 
+/// The occluder's layer mask is a receiver filter, not a light filter: a
+/// record whose mask shares no layer with the receiver evaluating the light
+/// steps out of the walk entirely. Two receivers — one listening on layer 0
+/// like everything predates layers, one on layer 1 — stand in the same
+/// frame behind one occluder shadowing layer 0 only, and the GPU paints
+/// the difference: the layer-0 surface goes dark behind the box, the
+/// layer-1 surface never notices the occluder exists. The light shines on
+/// both layers, so any darkness can only come from a shadow, never from
+/// the light filter.
+#[test]
+fn a_shadow_lands_only_on_the_layers_the_occluder_names() {
+    let lamp = [8.0, 8.5];
+    let light = Draw::Light {
+        pos: lamp,
+        radius: 1000.0,
+        intensity: 1.0,
+        color: objects::Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        },
+        penumbra: 0.0,
+        dir: [1.0, 0.0],
+        cos_half: -1.0,
+        feather: 0.0,
+        z: 0.0,
+        // The lamp reaches both listeners: darkness behind the box can
+        // then only mean a shadow, never an off-layer light.
+        layers: LightLayers::layer(0) | LightLayers::layer(1),
+    };
+    let surface = |lit_layers: LightLayers| Draw::Shape {
+        world: Transform::identity(),
+        center: [32.0, 32.0],
+        params: [80.0, 80.0],
+        kind: 1.0,
+        aa: 1.0,
+        color: objects::Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        },
+        emission: black(),
+        glow: None,
+        lit: 1.0,
+        occludes: 0.0,
+        z: 0.0,
+        diagnostic: false,
+        lit_layers,
+        occludes_layers: LightLayers::default(),
+    };
+    // One declared box, shadowing layer 0 — the set a box shadowed by
+    // before layers existed, now spelled instead of assumed.
+    let declared = [Occluder {
+        world: Transform::identity(),
+        center: [34.0, 34.0],
+        half: [8.0, 8.0],
+        polygon: None,
+        layers: LightLayers::layer(0),
+    }];
+    // The same box as the CPU sees it, for the geometric shadow set.
+    let boxes = [Collider::Box(box_in_pixels(
+        &Transform::identity(),
+        [34.0, 34.0],
+        [8.0, 8.0],
+    ))];
+    let blocked = |x: u32, y: u32| occluded(lamp, [x as f32 + 0.5, y as f32 + 0.5], &boxes);
+
+    let red = |lit_layers| paint(&[light.clone(), surface(lit_layers)], &declared);
+    let Some(layer0) = red(LightLayers::default()) else {
+        return; // no adapter: the harness says so on the way out
+    };
+    let layer1 = red(LightLayers::layer(1)).expect("the same adapter paints both");
+
+    // The scene must have a shadow to talk about at all.
+    let shadowed = (0..SPAN * SPAN)
+        .filter(|i| blocked(i % SPAN, i / SPAN))
+        .count();
+    assert!(
+        shadowed > 200,
+        "the box leaves {shadowed} blocked pixels: the test is comparing nothing"
+    );
+
+    // The layer-0 receiver: dark exactly where the CPU's segment hits the
+    // box (a block of margin keeps the shadow's own edge — where one float
+    // of clipping may differ between the two sides — out of the count).
+    let deep = |x: u32, y: u32| {
+        (1..=3).all(|d| {
+            blocked(x.saturating_sub(d), y)
+                && blocked(x + d, y)
+                && blocked(x, y.saturating_sub(d))
+                && blocked(x, y + d)
+        })
+    };
+    let mut dark_in_shadow = 0usize;
+    for y in 0..SPAN {
+        for x in 0..SPAN {
+            if blocked(x, y) && deep(x, y) {
+                assert!(
+                    layer0[(y * SPAN + x) as usize] < 128,
+                    "the layer-0 surface read lit at ({x}, {y}) inside the shadow"
+                );
+                dark_in_shadow += 1;
+            }
+        }
+    }
+    assert!(
+        dark_in_shadow > 100,
+        "only {dark_in_shadow} deep-shadow pixels"
+    );
+
+    // The layer-1 receiver: the very same pixels stay lit. The occluder's
+    // mask names no layer this surface listens on, so its record is stepped
+    // over before its slabs are ever clipped.
+    for y in 0..SPAN {
+        for x in 0..SPAN {
+            if blocked(x, y) && deep(x, y) {
+                assert!(
+                    layer1[(y * SPAN + x) as usize] >= 128,
+                    "the layer-1 surface read shadowed at ({x}, {y}): an occluder \
+                     on layer 0 reached a receiver on layer 1"
+                );
+            }
+        }
+    }
+}
+
 /// A density bench, run by hand: what the per-light occluder sublists
 /// actually buy, measured on pixels rather than argued.
 ///
@@ -1041,6 +1208,9 @@ fn occluder_walk_density_bench() {
         occludes: 0.0,
         z: 0.0,
         diagnostic: false,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     let mut draws = vec![surface];
     for i in 0..LIGHTS {
@@ -1059,6 +1229,8 @@ fn occluder_walk_density_bench() {
             cos_half: -1.0,
             feather: 0.0,
             z: 0.0,
+
+            layers: LightLayers::default(),
         });
     }
     // The field of boxes, on a grid centered well outside the window.
@@ -1069,6 +1241,8 @@ fn occluder_walk_density_bench() {
             center: [col as f32 * 64.0 - 352.0, row as f32 * 64.0 - 256.0],
             half: [6.0, 6.0],
             polygon: None,
+
+            layers: LightLayers::default(),
         })
         .collect();
 
@@ -1158,6 +1332,7 @@ fn occluder_walk_density_bench() {
         emission,
         glow,
         lit,
+        lit_layers,
         ..
     } = &draws[0]
     else {
@@ -1175,6 +1350,7 @@ fn occluder_walk_density_bench() {
             *emission,
             *glow,
             *lit,
+            *lit_layers,
         ),
         usage: BufferUsages::UNIFORM,
     });

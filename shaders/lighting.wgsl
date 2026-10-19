@@ -17,14 +17,19 @@
 
 // The frame's light field: one global storage buffer shared by every lit
 // pipeline. The 32-byte header holds the light count, 12 padding bytes,
-// and the scene's ambient color; the unsized array tail holds one 48-byte
+// and the scene's ambient color; the unsized array tail holds one 64-byte
 // record per light, in call order — (x, y, radius, intensity), then
-// (r, g, b, penumbra), then (dir_x, dir_y, cos_half, feather-or-taps):
+// (r, g, b, penumbra), then (dir_x, dir_y, cos_half, feather-or-taps),
+// then (layers, 0, 0, 0):
 // the light's color with its shadow penumbra radius in pixels, then the
 // cone's unit axis, the cosine of its half opening angle, and the width
 // of its edge feather in cosine units (0.0 for a hard edge; omni lights
-// pass every gate). The CPU sizes the bound buffer
-// to fit the frame's lights.
+// pass every gate). The fourth vec4's x is the light's light-layer mask —
+// the raw bits of its `LightLayers` set shipped through `f32::from_bits`
+// and read back with `bitcast<u32>`, never as a number to do arithmetic
+// on — and its other components are padding. A light reaches a receiver
+// only when its mask and the receiver's share a layer. The CPU sizes the
+// bound buffer to fit the frame's lights.
 struct LightField {
     count: u32,
     pad: array<u32, 3>,
@@ -46,10 +51,14 @@ struct LightField {
 // always was — (m00, m10, m01, m11), the inverse of the occluder's world
 // transform, column-major (pixel space to the occluder's local space), then
 // (tx, ty, cx, cy), the inverse transform's translation and the box's local
-// center, then (hx, hy, planes, 0), the box's local half-extents and the count
-// of half-planes that follow the record — zero for a box, and for a convex
-// polygon one (n.x, n.y, c, _) vec4 per edge, its outward unit normal and the
-// offset it sits at, both in the occluder's own space. Records are therefore
+// center, then (hx, hy, planes, layers), the box's local half-extents, the
+// count of half-planes that follow the record — zero for a box, and for a
+// convex polygon one (n.x, n.y, c, _) vec4 per edge, its outward unit normal
+// and the offset it sits at, both in the occluder's own space — and the
+// occluder's light-layer mask in the w that was padding before layers: raw
+// bits through `f32::from_bits`, read back with `bitcast<u32>`. A record
+// shadows a receiver only when its mask and the receiver's share a layer,
+// whoever the light behind it was. Records are therefore
 // variable length, `3 + planes` vec4s apiece. The CPU sizes the bound buffer
 // to fit the frame's lights and blocks; an occluder that can shadow several
 // lights is copied into every block that can use it.
@@ -104,6 +113,12 @@ fn clip_planes(base: u32, planes: u32, ll: vec2<f32>, lp: vec2<f32>) -> bool {
 // against an axis-aligned box — and a convex polygon is the list of edges it
 // was shipped with, clipped against that same interval.
 //
+// `recv` is the *receiver's* light-layer mask: a record whose own mask shares
+// no layer with it casts no shadow here, whatever light is being tested —
+// the filter asks "whose surfaces do I shadow", never "which lights do I
+// block", so the same wall can shade the far background while the floor it
+// stands on sees no shadow from it at all.
+//
 // Records vary in length, so the walk carries an offset rather than multiplying
 // an index: it walks the light's own block in order, since the first blocker
 // ends the search, and in exchange a box keeps the exact 48 bytes it had before
@@ -111,7 +126,7 @@ fn clip_planes(base: u32, planes: u32, ll: vec2<f32>, lp: vec2<f32>) -> bool {
 // polygon's half-extents are the box *around* it, so the slabs become the cheap
 // reject in front of its edges, which is worth having at up to sixteen clips a
 // ray, nine rays a pixel, per light.
-fn occluded(li: u32, l: vec2<f32>, p: vec2<f32>) -> bool {
+fn occluded(li: u32, recv: u32, l: vec2<f32>, p: vec2<f32>) -> bool {
     // Walk only the light's own block: the range table's `start..end` for
     // light `li`, in vec4 units from the tail's start. The packer put into
     // that block every occluder whose bounds reach this light's rays at a
@@ -125,6 +140,14 @@ fn occluded(li: u32, l: vec2<f32>, p: vec2<f32>) -> bool {
     while (base < end) {
         let rec = occluders.occluders[base + 2u];
         let edges = u32(rec.z);
+        // The record's layer mask, in the w that used to be zero padding:
+        // one shared layer and the shadow can land on this receiver;
+        // none, and the walk steps over the record — its planes included,
+        // which is why the offset advances before continuing.
+        if (bitcast<u32>(rec.w) & recv) == 0u {
+            base += 3u + edges;
+            continue;
+        }
         let m = occluders.occluders[base];
         let tv = occluders.occluders[base + 1u];
         let half = rec.xy;
@@ -187,6 +210,11 @@ fn occluded(li: u32, l: vec2<f32>, p: vec2<f32>) -> bool {
 // and ramped to zero across its penumbra where an occluder blocks the
 // light's path to the pixel. The result multiplies the unlit color:
 // pixel = base * (ambient + lights).
+//
+// `recv` is the receiver's own light-layer mask, and it filters both ends
+// of the mix: a light whose mask shares no layer with it never contributes,
+// and an occluder whose mask shares no layer with it never shadows it.
+// Ambient is no one's light: it always applies, whatever the mask.
 
 // The shadow-ray taps on the light's penumbra disk: a 3x3 grid in unit
 // space, scaled per pixel by the light's penumbra radius (the record's
@@ -219,12 +247,19 @@ const SHADOW_TAPS = array<vec2<f32>, 9>(
 // A larger range makes shadows more parallel and the penumbra harder, as
 // a source nearer the horizon's infinity would be.
 const SHADOW_RANGE: f32 = 1500.0;
-fn light_mix(p: vec2<f32>) -> vec3<f32> {
+fn light_mix(p: vec2<f32>, recv: u32) -> vec3<f32> {
     var c = field.ambient.rgb;
     for (var i = 0u; i < field.count; i++) {
-        let l = field.lights[3 * i];
-        let lc = field.lights[3 * i + 1];
-        let cone = field.lights[3 * i + 2];
+        // The light's layer mask, in the fourth vec4's x: raw bits, folded
+        // against the receiver's. No shared layer means the light simply
+        // is not shining here — skipped before a single distance is taken,
+        // so an off-layer light costs one load and a compare.
+        if (bitcast<u32>(field.lights[4 * i + 3u].x) & recv) == 0u {
+            continue;
+        }
+        let l = field.lights[4 * i];
+        let lc = field.lights[4 * i + 1];
+        let cone = field.lights[4 * i + 2];
         // A directional light is packed with a negative radius (see
         // `Light::directional`): it has no position and no falloff, so
         // every shadow ray runs parallel to the travel axis `cone.xy`
@@ -314,7 +349,7 @@ fn light_mix(p: vec2<f32>) -> vec3<f32> {
                     }
                     o = o * lc.w;
                     let q = src + vec2<f32>(ca * o.x - sa * o.y, sa * o.x + ca * o.y);
-                    lit += select(0.0, 1.0, !occluded(i, q, p));
+                    lit += select(0.0, 1.0, !occluded(i, recv, q, p));
                 }
                 v = lit / f32(taps);
             } else {
@@ -322,7 +357,7 @@ fn light_mix(p: vec2<f32>) -> vec3<f32> {
                 // the original hard shadow. Without this branch the
                 // default above would stand and the light would ignore
                 // every occluder.
-                v = select(0.0, 1.0, !occluded(i, src, p));
+                v = select(0.0, 1.0, !occluded(i, recv, src, p));
             }
             c += lc.rgb * l.w * f * f * v * gate;
         }

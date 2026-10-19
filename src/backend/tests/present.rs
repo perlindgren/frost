@@ -65,6 +65,9 @@ pub(crate) fn lamp_at(at: [f32; 2], emission: f32) -> Draw {
         occludes: 0.0,
         z: 0.0,
         diagnostic: false,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     }
 }
 
@@ -222,6 +225,7 @@ pub(crate) fn frame(
                 emission,
                 glow,
                 lit,
+                lit_layers,
                 ..
             } = draw
             else {
@@ -231,7 +235,16 @@ pub(crate) fn frame(
             let uniform = device.create_buffer_init(&BufferInitDescriptor {
                 label: Some("bloom plate uniform"),
                 contents: &shape_uniform_data(
-                    inv, *center, *params, *kind, *aa, *color, *emission, *glow, *lit,
+                    inv,
+                    *center,
+                    *params,
+                    *kind,
+                    *aa,
+                    *color,
+                    *emission,
+                    *glow,
+                    *lit,
+                    *lit_layers,
                 ),
                 usage: BufferUsages::UNIFORM,
             });

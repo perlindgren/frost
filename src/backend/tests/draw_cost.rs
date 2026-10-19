@@ -52,7 +52,7 @@
 fn an_arena_slot_keeps_two_draws_apart() {
     use crate::backend::app::{block_on, sprite_layouts};
     use crate::backend::frame::{SPRITE_UNIFORM_BYTES, sprite_uniform_data};
-    use crate::objects::{Color, Transform};
+    use crate::objects::{Color, LightLayers, Transform};
     use crate::shaders::SPRITE_SHADER;
     use std::borrow::Cow;
     use std::num::NonZeroU64;
@@ -177,6 +177,7 @@ fn an_arena_slot_keeps_two_draws_apart() {
             off,
             None,
             0.0,
+            LightLayers::default(),
             [0.0, 0.0, 1.0, 1.0],
         )
     };
@@ -395,7 +396,7 @@ fn a_uniform_per_draw_versus_an_arena() {
     let weather = Weather::start("glyph quads, 1600x1600");
     use crate::backend::app::block_on;
     use crate::backend::frame::{SPRITE_UNIFORM_BYTES, sprite_uniform_data};
-    use crate::objects::{Color, Transform};
+    use crate::objects::{Color, LightLayers, Transform};
     use crate::shaders::SPRITE_SHADER;
     use std::borrow::Cow;
     use std::num::NonZeroU64;
@@ -473,6 +474,7 @@ fn a_uniform_per_draw_versus_an_arena() {
                     off,
                     None,
                     0.0,
+                    LightLayers::default(),
                     uv,
                 );
                 let box_ = [
@@ -1020,7 +1022,7 @@ fn a_frame_of_every_kind_packs_into_the_arena_too() {
         CIRCLE_UNIFORM_BYTES, Draw, LINE_UNIFORM_BYTES, POLYLINE_UNIFORM_BYTES, RECT_UNIFORM_BYTES,
         SHAPE_UNIFORM_BYTES, SPRITE_UNIFORM_BYTES, uniform_bytes,
     };
-    use crate::objects::{Color, SpriteFilter, Transform};
+    use crate::objects::{Color, LightLayers, SpriteFilter, Transform};
     use crate::shaders::{
         CIRCLE_SHADER, LINE_SHADER, POLYLINE_SHADER, RECT_SHADER, SHAPE_SHADER, SPRITE_SHADER,
     };
@@ -1152,6 +1154,9 @@ fn a_frame_of_every_kind_packs_into_the_arena_too() {
                 occludes: 0.0,
                 z: 0.0,
                 diagnostic: false,
+
+                lit_layers: LightLayers::default(),
+                occludes_layers: LightLayers::default(),
             },
             _ => Draw::Sprite {
                 world: Transform::translate([x, y]),
@@ -1170,6 +1175,8 @@ fn a_frame_of_every_kind_packs_into_the_arena_too() {
                 lit: 0.0,
                 z: 0.0,
                 diagnostic: false,
+
+                lit_layers: LightLayers::default(),
             },
         }
     };

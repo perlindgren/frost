@@ -19,6 +19,8 @@ fn particles_scissor_covers_the_whole_surface() {
         sprite_generation: 0,
         lit: 0.0,
         z: 0.0,
+
+        lit_layers: LightLayers::default(),
     };
     // The batch's particles can be anywhere, so the scissor is the whole
     // render area; the per-particle quads are already tight.
@@ -189,6 +191,8 @@ fn a_lit_particle_batch_is_picked_out_by_the_lamp() {
             cos_half: -1.0,
             feather: 0.0,
             z: 0.0,
+
+            layers: LightLayers::default(),
         };
         let lights = pack_light_field(&[lamp], black());
 
@@ -236,7 +240,14 @@ fn a_lit_particle_batch_is_picked_out_by_the_lamp() {
         });
         let uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("particle bridge uniform"),
-            contents: &particles_uniform_data([SPAN as f32, SPAN as f32], white, 0.0, 1.0, lit),
+            contents: &particles_uniform_data(
+                [SPAN as f32, SPAN as f32],
+                white,
+                0.0,
+                1.0,
+                lit,
+                LightLayers::default(),
+            ),
             usage: BufferUsages::UNIFORM,
         });
         // The circle kind never samples the texture; a 1x1 white placeholder

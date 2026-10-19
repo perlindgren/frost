@@ -43,7 +43,13 @@ fn plate(at: [f32; 2], color: objects::Color, emission: objects::Color, lit: boo
         color,
         emission,
         lit: if lit { 1.0 } else { 0.0 },
+        // The emission contract this module pins is layer-agnostic: the
+        // plates hear every light and none of them occludes, so both sets
+        // stay at the default (layer 0 — the set every layerless scene
+        // shares, which is exactly what these plates were drawn in).
+        lit_layers: LightLayers::default(),
         occludes: 0.0,
+        occludes_layers: LightLayers::default(),
         z: 0.0,
         diagnostic: false,
     }
@@ -219,6 +225,7 @@ fn paint(
                 emission,
                 glow,
                 lit,
+                lit_layers,
                 ..
             } = draw
             else {
@@ -228,7 +235,16 @@ fn paint(
             let uniform = device.create_buffer_init(&BufferInitDescriptor {
                 label: Some("emission uniform"),
                 contents: &shape_uniform_data(
-                    inv, *center, *params, *kind, *aa, *color, *emission, *glow, *lit,
+                    inv,
+                    *center,
+                    *params,
+                    *kind,
+                    *aa,
+                    *color,
+                    *emission,
+                    *glow,
+                    *lit,
+                    *lit_layers,
                 ),
                 usage: BufferUsages::UNIFORM,
             });

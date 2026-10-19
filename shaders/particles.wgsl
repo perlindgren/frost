@@ -17,6 +17,9 @@ struct ParticlesUniforms {
     color: vec4<f32>, // the batch's base tint (already node-modulated)
     misc: vec2<f32>, // x: shape kind (0.0 circle, 1.0 rectangle, 2.0 sprite), y: the shape's height/width factor
     lit: f32, // 1.0 when the batch is lit by the frame's light field
+    // The receiver's light-layer mask — raw bits shipped through
+    // f32::from_bits on the CPU and read back with bitcast<u32>.
+    lit_layers: f32,
 };
 
 struct VertexOutput {
@@ -101,7 +104,7 @@ fn vs_main(
 fn light_rgb(tinted: vec3<f32>, at: vec2<f32>) -> vec3<f32> {
     var rgb = tinted;
     if (u.lit > 0.5) {
-        rgb *= light_mix(at);
+        rgb *= light_mix(at, bitcast<u32>(u.lit_layers));
     }
     return rgb;
 }

@@ -24,6 +24,11 @@
 struct TileMapUniforms {
     size: vec2<f32>, // surface size in pixels
     lit: f32, // 1.0 when the map is lit by the frame's light field
+    // The receiver's light-layer mask — raw bits shipped through
+    // f32::from_bits on the CPU and read back with bitcast<u32>. A map
+    // whose tiles must not shadow each other is lit from a layer its own
+    // occluders do not name.
+    lit_layers: f32,
     color: vec4<f32>, // the batch's base tint (already node-modulated)
 };
 
@@ -164,7 +169,7 @@ fn shade(in: VertexOutput) -> vec4<f32> {
     // on it, and one more shape is cheaper than one more field.
     var rgb = t.rgb * tint.rgb;
     if (u.lit > 0.5) {
-        rgb *= light_mix(in.position.xy);
+        rgb *= light_mix(in.position.xy, bitcast<u32>(u.lit_layers));
     }
     return vec4<f32>(rgb, t.a * tint.a);
 }

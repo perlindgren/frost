@@ -38,9 +38,10 @@ fn light_field_packs_an_empty_header_with_the_ambient() {
 #[test]
 fn light_field_packs_the_header_ambient_and_each_light_record() {
     // Two lights among non-light draws: count 2, the header, then one
-    // 48-byte record per light, in call order Ã¢â‚¬â€ a `(x, y, radius,
-    // intensity)` vec4, a `(r, g, b, penumbra)` vec4, and the cone vec4
-    // `(dir_x, dir_y, cos_half, feather)`.
+    // 64-byte record per light, in call order — a `(x, y, radius,
+    // intensity)` vec4, a `(r, g, b, penumbra)` vec4, the cone vec4
+    // `(dir_x, dir_y, cos_half, feather)`, and the layer vec4
+    // `(layers, 0, 0, 0)`.
     let ambient = Color {
         r: 0.1,
         g: 0.2,
@@ -70,6 +71,8 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
             cos_half: 0.0,
             feather: 0.25,
             z: 0.0,
+
+            layers: LightLayers::default(),
         },
         Draw::Circle {
             diagnostic: false,
@@ -88,6 +91,8 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
             cos_half: -1.0,
             feather: 0.0,
             z: 1.0,
+
+            layers: LightLayers::default(),
         },
         // A directional light: its negative radius is the sentinel the
         // shader reads, so the packer must write it through untouched.
@@ -101,6 +106,8 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
             cos_half: -1.0,
             feather: 0.0,
             z: 2.0,
+
+            layers: LightLayers::default(),
         },
     ];
     let field = pack_light_field(&draws, ambient);
@@ -164,6 +171,53 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
 }
 
 #[test]
+fn a_light_record_carries_its_layers_in_the_fourth_vec4() {
+    // The 64-byte record's fourth vec4: x is the layer mask's raw bits —
+    // the shader `bitcast<u32>`s it back, so every mask round-trips exact,
+    // `ALL` included — and its other components stay zero padding. The
+    // three vec4s the field always had ride through untouched: a layered
+    // light and a pre-layer light share their bytes position for position.
+    let amber = Color {
+        r: 1.0,
+        g: 0.5,
+        b: 0.0,
+        a: 1.0,
+    };
+    let layers = LightLayers::layer(0) | LightLayers::layer(3);
+    let draws = [Draw::Light {
+        pos: [60.0, 30.0],
+        radius: 16.0,
+        intensity: 2.0,
+        color: amber,
+        penumbra: 8.0,
+        dir: [0.6, 0.8],
+        cos_half: 0.0,
+        feather: 0.25,
+        z: 0.0,
+        layers,
+    }];
+    let field = pack_light_field(&draws, black());
+    assert_eq!(field.data.len(), LIGHT_FIELD_HEADER + LIGHT_RECORD);
+    let r0 = LIGHT_FIELD_HEADER;
+    assert_eq!(field_f32(&field.data, r0), 60.0);
+    assert_eq!(field_f32(&field.data, r0 + 4), 30.0);
+    assert_eq!(field_f32(&field.data, r0 + 8), 16.0);
+    assert_eq!(field_f32(&field.data, r0 + 12), 2.0);
+    assert_eq!(field_f32(&field.data, r0 + 16), 1.0);
+    assert_eq!(field_f32(&field.data, r0 + 20), 0.5);
+    assert_eq!(field_f32(&field.data, r0 + 28), 8.0);
+    assert_eq!(field_f32(&field.data, r0 + 32), 0.6);
+    assert_eq!(field_f32(&field.data, r0 + 36), 0.8);
+    assert_eq!(field_f32(&field.data, r0 + 44), 0.25);
+    // The fourth vec4, read as bits: layers 0 and 3 land as bits 0 and 3.
+    assert_eq!(
+        u32::from_le_bytes(field.data[r0 + 48..r0 + 52].try_into().unwrap()),
+        layers.bits()
+    );
+    assert_eq!(&field.data[r0 + 52..r0 + 64], &[0u8; 12]);
+}
+
+#[test]
 fn occluder_field_packs_an_empty_header() {
     // No occluders: just the 16-byte header Ã¢â‚¬â€ count 0, 12 padding bytes Ã¢â‚¬â€
     // and no records.
@@ -178,6 +232,8 @@ fn occluder_field_packs_an_empty_header() {
             cos_half: -1.0,
             feather: 0.0,
             z: 0.0,
+
+            layers: LightLayers::default(),
         }],
         &[],
         [128.0, 128.0],
@@ -215,6 +271,9 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
         lit: 0.0,
         occludes: 1.0,
         z: 0.0,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     let rotated = Draw::Shape {
         diagnostic: false,
@@ -229,6 +288,9 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
         lit: 1.0,
         occludes: 1.0,
         z: 0.0,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     let unflagged = Draw::Shape {
         diagnostic: false,
@@ -243,6 +305,9 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
         lit: 0.0,
         occludes: 0.0,
         z: 0.0,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     // Flagged, but a sprite: its silhouette is the texture's, and the field
     // has nothing to pack that into — the declare channel is for this.
@@ -259,6 +324,9 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
         lit: 0.0,
         occludes: 1.0,
         z: 0.0,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     // Flagged, but collapsed to a line: the inverse does not exist, so the
     // shape occludes nothing.
@@ -275,6 +343,9 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
         lit: 0.0,
         occludes: 1.0,
         z: 0.0,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     let field = pack_occluder_field(
         &[translated, unflagged, rotated, sprite, degenerate],
@@ -304,7 +375,12 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     assert_eq!(field_f32(&field.data, o + 32), 5.0);
     assert_eq!(field_f32(&field.data, o + 36), 2.0);
     assert_eq!(field_f32(&field.data, o + 40), 0.0);
-    assert_eq!(field_f32(&field.data, o + 44), 0.0);
+    // The padding slot of vec4 #2 carries the layer mask, not a zero: an
+    // occluder that names no layers shadows layer 0 — bit 0, one.
+    assert_eq!(
+        u32::from_le_bytes(field.data[o + 44..o + 48].try_into().unwrap()),
+        LightLayers::default().bits()
+    );
     // Record 1 @ 64: the 90Ã‚Â° rotation's inverse is the -90Ã‚Â° rotation,
     // column-major (m00, m10, m01, m11) = (0, -1, 1, 0); the translation is
     // zero. The diagonals are cos(90Ã‚Â°) in f32, so they are ~1e-8 rather
@@ -321,7 +397,10 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
     assert_eq!(field_f32(&field.data, o + 32), 4.0);
     assert_eq!(field_f32(&field.data, o + 36), 6.0);
     assert_eq!(field_f32(&field.data, o + 40), 0.0);
-    assert_eq!(field_f32(&field.data, o + 44), 0.0);
+    assert_eq!(
+        u32::from_le_bytes(field.data[o + 44..o + 48].try_into().unwrap()),
+        LightLayers::default().bits()
+    );
 }
 
 #[test]
@@ -341,6 +420,9 @@ fn occluder_field_appends_declared_occluders_after_the_drawn_ones() {
         lit: 0.0,
         occludes: 1.0,
         z: 0.0,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     let declared = [
         Occluder {
@@ -348,12 +430,16 @@ fn occluder_field_appends_declared_occluders_after_the_drawn_ones() {
             center: [1.0, 2.0],
             half: [10.0, 20.0],
             polygon: None,
+
+            layers: LightLayers::default(),
         },
         Occluder {
             world: Transform::rotate(std::f32::consts::FRAC_PI_2),
             center: [0.0, 0.0],
             half: [4.0, 6.0],
             polygon: None,
+
+            layers: LightLayers::default(),
         },
     ];
     let field = pack_occluder_field(&[drawn], &declared, VIEW);
@@ -392,6 +478,52 @@ fn occluder_field_appends_declared_occluders_after_the_drawn_ones() {
 }
 
 #[test]
+fn a_declared_occluder_carries_its_layers_in_the_records_padding() {
+    // The occluder record's vec4 #2 ends with the layer mask where the
+    // zero padding used to be: a shadow declared on layer 1 lands only on
+    // receivers listening on layer 1, and the mask must arrive bit-exact.
+    // The record around it — extents and edge count — is unchanged, and
+    // the record after it keeps its own mask: the walker strides by the
+    // edge count, not by the mask.
+    let declared = [
+        Occluder {
+            world: Transform::translate([10.0, 0.0]),
+            center: [0.0, 0.0],
+            half: [4.0, 6.0],
+            polygon: None,
+            layers: LightLayers::layer(1),
+        },
+        Occluder {
+            world: Transform::identity(),
+            center: [0.0, 0.0],
+            half: [1.0, 1.0],
+            polygon: None,
+            layers: LightLayers::default(),
+        },
+    ];
+    let field = pack_occluder_field(&[], &declared, VIEW);
+    assert_eq!(field.count, 2);
+    let r0 = OCCLUDER_FIELD_HEADER;
+    assert_eq!(field_f32(&field.data, r0 + 32), 4.0);
+    assert_eq!(field_f32(&field.data, r0 + 36), 6.0);
+    assert_eq!(
+        field_f32(&field.data, r0 + 40),
+        0.0,
+        "a box still carries no edges"
+    );
+    assert_eq!(
+        u32::from_le_bytes(field.data[r0 + 44..r0 + 48].try_into().unwrap()),
+        LightLayers::layer(1).bits()
+    );
+    let r1 = r0 + OCCLUDER_RECORD;
+    assert_eq!(
+        u32::from_le_bytes(field.data[r1 + 44..r1 + 48].try_into().unwrap()),
+        LightLayers::default().bits(),
+        "an occluder that names no layers shadows layer 0, bit 0 — not nothing"
+    );
+}
+
+#[test]
 fn occluder_field_skips_a_declared_occluder_it_cannot_invert() {
     // A declared occluder under a collapsed transform occludes nothing, and
     // the field keeps no hole where its record would have gone: the one that
@@ -402,12 +534,16 @@ fn occluder_field_skips_a_declared_occluder_it_cannot_invert() {
             center: [0.0, 0.0],
             half: [10.0, 10.0],
             polygon: None,
+
+            layers: LightLayers::default(),
         },
         Occluder {
             world: Transform::translate([7.0, 0.0]),
             center: [0.0, 0.0],
             half: [3.0, 4.0],
             polygon: None,
+
+            layers: LightLayers::default(),
         },
     ];
     let field = pack_occluder_field(&[], &declared, VIEW);
@@ -471,18 +607,24 @@ fn a_polygon_record_carries_its_edges_and_the_next_record_follows_them() {
             center: [0.0, 0.0],
             half: [3.0, 4.0],
             polygon: None,
+
+            layers: LightLayers::default(),
         },
         Occluder {
             world: Transform::identity(),
             center: bounds.center,
             half: bounds.half,
             polygon: Some(rock),
+
+            layers: LightLayers::default(),
         },
         Occluder {
             world: Transform::translate([0.0, 5.0]),
             center: [1.0, 1.0],
             half: [2.0, 2.0],
             polygon: None,
+
+            layers: LightLayers::default(),
         },
     ];
     let field = pack_occluder_field(&[], &declared, VIEW);
@@ -552,6 +694,9 @@ fn a_flagged_circle_is_packed_as_the_polygon_cut_from_it() {
         lit: 0.0,
         occludes: 1.0,
         z: 0.0,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     let want = Convex::disc([3.0, -4.0], radius);
     let field = pack_occluder_field(&[painted], &[], VIEW);
@@ -600,6 +745,9 @@ fn a_painted_circle_without_a_usable_radius_casts_nothing_instead_of_panicking()
         lit: 0.0,
         occludes: 1.0,
         z: 0.0,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     };
     for radius in [0.0, -4.0, f32::NAN, f32::INFINITY] {
         let field = pack_occluder_field(&[bare(radius)], &[], VIEW);
@@ -630,6 +778,8 @@ fn cull_light(pos: [f32; 2], radius: f32, penumbra: f32, dir: [f32; 2]) -> Draw 
         cos_half: -1.0,
         feather: 0.0,
         z: 0.0,
+
+        layers: LightLayers::default(),
     }
 }
 
@@ -640,6 +790,8 @@ fn cull_box(center: [f32; 2], half: f32) -> Occluder {
         center,
         half: [half, half],
         polygon: None,
+
+        layers: LightLayers::default(),
     }
 }
 
@@ -677,6 +829,8 @@ fn cull_cast() -> (Vec<Draw>, Vec<Occluder>) {
         center: [20.0, -10.0],
         half: [5.0, 5.0],
         polygon: Some(Convex::disc([20.0, -10.0], 5.0)),
+
+        layers: LightLayers::default(),
     };
     let declared = vec![
         cull_box([0.0, 0.0], 8.0),

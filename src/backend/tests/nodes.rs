@@ -43,7 +43,13 @@ fn node_scale_applies_to_the_shape_and_its_subtree() {
                 color: black(),
             }),
             children: vec![],
+
+            lit_layers: LightLayers::default(),
+            occludes_layers: LightLayers::default(),
         })],
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     });
     canvas.draw_scene(&scene);
     let [
@@ -128,8 +134,17 @@ fn node_order_accumulates_down_the_tree_like_the_transform() {
                     color: black(),
                 }),
                 children: vec![],
+
+                lit_layers: LightLayers::default(),
+                occludes_layers: LightLayers::default(),
             })],
+
+            lit_layers: LightLayers::default(),
+            occludes_layers: LightLayers::default(),
         })],
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     });
     canvas.draw_scene(&scene);
     let zs = canvas.draws.iter().map(|draw| draw.z()).collect::<Vec<_>>();
@@ -192,7 +207,13 @@ fn node_modulate_multiplies_into_the_shape_and_its_subtree() {
                 color: white,
             }),
             children: vec![],
+
+            lit_layers: LightLayers::default(),
+            occludes_layers: LightLayers::default(),
         })],
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     });
     canvas.draw_scene(&scene);
     let [Draw::Shape { color: c0, .. }, Draw::Shape { color: c1, .. }] = &canvas.draws[..] else {
@@ -259,6 +280,9 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
             generation: 0,
         }),
         children: vec![],
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     }));
     canvas.draw_scene(&Scene::new(SceneNode {
         diagnostic: false,
@@ -290,6 +314,9 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
             alpha: 0.75,
         }),
         children: vec![],
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
     }));
     let [
         Draw::Sprite { tint, alpha, .. },

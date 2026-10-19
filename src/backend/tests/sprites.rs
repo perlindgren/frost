@@ -394,6 +394,7 @@ fn the_sprite_paints_what_the_contract_promise() {
                 emission,
                 glow,
                 lit,
+                lit_layers,
                 uv_rect,
                 ..
             } = draw
@@ -405,7 +406,15 @@ fn the_sprite_paints_what_the_contract_promise() {
             let uniform = device.create_buffer_init(&BufferInitDescriptor {
                 label: Some("sprite bridge uniform"),
                 contents: &sprite_uniform_data(
-                    inv, *size, *tint, *alpha, *emission, *glow, *lit, *uv_rect,
+                    inv,
+                    *size,
+                    *tint,
+                    *alpha,
+                    *emission,
+                    *glow,
+                    *lit,
+                    *lit_layers,
+                    *uv_rect,
                 ),
                 usage: BufferUsages::UNIFORM,
             });

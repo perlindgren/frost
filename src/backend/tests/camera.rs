@@ -50,6 +50,9 @@ fn a_camera_anchors_the_view_to_its_node() {
                             },
                         }),
                         children: vec![],
+
+                        lit_layers: LightLayers::default(),
+                        occludes_layers: LightLayers::default(),
                     }),
                     Box::new(SceneNode {
                         diagnostic: false,
@@ -66,8 +69,14 @@ fn a_camera_anchors_the_view_to_its_node() {
                         order: 0.0,
                         shape: None,
                         children: vec![],
+
+                        lit_layers: LightLayers::default(),
+                        occludes_layers: LightLayers::default(),
                     }),
                 ],
+
+                lit_layers: LightLayers::default(),
+                occludes_layers: LightLayers::default(),
             },
         }],
         ambient: AMBIENT,
@@ -117,7 +126,13 @@ fn layer_speed_scales_the_camera_motion() {
                 order: 0.0,
                 shape: None,
                 children: vec![],
+
+                lit_layers: LightLayers::default(),
+                occludes_layers: LightLayers::default(),
             })],
+
+            lit_layers: LightLayers::default(),
+            occludes_layers: LightLayers::default(),
         },
         layers: vec![
             Layer {
@@ -148,6 +163,9 @@ fn layer_speed_scales_the_camera_motion() {
                         },
                     }),
                     children: vec![],
+
+                    lit_layers: LightLayers::default(),
+                    occludes_layers: LightLayers::default(),
                 },
             },
             Layer {
@@ -178,6 +196,9 @@ fn layer_speed_scales_the_camera_motion() {
                         },
                     }),
                     children: vec![],
+
+                    lit_layers: LightLayers::default(),
+                    occludes_layers: LightLayers::default(),
                 },
             },
         ],
@@ -250,6 +271,9 @@ fn the_camera_rotation_turns_the_view() {
                         },
                     }),
                     children: vec![],
+
+                    lit_layers: LightLayers::default(),
+                    occludes_layers: LightLayers::default(),
                 }),
                 Box::new(SceneNode {
                     diagnostic: false,
@@ -266,8 +290,14 @@ fn the_camera_rotation_turns_the_view() {
                     order: 0.0,
                     shape: None,
                     children: vec![],
+
+                    lit_layers: LightLayers::default(),
+                    occludes_layers: LightLayers::default(),
                 }),
             ],
+
+            lit_layers: LightLayers::default(),
+            occludes_layers: LightLayers::default(),
         },
         layers: vec![],
         ambient: AMBIENT,
@@ -327,7 +357,13 @@ fn a_missing_camera_path_renders_without_a_camera() {
                     },
                 }),
                 children: vec![],
+
+                lit_layers: LightLayers::default(),
+                occludes_layers: LightLayers::default(),
             })],
+
+            lit_layers: LightLayers::default(),
+            occludes_layers: LightLayers::default(),
         },
         layers: vec![],
         // No such layer: the camera path names no node.
