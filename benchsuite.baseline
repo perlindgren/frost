@@ -1,11 +1,14 @@
 # benchsuite baseline — one name and median fps per line
-fill-1080p 2136.9
-lamps-4 385.6
-lamps-10 173.8
-lamps-40 46.9
-lamps-40-static 46.9
-occluders-10 29.4
-occluders-100 15.4
-taps-1 16.1
-taps-4 4.2
-taps-9 1.8
+# walked 2026-10-19 on the 780M, reps agreeing within a fifth of a percent:
+# the floor now carries the float frame, its emissive plate, and the
+# tonemapped present, and the lit lines carry the reach reject.
+fill-1080p 1002.7
+lamps-4 610.6
+lamps-10 354.9
+lamps-40 117.4
+lamps-40-static 117.1
+occluders-10 227.1
+occluders-100 102.9
+taps-1 109.7
+taps-4 33.4
+taps-9 16.0
