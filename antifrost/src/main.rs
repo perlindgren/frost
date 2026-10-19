@@ -803,9 +803,75 @@ struct Row {
 
 /// The settings page's slider track, in user-space x around the panel
 /// centre; the label rides left of it. Shared by layout, hit test,
-/// and paint so the three can never disagree.
-const MENU_TRACK_CX: f32 = 190.0;
+/// and paint so the three can never disagree. The centre is chosen so
+/// the WHOLE ink of a slider row — label's left edge to the track's
+/// right — spans equally about x = 0: the label draws centred at
+/// `cx - half - 160`, so its left edge sits ~380 left of the track
+/// centre while the track ends 150 right of it, and 190-115 balances
+/// the two. The page is then centred on the plate, not merely its
+/// tracks.
+const MENU_TRACK_CX: f32 = 115.0;
 const MENU_TRACK_HALF: f32 = 150.0;
+
+/// The widest the title band ever gets: the page's 52-point sign
+/// draws at `top + 70` and its ink ends by `top + 96`.
+const PLATE_TOP_PAD_MAX: f32 = 130.0;
+
+/// The band above the first row, computed from the live view height:
+/// a quarter-ish of the screen at full size, shrunk on short windows
+/// so the plate's top stays inside the frame, floored where the
+/// title's own ink still fits (70 + half a 52-point cap).
+fn plate_top_pad(h: f32) -> f32 {
+    (h * 0.22).clamp(96.0, PLATE_TOP_PAD_MAX)
+}
+
+/// The plate's bottom is one extra row of the page's own stride below
+/// the last row — a ledger row's stride is its fat one, a plain
+/// page's is its own, compression included.
+fn plate_bottom_pad(page: Page, h: f32) -> f32 {
+    match page {
+        Page::Progress => progress_step(h),
+        Page::Main => menu_step_for(7, h),
+        Page::Settings => menu_step_for(10, h),
+        Page::Keyboard => menu_step_for(6, h),
+        Page::Mouse => menu_step_for(4, h),
+        Page::Won => menu_step_for(2, h),
+        Page::Game => MENU_STEP,
+    }
+}
+
+/// The plain menu's row stride at its roomiest: the step every page
+/// hangs by, and measures its trailing row with, until a short window
+/// says otherwise — see [`menu_step_for`].
+const MENU_STEP: f32 = 58.0;
+const MENU_STEP_SHORT: f32 = 46.0;
+
+/// The plain menu's stride, solved for the live view: the page's own
+/// step when a plate of `n` rows — title band, the gaps between rows,
+/// and the trailing row — clears the frame; compressed to the largest
+/// stride that does when it does not. A row's ink is 48 tall, so the
+/// solve owns a floor of 40: past that a page would rather let the
+/// stone's edge be trimmed by the view than braid two rows' texts
+/// together.
+fn menu_step_for(n: usize, h: f32) -> f32 {
+    let wide = if h < 720.0 {
+        MENU_STEP_SHORT
+    } else {
+        MENU_STEP
+    };
+    let gaps = n.saturating_sub(1) as f32;
+    let wanted = (h - 24.0 - plate_top_pad(h) - wide) / gaps;
+    wide.min(wanted).max(MENU_STEP_SHORT - 6.0)
+}
+
+/// A plain page's first row: its height above the centre when `n`
+/// rows hang at `step`, slid so the WHOLE composed plate — title
+/// band, rows, trailing row — is symmetric about the view's centre.
+/// Centring the rows alone off-centres the stone; centring the stone
+/// is centring the menu.
+fn plain_top(n: usize, step: f32, h: f32) -> f32 {
+    (n.saturating_sub(1)) as f32 * step / 2.0 + (menu_step_for(n, h) - plate_top_pad(h)) / 2.0
+}
 
 /// The menu's keyboard walk: arrows wrap around the page's rows, so
 /// the selection never falls off the panel and the shortest path from
@@ -828,28 +894,35 @@ fn row_under(rows: &[Row], p: [f32; 2]) -> Option<usize> {
         .position(|r| (p[0] - r.cx).abs() <= r.hw && (p[1] - r.cy).abs() <= r.hh)
 }
 
-/// The progress list's hang from the plate's top, shared by layout,
-/// input and paint like every other menu geometry.
+/// The progress list's first-row height above the centre: the window
+/// of `fits` rows plus its pinned `back` row, hung so the composed
+/// plate — title band above, one extra row below — is symmetric about
+/// the view's centre at every resolution.
 fn progress_top_y(h: f32) -> f32 {
-    (h * 0.5 - 104.0).min(252.0)
+    let rows = progress_fits(h) + 1;
+    (rows - 1) as f32 * progress_step(h) / 2.0 + (progress_step(h) - plate_top_pad(h)) / 2.0
 }
 
 /// The progress list's row stride: wider than the settings step,
 /// because each row wears a minimap as tall as its text is not. The
 /// maps own this stride — a card leaves two points of a step to
 /// its neighbour, never more — and a further step is affordable
-/// because the plate holds the same ten hills at a full-height
-/// window either way.
+/// because the plate holds the same window at full height either way.
 fn progress_step(h: f32) -> f32 {
     if h < 720.0 { 54.0 } else { 68.0 }
 }
 
-/// How many hill rows fit between the hang and the window's floor —
-/// the `back` row aside, which is pinned under the last visible row
-/// and so never scrolls out of reach.
+/// How many hill rows the centred block can hold: `n` rows plus the
+/// `back` row pinned under them span from `n*step/2` down to
+/// `-n*step/2 - 24`, and the block's low light must clear the plate's
+/// floor at `-h/2 + 96`. Solved for `n`, floored, clamped to the
+/// window's own half so a solve that has run past the floor still
+/// yields one row — a ledger of one is the minimum honest list.
 fn progress_fits(h: f32) -> usize {
-    let low = -h * 0.5 + 96.0;
-    (((progress_top_y(h) - low) / progress_step(h)).floor() as usize).max(1)
+    // The composed ledger: title band above, `back` row and its
+    // trailing row below, centred — n is what's left for hill rows.
+    let room = (h - 24.0 - plate_top_pad(h) - 2.0 * progress_step(h)).max(0.0);
+    ((room / progress_step(h)).floor() as usize).max(1)
 }
 
 /// The progress page's plate half-width and its column edges, settled
@@ -2791,8 +2864,16 @@ impl Demo {
         // rectangle the page hangs, and the moss and lichen do not
         // mind. Where the slab failed to decode, the plate is still
         // the plain ink slab it always was.
-        let (pcx, pcy) = (0.0, (top + bot) / 2.0);
-        let (phw, phh) = (plate_hw, (top - bot) / 2.0 + 130.0);
+        // The plate is deliberately unequal: the title's band above
+        // (`PLATE_TOP_PAD`) and one whole extra row of the page's own
+        // stride below the last row — a ledger row's stride is its
+        // fat one, the plain pages' is the menu step. Centre and
+        // half-height both shift by the difference.
+        let bottom_pad = plate_bottom_pad(self.menu_page, h);
+        let top_pad = plate_top_pad(h);
+        let pcx = 0.0;
+        let pcy = (top + bot) / 2.0 + (top_pad - bottom_pad) / 2.0;
+        let (phw, phh) = (plate_hw, (top - bot) / 2.0 + (top_pad + bottom_pad) / 2.0);
         let mut cut = false;
         if let Some(slab) = &self.slab {
             let mut panel = slab.clone();
@@ -2868,7 +2949,7 @@ impl Demo {
             // 92 units apart by the won page's hang (see
             // `menu_rows`); the word owns the middle of that
             // strip, full size, every window height.
-            let plate_top = top + 130.0;
+            let plate_top = top + plate_top_pad(h);
             let band = h / 2.0 - 93.0;
             ctx.text(
                 0.0,
@@ -3040,7 +3121,13 @@ impl Demo {
         } else {
             C_PAR_MET
         };
-        let score_text = format!("{moves} moves");
+        // A perfect run wears its number plain; a best that overshot
+        // par reads its debt — moves owed against the best known.
+        let score_text = if par > 0 && moves > par {
+            format!("{moves} of {par}")
+        } else {
+            format!("{moves} moves")
+        };
         let w_score = ctx.text_width(&self.font, &score_text, 30.0, 500.0);
         ctx.text(
             PROGRESS_SCORE_R - w_score / 2.0,
@@ -3182,7 +3269,7 @@ impl Demo {
             .iter()
             .filter(|r| matches!(r.action, Action::Hill(_)))
             .count();
-        let (up, down) = progress_marks(self.progressed(), self.progress_top, hills);
+        let (up, down) = progress_marks(self.levels.len(), self.progress_top, hills);
         if !up && !down {
             return;
         }
@@ -3345,7 +3432,7 @@ impl Demo {
             let down = self.pressed(ctx, KeyCode::ArrowDown);
             if self.page == Page::Progress {
                 let hills = rows.len() - 1; // the pinned back row aside
-                let more = self.progressed() > self.progress_top + hills;
+                let more = self.levels.len() > self.progress_top + hills;
                 if up && self.menu_sel == 0 && self.progress_top > 0 {
                     self.progress_top -= 1;
                 } else if down && self.menu_sel + 1 == hills && more {
@@ -3462,8 +3549,7 @@ impl Demo {
     fn menu_rows(&self, page: Page, h: f32) -> Vec<Row> {
         let st = &self.settings;
         let mut rows: Vec<Row> = Vec::new();
-        let short = h < 720.0;
-        let step = if short { 46.0 } else { 58.0 };
+
         let push = |rows: &mut Vec<Row>, action, cy, hw, text: String, slider: Option<f32>| {
             rows.push(Row {
                 action,
@@ -3478,7 +3564,11 @@ impl Demo {
         match page {
             Page::Game => {}
             Page::Main => {
-                let top = (h * 0.5 - 120.0).min(120.0);
+                // Seven rows, hung so the composed plate — title band
+                // above, one trailing row below — sits centred on the
+                // view at every resolution.
+                let step = menu_step_for(7, h);
+                let top = plain_top(7, step, h);
                 push(&mut rows, Action::New, top, 240.0, "new game".into(), None);
                 push(
                     &mut rows,
@@ -3539,6 +3629,7 @@ impl Demo {
                 // hang made the strip negative at 720p, and the
                 // word lay across both banners.
                 let top = (h * 0.5 - 315.0).min(120.0);
+                let step = menu_step_for(2, h);
                 push(
                     &mut rows,
                     Action::Next,
@@ -3557,10 +3648,10 @@ impl Demo {
                 );
             }
             Page::Settings => {
-                // Ten rows now that the glow has a rung of its own, which is
-                // sixteen pixels more than the page used to carry: hung higher
-                // so the `back` row still clears a 540p window's bottom edge.
-                let top = (h * 0.5 - 104.0).min(252.0);
+                // Ten rows now that the glow has a rung of its own —
+                // composed-plate centred like every other page.
+                let step = menu_step_for(10, h);
+                let top = plain_top(10, step, h);
                 let on = |b: bool| if b { "on" } else { "off" };
                 push(
                     &mut rows,
@@ -3649,7 +3740,8 @@ impl Demo {
             Page::Keyboard => {
                 // Lists the keyboard's whole vocabulary. Every row is
                 // the way out: these pages are read, not used.
-                let top = (h * 0.5 - 120.0).min(120.0);
+                let step = menu_step_for(6, h);
+                let top = plain_top(6, step, h);
                 for (i, line) in [
                     "wasd or arrows to move",
                     "space to detach",
@@ -3672,7 +3764,8 @@ impl Demo {
                 }
             }
             Page::Mouse => {
-                let top = (h * 0.5 - 120.0).min(120.0);
+                let step = menu_step_for(4, h);
+                let top = plain_top(4, step, h);
                 for (i, line) in [
                     "left click to move",
                     "right click to detach",
@@ -3709,7 +3802,12 @@ impl Demo {
                 // moves hills between them, never a row out.
                 let top = progress_top_y(h);
                 let pstep = progress_step(h);
-                let total = self.progressed();
+                // The whole descent hangs on the ledger: every hill is
+                // selectable from the start. A hill with no run wears
+                // no score — the column stays empty until a run is
+                // earned — and a best that overshot par reads its debt
+                // plainly: `moves of par`.
+                let total = self.levels.len();
                 let mut order: Vec<usize> = (0..total).collect();
                 order.sort_by_key(|&i| (self.perfect(i), i));
                 let start = self.progress_top.min(total);
@@ -3717,7 +3815,14 @@ impl Demo {
                 for (row, &i) in order[start..start + n].iter().enumerate() {
                     let name = self.levels.get(i).map_or("hill", |l| l.name.as_str());
                     let score = match self.progress.scores.iter().find(|(h, _)| *h == i) {
-                        Some((_, moves)) => format!("   {moves} moves"),
+                        Some((_, moves)) => {
+                            let par = self.levels.get(i).map_or(0, |l| l.par);
+                            if par > 0 && *moves > par {
+                                format!("   {moves} of {par}")
+                            } else {
+                                format!("   {moves} moves")
+                            }
+                        }
                         None => String::new(),
                     };
                     push(
@@ -5648,18 +5753,31 @@ mod menu_tests {
     }
 
     #[test]
-    fn the_seven_menu_rows_hang_inside_seven_twenty() {
-        // The bottom row of the main menu must land above the
-        // plate's own bottom edge — the plate's bottom is 130 under
-        // centre, the frame's is h/2 under it.
-        let d = demo();
-        let rows = d.menu_rows(d.page, 720.0);
-        assert_eq!(rows.len(), 7);
-        let lowest = rows.iter().map(|r| r.cy).fold(f32::MAX, f32::min);
-        assert!(
-            lowest >= 130.0 - 360.0,
-            "the last row escaped the plate: {lowest}"
-        );
+    fn the_plate_centres_itself_at_every_height() {
+        // The composed plate — title band, rows, trailing row — must
+        // hang symmetric about the view's centre whatever the height,
+        // and the whole menu block must clear the view at any height
+        // the game will actually run (540 and up).
+        for h in [540.0, 720.0, 1080.0, 2160.0] {
+            let d = demo();
+            for page in [Page::Main, Page::Settings, Page::Keyboard, Page::Mouse] {
+                let rows = d.menu_rows(page, h);
+                let top = rows.iter().map(|r| r.cy).fold(f32::MIN, f32::max);
+                let bot = rows.iter().map(|r| r.cy).fold(f32::MAX, f32::min);
+                let plate_top = top + plate_top_pad(h);
+                let plate_bot = bot - plate_bottom_pad(page, h);
+                assert!(
+                    (plate_top + plate_bot).abs() < 0.01,
+                    "{page:?} at {h}: the plate hangs off-centre: {plate_top} / {plate_bot}"
+                );
+                let lowest_ink = bot - 24.0;
+                let highest_ink = top + plate_top_pad(h).min(96.0);
+                assert!(
+                    plate_bot.min(lowest_ink) >= -h / 2.0 && highest_ink <= h / 2.0,
+                    "{page:?} at {h}: ink escaped the view"
+                );
+            }
+        }
     }
 
     /// The ledger's columns, held apart by measured ink: these four
@@ -5776,31 +5894,45 @@ mod menu_tests {
     }
 
     #[test]
-    fn a_stood_on_hill_is_listed_even_unwarmed() {
+    fn the_whole_descent_hangs_open_and_unwarmed_hills_keep_silence() {
         let mut d = demo();
         d.page = Page::Progress;
         d.load(2); // three hills stood on, none warmed.
         d.progress.stood(2);
         let rows = d.menu_rows(d.page, 1080.0);
+        // The ledger is no gate: every hill is selectable from the
+        // first day, so the window fills with the descent itself,
+        // not with the ground already walked.
         assert_eq!(
-            rows.iter().map(|r| r.action).collect::<Vec<_>>(),
-            vec![
-                Action::Hill(0),
-                Action::Hill(1),
-                Action::Hill(2),
-                Action::Back
-            ],
-            "the descent lists every hill reached, warm or not"
+            rows.iter()
+                .filter(|r| matches!(r.action, Action::Hill(_)))
+                .count(),
+            progress_fits(1080.0),
+            "the window hangs full of descent, standing or not"
         );
         assert!(
             !rows[0].text.contains("moves"),
-            "an unwarmed hill keeps its score column empty"
+            "an unscored hill keeps its score column empty"
         );
+        // And the last hill of the descent is a door like the first:
+        // scrolled to the bottom, it stands in the window.
+        d.progress_top = d.levels.len() - 1;
+        assert!(
+            d.menu_rows(d.page, 1080.0)
+                .iter()
+                .any(|r| r.action == Action::Hill(d.levels.len() - 1)),
+            "the deepest hill is selectable like the shallowest"
+        );
+        d.progress_top = 0;
+        // A run that overshot par reads its debt; its amount belongs
+        // to `the_ledger_owes_the_imperfect_runs_first`'s fixture.
         d.progress.record(1, 40);
         let rows = d.menu_rows(d.page, 1080.0);
+        assert_eq!(rows[1].action, Action::Hill(1));
         assert!(
-            rows[1].text.contains("40 moves"),
-            "a warmed hill wears its run"
+            rows[1].text.contains("40 of 5"),
+            "a best over par wears `moves of par`: {}",
+            rows[1].text
         );
         assert!(
             !rows[2].text.contains("moves"),
@@ -5813,26 +5945,40 @@ mod menu_tests {
         let mut d = demo();
         d.page = Page::Progress;
         d.load(5);
-        d.progress.stood(5); // six hills, none warmed yet.
+        d.progress.stood(5); // six hills stood on, of fifty open.
         // Perfect the 2nd and 4th (their pars are 5 and 10), overshoot
-        // the 5th, and leave the 1st, 3rd and 6th unwarmed.
+        // the 5th, and leave the rest of the descent unwarmed.
         d.progress.record(1, 3);
         d.progress.record(3, 8);
         d.progress.record(4, 30);
         let rows = d.menu_rows(d.page, 1080.0);
+        let acts: Vec<Action> = rows.iter().map(|r| r.action).collect();
+        // The owed runs — over-par with the never-walked — lead in
+        // hill order; the perfected sink below the fold of a descent
+        // that no longer closes.
         assert_eq!(
-            rows.iter().map(|r| r.action).collect::<Vec<_>>(),
-            vec![
+            &acts[..4],
+            &[
                 Action::Hill(0),
                 Action::Hill(2),
                 Action::Hill(4),
                 Action::Hill(5),
-                Action::Hill(1),
-                Action::Hill(3),
-                Action::Back,
             ],
-            "the owed runs lead in hill order — the unwarmed with the \
-             over-par — and the perfected follow in their own hill order"
+            "the owed runs lead in hill order — the unwarmed with the over-par"
+        );
+        assert!(
+            !acts.contains(&Action::Hill(1)) && !acts.contains(&Action::Hill(3)),
+            "the perfected have sunk below this window"
+        );
+        // And the sweep is only resting, not gone: scrolled to the
+        // very bottom of the descent, the perfected rows wait there
+        // in their own hill order.
+        d.progress_top = d.levels.len() - 2;
+        let last = d.menu_rows(d.page, 1080.0);
+        assert_eq!(
+            last.iter().map(|r| r.action).collect::<Vec<_>>(),
+            vec![Action::Hill(1), Action::Hill(3), Action::Back],
+            "the clean sweeps settle to the bottom of the scroll"
         );
     }
 
@@ -5973,7 +6119,7 @@ mod menu_tests {
         let mut d = demo();
         d.page = Page::Won;
         let rows = d.menu_rows(d.page, 720.0);
-        let plate_top = rows.iter().map(|r| r.cy).fold(f32::MIN, f32::max) + 130.0;
+        let plate_top = rows.iter().map(|r| r.cy).fold(f32::MIN, f32::max) + plate_top_pad(1080.0);
         let band = 720.0 / 2.0 - 93.0;
         assert!(
             band - plate_top >= 64.0 + 16.0,
