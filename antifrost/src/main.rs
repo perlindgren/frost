@@ -635,14 +635,63 @@ const COLD_NOTE: &str = "you are now getting cold";
 const BETTER_NOTE: &str = "YOU CAN DO BETTER";
 
 /// How long the answer holds on the screen before the hill deals
-/// again: three seconds, a held breath.
-const BETTER_HOLD: f32 = 3.0;
+/// again: two seconds and a half, a held breath — the measure all
+/// three of First Cold's admissions dance to: the oops, the
+/// not-again, and the better.
+const BETTER_HOLD: f32 = 2.5;
 
 /// The answer's size: big — twice the HUD's banner — though it
 /// answers in a sentence, not the splash's single word.
 const BETTER_EM: f32 = 72.0;
 
-/// The cold tour: the walk that works before the clever one.
+// The deck that precedes the cold tour: First Cold makes the pupil
+// make its mistakes for it. The card asks for the wrong step —
+// right, away from everything the walk will want — and the rail,
+// which has never once refused a lesson, refuses everything else;
+// the moment the step lands the hill admits it, big and centred in
+// the answer's own letters and hold, and when the words fade the
+// undo mark goes up: a chevron pointing back the way the wrong step
+// came, worded below. The Z takes the step back — and the trap
+// re-baits itself: the same wrong step is asked again, and again,
+// and this time the second landing earns the deeper admission and
+// the rewind mark. The R that restarts the hill retires the deck
+// for good, and the hill restarts under the answer's own words —
+// so the undo is learned before the walk, the restart before the
+// ruin, and both by making the mistake, never by being told.
+const MISTAKE_CARD: Lesson = Lesson {
+    act: game::Act::Move(game::Dir::Right),
+    word: "move right",
+};
+
+/// The admission, in the praise words' case and size. The hill
+/// owns the mistake — *I* made it — because a pupil who watched
+/// the hill choose wrong still pressed the key, and being scolded
+/// for obeying is how a lesson turns into a grudge.
+const MISTAKE_NOTE: &str = "OOPS I MADE A MISTAKE";
+
+/// The second card of the deck: the same trap re-baited. The word
+/// knows it is a repeat now — the hill does not even pretend.
+const DOUBLE_CARD: Lesson = Lesson {
+    act: game::Act::Move(game::Dir::Right),
+    word: "move right again",
+};
+
+/// The second admission, for the mistake twice as deep: two words,
+/// because at this depth a sentence would be an optimism.
+const NOT_AGAIN_NOTE: &str = "NOT AGAIN";
+
+/// The word under the rewind — two chevrons stepped back, the
+/// walk's own alphabet spelling the media-keys' rewind.
+const RESTART_WORD: &str = "r to restart";
+
+/// The word under the undo mark, lowercase like every foot word;
+/// named here so the sulking and the Z agree on the spelling.
+const UNDO_WORD: &str = "z for undo";
+
+/// The cold tour: the walk that works before the clever one — and
+/// after the oops deck, which deals first: a forced mistake, the
+/// admission, the undo. The tour takes up only once the hill has
+/// stumbled and been stepped back.
 /// Grab `r` and walk right along the top — the wake carries the
 /// ant home mid-stride, asleep on `R` while the walk goes on —
 /// then take the long way yourself: the wall, down, the wall the
@@ -1422,6 +1471,23 @@ struct Demo {
     /// Seconds left on the centred answer; it restarts the hill
     /// as it runs out.
     cold_better: f32,
+    /// The oops deck has had its turn: the forced mistake was made
+    /// and the Z took it back, so the cold tour may deal. Reset
+    /// every visit — a restarted hill may humble itself again.
+    mistake_shown: bool,
+    /// Seconds left on the big admission.
+    mistake_t: f32,
+    /// The standing mistake has been taken in: the admission is
+    /// said once per mistake, not once per frame beneath it.
+    mistake_seen: bool,
+    /// The same courtesy for the double disaster standing beneath
+    /// the undo's stage.
+    disaster_seen: bool,
+    /// The oops deck is done with this hill for good: the double
+    /// disaster was restarted out of, so the hill restarts under
+    /// the answer's own words and the cold tour takes up — the
+    /// deck that forces mistakes never re-baits itself again.
+    oops_retired: bool,
     note_t: f32,
     frost_t: f32,
     frost_bit: bool,
@@ -1601,6 +1667,11 @@ impl Demo {
             cold_noted: false,
             cold_pending: false,
             cold_better: 0.0,
+            mistake_shown: false,
+            mistake_t: 0.0,
+            mistake_seen: false,
+            disaster_seen: false,
+            oops_retired: false,
             note_t: 0.0,
             frost_t: 0.0,
             frost_bit: false,
@@ -1761,6 +1832,11 @@ impl Demo {
         self.note_t = 0.0;
         self.frost_t = 0.0;
         self.frost_bit = false;
+        // And the hill re-deals its own humility with the rest: a
+        // fresh visit means a fresh mistake to make and undo.
+        self.mistake_shown = false;
+        self.mistake_t = 0.0;
+        self.mistake_seen = false;
     }
 
     fn cell_px(&self, c: game::Cell) -> [f32; 2] {
@@ -2757,20 +2833,31 @@ impl Demo {
     /// Draw the verdict: one clean spin from a speck, eased so the
     /// speck lingers tiny before it blooms to half the screen; a
     /// heartbeat at full size; then the fade to the hill's own words.
-    /// The cold tour's answer to its own praise: hung at the
-    /// centre of the screen in the praise words' own case, twice
-    /// the banner's size, held over the still won hill while
-    /// `cold_better` counts down. The hill deals again — on its
-    /// better script — as the hold runs out.
+    /// The three held-centre messages, one screen and one voice: the
+    /// cold tour's answer to its own praise — hung at the centre in
+    /// the praise words' own case, twice the banner's size, over the
+    /// still won hill while `cold_better` counts down, the hill
+    /// dealing itself again on the better script as the hold runs
+    /// out — and the oops deck's two admissions, the same letters
+    /// and the same hold over the hill sulking on its single
+    /// mistake and then on its pair.
     fn draw_better(&self, ctx: &mut Context) {
-        if self.cold_better <= 0.0 {
+        let note = if self.cold_better > 0.0 {
+            BETTER_NOTE
+        } else if self.mistake_t > 0.0 {
+            if self.disaster_standing() {
+                NOT_AGAIN_NOTE
+            } else {
+                MISTAKE_NOTE
+            }
+        } else {
             return;
-        }
+        };
         ctx.text(
             0.0,
             0.0,
             &self.font,
-            BETTER_NOTE.to_string(),
+            note.to_string(),
             BETTER_EM,
             600.0,
             C_TEXT,
@@ -3048,6 +3135,24 @@ impl Demo {
         if self.page != Page::Game || self.replay.is_some() {
             return None;
         }
+        // The oops deck first: First Cold, un-warmed and un-humbled,
+        // opens on the wrong foot — the card asks for the step the
+        // hill must not take; once taken, it stands there sulking
+        // with no card at all, and the marks it shows then are the
+        // undo's, drawn outside any card. The Z that steps back
+        // lands on the re-baited trap: the same wrong step asked
+        // again, and the second landing is the deeper sulk — the
+        // restart's, not the undo's.
+        if self.oopsy_visit() {
+            let game = self.game.as_ref()?;
+            return match game.log.as_slice() {
+                [] => Some(&MISTAKE_CARD),
+                [a] if *a == game::Act::Move(game::Dir::Right) && self.mistake_shown => {
+                    Some(&DOUBLE_CARD)
+                }
+                _ => None,
+            };
+        }
         let script = self.script()?;
         let game = self.game.as_ref()?;
         if game.won || game.log.len() >= script.len() {
@@ -3072,6 +3177,49 @@ impl Demo {
         self.idx == FIRST_COLD_HILL && !self.warmed(FIRST_COLD_HILL)
     }
 
+    /// The oops deck is live: First Cold before it has been finished
+    /// *and* before the hill has been restarted out of its own
+    /// double mistake. The retirement outlives every restart of the
+    /// visit; nothing else here does.
+    fn oopsy_visit(&self) -> bool {
+        self.cold_tour() && !self.oops_retired
+    }
+
+    /// The forced mistake, standing on the board: the wrong step is
+    /// the walk's whole story, the hill answers nothing — every
+    /// rail-carrying input is refused, and only the Z, which needs
+    /// no rail, is heard — and the undo that takes it back re-baits
+    /// the trap.
+    fn mistake_standing(&self) -> bool {
+        self.oopsy_visit()
+            && !self.mistake_shown
+            && self
+                .game
+                .as_ref()
+                .is_some_and(|g| g.log.len() == 1 && g.log[0] == game::Act::Move(game::Dir::Right))
+    }
+
+    /// The same mistake twice as deep: the pair of wrong steps has
+    /// landed, and this time no undo will do — the hill sulks for
+    /// the rewind, and only the R is heard.
+    fn disaster_standing(&self) -> bool {
+        self.oopsy_visit()
+            && self.mistake_shown
+            && self.game.as_ref().is_some_and(|g| {
+                g.log.len() == 2
+                    && g.log
+                        .iter()
+                        .all(|a| *a == game::Act::Move(game::Dir::Right))
+            })
+    }
+
+    /// Either sulk: the hill standing on a mistake it forced,
+    /// admitting it big, and answering nothing until the taught key
+    /// comes — the undo's, or the restart's.
+    fn sulking(&self) -> bool {
+        self.mistake_standing() || self.disaster_standing()
+    }
+
     /// The lesson script for the hill underfoot: on the cold ring
     /// before it has ever been finished, the cold tour — the long
     /// walk, taught first; on a warmed ring, and on every other
@@ -3089,20 +3237,21 @@ impl Demo {
     /// walk, a walk where a shove is asked, a shove where the card
     /// says walk, a leave-behind nobody asked for — is refused at the
     /// gate. No card, no rail: the other forty-seven hills answer to
-    /// everything, and so does a hill whose lesson is finished.
+    /// everything, and so does a hill whose lesson is finished. One
+    /// exception sulks outside any card: the hill standing on its
+    /// own mistake admits nothing at all — the Z, or the R, which
+    /// need no rail are the only voices it waits for. And while one
+    /// of the held admissions still hangs at the centre, the hill
+    /// under it waits quietly too: no act answers until the words
+    /// have had their breath.
     fn rail_opens(&self, a: game::Act) -> bool {
-        self.lesson().is_none_or(|card| card.act == a)
+        !self.sulking() && self.cold_better <= 0.0 && self.lesson().is_none_or(|c| c.act == a)
     }
 
-    /// The card made visible: a chevron aimed the act's way hangs
-    /// over the queen's head — riding the hill, since it follows
-    /// her gliding `player_at` — doubled for a shove, the second
-    /// mark stepped back along the aim. The word sits on the
-    /// note's floor-side seat, standing a line higher when a note
-    /// is up with it, the same courtesy the showing pays.
+    /// The card made visible: the mark (or marks) of its act and
+    /// its word, drawn by the same painter the sulking hill borrows
+    /// for the undo.
     fn draw_lesson(&self, ctx: &mut Context, card: &Lesson) {
-        let (_, h) = self.view(ctx);
-        let [sx, sy] = self.screen([self.player_at[0], self.player_at[1] + TILE * 0.95]);
         let dir = match card.act {
             game::Act::Move(d) | game::Act::Push(d) => face_of(d),
             // A leave-behind aims nowhere: its mark points down —
@@ -3113,6 +3262,19 @@ impl Demo {
         // One chevron walks, two shove — the alphabet's own case
         // distinction, told in marks instead of letters.
         let marks = usize::from(matches!(card.act, game::Act::Push(_))) + 1;
+        self.draw_marks(ctx, dir, marks, card.word);
+    }
+
+    /// The marks and the foot word, whoever calls: a chevron aimed
+    /// the given way hangs over the queen's head — riding the hill,
+    /// since it follows her gliding `player_at` — doubled for a
+    /// shove, the second mark stepped back along the aim; the word
+    /// sits on the note's floor-side seat, standing a line higher
+    /// when a note is up with it, the same courtesy the showing
+    /// pays.
+    fn draw_marks(&self, ctx: &mut Context, dir: [f32; 2], marks: usize, word: &str) {
+        let (_, h) = self.view(ctx);
+        let [sx, sy] = self.screen([self.player_at[0], self.player_at[1] + TILE * 0.95]);
         let ang = dir[1].atan2(dir[0]) - std::f32::consts::FRAC_PI_2;
         let (s, c) = (ang.sin(), ang.cos());
         for k in 0..marks {
@@ -3140,7 +3302,7 @@ impl Demo {
             0.0,
             -h / 2.0 + seat,
             &self.font,
-            card.word.to_string(),
+            word.to_string(),
             30.0,
             600.0,
             C_NOTE,
@@ -3243,9 +3405,17 @@ impl Demo {
         }
         // School hills keep their lesson open while the walk follows
         // the script: a mark over the queen, a word at the foot.
-        // Elsewhere, and off the line, `lesson` is silent.
+        // Elsewhere, and off the line, `lesson` is silent — except
+        // the sulking hills, whose words have just faded: the first
+        // shows the undo, pointing back the way the wrong step
+        // came; the second, the rewind — two chevrons stepped back,
+        // because one undo will not be enough this time.
         if let Some(card) = self.lesson() {
             self.draw_lesson(ctx, card);
+        } else if self.mistake_standing() && self.mistake_t <= 0.0 {
+            self.draw_marks(ctx, face_of(game::Dir::Left), 1, UNDO_WORD);
+        } else if self.disaster_standing() && self.mistake_t <= 0.0 {
+            self.draw_marks(ctx, face_of(game::Dir::Left), 2, RESTART_WORD);
         }
     }
 
@@ -4840,11 +5010,19 @@ impl Process for Demo {
             // The tutorial rail answers for the hill before the hill
             // is even handed out: while a school hill keeps a card
             // open, that card's act is the only input the gate lets
-            // through — keys, clicks and shoves alike. Undo and
-            // restart keep their keys: a pupil may always step back
-            // to the card, and the deck always re-deals.
+            // through — keys, clicks and shoves alike — and a hill
+            // sulking over its own mistake lets nothing through at
+            // all. Undo and restart keep their keys: a pupil may
+            // always step back to the card, and the deck always
+            // re-deals; the sulking exists precisely to be stepped
+            // back out of.
             let rail = self.lesson().map(|c| c.act);
-            let rail_opens = move |a: game::Act| rail.is_none_or(|want| want == a);
+            let sulking = self.sulking();
+            let sulking_undo = self.mistake_standing();
+            let to_restart = self.disaster_standing();
+            let admitted = self.cold_better > 0.0;
+            let rail_opens =
+                move |a: game::Act| !sulking && !admitted && rail.is_none_or(|want| want == a);
             // N and P retired with their legend line: leaving a
             // finished hill belongs to the won page's two rows,
             // which answer to click and Enter alike — a control
@@ -4862,13 +5040,39 @@ impl Process for Demo {
                 if restart {
                     let level = game.level.clone();
                     *game = game::Game::start(level);
-                    // A restarted hill is played again, so it records
-                    // again; the old walk was a worse walk anyway.
+                    // A restarted hill is played again, so it
+                    // records again; the old walk was a worse walk
+                    // anyway.
                     game.record = true;
                     self.route.clear();
                     self.replay = None;
+                    // And an admission cut short by the restart
+                    // does not haunt the fresh hill.
+                    self.mistake_t = 0.0;
+                    self.mistake_seen = false;
+                    self.disaster_seen = false;
+                    if to_restart {
+                        // The deep sulk restarted out of: the deck
+                        // retires for good, and the hill restarts
+                        // under the answer's own words — the third
+                        // admission of First Cold, promising what
+                        // the tour beneath the hold will teach.
+                        self.oops_retired = true;
+                        self.cold_better = BETTER_HOLD;
+                    }
                 } else if undo {
-                    game.undo();
+                    // The one voice the first sulk hears: when the
+                    // step it takes back is its own forced mistake
+                    // (`sulking_undo`, computed before the hill was
+                    // borrowed), the deck moves on to re-bait its
+                    // trap — and the admission still mid-air goes
+                    // with the step, so the fresh card does not
+                    // stand under last mistake's words.
+                    if game.undo() && sulking_undo {
+                        self.mistake_shown = true;
+                        self.mistake_t = 0.0;
+                        self.mistake_seen = false;
+                    }
                     self.route.clear();
                 } else if (detach || detach_click) && !game.won {
                     self.route.clear();
@@ -5036,6 +5240,28 @@ impl Process for Demo {
                     }
                 }
                 _ => self.cold_noted = false,
+            }
+        }
+        // And the hill's own mistakes get said out loud: the moment
+        // a forced step lands, its admission hangs at the centre —
+        // the oops for the single wrong step, the not-again for the
+        // pair — and while it is up, and after it until the taught
+        // key comes, the hill sulks answering nothing (see
+        // `sulking`). The single step rolls back under the undo's
+        // snapshot, par and record included, so the tour that
+        // follows is still eighteen moves and the cold word still
+        // arrives at its tenth; the pair rolls back under the
+        // restart itself.
+        {
+            let oops = self.mistake_standing();
+            let disaster = self.disaster_standing();
+            if (oops && !self.mistake_seen) || (disaster && !self.disaster_seen) {
+                self.mistake_t = BETTER_HOLD;
+            }
+            self.mistake_seen = oops;
+            self.disaster_seen = disaster;
+            if self.mistake_t > 0.0 {
+                self.mistake_t -= dt;
             }
         }
         // And when the long walk finishes, the praise is allowed:
@@ -6262,10 +6488,90 @@ mod menu_tests {
     }
 
     #[test]
+    fn the_oops_deck_forces_both_mistakes_and_teaches_the_restart() {
+        let mut d = demo();
+        d.page = Page::Game;
+        d.load(2);
+        // First Cold opens on the wrong foot, on purpose: the card
+        // asks for the wrong step, and nothing else answers the
+        // gate.
+        assert_eq!(
+            d.lesson().map(|l| l.act),
+            Some(MISTAKE_CARD.act),
+            "the ring opens on a mistake, asked for out loud"
+        );
+        assert!(!d.rail_opens(game::Act::Move(game::Dir::Left)));
+        // The step lands and the hill sulks: no card is open, and
+        // the rail answers nothing — not even the step straight
+        // back — until the undo comes.
+        d.game
+            .as_mut()
+            .expect("the ring stands loaded")
+            .act(game::Act::Move(game::Dir::Right))
+            .expect("the forced step is still a legal one");
+        assert!(d.mistake_standing(), "the mistake is the whole walk");
+        assert!(d.lesson().is_none(), "a sulking hill keeps no card");
+        assert!(!d.rail_opens(game::Act::Move(game::Dir::Left)));
+        assert!(!d.rail_opens(game::Act::Move(game::Dir::Right)));
+        assert!(!d.rail_opens(game::Act::Detach));
+        // The Z takes the step back — no bill, moves and record
+        // rolled under — and the hill re-baits the very same trap:
+        // the wrong step is asked again, and this time it is asked
+        // twice.
+        d.mistake_shown = true;
+        let g = d.game.as_mut().expect("still sulking");
+        assert!(g.undo());
+        assert_eq!(g.moves, 0, "the mistake leaves no bill");
+        assert_eq!(
+            d.lesson().map(|l| l.act),
+            Some(MISTAKE_CARD.act),
+            "the same trap, re-baited"
+        );
+        let g = d.game.as_mut().expect("re-baited");
+        g.act(game::Act::Move(game::Dir::Right))
+            .expect("the second first step is legal");
+        assert_eq!(
+            d.lesson().map(|l| l.act),
+            Some(DOUBLE_CARD.act),
+            "and the pair asks its second step"
+        );
+        let g = d.game.as_mut().expect("mid-pair");
+        g.act(game::Act::Move(game::Dir::Right))
+            .expect("the second wrong step is legal too");
+        // The deep sulk: the pair stands, no card answers, and the
+        // rail is shut as tight as before — this time for the R.
+        assert!(d.disaster_standing(), "twice right is twice wrong");
+        assert!(d.lesson().is_none(), "the deep sulk keeps no card");
+        assert!(!d.rail_opens(game::Act::Move(game::Dir::Left)));
+        assert!(!d.rail_opens(game::Act::Move(game::Dir::Right)));
+        assert!(!d.rail_opens(game::Act::Detach));
+        // The R — what the restart handler retires and hands to
+        // the answer's hold, this test mirrors by hand — restarts
+        // the hill under the better words, and what follows them
+        // follows: the cold tour, at its own first card, never
+        // re-baited again.
+        d.oops_retired = true;
+        let level = d.game.as_ref().expect("disastered").level.clone();
+        d.game = Some(game::Game::start(level));
+        assert!(!d.oopsy_visit(), "a retired deck never re-baits");
+        assert_eq!(
+            d.lesson().map(|l| l.act),
+            Some(COLD_TOUR_LESSON[0].act),
+            "the restart lands on the long walk, as promised"
+        );
+        assert!(d.rail_opens(COLD_TOUR_LESSON[0].act));
+    }
+
+    #[test]
     fn the_cold_tour_walks_the_long_way_before_the_lesson() {
         let mut d = demo();
         d.page = Page::Game;
         d.load(2);
+        // The oops deck had its whole turn first: both mistakes
+        // made, the restart restarted out of them — the deck's own
+        // test walks that above.
+        d.mistake_shown = true;
+        d.oops_retired = true;
         let script: Vec<game::Act> = COLD_TOUR_LESSON.iter().map(|l| l.act).collect();
         assert_eq!(
             d.lesson().map(|l| l.act),
