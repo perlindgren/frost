@@ -627,17 +627,16 @@ const FIRST_COLD_HILL: usize = 2;
 /// par — the first move a cleverer walk would not have needed.
 const COLD_NOTE: &str = "you are now getting cold";
 
-/// The hill's answer to the cold tour's own praise: the praise
-/// splash spins first like on any win, then this hangs big in the
-/// centre of the world for `BETTER_HOLD` seconds, and the hill
-/// restarts on the better script. In the praise words' own case,
-/// because it answers them.
+/// The hill's answer to a tour's own praise — both double-dealt
+/// hills keep it — the praise splash spins first like on any win,
+/// then this hangs big in the centre of the world for
+/// `BETTER_HOLD` seconds, and the hill restarts on the better
+/// script. In the praise words' own case, because it answers them.
 const BETTER_NOTE: &str = "YOU CAN DO BETTER";
 
 /// How long the answer holds on the screen before the hill deals
-/// again: two seconds and a half, a held breath — the measure all
-/// three of First Cold's admissions dance to: the oops, the
-/// not-again, and the better.
+/// again: two seconds and a half, a held breath — the measure the
+/// tour's answer and both of the oops deck's admissions dance to.
 const BETTER_HOLD: f32 = 2.5;
 
 /// The answer's size: big — twice the HUD's banner — though it
@@ -655,9 +654,11 @@ const BETTER_EM: f32 = 72.0;
 // re-baits itself: the same wrong step is asked again, and again,
 // and this time the second landing earns the deeper admission and
 // the rewind mark. The R that restarts the hill retires the deck
-// for good, and the hill restarts under the answer's own words —
-// so the undo is learned before the walk, the restart before the
-// ruin, and both by making the mistake, never by being told.
+// for good and hands the fresh hill to the long walk — the
+// answer's own words wait at the tour's end, where they are
+// earned — so the undo is learned before the walk, the restart
+// before the ruin, and both by making the mistake, never by being
+// told.
 const MISTAKE_CARD: Lesson = Lesson {
     act: game::Act::Move(game::Dir::Right),
     word: "move right",
@@ -687,6 +688,12 @@ const RESTART_WORD: &str = "r to restart";
 /// The word under the undo mark, lowercase like every foot word;
 /// named here so the sulking and the Z agree on the spelling.
 const UNDO_WORD: &str = "z for undo";
+
+/// The send-off: the cheap dig watches the pupil take the dig for
+/// the first time and says the last kind word before the cold
+/// hills proper begin. It is a course well taught by now — four
+/// hills, five decks, two keys, one dig — and the hill knows it.
+const SEND_OFF_NOTE: &str = "I KNOW YOU CAN DO IT";
 
 /// The cold tour: the walk that works before the clever one — and
 /// after the oops deck, which deals first: a forced mistake, the
@@ -776,16 +783,139 @@ const COLD_TOUR_LESSON: [Lesson; 18] = [
     },
 ];
 
+/// The cheap dig: the fourth hill, and the hill the dig belongs
+/// to. The dirt cell in its wall is the lesson — walk into dirt
+/// and it gives way, one move, one budget — so the hill deals
+/// twice like the cold ring: first the honest fourteen that walk
+/// around the dirt and miss it entirely, then the answer's words,
+/// then the ten that dig.
+const DIG_TUTOR_HILL: usize = 3;
+
+/// The cheap dig's tour: fourteen moves that succeed — collect
+/// `r`, march on to the east shaft, ride it to the trail, walk
+/// home along the top while the wake carries `r` onto `R` — a
+/// real win at four moves' waste, and the praise splash is
+/// earned by it. Then the hill answers itself, big and centred,
+/// and deals the cheap way beneath the words.
+const DIG_TOUR_LESSON: [Lesson; 14] = [
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right collect the ant",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right to the shaft",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Up),
+        word: "move up the shaft",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Up),
+        word: "move up to the trail",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left red rides behind",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left red packs onto r",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left home to w",
+    },
+];
+
+/// The cheap dig taught cheap: collect `r`, then walk into the
+/// dirt cell in the wall — walking into dirt is the dig, one
+/// move and one budget — step out onto `R`, and walk home while
+/// the wake packs `r` onto its bed. Ten moves, and every one of
+/// them needed.
+const DIG_LESSON: [Lesson; 10] = [
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right collect the ant",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Up),
+        word: "walk up dig through the dirt",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Up),
+        word: "move up onto the red bed",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left red packs on the way",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left home to w",
+    },
+];
+
 /// The descent's school hills and their scripts: every lesson the
 /// descent teaches is here, in the hills that teach it. Anywhere
-/// else the hill has no cards and keeps no rail. First Cold is
-/// double-dealt — the cold tour until the hill has been warmed,
-/// the dunk script ever after; `Demo::script` picks the deck.
+/// else the hill has no cards and keeps no rail. Two hills deal
+/// double — First Cold and the cheap dig both show the long way
+/// first and answer their own praise with the better script;
+/// `Demo::script` picks the deck.
 fn lesson_script(hill: usize) -> Option<&'static [Lesson]> {
     match hill {
         0 => Some(&FIRST_WARM_LESSON),
         1 => Some(&ATTUNEMENT_LESSON),
         2 => Some(&FIRST_COLD_LESSON),
+        3 => Some(&DIG_LESSON),
         _ => None,
     }
 }
@@ -1466,11 +1596,11 @@ struct Demo {
     cold_noted: bool,
     /// The win tick marked this hill as the tour's finish: the
     /// won page is withheld, and when the praise splash fades,
-    /// the answer goes up (`cold_better`) and the hill restarts.
-    cold_pending: bool,
+    /// the answer goes up (`better_t`) and the hill restarts.
+    tour_pending: bool,
     /// Seconds left on the centred answer; it restarts the hill
     /// as it runs out.
-    cold_better: f32,
+    better_t: f32,
     /// The oops deck has had its turn: the forced mistake was made
     /// and the Z took it back, so the cold tour may deal. Reset
     /// every visit — a restarted hill may humble itself again.
@@ -1484,10 +1614,18 @@ struct Demo {
     /// the undo's stage.
     disaster_seen: bool,
     /// The oops deck is done with this hill for good: the double
-    /// disaster was restarted out of, so the hill restarts under
-    /// the answer's own words and the cold tour takes up — the
-    /// deck that forces mistakes never re-baits itself again.
+    /// disaster was restarted out of, so the cold tour takes up
+    /// the fresh hill — the deck that forces mistakes never
+    /// re-baits itself again.
     oops_retired: bool,
+    /// The cheap dig's par win owes the hill its send-off: pending
+    /// behind the splash, then hanging at the centre, then — and
+    /// only then — the won page.
+    send_pending: bool,
+    send_t: f32,
+    /// The send-off is said once: encouragement repeated is
+    /// nagging.
+    send_done: bool,
     note_t: f32,
     frost_t: f32,
     frost_bit: bool,
@@ -1665,13 +1803,16 @@ impl Demo {
             player_home: None,
             breath: HashMap::new(),
             cold_noted: false,
-            cold_pending: false,
-            cold_better: 0.0,
+            tour_pending: false,
+            better_t: 0.0,
             mistake_shown: false,
             mistake_t: 0.0,
             mistake_seen: false,
             disaster_seen: false,
             oops_retired: false,
+            send_pending: false,
+            send_t: 0.0,
+            send_done: false,
             note_t: 0.0,
             frost_t: 0.0,
             frost_bit: false,
@@ -1837,6 +1978,8 @@ impl Demo {
         self.mistake_shown = false;
         self.mistake_t = 0.0;
         self.mistake_seen = false;
+        self.send_pending = false;
+        self.send_t = 0.0;
     }
 
     fn cell_px(&self, c: game::Cell) -> [f32; 2] {
@@ -2833,16 +2976,18 @@ impl Demo {
     /// Draw the verdict: one clean spin from a speck, eased so the
     /// speck lingers tiny before it blooms to half the screen; a
     /// heartbeat at full size; then the fade to the hill's own words.
-    /// The three held-centre messages, one screen and one voice: the
-    /// cold tour's answer to its own praise — hung at the centre in
-    /// the praise words' own case, twice the banner's size, over the
-    /// still won hill while `cold_better` counts down, the hill
-    /// dealing itself again on the better script as the hold runs
-    /// out — and the oops deck's two admissions, the same letters
-    /// and the same hold over the hill sulking on its single
-    /// mistake and then on its pair.
+    /// The four held-centre messages, one screen and one voice: the
+    /// tour's answer to its own praise — in the praise words' own
+    /// case, twice the banner's size, over the still won hill while
+    /// `better_t` counts down, the hill dealing itself again on the
+    /// better script as the hold runs out — the oops deck's two
+    /// admissions over the hill sulking on its single mistake and
+    /// then on its pair — and the cheap dig's send-off to a pupil
+    /// who has just taken the dig. All four hang at the same
+    /// height: a quarter of the screen down from the top, clear of
+    /// the queen's marks and the foot words below.
     fn draw_better(&self, ctx: &mut Context) {
-        let note = if self.cold_better > 0.0 {
+        let note = if self.better_t > 0.0 {
             BETTER_NOTE
         } else if self.mistake_t > 0.0 {
             if self.disaster_standing() {
@@ -2850,12 +2995,15 @@ impl Demo {
             } else {
                 MISTAKE_NOTE
             }
+        } else if self.send_t > 0.0 {
+            SEND_OFF_NOTE
         } else {
             return;
         };
+        let (_, h) = self.view(ctx);
         ctx.text(
             0.0,
-            0.0,
+            h * 0.25,
             &self.font,
             note.to_string(),
             BETTER_EM,
@@ -3124,7 +3272,7 @@ impl Demo {
 
     /// The lesson card the hill underfoot is teaching right now: the
     /// script's next card while the played log spells the script's
-    /// prefix — and nothing at all elsewhere. Not on the forty-seven
+    /// prefix — and nothing at all elsewhere. Not on the forty-six
     /// hills that keep no script, not behind a page, not during a
     /// showing (whose walk is the ledger's, not a pupil's), not once
     /// the hill sleeps. The rail below makes the prefix check a
@@ -3177,6 +3325,22 @@ impl Demo {
         self.idx == FIRST_COLD_HILL && !self.warmed(FIRST_COLD_HILL)
     }
 
+    /// The cheap dig's tour: the same first-crossing bargain as
+    /// the cold ring — the long way taught first, the better
+    /// script dealt beneath the answer's words.
+    fn dig_tour(&self) -> bool {
+        self.idx == DIG_TUTOR_HILL && !self.warmed(DIG_TUTOR_HILL)
+    }
+
+    /// A tour is live underfoot: a hill whose first crossing it
+    /// teaches the long way round, praise and all. Two hills keep
+    /// such a deck — the cold ring and the cheap dig — and they
+    /// share the machinery: no won page, one splash, the answer's
+    /// words, a redeal on the better script.
+    fn tour(&self) -> bool {
+        self.cold_tour() || self.dig_tour()
+    }
+
     /// The oops deck is live: First Cold before it has been finished
     /// *and* before the hill has been restarted out of its own
     /// double mistake. The retirement outlives every restart of the
@@ -3223,10 +3387,15 @@ impl Demo {
     /// The lesson script for the hill underfoot: on the cold ring
     /// before it has ever been finished, the cold tour — the long
     /// walk, taught first; on a warmed ring, and on every other
-    /// school hill, the hill's own script.
+    /// school hill, the hill's own script. The cheap dig deals on
+    /// the same bargain: its tour until the ledger holds the hill,
+    /// the dig ever after.
     fn script(&self) -> Option<&'static [Lesson]> {
         if self.cold_tour() {
             return Some(&COLD_TOUR_LESSON);
+        }
+        if self.dig_tour() {
+            return Some(&DIG_TOUR_LESSON);
         }
         lesson_script(self.idx)
     }
@@ -3236,7 +3405,7 @@ impl Demo {
     /// every verb the script does not call for — the wrong way to
     /// walk, a walk where a shove is asked, a shove where the card
     /// says walk, a leave-behind nobody asked for — is refused at the
-    /// gate. No card, no rail: the other forty-seven hills answer to
+    /// gate. No card, no rail: the other forty-six hills answer to
     /// everything, and so does a hill whose lesson is finished. One
     /// exception sulks outside any card: the hill standing on its
     /// own mistake admits nothing at all — the Z, or the R, which
@@ -3245,7 +3414,7 @@ impl Demo {
     /// under it waits quietly too: no act answers until the words
     /// have had their breath.
     fn rail_opens(&self, a: game::Act) -> bool {
-        !self.sulking() && self.cold_better <= 0.0 && self.lesson().is_none_or(|c| c.act == a)
+        !self.sulking() && self.better_t <= 0.0 && self.lesson().is_none_or(|c| c.act == a)
     }
 
     /// The card made visible: the mark (or marks) of its act and
@@ -5020,7 +5189,7 @@ impl Process for Demo {
             let sulking = self.sulking();
             let sulking_undo = self.mistake_standing();
             let to_restart = self.disaster_standing();
-            let admitted = self.cold_better > 0.0;
+            let admitted = self.better_t > 0.0;
             let rail_opens =
                 move |a: game::Act| !sulking && !admitted && rail.is_none_or(|want| want == a);
             // N and P retired with their legend line: leaving a
@@ -5053,12 +5222,12 @@ impl Process for Demo {
                     self.disaster_seen = false;
                     if to_restart {
                         // The deep sulk restarted out of: the deck
-                        // retires for good, and the hill restarts
-                        // under the answer's own words — the third
-                        // admission of First Cold, promising what
-                        // the tour beneath the hold will teach.
+                        // retires for good and the long walk deals
+                        // beneath the fresh hill. The answer's own
+                        // words wait at the tour's end, where they
+                        // are earned — a restart that finished
+                        // nothing has nothing to answer.
                         self.oops_retired = true;
-                        self.cold_better = BETTER_HOLD;
                     }
                 } else if undo {
                     // The one voice the first sulk hears: when the
@@ -5266,17 +5435,31 @@ impl Process for Demo {
         }
         // And when the long walk finishes, the praise is allowed:
         // the ordinary splash spins ("YOUR DID IT", for eighteen
-        // where nine will do) and the ledger takes the score and
-        // the walk as it takes any win. The won page is not: the
-        // win tick marks the hill, and when the praise has faded
-        // the hill answers its own praise — big and centred, a
-        // held breath — and restarts on the nine-move script.
-        if self.cold_tour()
+        // where nine will do — or fourteen where ten) and the
+        // ledger takes the score and the walk as it takes any win.
+        // The won page is not: the win tick marks the hill, and
+        // when the praise has faded the hill answers its own
+        // praise — big and centred, a held breath — and restarts
+        // on the better script.
+        if self.tour()
             && self.page == Page::Game
             && self.replay.is_none()
             && self.game.as_ref().is_some_and(|g| g.won)
         {
-            self.cold_pending = true;
+            self.tour_pending = true;
+        }
+        // And the cheap dig's warm win owes the hill its send-off:
+        // the same held words at the centre — behind the splash,
+        // before the won page — said once, because encouragement
+        // repeated is nagging.
+        if self.idx == DIG_TUTOR_HILL
+            && self.warmed(DIG_TUTOR_HILL)
+            && !self.send_done
+            && self.page == Page::Game
+            && self.replay.is_none()
+            && self.game.as_ref().is_some_and(|g| g.won)
+        {
+            self.send_pending = true;
         }
         // A won hill hands the player their two ways off it — but
         // only after the splash has spun, held, and faded: the word
@@ -5286,8 +5469,10 @@ impl Process for Demo {
         if self.page == Page::Game
             && self.replay.is_none()
             && self.splash_done
-            && !self.cold_pending
-            && self.cold_better <= 0.0
+            && !self.tour_pending
+            && self.better_t <= 0.0
+            && !self.send_pending
+            && self.send_t <= 0.0
             && self.game.as_ref().is_some_and(|g| g.won)
         {
             self.page = Page::Won;
@@ -5355,21 +5540,32 @@ impl Process for Demo {
         }
         // The tour's answer to its own praise: the moment the
         // splash has faded, the words go up in the centre for a
-        // held three seconds, and the hill deals again beneath
-        // them — warm now, so the cards it deals are the better
-        // script.
-        if self.cold_pending && self.splash.is_none() && self.splash_done {
-            self.cold_pending = false;
-            self.cold_better = BETTER_HOLD;
+        // held breath, and the hill deals again beneath them —
+        // warm now, so the cards it deals are the better script.
+        if self.tour_pending && self.splash.is_none() && self.splash_done {
+            self.tour_pending = false;
+            self.better_t = BETTER_HOLD;
         }
-        if self.cold_better > 0.0 {
-            self.cold_better -= dt;
-            if self.cold_better <= 0.0 {
-                self.cold_better = 0.0;
+        if self.better_t > 0.0 {
+            self.better_t -= dt;
+            if self.better_t <= 0.0 {
+                self.better_t = 0.0;
                 let hill = self.idx;
                 self.load(hill);
                 self.page = Page::Game;
             }
+        }
+        // The send-off rides the same breath as the answer's words
+        // — splash first, then the held centre — but it reloads
+        // nothing when it fades: the won page is what waits under
+        // it, and the hill stays as the pupil left it.
+        if self.send_pending && self.splash.is_none() && self.splash_done {
+            self.send_pending = false;
+            self.send_done = true;
+            self.send_t = BETTER_HOLD;
+        }
+        if self.send_t > 0.0 {
+            self.send_t -= dt;
         }
         self.refresh(dt);
         self.update_camera(ctx, dt);
@@ -6545,11 +6741,10 @@ mod menu_tests {
         assert!(!d.rail_opens(game::Act::Move(game::Dir::Left)));
         assert!(!d.rail_opens(game::Act::Move(game::Dir::Right)));
         assert!(!d.rail_opens(game::Act::Detach));
-        // The R — what the restart handler retires and hands to
-        // the answer's hold, this test mirrors by hand — restarts
-        // the hill under the better words, and what follows them
-        // follows: the cold tour, at its own first card, never
-        // re-baited again.
+        // The R — what the restart handler retires, this test
+        // mirrors by hand — restarts the hill onto the cold tour,
+        // at its own first card, never re-baited again; the
+        // answer's words stay unspent until the tour earns them.
         d.oops_retired = true;
         let level = d.game.as_ref().expect("disastered").level.clone();
         d.game = Some(game::Game::start(level));
@@ -6617,6 +6812,66 @@ mod menu_tests {
     }
 
     #[test]
+    fn the_dig_tour_walks_the_long_way_then_digs_the_short() {
+        let mut d = demo();
+        d.page = Page::Game;
+        d.load(3);
+        let tour: Vec<game::Act> = DIG_TOUR_LESSON.iter().map(|l| l.act).collect();
+        assert_eq!(
+            d.lesson().map(|l| l.act),
+            tour.first().copied(),
+            "the cheap dig opens on its long way"
+        );
+        for (i, a) in tour.iter().enumerate() {
+            assert!(d.rail_opens(*a), "the rail asks tour card {i}");
+            d.game
+                .as_mut()
+                .expect("the dig stands loaded")
+                .act(*a)
+                .expect("the tour's walk is legal");
+        }
+        let (won, moves, dirt) = {
+            let g = d.game.as_ref().expect("still walking");
+            (g.won, g.moves, g.tile(game::Cell::new(5, 2)))
+        };
+        assert!(won, "the long way is still a way");
+        assert_eq!(moves, 14, "fourteen moves where ten will do");
+        assert!(
+            matches!(dirt, level::Tile::Dirt),
+            "the long walk misses the dirt entirely"
+        );
+        // Warm now, the hill re-deals on the cheap script — and
+        // this time the wall's dirt cell is the lesson.
+        d.progress.record(3, moves);
+        d.load(3);
+        let dig: Vec<game::Act> = DIG_LESSON.iter().map(|l| l.act).collect();
+        assert_eq!(
+            d.lesson().map(|l| l.act),
+            dig.first().copied(),
+            "the warmed hill teaches the dig"
+        );
+        for (i, a) in dig.iter().enumerate() {
+            assert!(d.rail_opens(*a), "the rail asks dig card {i}");
+            d.game
+                .as_mut()
+                .expect("the dig stands warm")
+                .act(*a)
+                .expect("the dig's walk is legal");
+        }
+        let (won, moves, gave_way) = {
+            let g = d.game.as_ref().expect("still digging");
+            (g.won, g.moves, g.tile(game::Cell::new(5, 2)))
+        };
+        assert!(won, "the dig wins");
+        assert_eq!(moves, 10, "ten moves, every one of them needed");
+        assert!(
+            matches!(gave_way, level::Tile::Tunnel),
+            "walking into dirt was the dig"
+        );
+        assert!(d.lesson().is_none(), "the lesson ends with the walk");
+    }
+
+    #[test]
     fn a_step_off_the_lesson_silences_it_and_undo_calls_it_back() {
         let mut d = demo();
         d.page = Page::Game;
@@ -6641,8 +6896,13 @@ mod menu_tests {
     fn no_other_hill_and_no_other_page_keeps_a_lesson_open() {
         let mut d = demo();
         d.page = Page::Game;
+        d.load(4);
+        assert!(d.lesson().is_none(), "the fifth hill teaches nothing");
         d.load(3);
-        assert!(d.lesson().is_none(), "the fourth hill teaches nothing");
+        assert!(
+            d.lesson().is_some(),
+            "the fourth hill keeps its cards since the swap"
+        );
         d.load(2);
         assert!(d.lesson().is_some(), "the third hill keeps its cards too");
         d.load(0);
@@ -6741,10 +7001,10 @@ mod menu_tests {
         assert_eq!(g.log[0], game::Act::Move(game::Dir::Right));
         assert!(d.note.is_empty(), "a walked card needs no word");
         // And the other hills keep no rail: every verb answers.
-        d.load(3);
+        d.load(4);
         assert!(
             d.rail_opens(game::Act::Detach) && d.rail_opens(game::Act::Move(game::Dir::Down)),
-            "the other forty-seven answer to everything"
+            "the other forty-six answer to everything"
         );
     }
 

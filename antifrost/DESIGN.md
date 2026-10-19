@@ -184,14 +184,16 @@ r y g b   = one wild ant of that color
 3. **First Cold** — ring with one ant. Wake lock-in, the bed-wall, and
    the long way home; the solver also found the dunk shortcut that hides
    in it. Par 9, BFS-proven optimum.
-4. **Fire Escape** — First Cold turned vertical: climb the shaft, stand
-   on R, descend the other side — the trail tucks r into the corner bed.
-   Par 10, BFS optimum.
-5. **Cheap Dig** — the dirt cell *is* the shaft. Dig it, walk the ant
+4. **Cheap Dig** — the dirt cell *is* the shaft. Dig it, walk the ant
    up, and the corner wake beds it in ten moves; the honest way around
    is fourteen. Dig as temptation — the hill where you learn the budget
-   has a price worth paying. Par 10, BFS optimum (the no-dig second-best,
-   14, also found by search).
+   has a price worth paying, and taught the way the cold ring is: the
+   fourteen dealt first as a real win with its praise, YOU CAN DO
+   BETTER over the restart, then the ten card by card. Par 10, BFS
+   optimum (the no-dig second-best, 14, also found by search).
+5. **Fire Escape** — First Cold turned vertical: climb the shaft, stand
+   on R, descend the other side — the trail tucks r into the corner bed.
+   Par 10, BFS optimum.
 6. **Second Lap** — two ants pack behind you and peel off one after the
    other on a single walk: the tail-swap double lock, no verbs but
    walking. Par 16, BFS optimum.

@@ -44,7 +44,19 @@ then post it into its bed with two pushes (⇧→ → ⇧→ — the second push
 dunks it onto R). Walk home. This hill shows the dunk before it asks
 you to need it.
 
-## 4. Fire Escape — par 10
+## 4. Cheap Dig — par 10
+
+    →×4  ↑  ↑  ←×4
+
+Collect r, **dig straight up through the dirt cell** (first ↑), step onto
+the R bed tile (second ↑), walk left: r packs onto its bed as you leave
+and sleeps; you arrive at W. Around the long way costs fourteen — this
+is the hill where paying the dig is the smart play, and since the swap
+it is the hill that teaches the dig: first-timers walk the fourteen,
+take the praise like any win, hear YOU CAN DO BETTER, and only then
+are dealt these ten card by card.
+
+## 5. Fire Escape — par 10
 
     →×3  ↑×4  ←×3
 
@@ -52,15 +64,6 @@ Start at the foot of the middle shaft with r one square above you.
 Climb past r into the trail, ride the shaft to the top and step onto R;
 your first step west leaves r tucked in the corner bed. Three steps to
 W. First Cold, turned vertical.
-
-## 5. Cheap Dig — par 10
-
-    →×4  ↑  ↑  ←×4
-
-Collect r, **dig straight up through the dirt cell** (first ↑), step onto
-the R bed tile (second ↑), walk left: r packs onto its bed as you leave
-and sleeps; you arrive at W. Around the long way costs fourteen — this
-is the hill where paying the dig is the smart play.
 
 ## 6. Second Lap — par 16
 
