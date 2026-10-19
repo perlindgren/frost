@@ -619,13 +619,13 @@ fn a_painted_circle_without_a_usable_radius_casts_nothing_instead_of_panicking()
 }
 
 /// A lamp drawn the way the packer reads one.
-fn cull_light(pos: [f32; 2], radius: f32, dir: [f32; 2]) -> Draw {
+fn cull_light(pos: [f32; 2], radius: f32, penumbra: f32, dir: [f32; 2]) -> Draw {
     Draw::Light {
         pos,
         radius,
         intensity: 1.0,
         color: black(),
-        penumbra: 0.0,
+        penumbra,
         dir,
         cos_half: -1.0,
         feather: 0.0,
@@ -643,17 +643,34 @@ fn cull_box(center: [f32; 2], half: f32) -> Occluder {
     }
 }
 
-/// The shared cast: three lights — a lamp inside the window, a lamp off
-/// its right edge, and a sun shining up through the window from far
-/// below — and six occluders spread across the plane: two inside, one at
-/// the top-right corner, one far below in the sun's beam, a disc among
-/// the winners, and one far off to the right where no ray of this frame
-/// ever travels.
+/// The nine points of the shader's tap grid at unit spacing — every
+/// point a penumbra ray starts from, before its scaling by the light's
+/// penumbra. Mirrors `SHADOW_TAPS` in `shaders/lighting.wgsl`.
+const TAP_GRID: [[f32; 2]; 9] = [
+    [-1.0, -1.0],
+    [0.0, -1.0],
+    [1.0, -1.0],
+    [-1.0, 0.0],
+    [0.0, 0.0],
+    [1.0, 0.0],
+    [-1.0, 1.0],
+    [0.0, 1.0],
+    [1.0, 1.0],
+];
+
+/// The shared cast: four lights — a lamp inside the window, a lamp off
+/// its right edge, a penumbra lamp mid-window, and a sun shining up
+/// through the window from far below — and seven occluders spread across
+/// the plane: two inside, one at the top-right corner, one far below in
+/// the sun's beam, a disc among the winners, one due east of the
+/// penumbra lamp past its falloff but inside its penumbra's reach, and
+/// one far off to the right where no ray of this frame ever travels.
 fn cull_cast() -> (Vec<Draw>, Vec<Occluder>) {
     let draws = vec![
-        cull_light([-40.0, -30.0], 60.0, [1.0, 0.0]),
-        cull_light([300.0, 0.0], 40.0, [1.0, 0.0]),
-        cull_light([0.0, 0.0], -1.0, [0.0, 1.0]),
+        cull_light([-40.0, -30.0], 60.0, 0.0, [1.0, 0.0]),
+        cull_light([300.0, 0.0], 40.0, 0.0, [1.0, 0.0]),
+        cull_light([64.0, 64.0], 20.0, 18.0, [1.0, 0.0]),
+        cull_light([0.0, 0.0], -1.0, 0.0, [0.0, 1.0]),
     ];
     let disc = Occluder {
         world: Transform::identity(),
@@ -668,6 +685,7 @@ fn cull_cast() -> (Vec<Draw>, Vec<Occluder>) {
         cull_box([0.0, -800.0], 6.0),
         disc,
         cull_box([300.0, 0.0], 8.0),
+        cull_box([92.0, 64.0], 4.0),
     ];
     (draws, declared)
 }
@@ -682,6 +700,7 @@ fn cull_bounds() -> Vec<[f32; 4]> {
         ([0.0, -800.0], 6.0),
         ([20.0, -10.0], 5.0),
         ([300.0, 0.0], 8.0),
+        ([92.0, 64.0], 4.0),
     ]
     .into_iter()
     .map(|(c, h)| [c[0] - h, c[1] - h, c[0] + h, c[1] + h])
@@ -735,10 +754,14 @@ fn seg_blocks(l: [f32; 2], p: [f32; 2], b: &[f32; 4]) -> bool {
 
 /// The safety property of the per-light cull: an occluder a light's block
 /// dropped must be one that light could never have needed — for every
-/// pixel of the window, its light-to-pixel segment misses the occluder's
-/// world bounds entirely. The GPU walk only ever sees the block, so this
-/// is the whole argument that culling cannot lose a shadow, and it is the
-/// reason `pack_occluder_field` is allowed to exist.
+/// pixel the light will ever light, every shadow ray it could fire from
+/// its penumbra disk to that pixel misses the occluder's world bounds
+/// entirely. Pixels past a ranged light's falloff radius ask it nothing
+/// (the reach reject in `light_mix`), so a ray to one blocks nothing the
+/// frame will show, and they are out of the for-every. The GPU walk only
+/// ever sees the block, so this is the whole argument that culling cannot
+/// lose a shadow, and it is the reason `pack_occluder_field` is allowed to
+/// exist.
 #[test]
 fn the_cull_keeps_every_occluder_that_could_block() {
     let (draws, declared) = cull_cast();
@@ -750,11 +773,29 @@ fn the_cull_keeps_every_occluder_that_could_block() {
     let mut saw_an_exclusion = false;
     for (li, light) in draws.iter().enumerate() {
         let Draw::Light {
-            pos, radius, dir, ..
+            pos,
+            radius,
+            penumbra,
+            dir,
+            ..
         } = light
         else {
             unreachable!("the cast is all lights")
         };
+        // The ray origins a shader may fire from this light: the light
+        // itself, plus every point of the tap grid scaled by the penumbra
+        // — all nine of them, whatever rung the frame rides, since a
+        // superset asks no promise the shader would not keep. (A
+        // directional light ignores these; its source lies back along
+        // the travel axis, computed per pixel below.)
+        let mut origins = vec![*pos];
+        if *penumbra > 0.0 {
+            origins.extend(
+                TAP_GRID
+                    .iter()
+                    .map(|t| [pos[0] + t[0] * penumbra, pos[1] + t[1] * penumbra]),
+            );
+        }
         let (start, end) = (
             field_f32(&field.data, OCCLUDER_FIELD_HEADER + li * 16) as u32,
             field_f32(&field.data, OCCLUDER_FIELD_HEADER + li * 16 + 4) as u32,
@@ -768,8 +809,9 @@ fn the_cull_keeps_every_occluder_that_could_block() {
                 continue;
             }
             saw_an_exclusion = true;
-            // Culled: then no visible pixel ever needed it. Pixels on a
-            // dense grid across the window, plus its exact corners.
+            // Culled: then no pixel the light reaches ever needed it.
+            // Pixels on a dense grid across the window, plus its exact
+            // corners.
             let mut xs: Vec<f32> = (0..=16).map(|i| i as f32 * 8.0).collect();
             xs.extend([0.0, 128.0]);
             let mut ys: Vec<f32> = (0..=16).map(|i| i as f32 * 8.0).collect();
@@ -777,15 +819,30 @@ fn the_cull_keeps_every_occluder_that_could_block() {
             for x in &xs {
                 for y in &ys {
                     let p = [*x, *y];
-                    let l = if *radius < 0.0 {
-                        [p[0] - dir[0] * SHADOW_RANGE, p[1] - dir[1] * SHADOW_RANGE]
-                    } else {
-                        *pos
-                    };
-                    assert!(
-                        !seg_blocks(l, p, &bounds[k]),
-                        "light {li} culled occluder {k}, yet its ray to {p:?} blocks there",
-                    );
+                    if *radius < 0.0 {
+                        let l = [p[0] - dir[0] * SHADOW_RANGE, p[1] - dir[1] * SHADOW_RANGE];
+                        assert!(
+                            !seg_blocks(l, p, &bounds[k]),
+                            "light {li} culled occluder {k}, yet its ray to {p:?} blocks there",
+                        );
+                        continue;
+                    }
+                    // Past the falloff radius the shader asks this light
+                    // nothing, so a blocker out there blocks nothing the
+                    // frame will show: the for-every is over lit pixels.
+                    let rr = radius.max(1e-4);
+                    let dx = p[0] - pos[0];
+                    let dy = p[1] - pos[1];
+                    if dx * dx + dy * dy >= rr * rr {
+                        continue;
+                    }
+                    for q in &origins {
+                        assert!(
+                            !seg_blocks(*q, p, &bounds[k]),
+                            "light {li} culled occluder {k}, yet its ray from {q:?} to \
+                             {p:?} blocks there",
+                        );
+                    }
                 }
             }
         }
@@ -793,6 +850,65 @@ fn the_cull_keeps_every_occluder_that_could_block() {
     assert!(
         saw_an_exclusion,
         "the cast must give the cull something to do"
+    );
+}
+
+/// The cull's exact shape on the shared cast — which occluders each
+/// light's block holds. The safety property says the packer may drop
+/// nothing it needed; this says it also drops what it does not need, and
+/// names the three rules that decide membership: a ranged light admits
+/// the records within its contributing-ray disk, which the penumbra
+/// widens past the falloff radius; a directional light admits the
+/// records inside its swept beam; and no light admits a record that no
+/// ray of the frame ever travels to.
+#[test]
+fn the_culls_admit_by_reach_penumbra_and_beam() {
+    let (draws, declared) = cull_cast();
+    let field = pack_occluder_field(&draws, &declared, VIEW);
+    let master = pack_occluder_field(&[], &declared, VIEW);
+    let masters = master_records(&master);
+    // Block membership, read back as master indices by byte identity.
+    let block_of = |li: usize| -> Vec<usize> {
+        let start = field_f32(&field.data, OCCLUDER_FIELD_HEADER + li * 16) as u32;
+        let end = field_f32(&field.data, OCCLUDER_FIELD_HEADER + li * 16 + 4) as u32;
+        block_records(&field, start, end)
+            .into_iter()
+            .map(|(off, span)| {
+                masters
+                    .iter()
+                    .position(|(moff, mspan)| {
+                        *mspan == span
+                            && field.data[off..off + span] == master.data[*moff..*moff + span]
+                    })
+                    .expect("every block record came from the master list")
+            })
+            .collect()
+    };
+    // The inner lamp: the two boxes and the disc within its 60-pixel
+    // reach; the corner box, the deep box and its neighbour's lamp all
+    // sit past that disk and walk no ray of this lamp's.
+    assert_eq!(block_of(0), [0, 1, 4], "the lamp keeps what it reaches");
+    // The lamp off the right edge: only the box it stands inside. The
+    // window's boxes are visible to it but unreachable — the hull keeps
+    // them in no block the falloff has already emptied.
+    assert_eq!(block_of(1), [5], "the far lamp keeps only its own box");
+    // The penumbra lamp mid-window: the corner box lies within its 20
+    // pixels of falloff; the east box stands at 24, past the falloff but
+    // inside `18 * √2` of penumbra — the disk a corner tap's ray can
+    // still leave and so the one disk the block must cover.
+    assert_eq!(
+        block_of(2),
+        [2, 6],
+        "the penumbra keeps past the falloff, but only to the corner taps"
+    );
+    // The sun: everything its parallel beam sweeps — the window's boxes,
+    // the disc, the east box standing in its column, and the deep box in
+    // the light below the frame. The box west of the window and the lamp
+    // far east stand outside the beam's column and walk no parallel ray.
+    assert_eq!(
+        block_of(3),
+        [0, 2, 3, 4, 6],
+        "the beam keeps its beam and nothing wider"
     );
 }
 

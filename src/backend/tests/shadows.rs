@@ -468,6 +468,177 @@ fn the_gpu_shadows_exactly_where_the_cpu_says() {
     );
 }
 
+/// The lamp's radius is a promise, not a suggestion: past it a pixel reads
+/// the ambient no matter what stands in front of the light — the reach
+/// reject in `light_mix` never fires a ray, and the packer's block has
+/// dropped whatever stood out there anyway — while pixels inside it are
+/// shadowed exactly where the CPU says, through the narrowed block. The
+/// other tests light their whole window and so prove only that a reached
+/// pixel answers right; this is the one whose scene splits at the radius.
+#[test]
+fn a_lamp_lights_no_further_than_its_radius() {
+    // A lamp with a reach that covers a bite of the window, not the whole
+    // of it, and an intensity that keeps every reached pixel's byte above
+    // the dark/lit threshold: `4·f² ≥ 128/255` wherever the test is
+    // about to claim "lit", which is pixels within 14 of the lamp.
+    let lamp = [10.0, 32.5];
+    let radius = 24.0;
+    let light = Draw::Light {
+        pos: lamp,
+        radius,
+        intensity: 4.0,
+        color: objects::Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        },
+        penumbra: 0.0,
+        dir: [1.0, 0.0],
+        cos_half: -1.0,
+        feather: 0.0,
+        z: 0.0,
+    };
+    let surface = Draw::Shape {
+        world: Transform::identity(),
+        center: [32.0, 32.0],
+        params: [80.0, 80.0],
+        kind: 1.0,
+        aa: 1.0,
+        color: objects::Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        },
+        emission: black(),
+        glow: None,
+        lit: 1.0,
+        occludes: 0.0,
+        z: 0.0,
+        diagnostic: false,
+    };
+    // A crate close enough that its shadow falls inside the bright core
+    // of the lamp's reach, and far enough that the shadow's far half and
+    // whole columns of window fall past the radius — where the crate
+    // would darken a pixel the old loop had already zeroed by falloff,
+    // and darkens nothing now because nothing is asked of it.
+    let crate_box = Draw::Shape {
+        world: Transform::identity(),
+        center: [17.0, 26.0],
+        params: [3.0, 3.0],
+        kind: 1.0,
+        aa: 1.0,
+        color: objects::Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 0.0,
+        },
+        emission: black(),
+        glow: None,
+        lit: 0.0,
+        occludes: 1.0,
+        z: 1.0,
+        diagnostic: false,
+    };
+    let draws = [light, surface, crate_box];
+
+    let Some(red) = paint(&draws, &[]) else {
+        return;
+    };
+    let occluders = [Collider::Box(OrientedBox::rotated(
+        [17.0, 26.0],
+        [3.0, 3.0],
+        0.0,
+    ))];
+    let blocked = |x: u32, y: u32| occluded(lamp, [x as f32 + 0.5, y as f32 + 0.5], &occluders);
+    let dist = |x: u32, y: u32| {
+        let dx = x as f32 + 0.5 - lamp[0];
+        let dy = y as f32 + 0.5 - lamp[1];
+        (dx * dx + dy * dy).sqrt()
+    };
+
+    // Inside the bright core: the GPU and the CPU must agree, settled
+    // pixels only, for the same edge-ulp reason as the wide-lamp test.
+    let mut wrong = vec![];
+    let (mut lit, mut dark) = (0usize, 0usize);
+    for y in 0..SPAN {
+        for x in 0..SPAN {
+            if dist(x, y) > 14.0 {
+                continue;
+            }
+            let edge = (-1i32..=1).any(|dy| {
+                (-1i32..=1).any(|dx| {
+                    let (cx, cy) = (x as i32 + dx, y as i32 + dy);
+                    (0..SPAN).contains(&(cx as u32))
+                        && (0..SPAN).contains(&(cy as u32))
+                        && blocked(cx as u32, cy as u32) != blocked(x, y)
+                })
+            });
+            if edge {
+                continue;
+            }
+            let shadowed = red[(y * SPAN + x) as usize] < 128;
+            if shadowed {
+                dark += 1;
+            } else {
+                lit += 1;
+            }
+            if shadowed != blocked(x, y) {
+                wrong.push((x, y, blocked(x, y), red[(y * SPAN + x) as usize]));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} pixels inside the reach disagree with the CPU, first five of \
+         {:?}: the narrowed block lost a blocker, or the reach reject \
+         skipped a pixel the lamp does reach",
+        wrong.len(),
+        &wrong[..wrong.len().min(5)]
+    );
+    assert!(
+        dark > 4 && lit > 8,
+        "the core is {dark} pixels dark and {lit} lit: inside the reach the \
+         scene must carry both a shadow and the light it interrupts"
+    );
+
+    // Past the radius, the answer is the ambient — black here — and the
+    // guard below says the claim is about pixels a blocker did stand in
+    // front of, not about an empty sky.
+    let mut past = 0usize;
+    let mut past_and_blocked = 0usize;
+    let mut bright_past = vec![];
+    for y in 0..SPAN {
+        for x in 0..SPAN {
+            if dist(x, y) <= radius + 1.0 {
+                continue;
+            }
+            past += 1;
+            if blocked(x, y) {
+                past_and_blocked += 1;
+            }
+            if red[(y * SPAN + x) as usize] > 2 {
+                bright_past.push((x, y, red[(y * SPAN + x) as usize]));
+            }
+        }
+    }
+    assert!(
+        bright_past.is_empty(),
+        "{} pixels past the radius still caught light, first five of {:?}: \
+         the falloff and the reject no longer say the same thing",
+        bright_past.len(),
+        &bright_past[..bright_past.len().min(5)]
+    );
+    assert!(
+        past > 200 && past_and_blocked > 20,
+        "{past} pixels sat past the radius, {past_and_blocked} of them \
+         behind the crate: the far half of this window is what the reject \
+         promises, and it must be populated and occluded"
+    );
+}
+
 /// The same bridge, asked about a disc: an occluder with no rectangle in it
 /// anywhere, so the field carries sixteen half-planes and the shader clips
 /// against each of them.

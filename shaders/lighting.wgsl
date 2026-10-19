@@ -38,8 +38,11 @@ struct LightField {
 // table — one (start, end, _, _) vec4 per light, in vec4 units from the
 // tail's start — and after the table runs one contiguous block of occluder
 // records per light: exactly those whose world bounds reach some ray that
-// light fires at a visible pixel, so a walk over a light's block can never
-// miss a blocker its own rays could meet. Each record is the shape it
+// light fires at a pixel it actually reaches — past a ranged light's radius
+// `light_mix` asks no ray at all (the reach reject below), and a ray starts
+// on the light's penumbra disk, so the block is the disk of rays that
+// remains — so a walk over a light's block can never miss a blocker its own
+// contributing rays could meet. Each record is the shape it
 // always was — (m00, m10, m01, m11), the inverse of the occluder's world
 // transform, column-major (pixel space to the occluder's local space), then
 // (tx, ty, cx, cy), the inverse transform's translation and the box's local
@@ -112,10 +115,10 @@ fn occluded(li: u32, l: vec2<f32>, p: vec2<f32>) -> bool {
     // Walk only the light's own block: the range table's `start..end` for
     // light `li`, in vec4 units from the tail's start. The packer put into
     // that block every occluder whose bounds reach this light's rays at a
-    // visible pixel, and only those — so an empty block answers "nothing
-    // stands in the way" without a single record load, and a full one is
-    // the walk the global field used to demand of every light, narrowed
-    // to the records that could honestly block this ray.
+    // pixel the light reaches, and only those — so an empty block answers
+    // "nothing stands in the way" without a single record load, and a full
+    // one is the walk the global field used to demand of every light,
+    // narrowed to the records that could honestly block this ray.
     let range = occluders.occluders[li];
     var base = u32(range.x);
     let end = u32(range.y);
@@ -229,15 +232,35 @@ fn light_mix(p: vec2<f32>) -> vec3<f32> {
         // that axis through `p`. Everything downstream — the gate, the
         // penumbra taps, the occlusion ray — then treats `src` as if it
         // were an ordinary point light's position, so the parallel case
-        // costs nothing new. A point or cone light (radius >= 0) keeps
-        // `src` as its own position and the distance falloff unchanged.
+        // costs nothing new.
         let directional = l.z < 0.0;
+        // The reach reject, and the falloff it rides on. A point or cone
+        // light (radius >= 0) contributes `f * f` of itself to a pixel,
+        // and past its radius `f` is zero — so the loop used to walk the
+        // light's whole occluder block for pixels the light could not
+        // touch even a fraction of, paying every slab test to multiply
+        // the answer by nothing. A squared-distance test stands in front
+        // of the entire body instead: a pixel outside a lamp's reach
+        // asks that lamp nothing at all. `rr` carries the `max` the
+        // falloff always applied — a light of radius under 1e-4 still
+        // lights the pixel it sits on, and the reject agrees with the
+        // old `f` to the last ulp of the radius — it skips only where
+        // the old contribution was zero. Skipped with it is the light's
+        // whole arithmetic, gate and shadow rays included — which is the
+        // whole point: the lamps of a lit scene reach a fraction of the
+        // screen each, and every pixel outside every one of them used to
+        // walk every one of their occluder blocks to add nothing.
+        var f = 1.0;
+        if (!directional) {
+            let to = p - l.xy;
+            let d2 = dot(to, to);
+            let rr = max(l.z, 1e-4);
+            if (d2 >= rr * rr) {
+                continue;
+            }
+            f = 1.0 - sqrt(d2) / rr;
+        }
         let src = select(l.xy, p - cone.xy * SHADOW_RANGE, directional);
-        let f = select(
-            max(0.0, 1.0 - distance(p, l.xy) / max(l.z, 1e-4)),
-            1.0,
-            directional,
-        );
         // The cone gate, as a 0..1 factor: omni and unfeathered cones
         // keep the hard test, without normalizing d so the pixel at the
         // light's own position stays inside the cone. An omni light's

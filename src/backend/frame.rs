@@ -1171,15 +1171,25 @@ fn push_master(
 }
 
 /// The region a light's shadow rays can ever traverse, given that only
-/// pixels inside the viewport ask the question. Every light-to-pixel
-/// segment lies inside the convex hull of the light and the window — so an
-/// occluder whose bounds miss that hull blocks nothing in this frame and
-/// need never be walked. A directional light's rays are parallel, sweeping
-/// the window back along the axis by [`SHADOW_RANGE`]; the axis-aligned
-/// box around that parallelogram is the conservative region.
+/// pixels inside the viewport ask the question — and, for a ranged light,
+/// only pixels the light actually reaches answer it at all. A directional
+/// light's rays are parallel, sweeping the window back along the axis by
+/// [`SHADOW_RANGE`]; the axis-aligned box around that parallelogram is the
+/// conservative region, exactly as the whole window lights. A ranged
+/// (point or cone) light is different in kind: `light_mix` rejects pixels
+/// past the falloff radius before a single ray issues (the reach reject in
+/// `shaders/lighting.wgsl`), so the only segments that can ever matter run
+/// from a point of the light's own penumbra disk to a pixel within the
+/// radius of it — and a segment between two points of a disk never leaves
+/// it. The disk around the light holding every one of those segments is
+/// then the whole region: radius `max(falloff, penumbra * √2)`, the
+/// penumbra term sized to the corner taps of the nine-point grid. An
+/// occluder whose bounds miss the region blocks nothing that any pixel
+/// will show, and need never be walked.
 enum RayRegion {
     Hull(Vec<[f32; 2]>),
     Bounds([f32; 4]),
+    Disc { center: [f32; 2], radius: f32 },
 }
 
 fn region_hits(region: &RayRegion, bounds: &[f32; 4]) -> bool {
@@ -1188,7 +1198,71 @@ fn region_hits(region: &RayRegion, bounds: &[f32; 4]) -> bool {
             r[0] <= bounds[2] && bounds[0] <= r[2] && r[1] <= bounds[3] && bounds[1] <= r[3]
         }
         RayRegion::Hull(hull) => aabb_hull_overlap(bounds, hull),
+        RayRegion::Disc { center, radius } => {
+            // Disk against axis-aligned box: the box's point nearest the
+            // center, found by clamping the center into the box on each
+            // axis; the distance to it, squared, against the radius
+            // squared. Touching counts as hitting — the conservative
+            // direction, as everywhere in this cull.
+            let dx = (bounds[0] - center[0]).max(center[0] - bounds[2]).max(0.0);
+            let dy = (bounds[1] - center[1]).max(center[1] - bounds[3]).max(0.0);
+            dx * dx + dy * dy <= radius * radius
+        }
     }
+}
+
+/// The regions one light's shadow rays sweep, as a [`RayRegion`] per
+/// necessary truth: an occluder joins the light's block only when its
+/// bounds hit *every* one of them, so each truth added is culling bought
+/// for the price of one overlap test per record. A directional light
+/// sweeps the parallelogram the window drags back along its axis, which
+/// is its one truth and the whole story. A ranged light answers to two:
+/// its rays still only run to visible pixels, so its bounds must hit the
+/// light-window hull as ever — and since the shader asks nothing past the
+/// falloff radius, they must also hit the disk of contributing rays
+/// around the light, sized `max(falloff, penumbra * √2)` as
+/// [`RayRegion::Disc`] argues. Which of the two bites harder depends on
+/// the light: a lamp of a few hundred pixels on a busy screen is held to
+/// its disk, a distant floodlight of enormous radius to its hull.
+fn ray_regions(
+    pos: [f32; 2],
+    radius: f32,
+    penumbra: f32,
+    dir: [f32; 2],
+    viewport: [f32; 2],
+) -> Vec<RayRegion> {
+    if radius < 0.0 {
+        let (dx, dy) = (-dir[0] * SHADOW_RANGE, -dir[1] * SHADOW_RANGE);
+        let corners = [
+            [0.0, 0.0],
+            [viewport[0], 0.0],
+            [viewport[0], viewport[1]],
+            [0.0, viewport[1]],
+        ];
+        let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for c in corners
+            .into_iter()
+            .chain(corners.into_iter().map(|c| [c[0] + dx, c[1] + dy]))
+        {
+            b[0] = b[0].min(c[0]);
+            b[1] = b[1].min(c[1]);
+            b[2] = b[2].max(c[0]);
+            b[3] = b[3].max(c[1]);
+        }
+        return vec![RayRegion::Bounds(b)];
+    }
+    vec![
+        RayRegion::Hull(light_window_hull(pos, viewport)),
+        RayRegion::Disc {
+            center: pos,
+            // The hairline keeps touching — as opposed to cleanly
+            // separated — records in, the same courtesy
+            // `aabb_hull_overlap` extends, so the packer's disk and the
+            // shader's rays cannot disagree across a rounding of the
+            // radius alone.
+            radius: radius.max(1e-4).max(penumbra * std::f32::consts::SQRT_2) + 1e-3,
+        },
+    ]
 }
 
 /// The convex hull of the light's position and the whole window — five
@@ -1292,15 +1366,15 @@ fn aabb_hull_overlap(a: &[f32; 4], hull: &[[f32; 2]]) -> bool {
 /// is ignored.
 ///
 /// That master list is then culled per light: an occluder enters a light's
-/// block when its world bounds overlap the region that light's shadow rays
-/// sweep (see [`RayRegion`]) — conservative by construction, since every
-/// segment from a light to a pixel inside `viewport` lies inside the region,
-/// so what the cull drops could never have blocked a visible pixel. The
-/// fragment shader walks only its own light's block, which turns the
-/// per-pixel cost from `lights × all-occluders` into `lights ×
-/// near-occluders`; the safety property is pinned by
-/// `the_cull_keeps_every_occluder_that_could_block` in
-/// `backend/tests/fields.rs`.
+/// block when its world bounds hit every region that light's shadow rays
+/// sweep (see [`RayRegion`] and [`ray_regions`]) — conservative by
+/// construction, since every segment from the light's disk to a pixel the
+/// light will ever light lies inside every one of the regions, so what the
+/// cull drops could never have blocked a lit pixel. The fragment shader
+/// walks only its own light's block, which turns the per-pixel cost from
+/// `lights × all-occluders` into `lit-lights × near-occluders`; the safety
+/// property is pinned by `the_cull_keeps_every_occluder_that_could_block`
+/// in `backend/tests/fields.rs`.
 ///
 /// The lights cut here are the `Draw::Light`s of `draws` — the frame must
 /// pack the light field and the occluder field from the same draw list,
@@ -1397,36 +1471,22 @@ pub(crate) fn pack_occluder_field(
     }
     for (i, light) in lights.iter().enumerate() {
         let Draw::Light {
-            pos, radius, dir, ..
+            pos,
+            radius,
+            penumbra,
+            dir,
+            ..
         } = *light
         else {
             unreachable!("filtered to lights")
         };
-        let region = if *radius < 0.0 {
-            let (dx, dy) = (-dir[0] * SHADOW_RANGE, -dir[1] * SHADOW_RANGE);
-            let corners = [
-                [0.0, 0.0],
-                [viewport[0], 0.0],
-                [viewport[0], viewport[1]],
-                [0.0, viewport[1]],
-            ];
-            let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
-            for c in corners
-                .into_iter()
-                .chain(corners.into_iter().map(|c| [c[0] + dx, c[1] + dy]))
-            {
-                b[0] = b[0].min(c[0]);
-                b[1] = b[1].min(c[1]);
-                b[2] = b[2].max(c[0]);
-                b[3] = b[3].max(c[1]);
-            }
-            RayRegion::Bounds(b)
-        } else {
-            RayRegion::Hull(light_window_hull(*pos, viewport))
-        };
+        let regions = ray_regions(*pos, *radius, *penumbra, *dir, viewport);
         let start = ((cursor - tail) / 16) as f32;
         for record in &master {
-            if !region_hits(&region, &record.bounds) {
+            if !regions
+                .iter()
+                .all(|region| region_hits(region, &record.bounds))
+            {
                 continue;
             }
             let span = record.bytes.len();
