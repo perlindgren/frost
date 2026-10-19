@@ -52,6 +52,25 @@ const DEEP_PARALLAX: f32 = 0.85;
 /// or on an ant.
 const BG_SHADOW_LAYER: LightLayers = LightLayers::layer(1);
 
+/// Fits the hill's node pool to the frame: grows with plain defaults,
+/// shrinks by truncation — and sweeps every listener the surviving
+/// nodes carry back to the default set. The pool survives hills, and
+/// so do the fields its roles set: the deep parallax sheet listens on
+/// [`BG_SHADOW_LAYER`], and it sits at the pool's last slot, which the
+/// next — larger — hill hands to some other role. A pooled node that
+/// kept that listener would draw tile shadows onto an ant shell or a
+/// bed, surfaces the hill shadows nothing; the sweep is where a
+/// listener learns it no longer listens.
+fn fit_pool(root: &mut SceneNode, slots: usize) {
+    while root.children.len() < slots {
+        root.children.push(Box::new(SceneNode::default()));
+    }
+    root.children.truncate(slots);
+    for node in root.children.iter_mut() {
+        node.lit_layers = LightLayers::default();
+    }
+}
+
 /// The backdrop: one soil texture stretched cover-first across the window,
 /// under every tile. The hairline gaps between tiles and the void past the
 /// hill's edge read as earth instead of as a screen.
@@ -2331,13 +2350,7 @@ impl Demo {
         // beacon and a sprite per bed (two apiece), and the two
         // backdrop sprites.
         let slots = LEAVES.len() + game.ants.len() * 2 + 6 + game.level.beds.len() * 2;
-        {
-            let root = &mut ctx.scene().root;
-            while root.children.len() < slots {
-                root.children.push(Box::new(SceneNode::default()));
-            }
-            root.children.truncate(slots);
-        }
+        fit_pool(&mut ctx.scene().root, slots);
         // Every ant is a lamp, and every lamp breathes: at rest a
         // gentle sway, working a deeper faster pulse, and stopping
         // winds the pace down by degrees. Asleep keeps only a faint
@@ -2478,9 +2491,12 @@ impl Demo {
                 b: 1.0,
                 a: 1.0,
             };
-            // Lit but not occluding: a lamp near the edge throws its
-            // emission onto the surrounding ground through the border
-            // hairlines, and the frame's own shadows do the rest.
+            // Lit but not occluding — and, listening on plain layer 0
+            // like everything but the sheet, not shadowed either: a
+            // lamp near the edge throws its emission onto the
+            // surrounding ground through the border hairlines, and
+            // the tiles' shadows stay where they belong, on the sky
+            // behind the hill.
             node.lit = true;
             node.order = -0.4;
         }
@@ -6327,6 +6343,37 @@ mod menu_tests {
         assert!(d.lesson().is_some(), "back on the first, the card is up");
         d.page = Page::Main;
         assert!(d.lesson().is_none(), "behind the menu the lesson waits");
+    }
+
+    #[test]
+    fn the_pool_hands_on_no_shadow_listeners() {
+        // The deep parallax sheet listens on the shadow layer from
+        // the pool's last slot, and a bigger hill hands that very
+        // node to another role. Fitting the pool must hand the
+        // listener back to plain layer 0 — a stale one would draw the
+        // hill's tile shadows onto an ant shell or a bed, surfaces
+        // the hill shadows nothing.
+        let mut root = SceneNode::default();
+        fit_pool(&mut root, 3);
+        root.children[2].lit_layers = LightLayers::default() | BG_SHADOW_LAYER;
+        fit_pool(&mut root, 5);
+        assert!(
+            root.children[..5]
+                .iter()
+                .all(|n| n.lit_layers == LightLayers::default()),
+            "the grown pool carries no leftover listener"
+        );
+        // And the sweep asks nothing of the slot: a listener planted
+        // anywhere in the pool answers to the default after a fit,
+        // whatever the pool's new size.
+        root.children[0].lit_layers = BG_SHADOW_LAYER;
+        fit_pool(&mut root, 2);
+        assert_eq!(root.children.len(), 2, "the fit hands back the size");
+        assert_eq!(
+            root.children[0].lit_layers,
+            LightLayers::default(),
+            "the shrunken pool carries no leftover listener either"
+        );
     }
 
     #[test]
