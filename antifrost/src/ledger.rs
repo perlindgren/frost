@@ -18,10 +18,12 @@ pub const MOVES_CAP: i32 = 999;
 /// how deep they ever got (the progress page's list grows down to
 /// here and never back), and the ledger the page reads — every hill
 /// they warmed, in the fewest moves they ever warmed it. It is
-/// written wherever the hill moves — New Game, N, P — and wherever a
-/// hill is won, never on launch and never inside `load`, so starting
-/// the game leaves no fingerprint and a window-manager kill loses
-/// nothing newer than the hill entered or the hill finished. The file
+/// written wherever the hill moves and wherever a hill is won, and
+/// at New Game — which rewrites it from its empty default, the
+/// settings' own file untouched; never on launch and never inside
+/// `load`, so starting the game leaves no fingerprint and a
+/// window-manager kill loses nothing newer than the hill entered or
+/// the hill finished. The file
 /// counts hills the way the HUD does, from one; each score is a
 /// quoted pair, `"hill moves"`, so the hand-written parser stays a
 /// walk down two atoms and nothing more.

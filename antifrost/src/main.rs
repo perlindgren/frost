@@ -477,6 +477,244 @@ fn face_of(dir: game::Dir) -> [f32; 2] {
     }
 }
 
+/// One card of a school hill's lesson: the act the hill is waiting
+/// for, and the word it says while waiting. A school hill deals its
+/// script card by card — while the played log spells the script's
+/// prefix, the next card shows itself: a mark over the queen's head
+/// (one chevron to walk, two to shove) and its word on the note's
+/// floor line. The hill keeps its side of the bargain: while a card
+/// is open the rail lets that card's act through and no other — every
+/// other key, click or shove is turned away at the gate with a word —
+/// so the pupil can neither stray nor strand the lesson; `Z` puts the
+/// card back, `R` deals the deck again.
+struct Lesson {
+    act: game::Act,
+    word: &'static str,
+}
+
+/// What the rail says when it turns an act away — the hill's own
+/// voice, in the note's letters, pointing back at the mark.
+const RAIL_NOTE: &str = "follow the mark";
+
+/// First Warm's script: the walkthrough's winning walk — step right,
+/// climb to the corridor beside `r`, shove it into `R` with the
+/// shift-push, one step home. The colony's first verb: the dunk.
+const FIRST_WARM_LESSON: [Lesson; 5] = [
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Up),
+        word: "move up",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Up),
+        word: "move up",
+    },
+    Lesson {
+        act: game::Act::Push(game::Dir::Right),
+        word: "hold shift and push right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left home",
+    },
+];
+
+/// Attunement's script: five steps due east down the straight hall —
+/// over the empty `R` tile, into `r` (who joins the line and, in the
+/// queen's own wake, falls asleep on `R` with no step to spare), and
+/// on to her bed at the hall's end. The lesson is the wake lock:
+/// walking on is what carries an ant home.
+const ATTUNEMENT_LESSON: [Lesson; 5] = [
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right collect the ant",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right to your bed",
+    },
+];
+
+/// First Cold's script: the walkthrough's nine acts — grab `r`, at
+/// once leave it behind so it sits on the corridor, post it home with
+/// two shoves (the second dunks it onto `R`), then the long walk
+/// home. The lesson is the leave-behind, and the dunk shown before
+/// it is ever needed.
+const FIRST_COLD_LESSON: [Lesson; 9] = [
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left collect the ant",
+    },
+    Lesson {
+        act: game::Act::Detach,
+        word: "press space leave it behind",
+    },
+    Lesson {
+        act: game::Act::Push(game::Dir::Right),
+        word: "hold shift and push right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right",
+    },
+    Lesson {
+        act: game::Act::Push(game::Dir::Right),
+        word: "hold shift and push right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left to your bed",
+    },
+];
+
+/// The hill whose first crossing is taught by the cold tour.
+const FIRST_COLD_HILL: usize = 2;
+
+/// What the cold tour says the moment the walk has spent its
+/// par — the first move a cleverer walk would not have needed.
+const COLD_NOTE: &str = "you are now getting cold";
+
+/// The hill's answer to the cold tour's own praise: the praise
+/// splash spins first like on any win, then this hangs big in the
+/// centre of the world for `BETTER_HOLD` seconds, and the hill
+/// restarts on the better script. In the praise words' own case,
+/// because it answers them.
+const BETTER_NOTE: &str = "YOU CAN DO BETTER";
+
+/// How long the answer holds on the screen before the hill deals
+/// again: three seconds, a held breath.
+const BETTER_HOLD: f32 = 3.0;
+
+/// The answer's size: big — twice the HUD's banner — though it
+/// answers in a sentence, not the splash's single word.
+const BETTER_EM: f32 = 72.0;
+
+/// The cold tour: the walk that works before the clever one.
+/// Grab `r` and walk right along the top — the wake carries the
+/// ant home mid-stride, asleep on `R` while the walk goes on —
+/// then take the long way yourself: the wall, down, the wall the
+/// other side, and up to bed. Eighteen moves where nine will do;
+/// the move past par says the walk is getting cold, and the
+/// finish gets the praise splash like any win — then the hill
+/// answers it, big and centred, and restarts on the better
+/// script. The hill warms on the way, and a warm hill never
+/// deals this deck again.
+const COLD_TOUR_LESSON: [Lesson; 18] = [
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left collect the ant",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right over the bed",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right red warms behind",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Right),
+        word: "move right to the wall",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Down),
+        word: "move down",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Down),
+        word: "move down to the floor",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Left),
+        word: "move left to the wall",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Up),
+        word: "move up",
+    },
+    Lesson {
+        act: game::Act::Move(game::Dir::Up),
+        word: "move up to your bed",
+    },
+];
+
+/// The descent's school hills and their scripts: every lesson the
+/// descent teaches is here, in the hills that teach it. Anywhere
+/// else the hill has no cards and keeps no rail. First Cold is
+/// double-dealt — the cold tour until the hill has been warmed,
+/// the dunk script ever after; `Demo::script` picks the deck.
+fn lesson_script(hill: usize) -> Option<&'static [Lesson]> {
+    match hill {
+        0 => Some(&FIRST_WARM_LESSON),
+        1 => Some(&ATTUNEMENT_LESSON),
+        2 => Some(&FIRST_COLD_LESSON),
+        _ => None,
+    }
+}
+
 /// Per-ant pixel glide: where it is drawn, where it is heading.
 /// One hop's path: a cubic between two cells whose control arms lie
 /// along the directions of travel at either end. Entering and leaving
@@ -1147,6 +1385,17 @@ struct Demo {
     /// between is the exertion's cue; `BREATH_*` turns exertion into
     /// pace and depth.
     breath: HashMap<usize, (f32, f32, [f32; 2], bool)>,
+    /// Has the cold tour said its word about the cold? Armed at
+    /// par, spent above it, and unarmed whenever the walk falls
+    /// back to par (an undo, a restart) or the tour itself ends.
+    cold_noted: bool,
+    /// The win tick marked this hill as the tour's finish: the
+    /// won page is withheld, and when the praise splash fades,
+    /// the answer goes up (`cold_better`) and the hill restarts.
+    cold_pending: bool,
+    /// Seconds left on the centred answer; it restarts the hill
+    /// as it runs out.
+    cold_better: f32,
     note_t: f32,
     frost_t: f32,
     frost_bit: bool,
@@ -1323,6 +1572,9 @@ impl Demo {
             landing: HashMap::new(),
             player_home: None,
             breath: HashMap::new(),
+            cold_noted: false,
+            cold_pending: false,
+            cold_better: 0.0,
             note_t: 0.0,
             frost_t: 0.0,
             frost_bit: false,
@@ -2470,6 +2722,27 @@ impl Demo {
     /// Draw the verdict: one clean spin from a speck, eased so the
     /// speck lingers tiny before it blooms to half the screen; a
     /// heartbeat at full size; then the fade to the hill's own words.
+    /// The cold tour's answer to its own praise: hung at the
+    /// centre of the screen in the praise words' own case, twice
+    /// the banner's size, held over the still won hill while
+    /// `cold_better` counts down. The hill deals again — on its
+    /// better script — as the hold runs out.
+    fn draw_better(&self, ctx: &mut Context) {
+        if self.cold_better <= 0.0 {
+            return;
+        }
+        ctx.text(
+            0.0,
+            0.0,
+            &self.font,
+            BETTER_NOTE.to_string(),
+            BETTER_EM,
+            600.0,
+            C_TEXT,
+            UI + 1.0,
+        );
+    }
+
     fn draw_splash(&self, ctx: &mut Context) {
         let Some(s) = &self.splash else { return };
         let (w, _) = self.view(ctx);
@@ -2727,6 +3000,119 @@ impl Demo {
         })
     }
 
+    /// The lesson card the hill underfoot is teaching right now: the
+    /// script's next card while the played log spells the script's
+    /// prefix — and nothing at all elsewhere. Not on the forty-seven
+    /// hills that keep no script, not behind a page, not during a
+    /// showing (whose walk is the ledger's, not a pupil's), not once
+    /// the hill sleeps. The rail below makes the prefix check a
+    /// formality on a played hill — no act but a card's ever reaches
+    /// the log — yet the card reads the log, not the rail, so a hand
+    /// at the code stays as untrusted as a hand at the file.
+    fn lesson(&self) -> Option<&'static Lesson> {
+        if self.page != Page::Game || self.replay.is_some() {
+            return None;
+        }
+        let script = self.script()?;
+        let game = self.game.as_ref()?;
+        if game.won || game.log.len() >= script.len() {
+            return None;
+        }
+        game.log
+            .iter()
+            .zip(script)
+            .all(|(a, l)| *a == l.act)
+            .then_some(&script[game.log.len()])
+    }
+
+    /// Has the ledger ever held this hill?
+    fn warmed(&self, hill: usize) -> bool {
+        self.progress.scores.iter().any(|(h, _)| *h == hill)
+    }
+
+    /// The cold tour: First Cold's first crossing, taught the long
+    /// way round. The tour ends the moment the ledger holds the hill
+    /// — however it was warmed — and never returns to it.
+    fn cold_tour(&self) -> bool {
+        self.idx == FIRST_COLD_HILL && !self.warmed(FIRST_COLD_HILL)
+    }
+
+    /// The lesson script for the hill underfoot: on the cold ring
+    /// before it has ever been finished, the cold tour — the long
+    /// walk, taught first; on a warmed ring, and on every other
+    /// school hill, the hill's own script.
+    fn script(&self) -> Option<&'static [Lesson]> {
+        if self.cold_tour() {
+            return Some(&COLD_TOUR_LESSON);
+        }
+        lesson_script(self.idx)
+    }
+
+    /// The rail: does the tutorial let this act through? On a school
+    /// hill, while a card is open, only the card's own act answers;
+    /// every verb the script does not call for — the wrong way to
+    /// walk, a walk where a shove is asked, a shove where the card
+    /// says walk, a leave-behind nobody asked for — is refused at the
+    /// gate. No card, no rail: the other forty-seven hills answer to
+    /// everything, and so does a hill whose lesson is finished.
+    fn rail_opens(&self, a: game::Act) -> bool {
+        self.lesson().is_none_or(|card| card.act == a)
+    }
+
+    /// The card made visible: a chevron aimed the act's way hangs
+    /// over the queen's head — riding the hill, since it follows
+    /// her gliding `player_at` — doubled for a shove, the second
+    /// mark stepped back along the aim. The word sits on the
+    /// note's floor-side seat, standing a line higher when a note
+    /// is up with it, the same courtesy the showing pays.
+    fn draw_lesson(&self, ctx: &mut Context, card: &Lesson) {
+        let (_, h) = self.view(ctx);
+        let [sx, sy] = self.screen([self.player_at[0], self.player_at[1] + TILE * 0.95]);
+        let dir = match card.act {
+            game::Act::Move(d) | game::Act::Push(d) => face_of(d),
+            // A leave-behind aims nowhere: its mark points down —
+            // the ant stepping off the line, out of the wake, and
+            // left where it stands.
+            game::Act::Detach => [0.0, -1.0],
+        };
+        // One chevron walks, two shove — the alphabet's own case
+        // distinction, told in marks instead of letters.
+        let marks = usize::from(matches!(card.act, game::Act::Push(_))) + 1;
+        let ang = dir[1].atan2(dir[0]) - std::f32::consts::FRAC_PI_2;
+        let (s, c) = (ang.sin(), ang.cos());
+        for k in 0..marks {
+            let at = [sx - dir[0] * k as f32 * 26.0, sy - dir[1] * k as f32 * 26.0];
+            // The base chevron points up; spin it onto the aim.
+            let spin = |p: [f32; 2]| [p[0] * c - p[1] * s + at[0], p[0] * s + p[1] * c + at[1]];
+            ctx.scene().root.children.push(Box::new(SceneNode {
+                order: UI + 1.0,
+                modulate: Color {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 0.9,
+                },
+                shape: Some(frost::Shape::Polyline {
+                    points: vec![spin([-17.0, -9.0]), spin([0.0, 9.0]), spin([17.0, -9.0])],
+                    width: 5.0,
+                    color: C_TEXT,
+                }),
+                ..Default::default()
+            }));
+        }
+        let seat = if self.note_t > 0.0 { 60.0 } else { 26.0 };
+        ctx.text(
+            0.0,
+            -h / 2.0 + seat,
+            &self.font,
+            card.word.to_string(),
+            30.0,
+            600.0,
+            C_NOTE,
+            UI + 1.0,
+        );
+    }
+
     fn draw_hud(&self, ctx: &mut Context) {
         let Some(game) = &self.game else { return };
         let (_, h) = self.view(ctx);
@@ -2819,6 +3205,12 @@ impl Demo {
                 C_NOTE,
                 UI + 1.0,
             );
+        }
+        // School hills keep their lesson open while the walk follows
+        // the script: a mark over the queen, a word at the foot.
+        // Elsewhere, and off the line, `lesson` is silent.
+        if let Some(card) = self.lesson() {
+            self.draw_lesson(ctx, card);
         }
     }
 
@@ -3309,7 +3701,6 @@ impl Demo {
         match action {
             Action::New => {
                 self.new_game();
-                self.progress.stood(self.idx);
                 self.progress.save();
             }
             Action::Resume => self.page = Page::Game,
@@ -3847,14 +4238,17 @@ impl Demo {
         rows
     }
 
-    /// New Game: the descent restarts at the first hill. Every stat
-    /// the game keeps lives inside `Game::start`'s fresh state, and
-    /// `load` already sweeps the extras the demo layers on top —
+    /// New Game: the descent restarts at the first hill and the
+    /// ledger returns to its empty default — no scores, no routes,
+    /// no depth — so the save starts its record from here. The
+    /// settings live under their own name and stay untouched. Every
+    /// stat the game keeps lives inside `Game::start`'s fresh state,
+    /// and `load` already sweeps the extras the demo layers on top —
     /// queued steps, drifting zs, the frost's claim, verdicts; the
-    /// saved progress is rewritten by the caller, which owns when
-    /// the disc learns of it. Then the page steps aside and the hill
-    /// plays.
+    /// caller owns when the disc learns of the restarted ledger.
+    /// Then the page steps aside and the hill plays.
     fn new_game(&mut self) {
+        self.progress = Progress::default();
         self.load(0);
         self.page = Page::Game;
     }
@@ -3869,6 +4263,16 @@ impl Demo {
             || self.spin.is_some()
             || !closer(self.player_at, self.player_target)
         {
+            return;
+        }
+        // The rail walks the pointer's route too: a first step the
+        // open card does not name never starts — no turn, no hop,
+        // just the gate and its word. A route that follows the card
+        // walks until it doesn't, and parts there.
+        if !self.rail_opens(game::Act::Move(self.route[0])) {
+            self.route.clear();
+            self.note = RAIL_NOTE.to_string();
+            self.note_t = 1.6;
             return;
         }
         // A reversal of the travelling direction is a turn, not a
@@ -4398,6 +4802,14 @@ impl Process for Demo {
             let detach_click = click_right;
             let undo = self.pressed(ctx, KeyCode::KeyZ);
             let restart = self.pressed(ctx, KeyCode::KeyR);
+            // The tutorial rail answers for the hill before the hill
+            // is even handed out: while a school hill keeps a card
+            // open, that card's act is the only input the gate lets
+            // through — keys, clicks and shoves alike. Undo and
+            // restart keep their keys: a pupil may always step back
+            // to the card, and the deck always re-deals.
+            let rail = self.lesson().map(|c| c.act);
+            let rail_opens = move |a: game::Act| rail.is_none_or(|want| want == a);
             // N and P retired with their legend line: leaving a
             // finished hill belongs to the won page's two rows,
             // which answer to click and Enter alike — a control
@@ -4425,21 +4837,43 @@ impl Process for Demo {
                     self.route.clear();
                 } else if (detach || detach_click) && !game.won {
                     self.route.clear();
-                    let _ = game.act(game::Act::Detach);
+                    if rail_opens(game::Act::Detach) {
+                        let _ = game.act(game::Act::Detach);
+                    } else {
+                        self.note = RAIL_NOTE.to_string();
+                        self.note_t = 1.6;
+                    }
                 } else if let Some(dir) = push_aim.filter(|_| !game.won) {
                     // The shove itself is the game's; the pusher faces
                     // the aim like the keys do, and a push — like the
                     // keyboard's — never carries the pusher along. A
-                    // refusal says why, in the game's own words.
+                    // refusal says why, in the game's own words; the
+                    // rail's refusal says only where to look, and the
+                    // ant does not even turn to aim a refused shove.
                     self.route.clear();
-                    self.face = face_of(dir);
-                    if let Err(why) = game.act(game::Act::Push(dir)) {
-                        self.note = why.to_string();
+                    if rail_opens(game::Act::Push(dir)) {
+                        self.face = face_of(dir);
+                        if let Err(why) = game.act(game::Act::Push(dir)) {
+                            self.note = why.to_string();
+                            self.note_t = 1.6;
+                        }
+                    } else {
+                        self.note = RAIL_NOTE.to_string();
                         self.note_t = 1.6;
                     }
                 } else if let Some((dir, push)) = action.filter(|_| !game.won) {
                     self.route.clear();
-                    if push {
+                    let asked = if push {
+                        game::Act::Push(dir)
+                    } else {
+                        game::Act::Move(dir)
+                    };
+                    if !rail_opens(asked) {
+                        // Refused at the gate: no turn, no shove, no
+                        // step — as if the key had never been struck.
+                        self.note = RAIL_NOTE.to_string();
+                        self.note_t = 1.6;
+                    } else if push {
                         // A push never moves the pusher, so no glide will
                         // carry its facing — turn by hand.
                         self.face = face_of(dir);
@@ -4548,6 +4982,41 @@ impl Process for Demo {
             self.spin = None;
             self.player_face = s;
         }
+        // The cold tour watches its own cost. When the walk has
+        // spent its par — the first step a cleverer walk would not
+        // have needed — the hill says the walk is getting cold,
+        // once; falling back to par (an undo, a restart) arms the
+        // word again, and leaving the tour unarms it for good.
+        {
+            let tour = self.cold_tour();
+            let watch = self.game.as_ref().map(|g| (g.moves, g.level.par, g.won));
+            match watch {
+                Some((moves, par, false)) if tour => {
+                    if moves > par && !self.cold_noted {
+                        self.cold_noted = true;
+                        self.note = COLD_NOTE.to_string();
+                        self.note_t = 2.4;
+                    } else if moves <= par {
+                        self.cold_noted = false;
+                    }
+                }
+                _ => self.cold_noted = false,
+            }
+        }
+        // And when the long walk finishes, the praise is allowed:
+        // the ordinary splash spins ("YOUR DID IT", for eighteen
+        // where nine will do) and the ledger takes the score and
+        // the walk as it takes any win. The won page is not: the
+        // win tick marks the hill, and when the praise has faded
+        // the hill answers its own praise — big and centred, a
+        // held breath — and restarts on the nine-move script.
+        if self.cold_tour()
+            && self.page == Page::Game
+            && self.replay.is_none()
+            && self.game.as_ref().is_some_and(|g| g.won)
+        {
+            self.cold_pending = true;
+        }
         // A won hill hands the player their two ways off it — but
         // only after the splash has spun, held, and faded: the word
         // comes first, then the panel and the verdict together. A
@@ -4556,6 +5025,8 @@ impl Process for Demo {
         if self.page == Page::Game
             && self.replay.is_none()
             && self.splash_done
+            && !self.cold_pending
+            && self.cold_better <= 0.0
             && self.game.as_ref().is_some_and(|g| g.won)
         {
             self.page = Page::Won;
@@ -4621,6 +5092,24 @@ impl Process for Demo {
                 self.splash_done = true;
             }
         }
+        // The tour's answer to its own praise: the moment the
+        // splash has faded, the words go up in the centre for a
+        // held three seconds, and the hill deals again beneath
+        // them — warm now, so the cards it deals are the better
+        // script.
+        if self.cold_pending && self.splash.is_none() && self.splash_done {
+            self.cold_pending = false;
+            self.cold_better = BETTER_HOLD;
+        }
+        if self.cold_better > 0.0 {
+            self.cold_better -= dt;
+            if self.cold_better <= 0.0 {
+                self.cold_better = 0.0;
+                let hill = self.idx;
+                self.load(hill);
+                self.page = Page::Game;
+            }
+        }
         self.refresh(dt);
         self.update_camera(ctx, dt);
         if self.page == Page::Game {
@@ -4641,6 +5130,7 @@ impl Process for Demo {
         self.draw_ants(ctx, dt);
         self.draw_hud(ctx);
         self.draw_splash(ctx);
+        self.draw_better(ctx);
         if self.menu_alpha > 0.002 {
             self.draw_menu(ctx);
         }
@@ -5594,6 +6084,296 @@ mod menu_tests {
             "the board forgot the step"
         );
         assert_eq!(d.page, Page::Game, "and the hill plays on");
+    }
+
+    #[test]
+    fn new_game_restores_the_empty_ledger() {
+        // The menu's New Game row rewinds the save to its empty
+        // default: every number, walk and depth the ledger ever
+        // kept is forgotten, and the descent restarts its record
+        // from the first hill. The settings keep their own file and
+        // are never part of the rewind.
+        let mut d = demo();
+        d.progress.record_run(3, 40, "rrrddd");
+        d.progress.stood(2);
+        assert!(
+            !d.progress.scores.is_empty() && d.progress.reached > 0,
+            "there must be a history to erase"
+        );
+        d.new_game();
+        assert_eq!(
+            d.progress,
+            Progress::default(),
+            "the save returns to its empty default"
+        );
+        assert_eq!(d.idx, 0, "the descent restarts at the first hill");
+    }
+
+    #[test]
+    fn the_first_hill_lessons_its_walk_card_by_card() {
+        let mut d = demo();
+        d.page = Page::Game;
+        let script: Vec<game::Act> = FIRST_WARM_LESSON.iter().map(|l| l.act).collect();
+        assert_eq!(
+            d.lesson().map(|l| l.act),
+            script.first().copied(),
+            "the hill opens on its first card"
+        );
+        for (i, a) in script.iter().enumerate() {
+            d.game
+                .as_mut()
+                .expect("the hill stands loaded")
+                .act(*a)
+                .expect("the lesson's walk is legal");
+            let next = d.lesson().map(|l| l.act);
+            if i + 1 < script.len() {
+                assert_eq!(
+                    next,
+                    script.get(i + 1).copied(),
+                    "card {i} hands over the next"
+                );
+            } else {
+                assert_eq!(next, None, "the won hill keeps no card");
+            }
+        }
+    }
+
+    #[test]
+    fn the_second_hill_lessons_the_straight_hall() {
+        let mut d = demo();
+        d.page = Page::Game;
+        d.load(1);
+        let script: Vec<game::Act> = ATTUNEMENT_LESSON.iter().map(|l| l.act).collect();
+        assert_eq!(
+            d.lesson().map(|l| l.act),
+            script.first().copied(),
+            "the hall opens on its first card"
+        );
+        for (i, a) in script.iter().enumerate() {
+            assert!(d.rail_opens(*a), "the hall's rail asks card {i}");
+            assert!(
+                !d.rail_opens(game::Act::Detach),
+                "and nothing else: card {i} admits the hall's one verb"
+            );
+            d.game
+                .as_mut()
+                .expect("the hall stands loaded")
+                .act(*a)
+                .expect("the hall's walk is legal");
+            if i == 1 {
+                // The lesson's own point, caught in the act: the
+                // collected ant sleeps on R in the queen's wake, no
+                // steps to spare.
+                assert_eq!(
+                    d.game.as_ref().expect("still walking").ants_asleep(),
+                    1,
+                    "the ant fell asleep on R in the wake"
+                );
+            }
+        }
+        let g = d.game.as_ref().expect("still loaded");
+        assert!(g.won, "five steps east and the hall is warm");
+        assert!(d.lesson().is_none(), "a warmed hall keeps no card");
+        assert!(
+            d.rail_opens(game::Act::Detach),
+            "and lifts its rail with the lesson"
+        );
+    }
+
+    #[test]
+    fn the_third_hill_lessons_the_dunk() {
+        let mut d = demo();
+        d.page = Page::Game;
+        // The dunk lesson is the hill's lesson after the cold tour;
+        // a warm hill — however it was warmed — opens on these cards.
+        d.progress.record(2, 40);
+        d.load(2);
+        let script: Vec<game::Act> = FIRST_COLD_LESSON.iter().map(|l| l.act).collect();
+        assert_eq!(
+            d.lesson().map(|l| l.act),
+            script.first().copied(),
+            "the cold ring opens on its first card"
+        );
+        for (i, a) in script.iter().enumerate() {
+            assert!(d.rail_opens(*a), "the ring's rail asks card {i}");
+            if *a != game::Act::Detach {
+                // The leave-behind answers only when the card asks
+                // for it: the verb is taught, not lying about loose.
+                assert!(
+                    !d.rail_opens(game::Act::Detach),
+                    "card {i} gates the leave-behind"
+                );
+            }
+            d.game
+                .as_mut()
+                .expect("the ring stands loaded")
+                .act(*a)
+                .expect("the ring's walk is legal");
+            if i == 4 {
+                assert_eq!(
+                    d.game.as_ref().expect("still walking").ants_asleep(),
+                    1,
+                    "the second shove dunks r onto R"
+                );
+            }
+        }
+        let g = d.game.as_ref().expect("still loaded");
+        assert!(g.won, "nine acts and the cold ring is warm");
+        assert!(d.lesson().is_none(), "a warmed ring keeps no card");
+        assert!(
+            d.rail_opens(game::Act::Detach),
+            "and lifts its rail with the lesson"
+        );
+    }
+
+    #[test]
+    fn the_cold_tour_walks_the_long_way_before_the_lesson() {
+        let mut d = demo();
+        d.page = Page::Game;
+        d.load(2);
+        let script: Vec<game::Act> = COLD_TOUR_LESSON.iter().map(|l| l.act).collect();
+        assert_eq!(
+            d.lesson().map(|l| l.act),
+            script.first().copied(),
+            "the cold ring opens on its long way"
+        );
+        for (i, a) in script.iter().enumerate() {
+            assert!(d.rail_opens(*a), "the rail asks tour card {i}");
+            d.game
+                .as_mut()
+                .expect("the ring stands loaded")
+                .act(*a)
+                .expect("the tour's walk is legal");
+            if i == 4 {
+                assert_eq!(
+                    d.game.as_ref().expect("still walking").ants_asleep(),
+                    1,
+                    "the wake carries r home while the walk goes on"
+                );
+            }
+        }
+        let (won, moves) = {
+            let g = d.game.as_ref().expect("still walking");
+            (g.won, g.moves)
+        };
+        assert!(won, "the long way is still a way");
+        assert_eq!(moves, 18, "eighteen moves where nine will do");
+        // And the tour's ledger is the lesson's opening: the update
+        // loop records this same walk and restarts the hill on the
+        // win tick; a warm hill answers only to the better script.
+        d.progress.record(2, moves);
+        d.load(2);
+        d.game
+            .as_mut()
+            .expect("reloaded")
+            .act(game::Act::Move(game::Dir::Left))
+            .expect("both decks open with the same grab");
+        assert_eq!(
+            d.lesson().map(|l| l.act),
+            Some(game::Act::Detach),
+            "the warmed hill teaches the leave-behind, not the walk"
+        );
+    }
+
+    #[test]
+    fn a_step_off_the_lesson_silences_it_and_undo_calls_it_back() {
+        let mut d = demo();
+        d.page = Page::Game;
+        assert!(d.lesson().is_some(), "the first hill opens with a card");
+        // The first card says right; a walk up is legal and off the
+        // line, and the hill keeps its own counsel about it.
+        d.game
+            .as_mut()
+            .expect("a hill is loaded")
+            .act(game::Act::Move(game::Dir::Up))
+            .expect("the shaft above the start is open");
+        assert!(d.lesson().is_none(), "off the script, silence");
+        d.game.as_mut().expect("still loaded").undo();
+        assert_eq!(
+            d.lesson().map(|l| l.act),
+            Some(game::Act::Move(game::Dir::Right)),
+            "the undone step puts the card back"
+        );
+    }
+
+    #[test]
+    fn no_other_hill_and_no_other_page_keeps_a_lesson_open() {
+        let mut d = demo();
+        d.page = Page::Game;
+        d.load(3);
+        assert!(d.lesson().is_none(), "the fourth hill teaches nothing");
+        d.load(2);
+        assert!(d.lesson().is_some(), "the third hill keeps its cards too");
+        d.load(0);
+        assert!(d.lesson().is_some(), "back on the first, the card is up");
+        d.page = Page::Main;
+        assert!(d.lesson().is_none(), "behind the menu the lesson waits");
+    }
+
+    #[test]
+    fn the_tutorial_hill_answers_to_the_card_alone() {
+        let mut d = demo();
+        d.page = Page::Game;
+        // The first card walks right; nothing else opens the gate.
+        for a in [
+            game::Act::Move(game::Dir::Left),
+            game::Act::Move(game::Dir::Up),
+            game::Act::Move(game::Dir::Down),
+            game::Act::Push(game::Dir::Right),
+            game::Act::Detach,
+        ] {
+            assert!(
+                !d.rail_opens(a),
+                "the rail refuses {a:?} while the card says right"
+            );
+        }
+        assert!(d.rail_opens(game::Act::Move(game::Dir::Right)));
+        // The gate follows the cards: a log walked through the
+        // script is asked each act in its turn — and once the hill
+        // sleeps, the gate lifts with the lesson.
+        for l in &FIRST_WARM_LESSON {
+            assert!(d.rail_opens(l.act), "the open card admits its own act");
+            d.game
+                .as_mut()
+                .expect("the hill stands loaded")
+                .act(l.act)
+                .expect("the script is legal");
+        }
+        assert!(d.rail_opens(game::Act::Detach), "a won hill keeps no rail");
+    }
+
+    #[test]
+    fn the_tutorial_rail_walks_its_click_route_by_the_card() {
+        let mut d = demo();
+        d.page = Page::Game;
+        // The open card walks right; a click route that says left
+        // dies at the gate — no hop, no turn, and the hill says
+        // where to look.
+        d.route = vec![game::Dir::Left];
+        d.walk_the_route();
+        assert!(d.route.is_empty(), "the off-card route is cut");
+        assert!(d.spin.is_none(), "and it never even began to turn");
+        assert_eq!(
+            d.game.as_ref().expect("a hill is loaded").log.len(),
+            0,
+            "no step was taken"
+        );
+        assert_eq!(d.note, RAIL_NOTE, "the gate answered with its word");
+        // The card's own step walks.
+        d.note.clear();
+        d.note_t = 0.0;
+        d.route = vec![game::Dir::Right];
+        d.walk_the_route();
+        let g = d.game.as_ref().expect("still loaded");
+        assert_eq!(g.log.len(), 1, "the card's step was taken");
+        assert_eq!(g.log[0], game::Act::Move(game::Dir::Right));
+        assert!(d.note.is_empty(), "a walked card needs no word");
+        // And the other hills keep no rail: every verb answers.
+        d.load(3);
+        assert!(
+            d.rail_opens(game::Act::Detach) && d.rail_opens(game::Act::Move(game::Dir::Down)),
+            "the other forty-seven answer to everything"
+        );
     }
 
     #[test]
