@@ -144,6 +144,17 @@ const ANT_FRAMES: [&[u8]; 4] = [
     include_bytes!("../assets/sprites/ant4.png"),
 ];
 
+/// The same four frames as pure silhouettes: every pixel that meets
+/// the eye at all is opaque black, so a painted shadow can be
+/// uniform ink at its own alpha instead of a tinted copy whose
+/// density wobbles with the art's own shading.
+const ANT_STENCILS: [&[u8]; 4] = [
+    include_bytes!("../assets/sprites/ant1_stencil.png"),
+    include_bytes!("../assets/sprites/ant2_stencil.png"),
+    include_bytes!("../assets/sprites/ant3_stencil.png"),
+    include_bytes!("../assets/sprites/ant4_stencil.png"),
+];
+
 /// Baked frame texture width in pixels. The originals are ~970 px wide;
 /// at `ZOOM` an ant draws ~172 user pixels — ~344 on a 2× display — so a
 /// 384-wide bake covers the sheet near 1:1 where it matters, while still
@@ -259,6 +270,27 @@ const LEAF_SIZE: (f32, f32) = (24.0, 48.0);
 /// nodes directly because the leaf z (above the board, under the HUD)
 /// only exists inside the base draw group, where `Layer`s cannot land.
 const LEAF_PARALLAX: f32 = 1.3;
+
+/// The painted shadow every ant wears: its own stencil — the walk
+/// frame with every pixel that meets the eye poured full black —
+/// laid pure black, a breath shy of its full weight, beside it.
+/// The queen had one first, a tinted copy of the art at full
+/// weight; the stencils evened the whole line, and then the line
+/// stopped asking the ground for half measures.
+const ANT_SHADOW: Color = Color {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.85,
+};
+
+/// How far the shadow sits down-right of its ant: two under a
+/// walking ant, one under a sleeping one — measured in world
+/// pixels, so the lean rides `ZOOM` like the ant's own geometry
+/// and keeps its share of the ant at any window size. The shadow
+/// lies down when the ant does.
+const SHADOW_LEAN_AWAKE: f32 = 2.0;
+const SHADOW_LEAN_ASLEEP: f32 = 1.0;
 
 const C_BG: Color = Color {
     r: 0.045,
@@ -1547,6 +1579,9 @@ struct Demo {
     cam: [f32; 2],
     /// The four baked walk-cycle frames, shared by every ant on the hill.
     ant_frames: Vec<frost::Shape>,
+    /// The same frames as stencils — pure silhouettes — which every
+    /// ant's painted shadow is drawn from.
+    ant_stencils: Vec<frost::Shape>,
     /// The soil backdrop, stretched across the window below the board.
     soil: frost::Shape,
     /// The hill's solids draw as one tile map: this atlas — the soil
@@ -1737,6 +1772,7 @@ struct Demo {
 impl Demo {
     fn new(
         ant_frames: Vec<frost::Shape>,
+        ant_stencils: Vec<frost::Shape>,
         soil: frost::Shape,
         settings: Settings,
         progress: Progress,
@@ -1785,6 +1821,7 @@ impl Demo {
             glides: HashMap::new(),
             cam: [0.0, 0.0],
             ant_frames,
+            ant_stencils,
             soil,
             tile_atlas,
             bed,
@@ -2440,22 +2477,36 @@ impl Demo {
 
     // ------------------------------------------------------------- draw
 
+    /// The painted shadow's foot: the ant's place, shifted
+    /// down-right by two world pixels at a walk and one when the
+    /// ant sleeps — `ZOOM`-scaled like the ant's own geometry, so
+    /// the lean is a fixed share of the ant at any window size.
+    fn shadow_at(&self, at: [f32; 2], asleep: bool) -> [f32; 2] {
+        let lean = if asleep {
+            SHADOW_LEAN_ASLEEP
+        } else {
+            SHADOW_LEAN_AWAKE
+        };
+        [at[0] + lean * ZOOM, at[1] - lean * ZOOM]
+    }
+
     /// Places one baked ant frame as a scene node: centered on `at`,
     /// turned so the head points along `face`, mirrored for a left walk,
     /// tinted by `tint`, drawn at `order` — the same z ladder the immediate
     /// draws use (trail ants ≈ 1.0, the player's silhouette 1.48, the
-    /// player 1.5). Cloning the shape just bumps an `Arc`; only the node's
+    /// player 1.5). `shape` is a walk-cycle frame or its answering
+    /// stencil: a shadow is a real ant laid out exactly as the ant it
+    /// shadows. Cloning the shape just bumps an `Arc`; only the node's
     /// numbers change from frame to frame.
     fn put_ant(
         &self,
         node: &mut SceneNode,
-        frame: usize,
+        shape: &frost::Shape,
         at: [f32; 2],
         face: [f32; 2],
         tint: Color,
         lamp: f32,
     ) {
-        let shape = &self.ant_frames[frame];
         node.shape = Some(shape.clone());
         // The frames face right. Walking left mirrors the sheet; walking
         // up or down turns it a quarter, and a mirrored sheet turns the
@@ -2534,10 +2585,11 @@ impl Demo {
             };
             facing.insert(id, if f == [0.0, 0.0] { [-1.0, 0.0] } else { f });
         }
-        // One scene node per ant (plus a silhouette slot under the player),
-        // hung on the root after the leaf batches. Frame index is the
-        // walk-cycle clock: every awake ant cycles, standing still or
-        // striding; an asleep ant always draws frame one, dimmed.
+        // One scene node per ant, one painted shadow under each, and
+        // a pair more for the queen, hung on the root after the leaf
+        // batches. Frame index is the walk-cycle clock: every awake
+        // ant cycles, standing still or striding; an asleep ant
+        // always draws frame one, dimmed.
         let frame_of = |anim: f32, asleep: bool| {
             if asleep {
                 0
@@ -2564,11 +2616,11 @@ impl Demo {
                 (rock || dirt).then_some((row, col, rock))
             })
             .collect();
-        // Slots: leaves, ants, the player pair, one lamp per ant plus
-        // the player's, the single tile map holding every solid, a
-        // beacon and a sprite per bed (two apiece), and the two
-        // backdrop sprites.
-        let slots = LEAVES.len() + game.ants.len() * 2 + 6 + game.level.beds.len() * 2;
+        // Slots: leaves, ants, a painted shadow per ant, the player
+        // pair, one lamp per ant plus the player's, the single tile
+        // map holding every solid, a beacon and a sprite per bed
+        // (two apiece), and the two backdrop sprites.
+        let slots = LEAVES.len() + game.ants.len() * 3 + 6 + game.level.beds.len() * 2;
         fit_pool(&mut ctx.scene().root, slots);
         // Every ant is a lamp, and every lamp breathes: at rest a
         // gentle sway, working a deeper faster pulse, and stopping
@@ -2854,6 +2906,11 @@ impl Demo {
                 node.order = 0.05;
             }
         }
+        // The shadow band: the pool grew one slot per ant, and the
+        // beds ended where the backdrops' two-anchor tail begins —
+        // so the new slots land between, and every expression above
+        // this line keeps counting as it always did.
+        let sh_base = LEAVES.len() + game.ants.len() * 2 + 4 + game.level.beds.len() * 2;
         for (id, &lamp) in lamps[..game.ants.len()].iter().enumerate() {
             let Some(g) = self.glides.get(&id) else {
                 continue;
@@ -2893,8 +2950,31 @@ impl Demo {
             let rf = self.render_face.entry(id).or_insert(want_face);
             *rf = turn_toward(*rf, want_face, TURN_RATE * dt);
             let rf = *rf;
-            self.put_ant(node, frame_of(g.anim, asleep), at, rf, col, lamp);
+            self.put_ant(
+                node,
+                &self.ant_frames[frame_of(g.anim, asleep)],
+                at,
+                rf,
+                col,
+                lamp,
+            );
             node.order = z;
+            // And the painted shadow: the queen's trick for every
+            // ant — its own stencil, silhouette in pure ink, leaned
+            // down-right (two world pixels walking, one asleep),
+            // parked a hair under its ant's
+            // rung on the z ladder so every shadow rides its own
+            // ant.
+            let sh = &mut ctx.scene().root.children[sh_base + id];
+            self.put_ant(
+                sh,
+                &self.ant_stencils[frame_of(g.anim, asleep)],
+                self.shadow_at(at, asleep),
+                rf,
+                ANT_SHADOW,
+                0.0,
+            );
+            sh.order = z - 2e-4;
         }
         // The zs: one born at each breath's crest, adrift and growing
         // from a small z to a full Z, wandering one way and then the
@@ -2925,9 +3005,10 @@ impl Demo {
                 1.56,
             );
         }
-        // The player: a near-black copy of the same frame a couple of
-        // pixels off, so the pale queen reads against even the darkest
-        // tunnel, with her own frame on top.
+        // The player: a translucent twin of the same frame a couple
+        // of pixels off — the same painted shadow the whole colony
+        // wears, since the queen reads best when she reads like them
+        // — with her own frame on top.
         let n = game.ants.len();
         let frame = frame_of(self.player_anim, false);
         {
@@ -2938,15 +3019,10 @@ impl Demo {
             let shadowed = &mut root.children[LEAVES.len() + back];
             self.put_ant(
                 shadowed,
-                frame,
-                [at[0] + 1.5 * ZOOM, at[1] - 1.5 * ZOOM],
+                &self.ant_stencils[frame],
+                self.shadow_at(at, self.player_home.is_some()),
                 self.player_face,
-                Color {
-                    r: 0.06,
-                    g: 0.05,
-                    b: 0.04,
-                    a: 1.0,
-                },
+                ANT_SHADOW,
                 0.0,
             );
             shadowed.order = 1.48;
@@ -2959,7 +3035,7 @@ impl Demo {
             let queen = &mut root.children[LEAVES.len() + player];
             self.put_ant(
                 queen,
-                frame,
+                &self.ant_frames[frame],
                 at,
                 self.player_face,
                 blaze(
@@ -5772,6 +5848,18 @@ fn main() {
             })
         })
         .collect();
+    // And the same cycle as silhouettes, on the same bake: the stencils
+    // are generated from these very frames, so one that decodes while
+    // its silhouette does not would be a broken checkout, not a bad day.
+    let ant_stencils: Vec<frost::Shape> = ANT_STENCILS
+        .iter()
+        .map(|png| {
+            ant_frame(png).unwrap_or_else(|err| {
+                log::error!("antifrost: bad ant stencil: {err}");
+                std::process::exit(1);
+            })
+        })
+        .collect();
     // The backdrop texture, baked once like everything else.
     let soil = frost::Shape::sprite_bytes(SOIL).unwrap_or_else(|err| {
         log::error!("antifrost: bad soil sprite: {err}");
@@ -5788,7 +5876,7 @@ fn main() {
     if let Err(err) = frost::run_configured(
         scene,
         {
-            let mut d = Demo::new(ant_frames, soil, settings.clone(), progress);
+            let mut d = Demo::new(ant_frames, ant_stencils, soil, settings.clone(), progress);
             d.bench = bench;
             d.resize_probe = resize_probe.then_some(0.0);
             d
@@ -5872,8 +5960,18 @@ mod click_tests {
             .iter()
             .map(|png| ant_frame(png).expect("shipped ant frames bake"))
             .collect();
+        let stencils = ANT_STENCILS
+            .iter()
+            .map(|png| ant_frame(png).expect("shipped ant stencils bake"))
+            .collect();
         let soil = frost::Shape::sprite_bytes(SOIL).expect("shipped soil bakes");
-        Demo::new(frames, soil, Settings::default(), Progress::default())
+        Demo::new(
+            frames,
+            stencils,
+            soil,
+            Settings::default(),
+            Progress::default(),
+        )
     }
 
     #[test]
@@ -6255,8 +6353,18 @@ mod menu_tests {
             .iter()
             .map(|png| ant_frame(png).expect("shipped ant frames bake"))
             .collect();
+        let stencils = ANT_STENCILS
+            .iter()
+            .map(|png| ant_frame(png).expect("shipped ant stencils bake"))
+            .collect();
         let soil = frost::Shape::sprite_bytes(SOIL).expect("shipped soil bakes");
-        Demo::new(frames, soil, Settings::default(), Progress::default())
+        Demo::new(
+            frames,
+            stencils,
+            soil,
+            Settings::default(),
+            Progress::default(),
+        )
     }
 
     #[test]
@@ -6472,9 +6580,14 @@ mod menu_tests {
             .iter()
             .map(|png| ant_frame(png).expect("shipped ant frames bake"))
             .collect();
+        let stencils = ANT_STENCILS
+            .iter()
+            .map(|png| ant_frame(png).expect("shipped ant stencils bake"))
+            .collect();
         let soil = frost::Shape::sprite_bytes(SOIL).expect("shipped soil bakes");
         let d = Demo::new(
             frames,
+            stencils,
             soil,
             Settings::default(),
             Progress {
