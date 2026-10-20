@@ -52,6 +52,7 @@ fn load(index: u32) -> Report {
         alpha,
         filter,
         generation,
+        program: _,
     } = &shape
     else {
         panic!("frame {index}: expected a sprite shape");

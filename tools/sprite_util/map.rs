@@ -927,6 +927,7 @@ mod tests {
             alpha: 1.0,
             filter: frost::SpriteFilter::Nearest,
             generation: 7,
+            program: None,
         };
         let Some(mut base) = ghost_base(&sprite) else {
             panic!("a sprite lends a base");

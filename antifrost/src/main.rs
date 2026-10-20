@@ -76,6 +76,15 @@ fn fit_pool(root: &mut SceneNode, slots: usize) {
 /// hill's edge read as earth instead of as a screen.
 const SOIL: &[u8] = include_bytes!("../assets/sprites/soil.png");
 
+/// The dig's dissolve, in the engine's own WGSL dialect: a game
+/// program, compiled behind the lighting prelude exactly like the
+/// engine's lit kinds, and hung on the soil sprite wherever a dug
+/// tile still has dirt to lose (see [`Demo::digs`]). The engine's
+/// live-reload watches its own shader directory, not this file — a
+/// change here is a rebuild, which is the honest trade for the game
+/// owning its effects.
+const DISSOLVE: &str = include_str!("../shaders/dissolve.wgsl");
+
 /// The slab the menu panels are cut from: one 16:9 band taken from
 /// the garden's granite photo (the user's own `stone.png`, 3024×4032)
 /// and baked down — cropped at 1440 wide, then darkened to a third in
@@ -97,6 +106,11 @@ const TILE: f32 = 44.0;
 /// pixels. `4.0` fills the window with about five cells across.
 const ZOOM: f32 = 4.0;
 const HOP: f32 = 0.26; // seconds, player pixel glide
+/// A dig step is the heavier move: the ant pushes *through* the hill
+/// instead of around it, so she lands at quarter speed — and the soil
+/// she is passing through dissolves across exactly that longer step,
+/// which is the whole contract of the pair.
+const DIG_HOP: f32 = HOP * 4.0;
 const TRAIL_HOP: f32 = 0.36; // ants glide slightly lazier
 const UI: f32 = 1_000_000.0;
 
@@ -489,6 +503,55 @@ fn shade(mut c: Color, k: f32) -> Color {
     c.g *= k;
     c.b *= k;
     c
+}
+
+/// One frame of the dig watch, kept whole and pure so it can be
+/// tested without a running hill. `seen` is the set of dirt cells as
+/// of the last frame, `now` as of this one, `digs` the live list of
+/// `(col, row, seconds left, seed)` carried over. Dirt that vanished
+/// between the two — eaten by the player's move, since no ant digs —
+/// starts a dissolve at the full hop length, so the eat finishes as
+/// the step lands; dirt that came back (an undo restores the tile)
+/// cancels a live dig at once. `left` counts down by `dt` and a dig
+/// whose tile has fully dissolved is dropped. The caller then stores
+/// `now` back as the watch's `seen`. Seeds come from the cell so no
+/// two holes eat with the same pattern.
+fn watch_digs(
+    digs: &mut Vec<(i32, i32, f32, f32)>,
+    seen: &[(i32, i32)],
+    now: &[(i32, i32)],
+    dt: f32,
+) {
+    let gone = |c: &(i32, i32)| !now.contains(c);
+    let back = |c: &(i32, i32)| !seen.contains(c) && now.contains(c);
+    // Age the live digs, then drop the ones that finished and the ones
+    // whose dirt came back.
+    digs.retain_mut(|(_, _, left, _)| {
+        *left -= dt;
+        *left > 0.0
+    });
+    digs.retain(|(col, row, _, _)| !back(&(*col, *row)));
+    // Every cell that vanished this frame begins a dig — unless one is
+    // already running on it (a cell dug, undone, and dug again inside
+    // one dissolve inherits the running countdown rather than
+    // restarting behind it).
+    for cell in seen.iter().copied().filter(gone) {
+        if !digs.iter().any(|(c, r, _, _)| (*c, *r) == cell) {
+            let (col, row) = cell;
+            let seed = (col as f32 * 12.9 + row as f32 * 78.2).sin().abs() % 1.0;
+            digs.push((col, row, DIG_HOP, seed));
+        }
+    }
+}
+
+/// The dirt cells of a hill, in the same row-major order the tile map
+/// walks them — the digest the dig watch diffs frame to frame. Rock
+/// stays out (it never dissolves); this is loose earth only.
+fn dirt_cells(g: &game::Game) -> Vec<(i32, i32)> {
+    (0..g.level.rows as i32)
+        .flat_map(|row| (0..g.level.cols as i32).map(move |col| (col, row)))
+        .filter(|&(col, row)| matches!(g.tile(game::Cell::new(col, row)), level::Tile::Dirt))
+        .collect()
 }
 
 /// The white in an ant's light: its own hue pulled a third of the way to full
@@ -1588,6 +1651,24 @@ struct Demo {
     /// texture itself, a single cell, the whole sheet — is shared by
     /// every wall and dirt placement, instanced in one draw call.
     tile_atlas: frost::Shape,
+    /// The soil sprite wearing the dissolve program: the same pixels
+    /// and the same GPU texture as the atlas's own sheet, painted by
+    /// the game's shader instead of the engine's sprite one. Each
+    /// live dig draws one quad of this at its cell.
+    dissolve: frost::Shape,
+    /// The dig watch: every dirt cell the player has eaten since the
+    /// last frame's picture, riding out its hop. `(col, row, seconds
+    /// left, seed)` — the countdown starts the frame the move is
+    /// issued and reaches zero the frame the step lands, so the tile
+    /// is gone exactly when the player is. Dirt restored (an undo)
+    /// cancels its dig mid-bite; `load` clears the whole ledger, or a
+    /// hill swap would read as a field of fresh digs.
+    digs: Vec<(i32, i32, f32, f32)>,
+    /// The dirt the watch last saw, and the count of it the hill
+    /// started with — the pool's ceiling on simultaneous digs, since
+    /// one dig needs one dirt cell and dirt is only ever lost.
+    dirt_key: Vec<(i32, i32)>,
+    dig_cap: usize,
     /// The bed sprite, laid square on every bed's cell.
     bed: frost::Shape,
     /// The stone slab the menu panels are cut from, held as a tile
@@ -1822,8 +1903,12 @@ impl Demo {
             cam: [0.0, 0.0],
             ant_frames,
             ant_stencils,
+            dissolve: soil.clone().with_program(DISSOLVE),
             soil,
             tile_atlas,
+            digs: Vec::new(),
+            dirt_key: Vec::new(),
+            dig_cap: 0,
             bed,
             slab,
             ground: None,
@@ -1989,6 +2074,15 @@ impl Demo {
             g.record = true;
         }
         self.replay = None;
+        // The dig watch starts clean on a new hill: no digs carry
+        // over, and the digest is re-taken, because the last hill's
+        // dirt vanishing from the ledger is not a thousand fresh
+        // holes opening under the player's feet. The pool's ceiling
+        // for live digs is this hill's own dirt count — digs are only
+        // ever made from dirt, and dirt is only ever lost.
+        self.digs.clear();
+        self.dirt_key = self.game.as_ref().map(dirt_cells).unwrap_or_default();
+        self.dig_cap = self.dirt_key.len();
         self.player_at = start;
         self.player_target = start;
         self.player_hop = Hop::flat(start, HOP);
@@ -2166,6 +2260,19 @@ impl Demo {
 
     fn refresh(&mut self, dt: f32) {
         let Some(game) = &self.game else { return };
+        // The dig watch, read before the glide: the glide needs to
+        // know whether the step it is about to ride ate dirt, because
+        // a dig lands at half speed — and the digest is born on this
+        // very frame, the frame that issued the move, counting down
+        // over the same doubled length. Only the player's move eats
+        // dirt, so only her move starts a digest; dirt restored by an
+        // undo cancels a running one mid-bite, the tile standing as
+        // the eat stops.
+        let now = dirt_cells(game);
+        let player = (game.player.col, game.player.row);
+        let dug_here = self.dirt_key.contains(&player) && !now.contains(&player);
+        watch_digs(&mut self.digs, &self.dirt_key, &now, dt);
+        self.dirt_key = now;
         // Player glide.
         let want = self.cell_px(game.player);
         if !closer(self.player_target, want) {
@@ -2184,8 +2291,13 @@ impl Demo {
             } else {
                 [0.0, step[1].signum()]
             };
-            self.player_hop
-                .to(self.player_at, want, self.face, exit, HOP);
+            self.player_hop.to(
+                self.player_at,
+                want,
+                self.face,
+                exit,
+                if dug_here { DIG_HOP } else { HOP },
+            );
             self.face = exit;
             self.player_target = want;
         }
@@ -2619,8 +2731,11 @@ impl Demo {
         // Slots: leaves, ants, a painted shadow per ant, the player
         // pair, one lamp per ant plus the player's, the single tile
         // map holding every solid, a beacon and a sprite per bed
-        // (two apiece), and the two backdrop sprites.
-        let slots = LEAVES.len() + game.ants.len() * 3 + 6 + game.level.beds.len() * 2;
+        // (two apiece), the dig band — one slot per dirt cell the
+        // hill began with, the ceiling on simultaneous dissolves —
+        // and the two backdrop sprites.
+        let slots =
+            LEAVES.len() + game.ants.len() * 3 + 6 + game.level.beds.len() * 2 + self.dig_cap;
         fit_pool(&mut ctx.scene().root, slots);
         // Every ant is a lamp, and every lamp breathes: at rest a
         // gentle sway, working a deeper faster pulse, and stopping
@@ -2975,6 +3090,55 @@ impl Demo {
                 0.0,
             );
             sh.order = z - 2e-4;
+        }
+        // The dig band: one dissolve quad per live countdown, right
+        // where the shadow band ends and the tail begins. The tile
+        // map has already forgotten the cell — the dig took it the
+        // same frame the countdown started — so this node is the last
+        // dirt it was, eating itself over the length of the hop.
+        // `modulate` rides white and the program does its own
+        // tinting: `glow` carries the cell's dirt color, noise and
+        // all (the same tint the tile map wore), and `emission`
+        // carries the eat — progress across the hop, the cell's seed,
+        // the band's softness. One rung above the tile map, below the
+        // beds, under every ant.
+        {
+            let base = LEAVES.len() + game.ants.len() * 3 + 4 + game.level.beds.len() * 2;
+            let inset = TILE * ZOOM - 1.5;
+            let [tw, th] = self.dissolve.sprite_size().unwrap_or([1.0, 1.0]);
+            let dirt_tint = Color {
+                r: C_DIRT.r * 2.2,
+                g: C_DIRT.g * 2.2,
+                b: C_DIRT.b * 2.2,
+                a: 1.0,
+            };
+            for (i, &(col, row, left, seed)) in self.digs.iter().enumerate() {
+                let node = &mut ctx.scene().root.children[base + i];
+                let noise = 1.0 + ((col * 31 + row * 17) % 3) as f32 * 0.045;
+                node.shape = Some(self.dissolve.clone());
+                node.transform =
+                    Transform::translate(self.screen(self.cell_px(game::Cell::new(col, row))));
+                node.scale = [inset / tw, inset / th];
+                node.modulate = Color {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                };
+                node.emission = Color {
+                    r: 1.0 - (left / DIG_HOP).clamp(0.0, 1.0),
+                    g: seed,
+                    b: 0.14,
+                    a: 1.0,
+                };
+                node.glow = Some(shade(dirt_tint, noise));
+                node.lit = true;
+                node.order = 0.02;
+            }
+            for node in &mut ctx.scene().root.children[base + self.digs.len()..base + self.dig_cap]
+            {
+                node.shape = None;
+            }
         }
         // The zs: one born at each breath's crest, adrift and growing
         // from a small z to a full Z, wandering one way and then the
@@ -6152,6 +6316,99 @@ fn merge_boxes(tiles: &[(i32, i32, bool)]) -> Vec<OccBox> {
         boxes.push(rect);
     }
     boxes
+}
+
+#[cfg(test)]
+mod dig_tests {
+    use super::*;
+
+    /// The watch's arithmetic, frame by frame: a dig is born the
+    /// frame its dirt vanishes, at exactly the hop's length; it ages
+    /// with the clock; and the frame its countdown runs out is the
+    /// frame it is gone — never a node outliving its tile.
+    #[test]
+    fn a_dig_is_born_at_full_hop_and_eaten_by_its_end() {
+        let mut digs: Vec<(i32, i32, f32, f32)> = Vec::new();
+        let mut seen: Vec<(i32, i32)> = Vec::new();
+        let full = [(3, 4)];
+        // Dirt arriving is not a dig: a hill loaded is a hill with
+        // dirt, not a field of holes opening.
+        watch_digs(&mut digs, &seen, &full, 1.0 / 60.0);
+        seen = full.to_vec();
+        assert!(digs.is_empty());
+        // The move: the cell vanishes this frame, and the digest is
+        // born whole — its first tick is next frame's.
+        watch_digs(&mut digs, &seen, &[], 1.0 / 60.0);
+        seen = Vec::new();
+        assert_eq!(digs.len(), 1);
+        assert_eq!(digs[0].0, 3);
+        assert_eq!(digs[0].1, 4);
+        assert!(
+            (digs[0].2 - DIG_HOP).abs() < 1e-6,
+            "born at the full dig hop"
+        );
+        // The clock carries it; the seed rode from the first frame,
+        // so the pattern never shifts mid-bite. One tick spent is one
+        // tick spent — exact to the f32, plus the epsilon a
+        // subtract-and-compare deserves.
+        let seed = digs[0].3;
+        watch_digs(&mut digs, &seen, &[], 1.0 / 60.0);
+        assert!(digs[0].2 <= DIG_HOP - 1.0 / 60.0 + 1e-6);
+        assert_eq!(digs[0].3, seed);
+        // And it ends: past the dig hop's length the list empties,
+        // because the tile dissolved with the step that landed. Ninety
+        // frames at 60 fps is a second and a half, comfortably past
+        // the dig hop's four ordinary hops.
+        for _ in 0..90 {
+            watch_digs(&mut digs, &seen, &[], 1.0 / 60.0);
+        }
+        assert!(digs.is_empty(), "a dissolved tile outlives no node");
+    }
+
+    /// An undo puts the dirt back mid-bite: the tile stands again,
+    /// so the digest that was eating it stops — and one tile keeps
+    /// one node, never a stack of eaters on the same square.
+    #[test]
+    fn restored_dirt_cancels_and_undedirt_does_not_stack() {
+        let mut digs: Vec<(i32, i32, f32, f32)> = Vec::new();
+        let mut seen: Vec<(i32, i32)> = Vec::new();
+        let full = [(1, 1)];
+        // Dig.
+        watch_digs(&mut digs, &seen, &full, 0.01);
+        seen = full.to_vec();
+        watch_digs(&mut digs, &seen, &[], 0.01);
+        seen = Vec::new();
+        assert_eq!(digs.len(), 1);
+        // The undo: the hill has the cell again, the digest stops.
+        watch_digs(&mut digs, &seen, &full, 0.01);
+        seen = full.to_vec();
+        assert!(digs.is_empty(), "the tile stands, the eat stops");
+        // Dug again after the cancel: one fresh digest, and the same
+        // gone picture re-offered changes nothing — one tile is one
+        // node, and a cell only ever vanishes once per digest.
+        watch_digs(&mut digs, &seen, &[], 0.01);
+        seen = Vec::new();
+        assert_eq!(digs.len(), 1);
+        // Same picture again — `seen` never re-offers the gone cell,
+        // so the single dig just ages.
+        watch_digs(&mut digs, &seen, &[], 0.01);
+        assert_eq!(digs.len(), 1);
+    }
+
+    /// The program antifrost ships must compile behind the engine's
+    /// lighting prelude exactly as the engine's own lit kinds do —
+    /// parse and device-side validation, the two stages wgpu runs,
+    /// checked here rather than paid for with a dead frame. If the
+    /// engine's contract (`LIGHTING_WGSL` prepended, both entry
+    /// points, the sprite bindings) ever moves, this fails at
+    /// `cargo test`, not at the first dig.
+    #[test]
+    fn the_dissolve_program_holds_the_contract() {
+        let joined = format!("{}\n{DISSOLVE}", frost::LIGHTING_WGSL);
+        if let Err(err) = frost::validate_wgsl(&joined) {
+            panic!("dissolve.wgsl fails behind the prelude: {err}");
+        }
+    }
 }
 
 #[cfg(test)]

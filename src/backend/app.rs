@@ -187,6 +187,25 @@ pub(crate) struct Frost<P: Process> {
     /// to add their light instead of covering with it. See
     /// [`ADDITIVE_BLEND`].
     sprite_additive_pipeline: Option<RenderPipeline>,
+    /// Pipelines for game-authored programs — the WGSL a game hands to
+    /// [`crate::Shape::with_program`] — one per distinct source, compiled
+    /// over the sprite pipeline's own bind group layout so the arena
+    /// uniform, the texture caches, and both light fields bind exactly as
+    /// they do for the engine's sprites. Built at first sight of a source
+    /// and dropped whenever the frame's format changes, which is the only
+    /// thing any of them was ever built against.
+    custom_pipelines: HashMap<Arc<str>, RenderPipeline>,
+    /// The sprite pipeline's layout, kept past pipeline creation for the
+    /// one reader that outlives setup: the user-program builder, which
+    /// must build its pipelines on the very layout the sprite's bind
+    /// groups were cut from. Every other pipeline drops its layout as
+    /// soon as the pipeline exists.
+    sprite_pipeline_layout: Option<PipelineLayout>,
+    /// The format and emissive target the scene pipelines were built
+    /// against this surface spell, remembered so a program compiled
+    /// mid-frame cannot disagree with the pass it draws into.
+    frame_format: Option<TextureFormat>,
+    frame_emissive: Option<TextureFormat>,
     particle_pipeline: Option<RenderPipeline>,
     /// The tile map pipeline: one instanced quad per tile, sampling the
     /// batch's atlas through per-instance UV bounds.
@@ -804,6 +823,10 @@ impl<P: Process> Frost<P> {
             shape_pipeline: None,
             sprite_pipeline: None,
             sprite_additive_pipeline: None,
+            custom_pipelines: HashMap::new(),
+            sprite_pipeline_layout: None,
+            frame_format: None,
+            frame_emissive: None,
             particle_pipeline: None,
             tilemap_pipeline: None,
             blit_pipeline: None,
@@ -1414,6 +1437,14 @@ impl<P: Process> Frost<P> {
         // `format`, same answer — and `BlitTarget` builds the texture against
         // it, so the pipelines and the pass cannot disagree.
         let emissive = Self::emissive_target(&self.adapter);
+        // Remembered for the user programs the frame may meet mid-frame:
+        // they must be built against exactly this format and exactly this
+        // emissive answer, and last frame's programs were built against
+        // whatever the last spell answered — so their pipelines go, here,
+        // with the scene's own being rebuilt.
+        self.frame_format = Some(format);
+        self.frame_emissive = emissive;
+        self.custom_pipelines.clear();
         let line_layout = slot_layouts(device, "line pipeline", LINE_UNIFORM_BYTES);
         let polyline_layout = slot_layouts(device, "polyline pipeline", POLYLINE_UNIFORM_BYTES);
         let circle_layout = slot_layouts(device, "circle pipeline", CIRCLE_UNIFORM_BYTES);
@@ -1495,9 +1526,10 @@ impl<P: Process> Frost<P> {
             source: ShaderSource::Wgsl(Cow::Borrowed(self.wgsl("sprite"))),
         });
         // The one pipeline with a hand-written layout, for the arena's
-        // dynamic offset. The layout is dropped once the pipeline exists:
-        // `RenderPipeline::get_bind_group_layout` hands it back to the draws
-        // that need it.
+        // dynamic offset. The bind layout is dropped once the pipeline
+        // exists — `get_bind_group_layout` hands it back — but the pipeline
+        // layout is kept: it is the one a game's user program must be built
+        // on, so its bind groups are the sprite's, unchanged.
         let (_sprite_bind_layout, sprite_pipeline_layout) = sprite_layouts(device);
         self.sprite_pipeline = Some(Self::create_pipeline(
             device,
@@ -1524,6 +1556,7 @@ impl<P: Process> Frost<P> {
             "sprite additive pipeline",
             Some(ADDITIVE_BLEND),
         ));
+        self.sprite_pipeline_layout = Some(sprite_pipeline_layout);
 
         let particles_module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("particle shaders"),
@@ -2157,6 +2190,43 @@ impl<P: Process> Frost<P> {
         };
         self.prim_binds.insert(label, bind_group.clone());
         bind_group
+    }
+
+    /// The pipeline for one game-authored program: the shared lighting
+    /// vocabulary, then the game's source — assembled the way the engine
+    /// assembles its own lit kinds — compiled on the device and built over
+    /// the sprite pipeline's very bind group layout, so the sprite's arena
+    /// uniform, texture, sampler, and both light fields bind exactly as
+    /// they do for the engine's own sprites, and a sprite bind group
+    /// cached for the ordinary pipeline serves the custom one unchanged.
+    /// Built at first sight of the source and kept until the frame's
+    /// format changes; a source that fails to compile is the driver's
+    /// complaint to hear — which is what [`crate::validate_wgsl`] is for.
+    fn custom_pipeline(&mut self, source: &Arc<str>) -> Option<RenderPipeline> {
+        if let Some(pipeline) = self.custom_pipelines.get(source.as_ref()) {
+            return Some(pipeline.clone());
+        }
+        let format = self.frame_format?;
+        let emissive = self.frame_emissive;
+        let layout = self.sprite_pipeline_layout.clone()?;
+        let module = self.device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("user program"),
+            source: ShaderSource::Wgsl(
+                format!("{}\n{source}", crate::shaders::LIGHTING_WGSL).into(),
+            ),
+        });
+        let pipeline = Self::create_pipeline(
+            &self.device,
+            &module,
+            format,
+            emissive,
+            Some(&layout),
+            "user pipeline",
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+        );
+        self.custom_pipelines
+            .insert(source.clone(), pipeline.clone());
+        Some(pipeline)
     }
 
     /// The bind group for one sprite image at one sampling filter: the
@@ -2828,6 +2898,7 @@ impl<P: Process> Frost<P> {
                         generation,
                         additive,
                         diagnostic,
+                        program,
                         // The rest of the sprite — its box, tint, opacity,
                         // emission and sub-rectangle — reached the arena in the
                         // pre-pass; the draw carries only the offset.
@@ -2871,11 +2942,22 @@ impl<P: Process> Frost<P> {
                         // The flag chooses a pipeline, not a bind group: the two
                         // share one layout, so an additive sprite reuses the
                         // cached bind group of an ordinary one from the same
-                        // image without either knowing about it.
-                        let pipeline = if additive {
-                            &sprite_additive_pipeline
-                        } else {
-                            &sprite_pipeline
+                        // image without either knowing about it. A program
+                        // is a second answer to the same question — the
+                        // game's own source, compiled once and cached — and
+                        // it too changes only the pipeline: the layout is
+                        // the sprite's, so the bind group below is the same
+                        // object an ordinary sprite of this image already
+                        // uses, and the additive flag stands aside, one
+                        // pipeline per program being the honest amount.
+                        let custom = match program.as_ref() {
+                            Some(source) => self.custom_pipeline(source),
+                            None => None,
+                        };
+                        let pipeline: &RenderPipeline = match &custom {
+                            Some(pipeline) => pipeline,
+                            None if additive => &sprite_additive_pipeline,
+                            None => &sprite_pipeline,
                         };
                         let bind_group = self.sprite_bind_group(
                             pipeline,

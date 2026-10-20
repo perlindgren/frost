@@ -1175,6 +1175,7 @@ fn a_frame_of_every_kind_packs_into_the_arena_too() {
                 lit: 0.0,
                 z: 0.0,
                 diagnostic: false,
+                program: None,
 
                 lit_layers: LightLayers::default(),
             },

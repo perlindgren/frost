@@ -199,6 +199,12 @@ pub(crate) enum Draw {
         /// the render loop can count the overlay's share of the frame's
         /// draw calls.
         diagnostic: bool,
+        /// The game-authored WGSL program painting this sprite, from
+        /// [`crate::Shape::with_program`]: the render loop builds (and
+        /// caches) a pipeline for the source over the sprite layout and
+        /// draws this quad with it. `None` draws with the engine's own
+        /// sprite pipelines; glyph-expanded text never carries one.
+        program: Option<Arc<str>>,
     },
     /// A batch of particles drawn in one instanced draw call.
     ///

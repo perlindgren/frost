@@ -220,6 +220,7 @@ fn scene_sprite_at_user_origin_lands_at_window_center() {
             alpha: 1.0,
             filter: SpriteFilter::Linear,
             generation: 0,
+            program: None,
         }),
         children: vec![],
 

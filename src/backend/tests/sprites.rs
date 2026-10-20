@@ -39,6 +39,7 @@ fn sprite_loader_round_trips_a_png_file() {
         alpha,
         filter,
         generation,
+        program: _,
     } = shape
     else {
         panic!("expected a sprite shape");
@@ -202,6 +203,7 @@ fn the_sprite_paints_what_the_contract_promise() {
         color,
         alpha: 1.0,
         filter: SpriteFilter::Nearest,
+        program: None,
     };
     // The five placements, 16px sprites, user space 1:1 to pixels.
     let nodes = |color: crate::objects::Color, transform: Transform, scale: [f32; 2]| SceneNode {

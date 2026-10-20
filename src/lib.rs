@@ -148,6 +148,10 @@ use backend::*;
 mod objects;
 pub use objects::*;
 
+pub use shaders::LIGHTING_WGSL;
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+pub use shaders::validate_wgsl;
+
 mod canvas;
 pub use canvas::Canvas;
 

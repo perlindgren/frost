@@ -790,6 +790,12 @@ pub enum Shape {
         /// The buffer's generation, identifying `data` to the backend's
         /// texture cache.
         generation: u64,
+        /// A game-authored WGSL program that paints this sprite in place
+        /// of the engine's sprite pipeline, attached by
+        /// [`Shape::with_program`]. `None` — every sprite the engine and
+        /// every scene without a custom effect carries — is the engine's
+        /// own shader, unchanged.
+        program: Option<Arc<str>>,
     },
     /// A text: `text` laid out with the font loaded by [`Shape::text`] at
     /// `size` pixels per em.
@@ -1031,6 +1037,7 @@ impl Shape {
             alpha: 1.0,
             filter,
             generation: NEXT_SPRITE_GENERATION.fetch_add(1, Ordering::Relaxed),
+            program: None,
         })
     }
 
@@ -1199,6 +1206,74 @@ impl Shape {
         if let Self::TileMap { filter: f, .. } = self {
             *f = filter;
         }
+    }
+
+    /// Attaches a game-authored WGSL program to a sprite: the source
+    /// takes the sprite pipeline's place wherever this shape draws, and
+    /// paints the sprite with whatever the program's fragment stage
+    /// decides. Other shape kinds carry no program — the engine's own
+    /// pipelines own them — and are returned unchanged.
+    ///
+    /// The contract is the sprite pipeline's, restated for a new author:
+    ///
+    /// - The source is compiled behind [`crate::LIGHTING_WGSL`], the same
+    ///   prelude the engine's lit kinds are assembled from, so the
+    ///   program may call `light_mix`, walk `occluded`, and bind the
+    ///   frame's light and occluder fields by declaring them itself.
+    /// - The entry points are the engine's: `vs_main` (the full-screen
+    ///   triangle — every scene pipeline takes the scissor, not a vertex
+    ///   buffer), and BOTH `fs_main` and `fs_emissive`, so the pipeline
+    ///   fits the scene pass whether or not the machine carries the
+    ///   emissive target.
+    /// - The per-draw uniform is [`crate::Shape`]'s sprite block, 112
+    ///   bytes, packed by the engine from the node's fields:
+    ///   `to_local`/`translation`/`size` (the sprite's inverse world
+    ///   transform and extent), `tint` (color × modulate), `alpha`,
+    ///   `lit`, `lit_layers`, `uv_rect`, `emission` (node emission ×
+    ///   modulate), and `glow`. The program declares its own mirror
+    ///   struct at `@group(0) @binding(0)` and reads it as it likes —
+    ///   `@binding(1)` is the sprite's texture, `@binding(2)` its
+    ///   sampler, `@binding(3)`/`@binding(4)` the light and occluder
+    ///   storage fields, exactly as `sprite.wgsl` binds them. Nothing
+    ///   checks the mirror's layout at runtime: the byte layout lives in
+    ///   `shaders/sprite.wgsl`'s `SpriteUniforms`, and a program whose
+    ///   struct drifts from it reads garbage where the engine wrote
+    ///   numbers.
+    /// - Blend is the alpha blend, always: a program that wants to add
+    ///   its light can do the arithmetic itself and write the result.
+    ///
+    /// A program that fails to compile is the driver's complaint to
+    /// hear, mid-frame, from the device's error sink — which is why
+    /// [`crate::validate_wgsl`] exists: a game's test suite can fail on
+    /// a bad shader the way `cargo test` fails on the engine's own,
+    /// against the same prelude the renderer will prepend.
+    ///
+    /// ```no_run
+    /// # fn demo(shape: frost::Shape, source: String) {
+    /// let dissolved = shape.with_program(source);
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn with_program(mut self, source: impl Into<Arc<str>>) -> Self {
+        if let Self::Sprite { program, .. } = &mut self {
+            *program = Some(source.into());
+        }
+        self
+    }
+
+    /// Reads like the wrapper it anticipates: `target` painted by
+    /// `program`. Today the two are the same mechanism — the program
+    /// takes the sprite pipeline's place for this shape, in place — but
+    /// the call shape stands where a screen-space `Shape::Effect` would
+    /// one day render its target to an offscreen image first and let the
+    /// program sample that finished picture. Such a wrapper needs
+    /// per-target render targets and pass splits the one-pass scene
+    /// carries no room for yet; when it arrives it will compile its
+    /// programs exactly as these are compiled, over the same prelude and
+    /// the same validation, which is why the seam lives here.
+    #[must_use]
+    pub fn painted_by(target: Self, program: impl Into<Arc<str>>) -> Self {
+        target.with_program(program)
     }
 }
 

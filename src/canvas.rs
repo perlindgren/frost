@@ -821,6 +821,7 @@ fn draw_node(
                 alpha,
                 filter,
                 generation,
+                program,
             } => Some(Draw::Sprite {
                 world: to_pixel,
                 data: data.clone(),
@@ -842,6 +843,9 @@ fn draw_node(
                 lit_layers: node.lit_layers,
                 z: order,
                 diagnostic: node.diagnostic,
+                // The program rides the shape, so every node drawing this
+                // sprite paints with it; `None` is the engine's own.
+                program: program.clone(),
             }),
             // Text is recorded in user space; `Canvas::expand_text` lays it
             // out and turns each glyph into a sprite quad before the frame
@@ -1482,6 +1486,9 @@ fn expand_text_list(
                         world: glyph_world,
                         data: atlas.data.clone(),
                         generation: atlas.generation(),
+                        // Glyph quads are the engine's own arithmetic: the
+                        // text pipeline's work, never a game program's.
+                        program: None,
                         // The cell is a raster-pixel box; the quad rides the
                         // transform that multiplies by the scale factor, so
                         // its local size divides the factor back out.

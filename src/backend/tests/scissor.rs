@@ -194,6 +194,7 @@ fn sprite_scissor_is_the_texture_box_plus_aa_band() {
         lit: 0.0,
         generation: 0,
         z: 0.0,
+        program: None,
 
         lit_layers: LightLayers::default(),
     };
@@ -226,6 +227,7 @@ fn sprite_scissor_under_rotation() {
         lit: 0.0,
         generation: 0,
         z: 0.0,
+        program: None,
 
         lit_layers: LightLayers::default(),
     };

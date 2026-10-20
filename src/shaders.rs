@@ -12,6 +12,16 @@
 /// The line shader source.
 pub(crate) const LINE_SHADER: &str = include_str!("../shaders/line.wgsl");
 
+/// The shared lighting vocabulary every lit pipeline is built on: the
+/// light and occluder field structs, the shadow test, and the loop over
+/// the lights. The engine's lit kinds concatenate it before their own
+/// source; a game's [`crate::Shape::with_program`] source gets the same
+/// treatment at compile time, which is what lets a user program call
+/// `light_mix` and bind the frame's fields without declaring them —
+/// and lets a game test its own `prelude + source` the way `cargo test`
+/// tests the engine's.
+pub const LIGHTING_WGSL: &str = include_str!("../shaders/lighting.wgsl");
+
 /// The polyline (batched line) shader source.
 pub(crate) const POLYLINE_SHADER: &str = include_str!("../shaders/polyline.wgsl");
 
@@ -95,6 +105,19 @@ pub(crate) fn validate(source: &str) -> Result<(), String> {
     .validate(&module)
     .map_err(|err| format!("{err}"))?;
     Ok(())
+}
+
+/// Check a WGSL source the way the engine checks its own: naga's parse,
+/// then its validator, and the complaint handed back instead of paid
+/// for with a dead frame. The runtime never calls this — a shipped
+/// program travels straight to the driver, which is exactly why a game
+/// should gate its own shaders on it in a test, the way `cargo test`
+/// gates the engine's. Available wherever wgpu carries naga: the same
+/// gate as the live shader watcher, which is every native build but
+/// wasm.
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+pub fn validate_wgsl(source: &str) -> Result<(), String> {
+    validate(source)
 }
 
 /// The watched shader directory: development edits `.wgsl` files
@@ -229,6 +252,79 @@ mod tests {
             .validate(&module)
             .unwrap_or_else(|err| panic!("{name} fails device-side validation: {err}"));
         }
+    }
+
+    /// The seam for game-authored programs, tested from this side: a
+    /// program written against the documented contract — the entry points
+    /// and bindings of `sprite.wgsl`, the `SpriteUniforms` mirror, and the
+    /// lighting vocabulary taken as given from the prelude — assembles and
+    /// validates exactly like the engine's own lit kinds. If this test
+    /// breaks, every game program in the workspace breaks with it, which
+    /// is the point: the contract is only a contract if CI signs it.
+    #[test]
+    fn a_users_program_assembles_over_the_prelude() {
+        const USER: &str = r#"
+struct SpriteUniforms {
+    to_local: mat2x2<f32>,
+    translation: vec2<f32>,
+    size: vec2<f32>,
+    tint: vec4<f32>,
+    alpha: f32,
+    lit: f32,
+    lit_layers: f32,
+    uv_rect: vec4<f32>,
+    emission: vec4<f32>,
+    glow: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> u: SpriteUniforms;
+@group(0) @binding(1) var tex: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+@group(0) @binding(3) var<storage, read> field: LightField;
+@group(0) @binding(4) var<storage, read> occluders: OccluderField;
+
+@vertex
+fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let p = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    return vec4(p[i], 0.0, 1.0);
+}
+
+fn paint(coord: vec4<f32>) -> vec4<f32> {
+    let local = u.to_local * coord.xy + u.translation;
+    let uv = vec2(local.x / u.size.x, -local.y / u.size.y) + vec2(0.5);
+    let t = textureSample(tex, samp, mix(u.uv_rect.xy, u.uv_rect.zw, uv));
+    var rgb = t.rgb * u.tint.rgb;
+    if (u.lit > 0.5) {
+        rgb *= light_mix(coord.xy, bitcast<u32>(u.lit_layers));
+    }
+    return vec4(rgb, t.a * u.alpha * u.tint.a);
+}
+
+@fragment
+fn fs_main(@builtin(position) coord: vec4<f32>) -> @location(0) vec4<f32> {
+    return paint(coord);
+}
+
+struct SceneOut {
+    @location(0) color: vec4<f32>,
+    @location(1) emissive: vec4<f32>,
+};
+
+@fragment
+fn fs_emissive(@builtin(position) coord: vec4<f32>) -> SceneOut {
+    let col = paint(coord);
+    return SceneOut(col, vec4(0.0));
+}
+"#;
+        let source = format!("{LIGHTING_WGSL}{USER}");
+        let module = naga::front::wgsl::parse_str(&source)
+            .unwrap_or_else(|err| panic!("a contract program must parse: {err}"));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|err| panic!("a contract program must validate: {err}"));
     }
 
     /// Every scene shader offers both fragment entry points; the blit offers

@@ -278,6 +278,7 @@ fn node_modulate_multiplies_sprite_tint_and_text_color_not_their_alpha() {
             alpha: 0.25,
             filter: SpriteFilter::Linear,
             generation: 0,
+            program: None,
         }),
         children: vec![],
 
