@@ -1791,6 +1791,29 @@ mod tests {
     }
 
     #[test]
+    fn default_node_carries_no_light() {
+        // The rest state a scene that recycles nodes between lives
+        // returns them to is exactly this default: no emission to
+        // lift the light mix, no glow to bloom, no additive blend to
+        // brighten, and a white modulate that tints nothing. Games
+        // define "washed" by these values — changing one silently
+        // rewrites every recycled node's rest.
+        let node = SceneNode::default();
+        assert_eq!(
+            node.emission,
+            Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0
+            }
+        );
+        assert_eq!(node.glow, None);
+        assert!(!node.additive);
+        assert_eq!(node.modulate, WHITE);
+    }
+
+    #[test]
     fn scene_ambient_is_a_dim_gray_by_default() {
         let ambient = Scene::default().ambient;
         assert_eq!(

@@ -71,6 +71,33 @@ fn fit_pool(root: &mut SceneNode, slots: usize) {
     }
 }
 
+/// Put one node's light-bearing fields back to rest. Emission and
+/// glow are the two fields a band can wear without every band
+/// writing them — the ants' embers and the dig's fx are the wearers —
+/// so a block dressed over a slot that last held a worn node would
+/// draw light nobody asked for. Every other field belongs to whoever
+/// dressed the node last, and the wash asks nothing of it.
+fn rest_light(node: &mut SceneNode) {
+    node.emission = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    };
+    node.glow = None;
+}
+
+/// The hill-threshold wash: bands slide across the pool as the
+/// hill's counts change, so a node that wore an ember or a dissolve
+/// last hill can stand under the backdrop today, where no block
+/// writes the light fields. Once per swap the pool comes back to rest
+/// before any band re-dresses it (see [`Demo::pool_reset`]).
+fn wash_pool(root: &mut SceneNode) {
+    for node in root.children.iter_mut() {
+        rest_light(node);
+    }
+}
+
 /// The backdrop: one soil texture stretched cover-first across the window,
 /// under every tile. The hairline gaps between tiles and the void past the
 /// hill's edge read as earth instead of as a screen.
@@ -1425,6 +1452,37 @@ fn step_sel(sel: usize, n: usize, dir: i32) -> usize {
     }
 }
 
+/// The repeat clock of a held menu arrow: the first press answers at
+/// once, and a hand that keeps the key down waits out the delay —
+/// then takes one row per beat until it lets go.
+const NAV_HOLD: f32 = 0.32;
+const NAV_RATE: f32 = 0.08;
+
+/// One frame of that clock: `next` is the time still to wait, and a
+/// frame spends it down; at zero the arrow steps and the next step
+/// arms one beat later. A hand resting before its decision never
+/// pays a step early, and a hand that holds never pays one late.
+fn key_repeat(next: &mut f32, dt: f32) -> bool {
+    *next -= dt;
+    if *next <= 0.0 {
+        *next = NAV_RATE;
+        true
+    } else {
+        false
+    }
+}
+
+/// The ledger's top chevron, kept: where the window must lean and
+/// where the selection must land so that pressing up from the first
+/// row stands on the last hill of the list. The window bottoms out
+/// (`total - visible` rows down) and the selection takes the window's
+/// own last hill row — which for a descent shorter than the window
+/// is simply the last hill where it already stood.
+fn wrap_to_last(total: usize, visible: usize) -> (usize, usize) {
+    let top = total.saturating_sub(visible);
+    (top, total.saturating_sub(1).saturating_sub(top))
+}
+
 /// Which row, if any, lives under a pointer: the one test the click,
 /// the highlight-follow, and any future pointer reader all share.
 fn row_under(rows: &[Row], p: [f32; 2]) -> Option<usize> {
@@ -1489,12 +1547,16 @@ const PROGRESS_SCORE_R: f32 = 206.0;
 /// edge, plus the widest possible card.
 const PROGRESS_MAP_CX: f32 = 344.0;
 
-/// Whether the ledger's window has more descent above it (an up mark)
-/// and below it (a down mark). Barrfont carries letters and a space
-/// and nothing else — no arrow glyph to spend — so the marks are
-/// drawn chevrons, and they answer only this: is something hidden?
-fn progress_marks(total: usize, top: usize, visible: usize) -> (bool, bool) {
-    (top > 0, top + visible < total)
+/// Whether the ledger shows its wrap chevrons. It always does, top
+/// and bottom: they no longer answer "is something hidden?" — they
+/// promise "the other end is one keypress away", and the arrows keep
+/// that promise from any edge by wrapping to the last or first hill
+/// of the descent. Barrfont carries no arrow glyph, so the marks are
+/// drawn chevrons. A descent of one hill has nothing to wrap to and
+/// spends no mark.
+fn progress_marks(total: usize) -> (bool, bool) {
+    let one = total <= 1;
+    (!one, !one)
 }
 
 /// A dragged slider, while the left button holds.
@@ -1669,6 +1731,12 @@ struct Demo {
     /// one dig needs one dirt cell and dirt is only ever lost.
     dirt_key: Vec<(i32, i32)>,
     dig_cap: usize,
+    /// Set by `load`, spent by the next draw: a hill swap moves every
+    /// pool band — the tail can slide down into the last hill's dig
+    /// territory, whose nodes wear emission and glow the backdrop
+    /// blocks never write. One wash of the pool per swap puts those
+    /// two fields back to rest before any band re-dresses them.
+    pool_reset: bool,
     /// The bed sprite, laid square on every bed's cell.
     bed: frost::Shape,
     /// The stone slab the menu panels are cut from, held as a tile
@@ -1750,6 +1818,13 @@ struct Demo {
     title_set: bool,
     was: HashMap<KeyCode, bool>,
     was_mouse: HashMap<MouseButton, bool>,
+    /// The repeat clocks of held menu arrows: for each arrow still
+    /// down, the time left before its next step. Written by
+    /// [`Demo::nav_held`] — the first press answers at once and arms
+    /// the delay; each frame held spends the clock down, arming one
+    /// beat per step. A released key simply stops being paid; the
+    /// next press re-arms the whole delay.
+    nav_timer: HashMap<KeyCode, f32>,
     /// Click-walking: the directions left to walk toward the last
     /// clicked cell, one issued per completed glide.
     route: Vec<game::Dir>,
@@ -1909,6 +1984,7 @@ impl Demo {
             digs: Vec::new(),
             dirt_key: Vec::new(),
             dig_cap: 0,
+            pool_reset: false,
             bed,
             slab,
             ground: None,
@@ -1940,6 +2016,7 @@ impl Demo {
             frost_bit: false,
             title_set: false,
             was: HashMap::new(),
+            nav_timer: HashMap::new(),
             was_mouse: HashMap::new(),
             route: Vec::new(),
             replay: None,
@@ -2083,6 +2160,7 @@ impl Demo {
         self.digs.clear();
         self.dirt_key = self.game.as_ref().map(dirt_cells).unwrap_or_default();
         self.dig_cap = self.dirt_key.len();
+        self.pool_reset = true;
         self.player_at = start;
         self.player_target = start;
         self.player_hop = Hop::flat(start, HOP);
@@ -2130,6 +2208,25 @@ impl Demo {
         let edge = down && !*self.was.entry(key).or_insert(false);
         self.was.insert(key, down);
         edge
+    }
+
+    /// The menu walk's key test, for the two arrows: the press itself
+    /// answers at once, exactly as `pressed` would, and a key held
+    /// down keeps answering — one step per beat after a first delay,
+    /// the way a held key scrolls a list anywhere else in the world.
+    /// Every other key in the game keeps its plain rising edge; the
+    /// repeat belongs to the walk alone.
+    fn nav_held(&mut self, ctx: &Context, dt: f32, key: KeyCode) -> bool {
+        if self.pressed(ctx, key) {
+            self.nav_timer.insert(key, NAV_HOLD);
+            return true;
+        }
+        if !ctx.key_down(key) {
+            return false;
+        }
+        self.nav_timer
+            .get_mut(&key)
+            .is_some_and(|left| key_repeat(left, dt))
     }
 
     /// The same rising-edge test for the mouse buttons.
@@ -2737,6 +2834,17 @@ impl Demo {
         let slots =
             LEAVES.len() + game.ants.len() * 3 + 6 + game.level.beds.len() * 2 + self.dig_cap;
         fit_pool(&mut ctx.scene().root, slots);
+        // A hill swap moves every band: the pool grew or shrank, so a
+        // node that wore an ember or a dissolve last hill can stand
+        // under the backdrop today. The sheet blocks dress shape,
+        // colour and light but never `emission` or `glow` — a
+        // backdrop wearing a dead dig's glow reads as sky on fire —
+        // so once per swap the pool is washed to its resting state,
+        // before any band re-dresses what it wears this frame.
+        if self.pool_reset {
+            self.pool_reset = false;
+            wash_pool(&mut ctx.scene().root);
+        }
         // Every ant is a lamp, and every lamp breathes: at rest a
         // gentle sway, working a deeper faster pulse, and stopping
         // winds the pace down by degrees. Asleep keeps only a faint
@@ -3133,11 +3241,17 @@ impl Demo {
                 };
                 node.glow = Some(shade(dirt_tint, noise));
                 node.lit = true;
+                node.lit_layers = LightLayers::default();
                 node.order = 0.02;
             }
             for node in &mut ctx.scene().root.children[base + self.digs.len()..base + self.dig_cap]
             {
+                // Released digs go back to the pool whole: a node
+                // that only stopped drawing still wears its last
+                // frame's fx, and any band that inherits this slot
+                // next would wear a dissolve it never asked for.
                 node.shape = None;
+                rest_light(node);
             }
         }
         // The zs: one born at each breath's crest, adrift and growing
@@ -4261,22 +4375,22 @@ impl Demo {
         }));
     }
 
-    /// The marks that make the descent visibly longer than the window:
-    /// a chevron above the first row while hills wait out of sight
-    /// above, and one below the last visible row while more wait
-    /// below, in the gap the pinned `back` shares. Barrfont carries
-    /// letters and a space and nothing else, so the arrows are drawn
-    /// as two short strokes meeting at a tip — each one a polyline
-    /// node, riding the page's fade. They sit in the inter-row gaps,
-    /// where no text reaches: a row's glyphs stand 25 off its centre
-    /// and a mark 11 off its own, and the gaps are wider than both.
+    /// The marks that make the descent a ring: a chevron above the
+    /// first row and one below the last, always lit, each promising
+    /// the far end of the ledger one press away (they share the gap
+    /// the pinned `back` row lives in). Barrfont carries letters and
+    /// a space and nothing else, so the arrows are drawn as two short
+    /// strokes meeting at a tip — each one a polyline node, riding the
+    /// page's fade. They sit in the inter-row gaps, where no text
+    /// reaches: a row's glyphs stand 25 off its centre and a mark 11
+    /// off its own, and the gaps are wider than both.
     fn draw_progress_marks(&self, ctx: &mut Context, rows: &[Row], h: f32, z: f32, a: f32) {
         let hills = rows
             .iter()
             .filter(|r| matches!(r.action, Action::Hill(_)))
             .count();
-        let (up, down) = progress_marks(self.levels.len(), self.progress_top, hills);
-        if !up && !down {
+        let (up, down) = progress_marks(self.levels.len());
+        if hills == 0 || (!up && !down) {
             return;
         }
         let chevron = |cy: f32, tip: f32, ctx: &mut Context| {
@@ -4405,7 +4519,7 @@ impl Demo {
     /// on the track until it lifts — dragging previews live, and only
     /// the release writes the disc. Any other row answers its press at
     /// once.
-    fn menu_input(&mut self, ctx: &mut Context) {
+    fn menu_input(&mut self, ctx: &mut Context, dt: f32) {
         let pointer = ctx.mouse_position();
         if let Some(sl) = self.drag {
             if ctx.mouse_button_down(MouseButton::Left) {
@@ -4421,10 +4535,12 @@ impl Demo {
                 self.settings.save();
             }
         }
-        // The keyboard's turn: arrows walk the rows, Enter presses
-        // the highlighted one, and left/right nudge a slider by five
-        // points when the highlight stands on its row. The same
-        // `menu_rows` list the mouse reads, so the two never diverge.
+        // The keyboard's turn: arrows walk the rows — and a held
+        // arrow keeps walking, one row per beat after a first delay —
+        // Enter presses the highlighted one, and left/right nudge a
+        // slider by five points when the highlight stands on its row.
+        // The same `menu_rows` list the mouse reads, so the two never
+        // diverge.
         let h = self.view(ctx).1;
         let rows = self.menu_rows(self.page, h);
         if !rows.is_empty() {
@@ -4432,9 +4548,12 @@ impl Demo {
             // The ledger leans: at its window's edges the arrow keys
             // slide the window over the hills instead of wrapping —
             // and the wheel drags the window directly, lines for
-            // lines. Every other page keeps the plain walk.
-            let up = self.pressed(ctx, KeyCode::ArrowUp);
-            let down = self.pressed(ctx, KeyCode::ArrowDown);
+            // lines. Past the true ends the two standing chevrons
+            // keep their promise: up from the first hill wraps to
+            // the last, down off the bottom comes home to the first.
+            // Every other page keeps the plain walk.
+            let up = self.nav_held(ctx, dt, KeyCode::ArrowUp);
+            let down = self.nav_held(ctx, dt, KeyCode::ArrowDown);
             if self.page == Page::Progress {
                 let hills = rows.len() - 1; // the pinned back row aside
                 let more = self.levels.len() > self.progress_top + hills;
@@ -4442,21 +4561,28 @@ impl Demo {
                     self.progress_top -= 1;
                 } else if down && self.menu_sel + 1 == hills && more {
                     self.progress_top += 1;
+                } else if up && self.menu_sel == 0 {
+                    // The top chevron's promise: the last hill of
+                    // the ledger — a hill, not the back row — and the
+                    // window leans so that hill stands in view.
+                    let (top, sel) = wrap_to_last(self.levels.len(), hills);
+                    self.progress_top = top;
+                    self.menu_sel = sel;
+                } else if down && self.menu_sel + 1 == rows.len() {
+                    // And the bottom chevron's: home to the first
+                    // hill, window and all.
+                    self.progress_top = 0;
+                    self.menu_sel = 0;
                 } else {
-                    // The plain walk: within the window the arrows
-                    // do what they do everywhere else, and the wrap
-                    // — the only way off either end without leaning
-                    // — comes home to the ledger's own top.
-                    let wrapped =
-                        (up && self.menu_sel == 0) || (down && self.menu_sel + 1 == rows.len());
+                    // The plain walk between the ends: within the
+                    // window the arrows do what they do everywhere
+                    // else, and from the last visible hill the walk
+                    // steps down onto the pinned back row.
                     if up {
                         self.menu_sel = step_sel(self.menu_sel, rows.len(), -1);
                     }
                     if down {
                         self.menu_sel = step_sel(self.menu_sel, rows.len(), 1);
-                    }
-                    if wrapped {
-                        self.progress_top = 0;
                     }
                 }
             } else {
@@ -5820,7 +5946,7 @@ impl Process for Demo {
         }
         // The menu takes the pointer whole while it is up.
         if self.page != Page::Game {
-            self.menu_input(ctx);
+            self.menu_input(ctx, dt);
         }
 
         self.update_leaves(ctx, dt);
@@ -7313,6 +7439,66 @@ mod menu_tests {
     }
 
     #[test]
+    fn the_wash_takes_the_light_back_at_the_threshold() {
+        // The bug this pays for: a dig wore its fx at a tail slot,
+        // the next hill counts smaller, and the backdrop now dresses
+        // that very slot — shape, colour, light — while `emission`
+        // and `glow` stay from the dig and read as sky on fire.
+        let rest = Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        };
+        let mut root = SceneNode::default();
+        fit_pool(&mut root, 4);
+        root.children[3].emission = Color {
+            r: 1.0,
+            g: 0.4,
+            b: 0.14,
+            a: 1.0,
+        };
+        root.children[3].glow = Some(Color {
+            r: 0.9,
+            g: 0.6,
+            b: 0.2,
+            a: 1.0,
+        });
+        // A hill swap — smaller this time — slides the tail down over
+        // the worn slot; the wash is what the draw spends per swap.
+        fit_pool(&mut root, 3);
+        wash_pool(&mut root);
+        for (i, n) in root.children.iter().enumerate() {
+            assert_eq!(n.emission, rest, "slot {i} still holds emission");
+            assert!(n.glow.is_none(), "slot {i} still wears a halo");
+        }
+        // And the wash asks nothing else of a dressed node: the
+        // backdrop's own colour and depth survive the threshold,
+        // because every other field belongs to its band, not the
+        // pool's memory.
+        root.children[2].modulate = Color {
+            r: 0.45,
+            g: 0.4,
+            b: 0.38,
+            a: 1.0,
+        };
+        root.children[2].order = -0.5;
+        root.children[2].lit = true;
+        wash_pool(&mut root);
+        assert_eq!(root.children[2].order, -0.5, "the wash touches no dress");
+        assert!(root.children[2].lit, "the wash touches no dress");
+        assert_eq!(
+            root.children[2].modulate.a, 1.0,
+            "the wash touches no dress"
+        );
+        // A grown pool needs no wash to be clean — new slots are born
+        // at rest — but a wash spends nothing on the pretence.
+        fit_pool(&mut root, 6);
+        assert_eq!(root.children[5].emission, rest);
+        assert_eq!(root.children[5].glow, None);
+    }
+
+    #[test]
     fn the_tutorial_hill_answers_to_the_card_alone() {
         let mut d = demo();
         d.page = Page::Game;
@@ -7601,15 +7787,60 @@ mod menu_tests {
     }
 
     #[test]
-    fn the_ledger_marks_more_above_and_below() {
-        // Nothing hidden at the top of a short descent...
-        assert_eq!(progress_marks(3, 0, 3), (false, false));
-        // ...a mark below while hills wait out of sight...
-        assert_eq!(progress_marks(20, 0, 12), (false, true));
-        // ...marks both ways mid-descent...
-        assert_eq!(progress_marks(20, 5, 12), (true, true));
-        // ...and only above once the bottom row is in the window.
-        assert_eq!(progress_marks(20, 8, 12), (true, false));
+    fn the_wrap_chevrons_stand_at_both_ends() {
+        // The chevrons no longer ask whether something hides beyond
+        // the window — they promise the far end is one press away —
+        // so they light on every descent with a far end to reach.
+        assert_eq!(
+            progress_marks(1),
+            (false, false),
+            "a hill of one has no other end"
+        );
+        assert_eq!(
+            progress_marks(2),
+            (true, true),
+            "two hills promise each other"
+        );
+        assert_eq!(progress_marks(20), (true, true), "at any depth");
+        // The top chevron's landing: the last hill of the ledger, and
+        // the window leans so that hill stands in view — bottom row
+        // of a window bottomed out.
+        assert_eq!(wrap_to_last(20, 12), (8, 11));
+        // A descent shallower than the window leans nowhere: the last
+        // hill already stands.
+        assert_eq!(wrap_to_last(3, 12), (0, 2));
+        // And an empty ledger stands still.
+        assert_eq!(wrap_to_last(0, 12), (0, 0));
+    }
+
+    #[test]
+    fn a_held_arrow_waits_then_walks() {
+        // The first repeat waits out the whole delay — a hand still
+        // travelling to the key pays no steps — ...
+        let mut left = NAV_HOLD;
+        let mut frames = 0;
+        while !key_repeat(&mut left, 1.0 / 60.0) {
+            frames += 1;
+            assert!(frames < 600, "the delay never let go");
+        }
+        assert!(
+            (frames as f32 + 1.0) / 60.0 >= NAV_HOLD,
+            "the first repeat cheated the delay: {frames} frames"
+        );
+        // ...and then the clock walks, one step per beat, no beat
+        // wider than the rate by more than a frame's rounding.
+        for beat in 1..6 {
+            let mut gap = 0;
+            while !key_repeat(&mut left, 1.0 / 60.0) {
+                gap += 1;
+                assert!(gap < 60, "beat {beat} never came");
+            }
+            let span = (gap + 1) as f32 / 60.0;
+            assert!(
+                (NAV_RATE..=NAV_RATE + 2.0 / 60.0).contains(&span),
+                "beat {beat} came at {span}"
+            );
+        }
     }
 
     #[test]
