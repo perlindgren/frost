@@ -9,6 +9,10 @@ edition = "2024"
 
 [dependencies]
 frost = { path = ".." }
+# The dig's dissolve, borrowed from the shelf of reusable shader
+# programs — the same source
+# `cargo run -p frost_shaders --example dissolve` puts on a window.
+frost_shaders = { path = "../frost_shaders" }
 # The app logs through the same facade the engine uses — the app picks
 # the messages, the binary picks the sink (stderr, or the console).
 log = "0.4.34"

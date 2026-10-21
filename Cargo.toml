@@ -15,8 +15,8 @@ edition = "2024"
 # measurement travels with the measurement instead of drifting away from it
 # in some other package.
 [workspace]
-members = ["antifrost", "tools/sprite_util", "tools/noisefloor"]
-default-members = [".", "antifrost", "tools/sprite_util", "tools/noisefloor"]
+members = ["antifrost", "frost_shaders", "tools/sprite_util", "tools/noisefloor"]
+default-members = [".", "antifrost", "frost_shaders", "tools/sprite_util", "tools/noisefloor"]
 # Edition 2024 implies resolver 3; stated explicitly so the workspace
 # resolver cannot drift from the packages' editions.
 resolver = "3"

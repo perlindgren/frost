@@ -166,6 +166,7 @@ dependencies = [
  "console_error_panic_hook",
  "env_logger",
  "frost",
+ "frost_shaders",
  "image",
  "js-sys",
  "log",
@@ -852,6 +853,13 @@ dependencies = [
  "web-sys",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "frost_shaders"
+version = "0.1.0"
+dependencies = [
+ "frost",
 ]
 
 [[package]]

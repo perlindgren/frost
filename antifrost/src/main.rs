@@ -103,14 +103,18 @@ fn wash_pool(root: &mut SceneNode) {
 /// hill's edge read as earth instead of as a screen.
 const SOIL: &[u8] = include_bytes!("../assets/sprites/soil.png");
 
-/// The dig's dissolve, in the engine's own WGSL dialect: a game
-/// program, compiled behind the lighting prelude exactly like the
-/// engine's lit kinds, and hung on the soil sprite wherever a dug
-/// tile still has dirt to lose (see [`Demo::digs`]). The engine's
-/// live-reload watches its own shader directory, not this file — a
-/// change here is a rebuild, which is the honest trade for the game
-/// owning its effects.
-const DISSOLVE: &str = include_str!("../shaders/dissolve.wgsl");
+/// The dig's dissolve, borrowed from `frost_shaders`: a game program
+/// the engine compiles behind the lighting prelude exactly like its
+/// own lit kinds, hung on the soil sprite wherever a dug tile still
+/// has dirt to lose (see [`Demo::digs`], and `frost_shaders::DISSOLVE`
+/// for the three floats of its contract). The shelf keeps the WGSL and
+/// signs its own contract test there;
+/// `cargo run -p frost_shaders --example dissolve` paints the same eat
+/// on a plain tile of soil. The engine's live-reload watches its own
+/// shader directory, not a crate's `include_str!` — a change there is
+/// a rebuild, the honest trade for a game owning its effects through a
+/// dependency instead of a folder.
+const DISSOLVE: &str = frost_shaders::DISSOLVE;
 
 /// The slab the menu panels are cut from: one 16:9 band taken from
 /// the garden's granite photo (the user's own `stone.png`, 3024×4032)
@@ -3237,7 +3241,10 @@ impl Demo {
                     r: 1.0 - (left / DIG_HOP).clamp(0.0, 1.0),
                     g: seed,
                     b: 0.14,
-                    a: 1.0,
+                    // The grain, as the shelf counts it: five noise
+                    // cycles across a dig cell — the lattice hides
+                    // inside one organic bite at a tile's scale.
+                    a: 5.0,
                 };
                 node.glow = Some(shade(dirt_tint, noise));
                 node.lit = true;
@@ -6519,21 +6526,6 @@ mod dig_tests {
         // so the single dig just ages.
         watch_digs(&mut digs, &seen, &[], 0.01);
         assert_eq!(digs.len(), 1);
-    }
-
-    /// The program antifrost ships must compile behind the engine's
-    /// lighting prelude exactly as the engine's own lit kinds do —
-    /// parse and device-side validation, the two stages wgpu runs,
-    /// checked here rather than paid for with a dead frame. If the
-    /// engine's contract (`LIGHTING_WGSL` prepended, both entry
-    /// points, the sprite bindings) ever moves, this fails at
-    /// `cargo test`, not at the first dig.
-    #[test]
-    fn the_dissolve_program_holds_the_contract() {
-        let joined = format!("{}\n{DISSOLVE}", frost::LIGHTING_WGSL);
-        if let Err(err) = frost::validate_wgsl(&joined) {
-            panic!("dissolve.wgsl fails behind the prelude: {err}");
-        }
     }
 }
 

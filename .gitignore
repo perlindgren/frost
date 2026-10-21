@@ -13,8 +13,8 @@
 # The game writes its own files where it launches from — settings the
 # moment one changes, progress whenever a hill moves. Per-machine
 # artifacts, never source.
-/antifrost.settings.ron
-/antifrost.progress.ron
+antifrost.settings.ron
+antifrost.progress.ron
 
 # self-signed certificates for `serve.py --tls` — minted locally, never committed
 web/.tls/

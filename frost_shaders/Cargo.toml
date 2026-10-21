@@ -1,0 +1,13 @@
+[package]
+name = "frost_shaders"
+version = "0.1.0"
+edition = "2024"
+
+# The shelf for reusable frost shader programs: sources a game can
+# hang on a shape with `Shape::with_program` / `Shape::painted_by`
+# without owning the WGSL itself. A program here belongs to no one
+# game — antifrost borrowed the dig's dissolve from this shelf, and
+# the example below is the smallest host that shows it working.
+
+[dependencies]
+frost = { path = ".." }

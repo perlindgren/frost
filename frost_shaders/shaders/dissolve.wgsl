@@ -3,7 +3,8 @@
 // by the time the step lands. A game-authored frost program —
 // compiled behind the engine's lighting prelude, bound exactly like
 // `sprite.wgsl`, and drawn in place of the sprite pipeline wherever
-// antifrost attaches it (`Shape::with_program`).
+// its host attaches it (`Shape::with_program`); the smallest host is
+// `frost_shaders/examples/dissolve.rs`.
 //
 // The uniforms are the sprite's, 112 bytes, and the engine packed
 // them from a scene node; what they mean here is the game's own
@@ -11,7 +12,9 @@
 // it arrives whole), and `u.emission` carries the effect:
 //     r = progress, 0 at the issued move, 1 as the step lands;
 //     g = a per-cell seed, so no two holes eat alike;
-//     b = edge softness of the eat band.
+//     b = edge softness of the eat band;
+//     a = noise cycles across the node — the grain, at the host's
+//         scale (antifrost's dig cells ride 5.0).
 
 struct SpriteUniforms {
     to_local: mat2x2<f32>,
@@ -56,25 +59,72 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(positions[i], 0.0, 1.0);
 }
 
-/// Hash of a point, the same one every grain of antifrost's noise
-/// could have used: no tables, no texture, just bit-scatter.
-fn hash(p: vec2<f32>) -> f32 {
-    let q = fract(p * vec2<f32>(127.1, 311.7));
-    return fract(sin(dot(q, vec2<f32>(12.9898, 78.233)) + q.x * 43.7) * 43758.5453);
+/// Modulus that keeps the simplex permutation honest at the
+/// magnitudes the skew touches — floor arithmetic, so it behaves
+/// identically on every GPU.
+fn mod289_2(x: vec2<f32>) -> vec2<f32> {
+    return x - floor(x * (1.0 / 289.0)) * 289.0;
 }
 
-/// Two octaves of value noise: coarse grain with a finer bite, the
-/// dirt's own scale of clumps. The band wants noise in [0, 1] that
-/// varies smoothly across the tile; two octaves is a clump with
-/// texture in it, three would be mush at a tile's hundred-odd pixels.
+fn mod289_3(x: vec3<f32>) -> vec3<f32> {
+    return x - floor(x * (1.0 / 289.0)) * 289.0;
+}
+
+fn permute3(x: vec3<f32>) -> vec3<f32> {
+    return mod289_3(((x * 34.0) + 1.0) * x);
+}
+
+/// Simplex noise in [-1, 1] (Ashima's 2D snoise, transcribed to
+/// WGSL one swizzle at a time). Chosen over value noise because
+/// value noise blends lattice values with a smoothstep, whose zero
+/// derivative along cell edges makes the field sit on plateaus with
+/// right-angle borders — a coarse-grained dissolve dissolves into a
+/// quilt, every seam axis-aligned. Simplex samples a triangular
+/// lattice of gradients instead: no plateaus, no axes, contours
+/// wander like rivers however far the host zooms the field.
+fn simplex(p: vec2<f32>) -> f32 {
+    let skew = 0.366025403784439; // (sqrt(3) - 1) / 2
+    let offset = 0.211324865405187; // (3 - sqrt(3)) / 6
+    let i = floor(p + vec2<f32>(dot(p, vec2<f32>(skew, skew))));
+    let x0 = p - i + vec2<f32>(dot(i, vec2<f32>(offset, offset)));
+    let i1 = select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), x0.x > x0.y);
+    let x1 = x0 - i1 + vec2<f32>(offset, offset);
+    let x2 = x0 + vec2<f32>(offset + offset - 1.0, offset + offset - 1.0);
+    let ii = mod289_2(i);
+    let p0 = permute3(
+        permute3(vec3<f32>(0.0, i1.y, 1.0) + vec3<f32>(ii.y, ii.y, ii.y))
+            + vec3<f32>(0.0, i1.x, 1.0)
+            + vec3<f32>(ii.x, ii.x, ii.x),
+    );
+    var m = max(
+        vec3<f32>(0.5)
+            - vec3<f32>(dot(x0, x0), dot(x1, x1), dot(x2, x2)),
+        vec3<f32>(0.0),
+    );
+    m = m * m;
+    m = m * m;
+    let xg = 2.0 * fract(p0 * 0.024390243902439) - 1.0;
+    let h = abs(xg) - 0.5;
+    let a0 = xg - floor(xg + 0.5);
+    m = m * (vec3<f32>(1.79284291400159) - vec3<f32>(0.85373472095314)
+        * (a0 * a0 + h * h));
+    let g = vec3<f32>(
+        a0.x * x0.x + h.x * x0.y,
+        a0.y * x1.x + h.y * x1.y,
+        a0.z * x2.x + h.z * x2.y,
+    );
+    return 130.0 * dot(m, g);
+}
+
+/// The dirt's field: three octaves of simplex — a broad bite with a
+/// medium and a fine one riding it — lifted and scaled into
+/// [0, 1]. Simplex's own octave halving is gentler than value
+/// noise's, and nothing in it knows which way the axes are.
 fn clumps(p: vec2<f32>) -> f32 {
-    let i = floor(p);
-    let f = fract(p);
-    let w = f * f * (3.0 - 2.0 * f);
-    let a = mix(hash(i), hash(i + vec2<f32>(1.0, 0.0)), w.x);
-    let b = mix(hash(i + vec2<f32>(0.0, 1.0)), hash(i + vec2<f32>(1.0, 1.0)), w.x);
-    let fine = mix(hash(i * 2.7), hash(i * 2.7 + vec2<f32>(1.3, 2.1)), w.x) * 0.25;
-    return mix(a, b, w.y) * 0.75 + fine;
+    let a = 0.5 + 0.5 * simplex(p);
+    let b = 0.5 + 0.5 * simplex(2.31 * p + vec2<f32>(7.3, 3.7));
+    let c = 0.5 + 0.5 * simplex(5.7 * p + vec2<f32>(1.9, 8.1));
+    return a * 0.62 + b * 0.26 + c * 0.12;
 }
 
 struct Shaded {
@@ -106,7 +156,20 @@ fn shade(frag_coord: vec4<f32>) -> Shaded {
     // two patterns.
     let prog = clamp(u.emission.r, 0.0, 1.0);
     let soft = max(u.emission.b, 0.01);
-    let q = uv * 5.0 + vec2<f32>(u.emission.g * 57.0, u.emission.g * 91.0);
+    // The lattice frequency — cycles of noise across the quad — is the
+    // host's to choose, carried in `emission.a`: one node may be a
+    // game tile or a whole window, and the bite stays the same physical
+    // grain when the host scales the cycles with the node. Clamped so
+    // a defaulted alpha (the sprite packs it like any colour) still
+    // eats in real clumps rather than one flat slab.
+    // The lattice's grain is the host's to choose, cycles of noise
+    // across the quad: antifrost rides 5.0 through a tile's hundred
+    // pixels — a clump the width of a thumb's nail. Hosts at another
+    // size class carry the contract by keeping that physical clump
+    // size, whatever the grain figure comes to; the field is the
+    // same earth everywhere, and never a visible lattice of cells.
+    let grain = clamp(u.emission.a, 2.0, 96.0);
+    let q = uv * grain + vec2<f32>(u.emission.g * 57.0, u.emission.g * 91.0);
     let n = clumps(q);
     let cut = -soft + prog * (1.0 + 2.0 * soft);
     let mask = smoothstep(cut - soft, cut + soft, n);
