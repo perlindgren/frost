@@ -2441,7 +2441,7 @@ impl Demo {
         }
         if let Some(note) = self.game.as_mut().and_then(|g| g.take_note()) {
             self.note = note.to_string();
-            self.note_t = 2.4;
+            self.note_t = 3.4;
         }
 
         // The frost: over par and winter arrives — snow mixed into
@@ -2455,8 +2455,8 @@ impl Demo {
             .is_some_and(|g| g.level.par > 0 && g.moves > g.level.par);
         if over && !self.frost_bit {
             self.frost_bit = true;
-            self.note = "the frost bites  keep walking".to_string();
-            self.note_t = 2.4;
+            self.note = "it is getting cold you can do better".to_string();
+            self.note_t = 3.4;
         }
         let target = match self.game.as_ref() {
             Some(g) if g.level.par > 0 => {
@@ -4631,6 +4631,14 @@ impl Demo {
                 let action = rows[self.menu_sel].action;
                 self.menu_action(ctx, action);
             }
+            // The finished hill answers `R` directly: it is the key
+            // the hill already takes mid-play as its restart, so a
+            // win that wants an immediate redo needs no walk to the
+            // row — the verdict plate is still up, the hill hits its
+            // beginning on the same key that clears it.
+            if self.page == Page::Won && self.pressed(ctx, KeyCode::KeyR) {
+                self.menu_action(ctx, Action::Retry);
+            }
             // Tab turns the highlighted ledger row over: its recorded
             // best run replays itself at the click walker's pace.
             // A hill without a recording stays as it was — that row
@@ -5019,7 +5027,7 @@ impl Demo {
         if !self.rail_opens(game::Act::Move(self.route[0])) {
             self.route.clear();
             self.note = RAIL_NOTE.to_string();
-            self.note_t = 1.6;
+            self.note_t = 2.6;
             return;
         }
         // A reversal of the travelling direction is a turn, not a
@@ -5118,7 +5126,7 @@ impl Demo {
                 rep.playing = false;
             }
             self.note = "the recording ends where the hill has changed".to_string();
-            self.note_t = 2.6;
+            self.note_t = 3.6;
             return;
         }
         if matches!(a, game::Act::Push(_)) {
@@ -5622,7 +5630,7 @@ impl Process for Demo {
                         let _ = game.act(game::Act::Detach);
                     } else {
                         self.note = RAIL_NOTE.to_string();
-                        self.note_t = 1.6;
+                        self.note_t = 2.6;
                     }
                 } else if let Some(dir) = push_aim.filter(|_| !game.won) {
                     // The shove itself is the game's; the pusher faces
@@ -5636,11 +5644,11 @@ impl Process for Demo {
                         self.face = face_of(dir);
                         if let Err(why) = game.act(game::Act::Push(dir)) {
                             self.note = why.to_string();
-                            self.note_t = 1.6;
+                            self.note_t = 2.6;
                         }
                     } else {
                         self.note = RAIL_NOTE.to_string();
-                        self.note_t = 1.6;
+                        self.note_t = 2.6;
                     }
                 } else if let Some((dir, push)) = action.filter(|_| !game.won) {
                     self.route.clear();
@@ -5653,7 +5661,7 @@ impl Process for Demo {
                         // Refused at the gate: no turn, no shove, no
                         // step — as if the key had never been struck.
                         self.note = RAIL_NOTE.to_string();
-                        self.note_t = 1.6;
+                        self.note_t = 2.6;
                     } else if push {
                         // A push never moves the pusher, so no glide will
                         // carry its facing — turn by hand.
@@ -5681,7 +5689,7 @@ impl Process for Demo {
                     Some(path) => self.route = path,
                     None => {
                         self.note = "the hill will not open that way".to_string();
-                        self.note_t = 1.6;
+                        self.note_t = 2.6;
                     }
                 }
             }
@@ -5776,7 +5784,7 @@ impl Process for Demo {
                     if moves > par && !self.cold_noted {
                         self.cold_noted = true;
                         self.note = COLD_NOTE.to_string();
-                        self.note_t = 2.4;
+                        self.note_t = 3.4;
                     } else if moves <= par {
                         self.cold_noted = false;
                     }
