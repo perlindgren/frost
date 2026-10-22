@@ -280,20 +280,23 @@ fn prune(dir: &Path, me: u32) {
 
 #[cfg(unix)]
 fn alive(pid: u32) -> bool {
-    // A number that does not fit a `pid_t` is no process of ours.
-    // `kill` reads a negative pid as a whole process *group*, and
-    // every platform's pid ceiling sits far below `i32::MAX` — so a
-    // pid past the ceiling, which no real process ever reports, is
-    // answered as gone rather than aimed at somebody's group.
-    let Ok(pid) = libc::pid_t::try_from(pid) else {
-        return false;
-    };
-    // Signal 0: the whole question, asked without touching anyone.
-    // SAFETY: `kill` takes two integers and answers with one — no
-    // pointers, no lifetimes, nothing to alias — and POSIX defines
-    // signal 0 as the error-checking form that delivers nothing, so
-    // the call cannot reach past the answer it asks for.
-    unsafe { libc::kill(pid, 0) == 0 }
+    // Signal zero, asked of the utility instead of the raw call:
+    // `/bin/kill -0` checks the pid and delivers nothing, answering
+    // the whole question through its exit status — no syscall, no
+    // unsafe, and none of `kill`'s sharp edges: a pid past the
+    // platform's ceiling and a pid reused by somebody else's
+    // process (an EPERM the raw call also answered as gone) both
+    // fail the status the same way the raw call judged them gone.
+    // If the probe itself cannot run, the card gets the benefit of
+    // the doubt: a broken question prunes nothing.
+    std::process::Command::new("/bin/kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_or(true, |status| status.success())
 }
 
 #[cfg(windows)]

@@ -50,7 +50,6 @@ rodio = "0.23.0"
 # unix — there are no processes to probe in the browser (the module is
 # itself `cfg`-gated out of the wasm build), and Windows has no
 # signal-zero to ask (see the `alive` arms in src/tell.rs).
-libc = "0.2"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Wall-clock access for `Rng::new` (`Date.now()`): `std::time` is not

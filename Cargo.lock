@@ -842,7 +842,6 @@ dependencies = [
  "gilrs",
  "image",
  "js-sys",
- "libc",
  "log",
  "naga",
  "noisefloor",
