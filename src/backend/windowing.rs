@@ -130,6 +130,42 @@ pub(crate) fn create_window(
             .create_window(attributes)
             .expect("failed to create window"),
     );
+    // A canvas has two sizes and only one of them had ever been set.
+    //
+    // `with_inner_size` above sizes the element's *CSS box* — what the page
+    // lays out and stretches. The drawing buffer is a separate pair of
+    // attributes, `canvas.width` and `canvas.height`, and an HTML canvas
+    // nobody touches leaves them at the browser's default **300×150**. So
+    // every frame was built in full — its 1920×1080 buffer, correct to the
+    // texel, as the upload, geometry and bit-pun probes went on to establish
+    // one at a time after a long detour — and then blitted down into a
+    // 300×150 surface for the browser to stretch back up. That is what a
+    // mosaic of blocks is, and it is why every instrument insisted the frame
+    // was fine while the page insisted it was garbage: both were right about
+    // different buffers.
+    //
+    // Prefer the laid-out box, because the page owns the canvas and may well
+    // size it with CSS; fall back to the requested logical size before
+    // layout has run. `devicePixelRatio` comes in so a HiDPI page gets a
+    // buffer that matches the pixels it will actually paint, not one the
+    // browser has to enlarge.
+    #[cfg(target_arch = "wasm32")]
+    {
+        use winit::platform::web::WindowExtWebSys;
+
+        if let Some(canvas) = window.canvas() {
+            let scale = window.scale_factor().max(1.0);
+            let laid = (canvas.client_width(), canvas.client_height());
+            let css = if laid.0 > 0 && laid.1 > 0 {
+                [f64::from(laid.0), f64::from(laid.1)]
+            } else {
+                let [width, height] = window_size.unwrap_or([900, 600]);
+                [f64::from(width), f64::from(height)]
+            };
+            canvas.set_width((css[0] * scale).round().max(1.0) as u32);
+            canvas.set_height((css[1] * scale).round().max(1.0) as u32);
+        }
+    }
     // Center the window on its monitor so frost always opens in the middle
     // of the screen. Native only: on the web the page decides where the
     // canvas sits.
