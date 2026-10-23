@@ -50,7 +50,10 @@ if command -v rustup >/dev/null 2>&1 &&
     exit 1
 fi
 
-cargo build -p antifrost --target wasm32-unknown-unknown --release
+# Extra arguments reach cargo, so the diagnostics overlay is a page and not
+# a source edit: `./web/build.sh --features diag`. Anything the browser can
+# see has to be compiled in, because a wasm build has no command line.
+cargo build -p antifrost --target wasm32-unknown-unknown --release "$@"
 wasm-bindgen --target web --out-dir web/pkg \
     target/wasm32-unknown-unknown/release/antifrost.wasm
 # Stamp index.html's module URLs with the new wasm's hash: browsers
