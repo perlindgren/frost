@@ -96,6 +96,11 @@
         `t=${((Date.now() - clock) / 1000).toFixed(0)}s ` +
           `canvas=${canvas ? `${canvas.width}x${canvas.height}` : "none"} ` +
           `css=${canvas ? `${canvas.clientWidth}x${canvas.clientHeight}` : "-"} ` +
+          // The window's own numbers, in the line the timeline already draws:
+          // `canvas` and `css` agreeing while `win` moves is the canvas refusing
+          // to follow; all three moving while the picture doesn't is the surface
+          // behind them, which is a different file and a different bug.
+          `win=${innerWidth}x${innerHeight} dpr=${devicePixelRatio} ` +
           `card=${card ? "up" : "gone"}`,
       );
       if (ticks.length > 14) ticks.shift();
