@@ -76,7 +76,7 @@ fn shade(frag_coord: vec4<f32>) -> Shaded {
     }
     // Sample the quad's [0, 1] uv remapped into the texture sub-rectangle it
     // covers; for a whole-texture sprite the remap is the identity.
-    let t = textureSample(tex, samp, mix(u.uv_rect.xy, u.uv_rect.zw, uv));
+    let t = textureSampleLevel(tex, samp, mix(u.uv_rect.xy, u.uv_rect.zw, uv), 0.0);
     // The final alpha: the texture's own, scaled by the sprite's alpha and
     // the tint's. Computed here, before the lights, for one exact reason:
     // a fragment that would blend (rgb, 0) is the blend equation's
@@ -85,11 +85,29 @@ fn shade(frag_coord: vec4<f32>) -> Shaded {
     // occlusion walk) is skipped along with it. PNG margins are exactly
     // zero, so every transparent texel of a padded sprite takes this exit;
     // an epsilon would be an image change dressed as an optimization, so
-    // the test is exact. The sample deliberately sits above the discard:
-    // WGSL derives mip levels from the surviving threads of each 2x2 quad,
-    // and discarding before the fetch would poison the survivors'
-    // derivatives. Note what this does NOT recover: the texel fetch and
-    // the rasterized slot are spent; only the arithmetic after them is.
+    // the test is exact. Note what this does NOT recover: the texel fetch
+    // and the rasterized slot are spent; only the arithmetic after them is.
+    //
+    // Why the fetch above names its level. `textureSample` works its mip
+    // level out from screen-space derivatives, which a 2x2 quad only has
+    // when all four of its threads ran the same path — so WGSL permits it
+    // only in *uniform* control flow, and both this discard and the
+    // out-of-rect early-out above are the opposite of uniform: they are
+    // chosen per pixel. Dawn enforces the rule and rejects the module,
+    // taking the pipeline, its bind group layout and every command buffer
+    // touching them down with it; Naga never checks, so the same shader
+    // builds and runs all day on Vulkan and Metal. Naming the level asks
+    // no questions and is exactly equivalent here, because there is no
+    // second level to ask about — every `mip_level_count` in the tree is
+    // 1. The rule is the shaders', not this shader's: no bare
+    // `textureSample` anywhere in frost.
+    //
+    // The sample keeps its place above the discard, which is where an
+    // earlier form of this note argued it must stay so the survivors'
+    // derivatives stayed defined. With the level named, that argument is
+    // void and hoisting the discard over the fetch would spare the texel
+    // read for every transparent texel — unmeasured, so not done. That
+    // would be an optimization, and optimizations arrive with a bench.
     //
     // For tile-based targets (mobile tilers under WebGL, Apple's own
     // tiles): some drivers keep whole-draw fast paths that a program

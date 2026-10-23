@@ -154,7 +154,7 @@ fn shade(in: VertexOutput) -> vec4<f32> {
     // one sprite.wgsl pays by flipping there. Without this flip
     // every tile would read its cell upside down.
     let uv = mix(in.uv_span.xy, in.uv_span.zw, vec2<f32>(in.quad_uv.x, 1.0 - in.quad_uv.y));
-    let t = textureSample(tex, samp, uv);
+    let t = textureSampleLevel(tex, samp, uv, 0.0);
     // The texel's own color times the tile's tint times the batch's —
     // like a sprite's tint and alpha: the texture's alpha carries through
     // multiplied, never tinted toward opacity.

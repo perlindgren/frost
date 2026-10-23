@@ -160,7 +160,7 @@ fn shade(frag_coord: vec4<f32>, inst: vec4<f32>, extra: vec4<f32>) -> vec4<f32> 
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
         return vec4<f32>(0.0);
     }
-    let t = textureSample(tex, samp, uv);
+    let t = textureSampleLevel(tex, samp, uv, 0.0);
     // The texture's own alpha multiplies the particle's alpha, like a
     // Shape::Sprite.
     let a = t.a * alpha;

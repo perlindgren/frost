@@ -75,10 +75,10 @@ fn fs_down(@builtin(position) out: vec4<f32>) -> @location(0) vec4<f32> {
         (out.y + 0.5) * u.texel.y * 2.0,
     );
     let t = u.texel;
-    var c = textureSample(source, src_sampler, uv + vec2<f32>(-0.5, -0.5) * t);
-    c += textureSample(source, src_sampler, uv + vec2<f32>(0.5, -0.5) * t);
-    c += textureSample(source, src_sampler, uv + vec2<f32>(-0.5, 0.5) * t);
-    c += textureSample(source, src_sampler, uv + vec2<f32>(0.5, 0.5) * t);
+    var c = textureSampleLevel(source, src_sampler, uv + vec2<f32>(-0.5, -0.5) * t, 0.0);
+    c += textureSampleLevel(source, src_sampler, uv + vec2<f32>(0.5, -0.5) * t, 0.0);
+    c += textureSampleLevel(source, src_sampler, uv + vec2<f32>(-0.5, 0.5) * t, 0.0);
+    c += textureSampleLevel(source, src_sampler, uv + vec2<f32>(0.5, 0.5) * t, 0.0);
     return vec4<f32>(keep_bright(c.rgb * 0.25), 1.0);
 }
 
@@ -97,18 +97,18 @@ fn fs_down(@builtin(position) out: vec4<f32>) -> @location(0) vec4<f32> {
 @fragment
 fn fs_blur(@builtin(position) out: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = (out.xy + vec2<f32>(0.5, 0.5)) * u.texel;
-    var c = textureSample(source, src_sampler, uv) * 0.1370;
+    var c = textureSampleLevel(source, src_sampler, uv, 0.0) * 0.1370;
     let near = u.spread * 1.4586;
     let middle = u.spread * 3.4036;
     let far = u.spread * 5.3514;
-    c += (textureSample(source, src_sampler, uv + near)
-        + textureSample(source, src_sampler, uv - near))
+    c += (textureSampleLevel(source, src_sampler, uv + near, 0.0)
+        + textureSampleLevel(source, src_sampler, uv - near, 0.0))
         * 0.2393;
-    c += (textureSample(source, src_sampler, uv + middle)
-        + textureSample(source, src_sampler, uv - middle))
+    c += (textureSampleLevel(source, src_sampler, uv + middle, 0.0)
+        + textureSampleLevel(source, src_sampler, uv - middle, 0.0))
         * 0.1394;
-    c += (textureSample(source, src_sampler, uv + far)
-        + textureSample(source, src_sampler, uv - far))
+    c += (textureSampleLevel(source, src_sampler, uv + far, 0.0)
+        + textureSampleLevel(source, src_sampler, uv - far, 0.0))
         * 0.0527;
     return vec4<f32>(c.rgb, 1.0);
 }

@@ -39,6 +39,7 @@ use winit::keyboard::{NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::backend::bloom::Bloom;
+use crate::backend::copy::pad_rows;
 use crate::backend::frame::*;
 #[cfg(target_arch = "wasm32")]
 use crate::backend::wasm::hide_fallback;
@@ -704,6 +705,11 @@ impl<P: Process> Frost<P> {
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             view_formats: &[],
         });
+        // One texel is a pitch of 4, which WebGPU refuses as readily as an
+        // ant's 3864 — see [`pad_rows`]. The placeholder pays the same row
+        // padding as any authored picture, because a placeholder whose
+        // upload was silently refused is a white square made of garbage.
+        let (placeholder_pixels, placeholder_pitch) = pad_rows(&[255, 255, 255, 255], 1, 1, 4);
         queue.write_texture(
             TexelCopyTextureInfo {
                 texture: &placeholder_texture,
@@ -711,10 +717,10 @@ impl<P: Process> Frost<P> {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: TextureAspect::All,
             },
-            &[255, 255, 255, 255],
+            &placeholder_pixels,
             TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(4),
+                bytes_per_row: Some(placeholder_pitch),
                 rows_per_image: None,
             },
             Extent3d {
@@ -1855,9 +1861,11 @@ impl<P: Process> Frost<P> {
 
     /// Creates the sprite's texture, view and sampler for one image.
     ///
-    /// The pixels arrive as tightly packed RGBA8 bytes (one per texel), so
-    /// the upload is a single `write_texture` of `width * height * 4` bytes
-    /// with `bytes_per_row = width * 4`. The texture is created in
+    /// The pixels arrive as tightly packed RGBA8 bytes (one per texel), and
+    /// [`pad_rows`] gives them the row pitch every texture copy is required
+    /// to carry — a multiple of 256, which a 966-texel-wide ant is not, and
+    /// which wgpu-core never asks for. One `write_texture` either way. The
+    /// texture is created in
     /// `Rgba8UnormSrgb` so the sample lands in linear space and the
     /// sRGB blending state produces the same colors the file was authored
     /// in. The texture itself is kept alive by the view: `TextureView`
@@ -1881,6 +1889,14 @@ impl<P: Process> Frost<P> {
             view_formats: &[],
         });
         let view = texture.create_view(&TextureViewDescriptor::default());
+        // The file's rows are tight; a texture copy's are not. Padding here
+        // rather than refusing the upload is the difference between a game
+        // that draws and one that draws noise, and on the native backends
+        // the padding is dead weight the browser would never have asked for
+        // — [`pad_rows`] borrows the bytes when the pitch already fits, so
+        // an ant-sized atlas pays one copy at load and a 1024-wide one pays
+        // nothing.
+        let (pixels, pitch) = pad_rows(data, width, height, 4);
         self.queue.write_texture(
             TexelCopyTextureInfo {
                 texture: &texture,
@@ -1888,11 +1904,11 @@ impl<P: Process> Frost<P> {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: TextureAspect::All,
             },
-            data,
+            &pixels,
             TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(width * 4),
-                rows_per_image: None,
+                bytes_per_row: Some(pitch),
+                rows_per_image: Some(height),
             },
             Extent3d {
                 width,

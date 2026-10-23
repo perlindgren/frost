@@ -151,7 +151,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // The buffer was fully cleared before the frame was drawn into it, so
     // the sampled color always covers the pixel: no blending needed, the
     // pass writes it straight to the window.
-    var c = textureSample(frame_buf, frame_sampler, in.uv);
+    var c = textureSampleLevel(frame_buf, frame_sampler, in.uv, 0.0);
     // Bloom is light, so it joins in the frame's own linear space, before any
     // encoding: added after the transfer curve it would be summed in a space
     // where doubling a number does not double its brightness, and a

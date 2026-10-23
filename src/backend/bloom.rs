@@ -29,6 +29,7 @@
 //!
 //! [`crate::SceneNode::emission`]: crate::SceneNode::emission
 
+use crate::backend::copy::pad_rows;
 use crate::shaders::BLOOM_SHADER;
 use std::borrow::Cow;
 use wgpu::{
@@ -430,12 +431,15 @@ impl Bloom {
         // One black texel, actually written. A texture that exists only to be
         // bound could be left uninitialised — nothing samples it, its weights
         // are zero — but "nothing samples it" is a promise about a branch, and
-        // a texel costs four bytes.
+        // a texel costs four bytes. Written through the same padded pitch as
+        // every other upload, because a copy's row pitch is a law of the API
+        // and not of the texture's size: see [`pad_rows`].
+        let (pixels, pitch) = pad_rows(&[0, 0, 0, 0], 1, 1, 4);
         queue.write_texture(
             texture.as_image_copy(),
-            &[0, 0, 0, 0, 0, 0, 0, 0],
+            &pixels,
             TexelCopyBufferLayout {
-                bytes_per_row: Some(8),
+                bytes_per_row: Some(pitch),
                 rows_per_image: Some(1),
                 ..Default::default()
             },

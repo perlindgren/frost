@@ -12,6 +12,8 @@ mod app;
 mod bloom;
 pub(crate) use app::*;
 
+mod copy;
+
 mod frame;
 pub(crate) use frame::*;
 
