@@ -12,6 +12,28 @@
      hunts is decimation between the scene and the page, not the maths in a
      shader — four edits to that maths produced byte-identical frames. -->
 <style>html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }</style>
+<script>
+  // Name the device that drew the frame, in the page and on the console, so a
+  // screenshot carries the answer. Without it, "is this the GPU or SwiftShader?"
+  // is a question about a browser's flags that nobody can read off pixels — and
+  // the whole value of this probe is that the pixels and the digits agree.
+  // It runs as a classic script before the module, because winit's `run_app`
+  // never returns and anything after `await init()` is dead code.
+  (() => {
+    const box = document.createElement("pre");
+    box.style.cssText = "position:fixed;left:0;top:0;margin:0;color:#fff;font:12px monospace;z-index:9";
+    document.documentElement.appendChild(box);
+    const show = (t) => { box.textContent = t; console.log(t); };
+    if (!navigator.gpu) return show("ADAPTER none: navigator.gpu missing");
+    navigator.gpu.requestAdapter().then((a) => {
+      if (!a) return show("ADAPTER none: requestAdapter resolved null");
+      const info = () => a.info ?? a.requestAdapterInfo?.() ?? Promise.resolve({});
+      Promise.resolve(info()).then((i) =>
+        show(`ADAPTER fallback=${a.isFallbackAdapter} ${i.adapterType ?? "?"} ${i.vendor ?? "?"}/${i.architecture ?? "?"} ${i.device ?? "?"} ${i.description ?? ""}`.trim()),
+      );
+    });
+  })();
+</script>
 </head>
 <body>
 <script type="module">

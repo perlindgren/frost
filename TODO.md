@@ -187,15 +187,19 @@ identically in a real browser. Suspects that nothing has questioned are rumours.
   one pixel); and the fragment coordinate's source — `@builtin(position)` replaced by a vertex
   computed varying, hardcoded geometry, a hard step for `smoothstep`, an exact viewport quad for
   the oversized triangle, all producing **byte-identical** frames.
-- **What is not settled, and why it cannot be settled from here.** `wgpu`-native on this GPU is
-  clean (§14 runs on it), so the difference belongs to Dawn or to this driver under it. This
-  Chromium refuses WebGPU through llvmpipe and through its OpenGL backend — both draw nothing at
-  all — so the rasteriser cannot be swapped headless. **The M4 over `web/serve.py --tls`** asks
-  whether the same wasm is healthy on Metal; **`chrome://flags/#default-webgpu-adapter`** set to
-  SwiftShader asks whether it is Dawn's Vulkan backend rather than Dawn. Either answer changes
-  what "fix" means: a Metal-healthy port wants a documented platform note and a workaround, a
-  Dawn-wide one wants the engine to stop handing the browser a scene whose detail it must
-  resample.
+- **Where the fault is, and where it is not.** Firefox 157 — rust-wgpu, the very library this engine
+  builds on — draws the probe **correctly** on this same machine, GPU and driver; it needs
+  `dom.webgpu.enabled` and `gfx.webgpu.ignore-blocklist` in `about:config` on this distro. `wgpu`
+  native here is clean as well, which is what §14 is measured on, and no Chromium switch moves the
+  frame by a pixel — not the shader disk cache, not GL compositing, not partial raster. **Dawn is the
+  fault**, and the reproducer is `examples/placement.rs` with `web/place/index.html`: two boxes, a
+  word, ninety lines, nothing else from the engine.
+- **The hole to start from.** Four fragment-stage edits produced byte-identical frames, which is
+  either proof that the fragment stage is not what reaches the page or proof that three of those four
+  builds never carried the edit — only the coordinate probe's string was checked against the shipped
+  wasm. Check the artifact's bytes before believing any null result in §16, then hunt the construct
+  Dawn mishandles: a flat opaque colour comes through untouched while anything position-dependent is
+  decimated at a period of 16, and that difference is the shortest road to a reduced repro.
 - **The port has never run here.** §1 to §14 of the benchmarking document are Apple M4 Max; §15
   and §16 are today. `git bisect` from `592e8a1 web dev` (11 October, where the page first
   exists) to here finds no commit that judges clean, so there is no regression to find and no

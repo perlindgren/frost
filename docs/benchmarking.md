@@ -960,13 +960,28 @@ broken browser frame. It judged all eleven days broken. Two of its early verdict
 identical to the byte across commits, which should have been the tell it was measuring its own
 harness rather than the tree: a metric that never moves is not a metric.
 
-**Two experiments remain, and neither can be run from a headless box.** Chromium here will not
-hand out WebGPU through llvmpipe or its OpenGL backend — `--enable-unsafe-swiftshader` and
-`--webgpu-dawn-backend-type=opengl` both draw nothing at all — so the driver cannot be swapped
-from this side. The M4 over `web/serve.py --tls` asks whether the same wasm is healthy on
-Metal, which would make this one platform rather than one engine. `chrome://flags/#default-webgpu-adapter`
-set to SwiftShader in a real browser asks whether it is Dawn's Vulkan backend rather than Dawn
-at all. Until one of those answers, the honest statement of the port's state is: geometry,
-uploads and layout are correct on web, detail is decimated between the scene and the page, and
-the mechanism belongs to the browser's presentation path on this driver, not to this engine's
-maths.
+**The other implementation draws it correctly, which settles where the fault is not.** Firefox 157
+— rust-wgpu, the same library this engine builds on natively — with `dom.webgpu.enabled` and
+`gfx.webgpu.ignore-blocklist` set in `about:config`, opens the identical page on the identical
+machine, GPU and driver, and draws it **right**: PLACE crisp and centred, the green box 512×256 in
+the middle of the canvas, the red box 400×200 up and left of it, no stripes, no tiled ghosts.
+Chromium 153 — Dawn — shreds the same bytes. `wgpu`-native on this GPU is clean, which is what §14 is
+measured on, and no Chromium switch moves the frame by a single pixel: not
+`--disable-gpu-shader-disk-cache`, not `--use-angle=gl --use-gl=angle`, not
+`--disable-partial-raster --disable-skia-runtime-opts`; `--disable-gpu-compositing` removes WebGPU
+rather than routing around the damage. Chromium here will not hand out WebGPU on any device but the
+real one — six attempts at SwiftShader and at the OpenGL backend, `requestAdapter()` resolving to
+`null` every time, which `web/place/index.html` now says out loud in the page instead of leaving it
+to be inferred from a black screenshot — so the second implementation had to come from another engine
+rather than another driver.
+
+So the port's state is stated, not guessed: geometry, uploads, layout and shader maths are correct on
+this hardware; **the damage is Chromium's**, in Dawn's device work, and an implementation that agrees
+with the desktop exonerates the engine. What remains belongs upstream, and the reproducer is
+`examples/placement.rs` with `web/place/index.html` — two boxes and a word, 90 lines, nothing else in
+the engine needed to show it. One hole in the account stays open, and it is where to start looking:
+four fragment-stage formulations produced byte-identical frames, which is either evidence that the
+fragment stage is not what reaches the page or evidence that three of those four edits were never in
+the wasm that was measured — only the coordinate probe's string was checked in the shipped binary. The
+next person to look at this should verify the bytes of the artifact before believing a single null
+result in this section.
