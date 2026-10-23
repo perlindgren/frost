@@ -3529,6 +3529,16 @@ impl Demo {
             window.inner_size().height,
             self.settings.fullscreen,
         );
+        // The browser owns the window on web, so this whole policy is a
+        // desktop concern — above all the size ask, which on web writes a CSS
+        // width and height onto the canvas and puts a 1920×1080 hill inside a
+        // 1366×682 page, its bottom and right third past the edge of the
+        // screen. The engine sizes the canvas to the viewport and keeps it
+        // there; the rung still decides the frame's quality on web, only not
+        // by deciding how big the page is.
+        if cfg!(target_arch = "wasm32") {
+            return;
+        }
         // One move on screen at a time: a press during an in-flight
         // move re-aims it when that move resolves — half-moves
         // stacking up mid-flight is what flickered.

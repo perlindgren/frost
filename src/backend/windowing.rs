@@ -64,11 +64,11 @@ pub(crate) fn prefer_srgb_format(
 /// display — including Retina Macs, where a logical request would double.
 /// `None` for both keeps the platform default. An oversized request is
 /// clamped into the primary monitor, aspect preserved (see
-/// [`fit_into_monitor`]). On the web, winit's canvas
-/// is neither appended to the page nor sized by default: without the
-/// append it is invisible, and without a size it stays the browser's
-/// 300x150 default — so an unset size falls back to 900x600 there, and
-/// the physical request is ignored (the canvas lives in CSS pixels).
+/// [`fit_into_monitor`]). On the web the browser owns the window, so the
+/// canvas is sized to the viewport it lands in — see [`fit_canvas`] — and
+/// `window_size` survives only as the fallback when no viewport can be
+/// measured, while the physical request is ignored (the canvas lives in CSS
+/// pixels).
 pub(crate) fn create_window(
     event_loop: &ActiveEventLoop,
     window_size: Option<[u32; 2]>,
@@ -120,10 +120,18 @@ pub(crate) fn create_window(
 
         let _ = window_size_px;
         let _ = fullscreen;
-        let [width, height] = window_size.unwrap_or([900, 600]);
+        // The viewport, not the configured size: a 1366×682 window that boots
+        // a 1920×1080 canvas draws the hill correctly and puts its bottom and
+        // right third past the edge of the screen, which is what the page did
+        // before this line. `window_size` remains for the case where the
+        // viewport cannot be measured at all.
+        let css = viewport_css().unwrap_or_else(|| {
+            let [width, height] = window_size.unwrap_or([900, 600]);
+            [f64::from(width), f64::from(height)]
+        });
         attributes = attributes
             .with_append(true)
-            .with_inner_size(LogicalSize::new(width, height));
+            .with_inner_size(LogicalSize::new(css[0], css[1]));
     }
     let window = Arc::new(
         event_loop
@@ -144,26 +152,39 @@ pub(crate) fn create_window(
     // was fine while the page insisted it was garbage: both were right about
     // different buffers.
     //
-    // Prefer the laid-out box, because the page owns the canvas and may well
-    // size it with CSS; fall back to the requested logical size before
-    // layout has run. `devicePixelRatio` comes in so a HiDPI page gets a
-    // buffer that matches the pixels it will actually paint, not one the
-    // browser has to enlarge.
+    // winit writes the CSS box and never the bitmap; wgpu reads the bitmap and
+    // never writes it. Both jobs are therefore ours, at creation and on every
+    // resize after it — see [`fit_canvas`] for why the box is asked of the
+    // layout rather than assumed from the style just written.
     #[cfg(target_arch = "wasm32")]
     {
+        // Reached through web-sys rather than as a direct dependency: the
+        // engine binds no wasm-bindgen of its own, and one re-exported by the
+        // crate that already carries the DOM types beats adding a second copy
+        // to the graph for two traits.
+        use web_sys::wasm_bindgen::JsCast;
+        use web_sys::wasm_bindgen::closure::Closure;
         use winit::platform::web::WindowExtWebSys;
 
         if let Some(canvas) = window.canvas() {
-            let scale = window.scale_factor().max(1.0);
-            let laid = (canvas.client_width(), canvas.client_height());
-            let css = if laid.0 > 0 && laid.1 > 0 {
-                [f64::from(laid.0), f64::from(laid.1)]
-            } else {
-                let [width, height] = window_size.unwrap_or([900, 600]);
-                [f64::from(width), f64::from(height)]
-            };
-            canvas.set_width((css[0] * scale).round().max(1.0) as u32);
-            canvas.set_height((css[1] * scale).round().max(1.0) as u32);
+            fit_canvas(&canvas, window.scale_factor());
+            // A dragged or maximised window moves the viewport, and nothing
+            // tells winit about it unless the canvas's box moves with it —
+            // winit's own size only ever follows a `set_inner_size` call. So
+            // the page is watched directly, and each resize refits the canvas,
+            // which moves the box, which is what winit's observer is waiting
+            // for before it reports `Resized` to the engine.
+            let (canvas, host) = (canvas.clone(), Arc::clone(&window));
+            let listener = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                fit_canvas(&canvas, host.scale_factor());
+            }) as Box<dyn FnMut(web_sys::Event)>);
+            if let Some(view) = web_sys::window() {
+                let _ = view
+                    .add_event_listener_with_callback("resize", listener.as_ref().unchecked_ref());
+            }
+            // Leaked on purpose: one listener per page, and the page outlives
+            // the window it watches.
+            listener.forget();
         }
     }
     // Center the window on its monitor so frost always opens in the middle
@@ -176,6 +197,43 @@ pub(crate) fn create_window(
     // the window is never mapped and nothing is ever drawn.
     window.request_redraw();
     window
+}
+
+/// The browser's viewport in CSS pixels, when it can be measured at all.
+#[cfg(target_arch = "wasm32")]
+fn viewport_css() -> Option<[f64; 2]> {
+    let view = web_sys::window()?;
+    let width = view.inner_width().ok()?.as_f64()?;
+    let height = view.inner_height().ok()?.as_f64()?;
+    (width >= 1.0 && height >= 1.0).then(|| [width.floor(), height.floor()])
+}
+
+/// Size a canvas to the viewport, both of the two ways a canvas is sized.
+///
+/// The CSS box goes first, because winit's resize observer watches the
+/// canvas's *device-pixel content box* and reports to the engine only when
+/// that box moves: writing the style is what makes a resized window reach the
+/// renderer at all. The drawing buffer follows, from the box the layout
+/// actually produced rather than the style just written — a page may override
+/// the style, and the laid-out box is the truth either way — scaled by
+/// `devicePixelRatio` so a HiDPI page paints the pixels it will show instead
+/// of asking the browser to enlarge ones we never drew.
+#[cfg(target_arch = "wasm32")]
+fn fit_canvas(canvas: &web_sys::HtmlCanvasElement, scale: f64) {
+    let scale = scale.max(1.0);
+    if let Some([width, height]) = viewport_css() {
+        let style = canvas.style();
+        let _ = style.set_property("width", &format!("{width}px"));
+        let _ = style.set_property("height", &format!("{height}px"));
+    }
+    let laid = (canvas.client_width(), canvas.client_height());
+    let css = if laid.0 > 0 && laid.1 > 0 {
+        [f64::from(laid.0), f64::from(laid.1)]
+    } else {
+        viewport_css().unwrap_or([900.0, 600.0])
+    };
+    canvas.set_width((css[0] * scale).round().max(1.0) as u32);
+    canvas.set_height((css[1] * scale).round().max(1.0) as u32);
 }
 
 /// Centers `window` on the monitor it sits on, so frost always opens in

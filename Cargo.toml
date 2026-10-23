@@ -63,10 +63,16 @@ console_error_panic_hook = "0.1"
 # `show_fallback`); already in the dependency graph via winit, so this adds
 # no new crate — just the features we use.
 web-sys = { version = "0.3", features = [
+    # The resize listener takes a DOM `Event`, the canvas is sized through its
+    # element type, and both hang off `EventTarget` — asked for by name because
+    # winit enables them today and a dependency's opinion is not a contract.
     "console",
     "CssStyleDeclaration",
     "Document",
     "Element",
+    "Event",
+    "EventTarget",
+    "HtmlCanvasElement",
     "HtmlElement",
     "Node",
     "Performance",

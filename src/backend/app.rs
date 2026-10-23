@@ -1315,8 +1315,16 @@ impl<P: Process> Frost<P> {
     /// specific rectangle (the work area, the whole display), so they go
     /// unfought — the guard is what keeps a Windows borderless-fullscreen
     /// window from answering a size request by resizing itself out of the
-    /// monitor rectangle.
+    /// monitor rectangle. On the web there is no window to correct: the
+    /// browser sizes the canvas and the frame letterboxes inside whatever
+    /// shape that gives, so asking for a different rectangle would resize the
+    /// page to the frame's wish — the opposite of what the port is for.
     fn snap_aspect(&mut self, size: PhysicalSize<u32>) {
+        // `cfg!` rather than `#[cfg]` + `return`, which would leave the rest
+        // of the body an unreachable statement and a refused lint run.
+        if cfg!(target_arch = "wasm32") {
+            return;
+        }
         let prev = std::mem::replace(&mut self.last_resized_px, (size.width, size.height));
         let Some(render) = self.render_size else {
             return;
