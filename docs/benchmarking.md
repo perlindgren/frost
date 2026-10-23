@@ -800,3 +800,27 @@ instruction to price the emission gate, which read *on the 780M* until this sect
 written — work on a machine nobody has — now reads *on the 610M*, which is what it
 always was: the 2-CU iGPU of the box this document was written on, the scarcest fill
 rate in the fleet and the one that answers `DRI_PRIME` today.
+
+**What a new row needs.** Two of the fleet's machines have no column here — the M4 Max
+of §6–13 and the 5900X with an RTX 4090 — and the sessions that fill them will not have
+been in this one, so what made these two rows trustworthy is written down instead of
+remembered:
+
+- **Condition it.** Ten scenarios × 6 s × 3 interleaved reps at 1080p, vsync off, the
+  `debug-assertions=true` release build (§1a). One pass is a number, not a reading; the
+  reps are what makes the 0.2% agreement above a fact worth quoting.
+- **Print the witness.** `noisefloor` before the run, and the run's own noise-floor
+  line after it, in the same record. A loud machine reports and declines to conclude
+  (§3 step 4), and `benchsuite` exits 3 to enforce that.
+- **Read the adapter before any number.** `using adapter:` out of the log, from an
+  escalated shell, every single time (§1c). On the 4090 box this is the entire risk:
+  NVK and the proprietary driver both answer, both produce a tidy table, and only the
+  log says which one a reader is looking at.
+- **Ask who answered before believing the column.** Run
+  `--only fill-1080p,taps-9` first and divide: this box's floor and cliff differ by
+  **62.6×**, and a machine reporting anything near **1×** has answered with its present
+  path rather than its GPU. That is how the XTX column above reads 820 everywhere, and
+  how §6's Mac read 90.0 on a fill floor and 88.9 on ten lamps; a column that fails
+  this goes in with that said next to it, or stays out. §6's two Mac cells are not a
+  half-filled row either — they predate the float-frame era, and belong beside this
+  table as a glimpse rather than inside it as a cell.
