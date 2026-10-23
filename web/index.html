@@ -20,7 +20,7 @@
 </style>
 </head>
 <body>
-<div id="fallback">warming the hill — build a6329643&hellip;</div>
+<div id="fallback">warming the hill — build 3ed133c2&hellip;</div>
 <script>
   // WebGPU's failures are not exceptions. A validation problem arrives as
   // an `uncapturederror` event on the device, silent unless somebody
@@ -125,14 +125,26 @@
         "position:fixed;right:0;bottom:0;z-index:10;border-left:2px solid #6bd;" +
         "border-top:2px solid #6bd;image-rendering:pixelated";
       document.body.appendChild(zoom);
+      // Live rather than a snapshot taken at six seconds: the entire point of
+      // these numbers is that they are supposed to move when the window does,
+      // and a readout written once can only ever report that things were fine
+      // at boot — which is how a canvas that never follows the viewport passed
+      // for working for as long as it did.
       const size = document.createElement("pre");
       size.style.cssText =
         "position:fixed;right:0;top:0;z-index:10;margin:0;padding:6px 8px;" +
         "background:rgba(8,6,14,.88);color:#6bd;font:12px/1.45 ui-monospace,monospace";
-      size.textContent =
-        `canvas ${canvas.width}x${canvas.height}  css ${canvas.clientWidth}x${canvas.clientHeight}\n` +
-        `devicePixelRatio ${devicePixelRatio}`;
+      const show = () => {
+        const box = canvas.getBoundingClientRect();
+        size.textContent =
+          `canvas ${canvas.width}×${canvas.height}  css ${Math.round(box.width)}×${Math.round(box.height)}\n` +
+          `viewport ${innerWidth}×${innerHeight}  devicePixelRatio ${devicePixelRatio}`;
+      };
       document.body.appendChild(size);
+      new ResizeObserver(show).observe(document.documentElement);
+      addEventListener("resize", show);
+      setInterval(show, 500);
+      show();
     }, 6000);
   })();
 </script>
@@ -141,8 +153,8 @@
   // the wasm module — Firefox serves its cached copy of the fixed
   // URL, which is how a stale module can haunt the page for days.
   // Bump the tag every time web/build.sh rebuilds the package.
-  import init from "./pkg/antifrost.js?v=a6329643";
-  await init("./pkg/antifrost_bg.wasm?v=a6329643");
+  import init from "./pkg/antifrost.js?v=3ed133c2";
+  await init("./pkg/antifrost_bg.wasm?v=3ed133c2");
 </script>
 </body>
 </html>
