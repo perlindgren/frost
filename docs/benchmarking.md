@@ -723,3 +723,80 @@ that is not a measurement.
 **What is still not measured**: any of it in a browser. antifrost also runs there,
 the chain's twelve passes have never been looked at on WebGPU, and a phone-class
 iGPU is the hardware the row exists for. That is the honest reason the row is a row.
+
+## 14. The suite on the machine the suite was written on (2026-10-23, Ryzen 9 7950X3D)
+
+§6 through §13 were measured on the M4 Max. This is the return to the campaign box of
+§4, and it is here because `benchsuite.baseline` was rewritten on the evening of
+2026-10-19 with a header naming a GPU this document has never seen and this project
+does not own.
+
+**The instrument.** `benchsuite`, whole suite: ten scenarios × 6 s × 3 interleaved
+reps, 1920×1080, vsync off, the release build with `debug-assertions=true` so the
+adapter line exists at all (§1a). `noisefloor` read 0.00 ms of excess lateness and a
+1.1–1.2× quantum spread before each run, and each run's three reps agreed within
+0.2%. Both GPUs answer only under escalated access — in a plain shell this box is
+llvmpipe alone, exactly as §1c warns — so `using adapter:` was read before a single
+number was.
+
+fps, medians of three reps, against the committed table:
+
+| scenario | `benchsuite.baseline` | Radeon 610M (iGPU) | Δ | RX 7900 XTX (`DRI_PRIME=1`) |
+| --- | --- | --- | --- | --- |
+| fill-1080p | 1002.7 | 970.5 | −3.2 % | 822.6 |
+| lamps-4 | 610.6 | 579.5 | −5.1 % | 821.6 |
+| lamps-10 | 354.9 | 333.8 | −5.9 % | 821.3 |
+| lamps-40 | 117.4 | 110.3 | −6.0 % | 820.5 |
+| lamps-40-static | 117.1 | 109.9 | −6.1 % | 819.7 |
+| occluders-10 | 227.1 | 214.7 | −5.5 % | 820.6 |
+| occluders-100 | 102.9 | 97.4 | −5.3 % | 818.1 |
+| taps-1 | 109.7 | 103.5 | −5.7 % | 819.0 |
+| taps-4 | 33.4 | 32.0 | −4.2 % | 814.4 |
+| taps-9 | 16.0 | 15.5 | −3.1 % | 781.2 |
+
+**The iGPU row is weather, not a regression.** Ten lines whose per-frame cost spans
+63× — 1.03 ms to 64.5 ms — moved between −3 % and −6 %, with nothing specific to any
+one of them, and §3 already prices that band: the same run *unconditioned* reads a
+uniform 4–6 % kinder. A shift that even across that span is the machine's mood; the
+suite has no claim against the tree at `bb22d87`.
+
+**The XTX row is not a measurement of the XTX.** 820 fps on every line, from the
+floor with an empty light field to `taps-9` — the line the iGPU renders at 15.5 fps —
+1.22 ms a frame everywhere, dipping 5 % only at the cliff, which is where the GPU
+finally costs more than the host does. That is §6's finding, *the fps column of any
+bench is the display's, not the machine's*, reproduced on a desktop, and it is the
+same wall as §4's XTX-at-4K "~120 fps, the cap is host-side — not chased" seen from
+the side where the cap is 820 rather than 120. Read it as a standing limit on the
+instrument: **at 1080p `benchsuite` cannot price lighting on a GPU that is not the
+bottleneck.** Weighing the XTX means work that outruns the present path — §5's
+drained spans, or a buffer and a field dense enough to pass 1.2 ms on their own.
+
+**There is no 780M.** The header claimed the table was "walked 2026-10-19 on the
+780M". That chip appears nowhere else in the project and cannot have produced those
+numbers:
+
+- *Vocabulary.* `780M` occurs twice in the tree — that header and two TODO.md lines —
+  in no commit message, and nowhere in `docs/`, which names the M4 Max ten times,
+  this box's XTX three and its 610M five. A machine that produced the central table
+  of the project is documented never to have existed.
+- *Physics.* The 610M is RDNA2 with 2 CUs; a Radeon 780M is RDNA3 with 12. Those two
+  do not finish 3 % apart on a fill floor *and* 3 % apart on 64 ms/frame of shadow-ray
+  walking. The cliff is precisely where six times the CUs has to show.
+- *Provenance.* The file was written here. `benchsuite.baseline` carries the mtime of
+  the rebase that landed it (17:05, same afternoon), the commit bearing it was made in
+  this checkout at 16:49, and this checkout's reflog runs unbroken back to its initial
+  commit on 2026-09-11 on the NVMe of the machine this section is typed on. The one
+  remaining suspect was §1c's accidental fallback, ruled out by measurement rather than
+  argument: forcing lavapipe alone — `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`,
+  which is how to get llvmpipe on a box that has real GPUs — reads **fill-1080p 206.6,
+  taps-9 12.8**, a universe under the table's 1002.7 and 16.0.
+
+The fleet is this box, a 5900X with an RTX 4090, and the Apple M4 of §6–13. The name
+was invented; the numbers were not, and the header now says 610M.
+
+**What the correction is worth.** The committed table *is* this box's baseline, so the
+suite referees from here today with no re-walk and no second file. And TODO's standing
+instruction to price the emission gate, which read *on the 780M* until this section was
+written — work on a machine nobody has — now reads *on the 610M*, which is what it
+always was: the 2-CU iGPU of the box this document was written on, the scarcest fill
+rate in the fleet and the one that answers `DRI_PRIME` today.

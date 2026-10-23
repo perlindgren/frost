@@ -1,7 +1,10 @@
 # benchsuite baseline — one name and median fps per line
-# walked 2026-10-19 on the 780M, reps agreeing within a fifth of a percent:
-# the floor now carries the float frame, its emissive plate, and the
-# tonemapped present, and the lit lines carry the reach reject.
+# walked 2026-10-19 on the Radeon 610M iGPU (RADV RAPHAEL_MENDOCINO), reps
+# agreeing within a fifth of a percent: the floor now carries the float
+# frame, its emissive plate, and the tonemapped present, and the lit lines
+# carry the reach reject. The header used to say 780M, a chip nobody here
+# owns; the ten numbers are unchanged, and this box re-walked them on
+# 2026-10-23 to within weather — see docs/benchmarking.md §14.
 fill-1080p 1002.7
 lamps-4 610.6
 lamps-10 354.9

@@ -86,7 +86,7 @@ present read, no tone fold.
 **Why it matters.**
 
 - Measured in the field: walking the baseline on 2026-10-19 caught the
-  780M floor halved (2136.9 → ~1002 fps, stamped into
+  610M floor halved (2136.9 → ~1002 fps, stamped into
   `benchsuite.baseline`) by the era that landed the float buffer (§7),
   the plate (§8) and the tone-mapped present — about 0.56 ms/frame of
   fixed cost, and the fill floor is the one line with nothing else to
@@ -127,9 +127,11 @@ present read, no tone fold.
    menus and every non-HDR app; misses a game that toggles). Start
    with the opt-out word and let the flag decide later.
 3. The honest price, §7/§8 style — interleaved pair of one binary,
-   same window — *on the 780M*: every existing measurement of this
-   cost was taken on machines with fill to spare, and the whole reason
-   to build the gate is that the scarce machine sees more.
+   same window — *on the 610M*, the 2-CU iGPU of the campaign box
+   (benchsuite.baseline was walked there; §14 is its re-walk): every
+   existing measurement of this cost was taken on machines with fill
+   to spare, and the whole reason to build the gate is that the
+   scarce machine sees more.
 
 ## The lighting loop's next multipliers
 
