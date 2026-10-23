@@ -26,3 +26,8 @@ web/.watch-stamp
 
 # Scratch worktrees and a hardlinked cargo home for building old commits.
 /.workspace/
+
+# tools/ holds python now, and driving a browser means importing the tools
+# from scratch scripts as well as running them: bytecode lands next to a
+# tracked file on the first import and is never wanted.
+__pycache__/
