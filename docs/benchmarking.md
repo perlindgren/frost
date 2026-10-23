@@ -52,6 +52,28 @@ tells: `frost` prints
 DSH-style sandbox, re-run the same command with escalated access and
 check that line again.
 
+Escalation is the whole machine for the length of one command, and the
+session's permission preset is the whole machine all the time; neither is
+the narrow answer. The narrow answer is the device node itself, which the
+sandbox does not deny but *erases*: the profile is a literal argv list in
+`dsh-sandbox-local/lib/index.js` that mounts `--dev /dev` — bwrap's own
+minimal tree — so inside it `/dev/dri` is not a path that was forbidden,
+it is a path that does not exist.
+[`tools/dsh-dev-dri-patch.sh`](../tools/dsh-dev-dri-patch.sh) adds one
+opt-in variable to that list, `DSH_SANDBOX_DEV_BINDS=/dev/dri`
+(colon-separated, empty by default, so an untouched deployment behaves as
+before), which appends `--dev-bind /dev/dri /dev/dri` after the tmpfs and
+honours only existing paths under `/dev/` so it cannot be steered into a
+general mount knob. Verified here by building the profile by hand: without
+it `ls /dev/dri` answers *No such file or directory*; with it,
+`vulkaninfo --summary` inside the same profile names `RADV
+RAPHAEL_MENDOCINO` and `RADV NAVI31`. Two catches, both of which have
+already cost an hour in the abstract: it edits a **built bundle inside the
+`npx` cache**, which the next `npx` resolution overwrites without a word —
+re-run the script after any harness update — and a running server holds
+the old module in memory, so it takes effect only for a newly started
+`dsh web`. Check with `ls /dev/dri`.
+
 ## 2. Which GPU answers
 
 frost requests its adapter with [`RequestAdapterOptions::default()`](../src/lib.rs)
