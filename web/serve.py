@@ -50,15 +50,41 @@ def lan_addresses() -> list[str]:
     """Every address this machine answers with, not just the one the
     default route would take: a laptop on Wi-Fi and a home subnet on
     the same bridge answers both, and visitors arrive on whichever
-    segment they live in. `ifconfig` says; loopback is already a
-    standing entry in the certificate."""
-    out = subprocess.run(["ifconfig", "-a"], capture_output=True, text=True).stdout
-    return sorted({
-        word.split("%")[0]
-        for line in out.splitlines() if line.startswith("\tinet ")
-        for word in line.split()[1:2]
-        if not word.startswith("127.")
-    })
+    segment they live in. Linux says with `ip`, macOS with BSD
+    `ifconfig`, and loopback is already a standing entry in the
+    certificate.
+
+    Both dialects are asked, in that order, because the script used to
+    ask only the Mac: `ifconfig` is not even installed on an Arch box,
+    so `--tls` died on a FileNotFoundError before it minted anything,
+    and installing net-tools would not have helped — BSD indents its
+    `inet` lines with a tab, which is what the old parser matched, and
+    Linux `ifconfig` does not."""
+    found: set[str] = set()
+    try:
+        out = subprocess.run(
+            ["ip", "-o", "-4", "addr", "show", "scope", "global"],
+            capture_output=True, text=True,
+        ).stdout
+        # One line per address: `<idx>: <iface> inet A.B.C.D/len brd ...`
+        found |= {
+            parts[3].split("/")[0]
+            for parts in (line.split() for line in out.splitlines())
+            if len(parts) > 3 and parts[2] == "inet" and parts[3].count(".") == 3
+        }
+    except FileNotFoundError:
+        pass
+    if not found:
+        try:
+            out = subprocess.run(["ifconfig", "-a"], capture_output=True, text=True).stdout
+        except FileNotFoundError:
+            out = ""
+        found |= {
+            word.split("%")[0]
+            for line in out.splitlines() if line.startswith("\tinet ")
+            for word in line.split()[1:2]
+        }
+    return sorted(ip for ip in found if not ip.startswith("127."))
 
 
 def openssl(*args: str) -> str:
@@ -116,9 +142,15 @@ def tls_pair(root: pathlib.Path):
                 "-keyout", str(key), "-out", str(folder / "leaf.csr"))
         # Browsers match the name from subjectAltName only, and
         # `x509 -req` copies nothing without being told: an extension
-        # file is the honest way to sign these in.
+        # file is the honest way to sign these in. A box with no LAN
+        # address at all still needs a leaf that speaks for loopback,
+        # so the address list is appended rather than spliced in blind —
+        # an empty `IP:` entry is not a name openssl will sign.
+        san = "DNS:localhost,IP:127.0.0.1"
+        if ip_list:
+            san += ",IP:" + ",IP:".join(ip_list)
         (folder / "leaf.cnf").write_text(
-            "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:" + ",IP:".join(ip_list) + "\n"
+            f"subjectAltName={san}\n"
             "basicConstraints=critical,CA:FALSE\n"
             "keyUsage=critical,digitalSignature,keyEncipherment\n"
             "extendedKeyUsage=serverAuth\n"
