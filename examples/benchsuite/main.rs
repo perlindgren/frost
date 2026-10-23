@@ -55,6 +55,11 @@
 //! each line becomes `name base -> now (+x%)` and the exit code is 1
 //! if any scenario fell more than 5 % below its baseline.
 //!
+//! Two more flags exist for displays that will not let the fps column
+//! mean what it says: `--fullscreen` and `--render-size WxH`. Both are
+//! off by default, and what they are for — and what a Retina Mac
+//! produced with and without them — is `docs/benchmarking.md` §17.
+//!
 //! Every run also prints a **noise floor** line — how late a wake landed
 //! and how long a fixed quantum of arithmetic took, sampled throughout
 //! (`tools/noisefloor`) — and a run whose floor is too loud prints its
@@ -451,6 +456,14 @@ fn select<'a>(only: &Option<String>, scenarios: &'a [Scenario]) -> Vec<&'a Scena
     }
 }
 
+/// `--render-size` parsing: `1920x1080`, nothing else. Returns `None` on
+/// anything that is not two numbers around one `x`, so the flag refuses at
+/// the command line rather than sizing a window by accident.
+fn parse_size(spec: &str) -> Option<[u32; 2]> {
+    let (w, h) = spec.split_once('x')?;
+    Some([w.trim().parse().ok()?, h.trim().parse().ok()?])
+}
+
 #[derive(clap::Parser)]
 struct Cli {
     /// Seconds measured per scenario (after a one-second warm-up).
@@ -471,6 +484,31 @@ struct Cli {
     /// instead of judging the run against one.
     #[arg(long)]
     save_baseline: Option<PathBuf>,
+    /// Open the window fullscreen — the platform's native fullscreen Space
+    /// on macOS, borderless elsewhere.
+    ///
+    /// It exists because a windowed run on the M4 Max presented exactly
+    /// 60.000 frames a second for thirteen seconds under
+    /// `present_mode AutoNoVsync`, floor and cliff together at 60.2 and
+    /// 60.0: the fps column was the panel, not the GPU (see
+    /// `docs/benchmarking.md` §6 and §14's ratio test). Whether a Space of
+    /// its own lets the suite outrun the display is a measurement, not a
+    /// promise — read `--only fill-1080p,taps-9` and divide before trusting
+    /// anything this flag produces.
+    #[arg(long)]
+    fullscreen: bool,
+    /// Render at a fixed physical size, `WxH`, whatever the window becomes.
+    ///
+    /// The suite asks for 1920×1080 logical pixels, and a Retina display
+    /// doubles that: the same `fill-1080p` frame is 8.3 Mpx on a Mac and
+    /// 2.07 Mpx on the Linux box the committed table was walked on, so a
+    /// Mac row read straight off the window would be weighing four times
+    /// the pixels. This pins the work to the pixels the name promises,
+    /// through the engine's `Config::render_size`, and the window stretches
+    /// the result to whatever it became — one sampling pass over the
+    /// window's own pixels, which is why it is a flag and not the default.
+    #[arg(long)]
+    render_size: Option<String>,
 }
 
 fn main() {
@@ -480,6 +518,28 @@ fn main() {
     if chosen.is_empty() {
         eprintln!("benchsuite: --only matched no scenario");
         std::process::exit(2);
+    }
+    let render_size = cli.render_size.as_deref().map(|spec| {
+        parse_size(spec).unwrap_or_else(|| {
+            eprintln!("benchsuite: --render-size wants WxH, like 1920x1080");
+            std::process::exit(2);
+        })
+    });
+    if render_size.is_some() || cli.fullscreen {
+        // The two flags exist to change what a number means, so say which
+        // of them are in force before the first frame costs anything.
+        eprintln!(
+            "benchsuite: running {}{}",
+            if cli.fullscreen {
+                "fullscreen"
+            } else {
+                "windowed"
+            },
+            match render_size {
+                Some([w, h]) => format!(", rendering {w}x{h} physical pixels"),
+                None => ", rendering at the window's own pixels".into(),
+            }
+        );
     }
     let mut queue = vec![&WARM];
     for _ in 0..cli.reps.max(1) {
@@ -530,6 +590,8 @@ fn main() {
         Config {
             vsync: false,
             window_size: Some([W as u32, H as u32]),
+            fullscreen: cli.fullscreen,
+            render_size,
             ..Default::default()
         },
     ) {
@@ -541,6 +603,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `--render-size` flag exists so a Retina run can be asked for the
+    /// pixels its row name promises, so the shape it accepts is a fact:
+    /// numbers around one `x`, nothing else.
+    #[test]
+    fn the_render_size_flag_reads_wxh_and_refuses_the_rest() {
+        assert_eq!(parse_size("1920x1080"), Some([1920, 1080]));
+        assert_eq!(parse_size(" 1920 x 1080 "), Some([1920, 1080]));
+        assert_eq!(parse_size("1920"), None);
+        assert_eq!(parse_size("1920x"), None);
+        assert_eq!(parse_size("widexhigh"), None);
+        assert_eq!(parse_size("1920:1080"), None);
+    }
 
     #[test]
     fn every_scenario_has_a_unique_name() {

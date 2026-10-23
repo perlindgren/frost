@@ -847,6 +847,11 @@ remembered:
   half-filled row either — they predate the float-frame era, and belong beside this
   table as a glimpse rather than inside it as a cell.
 
+The M4 Max seat has since been walked twice, and §17 is why it stays empty rather than
+filled with a number that would be read as silicon: windowed, that machine reports its
+panel to six digits, and its two conditioned walks disagree with each other by more than
+the suite's verdict threshold.
+
 ## 15. Two laws the browser enforces and the driver never mentions (2026-10-23, Ryzen 9 7950X3D, Chromium + RAPHAEL)
 
 Nothing in §1 to §14 is a way for a web measurement to *fail to run*. This is, and it
@@ -994,3 +999,127 @@ green box 512×256 with 126704 lit pixels, the native count exactly, red box 400
 not broken; one browser's implementation cannot display it, and the reason nobody knew is that this
 document had no way to ask a browser anything until today. That is the actual defect §16 ends on —
 not a shader, but a missing instrument.
+
+## 17. The suite on the Retina Mac: the display answers three times (2026-10-24, Apple M4 Max)
+
+§14 left a seat for this machine and wrote down what would have to be done to fill it.
+Two conditioned walks later the answer is that **the M4 Max has no cell in §14's table**,
+and the reason is measured rather than assumed, which is the more useful thing to leave
+behind. Machine: the 14-core M4 Max of §6–13 (32 GPU cores, 36 GB), built-in Liquid
+Retina XDR panel and nothing attached, on AC at 100 %, tree `3e9b433`, rustc 1.99.0,
+the `debug-assertions=true` release build. `using adapter: "Apple M4 Max"` before every
+run below; on this platform there is no `/dev/dri` to be hidden from and no llvmpipe
+costume for §1c to wear, so the adapter line is cheap and read every time anyway.
+
+**Two flags had to be bought first**, both on `examples/benchsuite`, both off by
+default so the committed table's meaning is untouched: `--fullscreen`, because a window
+on macOS is paced by the window server, and `--render-size WxH`, because the suite asks
+for 1920×1080 *logical* pixels and a Retina display doubles that request — so
+`fill-1080p` arrives as 8.3 Mpx against the 2.07 Mpx the row's name has always meant.
+
+| asked for | surface | fill-1080p | taps-9 | floor ÷ cliff |
+| --- | --- | --- | --- | --- |
+| windowed, as shipped | 3840×2160 | 60.2 | 60.0 | **1.003×** |
+| `--fullscreen` | 4112×2572 | 381.0 | 59.8 | 6.4× |
+| `--fullscreen --render-size 1920x1080` | 4112×2572, rendering 1920×1080 | 368.1 | 167.1 | 2.2× |
+
+**The windowed answer is exact, and that is the finding.** §6 wrote *the fps column of
+any bench is the display's* from a pair reading 90.0 and 88.9; this is the same wall to
+six digits. At `RUST_LOG=trace` the histogram of §3's awk over `frame presented` lines
+counts **60 presented frames in each of thirteen consecutive seconds** — 60.000, not
+59.8 and not 61 — under `present_mode AutoNoVsync`, with the app asking not to be paced
+and the floor and the cliff reporting 60.2 and 60.0 together. §14's ratio test reads
+**1.003×**, which is its own definition of a machine answering with its present path.
+§6's 90 and 120 were the same instrument reading a ProMotion rate rather than a GPU.
+
+**A Space of its own uncaps it, and moves the question.** In a native fullscreen Space
+the floor jumps 60.2 → 381.0 without one line of work changing, so the throttle was the
+window server and not the machine. But the Space's framebuffer is 4112×2572 — 10.6 Mpx,
+five times the pixels every row of the committed table paints — and the cliff still
+lands at 59.8. Pinning the render to 1920×1080 puts the work back where the row names
+it, and the cliff finally agrees with itself: 167.1 fps is 5.98 ms, against the 6.45 ms
+the drained offscreen meter charges for the same scenario at the same pixels (the table
+at the end of this section), a 7 % difference between two meters that share nothing but
+the shader.
+
+**Every line then pays for the display, and the tax is not the stretch.** Pinned, the
+floor costs 2.81 ms where the offscreen meter charges 0.231 ms for the same pixels — and
+unpinned, with no stretch pass at all, the floor costs 2.63 ms, so the ~2.5 ms is the
+present of a 10.6 Mpx surface into its own Space, about 0.25 ns per panel pixel, not the
+blit. Nothing about that is additive: the suite's taps-9 frame costs *less* in total
+(6.02 ms) than the offscreen meter's bare lit-shape frame (6.445 ms) despite also
+carrying the bloom chain, the tone map, the stretch and the present, because the
+offscreen meter drains the device every frame and this path lets frame N's scene overlap
+frame N−1's present. The ten rows arrive compressed into 2.7–6.0 ms, where the same ten
+on the 610M span 1.03–64.5 ms.
+
+**Two conditioned walks, taken as §14 asks** — ten scenarios × 6 s × 3 interleaved reps,
+vsync off, `noisefloor` before each (0.46 ms excess and a 2.0× spread, then 0.52 ms and
+1.7×; the box's quietest reading all evening was 0.16 ms and 2.2×) and the run's own
+witness after. Both were judged against no baseline at all, with `--baseline none`,
+because `benchsuite.baseline` belongs to the 610M and judging a Mac run against it
+invents a verdict in both directions at once: the floor would read −65 % against a
+committed line it was never asked to weigh, the cliff +938 %, and the suite's own rule —
+fail if any line falls more than 5 % below its baseline — would call the run broken on
+the strength of the display path:
+
+| scenario | 610M (§14) | walk 1 | walk 2 | walk 2 ms | reps, walk 1 | reps, walk 2 | walk to walk |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| fill-1080p | 970.5 | 356.5 | 345.2 | 2.90 | 0.4 % | 1.4 % | 3.2 % |
+| lamps-4 | 579.5 | 373.5 | 369.4 | 2.71 | 4.6 % | 5.5 % | 1.1 % |
+| lamps-10 | 333.8 | 362.4 | 350.6 | 2.85 | 2.4 % | 2.8 % | 3.3 % |
+| lamps-40 | 110.3 | 286.4 | 324.1 | 3.09 | 13.6 % | 12.8 % | 12.4 % |
+| lamps-40-static | 109.9 | 322.0 | 327.4 | 3.05 | 13.6 % | 5.9 % | 1.7 % |
+| occluders-10 | 214.7 | 334.8 | 352.4 | 2.84 | 6.3 % | 6.4 % | 5.1 % |
+| occluders-100 | 97.4 | 323.3 | 347.2 | 2.88 | 13.9 % | 11.8 % | 7.1 % |
+| taps-1 | 103.5 | 311.1 | 324.1 | 3.09 | 11.0 % | 2.3 % | 4.1 % |
+| taps-4 | 32.0 | 228.8 | 225.8 | 4.43 | 4.2 % | 2.2 % | 1.3 % |
+| taps-9 | 15.5 | 166.1 | 166.1 | 6.02 | 0.6 % | 0.7 % | 0.0 % |
+
+**The weather is the verdict.** §14's rows were quoted on reps agreeing within 0.2 %;
+this machine's reps agree to 0.4–0.7 % at the two ends of the table — the floor, where a
+fixed cost holds it, and the cliff, where there is nothing but work — and to 2–14 %
+through the middle, and two whole walks differ by as much as 12.4 % on a single line.
+The suite's own invariant fails inside that band: `lamps-40-static` is `lamps-40` by
+definition and the two came apart by 12.4 % in walk 1 and 1.0 % in walk 2. And
+`fill-1080p`, which is the floor, reads *slower* than `lamps-4` and `lamps-10` in both
+walks, and slower than `occluders-10` in the second — orderings no engine can produce,
+since four lamps over an empty field is the empty field plus work. Against a 5 % verdict
+threshold that is settled: a machine that disagrees with itself by 12 % cannot referee a
+lighting change, and §3's witness agrees — inside the runs the canary's quanta spread
+5.0× and 4.6× against a 3.5× gate, where §3's calibration table says even 4.3×
+oversubscription only reaches 3.7×. Those walks printed a table and exited 0 only because
+they were asked to judge nothing; with a baseline in hand `benchsuite` would have refused
+them, which is exactly the discipline §3 step 4 buys.
+
+**The Mac's real meter is the one no compositor can reach.** Run the drained offscreen
+bench (`cargo test --release --lib the_light_field_pays_its_fill_offscreen -- --ignored
+--nocapture`) and the same ten scenarios at exactly 1920×1080 answer with a witness of
+0.01 ms excess and a 1.3× quantum spread — §14's conditioned walks, and quieter than
+anything this box managed inside a run — over a span of 27.9× from floor to cliff, which
+is the shape §14 asks for:
+
+| scenario | offscreen ms | fps | | scenario | offscreen ms | fps |
+| --- | --- | --- | --- | --- | --- | --- |
+| fill-1080p | 0.231 | 4335.8 | | occluders-100 | 1.219 | 820.2 |
+| lamps-4 | 0.316 | 3165.0 | | taps-1 | 1.121 | 892.4 |
+| lamps-10 | 0.437 | 2290.1 | | taps-4 | 3.116 | 320.9 |
+| lamps-40 | 1.159 | 862.8 | | taps-9 | 6.445 | 155.2 |
+| lamps-40-static | 1.171 | 853.7 | | | | |
+| occluders-10 | 0.624 | 1601.5 | | | | |
+
+That frame has no bloom, no tone map and no present — `b04a597` said so when the meter
+landed, and it is why these are a price list and nobody's baseline. It is also the only
+place this machine says what the ten rows cost each other.
+
+**So the seat stays empty, on purpose,** and what a later Mac session should take from
+this is shorter than the walk that produced it: read `surface configured at` before
+believing any Mac number, because the suite's 1080p is 3840×2160 here; take
+`--fullscreen --render-size 1920x1080` if a number off a window is wanted at all, and
+divide floor by cliff before showing it to anyone — 1.003× windowed, 2.2× pinned, against
+the 62.6× that the box the table belongs to reports. The two Mac cells §6 left from
+2026-10-15 are explained by this rather than half-filled by it: they are this section's
+windowed reading, taken at whatever rate ProMotion was holding that evening. And when
+the question is what the light field costs rather than what the panel can present, run
+the offscreen meter. A row for the 4090 box is still open, and §14's four instructions
+stand as written for whoever fills it.
