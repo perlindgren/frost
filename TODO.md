@@ -165,3 +165,34 @@ era's fixed cost is attributed and out of the way.
 reduced the per-pixel cost to *lights that reach* × *occluders that
 are near*; every lever here compounds on that shape, and the walked
 baseline is the meter.
+
+## The web port's mosaic: the light field's float bit-pun
+
+`docs/benchmarking.md` §15 carries the measurements; this is the open end of them. The
+web build compiles every shader, makes its device, clears the loading card — and draws a
+mosaic of 8×8 blocks while the native build of the same tree is correct. Settled by
+instrument, not by eye: texture uploads land texel for texel at every width tried
+(`web/width-check.html`, `0/966` wrong with a tight pitch and a 256-aligned one alike),
+and the geometry is right — forcing a sprite's own alpha against a flat green drew the
+hill, the mounds and every plant exactly where they belong. What remains is what reaches
+the light: `shaders/lighting.wgsl:257` folds a light's layer mask against the receiver's
+with `bitcast<u32>(field.lights[…].x) & recv`, both masks travelling as raw bits inside an
+`f32`. Every small mask is a denormal as a float, so the pun's survival depends on how a
+particular uniform path treats values the IEEE says are subnormal — and the blocks are 8×8
+because the occluder walk is tile-aligned, which is why flat-colour shapes came through
+and lit sprites did not.
+
+- **The experiment, when there is a display to run it on.** Render one frame natively and
+  one on web with a probe that paints `bitcast<u32>(u.lit_layers)` and a light's mask bits
+  into a tile's colour, and compare. If the web's bits are zeroed or canonicalised, the pun
+  is the bug and the fix is to stop smuggling integers through floats in a uniform — a
+  `u32` in a storage buffer, or a mask widened to a value that is a normal float in every
+  bit pattern (`mask | 0x38000000` with the exponent forced non-zero, unpacked by masking).
+- **Why it was not fixed blind.** A probe with nothing to compare against is a rumour: the
+  bits read back need a native frame from the same build as their reference, and the agent
+  driving this had a reproducer for the web side only (headless Chromium with
+  `--use-angle=vulkan`) and no display for the native one.
+- **Cheap insurance regardless.** The pun is load-bearing in three places (light mask,
+  receiver mask, and the `lit` flag riding `f32`), none of them documented at the Rust end
+  as *"this integer must survive a float's bit pattern"*. Whatever the web answer turns out
+  to be, that sentence belongs above the struct that does it.

@@ -824,3 +824,68 @@ remembered:
   this goes in with that said next to it, or stays out. §6's two Mac cells are not a
   half-filled row either — they predate the float-frame era, and belong beside this
   table as a glimpse rather than inside it as a cell.
+
+## 15. Two laws the browser enforces and the driver never mentions (2026-10-23, Ryzen 9 7950X3D, Chromium + RAPHAEL)
+
+Nothing in §1 to §14 is a way for a web measurement to *fail to run*. This is, and it
+cost an evening, so the laws go here beside the others — the failure each produces has a
+shape, and knowing the shape is most of the diagnosis.
+
+**A `textureSample` is illegal in non-uniform control flow.** The mip level comes from
+screen-space derivatives, and a 2×2 quad has derivatives only when all four of its threads
+ran the same path. Every frost shader sampled *above* its discard — a discard is chosen per
+pixel, so that is exactly the branch the rule forbids — and Dawn refuses the module, taking
+the pipeline, its bind group layout and every command buffer touching them down with it.
+The result on screen was **505 console messages from one rule**, all of them downstream,
+all of them complaining about buffers and none about the shader. **Naga never checks this**,
+so the same shaders build and run all day on Vulkan and Metal; native had never seen the
+bug. The fix is `textureSampleLevel(…, 0.0)`, exactly equivalent here because every texture
+in the engine has `mip_level_count: 1` (`src/backend/app.rs:1860`), and it is now the only
+form in the tree: 20 sites converted, `grep 'textureSample(' shaders/*.wgsl` finds none.
+
+**`bytesPerRow` in a texture copy is meant to be a multiple of 256** (`COPY_BYTES_PER_ROW_
+ALIGNMENT`), and native wgpu-core accepts any pitch, so the engine passed `width * 4` for
+months. Measured rather than believed, and the measurement says the opposite of what the
+speculation did: `web/width-check.html` uploads a self-labelled ramp at widths 4 to 966,
+draws it, reads it back through the compositor, and every width comes home **0/W wrong,
+tight pitch and 256-aligned alike, with the browser silent**. So the padding now applied at
+the three upload sites (`src/backend/copy.rs`) is **not a bug fix and must not be described
+as one** — it is a hedge against a build that enforces the rule this one doesn't. What it
+did buy is the cheap knowledge that the pitch is not the web bug, which ended one line of
+inquiry in ten minutes instead of another evening.
+
+**And getting an adapter at all on this box takes three flags.** Chromium's Linux default
+is not Vulkan: without `--enable-features=Vulkan` the answer is `No available adapters.`,
+and on Wayland the stack says so outright — `'--ozone-platform=wayland' is not compatible
+with Vulkan` — so it needs `--ozone-platform=x11`; the Mesa here (26.2.4) is newer than the
+browser's blocklist data, so `--ignore-gpu-blocklist` as well. Headless needs
+`--use-angle=vulkan` on top, or it reports no adapter while appearing to run perfectly.
+Two of the evening's readings came from a headless run that had no adapter at all and was
+therefore showing the page's fallback `<div>`, not a frame — which is the same trap as §1c
+in a different costume: **an instrument that always answers looks like an instrument that
+answered.**
+
+**Read what the GPU drew, not what your readback did.** Two of this section's findings
+were fabricated by the page's own reading path and are not in the tree: a nine-argument
+`drawImage` that rescaled a 24-px-tall WebGPU canvas into a single row returned a
+permutation with a period of 32 columns, *identical* through `textureSampleLevel` and
+through `textureLoad` — which is what convinced me the sampler had been cleared by
+measurement when nothing of the kind had been measured. One-row canvases and a
+two-argument `drawImage` report `0/966` on the same textures, same pitches, same device.
+The tell, once seen, is obvious: a **permutation is not what a stride bug looks like**. A
+stride shears monotonically, and any reading that repeats is reading its own resampling.
+
+The web build is still broken as of stamp `0f3ea69b`, and this section says so plainly:
+shaders compile, the device is made, the loading card clears, and the frame is a mosaic of
+8×8 blocks. Two things are settled because they were measured and not inferred — uploads
+land texel for texel (above), and the geometry is right: a probe that returned a sprite's
+own alpha with flat green where its texture colour went drew the hill, the mounds and every
+plant in their correct places. What is left is what reaches the light. The field's layer
+masks travel as **raw bits inside an `f32`** (`shaders/lighting.wgsl:257`,
+`bitcast<u32>(field.lights[…].x) & recv`) and the receiver's mask the same way through
+`u.lit_layers`, so every small mask is a *denormal* float and the pun's survival across a
+browser's uniform path is exactly the kind of thing a driver is free to disagree about. The
+blocks are 8×8 because the occluder walk is tile-aligned — which is also why flat-colour
+shapes came through intact and everything lit did not. Confirming it needs a native frame
+as the reference to read the pun against, which the machine driving this had no display to
+render; it stays a named suspect in `TODO.md`, not a fix.

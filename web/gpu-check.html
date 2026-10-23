@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>frost — what this browser will and won't give</title>
+<!--
+  A probe, not a game: the antifrost page asks wgpu for an adapter and
+  reports one sentence about the failure, which turned out to be too
+  little to diagnose by. This page asks every question separately and
+  puts the answers on the screen in letters big enough to dictate, so
+  "still the same problem" becomes a report.
+
+  Nothing here is shipped by the game. It is served from web/ like the
+  page itself, and it needs no build, no wasm, no imports.
+-->
+<style>
+  body { background:#12141a; color:#e8e6e1; font:16px/1.5 system-ui, sans-serif;
+         margin:2rem auto; max-width:60rem; padding:0 1rem; }
+  h1 { font-size:1.3rem; font-weight:600; }
+  .row { display:block; margin:0 0 .9rem; padding:.7rem .9rem;
+         background:#1b1f27; border-left:4px solid #444; }
+  .yes { border-left-color:#5fb871; }
+  .no  { border-left-color:#d0605f; }
+  .warn{ border-left-color:#d8a34a; }
+  .what { color:#9aa0aa; font-size:.85rem; text-transform:uppercase;
+          letter-spacing:.06em; display:block; }
+  .said { font-size:1.15rem; word-break:break-word; }
+  .fine { color:#9aa0aa; font-size:.9rem; }
+</style>
+</head>
+<body>
+<h1>what this browser will and won't give</h1>
+<div id="out"></div>
+<p class="fine">Dictate the rows back in order and the diagnosis is finished.
+The origin row is not decoration: WebGPU lives in secure contexts, and the
+address a page was really loaded from is not always the one typed.</p>
+<script>
+const out = document.getElementById("out");
+const say = (ok, what, text) => {
+  const div = document.createElement("div");
+  div.className = "row " + (ok === true ? "yes" : ok === false ? "no" : "warn");
+  div.innerHTML = `<span class="what">${what}</span><span class="said"></span>`;
+  div.lastElementChild.textContent = text;
+  out.appendChild(div);
+};
+
+// 1. Where this is actually running, and whether the browser thinks the
+//    context is secure. `localhost` and https both count; a LAN address
+//    over plain http does not, and then WebGPU is absent by policy.
+say(null, "origin", `${location.href} — secure context: ${window.isSecureContext}`);
+
+// 2. Whether WebGPU exists in this browser at all. Firefox removes the
+//    whole property when its GPU process has no Vulkan device, which is
+//    a different story from a request that was refused.
+say(!!navigator.gpu, "navigator.gpu",
+    navigator.gpu ? "present — WebGPU is exposed" : "undefined — this browser exposes no WebGPU at all");
+
+// 3. Whether the browser will hand out *any* adapter on the terms the
+//    game uses: wgpu's RequestAdapterOptions::default() sends an empty
+//    options object, so this is the game's own question.
+const show = (a) => {
+  if (!a) return "null — the browser refused to name an adapter";
+  const i = a.info ?? a.requestAdapterInfo ?? {};
+  return `adapter: vendor="${i.vendor ?? "?"}" architecture="${i.architecture ?? "?"}" `
+       + `device="${i.device ?? "?"}" description="${i.description ?? "?"}"`;
+};
+const err = (e) => `${e?.name ?? typeof e}: ${e?.message ?? e}`;
+
+const asks = [
+  ["requestAdapter({}) — what the game asks", {}],
+  ["requestAdapter({forceFallbackAdapter:true}) — software, if allowed", {forceFallbackAdapter: true}],
+  ["requestAdapter({powerPreference:'high-performance'}) — the discrete card", {powerPreference: "high-performance"}],
+];
+
+// 4. WebGL as the control: WebRender/WebGL running on hardware while
+//    WebGPU is absent is the signature of a Vulkan-side failure, so the
+//    two rows together are the finding.
+try {
+  const gl = document.createElement("canvas").getContext("webgl2");
+  const dbg = gl?.getExtension("WEBGL_debug_renderer_info");
+  say(!!gl, "webgl2 (the control)",
+      gl ? dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : "up, renderer withheld"
+         : "no webgl2 either — this browser has no hardware path at all");
+} catch (e) { say(false, "webgl2 (the control)", err(e)); }
+
+(async () => {
+  if (!navigator.gpu) {
+    say(false, "requestAdapter", "never attempted — there is no navigator.gpu to ask");
+    say(null, "user agent", navigator.userAgent);
+    return;
+  }
+  for (const [label, options] of asks) {
+    try {
+      const a = await navigator.gpu.requestAdapter(options);
+      say(!!a, label, show(a));
+    } catch (e) {
+      say(false, label, "threw " + err(e));
+    }
+  }
+  // 5. What the browser is: the driver bug lists key on this line as much
+  //    as on the GPU, and Mesa newer than the browser is a real answer.
+  say(null, "user agent", navigator.userAgent);
+})();
+</script>
+</body>
+</html>

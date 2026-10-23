@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>frost — how wide before a texel upload stops landing where it was put?</title>
+<!--
+  Third instrument on this bug, and the one that should have existed first.
+
+  `draw-check.html` established that a texture comes back permuted — the
+  same result through `textureSampleLevel` and through `textureLoad`, for a
+  tight pitch and a 256-aligned one, so neither the sampler, the uv math,
+  nor the row pitch is involved. The permutation repeats every 32 columns.
+
+  What is left is the transfer itself, so vary one thing: the width. Every
+  texture below is one row tall, padded to the multiple of 256 WebGPU asks
+  for, and carries its own x coordinate in red. Each is drawn, read, and
+  counted. A width where the count is zero and the next width where it is
+  not is a threshold, and a threshold is something you can either work
+  around in the engine or report upstream with a number in it.
+-->
+<style>
+  body { background:#12141a; color:#e8e6e1; font:14px/1.45 ui-monospace,monospace; margin:1rem; }
+  canvas { display:block; image-rendering:pixelated; height:8px; border:1px solid #333; }
+  .row { display:flex; gap:10px; align-items:center; margin:2px 0; }
+  .row span { width:9rem; color:#9aa0aa; }
+  .ok { color:#5fb871; } .bad { color:#e06c6c; } .note { color:#9aa0aa; }
+</style>
+</head>
+<body>
+<div id="log">running…</div>
+<div id="bands"></div>
+<script>
+const WIDTHS = [4, 8, 16, 24, 32, 40, 64, 128, 966];
+const TEXEL = 4;
+const align = (n) => Math.ceil(n / 256) * 256;
+
+const SHADER = `
+@group(0) @binding(0) var tex: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+  let p = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  return vec4(p[i], 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) c: vec4<f32>) -> @location(0) vec4<f32> {
+  let t = textureLoad(tex, vec2<i32>(i32(c.x), 0), 0);
+  return vec4<f32>(vec3<f32>(t.r), 1.0);
+}`;
+
+let device, format;
+const log = (html) => { document.getElementById("log").innerHTML += "<br>" + html; };
+
+async function probe(width) {
+  const pitch = align(width * TEXEL);
+  const bytes = new Uint8Array(pitch);
+  for (let x = 0; x < width; x++) {
+    bytes[x * TEXEL] = (x * 4) & 0xff;   // four columns per step: x=0 → 0, x=1 → 4
+    bytes[x * TEXEL + 3] = 255;
+  }
+  const expected = (x) => (x * 4) & 0xff;
+
+  const holder = document.createElement("div");
+  holder.className = "row";
+  const label = document.createElement("span");
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = 1;
+  canvas.style.width = `${width}px`;
+  holder.append(label, canvas);
+  document.getElementById("bands").append(holder);
+
+  const context = canvas.getContext("webgpu");
+  context.configure({ device, format, alphaMode: "opaque" });
+
+  const notes = [];
+  const onError = (event) => notes.push(`${event.error.name}: ${event.error.message}`);
+  device.addEventListener("uncapturederror", onError);
+  const texture = device.createTexture({
+    size: [width, 1], format: "rgba8unorm",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  try {
+    device.queue.writeTexture(
+      { texture }, bytes, { bytesPerRow: pitch, rowsPerImage: 1 }, [width, 1]);
+  } catch (error) {
+    notes.push(`threw ${error.name}`);
+  }
+  device.removeEventListener("uncapturederror", onError);
+
+  const module = device.createShaderModule({ code: SHADER });
+  const pipeline = device.createRenderPipeline({
+    layout: "auto",
+    vertex: { module, entryPoint: "vs" },
+    fragment: { module, entryPoint: "fs", targets: [{ format }] },
+  });
+  const bind = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [{ binding: 0, resource: texture.createView() }],
+  });
+  const encoder = device.createCommandEncoder();
+  const pass = encoder.beginRenderPass({
+    colorAttachments: [{
+      view: context.getCurrentTexture().createView(),
+      clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store",
+    }],
+  });
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bind);
+  pass.draw(3);
+  pass.end();
+  device.queue.submit([encoder.finish()]);
+
+  const read = document.createElement("canvas");
+  read.width = width;
+  read.height = 1;
+  const two = read.getContext("2d", { willReadFrequently: true });
+  two.drawImage(canvas, 0, 0);
+  const got = two.getImageData(0, 0, width, 1).data;
+
+  let wrong = 0;
+  const firsts = [];
+  for (let x = 0; x < width; x++) {
+    if (got[x * 4] !== expected(x)) {
+      wrong++;
+      if (firsts.length < 10) firsts.push(`${x}→${got[x * 4]}`);
+    }
+  }
+  const cls = wrong ? "bad" : "ok";
+  label.innerHTML = `<span class="${cls}">${String(width).padStart(4)}: ${wrong}/${width}</span>`;
+  if (firsts.length) {
+    log(`<span class="bad">w=${width} x→got: ${firsts.join(" ")}</span>` +
+        (notes.length ? ` <span class="note">(${notes.join(" | ")})</span>` : ""));
+  }
+  texture.destroy();
+}
+
+(async () => {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) { document.getElementById("log").textContent = "no adapter"; return; }
+  device = await adapter.requestDevice();
+  format = navigator.gpu.getPreferredCanvasFormat();
+  log(`<span class="note">canvas format ${format}. expectation: column x reads 4x mod 256.</span>`);
+  for (const width of WIDTHS) await probe(width);
+})();
+</script>
+</body>
+</html>

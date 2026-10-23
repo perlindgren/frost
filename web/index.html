@@ -20,14 +20,129 @@
 </style>
 </head>
 <body>
-<div id="fallback">warming the hill — build d11732e4&hellip;</div>
+<div id="fallback">warming the hill — build 0f3ea69b&hellip;</div>
+<script>
+  // WebGPU's failures are not exceptions. A validation problem arrives as
+  // an `uncapturederror` event on the device, silent unless somebody
+  // listens, and wgpu on the web does not listen — so a port bug in the
+  // engine shows up as a picture made of garbage and one honest line in the
+  // console.
+  //
+  // The browser is the only place some of these laws are enforced, and
+  // until now the only witness was a person reading a devtools console —
+  // so the witness lives in the page now. It is off unless asked for,
+  // because the game page is not a dashboard: load it with ?probe=1 and
+  // the adapter's complaints, the canvas's own numbers, a magnified patch
+  // and a startup timeline appear in the corners. The page prints the
+  // absence of errors too, since silence is a finding and the last hour
+  // would have gone differently had it been on screen.
+  (() => {
+    if (!new URLSearchParams(location.search).has("probe")) return;
+    if (!("GPUAdapter" in globalThis)) return;
+    const seen = [];
+    const box = document.createElement("pre");
+    box.style.cssText =
+      "position:fixed;left:0;top:0;z-index:10;margin:0;padding:8px 10px;" +
+      "max-width:70vw;max-height:50vh;overflow:auto;display:none;" +
+      "background:rgba(8,6,14,.88);color:#ffc46b;border-right:2px solid #ffc46b;" +
+      "border-bottom:2px solid #ffc46b;font:12px/1.45 ui-monospace,monospace;" +
+      "white-space:pre-wrap;cursor:pointer";
+    box.title = "click to dismiss";
+    box.addEventListener("click", () => box.remove());
+    const show = (text) => {
+      box.textContent = text;
+      box.style.display = "block";
+      document.body.appendChild(box);
+    };
+    const asked = GPUAdapter.prototype.requestDevice;
+    GPUAdapter.prototype.requestDevice = function (...args) {
+      return asked.apply(this, args).then((device) => {
+        device.addEventListener("uncapturederror", (event) => {
+          const error = event.error;
+          const line = `${error?.name ?? "error"}: ${error?.message ?? error}`;
+          if (seen.length < 12 && !seen.includes(line)) {
+            seen.push(line);
+            show(`WebGPU said, in order:\n\n${seen.join("\n\n")}`);
+          }
+        });
+        return device;
+      });
+    };
+    setTimeout(() => {
+      if (!seen.length) show("no WebGPU errors in 10 s — the silence is the finding");
+    }, 10000);
+
+    // The second instrument: the canvas's own numbers, and a patch of it
+    // magnified four times. A picture made of garbage is one screenshot;
+    // the period of the garbage, and the size the backing store was asked
+    // for against the size the frame was rendered at, is a diagnosis.
+    //
+    // The timeline first, because "the page is broken" and "the page never
+    // started" look the same from the outside. The card is what the engine
+    // removes when the first frame lands, and the backing store is what it
+    // sizes when the GPU setup completes — so one line every two seconds
+    // says which of the two never happened, without a debugger attached.
+    const line = document.createElement("pre");
+    line.style.cssText =
+      "position:fixed;left:0;bottom:0;z-index:10;margin:0;padding:6px 8px;" +
+      "background:rgba(8,6,14,.88);color:#9ab;font:11px/1.4 ui-monospace,monospace";
+    document.body.appendChild(line);
+    const clock = Date.now();
+    const ticks = [];
+    setInterval(() => {
+      const canvas = document.querySelector("canvas");
+      const card = document.getElementById("fallback");
+      ticks.push(
+        `t=${((Date.now() - clock) / 1000).toFixed(0)}s ` +
+          `canvas=${canvas ? `${canvas.width}x${canvas.height}` : "none"} ` +
+          `css=${canvas ? `${canvas.clientWidth}x${canvas.clientHeight}` : "-"} ` +
+          `card=${card ? "up" : "gone"}`,
+      );
+      if (ticks.length > 14) ticks.shift();
+      line.textContent = ticks.join("\n");
+    }, 2000);
+
+    setTimeout(() => {
+      const canvas = document.querySelector("canvas");
+      if (!canvas) return;
+      const zoom = document.createElement("canvas");
+      const side = Math.min(80, canvas.width, canvas.height);
+      zoom.width = side * 4;
+      zoom.height = side * 4;
+      const context = zoom.getContext("2d");
+      context.imageSmoothingEnabled = false;
+      // Read from near the middle of the frame, where a hill is: corners
+      // are margins, and margins are where a bug gets to hide.
+      const x = Math.max(0, (canvas.width - side) >> 1);
+      const y = Math.max(0, (canvas.height - side) >> 1);
+      try {
+        context.drawImage(canvas, x, y, side, side, 0, 0, side * 4, side * 4);
+      } catch (error) {
+        show(`drawImage refused: ${error}`);
+        return;
+      }
+      zoom.style.cssText =
+        "position:fixed;right:0;bottom:0;z-index:10;border-left:2px solid #6bd;" +
+        "border-top:2px solid #6bd;image-rendering:pixelated";
+      document.body.appendChild(zoom);
+      const size = document.createElement("pre");
+      size.style.cssText =
+        "position:fixed;right:0;top:0;z-index:10;margin:0;padding:6px 8px;" +
+        "background:rgba(8,6,14,.88);color:#6bd;font:12px/1.45 ui-monospace,monospace";
+      size.textContent =
+        `canvas ${canvas.width}x${canvas.height}  css ${canvas.clientWidth}x${canvas.clientHeight}\n` +
+        `devicePixelRatio ${devicePixelRatio}`;
+      document.body.appendChild(size);
+    }, 6000);
+  })();
+</script>
 <script type="module">
   // The ?v= tags are load-bearing: a page reload never refetches
   // the wasm module — Firefox serves its cached copy of the fixed
   // URL, which is how a stale module can haunt the page for days.
   // Bump the tag every time web/build.sh rebuilds the package.
-  import init from "./pkg/antifrost.js?v=d11732e4";
-  await init("./pkg/antifrost_bg.wasm?v=d11732e4");
+  import init from "./pkg/antifrost.js?v=0f3ea69b";
+  await init("./pkg/antifrost_bg.wasm?v=0f3ea69b");
 </script>
 </body>
 </html>
