@@ -761,6 +761,22 @@ adapter line exists at all (§1a). `noisefloor` read 0.00 ms of excess lateness 
 llvmpipe alone, exactly as §1c warns — so `using adapter:` was read before a single
 number was.
 
+**Two names this document leans on, defined once here.** The suite's ten rows are an
+ordered cost ladder (the list and what each row isolates is
+[`examples/benchsuite/main.rs`](../examples/benchsuite/main.rs)), and the document calls
+its two ends by name:
+
+- **the floor** — `fill-1080p`: a screen of lit shapes under an *empty* light field. The
+  cheapest frame the suite can paint, so everything else in the table is this plus work.
+- **the cliff** — `taps-9`: ten lamps and sixty occluders under nine penumbra taps, the
+  heaviest row by a mile — 64.5 ms a frame on the iGPU below, against the floor's 1.03.
+  The row where a GPU's real throughput has to show, and the reason the other nine exist.
+
+Both come out of **one run, vsync off**: the two names are two *scenes*, not two
+settings. And they are scenario names, not §3's *noise floor* — where this document says
+"the floor is too loud" it means the witness, and where it divides a floor by a cliff it
+means these two rows.
+
 fps, medians of three reps, against the committed table:
 
 | scenario | `benchsuite.baseline` | Radeon 610M (iGPU) | Δ | RX 7900 XTX (`DRI_PRIME=1`) |
@@ -1017,7 +1033,12 @@ on macOS is paced by the window server, and `--render-size WxH`, because the sui
 for 1920×1080 *logical* pixels and a Retina display doubles that request — so
 `fill-1080p` arrives as 8.3 Mpx against the 2.07 Mpx the row's name has always meant.
 
-| asked for | surface | fill-1080p | taps-9 | floor ÷ cliff |
+Each row below is the two named scenes of §14 — **the floor** (`fill-1080p`, a lit screen
+under an empty light field) and **the cliff** (`taps-9`, ten lamps and sixty occluders
+under nine penumbra taps) — measured in the same run with vsync off, which is what makes
+dividing them a test of who answered rather than a comparison of two settings:
+
+| asked for | surface | the floor `fill-1080p` | the cliff `taps-9` | floor ÷ cliff |
 | --- | --- | --- | --- | --- |
 | windowed, as shipped | 3840×2160 | 60.2 | 60.0 | **1.003×** |
 | `--fullscreen` | 4112×2572 | 381.0 | 59.8 | 6.4× |

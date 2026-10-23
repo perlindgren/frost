@@ -13,10 +13,16 @@
 //! per lit pixel  ×  lights  ×  (rays  ×  occluders-in-block)
 //! ```
 //!
-//! * `fill-1080p`        — the floor: a lit screen, an empty field.
+//! * `fill-1080p`        — the floor: a lit screen, an empty field. The
+//!   cheapest frame the suite can paint, so every other row is this plus
+//!   work; `docs/benchmarking.md` calls these two ends the floor and the
+//!   cliff, and divides one by the other to ask which of the machine's
+//!   parts answered a run.
 //! * `lamps-4/10/40`     — the light loop and its falloff, no shadows.
 //! * `occluders-10/100`  — the shadow-ray walk, ten lamps over it.
-//! * `taps-1/4/9`        — the penumbra ladder and its divergence.
+//! * `taps-1/4/9`        — the penumbra ladder and its divergence; the
+//!   ninth rung is the cliff, heaviest by a mile and the row where a GPU's
+//!   real throughput has to show.
 //! * `lamps-40-static`   — the caching prize: equal to `lamps-40`
 //!   today *by definition* (nothing is cached); any future gap is a
 //!   win already paid for.
