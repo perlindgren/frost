@@ -174,9 +174,10 @@ pub(crate) fn create_window(
             // the page is watched directly, and each resize refits the canvas,
             // which moves the box, which is what winit's observer is waiting
             // for before it reports `Resized` to the engine.
-            let (canvas, host) = (canvas.clone(), Arc::clone(&window));
+            let watched = canvas.clone();
+            let host = Arc::clone(&window);
             let listener = Closure::wrap(Box::new(move |_event: web_sys::Event| {
-                fit_canvas(&canvas, host.scale_factor());
+                fit_canvas(&watched, host.scale_factor());
             }) as Box<dyn FnMut(web_sys::Event)>);
             if let Some(view) = web_sys::window() {
                 let _ = view
@@ -185,6 +186,37 @@ pub(crate) fn create_window(
             // Leaked on purpose: one listener per page, and the page outlives
             // the window it watches.
             listener.forget();
+            // The same refit a second time, driven by the layout rather than
+            // by the window. `resize` is the documented way to hear about a
+            // viewport change, and it is heard once per gesture — a compositor
+            // that snaps the frame to a tile, or a fullscreen transition that
+            // lands without one, moves the box and says nothing. Watching the
+            // root element makes the geometry itself the trigger, and
+            // `fit_canvas` is idempotent, so hearing it twice costs nothing.
+            let watched = canvas;
+            let host = Arc::clone(&window);
+            let resize = Closure::wrap(Box::new(
+                move |_entries: js_sys::Array, _obs: web_sys::ResizeObserver| {
+                    fit_canvas(&watched, host.scale_factor());
+                },
+            )
+                as Box<dyn FnMut(js_sys::Array, web_sys::ResizeObserver)>);
+            if let (Ok(observer), Some(root)) = (
+                web_sys::ResizeObserver::new(resize.as_ref().unchecked_ref()),
+                web_sys::window()
+                    .and_then(|v| v.document())
+                    .and_then(|d| d.document_element()),
+            ) {
+                observer.observe(&root);
+                // Both are deliberately leaked: an observer is dropped the
+                // instant its last strong handle goes, and there is no later
+                // point at which the page would rather stop following its own
+                // window.
+                resize.forget();
+                std::mem::forget(observer);
+            } else {
+                resize.forget();
+            }
         }
     }
     // Center the window on its monitor so frost always opens in the middle

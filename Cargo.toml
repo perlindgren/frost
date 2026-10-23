@@ -76,6 +76,11 @@ web-sys = { version = "0.3", features = [
     "HtmlElement",
     "Node",
     "Performance",
+    # The layout-driven resize path (see `fit_canvas`): the root element's box
+    # is watched as well as the window's `resize` event, so a compositor that
+    # moves the frame without announcing it still reaches the renderer.
+    "ResizeObserver",
+    "ResizeObserverEntry",
     # The browser's own memory for the store module (src/store.rs): the
     # per-origin `localStorage` a web build keeps its saves and settings
     # in, where the native store keeps files.
