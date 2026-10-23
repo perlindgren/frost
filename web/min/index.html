@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><title>minwin in the browser</title>
+<style>
+  /* No css on the canvas: the engine appends its own, and whatever size the
+     drawing buffer ends up with is exactly the thing under test. */
+  html, body { margin: 0; height: 100%; background: #222; overflow: hidden; }
+</style>
+<script>
+  // The readout lives in a classic script ahead of the module, not after
+  // `await init()`: winit's web backend calls run_app and never returns, so
+  // every statement after the await is dead code. An earlier revision of this
+  // page put the readout there, which is why it showed the player nothing.
+  const box = document.createElement("pre");
+  box.style.cssText = "position:fixed;right:0;top:0;margin:0;padding:6px;" +
+    "color:#9ff;font:12px ui-monospace,monospace;z-index:10";
+  document.documentElement.appendChild(box); // head runs before body exists
+  const tick = (t) => {
+    const c = document.querySelector("canvas");
+    const geom = {
+      t: t / 1000,
+      inner: [innerWidth, innerHeight],
+      dpr: devicePixelRatio,
+      canvas: c ? [c.width, c.height] : null,
+      css: c ? [c.clientWidth, c.clientHeight] : null,
+      style: c ? [c.style.width, c.style.height] : null,
+    };
+    box.textContent = JSON.stringify(geom);
+    if (t % 5000 === 0) console.log("GEOM " + JSON.stringify(geom));
+    if (t < 20000) setTimeout(() => tick(t + 1000), 1000);
+  };
+  tick(0);
+</script>
+</head>
+<body>
+<script type="module">
+  import init from "./pkg/minwin.js";
+  await init();
+</script>
+</body></html>

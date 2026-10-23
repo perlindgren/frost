@@ -902,12 +902,71 @@ shaders compile, the device is made, the loading card clears, and the frame is a
 8×8 blocks. Two things are settled because they were measured and not inferred — uploads
 land texel for texel (above), and the geometry is right: a probe that returned a sprite's
 own alpha with flat green where its texture colour went drew the hill, the mounds and every
-plant in their correct places. What is left is what reaches the light. The field's layer
-masks travel as **raw bits inside an `f32`** (`shaders/lighting.wgsl:257`,
-`bitcast<u32>(field.lights[…].x) & recv`) and the receiver's mask the same way through
-`u.lit_layers`, so every small mask is a *denormal* float and the pun's survival across a
-browser's uniform path is exactly the kind of thing a driver is free to disagree about. The
-blocks are 8×8 because the occluder walk is tile-aligned — which is also why flat-colour
-shapes came through intact and everything lit did not. Confirming it needs a native frame
-as the reference to read the pun against, which the machine driving this had no display to
-render; it stays a named suspect in `TODO.md`, not a fix.
+plant in their correct places. What was left then — what reaches the light — was the wrong
+question. The suspect named here at the time (the field's layer masks travelling as **raw bits
+inside an `f32`**, `shaders/lighting.wgsl:257`, blamed for the blocks because the occluder walk
+is tile-aligned) is **dead**: unlit rectangles with no light field anywhere near them shred the
+same way, and the build from before the light field existed shreds the same way in a real
+browser. §16 carries what is known now. The lesson worth keeping from this section is the
+smaller one: **a suspect stays a suspect until something asks it a question it cannot answer**,
+and the question here cost one example with two coloured boxes in it.
+
+## 16. The port has never run here, and the mosaic is not the light field (2026-10-24, Ryzen 9 7950X3D, Chromium + RAPHAEL)
+
+§15 ended blaming the light field's float bit-pun. It was wrong, and two measurements
+killed it. First, `examples/placement.rs` draws **unlit rectangles** — no texture, no light
+field, no emissive target, `lit` off — and they shred exactly as the hill does. Second, the
+build of `5d69399` (2026-10-15, the last commit before `441f65c the frame gets somewhere to
+keep more than it can show`) shreds identically **in a real browser**, and that build has no
+emissive target, no bloom and no layer-mask pun to lose. The pun is not the bug; a suspect
+that survives because nobody asked it a question it cannot answer is a rumour, which is what
+§15's last paragraph was.
+
+What the breakage actually is, measured on the probe with the canvas at 1024×768 and dpr 1.
+A rectangle asked for at user centre `(0,0)` with extent 256×128 arrives **the correct height,
+twice the width, and half covered**: coverage is a square wave, 8 pixels on and 8 off, period
+16 along x with autocorrelation 1.0, and the pixel count is *preserved* — 126486 against the
+native build's 126704. Nothing was scaled, sheared or blurred. Detail was **decimated**, and
+a flat colour survives decimation perfectly, which is the whole reason this hid: the same
+shader asked to write magenta with alpha 1 through the same full-screen triangle, the same
+scissor and the same arena produced 208650 of the 211072 pixels asked for, correctly placed on
+both platforms.
+
+Everything below was eliminated by measurement rather than by reasoning, which is the only
+reason it is written down. The drawing buffer's size (CSS box, buffer and style all 1024×768,
+dpr 1). The CPU geometry: `Canvas::user_to_pixels` is a diagonal matrix with a centred
+translation, and the native probe puts the off-centre box at pixel (211,583) for user
+(-300,-200) while the browser's **rows** are pixel-exact. The atlas uploads, which land texel
+for texel. The blit's filter, bloom (absent in the pre-HDR build that shreds anyway), and the
+float frame buffer (`hdr_frames = false` changes not one pixel). The source of the fragment
+coordinate: replacing `@builtin(position)` with a `@location(0)` varying computed in the vertex
+stage left the frame **identical to the byte**, as did hardcoding the geometry, as did a
+hard step in place of `smoothstep`, as did swapping the oversized triangle for an exact
+viewport quad. Three different fragment-stage edits and an HDR switch producing byte-identical
+frames is not a shader result — it is the result of a shader whose output is not what reaches
+the page, and every one of those edits was reported as a finding before the magenta test
+showed what to make of them.
+
+`wgpu`-native on this GPU and driver is clean: the game runs here, which is what §14 is
+measured on. Dawn is not. Nothing in this document before §15 was measured on Linux at all —
+§1 to §14 are Apple M4 Max — so there is no record of this port ever having been run here, and
+`git bisect` from `592e8a1 web dev` (11 October, where the page first exists) to here finds
+**no commit that judges clean**: the range is uniformly broken on this machine, which is what
+a port that was developed on Metal and only ever photographed on Metal looks like from the
+other side. The judge is `tools/web-render-judge.sh`; it builds `minwin` for the browser,
+photographs it headless, and measures energy at a period of exactly 16 pixels against the
+neighbouring periods, which scores 0.41 on the known-good desktop frame and 2.10 on the known-
+broken browser frame. It judged all eleven days broken. Two of its early verdicts were
+identical to the byte across commits, which should have been the tell it was measuring its own
+harness rather than the tree: a metric that never moves is not a metric.
+
+**Two experiments remain, and neither can be run from a headless box.** Chromium here will not
+hand out WebGPU through llvmpipe or its OpenGL backend — `--enable-unsafe-swiftshader` and
+`--webgpu-dawn-backend-type=opengl` both draw nothing at all — so the driver cannot be swapped
+from this side. The M4 over `web/serve.py --tls` asks whether the same wasm is healthy on
+Metal, which would make this one platform rather than one engine. `chrome://flags/#default-webgpu-adapter`
+set to SwiftShader in a real browser asks whether it is Dawn's Vulkan backend rather than Dawn
+at all. Until one of those answers, the honest statement of the port's state is: geometry,
+uploads and layout are correct on web, detail is decimated between the scene and the page, and
+the mechanism belongs to the browser's presentation path on this driver, not to this engine's
+maths.

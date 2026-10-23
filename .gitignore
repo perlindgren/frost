@@ -19,3 +19,10 @@ antifrost.progress.ron
 # self-signed certificates for `serve.py --tls` — minted locally, never committed
 web/.tls/
 web/.watch-stamp
+
+# The probe pages under web/ are source; their wasm is build output.
+/web/min/pkg/
+/web/place/pkg/
+
+# Scratch worktrees and a hardlinked cargo home for building old commits.
+/.workspace/

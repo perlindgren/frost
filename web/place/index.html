@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><title>placement in the browser</title>
+<!-- The page for `examples/placement.rs`: two boxes and a word at coordinates
+     the engine already knows, so where they land is a measurement and not an
+     impression. Build it with
+
+       cargo build --example placement --target wasm32-unknown-unknown --release
+       wasm-bindgen --target web --out-dir web/place/pkg \
+           target/wasm32-unknown-unknown/release/examples/placement.wasm
+
+     and read `docs/benchmarking.md` §16 before changing anything: the damage it
+     hunts is decimation between the scene and the page, not the maths in a
+     shader — four edits to that maths produced byte-identical frames. -->
+<style>html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }</style>
+</head>
+<body>
+<script type="module">
+  import init from "./pkg/placement.js";
+  await init();
+</script>
+</body></html>

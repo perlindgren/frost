@@ -166,33 +166,49 @@ reduced the per-pixel cost to *lights that reach* × *occluders that
 are near*; every lever here compounds on that shape, and the walked
 baseline is the meter.
 
-## The web port's mosaic: the light field's float bit-pun
+## The web port's mosaic: detail decimated between the scene and the page
 
-`docs/benchmarking.md` §15 carries the measurements; this is the open end of them. The
-web build compiles every shader, makes its device, clears the loading card — and draws a
-mosaic of 8×8 blocks while the native build of the same tree is correct. Settled by
-instrument, not by eye: texture uploads land texel for texel at every width tried
-(`web/width-check.html`, `0/966` wrong with a tight pitch and a 256-aligned one alike),
-and the geometry is right — forcing a sprite's own alpha against a flat green drew the
-hill, the mounds and every plant exactly where they belong. What remains is what reaches
-the light: `shaders/lighting.wgsl:257` folds a light's layer mask against the receiver's
-with `bitcast<u32>(field.lights[…].x) & recv`, both masks travelling as raw bits inside an
-`f32`. Every small mask is a denormal as a float, so the pun's survival depends on how a
-particular uniform path treats values the IEEE says are subnormal — and the blocks are 8×8
-because the occluder walk is tile-aligned, which is why flat-colour shapes came through
-and lit sprites did not.
+`docs/benchmarking.md` §16 carries the measurements; this is the open end of them. The web
+build compiles, makes its device, clears the loading card and draws a frame whose **detail is
+decimated**: a rectangle asked for 256×128 arrives the correct height, twice the width, half
+covered, as a square wave of 8 pixels on and 8 off at period 16, with its pixel count
+preserved. Flat opaque output through the same pipeline is correct on both platforms, which is
+why the breakage reads as "text is torn" rather than "the frame is wrong".
 
-- **The experiment, when there is a display to run it on.** Render one frame natively and
-  one on web with a probe that paints `bitcast<u32>(u.lit_layers)` and a light's mask bits
-  into a tile's colour, and compare. If the web's bits are zeroed or canonicalised, the pun
-  is the bug and the fix is to stop smuggling integers through floats in a uniform — a
-  `u32` in a storage buffer, or a mask widened to a value that is a normal float in every
-  bit pattern (`mask | 0x38000000` with the exponent forced non-zero, unpacked by masking).
-- **Why it was not fixed blind.** A probe with nothing to compare against is a rumour: the
-  bits read back need a native frame from the same build as their reference, and the agent
-  driving this had a reproducer for the web side only (headless Chromium with
-  `--use-angle=vulkan`) and no display for the native one.
-- **Cheap insurance regardless.** The pun is load-bearing in three places (light mask,
-  receiver mask, and the `lit` flag riding `f32`), none of them documented at the Rust end
-  as *"this integer must survive a float's bit pattern"*. Whatever the web answer turns out
-  to be, that sentence belongs above the struct that does it.
+The old entry here blamed the light field's float bit-pun. It is dead, and worth keeping as a
+note about method: the theory died because `examples/placement.rs` draws *unlit* rectangles and
+shreds them, and because `5d69399` — the last commit before the emissive target existed — shreds
+identically in a real browser. Suspects that nothing has questioned are rumours.
+
+- **What is settled, by measurement.** Canvas size (CSS, buffer and style agree, dpr 1); CPU
+  geometry (`user_to_pixels` is diagonal with a centred translation; the desktop probe lands
+  user (-300,-200) at pixel (211,583) and the browser's *rows* are exact); uploads (texel for
+  texel); the blit's filter; bloom and the float frame buffer (`hdr_frames = false` changes not
+  one pixel); and the fragment coordinate's source — `@builtin(position)` replaced by a vertex
+  computed varying, hardcoded geometry, a hard step for `smoothstep`, an exact viewport quad for
+  the oversized triangle, all producing **byte-identical** frames.
+- **What is not settled, and why it cannot be settled from here.** `wgpu`-native on this GPU is
+  clean (§14 runs on it), so the difference belongs to Dawn or to this driver under it. This
+  Chromium refuses WebGPU through llvmpipe and through its OpenGL backend — both draw nothing at
+  all — so the rasteriser cannot be swapped headless. **The M4 over `web/serve.py --tls`** asks
+  whether the same wasm is healthy on Metal; **`chrome://flags/#default-webgpu-adapter`** set to
+  SwiftShader asks whether it is Dawn's Vulkan backend rather than Dawn. Either answer changes
+  what "fix" means: a Metal-healthy port wants a documented platform note and a workaround, a
+  Dawn-wide one wants the engine to stop handing the browser a scene whose detail it must
+  resample.
+- **The port has never run here.** §1 to §14 of the benchmarking document are Apple M4 Max; §15
+  and §16 are today. `git bisect` from `592e8a1 web dev` (11 October, where the page first
+  exists) to here finds no commit that judges clean, so there is no regression to find and no
+  earlier good frame to read a fix against.
+- **The instruments, so the next hour starts here.** `examples/placement.rs` draws two boxes and
+  a word in colours nothing else uses, so a bounding box is a measurement and not an impression
+  (`--dump` prints what was asked for). `tools/web-render-judge.sh` builds `minwin` for the
+  browser, photographs it headless and scores the 16-pixel signature — 0.41 on the desktop
+  frame, 2.10 on the broken one, line at 1.0 — and is built to be run under `git bisect run`.
+  `web/min/` and `web/place/` are the pages that serve them; their `pkg/` is generated.
+- **Cheap insurance, unrelated to the mosaic now.** The bit-pun is still load-bearing in three
+  places (light mask, receiver mask, and the `lit` flag riding an `f32`) and is documented at
+  the WGSL end but not at the Rust end, where a reader only sees floats. Whatever else happens
+  to the port, *"this integer must survive a float's bit pattern"* belongs above the struct that
+  does it — the lesson of this entry is that an undocumented pun is a suspect that never gets
+  cleared.
