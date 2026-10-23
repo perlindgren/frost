@@ -88,6 +88,8 @@ def main() -> None:
     ap.add_argument("--wait", type=float, default=20.0, help="seconds after load before capturing")
     ap.add_argument("--size", default="1280,800", help="window size, WxH")
     ap.add_argument("--profile", default=None, help="profile dir; gets the WebGPU prefs added")
+    ap.add_argument("--freeze", action="store_true",
+                    help="starve requestAnimationFrame first, so the held frame is what gets shot")
     args = ap.parse_args()
 
     prof = profile_with_webgpu(pathlib.Path(args.profile) if args.profile
@@ -131,6 +133,15 @@ def main() -> None:
             send(conn, "browsingContext.navigate",
                  {"context": context, "url": args.url, "wait": "complete"}, session)
             time.sleep(args.wait)
+            if args.freeze:
+                # winit drives the wasm event loop from rAF; replacing it with a
+                # no-op means nothing schedules the next frame, and a canvas keeps
+                # whatever it last presented. The frame is then a specimen rather
+                # than a rolling number, which is all anyone wants from an overlay.
+                send(conn, "script.evaluate", {"expression": "window.requestAnimationFrame = () => 0;",
+                                               "target": {"context": context}, "awaitPromise": True,
+                                               "resultOwnership": "none"}, session)
+                time.sleep(1.0)
             send(conn, "browsingContext.activate", {"context": context}, session)
             time.sleep(0.5)
             shot = send(conn, "browsingContext.captureScreenshot",
