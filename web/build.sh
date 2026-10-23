@@ -9,11 +9,46 @@
 # 113+, Firefox 141+, Safari 26+).
 #
 # The wasm-bindgen CLI must exactly match the wasm-bindgen crate in
-# Cargo.lock — install once with:
-#   cargo install wasm-bindgen-cli --version 0.2.129
+# Cargo.lock; the script now reads the pin from the lock and refuses the
+# build when the machine is missing the CLI or carries the wrong version,
+# printing the install line either way.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
+
+# Two things must be installed before a browser build exists, and this
+# script used to learn about either of them minutes into a release
+# compile: the wasm std, and a bundler whose version must match the
+# crate's exactly — a wasm-bindgen CLI off by a point emits JS glue the
+# wasm refuses to load, and the browser answers with a link error rather
+# than a version number. So ask first, and print the remedy with the
+# refusal. The pin is read from the lock rather than repeated here, so
+# bumping wasm-bindgen cannot leave this check guarding the old number.
+want=$(awk -F'"' '/^name = "wasm-bindgen"$/{getline; print $2; exit}' Cargo.lock)
+if ! command -v wasm-bindgen >/dev/null 2>&1; then
+    {
+        echo "build.sh: no wasm-bindgen on PATH — the bundler is a build dependency:"
+        echo "            cargo install wasm-bindgen-cli --version $want"
+    } >&2
+    exit 1
+fi
+have=$(wasm-bindgen --version | awk '{print $NF}')
+if [ "$have" != "$want" ]; then
+    {
+        echo "build.sh: wasm-bindgen $have, but Cargo.lock pins $want."
+        echo "          The glue must match the crate exactly:"
+        echo "            cargo install wasm-bindgen-cli --version $want"
+    } >&2
+    exit 1
+fi
+if command -v rustup >/dev/null 2>&1 &&
+   ! rustup target list --installed | grep -qx wasm32-unknown-unknown; then
+    {
+        echo "build.sh: the wasm32-unknown-unknown target is not installed:"
+        echo "            rustup target add wasm32-unknown-unknown"
+    } >&2
+    exit 1
+fi
 
 cargo build -p antifrost --target wasm32-unknown-unknown --release
 wasm-bindgen --target web --out-dir web/pkg \
