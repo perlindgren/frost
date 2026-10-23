@@ -11,25 +11,23 @@
 # uniform arena's NonZeroU64 import (164679f) sat broken across six commits
 # until someone ran the check by hand.
 #
-# Pushes that include the main branch force-pass (tests are skipped), as ever.
+# Every push runs every check, `main` included. The hook used to force-pass
+# pushes that touched `main`, and to wave a clone through when the wasm target
+# was missing, on the grounds that a machine should only be asked to check what
+# it can check. With no CI anywhere in this repository, those two passings
+# through added up to the suite running only when someone remembered — and a
+# check that runs when remembered is not a gate, it is a habit. So the target is
+# a requirement now:
+#
+#     rustup target add wasm32-unknown-unknown
+#
+# The way out was never a branch name. `--no-verify` skips the hooks, by name
+# and in the open (README.md, "Repository hooks").
 
 fail() {
     printf 'pre-push: %s failed - push aborted.\n' "$*" >&2
     exit 1
 }
-
-# git feeds one line per ref: <local ref> <local sha> <remote ref> <remote sha>
-pushing_main=0
-while read -r local_ref local_sha remote_ref remote_sha; do
-    if [ "$remote_ref" = "refs/heads/main" ]; then
-        pushing_main=1
-    fi
-done
-
-if [ "$pushing_main" = "1" ]; then
-    printf 'pre-push: pushing to main - skipping tests (force pass).\n'
-    exit 0
-fi
 
 printf 'pre-push: running `cargo test`...\n'
 cargo test || fail 'cargo test'
@@ -38,21 +36,24 @@ printf 'pre-push: running `cargo test -p antifrost`...\n'
 cargo test -p antifrost || fail 'cargo test -p antifrost'
 
 # The web target shares the library and nothing else, so it gets its own line
-# rather than hiding inside the host's. One grace, announced rather than
-# silent: a clone without the target installed is warned and let through,
-# because `rustup target add` wants a network that box may not have, and a push
-# blocked there has checked nothing either.
+# rather than hiding inside the host's. Missing toolchain is a failure rather
+# than a warning: the check that cannot run is exactly the hole the check
+# exists to close, so the remedy travels with the refusal.
 wasm_target=wasm32-unknown-unknown
-if rustup target list --installed 2>/dev/null | grep -q "^${wasm_target}\$"; then
-    printf 'pre-push: checking the web target (%s)...\n' "$wasm_target"
-    cargo check --quiet -p antifrost --target "$wasm_target" ||
-        fail 'cargo check for wasm32 (the web target)'
-elif command -v rustup >/dev/null 2>&1; then
-    printf 'pre-push: WARNING: %s is not installed - the web target was NOT checked.\n' \
-        "$wasm_target" >&2
-    printf 'pre-push:          close the hole with: rustup target add %s\n' "$wasm_target" >&2
-else
-    printf 'pre-push: WARNING: no rustup on PATH - the web target was NOT checked.\n' >&2
+if ! command -v rustup >/dev/null 2>&1; then
+    printf 'pre-push: no rustup on PATH - the web target cannot be checked.\n' >&2
+    fail 'the web target could not be checked'
 fi
+if ! rustup target list --installed 2>/dev/null | grep -q "^${wasm_target}\$"; then
+    printf 'pre-push: %s is not installed - the web target cannot be checked.\n' \
+        "$wasm_target" >&2
+    printf 'pre-push:          close the hole with: rustup target add %s\n' \
+        "$wasm_target" >&2
+    fail 'the web target could not be checked'
+fi
+
+printf 'pre-push: checking the web target (%s)...\n' "$wasm_target"
+cargo check --quiet -p antifrost --target "$wasm_target" ||
+    fail 'cargo check for wasm32 (the web target)'
 
 exit 0
