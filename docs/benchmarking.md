@@ -1035,9 +1035,12 @@ and the floor and the cliff reporting 60.2 and 60.0 together. §14's ratio test 
 **A Space of its own uncaps it, and moves the question.** In a native fullscreen Space
 the floor jumps 60.2 → 381.0 without one line of work changing, so the throttle was the
 window server and not the machine. But the Space's framebuffer is 4112×2572 — 10.6 Mpx,
-five times the pixels every row of the committed table paints — and the cliff still
-lands at 59.8. Pinning the render to 1920×1080 puts the work back where the row names
-it, and the cliff finally agrees with itself: 167.1 fps is 5.98 ms, against the 6.45 ms
+five times the pixels every row of the committed table paints — and its cliff reads
+59.8, a number close enough to the old one to look like a second ceiling. It is not one,
+and the same line refutes it: a Space presenting its floor at 381.0 is not pacing
+anybody at 60, so 16.7 ms there is the scenario working rather than waiting. Pinning the
+render to 1920×1080 puts the work back where the row names it, and the cliff answers to
+another instrument for once: 167.1 fps is 5.98 ms, against the 6.45 ms
 the drained offscreen meter charges for the same scenario at the same pixels (the table
 at the end of this section), a 7 % difference between two meters that share nothing but
 the shader.
