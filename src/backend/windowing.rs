@@ -253,8 +253,19 @@ fn viewport_css() -> Option<[f64; 2]> {
 #[cfg(target_arch = "wasm32")]
 fn fit_canvas(canvas: &web_sys::HtmlCanvasElement, scale: f64) {
     let scale = scale.max(1.0);
+    let style = canvas.style();
+    // First take the clamps off. `set_min_inner_size` and
+    // `set_max_inner_size` reach the web as CSS `min-width`/`max-width` and
+    // friends on this very element, and a canvas pinned to its boot size in
+    // both directions follows nothing, however its width is written: the
+    // constraint beats the style, which is how a resize moves the attribute
+    // and leaves the layout standing still. Clearing them here, rather than
+    // only where the pin was set, makes the refit hold no matter which app
+    // pinned the window or when it got around to it.
+    for pin in ["min-width", "min-height", "max-width", "max-height"] {
+        let _ = style.set_property(pin, "none");
+    }
     if let Some([width, height]) = viewport_css() {
-        let style = canvas.style();
         let _ = style.set_property("width", &format!("{width}px"));
         let _ = style.set_property("height", &format!("{height}px"));
     }

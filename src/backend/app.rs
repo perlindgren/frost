@@ -1116,9 +1116,19 @@ impl<P: Process> Frost<P> {
 
         // The resizability request. The style hint is enough on the
         // well-behaved platforms; XFCE ignores it (per winit), so a
-        // non-resizable window also pins its size with hard min/max
-        // bounds. No-op on the web, where the page owns the canvas size.
-        if !self.resizable {
+        // non-resizable window also pins its size with hard min/max bounds.
+        //
+        // Those bounds are NOT a no-op on the web, whatever this comment used
+        // to claim: winit's web backend answers `set_min_inner_size` and
+        // `set_max_inner_size` by writing `min-width`/`max-width`/`min-height`/
+        // `max-height` onto the canvas element, so the page's own canvas
+        // arrives clamped to the size it booted at — `width: 560px` on such an
+        // element computes to the boot width, and the layout never moves
+        // because the clamp, not the style, is the constraint. A browser window
+        // is resized by the person using the browser, which is a thing no
+        // desktop app asks permission for, so on web the page keeps its own
+        // size and nothing pins it.
+        if !self.resizable && !cfg!(target_arch = "wasm32") {
             window.set_resizable(false);
             window.set_min_inner_size(Some(inner));
             window.set_max_inner_size(Some(inner));
