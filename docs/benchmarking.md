@@ -985,3 +985,12 @@ fragment stage is not what reaches the page or evidence that three of those four
 the wasm that was measured — only the coordinate probe's string was checked in the shipped binary. The
 next person to look at this should verify the bytes of the artifact before believing a single null
 result in this section.
+**The app itself runs, on this machine, in a browser.** `tools/firefox-shot.py` drives headless
+Firefox over WebDriver BiDi, waits, and photographs: thirty seconds into `http://localhost:8081/`
+the menu is there complete — FIRST WARM, the stove, leaves mid-fall, the termite, `HILL 1 OF 50 /
+WARM 0 OF 1 / MOVES 0 OF 5` in lettering that is crisp and the right height, 12333 distinct colours
+over a fully lit canvas. The probe page measured the same way is **pixel-identical to the desktop**:
+green box 512×256 with 126704 lit pixels, the native count exactly, red box 400×198. So the port is
+not broken; one browser's implementation cannot display it, and the reason nobody knew is that this
+document had no way to ask a browser anything until today. That is the actual defect §16 ends on —
+not a shader, but a missing instrument.
