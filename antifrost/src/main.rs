@@ -715,6 +715,11 @@ struct Demo {
     /// The profiler HUD, compiled in only with `--features diag`.
     #[cfg(feature = "diag")]
     diag: Diagnostics,
+    /// The standard buttons the first pad was pressing last diag
+    /// frame — `--features diag` logs every change of this set, so
+    /// a mystery button names itself the moment it is pressed.
+    #[cfg(feature = "diag")]
+    pad_probe: Vec<frost::Button>,
     font: Arc<[u8]>,
     note: String,
     /// Landing flares: ant id → flash left, 1 down to 0, for ants that
@@ -912,6 +917,8 @@ impl Demo {
             bed,
             slab,
             ground: None,
+            #[cfg(feature = "diag")]
+            pad_probe: Vec::new(),
             #[cfg(feature = "diag")]
             diag: Diagnostics::from_bytes(DIAG_FONT, DiagnosticsFlags::all()).unwrap_or_else(
                 |err| {
@@ -1891,6 +1898,46 @@ impl Demo {
 impl Process for Demo {
     fn process(&mut self, ctx: &mut Context, dt: f32) {
         self.beat();
+        // `--features diag`: the pad names itself. Press each button
+        // in turn; the stderr log says which standard button (if
+        // any) the platform's backend found under every press. An
+        // empty list is the honest answer for a button the backend
+        // drops before it reaches gilrs' standard names.
+        #[cfg(feature = "diag")]
+        if let Some(pad) = ctx.gamepads().next() {
+            const WATCH: [frost::Button; 20] = [
+                frost::Button::South,
+                frost::Button::East,
+                frost::Button::North,
+                frost::Button::West,
+                frost::Button::C,
+                frost::Button::Z,
+                frost::Button::LeftTrigger,
+                frost::Button::LeftTrigger2,
+                frost::Button::RightTrigger,
+                frost::Button::RightTrigger2,
+                frost::Button::Select,
+                frost::Button::Start,
+                frost::Button::Mode,
+                frost::Button::LeftThumb,
+                frost::Button::RightThumb,
+                frost::Button::DPadUp,
+                frost::Button::DPadDown,
+                frost::Button::DPadLeft,
+                frost::Button::DPadRight,
+                frost::Button::Unknown,
+            ];
+            let now: Vec<frost::Button> = WATCH
+                .iter()
+                .copied()
+                .filter(|b| pad.is_pressed(*b))
+                .collect();
+            if now != self.pad_probe {
+                self.pad_probe = now.clone();
+                let names: Vec<String> = now.iter().map(|b| format!("{b:?}")).collect();
+                log::info!("pad: [{}]", names.join(", "));
+            }
+        }
         // The overlay breathes: toward one while a menu is up, toward
         // zero when the hill takes the screen back. The page it
         // paints follows the live page in, and holds the last one
@@ -1973,8 +2020,18 @@ impl Process for Demo {
         // menus' own back, silent on the hill where Escape means
         // pause. The three edges are read before the test so no
         // short-circuit can strand one mid-air.
+        // The DualSense arrives on macOS often enough without a
+        // table-matched mapping that the menu trio — Create,
+        // Options, PS — land under whichever standard name the
+        // backend's guess gave them, and a heuristic match tends to
+        // drop them all. Rather than argue over which name Options
+        // kept, all three answer as Escape: none has another verb
+        // in this game, and the PS button is the system's own as
+        // often as not.
         let esc = self.pressed(ctx, KeyCode::Escape);
-        let pad_esc = self.pad_pressed(ctx, frost::Button::Start);
+        let pad_esc = self.pad_pressed(ctx, frost::Button::Start)
+            || self.pad_pressed(ctx, frost::Button::Select)
+            || self.pad_pressed(ctx, frost::Button::Mode);
         let pad_back = self.pad_pressed(ctx, frost::Button::East);
         if esc || pad_esc || (self.page != Page::Game && pad_back) {
             if self.replay.is_some() {
