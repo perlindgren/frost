@@ -357,7 +357,7 @@ pub(crate) const DIG_TOUR_LESSON: [Lesson; 14] = [
     },
     Lesson {
         act: game::Act::Move(game::Dir::Left),
-        word: "move left red packs onto r",
+        word: "move left red packs into its bed",
     },
     Lesson {
         act: game::Act::Move(game::Dir::Left),
@@ -369,7 +369,7 @@ pub(crate) const DIG_TOUR_LESSON: [Lesson; 14] = [
     },
     Lesson {
         act: game::Act::Move(game::Dir::Left),
-        word: "move left home to w",
+        word: "move left home to her bed",
     },
 ];
 
@@ -417,7 +417,7 @@ pub(crate) const DIG_LESSON: [Lesson; 10] = [
     },
     Lesson {
         act: game::Act::Move(game::Dir::Left),
-        word: "move left home to w",
+        word: "move left home to her bed",
     },
 ];
 
