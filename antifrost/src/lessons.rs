@@ -201,7 +201,7 @@ pub(crate) fn pad_word(word: &str) -> &str {
         "hold shift and push right" => "hold rt and push right",
         "press space leave it behind" => "square leaves it behind",
         "z for undo" => "lt for undo",
-        "r to restart" => "triangle to restart",
+        "r to restart" => "lt2 to restart",
         other => other,
     }
 }
@@ -706,7 +706,7 @@ mod lesson_tests {
             "square leaves it behind"
         );
         assert_eq!(pad_word(UNDO_WORD), "lt for undo");
-        assert_eq!(pad_word(RESTART_WORD), "triangle to restart");
+        assert_eq!(pad_word(RESTART_WORD), "lt2 to restart");
         // The whole deck is font-safe either way.
         for word in seen {
             for w in [word, pad_word(word)] {

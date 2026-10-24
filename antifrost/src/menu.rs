@@ -1390,7 +1390,7 @@ impl Demo {
                     "rt with a direction to push",
                     "square detaches",
                     "lt for undo",
-                    "triangle to restart",
+                    "lt2 to restart",
                     "back",
                 ]
                 .into_iter()
@@ -2448,7 +2448,7 @@ mod menu_tests {
                     "rt with a direction to push",
                     "square detaches",
                     "lt for undo",
-                    "triangle to restart",
+                    "lt2 to restart",
                 ][..],
             ),
         ] {

@@ -2121,13 +2121,15 @@ impl Process for Demo {
         let pad_back = self.pad_pressed(ctx, frost::Button::East);
         // Square is the pad's detach — the hill's third verb, read
         // beside the menu buttons so its edge is never stranded on
-        // a frame the hill's branch skipped. The left trigger
-        // rewinds (the shove's twin: one steps back, the other
-        // shoves) and Triangle restarts, so the sulking hill's
-        // words have a pad telling that is not a lie.
+        // a frame the hill's branch skipped. The shoulder rewinds
+        // (the shove's twin: one steps back, the other shoves) and
+        // the big trigger behind it restarts — two separate
+        // buttons, so no squeeze meant as an undo can deepen into
+        // erasing the run. So the sulking hill's words have a pad
+        // telling that is not a lie.
         let pad_detach = self.pad_pressed(ctx, frost::Button::West);
         let pad_undo = self.pad_pressed(ctx, frost::Button::LeftTrigger);
-        let pad_restart = self.pad_pressed(ctx, frost::Button::North);
+        let pad_restart = self.pad_pressed(ctx, frost::Button::LeftTrigger2);
         if esc || pad_esc || (self.page != Page::Game && pad_back) {
             if self.replay.is_some() {
                 // Stepping off a showing returns to the ledger it
