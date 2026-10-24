@@ -862,6 +862,16 @@ remembered:
   this goes in with that said next to it, or stays out. §6's two Mac cells are not a
   half-filled row either — they predate the float-frame era, and belong beside this
   table as a glimpse rather than inside it as a cell.
+- **Read the panel's number before the ratio.** The divide has a hole the Mac found
+  (§17): a ratio above 1 only proves that *something* moved off the ceiling. With that
+  panel pinned at 60 Hz the floor and the cliff both reported 60 and the test failed as
+  designed; set the same panel to 120 and the prediction is a floor of ~120.0 against a
+  cliff of ~39 — the cliff's own ~26 ms of work at the pixels a Retina window paints —
+  which divides to **~3×** and passes, on a floor that is still nothing but refresh rate.
+  The tell is cheaper than the test: **a floor that equals the panel's rate to the last
+  digit is the panel.** The 120 Hz half of this is written down to be tested, not
+  believed — the setting is one only the machine's owner can change, and no shell can
+  read it.
 
 The M4 Max seat has since been walked twice, and §17 is why it stays empty rather than
 filled with a number that would be read as silicon: windowed, that machine reports its
