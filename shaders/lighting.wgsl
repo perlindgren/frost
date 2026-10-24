@@ -271,6 +271,9 @@ fn occluded_taps(
 ) -> u32 {
     let every = (1u << taps) - 1u;
     var blocked = 0u;
+    // How far a tap's origin can sit from the disk's centre, in pixels: the
+    // 3x3 grid reaches sqrt(2) out at its corners, the balanced cross only 1.
+    let reach = rad * select(1.0, 1.4142136, !four);
     let range = occluders.occluders[li];
     var base = u32(range.x);
     let end = u32(range.y);
@@ -297,6 +300,45 @@ fn occluded_taps(
         var inside = all(abs(lp - center) <= half);
         if (inside && edges > 0u) {
             inside = in_planes(base + 3u, edges, lp);
+        }
+        // The whole-disk reject, boxes only. Every point of a tap's segment
+        // sits within the disk's reach of the matching point of the centre
+        // segment — the two differ by (1 - t) * (q - centre), and |q - centre|
+        // is at most the reach — so when the centre segment misses this box
+        // inflated by that reach, no ray of the disk can touch it and the nine
+        // slab tests below would answer "not here" nine times over. In the
+        // occluder's own space the disk is an ellipse, so the inflation is the
+        // reach scaled by the transform's longest column, which bounds the
+        // local offset from above whatever the disk's orientation turns out to
+        // be. A polygon keeps the per-tap path: its edges have the last word
+        // on what blocked means, and a reject that reads the bounds cannot be
+        // trusted to agree with them in the last bits.
+        if (edges == 0u && reach > 0.0) {
+            let hx = half.x + reach * sqrt(m.x * m.x + m.z * m.z);
+            let hy = half.y + reach * sqrt(m.y * m.y + m.w * m.w);
+            let dc = lp - lc;
+            var rmin = 0.0;
+            var rmax = 1.0;
+            if (abs(dc.x) > 1e-6) {
+                let a1 = (center.x - hx - lc.x) / dc.x;
+                let a2 = (center.x + hx - lc.x) / dc.x;
+                rmin = max(rmin, min(a1, a2));
+                rmax = min(rmax, max(a1, a2));
+            } else if (lc.x < center.x - hx || lc.x > center.x + hx) {
+                rmax = -1.0;
+            }
+            if (abs(dc.y) > 1e-6) {
+                let a1 = (center.y - hy - lc.y) / dc.y;
+                let a2 = (center.y + hy - lc.y) / dc.y;
+                rmin = max(rmin, min(a1, a2));
+                rmax = min(rmax, max(a1, a2));
+            } else if (lc.y < center.y - hy || lc.y > center.y + hy) {
+                rmax = -1.0;
+            }
+            if (!(rmax > rmin && rmax > 0.0 && rmin < 1.0)) {
+                base += 3u + edges;
+                continue;
+            }
         }
         if (!inside) {
             for (var t = 0u; t < taps; t = t + 1u) {

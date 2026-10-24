@@ -1379,3 +1379,69 @@ costs almost nothing however soft it looks, a trace costs what it looks like —
 intact, because the trace got 25 % cheaper and is still three times the mask. The number
 does not survive, and anyone reading §18's table should read it as the state of the engine
 on the morning of 2026-10-24 rather than as a property of frost.
+
+## 20. Nine rays, one decision: the whole-disk reject (2026-10-24, Apple M4 Max)
+
+§19 left the cliff at 12.53 ms with the tap-invariant work gone, which pinned the rest: the
+slab interval, per record, per tap. That looks irreducible until you notice what the nine
+rays have in common. Every point of a tap's segment sits within the disk's reach of the
+matching point of the centre ray's segment — the two segments differ by `(1 - t) · (q - c)`
+and `|q - c|` is at most the reach — so **if the centre segment misses the occluder's bounds
+inflated by that reach, no ray of the disk can touch it**, and the nine slab tests below it
+would answer "not here" nine times over. One test now decides all nine. In the occluder's
+own space the disk is an ellipse, so the inflation is the reach scaled by the transform's
+longest column, which bounds the local offset from above whatever orientation the disk ends
+up in.
+
+**Boxes only, deliberately.** A polygon's edges have the last word on what blocked means,
+and a reject that reads the bounds cannot be trusted to agree with them in the last bits, so
+polygons keep the per-tap path and get no speedup. The suite's casters are all boxes, which
+means every number below is the flattering case, and a game of convex polygons will see
+none of it. That is a limitation of the current reject, not of the argument.
+
+Fullscreen, 4112×2572, two interleaved passes against the §19 build, each side its own
+median of three:
+
+| row | §19 build | with the reject | change | reps, before → after (ms) |
+| --- | --- | --- | --- | --- |
+| `fill-1080p` | 2.97 ms | 2.81 ms | −5 % | [2.90, 3.03] → [2.88, 2.75] |
+| `lamps-10` | 2.88 ms | 2.88 ms | 0 % | identical |
+| `taps-1` | 4.61 ms | 4.45 ms | −4 % | [4.56, 4.67] → [4.39, 4.51] |
+| `taps-9-clear` | 2.89 ms | 2.89 ms | 0 % | identical |
+| `taps-4` | 7.08 ms | 4.56 ms | **−36 %** | [7.08, 7.08] → [4.49, 4.62] |
+| `taps-9` | 12.53 ms | 5.29 ms | **−58 %** | [12.53, 12.53] → [5.36, 5.22] |
+
+The nulls this time sit inside 5 % — `lamps-10` and `taps-9-clear` came back byte-for-byte
+the same twice — which makes a −58 % hard to explain as weather. Subtracting the control row
+isolates the walk as §19 did: **9.74 ms became 2.40 ms**. Against the pre-everything build
+of §19 — 16.71 ms — the cliff is now **5.29 ms, a 68 % reduction**, which is past the 40 %
+§19 predicted and by a wider margin than that prediction's mechanism can claim: the reject
+is not an amortisation of work already being done, it is work that stops happening for most
+records in most rays, and §19's estimate never contemplated that.
+
+**How the change was checked, and the honest size of that checking.** The suite does *not*
+cover this path: every shadow test runs a point-sized light (`penumbra: 0.0`, said outright
+at `shadows.rs:380`), so `light_mix` takes the single-ray branch and neither the fused walk
+nor the reject is ever executed. That also means §19's "the 429 lib tests pass" was weaker
+evidence than it read — true, and about a different code path. What was done instead: the
+same open-penumbra scene — six rotated casters at six distances, rendered at nine taps and
+again at four — was fingerprinted under all three builds, the pre-change shader, the fused
+one and this one, and **the output bytes are identical**: FNV-1a `a800aa6aa18701a1` at nine
+taps and `2944b3989634ba89` at four, in all three builds. Bit-exact agreement on one scene
+on one GPU is a strong result and not a substitute for a test.
+
+A CPU twin of the nine-ray average was written to do better and withdrawn: it disagreed with
+the GPU on 692 pixels of 4096 — and disagreed by *exactly the same 692 pixels* under the
+unmodified shader, so the model was wrong and not the engine. Every pixel the model called
+fully shadowed was dark on the GPU at every disk radius tried; the failures were all pixels
+the model called fully lit, which is the signature of a misplaced caster rather than a wrong
+ray — most likely the canvas's y-flip mirroring the occluder's rotation, where a box turned
+by +0.55 is not the box the packer shipped. That is a guess, and the guess is not in the
+tree. **The coverage gap stays open, and it is now the most valuable untested path in the
+engine**: two shipped optimisations rest on a byte comparison and an argument.
+
+**What §18 now costs.** Its frost column has moved twice since it was written — 16.69 ms at
+the cliff, then 12.53 in §19, now 5.29 — and the comparison with Godot's soft mask, measured
+on the same 4112×2572 surface at 4.09 ms, has gone from 4.1× to 1.3×. §18's conclusion about
+*why* the two engines differ still stands; its arithmetic no longer does, and anyone quoting
+the gap should quote this section's number instead.
