@@ -267,6 +267,22 @@ pub(crate) fn wrap_to_last(total: usize, visible: usize) -> (usize, usize) {
     (top, total.saturating_sub(1).saturating_sub(top))
 }
 
+/// The wheel's one step across the ledger window, with the same
+/// promise the chevrons make: past the first hill comes the last,
+/// and past the last comes the first. A step that fits simply
+/// moves; an overflow lands at the far end whole — a hard fling
+/// wraps once, not repeatedly, which is what a fling asks for.
+pub(crate) fn wheel_top(top: usize, wheel: f32, last: usize) -> usize {
+    let raw = top as i32 - wheel.round() as i32;
+    if raw < 0 {
+        last
+    } else if raw > last as i32 {
+        0
+    } else {
+        raw as usize
+    }
+}
+
 /// Which row, if any, lives under a pointer: the one test the click,
 /// the highlight-follow, and any future pointer reader all share.
 pub(crate) fn row_under(rows: &[Row], p: [f32; 2]) -> Option<usize> {
@@ -827,7 +843,7 @@ impl Demo {
             .iter()
             .filter(|r| matches!(r.action, Action::Hill(_)))
             .count();
-        let (up, down) = progress_marks(self.progress.unlocked.min(self.levels.len()));
+        let (up, down) = progress_marks(self.progress_total());
         if hills == 0 || (!up && !down) {
             return;
         }
@@ -1009,7 +1025,7 @@ impl Demo {
             let down = kd || pd;
             if self.page == Page::Progress {
                 let hills = rows.len() - 1; // the pinned back row aside
-                let more = self.levels.len() > self.menu.progress_top + hills;
+                let more = self.progress_total() > self.menu.progress_top + hills;
                 if up && self.menu.sel == 0 && self.menu.progress_top > 0 {
                     self.menu.progress_top -= 1;
                 } else if down && self.menu.sel + 1 == hills && more {
@@ -1018,7 +1034,7 @@ impl Demo {
                     // The top chevron's promise: the last hill of
                     // the ledger — a hill, not the back row — and the
                     // window leans so that hill stands in view.
-                    let (top, sel) = wrap_to_last(self.levels.len(), hills);
+                    let (top, sel) = wrap_to_last(self.progress_total(), hills);
                     self.menu.progress_top = top;
                     self.menu.sel = sel;
                 } else if down && self.menu.sel + 1 == rows.len() {
@@ -1049,9 +1065,8 @@ impl Demo {
             if self.page == Page::Progress {
                 let wheel = ctx.mouse_wheel();
                 if wheel != 0.0 {
-                    let last = self.progressed().saturating_sub(progress_fits(h));
-                    let top = self.menu.progress_top as i32 - wheel.round() as i32;
-                    self.menu.progress_top = top.clamp(0, last as i32) as usize;
+                    let last = self.progress_total().saturating_sub(progress_fits(h));
+                    self.menu.progress_top = wheel_top(self.menu.progress_top, wheel, last);
                 }
             }
             let nudge = match (
@@ -1445,7 +1460,7 @@ impl Demo {
                 // overshot par reads its debt plainly.
                 // The descent shown is the descent open: the window,
                 // the marks, and the rows all count unlocked hills.
-                let total = self.progress.unlocked.min(self.levels.len());
+                let total = self.progress_total();
                 let mut order: Vec<usize> = (0..total).collect();
                 order.sort_by_key(|&i| (self.perfect(i), i));
                 let start = self.menu.progress_top.min(total);
@@ -1617,6 +1632,46 @@ mod menu_tests {
         assert!(
             d.progress.scores.is_empty(),
             "and the fresh ledger keeps no numbers for the walk ahead"
+        );
+    }
+
+    #[test]
+    fn the_wheel_wraps_past_either_end_of_the_ledger() {
+        // Middle steps move as asked.
+        assert_eq!(wheel_top(5, -1.0, 10), 6);
+        assert_eq!(wheel_top(5, 1.0, 10), 4);
+        // Past the last hill, home to the first; past the first,
+        // to the last — the chevrons' promise in wheel's hand.
+        assert_eq!(wheel_top(10, -1.0, 10), 0);
+        assert_eq!(wheel_top(0, 1.0, 10), 10);
+        // A hard fling wraps once, whole, not repeatedly: whichever
+        // way it flies, it lands at the far end, never mid-board.
+        assert_eq!(wheel_top(0, 40.0, 10), 10);
+        assert_eq!(wheel_top(10, -40.0, 10), 0);
+        // A board that fits the window has one resting place.
+        assert_eq!(wheel_top(0, 1.0, 0), 0);
+        assert_eq!(wheel_top(0, -1.0, 0), 0);
+    }
+
+    #[test]
+    fn the_wrap_and_the_board_share_the_locks_total() {
+        let mut d = demo();
+        d.progress.unlocked = 6;
+        let hills = d.menu_rows(Page::Progress, 720.0).len() - 1;
+        assert_eq!(d.progress_total(), 6, "the board holds the open descent");
+        // The top chevron's jump, computed against the locked
+        // total, lands inside the board and shows the last hill.
+        let (top, sel) = wrap_to_last(d.progress_total(), hills);
+        d.menu.progress_top = top;
+        let rows = d.menu_rows(Page::Progress, 720.0);
+        assert!(!rows.is_empty(), "the wrapped window still shows hills");
+        assert!(
+            rows.iter().any(|r| r.action == Action::Hill(5)),
+            "wrapping up from the first hill stands the last open hill in view"
+        );
+        assert!(
+            sel < rows.len(),
+            "the wrapped selection is a row the board actually wears"
         );
     }
 

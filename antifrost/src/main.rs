@@ -1051,11 +1051,16 @@ impl Demo {
     /// on — `reached` carries that across runs, and it never walks
     /// back — clamped to the hills that exist. The progress page
     /// lists this many hills.
-    fn progressed(&self) -> usize {
-        if self.levels.is_empty() {
-            return 0;
-        }
-        self.progress.reached.min(self.levels.len() - 1) + 1
+    /// How many hills the progress board holds: the open descent,
+    /// clamped to the hills that exist. Every reader of the board's
+    /// length — the rows, the chevrons' wrap, the marks, the
+    /// wheel's end of travel — asks this one question, so a win
+    /// that opens a door moves every part of the window together.
+    /// (This once answered to `reached`, the depth ever stood on;
+    /// the lock replaced depth as the board's edge, and a stale
+    /// reader was exactly how the wrap went missing.)
+    fn progress_total(&self) -> usize {
+        self.progress.unlocked.min(self.levels.len())
     }
 
     /// Whether the ledger says a hill's run is done to par: warmed,
