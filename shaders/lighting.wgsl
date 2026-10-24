@@ -258,6 +258,54 @@ const SHADOW_TAPS = array<vec2<f32>, 9>(
 // `src` is the disk's centre, `rad` its radius in pixels, `ca`/`sa` the
 // per-pixel rotation that keeps the sample grid from banding, `taps` how many
 // rays sweep it, and `four` selects the balanced cross instead of the grid.
+// One ray of the penumbra disk against an occluder's bounds, in the occluder's
+// own space: where the ray starts (`ll`) and the interval its slab test found
+// along the segment to the pixel. Returned as one vec4 so a caller can hold a
+// pair of them in scalars — the intervals are four floats each and an array
+// under a loop index is the thing that sends this to private memory.
+fn tap_interval(
+    t: u32,
+    four: bool,
+    rad: f32,
+    ca: f32,
+    sa: f32,
+    lc: vec2<f32>,
+    lp: vec2<f32>,
+    m: vec4<f32>,
+    center: vec2<f32>,
+    half: vec2<f32>,
+) -> vec4<f32> {
+    // Branch, not select: both select arms evaluate, and the four-cross must
+    // never be indexed past its four.
+    var o = SHADOW_TAPS[t];
+    if four {
+        o = SHADOW_TAPS4[t];
+    }
+    o = o * rad;
+    let q = vec2<f32>(ca * o.x - sa * o.y, sa * o.x + ca * o.y);
+    let ll = vec2<f32>(lc.x + m.x * q.x + m.z * q.y, lc.y + m.y * q.x + m.w * q.y);
+    let d = lp - ll;
+    var tmin = 0.0;
+    var tmax = 1.0;
+    if (abs(d.x) > 1e-6) {
+        let t1 = (center.x - half.x - ll.x) / d.x;
+        let t2 = (center.x + half.x - ll.x) / d.x;
+        tmin = max(tmin, min(t1, t2));
+        tmax = min(tmax, max(t1, t2));
+    } else if (ll.x < center.x - half.x || ll.x > center.x + half.x) {
+        tmax = -1.0;
+    }
+    if (abs(d.y) > 1e-6) {
+        let t1 = (center.y - half.y - ll.y) / d.y;
+        let t2 = (center.y + half.y - ll.y) / d.y;
+        tmin = max(tmin, min(t1, t2));
+        tmax = min(tmax, max(t1, t2));
+    } else if (ll.y < center.y - half.y || ll.y > center.y + half.y) {
+        tmax = -1.0;
+    }
+    return vec4<f32>(ll.x, ll.y, tmin, tmax);
+}
+
 fn occluded_taps(
     li: u32,
     recv: u32,
@@ -342,43 +390,78 @@ fn occluded_taps(
             }
         }
         if (!inside) {
-            for (var t = 0u; t < taps; t = t + 1u) {
-                if ((blocked >> t) & 1u) != 0u {
-                    continue;
+            // Two rays at a time, in scalars. The plane list is the expensive
+            // part of a shape and it is walked once per pair instead of once
+            // per ray — five walks for nine rays, and the pixel's side of each
+            // edge is computed once per walk. Nine intervals carried in an
+            // array cost more than the walks they saved (§22), so the state
+            // here is four floats at a time and nothing else.
+            var t = 0u;
+            while (t < taps) {
+                let a = tap_interval(t, four, rad, ca, sa, lc, lp, m, center, half);
+                let u = t + 1u;
+                var b = vec4<f32>(0.0);
+                if (u < taps) {
+                    b = tap_interval(u, four, rad, ca, sa, lc, lp, m, center, half);
                 }
-                // Branch, not select: both select arms evaluate, and the
-                // four-cross must never be indexed past its four.
-                var o = SHADOW_TAPS[t];
-                if four {
-                    o = SHADOW_TAPS4[t];
-                }
-                o = o * rad;
-                let q = vec2<f32>(ca * o.x - sa * o.y, sa * o.x + ca * o.y);
-                let ll = vec2<f32>(lc.x + m.x * q.x + m.z * q.y, lc.y + m.y * q.x + m.w * q.y);
-                let d = lp - ll;
-                var tmin = 0.0;
-                var tmax = 1.0;
-                if (abs(d.x) > 1e-6) {
-                    let t1 = (center.x - half.x - ll.x) / d.x;
-                    let t2 = (center.x + half.x - ll.x) / d.x;
-                    tmin = max(tmin, min(t1, t2));
-                    tmax = min(tmax, max(t1, t2));
-                } else if (ll.x < center.x - half.x || ll.x > center.x + half.x) {
-                    tmax = -1.0;
-                }
-                if (abs(d.y) > 1e-6) {
-                    let t1 = (center.y - half.y - ll.y) / d.y;
-                    let t2 = (center.y + half.y - ll.y) / d.y;
-                    tmin = max(tmin, min(t1, t2));
-                    tmax = min(tmax, max(t1, t2));
-                } else if (ll.y < center.y - half.y || ll.y > center.y + half.y) {
-                    tmax = -1.0;
-                }
-                if (tmax > tmin && tmax > 0.0 && tmin < 1.0) {
-                    if (edges == 0u || clip_planes(base + 3u, edges, ll, lp)) {
+                let a_open = ((blocked >> t) & 1u) == 0u && a.w > a.z && a.w > 0.0 && a.z < 1.0;
+                let b_open = u < taps && ((blocked >> u) & 1u) == 0u && b.w > b.z && b.w > 0.0
+                    && b.z < 1.0;
+                if (edges == 0u) {
+                    // A box's bounds are the whole shape: the slab above is
+                    // the entire answer, exactly as it was before shapes.
+                    if (a_open) {
                         blocked |= 1u << t;
                     }
+                    if (b_open) {
+                        blocked |= 1u << u;
+                    }
+                } else if (a_open || b_open) {
+                    var ka = a_open;
+                    var kb = b_open;
+                    var amin = a.z;
+                    var amax = a.w;
+                    var bmin = b.z;
+                    var bmax = b.w;
+                    for (var k = 0u; k < edges; k++) {
+                        let n = occluders.occluders[base + 3u + k];
+                        let db = n.x * lp.x + n.y * lp.y - n.z;
+                        if (ka) {
+                            let da = n.x * a.x + n.y * a.y - n.z;
+                            if (da > 0.0) {
+                                if (db > 0.0) {
+                                    ka = false;
+                                } else {
+                                    amin = max(amin, da / (da - db));
+                                }
+                            } else if (db > 0.0) {
+                                amax = min(amax, da / (da - db));
+                            }
+                        }
+                        if (kb) {
+                            let da = n.x * b.x + n.y * b.y - n.z;
+                            if (da > 0.0) {
+                                if (db > 0.0) {
+                                    kb = false;
+                                } else {
+                                    bmin = max(bmin, da / (da - db));
+                                }
+                            } else if (db > 0.0) {
+                                bmax = min(bmax, da / (da - db));
+                            }
+                        }
+                        if (!ka && !kb) {
+                            break;
+                        }
+                    }
+                    if (ka && amax > amin && amax > 0.0 && amin < 1.0) {
+                        blocked |= 1u << t;
+                    }
+                    if (kb && bmax > bmin && bmax > 0.0 && bmin < 1.0) {
+                        blocked |= 1u << u;
+                    }
                 }
+                t = t + 2u;
             }
         }
         base += 3u + edges;

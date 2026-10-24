@@ -1558,3 +1558,53 @@ asleep produced no output and never returned — no frames, no error, no exit, t
 silence, and the process was invisible to `pgrep`. Every run since has been wrapped in
 `caffeinate -di` with a per-side timeout that kills the benchmark by its own pid. If a
 fullscreen suite goes quiet, suspect the display before the shader.
+
+## 23. Taps in pairs: the shape walk, five times instead of nine (2026-10-24, Apple M4 Max)
+
+§22 ended with a shape that avoids the mistake rather than a number: keep the disk's state in
+scalars and walk the plane list for two rays at a time, so nine rays cost five walks instead
+of nine and the pixel's side of each edge is computed once per walk instead of once per ray.
+Three pieces, in service of that. The slab test for one ray moved into `tap_interval`, which
+returns its origin and its interval as one `vec4` — four floats a caller can hold, which is
+the whole reason it returns a vec4 and not nothing else. The tap loop steps by two. And the
+plane walk runs inside the pair, `db` hoisted out of the ray loop, with a plane that strands
+both rays' endpoints ending the pair and a pair with nothing left ending the walk.
+
+**Bit-for-bit the same picture again.** The same three polygon scenes as §22 — hexagons at
+nine taps, hexagons at four, sixteen-sided discs at nine — fingerprint `2c192f9ffdba54a9`,
+`b370c6a09a07e5bf`, `8b05319a3961a004`, byte-identical to the committed build. That was worth
+expecting less of than it went: restructuring dot products can change how a compiler fuses
+multiply into add, which moves the last bit of a crossing, and the fact that it did not here
+is a fact about this driver, not a proof. Fullscreen 4112×2572, two interleaved passes,
+median of three, canary 2.6×–4.1×:
+
+| row | committed build (§22) | paired | change |
+| --- | --- | --- | --- |
+| `fill-1080p` | 2.61 ms | 2.68 ms | +3 % |
+| `polys-60` — hexagons, one hard ray | 4.43 ms | 4.44 ms | 0 % |
+| `taps-9` — boxes, nine rays | 5.21 ms | **4.86 ms** | **−7 %** |
+| `taps-9-polys` | 14.78 ms | **12.32 ms** | **−17 %** |
+| `taps-9-discs` | 30.53 ms | **23.67 ms** | **−22 %** |
+
+The `fill-1080p` row has no casters in it at all, so its +3 % belongs with the ±5 % the nulls
+in these runs have been drifting by; everything else moved in the direction the mechanism
+predicts and by more than that. The boxes gaining 7 % was not aimed at: pairing halves the
+loop's bookkeeping whether or not there are edges to walk, and a box's answer is still the
+slab alone.
+
+Taken from §21's baseline rather than from §22's build, the two shape rows are **21.98 → 12.32
+ms and 38.46 → 23.67 ms**, and the box cliff that started this is 16.71 → 4.86. Cutting the
+walks from nine to five took roughly a fifth off a hexagon and a quarter off a disc, which
+locates the remaining cost: the plane loads were a large share of a shape's walk and not the
+whole of it, and what is left is the per-ray slab and dot work that no amount of pairing can
+share, since every ray genuinely has its own.
+
+**The next lever this exposes, and it is a mechanism and not a number.** Two are visible. A
+pair can become three or four, taking nine rays to three walks; the same private-memory
+objection applies, so it is measured or nothing. And the interval a plane leaves behind is
+monotone — `tmin` only ever rises, `tmax` only ever falls — so a pair whose interval is
+already empty cannot be revived by a later edge, and the walk can end for it at that plane
+rather than at the last one. That one is provably outcome-preserving rather than merely
+bit-preserving, which makes it the cheaper of the two to trust. **The §20 caveat still
+applies to everything above: no test in the suite runs an open penumbra, and all three of
+these changes rest on byte-identical frames from one scene family on one GPU.**
