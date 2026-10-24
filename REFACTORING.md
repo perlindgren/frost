@@ -95,7 +95,20 @@ warnings at the `main` baseline of one (`ambient_floor`, pre-existing).
 `main.rs`: 8,168 → 2,586. Left in place deliberately: the asset
 constants (one reading list for the hill's look), the `Demo` struct,
 `load`, camera, gameplay input, `refresh`, the replay walker, the HUD,
-and `process()`'s frame contract. The ~65-field `Demo` is now the one
-remaining candidate — field clusters (`MenuNav`, `WindowWatch`,
-`Weather`) could group — but that is not a pure move and waits for its
-own branch.
+and `process()`'s frame contract.
+
+The `Demo` field clusters followed on the same branch — not pure
+moves, so each its own commit, each gate-green (21+61, clippy, wasm,
+diag, doc-links at baseline):
+
+- `WindowPolicy` (`window.rs`) — `pending`, `probe`, `move_queued`,
+  `expect`, `drift` grouped beside the watch that keeps them.
+- `Weather` (`world.rs`) — `leaves`, `seeded`, `active`, `t`, kept
+  whole in the system that steps it (`leaf_rng` stays where the zs and
+  gusts share it).
+- `MenuNav` (`menu.rs`) — `sel`, `last_pointer`, `nav_timer`, `drag`,
+  `progress_top`, `alpha`, `page`, grouped beside the pages.
+
+`Demo` is now the field count it is worth being: the render half, the
+game-state half, and one field each for the window, the weather, and
+the menu.
