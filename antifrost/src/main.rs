@@ -360,6 +360,15 @@ const ANT_SHADOW: Color = Color {
 const SHADOW_LEAN_AWAKE: f32 = 2.0;
 const SHADOW_LEAN_ASLEEP: f32 = 1.0;
 
+/// The queen's own two rungs, fixed like the rest of the ladder:
+/// her shadow at the top of the shadow tier — every other shadow
+/// under hers, every ant over it, the colony's ink under the
+/// queen's — and her body at the very top, over the whole colony.
+/// The numbers are the old fixed ones' survivors: 1.48 was the bug
+/// (her shadow over the ants), 1.5 always was her.
+const QUEEN_SHADOW_ORDER: f32 = 0.9;
+const QUEEN_ORDER: f32 = 1.5;
+
 const C_BG: Color = Color {
     r: 0.045,
     g: 0.038,

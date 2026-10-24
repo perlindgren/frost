@@ -472,22 +472,26 @@ impl Demo {
 
     // ------------------------------------------------------------- draw
 
-    /// The rung an ant wears: above the whole shadow tier, sorted
-    /// among the ants by row so a lower walker rides over a higher
-    /// one's line.
-    fn ant_order(y: f32) -> f32 {
-        1.0 + y * 1e-4
+    /// The rung an ant wears: a fixed place on the ladder, by ant
+    /// identity. A top-down hill has no near and far — a walker
+    /// crossing another looks the same however they met — so the
+    /// order says nothing about the walk, it only says overlaps
+    /// resolve the same way every time: ant 0 under ant 1 under
+    /// ant 2, queen over all. Ids are stable within a hill, so no
+    /// crossing ever swaps layers. A thousand ants would still fit
+    /// the tier; no hill has held a tenth of that.
+    fn ant_order(id: usize) -> f32 {
+        1.0 + id as f32 * 1e-3
     }
 
-    /// The rung a shadow wears — any ant's shadow, the queen's
-    /// included. The tier belongs to shadows alone: above the beds
-    /// (0.05) and under every ant (from 1.0 up), so a shadow falls
-    /// on ground and beds only, never on a colony member who is not
-    /// its own walker. Within the tier the walkers still sort by
-    /// row, so overlapping shadows agree with the ants that cast
-    /// them.
-    fn shadow_order(y: f32) -> f32 {
-        0.1 + y * 1e-4
+    /// The rung a shadow wears — any ant's shadow. The tier belongs
+    /// to shadows alone: above the beds (0.05) and under every ant
+    /// (from 1.0 up), so a shadow falls on ground and beds only,
+    /// never on a colony member who is not its own walker. Within
+    /// the tier the same id order keeps every shadow under the
+    /// shadow of the higher ant, matching the bodies above.
+    fn shadow_order(id: usize) -> f32 {
+        0.1 + id as f32 * 1e-3
     }
 
     /// The painted shadow's foot: the ant's place, shifted
@@ -968,7 +972,7 @@ impl Demo {
             } else {
                 col
             };
-            let z = Self::ant_order(g.at[1]);
+            let z = Self::ant_order(id);
             let node = &mut ctx.scene().root.children[LEAVES.len() + id];
             let at = self.screen(g.at);
             // Facings turn, never snap: toward travel on foot, toward
@@ -1002,7 +1006,7 @@ impl Demo {
                 ANT_SHADOW,
                 0.0,
             );
-            sh.order = Self::shadow_order(g.at[1]);
+            sh.order = Self::shadow_order(id);
         }
         // The dig band: one dissolve quad per live countdown, right
         // where the shadow band ends and the tail begins. The tile
@@ -1111,7 +1115,7 @@ impl Demo {
                 ANT_SHADOW,
                 0.0,
             );
-            shadowed.order = Self::shadow_order(self.player_at[1]);
+            shadowed.order = QUEEN_SHADOW_ORDER;
             // The queen carries a lamp of her own — the breath written on her
             // node above — so she wears the same ember and the same halo as
             // any ant, at her light's own strength. And she flashes on the bed
@@ -1131,7 +1135,7 @@ impl Demo {
                 ),
                 lamps[n],
             );
-            queen.order = 1.5;
+            queen.order = QUEEN_ORDER;
         }
     }
 
@@ -1272,25 +1276,38 @@ mod world_tests {
     use super::*;
 
     #[test]
-    fn every_shadow_rides_under_every_ant() {
-        // Every row a hill has ever held, and the queen's foot as
-        // it glides between rows: whatever the row, the shadow's
-        // tier sits above the beds and below the lowest ant rung.
-        for row in 0..=64 {
-            let y = row as f32;
+    fn the_ladder_is_strict_shadows_under_ants_and_never_swaps() {
+        // A hundred ants per hill — ten times any hill's ever held —
+        // walked in id order: every shadow clears the beds and sits
+        // under the *lowest* ant rung, every ant sits under the
+        // queen, and both tiers rise strictly with id. Order by
+        // identity is total: no crossing, no tie, no swap.
+        for id in 0..100usize {
             assert!(
-                Demo::shadow_order(y) > 0.05,
-                "a shadow at row {y} sank under the beds"
+                Demo::shadow_order(id) > 0.05,
+                "a shadow for ant {id} sank under the beds"
             );
             assert!(
-                Demo::shadow_order(y) < Demo::ant_order(0.0),
-                "a shadow at row {y} reached the ants' tier"
+                Demo::shadow_order(id) < Demo::ant_order(0),
+                "a shadow for ant {id} reached the ants' tier"
             );
-            // And within each tier the walkers still sort by row,
-            // so overlapping shadows agree with the ants that cast
-            // them.
-            assert!(Demo::shadow_order(y) < Demo::shadow_order(y + 1.0));
-            assert!(Demo::ant_order(y) < Demo::ant_order(y + 1.0));
+            assert!(
+                QUEEN_SHADOW_ORDER < Demo::ant_order(0),
+                "the queen's shadow crowded the lowest ant"
+            );
+            assert!(Demo::shadow_order(id) < Demo::shadow_order(id + 1));
+            assert!(Demo::ant_order(id) < Demo::ant_order(id + 1));
         }
+        // The queen's two rungs, against the filled tiers: her
+        // shadow over a full hundred-ant shadow tier, her body
+        // over a full hundred-ant hill.
+        assert!(
+            Demo::shadow_order(99) < QUEEN_SHADOW_ORDER,
+            "an ant's shadow reached the queen's"
+        );
+        assert!(
+            QUEEN_ORDER > Demo::ant_order(99),
+            "the queen must sit over a full hundred-ant hill"
+        );
     }
 }
