@@ -192,6 +192,20 @@ pub(crate) const RESTART_WORD: &str = "r to restart";
 /// named here so the sulking and the Z agree on the spelling.
 pub(crate) const UNDO_WORD: &str = "z for undo";
 
+/// The same word in the pad's voice. Only the key-named words have
+/// a second telling — every other card speaks verbs the pad shares
+/// — and the deck test walks the scripts so a key-named word can
+/// never ship without its pad telling.
+pub(crate) fn pad_word(word: &str) -> &str {
+    match word {
+        "hold shift and push right" => "hold rt and push right",
+        "press space leave it behind" => "square leaves it behind",
+        "z for undo" => "lt for undo",
+        "r to restart" => "triangle to restart",
+        other => other,
+    }
+}
+
 /// The send-off: the cheap dig watches the pupil take the dig for
 /// the first time and says the last kind word before the cold
 /// hills proper begin. It is a course well taught by now — four
@@ -585,7 +599,7 @@ impl Demo {
         // One chevron walks, two shove — the alphabet's own case
         // distinction, told in marks instead of letters.
         let marks = usize::from(matches!(card.act, game::Act::Push(_))) + 1;
-        self.draw_marks(ctx, dir, marks, card.word);
+        self.draw_marks(ctx, dir, marks, self.word_for(card.word));
     }
 
     /// The marks and the foot word, whoever calls: a chevron aimed
@@ -631,5 +645,76 @@ impl Demo {
             C_NOTE,
             UI + 1.0,
         );
+    }
+}
+
+/// The deck's words told to both hands.
+#[cfg(test)]
+mod lesson_tests {
+    use super::*;
+
+    #[test]
+    fn every_key_named_word_has_a_pad_telling() {
+        let deck: Vec<&[Lesson]> = vec![
+            &FIRST_WARM_LESSON,
+            &ATTUNEMENT_LESSON,
+            &FIRST_COLD_LESSON,
+            &COLD_TOUR_LESSON,
+            &DIG_TOUR_LESSON,
+            &DIG_LESSON,
+        ];
+        // The words that name a keyboard key: each must change
+        // voice for the pad, or the pad's player is read a key
+        // their hands will never touch. "onto r" and "home to w"
+        // name beds, not keys — only these four strings speak keys.
+        let key_words = [
+            "hold shift and push right",
+            "press space leave it behind",
+            UNDO_WORD,
+            RESTART_WORD,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        let cards = deck
+            .iter()
+            .flat_map(|script| script.iter())
+            .chain([MISTAKE_CARD, DOUBLE_CARD].iter());
+        for card in cards {
+            seen.insert(card.word);
+            if key_words.contains(&card.word) {
+                assert_ne!(
+                    pad_word(card.word),
+                    card.word,
+                    "{:?} ships without a pad telling",
+                    card.word
+                );
+            } else {
+                assert_eq!(
+                    pad_word(card.word),
+                    card.word,
+                    "{:?} names no key and must not be retold",
+                    card.word
+                );
+            }
+        }
+        // And the tellings themselves.
+        assert_eq!(
+            pad_word("hold shift and push right"),
+            "hold rt and push right"
+        );
+        assert_eq!(
+            pad_word("press space leave it behind"),
+            "square leaves it behind"
+        );
+        assert_eq!(pad_word(UNDO_WORD), "lt for undo");
+        assert_eq!(pad_word(RESTART_WORD), "triangle to restart");
+        // The whole deck is font-safe either way.
+        for word in seen {
+            for w in [word, pad_word(word)] {
+                assert!(
+                    w.chars().all(|c| c.is_ascii_alphanumeric() || c == ' '),
+                    "{w:?} must wear only glyphs the font owns"
+                );
+            }
+        }
     }
 }

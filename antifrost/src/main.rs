@@ -629,6 +629,17 @@ fn ambient_floor(t: f32) -> Color {
     }
 }
 
+/// Whichever hand last spoke to the game. The tutorial's words are
+/// told twice — once per hand — and this decides which telling the
+/// hill shows: a player who last touched a trigger should not be
+/// lectured about a shift key.
+#[derive(PartialEq, Eq, Default, Clone, Copy)]
+pub(crate) enum InputMode {
+    #[default]
+    Keys,
+    Pad,
+}
+
 struct Demo {
     levels: Vec<level::Level>,
     idx: usize,
@@ -790,6 +801,10 @@ struct Demo {
     /// Cross, Circle — the edge memory [`Demo::pad_pressed`] reads
     /// and renews, for the buttons no aim can speak.
     pad_was: HashMap<frost::Button, bool>,
+    /// Which hand last spoke, and where the pointer last stood so
+    /// its motion counts as speaking. See [`InputMode`].
+    last_input: InputMode,
+    last_mouse: Option<[f32; 2]>,
     /// Click-walking: the directions left to walk toward the last
     /// clicked cell, one issued per completed glide.
     route: Vec<game::Dir>,
@@ -950,6 +965,8 @@ impl Demo {
             was_mouse: HashMap::new(),
             pad_dir: None,
             pad_was: HashMap::new(),
+            last_input: InputMode::default(),
+            last_mouse: None,
             route: Vec::new(),
             replay: None,
             rng: Rng::default(),
@@ -1187,6 +1204,15 @@ impl Demo {
             } else {
                 game::Dir::Down
             })
+        }
+    }
+
+    /// The word in the voice the player last answered to.
+    fn word_for(&self, word: &'static str) -> &'static str {
+        if self.last_input == InputMode::Pad {
+            pad_word(word)
+        } else {
+            word
         }
     }
 
@@ -1679,9 +1705,11 @@ impl Demo {
         if let Some(card) = self.lesson() {
             self.draw_lesson(ctx, card);
         } else if self.mistake_standing() && self.mistake_t <= 0.0 {
-            self.draw_marks(ctx, face_of(game::Dir::Left), 1, UNDO_WORD);
+            let word = self.word_for(UNDO_WORD);
+            self.draw_marks(ctx, face_of(game::Dir::Left), 1, word);
         } else if self.disaster_standing() && self.mistake_t <= 0.0 {
-            self.draw_marks(ctx, face_of(game::Dir::Left), 2, RESTART_WORD);
+            let word = self.word_for(RESTART_WORD);
+            self.draw_marks(ctx, face_of(game::Dir::Left), 2, word);
         }
     }
 
@@ -2013,6 +2041,61 @@ impl Process for Demo {
         if self.pressed(ctx, KeyCode::F11) {
             self.menu_action(ctx, Action::Fullscreen);
         }
+        // The hill's ear: whichever hand spoke last — keys struck,
+        // pointer moved, stick pushed, trigger squeezed — decides the
+        // voice of the tutorial's words. Level reads, not edges: a
+        // held stick is the pad still speaking, a still pad silent.
+        {
+            let pad_spoke = ctx.gamepads().next().is_some_and(|p| {
+                let axis = |a: frost::Axis| p.axis_data(a).map(|d| d.value()).unwrap_or(0.0);
+                let pressed = |b: frost::Button| p.is_pressed(b);
+                axis(frost::Axis::LeftStickX).abs() > 0.2
+                    || axis(frost::Axis::LeftStickY).abs() > 0.2
+                    || pressed(frost::Button::DPadUp)
+                    || pressed(frost::Button::DPadDown)
+                    || pressed(frost::Button::DPadLeft)
+                    || pressed(frost::Button::DPadRight)
+                    || pressed(frost::Button::South)
+                    || pressed(frost::Button::East)
+                    || pressed(frost::Button::West)
+                    || pressed(frost::Button::North)
+                    || pressed(frost::Button::LeftTrigger)
+                    || pressed(frost::Button::RightTrigger)
+                    || pressed(frost::Button::Start)
+                    || pressed(frost::Button::Select)
+            });
+            let pointer = ctx.mouse_position();
+            let keys_spoke = pointer != self.last_mouse
+                || ctx.mouse_button_down(MouseButton::Left)
+                || ctx.mouse_button_down(MouseButton::Right)
+                || [
+                    KeyCode::ArrowUp,
+                    KeyCode::ArrowDown,
+                    KeyCode::ArrowLeft,
+                    KeyCode::ArrowRight,
+                    KeyCode::KeyW,
+                    KeyCode::KeyA,
+                    KeyCode::KeyS,
+                    KeyCode::KeyD,
+                    KeyCode::Space,
+                    KeyCode::KeyZ,
+                    KeyCode::KeyR,
+                    KeyCode::ShiftLeft,
+                    KeyCode::ShiftRight,
+                    KeyCode::Enter,
+                    KeyCode::Escape,
+                ]
+                .iter()
+                .any(|k| ctx.key_down(*k));
+            self.last_mouse = pointer;
+            // Both in one frame belongs to the pad: keys held while
+            // a stick moved still left the player steering by thumb.
+            if pad_spoke {
+                self.last_input = InputMode::Pad;
+            } else if keys_spoke {
+                self.last_input = InputMode::Keys;
+            }
+        }
         // Escape answers its page: the hill yields to the menu, the
         // menu hands the hill back, settings step back to the menu.
         // Quitting belongs to the exit row alone. (`Config::escape_exits`
@@ -2038,8 +2121,13 @@ impl Process for Demo {
         let pad_back = self.pad_pressed(ctx, frost::Button::East);
         // Square is the pad's detach — the hill's third verb, read
         // beside the menu buttons so its edge is never stranded on
-        // a frame the hill's branch skipped.
+        // a frame the hill's branch skipped. The left trigger
+        // rewinds (the shove's twin: one steps back, the other
+        // shoves) and Triangle restarts, so the sulking hill's
+        // words have a pad telling that is not a lie.
         let pad_detach = self.pad_pressed(ctx, frost::Button::West);
+        let pad_undo = self.pad_pressed(ctx, frost::Button::LeftTrigger);
+        let pad_restart = self.pad_pressed(ctx, frost::Button::North);
         if esc || pad_esc || (self.page != Page::Game && pad_back) {
             if self.replay.is_some() {
                 // Stepping off a showing returns to the ledger it
@@ -2124,8 +2212,8 @@ impl Process for Demo {
             let click_right = self.pressed_mouse(ctx, MouseButton::Right);
             // Right-click detaches; shift+left-click pushes instead.
             let detach_click = click_right;
-            let undo = self.pressed(ctx, KeyCode::KeyZ);
-            let restart = self.pressed(ctx, KeyCode::KeyR);
+            let undo = self.pressed(ctx, KeyCode::KeyZ) || pad_undo;
+            let restart = self.pressed(ctx, KeyCode::KeyR) || pad_restart;
             // The tutorial rail answers for the hill before the hill
             // is even handed out: while a school hill keeps a card
             // open, that card's act is the only input the gate lets
