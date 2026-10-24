@@ -1,0 +1,15 @@
+config_version=5
+
+[application]
+
+config/name="godot-compare"
+run/main_scene="res://compare.tscn"
+
+[display]
+
+window/size/viewport_width=1920
+window/size/viewport_height=1080
+
+[rendering]
+
+anti_aliasing/quality/msaa_2d=0

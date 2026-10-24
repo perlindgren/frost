@@ -1220,3 +1220,84 @@ is pinned to. Record the setting next time — it is the first condition of a Ma
 and it cannot be read from inside a shell. And when the question is what the light field
 costs rather than what the panel can present, run the offscreen meter. A row for the 4090
 box is still open, and §14's four instructions stand as written for whoever fills it.
+
+## 18. The same ladder in Godot 4.7.1 (2026-10-24, Apple M4 Max)
+
+§17 left the Mac without a cell and with a question it could not answer alone: is frost's
+lighting expensive, or is per-pixel lighting just expensive, and what do the neighbours
+charge for the same job? Unity and Unreal cannot be answered cheaply — one needs a Hub and
+a license dance, the other has no 2D lighting of this class at all — but Godot was already
+in `/Applications`, so this section measures the one neighbour that was reachable, and
+stops there rather than implying the other two.
+
+**The harness is `tools/godot-compare`, and it is a mirror, not an approximation of one.**
+Same ladder of scenarios, same 1 s warm-up and 6 s measurement, same three interleaved
+reps with the median reported, so the tables below can be read across. `run.sh` exists
+because Godot aborts — not complains, aborts — when `~/Library/Application Support/Godot`
+is unwritable, and because its own flags must follow `--`. Four things had to be measured
+before any of it could be trusted, and they are the same four §17 spent its pages on: an
+empty Godot scene in a window reads **60.1 fps** with vsync off, the panel again; the same
+scene with the window unfocused reads **30.2 fps**, macOS throttling an unseen window to
+half refresh, which is why the harness prints `can draw` beside every scenario number
+rather than once at the end; `--fullscreen` puts it in a **4112×2572** Space, the same
+settled surface §17 argued about, to the pixel, including the notch band; and Godot draws
+at content scale **1.00**, so its window pixels are physical pixels and both engines paint
+the same 10.58 Mpx raster in this configuration. That last point is what makes the
+comparison worth a table rather than a shrug.
+
+**The models are not the same, and the scenarios are named for the work they ask for, not
+for an equality that does not hold.** Godot's 2D lights blit a light texture over a
+darkened canvas and build shadows by rendering occluder silhouettes into a mask; frost
+traces rays per lit pixel against every occluder. So `shadows-1x/4x/8x` is MSAA on that
+mask standing in for frost's `taps-1/4/9` penumbra samples — a filter against a trace —
+and the honest reading of those three rows is *how each engine sells softness*, not a
+same-work race. Measured on the same M4 Max, same surface, `visible: Some(true)`,
+`can draw true` on all twenty-seven of Godot's scenarios:
+
+| what it asks for | frost | Godot 4.7.1 |
+| --- | --- | --- |
+| a lit screen, no lights | **2.60 ms** (385.1 fps) | **3.43 ms** (291.5 fps) |
+| four lights | 2.91 ms | 3.49 ms |
+| ten lights | 2.90 ms | 3.43 ms |
+| forty lights | 4.88 ms | **4.55 ms** |
+| forty lights, static twin | 4.89 ms | not built |
+| ten occluders | 3.43 ms | 3.66 ms |
+| one hundred occluders | 4.43 ms | **3.72 ms** |
+| soft shadows, cheapest | 4.42 ms (`taps-1`) | 3.73 ms (MSAA off) |
+| soft shadows, middling | 8.20 ms (`taps-4`) | 4.10 ms (4×) |
+| soft shadows, dearest | **16.69 ms** (`taps-9`) | **4.09 ms** (8×) |
+
+**Two curves, and the shapes are the finding.** Godot's spans **1.19×** from its empty
+frame to its most expensive; frost's spans **6.4×** over the same surface. Read gently:
+frost's floor is 0.8 ms cheaper and its many-lights case is a wash — forty lights costs
+4.88 ms here against 4.55 ms there, and ten lights is 2.90 against 3.43 — while the soft
+shadow is where the money goes: **4.1× more** for nine penumbra taps than for Godot's
+softest-possible-with-8×-MSAA. That is not a bug and not an accident: a mask with a filter
+on it costs roughly the same however soft it looks, and a per-pixel trace costs what it
+looks like. frost is selling an exact penumbra with no resolution ceiling, no bake step
+and no light budget to tune; Godot is selling one texture fetch per pixel per light and a
+blurred silhouette. §17's measured slope says the same thing from the inside — frost's
+shadow term is `taps × occluder work`, linear and unhideable, ~68 µs per tap per sixty
+occluders at 1080p.
+
+**The weather, because neither ladder passes §3's gate.** Godot's own reps agreed to
+about 4 %, and frost's twin control — `lamps-40` against `lamps-40-static`, identical by
+definition — came within 0.4 % of each other, which the pinned walks of §17 never managed.
+But the canary inside the frost run read burn spread **3.8×**, past the 3.5 limit, and the
+witness taken seconds after the Godot ladder read the same way — **too loud to judge** —
+while a witness run alone a minute later read a quiet 2.6×. So these are indicative
+numbers with the weather stated, not §14-grade verdicts: nothing here touches a baseline,
+nothing here is a row, and §14's four instructions still stand unexercised for this
+comparison.
+
+**One coincidence to disarm before it bites anyone.** frost's `taps-9` at this surface
+reads **59.9 fps**, which is 60.0 Hz to within a digit and looks exactly like the trap §17
+is full of. It is not that trap: the same Space in the same run presents the floor at
+385.1 fps, so nothing is pacing anyone at 60 — the work genuinely is ~16.7 ms, and the
+ratio test gives 385.1 ÷ 59.9 = **6.4×**, the same figure §17 measured unpinned. The
+lesson is the one §14 now carries in both directions: a Mac number at 60 is guilty until
+the floor says otherwise.
+
+Still open after this: Godot on a machine where §14's gate can actually be met, Unity and
+Unreal unmeasured rather than dismissed, and the RTX 4090 row, which remains the most
+useful number any of these sections can still be given.
