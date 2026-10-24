@@ -6,6 +6,17 @@
 
 use crate::*;
 
+/// The autumn weather, grouped off `Demo`: the leaf deck, how much
+/// of it the frost has called into the air, the clock the wind reads,
+/// and whether the deck has ever been dealt. Kept whole in the one
+/// system that steps it.
+pub(crate) struct Weather {
+    pub(crate) leaves: Vec<Leaf>,
+    pub(crate) seeded: bool,
+    pub(crate) active: usize,
+    pub(crate) t: f32,
+}
+
 /// Per-ant pixel glide: where it is drawn, where it is heading.
 /// One hop's path: a cubic between two cells whose control arms lie
 /// along the directions of travel at either end. Entering and leaving
@@ -253,7 +264,7 @@ impl Demo {
             -self.cam[0] * ZOOM * LEAF_PARALLAX,
             -self.cam[1] * ZOOM * LEAF_PARALLAX,
         ];
-        self.leaf_t += dt;
+        self.weather.t += dt;
         // The weather: past par the gauge climbs, the wind leans out
         // of the right, and the snow creeps into the deck — all three
         // capped at double par, where the storm holds its note.
@@ -264,8 +275,8 @@ impl Demo {
         let reach = wind_mag * h / WIND_MAX;
         // A slow shared gust all the leaves hang from — and under it,
         // once it comes, the gale out of the right.
-        let wind =
-            16.0 * (0.11 * self.leaf_t).sin() + 7.0 * (0.37 * self.leaf_t + 2.1).sin() - wind_mag;
+        let wind = 16.0 * (0.11 * self.weather.t).sin() + 7.0 * (0.37 * self.weather.t + 2.1).sin()
+            - wind_mag;
         let sky = Sky {
             w,
             h,
@@ -273,8 +284,8 @@ impl Demo {
             snow: self.frost_t,
             reach,
         };
-        if !self.leaves_seeded {
-            self.leaves_seeded = true;
+        if !self.weather.seeded {
+            self.weather.seeded = true;
             // The deck deals all eighty, but the calm-weather ledger
             // draws only the first thirty — so seed on the *drawn* lane
             // grid, not the deck's size. Seeding `lane of N_MAX` put the
@@ -282,12 +293,12 @@ impl Demo {
             // every drawn lane three times over, so the open frame is
             // wide even before the storm calls in the rest (who are
             // re-dealt on activation anyway).
-            self.leaves = (0..N_MAX)
+            self.weather.leaves = (0..N_MAX)
                 .map(|lane| Leaf::fresh(lane % N_LEAVES, N_LEAVES, &sky, &mut self.leaf_rng))
                 .collect();
             // Scatter the first volley through the air, so the hill
             // opens already in autumn rather than waiting for a fall.
-            for leaf in &mut self.leaves {
+            for leaf in &mut self.weather.leaves {
                 leaf.pos[1] = self
                     .leaf_rng
                     .in_range(-h / 2.0 - off[1] + 20.0, h / 2.0 - off[1] + 60.0);
@@ -298,22 +309,22 @@ impl Demo {
         // eighty as the frost deepens — newcomers are called in from
         // above, dealt like everything else.
         let active = (N_LEAVES as f32 + (N_MAX - N_LEAVES) as f32 * self.frost_t) as usize;
-        if active > self.leaves_active {
-            for i in self.leaves_active..active {
-                self.leaves[i] = Leaf::fresh(i, active, &sky, &mut self.leaf_rng);
+        if active > self.weather.active {
+            for i in self.weather.active..active {
+                self.weather.leaves[i] = Leaf::fresh(i, active, &sky, &mut self.leaf_rng);
             }
         }
-        self.leaves_active = active;
-        for (i, leaf) in self.leaves.iter_mut().enumerate().take(active) {
+        self.weather.active = active;
+        for (i, leaf) in self.weather.leaves.iter_mut().enumerate().take(active) {
             leaf.phase += leaf.freq * dt;
             leaf.flip_phase += leaf.flip_freq * dt;
             let flip = leaf.flip_phase.sin();
             // A wandering spin: the rate chases a target that is
             // redrawn at random moments — speeding up, easing off,
             // sometimes reversing — never a metronome.
-            if self.leaf_t >= leaf.spin_next {
+            if self.weather.t >= leaf.spin_next {
                 leaf.spin_target = self.leaf_rng.in_range(-1.8, 1.8);
-                leaf.spin_next = self.leaf_t + self.leaf_rng.in_range(0.6, 2.4);
+                leaf.spin_next = self.weather.t + self.leaf_rng.in_range(0.6, 2.4);
             }
             leaf.spin_rate += (leaf.spin_target - leaf.spin_rate) * (dt * 2.2).min(1.0);
             leaf.spin += leaf.spin_rate * dt;

@@ -791,12 +791,9 @@ struct Demo {
     /// replays itself, with its own keys and its own pace.
     replay: Option<Replay>,
     leaf_rng: Rng,
-    leaves: Vec<Leaf>,
-    leaves_seeded: bool,
-    /// How many of the deck are currently in the air — thirty in calm
-    /// weather, swelling toward `N_MAX` as the frost deepens.
-    leaves_active: usize,
-    leaf_t: f32,
+    /// The leaf deck, its clock, and how much of it the frost has
+    /// called into the air. See [`Weather`].
+    weather: Weather,
     /// The hill's shadow cache: the solid-cell list as of the last
     /// merge, and the merged rectangles (cell-space spans, both ends
     /// inclusive) that list earned. Recomputed only when the cells
@@ -959,10 +956,12 @@ impl Demo {
             route: Vec::new(),
             replay: None,
             leaf_rng: Rng::default(),
-            leaves: Vec::new(),
-            leaves_seeded: false,
-            leaves_active: N_LEAVES,
-            leaf_t: 0.0,
+            weather: Weather {
+                leaves: Vec::new(),
+                seeded: false,
+                active: N_LEAVES,
+                t: 0.0,
+            },
             occ_key: Vec::new(),
             occ_boxes: Vec::new(),
             settings,
