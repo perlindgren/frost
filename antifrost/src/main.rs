@@ -369,6 +369,21 @@ const SHADOW_LEAN_ASLEEP: f32 = 1.0;
 const QUEEN_SHADOW_ORDER: f32 = 0.9;
 const QUEEN_ORDER: f32 = 1.5;
 
+/// The bed's rung, the bottom of the ladder above bare ground:
+/// named because the shadow tier swears to stay above it.
+const BED_TIER: f32 = 0.05;
+
+/// The two tiers the colony stands on, and that is all the ladder
+/// needs: shadows at 0.1 — over the beds — ants from 1.0.
+/// Within a tier every node wears the same rung, and the engine's
+/// z-sort is stable: equal orders keep the order the scene was
+/// walked in, and the colony's nodes are children laid out one per
+/// ant in id order. So ant 0 under ant 1 under ant 2, and the same
+/// for the shadows under them, for free from the traversal — no
+/// stride, no row, nothing to renumber and nothing to swap.
+const ANT_TIER: f32 = 1.0;
+const SHADOW_TIER: f32 = 0.1;
+
 const C_BG: Color = Color {
     r: 0.045,
     g: 0.038,

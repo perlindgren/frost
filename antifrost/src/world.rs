@@ -472,28 +472,6 @@ impl Demo {
 
     // ------------------------------------------------------------- draw
 
-    /// The rung an ant wears: a fixed place on the ladder, by ant
-    /// identity. A top-down hill has no near and far — a walker
-    /// crossing another looks the same however they met — so the
-    /// order says nothing about the walk, it only says overlaps
-    /// resolve the same way every time: ant 0 under ant 1 under
-    /// ant 2, queen over all. Ids are stable within a hill, so no
-    /// crossing ever swaps layers. A thousand ants would still fit
-    /// the tier; no hill has held a tenth of that.
-    fn ant_order(id: usize) -> f32 {
-        1.0 + id as f32 * 1e-3
-    }
-
-    /// The rung a shadow wears — any ant's shadow. The tier belongs
-    /// to shadows alone: above the beds (0.05) and under every ant
-    /// (from 1.0 up), so a shadow falls on ground and beds only,
-    /// never on a colony member who is not its own walker. Within
-    /// the tier the same id order keeps every shadow under the
-    /// shadow of the higher ant, matching the bodies above.
-    fn shadow_order(id: usize) -> f32 {
-        0.1 + id as f32 * 1e-3
-    }
-
     /// The painted shadow's foot: the ant's place, shifted
     /// down-right by two world pixels at a walk and one when the
     /// ant sleeps — `ZOOM`-scaled like the ant's own geometry, so
@@ -934,7 +912,7 @@ impl Demo {
                 // the modulate's base cloth, not the other way round.
                 node.modulate = ant_color(*color);
                 node.lit = true;
-                node.order = 0.05;
+                node.order = BED_TIER;
             }
         }
         // The shadow band: the pool grew one slot per ant, and the
@@ -972,7 +950,6 @@ impl Demo {
             } else {
                 col
             };
-            let z = Self::ant_order(id);
             let node = &mut ctx.scene().root.children[LEAVES.len() + id];
             let at = self.screen(g.at);
             // Facings turn, never snap: toward travel on foot, toward
@@ -989,7 +966,7 @@ impl Demo {
                 col,
                 lamp,
             );
-            node.order = z;
+            node.order = ANT_TIER;
             // And the painted shadow: the queen's trick for every
             // ant — its own stencil, silhouette in pure ink, leaned
             // down-right (two world pixels walking, one asleep).
@@ -1006,7 +983,7 @@ impl Demo {
                 ANT_SHADOW,
                 0.0,
             );
-            sh.order = Self::shadow_order(id);
+            sh.order = SHADOW_TIER;
         }
         // The dig band: one dissolve quad per live countdown, right
         // where the shadow band ends and the tail begins. The tile
@@ -1275,39 +1252,25 @@ impl Demo {
 mod world_tests {
     use super::*;
 
+    // The whole assertion compares compile-time constants — which
+    // is exactly the point: the tiers ARE constants, and a future
+    // edit that lets beds meet shadows, or shadows meet ants, must
+    // fail here rather than on screen.
     #[test]
-    fn the_ladder_is_strict_shadows_under_ants_and_never_swaps() {
-        // A hundred ants per hill — ten times any hill's ever held —
-        // walked in id order: every shadow clears the beds and sits
-        // under the *lowest* ant rung, every ant sits under the
-        // queen, and both tiers rise strictly with id. Order by
-        // identity is total: no crossing, no tie, no swap.
-        for id in 0..100usize {
-            assert!(
-                Demo::shadow_order(id) > 0.05,
-                "a shadow for ant {id} sank under the beds"
-            );
-            assert!(
-                Demo::shadow_order(id) < Demo::ant_order(0),
-                "a shadow for ant {id} reached the ants' tier"
-            );
-            assert!(
-                QUEEN_SHADOW_ORDER < Demo::ant_order(0),
-                "the queen's shadow crowded the lowest ant"
-            );
-            assert!(Demo::shadow_order(id) < Demo::shadow_order(id + 1));
-            assert!(Demo::ant_order(id) < Demo::ant_order(id + 1));
-        }
-        // The queen's two rungs, against the filled tiers: her
-        // shadow over a full hundred-ant shadow tier, her body
-        // over a full hundred-ant hill.
+    #[allow(clippy::assertions_on_constants)]
+    fn the_tiers_never_meet() {
+        assert!(BED_TIER < SHADOW_TIER, "shadows sank under the beds");
         assert!(
-            Demo::shadow_order(99) < QUEEN_SHADOW_ORDER,
-            "an ant's shadow reached the queen's"
+            SHADOW_TIER < QUEEN_SHADOW_ORDER,
+            "the queen's shadow left its tier"
         );
         assert!(
-            QUEEN_ORDER > Demo::ant_order(99),
-            "the queen must sit over a full hundred-ant hill"
+            QUEEN_SHADOW_ORDER < ANT_TIER,
+            "the queen's shadow reached the ants"
+        );
+        assert!(
+            QUEEN_SHADOW_ORDER < QUEEN_ORDER,
+            "the queen's shadow escaped her body"
         );
     }
 }
