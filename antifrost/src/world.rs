@@ -472,6 +472,24 @@ impl Demo {
 
     // ------------------------------------------------------------- draw
 
+    /// The rung an ant wears: above the whole shadow tier, sorted
+    /// among the ants by row so a lower walker rides over a higher
+    /// one's line.
+    fn ant_order(y: f32) -> f32 {
+        1.0 + y * 1e-4
+    }
+
+    /// The rung a shadow wears — any ant's shadow, the queen's
+    /// included. The tier belongs to shadows alone: above the beds
+    /// (0.05) and under every ant (from 1.0 up), so a shadow falls
+    /// on ground and beds only, never on a colony member who is not
+    /// its own walker. Within the tier the walkers still sort by
+    /// row, so overlapping shadows agree with the ants that cast
+    /// them.
+    fn shadow_order(y: f32) -> f32 {
+        0.1 + y * 1e-4
+    }
+
     /// The painted shadow's foot: the ant's place, shifted
     /// down-right by two world pixels at a walk and one when the
     /// ant sleeps — `ZOOM`-scaled like the ant's own geometry, so
@@ -950,7 +968,7 @@ impl Demo {
             } else {
                 col
             };
-            let z = 1.0 + g.at[1] * 1e-4;
+            let z = Self::ant_order(g.at[1]);
             let node = &mut ctx.scene().root.children[LEAVES.len() + id];
             let at = self.screen(g.at);
             // Facings turn, never snap: toward travel on foot, toward
@@ -970,10 +988,11 @@ impl Demo {
             node.order = z;
             // And the painted shadow: the queen's trick for every
             // ant — its own stencil, silhouette in pure ink, leaned
-            // down-right (two world pixels walking, one asleep),
-            // parked a hair under its ant's
-            // rung on the z ladder so every shadow rides its own
-            // ant.
+            // down-right (two world pixels walking, one asleep).
+            // It wears the shadow tier, never a rung beside its
+            // walker: a shadow one hair under its own ant was still
+            // two rows above the hill's floor, and any ant walking
+            // between those rows got inked by a stranger.
             let sh = &mut ctx.scene().root.children[sh_base + id];
             self.put_ant(
                 sh,
@@ -983,7 +1002,7 @@ impl Demo {
                 ANT_SHADOW,
                 0.0,
             );
-            sh.order = z - 2e-4;
+            sh.order = Self::shadow_order(g.at[1]);
         }
         // The dig band: one dissolve quad per live countdown, right
         // where the shadow band ends and the tail begins. The tile
@@ -1092,7 +1111,7 @@ impl Demo {
                 ANT_SHADOW,
                 0.0,
             );
-            shadowed.order = 1.48;
+            shadowed.order = Self::shadow_order(self.player_at[1]);
             // The queen carries a lamp of her own — the breath written on her
             // node above — so she wears the same ember and the same halo as
             // any ant, at her light's own strength. And she flashes on the bed
@@ -1243,6 +1262,35 @@ impl Demo {
                 UI + 10.5,
             );
             x += w + gap * size;
+        }
+    }
+}
+
+/// The z ladder, where shadows may fall and where they may not.
+#[cfg(test)]
+mod world_tests {
+    use super::*;
+
+    #[test]
+    fn every_shadow_rides_under_every_ant() {
+        // Every row a hill has ever held, and the queen's foot as
+        // it glides between rows: whatever the row, the shadow's
+        // tier sits above the beds and below the lowest ant rung.
+        for row in 0..=64 {
+            let y = row as f32;
+            assert!(
+                Demo::shadow_order(y) > 0.05,
+                "a shadow at row {y} sank under the beds"
+            );
+            assert!(
+                Demo::shadow_order(y) < Demo::ant_order(0.0),
+                "a shadow at row {y} reached the ants' tier"
+            );
+            // And within each tier the walkers still sort by row,
+            // so overlapping shadows agree with the ants that cast
+            // them.
+            assert!(Demo::shadow_order(y) < Demo::shadow_order(y + 1.0));
+            assert!(Demo::ant_order(y) < Demo::ant_order(y + 1.0));
         }
     }
 }
