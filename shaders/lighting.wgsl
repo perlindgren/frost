@@ -310,10 +310,11 @@ fn occluded_taps(
         // occluder's own space the disk is an ellipse, so the inflation is the
         // reach scaled by the transform's longest column, which bounds the
         // local offset from above whatever the disk's orientation turns out to
-        // be. A polygon keeps the per-tap path: its edges have the last word
-        // on what blocked means, and a reject that reads the bounds cannot be
-        // trusted to agree with them in the last bits.
-        if (edges == 0u && reach > 0.0) {
+        // be. It reads the record's bounds, and that is sound for a polygon
+        // too: the packer ships a polygon's own bounding box as those bounds,
+        // so a disk that misses the box misses the shape, whatever the edges
+        // then have to say about a disk that reaches it.
+        if (reach > 0.0) {
             let hx = half.x + reach * sqrt(m.x * m.x + m.z * m.z);
             let hy = half.y + reach * sqrt(m.y * m.y + m.w * m.w);
             let dc = lp - lc;

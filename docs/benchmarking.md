@@ -1487,3 +1487,74 @@ plane walk over taps, which is §19's argument applied to the edges instead of t
 the plane-based whole-disk reject, which needs the packer's plane derivation read before it
 can be trusted. **Neither is measured yet, and this section's whole purpose is that the next
 number written about polygons is compared against these ones rather than against a guess.**
+
+## 22. Two attempts at the polygon walk: one lost, one won (2026-10-24, Apple M4 Max)
+
+§21 left two candidates and both were tried the same way, against the same build, two
+interleaved passes each, five rows, median of three reps at 4112×2572. The canary read
+2.7×–3.5× on every side-run, loud by §3's gate. The HEAD column here reproduces §21's
+numbers — 22.00 ms and 38.46 ms against 21.98 and 38.46 from a run an hour earlier — which
+is as good a check on §21 as anyone is likely to get.
+
+**The fusion lost, and lost badly.** The idea was §19's argument moved from the record to the
+edge: load each plane once per record instead of once per ray, compute `db` once because the
+pixel's side of an edge cannot change between taps, carry the nine intervals and narrow them
+inside the plane loop, and let one edge that puts both endpoints of every remaining ray
+outside it end the record for all nine at once. The arithmetic was bit-for-bit the same and
+was checked to be so — three polygon scenes, hexagons at nine taps, hexagons at four,
+sixteen-sided discs at nine, fingerprints `2c192f9ffdba54a9`, `b370c6a09a07e5bf` and
+`8b05319a3961a004` identical to the committed build. Then the time:
+
+| row | committed build | with the fusion | change |
+| --- | --- | --- | --- |
+| `fill-1080p` | 2.60 ms | 2.59 ms | −1 % |
+| `polys-60` | 4.37 ms | 4.42 ms | +1 % |
+| `taps-9` — boxes, nine rays | 5.16 ms | 6.91 ms | **+34 %** |
+| `taps-9-polys` | 22.03 ms | 36.63 ms | **+66 %** |
+| `taps-9-discs` | 38.46 ms | 71.43 ms | **+86 %** |
+
+Reps within 0.01 ms of each other, so this is not weather. The number that explains it is
+the box row: a box never enters the plane loop, so the plane walk cannot be what got slower.
+What got slower is carrying nine `(ll, tmin, tmax)` triples indexed by a loop counter — a
+local array with a dynamic index, which this driver puts in private memory rather than
+registers, so every step of every plane became a memory round-trip instead of a register
+read. **Fewer operations, more time.** It is reverted, and the general lesson for this engine
+is that "the same expressions, used fewer times" is not an argument for a GPU change on its
+own; only the measurement is.
+
+**The bounds reject generalised, and won.** §20 had confined the whole-disk reject to boxes
+on the worry that a reject reading the record's bounds could not be trusted to agree with a
+shape's edges. `canvas.rs:306` settles it: a polygon's record box *is*
+`polygon.bounds_as_box()`, the shape's own bounding box, so the box contains the shape by
+construction and a disk that misses the box inflated by the reach misses the shape no matter
+what the edges then say about a disk that does reach it. The change is one condition
+widened, `edges == 0u &&` dropped:
+
+| row | committed build | with the polygon reject | change |
+| --- | --- | --- | --- |
+| `fill-1080p` | 2.70 ms | 2.69 ms | 0 % |
+| `polys-60` — one hard ray | 4.43 ms | 4.43 ms | 0 % |
+| `taps-9` — boxes, nine rays | 5.19 ms | 5.14 ms | −1 % |
+| `taps-9-polys` | 22.00 ms | **14.77 ms** | **−33 %** |
+| `taps-9-discs` | 38.46 ms | **30.58 ms** | **−20 %** |
+
+Same three scenes fingerprinted byte-for-byte as the committed build, which is the same
+evidence §20 accepted and carries the same caveat: one scene family, one GPU, and no test in
+the suite covers the path. The saving itself is the evidence that the reject fires — a reject
+that never triggered would have changed nothing at all, and −33 % is nothing changing very
+much. A hexagon gains more than a disc because the reject removes work proportional to the
+edges, and a disc has more edges to lose.
+
+**What is left, and what the next attempt should look like.** A disc scene still costs 30.58 ms
+against a box scene's 5.14, so the plane walk per ray remains the polygon cliff and this
+section has not closed it, only cut a third off it. The fusion showed what *not* to do; the
+shape that keeps the win and avoids the private memory is a fixed unrolled grouping — taps in
+pairs, six scalars of state instead of an array of nine, the plane list walked five times
+instead of nine. That is a prediction about a mechanism, not a number, and it will be
+measured against the four rows above before anyone believes it.
+
+**One protocol note for the next person.** A fullscreen run started while the display is
+asleep produced no output and never returned — no frames, no error, no exit, twenty minutes of
+silence, and the process was invisible to `pgrep`. Every run since has been wrapped in
+`caffeinate -di` with a per-side timeout that kills the benchmark by its own pid. If a
+fullscreen suite goes quiet, suspect the display before the shader.
