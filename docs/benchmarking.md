@@ -1065,8 +1065,15 @@ dividing them a test of who answered rather than a comparison of two settings:
 any bench is the display's* from a pair reading 90.0 and 88.9; this is the same wall to
 six digits. At `RUST_LOG=trace` the histogram of §3's awk over `frame presented` lines
 counts **60 presented frames in each of thirteen consecutive seconds** — 60.000, not
-59.8 and not 61 — under `present_mode AutoNoVsync`, with the app asking not to be paced
-and the floor and the cliff reporting 60.2 and 60.0 together. §14's ratio test reads
+59.8 and not 61 — with the floor and the cliff reporting 60.2 and 60.0 together. And it
+is not the swap chain holding the door: the line after `surface configured` reads
+**`present modes: [Fifo, Immediate], resolved: Immediate`** — the least paced mode this
+backend offers, asking the driver never to wait — and it presented 60.000 frames a second
+anyway. `Config::vsync = false` did exactly what it promises and bought nothing, because
+the pacing is upstream of presentation: the engine renders when winit delivers
+`RedrawRequested`, it asks for the next one at the end of each frame
+(`src/backend/app.rs:1052`), and a macOS window is invited once per refresh. There is no
+overrun to measure, because there is no attempt to overrun. §14's ratio test reads
 **1.003×**, which is its own definition of a machine answering with its present path.
 And because the panel is pinned at 60 Hz, there is no drift to blame: that is a hard
 ceiling, not a variable refresh caught mid-move. §6's 90.0, 88.9 and "exactly 120.0" are
