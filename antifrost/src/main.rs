@@ -2036,6 +2036,10 @@ impl Process for Demo {
             || self.pad_pressed(ctx, frost::Button::Select)
             || self.pad_pressed(ctx, frost::Button::Mode);
         let pad_back = self.pad_pressed(ctx, frost::Button::East);
+        // Square is the pad's detach — the hill's third verb, read
+        // beside the menu buttons so its edge is never stranded on
+        // a frame the hill's branch skipped.
+        let pad_detach = self.pad_pressed(ctx, frost::Button::West);
         if esc || pad_esc || (self.page != Page::Game && pad_back) {
             if self.replay.is_some() {
                 // Stepping off a showing returns to the ledger it
@@ -2115,7 +2119,7 @@ impl Process for Demo {
             // shove, the same refusals — its step only stands where
             // no key answered, and its shoulders are its Shift.
             let action = action.or_else(|| self.pad_action(ctx));
-            let detach = self.pressed(ctx, KeyCode::Space);
+            let detach = self.pressed(ctx, KeyCode::Space) || pad_detach;
             let click_left = self.pressed_mouse(ctx, MouseButton::Left);
             let click_right = self.pressed_mouse(ctx, MouseButton::Right);
             // Right-click detaches; shift+left-click pushes instead.

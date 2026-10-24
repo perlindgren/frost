@@ -183,7 +183,7 @@ pub(crate) fn plate_bottom_pad(page: Page, h: f32) -> f32 {
         Page::Settings => menu_step_for(10, h),
         Page::Keyboard => menu_step_for(6, h),
         Page::Mouse => menu_step_for(4, h),
-        Page::Gamepad => menu_step_for(6, h),
+        Page::Gamepad => menu_step_for(7, h),
         Page::Won => menu_step_for(2, h),
         Page::Game => MENU_STEP,
     }
@@ -1383,11 +1383,12 @@ impl Demo {
                 // words: Barrfont owns letters, digits and spaces,
                 // so the dpad, the trigger and the DualSense's own
                 // names keep their shorthand.
-                let step = menu_step_for(6, h);
-                let top = plain_top(6, step, h);
+                let step = menu_step_for(7, h);
+                let top = plain_top(7, step, h);
                 for (i, line) in [
                     "left stick or dpad to move",
                     "rt with a direction to push",
+                    "square detaches",
                     "options opens and closes the menu",
                     "dpad walks rows and cross picks",
                     "circle steps back",
@@ -2446,6 +2447,7 @@ mod menu_tests {
                 &[
                     "left stick or dpad to move",
                     "rt with a direction to push",
+                    "square detaches",
                     "options opens and closes the menu",
                     "dpad walks rows and cross picks",
                     "circle steps back",
