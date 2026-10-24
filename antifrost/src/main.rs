@@ -369,8 +369,9 @@ const SHADOW_LEAN_ASLEEP: f32 = 1.0;
 /// How far the world melts behind a menu, as a fraction of the
 /// frame's height — the engine's `set_backdrop_blur` radius, scaled
 /// by the overlay's breath so the smear arrives with the plate and
-/// leaves with it.
-const BACKDROP_BLUR: f32 = 0.02;
+/// leaves with it. A breath, not a bath: the hill should read as a
+/// place the menu was called from, not as weather.
+const BACKDROP_BLUR: f32 = 0.009;
 
 const QUEEN_SHADOW_ORDER: f32 = 0.9;
 const QUEEN_ORDER: f32 = 1.5;
@@ -2041,6 +2042,13 @@ impl Process for Demo {
         // number is nonzero, which is exactly the menu's own
         // breathing time.
         ctx.set_backdrop_blur(self.menu.alpha * BACKDROP_BLUR);
+        // The plate region lives as long as the overlay is on
+        // screen, and `draw_menu` renews it every frame it paints;
+        // the moment the fade has fully left, the sharp region
+        // retires with it.
+        if self.menu.alpha <= 0.002 {
+            ctx.set_backdrop_sharp_rect(None);
+        }
         if self.window.pending {
             self.window.pending = false;
             self.apply_window_policy(ctx);

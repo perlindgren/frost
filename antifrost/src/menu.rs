@@ -432,6 +432,25 @@ impl Demo {
         let pcx = 0.0;
         let pcy = (top + bot) / 2.0 + (top_pad - bottom_pad) / 2.0;
         let (phw, phh) = (plate_hw, (top - bot) / 2.0 + (top_pad + bottom_pad) / 2.0);
+        // The plate's sharp word to the blur: the melt is for the
+        // hill behind the menu, never for the menu itself. The rect
+        // is the plate as measured — and on the won page it reaches
+        // up over the verdict strip too, because the word of the
+        // hill is as much the menu as the rows under it.
+        {
+            let mut top_edge = pcy + phh;
+            if self.menu.page == Page::Won {
+                let band = h / 2.0 - 93.0;
+                let verdict = (top_edge + band) / 2.0 + 44.0;
+                top_edge = top_edge.max(verdict);
+            }
+            ctx.set_backdrop_sharp_rect(Some((
+                pcx,
+                (top_edge + (pcy - phh)) / 2.0,
+                phw,
+                (top_edge - (pcy - phh)) / 2.0,
+            )));
+        }
         let mut cut = false;
         if let Some(slab) = &self.slab {
             let mut panel = slab.clone();

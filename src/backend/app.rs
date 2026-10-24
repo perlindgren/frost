@@ -152,6 +152,12 @@ pub(crate) struct Frost<P: Process> {
     /// buffer whenever it is nonzero, since a frame drawn straight to the
     /// window has nothing for the taps to read.
     backdrop_blur: f32,
+    /// The one rectangle a backdrop blur must leave sharp, as centre and
+    /// half-extents in the canvas's y-up user space — the menu's plate.
+    /// The blur exists to put scenery behind the menu; the menu itself
+    /// was never scenery, and this is the rect that keeps its words
+    /// razor. `None` lets the melt take the whole frame.
+    backdrop_sharp: Option<[f32; 4]>,
     #[allow(dead_code)]
     window_id: Option<WindowId>,
     /// The winit window (shared), kept so we can call `request_redraw` for
@@ -825,6 +831,7 @@ impl<P: Process> Frost<P> {
             bloom,
             tone_map,
             backdrop_blur: 0.0,
+            backdrop_sharp: None,
             window_id: None,
             window: None,
             logical_size: (0, 0),
@@ -1972,7 +1979,9 @@ impl<P: Process> Frost<P> {
                 (1.0, 1.0),
                 [0.0; crate::backend::bloom::MAX_LEVELS],
                 self.tone_map,
-                self.backdrop_blur,
+                0.0,
+                (0.0, 0.0),
+                (-1.0, -1.0),
             ),
         );
         let bind_group = self.blit_bind_group(&view, &sampler, &fit_buffer, &bloom);
@@ -2609,6 +2618,7 @@ impl<P: Process> Frost<P> {
                 bloom: &mut self.bloom,
                 tone_map: &mut self.tone_map,
                 backdrop_blur: &mut self.backdrop_blur,
+                backdrop_sharp: &mut self.backdrop_sharp,
                 // The window is attached before the first frame renders, so
                 // this is `Some` for every frame the process sees; the
                 // `Option` is the type the field has before attach.
@@ -3321,10 +3331,29 @@ impl<P: Process> Frost<P> {
             // below adds back as it samples. A dormant chain has no levels, so
             // this draws nothing at all when the app asked for no bloom.
             t.bloom.run(&mut encoder);
+            // The sharp region converts here, once per frame, from the
+            // canvas's y-up user space to the frame buffer's y-down uv —
+            // the same centred mapping every draw the canvas records
+            // already rides, so a rect the app measured in its own
+            // coordinates lands exactly over what it drew.
+            let (sharp_c, sharp_h) = match (self.backdrop_sharp, self.logical_size) {
+                (Some([cx, cy, hw, hh]), (lw, lh)) if lw > 0 && lh > 0 => (
+                    (0.5 + cx / lw as f32, 0.5 - cy / lh as f32),
+                    (hw / lw as f32, hh / lh as f32),
+                ),
+                _ => ((0.0, 0.0), (-1.0, -1.0)),
+            };
             self.queue.write_buffer(
                 &t.fit_buffer,
                 0,
-                &fit_bytes(fit, t.bloom.weights, self.tone_map, self.backdrop_blur),
+                &fit_bytes(
+                    fit,
+                    t.bloom.weights,
+                    self.tone_map,
+                    self.backdrop_blur,
+                    sharp_c,
+                    sharp_h,
+                ),
             );
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("blit pass"),

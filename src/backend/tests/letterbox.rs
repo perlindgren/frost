@@ -81,7 +81,11 @@ fn stretch(surface: (u32, u32), fit: (f32, f32)) -> Option<Vec<u32>> {
         usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    queue.write_buffer(&uniform, 0, &fit_bytes(fit, [0.0; 6], 0.0, 0.0));
+    queue.write_buffer(
+        &uniform,
+        0,
+        &fit_bytes(fit, [0.0; 6], 0.0, 0.0, (0.0, 0.0), (-1.0, -1.0)),
+    );
 
     let texture_entry = BindingType::Texture {
         sample_type: TextureSampleType::Float { filterable: true },

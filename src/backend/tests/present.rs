@@ -350,6 +350,8 @@ pub(crate) fn frame(
         override_weights.unwrap_or(bloom.weights),
         tone,
         0.0,
+        (0.0, 0.0),
+        (-1.0, -1.0),
     );
     queue.write_buffer(&fit_buffer, 0, &fit);
     let window = new_target("bloom window", TextureUsages::empty());
