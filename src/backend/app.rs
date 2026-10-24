@@ -178,6 +178,9 @@ pub(crate) struct Frost<P: Process> {
     /// size twice by a chatty compositor does not report that it resized
     /// twice. The work `resize` does is not skipped, only the sentence.
     resize_logged: (u32, u32, u32, u32),
+    /// A size the window asked for that the engine has not accepted yet, with
+    /// the moment it was asked. See [`Frost::note_resize`].
+    resize_pending: PendingResize,
     line_pipeline: Option<RenderPipeline>,
     polyline_pipeline: Option<RenderPipeline>,
     circle_pipeline: Option<RenderPipeline>,
@@ -822,6 +825,7 @@ impl<P: Process> Frost<P> {
             surface: None,
             surface_gone: None,
             resize_logged: (0, 0, 0, 0),
+            resize_pending: PendingResize::default(),
             line_pipeline: None,
             polyline_pipeline: None,
             circle_pipeline: None,
@@ -1021,16 +1025,10 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                 }
             }
             WindowEvent::Resized(size) => {
-                // `size` is the physical client size; store the logical size
-                // so `pixel_size()` reproduces the true physical pixels.
+                // Recorded, not applied: see `note_resize`. `size` is the
+                // physical client size.
                 if size.width > 0 && size.height > 0 {
-                    let scale = (self.scale as f64).max(0.01);
-                    self.logical_size = (
-                        (size.width as f64 / scale).max(1.0).round() as u32,
-                        (size.height as f64 / scale).max(1.0).round() as u32,
-                    );
-                    self.resize();
-                    self.snap_aspect(size);
+                    self.note_resize(size);
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -1046,6 +1044,7 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                 log::info!("window occluded: {occluded}");
             }
             WindowEvent::RedrawRequested => {
+                self.apply_pending_resize();
                 self.render();
                 // A process that asked to leave has its last frame drawn
                 // and queued; the loop now ends, exactly as when the
@@ -1062,6 +1061,43 @@ impl<P: Process> ApplicationHandler for Frost<P> {
             }
             _ => {}
         }
+    }
+}
+
+/// How long a window's size must hold still before the engine rebuilds for
+/// it. It has to outlast the gap between two ticks of a platform animation —
+/// macOS flies a window into its fullscreen Space at display rate, so its
+/// intermediate sizes arrive some 16 ms apart — and stay short enough that a
+/// dragged window still feels nailed to the pointer. The measured transition
+/// spans under a second and its sizes arrive inside a single one.
+const RESIZE_SETTLE_MS: f64 = 100.0;
+
+/// The size a window last asked for, and when: the half of a resize that has
+/// not been believed yet. See [`Frost::note_resize`] for the reason it is
+/// deferred, and the tests for the sequence it has to survive.
+#[derive(Default)]
+struct PendingResize {
+    size: Option<(u32, u32)>,
+    since: f64,
+}
+
+impl PendingResize {
+    /// A request arrives. It replaces whatever was pending and restarts the
+    /// clock, so the size that wins is the last one the platform spoke.
+    fn note(&mut self, width: u32, height: u32, now: f64) {
+        self.size = Some((width, height));
+        self.since = now;
+    }
+
+    /// The size worth rebuilding for, once the window has been still for
+    /// [`RESIZE_SETTLE_MS`]. Consumed on delivery: one rebuild per settle.
+    fn due(&mut self, now: f64) -> Option<(u32, u32)> {
+        let (width, height) = self.size?;
+        if now - self.since < RESIZE_SETTLE_MS {
+            return None;
+        }
+        self.size = None;
+        Some((width, height))
     }
 }
 
@@ -1258,6 +1294,49 @@ impl<P: Process> Frost<P> {
             self.format = Some(config.format);
         }
         Some(config)
+    }
+
+    /// Take a resize from the platform without honouring it yet.
+    ///
+    /// A resize is not one event: macOS animates a window into and out of its
+    /// fullscreen Space and reports every frame of the flight as a new size,
+    /// and the sizes it flies through are not sizes anything has. Measured on
+    /// the Mac of `docs/benchmarking.md` §17, entering fullscreen once: four
+    /// events inside a second — 2056×1286, 1329, 1286, then **1357**, a window
+    /// taller than the 1329-point display it was being animated into — and
+    /// 1286 again, where it sat for the next four minutes. Honouring each one
+    /// means rebuilding a swap chain for pixels nobody will ever see: a
+    /// 4112×2714 set of drawables, allocated because a window was in the air.
+    ///
+    /// So the engine accepts a size only once the platform has stopped
+    /// changing its mind, on the next frame past [`RESIZE_SETTLE_MS`]. In a
+    /// window drag that is the difference between following the pointer and
+    /// lagging it by a tenth of a second, during which the old surface is
+    /// stretched to the new window by the compositor — the same thing a
+    /// dragged window already looks like for the frame the engine misses on
+    /// any platform. In an animation it is the whole difference, because the
+    /// flight emits nothing worth rebuilding for.
+    fn note_resize(&mut self, size: PhysicalSize<u32>) {
+        self.resize_pending
+            .note(size.width, size.height, now_millis());
+    }
+
+    /// The deferred half of [`Self::note_resize`], asked on every frame: the
+    /// window's size changes, the swap chain follows, and the aspect lock
+    /// corrects the request a fixed render-size window is owed.
+    fn apply_pending_resize(&mut self) {
+        let Some((width, height)) = self.resize_pending.due(now_millis()) else {
+            return;
+        };
+        // `size` is the physical client size; store the logical size so
+        // `pixel_size()` reproduces the true physical pixels.
+        let scale = (self.scale as f64).max(0.01);
+        self.logical_size = (
+            (width as f64 / scale).max(1.0).round() as u32,
+            (height as f64 / scale).max(1.0).round() as u32,
+        );
+        self.resize();
+        self.snap_aspect(PhysicalSize::new(width, height));
     }
 
     fn resize(&mut self) {
@@ -3307,5 +3386,60 @@ pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
         if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
             return value;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A macOS fullscreen transition as it was measured on the notch Mac of
+    /// `docs/benchmarking.md` §17: five sizes inside a second, one of them
+    /// taller than the display the window is being animated into, and the
+    /// engine must rebuild once, for the size the window actually keeps.
+    #[test]
+    fn an_animation_through_sizes_rebuilds_once_for_the_last_one() {
+        let mut pending = PendingResize::default();
+        // A quiet window asks and is given nothing.
+        assert_eq!(pending.due(0.0), None);
+
+        // The flight, at display rate: 16 ms apart, and four of these five
+        // sizes are positions in an animation rather than a window's home.
+        for (t, (w, h)) in [
+            (0.0, (4112, 2572)),
+            (16.0, (4112, 2658)),
+            (32.0, (4112, 2572)),
+            (48.0, (4112, 2714)),
+            (64.0, (4112, 2572)),
+        ] {
+            pending.note(w, h, t);
+            assert_eq!(pending.due(t), None, "the window is still in the air");
+        }
+
+        // Frames tick past while it settles; none of them rebuilds.
+        for t in [70.0, 100.0, 140.0] {
+            assert_eq!(pending.due(t), None);
+        }
+
+        // A hundred ms after the last event: once, and only once.
+        assert_eq!(pending.due(164.0), Some((4112, 2572)));
+        assert_eq!(pending.due(200.0), None, "one rebuild per settle");
+    }
+
+    /// The other half of the promise: a dragged window lags the pointer by at
+    /// most the settle window, and lands on the size the pointer was left at.
+    #[test]
+    fn a_drag_settles_at_the_size_it_was_left_at() {
+        let mut pending = PendingResize::default();
+        pending.note(1280, 720, 0.0);
+        assert_eq!(pending.due(99.0), None, "just short is not settled");
+        assert_eq!(pending.due(100.0), Some((1280, 720)));
+
+        // A new drag is a new question: the clock restarts and whatever was
+        // pending is forgotten rather than delivered late.
+        pending.note(800, 600, 120.0);
+        pending.note(640, 480, 130.0);
+        assert_eq!(pending.due(230.0), Some((640, 480)));
+        assert_eq!(pending.due(300.0), None);
     }
 }

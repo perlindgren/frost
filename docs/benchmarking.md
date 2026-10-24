@@ -1107,10 +1107,15 @@ the shader.
 drew into — `drew into 4112x2572 px (2056x1286 at 2.00x) in a 4112x2658 px monitor @
 60.0 Hz, fullscreen: true, visible: Some(true)` — and the event loop logs `window
 occluded`. That readout exists because two inferences about this space were wrong. The
-suspected one was a swap chain left behind by the fullscreen transition; it is not:
-AppKit delivers four resizes inside a second (2056×1286 → 1329 → 1286 → 1357 → 1286
-logical, the last two larger and then smaller than the display itself) and `window
-resized to` followed each one, reconfiguring as it went. What is true is quieter and
+suspected one was a swap chain left behind by the fullscreen transition; it was not left
+behind — it *followed*, and that was a fault of its own. AppKit animates a window into its
+Space and reports every frame of the flight as a resize (2056×1286 → 1329 → 1286 → 1357 →
+1286 logical, one of them a window taller than the display it was being animated into),
+and honouring each one meant allocating drawables for a size no screen has ever had. The
+engine now believes a size only once the platform stops changing its mind —
+`PendingResize`, one rebuild per settle, a tenth of a second after the last event, with
+the measured flight in its test — so that same transition prints **one** `window resized
+to` line, for 4112×2572, and the animation is nobody's allocation any more. What is true is quieter and
 cosmetic: the window settles at the display's 2658 px less 86 — the menu bar's 43 points
 doubled — so a Space reporting `fullscreen: true` draws 3.3 % fewer pixels than the panel
 it fills, which is enough to keep a megapixel count honest and nowhere near enough to
