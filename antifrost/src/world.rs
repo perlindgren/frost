@@ -294,13 +294,13 @@ impl Demo {
             // wide even before the storm calls in the rest (who are
             // re-dealt on activation anyway).
             self.weather.leaves = (0..N_MAX)
-                .map(|lane| Leaf::fresh(lane % N_LEAVES, N_LEAVES, &sky, &mut self.leaf_rng))
+                .map(|lane| Leaf::fresh(lane % N_LEAVES, N_LEAVES, &sky, &mut self.rng))
                 .collect();
             // Scatter the first volley through the air, so the hill
             // opens already in autumn rather than waiting for a fall.
             for leaf in &mut self.weather.leaves {
                 leaf.pos[1] = self
-                    .leaf_rng
+                    .rng
                     .in_range(-h / 2.0 - off[1] + 20.0, h / 2.0 - off[1] + 60.0);
             }
         }
@@ -311,7 +311,7 @@ impl Demo {
         let active = (N_LEAVES as f32 + (N_MAX - N_LEAVES) as f32 * self.frost_t) as usize;
         if active > self.weather.active {
             for i in self.weather.active..active {
-                self.weather.leaves[i] = Leaf::fresh(i, active, &sky, &mut self.leaf_rng);
+                self.weather.leaves[i] = Leaf::fresh(i, active, &sky, &mut self.rng);
             }
         }
         self.weather.active = active;
@@ -323,8 +323,8 @@ impl Demo {
             // redrawn at random moments — speeding up, easing off,
             // sometimes reversing — never a metronome.
             if self.weather.t >= leaf.spin_next {
-                leaf.spin_target = self.leaf_rng.in_range(-1.8, 1.8);
-                leaf.spin_next = self.weather.t + self.leaf_rng.in_range(0.6, 2.4);
+                leaf.spin_target = self.rng.in_range(-1.8, 1.8);
+                leaf.spin_next = self.weather.t + self.rng.in_range(0.6, 2.4);
             }
             leaf.spin_rate += (leaf.spin_target - leaf.spin_rate) * (dt * 2.2).min(1.0);
             leaf.spin += leaf.spin_rate * dt;
@@ -350,12 +350,12 @@ impl Demo {
                 // range reaching past it would hand the flake straight
                 // back, ping-ponging between margins instead of
                 // walking in.
-                leaf.pos[0] = w / 2.0 - off[0] + self.leaf_rng.in_range(0.0, m + reach);
+                leaf.pos[0] = w / 2.0 - off[0] + self.rng.in_range(0.0, m + reach);
             }
             // Past the bottom and the leaf is simply gone — recycled to
             // its lane above the window. No pile, no fade.
             if leaf.pos[1] < -h / 2.0 - off[1] - m {
-                *leaf = Leaf::fresh(i, active, &sky, &mut self.leaf_rng);
+                *leaf = Leaf::fresh(i, active, &sky, &mut self.rng);
             }
             batches[leaf.sprite].spawn(Particle {
                 pos: leaf.pos,
@@ -430,8 +430,8 @@ impl Demo {
             // many zs, and how wide a window. The window is an eighth
             // of the breath, ± a quarter of itself redrawn every
             // cycle, always ending its last z on the crest.
-            let n = (self.leaf_rng.in_range(2.0, 5.0).round() as u32).clamp(2, 5);
-            let w = std::f32::consts::FRAC_PI_4 * self.leaf_rng.in_range(0.75, 1.25);
+            let n = (self.rng.in_range(2.0, 5.0).round() as u32).clamp(2, 5);
+            let w = std::f32::consts::FRAC_PI_4 * self.rng.in_range(0.75, 1.25);
             self.zbloom
                 .insert(id, (n, std::f32::consts::FRAC_PI_2 - w, w / (n - 1) as f32));
         }
@@ -453,14 +453,14 @@ impl Demo {
     /// One z off a sleeper's breath, into the air above its head:
     /// tilted a random way and never quite the same twice.
     pub(crate) fn spawn_z(&mut self, at: [f32; 2]) {
-        let jx = self.leaf_rng.in_range(-6.0, 6.0);
+        let jx = self.rng.in_range(-6.0, 6.0);
         // Three fifths of the old drift and rise — a sleepy exhale —
         // and a life stretched by the same factor, so each z still
         // climbs as high as it ever did, only slower.
-        let vx = self.leaf_rng.in_range(-18.0, 18.0) * 0.6;
-        let vy = self.leaf_rng.in_range(30.0, 48.0) * 0.6;
-        let ttl = self.leaf_rng.in_range(1.6, 2.3) / 0.6;
-        let seed = self.leaf_rng.in_range(0.0, std::f32::consts::TAU);
+        let vx = self.rng.in_range(-18.0, 18.0) * 0.6;
+        let vy = self.rng.in_range(30.0, 48.0) * 0.6;
+        let ttl = self.rng.in_range(1.6, 2.3) / 0.6;
+        let seed = self.rng.in_range(0.0, std::f32::consts::TAU);
         self.zs.push(Zzz {
             at: [at[0] + jx, at[1] + TILE * 0.34],
             vel: [vx, vy],

@@ -783,7 +783,11 @@ struct Demo {
     /// A best run being shown rather than played: `Some` while a hill
     /// replays itself, with its own keys and its own pace.
     replay: Option<Replay>,
-    leaf_rng: Rng,
+    /// The game's one source of randomness: the leaves' deal, the
+    /// zs' jitter, a splash's flare, the wind's gusts — whatever
+    /// wants a number without a reason. Seeded from the clock, so
+    /// no two runs drift the same way.
+    rng: Rng,
     /// The leaf deck, its clock, and how much of it the frost has
     /// called into the air. See [`Weather`].
     weather: Weather,
@@ -931,7 +935,7 @@ impl Demo {
             was_mouse: HashMap::new(),
             route: Vec::new(),
             replay: None,
-            leaf_rng: Rng::default(),
+            rng: Rng::default(),
             weather: Weather {
                 leaves: Vec::new(),
                 seeded: false,
@@ -2224,13 +2228,13 @@ impl Process for Demo {
                 } else {
                     ["YOUR DID IT", "GOOD JOB", "WELL DONE"]
                 };
-                let pick = self.leaf_rng.in_range(0.0, 2.999) as usize;
+                let pick = self.rng.in_range(0.0, 2.999) as usize;
                 let text = praise[pick].to_string();
                 // The word outlives its spin: the won panel reads it,
                 // in the same bright the splash burned.
                 self.verdict = Some((text.clone(), colour));
-                let grow = self.leaf_rng.in_range(1.875, 2.55);
-                let end = self.leaf_rng.in_range(-45.0, 45.0) * std::f32::consts::FRAC_PI_4 / 45.0;
+                let grow = self.rng.in_range(1.875, 2.55);
+                let end = self.rng.in_range(-45.0, 45.0) * std::f32::consts::FRAC_PI_4 / 45.0;
                 self.splash = Some(Splash {
                     text,
                     t: 0.0,
