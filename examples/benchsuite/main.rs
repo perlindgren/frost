@@ -84,8 +84,8 @@
 use std::path::PathBuf;
 
 use frost::{
-    Color, Config, Context, Convex, Light, Process, Scene, SceneNode, Shape, Transform,
-    run_configured,
+    Color, Config, Context, Convex, Light, Particle, ParticleShape, ParticleSystem, Process, Scene,
+    SceneNode, Shape, Transform, run_configured,
 };
 
 /// The window every scenario is measured in: 1080p, the resolution
@@ -108,6 +108,16 @@ struct Scenario {
     /// Lamp radius: how much of the screen each light's loop touches.
     reach: f32,
     moving: bool,
+    /// Live particles in a batch on the node, and the area they cover: as a
+    /// fraction of the window when `p_radius` is 0, so a row's particle count
+    /// can move without its coverage moving, or in user-space pixels when it
+    /// is not, so coverage can move without the count moving. `p_lit` decides
+    /// whether the batch is a lighting receiver — the one place a particle
+    /// frame and a lighting frame are the same question.
+    particles: usize,
+    p_cover: f32,
+    p_radius: f32,
+    p_lit: bool,
     /// The casters' shape: 0 is the suite's box, otherwise the side count
     /// of a regular polygon of the same area — 16 being `DISC_SIDES`, the
     /// packer's plane cap and the engine's own disc.
@@ -133,6 +143,10 @@ const WARM: Scenario = Scenario {
     reach: LAMP_REACH,
     moving: true,
     poly_sides: 0,
+    particles: 0,
+    p_cover: 0.0,
+    p_radius: 0.0,
+    p_lit: false,
 };
 
 /// The suite. Ordered: the cheap floors first, the cliffs last, so a
@@ -147,6 +161,10 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        particles: 0,
+        p_cover: 0.0,
+        p_radius: 0.0,
+        p_lit: false,
     },
     Scenario {
         name: "lamps-4",
@@ -157,6 +175,10 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        particles: 0,
+        p_cover: 0.0,
+        p_radius: 0.0,
+        p_lit: false,
     },
     Scenario {
         name: "lamps-10",
@@ -167,6 +189,10 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        particles: 0,
+        p_cover: 0.0,
+        p_radius: 0.0,
+        p_lit: false,
     },
     Scenario {
         name: "lamps-40",
@@ -177,6 +203,10 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: true,
         poly_sides: 0,
+        particles: 0,
+        p_cover: 0.0,
+        p_radius: 0.0,
+        p_lit: false,
     },
     Scenario {
         name: "lamps-40-static",
@@ -187,6 +217,10 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        particles: 0,
+        p_cover: 0.0,
+        p_radius: 0.0,
+        p_lit: false,
     },
     Scenario {
         name: "occluders-10",
@@ -197,6 +231,10 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        particles: 0,
+        p_cover: 0.0,
+        p_radius: 0.0,
+        p_lit: false,
     },
     Scenario {
         name: "occluders-100",
@@ -207,6 +245,10 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        particles: 0,
+        p_cover: 0.0,
+        p_radius: 0.0,
+        p_lit: false,
     },
     Scenario {
         name: "taps-1",
@@ -217,6 +259,10 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        particles: 0,
+        p_cover: 0.0,
+        p_radius: 0.0,
+        p_lit: false,
     },
     Scenario {
         name: "taps-4",
@@ -227,6 +273,10 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        particles: 0,
+        p_cover: 0.0,
+        p_radius: 0.0,
+        p_lit: false,
     },
     Scenario {
         name: "taps-9",
@@ -237,6 +287,10 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        particles: 0,
+        p_cover: 0.0,
+        p_radius: 0.0,
+        p_lit: false,
     },
     // A control, not a rung: the same nine rays a pixel with nothing to
     // walk — the packer leaves a light's block empty when no occluder
@@ -253,6 +307,10 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        particles: 0,
+        p_cover: 0.0,
+        p_radius: 0.0,
+        p_lit: false,
     },
     // The shape rows. `taps-1` and `taps-9` say what sixty *boxes* cost;
     // these say what sixty shapes cost, same count, same area, same lamps —
@@ -270,6 +328,10 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 6,
+        particles: 0,
+        p_cover: 0.0,
+        p_radius: 0.0,
+        p_lit: false,
     },
     Scenario {
         name: "taps-9-polys",
@@ -280,6 +342,10 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 6,
+        particles: 0,
+        p_cover: 0.0,
+        p_radius: 0.0,
+        p_lit: false,
     },
     Scenario {
         name: "taps-9-discs",
@@ -290,8 +356,170 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 16,
+        particles: 0,
+        p_cover: 0.0,
+        p_radius: 0.0,
+        p_lit: false,
+    },
+    // The particle probe. Two ladders that each hold one thing fixed, because
+    // a batch costs two different things: it costs per particle (instances
+    // emitted, 32 bytes packed — §24 measured that column at ~15 ns each on
+    // the CPU) and it costs per covered pixel (shaded, and shaded again per
+    // light if the batch is lit). `parts-1k/10k/100k` hold the *coverage*
+    // fixed at a quarter of the window while the count runs up two orders of
+    // magnitude, so their slope is the per-particle cost; `parts-10k-big`
+    // holds the count fixed and quadruples the coverage, so the step from
+    // `parts-10k` is the per-pixel cost; and `parts-10k-lit` is the same
+    // frame with the batch as a receiver, which is where §19-§23's work
+    // reaches a particle scene at all.
+    Scenario {
+        name: "parts-1k",
+        lamps: 0,
+        occluders: 0,
+        penumbra: 0.0,
+        taps: 1,
+        reach: LAMP_REACH,
+        moving: false,
+        poly_sides: 0,
+        particles: 1_000,
+        p_cover: 0.25,
+        p_radius: 0.0,
+        p_lit: false,
+    },
+    Scenario {
+        name: "parts-10k",
+        lamps: 0,
+        occluders: 0,
+        penumbra: 0.0,
+        taps: 1,
+        reach: LAMP_REACH,
+        moving: false,
+        poly_sides: 0,
+        particles: 10_000,
+        p_cover: 0.25,
+        p_radius: 0.0,
+        p_lit: false,
+    },
+    Scenario {
+        name: "parts-100k",
+        lamps: 0,
+        occluders: 0,
+        penumbra: 0.0,
+        taps: 1,
+        reach: LAMP_REACH,
+        moving: false,
+        poly_sides: 0,
+        particles: 100_000,
+        p_cover: 0.25,
+        p_radius: 0.0,
+        p_lit: false,
+    },
+    Scenario {
+        name: "parts-10k-big",
+        lamps: 0,
+        occluders: 0,
+        penumbra: 0.0,
+        taps: 1,
+        reach: LAMP_REACH,
+        moving: false,
+        poly_sides: 0,
+        particles: 10_000,
+        p_cover: 1.0,
+        p_radius: 0.0,
+        p_lit: false,
+    },
+    // A canary for the rows above: 200 circles of 500 user pixels each is a
+    // hundred times the window's area in one batch. If the batch is drawn at
+    // all this row is dramatically slower than `fill-1080p`; if it is not,
+    // the two read the same and every other particle row here is measuring
+    // an empty frame.
+    Scenario {
+        name: "parts-huge",
+        lamps: 0,
+        occluders: 0,
+        penumbra: 0.0,
+        taps: 1,
+        reach: LAMP_REACH,
+        moving: false,
+        poly_sides: 0,
+        particles: 200,
+        p_cover: 0.0,
+        p_radius: 500.0,
+        p_lit: false,
+    },
+    // The two rows that ask the one question particles and lighting share: the
+    // same batch over the same ten lamps, once as an unlit quad layer and once
+    // as a receiver that pays `light_mix` per covered pixel. Their difference
+    // is what §19-§23 bought a particle scene. A `lit` row with no lamps in it
+    // — the first version of this row — asks nothing at all, which is worth
+    // recording because that is how it shipped for an hour.
+    Scenario {
+        name: "parts-10k-lamps",
+        lamps: 10,
+        occluders: 0,
+        penumbra: 0.0,
+        taps: 1,
+        reach: LAMP_REACH,
+        moving: false,
+        poly_sides: 0,
+        particles: 10_000,
+        p_cover: 0.25,
+        p_radius: 0.0,
+        p_lit: false,
+    },
+    Scenario {
+        name: "parts-10k-lit",
+        lamps: 10,
+        occluders: 0,
+        penumbra: 0.0,
+        taps: 1,
+        reach: LAMP_REACH,
+        moving: false,
+        poly_sides: 0,
+        particles: 10_000,
+        p_cover: 0.25,
+        p_radius: 0.0,
+        p_lit: true,
     },
 ];
+
+/// A static batch of `n` particles, scattered over the window by the suite's
+/// own scatter and sized so the batch covers `cover` of the window's area: a
+/// circle's area is pi r^2, shared over n of them.
+fn batch(n: usize, cover: f32, radius: f32) -> ParticleSystem {
+    let r = if radius > 0.0 {
+        radius
+    } else {
+        (W * H * cover / (n as f32 * std::f32::consts::PI)).sqrt()
+    };
+    let mut sys = ParticleSystem::new();
+    let mut bits = 2463534242u32;
+    for _ in 0..n {
+        bits ^= bits << 13;
+        bits ^= bits >> 17;
+        bits ^= bits << 5;
+        let a = (bits >> 8) as f32 / 16777216.0;
+        bits ^= bits << 13;
+        bits ^= bits >> 17;
+        bits ^= bits << 5;
+        let b = (bits >> 8) as f32 / 16777216.0;
+        sys.spawn(Particle {
+            pos: [a * W - W / 2.0, b * H - H / 2.0],
+            vel: [0.0; 2],
+            life: 9.0,
+            max_life: 9.0,
+            size: r,
+            angle: 0.0,
+            color: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+        });
+    }
+    sys
+}
 
 /// The scatter both lamps and occluders use: deterministic, uniform,
 /// and identical across runs so no A/B ever compares two different
@@ -341,6 +569,22 @@ fn build(s: &Scenario) -> Vec<SceneNode> {
         nodes.push(SceneNode {
             shape: Some(Shape::Light { light }),
             transform: Transform::translate(scatter(i)),
+            ..Default::default()
+        });
+    }
+    if s.particles > 0 {
+        nodes.push(SceneNode {
+            shape: Some(Shape::Particles {
+                system: batch(s.particles, s.p_cover, s.p_radius),
+                color: Color {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
+                shape: ParticleShape::Circle,
+            }),
+            lit: s.p_lit,
             ..Default::default()
         });
     }

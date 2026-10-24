@@ -1659,3 +1659,61 @@ have been the finding — a packing function needing work — was an artifact of
 their coverage costs, or what a *lit* batch pays through `light_mix` per covered pixel — which
 is the one place particles and lighting genuinely meet, and the subject of the probe that
 follows.
+
+## 25. Particles meet the frame: cheap until they are lit (2026-10-24, Apple M4 Max)
+
+§24 measured the CPU phase of a particle batch and could say nothing about the frame it lands
+in. This is the GPU side, and it went into the benchsuite rather than a hand-built bridge,
+because the suite renders through the real renderer and a second implementation of the particle
+pipeline would have drifted from the first. The rows: a batch's count, its coverage, and its
+`lit` flag, with the two ladders built to hold one thing fixed each — `parts-1k/10k/100k`
+keep the *coverage* at a quarter of the window while the count runs up two orders of
+magnitude, and `parts-10k-big` holds the count and quadruples the coverage. `parts-huge` is
+the canary the whole set needed: 200 circles of 500 user pixels, about a hundred times the
+window's area.
+
+Two findings, one anomaly, and one design flaw worth naming.
+
+**A batch is cheap unlit and expensive lit.** Run twice in opposite row orders, median of two
+reps each, fullscreen 4112×2572, ten lamps, no occluders:
+
+| row | order A | order B | above the control |
+| --- | --- | --- | --- |
+| `lamps-10` — no batch | 2.88 ms | 2.87 ms | — |
+| `parts-10k-lamps` — 10 000 particles, unlit | 2.92 ms | 2.91 ms | **+0.04 ms** |
+| `parts-10k-lit` — the same batch, `lit: true` | 3.45 ms | 3.47 ms | **+0.57 ms** |
+
+Twenty-five percent of the window's coverage costs 1.4 % of the frame as an unlit quad layer
+and 20 % of it as a lighting receiver — **fourteen times the difference for identical pixels**,
+because a lit particle pays `light_mix` per covered pixel per light like any other receiver.
+That is the one place a particle frame and a lighting frame are the same question, and it is
+the reason §19–§23's work reaches a particle scene at all. *Prediction, unmeasured:* a lit
+batch over the cliff scene of §23 should pay the occluder walk per covered pixel too, which
+would make a particle effect in front of a penumbra the most expensive frame in the engine.
+
+**Coverage, not count, is where a particle frame dies.** `parts-huge` read 8.22 ms against the
+2.75 ms of the same frame without it — +5.5 ms, two orders of magnitude outside the noise of
+everything else here. Count, at fixed coverage, barely moves: 10 000 particles are 0.04 ms
+unlit, and §24's ~15 ns a particle says why 100 000 of them only reach ~1.5 ms of CPU.
+
+**The control inversion I could not explain, and the count ladder it disqualifies.** In the
+first ladder, `fill-1080p` — the same scene with no batch at all, same lamp count, same
+everything — read *slower* than the rows carrying particles: 2.74 ms against `parts-10k`'s
+2.50 ms, in both passes, with reps tight inside each row. Rows that ought to be equal differed
+by 0.3 ms, which is larger than the whole effect the ladder was built to see. The swapped run
+above rules out row order as the mechanism: the control read 2.88 first and 2.87 last. So the
+`parts-1k/10k/100k` numbers stay in the table and out of the conclusions — **a control that
+disagrees with its treatment by more than the treatment's effect is not an instrument, and
+these rows need that anomaly explained before they are quoted.**
+
+**The flaw, because it is the instructive kind.** `parts-10k-lit` first shipped with `lamps: 0`
+in it: a receiver row in a scene with nothing to receive. It read 2.48 ms, it looked like
+evidence that lighting barely costs a batch, and it answered a question nobody had asked. The
+row now carries ten lamps and has an unlit twin beside it, and the answer changed by a factor
+of fourteen.
+
+**One apparent contradiction, resolved.** §24 measured the pack at ~17 ns a particle —
+0.17 ms for these 10 000 — yet the unlit row adds 0.04 ms to the frame. Both are right: the
+frame here is GPU-bound at 2.88 ms, so the CPU phase hides underneath the GPU's work instead of
+lengthening the frame. §24's number bites when the CPU phase becomes the critical path — a
+short frame, a heavy batch, or a scene too cheap to keep the GPU busy — and not before.
