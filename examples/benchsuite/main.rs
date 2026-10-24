@@ -23,6 +23,10 @@
 //! * `taps-1/4/9`        — the penumbra ladder and its divergence; the
 //!   ninth rung is the cliff, heaviest by a mile and the row where a GPU's
 //!   real throughput has to show.
+//! * `polys-60`, `taps-9-polys`, `taps-9-discs` — the casters' *shape*:
+//!   sixty hexagons and sixty 16-sided discs at the boxes' own area, so the
+//!   rows against `taps-1` and `taps-9` say what a polygon's edges cost on
+//!   top of the box's bounds. Without them the polygon path is unmeasured.
 //! * `taps-9-clear`      — a control, not a rung: nine rays a pixel with
 //!   an empty block to walk, so `taps-9` minus it is the walk and it minus
 //!   `lamps-10` is the rays. It says whether the penumbra ladder is spent
@@ -80,7 +84,8 @@
 use std::path::PathBuf;
 
 use frost::{
-    Color, Config, Context, Light, Process, Scene, SceneNode, Shape, Transform, run_configured,
+    Color, Config, Context, Convex, Light, Process, Scene, SceneNode, Shape, Transform,
+    run_configured,
 };
 
 /// The window every scenario is measured in: 1080p, the resolution
@@ -103,6 +108,10 @@ struct Scenario {
     /// Lamp radius: how much of the screen each light's loop touches.
     reach: f32,
     moving: bool,
+    /// The casters' shape: 0 is the suite's box, otherwise the side count
+    /// of a regular polygon of the same area — 16 being `DISC_SIDES`, the
+    /// packer's plane cap and the engine's own disc.
+    poly_sides: u8,
 }
 
 const LAMP_REACH: f32 = 380.0;
@@ -123,6 +132,7 @@ const WARM: Scenario = Scenario {
     taps: 1,
     reach: LAMP_REACH,
     moving: true,
+    poly_sides: 0,
 };
 
 /// The suite. Ordered: the cheap floors first, the cliffs last, so a
@@ -136,6 +146,7 @@ const SCENARIOS: &[Scenario] = &[
         taps: 1,
         reach: LAMP_REACH,
         moving: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "lamps-4",
@@ -145,6 +156,7 @@ const SCENARIOS: &[Scenario] = &[
         taps: 1,
         reach: LAMP_REACH,
         moving: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "lamps-10",
@@ -154,6 +166,7 @@ const SCENARIOS: &[Scenario] = &[
         taps: 1,
         reach: LAMP_REACH,
         moving: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "lamps-40",
@@ -163,6 +176,7 @@ const SCENARIOS: &[Scenario] = &[
         taps: 1,
         reach: LAMP_REACH,
         moving: true,
+        poly_sides: 0,
     },
     Scenario {
         name: "lamps-40-static",
@@ -172,6 +186,7 @@ const SCENARIOS: &[Scenario] = &[
         taps: 1,
         reach: LAMP_REACH,
         moving: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "occluders-10",
@@ -181,6 +196,7 @@ const SCENARIOS: &[Scenario] = &[
         taps: 1,
         reach: LAMP_REACH,
         moving: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "occluders-100",
@@ -190,6 +206,7 @@ const SCENARIOS: &[Scenario] = &[
         taps: 1,
         reach: LAMP_REACH,
         moving: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "taps-1",
@@ -199,6 +216,7 @@ const SCENARIOS: &[Scenario] = &[
         taps: 1,
         reach: LAMP_REACH,
         moving: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "taps-4",
@@ -208,6 +226,7 @@ const SCENARIOS: &[Scenario] = &[
         taps: 4,
         reach: LAMP_REACH,
         moving: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "taps-9",
@@ -217,6 +236,7 @@ const SCENARIOS: &[Scenario] = &[
         taps: 9,
         reach: LAMP_REACH,
         moving: false,
+        poly_sides: 0,
     },
     // A control, not a rung: the same nine rays a pixel with nothing to
     // walk — the packer leaves a light's block empty when no occluder
@@ -232,6 +252,44 @@ const SCENARIOS: &[Scenario] = &[
         taps: 9,
         reach: LAMP_REACH,
         moving: false,
+        poly_sides: 0,
+    },
+    // The shape rows. `taps-1` and `taps-9` say what sixty *boxes* cost;
+    // these say what sixty shapes cost, same count, same area, same lamps —
+    // and a polygon's cost is not the box's: its bounds are only the cheap
+    // reject in front of a walk over the shape's edges, up to sixteen of
+    // them, and `clip_planes` is run per ray. Without these rows the shape
+    // is unmeasured, and an optimisation aimed at it would be the guess
+    // `docs/benchmarking.md` §19 is a lesson against.
+    Scenario {
+        name: "polys-60",
+        lamps: 10,
+        occluders: 60,
+        penumbra: 0.0,
+        taps: 1,
+        reach: LAMP_REACH,
+        moving: false,
+        poly_sides: 6,
+    },
+    Scenario {
+        name: "taps-9-polys",
+        lamps: 10,
+        occluders: 60,
+        penumbra: LAMP_PENUMBRA,
+        taps: 9,
+        reach: LAMP_REACH,
+        moving: false,
+        poly_sides: 6,
+    },
+    Scenario {
+        name: "taps-9-discs",
+        lamps: 10,
+        occluders: 60,
+        penumbra: LAMP_PENUMBRA,
+        taps: 9,
+        reach: LAMP_REACH,
+        moving: false,
+        poly_sides: 16,
     },
 ];
 
@@ -331,7 +389,27 @@ impl Process for Suite {
         // moving camera must; positions ride the same scatter.
         for i in 0..s.occluders {
             let [x, y] = scatter(i + s.lamps * 7919);
-            ctx.occluder(Transform::translate([x, y]), [0.0, 0.0], [90.0, 60.0]);
+            if s.poly_sides == 0 {
+                ctx.occluder(Transform::translate([x, y]), [0.0, 0.0], [90.0, 60.0]);
+                continue;
+            }
+            // Same area as the suite's 180x120 box, so the rows differ in
+            // their shape and not in how much of the screen they cover: a
+            // regular polygon's area is (1/2) n R^2 sin(2 pi / n).
+            let n = s.poly_sides as f32;
+            let radius = (2.0 * 21600.0 / (n * (2.0 * std::f32::consts::PI / n).sin())).sqrt();
+            let shape = if s.poly_sides >= 16 {
+                Convex::disc([0.0, 0.0], radius)
+            } else {
+                let points: Vec<[f32; 2]> = (0..s.poly_sides as usize)
+                    .map(|k| {
+                        let a = 2.0 * std::f32::consts::PI * k as f32 / n;
+                        [a.cos() * radius, a.sin() * radius]
+                    })
+                    .collect();
+                Convex::new(&points).expect("a regular polygon is convex")
+            };
+            ctx.occluder_polygon(Transform::translate([x, y]), &shape);
         }
         self.t += dt;
         if self.t > 1.0 {

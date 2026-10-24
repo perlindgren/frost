@@ -86,6 +86,9 @@ struct Scenario {
     occ2: u32,
     /// Marks a row that needs the layers' fields to exist at all.
     layered: bool,
+    /// The casters' shape: 0 is the suite's box, otherwise the side count of
+    /// a regular polygon of the box's area — 16 being `DISC_SIDES`.
+    poly_sides: u8,
 }
 
 /// Whether this checkout can name layers. The strip against a pre-merge
@@ -111,6 +114,7 @@ const SCENARIOS: &[Scenario] = &[
         occ: 1,
         occ2: 0,
         layered: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "lamps-4",
@@ -125,6 +129,7 @@ const SCENARIOS: &[Scenario] = &[
         occ: 1,
         occ2: 0,
         layered: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "lamps-10",
@@ -139,6 +144,7 @@ const SCENARIOS: &[Scenario] = &[
         occ: 1,
         occ2: 0,
         layered: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "lamps-40",
@@ -153,6 +159,7 @@ const SCENARIOS: &[Scenario] = &[
         occ: 1,
         occ2: 0,
         layered: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "lamps-40-static",
@@ -167,6 +174,7 @@ const SCENARIOS: &[Scenario] = &[
         occ: 1,
         occ2: 0,
         layered: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "occluders-10",
@@ -181,6 +189,7 @@ const SCENARIOS: &[Scenario] = &[
         occ: 1,
         occ2: 0,
         layered: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "occluders-100",
@@ -195,6 +204,7 @@ const SCENARIOS: &[Scenario] = &[
         occ: 1,
         occ2: 0,
         layered: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "taps-1",
@@ -209,6 +219,7 @@ const SCENARIOS: &[Scenario] = &[
         occ: 1,
         occ2: 0,
         layered: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "taps-4",
@@ -223,6 +234,7 @@ const SCENARIOS: &[Scenario] = &[
         occ: 1,
         occ2: 0,
         layered: false,
+        poly_sides: 0,
     },
     Scenario {
         name: "taps-9",
@@ -237,6 +249,7 @@ const SCENARIOS: &[Scenario] = &[
         occ: 1,
         occ2: 0,
         layered: false,
+        poly_sides: 0,
     },
     // A control, not a rung: the same nine rays a pixel with nothing to
     // walk — the packer leaves a light's block empty when no occluder
@@ -257,6 +270,54 @@ const SCENARIOS: &[Scenario] = &[
         occ: 1,
         occ2: 0,
         layered: false,
+        poly_sides: 0,
+    },
+    // The shape rows, mirroring the suite's: sixty hexagons and sixty
+    // 16-sided discs at the boxes' own area.
+    Scenario {
+        name: "polys-60",
+        lamps: 10,
+        occluders: 60,
+        penumbra: 0.0,
+        taps: 1,
+        reach: LAMP_REACH,
+        moving: false,
+        recv: 1,
+        lamp: 1,
+        occ: 1,
+        occ2: 0,
+        layered: false,
+        poly_sides: 6,
+    },
+    Scenario {
+        name: "taps-9-polys",
+        lamps: 10,
+        occluders: 60,
+        penumbra: LAMP_PENUMBRA,
+        taps: 9,
+        reach: LAMP_REACH,
+        moving: false,
+        recv: 1,
+        lamp: 1,
+        occ: 1,
+        occ2: 0,
+        layered: false,
+        poly_sides: 6,
+    },
+    Scenario {
+        name: "taps-9-discs",
+        lamps: 10,
+        occluders: 60,
+        penumbra: LAMP_PENUMBRA,
+        taps: 9,
+        reach: LAMP_REACH,
+        moving: false,
+        recv: 1,
+        lamp: 1,
+        occ: 1,
+        occ2: 0,
+        layered: false,
+        poly_sides: 16,
     },
     // The three rows the merge bought: same pixel counts, same fields,
     // the masks pointed away.
@@ -273,6 +334,7 @@ const SCENARIOS: &[Scenario] = &[
         occ: 1,
         occ2: 0,
         layered: true,
+        poly_sides: 0,
     },
     Scenario {
         name: "taps-9-layers",
@@ -287,6 +349,7 @@ const SCENARIOS: &[Scenario] = &[
         occ: 1 << 1,
         occ2: 0,
         layered: true,
+        poly_sides: 0,
     },
     Scenario {
         name: "taps-9-half",
@@ -301,6 +364,7 @@ const SCENARIOS: &[Scenario] = &[
         occ: 1,
         occ2: 1 << 1,
         layered: true,
+        poly_sides: 0,
     },
 ];
 
@@ -399,11 +463,35 @@ fn declared(s: &Scenario) -> Vec<crate::canvas::Occluder> {
             } else {
                 s.occ
             };
+            // The shape rows: a regular polygon of the box's own area, so a
+            // row's cost is about its edges and not about its coverage. The
+            // footprint stays the box the walk rejects on first — the bounds
+            // around the shape, which is what the packer ships.
+            let (half, polygon) = if s.poly_sides == 0 {
+                ([90.0, 60.0], None)
+            } else {
+                let n = s.poly_sides as f32;
+                let radius = (2.0 * 21600.0 / (n * (2.0 * std::f32::consts::PI / n).sin())).sqrt();
+                let points: Vec<[f32; 2]> = (0..s.poly_sides as usize)
+                    .map(|k| {
+                        let a = 2.0 * std::f32::consts::PI * k as f32 / n;
+                        [a.cos() * radius, a.sin() * radius]
+                    })
+                    .collect();
+                let half = [
+                    points.iter().fold(0.0f32, |m, p| m.max(p[0].abs())),
+                    points.iter().fold(0.0f32, |m, p| m.max(p[1].abs())),
+                ];
+                (
+                    half,
+                    Some(crate::Convex::new(&points).expect("a regular polygon is convex")),
+                )
+            };
             Occluder {
                 world: Transform::translate([x + W / 2.0, y + H / 2.0]),
                 center: [0.0, 0.0],
-                half: [90.0, 60.0],
-                polygon: None,
+                half,
+                polygon,
 
                 layers: LightLayers::from_bits(mask),
             }

@@ -1445,3 +1445,45 @@ the cliff, then 12.53 in §19, now 5.29 — and the comparison with Godot's soft
 on the same 4112×2572 surface at 4.09 ms, has gone from 4.1× to 1.3×. §18's conclusion about
 *why* the two engines differ still stands; its arithmetic no longer does, and anyone quoting
 the gap should quote this section's number instead.
+
+## 21. What a shape costs: the polygon baseline (2026-10-24, Apple M4 Max)
+
+§20 ends with boxes only, and that is a limitation with a consequence: nothing in the suite
+had ever measured a caster that was not a rectangle, so the polygon path — where a ray that
+passes the bounds goes on to walk the shape's edges, up to sixteen of them, once *per ray* —
+was optimised by argument alone. Before aiming anything at it, the rows.
+
+Three new ones, in both tables, named for what they add: `polys-60` (ten lamps, sixty
+hexagons, one hard ray), `taps-9-polys` (the same at nine) and `taps-9-discs` (sixty
+`DISC_SIDES`-sided discs, the packer's plane cap, at nine). The casters carry the suite's
+own screen area — a regular polygon of 21 600 px², the box's 180×120 — so a row differs from
+`taps-1` and `taps-9` in its edges and not in its coverage, and the comparison is about shape.
+Fullscreen at 4112×2572, median of three reps, one pass; the canary read 3.6×, loud by §3's
+gate, so this is a baseline in the sense of *the first measurement of something*, not a
+verdict against another build:
+
+| row | ms/frame | above the 2.82 ms floor | per extra ray |
+| --- | --- | --- | --- |
+| `taps-1` — sixty boxes, one ray | 4.44 | 1.62 | — |
+| `polys-60` — sixty hexagons, one ray | 4.49 | 1.67 | — |
+| `taps-9` — sixty boxes, nine rays | **5.83** | 3.01 | 0.17 ms |
+| `taps-9-polys` — sixty hexagons, nine rays | **21.98** | 19.16 | **2.19 ms** |
+| `taps-9-discs` — sixty discs, nine rays | **38.46** | 35.64 | **4.25 ms** |
+
+**At one ray a hexagon is free: 4.49 ms against a box's 4.44.** The shape only starts to
+cost when the disk opens — nine rays take it to 21.98 ms, 3.8× the box row's 5.83, and a
+disc's sixteen edges take it to 38.46 ms. Per extra ray, a hexagon is 12.6× a box and a disc
+24×. Two things follow, and it is worth being clear about which is which. Some of the gap is
+the §20 reject working as designed on boxes and being denied to polygons, so boxes get one
+whole-disk test per record while a polygon tests its bounds nine times and then walks its
+edges. And some of it is the plane walk itself, which `clip_planes` still runs **once per
+ray**, reloading every plane each time and recomputing the pixel's side of it — `n · lp`,
+which cannot change between taps — even though the disk's nine rays share it.
+
+So the polygon path is now the cliff in this engine, larger than the box cliff that §19 and
+§20 spent a day halving, and a scene of discs costs six times what the same scene of boxes
+costs. Two candidate fixes are the same two the baseline was written to size: fusing the
+plane walk over taps, which is §19's argument applied to the edges instead of the record, and
+the plane-based whole-disk reject, which needs the packer's plane derivation read before it
+can be trusted. **Neither is measured yet, and this section's whole purpose is that the next
+number written about polygons is compared against these ones rather than against a guess.**
