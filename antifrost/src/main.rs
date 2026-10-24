@@ -1288,8 +1288,8 @@ impl Demo {
 
     /// The gamepad's step this frame, if a new one: an aimed pad
     /// fires once, like a key's press edge — and holding the right
-    /// trigger (`rt`, and its analog deep-press `r2`) turns the step
-    /// into a shove, the pad's own Shift.
+    /// shoulder (`r1`) or the big trigger behind it (`r2`) turns the
+    /// step into a shove, the pad's own Shift.
     fn pad_action(&mut self, ctx: &Context) -> Option<(game::Dir, bool)> {
         let now = self.pad_aim(ctx);
         let edge = now.filter(|d| Some(*d) != self.pad_dir);

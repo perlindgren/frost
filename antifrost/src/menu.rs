@@ -1387,10 +1387,10 @@ impl Demo {
                 let top = plain_top(6, step, h);
                 for (i, line) in [
                     "left stick or dpad to move",
-                    "rt with a direction to push",
+                    "r1 or r2 with a direction to push",
                     "square detaches",
-                    "lt for undo",
-                    "lt2 to restart",
+                    "l1 to undo",
+                    "l2 to restart",
                     "back",
                 ]
                 .into_iter()
@@ -2445,10 +2445,10 @@ mod menu_tests {
                 Page::Gamepad,
                 &[
                     "left stick or dpad to move",
-                    "rt with a direction to push",
+                    "r1 or r2 with a direction to push",
                     "square detaches",
-                    "lt for undo",
-                    "lt2 to restart",
+                    "l1 to undo",
+                    "l2 to restart",
                 ][..],
             ),
         ] {
