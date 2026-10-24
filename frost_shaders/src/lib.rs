@@ -47,19 +47,24 @@ pub const DISSOLVE: &str = include_str!("../shaders/dissolve.wgsl");
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// The program must compile behind the engine's lighting prelude
     /// exactly as the engine's own lit kinds do — parse and
     /// device-side validation, the two stages wgpu runs. If the
     /// engine's contract (`LIGHTING_WGSL` prepended, the two fragment
-    /// entry points, the sprite bindings) ever moves, this fails on
-    /// the shelf rather than inside the next app that borrows the
-    /// program. Gated as `frost::validate_wgsl` itself is: naga
-    /// stands ready in native debug builds.
+    /// entry points, the sprite bindings) ever moves, this fails on the
+    /// shelf rather than inside the next app that borrows the program.
+    /// Gated as `frost::validate_wgsl` itself is: naga stands ready in
+    /// native debug builds. The import rides that same gate by sitting
+    /// inside the test, because a module-level `use super::*` is dead
+    /// code in a release build — this is the module's only test and it
+    /// is compiled out there — and
+    /// `cargo clippy --release --all-targets -- -D warnings` fails a
+    /// clean tree on the strength of it.
     #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
     #[test]
     fn the_dissolve_program_keeps_the_contract() {
+        use super::DISSOLVE;
+
         let joined = format!("{}\n{DISSOLVE}", frost::LIGHTING_WGSL);
         if let Err(err) = frost::validate_wgsl(&joined) {
             panic!("dissolve.wgsl fails behind the prelude: {err}");
