@@ -7,6 +7,40 @@
 
 use crate::*;
 
+/// The menu's memory, grouped off `Demo`: which row is lit, where
+/// the pointer stood, the held arrows' repeat clocks, the slider
+/// under the button, the progress page's scroll, and the overlay's
+/// breath. The pages reach the same record through `Demo::menu`.
+pub(crate) struct MenuNav {
+    /// The highlighted row — what the arrow keys walk and Enter
+    /// presses. The one highlight there is: the pointer takes the
+    /// selection over when it moves onto a row, clicks press theirs
+    /// and take it too, and pages reset it to the top as they open.
+    pub(crate) sel: usize,
+    /// Where the pointer stood last menu frame, so motion can be
+    /// told from mere presence: a parked cursor must not out-vote
+    /// the arrow keys.
+    pub(crate) last_pointer: Option<[f32; 2]>,
+    /// The repeat clocks of held menu arrows: for each arrow still
+    /// down, the time left before its next step. Written by
+    /// [`Demo::nav_held`] — the first press answers at once and arms
+    /// the delay; each frame held spends the clock down, arming one
+    /// beat per step. A released key simply stops being paid; the
+    /// next press re-arms the whole delay.
+    pub(crate) nav_timer: HashMap<KeyCode, f32>,
+    /// The slider currently under the button, if any.
+    pub(crate) drag: Option<Slider>,
+    /// The first hill row the progress page shows: the window that
+    /// slides as the selection (or the wheel) walks past its edges.
+    pub(crate) progress_top: usize,
+    /// The overlay's breath: every menu — main, settings, the won
+    /// hill's panel — fades through this alpha rather than snapping.
+    pub(crate) alpha: f32,
+    /// Which page the overlay paints: the live one while a menu is
+    /// up, and the last one held while the layer fades out.
+    pub(crate) page: Page,
+}
+
 /// The page the app shows: the hill itself, the menu it opens onto,
 /// or the settings the menu leads to. The menu pages pause the hill —
 /// no key, click, or queued step reaches the game behind them, and
@@ -323,7 +357,7 @@ impl Demo {
         let z = UI + 10.0;
         // Everything the overlay owns breathes together — veil,
         // plate, rows, verdict — through one alpha held by `process`.
-        let a = self.menu_alpha;
+        let a = self.menu.alpha;
         let fade = |c: Color| Color { a: c.a * a, ..c };
         ctx.rectangle(
             0.0,
@@ -338,7 +372,7 @@ impl Demo {
             },
             z,
         );
-        let rows = self.menu_rows(self.menu_page, h);
+        let rows = self.menu_rows(self.menu.page, h);
         if rows.is_empty() {
             return;
         }
@@ -347,7 +381,7 @@ impl Demo {
         // The plate is as wide as its page's widest claim: the ledger
         // spends a number, a name, a score, and a map, so it takes
         // the widest hall of any page on the menu.
-        let plate_hw = match self.menu_page {
+        let plate_hw = match self.menu.page {
             Page::Progress => PROGRESS_PLATE,
             Page::Settings | Page::Keyboard | Page::Mouse => 380.0,
             _ => 300.0,
@@ -362,7 +396,7 @@ impl Demo {
         // stride below the last row — a ledger row's stride is its
         // fat one, the plain pages' is the menu step. Centre and
         // half-height both shift by the difference.
-        let bottom_pad = plate_bottom_pad(self.menu_page, h);
+        let bottom_pad = plate_bottom_pad(self.menu.page, h);
         let top_pad = plate_top_pad(h);
         let pcx = 0.0;
         let pcy = (top + bot) / 2.0 + (top_pad - bottom_pad) / 2.0;
@@ -411,7 +445,7 @@ impl Demo {
         // both name their ground — the title answers the same banner
         // the player has been reading all run. Settings is its own
         // room and keeps its own sign.
-        let title: String = match self.menu_page {
+        let title: String = match self.menu.page {
             Page::Settings => "SETTINGS".to_string(),
             Page::Keyboard => "KEYBOARD".to_string(),
             Page::Mouse => "MOUSE".to_string(),
@@ -435,7 +469,7 @@ impl Demo {
         // The won hill's verdict: the word its splash just spoke,
         // now read plainly in the strip between the HUD's band and
         // the plate's top — verdict overhead, choices under foot.
-        if self.menu_page == Page::Won
+        if self.menu.page == Page::Won
             && let Some((word, colour)) = &self.verdict
         {
             // The plate's top and the score banner's bottom are
@@ -461,7 +495,7 @@ impl Demo {
         // each light their own row — the two-emission state a separate
         // hover used to allow.
         for (i, r) in rows.iter().enumerate() {
-            let hot = i == self.menu_sel;
+            let hot = i == self.menu.sel;
             // A row with no road left in it: `next` greys when the
             // hill underfoot is all the descent still owes — the
             // same rule the key obeys, asked at the same lip.
@@ -549,7 +583,7 @@ impl Demo {
         // every cell of every visible hill is a tinted placement of
         // one white pixel, and the node's clip cuts the column to
         // the plate — scroll and all of it rides together.
-        if self.menu_page == Page::Progress {
+        if self.menu.page == Page::Progress {
             self.draw_minimaps(ctx, &rows, h, z, a);
             self.draw_progress_marks(ctx, &rows, h, z, a);
         }
@@ -822,13 +856,13 @@ impl Demo {
             Action::Resume => self.page = Page::Game,
             Action::OpenSettings => {
                 self.page = Page::Settings;
-                self.drag = None;
-                self.menu_sel = 0;
+                self.menu.drag = None;
+                self.menu.sel = 0;
             }
             Action::OpenProgress => {
                 self.page = Page::Progress;
-                self.menu_sel = 0;
-                self.progress_top = 0;
+                self.menu.sel = 0;
+                self.menu.progress_top = 0;
             }
             Action::Next => {
                 // The greyed row answers nothing, whichever key or
@@ -864,15 +898,15 @@ impl Demo {
             Action::Exit => ctx.exit(),
             Action::Keyboard => {
                 self.page = Page::Keyboard;
-                self.menu_sel = 0;
+                self.menu.sel = 0;
             }
             Action::Mouse => {
                 self.page = Page::Mouse;
-                self.menu_sel = 0;
+                self.menu.sel = 0;
             }
             Action::Back => {
                 self.page = Page::Main;
-                self.menu_sel = 0;
+                self.menu.sel = 0;
             }
             Action::Vsync => {
                 self.settings.vsync = !self.settings.vsync;
@@ -909,7 +943,7 @@ impl Demo {
     /// once.
     pub(crate) fn menu_input(&mut self, ctx: &mut Context, dt: f32) {
         let pointer = ctx.mouse_position();
-        if let Some(sl) = self.drag {
+        if let Some(sl) = self.menu.drag {
             if ctx.mouse_button_down(MouseButton::Left) {
                 if let Some([x, _]) = pointer {
                     let frac = slide_value(x, MENU_TRACK_CX, MENU_TRACK_HALF);
@@ -919,7 +953,7 @@ impl Demo {
                     }
                 }
             } else {
-                self.drag = None;
+                self.menu.drag = None;
                 self.settings.save();
             }
         }
@@ -932,7 +966,7 @@ impl Demo {
         let h = self.view(ctx).1;
         let rows = self.menu_rows(self.page, h);
         if !rows.is_empty() {
-            self.menu_sel = self.menu_sel.min(rows.len() - 1);
+            self.menu.sel = self.menu.sel.min(rows.len() - 1);
             // The ledger leans: at its window's edges the arrow keys
             // slide the window over the hills instead of wrapping —
             // and the wheel drags the window directly, lines for
@@ -944,49 +978,49 @@ impl Demo {
             let down = self.nav_held(ctx, dt, KeyCode::ArrowDown);
             if self.page == Page::Progress {
                 let hills = rows.len() - 1; // the pinned back row aside
-                let more = self.levels.len() > self.progress_top + hills;
-                if up && self.menu_sel == 0 && self.progress_top > 0 {
-                    self.progress_top -= 1;
-                } else if down && self.menu_sel + 1 == hills && more {
-                    self.progress_top += 1;
-                } else if up && self.menu_sel == 0 {
+                let more = self.levels.len() > self.menu.progress_top + hills;
+                if up && self.menu.sel == 0 && self.menu.progress_top > 0 {
+                    self.menu.progress_top -= 1;
+                } else if down && self.menu.sel + 1 == hills && more {
+                    self.menu.progress_top += 1;
+                } else if up && self.menu.sel == 0 {
                     // The top chevron's promise: the last hill of
                     // the ledger — a hill, not the back row — and the
                     // window leans so that hill stands in view.
                     let (top, sel) = wrap_to_last(self.levels.len(), hills);
-                    self.progress_top = top;
-                    self.menu_sel = sel;
-                } else if down && self.menu_sel + 1 == rows.len() {
+                    self.menu.progress_top = top;
+                    self.menu.sel = sel;
+                } else if down && self.menu.sel + 1 == rows.len() {
                     // And the bottom chevron's: home to the first
                     // hill, window and all.
-                    self.progress_top = 0;
-                    self.menu_sel = 0;
+                    self.menu.progress_top = 0;
+                    self.menu.sel = 0;
                 } else {
                     // The plain walk between the ends: within the
                     // window the arrows do what they do everywhere
                     // else, and from the last visible hill the walk
                     // steps down onto the pinned back row.
                     if up {
-                        self.menu_sel = step_sel(self.menu_sel, rows.len(), -1);
+                        self.menu.sel = step_sel(self.menu.sel, rows.len(), -1);
                     }
                     if down {
-                        self.menu_sel = step_sel(self.menu_sel, rows.len(), 1);
+                        self.menu.sel = step_sel(self.menu.sel, rows.len(), 1);
                     }
                 }
             } else {
                 if up {
-                    self.menu_sel = step_sel(self.menu_sel, rows.len(), -1);
+                    self.menu.sel = step_sel(self.menu.sel, rows.len(), -1);
                 }
                 if down {
-                    self.menu_sel = step_sel(self.menu_sel, rows.len(), 1);
+                    self.menu.sel = step_sel(self.menu.sel, rows.len(), 1);
                 }
             }
             if self.page == Page::Progress {
                 let wheel = ctx.mouse_wheel();
                 if wheel != 0.0 {
                     let last = self.progressed().saturating_sub(progress_fits(h));
-                    let top = self.progress_top as i32 - wheel.round() as i32;
-                    self.progress_top = top.clamp(0, last as i32) as usize;
+                    let top = self.menu.progress_top as i32 - wheel.round() as i32;
+                    self.menu.progress_top = top.clamp(0, last as i32) as usize;
                 }
             }
             let nudge = match (
@@ -998,9 +1032,9 @@ impl Demo {
                 _ => None,
             };
             if let Some(dir) = nudge
-                && rows[self.menu_sel].slider.is_some()
+                && rows[self.menu.sel].slider.is_some()
             {
-                match rows[self.menu_sel].action {
+                match rows[self.menu.sel].action {
                     Action::Ambient => {
                         self.settings.ambient = (self.settings.ambient + dir * 0.05).clamp(0.0, 1.0)
                     }
@@ -1009,7 +1043,7 @@ impl Demo {
                 self.settings.save();
             }
             if self.pressed(ctx, KeyCode::Enter) || self.pressed(ctx, KeyCode::NumpadEnter) {
-                let action = rows[self.menu_sel].action;
+                let action = rows[self.menu.sel].action;
                 self.menu_action(ctx, action);
             }
             // The finished hill answers `R` directly: it is the key
@@ -1026,7 +1060,7 @@ impl Demo {
             // is a door to playing, not yet to showing.
             if self.page == Page::Progress
                 && self.pressed(ctx, KeyCode::Tab)
-                && let Some(&Action::Hill(h)) = rows.get(self.menu_sel).map(|r| &r.action)
+                && let Some(&Action::Hill(h)) = rows.get(self.menu.sel).map(|r| &r.action)
             {
                 self.start_replay(h);
             }
@@ -1034,13 +1068,13 @@ impl Demo {
         // The pointer moving onto a row takes the highlight with it —
         // motion only, so a cursor parked on `resume` cannot out-vote
         // the arrow keys walking to `exit`. One row is ever lit.
-        if pointer != self.last_pointer
+        if pointer != self.menu.last_pointer
             && let Some(p) = pointer
             && let Some(i) = row_under(&rows, p)
         {
-            self.menu_sel = i;
+            self.menu.sel = i;
         }
-        self.last_pointer = pointer;
+        self.menu.last_pointer = pointer;
         // The mouse's turn: a click presses its row's action and takes
         // the highlight with it.
         if !self.pressed_mouse(ctx, MouseButton::Left) {
@@ -1049,10 +1083,10 @@ impl Demo {
         let Some(p) = pointer else { return };
         if let Some(i) = row_under(&rows, p) {
             let r = &rows[i];
-            self.menu_sel = i;
+            self.menu.sel = i;
             match r.action {
                 Action::Ambient | Action::Light => {
-                    self.drag = Some(match r.action {
+                    self.menu.drag = Some(match r.action {
                         Action::Ambient => Slider::Ambient,
                         _ => Slider::Light,
                     });
@@ -1337,7 +1371,7 @@ impl Demo {
                 let total = self.levels.len();
                 let mut order: Vec<usize> = (0..total).collect();
                 order.sort_by_key(|&i| (self.perfect(i), i));
-                let start = self.progress_top.min(total);
+                let start = self.menu.progress_top.min(total);
                 let n = progress_fits(h).min(total - start);
                 for (row, &i) in order[start..start + n].iter().enumerate() {
                     let name = self.levels.get(i).map_or("hill", |l| l.name.as_str());
@@ -2543,7 +2577,7 @@ mod menu_tests {
             Some(Action::Back),
             "and the way out rides below the last visible row"
         );
-        d.progress_top = 10;
+        d.menu.progress_top = 10;
         let rows = d.menu_rows(d.page, 1080.0);
         assert_eq!(
             rows.first().map(|r| r.action),
@@ -2580,14 +2614,14 @@ mod menu_tests {
         );
         // And the last hill of the descent is a door like the first:
         // scrolled to the bottom, it stands in the window.
-        d.progress_top = d.levels.len() - 1;
+        d.menu.progress_top = d.levels.len() - 1;
         assert!(
             d.menu_rows(d.page, 1080.0)
                 .iter()
                 .any(|r| r.action == Action::Hill(d.levels.len() - 1)),
             "the deepest hill is selectable like the shallowest"
         );
-        d.progress_top = 0;
+        d.menu.progress_top = 0;
         // A run that overshot par reads its debt; its amount belongs
         // to `the_ledger_owes_the_imperfect_runs_first`'s fixture.
         d.progress.record(1, 40);
@@ -2637,7 +2671,7 @@ mod menu_tests {
         // And the sweep is only resting, not gone: scrolled to the
         // very bottom of the descent, the perfected rows wait there
         // in their own hill order.
-        d.progress_top = d.levels.len() - 2;
+        d.menu.progress_top = d.levels.len() - 2;
         let last = d.menu_rows(d.page, 1080.0);
         assert_eq!(
             last.iter().map(|r| r.action).collect::<Vec<_>>(),

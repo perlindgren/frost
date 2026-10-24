@@ -777,13 +777,6 @@ struct Demo {
     title_set: bool,
     was: HashMap<KeyCode, bool>,
     was_mouse: HashMap<MouseButton, bool>,
-    /// The repeat clocks of held menu arrows: for each arrow still
-    /// down, the time left before its next step. Written by
-    /// [`Demo::nav_held`] — the first press answers at once and arms
-    /// the delay; each frame held spends the clock down, arming one
-    /// beat per step. A released key simply stops being paid; the
-    /// next press re-arms the whole delay.
-    nav_timer: HashMap<KeyCode, f32>,
     /// Click-walking: the directions left to walk toward the last
     /// clicked cell, one issued per completed glide.
     route: Vec<game::Dir>,
@@ -807,24 +800,14 @@ struct Demo {
     /// hill shows through the dimmed panel, paused, until New Game or
     /// Resume opens the gate.
     page: Page,
-    /// The slider currently under the button, if any.
-    drag: Option<Slider>,
-    /// The highlighted row — what the arrow keys walk and Enter
-    /// presses. The one highlight there is: the pointer takes the
-    /// selection over when it moves onto a row, clicks press theirs
-    /// and take it too, and pages reset it to the top as they open.
-    menu_sel: usize,
-    /// Where the pointer stood last menu frame, so motion can be
-    /// told from mere presence: a parked cursor must not out-vote
-    /// the arrow keys.
-    last_pointer: Option<[f32; 2]>,
+    /// The menu's own memory — its highlight, its scroll, its held
+    /// arrows, its drag, its breathing overlay — grouped off the
+    /// struct. See [`MenuNav`].
+    menu: MenuNav,
     /// The live ledger: the disc's scores, plus every hill won since
     /// the game opened. Written when a hill moves and when a hill is
     /// won — the same law the file keeps from the outside.
     progress: Progress,
-    /// The first hill row the progress page shows: the window that
-    /// slides as the selection (or the wheel) walks past its edges.
-    progress_top: usize,
     /// When the last frame beat, in milliseconds on the browser's
     /// clock. The stutter sentinel's only memory: half a second of
     /// silence between beats is worth a line in the console, and a
@@ -843,12 +826,6 @@ struct Demo {
     bench: Option<f32>,
     bench_t: f32,
     bench_frames: u32,
-    /// The overlay's breath: every menu — main, settings, the won
-    /// hill's panel — fades through this alpha rather than snapping.
-    menu_alpha: f32,
-    /// Which page the overlay paints: the live one while a menu is
-    /// up, and the last one held while the layer fades out.
-    menu_page: Page,
     /// The verdict word and its bright, kept after the splash has
     /// spun itself out: the won panel reads it in the strip above the
     /// plate.
@@ -951,7 +928,6 @@ impl Demo {
             frost_bit: false,
             title_set: false,
             was: HashMap::new(),
-            nav_timer: HashMap::new(),
             was_mouse: HashMap::new(),
             route: Vec::new(),
             replay: None,
@@ -966,18 +942,21 @@ impl Demo {
             occ_boxes: Vec::new(),
             settings,
             page: Page::Main,
-            drag: None,
-            menu_sel: 0,
-            last_pointer: None,
+            menu: MenuNav {
+                nav_timer: HashMap::new(),
+                drag: None,
+                sel: 0,
+                last_pointer: None,
+                progress_top: 0,
+                alpha: 0.0,
+                page: Page::Main,
+            },
             progress,
-            progress_top: 0,
             last_beat: 0.0,
             minimap_atlas: Arc::from([255u8, 255, 255, 255].as_slice()),
             bench: None,
             bench_t: 0.0,
             bench_frames: 0,
-            menu_alpha: 0.0,
-            menu_page: Page::Main,
             verdict: None,
             window: WindowPolicy {
                 pending: true,
@@ -1157,13 +1136,14 @@ impl Demo {
     /// repeat belongs to the walk alone.
     fn nav_held(&mut self, ctx: &Context, dt: f32, key: KeyCode) -> bool {
         if self.pressed(ctx, key) {
-            self.nav_timer.insert(key, NAV_HOLD);
+            self.menu.nav_timer.insert(key, NAV_HOLD);
             return true;
         }
         if !ctx.key_down(key) {
             return false;
         }
-        self.nav_timer
+        self.menu
+            .nav_timer
             .get_mut(&key)
             .is_some_and(|left| key_repeat(left, dt))
     }
@@ -1774,11 +1754,11 @@ impl Process for Demo {
         // leaving — never whatever page happens to be behind it.
         let target = if self.page == Page::Game { 0.0 } else { 1.0 };
         if target > 0.0 {
-            self.menu_page = self.page;
+            self.menu.page = self.page;
         }
-        self.menu_alpha += (target - self.menu_alpha) * (1.0 - (-dt / 0.15).exp());
-        if (self.menu_alpha - target).abs() < 0.002 {
-            self.menu_alpha = target;
+        self.menu.alpha += (target - self.menu.alpha) * (1.0 - (-dt / 0.15).exp());
+        if (self.menu.alpha - target).abs() < 0.002 {
+            self.menu.alpha = target;
         }
         if self.window.pending {
             self.window.pending = false;
@@ -1852,13 +1832,13 @@ impl Process for Demo {
                 self.replay = None;
                 self.load(hill);
                 self.page = Page::Progress;
-                self.drag = None;
+                self.menu.drag = None;
             } else {
                 match escape_nav(self.page) {
                     Escape::ToMenu => {
                         self.page = Page::Main;
-                        self.drag = None;
-                        self.menu_sel = 0;
+                        self.menu.drag = None;
+                        self.menu.sel = 0;
                     }
                     Escape::Resume => self.page = Page::Game,
                 }
@@ -2225,8 +2205,8 @@ impl Process for Demo {
             && self.game.as_ref().is_some_and(|g| g.won)
         {
             self.page = Page::Won;
-            self.drag = None;
-            self.menu_sel = 0;
+            self.menu.drag = None;
+            self.menu.sel = 0;
         }
         // The verdict: when the hill is won and has not yet been told
         // its own name, draw one from the hat — the praise tier reads
@@ -2337,7 +2317,7 @@ impl Process for Demo {
         self.draw_hud(ctx);
         self.draw_splash(ctx);
         self.draw_better(ctx);
-        if self.menu_alpha > 0.002 {
+        if self.menu.alpha > 0.002 {
             self.draw_menu(ctx);
         }
         self.draw_letterbox(ctx);
