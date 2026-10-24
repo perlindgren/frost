@@ -118,7 +118,10 @@ If a `--gpu`/power-preference knob is ever wanted, that single
 
 3. **Verify the run, then histogram it.** First lines to check:
    `using adapter:` (right GPU, not llvmpipe) and `surface configured at
-   WxH … present_mode` (right size, `AutoNoVsync`). Then:
+   WxH … present_mode` (right size, `AutoNoVsync`) — plus, since the Mac walk
+   of §17, the closing `benchsuite: drew into WxH px … monitor @ Hz, fullscreen,
+   visible` line, which is the geometry the window *settled* at and not the one
+   it asked for. Then:
 
    ```sh
    awk '/frame presented/ {split($1,a,"T"); split(a[2],b,"Z"); split(b[1],c,":");
@@ -874,8 +877,10 @@ remembered:
   panel**, and that is exactly how 60.000 for thirteen seconds gave this up. The
   above-60 half is written to be tested, not believed: the panel will be at 60 for a
   static window even under ProMotion if that is what it decides, which is itself worth
-  knowing, and no shell can read or set any of it — this document recorded the rate
-  because its owner was asked.
+  knowing. No shell can read or set the rate, but the app can — `benchsuite` prints it
+  beside its numbers now, `in a 4112x2658 px monitor @ 60.0 Hz` — so the rate is a thing
+  to record rather than to argue about, and this document recorded it from both sources
+  available: the owner, and winit.
 
 The M4 Max seat has since been walked twice, and §17 is why it stays empty rather than
 filled with a number that would be read as silicon: windowed, that machine reports its
@@ -1036,11 +1041,14 @@ not a shader, but a missing instrument.
 Two conditioned walks later the answer is that **the M4 Max has no cell in §14's table**,
 and the reason is measured rather than assumed, which is the more useful thing to leave
 behind. Machine: the 14-core M4 Max of §6–13 (32 GPU cores, 36 GB), built-in Liquid
-Retina XDR panel and nothing attached, **set to a fixed 60 Hz in System Settings** —
-ProMotion off, the owner's report, since nothing in a shell can read it (§1c's Mac
-equivalent of §1c's device node: `com.apple.windowserver` answers to no query here) —
-on AC at 100 %, tree `3e9b433`, rustc 1.99.0, the `debug-assertions=true` release
-build. `using adapter: "Apple M4 Max"` before every run below; on this platform there
+Retina XDR panel and nothing attached, **set to a fixed 60 Hz in System Settings**:
+ProMotion off on the owner's word, and 60.0 Hz on winit's, which is the difference that
+matters — no shell can read the rate (`com.apple.windowserver` answers to no query here,
+this platform's version of §1c's missing device node), but the app can ask, and the suite
+now prints `in a 4112x2658 px monitor @ 60.0 Hz`. Note that mode is *larger* than the
+3456×2234 System Information prints: the desktop runs a scaled HiDPI mode, so every
+megapixel figure below is read from a log line and not from the panel's spec. On AC at
+100 %, tree `3e9b433`, rustc 1.99.0, the `debug-assertions=true` release build. `using adapter: "Apple M4 Max"` before every run below; on this platform there
 is no `/dev/dri` to be hidden from and no llvmpipe costume for §1c to wear, so the
 adapter line is cheap and read every time anyway.
 
@@ -1094,6 +1102,23 @@ another instrument for once: 167.1 fps is 5.98 ms, against the 6.45 ms
 the drained offscreen meter charges for the same scenario at the same pixels (the table
 at the end of this section), a 7 % difference between two meters that share nothing but
 the shader.
+
+**What the geometry is, printed instead of inferred.** Every run now ends with the box it
+drew into — `drew into 4112x2572 px (2056x1286 at 2.00x) in a 4112x2658 px monitor @
+60.0 Hz, fullscreen: true, visible: Some(true)` — and the event loop logs `window
+occluded`. That readout exists because two inferences about this space were wrong. The
+suspected one was a swap chain left behind by the fullscreen transition; it is not:
+AppKit delivers four resizes inside a second (2056×1286 → 1329 → 1286 → 1357 → 1286
+logical, the last two larger and then smaller than the display itself) and `window
+resized to` followed each one, reconfiguring as it went. What is true is quieter and
+cosmetic: the window settles at the display's 2658 px less 86 — the menu bar's 43 points
+doubled — so a Space reporting `fullscreen: true` draws 3.3 % fewer pixels than the panel
+it fills, which is enough to keep a megapixel count honest and nowhere near enough to
+move a number here. `occluded: false` and `visible: Some(true)` say the frames really
+were the display's, which matters because the check that tried to prove it failed: a
+mid-run `screencapture -x` came back as wallpaper under a black band, because a process
+without Screen Recording permission is shown nothing else. Treat such an image as silence,
+not as a picture.
 
 **Every line then pays for the display, and the tax is not the stretch.** Pinned, the
 floor costs 2.81 ms where the offscreen meter charges 0.231 ms for the same pixels — and
@@ -1166,8 +1191,10 @@ landed, and it is why these are a price list and nobody's baseline. It is also t
 place this machine says what the ten rows cost each other.
 
 **So the seat stays empty, on purpose,** and what a later Mac session should take from
-this is shorter than the walk that produced it: read `surface configured at` before
-believing any Mac number, because the suite's 1080p is 3840×2160 here; take
+this is shorter than the walk that produced it: read `drew into` — and
+`surface configured at` beside it — before believing any Mac number, because the suite's
+1080p is 3840×2160 here and a fullscreen request settles at the display less its menu
+bar; take
 `--fullscreen --render-size 1920x1080` if a number off a window is wanted at all, and
 divide floor by cliff before showing it to anyone — 1.003× windowed, 2.2× pinned, against
 the 62.6× that the box the table belongs to reports. The two Mac cells §6 left from
