@@ -507,9 +507,11 @@ impl Demo {
         for (i, r) in rows.iter().enumerate() {
             let hot = i == self.menu.sel;
             // A row with no road left in it: `next` greys when the
-            // hill underfoot is all the descent still owes — the
-            // same rule the key obeys, asked at the same lip.
-            let mute = matches!(r.action, Action::Next) && !self.next_owed();
+            // hill underfoot is all the descent still owes, and a
+            // locked ledger hill greys the same way — the same
+            // mute for the same shut door, whichever key asks.
+            let mute = (matches!(r.action, Action::Next) && !self.next_owed())
+                || matches!(r.action, Action::Hill(hill) if hill >= self.progress.unlocked);
             if hot {
                 ctx.rectangle(
                     r.cx,
@@ -898,6 +900,11 @@ impl Demo {
                 self.page = Page::Game;
             }
             Action::Hill(n) => {
+                // A locked door answers to nobody: the row shows the
+                // hill, the frontier keeps it shut.
+                if n >= self.progress.unlocked {
+                    return;
+                }
                 // A ledger row is a door: walking back into a warmed
                 // hill is a hill moved, and the file says so.
                 self.load(n);
@@ -1084,6 +1091,8 @@ impl Demo {
             if self.page == Page::Progress
                 && self.pressed(ctx, KeyCode::Tab)
                 && let Some(&Action::Hill(h)) = rows.get(self.menu.sel).map(|r| &r.action)
+            // A locked row replays nothing: no door, no walk.
+            && h < self.progress.unlocked
             {
                 self.start_replay(h);
             }
@@ -1423,11 +1432,13 @@ impl Demo {
                 // moves hills between them, never a row out.
                 let top = progress_top_y(h);
                 let pstep = progress_step(h);
-                // The whole descent hangs on the ledger: every hill is
-                // selectable from the start. A hill with no run wears
-                // no score — the column stays empty until a run is
-                // earned — and a best that overshot par reads its debt
-                // plainly: `moves of par`.
+                // The descent hangs on the ledger, opened a win at a
+                // time: hills within the lock answer their rows, and
+                // the hills past it wait there — shown, numbered if
+                // ever warmed, saying `locked` and answering nothing.
+                // A hill with no run wears no score — the column
+                // stays empty until a run is earned — and a best
+                // that overshot par reads its debt plainly.
                 let total = self.levels.len();
                 let mut order: Vec<usize> = (0..total).collect();
                 order.sort_by_key(|&i| (self.perfect(i), i));
@@ -1446,12 +1457,13 @@ impl Demo {
                         }
                         None => String::new(),
                     };
+                    let locked = i >= self.progress.unlocked;
                     push(
                         &mut rows,
                         Action::Hill(i),
                         top - row as f32 * pstep,
                         PROGRESS_PLATE - 12.0,
-                        format!("{name}{score}"),
+                        format!("{name}{score}{}", if locked { "   locked" } else { "" }),
                         None,
                     );
                 }
@@ -1491,7 +1503,13 @@ mod menu_tests {
             stencils,
             soil,
             Settings::default(),
-            Progress::default(),
+            // The test player has walked everything: doors open as
+            // far as the hill list, so ledger tests read the ledger
+            // and not the lock.
+            Progress {
+                unlocked: usize::MAX,
+                ..Default::default()
+            },
         )
     }
 
@@ -1499,7 +1517,7 @@ mod menu_tests {
     fn the_progress_file_counts_hills_as_the_hud_does() {
         assert_eq!(
             Progress::default().text(),
-            "(\n    hill: 1,\n    reached: 1,\n    scores: [],\n    routes: [],\n)\n",
+            "(\n    hill: 1,\n    reached: 1,\n    unlocked: 0,\n    scores: [],\n    routes: [],\n)\n",
             "a player who never moved stands on the first hill, ledger empty"
         );
         let p = Progress::parse("(\n    hill: 3,\n)\n");
@@ -1520,7 +1538,7 @@ mod menu_tests {
                 ..Default::default()
             }
             .text(),
-            "(\n    hill: 2,\n    reached: 2,\n    scores: [],\n    routes: [],\n)\n"
+            "(\n    hill: 2,\n    reached: 2,\n    unlocked: 0,\n    scores: [],\n    routes: [],\n)\n"
         );
         assert_eq!(
             Progress::parse("garbage").hill,
@@ -1554,6 +1572,75 @@ mod menu_tests {
         let p =
             Progress::parse("(\n    hill: 4,\n    scores: [\"3 31\", \"1 47\", \"3 29\"],\n)\n");
         assert_eq!(p.scores, vec![(0, 47), (2, 29)]);
+    }
+
+    #[test]
+    fn warmth_opens_the_descent_one_hill_at_a_time() {
+        let mut p = Progress::default();
+        assert_eq!(p.unlocked, 0, "an empty ledger opens nothing by itself");
+        p.record(0, 30);
+        assert_eq!(p.unlocked, 2, "the first hill won opens the door below");
+        p.record(0, 25);
+        assert_eq!(p.unlocked, 2, "warming a hill twice opens no extra doors");
+        p.record(4, 40);
+        assert_eq!(
+            p.unlocked, 6,
+            "the frontier answers to warmth and never retreats"
+        );
+        let back = Progress::parse(&p.text());
+        assert_eq!(back.unlocked, 6, "the lock survives the file");
+        assert_eq!(
+            Progress::parse("(\n    hill: 3,\n)\n").unlocked,
+            usize::MAX,
+            "a file from before the lock keeps the freedom it was written in"
+        );
+    }
+
+    #[test]
+    fn new_game_locks_the_descent_behind_its_school() {
+        let mut d = demo();
+        d.progress.record_run(9, 20, "");
+        assert!(
+            d.progress.unlocked > TUTORIAL_HILLS,
+            "a deep player owns deep doors"
+        );
+        d.new_game();
+        assert_eq!(
+            d.progress.unlocked, TUTORIAL_HILLS,
+            "new game leaves the teaching hills open and slams the descent shut"
+        );
+        assert!(
+            d.progress.scores.is_empty(),
+            "and the fresh ledger keeps no numbers for the walk ahead"
+        );
+    }
+
+    #[test]
+    fn a_locked_hill_shows_its_row_and_says_locked() {
+        let mut d = demo();
+        d.progress.record(3, 21);
+        d.progress.unlocked = 2;
+        let rows = d.menu_rows(Page::Progress, 720.0);
+        let open = rows
+            .iter()
+            .find(|r| r.action == Action::Hill(1))
+            .expect("hill 2 is on the ledger");
+        assert!(
+            !open.text.ends_with("locked"),
+            "a hill within the lock wears no warning"
+        );
+        let shut = rows
+            .iter()
+            .find(|r| r.action == Action::Hill(3))
+            .expect("hill 4 is on the ledger");
+        assert!(
+            shut.text.ends_with("locked"),
+            "a hill past the frontier says so on its row"
+        );
+        assert!(
+            shut.text.contains("21"),
+            "and its kept number stays on the row, debt reading and all: a lock hides no stats"
+        );
     }
 
     #[test]
@@ -1801,8 +1888,11 @@ mod menu_tests {
         d.new_game();
         assert_eq!(
             d.progress,
-            Progress::default(),
-            "the save returns to its empty default"
+            Progress {
+                unlocked: TUTORIAL_HILLS,
+                ..Default::default()
+            },
+            "the save returns to its empty default — open only as far as its school"
         );
         assert_eq!(d.idx, 0, "the descent restarts at the first hill");
     }

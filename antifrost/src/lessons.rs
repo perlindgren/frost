@@ -427,6 +427,13 @@ pub(crate) const DIG_LESSON: [Lesson; 10] = [
 /// double — First Cold and the cheap dig both show the long way
 /// first and answer their own praise with the better script;
 /// `Demo::script` picks the deck.
+/// The hills that teach: the tutorial front of the descent. Hills
+/// 0 to 3 — the first warm, the attunement, first cold, and the
+/// cheap dig — exactly the hills `lesson_script` keeps a script
+/// for, and the doors a New Game leaves open while the descent
+/// behind them locks.
+pub(crate) const TUTORIAL_HILLS: usize = 4;
+
 pub(crate) fn lesson_script(hill: usize) -> Option<&'static [Lesson]> {
     match hill {
         0 => Some(&FIRST_WARM_LESSON),

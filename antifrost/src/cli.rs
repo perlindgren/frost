@@ -95,6 +95,14 @@ pub(crate) struct Cli {
     /// "did the window actually move". Not a feature; a probe.
     #[arg(long)]
     pub(crate) resize_probe: bool,
+
+    /// Walk any hill from the first launch: every hill unlocks and
+    /// the unlock is saved, so the flag need not return. Nothing
+    /// else moves — scores, routes, and the descent's kept depth
+    /// stay exactly as they were. This opens doors; it does not
+    /// wipe a ledger.
+    #[arg(long)]
+    pub(crate) unlock: bool,
 }
 
 /// clap's value parser for the vsync flag: `on`/`off`, any case.
@@ -141,5 +149,17 @@ mod cli_tests {
     fn any_other_vsync_value_is_rejected() {
         let err = <Cli as clap::Parser>::try_parse_from(["antifrost", "--vsync", "maybe"]);
         assert!(err.is_err(), "the flag speaks on or off, nothing else");
+    }
+
+    #[test]
+    fn unlock_is_a_bare_flag_defaulting_shut() {
+        let open = <Cli as clap::Parser>::try_parse_from(["antifrost", "--unlock"])
+            .expect("--unlock takes no value");
+        assert!(open.unlock, "the flag opens every door");
+        let shut = <Cli as clap::Parser>::try_parse_from(["antifrost"]).expect("no args");
+        assert!(
+            !shut.unlock,
+            "without the flag the lock stands as the ledger left it"
+        );
     }
 }

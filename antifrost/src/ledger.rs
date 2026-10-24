@@ -42,6 +42,14 @@ pub struct Progress {
     /// better score does, so a route always shows how its number was
     /// honestly earned.
     pub routes: Vec<(usize, String)>,
+    /// How far the descent is open: hills `0..unlocked` may be
+    /// walked, and every hill past the frontier waits on its ledger
+    /// row — shown, numbered if ever warmed, and mute. A won hill
+    /// opens the door below it; a New Game slams the descent back
+    /// to its tutorials; and a file from before the lock reads as
+    /// wholly open, because freedom once given is never quietly
+    /// revoked.
+    pub unlocked: usize,
 }
 
 impl Progress {
@@ -57,9 +65,10 @@ impl Progress {
 
     pub fn text(&self) -> String {
         let mut text = format!(
-            "(\n    hill: {},\n    reached: {},\n    scores: [",
+            "(\n    hill: {},\n    reached: {},\n    unlocked: {},\n    scores: [",
             self.hill + 1,
-            self.reached + 1
+            self.reached + 1,
+            self.unlocked
         );
         if self.scores.is_empty() {
             text.push_str("],\n");
@@ -96,6 +105,8 @@ impl Progress {
         // trusts its width — sees `MOVES_CAP` at the most.
         let moves = moves.min(MOVES_CAP);
         self.reached = self.reached.max(hill);
+        // Warmth opens the descent: the hill below a won one walks.
+        self.open(hill + 2);
         match self.scores.iter_mut().find(|(h, _)| *h == hill) {
             Some(entry) => {
                 if moves < entry.1 {
@@ -111,6 +122,12 @@ impl Progress {
                 true
             }
         }
+    }
+
+    /// Open the descent as far as `hills`: doors swing outward only,
+    /// the lock never closing on ground the ledger has reached.
+    pub fn open(&mut self, hills: usize) {
+        self.unlocked = self.unlocked.max(hills);
     }
 
     /// The best run's own walk, when the ledger keeps one for `hill`.
@@ -177,6 +194,16 @@ impl Progress {
             // more than where it stands: the stood-on hill is the
             // deepest it ever named.
             _ => hill,
+        };
+        let unlocked = match frost::ron::field(&root, "unlocked") {
+            Some(frost::ron::Val::Atom(text, _)) => text
+                .trim_matches('"')
+                .parse::<usize>()
+                .unwrap_or(usize::MAX),
+            // A file from before the lock keeps the freedom it was
+            // written in: every hill in it was walked with open
+            // doors, and no number in the ledger says otherwise.
+            _ => usize::MAX,
         };
         // The ledger survives what a hand may not: entries out of
         // order fold to sorted, a hill named twice keeps its better
@@ -252,6 +279,7 @@ impl Progress {
             reached,
             scores,
             routes,
+            unlocked,
         }
     }
 

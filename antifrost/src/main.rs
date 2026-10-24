@@ -899,6 +899,16 @@ impl Demo {
             Err(_) => None,
         };
         let levels = level::load_levels(LEVELS);
+        // The lock answers to the hill list: no more doors open than
+        // there are hills, and the tutorials stand open to every
+        // player — the first words a newcomer meets cannot be a
+        // locked door. Held in memory only; the launch still leaves
+        // no fingerprint on the file.
+        let mut progress = progress;
+        progress.unlocked = progress
+            .unlocked
+            .max(TUTORIAL_HILLS.min(levels.len()))
+            .min(levels.len());
         if levels.is_empty() {
             log::error!("antifrost: no levels loaded");
         }
@@ -1724,6 +1734,10 @@ impl Demo {
     /// Then the page steps aside and the hill plays.
     fn new_game(&mut self) {
         self.progress = Progress::default();
+        // New slams the descent shut behind its school: the four
+        // teaching hills stand open, every door below waits on the
+        // win above it.
+        self.progress.open(TUTORIAL_HILLS.min(self.levels.len()));
         self.load(0);
         self.page = Page::Game;
     }
@@ -2648,15 +2662,15 @@ fn main() {
     let mut settings = Settings::load();
     let progress = Progress::load();
     #[cfg(not(target_arch = "wasm32"))]
-    let (bench, resize_probe) = {
+    let (bench, resize_probe, unlock) = {
         let cli: Cli = clap::Parser::parse();
         if let Some(v) = cli.vsync {
             settings.vsync = v;
         }
-        (cli.bench, cli.resize_probe)
+        (cli.bench, cli.resize_probe, cli.unlock)
     };
     #[cfg(target_arch = "wasm32")]
-    let (bench, resize_probe) = (None, false);
+    let (bench, resize_probe, unlock) = (None, false, false);
     let vsync = settings.vsync;
     // Native logs to stderr; a browser has no stderr, so there the
     // panic hook surfaces failures in the devtools console instead of
@@ -2737,6 +2751,14 @@ fn main() {
         scene,
         {
             let mut d = Demo::new(ant_frames, ant_stencils, soil, settings.clone(), progress);
+            // `--unlock` opens every door, once and for the record:
+            // the write is the point, so the flag need not return.
+            // The ledger's numbers, routes, and depth are untouched
+            // — this opens doors, it does not wipe a ledger.
+            if unlock {
+                d.progress.open(d.levels.len());
+                d.progress.save();
+            }
             d.bench = bench;
             d.window.probe = resize_probe.then_some(0.0);
             d
