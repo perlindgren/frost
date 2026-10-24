@@ -1608,3 +1608,54 @@ rather than at the last one. That one is provably outcome-preserving rather than
 bit-preserving, which makes it the cheaper of the two to trust. **The §20 caveat still
 applies to everything above: no test in the suite runs an open penumbra, and all three of
 these changes rest on byte-identical frames from one scene family on one GPU.**
+
+## 24. The CPU side of a particle batch (2026-10-24, Apple M4 Max, 14 cores)
+
+Every row so far shades pixels, so every cost so far has been a GPU cost. A particle batch
+spends real time before the GPU sees it: the simulation steps every live particle, and the
+frame rebuilds the batch's instance bytes from nothing — a fresh `Vec`, a transform per
+particle, 32 bytes appended each. None of that appears in a pixels-per-second number, and all
+of it is one thread doing arithmetic, so it can be measured without a display, an adapter, or
+a quiet machine. The instrument is `src/backend/tests/particle_cost.rs`, run by hand:
+
+```text
+cargo test --release --config 'profile.release.debug-assertions=true' \
+    --lib particle_cost -- --ignored --nocapture
+```
+
+It goes through [`Canvas::draw_scene`](crate::Canvas::draw_scene), the call a game makes, over
+a scene whose only content is one batch, and it prints the controls beside the costs rather
+than netting them out of sight:
+
+| what | median | per particle | what it is |
+| --- | --- | --- | --- |
+| `walk` | 0.0001 ms | — | the scene walk and a fresh canvas, batch empty |
+| `pack-1000` | 0.0124 ms | 12.4 ns | |
+| `pack-10000` | 0.171 ms | 17.1 ns | reps 0.109–0.285, the widest row here |
+| `pack-100000` | **1.545 ms** | 15.5 ns | |
+| `instance-10000` | 0.118 ms | 11.8 ns | the instance bytes alone, into a buffer that never grows |
+| `append-10000` | 0.034 ms | 3.4 ns | the same buffer, filled with a constant |
+| `sim-100000` | 0.210 ms | 2.1 ns | `ParticleSystem::update`, nothing dying |
+| compaction, 10 000 dying | est. 0.025 ms | — | difference of two medians, so an estimate |
+| one 3.2 MB allocation | 0.0043 ms | — | what a 100 000-particle batch asks the allocator per frame |
+
+**About 15 ns a particle, linear, with no fixed cost worth naming.** A hundred thousand of
+them cost ~1.75 ms of one frame — 1.55 to pack, 0.21 to simulate — which is real but is not a
+cliff: it is a third of the lighting cliff of §23, at a particle count a 2D game would call
+heavy. The pack is the instance function and not much else; the buffer append is a quarter of
+it; the per-frame allocation, the scene walk and the `retain` compaction are all under 1 % of
+the row they sit in. A batch's `lit` flag made no difference I could see, though its spread
+overlaps the lit row's, so that is "not visible", not "free".
+
+**The trap this bench walked into, recorded so the next runner doesn't.** The first run of it
+was `cargo test --lib particle_cost`, without `--release`. It read ~90 ns a particle, six
+times the truth, and every row's shape still looked plausible — sub-linear, allocation-flavoured,
+easy to explain to oneself. An unoptimised build turns eight slice copies in a packing function
+into eight function calls, and there is no canary in a CPU bench to say *the machine is not the
+problem, the build is*. `--release` is now in the bench's own header, and the row that would
+have been the finding — a packing function needing work — was an artifact of the measurement.
+
+**What this bench cannot say.** Nothing about the GPU: how many quads a frame instances, what
+their coverage costs, or what a *lit* batch pays through `light_mix` per covered pixel — which
+is the one place particles and lighting genuinely meet, and the subject of the probe that
+follows.

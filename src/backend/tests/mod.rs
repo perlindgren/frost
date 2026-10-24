@@ -21,6 +21,7 @@ mod layers;
 mod letterbox;
 mod light_cost;
 mod nodes;
+mod particle_cost;
 mod particles;
 mod present;
 mod repeat;
