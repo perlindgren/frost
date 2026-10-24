@@ -453,6 +453,58 @@ const SCENARIOS: &[Scenario] = &[
     // is what §19-§23 bought a particle scene. A `lit` row with no lamps in it
     // — the first version of this row — asks nothing at all, which is worth
     // recording because that is how it shipped for an hour.
+    // The lit batch over the cliff, which is the frame §25 predicts is the most
+    // expensive thing in the engine and had no right to predict it. `light_mix`
+    // is the same function for a particle as for a wall, so a lit batch in
+    // front of sixty casters at nine taps should pay the occluder walk per
+    // covered pixel — and §22 and §23's savings land there too, since there is
+    // no second lighting path for particles to miss them. `parts-10k-shadow-lit`
+    // holds the casters and drops the disk to one hard ray, so the step up to
+    // the nine-tap row is the penumbra's own price on particle pixels; the
+    // unlit twins say how much of any of it is lighting at all. Their controls
+    // are `taps-9` and `taps-1`, the same scenes with no batch in them.
+    Scenario {
+        name: "parts-10k-cliff",
+        lamps: 10,
+        occluders: 60,
+        penumbra: LAMP_PENUMBRA,
+        taps: 9,
+        reach: LAMP_REACH,
+        moving: false,
+        poly_sides: 0,
+        particles: 10_000,
+        p_cover: 0.25,
+        p_radius: 0.0,
+        p_lit: false,
+    },
+    Scenario {
+        name: "parts-10k-cliff-lit",
+        lamps: 10,
+        occluders: 60,
+        penumbra: LAMP_PENUMBRA,
+        taps: 9,
+        reach: LAMP_REACH,
+        moving: false,
+        poly_sides: 0,
+        particles: 10_000,
+        p_cover: 0.25,
+        p_radius: 0.0,
+        p_lit: true,
+    },
+    Scenario {
+        name: "parts-10k-shadow-lit",
+        lamps: 10,
+        occluders: 60,
+        penumbra: 0.0,
+        taps: 1,
+        reach: LAMP_REACH,
+        moving: false,
+        poly_sides: 0,
+        particles: 10_000,
+        p_cover: 0.25,
+        p_radius: 0.0,
+        p_lit: true,
+    },
     Scenario {
         name: "parts-10k-lamps",
         lamps: 10,

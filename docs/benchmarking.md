@@ -1717,3 +1717,46 @@ of fourteen.
 frame here is GPU-bound at 2.88 ms, so the CPU phase hides underneath the GPU's work instead of
 lengthening the frame. §24's number bites when the CPU phase becomes the critical path — a
 short frame, a heavy batch, or a scene too cheap to keep the GPU busy — and not before.
+
+## 26. A lit particle batch over the cliff (2026-10-24, Apple M4 Max)
+
+§25 predicted that a lit batch in front of the §23 cliff would pay the occluder walk per
+covered pixel, and said so without measuring it. Three rows close that: the cliff scene —
+ten lamps, sixty box casters, an open penumbra at nine taps — with a 10 000-particle batch
+over a quarter of the window, once unlit, once `lit: true`, and once with the same lit batch
+while the disk is shut to a single hard ray. Run in both row orders, median of two reps each;
+the two orders agreed to 0.03 ms on every row, so nothing below is order or drift.
+
+| row | ms/frame | over the same scene with no batch |
+| --- | --- | --- |
+| `taps-9` — cliff, no batch | 4.91 | — |
+| `parts-10k-cliff` — unlit batch | 5.28 | +0.37 |
+| `parts-10k-cliff-lit` — **lit batch, nine taps** | **6.66** | **+1.75** |
+| `taps-1` — cliff, one hard ray, no batch | 4.50 | — |
+| `parts-10k-shadow-lit` — lit batch, one hard ray | 4.91 | +0.41 |
+
+**The prediction was right, and the disk is the whole of it.** Against its own unlit twin the
+lit batch costs **+1.38 ms**, and with the penumbra shut to one ray the same batch adds about
++0.04 over its own drawing. A quarter-screen of particle pixels walked nine times in front of
+sixty casters is therefore worth more than a third of the entire frame, which is the cost
+§19–§23 spent two days cutting — and since `particles.wgsl` calls that same `light_mix`
+([line 107](shaders/particles.wgsl)), the polygon reject and the paired walk were already
+applied to it, for free, with nothing particle-specific to do.
+
+Two footnotes that are really corrections to how §25 should be read. Its rows carry
+`penumbra: 0.0, taps: 1`, so its +0.57 ms was falloff and cone with a single hard ray and no
+occluders in the scene — a fifth of a frame for a quarter of its pixels, but nothing to do with
+shadows; the shadow half is this section's, not that one's. And its rows had no casters, which
+is why the question came up at all.
+
+**What does not add up.** Take the lighting-only cost of the same quarter-screen at one hard
+ray: §25's open scene leaves +0.53 ms after subtracting the unlit batch, this section's
+sixty-caster scene leaves about +0.04. Same lamp count, same single ray, strictly more work,
+cheaper by an order of magnitude. The unlit batch's own cost also moves ninefold between the
+two scenes — +0.04 where the GPU has slack and +0.37 where it is the critical path, which is
+the §25 resolution of the CPU pack and entirely expected. That explains a great deal of the
+sensitivity here and none of the sign of the discrepancy. **So treat the small residuals in
+these two sections as unsettled**; the +1.38 ms above is the one particle-lighting number
+large enough to survive the instrument, and the experiment that would settle the rest is the
+same lit batch at one ray measured with and without casters in a single pass, several reps,
+both orders.
