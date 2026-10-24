@@ -1219,12 +1219,14 @@ impl Demo {
     }
 
     /// A gamepad button's press edge: down this frame, up last
-    /// frame. Watched buttons should be read every frame — a frame
-    /// that short-circuits past the read can return the next as a
-    /// phantom press.
+    /// frame. Two laws, learned the hard way: the memory is written
+    /// before any `&&` can skip it — short-circuiting past the write
+    /// pins it at down and silences every press after the first —
+    /// and watched buttons are read every frame, wherever the page.
     fn pad_pressed(&mut self, ctx: &Context, b: frost::Button) -> bool {
         let down = ctx.gamepads().next().is_some_and(|p| p.is_pressed(b));
-        down && !self.pad_was.insert(b, down).unwrap_or(false)
+        let was = self.pad_was.insert(b, down).unwrap_or(false);
+        down && !was
     }
 
     /// The pad's menu intents for one frame: (up, down, left, right).
