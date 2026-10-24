@@ -1905,7 +1905,9 @@ impl Process for Demo {
         // drops before it reaches gilrs' standard names.
         #[cfg(feature = "diag")]
         if let Some(pad) = ctx.gamepads().next() {
-            const WATCH: [frost::Button; 20] = [
+            // No `Unknown` here: gilrs' `is_pressed` asserts the
+            // question is a real name, and asking it panics.
+            const WATCH: [frost::Button; 19] = [
                 frost::Button::South,
                 frost::Button::East,
                 frost::Button::North,
@@ -1925,7 +1927,6 @@ impl Process for Demo {
                 frost::Button::DPadDown,
                 frost::Button::DPadLeft,
                 frost::Button::DPadRight,
-                frost::Button::Unknown,
             ];
             let now: Vec<frost::Button> = WATCH
                 .iter()
