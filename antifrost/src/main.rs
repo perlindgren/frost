@@ -856,32 +856,11 @@ struct Demo {
     /// spun itself out: the won panel reads it in the strip above the
     /// plate.
     verdict: Option<(String, Color)>,
-    /// The window takes its first shape on the first frame the
-    /// engine's handle exists: the OS will not size a window that
-    /// has not been born yet.
-    window_policy_pending: bool,
-    /// Diagnostic clock for `--resize-probe`: cycles the real
-    /// resolution row once on a timer, so the window's answer can
-    /// be read from the log without a hand on the mouse.
-    resize_probe: Option<f32>,
-    /// A press that arrived while a move was in flight: one move
-    /// on screen at a time, and the newest rung always gets its
-    /// turn — queued pressed, applied resolved.
-    window_move_queued: bool,
-    /// A fixed tier's standing claim on the window's size — the ask, and
-    /// how the asking is going. See [`TierAsk`] for why it keeps asking
-    /// after it has arrived.
-    window_expect: Option<TierAsk>,
-    /// Frames the window's fullscreen state has disagreed with the
-    /// settings row. The desktop can move that state on its own — a
-    /// green button, a window rule, a shortcut the WM answers itself —
-    /// and the only news of it is the state, so the state is polled,
-    /// the way the size is. The count is the grace, and it is a
-    /// second's worth on purpose: it has to outlive both a compositor
-    /// round trip and macOS's fullscreen animation, because acting
-    /// sooner would mean the game yanking the window out of an
-    /// entrance the desktop was still drawing.
-    fullscreen_drift: u32,
+    /// The window's claim and the desktop's answer, kept together:
+    /// the first-frame policy ask, the standing tier, the queued
+    /// move, the fullscreen drift, and the resize probe. See
+    /// [`WindowPolicy`].
+    window: WindowPolicy,
 }
 
 impl Demo {
@@ -1001,11 +980,13 @@ impl Demo {
             menu_alpha: 0.0,
             menu_page: Page::Main,
             verdict: None,
-            window_policy_pending: true,
-            resize_probe: None,
-            window_expect: None,
-            fullscreen_drift: 0,
-            window_move_queued: false,
+            window: WindowPolicy {
+                pending: true,
+                probe: None,
+                expect: None,
+                drift: 0,
+                move_queued: false,
+            },
         };
         // The saved hill, wherever it lands — `load` folds indices
         // past the last level back onto the set that exists.
@@ -1800,8 +1781,8 @@ impl Process for Demo {
         if (self.menu_alpha - target).abs() < 0.002 {
             self.menu_alpha = target;
         }
-        if self.window_policy_pending {
-            self.window_policy_pending = false;
+        if self.window.pending {
+            self.window.pending = false;
             self.apply_window_policy(ctx);
         }
         // The glow, like the rest of the look: written every frame, so the
@@ -2467,7 +2448,7 @@ fn main() {
         {
             let mut d = Demo::new(ant_frames, ant_stencils, soil, settings.clone(), progress);
             d.bench = bench;
-            d.resize_probe = resize_probe.then_some(0.0);
+            d.window.probe = resize_probe.then_some(0.0);
             d
         },
         frost::Config {

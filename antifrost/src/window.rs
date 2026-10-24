@@ -6,6 +6,39 @@
 
 use crate::*;
 
+/// All the window's bookkeeping, grouped off `Demo`: the first
+/// policy to apply, the probe's clock, a queued move, the tier's
+/// standing claim, and the fullscreen drift. The watch, the policy
+/// and the menu all reach the same record through `Demo::window`.
+pub(crate) struct WindowPolicy {
+    /// The window takes its first shape on the first frame the
+    /// engine's handle exists: the OS will not size a window that
+    /// has not been born yet.
+    pub(crate) pending: bool,
+    /// Diagnostic clock for `--resize-probe`: cycles the real
+    /// resolution row once on a timer, so the window's answer can
+    /// be read from the log without a hand on the mouse.
+    pub(crate) probe: Option<f32>,
+    /// A press that arrived while a move was in flight: one move
+    /// on screen at a time, and the newest rung always gets its
+    /// turn — queued pressed, applied resolved.
+    pub(crate) move_queued: bool,
+    /// A fixed tier's standing claim on the window's size — the ask,
+    /// and how the asking is going. See [`TierAsk`] for why it keeps
+    /// asking after it has arrived.
+    pub(crate) expect: Option<TierAsk>,
+    /// Frames the window's fullscreen state has disagreed with the
+    /// settings row. The desktop can move that state on its own — a
+    /// green button, a window rule, a shortcut the WM answers itself —
+    /// and the only news of it is the state, so the state is polled,
+    /// the way the size is. The count is the grace, and it is a
+    /// second's worth on purpose: it has to outlive both a compositor
+    /// round trip and macOS's fullscreen animation, because acting
+    /// sooner would mean the game yanking the window out of an
+    /// entrance the desktop was still drawing.
+    pub(crate) drift: u32,
+}
+
 /// The largest 16:9 box inside a window: native mode's view. A
 /// fixed tier needs no fitting — its buffer *is* 16:9 and the engine
 /// letterboxes the stretch to the window's aspect — but at native
@@ -118,7 +151,7 @@ impl Demo {
     /// move on screen at a time, so a press during one queues behind it —
     /// behind the *move*, not behind the tail that keeps watching it.
     pub(crate) fn in_flight(&self) -> bool {
-        self.window_expect.as_ref().is_some_and(TierAsk::in_flight)
+        self.window.expect.as_ref().is_some_and(TierAsk::in_flight)
     }
 
     pub(crate) fn apply_window_policy(&mut self, ctx: &mut Context) {
@@ -146,7 +179,7 @@ impl Demo {
         // move re-aims it when that move resolves — half-moves
         // stacking up mid-flight is what flickered.
         if self.in_flight() {
-            self.window_move_queued = true;
+            self.window.move_queued = true;
             log::info!("window policy: move in flight, re-aim queued");
             return;
         }
@@ -163,7 +196,7 @@ impl Demo {
             if window.fullscreen().is_none() {
                 window.set_fullscreen(Some(frost::Fullscreen::Borderless(None)));
             }
-            self.window_expect = None;
+            self.window.expect = None;
         } else {
             if window.fullscreen().is_some() {
                 window.set_fullscreen(None);
@@ -192,7 +225,7 @@ impl Demo {
                     let got = window.request_inner_size(frost::PhysicalSize::new(w, h));
                     window.set_min_inner_size(Some(frost::PhysicalSize::new(w, h)));
                     window.set_max_inner_size(Some(frost::PhysicalSize::new(w, h)));
-                    self.window_expect = Some(TierAsk {
+                    self.window.expect = Some(TierAsk {
                         w,
                         h,
                         off: 0,
@@ -209,7 +242,7 @@ impl Demo {
                     window.set_resizable(true);
                     window.set_min_inner_size(None::<frost::PhysicalSize<u32>>);
                     window.set_max_inner_size(None::<frost::PhysicalSize<u32>>);
-                    self.window_expect = None;
+                    self.window.expect = None;
                 }
             }
         }
@@ -241,10 +274,10 @@ impl Demo {
         if let Some(window) = ctx.window() {
             let state = window.fullscreen().is_some();
             if state == self.settings.fullscreen || self.in_flight() {
-                self.fullscreen_drift = 0;
+                self.window.drift = 0;
             } else {
-                self.fullscreen_drift += 1;
-                if self.fullscreen_drift == 60 {
+                self.window.drift += 1;
+                if self.window.drift == 60 {
                     log::info!(
                         "window policy: the desktop has it {}fullscreen, the row said otherwise",
                         if state { "" } else { "out of " },
@@ -254,7 +287,7 @@ impl Demo {
                 }
             }
         }
-        if let Some(ask) = self.window_expect
+        if let Some(ask) = self.window.expect
             && let Some(window) = ctx.window()
         {
             {
@@ -277,7 +310,7 @@ impl Demo {
                     window.set_min_inner_size(Some(px));
                     window.set_max_inner_size(Some(px));
                     window.set_resizable(false);
-                    self.window_expect = Some(TierAsk {
+                    self.window.expect = Some(TierAsk {
                         w,
                         h,
                         off: 0,
@@ -285,7 +318,7 @@ impl Demo {
                         asks,
                     });
                 } else if at_tier {
-                    self.window_expect = if calm + 1 >= TierAsk::HOLD {
+                    self.window.expect = if calm + 1 >= TierAsk::HOLD {
                         log::info!(
                             "window policy: {}x{} held for {} seconds, the tier stands",
                             w,
@@ -303,7 +336,7 @@ impl Demo {
                         })
                     };
                 } else if off > TierAsk::PATIENCE || asks > TierAsk::PATIENCE_ASKS {
-                    self.window_expect = None;
+                    self.window.expect = None;
                     println!(
                         "antifrost: asked the window for {w}x{h} {} times, it stayed {}x{} \u{2014} \
                          the desktop is keeping its own geometry: a tile or a snap, a window \
@@ -341,7 +374,7 @@ impl Demo {
                             );
                         }
                     }
-                    self.window_expect = Some(TierAsk {
+                    self.window.expect = Some(TierAsk {
                         w,
                         h,
                         off: off + 1,
@@ -355,13 +388,13 @@ impl Demo {
                 }
             }
         }
-        if self.window_move_queued && !self.in_flight() {
-            self.window_move_queued = false;
+        if self.window.move_queued && !self.in_flight() {
+            self.window.move_queued = false;
             self.apply_window_policy(ctx);
         }
-        if let Some(clock) = self.resize_probe {
+        if let Some(clock) = self.window.probe {
             let t = clock + dt;
-            self.resize_probe = Some(t);
+            self.window.probe = Some(t);
             // Edge-triggered, every one: a range check on a 60 Hz
             // clock is a six-frame window, and six resize requests
             // on Wayland — where configures land asynchronously —
@@ -409,7 +442,7 @@ impl Demo {
                         self.settings.quality.size(),
                     );
                 }
-                self.resize_probe = None;
+                self.window.probe = None;
             }
         }
     }
