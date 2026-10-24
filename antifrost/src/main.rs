@@ -777,6 +777,10 @@ struct Demo {
     title_set: bool,
     was: HashMap<KeyCode, bool>,
     was_mouse: HashMap<MouseButton, bool>,
+    /// The direction the first gamepad was aimed last frame — the
+    /// stick and the d-pad share one memory, so an aimed pad fires
+    /// one step, the same law as a key's edge.
+    pad_dir: Option<game::Dir>,
     /// Click-walking: the directions left to walk toward the last
     /// clicked cell, one issued per completed glide.
     route: Vec<game::Dir>,
@@ -933,6 +937,7 @@ impl Demo {
             title_set: false,
             was: HashMap::new(),
             was_mouse: HashMap::new(),
+            pad_dir: None,
             route: Vec::new(),
             replay: None,
             rng: Rng::default(),
@@ -1125,6 +1130,84 @@ impl Demo {
     }
 
     /// Rising-edge key test (the repo idiom: remember last frame's state).
+    /// One frame of the pad read as a step: the d-pad speaks first,
+    /// then the left stick past its dead zone, its dominant axis the
+    /// walked way (`y` positive is up, the sign `pad_action` turns
+    /// the raw axis into). No aim, no step. Pure, so the mapping is
+    /// nailed by tests, not thumbs.
+    fn pad_step(dpad: [bool; 4], x: f32, y: f32) -> Option<game::Dir> {
+        let [up, down, left, right] = dpad;
+        // A d-pad held two ways is no verb: opposing holds cancel,
+        // its diagonals aim nowhere the hill would walk.
+        let vy = i8::from(up) - i8::from(down);
+        let vx = i8::from(right) - i8::from(left);
+        if vy != 0 && vx != 0 {
+            return None;
+        }
+        if vy != 0 {
+            return Some(if vy > 0 {
+                game::Dir::Up
+            } else {
+                game::Dir::Down
+            });
+        }
+        if vx != 0 {
+            return Some(if vx > 0 {
+                game::Dir::Right
+            } else {
+                game::Dir::Left
+            });
+        }
+        if x.abs().max(y.abs()) < 0.5 {
+            return None;
+        }
+        if x.abs() >= y.abs() {
+            Some(if x > 0.0 {
+                game::Dir::Right
+            } else {
+                game::Dir::Left
+            })
+        } else {
+            Some(if y > 0.0 {
+                game::Dir::Up
+            } else {
+                game::Dir::Down
+            })
+        }
+    }
+
+    /// The gamepad's step this frame, if a new one: an aimed pad
+    /// fires once, like a key's press edge — and holding the right
+    /// trigger (`rt`, and its analog deep-press `r2`) turns the step
+    /// into a shove, the pad's own Shift.
+    fn pad_action(&mut self, ctx: &Context) -> Option<(game::Dir, bool)> {
+        let pad = ctx.gamepads().next()?;
+        let held = |b: frost::Button| pad.is_pressed(b);
+        let dpad = [
+            held(frost::Button::DPadUp),
+            held(frost::Button::DPadDown),
+            held(frost::Button::DPadLeft),
+            held(frost::Button::DPadRight),
+        ];
+        let axis = |a: frost::Axis| pad.axis_data(a).map(|d| d.value()).unwrap_or(0.0);
+        let x = axis(frost::Axis::LeftStickX);
+        let raw_y = axis(frost::Axis::LeftStickY);
+        // gilrs hands over each backend's native sign: XInput calls
+        // up positive, the evdev-style macOS and Linux backends call
+        // down positive. The hill thinks in ups, so the evdev sign
+        // turns around at the door.
+        let y = if cfg!(target_os = "windows") {
+            raw_y
+        } else {
+            -raw_y
+        };
+        let now = Self::pad_step(dpad, x, y);
+        let edge = now.filter(|d| Some(*d) != self.pad_dir);
+        self.pad_dir = now;
+        let push = held(frost::Button::RightTrigger) || held(frost::Button::RightTrigger2);
+        edge.map(|d| (d, push))
+    }
+
     fn pressed(&mut self, ctx: &Context, key: KeyCode) -> bool {
         let down = ctx.key_down(key);
         let edge = down && !*self.was.entry(key).or_insert(false);
@@ -1479,7 +1562,7 @@ impl Demo {
                 -h / 2.0 + 26.0,
                 &self.font,
                 self.note.clone(),
-                30.0,
+                34.0,
                 600.0,
                 Color {
                     r: C_NOTE.r,
@@ -1508,13 +1591,13 @@ impl Demo {
                 rep.acts.len(),
                 tail
             );
-            let seat = if self.note_t > 0.0 { 60.0 } else { 26.0 };
+            let seat = if self.note_t > 0.0 { 64.0 } else { 26.0 };
             ctx.text(
                 0.0,
                 -h / 2.0 + seat,
                 &self.font,
                 line,
-                30.0,
+                34.0,
                 600.0,
                 C_NOTE,
                 UI + 1.0,
@@ -1902,6 +1985,10 @@ impl Process for Demo {
                     action = Some((dir, shift));
                 }
             }
+            // The pad walks the keys' road: the same gate, the same
+            // shove, the same refusals — its step only stands where
+            // no key answered, and its shoulders are its Shift.
+            let action = action.or_else(|| self.pad_action(ctx));
             let detach = self.pressed(ctx, KeyCode::Space);
             let click_left = self.pressed_mouse(ctx, MouseButton::Left);
             let click_right = self.pressed_mouse(ctx, MouseButton::Right);
@@ -2482,6 +2569,49 @@ fn main() {
     ) {
         log::error!("frost failed: {err}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod pad_tests {
+    use super::*;
+
+    #[test]
+    fn the_pad_aim_maps_to_a_step() {
+        // The d-pad speaks first, and it speaks plainly.
+        assert_eq!(
+            Demo::pad_step([true, false, false, false], 0.0, 0.0),
+            Some(game::Dir::Up)
+        );
+        assert_eq!(
+            Demo::pad_step([false, true, false, false], 0.0, 0.0),
+            Some(game::Dir::Down)
+        );
+        assert_eq!(
+            Demo::pad_step([false, false, true, false], 0.0, 0.0),
+            Some(game::Dir::Left)
+        );
+        assert_eq!(
+            Demo::pad_step([false, false, false, true], 0.0, 0.0),
+            Some(game::Dir::Right)
+        );
+        // A pad held two ways aims nowhere: the hill takes no step
+        // from an ambiguous cross or an opposing pair.
+        assert_eq!(Demo::pad_step([true, false, true, false], 0.0, 0.0), None);
+        assert_eq!(Demo::pad_step([true, true, false, false], 0.0, 0.0), None);
+        // The stick: past the dead zone, the dominant axis walks,
+        // and `y` positive is up — the sign the hill thinks in.
+        assert_eq!(Demo::pad_step([false; 4], 0.9, 0.2), Some(game::Dir::Right));
+        assert_eq!(
+            Demo::pad_step([false; 4], -0.9, -0.2),
+            Some(game::Dir::Left)
+        );
+        assert_eq!(Demo::pad_step([false; 4], 0.2, 0.9), Some(game::Dir::Up));
+        assert_eq!(Demo::pad_step([false; 4], 0.0, -0.8), Some(game::Dir::Down));
+        // The dead zone keeps a resting stick from walking the trail
+        // on its own, and it is the same floor on both axes.
+        assert_eq!(Demo::pad_step([false; 4], 0.0, 0.0), None);
+        assert_eq!(Demo::pad_step([false; 4], 0.49, 0.49), None);
     }
 }
 

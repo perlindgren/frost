@@ -620,13 +620,13 @@ impl Demo {
                 ..Default::default()
             }));
         }
-        let seat = if self.note_t > 0.0 { 60.0 } else { 26.0 };
+        let seat = if self.note_t > 0.0 { 64.0 } else { 26.0 };
         ctx.text(
             0.0,
             -h / 2.0 + seat,
             &self.font,
             word.to_string(),
-            30.0,
+            34.0,
             600.0,
             C_NOTE,
             UI + 1.0,

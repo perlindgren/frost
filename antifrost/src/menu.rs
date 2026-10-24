@@ -54,12 +54,13 @@ pub(crate) enum Page {
     /// next hill and retry hill — the only way a finished hill is
     /// ever left.
     Won,
-    /// The two control pages: plain lists answering the menu rows
-    /// of the same names. Any row on them steps back to the menu —
+    /// The control pages: plain lists answering the menu rows of
+    /// the same names. Any row on them steps back to the menu —
     /// they are reading material, and reading ends when you press
     /// anything.
     Keyboard,
     Mouse,
+    Gamepad,
     /// The ledger: one row per warm hill — number, name, best run,
     /// and a minimap of the hill itself — a list that can outgrow
     /// the plate, so the window slides with the selection and the
@@ -83,7 +84,7 @@ pub(crate) fn escape_nav(from: Page) -> Escape {
         Page::Game => Escape::ToMenu,
         Page::Main => Escape::Resume,
         Page::Settings => Escape::ToMenu,
-        Page::Keyboard | Page::Mouse => Escape::ToMenu,
+        Page::Keyboard | Page::Mouse | Page::Gamepad => Escape::ToMenu,
         // The ledger is read, not lived in: Escape steps off it onto
         // the menu like everywhere else.
         Page::Progress => Escape::ToMenu,
@@ -116,9 +117,10 @@ pub(crate) enum Action {
     /// Sliders: the press starts a drag, the release saves.
     Ambient,
     Light,
-    /// The control pages of the menu: keyboard, mouse.
+    /// The control pages of the menu: keyboard, mouse, gamepad.
     Keyboard,
     Mouse,
+    Gamepad,
     /// The ledger page, and one of its hill rows: a hill row replays
     /// the hill it names — the ledger is a door, not a museum.
     OpenProgress,
@@ -171,10 +173,11 @@ pub(crate) fn plate_top_pad(h: f32) -> f32 {
 pub(crate) fn plate_bottom_pad(page: Page, h: f32) -> f32 {
     match page {
         Page::Progress => progress_step(h),
-        Page::Main => menu_step_for(7, h),
+        Page::Main => menu_step_for(8, h),
         Page::Settings => menu_step_for(10, h),
         Page::Keyboard => menu_step_for(6, h),
         Page::Mouse => menu_step_for(4, h),
+        Page::Gamepad => menu_step_for(3, h),
         Page::Won => menu_step_for(2, h),
         Page::Game => MENU_STEP,
     }
@@ -449,6 +452,7 @@ impl Demo {
             Page::Settings => "SETTINGS".to_string(),
             Page::Keyboard => "KEYBOARD".to_string(),
             Page::Mouse => "MOUSE".to_string(),
+            Page::Gamepad => "GAMEPAD".to_string(),
             Page::Progress => "PROGRESS".to_string(),
             _ => self
                 .game
@@ -904,6 +908,10 @@ impl Demo {
                 self.page = Page::Mouse;
                 self.menu.sel = 0;
             }
+            Action::Gamepad => {
+                self.page = Page::Gamepad;
+                self.menu.sel = 0;
+            }
             Action::Back => {
                 self.page = Page::Main;
                 self.menu.sel = 0;
@@ -1125,11 +1133,11 @@ impl Demo {
         match page {
             Page::Game => {}
             Page::Main => {
-                // Seven rows, hung so the composed plate — title band
-                // above, one trailing row below — sits centred on the
-                // view at every resolution.
-                let step = menu_step_for(7, h);
-                let top = plain_top(7, step, h);
+                // Eight rows, hung so the composed plate — title
+                // band above, one trailing row below — sits centred
+                // on the view at every resolution.
+                let step = menu_step_for(8, h);
+                let top = plain_top(8, step, h);
                 push(&mut rows, Action::New, top, 240.0, "new game".into(), None);
                 push(
                     &mut rows,
@@ -1173,8 +1181,16 @@ impl Demo {
                 );
                 push(
                     &mut rows,
-                    Action::Exit,
+                    Action::Gamepad,
                     top - 6.0 * step,
+                    240.0,
+                    "gamepad".into(),
+                    None,
+                );
+                push(
+                    &mut rows,
+                    Action::Exit,
+                    top - 7.0 * step,
                     240.0,
                     "exit".into(),
                     None,
@@ -1331,6 +1347,31 @@ impl Demo {
                     "left click to move",
                     "right click to detach",
                     "shift click to push",
+                    "back",
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    push(
+                        &mut rows,
+                        Action::Back,
+                        top - i as f32 * step,
+                        280.0,
+                        line.to_string(),
+                        None,
+                    );
+                }
+            }
+            Page::Gamepad => {
+                // The pad's whole vocabulary, in the same voice as
+                // the other control pages — and in the same font-safe
+                // words: Barrfont owns letters, digits and spaces,
+                // so the dpad and the trigger keep their shorthand.
+                let step = menu_step_for(3, h);
+                let top = plain_top(3, step, h);
+                for (i, line) in [
+                    "left stick or dpad to move",
+                    "rt with a direction to push",
                     "back",
                 ]
                 .into_iter()
@@ -2381,6 +2422,10 @@ mod menu_tests {
                     "shift click to push",
                 ][..],
             ),
+            (
+                Page::Gamepad,
+                &["left stick or dpad to move", "rt with a direction to push"][..],
+            ),
         ] {
             d.page = page;
             let rows = d.menu_rows(d.page, 720.0);
@@ -2402,6 +2447,7 @@ mod menu_tests {
     fn escape_leaves_the_control_pages_for_the_menu() {
         assert_eq!(escape_nav(Page::Keyboard), Escape::ToMenu);
         assert_eq!(escape_nav(Page::Mouse), Escape::ToMenu);
+        assert_eq!(escape_nav(Page::Gamepad), Escape::ToMenu);
         assert_eq!(escape_nav(Page::Progress), Escape::ToMenu);
     }
 
@@ -2413,7 +2459,13 @@ mod menu_tests {
         // the game will actually run (540 and up).
         for h in [540.0, 720.0, 1080.0, 2160.0] {
             let d = demo();
-            for page in [Page::Main, Page::Settings, Page::Keyboard, Page::Mouse] {
+            for page in [
+                Page::Main,
+                Page::Settings,
+                Page::Keyboard,
+                Page::Mouse,
+                Page::Gamepad,
+            ] {
                 let rows = d.menu_rows(page, h);
                 let top = rows.iter().map(|r| r.cy).fold(f32::MIN, f32::max);
                 let bot = rows.iter().map(|r| r.cy).fold(f32::MAX, f32::min);
@@ -2804,6 +2856,7 @@ mod menu_tests {
                 Action::OpenProgress,
                 Action::Keyboard,
                 Action::Mouse,
+                Action::Gamepad,
                 Action::Exit,
             ]
         );
