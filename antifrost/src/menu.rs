@@ -433,23 +433,28 @@ impl Demo {
                 cut = true;
             }
         }
-        // The panel's own night: once it was the plate itself, and on
-        // stone it is a shade — the slab was baked at a third of its
-        // daylight, and all this shade has left to do is settle the
-        // white lichen behind the words.
-        ctx.rectangle(
-            pcx,
-            pcy,
-            phw,
-            phh,
-            Color {
-                r: 0.05,
-                g: 0.055,
-                b: 0.08,
-                a: (if cut { 0.45 } else { 0.94 }) * a,
-            },
-            z + 1.25,
-        );
+        // The ink slab that used to be the plate is a fallback now,
+        // painted only when the stone failed to decode: where the
+        // slab rode, the words need their dark. Over real stone no
+        // wash rides — the slab *is* the menu, and a shade laid on
+        // it reads as a rectangle wearing a stone frame. The stone
+        // was baked at a third of its daylight for exactly this:
+        // the lichen settles for the words on its own.
+        if !cut {
+            ctx.rectangle(
+                pcx,
+                pcy,
+                phw,
+                phh,
+                Color {
+                    r: 0.05,
+                    g: 0.055,
+                    b: 0.08,
+                    a: 0.94 * a,
+                },
+                z + 1.25,
+            );
+        }
         // The panel wears the hill it stands on: main and won pages
         // both name their ground — the title answers the same banner
         // the player has been reading all run. Settings is its own
