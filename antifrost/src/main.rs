@@ -781,6 +781,10 @@ struct Demo {
     /// stick and the d-pad share one memory, so an aimed pad fires
     /// one step, the same law as a key's edge.
     pad_dir: Option<game::Dir>,
+    /// The last frame's face of the pad's watched buttons — Start,
+    /// Cross, Circle — the edge memory [`Demo::pad_pressed`] reads
+    /// and renews, for the buttons no aim can speak.
+    pad_was: HashMap<frost::Button, bool>,
     /// Click-walking: the directions left to walk toward the last
     /// clicked cell, one issued per completed glide.
     route: Vec<game::Dir>,
@@ -938,6 +942,7 @@ impl Demo {
             was: HashMap::new(),
             was_mouse: HashMap::new(),
             pad_dir: None,
+            pad_was: HashMap::new(),
             route: Vec::new(),
             replay: None,
             rng: Rng::default(),
@@ -953,6 +958,8 @@ impl Demo {
             page: Page::Main,
             menu: MenuNav {
                 nav_timer: HashMap::new(),
+                pad_row: None,
+                pad_repeat: 0.0,
                 drag: None,
                 sel: 0,
                 last_pointer: None,
@@ -1176,11 +1183,11 @@ impl Demo {
         }
     }
 
-    /// The gamepad's step this frame, if a new one: an aimed pad
-    /// fires once, like a key's press edge — and holding the right
-    /// trigger (`rt`, and its analog deep-press `r2`) turns the step
-    /// into a shove, the pad's own Shift.
-    fn pad_action(&mut self, ctx: &Context) -> Option<(game::Dir, bool)> {
+    /// Where the first gamepad aims this frame: the d-pad speaks
+    /// first, then the left stick, in the hill's own sign. `None`
+    /// is rest. The one pad read — the hill's walk and the menu's
+    /// rows aim by the same hand.
+    fn pad_aim(&self, ctx: &Context) -> Option<game::Dir> {
         let pad = ctx.gamepads().next()?;
         let held = |b: frost::Button| pad.is_pressed(b);
         let dpad = [
@@ -1201,10 +1208,60 @@ impl Demo {
         } else {
             -raw_y
         };
-        let now = Self::pad_step(dpad, x, y);
+        Self::pad_step(dpad, x, y)
+    }
+
+    /// A gamepad button's press edge: down this frame, up last
+    /// frame. Watched buttons should be read every frame — a frame
+    /// that short-circuits past the read can return the next as a
+    /// phantom press.
+    fn pad_pressed(&mut self, ctx: &Context, b: frost::Button) -> bool {
+        let down = ctx.gamepads().next().is_some_and(|p| p.is_pressed(b));
+        down && !self.pad_was.insert(b, down).unwrap_or(false)
+    }
+
+    /// The pad's menu intents for one frame: (up, down, left, right).
+    /// Vertical follows the keys' hold law — a new aim answers at
+    /// once, a held one keeps stepping on the nav beat; horizontal
+    /// fires once per aim, the arrow-nudge law a slider row lives by.
+    fn pad_nav(&mut self, ctx: &mut Context, dt: f32) -> (bool, bool, bool, bool) {
+        let d = self.pad_aim(ctx);
+        let (fresh, on_beat) = match d {
+            None => {
+                self.menu.pad_row = None;
+                (false, false)
+            }
+            Some(dir) => {
+                if Some(dir) != self.menu.pad_row {
+                    self.menu.pad_row = Some(dir);
+                    self.menu.pad_repeat = NAV_HOLD;
+                    (true, false)
+                } else {
+                    (false, key_repeat(&mut self.menu.pad_repeat, dt))
+                }
+            }
+        };
+        let step = fresh || on_beat;
+        let turn = |want| d == Some(want);
+        (
+            step && turn(game::Dir::Up),
+            step && turn(game::Dir::Down),
+            fresh && turn(game::Dir::Left),
+            fresh && turn(game::Dir::Right),
+        )
+    }
+
+    /// The gamepad's step this frame, if a new one: an aimed pad
+    /// fires once, like a key's press edge — and holding the right
+    /// trigger (`rt`, and its analog deep-press `r2`) turns the step
+    /// into a shove, the pad's own Shift.
+    fn pad_action(&mut self, ctx: &Context) -> Option<(game::Dir, bool)> {
+        let now = self.pad_aim(ctx);
         let edge = now.filter(|d| Some(*d) != self.pad_dir);
         self.pad_dir = now;
-        let push = held(frost::Button::RightTrigger) || held(frost::Button::RightTrigger2);
+        let push = ctx.gamepads().next().is_some_and(|p| {
+            p.is_pressed(frost::Button::RightTrigger) || p.is_pressed(frost::Button::RightTrigger2)
+        });
         edge.map(|d| (d, push))
     }
 
@@ -1910,7 +1967,16 @@ impl Process for Demo {
         // menu hands the hill back, settings step back to the menu.
         // Quitting belongs to the exit row alone. (`Config::escape_exits`
         // is off — the demo owns this key.)
-        if self.pressed(ctx, KeyCode::Escape) {
+        // Options is the pad's Escape — it opens the menu from the
+        // hill, steps off every page, and walks back out of a
+        // showing, exactly as the key does; Circle joins as the
+        // menus' own back, silent on the hill where Escape means
+        // pause. The three edges are read before the test so no
+        // short-circuit can strand one mid-air.
+        let esc = self.pressed(ctx, KeyCode::Escape);
+        let pad_esc = self.pad_pressed(ctx, frost::Button::Start);
+        let pad_back = self.pad_pressed(ctx, frost::Button::East);
+        if esc || pad_esc || (self.page != Page::Game && pad_back) {
             if self.replay.is_some() {
                 // Stepping off a showing returns to the ledger it
                 // came from, and the hill is wiped back to its own

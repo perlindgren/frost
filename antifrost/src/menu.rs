@@ -28,6 +28,12 @@ pub(crate) struct MenuNav {
     /// beat per step. A released key simply stops being paid; the
     /// next press re-arms the whole delay.
     pub(crate) nav_timer: HashMap<KeyCode, f32>,
+    /// The row aim the pad held last menu frame, and its repeat
+    /// clock — the pad's share of the arrows' law, kept by
+    /// [`Demo::pad_nav`]: a new aim steps at once, a held one walks
+    /// on `NAV_RATE` beats after the `NAV_HOLD` delay.
+    pub(crate) pad_row: Option<game::Dir>,
+    pub(crate) pad_repeat: f32,
     /// The slider currently under the button, if any.
     pub(crate) drag: Option<Slider>,
     /// The first hill row the progress page shows: the window that
@@ -177,7 +183,7 @@ pub(crate) fn plate_bottom_pad(page: Page, h: f32) -> f32 {
         Page::Settings => menu_step_for(10, h),
         Page::Keyboard => menu_step_for(6, h),
         Page::Mouse => menu_step_for(4, h),
-        Page::Gamepad => menu_step_for(3, h),
+        Page::Gamepad => menu_step_for(6, h),
         Page::Won => menu_step_for(2, h),
         Page::Game => MENU_STEP,
     }
@@ -982,8 +988,14 @@ impl Demo {
             // keep their promise: up from the first hill wraps to
             // the last, down off the bottom comes home to the first.
             // Every other page keeps the plain walk.
-            let up = self.nav_held(ctx, dt, KeyCode::ArrowUp);
-            let down = self.nav_held(ctx, dt, KeyCode::ArrowDown);
+            let ku = self.nav_held(ctx, dt, KeyCode::ArrowUp);
+            let kd = self.nav_held(ctx, dt, KeyCode::ArrowDown);
+            // The pad's stick and d-pad walk the same rows the
+            // arrows walk — same wrap, same ledger lean, because
+            // their steps arrive as the same two booleans.
+            let (pu, pd, pl, pr) = self.pad_nav(ctx, dt);
+            let up = ku || pu;
+            let down = kd || pd;
             if self.page == Page::Progress {
                 let hills = rows.len() - 1; // the pinned back row aside
                 let more = self.levels.len() > self.menu.progress_top + hills;
@@ -1032,8 +1044,8 @@ impl Demo {
                 }
             }
             let nudge = match (
-                self.pressed(ctx, KeyCode::ArrowLeft),
-                self.pressed(ctx, KeyCode::ArrowRight),
+                self.pressed(ctx, KeyCode::ArrowLeft) || pl,
+                self.pressed(ctx, KeyCode::ArrowRight) || pr,
             ) {
                 (true, false) => Some(-1.0),
                 (false, true) => Some(1.0),
@@ -1050,7 +1062,10 @@ impl Demo {
                 }
                 self.settings.save();
             }
-            if self.pressed(ctx, KeyCode::Enter) || self.pressed(ctx, KeyCode::NumpadEnter) {
+            if self.pressed(ctx, KeyCode::Enter)
+                || self.pressed(ctx, KeyCode::NumpadEnter)
+                || self.pad_pressed(ctx, frost::Button::South)
+            {
                 let action = rows[self.menu.sel].action;
                 self.menu_action(ctx, action);
             }
@@ -1366,12 +1381,16 @@ impl Demo {
                 // The pad's whole vocabulary, in the same voice as
                 // the other control pages — and in the same font-safe
                 // words: Barrfont owns letters, digits and spaces,
-                // so the dpad and the trigger keep their shorthand.
-                let step = menu_step_for(3, h);
-                let top = plain_top(3, step, h);
+                // so the dpad, the trigger and the DualSense's own
+                // names keep their shorthand.
+                let step = menu_step_for(6, h);
+                let top = plain_top(6, step, h);
                 for (i, line) in [
                     "left stick or dpad to move",
                     "rt with a direction to push",
+                    "options opens and closes the menu",
+                    "dpad walks rows and cross picks",
+                    "circle steps back",
                     "back",
                 ]
                 .into_iter()
@@ -2424,7 +2443,13 @@ mod menu_tests {
             ),
             (
                 Page::Gamepad,
-                &["left stick or dpad to move", "rt with a direction to push"][..],
+                &[
+                    "left stick or dpad to move",
+                    "rt with a direction to push",
+                    "options opens and closes the menu",
+                    "dpad walks rows and cross picks",
+                    "circle steps back",
+                ][..],
             ),
         ] {
             d.page = page;
