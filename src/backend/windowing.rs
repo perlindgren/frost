@@ -480,9 +480,15 @@ mod tests {
         );
         assert_eq!(f32::from_le_bytes(bytes[0..4].try_into().unwrap()), 0.5);
         assert_eq!(f32::from_le_bytes(bytes[4..8].try_into().unwrap()), 0.25);
+        // The struct's old padding is the sharp centre now: a zero ask
+        // really is zero bytes, where the old test found silence here
+        // because nothing lived here. The tail keeps no such silence:
+        // the half-extents close it at the sentinel.
         assert_eq!(&bytes[8..16], &[0u8; 8]);
         assert_eq!(&bytes[16..48], &[0u8; 32]);
-        assert_eq!(&bytes[48..], &[0u8; 16]);
+        assert_eq!(&bytes[48..56], &[0u8; 8]);
+        assert_eq!(f32::from_le_bytes(bytes[56..60].try_into().unwrap()), -1.0);
+        assert_eq!(f32::from_le_bytes(bytes[60..64].try_into().unwrap()), -1.0);
     }
 
     /// The bloom weights ride in the same bytes as the letterbox fit, at
