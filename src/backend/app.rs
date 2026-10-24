@@ -1386,6 +1386,23 @@ impl<P: Process> Frost<P> {
         if self.surface_vsync == self.vsync {
             return;
         }
+        // Tear the chain down before building the new one: a whole
+        // new surface handle for the same window, so the configure
+        // that follows has no swap chain to keep and must create one
+        // in the new mode. Reconfiguring the *same* handle over an
+        // unchanged size and format is where a composited backend —
+        // Windows' WGC above all — has been seen to keep the old
+        // chain's cadence alive: the request lands in the config, the
+        // presents go on arriving at the old mode, and the flip only
+        // takes on the next launch, which is exactly the bug this
+        // answers. The old handle goes out of scope with the
+        // assignment, releasing its id; only the vsync flip pays this
+        // — a resize changes the size and rebuilds on its own.
+        if let Some(window) = self.window.clone()
+            && let Ok(surface) = self.instance.create_surface(window)
+        {
+            self.surface = Some(surface);
+        }
         if self.reconfigure_surface().is_some() {
             log::info!(
                 "vsync turned {} (present mode {:?})",
@@ -1395,6 +1412,11 @@ impl<P: Process> Frost<P> {
         }
         if let Some(window) = self.window.clone() {
             self.refresh_expected_fps(&window);
+            // A fresh chain has no present in flight to wake the event
+            // loop with, and a Wait-mode loop would otherwise sit
+            // until the next event: one redraw demanded, the new
+            // cadence starts on the next frame, not on a mouse move.
+            window.request_redraw();
         }
     }
 
