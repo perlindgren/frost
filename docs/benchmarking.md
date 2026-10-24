@@ -1022,10 +1022,13 @@ not a shader, but a missing instrument.
 Two conditioned walks later the answer is that **the M4 Max has no cell in §14's table**,
 and the reason is measured rather than assumed, which is the more useful thing to leave
 behind. Machine: the 14-core M4 Max of §6–13 (32 GPU cores, 36 GB), built-in Liquid
-Retina XDR panel and nothing attached, on AC at 100 %, tree `3e9b433`, rustc 1.99.0,
-the `debug-assertions=true` release build. `using adapter: "Apple M4 Max"` before every
-run below; on this platform there is no `/dev/dri` to be hidden from and no llvmpipe
-costume for §1c to wear, so the adapter line is cheap and read every time anyway.
+Retina XDR panel and nothing attached, **set to a fixed 60 Hz in System Settings** —
+ProMotion off, the owner's report, since nothing in a shell can read it (§1c's Mac
+equivalent of §1c's device node: `com.apple.windowserver` answers to no query here) —
+on AC at 100 %, tree `3e9b433`, rustc 1.99.0, the `debug-assertions=true` release
+build. `using adapter: "Apple M4 Max"` before every run below; on this platform there
+is no `/dev/dri` to be hidden from and no llvmpipe costume for §1c to wear, so the
+adapter line is cheap and read every time anyway.
 
 **Two flags had to be bought first**, both on `examples/benchsuite`, both off by
 default so the committed table's meaning is untouched: `--fullscreen`, because a window
@@ -1051,7 +1054,12 @@ counts **60 presented frames in each of thirteen consecutive seconds** — 60.00
 59.8 and not 61 — under `present_mode AutoNoVsync`, with the app asking not to be paced
 and the floor and the cliff reporting 60.2 and 60.0 together. §14's ratio test reads
 **1.003×**, which is its own definition of a machine answering with its present path.
-§6's 90 and 120 were the same instrument reading a ProMotion rate rather than a GPU.
+And because the panel is pinned at 60 Hz, there is no drift to blame: that is a hard
+ceiling, not a variable refresh caught mid-move. §6's 90.0, 88.9 and "exactly 120.0" are
+the same instrument against a panel running faster — 90 and 120 are the tiers that mode
+offers, and its non-round 85.4, 88.9, 91.9 and 92.1 are what a ~90 Hz pace reads with
+window-boundary noise on top — which is a claim about that evening's setting, not about
+a ceiling, and it was written before anyone thought to record the setting.
 
 **A Space of its own uncaps it, and moves the question.** In a native fullscreen Space
 the floor jumps 60.2 → 381.0 without one line of work changing, so the throttle was the
@@ -1143,7 +1151,8 @@ believing any Mac number, because the suite's 1080p is 3840×2160 here; take
 divide floor by cliff before showing it to anyone — 1.003× windowed, 2.2× pinned, against
 the 62.6× that the box the table belongs to reports. The two Mac cells §6 left from
 2026-10-15 are explained by this rather than half-filled by it: they are this section's
-windowed reading, taken at whatever rate ProMotion was holding that evening. And when
-the question is what the light field costs rather than what the panel can present, run
-the offscreen meter. A row for the 4090 box is still open, and §14's four instructions
-stand as written for whoever fills it.
+windowed reading, taken against a panel running at some rate above the 60 Hz this machine
+is pinned to. Record the setting next time — it is the first condition of a Mac number,
+and it cannot be read from inside a shell. And when the question is what the light field
+costs rather than what the panel can present, run the offscreen meter. A row for the 4090
+box is still open, and §14's four instructions stand as written for whoever fills it.
