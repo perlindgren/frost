@@ -507,11 +507,10 @@ impl Demo {
         for (i, r) in rows.iter().enumerate() {
             let hot = i == self.menu.sel;
             // A row with no road left in it: `next` greys when the
-            // hill underfoot is all the descent still owes, and a
-            // locked ledger hill greys the same way — the same
-            // mute for the same shut door, whichever key asks.
-            let mute = (matches!(r.action, Action::Next) && !self.next_owed())
-                || matches!(r.action, Action::Hill(hill) if hill >= self.progress.unlocked);
+            // hill underfoot is all the descent still owes — the
+            // same rule the key obeys, asked at the same lip. A
+            // locked hill needs no grey: it is not on the board.
+            let mute = matches!(r.action, Action::Next) && !self.next_owed();
             if hot {
                 ctx.rectangle(
                     r.cx,
@@ -823,7 +822,7 @@ impl Demo {
             .iter()
             .filter(|r| matches!(r.action, Action::Hill(_)))
             .count();
-        let (up, down) = progress_marks(self.levels.len());
+        let (up, down) = progress_marks(self.progress.unlocked.min(self.levels.len()));
         if hills == 0 || (!up && !down) {
             return;
         }
@@ -1432,14 +1431,16 @@ impl Demo {
                 // moves hills between them, never a row out.
                 let top = progress_top_y(h);
                 let pstep = progress_step(h);
-                // The descent hangs on the ledger, opened a win at a
-                // time: hills within the lock answer their rows, and
-                // the hills past it wait there — shown, numbered if
-                // ever warmed, saying `locked` and answering nothing.
-                // A hill with no run wears no score — the column
-                // stays empty until a run is earned — and a best
-                // that overshot par reads its debt plainly.
-                let total = self.levels.len();
+                // The board shows the descent the player owns: the
+                // open hills and no others. A hill past the frontier
+                // is not on the board at all — the ledger is ground
+                // one can walk, not a census of the hill list. A
+                // hill with no run wears no score — the column stays
+                // empty until a run is earned — and a best that
+                // overshot par reads its debt plainly.
+                // The descent shown is the descent open: the window,
+                // the marks, and the rows all count unlocked hills.
+                let total = self.progress.unlocked.min(self.levels.len());
                 let mut order: Vec<usize> = (0..total).collect();
                 order.sort_by_key(|&i| (self.perfect(i), i));
                 let start = self.menu.progress_top.min(total);
@@ -1457,13 +1458,12 @@ impl Demo {
                         }
                         None => String::new(),
                     };
-                    let locked = i >= self.progress.unlocked;
                     push(
                         &mut rows,
                         Action::Hill(i),
                         top - row as f32 * pstep,
                         PROGRESS_PLATE - 12.0,
-                        format!("{name}{score}{}", if locked { "   locked" } else { "" }),
+                        format!("{name}{score}"),
                         None,
                     );
                 }
@@ -1616,30 +1616,28 @@ mod menu_tests {
     }
 
     #[test]
-    fn a_locked_hill_shows_its_row_and_says_locked() {
+    fn a_locked_hill_is_not_on_the_board_at_all() {
         let mut d = demo();
         d.progress.record(3, 21);
         d.progress.unlocked = 2;
         let rows = d.menu_rows(Page::Progress, 720.0);
-        let open = rows
-            .iter()
-            .find(|r| r.action == Action::Hill(1))
-            .expect("hill 2 is on the ledger");
         assert!(
-            !open.text.ends_with("locked"),
-            "a hill within the lock wears no warning"
-        );
-        let shut = rows
-            .iter()
-            .find(|r| r.action == Action::Hill(3))
-            .expect("hill 4 is on the ledger");
-        assert!(
-            shut.text.ends_with("locked"),
-            "a hill past the frontier says so on its row"
+            rows.iter().any(|r| r.action == Action::Hill(1)),
+            "an open hill holds its row"
         );
         assert!(
-            shut.text.contains("21"),
-            "and its kept number stays on the row, debt reading and all: a lock hides no stats"
+            !rows
+                .iter()
+                .any(|r| matches!(r.action, Action::Hill(i) if i >= 2)),
+            "the board shows the open descent and nothing past it —
+             no locked rows, no census of the hill list"
+        );
+        // The score of the hidden hill is not deleted, only unseen:
+        // the lock hides the door, the ledger keeps the number.
+        assert_eq!(
+            d.progress.scores,
+            vec![(3, 21)],
+            "hiding a hill hides its row, not its history"
         );
     }
 
