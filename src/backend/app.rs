@@ -1037,6 +1037,14 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                 self.scale = scale_factor as f32;
                 self.resize();
             }
+            // Whether the window is on a screen at all. A window macOS has
+            // parked on another Space keeps being driven by its own redraw
+            // source, so a run whose window went occluded measures something
+            // other than what the display shows; a fullscreen number is only
+            // worth what the log says about this.
+            WindowEvent::Occluded(occluded) => {
+                log::info!("window occluded: {occluded}");
+            }
             WindowEvent::RedrawRequested => {
                 self.render();
                 // A process that asked to leave has its last frame drawn

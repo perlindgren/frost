@@ -342,6 +342,44 @@ impl Process for Suite {
 impl Suite {
     fn finish(&mut self, ctx: &mut Context) {
         self.done = true;
+        // Print the box the frames came out of beside the frames themselves.
+        // A Mac's request for 1920×1080 is not what arrives (Retina doubles
+        // it), and a fullscreen request settles wherever the platform likes
+        // — so the geometry is part of the record, not a detail to infer
+        // afterwards. `docs/benchmarking.md` §17 is what inferring cost.
+        if let Some(window) = ctx.window() {
+            let inner = window.inner_size();
+            let scale = window.scale_factor().max(0.01);
+            let logical_w = (inner.width as f64 / scale).round() as u32;
+            let logical_h = (inner.height as f64 / scale).round() as u32;
+            let monitor = window
+                .current_monitor()
+                .or_else(|| window.primary_monitor())
+                .map(|m| {
+                    let size = m.size();
+                    format!(
+                        "in a {w}x{h} px monitor{rate}",
+                        w = size.width,
+                        h = size.height,
+                        rate = m
+                            .refresh_rate_millihertz()
+                            .map(|hz| format!(" @ {:.1} Hz", hz as f64 / 1000.0))
+                            .unwrap_or_default()
+                    )
+                })
+                .unwrap_or_else(|| "with no monitor reported".into());
+            println!(
+                "benchsuite: drew into {}x{} px ({}x{} at {:.2}x) {}, fullscreen: {}, visible: {:?}",
+                inner.width,
+                inner.height,
+                logical_w,
+                logical_h,
+                scale,
+                monitor,
+                window.fullscreen().is_some(),
+                window.is_visible()
+            );
+        }
         let floor = self
             .canary
             .take()
