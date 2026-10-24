@@ -864,14 +864,18 @@ remembered:
   table as a glimpse rather than inside it as a cell.
 - **Read the panel's number before the ratio.** The divide has a hole the Mac found
   (§17): a ratio above 1 only proves that *something* moved off the ceiling. With that
-  panel pinned at 60 Hz the floor and the cliff both reported 60 and the test failed as
-  designed; set the same panel to 120 and the prediction is a floor of ~120.0 against a
-  cliff of ~39 — the cliff's own ~26 ms of work at the pixels a Retina window paints —
-  which divides to **~3×** and passes, on a floor that is still nothing but refresh rate.
-  The tell is cheaper than the test: **a floor that equals the panel's rate to the last
-  digit is the panel.** The 120 Hz half of this is written down to be tested, not
-  believed — the setting is one only the machine's owner can change, and no shell can
-  read it.
+  panel pinned at its highest fixed rate, 60 Hz, the floor and the cliff both reported 60
+  and the test failed as designed. Free the panel — macOS offers no fixed 120, only
+  **ProMotion**, its adaptive 24–120 mode, as the setting above 60 — and the prediction is
+  a floor near the panel's new rate against a cliff near 39 fps, its own ~26 ms of work at
+  the pixels a Retina window paints, which could divide to **~3×** and pass on a floor
+  that is still nothing but refresh rate. The tell is cheaper than the test and survives
+  whatever the panel does: **a floor that equals the panel's rate to the last digit is the
+  panel**, and that is exactly how 60.000 for thirteen seconds gave this up. The
+  above-60 half is written to be tested, not believed: the panel will be at 60 for a
+  static window even under ProMotion if that is what it decides, which is itself worth
+  knowing, and no shell can read or set any of it — this document recorded the rate
+  because its owner was asked.
 
 The M4 Max seat has since been walked twice, and §17 is why it stays empty rather than
 filled with a number that would be read as silicon: windowed, that machine reports its
