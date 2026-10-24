@@ -1301,3 +1301,81 @@ the floor says otherwise.
 Still open after this: Godot on a machine where §14's gate can actually be met, Unity and
 Unreal unmeasured rather than dismissed, and the RTX 4090 row, which remains the most
 useful number any of these sections can still be given.
+
+## 19. What the shadow slope is charged against, and one walk instead of nine (2026-10-24, Apple M4 Max)
+
+§17 measured frost's shadow term as `0.44 + taps × 0.68 ms` at 1080p and §18 priced it
+against a neighbour, and neither asked the obvious question: what is a *tap* being charged
+for? Two answers were possible and they want opposite fixes — either the walk visits
+occluders that cannot possibly block the ray, which is a culling problem, or it visits the
+right ones and re-does work that does not vary between taps, which is a loop-order problem.
+
+**The cull already exists.** The packer builds a block per light holding exactly the
+occluders whose bounds reach some ray that light fires at a pixel it reaches, and an empty
+block answers "nothing stands in the way" without a single record load
+(`shaders/lighting.wgsl`, the walk in `occluded`). No win was available there, and the
+hypothesis that sent this looking died in the first five minutes, which is the correct
+outcome for a hypothesis.
+
+**The walk is the cliff, and the rays are nothing.** A control row was added to both
+tables — `taps-9-clear`, ten lamps, nine rays a pixel, and *no* occluders, so the penumbra
+ladder runs against empty blocks. Offscreen at 1080p: eight extra rays over ten lamps cost
+**0.43 ms**, while the same nine rays over sixty occluders cost **5.62 ms** — **87 % of the
+cliff is the walk**, and it is linear in taps to within measurement (first walk 0.669 ms,
+nine of them 5.62, i.e. 0.624 each). Nothing was hiding.
+
+**The change: one walk resolves the whole disk.** The tap loop sat outside the walk, so per
+occluder, per light, per pixel, nine times over, the shader re-loaded the same 48-byte
+record, re-multiplied the occluder's transform for the *pixel* — which does not move between
+taps — and re-ran the "is the pixel sitting on this shape" test. `occluded_taps` walks the
+block once and returns a mask of which taps found a blocker; the record loads, the pixel's
+trip through the transform and the inside test happen once per record, and only the slab
+interval, which genuinely depends on where on the disk a ray started, still runs per tap.
+It cannot visit more records than the nine separate walks did: each of those stopped at its
+own ray's first blocker, and this stops when every unresolved ray has found one — the
+longest of the nine prefixes rather than their sum. Semantics are unchanged by construction
+and the 429 lib tests, including the shadow ones, still pass. The point-light path — the
+single hard ray from a light with no penumbra — was left exactly as it was.
+
+**Measured with the suite, not the meter, in fullscreen at 4112×2572.** Two interleaved
+passes, each side's own median of three reps, fused and plain alternating with 15 s of
+settle between sides; the two passes of a side agreed to 0.2 % on the heavy rows:
+
+| row | plain | fused | change | the two passes, plain → fused (ms) |
+| --- | --- | --- | --- | --- |
+| `fill-1080p` | 2.63 ms | 2.46 ms | −6 % | 2.63 → 2.46 |
+| `lamps-10` | 2.91 ms | 2.59 ms | −11 % | 2.91 → 2.59 |
+| `taps-1` | 4.17 ms | 4.28 ms | +3 % | 4.17 → 4.28 |
+| `taps-4` | 8.19 ms | 7.05 ms | **−14 %** | 8.19 → 7.05 |
+| `taps-9` | 16.71 ms | 12.53 ms | **−25 %** | 16.72, 16.69 → 12.53, 12.53 |
+| `taps-9-clear` | 4.18 ms | 2.79 ms | **−33 %** | 4.18 → 2.79 |
+
+**Three of those rows are null controls and they are the reason the other three mean
+anything.** `fill-1080p` runs no lights, `lamps-10` and `taps-1` take the point-light path
+the change never touches: they read −6 %, −11 % and +3 %, which is the band this
+arrangement leaves for order and heat — fused always ran first in a pass, so the second
+side runs hotter. Anything inside roughly ±11 % is not a result here. `taps-9` at −25 % and
+`taps-9-clear` at −33 % sit outside it with no overlap between sides; `taps-4` at −14 % is
+real but close to the edge. The canary read 4.5× on these runs — loud, self-inflicted, the
+suite measuring itself — which is why the agreement between the two passes is quoted
+alongside the medians rather than instead of them.
+
+**The offscreen meter got demoted by this experiment, and that belongs in the record.**
+The same A/B run on `light_cost`'s drained table produced `fill-1080p` "40 % slower" on a
+row that executes none of the changed code, `taps-9` reps of `[6.51, 10.96, 6.53]`, and +43 %
+on `taps-9-clear`, a row with no occluders at all. The reason is in its own numbers: the
+whole table is ~2.4 s of GPU work with no burn, so every row rides the clock ramp, and
+benchsuite's 6 s burn exists precisely to stop that. The meter is still the right
+instrument for *shape* — it is what found the 87 % split above, and it said the masked rows
+move most (`taps-9-layers` 4.66 → 1.19 ms, `taps-9-half` 6.12 → 4.19 ms, both explicable:
+records skipped for a layer mismatch were being paid nine times) — but those four numbers
+are directional until the suite repeats them, and none of them belongs in a table next to
+conditioned figures.
+
+**One consequence for §18, stated rather than quietly applied.** That section priced the
+cliff at 16.69 ms against Godot's 4.09 ms and called it 4.1×. The frost column there
+predates this change; at 12.53 ms the same comparison is **3.1×**. The conclusion — a filter
+costs almost nothing however soft it looks, a trace costs what it looks like — survives
+intact, because the trace got 25 % cheaper and is still three times the mask. The number
+does not survive, and anyone reading §18's table should read it as the state of the engine
+on the morning of 2026-10-24 rather than as a property of frost.

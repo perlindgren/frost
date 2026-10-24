@@ -238,6 +238,26 @@ const SCENARIOS: &[Scenario] = &[
         occ2: 0,
         layered: false,
     },
+    // A control, not a rung: the same nine rays a pixel with nothing to
+    // walk — the packer leaves a light's block empty when no occluder
+    // reaches it, and an empty block answers "nothing stands in the way"
+    // without a record load. `taps-9` minus this row is what the walk
+    // costs; this row minus `lamps-10` is what the rays cost when no
+    // occluder is in front of them.
+    Scenario {
+        name: "taps-9-clear",
+        lamps: 10,
+        occluders: 0,
+        penumbra: LAMP_PENUMBRA,
+        taps: 9,
+        reach: LAMP_REACH,
+        moving: false,
+        recv: 1,
+        lamp: 1,
+        occ: 1,
+        occ2: 0,
+        layered: false,
+    },
     // The three rows the merge bought: same pixel counts, same fields,
     // the masks pointed away.
     Scenario {

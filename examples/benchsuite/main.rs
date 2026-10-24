@@ -23,6 +23,11 @@
 //! * `taps-1/4/9`        — the penumbra ladder and its divergence; the
 //!   ninth rung is the cliff, heaviest by a mile and the row where a GPU's
 //!   real throughput has to show.
+//! * `taps-9-clear`      — a control, not a rung: nine rays a pixel with
+//!   an empty block to walk, so `taps-9` minus it is the walk and it minus
+//!   `lamps-10` is the rays. It says whether the penumbra ladder is spent
+//!   issuing rays or walking records, which is the difference between two
+//!   very different optimizations.
 //! * `lamps-40-static`   — the caching prize: equal to `lamps-40`
 //!   today *by definition* (nothing is cached); any future gap is a
 //!   win already paid for.
@@ -208,6 +213,21 @@ const SCENARIOS: &[Scenario] = &[
         name: "taps-9",
         lamps: 10,
         occluders: 60,
+        penumbra: LAMP_PENUMBRA,
+        taps: 9,
+        reach: LAMP_REACH,
+        moving: false,
+    },
+    // A control, not a rung: the same nine rays a pixel with nothing to
+    // walk — the packer leaves a light's block empty when no occluder
+    // reaches it, and an empty block answers "nothing stands in the way"
+    // without a record load. `taps-9` minus this row is what the walk
+    // costs; this row minus `lamps-10` is what the rays cost when no
+    // occluder is in front of them.
+    Scenario {
+        name: "taps-9-clear",
+        lamps: 10,
+        occluders: 0,
         penumbra: LAMP_PENUMBRA,
         taps: 9,
         reach: LAMP_REACH,
