@@ -112,6 +112,17 @@ pub(crate) fn create_window(
             // surface through the transition, and a later un-fullscreen
             // returns the window to it.
             attributes = attributes.with_fullscreen(Some(Fullscreen::Borderless(None)));
+            // Two winit knobs were tried here against the notch Mac of the
+            // benchmarking doc's §17, where the Space leaves the menu bar's
+            // band black across the top and the surface settles 43 points
+            // short of the panel: `with_borderless_game(true)`, which hides
+            // the bar and dock outright, and `with_fullsize_content_view(true)`,
+            // which pushes the content behind the titlebar. Each alone, each
+            // measured: the settled surface stayed 4112x2572 on a 4112x2658
+            // display and the band stayed visible. The second changed the
+            // resize sequence and nothing else. Closing the band needs AppKit
+            // past what winit exposes; it is 3.3 % of the pixels and moves no
+            // measurement, so it is left as a known gap rather than a guess.
         }
     }
     #[cfg(target_arch = "wasm32")]

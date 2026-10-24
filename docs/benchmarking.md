@@ -1120,6 +1120,17 @@ mid-run `screencapture -x` came back as wallpaper under a black band, because a 
 without Screen Recording permission is shown nothing else. Treat such an image as silence,
 not as a picture.
 
+The band is not invisible-but-real either: the owner watched a run and saw it, its height
+matching the camera notch this panel carries — the same 43 points AppKit reserves. Two of
+winit's knobs were fitted to it and measured, one at a time: `with_borderless_game(true)`,
+which hides the bar and dock instead of auto-hiding them, and `with_fullsize_content_view(true)`,
+which pushes content behind the titlebar. The settled surface stayed **4112×2572** both
+times and the band stayed visible; the second knob changed only the resize sequence, the
+excursion past the panel's height dropping out of it. Closing the band needs AppKit past
+what winit exposes for it. It costs 3.3 % of the pixels, moves no number in this document,
+and is therefore left named rather than guessed at — but it is the reason every fullscreen
+figure here is a 10.6 Mpx figure and never a 10.9 Mpx one.
+
 **Every line then pays for the display, and the tax is not the stretch.** Pinned, the
 floor costs 2.81 ms where the offscreen meter charges 0.231 ms for the same pixels — and
 unpinned, with no stretch pass at all, the floor costs 2.63 ms, so the ~2.5 ms is the
