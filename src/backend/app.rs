@@ -144,6 +144,14 @@ pub(crate) struct Frost<P: Process> {
     /// immediately — unlike [`Self::bloom`], which may have to build the chain
     /// that a glow is made of before the number means anything.
     tone_map: f32,
+    /// The backdrop blur the app asked for (live through
+    /// [`Context::set_backdrop_blur`](crate::Context::set_backdrop_blur)):
+    /// a radius as a fraction of the frame's height, zero for none. Like
+    /// [`Self::tone_map`] it rides the stretch pass's uniform, rewritten
+    /// every frame — but unlike the headroom it also demands the offscreen
+    /// buffer whenever it is nonzero, since a frame drawn straight to the
+    /// window has nothing for the taps to read.
+    backdrop_blur: f32,
     #[allow(dead_code)]
     window_id: Option<WindowId>,
     /// The winit window (shared), kept so we can call `request_redraw` for
@@ -816,6 +824,7 @@ impl<P: Process> Frost<P> {
             blit_filter,
             bloom,
             tone_map,
+            backdrop_blur: 0.0,
             window_id: None,
             window: None,
             logical_size: (0, 0),
@@ -1963,6 +1972,7 @@ impl<P: Process> Frost<P> {
                 (1.0, 1.0),
                 [0.0; crate::backend::bloom::MAX_LEVELS],
                 self.tone_map,
+                self.backdrop_blur,
             ),
         );
         let bind_group = self.blit_bind_group(&view, &sampler, &fit_buffer, &bloom);
@@ -2598,6 +2608,7 @@ impl<P: Process> Frost<P> {
                 render_size: &mut self.render_size,
                 bloom: &mut self.bloom,
                 tone_map: &mut self.tone_map,
+                backdrop_blur: &mut self.backdrop_blur,
                 // The window is attached before the first frame renders, so
                 // this is `Some` for every frame the process sees; the
                 // `Option` is the type the field has before attach.
@@ -2767,6 +2778,23 @@ impl<P: Process> Frost<P> {
             // size, and the blit pass writes it down. (The buffer is built
             // lazily below when no render size asked for one.)
             _ if self.linear_surface || self.hdr_frames => {
+                let size = [surface_px.0, surface_px.1];
+                let cached = self
+                    .blit_target
+                    .take()
+                    .filter(|t| t.size == size && t.filter == self.blit_filter);
+                match cached {
+                    Some(t) => Some(t),
+                    None => Some(self.new_blit_target(size)),
+                }
+            }
+            // A blurred backdrop needs a texture to blur. Whatever the
+            // render-size setting says, the frame that asks for a smear is
+            // parked in the offscreen buffer at the window's own size —
+            // the blit pass reads it back thirteen taps to the pixel and
+            // writes the window. The pipeline has always been built; this
+            // branch only gives it a frame to stretch.
+            _ if self.backdrop_blur > 0.0 => {
                 let size = [surface_px.0, surface_px.1];
                 let cached = self
                     .blit_target
@@ -3296,7 +3324,7 @@ impl<P: Process> Frost<P> {
             self.queue.write_buffer(
                 &t.fit_buffer,
                 0,
-                &fit_bytes(fit, t.bloom.weights, self.tone_map),
+                &fit_bytes(fit, t.bloom.weights, self.tone_map, self.backdrop_blur),
             );
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("blit pass"),

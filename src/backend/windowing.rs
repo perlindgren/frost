@@ -340,10 +340,17 @@ pub(crate) fn fit_into_monitor(size: [u32; 2], avail: [u32; 2]) -> [u32; 2] {
 
 /// Packs the present pass's whole uniform: two floats of letterbox fit, the
 /// struct's padding, one bloom weight per plumbing slot in two `vec4`s, and
-/// the tone-map headroom. Sixty-four bytes — the weight pair pushes the last
-/// field past the old forty-eighth — which is a reminder that this function
-/// and `blit.wgsl`'s `BlitUniforms` are one layout written in two languages.
-pub(crate) fn fit_bytes(fit: (f32, f32), bloom: [f32; MAX_LEVELS], tone: f32) -> [u8; 64] {
+/// the tone-map headroom and the backdrop blur. Sixty-four bytes — the
+/// weight pair pushed the tone past the old forty-eighth and the blur slid
+/// in beside it — which is a reminder that this function and `blit.wgsl`'s
+/// `BlitUniforms` are one layout written in two languages.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn fit_bytes(
+    fit: (f32, f32),
+    bloom: [f32; MAX_LEVELS],
+    tone: f32,
+    blur: f32,
+) -> [u8; 64] {
     // The present pass reads the weights as two `vec4`s, so a seventh slot
     // would need the shader and this buffer widened together rather than one
     // of them silently overrunning.
@@ -357,6 +364,7 @@ pub(crate) fn fit_bytes(fit: (f32, f32), bloom: [f32; MAX_LEVELS], tone: f32) ->
         bytes[16 + i * 4..20 + i * 4].copy_from_slice(&w.to_le_bytes());
     }
     bytes[48..52].copy_from_slice(&tone.to_le_bytes());
+    bytes[52..56].copy_from_slice(&blur.to_le_bytes());
     bytes
 }
 
@@ -454,7 +462,7 @@ mod tests {
 
     #[test]
     fn fit_bytes_writes_the_two_extents_and_pads() {
-        let bytes = fit_bytes((0.5, 0.25), [0.0; MAX_LEVELS], 0.0);
+        let bytes = fit_bytes((0.5, 0.25), [0.0; MAX_LEVELS], 0.0, 0.0);
         assert_eq!(f32::from_le_bytes(bytes[0..4].try_into().unwrap()), 0.5);
         assert_eq!(f32::from_le_bytes(bytes[4..8].try_into().unwrap()), 0.25);
         assert_eq!(&bytes[8..16], &[0u8; 8]);
@@ -470,7 +478,7 @@ mod tests {
     /// each thing lands.
     #[test]
     fn the_bloom_weights_land_after_the_padding() {
-        let bytes = fit_bytes((1.0, 1.0), [0.5, 0.3, 0.2, 0.1, 0.05, 0.05], 0.75);
+        let bytes = fit_bytes((1.0, 1.0), [0.5, 0.3, 0.2, 0.1, 0.05, 0.05], 0.75, 0.0);
         let f = |r: std::ops::Range<usize>| f32::from_le_bytes(bytes[r].try_into().unwrap());
         assert_eq!(
             (f(16..20), f(20..24), f(24..28), f(28..32)),
@@ -488,12 +496,31 @@ mod tests {
     /// failure it exists to catch.
     #[test]
     fn the_headroom_lands_at_the_end() {
-        let bytes = fit_bytes((1.0, 1.0), [0.0; MAX_LEVELS], 0.15);
+        let bytes = fit_bytes((1.0, 1.0), [0.0; MAX_LEVELS], 0.15, 0.0);
         assert_eq!(
             f32::from_le_bytes(bytes[48..52].try_into().unwrap()),
             0.15,
             "blit.wgsl reads `tone` at offset 48"
         );
         assert_eq!(&bytes[16..48], &[0u8; 32]);
+        assert_eq!(&bytes[52..56], &[0u8; 4], "no blur asked writes no blur");
+
+        // The blur beside it, on its own turn: one float at 52, the
+        // struct still sixty-four bytes whole.
+        let blurred = fit_bytes((1.0, 1.0), [0.0; MAX_LEVELS], 0.75, 0.02);
+        assert_eq!(
+            f32::from_le_bytes(blurred[48..52].try_into().unwrap()),
+            0.75
+        );
+        assert_eq!(
+            f32::from_le_bytes(blurred[52..56].try_into().unwrap()),
+            0.02,
+            "the blur lands at 52, where `blit.wgsl` reads it beside the headroom"
+        );
+        assert_eq!(
+            &blurred[56..],
+            &[0u8; 8],
+            "and the struct keeps its sixty-four bytes"
+        );
     }
 }

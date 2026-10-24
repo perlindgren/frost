@@ -384,6 +384,12 @@ impl Demo {
         // plate, rows, verdict — through one alpha held by `process`.
         let a = self.menu.alpha;
         let fade = |c: Color| Color { a: c.a * a, ..c };
+        // The blue veil, lighter than it was: its full-strength
+        // 0.72 used to be the only thing separating menu from
+        // world, and dimming was therefore brutal. The backdrop
+        // blur (see `BACKDROP_BLUR`) now smears the hill out of
+        // competition, and the veil keeps only its own jobs —
+        // depth, and a cold cast so the stone reads warm.
         ctx.rectangle(
             0.0,
             0.0,
@@ -393,7 +399,7 @@ impl Demo {
                 r: 0.012,
                 g: 0.014,
                 b: 0.022,
-                a: 0.72 * a,
+                a: 0.5 * a,
             },
             z,
         );

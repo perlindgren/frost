@@ -277,6 +277,7 @@ pub struct Context<'c> {
     /// The engine's live tone-map headroom, mutable so a running app can change
     /// what it does with light above white (see [`Context::set_tone_map`]).
     tone_map: &'c mut f32,
+    backdrop_blur: &'c mut f32,
     /// The window this frame is drawn into, or `None` before the window
     /// exists.
     window: Option<&'c Window>,
@@ -497,6 +498,27 @@ impl Context<'_> {
     /// scene tree cannot express today.
     pub fn set_tone_map(&mut self, headroom: f32) {
         *self.tone_map = headroom;
+    }
+
+    /// How far the composed frame is smeared on its way to the window:
+    /// a radius as a fraction of the frame's height, zero when the world
+    /// arrives sharp. The live value [`Self::set_backdrop_blur`] writes.
+    pub fn backdrop_blur(&self) -> f32 {
+        *self.backdrop_blur
+    }
+
+    /// Smears the composed frame behind the interface, or stops: the
+    /// radius is a fraction of the frame's height, clamped to a fifth of
+    /// it, and thirteen taps per window pixel do the smearing — the
+    /// centre exact, twelve in a golden spiral. Built for a menu over a
+    /// paused hill: while the radius is nonzero the frame is parked in
+    /// the engine's offscreen buffer (a frame drawn straight to the
+    /// window has nothing to sample) and the stretch pass melts it, so
+    /// the cost is one extra pass at the window's size for exactly as
+    /// long as the blur is asked for, and zero on every other frame.
+    /// Like the headroom, it lands on the frame that asks.
+    pub fn set_backdrop_blur(&mut self, radius: f32) {
+        *self.backdrop_blur = radius.clamp(0.0, 0.2);
     }
 
     /// Fixes the render size — or lifts the fix — mid-run: the runtime

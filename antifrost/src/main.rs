@@ -366,6 +366,12 @@ const SHADOW_LEAN_ASLEEP: f32 = 1.0;
 /// queen's — and her body at the very top, over the whole colony.
 /// The numbers are the old fixed ones' survivors: 1.48 was the bug
 /// (her shadow over the ants), 1.5 always was her.
+/// How far the world melts behind a menu, as a fraction of the
+/// frame's height — the engine's `set_backdrop_blur` radius, scaled
+/// by the overlay's breath so the smear arrives with the plate and
+/// leaves with it.
+const BACKDROP_BLUR: f32 = 0.02;
+
 const QUEEN_SHADOW_ORDER: f32 = 0.9;
 const QUEEN_ORDER: f32 = 1.5;
 
@@ -2025,6 +2031,16 @@ impl Process for Demo {
         if (self.menu.alpha - target).abs() < 0.002 {
             self.menu.alpha = target;
         }
+        // The blur breathes with the overlay: the world behind a
+        // menu melts as it fades in and sharpens as the hill takes
+        // the screen back, on the same rail and the same seconds.
+        // Two percent of the frame height is the radius — enough
+        // that the menu is the only sharp thing on screen, at any
+        // resolution, because the engine counts it in fractions —
+        // and the engine pays its one extra pass only while the
+        // number is nonzero, which is exactly the menu's own
+        // breathing time.
+        ctx.set_backdrop_blur(self.menu.alpha * BACKDROP_BLUR);
         if self.window.pending {
             self.window.pending = false;
             self.apply_window_policy(ctx);
