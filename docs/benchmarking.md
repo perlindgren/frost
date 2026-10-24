@@ -1760,3 +1760,50 @@ these two sections as unsettled**; the +1.38 ms above is the one particle-lighti
 large enough to survive the instrument, and the experiment that would settle the rest is the
 same lit batch at one ray measured with and without casters in a single pass, several reps,
 both orders.
+
+## 27. Two comparisons that were never comparisons (2026-10-24, Apple M4 Max)
+
+§26 left a residual with the wrong sign and §25 left a control reading slower than its
+treatments. Both came from the same place, and neither was the engine.
+
+**The residual was arithmetic.** A row was added — `parts-10k-shadow`, the unlit batch over
+sixty casters at one hard ray, the twin `parts-10k-shadow-lit` had been missing — so that
+lighting-only cost could be subtracted in both scenes instead of one. Measured in one
+invocation, in both row orders, median of three:
+
+| scene | unlit batch | lit batch | lighting only |
+| --- | --- | --- | --- |
+| ten lamps, no casters (§25's) | 2.91 ms | 3.48 ms | **+0.57 ms** |
+| ten lamps, sixty casters | 4.30 ms | 4.91 ms | **+0.61 ms** |
+
+They agree. The +0.04 ms that couldn't be explained was `parts-10k-shadow-lit` minus `taps-1`
+— a batch row minus a *no-batch* row, which charges the batch's own drawing to the lighting.
+With its proper twin the sign is right and the two scenes say the same thing.
+
+**The inversion was the process, not the row.** §25's control read 2.74 ms against a treatment
+at 2.50 ms, and row order was ruled out then and again here: the same rows in opposite orders
+inside one invocation agree to 0.03–0.07 ms, about 1 %. What differs is one invocation from the
+next. `taps-1`, the same scenario with the same flags, read **4.22, 4.29, 4.47, 4.50 and 4.53 ms**
+across five processes today — a 7 % spread on a row nobody changed. Compare that row with the
+batch row inside one process and the batch costs +0.04 and +0.14 ms, the right sign; compare
+them across processes — 4.50 from one run, 4.30 from another — and a batch appears to make a
+frame 0.20 ms *faster*, which is what §25 recorded as a mystery.
+
+**The rule, then: two numbers are comparable when they came from one invocation, and not
+otherwise.** That is what `--reps` interleaving is for, and it is why the suite runs a row
+several times through a process rather than once each in several processes. For an A/B across
+builds it cannot be honoured — the two sides are by definition different processes — so those
+comparisons lean on the alternating passes and on the effect being larger than the band.
+
+**Which of this document's numbers that touches.** Everything large is fine: §20's −58 % and
+−36 %, §22's +66 % and −33 %, §23's −17 % and −22 %, §25's +0.57 ms and §26's +1.38 ms, all of
+them either measured inside one invocation or many times the width of the band. **§23's box-row
+−7 % is not.** It was measured across processes, it sits inside the 7 % spread, and it is
+therefore *not established*: pairing halves the loop's bookkeeping on a box, which is a
+mechanism worth believing, but the number that was quoted for it today could be noise in
+either direction. Re-measured across more alternating passes it either earns its place or
+loses it, and until then the honest claim about boxes is that the paired walk left them
+unchanged within measurement.
+
+And the anomaly §25 asked to be left open is closed by this section, with the explanation
+being the instrument rather than the renderer — the more useful of the two possible outcomes.

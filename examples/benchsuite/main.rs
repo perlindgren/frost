@@ -491,6 +491,24 @@ const SCENARIOS: &[Scenario] = &[
         p_radius: 0.0,
         p_lit: true,
     },
+    // The twin `parts-10k-shadow-lit` was missing: the same batch, unlit, over
+    // the same sixty casters at one hard ray. Without it the lighting-only cost
+    // of a lit batch in this scene could not be subtracted, and §25's open-scene
+    // residual had nothing to be compared against.
+    Scenario {
+        name: "parts-10k-shadow",
+        lamps: 10,
+        occluders: 60,
+        penumbra: 0.0,
+        taps: 1,
+        reach: LAMP_REACH,
+        moving: false,
+        poly_sides: 0,
+        particles: 10_000,
+        p_cover: 0.25,
+        p_radius: 0.0,
+        p_lit: false,
+    },
     Scenario {
         name: "parts-10k-shadow-lit",
         lamps: 10,
