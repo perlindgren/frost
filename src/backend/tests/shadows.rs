@@ -31,7 +31,9 @@ use wgpu::*;
 
 /// The render target's edge, in pixels. 64 keeps every readback row exactly
 /// 256 bytes, the copy's required multiple, so no row padding is involved.
-const SPAN: u32 = 64;
+/// Shared with the penumbra tests, which render through the same bridge.
+#[allow(dead_code)] // read by the penumbra tests, not by this file
+pub(super) const SPAN: u32 = 64;
 
 /// A box pushed from its own space into pixel space, measured from its four
 /// corners rather than by folding the transform's rotation into its angle.
@@ -70,7 +72,7 @@ fn box_in_pixels(world: &Transform, center: [f32; 2], half: [f32; 2]) -> Oriente
 /// the shadow test blocks therefore reads 0; one it does not reads most of
 /// full scale. Nothing else in the frame can write a pixel, so there is no
 /// compositing arithmetic between the shadow answer and the byte.
-fn paint(draws: &[Draw], declared: &[Occluder]) -> Option<Vec<u8>> {
+pub(super) fn paint(draws: &[Draw], declared: &[Occluder]) -> Option<Vec<u8>> {
     let lights = pack_light_field(draws, black());
     // The harness window is the SPAN-square target: the per-light cull
     // bounds every ray region by exactly the pixels this test reads back.

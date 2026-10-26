@@ -1814,3 +1814,95 @@ unchanged within measurement.
 
 And the anomaly §25 asked to be left open is closed by this section, with the explanation
 being the instrument rather than the renderer — the more useful of the two possible outcomes.
+
+---
+
+## 28. The penumbra, measured against geometry instead of against itself (2026-10-26, Apple M4 Max)
+
+Everything §20 through §27 measured about the soft edge was measured *around* it: frame times of
+scenes whose lights ran `penumbra: 0.0`, and a CPU twin that disagreed with the GPU on 692 of 4096
+pixels and was dropped (§20). So the disk of shadow rays — the most expensive code path in the
+renderer, nine occluder walks per pixel per light — had no test that entered it. This section closes
+that, and it is worth recording that three of the four bugs it found were in the measuring.
+
+**The route: properties, not a twin.** `src/backend/tests/penumbra.rs` renders one scene through
+the bridge `shadows.rs` already had (`paint`, made visible to the module) and asserts what the
+geometry forces however the disk is sampled: an umbra that is exactly dark, open light that is
+exactly full, an outer silhouette at the distance similar triangles put it, a shadow centred on the
+light's own axis, and a total amount of darkness that does not care how many rays drew it. Nothing
+in the file re-implements the shader, so nothing in it can be wrong in the same direction as the
+shader — which is the whole reason §20's twin could not settle anything.
+
+**Meter bug one: the light's own falloff is a shadow-shaped hole.** The first draft normalised each
+column by its brightest byte and looked for the first row to fall half a tap below full light. Along
+a vertical column the light's falloff does exactly that, some pixels before any shadow begins, so
+the silhouette came out a quarter wider than the geometry allows at every rung above two. The point
+light, whose level sits far below the falloff, measured flawless throughout — the instrument was
+biased in a way that only appeared once the thing being measured got soft enough to need measuring.
+Fixed by rendering each column twice, with the caster and without, and dividing row by row: the
+falloff cancels because it was recorded in both frames rather than assumed away.
+
+**Meter bug two: the two flanks were answering different questions.** Half light on the way in from
+the top, half light on the way in from the bottom — on a coarse rung those are different boundaries,
+and a symmetric shadow reported itself up to 3.5 px lopsided. Both flanks now use the same
+criterion, walked inward from full light.
+
+**Model bug, mine: the silhouette grazes the near edge.** My first prediction had the outermost ray
+grazing the caster's *far* edge and continuing on. It grazes the *near* edge — the segment starts on
+the light's disk, enters the box's near face and the box is 4 px deep, so the ray that just clears
+it is the one clipping the near face at the far corner. With that corrected the engine matches
+arithmetic, and these are the numbers, all of them absolute:
+
+| quantity | measured | computed | where |
+|---|---|---|---|
+| point light's shadow, half-width | 13.50 px | 13.71 px | probe 40, `penumbra: 0` |
+| point light's shadow, half-width | 20.50 px | 20.57 px | probe 56, `penumbra: 0` |
+| cross's silhouette, half-width | 27.50 px | 27.86 px | probe 56, taps 4, reach = rad |
+| grid's silhouette, half-width | 29.99 px | 30.87 px | probe 56, taps 9, reach = √2·rad |
+| one ray, soft band | −0.48 px | 0 | no penumbra is possible |
+| one ray, umbra width vs silhouette | 54.00 vs 54.00 px | equal | a ray's core *is* its shadow |
+| light eaten, rungs 2…9 | 27.34–28.59 rows | rung-independent | probe 40 |
+| light eaten, rungs 2…9 | 42.00–43.50 rows | rung-independent | probe 56 |
+
+The point-light rows are the ones §20 was after: readback row order, light-record layout and the
+occluder-space `m` are all confirmed against arithmetic, to a quarter pixel, without a second
+implementation anywhere. The silhouette residuals are one-sided by construction and stay that way —
+along a column the rotation rarely puts a tap exactly on the rim, so a measured shadow can fall
+short of its rim's shadow and must never exceed it, which is asserted as its own clause. And the
+disk does eat slightly more than a point, 28.0 rows against 27.0: the disk extends *along* the axis
+toward the caster, and a ray nearer the caster magnifies more, so its hard shadow is wider. Measured
+first, explained after.
+
+**A claim of mine, withdrawn.** The tap tables take a *prefix* of a row-major 3×3 grid, and a prefix
+is off-centre — mean sample offset 1.00 radii at one tap, 0.63 at five, 0.32 at seven, balanced only
+at two, four and nine. I said this displaced the penumbra edge by up to two thirds of the light's
+radius, worst on soft lights. **It does not, and the measurement is why.** Across all nine rungs the
+silhouette stays within 1.38 px of the axis and the umbra within 2.48 px, and the sign of the
+umbra's offset *flips* between the two probe columns (+1.47 px at probe 40, −1.56 px at probe 56,
+same rung). The reason is the dither: the per-pixel rotation advances 111° per row down a column and 200° per
+pixel across one (`360° · 52.9829 · 0.005837`, and the same with 0.06711 for the axis along it), so
+an off-centre sample set is spun in a different direction in every
+pixel and its bias has no direction left to accumulate toward. The umbra, being the region where
+every pixel is dark for every rotation, is set by the worst case and so comes out symmetric. The
+arithmetic bias is real; its consequence is per-pixel quadrature error, not a shifted edge, and I
+should not have quoted pixels for the latter.
+
+**What the prefix does cost, and this one is visible.** The umbra half-width by rung at probe 56,
+taps 2 through 9: 18.00, 16.98, 13.50, **18.46**, 16.99, 12.00, 12.00, 11.50. More rays sampling the
+same disk can only find rays that escape where a coarser set saw none, so the umbra may shrink and
+must not widen — and going from four rays to five *grows it by 4.96 px*, 37 %. The cause is prefix
+semantics: the fourth step leaves the grid and starts a new row, so rung 5 surveys a wider patch of
+the disk than rung 4 does. To a user it reads as a light whose core shadow gets bigger when they ask
+for a better estimate. `more_rays_must_not_widen_the_umbra_and_today_five_of_them_do` pins that step
+instead of asserting it away, so rebalancing the tables trips the test rather than passing it quietly.
+
+**What this changes in the plan.** The lattice rebalance is still worth doing — monotonic umbra across
+rungs is a property worth having, and unlike the "shifted edge" story it is measured. It is not worth
+doing for the reason I gave on 2026-10-24, and it still changes output at rungs 1, 3, 5, 6, 7 and 8,
+so it goes in only alongside this file, which now says by how much it changes it. `taps: 1` remains a
+hard shadow that wanders by up to a penumbra radius, never a soft one — asserted now, not remembered.
+
+Re-measure with `cargo test --lib the_penumbra_profiles -- --ignored --nocapture`, which prints the
+axis, the rim comparison, the umbra width and the light eaten for all nine rungs at both probes;
+`the_penumbra_dumps_its_columns` prints the profiles themselves. Every tolerance in the file came
+from that output, and none of them should be edited without reading it.

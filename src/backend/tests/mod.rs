@@ -23,6 +23,7 @@ mod light_cost;
 mod nodes;
 mod particle_cost;
 mod particles;
+mod penumbra;
 mod present;
 mod repeat;
 mod scene;
