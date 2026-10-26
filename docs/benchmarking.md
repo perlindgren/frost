@@ -1899,10 +1899,110 @@ instead of asserting it away, so rebalancing the tables trips the test rather th
 **What this changes in the plan.** The lattice rebalance is still worth doing — monotonic umbra across
 rungs is a property worth having, and unlike the "shifted edge" story it is measured. It is not worth
 doing for the reason I gave on 2026-10-24, and it still changes output at rungs 1, 3, 5, 6, 7 and 8,
-so it goes in only alongside this file, which now says by how much it changes it. `taps: 1` remains a
-hard shadow that wanders by up to a penumbra radius, never a soft one — asserted now, not remembered.
+so it goes in only alongside this file, which now says by how much it changes it. `taps: 1` was a
+hard shadow that wandered by up to a penumbra radius, never a soft one — asserted here on
+2026-10-26, and superseded three sections later by §29, which moved the first tap onto the disk's
+centre so that one ray means the light's own point.
 
 Re-measure with `cargo test --lib the_penumbra_profiles -- --ignored --nocapture`, which prints the
 axis, the rim comparison, the umbra width and the light eaten for all nine rungs at both probes;
 `the_penumbra_dumps_its_columns` prints the profiles themselves. Every tolerance in the file came
 from that output, and none of them should be edited without reading it.
+
+---
+
+## 29. The tap ladder, rebuilt so the umbra can only shrink (2026-10-26, Apple M4 Max)
+
+§28 closed with a defect it had measured but not mended: the tap count walked a
+*prefix* of a row-major 3×3 grid, so the fifth rung held no sample on one side of
+the disk at all and the core shadow it resolved was 4.96 px — 37 % — wider than
+the fourth rung's. This section is the mending, and the argument that decided the
+new order.
+
+**The property to build for is not centring, it is nesting.** For a given pixel,
+the set of disk points whose shadow ray is blocked is *convex*: the slab test
+narrows an interval as it goes, so an origin blocked on two counts blocks every
+origin between them. Give that, if rung N+1's sample points are a superset of rung
+N's, a pixel dark at N+1 rays was already dark at N — the umbra can shrink and
+cannot grow, at every pixel, by construction rather than on average. Centring is
+worth having too, but it is the secondary object, and it cannot always be had: a
+nested chain of even length drawn from a 3×3 lattice ends on an unmatched point, so
+some rung must be off-centre. The old order optimised the wrong thing and got both
+wrong.
+
+**The new order**, one table, `SHADOW_TAPS` in `shaders/lighting.wgsl`, walked
+first-N as before:
+
+| rung | adds | mean offset (radii) | reach |
+|---|---|---|---|
+| 1 | centre | 0.000 balanced | 0 |
+| 2 | −x | 0.500 | 1 |
+| 3 | +x | 0.000 balanced | 1 |
+| 4 | −y | 0.250 | 1 |
+| 5 | +y | 0.000 balanced | 1 |
+| 6 | corner (+x,+y) | 0.236 | √2 |
+| 7 | corner (−x,−y) | 0.000 balanced | √2 |
+| 8 | corner (+x,−y) | 0.177 | √2 |
+| 9 | corner (−x,+y) | 0.000 balanced | √2 |
+
+Every prefix is a superset of the last, so the umbra is monotone by the convexity
+argument. The worst mean offset is 0.500 at rung 2 where the old table's worst was
+1.000 at rung 1 and 0.632 at rung 5. The `SHADOW_TAPS4` cross is gone: one ladder
+replaces both tables, which retires the `four` flag from `tap_interval` and
+`occluded_taps` and with it the branch that chose between them.
+
+**One tap is now the point light, exactly.** The ladder starts at the disk's centre,
+so `taps: 1` fires the ray a penumbra-less light fires. Its measured silhouette is
+13.50 px half-width at probe 40 and 20.50 px at probe 56 — the same numbers the
+point light measured in §28, to the quarter pixel, which is what `one_ray_therefore_no_penumbra_at_all`
+now asserts. Before this it was a rim point spun to a random angle per pixel: a hard
+shadow that wandered by up to a penumbra radius, which was never a sensible meaning
+for "one ray" and is now forbidden by a test.
+
+**The umbra ladder, measured before and after** (half-width, px):
+
+| probe | rung 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+|---|---|---|---|---|---|---|---|---|---|
+| 40, row-major | 15.50 | 11.50 | 10.98 | 10.00 | **12.50** | 11.00 | 9.55 | 9.55 | 8.50 |
+| 40, ladder | 13.50 | 13.49 | 11.50 | 10.98 | 10.00 | 9.47 | 9.00 | 9.00 | 8.50 |
+| 56, row-major | 27.00 | 18.00 | 16.98 | 13.50 | **18.46** | 16.99 | 12.00 | 12.00 | 11.50 |
+| 56, ladder | 20.50 | 20.49 | 18.00 | 16.98 | 13.50 | 13.53 | 12.97 | 12.46 | 11.50 |
+
+Both new rows fall monotonically. The +0.03 px between rungs 5 and 6 at probe 56 is
+the crossing interpolation stepping across a quantization level, so the test bound is
+a third of a pixel rather than zero. The old row's rise at rung 5 — the artefact this
+whole section exists to remove — is gone at both probes. `more_rays_must_not_widen_the_umbra_and_today_five_of_them_do`
+became `more_rays_never_widen_the_umbra`: the pinned step is deleted and the property
+asserted at every rung, which is the swap §28 promised in advance.
+
+**The reach follows the ladder now, rung by rung.** The whole-disk reject inflates an
+occluder by the farthest a tap's origin can sit from the centre; that used to be one
+constant per table. It is 0 at one tap — where the reject becomes the exact centre-ray
+test that existed before disks — one radius through rung 5, and √2 above. This is a
+soundness number, not a tuning one: understating it lets the reject discard an occluder
+a ray does touch. *Cost, unmeasured:* two rungs changed reach. Rung 1 went from the
+cross's 1 to nothing, and rung 5 from the grid's √2 to one radius, so on both the
+reject inflates its occluder less and should discard more casters before the walk —
+cheapest on the row that asks for five rays over many occluders. Rungs 2 to 4 and 6 to
+9 pay exactly what they paid before. That is a prediction about a mechanism, and per §27
+it needs alternating passes across the two builds before it is a number; it gets a
+commit of its own rather than being asserted here.
+
+**Silhouettes moved with the reach**, which is the arithmetic noticing: rung 5's outer
+edge at probe 56 was 29.12 px from the axis when rung 5 surveyed a √2 corner, and is
+27.50 px now that it does not — against the rim formula's 27.86, closer than before.
+Rung 9 is unchanged at 29.99 against 30.87, as it must be.
+
+**The pictures regenerate from the table now.** `python3 tools/penumbra-taps.py`
+reads `SHADOW_TAPS` out of the shader and redraws both diagrams in `docs/`, so §28's
+claim that the pictures and the tables cannot drift apart is a property of the tool
+rather than a hope: it takes the prefixes the shader walks, marks each rung's mean
+offset, and frames the rungs that average on the light's centre in green. The rotated
+sheet draws each rung's mean at the five angles a column passes through — a balanced
+rung shows one dot at the centre, an off-centre one a fan, which is the picture of why
+a bias spun every 111° cannot add up across an edge.
+
+**What a scene sees.** Pixels change at every rung but 5 and 9: soft edges shift by
+sub-pixel to a couple of pixels, `taps: 1` stops wandering, and the core shadow stops
+growing when the tap count rises. Nothing else in the renderer moved — this is one
+`const` array, one `select`, and the deletion of a second table.

@@ -562,13 +562,17 @@ pub struct Light {
     /// suns and stars shadows worth calling soft.
     pub penumbra: f32,
     /// How many shadow rays a penumbra'd **omni** light sweeps through
-    /// its disk per lit pixel: 1..=9, taken from a grid ordered so the
-    /// first four are a balanced cross and all nine fill the 3×3.
-    /// Weak hardware trades diffusion for frame rate one ray at a
-    /// time; the default, 9, is the full grid. Ignored when
-    /// [`penumbra`](Self::penumbra) is zero — that is the single hard
-    /// ray by definition — and by cone and directional lights, whose
-    /// third uniform slot carries the cone's edge feather instead.
+    /// its disk per lit pixel: 1..=9. The rays come from a ladder — the
+    /// disk's centre, then the ±x pair, then ±y, then the corners — whose
+    /// every rung is a superset of the rung below it, so raising the count
+    /// can only find more blocked rays: the core shadow shrinks as the
+    /// count rises and never grows. One ray is the disk's centre, which is
+    /// the hard shadow a penumbra-less light casts; a balanced set returns
+    /// at three, and the default, 9, is the whole disk. Weak hardware
+    /// trades diffusion for frame rate one ray at a time. Ignored when
+    /// [`penumbra`](Self::penumbra) is zero — that is the single hard ray
+    /// by definition — and by cone and directional lights, whose third
+    /// uniform slot carries the cone's edge feather instead.
     pub shadow_taps: u32,
     /// The light layers this light shines on: it reaches every receiver
     /// whose [`SceneNode::lit_layers`] shares a layer with this set.

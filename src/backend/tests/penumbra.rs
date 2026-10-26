@@ -287,10 +287,12 @@ fn the_penumbra_profiles_print_themselves() {
             let p = profile(DISK, taps, probe_x);
             let (t, b) = silhouette(&p, taps);
             let (ct, cb) = core(&p);
-            let reach = if taps <= 4 {
-                DISK
-            } else {
-                DISK * 2.0_f32.sqrt()
+            // The ladder's own reach: nothing at one tap, one radius through
+            // five, a corner's sqrt(2) above that.
+            let reach = match taps {
+                1 => 0.0,
+                2..=5 => DISK,
+                _ => DISK * 2.0_f32.sqrt(),
             };
             println!(
                 "  taps {taps}: silhouette {t:.2}..{b:.2} half {:.2} vs rim {:.2} | core half {:.2} \
@@ -374,18 +376,26 @@ fn a_soft_shadows_outer_edge_is_the_shadow_of_the_disks_rim() {
 
 /// One ray is a point light, and a point light has no penumbra: the band
 /// between the silhouette and the umbra must be nothing, and the dark core must
-/// be the whole shadow. Measured exactly: 27.00 px of silhouette, 27.00 px of
+/// be the whole shadow. Measured exactly: 54.00 px of silhouette, 54.00 px of
 /// core, a band of −0.48 px of interpolation slop.
 ///
-/// This is also what `taps: 1` *means* in this engine — one tap on the rim,
-/// spun to a random angle per pixel — so it is a hard shadow that wanders by up
-/// to a radius, not a soft one. Anyone wanting a soft edge wants at least the
-/// cross.
+/// And since the ladder starts at the disk's centre, one ray is not merely
+/// penumbra-less, it is *the point light*: the same silhouette to a quarter
+/// pixel, 13.50 against 13.50 and 20.50 against 20.50. Before the ladder was
+/// rebalanced the first tap was a rim point spun to a random angle per pixel, so
+/// `taps: 1` meant a hard shadow that wandered by up to a penumbra radius —
+/// which is what this test now forbids.
 #[test]
 fn one_ray_therefore_no_penumbra_at_all() {
     for probe_x in [40u32, 56] {
         let p = profile(DISK, 1, probe_x);
         let (t, b) = silhouette(&p, 1);
+        let (ht, hb) = silhouette(&profile(0.0, 1, probe_x), 1);
+        assert!(
+            (b - t - (hb - ht)).abs() <= 0.25,
+            "one ray casts a shadow {t:.2}..{b:.2} where the point light casts {ht:.2}..{hb:.2}: one \
+             ray from the disk's centre should be that ray and no more",
+        );
         let soft = band(&p, 1);
         assert!(
             soft.abs() <= 1.0,
@@ -422,8 +432,12 @@ fn the_darkness_a_casters_casts_does_not_depend_on_the_tap_count() {
             .collect();
         let least = rows.iter().copied().fold(f32::INFINITY, f32::min);
         let most = rows.iter().copied().fold(0.0f32, f32::max);
+        // Probe 40 holds the whole shadow inside the target and can be strict.
+        // Probe 56 cannot: the widest rungs reach row 1.5 and row 61.5 of 64, so
+        // their tails fall off the edge of the readback and the sum loses them.
+        let slack = if probe_x == 40 { 1.05 } else { 1.10 };
         assert!(
-            most / least <= 1.10,
+            most / least <= slack,
             "probe {probe_x}: rungs 2..9 ate {rows:?} rows of light; the same scene must not care \
              how many rays draw its shadow, and these differ by {:.0}%",
             (most / least - 1.0) * 100.0
@@ -434,9 +448,13 @@ fn the_darkness_a_casters_casts_does_not_depend_on_the_tap_count() {
 /// Whatever the rung, the shadow's outline must be centred on the light's own
 /// axis, which is measured from a point light rather than assumed: the readback
 /// puts it at 31.0 in this harness, and every number here is relative to that.
-/// The worst measured rung is 1.38 px out, which is dither: the rotation advances
-/// 111° per row down a column and 200° per pixel across one, so which tap sits outermost in a
-/// given pixel is luck, and the bias never points the same way twice.
+/// The worst measured rung is 1.38 px out, which is the dither a single column carries. The fine rungs land within 0.90 px,
+/// because a ninth of the band moves the level crossing a little; `taps: 2` was
+/// measured 1.87 px out at probe 40 and cannot do better, since a two-ray column
+/// has exactly three levels — lit, half lit, dark — so its silhouette is one coin
+/// flip per row, thrown by a rotation that advances
+/// 111° per row down a column and 200° per pixel across one. The claim that
+/// survives the coin flip is the umbra's, below, and the ladder's monotonicity.
 #[test]
 fn every_rung_keeps_the_shadow_centred_on_the_light() {
     for probe_x in [40u32, 56] {
@@ -473,7 +491,7 @@ fn every_rung_keeps_the_umbra_near_the_axis() {
             let (ct, cb) = core(&p);
             let off = (ct + cb) / 2.0 - axis;
             assert!(
-                off.abs() <= 3.0,
+                off.abs() <= 2.5,
                 "taps {taps} at probe {probe_x}: umbra {ct:.2}..{cb:.2} sits {off:+.2} px off the axis \
                  at {axis:.2}"
             );
@@ -481,58 +499,47 @@ fn every_rung_keeps_the_umbra_near_the_axis() {
     }
 }
 
-/// More rays must not make the core shadow grow: a finer sample of the same
-/// disk can only find rays that escape where a coarser one saw none, so the
-/// umbra can shrink and cannot widen. Measured at probe 56, in rungs 2 to 9:
-/// 18.00, 16.98, 13.50, **18.46**, 16.99, 12.00, 12.00, 11.50 — and the jump at
-/// five is the tap tables' prefix semantics, not noise. A prefix of a row-major
-/// grid adds a whole new row of radius-one taps at the fourth step, so the fifth
-/// rung surveys a *wider* patch of the disk than the fourth does, and resolves a
-/// smaller umbra than a rung with fewer rays. Three and a half pixels of core
-/// shadow, appearing as accuracy goes up: a light whose umbra grows when the
-/// user asks for a better estimate.
+/// More rays must not make the core shadow grow. For a given pixel the disk
+/// points whose ray is blocked form a convex set — the slab test narrows an
+/// interval, so an origin blocked on two counts blocks every origin between them
+/// — and the tap ladder is nested, so rung N+1 surveys a superset of the points
+/// rung N surveyed. A pixel dark at N+1 rays was therefore dark at N, and the
+/// umbra can only shrink as rays are added. Measured half-widths, rungs 1
+/// through 9: 13.50, 13.49, 11.50, 10.98, 10.00, 9.47, 9.00, 9.00, 8.50 at probe
+/// 40, and 20.50, 20.49, 18.00, 16.98, 13.50, 13.53, 12.97, 12.46, 11.50 at probe
+/// 56. It never grows; the +0.03 px between five and six rays is the interpolation
+/// walking across a step, which is why the bound is a third of a pixel, not zero.
 ///
-/// Pinned at the measured 4.96 px of growth rather than asserted as ≤ 0, so that
-/// a rebalanced tap table trips this test instead of passing it silently. When
-/// it does, replace the pin with `core_half(next) <= core_half(prev) + 1.0` for
-/// every step and the ordering becomes a property instead of a defect.
+/// This is the property the ladder was built for. The row-major order it replaced
+/// asked for five rays and received a prefix holding no point on one side of the
+/// disk at all, so the fifth rung's core shadow measured 4.96 px *wider* than the
+/// fourth's and a user raising the tap count watched the umbra grow (§28). If this
+/// test fails, the tap table has stopped being a nested ladder — and it should
+/// fail, because that growth is the one artefact a tap count is not allowed to
+/// have.
 #[test]
-fn more_rays_must_not_widen_the_umbra_and_today_five_of_them_do() {
+fn more_rays_never_widen_the_umbra() {
     for probe_x in [40u32, 56] {
-        let widths: Vec<f32> = (2..=9u32)
+        let widths: Vec<f32> = (1..=9u32)
             .map(|taps| core_half(&profile(DISK, taps, probe_x)))
             .collect();
         for (i, pair) in widths.windows(2).enumerate() {
-            let (prev, next) = (pair[0], pair[1]);
-            let step = i + 2;
-            println!(
-                "probe {probe_x}: umbra half {prev:.2} at {step} rays, {next:.2} at {}",
-                step + 1
+            assert!(
+                pair[1] <= pair[0] + 0.34,
+                "probe {probe_x}: the umbra is {:.2} px wide at {} rays and {:.2} px at {} — a finer \
+                 sample of one disk can only find rays that escape, never lose one: {widths:?}",
+                pair[0],
+                i + 1,
+                pair[1],
+                i + 2
             );
-            if step == 4 {
-                assert!(
-                    next - prev <= 5.5,
-                    "probe {probe_x}: the umbra grew from {prev:.2} px at four rays to {next:.2} px at \
-                     five, past the pinned 4.96 + 0.5 px. If the tap tables were rebalanced, drop this \
-                     branch: the growth was the prefix, and it should be gone."
-                );
-            } else {
-                assert!(
-                    next <= prev + 1.0,
-                    "probe {probe_x}: the umbra grew by {:.2} px going from {step} to {} rays, where \
-                     a finer sample of the same disk can only find more escapes: {widths:?}",
-                    next - prev,
-                    step + 1
-                );
-            }
         }
-        // The two ends of the ladder, which is the ordering the ladder owes.
         assert!(
-            widths[7] < widths[2],
-            "probe {probe_x}: nine rays resolve a {pop} px umbra against four rays' {few} — more rays \
-             must not see a wider core shadow",
-            pop = widths[7],
-            few = widths[2]
+            widths[8] < widths[0],
+            "probe {probe_x}: nine rays leave a {pop} px umbra where one ray left {first} px. The \
+             ladder is nested, so the nine-ray core shadow must sit inside the single ray's",
+            pop = widths[8],
+            first = widths[0]
         );
     }
 }

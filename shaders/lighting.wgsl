@@ -203,29 +203,48 @@ fn occluded(li: u32, recv: u32, l: vec2<f32>, p: vec2<f32>) -> bool {
     return false;
 }
 
-// The shadow-ray taps on the light's penumbra disk: a 3x3 grid in unit
-// space, scaled per pixel by the light's penumbra radius (the record's
-// `lc.w`). A light of physical size is a disk, not a mathematical point,
-// so every tap is its own shadow ray from a point of that disk.
-// The same disk sampled four times: the cross of axis points, the
-// balanced quarter of the grid for hardware that cannot pay nine.
-const SHADOW_TAPS4 = array<vec2<f32>, 4>(
-    vec2<f32>(-1.0, 0.0),
-    vec2<f32>(1.0, 0.0),
-    vec2<f32>(0.0, -1.0),
-    vec2<f32>(0.0, 1.0),
-);
-
+// The shadow-ray taps on the light's penumbra disk, in unit space and scaled
+// per pixel by the light's penumbra radius (the record's `lc.w`). A light with
+// any physical size is a disk, not a mathematical point, so every tap is its own
+// shadow ray from a point of that disk. Rung N walks the first N of these.
+//
+// The order is the ladder, and the ladder is the whole design. Every prefix is
+// a superset of the one before it, and for a given pixel the set of disk points
+// whose ray is blocked is convex — the slab test narrows an interval, so an
+// origin blocked on both counts blocks any origin between them — therefore a
+// rung that covers a superset can only find *more* blocked rays. The umbra,
+// which is where every ray is blocked, can then only shrink as rays are added.
+// The previous order was the 3x3 grid read row-major, whose fifth prefix holds
+// no point on one side of the disk at all, so going from four rays to five
+// surveyed a differently-shaped patch instead of a larger one and the measured
+// core shadow grew by a third (§28). Reading a grid is convenient and wrong;
+// growing the set is the property a tap count has to have.
+//
+// Centre first, so `taps: 1` is the light's own point rather than a point on its
+// rim: one ray then means a hard shadow, which is what asking for one ray should
+// mean. Then the ±x pair, so the balanced sets land on the odd rungs (1, 3, 5, 7,
+// 9) where a mean of zero is achievable. It is not achievable on the even ones —
+// a nested chain of an even length from a 3x3 lattice has an unmatched point at
+// the end of it — so the mean sample offset of the rungs is 0, 0.50, 0, 0.25, 0,
+// 0.24, 0, 0.18, 0 radii. The row-major order it replaces was off-centre by a
+// full radius at rung 1 and 0.63 at rung 5. §28 measured that an off-centre set
+// does not shift the shadow, because the rotation below spins each pixel's set a
+// different way and the bias cannot add up; what it costs is per-pixel error, and
+// it is worth not paying for.
+//
+// The far corner of the disk, in the same order: nothing before the sixth tap
+// leaves the axis points, so the reach — the radius the whole-disk reject inflates
+// an occluder by — is 0 at one tap, one radius through five, and sqrt(2) above.
 const SHADOW_TAPS = array<vec2<f32>, 9>(
-    vec2<f32>(-1.0, -1.0),
-    vec2<f32>(0.0, -1.0),
-    vec2<f32>(1.0, -1.0),
-    vec2<f32>(-1.0, 0.0),
     vec2<f32>(0.0, 0.0),
+    vec2<f32>(-1.0, 0.0),
     vec2<f32>(1.0, 0.0),
-    vec2<f32>(-1.0, 1.0),
+    vec2<f32>(0.0, -1.0),
     vec2<f32>(0.0, 1.0),
     vec2<f32>(1.0, 1.0),
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>(1.0, -1.0),
+    vec2<f32>(-1.0, 1.0),
 );
 
 // How far back along a directional light's travel axis its virtual
@@ -256,8 +275,8 @@ const SHADOW_TAPS = array<vec2<f32>, 9>(
 // loads per step.
 //
 // `src` is the disk's centre, `rad` its radius in pixels, `ca`/`sa` the
-// per-pixel rotation that keeps the sample grid from banding, `taps` how many
-// rays sweep it, and `four` selects the balanced cross instead of the grid.
+// per-pixel rotation that keeps the sample grid from banding, and `t` which tap
+// of the ladder this ray starts from — the caller walks the first `taps` of them.
 // One ray of the penumbra disk against an occluder's bounds, in the occluder's
 // own space: where the ray starts (`ll`) and the interval its slab test found
 // along the segment to the pixel. Returned as one vec4 so a caller can hold a
@@ -265,7 +284,6 @@ const SHADOW_TAPS = array<vec2<f32>, 9>(
 // under a loop index is the thing that sends this to private memory.
 fn tap_interval(
     t: u32,
-    four: bool,
     rad: f32,
     ca: f32,
     sa: f32,
@@ -275,13 +293,9 @@ fn tap_interval(
     center: vec2<f32>,
     half: vec2<f32>,
 ) -> vec4<f32> {
-    // Branch, not select: both select arms evaluate, and the four-cross must
-    // never be indexed past its four.
-    var o = SHADOW_TAPS[t];
-    if four {
-        o = SHADOW_TAPS4[t];
-    }
-    o = o * rad;
+    // The ladder's order is the only choice to make here: the rung has already
+    // decided which prefixes exist, and every prefix is a superset of the last.
+    let o = SHADOW_TAPS[t] * rad;
     let q = vec2<f32>(ca * o.x - sa * o.y, sa * o.x + ca * o.y);
     let ll = vec2<f32>(lc.x + m.x * q.x + m.z * q.y, lc.y + m.y * q.x + m.w * q.y);
     let d = lp - ll;
@@ -315,13 +329,17 @@ fn occluded_taps(
     ca: f32,
     sa: f32,
     taps: u32,
-    four: bool,
 ) -> u32 {
     let every = (1u << taps) - 1u;
     var blocked = 0u;
-    // How far a tap's origin can sit from the disk's centre, in pixels: the
-    // 3x3 grid reaches sqrt(2) out at its corners, the balanced cross only 1.
-    let reach = rad * select(1.0, 1.4142136, !four);
+    // How far a tap's origin can sit from the disk's centre, in pixels, for
+    // the rung actually being walked: the ladder stays on the axis points
+    // through five taps and only then pays a corner's sqrt(2), and one tap is
+    // the centre itself — a reach of nothing, which makes the reject below the
+    // exact centre-ray test it was before disks existed. Understating this
+    // would let the reject discard an occluder a ray does touch, so it is the
+    // ladder's own bound, rung by rung, and not a constant of convenience.
+    let reach = rad * select(select(1.0, 0.0, taps == 1u), 1.4142136, taps >= 6u);
     let range = occluders.occluders[li];
     var base = u32(range.x);
     let end = u32(range.y);
@@ -398,11 +416,11 @@ fn occluded_taps(
             // here is four floats at a time and nothing else.
             var t = 0u;
             while (t < taps) {
-                let a = tap_interval(t, four, rad, ca, sa, lc, lp, m, center, half);
+                let a = tap_interval(t, rad, ca, sa, lc, lp, m, center, half);
                 let u = t + 1u;
                 var b = vec4<f32>(0.0);
                 if (u < taps) {
-                    b = tap_interval(u, four, rad, ca, sa, lc, lp, m, center, half);
+                    b = tap_interval(u, rad, ca, sa, lc, lp, m, center, half);
                 }
                 let a_open = ((blocked >> t) & 1u) == 0u && a.w > a.z && a.w > 0.0 && a.z < 1.0;
                 let b_open = u < taps && ((blocked >> u) & 1u) == 0u && b.w > b.z && b.w > 0.0
@@ -572,8 +590,8 @@ fn light_mix(p: vec2<f32>, recv: u32) -> vec3<f32> {
                 // How many rays sweep the disk. Omni (and directional)
                 // lights carry the rung in the slot a cone uses for
                 // its feather: 0 is the full nine — every light that
-                // never named a rung — and 1..=9 walks that many of
-                // the grid, four of them from the balanced cross.
+                // never named a rung — and 1..=9 walks that many of the
+                // ladder, which grows one nested set at a time.
                 var taps = 9u;
                 if (cone.z <= -1.0 && cone.w > 0.0) {
                     taps = clamp(u32(cone.w), 1u, 9u);
@@ -582,7 +600,7 @@ fn light_mix(p: vec2<f32>, recv: u32) -> vec3<f32> {
                 // found a blocker, and the lit fraction is the rest — the
                 // same ten sample levels the nine separate rays produced,
                 // gathered without walking the block nine times.
-                let blocked = occluded_taps(i, recv, src, p, lc.w, ca, sa, taps, taps <= 4u);
+                let blocked = occluded_taps(i, recv, src, p, lc.w, ca, sa, taps);
                 v = f32(taps - countOneBits(blocked)) / f32(taps);
             } else {
                 // A point-sized light: the single ray from its position,
