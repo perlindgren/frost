@@ -1582,7 +1582,7 @@ median of three, canary 2.6×–4.1×:
 | --- | --- | --- | --- |
 | `fill-1080p` | 2.61 ms | 2.68 ms | +3 % |
 | `polys-60` — hexagons, one hard ray | 4.43 ms | 4.44 ms | 0 % |
-| `taps-9` — boxes, nine rays | 5.21 ms | **4.86 ms** | **−7 %** |
+| `taps-9` — boxes, nine rays | 5.21 ms | 4.86 ms | −7 %, *not established* — see §27 |
 | `taps-9-polys` | 14.78 ms | **12.32 ms** | **−17 %** |
 | `taps-9-discs` | 30.53 ms | **23.67 ms** | **−22 %** |
 
@@ -1591,6 +1591,13 @@ in these runs have been drifting by; everything else moved in the direction the 
 predicts and by more than that. The boxes gaining 7 % was not aimed at: pairing halves the
 loop's bookkeeping whether or not there are edges to walk, and a box's answer is still the
 slab alone.
+
+**That 7 % has since been withdrawn as a measurement (§27).** Those two columns are different
+processes, and the same scenario across five processes on this machine spans 4.22–4.53 ms, so
+the spread alone is 7 %: the box row could be noise in either direction. What is left is the
+mechanism — pairing halves the bookkeeping on a box too — and the honest claim about boxes is
+that the paired walk left them unchanged within measurement, until more alternating passes say
+otherwise. The two shape rows are 17 % and 22 %, both far outside that band, and they stand.
 
 Taken from §21's baseline rather than from §22's build, the two shape rows are **21.98 → 12.32
 ms and 38.46 → 23.67 ms**, and the box cliff that started this is 16.71 → 4.86. Cutting the
