@@ -1986,7 +1986,7 @@ reject inflates its occluder less and should discard more casters before the wal
 cheapest on the row that asks for five rays over many occluders. Rungs 2 to 4 and 6 to
 9 pay exactly what they paid before. That is a prediction about a mechanism, and per §27
 it needs alternating passes across the two builds before it is a number; it gets a
-commit of its own rather than being asserted here.
+commit of its own rather than being asserted here. §30 priced it and found nothing.
 
 **Silhouettes moved with the reach**, which is the arithmetic noticing: rung 5's outer
 edge at probe 56 was 29.12 px from the axis when rung 5 surveyed a √2 corner, and is
@@ -2006,3 +2006,60 @@ a bias spun every 111° cannot add up across an edge.
 sub-pixel to a couple of pixels, `taps: 1` stops wandering, and the core shadow stops
 growing when the tap count rises. Nothing else in the renderer moved — this is one
 `const` array, one `select`, and the deletion of a second table.
+
+---
+
+## 30. The ladder's cost, priced: nothing (2026-10-26, Apple M4 Max)
+
+§29 predicted the new ladder would be a little cheaper at two rungs, because the
+whole-disk reject now inflates an occluder by less at rung 1 (reach 1 → 0) and rung 5
+(√2 → 1), and a smaller inflation discards more casters before the walk. It is worth
+pricing rather than keeping, and pricing it means two builds, because §27 forbids
+comparing a number from one process with a number from another.
+
+**Method.** Two binaries — this build, and the same tree with `32fe6bc`'s shader
+dropped back in — run alternately, four passes each, fullscreen 4112×2572 at 2.00×,
+three rows per pass, median of the row's reps within its own invocation. Weather from
+a pass of the same pair: noise floor p50 0.21 / p99 0.22 / worst 0.91 ms, burn p50 56
+µs at 1.8× — a cool machine, which is the least the GPU will admit.
+
+| row | reach, old → new | old median (spread) | new median (spread) | delta |
+|---|---|---|---|---|
+| `taps-1` | 1 → 0 | 3.85 ms (3.83–3.86) | 3.85 ms (3.82–3.87) | +0.007 ms (+0.2 %) |
+| `taps-4` | 1 → 1, control | 4.24 ms (4.24–4.26) | 4.21 ms (4.21–4.22) | −0.037 ms (−0.9 %) |
+| `taps-9` | √2 → √2, control | 4.92 ms (4.81–5.11) | 4.75 ms (4.63–5.23) | −0.177 ms (−3.6 %) |
+
+**The prediction did not survive.** Rung 1, the rung whose reach went to nothing, moved
+by seven microseconds on a 3.85 ms frame, with the two sides' four passes interleaved
+and overlapping end to end. There is no there there.
+
+**The interesting row is the one that was supposed to be a control.** `taps-4` kept its
+reach at one radius, so nothing in the prediction applies to it, yet all four new passes
+came in below all four old ones — the only complete separation in the experiment, which
+is a stronger shape than §27's single cross-process comparison. The mechanism available
+to it is composition rather than reach: the old fourth rung was the cross, four rim
+points and no centre, and the new one is the centre plus three axis points, and the
+centre tap is the one most likely to be deep in shadow. `occluded_taps` stops when every
+unresolved ray has found a blocker, so a rung that blocks a ray sooner walks fewer
+records. That is a story that fits, and 0.037 ms is exactly the size §27 measured as the
+agreement *within* one invocation, so it is not a number. It is a hypothesis with a row
+worth re-running if this path ever gets hot.
+
+**`taps-9` is noise wearing a result's clothes.** −3.6 %, against one side's four passes
+spanning 4.63 to 5.23 ms — 13 % — and both sides sagging through the passes in the same
+order, which is the machine warming rather than either build being slower. A row whose
+within-side spread is four times the between-side difference cannot carry a claim, and
+this one carries none.
+
+**And the rung with the bigger reach change is unmeasured entirely.** The suite has
+`taps-1`, `taps-4` and `taps-9`; there is no rung-5 row, so the √2 → 1 change that
+motivated the prediction never ran. If the reject's reach ever needs to be argued about,
+the row to add is five rays over the 60-caster cliff, not another pass at these three.
+
+**What this leaves the ladder standing on: geometry, not money.** The umbra is monotone
+in the tap count, one ray means the light's own point, and the sample mean is off centre
+by half what it was. On cost the honest sentence is that nothing moved that measurement
+could see — which is also the third piece of evidence that at 60 box casters the reject
+is already discarding nearly everything there is to discard, so shrinking what it
+inflates by has little left to win. §20 found the walk dominates when there is a walk to
+be had; this finds that on a box cliff there is hardly one left.
