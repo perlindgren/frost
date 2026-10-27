@@ -2,8 +2,8 @@
 //!
 //! The engine compiles a game-authored program behind its lighting
 //! prelude, binds it exactly like the sprite pipeline, and draws it in
-//! place of the sprite on any shape that wears it
-//! ([`frost::Shape::with_program`], [`frost::Shape::painted_by`]). This
+//! place of the sprite on any shape that wears it — the engine's
+//! `frost::Shape::with_program` and `Shape::painted_by`. This
 //! crate is the shelf for such programs: each one is a plain
 //! `&'static str` include_str!'d into the binary, and each signs the
 //! engine's contract in a test — `frost::LIGHTING_WGSL` prepended,
@@ -27,7 +27,7 @@
 /// progress reaches 1.0.
 ///
 /// The uniforms are the sprite's — 112 bytes the engine packs from an
-/// ordinary [`frost::SceneNode`] — and what they mean is the program's
+/// ordinary `frost::SceneNode` — and what they mean is the program's
 /// own saying:
 ///
 /// - `emission.r` — progress: 0.0 whole, 1.0 eaten through;
