@@ -1533,16 +1533,35 @@ impl Demo {
 mod menu_tests {
     use super::*;
 
+    /// The shipped art, baked once per process. `ant_frame` resizes with
+    /// Lanczos3 and re-encodes a PNG — seconds of debug-profile work for
+    /// pixels that never change — and a third of the suite was paying it
+    /// per test, thirty-one `demo()` calls burning minutes of identical
+    /// resizes while every other test queued behind them. The shapes are
+    /// Arc-backed, so a test borrows from the bake rather than redoing
+    /// it; on first use this bakes, and every later call clones.
+    fn baked_art() -> &'static (Vec<frost::Shape>, Vec<frost::Shape>, frost::Shape) {
+        static BAKED: std::sync::OnceLock<(Vec<frost::Shape>, Vec<frost::Shape>, frost::Shape)> =
+            std::sync::OnceLock::new();
+        BAKED.get_or_init(|| {
+            let frames = ANT_FRAMES
+                .iter()
+                .map(|png| ant_frame(png).expect("shipped ant frames bake"))
+                .collect();
+            let stencils = ANT_STENCILS
+                .iter()
+                .map(|png| ant_frame(png).expect("shipped ant stencils bake"))
+                .collect();
+            let soil = frost::Shape::sprite_bytes(SOIL).expect("shipped soil bakes");
+            (frames, stencils, soil)
+        })
+    }
+
     fn demo() -> Demo {
-        let frames = ANT_FRAMES
-            .iter()
-            .map(|png| ant_frame(png).expect("shipped ant frames bake"))
-            .collect();
-        let stencils = ANT_STENCILS
-            .iter()
-            .map(|png| ant_frame(png).expect("shipped ant stencils bake"))
-            .collect();
-        let soil = frost::Shape::sprite_bytes(SOIL).expect("shipped soil bakes");
+        let (frames, stencils, soil) = baked_art();
+        let frames = frames.clone();
+        let stencils = stencils.clone();
+        let soil = soil.clone();
         Demo::new(
             frames,
             stencils,

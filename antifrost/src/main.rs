@@ -273,7 +273,42 @@ fn ant_frame(png: &[u8]) -> Result<frost::Shape, String> {
 /// than depth. Same sprite as the walls wear, stretched a thousand
 /// times wider than a tile: the ground can only whisper the grain,
 /// while the walls shout it.
+/// The bake proper lives in [`bake_ground`]; this entry point adds one
+/// thing for the test suite only: a table of grounds by hill size. The
+/// suite loads hills the way a player walks them — dozens of times
+/// over a handful of sizes — and every load re-ran the full Lanczos3
+/// resize and PNG encode, filling cores with identical work and making
+/// the suite look stuck behind whichever test happened to be re-baking
+/// soil. The shapes are Arc-backed, so a hit is a clone. Production is
+/// deliberately untouched: a player entering a hill pays its one honest
+/// bake, and the game holds one ground at a time.
 fn ground_sprite(cols: usize, rows: usize) -> Result<(frost::Shape, [f32; 2]), String> {
+    #[cfg(test)]
+    {
+        type Table =
+            std::sync::Mutex<std::collections::HashMap<(usize, usize), (frost::Shape, [f32; 2])>>;
+        static BAKED: std::sync::OnceLock<Table> = std::sync::OnceLock::new();
+        let table = BAKED.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+        let served = table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&(cols, rows))
+            .cloned();
+        if let Some(hit) = served {
+            return Ok(hit);
+        }
+        let ground = bake_ground(cols, rows)?;
+        table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert((cols, rows), ground.clone());
+        Ok(ground)
+    }
+    #[cfg(not(test))]
+    bake_ground(cols, rows)
+}
+
+fn bake_ground(cols: usize, rows: usize) -> Result<(frost::Shape, [f32; 2]), String> {
     use image::{ExtendedColorType, ImageEncoder};
     // The reach: the hill plus a margin wide enough that no window, at
     // any camera a hill can show, ever finds the sprite's edge. The
