@@ -246,20 +246,15 @@ const LAND_FLASH: f32 = 1.1;
 const ANT_W: f32 = TILE * 0.98;
 
 /// Bakes one hand-tailored PNG into a sprite shape: a Lanczos downscale to
-/// `ANT_TEX` wide, re-encoded in memory for `Shape::sprite_bytes`.
+/// `ANT_TEX` wide, handed to the engine as the pixels they already are.
 fn ant_frame(png: &[u8]) -> Result<frost::Shape, String> {
-    use image::{ExtendedColorType, ImageEncoder};
     let rgba = image::load_from_memory(png)
         .map_err(|err| err.to_string())?
         .into_rgba8();
     let (w, h) = (rgba.width().max(1), rgba.height());
     let th = ((ANT_TEX as f32) * h as f32 / w as f32).round().max(1.0) as u32;
     let small = image::imageops::resize(&rgba, ANT_TEX, th, image::imageops::FilterType::Lanczos3);
-    let mut baked = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut baked)
-        .write_image(small.as_raw(), ANT_TEX, th, ExtendedColorType::Rgba8)
-        .map_err(|err| err.to_string())?;
-    frost::Shape::sprite_bytes(&baked).map_err(|err| err.to_string())
+    frost::Shape::sprite_rgba(ANT_TEX, th, small.into_raw()).map_err(|err| err.to_string())
 }
 
 /// The surrounding ground for one hill: a single giant soil sprite —
@@ -309,7 +304,6 @@ fn ground_sprite(cols: usize, rows: usize) -> Result<(frost::Shape, [f32; 2]), S
 }
 
 fn bake_ground(cols: usize, rows: usize) -> Result<(frost::Shape, [f32; 2]), String> {
-    use image::{ExtendedColorType, ImageEncoder};
     // The reach: the hill plus a margin wide enough that no window, at
     // any camera a hill can show, ever finds the sprite's edge. The
     // texture stays modest — the ground reads soft, which suits it.
@@ -331,11 +325,7 @@ fn bake_ground(cols: usize, rows: usize) -> Result<(frost::Shape, [f32; 2]), Str
             *img.get_pixel_mut(px, y) = image::Rgba([0, 0, 0, 0]);
         }
     }
-    let mut baked = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut baked)
-        .write_image(img.as_raw(), TEX_W, th, ExtendedColorType::Rgba8)
-        .map_err(|err| err.to_string())?;
-    frost::Shape::sprite_bytes(&baked)
+    frost::Shape::sprite_rgba(TEX_W, th, img.into_raw())
         .map(|shape| (shape, span))
         .map_err(|err| err.to_string())
 }

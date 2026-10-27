@@ -1041,6 +1041,46 @@ impl Shape {
         })
     }
 
+    /// Creates a sprite shape from raw RGBA8 pixels: the low door the
+    /// other sprite constructors walk through, and the one for callers
+    /// that already hold decoded pixels — a bake that resized or punched
+    /// its own image in memory. Those callers would otherwise encode the
+    /// pixels into a PNG only for [`Self::sprite_bytes`] to turn around
+    /// and decode the identical bytes; this takes them whole and copies
+    /// them into the shared [`Arc`] once. `rgba` must be `width * height
+    /// * 4` bytes, row by row, top row first; a mismatch is reported, not
+    /// read past. Sprites made here sample with the linear filter, like
+    /// [`Self::sprite`].
+    pub fn sprite_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self, SpriteError> {
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or(SpriteError::BadDimensions)?;
+        if rgba.len() != expected {
+            return Err(SpriteError::WrongLength {
+                width,
+                height,
+                len: rgba.len(),
+            });
+        }
+        let data = Arc::from(rgba.into_boxed_slice());
+        Ok(Self::Sprite {
+            data,
+            width,
+            height,
+            color: Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            alpha: 1.0,
+            filter: SpriteFilter::Linear,
+            generation: NEXT_SPRITE_GENERATION.fetch_add(1, Ordering::Relaxed),
+            program: None,
+        })
+    }
+
     /// Creates a text shape from the font file at `path`.
     ///
     /// The file is read immediately and checked to be a TrueType/OpenType
@@ -1311,6 +1351,12 @@ pub enum SpriteError {
     Io(std::io::Error),
     /// The file was read but is not a decodable PNG image.
     Decode(image::ImageError),
+    /// [`Shape::sprite_rgba`] was handed pixel bytes whose count does not
+    /// match `width * height * 4`.
+    WrongLength { width: u32, height: u32, len: usize },
+    /// [`Shape::sprite_rgba`] was given dimensions whose `width * height *
+    /// 4` overflows.
+    BadDimensions,
 }
 
 impl std::fmt::Display for SpriteError {
@@ -1320,6 +1366,12 @@ impl std::fmt::Display for SpriteError {
             Self::Decode(err) => {
                 write!(f, "failed to decode the sprite as a PNG image: {err}")
             }
+            Self::WrongLength { width, height, len } => write!(
+                f,
+                "sprite pixels do not match their dimensions:                  {width}x{height} wants {} bytes, got {len}",
+                (*width as usize) * (*height as usize) * 4
+            ),
+            Self::BadDimensions => write!(f, "sprite dimensions overflow a byte count"),
         }
     }
 }
@@ -1329,6 +1381,9 @@ impl std::error::Error for SpriteError {
         match self {
             Self::Io(err) => Some(err),
             Self::Decode(err) => Some(err),
+            // The raw door's refusals are the whole story; there is no
+            // underlying error behind them.
+            Self::WrongLength { .. } | Self::BadDimensions => None,
         }
     }
 }
@@ -1784,6 +1839,56 @@ impl Default for Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sprite_rgba_walks_the_same_door_as_the_png_constructor() {
+        // A bake that holds its pixels in memory and a shipped PNG must
+        // reach the renderer as the same shape of thing: the same
+        // pixels, the same dimensions. This is the guarantee that lets
+        // antifrost hand the ground over without a PNG in the middle —
+        // if the raw door ever stops matching the decoded one, a hill's
+        // dirt would differ from a sprite, and the test is the notice.
+        use image::ImageEncoder;
+        let rgba = vec![
+            10u8, 60, 120, 200, 20, 70, 130, 210, 30, 80, 140, 220, 40, 90, 150, 230,
+        ];
+        let direct = Shape::sprite_rgba(2, 2, rgba.clone()).expect("four RGBA pixels fill 2x2");
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&rgba, 2, 2, image::ExtendedColorType::Rgba8)
+            .expect("encoding four pixels");
+        let decoded = Shape::sprite_bytes(&png).expect("a png we just wrote");
+        let (
+            Shape::Sprite {
+                data: raw,
+                width: rw,
+                height: rh,
+                ..
+            },
+            Shape::Sprite {
+                data: dw,
+                width: pw,
+                height: ph,
+                ..
+            },
+        ) = (&direct, &decoded)
+        else {
+            panic!("both constructors make sprites");
+        };
+        assert_eq!((*rw, *rh), (*pw, *ph));
+        assert_eq!(raw.as_ref(), dw.as_ref());
+    }
+
+    #[test]
+    fn sprite_rgba_refuses_pixels_that_do_not_fill_their_frame() {
+        // The one mistake a caller can make here is a byte count that
+        // stops short of (or past) width * height * 4; the renderer
+        // would read the shortfall as garbage, so the constructor
+        // refuses it, and a dimensions product that overflows is its
+        // own answer.
+        assert!(Shape::sprite_rgba(2, 2, vec![0u8; 15]).is_err());
+        assert!(Shape::sprite_rgba(u32::MAX, u32::MAX, Vec::new()).is_err());
+    }
 
     #[test]
     fn node_is_unlit_by_default() {
