@@ -18,7 +18,7 @@
 
 use super::super::*;
 use super::half_to_f32;
-use crate::backend::app::{ADDITIVE_BLEND, block_on};
+use crate::backend::app::ADDITIVE_BLEND;
 use crate::objects;
 use crate::shaders::SPRITE_SHADER;
 use std::borrow::Cow;
@@ -83,15 +83,9 @@ struct Painting {
 /// sixteen pixels, then reads the wall outside the sprite and the sprite's two
 /// alpha steps inside it.
 fn paint(additive: bool) -> Option<Painting> {
-    let instance = Instance::default();
-    let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
-        eprintln!("blend bridge: no adapter on this machine — the blend goes unverified!");
-        return None;
-    };
-    let Ok((device, queue)) = block_on(adapter.request_device(&DeviceDescriptor::default())) else {
-        eprintln!("blend bridge: no device — the blend goes unverified!");
-        return None;
-    };
+    // The thread's shared GPU: see [`super::machine`].
+    let machine = super::machine::machine()?;
+    let (device, queue) = (&machine.device, &machine.queue);
 
     let upload = |label: &str, bytes: Vec<u8>, size: [u32; 2]| {
         let texture = device.create_texture(&TextureDescriptor {

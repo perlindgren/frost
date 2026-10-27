@@ -50,7 +50,7 @@
 /// draw's colour, and this test is where that shows.
 #[test]
 fn an_arena_slot_keeps_two_draws_apart() {
-    use crate::backend::app::{block_on, sprite_layouts};
+    use crate::backend::app::sprite_layouts;
     use crate::backend::frame::{SPRITE_UNIFORM_BYTES, sprite_uniform_data};
     use crate::objects::{Color, LightLayers, Transform};
     use crate::shaders::SPRITE_SHADER;
@@ -69,15 +69,12 @@ fn an_arena_slot_keeps_two_draws_apart() {
         a: 0.0,
     };
 
-    let instance = Instance::default();
-    let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
-        eprintln!("GPU bridge: no adapter on this machine — the arena goes unverified!");
+    // The thread's shared GPU: see [`super::machine`].
+    let Some(machine) = super::machine::machine() else {
         return;
     };
-    let Ok((device, queue)) = block_on(adapter.request_device(&DeviceDescriptor::default())) else {
-        eprintln!("GPU bridge: no device on this machine — the arena goes unverified!");
-        return;
-    };
+    let (device, queue) = (&machine.device, &machine.queue);
+
     let stride = {
         let align = device.limits().min_uniform_buffer_offset_alignment as u64;
         SPRITE_UNIFORM_BYTES.max(align).next_multiple_of(align)
@@ -134,7 +131,7 @@ fn an_arena_slot_keeps_two_draws_apart() {
 
     // The engine's own layout, so the offsets this test slides are the
     // offsets the render loop slides.
-    let (_bind_layout, pipeline_layout) = sprite_layouts(&device);
+    let (_bind_layout, pipeline_layout) = sprite_layouts(device);
     let module = device.create_shader_module(ShaderModuleDescriptor {
         label: Some("arena sprite"),
         source: ShaderSource::Wgsl(Cow::Borrowed(SPRITE_SHADER)),
@@ -394,7 +391,6 @@ impl Weather {
 #[ignore = "a timing bench: run by hand with --ignored --nocapture"]
 fn a_uniform_per_draw_versus_an_arena() {
     let weather = Weather::start("glyph quads, 1600x1600");
-    use crate::backend::app::block_on;
     use crate::backend::frame::{SPRITE_UNIFORM_BYTES, sprite_uniform_data};
     use crate::objects::{Color, LightLayers, Transform};
     use crate::shaders::SPRITE_SHADER;
@@ -652,16 +648,13 @@ fn a_uniform_per_draw_versus_an_arena() {
         encoder
     }
 
-    let instance = Instance::default();
-    let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
-        eprintln!("draw cost: no adapter on this machine — the bench goes unrun!");
+    // The thread's shared GPU: see [`super::machine`].
+    let Some(machine) = super::machine::machine() else {
         return;
     };
-    let name = adapter.get_info().name;
-    let Ok((device, queue)) = block_on(adapter.request_device(&DeviceDescriptor::default())) else {
-        eprintln!("draw cost: no device on this machine — the bench goes unrun!");
-        return;
-    };
+    let (device, queue) = (&machine.device, &machine.queue);
+    let name = machine.info().name;
+
     // The stride an arena slot needs: a dynamic offset must be a multiple of
     // the device's uniform-offset alignment — 256 on every backend so far,
     // against the sprite uniform's 96 bytes — so an arena carries the frame
@@ -925,8 +918,8 @@ fn a_uniform_per_draw_versus_an_arena() {
             let one = |packed: &mut Vec<u8>| {
                 let encoder = match scheme {
                     Scheme::PerDraw => frame_per_draw(
-                        &device,
-                        &queue,
+                        device,
+                        queue,
                         &plain,
                         &view,
                         &sampler,
@@ -935,8 +928,8 @@ fn a_uniform_per_draw_versus_an_arena() {
                         &scene,
                     ),
                     Scheme::Arena => frame_arena(
-                        &device,
-                        &queue,
+                        device,
+                        queue,
                         &arena_pipeline,
                         &arena,
                         &bind,
@@ -945,9 +938,7 @@ fn a_uniform_per_draw_versus_an_arena() {
                         &target_view,
                         &scene,
                     ),
-                    Scheme::Pool => {
-                        frame_pool(&device, &queue, &plain, &pool, &target_view, &scene)
-                    }
+                    Scheme::Pool => frame_pool(device, queue, &plain, &pool, &target_view, &scene),
                 };
                 queue.submit(Some(encoder.finish()));
             };
@@ -1017,7 +1008,7 @@ fn a_uniform_per_draw_versus_an_arena() {
 #[ignore = "a timing bench: run by hand with --ignored --nocapture"]
 fn a_frame_of_every_kind_packs_into_the_arena_too() {
     let weather = Weather::start("every kind, 960x720");
-    use crate::backend::app::{block_on, shape_layouts, slot_layouts, sprite_layouts};
+    use crate::backend::app::{shape_layouts, slot_layouts, sprite_layouts};
     use crate::backend::frame::{
         CIRCLE_UNIFORM_BYTES, Draw, LINE_UNIFORM_BYTES, POLYLINE_UNIFORM_BYTES, RECT_UNIFORM_BYTES,
         SHAPE_UNIFORM_BYTES, SPRITE_UNIFORM_BYTES, uniform_bytes,
@@ -1182,15 +1173,12 @@ fn a_frame_of_every_kind_packs_into_the_arena_too() {
         }
     };
 
-    let instance = Instance::default();
-    let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
-        eprintln!("GPU bridge: no adapter on this machine — nothing to measure!");
+    // The thread's shared GPU: see [`super::machine`].
+    let Some(machine) = super::machine::machine() else {
         return;
     };
-    let Ok((device, queue)) = block_on(adapter.request_device(&DeviceDescriptor::default())) else {
-        eprintln!("GPU bridge: no device on this machine — nothing to measure!");
-        return;
-    };
+    let (device, queue) = (&machine.device, &machine.queue);
+
     let stride = {
         let align = device.limits().min_uniform_buffer_offset_alignment as u64;
         SPRITE_UNIFORM_BYTES.max(align).next_multiple_of(align)
@@ -1298,19 +1286,19 @@ fn a_frame_of_every_kind_packs_into_the_arena_too() {
     // in a derived one.
     let plain: Vec<RenderPipeline> = kinds
         .iter()
-        .map(|k| pipeline(&device, k.source, None, k.name))
+        .map(|k| pipeline(device, k.source, None, k.name))
         .collect();
     let arena_pipelines: Vec<RenderPipeline> = kinds
         .iter()
         .map(|k| {
             let layout = if k.image {
-                sprite_layouts(&device).1
+                sprite_layouts(device).1
             } else if k.fields {
-                shape_layouts(&device, k.name)
+                shape_layouts(device, k.name)
             } else {
-                slot_layouts(&device, k.name, k.uniform)
+                slot_layouts(device, k.name, k.uniform)
             };
-            pipeline(&device, k.source, Some(&layout), k.name)
+            pipeline(device, k.source, Some(&layout), k.name)
         })
         .collect();
 
