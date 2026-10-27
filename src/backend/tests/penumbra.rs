@@ -48,7 +48,9 @@ use super::super::*;
 use super::shadows::SPAN;
 use super::shadows::paint;
 use super::*;
+use crate::Canvas;
 use crate::canvas::Occluder;
+use crate::collision::{Collider, Convex, OrientedBox};
 use crate::objects;
 use crate::objects::*;
 
@@ -58,6 +60,27 @@ use crate::objects::*;
 /// the first draft of this scene had that shape: the darkest pixel read 0.22
 /// and no assertion would have made it zero.
 const CASTER: [f32; 2] = [2.0, 6.0];
+
+/// What stands between the light and the surface.
+///
+/// Two casters because the engine has two roads into the occluder field. A box
+/// is *painted* here — an invisible draw whose `occludes` flag is the only thing
+/// the field is built from — and a polygon is *declared* through the canvas,
+/// because a polygon's edges are its shadow and only the declare channel carries
+/// them. [`super::shadows`] proves the two roads reach the field as the same
+/// record for a circle; [`super::polygon`] points the meter below at the second
+/// one, which is where the plane walk of §22 and §23 lives and where an
+/// optimisation that drops a ray has somewhere to be caught.
+// Boxed? No: this enum is built a handful of times per test run and only ever
+// lives inside one function, and a pointer would sit between the reader and the
+// shape being read about.
+#[allow(clippy::large_enum_variant)]
+pub(super) enum Caster {
+    /// A box of these half-extents, centred on the axis at x = 24.
+    Box([f32; 2]),
+    /// A convex polygon, centred on the axis at x = 24.
+    Polygon(Convex),
+}
 /// The light's disk radius, and the axis its centre sits on.
 const DISK: f32 = 3.0;
 const AXIS: f32 = 32.0;
@@ -67,7 +90,7 @@ const AXIS: f32 = 32.0;
 /// falloff exactly as they were, so the ratio of the two is the blocked
 /// fraction with the falloff cancelled — not by assumption, but by dividing by
 /// the frame that measured it.
-fn column(penumbra: f32, taps: u32, probe_x: u32, shadowed: bool) -> Vec<f32> {
+pub(super) fn plane(caster: &Caster, penumbra: f32, taps: u32, shadowed: bool) -> Vec<u8> {
     let surface = Draw::Shape {
         world: Transform::identity(),
         center: [32.0, AXIS],
@@ -91,7 +114,7 @@ fn column(penumbra: f32, taps: u32, probe_x: u32, shadowed: bool) -> Vec<f32> {
     };
     // Alpha 0: the caster composites nothing, so the byte read back is light
     // and nothing else, while the occluder field still carries it.
-    let caster = Draw::Shape {
+    let box_caster = Draw::Shape {
         world: Transform::identity(),
         center: [24.0, AXIS],
         params: CASTER,
@@ -131,23 +154,167 @@ fn column(penumbra: f32, taps: u32, probe_x: u32, shadowed: bool) -> Vec<f32> {
         z: 0.0,
         layers: LightLayers::default(),
     };
-    let none: Vec<Occluder> = Vec::new();
-    let draws: Vec<Draw> = if shadowed {
-        vec![light, surface, caster]
-    } else {
-        vec![light, surface]
+    let behind: Vec<Draw> = match caster {
+        Caster::Box(_) => vec![box_caster],
+        Caster::Polygon(_) => Vec::new(),
     };
-    let red = paint(&draws, &none).expect("this test needs an adapter");
+    let declared: Vec<Occluder> = match (caster, shadowed) {
+        (Caster::Box(_), _) | (Caster::Polygon(_), false) => Vec::new(),
+        (Caster::Polygon(polygon), true) => {
+            let mut canvas = Canvas::new((SPAN, SPAN), 1.0);
+            // The declare channel takes user space and folds the canvas's own
+            // y-flip into it, while the light and surface above are named in
+            // pixel space. The map at scale 1 is pixel = (32 + x, 32 − y), so
+            // the caster's post on the axis at pixel x = 24 is user (−8, 0).
+            canvas.occluder_polygon(Transform::translate([-8.0, 0.0]), polygon);
+            canvas.occluders
+        }
+    };
+    let mut draws = vec![light, surface];
+    if shadowed {
+        draws.extend(behind);
+    }
+    paint(&draws, &declared).expect("this test needs an adapter")
+}
+
+/// One column of [`plane`]'s target, as bytes per row: what every measurement in
+/// this file walks, and what [`super::polygon`] fingerprints a step before this.
+pub(super) fn column(
+    caster: &Caster,
+    penumbra: f32,
+    taps: u32,
+    probe_x: u32,
+    shadowed: bool,
+) -> Vec<f32> {
+    let red = plane(caster, penumbra, taps, shadowed);
     (0..SPAN)
         .map(|y| f32::from(red[(y as usize * SPAN as usize) + probe_x as usize]))
         .collect()
 }
 
+/// The caster as the CPU can answer for it, in the space each kind is held in.
+///
+/// This is the oracle that needs no model of the tap set at all. The engine's
+/// rays start somewhere inside a region of radius `reach` about the lamp — the
+/// same number the whole-disk reject inflates occluders by — so:
+///
+/// * if **no** origin in that region is blocked, the row must read fully lit,
+///   whatever points the ladder happened to sample and however it was spun; and
+/// * if **every** origin in it is blocked, the row must read dark.
+///
+/// Both directions are sound for a *subset* of the region, which is what nine
+/// taps are, so the test holds for any tap count, any order and any rotation —
+/// the property a per-pixel CPU twin could not offer (§20). Over-blocking from a
+/// reject or an angular wedge that discards a caster the rays do touch shows up
+/// on the first; under-blocking on the second.
+pub(super) struct CpuCaster {
+    box_: Option<OrientedBox>,
+    polygon: Option<Convex>,
+    to_local: Transform,
+}
+
+impl CpuCaster {
+    pub(super) fn new(caster: &Caster) -> Self {
+        match caster {
+            Caster::Box(half) => Self {
+                box_: Some(OrientedBox::rotated([24.0, AXIS], *half, 0.0)),
+                polygon: None,
+                to_local: Transform::identity(),
+            },
+            Caster::Polygon(polygon) => {
+                let mut canvas = Canvas::new((SPAN, SPAN), 1.0);
+                canvas.occluder_polygon(Transform::translate([24.0 - AXIS, 0.0]), polygon);
+                Self {
+                    box_: None,
+                    polygon: Some(*polygon),
+                    to_local: canvas.occluders[0]
+                        .world
+                        .invert()
+                        .expect("a non-degenerate caster"),
+                }
+            }
+        }
+    }
+
+    /// Whether the segment from a lamp-side origin to a pixel meets the caster.
+    pub(super) fn hits(&self, from: [f32; 2], to: [f32; 2]) -> bool {
+        match (&self.box_, &self.polygon) {
+            (Some(b), _) => Collider::Box(*b).occludes(from, to),
+            (None, Some(p)) => p.occludes(self.to_local.apply(from), self.to_local.apply(to)),
+            (None, None) => false,
+        }
+    }
+}
+
+/// The half-width a run of CPU-shaded rows describes, in the same continuous
+/// units the interpolated crossings are: the run covers rows `first` through
+/// `last`, which spans `first` to `last + 1` in pixel space.
+fn cpu_half(first: Option<u32>, last: Option<u32>) -> f32 {
+    match (first, last) {
+        (Some(f), Some(l)) => (l + 1 - f) as f32 / 2.0,
+        _ => 0.0,
+    }
+}
+
+/// The origins the taps can be drawn from: the centre plus four rings of
+/// twenty-four out to `reach`. A grid, not the nine, because the ladder is
+/// rotated per pixel and an assertion may not depend on where it landed.
+fn origins(reach: f32) -> Vec<[f32; 2]> {
+    let lamp = [8.0, AXIS];
+    if reach <= 0.0 {
+        return vec![lamp];
+    }
+    let mut out = vec![lamp];
+    for ring in 1..=4 {
+        let r = reach * ring as f32 / 4.0;
+        for k in 0..24 {
+            let a = std::f32::consts::TAU * k as f32 / 24.0;
+            out.push([lamp[0] + r * a.cos(), lamp[1] + r * a.sin()]);
+        }
+    }
+    out
+}
+
+/// The rows a column must read lit, and the rows it must read dark, from the
+/// CPU alone. `reach` is the radius the taps are drawn from at this rung:
+/// nothing at one ray, one penumbra through five, a corner's √2 above that.
+pub(super) fn verdict(caster: &Caster, probe_x: u32, reach: f32) -> (Vec<u32>, Vec<u32>) {
+    let cpu = CpuCaster::new(caster);
+    let rays = origins(reach);
+    let mut never = vec![];
+    let mut always = vec![];
+    for y in 0..SPAN {
+        let to = [probe_x as f32 + 0.5, y as f32 + 0.5];
+        let blocked = rays.iter().filter(|o| cpu.hits(**o, to)).count();
+        if blocked == 0 {
+            never.push(y);
+        } else if blocked == rays.len() {
+            always.push(y);
+        }
+    }
+    (never, always)
+}
+
+/// The reach this rung draws its taps from, in the same units as the penumbra.
+pub(super) fn reach_of(taps: u32, penumbra: f32) -> f32 {
+    match taps {
+        1 => 0.0,
+        2..=5 => penumbra,
+        _ => penumbra * 2.0_f32.sqrt(),
+    }
+}
+
 /// The lit fraction down one column: shadowed over unshadowed, row for row.
 /// 1.0 is every ray arriving, 0.0 is none of them.
-fn profile(penumbra: f32, taps: u32, probe_x: u32) -> Vec<f32> {
-    let lit = column(penumbra, taps, probe_x, false);
-    let shaded = column(penumbra, taps, probe_x, true);
+pub(super) fn profile(penumbra: f32, taps: u32, probe_x: u32) -> Vec<f32> {
+    profile_with(&Caster::Box(CASTER), penumbra, taps, probe_x)
+}
+
+/// The same meter on any caster: this is the whole reason the box scene's
+/// profile is a function rather than a fixture.
+pub(super) fn profile_with(caster: &Caster, penumbra: f32, taps: u32, probe_x: u32) -> Vec<f32> {
+    let lit = column(caster, penumbra, taps, probe_x, false);
+    let shaded = column(caster, penumbra, taps, probe_x, true);
     lit.iter()
         .zip(&shaded)
         .map(|(l, s)| if *l > 1.0 { s / l } else { 1.0 })
@@ -166,7 +333,16 @@ fn first_drop(p: &[f32], level: f32, from: usize, toward: isize) -> Option<f32> 
         }
         let now = p[i as usize];
         if now < level {
-            return Some(i as f32 - 1.0 + (prev - level) / (prev - now));
+            // The two samples bracketing the crossing are `now` at row i and
+            // `prev` at row i − toward. Walking down, that interval is (i−1, i)
+            // and the crossing is i − 1 + frac; walking *up*, it is (i, i+1) and
+            // the crossing is i + 1 − frac. The line used to be the downhill
+            // case whatever the direction, so every lower flank this meter
+            // measured came out one row high on the shadow — found by pointing
+            // it at a polygon, whose hard edge the collision code puts on known
+            // rows, and watching the two disagree by exactly a pixel.
+            let frac = (prev - level) / (prev - now);
+            return Some(i as f32 - toward as f32 * (1.0 - frac));
         }
         prev = now;
     }
@@ -184,11 +360,14 @@ fn outline_level(taps: u32) -> f32 {
 /// the first draft looked for a fall through half light on one side and a rise
 /// through it on the other, so on a coarse rung the two flanks answered
 /// different questions and a symmetric shadow reported itself lopsided.
-fn silhouette(p: &[f32], taps: u32) -> (f32, f32) {
+pub(super) fn silhouette(p: &[f32], taps: u32) -> (f32, f32) {
     let level = outline_level(taps);
-    let top = first_drop(p, level, 0, 1).expect("no upper silhouette: the column is all shadow");
+    // `first_drop` running off the end means the column never darkened, not that
+    // it is dark: the message said "all shadow" here and sent one debugging run
+    // the wrong way through a scene whose reference frame was the one at fault.
+    let top = first_drop(p, level, 0, 1).expect("no upper silhouette: the column is all light");
     let bottom = first_drop(p, level, (SPAN - 1) as usize, -1)
-        .expect("no lower silhouette: the column is all shadow");
+        .expect("no lower silhouette: the column is all light");
     (top, bottom)
 }
 
@@ -197,7 +376,14 @@ fn silhouette(p: &[f32], taps: u32) -> (f32, f32) {
 /// construction. It lands away from 32, and measuring it is what keeps the
 /// harness's pixel convention out of the tap-bias numbers.
 fn measured_axis(probe_x: u32) -> f32 {
-    let (t, b) = silhouette(&profile(0.0, 1, probe_x), 1);
+    measured_axis_with(&Caster::Box(CASTER), probe_x)
+}
+
+/// The axis for another caster, measured the same way — from that caster's own
+/// point-sized render, so the harness's half-pixel convention lands in the
+/// number instead of being mistaken for a bias in the tap set.
+pub(super) fn measured_axis_with(caster: &Caster, probe_x: u32) -> f32 {
+    let (t, b) = silhouette(&profile_with(caster, 0.0, 1, probe_x), 1);
     (t + b) / 2.0
 }
 
@@ -205,7 +391,7 @@ fn measured_axis(probe_x: u32) -> f32 {
 /// begins. The umbra does not scale with distance the way the band does, so the
 /// two edges are measured separately — the distance between the two flanks'
 /// silhouettes is mostly umbra, and a ratio taken of that is wrong.
-fn band(p: &[f32], taps: u32) -> f32 {
+pub(super) fn band(p: &[f32], taps: u32) -> f32 {
     let start = (SPAN - 1) as usize;
     let out = first_drop(p, outline_level(taps), start, -1).expect("no silhouette on this flank");
     let dark = first_drop(p, 0.02, start, -1)
@@ -213,40 +399,36 @@ fn band(p: &[f32], taps: u32) -> f32 {
     out - dark
 }
 
-/// The half-width the geometry promises for the outermost ray of the disk:
-/// the tap at lateral distance `reach` whose segment just clips the caster's
-/// near edge. The near edge, not the far one — the first draft grazed the far
-/// edge and predicted a shadow a quarter narrower than the one measured, which
-/// is how this file found that it had the wrong model rather than that the
-/// engine had the wrong shadow.
-fn rim(probe_x: u32, reach: f32) -> f32 {
-    let u = (22.0 - 8.0) / (probe_x as f32 - 8.0);
-    (6.0 + reach * (1.0 - u)) / u
-}
-
 /// Where the umbra begins on each flank: the last ray to be blocked, walking in
 /// from full light. The silhouette is set by the outermost tap and so stays
 /// centred even when the sample set is off-centre; the dark core is where every
 /// tap has to be blocked, and that is what an off-centre set moves.
-fn core(p: &[f32]) -> (f32, f32) {
+pub(super) fn core(p: &[f32]) -> (f32, f32) {
     let top = first_drop(p, 0.02, 0, 1).expect("no umbra above the axis");
     let bottom = first_drop(p, 0.02, (SPAN - 1) as usize, -1).expect("no umbra below the axis");
     (top, bottom)
 }
 
 /// The dark half of a column: how many pixel-rows' worth of light the caster
-/// takes away, counting a row that loses a third of its light as a third. By
-/// Fubini this is the same however the disk is sampled — each ray sweeps a
-/// hard shadow of its own, and a ray's shadow is as wide as the point light's
-/// whatever the ray's offset, only moved — so this number must not depend on
-/// the penumbra or the tap count. It is the strongest check here and it needs
-/// no model of the disk at all, only the point light's own width.
-fn darkness(p: &[f32]) -> f32 {
+/// takes away, counting a row that loses a third of its light as a third.
+///
+/// Written here first as an invariant — each ray sweeps a hard shadow as wide as
+/// the point light's, only displaced, so the total cannot depend on how the disk
+/// is sampled. *Only displaced* is the part that is only true in parallel
+/// projection. Under this one, a tap nearer the caster casts a wider shadow, and
+/// the ladder's five-point-in-three-radii weighting is not a quadrature of the
+/// disk; [`super::polygon`] measures the result on a sixteen-sided caster, where
+/// the same total moves 16.00 → 17.50 rows between one ray and six. On this box
+/// the whole spread is a quarter of a row, so the bound below still holds and
+/// still catches a ray going missing outright — but it is a bound on jitter now,
+/// not the law it was described as, and the row-for-row oracle two screens up is
+/// the instrument that has no premise of that kind to fail.
+pub(super) fn darkness(p: &[f32]) -> f32 {
     p.iter().map(|v| 1.0 - v).sum()
 }
 
 /// Half the distance between the umbra's two flanks.
-fn core_half(p: &[f32]) -> f32 {
+pub(super) fn core_half(p: &[f32]) -> f32 {
     let (t, b) = core(p);
     (b - t) / 2.0
 }
@@ -278,30 +460,28 @@ fn the_penumbra_profiles_print_themselves() {
         let axis = measured_axis(probe_x);
         let hard = profile(0.0, 1, probe_x);
         let (ht, hb) = silhouette(&hard, 1);
+        let (_, always) = verdict(&Caster::Box(CASTER), probe_x, 0.0);
         println!(
-            "probe {probe_x}: axis {axis:.2}, point-light half-width {:.2} (geometry says {:.2})",
+            "probe {probe_x}: axis {axis:.2}, point-light half-width {:.2} (the CPU walk puts it at \
+             {:.2})",
             (hb - ht) / 2.0,
-            rim(probe_x, 0.0)
+            cpu_half(always.first().copied(), always.last().copied()),
         );
         for taps in 1..=9u32 {
             let p = profile(DISK, taps, probe_x);
             let (t, b) = silhouette(&p, taps);
             let (ct, cb) = core(&p);
-            // The ladder's own reach: nothing at one tap, one radius through
-            // five, a corner's sqrt(2) above that.
-            let reach = match taps {
-                1 => 0.0,
-                2..=5 => DISK,
-                _ => DISK * 2.0_f32.sqrt(),
-            };
+            let (never, _) = verdict(&Caster::Box(CASTER), probe_x, reach_of(taps, DISK));
+            let shadable: Vec<u32> = (0..SPAN).filter(|y| !never.contains(y)).collect();
             println!(
-                "  taps {taps}: silhouette {t:.2}..{b:.2} half {:.2} vs rim {:.2} | core half {:.2} \
-                 mid {:+.2} off axis | darkness {:.2} rows",
+                "  taps {taps}: silhouette {t:.2}..{b:.2} half {:.2} (cpu union \
+                 {}..{}) | core half {:.2} mid {:+.2} off axis | darkness {:.2} rows",
                 (b - t) / 2.0,
-                rim(probe_x, reach),
+                shadable.first().copied().unwrap_or(0),
+                shadable.last().copied().unwrap_or(SPAN - 1),
                 core_half(&p),
                 (ct + cb) / 2.0 - axis,
-                darkness(&p)
+                darkness(&p),
             );
         }
     }
@@ -336,7 +516,8 @@ fn a_point_lights_shadow_is_where_triangles_put_it() {
     for probe_x in [40u32, 56] {
         let (t, b) = silhouette(&profile(0.0, 1, probe_x), 1);
         let half = (b - t) / 2.0;
-        let want = rim(probe_x, 0.0);
+        let (_, always) = verdict(&Caster::Box(CASTER), probe_x, 0.0);
+        let want = cpu_half(always.first().copied(), always.last().copied());
         assert!(
             (half - want).abs() <= 0.5,
             "probe {probe_x}: the point light's shadow is {half:.2} px wide either side, where the \
@@ -351,24 +532,49 @@ fn a_point_lights_shadow_is_where_triangles_put_it() {
 /// Measured 27.50 against 27.86 and 29.99 against 30.87 — and the residual is
 /// one-sided by construction: along a column the rotation rarely puts a tap
 /// exactly on the rim, so a measured silhouette can fall short of the rim's
-/// shadow, never exceed it.
+/// **The outline sits inside what the disk can actually shade, and outside the
+/// point light's own shadow.** The CPU oracle answers row by row which rows some
+/// origin within the tap region can reach; no measured edge may go past that. And
+/// the centre ray is in every rung of the ladder, so the outline can never be
+/// narrower than the hard shadow either. Both bounds come from the engine's own
+/// collision code rather than from a model of the disk.
+///
+/// This replaces `rim()`, an analytic formula for the outermost ray, and the
+/// reason is worth keeping. The formula treated a tap's reach as a purely
+/// lateral offset — (half + reach·(1−u))/u — but a tap displaced *along* the axis
+/// widens the shadow too, since an origin nearer the caster subtends it at a
+/// steeper angle, and at nine rays, where the corners sit √2 out, that omission
+/// came to about a pixel. The formula and this file's off-by-one on the lower
+/// flank were each about half a pixel low, which is the whole reason they agreed
+/// so neatly for as long as they did: fixing the meter broke the agreement, and
+/// the oracle — which models nothing, it just asks — showed the shadow sitting
+/// exactly where the geometry puts it. So the formula is deleted rather than
+/// widened. A bound the collision code can answer directly should not be a
+/// formula.
 #[test]
-fn a_soft_shadows_outer_edge_is_the_shadow_of_the_disks_rim() {
+fn a_soft_shadows_outer_edge_stays_inside_the_disks_union() {
     for probe_x in [40u32, 56] {
-        for (taps, reach) in [(4u32, DISK), (9u32, DISK * 2.0_f32.sqrt())] {
+        let (hard_top, hard_bottom) = silhouette(&profile(0.0, 1, probe_x), 1);
+        for taps in 1..=9u32 {
             let p = profile(DISK, taps, probe_x);
             let (t, b) = silhouette(&p, taps);
-            let half = (b - t) / 2.0;
-            let want = rim(probe_x, reach);
-            assert!(
-                (half - want).abs() <= 1.5,
-                "taps {taps} at probe {probe_x}: silhouette half-width {half:.2} px against the rim's \
-                 {want:.2} (reach {reach:.2} px)"
+            let (never, _) = verdict(&Caster::Box(CASTER), probe_x, reach_of(taps, DISK));
+            let shadable: Vec<u32> = (0..SPAN).filter(|y| !never.contains(y)).collect();
+            let (first, last) = (
+                shadable.first().copied().unwrap_or(0) as f32,
+                shadable.last().copied().unwrap_or(SPAN - 1) as f32,
             );
             assert!(
-                half <= want + 0.6,
-                "taps {taps} at probe {probe_x}: the shadow is {half:.2} px wide, wider than its own \
-                 rim permits at {want:.2}: rays are being blocked that never touch the caster"
+                t >= first - 1.0 && b <= last + 1.0,
+                "taps {taps} at probe {probe_x}: the outline spans {t:.2}..{b:.2} but the CPU says \
+                 nothing inside the tap region can shade below {first:.0} or above {last:.0} — \
+                 rays are being blocked that never touch the caster",
+            );
+            assert!(
+                t <= hard_top + 1.0 && b >= hard_bottom - 1.0,
+                "taps {taps} at probe {probe_x}: the outline spans {t:.2}..{b:.2}, narrower than the \
+                 point light's {hard_top:.2}..{hard_bottom:.2}, although the centre ray is in every \
+                 rung and casts that shadow wherever it casts one",
             );
         }
     }

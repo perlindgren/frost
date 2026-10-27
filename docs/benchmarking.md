@@ -1503,7 +1503,9 @@ inside the plane loop, and let one edge that puts both endpoints of every remain
 outside it end the record for all nine at once. The arithmetic was bit-for-bit the same and
 was checked to be so — three polygon scenes, hexagons at nine taps, hexagons at four,
 sixteen-sided discs at nine, fingerprints `2c192f9ffdba54a9`, `b370c6a09a07e5bf` and
-`8b05319a3961a004` identical to the committed build. Then the time:
+`8b05319a3961a004` identical to the committed build. **§32: nothing in this tree can produce those three
+numbers again** — the claim stands as reported, and the instrument that would check the next one is
+`src/backend/tests/polygon.rs`. Then the time:
 
 | row | committed build | with the fusion | change |
 | --- | --- | --- | --- |
@@ -1572,7 +1574,8 @@ both rays' endpoints ending the pair and a pair with nothing left ending the wal
 
 **Bit-for-bit the same picture again.** The same three polygon scenes as §22 — hexagons at
 nine taps, hexagons at four, sixteen-sided discs at nine — fingerprint `2c192f9ffdba54a9`,
-`b370c6a09a07e5bf`, `8b05319a3961a004`, byte-identical to the committed build. That was worth
+`b370c6a09a07e5bf`, `8b05319a3961a004`, byte-identical to the committed build. Not reproducible here;
+see §32, which is the same promise made checkable. That was worth
 expecting less of than it went: restructuring dot products can change how a compiler fuses
 multiply into add, which moves the last bit of a crossing, and the fact that it did not here
 is a fact about this driver, not a proof. Fullscreen 4112×2572, two interleaved passes,
@@ -1862,6 +1865,12 @@ arithmetic, and these are the numbers, all of them absolute:
 | point light's shadow, half-width | 20.50 px | 20.57 px | probe 56, `penumbra: 0` |
 | cross's silhouette, half-width | 27.50 px | 27.86 px | probe 56, taps 4, reach = rad |
 | grid's silhouette, half-width | 29.99 px | 30.87 px | probe 56, taps 9, reach = √2·rad |
+
+Every silhouette half-width here is 0.50 px low, and the umbra halves in §29 by 0.02 to 0.18 px: the
+meter's lower flank was read one row high on a *step* and less than that on a ramp. Corrected, the
+point-light rows are 14.00 measured against 14.00 from the CPU walk at probe 40 and 21.00 against 21.00 at
+probe 56, and the two silhouettes are 27.99 and 30.51. §32 has the cause, and retires this table's
+`computed` column in favour of asking the collision code what it would shade.
 | one ray, soft band | −0.48 px | 0 | no penumbra is possible |
 | one ray, umbra width vs silhouette | 54.00 vs 54.00 px | equal | a ray's core *is* its shadow |
 | light eaten, rungs 2…9 | 27.34–28.59 rows | rung-independent | probe 40 |
@@ -1908,7 +1917,8 @@ hard shadow that wandered by up to a penumbra radius, never a soft one — asser
 centre so that one ray means the light's own point.
 
 Re-measure with `cargo test --lib the_penumbra_profiles -- --ignored --nocapture`, which prints the
-axis, the rim comparison, the umbra width and the light eaten for all nine rungs at both probes;
+axis, the CPU union of rows the tap region can shade, the umbra width and the light eaten for all nine
+rungs at both probes;
 `the_penumbra_dumps_its_columns` prints the profiles themselves. Every tolerance in the file came
 from that output, and none of them should be edited without reading it.
 
@@ -2122,3 +2132,111 @@ other that the clock has nothing to contribute.
 Unchanged by this: §23's −17 % and −22 % shape rows, which always stood well outside the band; §30's
 conclusion that the tap ladder changed nothing measurable in cost; and the rest of §27's ledger, which
 stands as written.
+
+---
+
+## 32. The polygon path gets a guard, and the meter turns out to be a pixel out (2026-10-28, Apple M4 Max)
+
+§22 and §23 both rest on the same assurance: *bit-for-bit the same picture*. The same three polygon
+scenes — hexagons at nine taps, hexagons at four, sixteen-sided discs at nine — fingerprint
+`2c192f9ffdba54a9`, `b370c6a09a07e5bf`, `8b05319a3961a004`, byte-identical to the committed build. Those
+sixteen digits are in the prose of this document and nowhere else. `benchsuite` has no hashing, no frame
+dump, no checksum path; nothing in the tree computes them, and the thing that did is not in this
+repository. So the claim that the two largest restructurings in the shadow path preserved the image
+cannot be re-checked by anyone — not by a reader, not by me, and not by whoever writes the next one. That
+last is the case that matters: the next one is the angular wedge, aimed squarely at this walk because
+nine rays over sixty discs cost 23.67 ms against boxes' 4.86 ms (§23), and an optimisation that quietly
+drops a ray is precisely what a fingerprint was supposed to catch.
+
+I went to re-run the fingerprints before filing that as a queue item. They cannot be re-run in either
+direction: there is no instrument, and the scenes were benchsuite's fullscreen ones, so even hashing the
+test tree's scenes would not speak to them. What can be built is an instrument for what comes next, and
+`src/backend/tests/polygon.rs` is it. It points §28's meter — unchanged in its reasoning, generalised in
+its plumbing, now taking any `Caster` rather than a box — at casters with edges, and asserts two things.
+
+**Geometry, answered by the engine's own collision code.** The hard shadow must land on the rows
+`Convex::occludes` says it lands on; one ray through a disk must be that same hard shadow, because the
+ladder starts at the disk's centre; more rays may never widen the umbra, because the ladder is nested
+and the blocked set is convex; the outline must stay centred on the axis the point light measures; and
+the outline must sit inside what the disk can actually shade. That last one is the interesting shape of
+the test. For every row it asks ninety-seven origins spread over the tap region whether their segment
+meets the caster, and asserts only where the answer is unanimous: a row no origin can shade must read
+fully lit, a row every origin shades must read dark. Both directions are sound for *any* subset of the
+region, and nine taps are a subset, so it holds whatever the tap count, the order, and the per-pixel
+rotation — which is the assertion §20's per-pixel CPU twin could not make, and the reason this is the
+form the oracle takes rather than a second implementation of the shader.
+
+**Fingerprints, pinned in the test itself.** The three scenes above, hashed FNV-1a over 64 bits across
+the whole target, lit frame and shadowed frame both, so a change to the lighting that leaves the shadow
+alone still moves the number. `3cd0d60c58d79dce`, `33a2a3a4bbf090c5`, `c7e013957ba77c16`, taken today
+with the geometry tests all passing. They are a fact about this driver, exactly as §23 said its own were,
+and they are *not* the old numbers' successors: the scenes are this file's — a hexagon of radius 4 on the
+same post, so that the widest shadow still fits inside the 64-px readback — where §22's were benchsuite's
+across a 4112×2572 frame. Nothing here retroactively verifies the two withdrawn-looking rows above it.
+What it does is make the next such claim checkable, and make re-pinning a deliberate act:
+`cargo test --lib the_polygon_fingerprints -- --ignored --nocapture` prints the numbers *and* the
+outlines, umbra widths and light eaten beside them, so that the reading happens before the constants move.
+
+**The guard found a bug in the meter on its first day.** The collision walk puts the hexagon's hard
+shadow on rows 24 through 39; `silhouette()` reported the lower edge at 38.5 when the profile's own step
+is between rows 39 and 40. `first_drop` interpolated the crossing as `i − 1 + frac` in both directions,
+and that is right walking *down* a column, where the bracketing rows are *i − 1* and *i*, and one row low
+walking *up*, where they are *i* and *i + 1*. Every lower flank this meter ever measured sat one row high
+on the shadow. The size of the error is `2 − 2·frac` rows, where `frac` is where the crossing lands
+between the two bracketing samples, and that is why it does not land evenly: on a *step* the crossing sits
+midway and the error is a full row, and on a *shallow ramp* the crossing sits near the brighter sample and
+the error nearly vanishes. So the two things this meter measured are corrected by different amounts.
+Silhouette edges are steps at half light: the axis is at 31.50, not 31.00, and every silhouette half-width
+is 0.50 px larger — the point light's shadow is 21.00 px either side at probe 56 with the CPU walk putting
+it at 21.00, against §28's 20.50 measured against 20.57 computed, and 14.00 against 14.00 at probe 40; the
+two silhouettes §28 compared against its rim arithmetic, 27.50 at four taps and 29.99 at nine, are 27.99
+and 30.51. Umbra edges are ramps at 0.02 light, and the correction there is small and grows with the rung
+as the penumbra deepens: §29's ladder row at probe 56, 20.50, 20.49, 18.00, 16.98, 13.50, 13.53, 12.97,
+12.46, 11.50, becomes 20.52, 20.53, 18.06, 17.06, 13.60, 13.59, 13.10, 12.62, 11.68 — from +0.02 px at one
+ray to +0.18 at nine, monotone before and monotone after, which is what §29 was actually claiming. Because
+the two flanks shift by *different* amounts, the axis-relative offsets move as well, by up to about a
+pixel: the umbra's offset is now at most 0.50 px at probe 40 and 1.96 px at probe 56, inside both files'
+bounds. `darkness` is untouched, being a sum over rows rather than a crossing. The engine is not a
+different engine than it was. The ruler was, and it was a ruler I trusted.
+
+**Two claims die with the ruler, and one of them cheerfully.** The `rim()` formula — a half-width of
+(half + reach·(1 − u)) / u — is deleted, along with the test that compared to it. It treated a tap's reach
+as a purely lateral offset, and that is wrong: a tap displaced *along* the axis, nearer the caster,
+subtends the caster at a steeper angle and casts a wider shadow, which at nine taps, where the corners
+sit √2 out, is worth about a pixel. The formula was ~0.5 px low and the meter was ~0.5 px low in the same
+direction, and that is the entire reason they agreed to a quarter pixel through §28 and §29: correcting
+the ruler broke an agreement that had been holding two errors up, and the oracle — which models nothing
+and simply asks — showed the shadow sitting exactly where the geometry puts it. The bound is the oracle's
+now, per row, for both shapes. The other claim is the softer one, in both files: *the light a caster eats
+cannot depend on the tap count*, by Fubini, because each ray sweeps a shadow as wide as the point light's,
+only displaced. On a box the whole spread is a quarter row and the claim looked like a law. On a
+sixteen-sided disc it is 16.00 rows at one ray and 17.50 at six — 16.00, 16.50, 16.66, 17.24, 17.20,
+17.50, 17.14, 16.88, 17.11 — and the reason is in the premise again: *only displaced* is a parallel-
+projection sentence, magnification varies across a disk under this one, and nine taps at three radii are
+not a quadrature of a disk. Both files now say jitter where they said law, and point at the row oracle as
+the instrument with no premise of that kind to fail.
+
+**Whether it bites was tested, because a guard that does not bite is decoration.** Two perturbations to
+`shaders/lighting.wgsl`, each reverted. First the under-blocker, which is the wedge's shape: polygon taps
+4 through 8 discarded, so the walk keeps the centre and three axis taps and drops every corner — what an
+angular reject leaves on a pixel whose disk is spun one particular way, and enough to break the ladder's
+nesting at rung 6. It failed four tests: the umbra widened between rungs 5 and 6 (a rung may not grow the
+dark core when every prefix is a superset of the last), the oracle's must-be-dark rows lit up (`row 29
+reads 0.20 of its light although every origin in the tap region is behind the caster`), the light eaten
+moved further than the rungs explain, and the fingerprints moved. It left alone the hard shadow, the
+one-ray-is-the-point-light identity, and the outline bounds, all correctly: none of those is a statement
+about rays that were never walked. Second the opposite failure: polygons occluding as their bounds box, edges
+never consulted — an over-blocker. It failed the oracle per row (`row 23 reads 0.00 of its light
+although no origin in the tap region reaches it`), the outline's containment in the CPU union, the
+one-ray identity, and the fingerprints — and it *passed* the CPU hard-shadow comparison, because a
+hexagon's widest chord and its bounding box cast the same shadow at the axis row. That is the whole
+argument for the oracle in one line: checking the shadow against the collision code at one ray is not a
+guard on the other eight.
+
+**What is now safe to attempt.** The angular wedge has an oracle, a monotone umbra, and three pinned
+frames. If it changes the picture, some test here says which property moved and by how many rows, and
+re-pinning is a sentence in a commit message rather than a sixteen-digit number nobody can produce again.
+Also corrected in passing: this file's `silhouette` said "the column is all shadow" when its walk found
+no dark row at all, which sent one debugging session the wrong way through a scene whose reference frame
+was the thing actually at fault — the reference render was carrying the caster, because a painted box is
+skipped when the frame is unshadowed and a declared polygon was not.

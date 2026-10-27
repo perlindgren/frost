@@ -25,6 +25,7 @@ mod nodes;
 mod particle_cost;
 mod particles;
 mod penumbra;
+mod polygon;
 mod present;
 mod repeat;
 mod scene;
