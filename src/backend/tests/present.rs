@@ -70,6 +70,120 @@ pub(crate) fn lamp_at(at: [f32; 2], emission: f32) -> Draw {
     }
 }
 
+/// The harness's standing graphics state: everything a frame composites
+/// with that is built from constant shader source and a constant
+/// format — the scene pipeline (two blended float targets, exactly as
+/// the engine configures it for an emissive frame) and the present
+/// pipeline that adds the glow back, with the sampler they read.
+/// Rebuilding them per `frame` call re-ran naga and the driver's shader
+/// compiler every time; under D3D12 that charges seconds per compile on
+/// the test's own thread, and a test calling `frame` three times looked
+/// frozen behind its own compiles. The app builds these once per
+/// window; so now does the harness — once per thread, from the thread's
+/// shared machine. A clone of a wgpu handle is a pointer bump, and the
+/// bind groups and textures that do belong to a frame still belong to
+/// it.
+struct Rig {
+    scene_pipeline: RenderPipeline,
+    blit_pipeline: RenderPipeline,
+    sampler: Sampler,
+}
+
+impl Rig {
+    fn new(device: &Device) -> Rig {
+        let float = TextureFormat::Rgba16Float;
+        let scene_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("bloom scene"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(SHAPE_SHADER)),
+        });
+        // The scene pass, exactly as the engine configures it when the frame
+        // has an emissive target: two float outputs, blended, `fs_emissive`.
+        let scene_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("bloom scene pipeline"),
+            layout: None,
+            vertex: VertexState {
+                module: &scene_module,
+                entry_point: Some("vs_main"),
+                compilation_options: PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(FragmentState {
+                module: &scene_module,
+                entry_point: Some("fs_emissive"),
+                compilation_options: PipelineCompilationOptions::default(),
+                targets: &[
+                    Some(ColorTargetState {
+                        format: float,
+                        blend: Some(BlendState::ALPHA_BLENDING),
+                        write_mask: ColorWrites::ALL,
+                    }),
+                    Some(ColorTargetState {
+                        format: float,
+                        blend: Some(BlendState::ALPHA_BLENDING),
+                        write_mask: ColorWrites::ALL,
+                    }),
+                ],
+            }),
+            primitive: PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let blit_module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("bloom present"),
+            source: ShaderSource::Wgsl(Cow::Borrowed(BLIT_SHADER)),
+        });
+        let blit_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("bloom present pipeline"),
+            layout: None,
+            vertex: VertexState {
+                module: &blit_module,
+                entry_point: Some("vs_main"),
+                compilation_options: PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(FragmentState {
+                module: &blit_module,
+                entry_point: Some("fs_main"),
+                compilation_options: PipelineCompilationOptions::default(),
+                targets: &[Some(ColorTargetState {
+                    format: float,
+                    blend: None,
+                    write_mask: ColorWrites::ALL,
+                })],
+            }),
+            primitive: PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let sampler = device.create_sampler(&SamplerDescriptor {
+            label: Some("bloom frame sampler"),
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            ..Default::default()
+        });
+        Rig {
+            scene_pipeline,
+            blit_pipeline,
+            sampler,
+        }
+    }
+}
+
+thread_local! {
+    /// One rig per thread, beside the machine it was built from.
+    static RIG: std::cell::OnceCell<Rig> = const { std::cell::OnceCell::new() };
+    /// The bloom chain outlives its frames too — same reason, same
+    /// leak as the machine's, so nothing drops at thread teardown. It
+    /// is mutated per frame (strength, and levels rebuilt against the
+    /// frame's emissive), hence the `RefCell`.
+    static BLOOM: std::cell::OnceCell<&'static std::cell::RefCell<Bloom>> =
+        const { std::cell::OnceCell::new() };
+}
+
 /// The frame a window would have held: `draws` painted, the emissive target
 /// bloomed at `strength`, and the pair composited by the present pass.
 ///
@@ -96,6 +210,16 @@ pub(crate) fn frame(
     // The thread's shared GPU: see [`super::machine`].
     let machine = super::machine::machine()?;
     let (device, queue) = (&machine.device, &machine.queue);
+    // The thread's standing graphics: see [`Rig`]. The clones are
+    // reference-counted handles — pointer bumps, not compiles.
+    let (scene_pipeline, blit_pipeline, sampler) = RIG.with(|cell| {
+        let rig = cell.get_or_init(|| Rig::new(device));
+        (
+            rig.scene_pipeline.clone(),
+            rig.blit_pipeline.clone(),
+            rig.sampler.clone(),
+        )
+    });
 
     let padded = |field: &Vec<u8>| {
         let mut bytes = field.clone();
@@ -115,45 +239,7 @@ pub(crate) fn frame(
         usage: BufferUsages::STORAGE,
     });
 
-    // The scene pass, exactly as the engine configures it when the frame has an
-    // emissive target: two float outputs, blended, `fs_emissive`.
-    let scene_module = device.create_shader_module(ShaderModuleDescriptor {
-        label: Some("bloom scene"),
-        source: ShaderSource::Wgsl(Cow::Borrowed(SHAPE_SHADER)),
-    });
     let float = TextureFormat::Rgba16Float;
-    let scene_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-        label: Some("bloom scene pipeline"),
-        layout: None,
-        vertex: VertexState {
-            module: &scene_module,
-            entry_point: Some("vs_main"),
-            compilation_options: PipelineCompilationOptions::default(),
-            buffers: &[],
-        },
-        fragment: Some(FragmentState {
-            module: &scene_module,
-            entry_point: Some("fs_emissive"),
-            compilation_options: PipelineCompilationOptions::default(),
-            targets: &[
-                Some(ColorTargetState {
-                    format: float,
-                    blend: Some(BlendState::ALPHA_BLENDING),
-                    write_mask: ColorWrites::ALL,
-                }),
-                Some(ColorTargetState {
-                    format: float,
-                    blend: Some(BlendState::ALPHA_BLENDING),
-                    write_mask: ColorWrites::ALL,
-                }),
-            ],
-        }),
-        primitive: PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    });
     let new_target = |label: &str, extra: TextureUsages| {
         device.create_texture(&TextureDescriptor {
             label: Some(label),
@@ -277,62 +363,33 @@ pub(crate) fn frame(
         }
     }
 
-    // The chain itself, and the present pass that adds it back: the same two
-    // pieces of the engine, in the same order, at the same sizes.
-    // Built the way the engine builds it now, which is not the way `Bloom::new`
-    // reads if you only want a chain: it comes up dormant and is woken by the
-    // strength this frame asks for. Every bloom and tone test in the tree
-    // therefore runs the same path a mid-run `Context::set_bloom` takes, and a
-    // wake that produced an empty chain would darken every one of them.
-    let mut bloom = Bloom::new(
-        device,
-        queue,
-        float,
-        [SPAN, SPAN],
-        Some(&emissive_view),
-        0.0,
-    );
+    // The chain itself, standing on this thread's machine. It survives
+    // its frames the way the app's survives its windows: the shader
+    // module, pipelines, and sampler compile once per thread. What a
+    // frame still pays for is the wake a mid-run `Context::set_bloom`
+    // pays for — strength first, then the levels rebuilt against this
+    // frame's emissive, which is a fresh texture every call and no
+    // frame may inherit another's bind groups. A chain that woke to
+    // nothing would still darken every bloom and tone test in the
+    // tree, which is the standing guarantee this path used to test by
+    // rebuilding everything per call and no longer hides.
+    let bloom_cell = BLOOM.with(|cell| {
+        *cell.get_or_init(|| {
+            Box::leak(Box::new(std::cell::RefCell::new(Bloom::new(
+                device,
+                queue,
+                float,
+                [SPAN, SPAN],
+                Some(&emissive_view),
+                0.0,
+            ))))
+        })
+    });
+    let mut bloom = bloom_cell.borrow_mut();
     bloom.set_strength(strength);
-    if bloom.needs_building() {
-        bloom.build(device, queue, float, [SPAN, SPAN], &emissive_view);
-    }
+    bloom.build(device, queue, float, [SPAN, SPAN], &emissive_view);
     bloom.run(&mut encoder);
 
-    let blit_module = device.create_shader_module(ShaderModuleDescriptor {
-        label: Some("bloom present"),
-        source: ShaderSource::Wgsl(Cow::Borrowed(BLIT_SHADER)),
-    });
-    let blit_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-        label: Some("bloom present pipeline"),
-        layout: None,
-        vertex: VertexState {
-            module: &blit_module,
-            entry_point: Some("vs_main"),
-            compilation_options: PipelineCompilationOptions::default(),
-            buffers: &[],
-        },
-        fragment: Some(FragmentState {
-            module: &blit_module,
-            entry_point: Some("fs_main"),
-            compilation_options: PipelineCompilationOptions::default(),
-            targets: &[Some(ColorTargetState {
-                format: float,
-                blend: None,
-                write_mask: ColorWrites::ALL,
-            })],
-        }),
-        primitive: PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    });
-    let sampler = device.create_sampler(&SamplerDescriptor {
-        label: Some("bloom frame sampler"),
-        mag_filter: FilterMode::Linear,
-        min_filter: FilterMode::Linear,
-        ..Default::default()
-    });
     let fit_buffer = device.create_buffer(&BufferDescriptor {
         label: Some("bloom fit"),
         size: 64,
