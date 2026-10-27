@@ -282,7 +282,7 @@ fn paint(draws: &[Draw], declared: &[Occluder]) -> Option<Vec<u8>> {
     readback.slice(..).map_async(MapMode::Read, move |_| {
         signal.fetch_add(1, Ordering::SeqCst);
     });
-    let _ = device.poll(PollType::wait_indefinitely());
+    super::machine::drain(device);
     assert_eq!(done.load(Ordering::SeqCst), 1, "the readback never mapped");
     let shot = readback
         .get_mapped_range(..)
@@ -1428,7 +1428,7 @@ fn occluder_walk_density_bench() {
             }
             let started = Instant::now();
             queue.submit([encoder.finish()]);
-            let _ = device.poll(PollType::wait_indefinitely());
+            super::machine::drain(device);
             let ms = started.elapsed().as_secs_f64() * 1_000.0;
             if frame > 0 {
                 total += ms;

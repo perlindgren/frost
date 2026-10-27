@@ -371,7 +371,7 @@ fn float_and_srgb_frame_buffers_agree_where_the_window_can_tell() {
                 done.store(true, Ordering::SeqCst);
             });
         }
-        let _ = device.poll(PollType::wait_indefinitely());
+        super::machine::drain(device);
         assert!(done.load(Ordering::SeqCst));
         let out = readback.get_mapped_range(..).expect("mapped").to_vec();
         readback.unmap();
