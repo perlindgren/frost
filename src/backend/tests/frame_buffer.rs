@@ -67,8 +67,27 @@ fn float_and_srgb_frame_buffers_agree_where_the_window_can_tell() {
         ]
         .iter()
         .any(|mark| info.name.to_lowercase().contains(mark));
-    let worst_allowed = if software { 4 } else { 1 };
-    let outside_allowed = if software { 1 } else { 0 };
+    // NVIDIA's store conversion sits one code off the reference curve:
+    // measured from the field on a Windows 11 GeForce over D3D12
+    // (July 2026), where a single store — outside the stacked washes,
+    // the one place the two buffers were promised identical — landed
+    // one step of 255 away from the CPU's encode. The same run's
+    // stack stayed within the GPU's one step, but a per-store
+    // disagreement that size can only ever borrow a step from the
+    // accumulation too, so the family gets one step of margin inside
+    // as well as outside rather than a fresh calibration per card:
+    // what this pin exists to catch is a format mistake, and those
+    // move dozens of steps, not one. The PCI vendor names the family
+    // whatever the marketing name dresses it in.
+    let nvidia = info.vendor == 0x10de;
+    let worst_allowed = if software {
+        4
+    } else if nvidia {
+        2
+    } else {
+        1
+    };
+    let outside_allowed = if software || nvidia { 1 } else { 0 };
 
     let module = device.create_shader_module(ShaderModuleDescriptor {
         label: Some("sprites"),
