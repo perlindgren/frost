@@ -1582,7 +1582,7 @@ median of three, canary 2.6×–4.1×:
 | --- | --- | --- | --- |
 | `fill-1080p` | 2.61 ms | 2.68 ms | +3 % |
 | `polys-60` — hexagons, one hard ray | 4.43 ms | 4.44 ms | 0 % |
-| `taps-9` — boxes, nine rays | 5.21 ms | 4.86 ms | −7 %, *not established* — see §27 |
+| `taps-9` — boxes, nine rays | 5.21 ms | 4.86 ms | −7 %, withdrawn by §27, **re-established at −5.6 % by §31** |
 | `taps-9-polys` | 14.78 ms | **12.32 ms** | **−17 %** |
 | `taps-9-discs` | 30.53 ms | **23.67 ms** | **−22 %** |
 
@@ -1592,12 +1592,14 @@ predicts and by more than that. The boxes gaining 7 % was not aimed at: pairing 
 loop's bookkeeping whether or not there are edges to walk, and a box's answer is still the
 slab alone.
 
-**That 7 % has since been withdrawn as a measurement (§27).** Those two columns are different
-processes, and the same scenario across five processes on this machine spans 4.22–4.53 ms, so
-the spread alone is 7 %: the box row could be noise in either direction. What is left is the
-mechanism — pairing halves the bookkeeping on a box too — and the honest claim about boxes is
-that the paired walk left them unchanged within measurement, until more alternating passes say
-otherwise. The two shape rows are 17 % and 22 %, both far outside that band, and they stand.
+**That 7 % was withdrawn as a measurement (§27) and later re-established as a smaller one
+(§31).** Those two columns were different processes, and the same scenario across five processes on
+this machine spans 4.22–4.53 ms, so the spread alone was 7 %: as measured, the row could have been
+noise either way, and for the four days between the two sections the honest claim about boxes was that the
+paired walk left them unchanged within measurement. Five alternating passes across the two builds settled it — every
+paired pass below every unpaired one, a −0.269 ms gap over a 0.002 ms spread — and the effect is
+real at **−5.6 %**, not −7 %. The columns had both drifted about 0.35 ms from today's, which is why
+the ratio they produced came out a fifth too large. The two shape rows are 17 % and 22 %, both far outside that band, and they stand.
 
 Taken from §21's baseline rather than from §22's build, the two shape rows are **21.98 → 12.32
 ms and 38.46 → 23.67 ms**, and the box cliff that started this is 16.71 → 4.86. Cutting the
@@ -1805,12 +1807,13 @@ comparisons lean on the alternating passes and on the effect being larger than t
 **Which of this document's numbers that touches.** Everything large is fine: §20's −58 % and
 −36 %, §22's +66 % and −33 %, §23's −17 % and −22 %, §25's +0.57 ms and §26's +1.38 ms, all of
 them either measured inside one invocation or many times the width of the band. **§23's box-row
-−7 % is not.** It was measured across processes, it sits inside the 7 % spread, and it is
-therefore *not established*: pairing halves the loop's bookkeeping on a box, which is a
-mechanism worth believing, but the number that was quoted for it today could be noise in
-either direction. Re-measured across more alternating passes it either earns its place or
-loses it, and until then the honest claim about boxes is that the paired walk left them
-unchanged within measurement.
+−7 % was not.** It was measured across processes, it sat inside the 7 % spread, and it was therefore
+*not established*: pairing halves the loop's bookkeeping on a box, which is a mechanism worth
+believing, but the number quoted for it that day could have been noise in either direction. It asked
+to be re-measured across more alternating passes, where it would either earn its place or lose it, and
+**§31 ran them: it earned its place, at −5.6 %.** The rule that struck it stays exactly as written —
+and §31 sharpens it, since ten passes back to back agreed to 0.01 ms where five passes across a day
+spanned 7 %, so what the rule really protects is closeness in time, not the alternation itself.
 
 And the anomaly §25 asked to be left open is closed by this section, with the explanation
 being the instrument rather than the renderer — the more useful of the two possible outcomes.
@@ -2063,3 +2066,59 @@ could see — which is also the third piece of evidence that at 60 box casters t
 is already discarding nearly everything there is to discard, so shrinking what it
 inflates by has little left to win. §20 found the walk dominates when there is a walk to
 be had; this finds that on a box cliff there is hardly one left.
+
+---
+
+## 31. §23's box row, settled: it is real, and it is −5.6 %, not −7 % (2026-10-28, Apple M4 Max)
+
+§23 measured the paired walk's effect on a box scene at −7 % and §27 took the number back, because its
+two columns came from two processes and the same untouched row spans 4.22–4.53 ms across five processes.
+What was left standing was the mechanism — pairing halves the loop's bookkeeping whether or not there are
+edges to walk — and the honest claim, that the paired walk left boxes unchanged within measurement. §27
+ended by saying the row either earns its place on alternating passes or loses it. This section runs those
+passes, and the row earns its place.
+
+**Method, the way §27 demands it.** Two binaries, built from the two trees either side of the change:
+`f8fcd26`, the build §23 measured as *committed*, whose own commit message closes by calling the pairing "a
+claim about a mechanism and not a number until the four rows above say otherwise"; and `8d1402a`, the
+pairing itself. Five alternating passes, fullscreen 4112×2572 at 2.00×, `--reps 2`, every median taken
+inside its own invocation. Three rows: the disputed box row, the polygon row as calibration, and a fill row
+with no casters at all as the null.
+
+| row | unpaired | paired | change | passes |
+|---|---|---|---|---|
+| `fill-1080p` — null | 1.222 ms (1.22–1.54) | 1.229 ms (1.22–1.24) | +0.008 ms (+0.6 %) | overlap |
+| `taps-9` — boxes, nine rays | 4.798 ms (4.80–4.80) | 4.529 ms (4.53–4.53) | **−0.269 ms (−5.6 %)** | separated |
+| `taps-9-polys` — calibration | 14.728 ms | 12.315 ms | **−2.412 ms (−16.4 %)** | separated |
+
+**The box row is established.** Every one of the five paired passes came in below every one of the five
+unpaired ones, and the within-side spread was 0.002 ms — the unpaired row read 4.798 ms five times over. A
+−0.269 ms gap with a 0.002 ms spread underneath it is not noise, and the direction is the one the mechanism
+predicts. §23's claim comes back, with its number corrected.
+
+**Calibration, which is what makes the verdict worth reading.** The polygon row measured 14.728 → 12.315 ms
+against §23's 14.78 → 12.32 — the paired side lands five thousandths of a millisecond from a figure taken
+four days earlier on a different build of the whole rest of the tree. If this method could not reproduce the
+effect everyone already believed in, nothing in the row above would mean anything. The null does what a null
+should: +0.6 %, distributions overlapping, with one cold first sample at 1.54 ms inside an otherwise flat
+column.
+
+**−7 % was too big, and why.** Today's unpaired build reads 4.798 ms where §23 read 5.21 ms for the same
+tree, and the paired side 4.529 where §23 read 4.86 — both columns about 0.35 ms low, moving together, which
+is machine state rather than a different build. A ratio measured between two columns that have both shifted
+is a ratio of the shift as well as of the change, so the sensible reading is that §23's −7 % contained a
+little of its own weather. The number to quote is this one: **−5.6 %, −0.269 ms**, measured the way the
+document now requires.
+
+**The finding that matters more than the row.** §27's 7 % was real, and it is not a property of processes or
+of rows. Ten runs back to back inside four minutes agree to a hundredth of a millisecond; the same row
+across five processes spread over a day spans 7 %; §30's longer run sagged 13 % as the machine warmed, on
+both sides equally. So the force of *alternate the passes* is not the alternation, it is that alternating
+forces the passes close together in time. A cross-build comparison run in the morning and the evening would
+reproduce §27's spread exactly and prove nothing, and the rule in §27 wants reading with that sharpened:
+compare inside one invocation, and where two sides cannot share one, keep the passes near enough to each
+other that the clock has nothing to contribute.
+
+Unchanged by this: §23's −17 % and −22 % shape rows, which always stood well outside the band; §30's
+conclusion that the tap ladder changed nothing measurable in cost; and the rest of §27's ledger, which
+stands as written.
