@@ -9,5 +9,16 @@ edition = "2024"
 # game — antifrost borrowed the dig's dissolve from this shelf, and
 # the example below is the smallest host that shows it working.
 
+# This dependency reads as unused to any tool that looks at the
+# library target alone — and that target genuinely does not need the
+# engine: the shelf's whole API is a `&str` of WGSL, and a game that
+# borrows it links frost on its own account. The engine is still a
+# real dependency of the crate: the contract test calls
+# `frost::LIGHTING_WGSL` and `frost::validate_wgsl`, the dissolve
+# example is a whole frost host, and the library's own documentation
+# links into the engine's items. Dev-dependencies are tried and
+# rejected for the last of these: cargo does not pass them to rustdoc,
+# and those links turn to text (`unresolved link to frost::...` x3).
+# A plain dependency is the one classification all four users share.
 [dependencies]
 frost = { path = ".." }
