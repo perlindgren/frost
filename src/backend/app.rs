@@ -3461,9 +3461,27 @@ impl<P: Process> Frost<P> {
 pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     let mut cx = TaskContext::from_waker(Waker::noop());
     let mut future = std::pin::pin!(future);
+    // The spin is load-bearing — a noop waker is never woken, so
+    // only another poll moves the future — but it must not be
+    // greedy. What these futures wait on (adapter enumeration,
+    // device creation) completes on threads the OS has to schedule,
+    // and a thread that never yields its slice starves the very
+    // workers it waits for; a test suite running several GPU tests
+    // concurrently turns every one of them into such a thread, and
+    // under a driver stack that answers slowly (D3D12) minutes
+    // instead of seconds. Yield every spin; after a few dozen
+    // unproductive turns, sleep a millisecond — patience a driver
+    // can bank on, at a cost no frame has ever noticed.
+    let mut spins = 0u32;
     loop {
         if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
             return value;
+        }
+        spins += 1;
+        if spins > 64 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        } else {
+            std::thread::yield_now();
         }
     }
 }
