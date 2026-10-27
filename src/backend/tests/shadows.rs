@@ -17,7 +17,6 @@
 use super::super::*;
 use super::*;
 use crate::Canvas;
-use crate::backend::app::block_on;
 use crate::canvas::Occluder;
 use crate::collision::{Circle, Collider, Convex, DISC_SIDES, OrientedBox, occluded};
 use crate::objects;
@@ -76,15 +75,9 @@ fn paint(draws: &[Draw], declared: &[Occluder]) -> Option<Vec<u8>> {
     // bounds every ray region by exactly the pixels this test reads back.
     let occluders = pack_occluder_field(draws, declared, [SPAN as f32, SPAN as f32]);
 
-    let instance = Instance::default();
-    let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
-        eprintln!("shadow bridge: no adapter on this machine — the shadow test goes unverified!");
-        return None;
-    };
-    let Ok((device, queue)) = block_on(adapter.request_device(&DeviceDescriptor::default())) else {
-        eprintln!("shadow bridge: no device — the shadow test goes unverified!");
-        return None;
-    };
+    // The thread's shared GPU: see [`super::machine`].
+    let machine = super::machine::machine()?;
+    let (device, queue) = (&machine.device, &machine.queue);
 
     // Padded well past what the two fields hold: a binding shorter than the
     // adapter's minimum storage-binding size is an outright validation error,
@@ -1272,14 +1265,12 @@ fn occluder_walk_density_bench() {
     let (c_min, c_max) = block_spans(&culled);
     let (g_min, g_max) = block_spans(&global);
 
-    let instance = Instance::default();
-    let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
-        eprintln!("density bench: no adapter on this machine — the bench goes unmeasured!");
+    // The thread's shared GPU: see [`super::machine`].
+    let Some(machine) = super::machine::machine() else {
         return;
     };
-    eprintln!("density bench on {}", adapter.get_info().name);
-    let (device, queue) =
-        block_on(adapter.request_device(&DeviceDescriptor::default())).expect("a device");
+    eprintln!("density bench on {}", machine.info().name);
+    let (device, queue) = (&machine.device, &machine.queue);
 
     let buffer = |label: &str, bytes: &[u8]| {
         device.create_buffer_init(&BufferInitDescriptor {

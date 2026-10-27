@@ -160,7 +160,6 @@ fn canvas_particles_with_no_particles_adds_no_draw() {
 /// pool, the corner sits outside the lamp's reach.
 #[test]
 fn a_lit_particle_batch_is_picked_out_by_the_lamp() {
-    use crate::backend::app::block_on;
     use crate::shaders::PARTICLES_SHADER;
     use std::borrow::Cow;
     use std::sync::Arc;
@@ -196,17 +195,9 @@ fn a_lit_particle_batch_is_picked_out_by_the_lamp() {
         };
         let lights = pack_light_field(&[lamp], black());
 
-        let instance = Instance::default();
-        let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default()))
-        else {
-            eprintln!("particle bridge: no adapter — the lit-batch claim goes unverified!");
-            return None;
-        };
-        let Ok((device, queue)) = block_on(adapter.request_device(&DeviceDescriptor::default()))
-        else {
-            eprintln!("particle bridge: no device — the lit-batch claim goes unverified!");
-            return None;
-        };
+        // The thread's shared GPU: see [`super::machine`].
+        let machine = super::machine::machine()?;
+        let (device, queue) = (&machine.device, &machine.queue);
 
         // One circle particle: centered on the lamp, its half-size (60)
         // larger than the whole target, at full life. Then the (angle, tint)

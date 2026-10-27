@@ -22,7 +22,7 @@
 
 #[test]
 fn float_and_srgb_frame_buffers_agree_where_the_window_can_tell() {
-    use crate::backend::app::{block_on, sprite_layouts};
+    use crate::backend::app::sprite_layouts;
     use crate::backend::frame::{SPRITE_UNIFORM_BYTES, sprite_uniform_data};
     use crate::objects::{Color, LightLayers, Transform};
     use crate::shaders::SPRITE_SHADER;
@@ -39,11 +39,12 @@ fn float_and_srgb_frame_buffers_agree_where_the_window_can_tell() {
     };
     let off = black;
 
-    let instance = Instance::default();
-    let adapter =
-        block_on(instance.request_adapter(&RequestAdapterOptions::default())).expect("adapter");
-    let (device, queue) =
-        block_on(adapter.request_device(&DeviceDescriptor::default())).expect("device");
+    // One machine, two formats: this A/B is precisely about what one
+    // device stores differently, so it asks the shared machine for
+    // both frames — and unlike the bridges it does not skip a machine
+    // with no GPU: a suite that cannot answer the question fails it.
+    let machine = super::machine::machine().expect("the frame-buffer A/B needs a GPU");
+    let (device, queue) = (&machine.device, &machine.queue);
 
     // Which adapter answered decides the two bounds this test cannot fix
     // from the WGSL side: the sRGB store conversion is the
@@ -56,7 +57,7 @@ fn float_and_srgb_frame_buffers_agree_where_the_window_can_tell() {
     // the stack (BUGS.md) — so it gets those measurements with a step of
     // margin on the accumulation. Everything else stays exact for every
     // adapter.
-    let info = adapter.get_info();
+    let info = machine.info();
     let software = info.device_type == DeviceType::Cpu
         || [
             "llvmpipe",
@@ -93,7 +94,7 @@ fn float_and_srgb_frame_buffers_agree_where_the_window_can_tell() {
         label: Some("sprites"),
         source: ShaderSource::Wgsl(Cow::Borrowed(SPRITE_SHADER)),
     });
-    let (_bind_layout, layout) = sprite_layouts(&device);
+    let (_bind_layout, layout) = sprite_layouts(device);
 
     let pipeline = |format: TextureFormat| {
         device.create_render_pipeline(&RenderPipelineDescriptor {

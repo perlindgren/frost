@@ -18,7 +18,6 @@
 //! real edges — cannot do this; this test is the pin.
 
 use super::super::windowing::{content_fit, fit_bytes};
-use crate::backend::app::block_on;
 use crate::shaders::BLIT_SHADER;
 use std::borrow::Cow;
 use wgpu::*;
@@ -27,15 +26,9 @@ use wgpu::*;
 /// read back as the surface's red channel, row-major from the top. `None`
 /// when the machine has no GPU to ask, as in every other bridge here.
 fn stretch(surface: (u32, u32), fit: (f32, f32)) -> Option<Vec<u32>> {
-    let instance = Instance::default();
-    let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
-        eprintln!("letterbox bridge: no adapter on this machine — the bars go unverified!");
-        return None;
-    };
-    let Ok((device, queue)) = block_on(adapter.request_device(&DeviceDescriptor::default())) else {
-        eprintln!("letterbox bridge: no device — the bars go unverified!");
-        return None;
-    };
+    // The thread's shared GPU: see [`super::machine`].
+    let machine = super::machine::machine()?;
+    let (device, queue) = (&machine.device, &machine.queue);
     let (w, h) = surface;
 
     // One white texel stands in for the frame buffer and for every dormant

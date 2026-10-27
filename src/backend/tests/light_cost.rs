@@ -430,7 +430,6 @@ const FRAMES: u32 = 20;
 #[ignore = "a timing bench: run by hand with --ignored --nocapture"]
 fn the_light_field_pays_its_fill_offscreen() {
     let weather = Weather::start();
-    use crate::backend::app::block_on;
     use crate::backend::frame::{Draw, shape_uniform_data};
     use crate::backend::frame::{pack_light_field, pack_occluder_field};
     use crate::shaders::SHAPE_SHADER;
@@ -439,16 +438,12 @@ fn the_light_field_pays_its_fill_offscreen() {
     use wgpu::util::{BufferInitDescriptor, DeviceExt};
     use wgpu::*;
 
-    let instance = Instance::default();
-    let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
-        eprintln!("light cost: no adapter on this machine — the bench goes unrun!");
+    // The thread's shared GPU: see [`super::machine`].
+    let Some(machine) = super::machine::machine() else {
         return;
     };
-    let name = adapter.get_info().name;
-    let Ok((device, queue)) = block_on(adapter.request_device(&DeviceDescriptor::default())) else {
-        eprintln!("light cost: no device on this machine — the bench goes unrun!");
-        return;
-    };
+    let name = machine.info().name;
+    let (device, queue) = (&machine.device, &machine.queue);
 
     // The lit-shape pipeline, exactly the shadow tests' bridge: the real
     // shader under an auto layout — a static per-draw uniform, as the
