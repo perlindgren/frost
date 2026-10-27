@@ -2,6 +2,7 @@
     "editor.formatOnSave": true,
     "cSpell.ignoreWords": [
         "Borderless",
+        "Deque",
         "Derefs",
         "Fira",
         "Fontation",
@@ -13,17 +14,20 @@
         "Lindgren",
         "Multisample",
         "OLLAMA",
+        "Sidesway",
         "Texel",
         "Unorm",
         "WASD",
         "antifrost",
         "arboard",
+        "behaviour",
         "benchsuite",
         "blit",
         "clippy",
         "colour",
         "deepseek",
         "diffable",
+        "fixpoint",
         "flipbook",
         "followable",
         "fract",
@@ -58,6 +62,7 @@
         "scancodes",
         "seedable",
         "serde",
+        "signum",
         "skrifa",
         "splitmix",
         "srgb",
@@ -67,6 +72,7 @@
         "texels",
         "tilemap",
         "tileset",
+        "travelling",
         "twostars",
         "ubatch",
         "unsloth",
@@ -76,6 +82,7 @@
         "wgpu",
         "wgsl",
         "winit",
-        "yazi"
+        "yazi",
+        "zbloom"
     ]
 }
