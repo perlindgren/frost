@@ -423,7 +423,7 @@ fn a_lit_particle_batch_is_picked_out_by_the_lamp() {
         readback.slice(..).map_async(MapMode::Read, move |_| {
             signal.fetch_add(1, Ordering::SeqCst);
         });
-        let _ = device.poll(PollType::wait_indefinitely());
+        super::machine::drain(device);
         assert_eq!(done.load(Ordering::SeqCst), 1, "the readback never mapped");
         let shot = readback
             .get_mapped_range(..)

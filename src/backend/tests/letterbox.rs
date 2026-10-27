@@ -278,7 +278,7 @@ fn stretch(surface: (u32, u32), fit: (f32, f32)) -> Option<Vec<u32>> {
     readback
         .slice(..)
         .map_async(MapMode::Read, |r| r.expect("map"));
-    let _ = device.poll(PollType::wait_indefinitely());
+    super::machine::drain(device);
     let bytes = readback.get_mapped_range(..).expect("mapped").to_vec();
     readback.unmap();
     let mut red = Vec::with_capacity((w * h) as usize);

@@ -375,7 +375,7 @@ fn paint(additive: bool) -> Option<Painting> {
     };
     frame_read.slice(..).map_async(MapMode::Read, mapped);
     emissive_read.slice(..).map_async(MapMode::Read, mapped);
-    let _ = device.poll(PollType::wait_indefinitely());
+    super::machine::drain(device);
     assert_eq!(
         DONE.load(std::sync::atomic::Ordering::SeqCst),
         2,

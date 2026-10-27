@@ -331,7 +331,7 @@ fn an_arena_slot_keeps_two_draws_apart() {
             done.store(true, Ordering::SeqCst);
         });
     }
-    let _ = device.poll(PollType::wait_indefinitely());
+    super::machine::drain(device);
     assert!(done.load(Ordering::SeqCst), "the readback never mapped");
     let shot = readback
         .get_mapped_range(..)
@@ -945,21 +945,21 @@ fn a_uniform_per_draw_versus_an_arena() {
             for _ in 0..WARM {
                 one(&mut packed);
                 if drain {
-                    let _ = device.poll(PollType::wait_indefinitely());
+                    super::machine::drain(device);
                 }
             }
-            let _ = device.poll(PollType::wait_indefinitely());
+            super::machine::drain(device);
             let mut last = 0.0;
             for _ in 0..PASSES {
                 let t = Instant::now();
                 for _ in 0..FRAMES {
                     one(&mut packed);
                     if drain {
-                        let _ = device.poll(PollType::wait_indefinitely());
+                        super::machine::drain(device);
                     }
                 }
                 if !drain {
-                    let _ = device.poll(PollType::wait_indefinitely());
+                    super::machine::drain(device);
                 }
                 last = t.elapsed().as_secs_f64() * 1000.0 / f64::from(FRAMES);
             }
@@ -1491,21 +1491,21 @@ fn a_frame_of_every_kind_packs_into_the_arena_too() {
             for _ in 0..WARM {
                 one();
                 if drain {
-                    let _ = device.poll(PollType::wait_indefinitely());
+                    super::machine::drain(device);
                 }
             }
-            let _ = device.poll(PollType::wait_indefinitely());
+            super::machine::drain(device);
             let mut last = 0.0;
             for _ in 0..PASSES {
                 let t = Instant::now();
                 for _ in 0..FRAMES {
                     one();
                     if drain {
-                        let _ = device.poll(PollType::wait_indefinitely());
+                        super::machine::drain(device);
                     }
                 }
                 if !drain {
-                    let _ = device.poll(PollType::wait_indefinitely());
+                    super::machine::drain(device);
                 }
                 last = t.elapsed().as_secs_f64() * 1000.0 / f64::from(FRAMES as u32);
             }

@@ -478,7 +478,7 @@ impl Gpu {
                 done.store(true, Ordering::SeqCst);
             });
         }
-        let _ = self.machine.device.poll(PollType::wait_indefinitely());
+        super::machine::drain(&self.machine.device);
         assert!(done.load(Ordering::SeqCst), "the readback never mapped");
         let shot = readback
             .get_mapped_range(..)

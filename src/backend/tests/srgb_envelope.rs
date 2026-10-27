@@ -269,7 +269,7 @@ fn fs_main(@builtin(position) xy: vec4f) -> @location(0) vec4f {
                 done.store(true, Ordering::SeqCst);
             });
         }
-        let _ = device.poll(PollType::wait_indefinitely());
+        super::machine::drain(&device);
         assert!(done.load(Ordering::SeqCst), "the readback never mapped");
         let out = readback.get_mapped_range(..).expect("mapped").to_vec();
         readback.unmap();

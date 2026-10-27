@@ -610,7 +610,7 @@ fn the_light_field_pays_its_fill_offscreen() {
             }
         }
         queue.submit(Some(encoder.finish()));
-        let _ = device.poll(PollType::wait_indefinitely());
+        super::machine::drain(device);
     };
 
     eprintln!("light cost: adapter {name}, {W:.0}x{H:.0} offscreen, drained per frame");

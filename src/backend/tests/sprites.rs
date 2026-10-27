@@ -490,7 +490,7 @@ fn the_sprite_paints_what_the_contract_promise() {
     readback.slice(..).map_async(MapMode::Read, |_| {
         DONE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     });
-    let _ = device.poll(PollType::wait_indefinitely());
+    super::machine::drain(device);
     assert_eq!(
         DONE.load(std::sync::atomic::Ordering::SeqCst),
         1,
