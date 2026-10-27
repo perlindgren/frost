@@ -835,9 +835,8 @@ fn fs_emissive(@builtin(position) coord: vec4<f32>) -> SceneOut {
     #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
     #[test]
     fn a_touched_shader_is_vetted_then_swapped() {
-        let dir = std::env::temp_dir().join(format!("frost_shaders_{}", std::process::id()));
+        let dir = crate::scratch::claim("frost_shaders");
         let shipped = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
-        std::fs::create_dir_all(&dir).unwrap();
         for entry in std::fs::read_dir(&shipped).unwrap() {
             let path = entry.unwrap().path();
             std::fs::copy(&path, dir.join(path.file_name().unwrap())).unwrap();

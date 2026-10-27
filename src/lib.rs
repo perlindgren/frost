@@ -245,6 +245,10 @@ pub use rng::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod audio;
+
+/// The tests' scratch folders, claimed rather than assumed.
+#[cfg(test)]
+pub(crate) mod scratch;
 #[cfg(not(target_arch = "wasm32"))]
 pub use audio::{Audio, AudioError, Sound};
 

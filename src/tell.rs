@@ -311,10 +311,12 @@ fn alive(_pid: u32) -> bool {
 mod tests {
     use super::*;
 
+    /// A claimed folder, never an assumed one: see [`crate::scratch`]
+    /// — the assumed name was a Windows sharing violation wearing a
+    /// permission mask, and the swallowed `remove_dir_all` meant the
+    /// test then narrated a stale folder as if it were its own.
     fn scratch(who: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("frost_tell_{who}_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        dir
+        crate::scratch::claim(&format!("frost_tell_{who}"))
     }
 
     /// The opening of a telling: boot publishes rev 1 to the live

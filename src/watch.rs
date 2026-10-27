@@ -73,43 +73,13 @@ fn stamp(target: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
 mod tests {
     use super::*;
 
-    /// A scratch file with a name of its own, reserved by the claim
-    /// that creates it, gone when the test is.
-    ///
-    /// The name carries a pid *and* a claim counter, and the claim is
-    /// `create_new`: on Windows a leftover from a dead run — whose
-    /// pid a later process may well have inherited — sits on the same
-    /// name, and whatever holds it (a real-time scanner, a syncing
-    /// temp folder, a crashed process's handle) answers an overwrite
-    /// with Access denied, which is a sharing violation wearing a
-    /// permission mask. Asking instead for a name that does not exist
-    /// yet makes leftovers someone else's problem: the claim simply
-    /// takes the next number. And a temp directory that refuses
-    /// creation outright — a redirected, syncing, or read-only one —
-    /// sends the claim to the workspace's own `target`, where a dev
-    /// loop is guaranteed write access by the fact that it just
-    /// compiled there.
+    /// A scratch file inside a claimed scratch directory: the name
+    /// is taken by `create_dir`, never assumed — see
+    /// [`crate::scratch`] for why a pid-shaped assumption is a
+    /// Windows sharing violation waiting to be misread as Access
+    /// denied.
     fn scratch(name: &str) -> std::path::PathBuf {
-        let pid = std::process::id();
-        let dirs = [
-            std::env::temp_dir(),
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target"),
-        ];
-        for dir in &dirs {
-            for claim in 0.. {
-                let path = dir.join(format!("frost_watch_{name}_{pid}_{claim}"));
-                match std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)
-                {
-                    Ok(_) => return path,
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                    Err(_) => break,
-                }
-            }
-        }
-        panic!("no scratch directory the watcher tests can write to");
+        crate::scratch::claim(&format!("frost_watch_{name}")).join("watched")
     }
 
     /// The quiet case first: a file nobody touches never reports.
