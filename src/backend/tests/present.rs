@@ -71,6 +71,30 @@ pub(crate) fn lamp_at(at: [f32; 2], emission: f32) -> Draw {
     }
 }
 
+/// One thread's GPU, holding every handle the opening road returned.
+struct Machine {
+    device: Device,
+    queue: Queue,
+    // Held for the device's sake, never used directly: a device
+    // belongs to the instance that registered it, so the instance has
+    // to outlive the device — one field-order decision from a rule.
+    _adapter: Adapter,
+    _instance: Instance,
+}
+
+thread_local! {
+    /// The one GPU this test thread opens and keeps: see `frame`.
+    /// Leaked on purpose, and the cell stores a bare reference so no
+    /// destructor ever runs: a wgpu `Device` destroyed during
+    /// thread-local teardown meets a world already partly gone and
+    /// panics there, and a panic in thread-local drop aborts the
+    /// process — the failure this cache first shipped with, learned
+    /// the loud way. The most a run leaks is one machine per test
+    /// thread, and process exit reclaims every byte of it.
+    static MACHINE: std::cell::OnceCell<Option<&'static Machine>> =
+        const { std::cell::OnceCell::new() };
+}
+
 /// The frame a window would have held: `draws` painted, the emissive target
 /// bloomed at `strength`, and the pair composited by the present pass.
 ///
@@ -94,15 +118,39 @@ pub(crate) fn frame(
     let lights = pack_light_field(draws, ambient);
     let occluders = pack_occluder_field(draws, &[] as &[Occluder], [SPAN as f32, SPAN as f32]);
 
-    let instance = Instance::default();
-    let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
-        eprintln!("bloom: no adapter on this machine — the test goes unverified!");
-        return None;
-    };
-    let Ok((device, queue)) = block_on(adapter.request_device(&DeviceDescriptor::default())) else {
-        eprintln!("bloom: no device — the test goes unverified!");
-        return None;
-    };
+    // A machine per test thread, kept between calls: opening a wgpu
+    // device — instance, adapter enumeration, device request — walks
+    // to the same place every time, and under D3D12 the walk is
+    // measured in seconds; the tests below call `frame` two and
+    // three times each, which used to mean paying the road each
+    // time. The handles are reference-counted clones; the cache
+    // dies with its thread, which is the thread wgpu drives them
+    // from anyway. A machine with no GPU says so once per thread
+    // rather than once per call.
+    let machine = MACHINE.with(|cell| {
+        *cell.get_or_init(|| {
+            let instance = Instance::default();
+            let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default()))
+            else {
+                eprintln!("bloom: no adapter on this machine — the test goes unverified!");
+                return None;
+            };
+            let Ok((device, queue)) =
+                block_on(adapter.request_device(&DeviceDescriptor::default()))
+            else {
+                eprintln!("bloom: no device — the test goes unverified!");
+                return None;
+            };
+            Some(Box::leak(Box::new(Machine {
+                device,
+                queue,
+                _adapter: adapter,
+                _instance: instance,
+            })))
+        })
+    });
+    let machine = machine?;
+    let (device, queue) = (&machine.device, &machine.queue);
     let padded = |field: &Vec<u8>| {
         let mut bytes = field.clone();
         if bytes.len() < 256 {
@@ -291,8 +339,8 @@ pub(crate) fn frame(
     // therefore runs the same path a mid-run `Context::set_bloom` takes, and a
     // wake that produced an empty chain would darken every one of them.
     let mut bloom = Bloom::new(
-        &device,
-        &queue,
+        device,
+        queue,
         float,
         [SPAN, SPAN],
         Some(&emissive_view),
@@ -300,7 +348,7 @@ pub(crate) fn frame(
     );
     bloom.set_strength(strength);
     if bloom.needs_building() {
-        bloom.build(&device, &queue, float, [SPAN, SPAN], &emissive_view);
+        bloom.build(device, queue, float, [SPAN, SPAN], &emissive_view);
     }
     bloom.run(&mut encoder);
 
