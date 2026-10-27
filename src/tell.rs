@@ -300,21 +300,47 @@ fn alive(pid: u32) -> bool {
 }
 
 #[cfg(windows)]
-fn alive(_pid: u32) -> bool {
-    // No signal-zero without opening a process handle; on Windows a
-    // card is trusted to have an author, and a crash leaves one to
-    // clean by hand. Honest, narrow, dev-only.
-    true
+fn alive(pid: u32) -> bool {
+    // Signal-zero the Windows way, asked of a utility exactly as the
+    // unix side asks `/bin/kill` — existence through a stranger's
+    // exit, no handle, no unsafe. `tasklist` filtered to the one pid
+    // answers in CSV, one row per match; the row's second field is
+    // the pid itself, so existence is read as that field and absence
+    // as its no-match line. The line's PROSE is localized — German
+    // Windows words absence differently — which is why the question
+    // is the pid's own quoted CSV field, a fact no locale rewords.
+    // A machine where `tasklist` itself cannot run grants the card
+    // the same benefit of the doubt as a broken `/bin/kill`: a
+    // broken question prunes nothing.
+    let asked = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    match asked {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let wanted = pid.to_string();
+            text.lines().any(|line| {
+                line.split("\",\"")
+                    .nth(1)
+                    .is_some_and(|field| field == wanted)
+            })
+        }
+        Err(_) => true,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A claimed folder, never an assumed one: see [`crate::scratch`]
+    /// — the assumed name was a Windows sharing violation wearing a
+    /// permission mask, and the swallowed `remove_dir_all` meant the
+    /// test then narrated a stale folder as if it were its own.
     fn scratch(who: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("frost_tell_{who}_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        dir
+        crate::scratch::claim(&format!("frost_tell_{who}"))
     }
 
     /// The opening of a telling: boot publishes rev 1 to the live

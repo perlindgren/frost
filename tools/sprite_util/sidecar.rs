@@ -311,6 +311,33 @@ pub(crate) fn shape_corners(
 
 #[cfg(test)]
 mod tests {
+
+    /// Claim a scratch folder by `create_dir`, stepping over names
+    /// that exist — a leftover from a dead run (pid recycling) or a
+    /// folder a scanner still holds answers an overwrite with a
+    /// sharing violation wearing a permission mask, Access denied on
+    /// Windows. The workspace `target` waits as fallback for a temp
+    /// that refuses creation outright. The same discipline as the
+    /// engine's `frost::scratch`.
+    fn claim_scratch(tag: &str) -> std::path::PathBuf {
+        let pid = std::process::id();
+        let dirs = [
+            std::env::temp_dir(),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target"),
+        ];
+        for dir in &dirs {
+            let _ = std::fs::create_dir_all(dir);
+            for n in 0.. {
+                let path = dir.join(format!("{tag}-{pid}-{n}"));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return path,
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(_) => break,
+                }
+            }
+        }
+        panic!("no scratch directory `{tag}` can claim");
+    }
     use super::*;
     use crate::spots::scan_spots;
 
@@ -433,8 +460,7 @@ mod tests {
     fn a_sidecar_parses_or_the_sprite_loads_alone() {
         // The tree panel speaks the shared parser: the plant files'
         // tuples, anchors and all — and a broken one is simply None.
-        let dir = std::env::temp_dir().join(format!("sprite_util_ron_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = claim_scratch("sprite_util_ron");
         let png = dir.join("probe.png");
         std::fs::write(&png, b"not really a png, the sidecar loader never reads it").unwrap();
         assert!(load_ron(&png).is_none(), "no sidecar, no panel");
@@ -523,8 +549,7 @@ mod tests {
         // The sprite reloads tiled the way it was saved: the sidecar's
         // `atlas` field reads into `Sprite.atlas` on the way in, and a
         // missing or broken field reads as no grid.
-        let dir = std::env::temp_dir().join(format!("sprite_util_atlas_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = claim_scratch("sprite_util_atlas");
         let png = dir.join("probe.png");
         let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255]));
         std::fs::write(&png, png_bytes(&img).unwrap()).unwrap();

@@ -313,3 +313,16 @@ arboard = "3.7.0"
 # (tools/noisefloor). Native-only for the arboard reason above — the canary
 # measures a scheduler, and a browser tab does not have the one being judged.
 noisefloor = { path = "tools/noisefloor" }
+
+# The debug profile's tax on image work: Lanczos3 resizes and PNG
+# encoding run an order of magnitude slower unoptimized, and that tax
+# is what the suites' cold bakes and a debug session's hill entries
+# actually pay — the test tables keep the suite from paying it twice,
+# but the first bake of each size, per process, is honest work. The
+# dependency gets the optimization; our own code keeps full debug
+# detail, line numbers, and stepping.
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.png]
+opt-level = 3

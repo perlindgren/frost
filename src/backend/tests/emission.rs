@@ -8,7 +8,6 @@
 
 use super::super::*;
 use super::*;
-use crate::backend::app::block_on;
 use crate::canvas::Occluder;
 use crate::objects;
 use crate::objects::*;
@@ -84,15 +83,9 @@ fn paint(
     let lights = pack_light_field(draws, ambient);
     let occluders = pack_occluder_field(draws, &[] as &[Occluder], [SPAN as f32, SPAN as f32]);
 
-    let instance = Instance::default();
-    let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
-        eprintln!("emission: no adapter on this machine — the test goes unverified!");
-        return None;
-    };
-    let Ok((device, queue)) = block_on(adapter.request_device(&DeviceDescriptor::default())) else {
-        eprintln!("emission: no device — the test goes unverified!");
-        return None;
-    };
+    // The thread's shared GPU: see [`super::machine`].
+    let machine = super::machine::machine()?;
+    let (device, queue) = (&machine.device, &machine.queue);
 
     // Padded to the minimum storage-binding size the same way the shadow
     // harness pads its fields; the loops stop at each header's count and never
@@ -330,7 +323,7 @@ fn paint(
     readback.slice(..).map_async(MapMode::Read, move |_| {
         signal.fetch_add(1, Ordering::SeqCst);
     });
-    let _ = device.poll(PollType::wait_indefinitely());
+    super::machine::drain(device);
     assert_eq!(done.load(Ordering::SeqCst), 1, "the readback never mapped");
     let shot = readback
         .get_mapped_range(..)

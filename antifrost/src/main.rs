@@ -30,6 +30,29 @@ use frost::{Diagnostics, DiagnosticsFlags};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
+/// How the hill launches: the logging shapes, the beat sentinel's
+/// clock, and the native command line.
+mod cli;
+pub(crate) use cli::*;
+/// The school hills' lessons: the scripts, the tour state machine,
+/// and the marks the rail shows while a card is open.
+mod lessons;
+pub(crate) use lessons::*;
+/// The pages the hill opens onto and the menu they are built of.
+mod menu;
+pub(crate) use menu::*;
+/// The hill as it breathes: animation, weather, ants, and the
+/// verdict.
+mod world;
+pub(crate) use world::*;
+/// The window's shape and the desktop's answer to it.
+mod window;
+pub(crate) use window::*;
+/// The hill's dug geometry: the dig watch and the occluder merge,
+/// pure cell math with its cover tests beside it.
+mod shadow;
+pub(crate) use shadow::*;
+
 /// The hill's own voice: Barrfont for every word the game draws —
 /// notes, HUD, win screen, the sleepy "z"s.
 const GAME_FONT: &[u8] = include_bytes!("../assets/fonts/Barrfont-Regular.ttf");
@@ -223,20 +246,15 @@ const LAND_FLASH: f32 = 1.1;
 const ANT_W: f32 = TILE * 0.98;
 
 /// Bakes one hand-tailored PNG into a sprite shape: a Lanczos downscale to
-/// `ANT_TEX` wide, re-encoded in memory for `Shape::sprite_bytes`.
+/// `ANT_TEX` wide, handed to the engine as the pixels they already are.
 fn ant_frame(png: &[u8]) -> Result<frost::Shape, String> {
-    use image::{ExtendedColorType, ImageEncoder};
     let rgba = image::load_from_memory(png)
         .map_err(|err| err.to_string())?
         .into_rgba8();
     let (w, h) = (rgba.width().max(1), rgba.height());
     let th = ((ANT_TEX as f32) * h as f32 / w as f32).round().max(1.0) as u32;
     let small = image::imageops::resize(&rgba, ANT_TEX, th, image::imageops::FilterType::Lanczos3);
-    let mut baked = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut baked)
-        .write_image(small.as_raw(), ANT_TEX, th, ExtendedColorType::Rgba8)
-        .map_err(|err| err.to_string())?;
-    frost::Shape::sprite_bytes(&baked).map_err(|err| err.to_string())
+    frost::Shape::sprite_rgba(ANT_TEX, th, small.into_raw()).map_err(|err| err.to_string())
 }
 
 /// The surrounding ground for one hill: a single giant soil sprite —
@@ -250,8 +268,42 @@ fn ant_frame(png: &[u8]) -> Result<frost::Shape, String> {
 /// than depth. Same sprite as the walls wear, stretched a thousand
 /// times wider than a tile: the ground can only whisper the grain,
 /// while the walls shout it.
+/// The bake proper lives in [`bake_ground`]; this entry point adds one
+/// thing for the test suite only: a table of grounds by hill size. The
+/// suite loads hills the way a player walks them — dozens of times
+/// over a handful of sizes — and every load re-ran the full Lanczos3
+/// resize and PNG encode, filling cores with identical work and making
+/// the suite look stuck behind whichever test happened to be re-baking
+/// soil. The shapes are Arc-backed, so a hit is a clone. Production is
+/// deliberately untouched: a player entering a hill pays its one honest
+/// bake, and the game holds one ground at a time.
 fn ground_sprite(cols: usize, rows: usize) -> Result<(frost::Shape, [f32; 2]), String> {
-    use image::{ExtendedColorType, ImageEncoder};
+    #[cfg(test)]
+    {
+        type Table =
+            std::sync::Mutex<std::collections::HashMap<(usize, usize), (frost::Shape, [f32; 2])>>;
+        static BAKED: std::sync::OnceLock<Table> = std::sync::OnceLock::new();
+        let table = BAKED.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+        let served = table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&(cols, rows))
+            .cloned();
+        if let Some(hit) = served {
+            return Ok(hit);
+        }
+        let ground = bake_ground(cols, rows)?;
+        table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert((cols, rows), ground.clone());
+        Ok(ground)
+    }
+    #[cfg(not(test))]
+    bake_ground(cols, rows)
+}
+
+fn bake_ground(cols: usize, rows: usize) -> Result<(frost::Shape, [f32; 2]), String> {
     // The reach: the hill plus a margin wide enough that no window, at
     // any camera a hill can show, ever finds the sprite's edge. The
     // texture stays modest — the ground reads soft, which suits it.
@@ -273,11 +325,7 @@ fn ground_sprite(cols: usize, rows: usize) -> Result<(frost::Shape, [f32; 2]), S
             *img.get_pixel_mut(px, y) = image::Rgba([0, 0, 0, 0]);
         }
     }
-    let mut baked = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut baked)
-        .write_image(img.as_raw(), TEX_W, th, ExtendedColorType::Rgba8)
-        .map_err(|err| err.to_string())?;
-    frost::Shape::sprite_bytes(&baked)
+    frost::Shape::sprite_rgba(TEX_W, th, img.into_raw())
         .map(|shape| (shape, span))
         .map_err(|err| err.to_string())
 }
@@ -336,6 +384,37 @@ const ANT_SHADOW: Color = Color {
 /// lies down when the ant does.
 const SHADOW_LEAN_AWAKE: f32 = 2.0;
 const SHADOW_LEAN_ASLEEP: f32 = 1.0;
+
+/// The queen's own two rungs, fixed like the rest of the ladder:
+/// her shadow at the top of the shadow tier — every other shadow
+/// under hers, every ant over it, the colony's ink under the
+/// queen's — and her body at the very top, over the whole colony.
+/// The numbers are the old fixed ones' survivors: 1.48 was the bug
+/// (her shadow over the ants), 1.5 always was her.
+/// How far the world melts behind a menu, as a fraction of the
+/// frame's height — the engine's `set_backdrop_blur` radius, scaled
+/// by the overlay's breath so the smear arrives with the plate and
+/// leaves with it. A breath, not a bath: the hill should read as a
+/// place the menu was called from, not as weather.
+const BACKDROP_BLUR: f32 = 0.009;
+
+const QUEEN_SHADOW_ORDER: f32 = 0.9;
+const QUEEN_ORDER: f32 = 1.5;
+
+/// The bed's rung, the bottom of the ladder above bare ground:
+/// named because the shadow tier swears to stay above it.
+const BED_TIER: f32 = 0.05;
+
+/// The two tiers the colony stands on, and that is all the ladder
+/// needs: shadows at 0.1 — over the beds — ants from 1.0.
+/// Within a tier every node wears the same rung, and the engine's
+/// z-sort is stable: equal orders keep the order the scene was
+/// walked in, and the colony's nodes are children laid out one per
+/// ant in id order. So ant 0 under ant 1 under ant 2, and the same
+/// for the shadows under them, for free from the traversal — no
+/// stride, no row, nothing to renumber and nothing to swap.
+const ANT_TIER: f32 = 1.0;
+const SHADOW_TIER: f32 = 0.1;
 
 const C_BG: Color = Color {
     r: 0.045,
@@ -536,55 +615,6 @@ fn shade(mut c: Color, k: f32) -> Color {
     c
 }
 
-/// One frame of the dig watch, kept whole and pure so it can be
-/// tested without a running hill. `seen` is the set of dirt cells as
-/// of the last frame, `now` as of this one, `digs` the live list of
-/// `(col, row, seconds left, seed)` carried over. Dirt that vanished
-/// between the two — eaten by the player's move, since no ant digs —
-/// starts a dissolve at the full hop length, so the eat finishes as
-/// the step lands; dirt that came back (an undo restores the tile)
-/// cancels a live dig at once. `left` counts down by `dt` and a dig
-/// whose tile has fully dissolved is dropped. The caller then stores
-/// `now` back as the watch's `seen`. Seeds come from the cell so no
-/// two holes eat with the same pattern.
-fn watch_digs(
-    digs: &mut Vec<(i32, i32, f32, f32)>,
-    seen: &[(i32, i32)],
-    now: &[(i32, i32)],
-    dt: f32,
-) {
-    let gone = |c: &(i32, i32)| !now.contains(c);
-    let back = |c: &(i32, i32)| !seen.contains(c) && now.contains(c);
-    // Age the live digs, then drop the ones that finished and the ones
-    // whose dirt came back.
-    digs.retain_mut(|(_, _, left, _)| {
-        *left -= dt;
-        *left > 0.0
-    });
-    digs.retain(|(col, row, _, _)| !back(&(*col, *row)));
-    // Every cell that vanished this frame begins a dig — unless one is
-    // already running on it (a cell dug, undone, and dug again inside
-    // one dissolve inherits the running countdown rather than
-    // restarting behind it).
-    for cell in seen.iter().copied().filter(gone) {
-        if !digs.iter().any(|(c, r, _, _)| (*c, *r) == cell) {
-            let (col, row) = cell;
-            let seed = (col as f32 * 12.9 + row as f32 * 78.2).sin().abs() % 1.0;
-            digs.push((col, row, DIG_HOP, seed));
-        }
-    }
-}
-
-/// The dirt cells of a hill, in the same row-major order the tile map
-/// walks them — the digest the dig watch diffs frame to frame. Rock
-/// stays out (it never dissolves); this is loose earth only.
-fn dirt_cells(g: &game::Game) -> Vec<(i32, i32)> {
-    (0..g.level.rows as i32)
-        .flat_map(|row| (0..g.level.cols as i32).map(move |col| (col, row)))
-        .filter(|&(col, row)| matches!(g.tile(game::Cell::new(col, row)), level::Tile::Dirt))
-        .collect()
-}
-
 /// The white in an ant's light: its own hue pulled a third of the way to full
 /// white, which is how a lamp reads as a source rather than as a coloured wash.
 ///
@@ -629,954 +659,6 @@ fn face_of(dir: game::Dir) -> [f32; 2] {
     }
 }
 
-/// One card of a school hill's lesson: the act the hill is waiting
-/// for, and the word it says while waiting. A school hill deals its
-/// script card by card — while the played log spells the script's
-/// prefix, the next card shows itself: a mark over the queen's head
-/// (one chevron to walk, two to shove) and its word on the note's
-/// floor line. The hill keeps its side of the bargain: while a card
-/// is open the rail lets that card's act through and no other — every
-/// other key, click or shove is turned away at the gate with a word —
-/// so the pupil can neither stray nor strand the lesson; `Z` puts the
-/// card back, `R` deals the deck again.
-struct Lesson {
-    act: game::Act,
-    word: &'static str,
-}
-
-/// What the rail says when it turns an act away — the hill's own
-/// voice, in the note's letters, pointing back at the mark.
-const RAIL_NOTE: &str = "follow the mark";
-
-/// First Warm's script: the walkthrough's winning walk — step right,
-/// climb to the corridor beside `r`, shove it into `R` with the
-/// shift-push, one step home. The colony's first verb: the dunk.
-const FIRST_WARM_LESSON: [Lesson; 5] = [
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Up),
-        word: "move up",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Up),
-        word: "move up",
-    },
-    Lesson {
-        act: game::Act::Push(game::Dir::Right),
-        word: "hold shift and push right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left home",
-    },
-];
-
-/// Attunement's script: five steps due east down the straight hall —
-/// over the empty `R` tile, into `r` (who joins the line and, in the
-/// queen's own wake, falls asleep on `R` with no step to spare), and
-/// on to her bed at the hall's end. The lesson is the wake lock:
-/// walking on is what carries an ant home.
-const ATTUNEMENT_LESSON: [Lesson; 5] = [
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right collect the ant",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right to your bed",
-    },
-];
-
-/// First Cold's script: the walkthrough's nine acts — grab `r`, at
-/// once leave it behind so it sits on the corridor, post it home with
-/// two shoves (the second dunks it onto `R`), then the long walk
-/// home. The lesson is the leave-behind, and the dunk shown before
-/// it is ever needed.
-const FIRST_COLD_LESSON: [Lesson; 9] = [
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left collect the ant",
-    },
-    Lesson {
-        act: game::Act::Detach,
-        word: "press space leave it behind",
-    },
-    Lesson {
-        act: game::Act::Push(game::Dir::Right),
-        word: "hold shift and push right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right",
-    },
-    Lesson {
-        act: game::Act::Push(game::Dir::Right),
-        word: "hold shift and push right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left to your bed",
-    },
-];
-
-/// The hill whose first crossing is taught by the cold tour.
-const FIRST_COLD_HILL: usize = 2;
-
-/// What the cold tour says the moment the walk has spent its
-/// par — the first move a cleverer walk would not have needed.
-const COLD_NOTE: &str = "you are now getting cold";
-
-/// The hill's answer to a tour's own praise — both double-dealt
-/// hills keep it — the praise splash spins first like on any win,
-/// then this hangs big in the centre of the world for
-/// `BETTER_HOLD` seconds, and the hill restarts on the better
-/// script. In the praise words' own case, because it answers them.
-const BETTER_NOTE: &str = "YOU CAN DO BETTER";
-
-/// How long the answer holds on the screen before the hill deals
-/// again: two seconds and a half, a held breath — the measure the
-/// tour's answer and both of the oops deck's admissions dance to.
-const BETTER_HOLD: f32 = 2.5;
-
-/// The answer's size: big — twice the HUD's banner — though it
-/// answers in a sentence, not the splash's single word.
-const BETTER_EM: f32 = 72.0;
-
-// The deck that precedes the cold tour: First Cold makes the pupil
-// make its mistakes for it. The card asks for the wrong step —
-// right, away from everything the walk will want — and the rail,
-// which has never once refused a lesson, refuses everything else;
-// the moment the step lands the hill admits it, big and centred in
-// the answer's own letters and hold, and when the words fade the
-// undo mark goes up: a chevron pointing back the way the wrong step
-// came, worded below. The Z takes the step back — and the trap
-// re-baits itself: the same wrong step is asked again, and again,
-// and this time the second landing earns the deeper admission and
-// the rewind mark. The R that restarts the hill retires the deck
-// for good and hands the fresh hill to the long walk — the
-// answer's own words wait at the tour's end, where they are
-// earned — so the undo is learned before the walk, the restart
-// before the ruin, and both by making the mistake, never by being
-// told.
-const MISTAKE_CARD: Lesson = Lesson {
-    act: game::Act::Move(game::Dir::Right),
-    word: "move right",
-};
-
-/// The admission, in the praise words' case and size. The hill
-/// owns the mistake — *I* made it — because a pupil who watched
-/// the hill choose wrong still pressed the key, and being scolded
-/// for obeying is how a lesson turns into a grudge.
-const MISTAKE_NOTE: &str = "OOPS I MADE A MISTAKE";
-
-/// The second card of the deck: the same trap re-baited. The word
-/// knows it is a repeat now — the hill does not even pretend.
-const DOUBLE_CARD: Lesson = Lesson {
-    act: game::Act::Move(game::Dir::Right),
-    word: "move right again",
-};
-
-/// The second admission, for the mistake twice as deep: two words,
-/// because at this depth a sentence would be an optimism.
-const NOT_AGAIN_NOTE: &str = "NOT AGAIN";
-
-/// The word under the rewind — two chevrons stepped back, the
-/// walk's own alphabet spelling the media-keys' rewind.
-const RESTART_WORD: &str = "r to restart";
-
-/// The word under the undo mark, lowercase like every foot word;
-/// named here so the sulking and the Z agree on the spelling.
-const UNDO_WORD: &str = "z for undo";
-
-/// The send-off: the cheap dig watches the pupil take the dig for
-/// the first time and says the last kind word before the cold
-/// hills proper begin. It is a course well taught by now — four
-/// hills, five decks, two keys, one dig — and the hill knows it.
-const SEND_OFF_NOTE: &str = "I KNOW YOU CAN DO IT";
-
-/// The cold tour: the walk that works before the clever one — and
-/// after the oops deck, which deals first: a forced mistake, the
-/// admission, the undo. The tour takes up only once the hill has
-/// stumbled and been stepped back.
-/// Grab `r` and walk right along the top — the wake carries the
-/// ant home mid-stride, asleep on `R` while the walk goes on —
-/// then take the long way yourself: the wall, down, the wall the
-/// other side, and up to bed. Eighteen moves where nine will do;
-/// the move past par says the walk is getting cold, and the
-/// finish gets the praise splash like any win — then the hill
-/// answers it, big and centred, and restarts on the better
-/// script. The hill warms on the way, and a warm hill never
-/// deals this deck again.
-const COLD_TOUR_LESSON: [Lesson; 18] = [
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left collect the ant",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right over the bed",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right red warms behind",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right to the wall",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Down),
-        word: "move down",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Down),
-        word: "move down to the floor",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left to the wall",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Up),
-        word: "move up",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Up),
-        word: "move up to your bed",
-    },
-];
-
-/// The cheap dig: the fourth hill, and the hill the dig belongs
-/// to. The dirt cell in its wall is the lesson — walk into dirt
-/// and it gives way, one move, one budget — so the hill deals
-/// twice like the cold ring: first the honest fourteen that walk
-/// around the dirt and miss it entirely, then the answer's words,
-/// then the ten that dig.
-const DIG_TUTOR_HILL: usize = 3;
-
-/// The cheap dig's tour: fourteen moves that succeed — collect
-/// `r`, march on to the east shaft, ride it to the trail, walk
-/// home along the top while the wake carries `r` onto `R` — a
-/// real win at four moves' waste, and the praise splash is
-/// earned by it. Then the hill answers itself, big and centred,
-/// and deals the cheap way beneath the words.
-const DIG_TOUR_LESSON: [Lesson; 14] = [
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right collect the ant",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right to the shaft",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Up),
-        word: "move up the shaft",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Up),
-        word: "move up to the trail",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left red rides behind",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left red packs onto r",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left home to w",
-    },
-];
-
-/// The cheap dig taught cheap: collect `r`, then walk into the
-/// dirt cell in the wall — walking into dirt is the dig, one
-/// move and one budget — step out onto `R`, and walk home while
-/// the wake packs `r` onto its bed. Ten moves, and every one of
-/// them needed.
-const DIG_LESSON: [Lesson; 10] = [
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Right),
-        word: "move right collect the ant",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Up),
-        word: "walk up dig through the dirt",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Up),
-        word: "move up onto the red bed",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left red packs on the way",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left",
-    },
-    Lesson {
-        act: game::Act::Move(game::Dir::Left),
-        word: "move left home to w",
-    },
-];
-
-/// The descent's school hills and their scripts: every lesson the
-/// descent teaches is here, in the hills that teach it. Anywhere
-/// else the hill has no cards and keeps no rail. Two hills deal
-/// double — First Cold and the cheap dig both show the long way
-/// first and answer their own praise with the better script;
-/// `Demo::script` picks the deck.
-fn lesson_script(hill: usize) -> Option<&'static [Lesson]> {
-    match hill {
-        0 => Some(&FIRST_WARM_LESSON),
-        1 => Some(&ATTUNEMENT_LESSON),
-        2 => Some(&FIRST_COLD_LESSON),
-        3 => Some(&DIG_LESSON),
-        _ => None,
-    }
-}
-
-/// Per-ant pixel glide: where it is drawn, where it is heading.
-/// One hop's path: a cubic between two cells whose control arms lie
-/// along the directions of travel at either end. Entering and leaving
-/// the same way, the arms fall on the line and the hop is straight;
-/// at a corner they stand out and the hop bends into a quarter
-/// circle — position and facing curve together, because both read the
-/// same curve.
-#[derive(Clone, Copy)]
-struct Hop {
-    a: [f32; 2],
-    b: [f32; 2],
-    c: [f32; 2],
-    d: [f32; 2],
-    t: f32,
-    dur: f32,
-}
-
-impl Hop {
-    /// A finished hop parked at `p`, going nowhere — for snaps and spawns.
-    fn flat(p: [f32; 2], dur: f32) -> Self {
-        Self {
-            a: p,
-            b: p,
-            c: p,
-            d: p,
-            t: 1.0,
-            dur,
-        }
-    }
-    /// Re-armed from `from` to `to`, entering along `entry` and leaving
-    /// along `exit` (unit axes): perpendicular, the arms bend the
-    /// corner; aligned, the arms lie flat and it is a straight line.
-    fn to(&mut self, from: [f32; 2], to: [f32; 2], entry: [f32; 2], exit: [f32; 2], dur: f32) {
-        let dot = entry[0] * exit[0] + entry[1] * exit[1];
-        let k = if dot.abs() < 0.5 {
-            HOP_ARC_K * TILE
-        } else {
-            0.0
-        };
-        *self = Self {
-            a: from,
-            b: [from[0] + entry[0] * k, from[1] + entry[1] * k],
-            c: [to[0] - exit[0] * k, to[1] - exit[1] * k],
-            d: to,
-            t: 0.0,
-            dur,
-        };
-    }
-    fn tick(&mut self, dt: f32) -> [f32; 2] {
-        self.t = (self.t + dt / self.dur).min(1.0);
-        let t = self.t;
-        let u = 1.0 - t;
-        let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
-        [
-            w[0] * self.a[0] + w[1] * self.b[0] + w[2] * self.c[0] + w[3] * self.d[0],
-            w[0] * self.a[1] + w[1] * self.b[1] + w[2] * self.c[1] + w[3] * self.d[1],
-        ]
-    }
-}
-
-/// Turns `from` toward `to` by at most `max` radians.
-fn turn_toward(from: [f32; 2], to: [f32; 2], max: f32) -> [f32; 2] {
-    let a = (from[0] * to[1] - from[1] * to[0])
-        .atan2(from[0] * to[0] + from[1] * to[1])
-        .clamp(-max, max);
-    let (s, c) = a.sin_cos();
-    [from[0] * c - from[1] * s, from[0] * s + from[1] * c]
-}
-
-/// One z off a sleeper's breath: it drifts up, wanders a little on the
-/// way, and its glyph grows from a small z to a full Z before it goes.
-struct Zzz {
-    at: [f32; 2],
-    vel: [f32; 2],
-    age: f32,
-    ttl: f32,
-    seed: f32,
-}
-
-/// The verdict splash: when the last ant lies down, a word spins up
-/// from a speck until it fills half the screen, rests a heartbeat,
-/// and fades to the hill's own quiet. The growth time is drawn
-/// randomly, so the spin — one clean turn and the landing — comes to
-/// rest on a random tilt anywhere within 45 degrees of level.
-struct Splash {
-    text: String,
-    t: f32,
-    grow: f32,
-    end: f32,
-    /// Par met or missed, decided at the spawn: yellow or red.
-    color: Color,
-}
-
-impl Splash {
-    const HOLD: f32 = 0.35;
-    const FADE: f32 = 2.475;
-    fn total(&self) -> f32 {
-        self.grow + Self::HOLD + Self::FADE
-    }
-}
-
-struct Glide {
-    at: [f32; 2],
-    target: [f32; 2],
-    /// The direction this walker travels — the next hop's entry tangent.
-    dir: [f32; 2],
-    /// Walk-cycle clock, in seconds. It turns continuously — ants mill
-    /// about even where they stand — and only an asleep ant's drawing
-    /// ignores it.
-    anim: f32,
-    hop: Hop,
-}
-
-impl Glide {
-    fn step(&mut self, to: [f32; 2], dt: f32) {
-        if !closer(self.target, to) {
-            // The exit direction reads off the old target — the cell
-            // just left; a walker that has never left anywhere reads it
-            // off the hop itself.
-            let mut ex = [to[0] - self.target[0], to[1] - self.target[1]];
-            if ex[0].abs() + ex[1].abs() < 1e-3 {
-                ex = [to[0] - self.at[0], to[1] - self.at[1]];
-            }
-            let exit = if ex[0].abs() >= ex[1].abs() {
-                [ex[0].signum(), 0.0]
-            } else {
-                [0.0, ex[1].signum()]
-            };
-            self.hop.to(self.at, to, self.dir, exit, TRAIL_HOP);
-            self.dir = exit;
-            self.target = to;
-        }
-        self.at = self.hop.tick(dt);
-        self.anim += dt;
-    }
-}
-
-/// One drifting leaf — the simulation state the Demo owns. Fluttering is
-/// deliberately *not* `ParticleSystem::update`: that is a gravity
-/// integrator, while a leaf sways, flips edge-on and rides the gust down
-/// and clean out of the world — the wind keeps no litter pile. The
-/// engine leaves `size`, `angle` and `color` to the caller for exactly
-/// this — the systems only carry the finished particles into the sprite
-/// batches.
-struct Leaf {
-    /// Which sprite sheet draws this leaf (index into `LEAVES`).
-    sprite: usize,
-    pos: [f32; 2],
-    /// Descent speed in px/s, modulated by the flip.
-    fall: f32,
-    /// Sidesway amplitude in px/s.
-    sway: f32,
-    phase: f32,
-    freq: f32,
-    flip_phase: f32,
-    flip_freq: f32,
-    tilt: f32,
-    /// Integrated rotation at a wandering speed: `spin_rate` relaxes
-    /// toward `spin_target`, which is redrawn at random near every
-    /// `spin_next` — so each leaf turns at speeds no clock repeats.
-    spin: f32,
-    spin_rate: f32,
-    spin_target: f32,
-    spin_next: f32,
-    angle: f32,
-    size: f32,
-}
-
-/// Everything a fresh draw needs to know about the current sky.
-struct Sky {
-    w: f32,
-    h: f32,
-    /// The canopy's parallax offset — spawn and wrap live in the
-    /// leaves' own space, which keeps every re-entry at a visible edge.
-    off: [f32; 2],
-    /// The frost's odds of dealing a snowflake.
-    snow: f32,
-    /// The windward emission reach.
-    reach: f32,
-}
-
-impl Leaf {
-    /// A fresh leaf slightly above the visible window — which, in the
-    /// parallax-shifted space the leaf lane lives in, is the window at
-    /// `-off` — jittered inside its lane. `lane` of `lanes`.
-    fn fresh(lane: usize, lanes: usize, sky: &Sky, rng: &mut Rng) -> Self {
-        // The deal: with the frost's own odds, the wind turns a leaf
-        // face down into a snowflake — the sheet changes, the
-        // behaviour does not: a flake sways, flips and spins exactly
-        // like any leaf.
-        let sprite = if rng.next_f32() < sky.snow {
-            SNOW_SHEET
-        } else {
-            (rng.next_f32() * SNOW_SHEET as f32) as usize % SNOW_SHEET.max(1)
-        };
-        // The emission width: the window, plus the windward reach a
-        // gale needs upwind so its drift still paints the whole sky.
-        let lane_w = (sky.w + sky.reach) / lanes.max(1) as f32;
-        Self {
-            sprite,
-            pos: [
-                -sky.w / 2.0 - sky.off[0] + lane_w * (lane as f32 + 0.5 + rng.in_range(-0.4, 0.4)),
-                // The band's low end clears the fattest leaf's half-height
-                // (`size` is a half-width), so nothing hangs into the window
-                // and pops at birth.
-                sky.h / 2.0 - sky.off[1] + rng.in_range(LEAF_SIZE.1, 140.0),
-            ],
-            fall: rng.in_range(38.0, 92.0),
-            sway: rng.in_range(26.0, 85.0),
-            phase: rng.in_range(0.0, TAU),
-            freq: rng.in_range(1.3, 2.8),
-            flip_phase: rng.in_range(0.0, TAU),
-            flip_freq: rng.in_range(0.7, 1.9),
-            tilt: rng.in_range(-0.25, 0.25),
-            spin: rng.in_range(0.0, TAU),
-            spin_rate: rng.in_range(-0.9, 0.9),
-            spin_target: rng.in_range(-1.8, 1.8),
-            spin_next: 0.0,
-            angle: 0.0,
-            size: rng.in_range(LEAF_SIZE.0, LEAF_SIZE.1),
-        }
-    }
-}
-
-/// The page the app shows: the hill itself, the menu it opens onto,
-/// or the settings the menu leads to. The menu pages pause the hill —
-/// no key, click, or queued step reaches the game behind them, and
-/// `Resume Game` hands it back.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Page {
-    Game,
-    Main,
-    Settings,
-    /// The hill is won: the splash's verdict hangs over two rows,
-    /// next hill and retry hill — the only way a finished hill is
-    /// ever left.
-    Won,
-    /// The two control pages: plain lists answering the menu rows
-    /// of the same names. Any row on them steps back to the menu —
-    /// they are reading material, and reading ends when you press
-    /// anything.
-    Keyboard,
-    Mouse,
-    /// The ledger: one row per warm hill — number, name, best run,
-    /// and a minimap of the hill itself — a list that can outgrow
-    /// the plate, so the window slides with the selection and the
-    /// wheel, and a row walked is a door back onto that hill.
-    Progress,
-}
-
-/// Where the Escape key leads. The rule the menu keeps: from the hill
-/// Escape opens the menu, from the menu Escape hands the hill back,
-/// and from settings it is a plain back step. Escape never quits —
-/// leaving is the exit row's (and the window button's) alone, so the
-/// key that pauses is never the key that destroys.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Escape {
-    ToMenu,
-    Resume,
-}
-
-fn escape_nav(from: Page) -> Escape {
-    match from {
-        Page::Game => Escape::ToMenu,
-        Page::Main => Escape::Resume,
-        Page::Settings => Escape::ToMenu,
-        Page::Keyboard | Page::Mouse => Escape::ToMenu,
-        // The ledger is read, not lived in: Escape steps off it onto
-        // the menu like everywhere else.
-        Page::Progress => Escape::ToMenu,
-        // Escape steps off the finished hill onto the menu; the
-        // resume row walks back to the won hill and its panel.
-        Page::Won => Escape::ToMenu,
-    }
-}
-
-/// The rows a menu page can answer to.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Action {
-    /// Move to the next hill — the button N used to be.
-    Next,
-    /// Replay the hill now underfoot from its own beginning.
-    Retry,
-    New,
-    Resume,
-    OpenSettings,
-    Exit,
-    Back,
-    Vsync,
-    Filter,
-    Fullscreen,
-    Quality,
-    Leaves,
-    /// The halo the ants throw, on and off.
-    Glow,
-    Shadows,
-    /// Sliders: the press starts a drag, the release saves.
-    Ambient,
-    Light,
-    /// The control pages of the menu: keyboard, mouse.
-    Keyboard,
-    Mouse,
-    /// The ledger page, and one of its hill rows: a hill row replays
-    /// the hill it names — the ledger is a door, not a museum.
-    OpenProgress,
-    Hill(usize),
-}
-
-/// One laid-out menu row: a clickable rectangle (centre and half
-/// extents in user space) with its text, and for sliders also the
-/// track geometry and the current fraction. Input hit-tests rows and
-/// paint draws the very same list — the click can never miss the
-/// picture.
-struct Row {
-    action: Action,
-    cx: f32,
-    cy: f32,
-    hw: f32,
-    hh: f32,
-    text: String,
-    /// `Some(fraction)` marks a slider row: the track's live value.
-    slider: Option<f32>,
-}
-
-/// The settings page's slider track, in user-space x around the panel
-/// centre; the label rides left of it. Shared by layout, hit test,
-/// and paint so the three can never disagree. The centre is chosen so
-/// the WHOLE ink of a slider row — label's left edge to the track's
-/// right — spans equally about x = 0: the label draws centred at
-/// `cx - half - 160`, so its left edge sits ~380 left of the track
-/// centre while the track ends 150 right of it, and 190-115 balances
-/// the two. The page is then centred on the plate, not merely its
-/// tracks.
-const MENU_TRACK_CX: f32 = 115.0;
-const MENU_TRACK_HALF: f32 = 150.0;
-
-/// The widest the title band ever gets: the page's 52-point sign
-/// draws at `top + 70` and its ink ends by `top + 96`.
-const PLATE_TOP_PAD_MAX: f32 = 130.0;
-
-/// The band above the first row, computed from the live view height:
-/// a quarter-ish of the screen at full size, shrunk on short windows
-/// so the plate's top stays inside the frame, floored where the
-/// title's own ink still fits (70 + half a 52-point cap).
-fn plate_top_pad(h: f32) -> f32 {
-    (h * 0.22).clamp(96.0, PLATE_TOP_PAD_MAX)
-}
-
-/// The plate's bottom is one extra row of the page's own stride below
-/// the last row — a ledger row's stride is its fat one, a plain
-/// page's is its own, compression included.
-fn plate_bottom_pad(page: Page, h: f32) -> f32 {
-    match page {
-        Page::Progress => progress_step(h),
-        Page::Main => menu_step_for(7, h),
-        Page::Settings => menu_step_for(10, h),
-        Page::Keyboard => menu_step_for(6, h),
-        Page::Mouse => menu_step_for(4, h),
-        Page::Won => menu_step_for(2, h),
-        Page::Game => MENU_STEP,
-    }
-}
-
-/// The plain menu's row stride at its roomiest: the step every page
-/// hangs by, and measures its trailing row with, until a short window
-/// says otherwise — see [`menu_step_for`].
-const MENU_STEP: f32 = 58.0;
-const MENU_STEP_SHORT: f32 = 46.0;
-
-/// The plain menu's stride, solved for the live view: the page's own
-/// step when a plate of `n` rows — title band, the gaps between rows,
-/// and the trailing row — clears the frame; compressed to the largest
-/// stride that does when it does not. A row's ink is 48 tall, so the
-/// solve owns a floor of 40: past that a page would rather let the
-/// stone's edge be trimmed by the view than braid two rows' texts
-/// together.
-fn menu_step_for(n: usize, h: f32) -> f32 {
-    let wide = if h < 720.0 {
-        MENU_STEP_SHORT
-    } else {
-        MENU_STEP
-    };
-    let gaps = n.saturating_sub(1) as f32;
-    let wanted = (h - 24.0 - plate_top_pad(h) - wide) / gaps;
-    wide.min(wanted).max(MENU_STEP_SHORT - 6.0)
-}
-
-/// A plain page's first row: its height above the centre when `n`
-/// rows hang at `step`, slid so the WHOLE composed plate — title
-/// band, rows, trailing row — is symmetric about the view's centre.
-/// Centring the rows alone off-centres the stone; centring the stone
-/// is centring the menu.
-fn plain_top(n: usize, step: f32, h: f32) -> f32 {
-    (n.saturating_sub(1)) as f32 * step / 2.0 + (menu_step_for(n, h) - plate_top_pad(h)) / 2.0
-}
-
-/// The menu's keyboard walk: arrows wrap around the page's rows, so
-/// the selection never falls off the panel and the shortest path from
-/// either end to the other is one keypress of the far direction.
-fn step_sel(sel: usize, n: usize, dir: i32) -> usize {
-    if n == 0 {
-        return 0;
-    }
-    if dir < 0 {
-        (sel + n - 1) % n
-    } else {
-        (sel + 1) % n
-    }
-}
-
-/// The repeat clock of a held menu arrow: the first press answers at
-/// once, and a hand that keeps the key down waits out the delay —
-/// then takes one row per beat until it lets go.
-const NAV_HOLD: f32 = 0.32;
-const NAV_RATE: f32 = 0.08;
-
-/// One frame of that clock: `next` is the time still to wait, and a
-/// frame spends it down; at zero the arrow steps and the next step
-/// arms one beat later. A hand resting before its decision never
-/// pays a step early, and a hand that holds never pays one late.
-fn key_repeat(next: &mut f32, dt: f32) -> bool {
-    *next -= dt;
-    if *next <= 0.0 {
-        *next = NAV_RATE;
-        true
-    } else {
-        false
-    }
-}
-
-/// The ledger's top chevron, kept: where the window must lean and
-/// where the selection must land so that pressing up from the first
-/// row stands on the last hill of the list. The window bottoms out
-/// (`total - visible` rows down) and the selection takes the window's
-/// own last hill row — which for a descent shorter than the window
-/// is simply the last hill where it already stood.
-fn wrap_to_last(total: usize, visible: usize) -> (usize, usize) {
-    let top = total.saturating_sub(visible);
-    (top, total.saturating_sub(1).saturating_sub(top))
-}
-
-/// Which row, if any, lives under a pointer: the one test the click,
-/// the highlight-follow, and any future pointer reader all share.
-fn row_under(rows: &[Row], p: [f32; 2]) -> Option<usize> {
-    rows.iter()
-        .position(|r| (p[0] - r.cx).abs() <= r.hw && (p[1] - r.cy).abs() <= r.hh)
-}
-
-/// The progress list's first-row height above the centre: the window
-/// of `fits` rows plus its pinned `back` row, hung so the composed
-/// plate — title band above, one extra row below — is symmetric about
-/// the view's centre at every resolution.
-fn progress_top_y(h: f32) -> f32 {
-    let rows = progress_fits(h) + 1;
-    (rows - 1) as f32 * progress_step(h) / 2.0 + (progress_step(h) - plate_top_pad(h)) / 2.0
-}
-
-/// The progress list's row stride: wider than the settings step,
-/// because each row wears a minimap as tall as its text is not. The
-/// maps own this stride — a card leaves two points of a step to
-/// its neighbour, never more — and a further step is affordable
-/// because the plate holds the same window at full height either way.
-fn progress_step(h: f32) -> f32 {
-    if h < 720.0 { 54.0 } else { 68.0 }
-}
-
-/// How many hill rows the centred block can hold: `n` rows plus the
-/// `back` row pinned under them span from `n*step/2` down to
-/// `-n*step/2 - 24`, and the block's low light must clear the plate's
-/// floor at `-h/2 + 96`. Solved for `n`, floored, clamped to the
-/// window's own half so a solve that has run past the floor still
-/// yields one row — a ledger of one is the minimum honest list.
-fn progress_fits(h: f32) -> usize {
-    // The composed ledger: title band above, `back` row and its
-    // trailing row below, centred — n is what's left for hill rows.
-    let room = (h - 24.0 - plate_top_pad(h) - 2.0 * progress_step(h)).max(0.0);
-    ((room / progress_step(h)).floor() as usize).max(1)
-}
-
-/// The progress page's plate half-width and its column edges, settled
-/// once against measured ink rather than guesswork: every width below
-/// was laid out by the engine's own text shaper in the shipped
-/// Barrfont at the ledger's size (30, weight 500). The widest authored
-/// hill name — "Three Cold Nights" — is 370.0, and since
-/// [`MOVES_CAP`] guarantees no score wider than "999 moves" at 199.2,
-/// the name column gets a real budget (372.0) and the score column is
-/// right-aligned, so long names and long scores can never reach each
-/// other. The map card caps at 235.0 wide by the cell's own limits.
-/// Every gutter below is at least 20 points, and
-/// `the_ledger_columns_never_touch` holds all of it: a wider name
-/// than the budget, or a shrunken plate, fails the test instead of
-/// painting a collision.
-const PROGRESS_PLATE: f32 = 473.0;
-/// The hill-number column's left edge.
-const PROGRESS_NUM_X: f32 = -459.0;
-/// The name column's left edge: a 20-point gutter past the widest
-/// two-digit hill number.
-const PROGRESS_NAME_X: f32 = -391.0;
-/// The score column's right edge — scores right-align, so the name
-/// column always owns its full budget.
-const PROGRESS_SCORE_R: f32 = 206.0;
-/// The map column's centre: a 20-point gutter past the score's right
-/// edge, plus the widest possible card.
-const PROGRESS_MAP_CX: f32 = 344.0;
-
-/// Whether the ledger shows its wrap chevrons. It always does, top
-/// and bottom: they no longer answer "is something hidden?" — they
-/// promise "the other end is one keypress away", and the arrows keep
-/// that promise from any edge by wrapping to the last or first hill
-/// of the descent. Barrfont carries no arrow glyph, so the marks are
-/// drawn chevrons. A descent of one hill has nothing to wrap to and
-/// spends no mark.
-fn progress_marks(total: usize) -> (bool, bool) {
-    let one = total <= 1;
-    (!one, !one)
-}
-
-/// A dragged slider, while the left button holds.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Slider {
-    Ambient,
-    Light,
-}
-
-/// Where on a track a pointer falls, as 0..=1: clamped at both ends,
-/// so the knob lives on the track and a click past its tip sets the
-/// tip.
-fn slide_value(x: f32, track_cx: f32, track_half: f32) -> f32 {
-    ((x - (track_cx - track_half)) / (2.0 * track_half)).clamp(0.0, 1.0)
-}
-
 /// The ambient floor the slider asks for. The track hinges on the
 /// shipped look: the lower half darkens from the night the game was
 /// balanced with (the middle, the default) toward absolute dark, and
@@ -1602,76 +684,16 @@ fn ambient_floor(t: f32) -> Color {
         }
     }
 }
-/// The largest 16:9 box inside a window: native mode's view. A
-/// fixed tier needs no fitting — its buffer *is* 16:9 and the engine
-/// letterboxes the stretch to the window's aspect — but at native
-/// the window is whatever the user dragged, so the game lays itself
-/// out in this box and lets black bars frame what's left over.
-fn fit_16x9(w: f32, h: f32) -> (f32, f32) {
-    let vw = w.min(h * 16.0 / 9.0);
-    (vw, vw * 9.0 / 16.0)
-}
 
-/// A fixed tier's claim on the window's size, and the record of how
-/// that claim is being answered.
-///
-/// The claim outlives its own arrival, which is not the obvious design and
-/// is the whole point of the type. Measured on macOS, coming out of a
-/// fullscreen exit: the request landed — the engine logged the window at
-/// 1920×1080 — and then the desktop resized it away twice more, to 1600×1144
-/// and then to 1600×900, a second and a half later, during a stretch where
-/// the surface was gone and the game was not even running its frames. A
-/// policy that stopped caring the moment the size appeared left the window
-/// exactly there: pinned by nothing, holding neither the tier's pixels nor
-/// the aspect those pixels were chosen for.
-///
-/// So arrival starts a tail of quiet frames instead of ending the watch, and
-/// any deviation during it re-asks. Both bounds are there because the other
-/// answer is worse: a desktop that truly owns this window's geometry — a
-/// tile, a snap, a window rule — gets argued with a bounded number of times
-/// and then told about, rather than forever.
-#[derive(Clone, Copy)]
-struct TierAsk {
-    /// The pixels the tier asked for, which fix the aspect too: one
-    /// promise, not two.
-    w: u32,
-    h: u32,
-    /// Frames since the window was last at those pixels.
-    off: u32,
-    /// Frames it has spent there. `CALM_HOLD` of them and the tier stands
-    /// on its own.
-    calm: u32,
-    /// Asks made in all, counted so the give-up can say how many times it
-    /// knocked.
-    asks: u32,
-}
-
-impl TierAsk {
-    /// Frames spent at the asked size before the move counts as over: half
-    /// a second of a window sitting still. Until then a press queues
-    /// behind it — one move on screen at a time — and after that the tail
-    /// keeps watching in the background and a new press simply replaces the
-    /// ask.
-    const SETTLED: u32 = 30;
-    /// How long the tail runs: five seconds of the window holding still,
-    /// long past anything a compositor might still be doing about a window
-    /// it just left fullscreen.
-    const HOLD: u32 = 300;
-    /// Frames off-size before the desktop is declared the owner of this
-    /// window's geometry, and total asks before the same verdict on a
-    /// window that keeps being moved back.
-    const PATIENCE: u32 = 150;
-    const PATIENCE_ASKS: u32 = 8;
-    /// Frames between asks: six requests in six frames on a compositor
-    /// that answers configures asynchronously is six fights in the log
-    /// instead of one answer.
-    const CADENCE: u32 = 15;
-
-    /// Whether this ask still has a move in flight — off-size, or arrived
-    /// too recently for the desktop to be done with the window.
-    fn in_flight(&self) -> bool {
-        self.off > 0 || self.calm < Self::SETTLED
-    }
+/// Whichever hand last spoke to the game. The tutorial's words are
+/// told twice — once per hand — and this decides which telling the
+/// hill shows: a player who last touched a trigger should not be
+/// lectured about a shift key.
+#[derive(PartialEq, Eq, Default, Clone, Copy)]
+pub(crate) enum InputMode {
+    #[default]
+    Keys,
+    Pad,
 }
 
 struct Demo {
@@ -1760,6 +782,11 @@ struct Demo {
     /// The profiler HUD, compiled in only with `--features diag`.
     #[cfg(feature = "diag")]
     diag: Diagnostics,
+    /// The standard buttons the first pad was pressing last diag
+    /// frame — `--features diag` logs every change of this set, so
+    /// a mystery button names itself the moment it is pressed.
+    #[cfg(feature = "diag")]
+    pad_probe: Vec<frost::Button>,
     font: Arc<[u8]>,
     note: String,
     /// Landing flares: ant id → flash left, 1 down to 0, for ants that
@@ -1822,26 +849,32 @@ struct Demo {
     title_set: bool,
     was: HashMap<KeyCode, bool>,
     was_mouse: HashMap<MouseButton, bool>,
-    /// The repeat clocks of held menu arrows: for each arrow still
-    /// down, the time left before its next step. Written by
-    /// [`Demo::nav_held`] — the first press answers at once and arms
-    /// the delay; each frame held spends the clock down, arming one
-    /// beat per step. A released key simply stops being paid; the
-    /// next press re-arms the whole delay.
-    nav_timer: HashMap<KeyCode, f32>,
+    /// The direction the first gamepad was aimed last frame — the
+    /// stick and the d-pad share one memory, so an aimed pad fires
+    /// one step, the same law as a key's edge.
+    pad_dir: Option<game::Dir>,
+    /// The last frame's face of the pad's watched buttons — Start,
+    /// Cross, Circle — the edge memory [`Demo::pad_pressed`] reads
+    /// and renews, for the buttons no aim can speak.
+    pad_was: HashMap<frost::Button, bool>,
+    /// Which hand last spoke, and where the pointer last stood so
+    /// its motion counts as speaking. See [`InputMode`].
+    last_input: InputMode,
+    last_mouse: Option<[f32; 2]>,
     /// Click-walking: the directions left to walk toward the last
     /// clicked cell, one issued per completed glide.
     route: Vec<game::Dir>,
     /// A best run being shown rather than played: `Some` while a hill
     /// replays itself, with its own keys and its own pace.
     replay: Option<Replay>,
-    leaf_rng: Rng,
-    leaves: Vec<Leaf>,
-    leaves_seeded: bool,
-    /// How many of the deck are currently in the air — thirty in calm
-    /// weather, swelling toward `N_MAX` as the frost deepens.
-    leaves_active: usize,
-    leaf_t: f32,
+    /// The game's one source of randomness: the leaves' deal, the
+    /// zs' jitter, a splash's flare, the wind's gusts — whatever
+    /// wants a number without a reason. Seeded from the clock, so
+    /// no two runs drift the same way.
+    rng: Rng,
+    /// The leaf deck, its clock, and how much of it the frost has
+    /// called into the air. See [`Weather`].
+    weather: Weather,
     /// The hill's shadow cache: the solid-cell list as of the last
     /// merge, and the merged rectangles (cell-space spans, both ends
     /// inclusive) that list earned. Recomputed only when the cells
@@ -1855,24 +888,14 @@ struct Demo {
     /// hill shows through the dimmed panel, paused, until New Game or
     /// Resume opens the gate.
     page: Page,
-    /// The slider currently under the button, if any.
-    drag: Option<Slider>,
-    /// The highlighted row — what the arrow keys walk and Enter
-    /// presses. The one highlight there is: the pointer takes the
-    /// selection over when it moves onto a row, clicks press theirs
-    /// and take it too, and pages reset it to the top as they open.
-    menu_sel: usize,
-    /// Where the pointer stood last menu frame, so motion can be
-    /// told from mere presence: a parked cursor must not out-vote
-    /// the arrow keys.
-    last_pointer: Option<[f32; 2]>,
+    /// The menu's own memory — its highlight, its scroll, its held
+    /// arrows, its drag, its breathing overlay — grouped off the
+    /// struct. See [`MenuNav`].
+    menu: MenuNav,
     /// The live ledger: the disc's scores, plus every hill won since
     /// the game opened. Written when a hill moves and when a hill is
     /// won — the same law the file keeps from the outside.
     progress: Progress,
-    /// The first hill row the progress page shows: the window that
-    /// slides as the selection (or the wheel) walks past its edges.
-    progress_top: usize,
     /// When the last frame beat, in milliseconds on the browser's
     /// clock. The stutter sentinel's only memory: half a second of
     /// silence between beats is worth a line in the console, and a
@@ -1891,42 +914,15 @@ struct Demo {
     bench: Option<f32>,
     bench_t: f32,
     bench_frames: u32,
-    /// The overlay's breath: every menu — main, settings, the won
-    /// hill's panel — fades through this alpha rather than snapping.
-    menu_alpha: f32,
-    /// Which page the overlay paints: the live one while a menu is
-    /// up, and the last one held while the layer fades out.
-    menu_page: Page,
     /// The verdict word and its bright, kept after the splash has
     /// spun itself out: the won panel reads it in the strip above the
     /// plate.
     verdict: Option<(String, Color)>,
-    /// The window takes its first shape on the first frame the
-    /// engine's handle exists: the OS will not size a window that
-    /// has not been born yet.
-    window_policy_pending: bool,
-    /// Diagnostic clock for `--resize-probe`: cycles the real
-    /// resolution row once on a timer, so the window's answer can
-    /// be read from the log without a hand on the mouse.
-    resize_probe: Option<f32>,
-    /// A press that arrived while a move was in flight: one move
-    /// on screen at a time, and the newest rung always gets its
-    /// turn — queued pressed, applied resolved.
-    window_move_queued: bool,
-    /// A fixed tier's standing claim on the window's size — the ask, and
-    /// how the asking is going. See [`TierAsk`] for why it keeps asking
-    /// after it has arrived.
-    window_expect: Option<TierAsk>,
-    /// Frames the window's fullscreen state has disagreed with the
-    /// settings row. The desktop can move that state on its own — a
-    /// green button, a window rule, a shortcut the WM answers itself —
-    /// and the only news of it is the state, so the state is polled,
-    /// the way the size is. The count is the grace, and it is a
-    /// second's worth on purpose: it has to outlive both a compositor
-    /// round trip and macOS's fullscreen animation, because acting
-    /// sooner would mean the game yanking the window out of an
-    /// entrance the desktop was still drawing.
-    fullscreen_drift: u32,
+    /// The window's claim and the desktop's answer, kept together:
+    /// the first-frame policy ask, the standing tier, the queued
+    /// move, the fullscreen drift, and the resize probe. See
+    /// [`WindowPolicy`].
+    window: WindowPolicy,
 }
 
 impl Demo {
@@ -1959,6 +955,16 @@ impl Demo {
             Err(_) => None,
         };
         let levels = level::load_levels(LEVELS);
+        // The lock answers to the hill list: no more doors open than
+        // there are hills, and the tutorials stand open to every
+        // player — the first words a newcomer meets cannot be a
+        // locked door. Held in memory only; the launch still leaves
+        // no fingerprint on the file.
+        let mut progress = progress;
+        progress.unlocked = progress
+            .unlocked
+            .max(TUTORIAL_HILLS.min(levels.len()))
+            .min(levels.len());
         if levels.is_empty() {
             log::error!("antifrost: no levels loaded");
         }
@@ -1993,6 +999,8 @@ impl Demo {
             slab,
             ground: None,
             #[cfg(feature = "diag")]
+            pad_probe: Vec::new(),
+            #[cfg(feature = "diag")]
             diag: Diagnostics::from_bytes(DIAG_FONT, DiagnosticsFlags::all()).unwrap_or_else(
                 |err| {
                     log::error!("antifrost: bad diagnostics font: {err}");
@@ -2020,37 +1028,49 @@ impl Demo {
             frost_bit: false,
             title_set: false,
             was: HashMap::new(),
-            nav_timer: HashMap::new(),
             was_mouse: HashMap::new(),
+            pad_dir: None,
+            pad_was: HashMap::new(),
+            last_input: InputMode::default(),
+            last_mouse: None,
             route: Vec::new(),
             replay: None,
-            leaf_rng: Rng::default(),
-            leaves: Vec::new(),
-            leaves_seeded: false,
-            leaves_active: N_LEAVES,
-            leaf_t: 0.0,
+            rng: Rng::default(),
+            weather: Weather {
+                leaves: Vec::new(),
+                seeded: false,
+                active: N_LEAVES,
+                t: 0.0,
+            },
             occ_key: Vec::new(),
             occ_boxes: Vec::new(),
             settings,
             page: Page::Main,
-            drag: None,
-            menu_sel: 0,
-            last_pointer: None,
+            menu: MenuNav {
+                nav_timer: HashMap::new(),
+                pad_row: None,
+                pad_repeat: 0.0,
+                drag: None,
+                sel: 0,
+                last_pointer: None,
+                progress_top: 0,
+                alpha: 0.0,
+                page: Page::Main,
+            },
             progress,
-            progress_top: 0,
             last_beat: 0.0,
             minimap_atlas: Arc::from([255u8, 255, 255, 255].as_slice()),
             bench: None,
             bench_t: 0.0,
             bench_frames: 0,
-            menu_alpha: 0.0,
-            menu_page: Page::Main,
             verdict: None,
-            window_policy_pending: true,
-            resize_probe: None,
-            window_expect: None,
-            fullscreen_drift: 0,
-            window_move_queued: false,
+            window: WindowPolicy {
+                pending: true,
+                probe: None,
+                expect: None,
+                drift: 0,
+                move_queued: false,
+            },
         };
         // The saved hill, wherever it lands — `load` folds indices
         // past the last level back onto the set that exists.
@@ -2063,11 +1083,16 @@ impl Demo {
     /// on — `reached` carries that across runs, and it never walks
     /// back — clamped to the hills that exist. The progress page
     /// lists this many hills.
-    fn progressed(&self) -> usize {
-        if self.levels.is_empty() {
-            return 0;
-        }
-        self.progress.reached.min(self.levels.len() - 1) + 1
+    /// How many hills the progress board holds: the open descent,
+    /// clamped to the hills that exist. Every reader of the board's
+    /// length — the rows, the chevrons' wrap, the marks, the
+    /// wheel's end of travel — asks this one question, so a win
+    /// that opens a door moves every part of the window together.
+    /// (This once answered to `reached`, the depth ever stood on;
+    /// the lock replaced depth as the board's edge, and a stale
+    /// reader was exactly how the wrap went missing.)
+    fn progress_total(&self) -> usize {
+        self.progress.unlocked.min(self.levels.len())
     }
 
     /// Whether the ledger says a hill's run is done to par: warmed,
@@ -2207,6 +1232,145 @@ impl Demo {
     }
 
     /// Rising-edge key test (the repo idiom: remember last frame's state).
+    /// One frame of the pad read as a step: the d-pad speaks first,
+    /// then the left stick past its dead zone, its dominant axis the
+    /// walked way (`y` positive is up, the sign `pad_action` turns
+    /// the raw axis into). No aim, no step. Pure, so the mapping is
+    /// nailed by tests, not thumbs.
+    fn pad_step(dpad: [bool; 4], x: f32, y: f32) -> Option<game::Dir> {
+        let [up, down, left, right] = dpad;
+        // A d-pad held two ways is no verb: opposing holds cancel,
+        // its diagonals aim nowhere the hill would walk.
+        let vy = i8::from(up) - i8::from(down);
+        let vx = i8::from(right) - i8::from(left);
+        if vy != 0 && vx != 0 {
+            return None;
+        }
+        if vy != 0 {
+            return Some(if vy > 0 {
+                game::Dir::Up
+            } else {
+                game::Dir::Down
+            });
+        }
+        if vx != 0 {
+            return Some(if vx > 0 {
+                game::Dir::Right
+            } else {
+                game::Dir::Left
+            });
+        }
+        if x.abs().max(y.abs()) < 0.5 {
+            return None;
+        }
+        if x.abs() >= y.abs() {
+            Some(if x > 0.0 {
+                game::Dir::Right
+            } else {
+                game::Dir::Left
+            })
+        } else {
+            Some(if y > 0.0 {
+                game::Dir::Up
+            } else {
+                game::Dir::Down
+            })
+        }
+    }
+
+    /// The word in the voice the player last answered to.
+    fn word_for(&self, word: &'static str) -> &'static str {
+        if self.last_input == InputMode::Pad {
+            pad_word(word)
+        } else {
+            word
+        }
+    }
+
+    /// Where the first gamepad aims this frame: the d-pad speaks
+    /// first, then the left stick, in the hill's own sign. `None`
+    /// is rest. The one pad read — the hill's walk and the menu's
+    /// rows aim by the same hand.
+    fn pad_aim(&self, ctx: &Context) -> Option<game::Dir> {
+        let pad = ctx.gamepads().next()?;
+        let held = |b: frost::Button| pad.is_pressed(b);
+        let dpad = [
+            held(frost::Button::DPadUp),
+            held(frost::Button::DPadDown),
+            held(frost::Button::DPadLeft),
+            held(frost::Button::DPadRight),
+        ];
+        let axis = |a: frost::Axis| pad.axis_data(a).map(|d| d.value()).unwrap_or(0.0);
+        let x = axis(frost::Axis::LeftStickX);
+        let raw_y = axis(frost::Axis::LeftStickY);
+        // gilrs hands over each backend's native sign: XInput calls
+        // up positive, the evdev-style macOS and Linux backends call
+        // down positive. The hill thinks in ups, so the evdev sign
+        // turns around at the door.
+        let y = if cfg!(target_os = "windows") {
+            raw_y
+        } else {
+            -raw_y
+        };
+        Self::pad_step(dpad, x, y)
+    }
+
+    /// A gamepad button's press edge: down this frame, up last
+    /// frame. Two laws, learned the hard way: the memory is written
+    /// before any `&&` can skip it — short-circuiting past the write
+    /// pins it at down and silences every press after the first —
+    /// and watched buttons are read every frame, wherever the page.
+    fn pad_pressed(&mut self, ctx: &Context, b: frost::Button) -> bool {
+        let down = ctx.gamepads().next().is_some_and(|p| p.is_pressed(b));
+        let was = self.pad_was.insert(b, down).unwrap_or(false);
+        down && !was
+    }
+
+    /// The pad's menu intents for one frame: (up, down, left, right).
+    /// Vertical follows the keys' hold law — a new aim answers at
+    /// once, a held one keeps stepping on the nav beat; horizontal
+    /// fires once per aim, the arrow-nudge law a slider row lives by.
+    fn pad_nav(&mut self, ctx: &mut Context, dt: f32) -> (bool, bool, bool, bool) {
+        let d = self.pad_aim(ctx);
+        let (fresh, on_beat) = match d {
+            None => {
+                self.menu.pad_row = None;
+                (false, false)
+            }
+            Some(dir) => {
+                if Some(dir) != self.menu.pad_row {
+                    self.menu.pad_row = Some(dir);
+                    self.menu.pad_repeat = NAV_HOLD;
+                    (true, false)
+                } else {
+                    (false, key_repeat(&mut self.menu.pad_repeat, dt))
+                }
+            }
+        };
+        let step = fresh || on_beat;
+        let turn = |want| d == Some(want);
+        (
+            step && turn(game::Dir::Up),
+            step && turn(game::Dir::Down),
+            fresh && turn(game::Dir::Left),
+            fresh && turn(game::Dir::Right),
+        )
+    }
+
+    /// The gamepad's step this frame, if a new one: an aimed pad
+    /// fires once, like a key's press edge — and holding the right
+    /// shoulder (`r1`) or the big trigger behind it (`r2`) turns the
+    /// step into a shove, the pad's own Shift.
+    fn pad_action(&mut self, ctx: &Context) -> Option<(game::Dir, bool)> {
+        let now = self.pad_aim(ctx);
+        let edge = now.filter(|d| Some(*d) != self.pad_dir);
+        self.pad_dir = now;
+        let push = ctx.gamepads().next().is_some_and(|p| {
+            p.is_pressed(frost::Button::RightTrigger) || p.is_pressed(frost::Button::RightTrigger2)
+        });
+        edge.map(|d| (d, push))
+    }
+
     fn pressed(&mut self, ctx: &Context, key: KeyCode) -> bool {
         let down = ctx.key_down(key);
         let edge = down && !*self.was.entry(key).or_insert(false);
@@ -2222,13 +1386,14 @@ impl Demo {
     /// repeat belongs to the walk alone.
     fn nav_held(&mut self, ctx: &Context, dt: f32, key: KeyCode) -> bool {
         if self.pressed(ctx, key) {
-            self.nav_timer.insert(key, NAV_HOLD);
+            self.menu.nav_timer.insert(key, NAV_HOLD);
             return true;
         }
         if !ctx.key_down(key) {
             return false;
         }
-        self.nav_timer
+        self.menu
+            .nav_timer
             .get_mut(&key)
             .is_some_and(|left| key_repeat(left, dt))
     }
@@ -2467,1003 +1632,6 @@ impl Demo {
         self.frost_t += (target - self.frost_t) * (1.0 - (-(dt / 1.2)).exp());
     }
 
-    /// Autumn over the hill: thirty leaves flutter down and drift clean
-    /// out past the bottom edge, re-entering above the window — the
-    /// wind keeps no litter. One step per leaf, then the eleven sprite
-    /// batches are rebuilt whole — with thirty particles, incremental
-    /// bookkeeping would only be a place to hide bugs.
-    fn update_leaves(&mut self, ctx: &mut Context, dt: f32) {
-        let (w, h) = self.view(ctx);
-        // The canopy's parallax: the batches ride a node offset, so the
-        // leaves' own space shows the window shifted by `-off` — spawn,
-        // wrap, and ground all live in that space, which keeps every
-        // re-entry at a visible edge.
-        let off = [
-            -self.cam[0] * ZOOM * LEAF_PARALLAX,
-            -self.cam[1] * ZOOM * LEAF_PARALLAX,
-        ];
-        self.leaf_t += dt;
-        // The weather: past par the gauge climbs, the wind leans out
-        // of the right, and the snow creeps into the deck — all three
-        // capped at double par, where the storm holds its note.
-        let wind_mag = self.frost_t * WIND_MAX;
-        // The emission width answers the wind: upwind reach equal to
-        // the drift a flake performs across its whole fall, so the
-        // gale paints an even sky instead of a bare right edge.
-        let reach = wind_mag * h / WIND_MAX;
-        // A slow shared gust all the leaves hang from — and under it,
-        // once it comes, the gale out of the right.
-        let wind =
-            16.0 * (0.11 * self.leaf_t).sin() + 7.0 * (0.37 * self.leaf_t + 2.1).sin() - wind_mag;
-        let sky = Sky {
-            w,
-            h,
-            off,
-            snow: self.frost_t,
-            reach,
-        };
-        if !self.leaves_seeded {
-            self.leaves_seeded = true;
-            // The deck deals all eighty, but the calm-weather ledger
-            // draws only the first thirty — so seed on the *drawn* lane
-            // grid, not the deck's size. Seeding `lane of N_MAX` put the
-            // visible thirty at the sky's left 3/8; the modulo fills
-            // every drawn lane three times over, so the open frame is
-            // wide even before the storm calls in the rest (who are
-            // re-dealt on activation anyway).
-            self.leaves = (0..N_MAX)
-                .map(|lane| Leaf::fresh(lane % N_LEAVES, N_LEAVES, &sky, &mut self.leaf_rng))
-                .collect();
-            // Scatter the first volley through the air, so the hill
-            // opens already in autumn rather than waiting for a fall.
-            for leaf in &mut self.leaves {
-                leaf.pos[1] = self
-                    .leaf_rng
-                    .in_range(-h / 2.0 - off[1] + 20.0, h / 2.0 - off[1] + 60.0);
-            }
-        }
-        let mut batches = vec![ParticleSystem::default(); LEAVES.len()];
-        // The storm's ledger: thirty in calm weather, swelling toward
-        // eighty as the frost deepens — newcomers are called in from
-        // above, dealt like everything else.
-        let active = (N_LEAVES as f32 + (N_MAX - N_LEAVES) as f32 * self.frost_t) as usize;
-        if active > self.leaves_active {
-            for i in self.leaves_active..active {
-                self.leaves[i] = Leaf::fresh(i, active, &sky, &mut self.leaf_rng);
-            }
-        }
-        self.leaves_active = active;
-        for (i, leaf) in self.leaves.iter_mut().enumerate().take(active) {
-            leaf.phase += leaf.freq * dt;
-            leaf.flip_phase += leaf.flip_freq * dt;
-            let flip = leaf.flip_phase.sin();
-            // A wandering spin: the rate chases a target that is
-            // redrawn at random moments — speeding up, easing off,
-            // sometimes reversing — never a metronome.
-            if self.leaf_t >= leaf.spin_next {
-                leaf.spin_target = self.leaf_rng.in_range(-1.8, 1.8);
-                leaf.spin_next = self.leaf_t + self.leaf_rng.in_range(0.6, 2.4);
-            }
-            leaf.spin_rate += (leaf.spin_target - leaf.spin_rate) * (dt * 2.2).min(1.0);
-            leaf.spin += leaf.spin_rate * dt;
-            // Edge-on, a leaf falls faster; the scale barely notices
-            // (a 6 % whisper), and the size "zoom" the flip used to
-            // pump is gone entirely.
-            let vx = leaf.sway * leaf.phase.cos() + wind;
-            let vy = -leaf.fall * (0.62 + 0.38 * flip.abs());
-            leaf.pos[0] += vx * dt;
-            leaf.pos[1] += vy * dt;
-            leaf.angle = leaf.tilt + 0.45 * leaf.phase.cos() + leaf.spin;
-            // The gust may carry a leaf across the whole width. The
-            // margin clears the fattest leaf's half-width so nothing
-            // pops at an edge.
-            let m = 100.0;
-            if leaf.pos[0] > w / 2.0 - off[0] + m + reach {
-                leaf.pos[0] -= w + 2.0 * m + reach;
-            } else if leaf.pos[0] < -w / 2.0 - off[0] - m {
-                // Taken by the gale: the flake walks back onto the
-                // windward edge, anywhere along the reach and at its
-                // own height — drift and feed stay even. The landing
-                // stays under the edge that wraps the other way: a
-                // range reaching past it would hand the flake straight
-                // back, ping-ponging between margins instead of
-                // walking in.
-                leaf.pos[0] = w / 2.0 - off[0] + self.leaf_rng.in_range(0.0, m + reach);
-            }
-            // Past the bottom and the leaf is simply gone — recycled to
-            // its lane above the window. No pile, no fade.
-            if leaf.pos[1] < -h / 2.0 - off[1] - m {
-                *leaf = Leaf::fresh(i, active, &sky, &mut self.leaf_rng);
-            }
-            batches[leaf.sprite].spawn(Particle {
-                pos: leaf.pos,
-                vel: [vx, vy],
-                // Nothing here dies of old age; nothing here fades.
-                life: 1.0,
-                max_life: 1.0,
-                size: leaf.size * (0.94 + 0.06 * flip.abs()),
-                angle: leaf.angle,
-                color: Color {
-                    r: 1.0,
-                    g: 1.0,
-                    b: 1.0,
-                    a: 1.0,
-                },
-            });
-        }
-        for (node, batch) in ctx.scene().root.children.iter_mut().zip(batches) {
-            node.transform = Transform::translate(off);
-            if let Some(frost::Shape::Particles { system, .. }) = node.shape.as_mut() {
-                *system = batch;
-            }
-        }
-    }
-
-    /// Advance one lamp's breath: the phase turns at the lamp's rate,
-    /// and the exertion chases the speed the lamp is actually
-    /// travelling at — brisk on the way up, gradual on the way down,
-    /// so stopping slows the pace by degrees rather than by switch.
-    /// Phases start scattered on the golden angle, so a dorm of
-    /// sleepers never breathes in chorus. A resting lamp also blooms
-    /// its zs: a burst of two to five, spread over the eighth of a
-    /// breath that leads to the crest, the last z landing exactly on
-    /// the peak of the breath.
-    fn breathe(&mut self, id: usize, at: [f32; 2], resting: bool, dt: f32) {
-        let e = self
-            .breath
-            .entry(id)
-            .or_insert((id as f32 * 2.399_963_3, 0.0, at, resting));
-        if resting && !e.3 {
-            // Sleep does not strike up mid-breath. It starts three
-            // quarters into one, so the first bloom is soon behind
-            // the sleeper — soon, not instant, the way a first yawn
-            // still has to gather.
-            e.0 = 3.0 * std::f32::consts::FRAC_PI_2;
-        }
-        e.3 = resting;
-        let dx = at[0] - e.2[0];
-        let dy = at[1] - e.2[1];
-        e.2 = at;
-        let speed = (dx * dx + dy * dy).sqrt() / dt.max(1e-3);
-        let target = (speed / BREATH_FULL_SPEED).min(1.0);
-        let tau = if target > e.1 {
-            BREATH_UP_TAU
-        } else {
-            BREATH_DOWN_TAU
-        };
-        e.1 += (target - e.1) * (1.0 - (-(dt / tau)).exp());
-        let rate = if resting {
-            BREATH_SLEEP_RATE
-        } else {
-            BREATH_CALM_RATE + (BREATH_WORK_RATE - BREATH_CALM_RATE) * e.1
-        };
-        let prev = e.0;
-        e.0 = (e.0 + dt * rate * std::f32::consts::TAU) % std::f32::consts::TAU;
-        if !resting {
-            self.zbloom.remove(&id);
-            return;
-        }
-        if e.0 < prev {
-            // A breath has just begun: draw the next bloom's lot — how
-            // many zs, and how wide a window. The window is an eighth
-            // of the breath, ± a quarter of itself redrawn every
-            // cycle, always ending its last z on the crest.
-            let n = (self.leaf_rng.in_range(2.0, 5.0).round() as u32).clamp(2, 5);
-            let w = std::f32::consts::FRAC_PI_4 * self.leaf_rng.in_range(0.75, 1.25);
-            self.zbloom
-                .insert(id, (n, std::f32::consts::FRAC_PI_2 - w, w / (n - 1) as f32));
-        }
-        // Angles run from an eighth-turn out to the quarter-turn that
-        // crowns the crest — an eighth of the period, to the last z.
-        let mut fire = 0u32;
-        if let Some(b) = self.zbloom.get_mut(&id) {
-            while b.0 > 0 && prev < b.1 && b.1 <= e.0 {
-                b.0 -= 1;
-                b.1 += b.2;
-                fire += 1;
-            }
-        }
-        for _ in 0..fire {
-            self.spawn_z(at);
-        }
-    }
-
-    /// One z off a sleeper's breath, into the air above its head:
-    /// tilted a random way and never quite the same twice.
-    fn spawn_z(&mut self, at: [f32; 2]) {
-        let jx = self.leaf_rng.in_range(-6.0, 6.0);
-        // Three fifths of the old drift and rise — a sleepy exhale —
-        // and a life stretched by the same factor, so each z still
-        // climbs as high as it ever did, only slower.
-        let vx = self.leaf_rng.in_range(-18.0, 18.0) * 0.6;
-        let vy = self.leaf_rng.in_range(30.0, 48.0) * 0.6;
-        let ttl = self.leaf_rng.in_range(1.6, 2.3) / 0.6;
-        let seed = self.leaf_rng.in_range(0.0, std::f32::consts::TAU);
-        self.zs.push(Zzz {
-            at: [at[0] + jx, at[1] + TILE * 0.34],
-            vel: [vx, vy],
-            age: 0.0,
-            ttl,
-            seed,
-        });
-    }
-
-    // ------------------------------------------------------------- draw
-
-    /// The painted shadow's foot: the ant's place, shifted
-    /// down-right by two world pixels at a walk and one when the
-    /// ant sleeps — `ZOOM`-scaled like the ant's own geometry, so
-    /// the lean is a fixed share of the ant at any window size.
-    fn shadow_at(&self, at: [f32; 2], asleep: bool) -> [f32; 2] {
-        let lean = if asleep {
-            SHADOW_LEAN_ASLEEP
-        } else {
-            SHADOW_LEAN_AWAKE
-        };
-        [at[0] + lean * ZOOM, at[1] - lean * ZOOM]
-    }
-
-    /// Places one baked ant frame as a scene node: centered on `at`,
-    /// turned so the head points along `face`, mirrored for a left walk,
-    /// tinted by `tint`, drawn at `order` — the same z ladder the immediate
-    /// draws use (trail ants ≈ 1.0, the player's silhouette 1.48, the
-    /// player 1.5). `shape` is a walk-cycle frame or its answering
-    /// stencil: a shadow is a real ant laid out exactly as the ant it
-    /// shadows. Cloning the shape just bumps an `Arc`; only the node's
-    /// numbers change from frame to frame.
-    fn put_ant(
-        &self,
-        node: &mut SceneNode,
-        shape: &frost::Shape,
-        at: [f32; 2],
-        face: [f32; 2],
-        tint: Color,
-        lamp: f32,
-    ) {
-        node.shape = Some(shape.clone());
-        // The frames face right. Walking left mirrors the sheet; walking
-        // up or down turns it a quarter, and a mirrored sheet turns the
-        // other way so its head still points where the ant walks.
-        let (sx, ang) = if face[0] < 0.0 {
-            (-1.0, (-face[1]).atan2(-face[0]))
-        } else {
-            (1.0, face[1].atan2(face[0].max(0.0)))
-        };
-        let s = ANT_W * ZOOM / shape.sprite_size().map_or(1.0, |sz| sz[0]).max(1.0);
-        node.transform = Transform::rotate(ang).compose(&Transform::translate(at));
-        node.scale = [sx * s, s];
-        node.modulate = tint;
-        // An ant is not only lit by the night — it carries its own
-        // ember, so the lamp it casts always has a face to stand on
-        // even at the very floor of the ambient. And the ember breathes
-        // with that lamp: the same number the light node was just given,
-        // scaled down, which is why one pulse crosses the snow and the
-        // ant together and why the `light fx` slider takes the glow with
-        // it when it takes the lamps down.
-        node.lit = true;
-        node.emission = shade(tint, EMBER_FLOOR + EMBER_PER_LAMP * lamp);
-        // The halo is the light's color, not the shell's — the core a lamp
-        // throws rather than the cuticle it came from, so an ant's glow is a
-        // whiter, warmer thing than the ant. It rides the same number, and at
-        // no lamp it is black, which the blend answers exactly as it answers
-        // no halo at all: the dark copy under the player asks for neither.
-        node.glow = Some(shade(lamp_core(tint), GLOW_PER_LAMP * lamp));
-    }
-
-    fn draw_ants(&mut self, ctx: &mut Context, dt: f32) {
-        let Some(game) = &self.game else { return };
-        // Chain link line: player → head → … → tail.
-        if !game.trail.is_empty() {
-            let mut pts: Vec<[f32; 2]> = vec![self.screen(self.player_at)];
-            for i in 0..game.trail.len() {
-                if let Some(g) = self.glides.get(&game.trail[i]) {
-                    pts.push(self.screen(g.at));
-                }
-            }
-            for w in pts.windows(2) {
-                ctx.line(
-                    w[0][0],
-                    w[0][1],
-                    w[1][0],
-                    w[1][1],
-                    Color {
-                        r: 0.55,
-                        g: 0.44,
-                        b: 0.32,
-                        a: 0.65,
-                    },
-                    2.0,
-                    0.6,
-                );
-            }
-        }
-        // Facing for trail ants: toward whoever they follow.
-        let mut facing: HashMap<usize, [f32; 2]> = HashMap::new();
-        for i in 0..game.trail.len() {
-            let id = game.trail[i];
-            let ahead = if i == 0 {
-                self.player_at
-            } else {
-                self.glides
-                    .get(&game.trail[i - 1])
-                    .map(|g| g.at)
-                    .unwrap_or([0.0, 0.0])
-            };
-            let here = self.glides.get(&id).map(|g| g.at).unwrap_or([0.0, 0.0]);
-            let (dx, dy) = (ahead[0] - here[0], ahead[1] - here[1]);
-            let f = if dx.abs() >= dy.abs() {
-                [dx.signum(), 0.0]
-            } else {
-                [0.0, dy.signum()]
-            };
-            facing.insert(id, if f == [0.0, 0.0] { [-1.0, 0.0] } else { f });
-        }
-        // One scene node per ant, one painted shadow under each, and
-        // a pair more for the queen, hung on the root after the leaf
-        // batches. Frame index is the walk-cycle clock: every awake
-        // ant cycles, standing still or striding; an asleep ant
-        // always draws frame one, dimmed.
-        let frame_of = |anim: f32, asleep: bool| {
-            if asleep {
-                0
-            } else {
-                ((anim * ANT_WALK_FPS) as usize) % ANT_FRAMES.len()
-            }
-        };
-        // The hill's solid cells are soil too: the same sprite the
-        // ground wears, shrunk from a thousand pixels to a tile's two
-        // hundred, so the grain the background can only whisper, the
-        // walls shout — one material at two distances is the whole
-        // depth trick. Sprites only ride scene nodes, so the hill's
-        // rock and dirt are rebuilt each frame from a pool sized to
-        // the count the level holds — and as nodes they join the light
-        // field: they receive the ants' lamps, and they occlude them,
-        // so a wall between an ant and a pixel puts that pixel in
-        // shadow. Dirt is the same sprite, tinted toward the old C_DIRT
-        // brown: loose earth, kin to the wall.
-        let tiles: Vec<(i32, i32, bool)> = (0..game.level.rows as i32)
-            .flat_map(|row| (0..game.level.cols as i32).map(move |col| (row, col)))
-            .filter_map(|(row, col)| {
-                let rock = matches!(game.tile(game::Cell::new(col, row)), level::Tile::Rock);
-                let dirt = matches!(game.tile(game::Cell::new(col, row)), level::Tile::Dirt);
-                (rock || dirt).then_some((row, col, rock))
-            })
-            .collect();
-        // Slots: leaves, ants, a painted shadow per ant, the player
-        // pair, one lamp per ant plus the player's, the single tile
-        // map holding every solid, a beacon and a sprite per bed
-        // (two apiece), the dig band — one slot per dirt cell the
-        // hill began with, the ceiling on simultaneous dissolves —
-        // and the two backdrop sprites.
-        let slots =
-            LEAVES.len() + game.ants.len() * 3 + 6 + game.level.beds.len() * 2 + self.dig_cap;
-        fit_pool(&mut ctx.scene().root, slots);
-        // A hill swap moves every band: the pool grew or shrank, so a
-        // node that wore an ember or a dissolve last hill can stand
-        // under the backdrop today. The sheet blocks dress shape,
-        // colour and light but never `emission` or `glow` — a
-        // backdrop wearing a dead dig's glow reads as sky on fire —
-        // so once per swap the pool is washed to its resting state,
-        // before any band re-dresses what it wears this frame.
-        if self.pool_reset {
-            self.pool_reset = false;
-            wash_pool(&mut ctx.scene().root);
-        }
-        // Every ant is a lamp, and every lamp breathes: at rest a
-        // gentle sway, working a deeper faster pulse, and stopping
-        // winds the pace down by degrees. Asleep keeps only a faint
-        // slow pulse on the dark — the dorm breathes, it does not go
-        // out — and the tuck-in spike burns loud over it. The player
-        // is an ant too, and the queen's bed is her target: same
-        // breath, same flare.
-        // Every lamp's strength for this frame, in the units the light nodes
-        // get — index `game.ants.len()` is the player's, who is an ant too.
-        // The shells read it back below, because an ember and a halo are the
-        // breath the snow already sees, not a second pulse to keep in step.
-        let mut lamps = vec![0.0; game.ants.len() + 1];
-        {
-            let reach = TILE * ZOOM * LAMP_REACH;
-            let base = LEAVES.len() + game.ants.len() + 2;
-            for (id, lamp) in lamps[..game.ants.len()].iter_mut().enumerate() {
-                let node = &mut ctx.scene().root.children[base + id];
-                let Some(g) = self.glides.get(&id) else {
-                    node.shape = None;
-                    continue;
-                };
-                let asleep = matches!(game.ants[id].state, game::AntState::Asleep(_));
-                let flare = self.landing.get(&id).copied().unwrap_or(0.0);
-                let (phase, exertion, ..) = self
-                    .breath
-                    .get(&id)
-                    .copied()
-                    .unwrap_or((0.0, 0.0, [0.0; 2], false));
-                let intensity = if asleep {
-                    BREATH_SLEEP_BASE + BREATH_SLEEP_AMP * phase.sin() + flare * 3.0
-                } else {
-                    BREATH_LAMP_BASE
-                        + (BREATH_CALM_AMP + (BREATH_WORK_AMP - BREATH_CALM_AMP) * exertion)
-                            * phase.sin()
-                };
-                if intensity <= 0.0 {
-                    node.shape = None;
-                    continue;
-                }
-                // A little white in the core, the ant's own hue in the
-                // throw of it.
-                let col = lamp_core(ant_color(game.ants[id].color));
-                node.shape = Some(frost::Shape::Light {
-                    light: frost::Light::point(col, intensity * self.settings.light, reach)
-                        .with_penumbra(self.settings.shadows.penumbra())
-                        .with_shadow_taps(self.settings.shadows.taps()),
-                });
-                node.transform = Transform::translate(self.screen(g.at));
-                *lamp = intensity * self.settings.light;
-            }
-            // The player breathes with the rest: a working pulse on
-            // the walk, the queen's bed a loud spike, and then the
-            // faint slow sway of the tucked-in.
-            let node = &mut ctx.scene().root.children[base + game.ants.len()];
-            let (phase, exertion, ..) = self
-                .breath
-                .get(&game.ants.len())
-                .copied()
-                .unwrap_or((0.0, 0.0, [0.0; 2], false));
-            let intensity = match self.player_home {
-                Some(t) => BREATH_SLEEP_BASE + BREATH_SLEEP_AMP * phase.sin() + t * 4.5,
-                None => {
-                    BREATH_LAMP_BASE
-                        + (BREATH_CALM_AMP + (BREATH_WORK_AMP - BREATH_CALM_AMP) * exertion)
-                            * phase.sin()
-                }
-            };
-            if intensity > 0.0 {
-                node.shape = Some(frost::Shape::Light {
-                    light: frost::Light::point(
-                        Color {
-                            r: 1.0,
-                            g: 0.86,
-                            b: 0.66,
-                            a: 1.0,
-                        },
-                        intensity * self.settings.light,
-                        reach,
-                    )
-                    .with_penumbra(self.settings.shadows.penumbra())
-                    .with_shadow_taps(self.settings.shadows.taps()),
-                });
-            } else {
-                node.shape = None;
-            }
-            node.transform = Transform::translate(self.screen(self.player_at));
-            lamps[game.ants.len()] = intensity.max(0.0) * self.settings.light;
-        }
-        // The map as a window, in two sprites. Behind: the far
-        // background — the map's own rectangle, plus the one slack its
-        // own drift demands — drifting at `DEEP_PARALLAX` of the
-        // camera. The drift is camera-absolute and the camera chases
-        // the player anywhere on the hill, so the hole can sit off the
-        // sprite's centre by `(1 − DEEP_PARALLAX)` of the camera's
-        // reach — up to that fraction of half the map. Size for the
-        // worst case and the slack lies under the ground sheet,
-        // forever invisible; undersize it and the hole outruns the
-        // sprite into a band of `C_BG`, which is what launched.
-        // In front: the ground sheet — flat, in the window's original
-        // `Background` colour — welded to the board's speed at 1.0,
-        // whose punched hole hides every far edge the hole does not
-        // contain.
-        {
-            let [tw, th] = self.soil.sprite_size().unwrap_or([1.0, 1.0]);
-            let cw = game.level.cols as f32 * TILE * ZOOM;
-            let ch = game.level.rows as f32 * TILE * ZOOM;
-            let slack = |m: f32| m * (1.0 - DEEP_PARALLAX) * 0.5 * 1.05;
-            let node = &mut ctx.scene().root.children[slots - 1];
-            node.shape = Some(self.soil.clone());
-            node.transform = Transform::translate([
-                -self.cam[0] * ZOOM * DEEP_PARALLAX,
-                -self.cam[1] * ZOOM * DEEP_PARALLAX,
-            ]);
-            node.scale = [(cw + 2.0 * slack(cw)) / tw, (ch + 2.0 * slack(ch)) / th];
-            node.modulate = Color {
-                r: 0.45,
-                g: 0.4,
-                b: 0.38,
-                a: 1.0,
-            };
-            node.lit = true;
-            // The deep parallax sheet listens on the shadow layer beside
-            // the default one: the lamps still reach it (layer 0 is in the
-            // set), and it is the only surface the hill's tile shadows land
-            // on (see [`BG_SHADOW_LAYER`]).
-            node.lit_layers = LightLayers::default() | BG_SHADOW_LAYER;
-            node.order = -0.5;
-        }
-        if let Some((shape, span)) = &self.ground {
-            let [gw, gh] = shape.sprite_size().unwrap_or([1.0, 1.0]);
-            let node = &mut ctx.scene().root.children[slots - 2];
-            node.shape = Some(shape.clone());
-            node.transform = Transform::translate(self.screen([0.0, 0.0]));
-            node.scale = [span[0] / gw, span[1] / gh];
-            node.modulate = Color {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 1.0,
-            };
-            // Lit but not occluding — and, listening on plain layer 0
-            // like everything but the sheet, not shadowed either: a
-            // lamp near the edge throws its emission onto the
-            // surrounding ground through the border hairlines, and
-            // the tiles' shadows stay where they belong, on the sky
-            // behind the hill.
-            node.lit = true;
-            node.order = -0.4;
-        }
-        // Painted occlusion is a rectangle's privilege — a sprite's
-        // body casts no shadow on the flag alone — so the hill's solid
-        // cells declare their boxes here. But every occluder the field
-        // carries is tested by every fragment any light reaches, so
-        // one box per tile at 4K is a frame budget in chains: instead,
-        // the cells merge into a small cover of boxes — row runs, equal
-        // spans stacked, and a fixpoint pass over the result (see
-        // [`merge_boxes`]). A merged cover casts the same shadow its
-        // tiles ever did — the tile hairlines that used to leak a thread
-        // of light measure a pixel, and a merged edge is invisible
-        // against the row it belongs to.
-        //
-        // The merge itself is cached on the cell list: the hill is
-        // static between digs, so the run scan, the sort, and the walk
-        // re-run only when the cells actually change. What every frame
-        // does instead is re-pack the cached rectangles into screen
-        // space — the camera pan forces fresh pixel-space boxes either
-        // way, but packing cached runs is arithmetic where merging is
-        // search, and the frames between digs are the overwhelming
-        // majority of the game.
-        {
-            let ts = TILE * ZOOM;
-            if tiles != self.occ_key {
-                self.occ_boxes = merge_boxes(&tiles);
-                self.occ_key.clone_from(&tiles);
-            }
-            // Off, the field never learns of a single occluder: the
-            // packer hands every light an empty block, `occluded`
-            // answers without one record load, and the hill pays only
-            // for the lamps' arithmetic — the weak-hardware shape of
-            // this renderer, decided at the menu rather than in the
-            // shader.
-            for &(col_s, col_e, row0, row1) in self
-                .occ_boxes
-                .iter()
-                .filter(|_| self.settings.shadows != Shadow::None)
-            {
-                let [x0, y0] = self.screen(self.cell_px(game::Cell::new(col_s, row0)));
-                let [x1, y1] = self.screen(self.cell_px(game::Cell::new(col_e, row1)));
-                // Full cells, not drawn tiles: the hairline inset is a
-                // detail of the grain, while the hill's body is solid
-                // to the grid — so the shadow must be too. And the
-                // shadow goes only where [`BG_SHADOW_LAYER`] reaches:
-                // the merged boxes darken the far background behind the
-                // hill, never the tiles that cast them, never an ant
-                // walking beside them — a wall that shades the sky it
-                // stands against while the floor it stands on sees no
-                // shadow at all is exactly the hill's demand.
-                ctx.occluder_layers(
-                    Transform::translate([(x0 + x1) * 0.5, (y0 + y1) * 0.5]),
-                    [0.0, 0.0],
-                    [((x1 - x0) + ts) * 0.5, ((y0 - y1) + ts) * 0.5],
-                    BG_SHADOW_LAYER,
-                );
-            }
-        }
-        {
-            // The hill's solids draw as one tile map: every wall and
-            // dirt cell is a placement sharing the soil atlas, drawn
-            // instanced in a single call — the engine's answer to the
-            // per-cell node pool this replaces. Placements ride the
-            // node's space, which is the screen's here; tint per tile
-            // — rock bare soil, dirt the old C_DIRT, both keeping the
-            // standing jitter — and the whole map lights as one
-            // surface. The shadows are the merged boxes declared
-            // above: batched art and shadow arithmetic are separate
-            // problems, and only one of them is a draw call.
-            let mut map = self.tile_atlas.clone();
-            let inset = TILE * ZOOM - 1.5;
-            let wall = Color {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 1.0,
-            };
-            let dirt_tint = Color {
-                r: C_DIRT.r * 2.2,
-                g: C_DIRT.g * 2.2,
-                b: C_DIRT.b * 2.2,
-                a: 1.0,
-            };
-            map.set_tiles(tiles.iter().map(|(row, col, rock)| {
-                let [x, y] = self.screen(self.cell_px(game::Cell::new(*col, *row)));
-                let noise = 1.0 + ((col * 31 + row * 17) % 3) as f32 * 0.045;
-                let mut tile = Tile::new([x, y], [inset, inset], [0.0, 0.0, 1.0, 1.0]);
-                tile.color = shade(if *rock { wall } else { dirt_tint }, noise);
-                tile
-            }));
-            let node = &mut ctx.scene().root.children[LEAVES.len() + game.ants.len() * 2 + 3];
-            node.shape = Some(map);
-            node.transform = Transform::translate([0.0, 0.0]);
-            node.scale = [1.0, 1.0];
-            node.modulate = wall;
-            node.lit = true;
-            node.order = 0.0;
-        }
-        // The beds are the hill's beacons: each carries a faint light
-        // of its own colour — enough to find across a dark room and to
-        // aim a push by, never enough to light one. They burn always:
-        // a taken bed stays self-lit, the target outlives the ant.
-        {
-            let base = LEAVES.len() + game.ants.len() * 2 + 4;
-            for (i, (cell, color)) in game.level.beds.iter().enumerate() {
-                let node = &mut ctx.scene().root.children[base + i];
-                node.shape = Some(frost::Shape::Light {
-                    light: frost::Light::point(
-                        ant_color(*color),
-                        0.5 * self.settings.light,
-                        TILE * ZOOM * 1.3,
-                    )
-                    .with_penumbra(self.settings.shadows.penumbra())
-                    .with_shadow_taps(self.settings.shadows.taps()),
-                });
-                node.transform = Transform::translate(self.screen(self.cell_px(*cell)));
-            }
-        }
-        // And the beds receive as well as give: the user's own bed
-        // sprite, square on the cell, lit by the beacon it sleeps
-        // under and every lamp that reaches it.
-        {
-            let base = LEAVES.len() + game.ants.len() * 2 + 4 + game.level.beds.len();
-            let [tw, th] = self.bed.sprite_size().unwrap_or([1.0, 1.0]);
-            let s = (TILE * ZOOM - 2.0) / tw.max(th);
-            for (i, (cell, color)) in game.level.beds.iter().enumerate() {
-                let node = &mut ctx.scene().root.children[base + i];
-                node.shape = Some(self.bed.clone());
-                node.transform = Transform::translate(self.screen(self.cell_px(*cell)));
-                node.scale = [s, s];
-                // Each bed wears its sleeper's colour — the sprite is
-                // the modulate's base cloth, not the other way round.
-                node.modulate = ant_color(*color);
-                node.lit = true;
-                node.order = 0.05;
-            }
-        }
-        // The shadow band: the pool grew one slot per ant, and the
-        // beds ended where the backdrops' two-anchor tail begins —
-        // so the new slots land between, and every expression above
-        // this line keeps counting as it always did.
-        let sh_base = LEAVES.len() + game.ants.len() * 2 + 4 + game.level.beds.len() * 2;
-        for (id, &lamp) in lamps[..game.ants.len()].iter().enumerate() {
-            let Some(g) = self.glides.get(&id) else {
-                continue;
-            };
-            let asleep = matches!(game.ants[id].state, game::AntState::Asleep(_));
-            let face = *facing.get(&id).unwrap_or(&[1.0, 0.0]);
-            let col = ant_color(game.ants[id].color);
-            let col = if asleep {
-                // Tucked in: blaze loud, then fade to the dim sleeping
-                // variant. The flare's modulate runs past white and
-                // lets the framebuffer clamp it — the clamp is what
-                // makes loud look loud. The hold-then-fade curve keeps
-                // the blaze a heartbeat before it dims.
-                let dim = shade(col, 0.55);
-                let k = (self.landing.get(&id).copied().unwrap_or(0.0) * 1.7).min(1.0);
-                blaze(
-                    dim,
-                    Color {
-                        r: col.r * 2.4 + 0.9,
-                        g: col.g * 2.4 + 0.9,
-                        b: col.b * 2.4 + 0.9,
-                        a: 1.0,
-                    },
-                    k,
-                )
-            } else if matches!(game.ants[id].state, game::AntState::Wild(_)) {
-                shade(col, 0.88)
-            } else {
-                col
-            };
-            let z = 1.0 + g.at[1] * 1e-4;
-            let node = &mut ctx.scene().root.children[LEAVES.len() + id];
-            let at = self.screen(g.at);
-            // Facings turn, never snap: toward travel on foot, toward
-            // the ceiling when tucked in.
-            let want_face = if asleep { [0.0, 1.0] } else { face };
-            let rf = self.render_face.entry(id).or_insert(want_face);
-            *rf = turn_toward(*rf, want_face, TURN_RATE * dt);
-            let rf = *rf;
-            self.put_ant(
-                node,
-                &self.ant_frames[frame_of(g.anim, asleep)],
-                at,
-                rf,
-                col,
-                lamp,
-            );
-            node.order = z;
-            // And the painted shadow: the queen's trick for every
-            // ant — its own stencil, silhouette in pure ink, leaned
-            // down-right (two world pixels walking, one asleep),
-            // parked a hair under its ant's
-            // rung on the z ladder so every shadow rides its own
-            // ant.
-            let sh = &mut ctx.scene().root.children[sh_base + id];
-            self.put_ant(
-                sh,
-                &self.ant_stencils[frame_of(g.anim, asleep)],
-                self.shadow_at(at, asleep),
-                rf,
-                ANT_SHADOW,
-                0.0,
-            );
-            sh.order = z - 2e-4;
-        }
-        // The dig band: one dissolve quad per live countdown, right
-        // where the shadow band ends and the tail begins. The tile
-        // map has already forgotten the cell — the dig took it the
-        // same frame the countdown started — so this node is the last
-        // dirt it was, eating itself over the length of the hop.
-        // `modulate` rides white and the program does its own
-        // tinting: `glow` carries the cell's dirt color, noise and
-        // all (the same tint the tile map wore), and `emission`
-        // carries the eat — progress across the hop, the cell's seed,
-        // the band's softness. One rung above the tile map, below the
-        // beds, under every ant.
-        {
-            let base = LEAVES.len() + game.ants.len() * 3 + 4 + game.level.beds.len() * 2;
-            let inset = TILE * ZOOM - 1.5;
-            let [tw, th] = self.dissolve.sprite_size().unwrap_or([1.0, 1.0]);
-            let dirt_tint = Color {
-                r: C_DIRT.r * 2.2,
-                g: C_DIRT.g * 2.2,
-                b: C_DIRT.b * 2.2,
-                a: 1.0,
-            };
-            for (i, &(col, row, left, seed)) in self.digs.iter().enumerate() {
-                let node = &mut ctx.scene().root.children[base + i];
-                let noise = 1.0 + ((col * 31 + row * 17) % 3) as f32 * 0.045;
-                node.shape = Some(self.dissolve.clone());
-                node.transform =
-                    Transform::translate(self.screen(self.cell_px(game::Cell::new(col, row))));
-                node.scale = [inset / tw, inset / th];
-                node.modulate = Color {
-                    r: 1.0,
-                    g: 1.0,
-                    b: 1.0,
-                    a: 1.0,
-                };
-                node.emission = Color {
-                    r: 1.0 - (left / DIG_HOP).clamp(0.0, 1.0),
-                    g: seed,
-                    b: 0.14,
-                    // The grain, as the shelf counts it: five noise
-                    // cycles across a dig cell — the lattice hides
-                    // inside one organic bite at a tile's scale.
-                    a: 5.0,
-                };
-                node.glow = Some(shade(dirt_tint, noise));
-                node.lit = true;
-                node.lit_layers = LightLayers::default();
-                node.order = 0.02;
-            }
-            for node in &mut ctx.scene().root.children[base + self.digs.len()..base + self.dig_cap]
-            {
-                // Released digs go back to the pool whole: a node
-                // that only stopped drawing still wears its last
-                // frame's fx, and any band that inherits this slot
-                // next would wear a dissolve it never asked for.
-                node.shape = None;
-                rest_light(node);
-            }
-        }
-        // The zs: one born at each breath's crest, adrift and growing
-        // from a small z to a full Z, wandering one way and then the
-        // other, and thinning out as it climbs. Immediate text rides
-        // above the dark like every other word in the game.
-        for zz in &self.zs {
-            let k = (zz.age / zz.ttl).min(1.0);
-            let [x, y] = self.screen([
-                zz.at[0] + 8.0 * (zz.seed + zz.age * 1.56).sin() * k,
-                zz.at[1],
-            ]);
-            ctx.text(
-                x,
-                y,
-                &self.font,
-                "z",
-                // Whole points only: the glyph atlas is keyed by size,
-                // and a z that grew through fractional sizes would
-                // bake itself a fresh atlas every frame.
-                (16.0 + 36.0 * k).round(),
-                700.0,
-                Color {
-                    r: C_DIM.r,
-                    g: C_DIM.g,
-                    b: C_DIM.b,
-                    a: 1.0 - k * k,
-                },
-                1.56,
-            );
-        }
-        // The player: a translucent twin of the same frame a couple
-        // of pixels off — the same painted shadow the whole colony
-        // wears, since the queen reads best when she reads like them
-        // — with her own frame on top.
-        let n = game.ants.len();
-        let frame = frame_of(self.player_anim, false);
-        {
-            let root = &mut ctx.scene().root;
-            let back = n;
-            let player = n + 1;
-            let at = self.screen(self.player_at);
-            let shadowed = &mut root.children[LEAVES.len() + back];
-            self.put_ant(
-                shadowed,
-                &self.ant_stencils[frame],
-                self.shadow_at(at, self.player_home.is_some()),
-                self.player_face,
-                ANT_SHADOW,
-                0.0,
-            );
-            shadowed.order = 1.48;
-            // The queen carries a lamp of her own — the breath written on her
-            // node above — so she wears the same ember and the same halo as
-            // any ant, at her light's own strength. And she flashes on the bed
-            // like one: her spike always reached her lamp and never her pixels,
-            // which is why her tuck-in lit the snow and left her out of it. The
-            // same hold-then-drain curve the ants ride, on the amber.
-            let queen = &mut root.children[LEAVES.len() + player];
-            self.put_ant(
-                queen,
-                &self.ant_frames[frame],
-                at,
-                self.player_face,
-                blaze(
-                    ant_color(game::AntColor::White),
-                    CROWN_BLAZE,
-                    (self.player_home.unwrap_or(0.0) * 1.7).min(1.0),
-                ),
-                lamps[n],
-            );
-            queen.order = 1.5;
-        }
-    }
-
-    /// Draw the verdict: one clean spin from a speck, eased so the
-    /// speck lingers tiny before it blooms to half the screen; a
-    /// heartbeat at full size; then the fade to the hill's own words.
-    /// The four held-centre messages, one screen and one voice: the
-    /// tour's answer to its own praise — in the praise words' own
-    /// case, twice the banner's size, over the still won hill while
-    /// `better_t` counts down, the hill dealing itself again on the
-    /// better script as the hold runs out — the oops deck's two
-    /// admissions over the hill sulking on its single mistake and
-    /// then on its pair — and the cheap dig's send-off to a pupil
-    /// who has just taken the dig. All four hang at the same
-    /// height: a quarter of the screen down from the top, clear of
-    /// the queen's marks and the foot words below.
-    fn draw_better(&self, ctx: &mut Context) {
-        let note = if self.better_t > 0.0 {
-            BETTER_NOTE
-        } else if self.mistake_t > 0.0 {
-            if self.disaster_standing() {
-                NOT_AGAIN_NOTE
-            } else {
-                MISTAKE_NOTE
-            }
-        } else if self.send_t > 0.0 {
-            SEND_OFF_NOTE
-        } else {
-            return;
-        };
-        let (_, h) = self.view(ctx);
-        ctx.text(
-            0.0,
-            h * 0.25,
-            &self.font,
-            note.to_string(),
-            BETTER_EM,
-            600.0,
-            C_TEXT,
-            UI + 1.0,
-        );
-    }
-
-    fn draw_splash(&self, ctx: &mut Context) {
-        let Some(s) = &self.splash else { return };
-        let (w, _) = self.view(ctx);
-        let k = (s.t / s.grow).min(1.0);
-        let e = k * k * (3.0 - 2.0 * k);
-        // The word is baked once, at one fixed size, and the growth
-        // rides the node's scale: the whole splash needs exactly one
-        // glyph atlas, and the bloom is smooth at every step.
-        const SPLASH_EM: f32 = 200.0;
-        // Full growth: the word fills half the screen's width.
-        let scale = (e * w / (1.3 * SPLASH_EM * s.text.len().max(4) as f32)).max(0.002);
-        // Five full turns — a quarter faster spinning than four —
-        // landing on the drawn tilt within 45 degrees of level; the
-        // random growth time keeps the landing unpredictable, the
-        // angle is simply where the turn stops.
-        let angle = (5.0 * std::f32::consts::TAU + s.end) * e;
-        let alpha = if s.t <= s.grow + Splash::HOLD {
-            1.0
-        } else {
-            (1.0 - (s.t - s.grow - Splash::HOLD) / Splash::FADE).max(0.0)
-        };
-        // The example's own font Arc, handed over whole: the glyph
-        // atlas is keyed on the buffer's pointer, and a fresh Arc per
-        // frame (what `text_bytes` builds) would mint a fresh atlas
-        // every frame — the flicker this line is careful about.
-        let mut shape =
-            match frost::Shape::text_shared(Arc::clone(&self.font), s.text.clone(), SPLASH_EM) {
-                Ok(shape) => shape,
-                Err(_) => return,
-            };
-        if let frost::Shape::Text {
-            color, alpha: a, ..
-        } = &mut shape
-        {
-            *color = s.color;
-            *a = alpha;
-        }
-        ctx.scene().root.children.push(Box::new(SceneNode {
-            shape: Some(shape),
-            transform: Transform::rotate(angle),
-            scale: [scale, scale],
-            order: UI + 1.0,
-            ..Default::default()
-        }));
-    }
-
-    /// One banner row from measured pieces laid end to end, the whole
-    /// line centred as a string would be. The widths come from the
-    /// engine's shaping — measured additive, checked — so measure and
-    /// paint cannot drift apart. Runs carry no spaces: Barrfont's own
-    /// space is 7.5 px at 30, nearly invisible under small caps, so
-    /// every gap here is an explicit fraction of the size instead.
-    fn banner(
-        &self,
-        ctx: &mut Context,
-        cy: f32,
-        size: f32,
-        weight: f32,
-        runs: &[(&str, Color, f32)],
-    ) {
-        // Measured first, drawn after: the shaping asks the canvas
-        // read-only, the paint takes it back.
-        let widths: Vec<f32> = runs
-            .iter()
-            .map(|(t, _, _)| ctx.text_width(&self.font, t, size, weight))
-            .collect();
-        let total: f32 =
-            widths.iter().sum::<f32>() + runs.iter().map(|(_, _, gap)| gap * size).sum::<f32>();
-        let mut x = -total / 2.0;
-        for ((text, colour, gap), w) in runs.iter().zip(widths) {
-            let half = w / 2.0;
-            ctx.text(
-                x + half,
-                cy,
-                &self.font,
-                (*text).to_string(),
-                size,
-                weight,
-                // One over the veil's head (its base, below the plate
-                // and rows): the hill's record rides above the fade,
-                // fully lit while any menu is up — a simple z, where
-                // colours pushed past 1.0 would only meet the 8-bit
-                // buffer's clamp.
-                *colour,
-                UI + 10.5,
-            );
-            x += w + gap * size;
-        }
-    }
-
     /// The rectangle the game lays itself out in. See [`fit_16x9`]:
     /// a fixed tier's canvas size already *is* the 16:9 view (the
     /// engine letterboxes the stretch itself); native fits it in.
@@ -3473,142 +1641,6 @@ impl Demo {
             (w, h)
         } else {
             fit_16x9(w, h)
-        }
-    }
-
-    /// Black bars from the view's edge to the window's, above
-    /// everything the game owns. Nothing draws outside the view, so
-    /// the bars only ever cover the backdrop and the backdrop's
-    /// darkness — they frame the picture and touch nothing else.
-    fn draw_letterbox(&self, ctx: &mut Context) {
-        let (w, h) = ctx.size();
-        let (vw, vh) = self.view(ctx);
-        let black = Color {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 1.0,
-        };
-        let z = UI + 20.0;
-        if w - vw > 0.5 {
-            let d = (w - vw) / 4.0;
-            ctx.rectangle(-(vw + w) / 4.0, 0.0, d, h / 2.0, black, z);
-            ctx.rectangle((vw + w) / 4.0, 0.0, d, h / 2.0, black, z);
-        }
-        if h - vh > 0.5 {
-            let d = (h - vh) / 4.0;
-            ctx.rectangle(0.0, (vh + h) / 4.0, w / 2.0, d, black, z);
-            ctx.rectangle(0.0, -(vh + h) / 4.0, w / 2.0, d, black, z);
-        }
-    }
-
-    /// Bring the OS window to what the tier and the fullscreen flag
-    /// ask for. A fixed windowed tier gets a window of exactly the
-    /// buffer's pixels and no resize handle — picture and window are
-    /// one rectangle, and the 16:9 question never comes up. Native
-    /// takes the resize handle back: the user drags any shape, and
-    /// [`fit_16x9`] keeps the game a 16:9 picture inside it.
-    /// Fullscreen leaves the window to the display and the engine's
-    /// letterboxed stretch to keep 16:9 on non-16:9 monitors.
-    /// Whether the window is mid-move: a tier's ask that is either off-size or
-    /// arrived so recently the desktop may still be dragging the window. One
-    /// move on screen at a time, so a press during one queues behind it —
-    /// behind the *move*, not behind the tail that keeps watching it.
-    fn in_flight(&self) -> bool {
-        self.window_expect.as_ref().is_some_and(TierAsk::in_flight)
-    }
-
-    fn apply_window_policy(&mut self, ctx: &mut Context) {
-        let Some(window) = ctx.window() else {
-            return;
-        };
-        log::info!(
-            "window policy: ask {:?} (before {}x{}, fullscreen {})",
-            self.settings.quality.size(),
-            window.inner_size().width,
-            window.inner_size().height,
-            self.settings.fullscreen,
-        );
-        // The browser owns the window on web, so this whole policy is a
-        // desktop concern — above all the size ask, which on web writes a CSS
-        // width and height onto the canvas and puts a 1920×1080 hill inside a
-        // 1366×682 page, its bottom and right third past the edge of the
-        // screen. The engine sizes the canvas to the viewport and keeps it
-        // there; the rung still decides the frame's quality on web, only not
-        // by deciding how big the page is.
-        if cfg!(target_arch = "wasm32") {
-            return;
-        }
-        // One move on screen at a time: a press during an in-flight
-        // move re-aims it when that move resolves — half-moves
-        // stacking up mid-flight is what flickered.
-        if self.in_flight() {
-            self.window_move_queued = true;
-            log::info!("window policy: move in flight, re-aim queued");
-            return;
-        }
-        // Touch fullscreen only when the ask differs from the
-        // state: winit rewrites the window's whole state list on
-        // every call (X11 especially), and states it does not know
-        // — like KWin's tile atom — die in the rewrite. KWin
-        // notices its tile was yanked and retiles: the window
-        // jumps to a size nobody asked for.
-        if self.settings.fullscreen {
-            window.set_resizable(true);
-            window.set_min_inner_size(None::<frost::PhysicalSize<u32>>);
-            window.set_max_inner_size(None::<frost::PhysicalSize<u32>>);
-            if window.fullscreen().is_none() {
-                window.set_fullscreen(Some(frost::Fullscreen::Borderless(None)));
-            }
-            self.window_expect = None;
-        } else {
-            if window.fullscreen().is_some() {
-                window.set_fullscreen(None);
-            }
-            match self.settings.quality.size() {
-                Some([w, h]) => {
-                    // Unlock (hints and all), then move: pin min/max
-                    // to the rung — on Wayland that clamp is the
-                    // engine, since winit's request never leaves the
-                    // app — and lock (set_resizable(false)) only on
-                    // arrival, because locking pins to the CURRENT
-                    // size and would stomp the new one wherever the
-                    // request lands asynchronously.
-                    window.set_resizable(true);
-                    window.set_min_inner_size(None::<frost::PhysicalSize<u32>>);
-                    window.set_max_inner_size(None::<frost::PhysicalSize<u32>>);
-                    // The request is the mover: X11 directly,
-                    // Wayland through the surface geometry winit
-                    // sends with it — KWin honours a geometry
-                    // change on a mapped window. A configure that
-                    // then matches our wish is swallowed by
-                    // winit's dedup, so never trust events alone
-                    // to follow the window: the engine's frame
-                    // loop checks its size against the surface's
-                    // belief every frame (see app.rs).
-                    let got = window.request_inner_size(frost::PhysicalSize::new(w, h));
-                    window.set_min_inner_size(Some(frost::PhysicalSize::new(w, h)));
-                    window.set_max_inner_size(Some(frost::PhysicalSize::new(w, h)));
-                    self.window_expect = Some(TierAsk {
-                        w,
-                        h,
-                        off: 0,
-                        calm: 0,
-                        asks: 1,
-                    });
-                    log::info!(
-                        "window policy: asked {w}x{h} ({got:?}, local {}x{})",
-                        window.inner_size().width,
-                        window.inner_size().height,
-                    );
-                }
-                None => {
-                    window.set_resizable(true);
-                    window.set_min_inner_size(None::<frost::PhysicalSize<u32>>);
-                    window.set_max_inner_size(None::<frost::PhysicalSize<u32>>);
-                    self.window_expect = None;
-                }
-            }
         }
     }
 
@@ -3639,215 +1671,6 @@ impl Demo {
         } else {
             game::Dir::Up
         })
-    }
-
-    /// The lesson card the hill underfoot is teaching right now: the
-    /// script's next card while the played log spells the script's
-    /// prefix — and nothing at all elsewhere. Not on the forty-six
-    /// hills that keep no script, not behind a page, not during a
-    /// showing (whose walk is the ledger's, not a pupil's), not once
-    /// the hill sleeps. The rail below makes the prefix check a
-    /// formality on a played hill — no act but a card's ever reaches
-    /// the log — yet the card reads the log, not the rail, so a hand
-    /// at the code stays as untrusted as a hand at the file.
-    fn lesson(&self) -> Option<&'static Lesson> {
-        if self.page != Page::Game || self.replay.is_some() {
-            return None;
-        }
-        // The oops deck first: First Cold, un-warmed and un-humbled,
-        // opens on the wrong foot — the card asks for the step the
-        // hill must not take; once taken, it stands there sulking
-        // with no card at all, and the marks it shows then are the
-        // undo's, drawn outside any card. The Z that steps back
-        // lands on the re-baited trap: the same wrong step asked
-        // again, and the second landing is the deeper sulk — the
-        // restart's, not the undo's.
-        if self.oopsy_visit() {
-            let game = self.game.as_ref()?;
-            return match game.log.as_slice() {
-                [] => Some(&MISTAKE_CARD),
-                [a] if *a == game::Act::Move(game::Dir::Right) && self.mistake_shown => {
-                    Some(&DOUBLE_CARD)
-                }
-                _ => None,
-            };
-        }
-        let script = self.script()?;
-        let game = self.game.as_ref()?;
-        if game.won || game.log.len() >= script.len() {
-            return None;
-        }
-        game.log
-            .iter()
-            .zip(script)
-            .all(|(a, l)| *a == l.act)
-            .then_some(&script[game.log.len()])
-    }
-
-    /// Has the ledger ever held this hill?
-    fn warmed(&self, hill: usize) -> bool {
-        self.progress.scores.iter().any(|(h, _)| *h == hill)
-    }
-
-    /// The cold tour: First Cold's first crossing, taught the long
-    /// way round. The tour ends the moment the ledger holds the hill
-    /// — however it was warmed — and never returns to it.
-    fn cold_tour(&self) -> bool {
-        self.idx == FIRST_COLD_HILL && !self.warmed(FIRST_COLD_HILL)
-    }
-
-    /// The cheap dig's tour: the same first-crossing bargain as
-    /// the cold ring — the long way taught first, the better
-    /// script dealt beneath the answer's words.
-    fn dig_tour(&self) -> bool {
-        self.idx == DIG_TUTOR_HILL && !self.warmed(DIG_TUTOR_HILL)
-    }
-
-    /// A tour is live underfoot: a hill whose first crossing it
-    /// teaches the long way round, praise and all. Two hills keep
-    /// such a deck — the cold ring and the cheap dig — and they
-    /// share the machinery: no won page, one splash, the answer's
-    /// words, a redeal on the better script.
-    fn tour(&self) -> bool {
-        self.cold_tour() || self.dig_tour()
-    }
-
-    /// The oops deck is live: First Cold before it has been finished
-    /// *and* before the hill has been restarted out of its own
-    /// double mistake. The retirement outlives every restart of the
-    /// visit; nothing else here does.
-    fn oopsy_visit(&self) -> bool {
-        self.cold_tour() && !self.oops_retired
-    }
-
-    /// The forced mistake, standing on the board: the wrong step is
-    /// the walk's whole story, the hill answers nothing — every
-    /// rail-carrying input is refused, and only the Z, which needs
-    /// no rail, is heard — and the undo that takes it back re-baits
-    /// the trap.
-    fn mistake_standing(&self) -> bool {
-        self.oopsy_visit()
-            && !self.mistake_shown
-            && self
-                .game
-                .as_ref()
-                .is_some_and(|g| g.log.len() == 1 && g.log[0] == game::Act::Move(game::Dir::Right))
-    }
-
-    /// The same mistake twice as deep: the pair of wrong steps has
-    /// landed, and this time no undo will do — the hill sulks for
-    /// the rewind, and only the R is heard.
-    fn disaster_standing(&self) -> bool {
-        self.oopsy_visit()
-            && self.mistake_shown
-            && self.game.as_ref().is_some_and(|g| {
-                g.log.len() == 2
-                    && g.log
-                        .iter()
-                        .all(|a| *a == game::Act::Move(game::Dir::Right))
-            })
-    }
-
-    /// Either sulk: the hill standing on a mistake it forced,
-    /// admitting it big, and answering nothing until the taught key
-    /// comes — the undo's, or the restart's.
-    fn sulking(&self) -> bool {
-        self.mistake_standing() || self.disaster_standing()
-    }
-
-    /// The lesson script for the hill underfoot: on the cold ring
-    /// before it has ever been finished, the cold tour — the long
-    /// walk, taught first; on a warmed ring, and on every other
-    /// school hill, the hill's own script. The cheap dig deals on
-    /// the same bargain: its tour until the ledger holds the hill,
-    /// the dig ever after.
-    fn script(&self) -> Option<&'static [Lesson]> {
-        if self.cold_tour() {
-            return Some(&COLD_TOUR_LESSON);
-        }
-        if self.dig_tour() {
-            return Some(&DIG_TOUR_LESSON);
-        }
-        lesson_script(self.idx)
-    }
-
-    /// The rail: does the tutorial let this act through? On a school
-    /// hill, while a card is open, only the card's own act answers;
-    /// every verb the script does not call for — the wrong way to
-    /// walk, a walk where a shove is asked, a shove where the card
-    /// says walk, a leave-behind nobody asked for — is refused at the
-    /// gate. No card, no rail: the other forty-six hills answer to
-    /// everything, and so does a hill whose lesson is finished. One
-    /// exception sulks outside any card: the hill standing on its
-    /// own mistake admits nothing at all — the Z, or the R, which
-    /// need no rail are the only voices it waits for. And while one
-    /// of the held admissions still hangs at the centre, the hill
-    /// under it waits quietly too: no act answers until the words
-    /// have had their breath.
-    fn rail_opens(&self, a: game::Act) -> bool {
-        !self.sulking() && self.better_t <= 0.0 && self.lesson().is_none_or(|c| c.act == a)
-    }
-
-    /// The card made visible: the mark (or marks) of its act and
-    /// its word, drawn by the same painter the sulking hill borrows
-    /// for the undo.
-    fn draw_lesson(&self, ctx: &mut Context, card: &Lesson) {
-        let dir = match card.act {
-            game::Act::Move(d) | game::Act::Push(d) => face_of(d),
-            // A leave-behind aims nowhere: its mark points down —
-            // the ant stepping off the line, out of the wake, and
-            // left where it stands.
-            game::Act::Detach => [0.0, -1.0],
-        };
-        // One chevron walks, two shove — the alphabet's own case
-        // distinction, told in marks instead of letters.
-        let marks = usize::from(matches!(card.act, game::Act::Push(_))) + 1;
-        self.draw_marks(ctx, dir, marks, card.word);
-    }
-
-    /// The marks and the foot word, whoever calls: a chevron aimed
-    /// the given way hangs over the queen's head — riding the hill,
-    /// since it follows her gliding `player_at` — doubled for a
-    /// shove, the second mark stepped back along the aim; the word
-    /// sits on the note's floor-side seat, standing a line higher
-    /// when a note is up with it, the same courtesy the showing
-    /// pays.
-    fn draw_marks(&self, ctx: &mut Context, dir: [f32; 2], marks: usize, word: &str) {
-        let (_, h) = self.view(ctx);
-        let [sx, sy] = self.screen([self.player_at[0], self.player_at[1] + TILE * 0.95]);
-        let ang = dir[1].atan2(dir[0]) - std::f32::consts::FRAC_PI_2;
-        let (s, c) = (ang.sin(), ang.cos());
-        for k in 0..marks {
-            let at = [sx - dir[0] * k as f32 * 26.0, sy - dir[1] * k as f32 * 26.0];
-            // The base chevron points up; spin it onto the aim.
-            let spin = |p: [f32; 2]| [p[0] * c - p[1] * s + at[0], p[0] * s + p[1] * c + at[1]];
-            ctx.scene().root.children.push(Box::new(SceneNode {
-                order: UI + 1.0,
-                modulate: Color {
-                    r: 1.0,
-                    g: 1.0,
-                    b: 1.0,
-                    a: 0.9,
-                },
-                shape: Some(frost::Shape::Polyline {
-                    points: vec![spin([-17.0, -9.0]), spin([0.0, 9.0]), spin([17.0, -9.0])],
-                    width: 5.0,
-                    color: C_TEXT,
-                }),
-                ..Default::default()
-            }));
-        }
-        let seat = if self.note_t > 0.0 { 60.0 } else { 26.0 };
-        ctx.text(
-            0.0,
-            -h / 2.0 + seat,
-            &self.font,
-            word.to_string(),
-            30.0,
-            600.0,
-            C_NOTE,
-            UI + 1.0,
-        );
     }
 
     fn draw_hud(&self, ctx: &mut Context) {
@@ -3902,7 +1725,7 @@ impl Demo {
                 -h / 2.0 + 26.0,
                 &self.font,
                 self.note.clone(),
-                30.0,
+                34.0,
                 600.0,
                 Color {
                     r: C_NOTE.r,
@@ -3931,13 +1754,13 @@ impl Demo {
                 rep.acts.len(),
                 tail
             );
-            let seat = if self.note_t > 0.0 { 60.0 } else { 26.0 };
+            let seat = if self.note_t > 0.0 { 64.0 } else { 26.0 };
             ctx.text(
                 0.0,
                 -h / 2.0 + seat,
                 &self.font,
                 line,
-                30.0,
+                34.0,
                 600.0,
                 C_NOTE,
                 UI + 1.0,
@@ -3953,1054 +1776,12 @@ impl Demo {
         if let Some(card) = self.lesson() {
             self.draw_lesson(ctx, card);
         } else if self.mistake_standing() && self.mistake_t <= 0.0 {
-            self.draw_marks(ctx, face_of(game::Dir::Left), 1, UNDO_WORD);
+            let word = self.word_for(UNDO_WORD);
+            self.draw_marks(ctx, face_of(game::Dir::Left), 1, word);
         } else if self.disaster_standing() && self.mistake_t <= 0.0 {
-            self.draw_marks(ctx, face_of(game::Dir::Left), 2, RESTART_WORD);
+            let word = self.word_for(RESTART_WORD);
+            self.draw_marks(ctx, face_of(game::Dir::Left), 2, word);
         }
-    }
-
-    /// The menu itself. The hill dims behind it, paused and visible —
-    /// the point of Resume is that you can see what you are taking
-    /// back — and the hovered row lifts a whisper of white.
-    fn draw_menu(&self, ctx: &mut Context) {
-        let (w, h) = self.view(ctx);
-        let z = UI + 10.0;
-        // Everything the overlay owns breathes together — veil,
-        // plate, rows, verdict — through one alpha held by `process`.
-        let a = self.menu_alpha;
-        let fade = |c: Color| Color { a: c.a * a, ..c };
-        ctx.rectangle(
-            0.0,
-            0.0,
-            w / 2.0,
-            h / 2.0,
-            Color {
-                r: 0.012,
-                g: 0.014,
-                b: 0.022,
-                a: 0.72 * a,
-            },
-            z,
-        );
-        let rows = self.menu_rows(self.menu_page, h);
-        if rows.is_empty() {
-            return;
-        }
-        let top = rows.iter().map(|r| r.cy).fold(f32::MIN, f32::max);
-        let bot = rows.iter().map(|r| r.cy).fold(f32::MAX, f32::min);
-        // The plate is as wide as its page's widest claim: the ledger
-        // spends a number, a name, a score, and a map, so it takes
-        // the widest hall of any page on the menu.
-        let plate_hw = match self.menu_page {
-            Page::Progress => PROGRESS_PLATE,
-            Page::Settings | Page::Keyboard | Page::Mouse => 380.0,
-            _ => 300.0,
-        };
-        // The panel is cut from the slab: one placement of the whole
-        // stone at the plate's own size — stretched to whatever
-        // rectangle the page hangs, and the moss and lichen do not
-        // mind. Where the slab failed to decode, the plate is still
-        // the plain ink slab it always was.
-        // The plate is deliberately unequal: the title's band above
-        // (`PLATE_TOP_PAD`) and one whole extra row of the page's own
-        // stride below the last row — a ledger row's stride is its
-        // fat one, the plain pages' is the menu step. Centre and
-        // half-height both shift by the difference.
-        let bottom_pad = plate_bottom_pad(self.menu_page, h);
-        let top_pad = plate_top_pad(h);
-        let pcx = 0.0;
-        let pcy = (top + bot) / 2.0 + (top_pad - bottom_pad) / 2.0;
-        let (phw, phh) = (plate_hw, (top - bot) / 2.0 + (top_pad + bottom_pad) / 2.0);
-        let mut cut = false;
-        if let Some(slab) = &self.slab {
-            let mut panel = slab.clone();
-            if let frost::Shape::TileMap { tiles, .. } = &mut panel {
-                tiles.push(frost::Tile::new(
-                    [pcx, pcy],
-                    [2.0 * phw, 2.0 * phh],
-                    [0.0, 0.0, 1.0, 1.0],
-                ));
-                ctx.scene().root.children.push(Box::new(SceneNode {
-                    order: z + 1.0,
-                    modulate: Color {
-                        r: 1.0,
-                        g: 1.0,
-                        b: 1.0,
-                        a,
-                    },
-                    shape: Some(panel),
-                    ..Default::default()
-                }));
-                cut = true;
-            }
-        }
-        // The panel's own night: once it was the plate itself, and on
-        // stone it is a shade — the slab was baked at a third of its
-        // daylight, and all this shade has left to do is settle the
-        // white lichen behind the words.
-        ctx.rectangle(
-            pcx,
-            pcy,
-            phw,
-            phh,
-            Color {
-                r: 0.05,
-                g: 0.055,
-                b: 0.08,
-                a: (if cut { 0.45 } else { 0.94 }) * a,
-            },
-            z + 1.25,
-        );
-        // The panel wears the hill it stands on: main and won pages
-        // both name their ground — the title answers the same banner
-        // the player has been reading all run. Settings is its own
-        // room and keeps its own sign.
-        let title: String = match self.menu_page {
-            Page::Settings => "SETTINGS".to_string(),
-            Page::Keyboard => "KEYBOARD".to_string(),
-            Page::Mouse => "MOUSE".to_string(),
-            Page::Progress => "PROGRESS".to_string(),
-            _ => self
-                .game
-                .as_ref()
-                .map_or("ANTIFROST", |g| g.level.name.as_str())
-                .to_string(),
-        };
-        ctx.text(
-            0.0,
-            top + 70.0,
-            &self.font,
-            title,
-            52.0,
-            700.0,
-            fade(C_TEXT),
-            z + 2.0,
-        );
-        // The won hill's verdict: the word its splash just spoke,
-        // now read plainly in the strip between the HUD's band and
-        // the plate's top — verdict overhead, choices under foot.
-        if self.menu_page == Page::Won
-            && let Some((word, colour)) = &self.verdict
-        {
-            // The plate's top and the score banner's bottom are
-            // 92 units apart by the won page's hang (see
-            // `menu_rows`); the word owns the middle of that
-            // strip, full size, every window height.
-            let plate_top = top + plate_top_pad(h);
-            let band = h / 2.0 - 93.0;
-            ctx.text(
-                0.0,
-                (plate_top + band) / 2.0,
-                &self.font,
-                word.clone(),
-                64.0,
-                700.0,
-                fade(*colour),
-                z + 2.0,
-            );
-        }
-        // Exactly one row wears the highlight: the selected one. The
-        // pointer takes the selection over when it moves onto a row
-        // (see `menu_input`), so the mouse and the keys can never
-        // each light their own row — the two-emission state a separate
-        // hover used to allow.
-        for (i, r) in rows.iter().enumerate() {
-            let hot = i == self.menu_sel;
-            // A row with no road left in it: `next` greys when the
-            // hill underfoot is all the descent still owes — the
-            // same rule the key obeys, asked at the same lip.
-            let mute = matches!(r.action, Action::Next) && !self.next_owed();
-            if hot {
-                ctx.rectangle(
-                    r.cx,
-                    r.cy,
-                    r.hw,
-                    24.0,
-                    Color {
-                        r: 1.0,
-                        g: 1.0,
-                        b: 1.0,
-                        a: (if mute { 0.03 } else { 0.07 }) * a,
-                    },
-                    z + 2.0,
-                );
-            }
-            if let Action::Hill(hill) = r.action {
-                self.draw_ledger_row(ctx, r, hill, hot, z, a);
-                continue;
-            }
-            match r.slider {
-                None => ctx.text(
-                    r.cx,
-                    r.cy - 10.0,
-                    &self.font,
-                    r.text.clone(),
-                    30.0,
-                    500.0,
-                    if mute {
-                        fade(C_MUTE)
-                    } else if hot {
-                        fade(C_TEXT)
-                    } else {
-                        fade(C_DIM)
-                    },
-                    z + 3.0,
-                ),
-                Some(frac) => {
-                    ctx.text(
-                        MENU_TRACK_CX - MENU_TRACK_HALF - 160.0,
-                        r.cy - 10.0,
-                        &self.font,
-                        r.text.clone(),
-                        30.0,
-                        500.0,
-                        if hot { fade(C_TEXT) } else { fade(C_DIM) },
-                        z + 3.0,
-                    );
-                    ctx.rectangle(
-                        MENU_TRACK_CX,
-                        r.cy,
-                        MENU_TRACK_HALF,
-                        3.0,
-                        Color {
-                            r: 0.35,
-                            g: 0.36,
-                            b: 0.42,
-                            a,
-                        },
-                        z + 3.0,
-                    );
-                    ctx.rectangle(
-                        MENU_TRACK_CX - MENU_TRACK_HALF + frac * MENU_TRACK_HALF,
-                        r.cy,
-                        (frac * MENU_TRACK_HALF).max(0.5),
-                        3.0,
-                        fade(C_NOTE),
-                        z + 3.0,
-                    );
-                    ctx.rectangle(
-                        MENU_TRACK_CX - MENU_TRACK_HALF + frac * 2.0 * MENU_TRACK_HALF,
-                        r.cy,
-                        5.0,
-                        11.0,
-                        fade(C_TEXT),
-                        z + 3.0,
-                    );
-                }
-            }
-        }
-        // The maps beside the ledger's rows, in one instanced node:
-        // every cell of every visible hill is a tinted placement of
-        // one white pixel, and the node's clip cuts the column to
-        // the plate — scroll and all of it rides together.
-        if self.menu_page == Page::Progress {
-            self.draw_minimaps(ctx, &rows, h, z, a);
-            self.draw_progress_marks(ctx, &rows, h, z, a);
-        }
-    }
-
-    /// One ledger row: the hill's number, its name, and — for a hill
-    /// the colony warmed — its best run in the par's own colour
-    /// language (the yellow a met par wears, the red a missed one).
-    /// A hill stood on but not finished keeps its score column
-    /// empty: the ledger writes nothing it has not been given. The
-    /// runs sit in columns rather than the HUD's one centred
-    /// sentence: this is a list to scan, not a banner to read.
-    fn draw_ledger_row(&self, ctx: &mut Context, r: &Row, hill: usize, hot: bool, z: f32, a: f32) {
-        let score = self
-            .progress
-            .scores
-            .iter()
-            .find(|(h, _)| *h == hill)
-            .map(|(_, m)| *m);
-        let (name, par) = self
-            .levels
-            .get(hill)
-            .map_or(("hill", 0), |l| (l.name.as_str(), l.par));
-        // Measured first, drawn after: the columns are left edges,
-        // and text draws centred, so every run needs its own width
-        // before any of it reaches the canvas.
-        let num = (hill + 1).to_string();
-        let w_num = ctx.text_width(&self.font, &num, 30.0, 500.0);
-        let w_name = ctx.text_width(&self.font, name, 30.0, 500.0);
-        let fade = |c: Color| Color { a: c.a * a, ..c };
-        let ink = if hot { fade(C_TEXT) } else { fade(C_DIM) };
-        let cy = r.cy - 10.0;
-        ctx.text(
-            PROGRESS_NUM_X + w_num / 2.0,
-            cy,
-            &self.font,
-            num,
-            30.0,
-            500.0,
-            ink,
-            z + 3.0,
-        );
-        ctx.text(
-            PROGRESS_NAME_X + w_name / 2.0,
-            cy,
-            &self.font,
-            name,
-            30.0,
-            500.0,
-            ink,
-            z + 3.0,
-        );
-        let Some(moves) = score else { return };
-        // The score wears its judgement always and never the
-        // highlight's: the best run at or under par — perfect — is
-        // yellow, a best that still overshot par is red, the same
-        // full hue on every row lit or unlit. The page's own fade
-        // is the only hand on either. Right-aligned at the column's
-        // edge — a list of numbers reads up its right side.
-        let colour = if par > 0 && moves > par {
-            C_PAR_MISSED
-        } else {
-            C_PAR_MET
-        };
-        // A perfect run wears its number plain; a best that overshot
-        // par reads its debt — moves owed against the best known.
-        let score_text = if par > 0 && moves > par {
-            format!("{moves} of {par}")
-        } else {
-            format!("{moves} moves")
-        };
-        let w_score = ctx.text_width(&self.font, &score_text, 30.0, 500.0);
-        ctx.text(
-            PROGRESS_SCORE_R - w_score / 2.0,
-            cy,
-            &self.font,
-            score_text,
-            30.0,
-            500.0,
-            fade(colour),
-            z + 3.0,
-        );
-    }
-
-    /// Every minimap the page shows, in one tile-map node: a one-
-    /// pixel white atlas tinted per cell — rock, dirt, open tunnel,
-    /// and every bed in its ant's own colour. The maps are the
-    /// authored hills themselves, tile for tile: the ledger keeps no
-    /// picture, because the hill already is one.
-    fn draw_minimaps(&self, ctx: &mut Context, rows: &[Row], h: f32, z: f32, a: f32) {
-        let mut map = frost::Shape::TileMap {
-            data: self.minimap_atlas.clone(),
-            width: 1,
-            height: 1,
-            // One atlas for the game's whole life, behind one Arc: the
-            // texture cache's (pointer, generation) identity never
-            // changes, so the pixel uploads once and never again.
-            generation: 0,
-            filter: SpriteFilter::Nearest,
-            tiles: Vec::new(),
-            clip: Some([
-                PROGRESS_MAP_CX - 126.0,
-                -h * 0.5 + 70.0,
-                PROGRESS_MAP_CX + 126.0,
-                progress_top_y(h) + 46.0,
-            ]),
-            color: Color {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 1.0,
-            },
-        };
-        for r in rows {
-            let Action::Hill(hill) = r.action else {
-                continue;
-            };
-            let Some(level) = self.levels.get(hill) else {
-                continue;
-            };
-            let (cols, rows_n) = (level.cols as f32, level.rows as f32);
-            // The cell answers to both bounds: the map is at most
-            // 225 wide — that budget is what holds the card and the
-            // column gutters honest — and never taller than the row
-            // stride minus its breathing room, so maps of neighbouring
-            // rows cannot touch even at the short-window stride.
-            let cell = ((progress_step(h) - 12.0) / rows_n)
-                .min(225.0 / cols)
-                .min(5.6);
-            // The card centres on the row itself — the selection band
-            // spans ±24 about `r.cy` — not on the row's text, which
-            // sits ten low for its baseline. An earlier draft stole
-            // four of those points for the baseline too, and the maps
-            // read a touch sunken in their rows.
-            let (cx, cy) = (PROGRESS_MAP_CX, r.cy);
-            // The dark card first, so the tiles land on it: a map
-            // reads as a framed thing beside its row, not as spill.
-            ctx.rectangle(
-                cx,
-                cy,
-                cols * cell / 2.0 + 5.0,
-                rows_n * cell / 2.0 + 5.0,
-                Color {
-                    r: 0.02,
-                    g: 0.022,
-                    b: 0.03,
-                    a: 0.9 * a,
-                },
-                z + 1.2,
-            );
-            for (i, t) in level.tiles.iter().enumerate() {
-                let (row, col) = (i / level.cols, i % level.cols);
-                let tint = match t {
-                    level::Tile::Rock => Color {
-                        r: 0.30,
-                        g: 0.27,
-                        b: 0.25,
-                        a: 1.0,
-                    },
-                    level::Tile::Dirt => Color {
-                        r: 0.46,
-                        g: 0.34,
-                        b: 0.22,
-                        a: 1.0,
-                    },
-                    level::Tile::Tunnel => Color {
-                        r: 0.05,
-                        g: 0.05,
-                        b: 0.06,
-                        a: 1.0,
-                    },
-                    level::Tile::Bed(c) => ant_color(*c),
-                };
-                let mut tile = frost::Tile::new(
-                    [
-                        cx + (col as f32 - (cols - 1.0) / 2.0) * cell,
-                        cy + ((rows_n - 1.0) / 2.0 - row as f32) * cell,
-                    ],
-                    [cell, cell],
-                    [0.0, 0.0, 1.0, 1.0],
-                );
-                tile.color = tint;
-                map.push_tile(tile);
-            }
-        }
-        ctx.scene().root.children.push(Box::new(SceneNode {
-            order: z + 1.5,
-            modulate: Color {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a,
-            },
-            shape: Some(map),
-            ..Default::default()
-        }));
-    }
-
-    /// The marks that make the descent a ring: a chevron above the
-    /// first row and one below the last, always lit, each promising
-    /// the far end of the ledger one press away (they share the gap
-    /// the pinned `back` row lives in). Barrfont carries letters and
-    /// a space and nothing else, so the arrows are drawn as two short
-    /// strokes meeting at a tip — each one a polyline node, riding the
-    /// page's fade. They sit in the inter-row gaps, where no text
-    /// reaches: a row's glyphs stand 25 off its centre and a mark 11
-    /// off its own, and the gaps are wider than both.
-    fn draw_progress_marks(&self, ctx: &mut Context, rows: &[Row], h: f32, z: f32, a: f32) {
-        let hills = rows
-            .iter()
-            .filter(|r| matches!(r.action, Action::Hill(_)))
-            .count();
-        let (up, down) = progress_marks(self.levels.len());
-        if hills == 0 || (!up && !down) {
-            return;
-        }
-        let chevron = |cy: f32, tip: f32, ctx: &mut Context| {
-            ctx.scene().root.children.push(Box::new(SceneNode {
-                order: z + 3.0,
-                modulate: Color {
-                    r: 1.0,
-                    g: 1.0,
-                    b: 1.0,
-                    a,
-                },
-                shape: Some(frost::Shape::Polyline {
-                    points: vec![[-15.0, -tip * 0.55], [0.0, tip], [15.0, -tip * 0.55]],
-                    width: 5.0,
-                    color: C_TEXT,
-                }),
-                transform: Transform::translate([0.0, cy]),
-                ..Default::default()
-            }));
-        };
-        let top = progress_top_y(h);
-        let step = progress_step(h);
-        if up {
-            chevron(top + step * 0.42, 8.0, ctx);
-        }
-        if down {
-            chevron(top - (hills as f32 - 0.5) * step, -8.0, ctx);
-        }
-    }
-
-    /// A row's answer: the page rows turn the page, the setting rows
-    /// flip the engine the moment they move, and everything the disc
-    /// should remember is written before the click is even over —
-    /// except the sliders, which save on release.
-    fn menu_action(&mut self, ctx: &mut Context, action: Action) {
-        match action {
-            Action::New => {
-                self.new_game();
-                self.progress.save();
-            }
-            Action::Resume => self.page = Page::Game,
-            Action::OpenSettings => {
-                self.page = Page::Settings;
-                self.drag = None;
-                self.menu_sel = 0;
-            }
-            Action::OpenProgress => {
-                self.page = Page::Progress;
-                self.menu_sel = 0;
-                self.progress_top = 0;
-            }
-            Action::Next => {
-                // The greyed row answers nothing, whichever key or
-                // click called it: the hill underfoot is all the
-                // descent still owes, and `next` leads nowhere new.
-                if !self.next_owed() {
-                    return;
-                }
-                // Not the next hill number — the next owed hill: the
-                // freshly unlocked one at the frontier, else the
-                // nearest without a perfect run. `next_hill` says it
-                // at length; this is the same key's short hand.
-                let next = self.next_hill();
-                self.load(next);
-                self.page = Page::Game;
-                // Standing on a new hill is the fact the progress
-                // file keeps — written the moment it's true.
-                self.progress.stood(self.idx);
-                self.progress.save();
-            }
-            Action::Retry => {
-                self.load(self.idx);
-                self.page = Page::Game;
-            }
-            Action::Hill(n) => {
-                // A ledger row is a door: walking back into a warmed
-                // hill is a hill moved, and the file says so.
-                self.load(n);
-                self.page = Page::Game;
-                self.progress.stood(self.idx);
-                self.progress.save();
-            }
-            Action::Exit => ctx.exit(),
-            Action::Keyboard => {
-                self.page = Page::Keyboard;
-                self.menu_sel = 0;
-            }
-            Action::Mouse => {
-                self.page = Page::Mouse;
-                self.menu_sel = 0;
-            }
-            Action::Back => {
-                self.page = Page::Main;
-                self.menu_sel = 0;
-            }
-            Action::Vsync => {
-                self.settings.vsync = !self.settings.vsync;
-                ctx.set_vsync(self.settings.vsync);
-            }
-            Action::Filter => {
-                self.settings.nearest = !self.settings.nearest;
-                ctx.set_blit_filter(if self.settings.nearest {
-                    SpriteFilter::Nearest
-                } else {
-                    SpriteFilter::Linear
-                });
-            }
-            Action::Fullscreen => {
-                self.settings.fullscreen = !self.settings.fullscreen;
-                self.apply_window_policy(ctx);
-            }
-            Action::Quality => {
-                self.settings.quality = self.settings.quality.next();
-                ctx.set_render_size(self.settings.quality.size());
-                self.apply_window_policy(ctx);
-            }
-            Action::Leaves => self.settings.leaves_lit = !self.settings.leaves_lit,
-            Action::Glow => self.settings.lamp_glow = !self.settings.lamp_glow,
-            Action::Shadows => self.settings.shadows = self.settings.shadows.next(),
-            Action::Ambient | Action::Light => return,
-        }
-        self.settings.save();
-    }
-
-    /// The menu's input pass. A slider owns the button from the press
-    /// on the track until it lifts — dragging previews live, and only
-    /// the release writes the disc. Any other row answers its press at
-    /// once.
-    fn menu_input(&mut self, ctx: &mut Context, dt: f32) {
-        let pointer = ctx.mouse_position();
-        if let Some(sl) = self.drag {
-            if ctx.mouse_button_down(MouseButton::Left) {
-                if let Some([x, _]) = pointer {
-                    let frac = slide_value(x, MENU_TRACK_CX, MENU_TRACK_HALF);
-                    match sl {
-                        Slider::Ambient => self.settings.ambient = frac,
-                        Slider::Light => self.settings.light = frac * 2.0,
-                    }
-                }
-            } else {
-                self.drag = None;
-                self.settings.save();
-            }
-        }
-        // The keyboard's turn: arrows walk the rows — and a held
-        // arrow keeps walking, one row per beat after a first delay —
-        // Enter presses the highlighted one, and left/right nudge a
-        // slider by five points when the highlight stands on its row.
-        // The same `menu_rows` list the mouse reads, so the two never
-        // diverge.
-        let h = self.view(ctx).1;
-        let rows = self.menu_rows(self.page, h);
-        if !rows.is_empty() {
-            self.menu_sel = self.menu_sel.min(rows.len() - 1);
-            // The ledger leans: at its window's edges the arrow keys
-            // slide the window over the hills instead of wrapping —
-            // and the wheel drags the window directly, lines for
-            // lines. Past the true ends the two standing chevrons
-            // keep their promise: up from the first hill wraps to
-            // the last, down off the bottom comes home to the first.
-            // Every other page keeps the plain walk.
-            let up = self.nav_held(ctx, dt, KeyCode::ArrowUp);
-            let down = self.nav_held(ctx, dt, KeyCode::ArrowDown);
-            if self.page == Page::Progress {
-                let hills = rows.len() - 1; // the pinned back row aside
-                let more = self.levels.len() > self.progress_top + hills;
-                if up && self.menu_sel == 0 && self.progress_top > 0 {
-                    self.progress_top -= 1;
-                } else if down && self.menu_sel + 1 == hills && more {
-                    self.progress_top += 1;
-                } else if up && self.menu_sel == 0 {
-                    // The top chevron's promise: the last hill of
-                    // the ledger — a hill, not the back row — and the
-                    // window leans so that hill stands in view.
-                    let (top, sel) = wrap_to_last(self.levels.len(), hills);
-                    self.progress_top = top;
-                    self.menu_sel = sel;
-                } else if down && self.menu_sel + 1 == rows.len() {
-                    // And the bottom chevron's: home to the first
-                    // hill, window and all.
-                    self.progress_top = 0;
-                    self.menu_sel = 0;
-                } else {
-                    // The plain walk between the ends: within the
-                    // window the arrows do what they do everywhere
-                    // else, and from the last visible hill the walk
-                    // steps down onto the pinned back row.
-                    if up {
-                        self.menu_sel = step_sel(self.menu_sel, rows.len(), -1);
-                    }
-                    if down {
-                        self.menu_sel = step_sel(self.menu_sel, rows.len(), 1);
-                    }
-                }
-            } else {
-                if up {
-                    self.menu_sel = step_sel(self.menu_sel, rows.len(), -1);
-                }
-                if down {
-                    self.menu_sel = step_sel(self.menu_sel, rows.len(), 1);
-                }
-            }
-            if self.page == Page::Progress {
-                let wheel = ctx.mouse_wheel();
-                if wheel != 0.0 {
-                    let last = self.progressed().saturating_sub(progress_fits(h));
-                    let top = self.progress_top as i32 - wheel.round() as i32;
-                    self.progress_top = top.clamp(0, last as i32) as usize;
-                }
-            }
-            let nudge = match (
-                self.pressed(ctx, KeyCode::ArrowLeft),
-                self.pressed(ctx, KeyCode::ArrowRight),
-            ) {
-                (true, false) => Some(-1.0),
-                (false, true) => Some(1.0),
-                _ => None,
-            };
-            if let Some(dir) = nudge
-                && rows[self.menu_sel].slider.is_some()
-            {
-                match rows[self.menu_sel].action {
-                    Action::Ambient => {
-                        self.settings.ambient = (self.settings.ambient + dir * 0.05).clamp(0.0, 1.0)
-                    }
-                    _ => self.settings.light = (self.settings.light + dir * 0.10).clamp(0.0, 2.0),
-                }
-                self.settings.save();
-            }
-            if self.pressed(ctx, KeyCode::Enter) || self.pressed(ctx, KeyCode::NumpadEnter) {
-                let action = rows[self.menu_sel].action;
-                self.menu_action(ctx, action);
-            }
-            // The finished hill answers `R` directly: it is the key
-            // the hill already takes mid-play as its restart, so a
-            // win that wants an immediate redo needs no walk to the
-            // row — the verdict plate is still up, the hill hits its
-            // beginning on the same key that clears it.
-            if self.page == Page::Won && self.pressed(ctx, KeyCode::KeyR) {
-                self.menu_action(ctx, Action::Retry);
-            }
-            // Tab turns the highlighted ledger row over: its recorded
-            // best run replays itself at the click walker's pace.
-            // A hill without a recording stays as it was — that row
-            // is a door to playing, not yet to showing.
-            if self.page == Page::Progress
-                && self.pressed(ctx, KeyCode::Tab)
-                && let Some(&Action::Hill(h)) = rows.get(self.menu_sel).map(|r| &r.action)
-            {
-                self.start_replay(h);
-            }
-        }
-        // The pointer moving onto a row takes the highlight with it —
-        // motion only, so a cursor parked on `resume` cannot out-vote
-        // the arrow keys walking to `exit`. One row is ever lit.
-        if pointer != self.last_pointer
-            && let Some(p) = pointer
-            && let Some(i) = row_under(&rows, p)
-        {
-            self.menu_sel = i;
-        }
-        self.last_pointer = pointer;
-        // The mouse's turn: a click presses its row's action and takes
-        // the highlight with it.
-        if !self.pressed_mouse(ctx, MouseButton::Left) {
-            return;
-        }
-        let Some(p) = pointer else { return };
-        if let Some(i) = row_under(&rows, p) {
-            let r = &rows[i];
-            self.menu_sel = i;
-            match r.action {
-                Action::Ambient | Action::Light => {
-                    self.drag = Some(match r.action {
-                        Action::Ambient => Slider::Ambient,
-                        _ => Slider::Light,
-                    });
-                    let frac = slide_value(p[0], MENU_TRACK_CX, MENU_TRACK_HALF);
-                    match r.action {
-                        Action::Ambient => self.settings.ambient = frac,
-                        _ => self.settings.light = frac * 2.0,
-                    }
-                }
-                action => self.menu_action(ctx, action),
-            }
-        }
-    }
-
-    /// The rows of the page currently up, laid out in user space —
-    /// the list the pointer hit-tests and the paint draws, so a click
-    /// can never miss the picture it answers to. `h` is the window's
-    /// user height: the block hangs from its top, and shrinks its
-    /// stride on short windows (a 540p quality buffer still wears the
-    /// whole menu).
-    fn menu_rows(&self, page: Page, h: f32) -> Vec<Row> {
-        let st = &self.settings;
-        let mut rows: Vec<Row> = Vec::new();
-
-        let push = |rows: &mut Vec<Row>, action, cy, hw, text: String, slider: Option<f32>| {
-            rows.push(Row {
-                action,
-                cx: if slider.is_some() { MENU_TRACK_CX } else { 0.0 },
-                cy,
-                hw,
-                hh: 24.0,
-                text,
-                slider,
-            })
-        };
-        match page {
-            Page::Game => {}
-            Page::Main => {
-                // Seven rows, hung so the composed plate — title band
-                // above, one trailing row below — sits centred on the
-                // view at every resolution.
-                let step = menu_step_for(7, h);
-                let top = plain_top(7, step, h);
-                push(&mut rows, Action::New, top, 240.0, "new game".into(), None);
-                push(
-                    &mut rows,
-                    Action::Resume,
-                    top - step,
-                    240.0,
-                    "resume game".into(),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::OpenSettings,
-                    top - 2.0 * step,
-                    240.0,
-                    "settings".into(),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::OpenProgress,
-                    top - 3.0 * step,
-                    240.0,
-                    "progress".into(),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Keyboard,
-                    top - 4.0 * step,
-                    240.0,
-                    "keyboard".into(),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Mouse,
-                    top - 5.0 * step,
-                    240.0,
-                    "mouse".into(),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Exit,
-                    top - 6.0 * step,
-                    240.0,
-                    "exit".into(),
-                    None,
-                );
-            }
-            Page::Won => {
-                // The won page hangs lower than its siblings: the
-                // 315-unit drop leaves a constant 92-unit strip —
-                // plate top to the HUD's lowest banner (the score,
-                // h/2 - 78 with a 30-unit body: bottom at h/2 - 93)
-                // — and the verdict, at its full 64, is centred in
-                // that strip at any window height. The old 120-unit
-                // hang made the strip negative at 720p, and the
-                // word lay across both banners.
-                let top = (h * 0.5 - 315.0).min(120.0);
-                let step = menu_step_for(2, h);
-                push(
-                    &mut rows,
-                    Action::Next,
-                    top,
-                    240.0,
-                    "next hill".into(),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Retry,
-                    top - step,
-                    240.0,
-                    "retry hill".into(),
-                    None,
-                );
-            }
-            Page::Settings => {
-                // Ten rows now that the glow has a rung of its own —
-                // composed-plate centred like every other page.
-                let step = menu_step_for(10, h);
-                let top = plain_top(10, step, h);
-                let on = |b: bool| if b { "on" } else { "off" };
-                push(
-                    &mut rows,
-                    Action::Vsync,
-                    top,
-                    250.0,
-                    format!("vsync   {}", on(st.vsync)),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Filter,
-                    top - step,
-                    250.0,
-                    format!(
-                        "filter   {}",
-                        if st.nearest { "nearest" } else { "bilinear" }
-                    ),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Fullscreen,
-                    top - 2.0 * step,
-                    250.0,
-                    format!("fullscreen   {}", on(st.fullscreen)),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Quality,
-                    top - 3.0 * step,
-                    250.0,
-                    format!("resolution   {}", st.quality.label()),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Ambient,
-                    top - 4.0 * step,
-                    MENU_TRACK_HALF + 12.0,
-                    format!("ambient   {}", (st.ambient * 100.0).round() as i32),
-                    Some(st.ambient),
-                );
-                push(
-                    &mut rows,
-                    Action::Light,
-                    top - 5.0 * step,
-                    MENU_TRACK_HALF + 12.0,
-                    format!("light fx   {}", (st.light * 50.0).round() as i32),
-                    Some(st.light / 2.0),
-                );
-                push(
-                    &mut rows,
-                    Action::Glow,
-                    top - 6.0 * step,
-                    250.0,
-                    format!("lamp glow   {}", on(st.lamp_glow)),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Leaves,
-                    top - 7.0 * step,
-                    250.0,
-                    format!("leaf lighting   {}", on(st.leaves_lit)),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Shadows,
-                    top - 8.0 * step,
-                    250.0,
-                    format!("lamp shadows   {}", st.shadows.label()),
-                    None,
-                );
-                push(
-                    &mut rows,
-                    Action::Back,
-                    top - 9.0 * step,
-                    250.0,
-                    "back".into(),
-                    None,
-                );
-            }
-            Page::Keyboard => {
-                // Lists the keyboard's whole vocabulary. Every row is
-                // the way out: these pages are read, not used.
-                let step = menu_step_for(6, h);
-                let top = plain_top(6, step, h);
-                for (i, line) in [
-                    "wasd or arrows to move",
-                    "space to detach",
-                    "shift wasd or arrows to push",
-                    "z to undo",
-                    "r to reset level",
-                    "back",
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    push(
-                        &mut rows,
-                        Action::Back,
-                        top - i as f32 * step,
-                        280.0,
-                        line.to_string(),
-                        None,
-                    );
-                }
-            }
-            Page::Mouse => {
-                let step = menu_step_for(4, h);
-                let top = plain_top(4, step, h);
-                for (i, line) in [
-                    "left click to move",
-                    "right click to detach",
-                    "shift click to push",
-                    "back",
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    push(
-                        &mut rows,
-                        Action::Back,
-                        top - i as f32 * step,
-                        280.0,
-                        line.to_string(),
-                        None,
-                    );
-                }
-            }
-            Page::Progress => {
-                // The descent, cut to its window and ordered by the
-                // work it still owes: hills not yet perfected come
-                // first in hill order, the perfected ones follow in
-                // hill order, so the top of the list is always the
-                // run still to earn and the clean sweeps settle to
-                // the bottom. A hill stood on but not warmed owns no
-                // run — and no run is no perfect run — so it leads
-                // with the imperfect. `perfect` is the exact
-                // negation of the score's red, so a hill's place in
-                // the order and its colour can never disagree. The
-                // `back` row stays pinned under the last visible one,
-                // where it can never scroll out of reach; the window
-                // and the scroll marks count rows, and a reorder
-                // moves hills between them, never a row out.
-                let top = progress_top_y(h);
-                let pstep = progress_step(h);
-                // The whole descent hangs on the ledger: every hill is
-                // selectable from the start. A hill with no run wears
-                // no score — the column stays empty until a run is
-                // earned — and a best that overshot par reads its debt
-                // plainly: `moves of par`.
-                let total = self.levels.len();
-                let mut order: Vec<usize> = (0..total).collect();
-                order.sort_by_key(|&i| (self.perfect(i), i));
-                let start = self.progress_top.min(total);
-                let n = progress_fits(h).min(total - start);
-                for (row, &i) in order[start..start + n].iter().enumerate() {
-                    let name = self.levels.get(i).map_or("hill", |l| l.name.as_str());
-                    let score = match self.progress.scores.iter().find(|(h, _)| *h == i) {
-                        Some((_, moves)) => {
-                            let par = self.levels.get(i).map_or(0, |l| l.par);
-                            if par > 0 && *moves > par {
-                                format!("   {moves} of {par}")
-                            } else {
-                                format!("   {moves} moves")
-                            }
-                        }
-                        None => String::new(),
-                    };
-                    push(
-                        &mut rows,
-                        Action::Hill(i),
-                        top - row as f32 * pstep,
-                        PROGRESS_PLATE - 12.0,
-                        format!("{name}{score}"),
-                        None,
-                    );
-                }
-                push(
-                    &mut rows,
-                    Action::Back,
-                    top - n as f32 * pstep,
-                    240.0,
-                    "back".to_string(),
-                    None,
-                );
-            }
-        }
-        rows
     }
 
     /// New Game: the descent restarts at the first hill and the
@@ -5014,6 +1795,10 @@ impl Demo {
     /// Then the page steps aside and the hill plays.
     fn new_game(&mut self) {
         self.progress = Progress::default();
+        // New slams the descent shut behind its school: the four
+        // teaching hills stand open, every door below waits on the
+        // win above it.
+        self.progress.open(TUTORIAL_HILLS.min(self.levels.len()));
         self.load(0);
         self.page = Page::Game;
     }
@@ -5218,6 +2003,47 @@ impl Demo {
 impl Process for Demo {
     fn process(&mut self, ctx: &mut Context, dt: f32) {
         self.beat();
+        // `--features diag`: the pad names itself. Press each button
+        // in turn; the stderr log says which standard button (if
+        // any) the platform's backend found under every press. An
+        // empty list is the honest answer for a button the backend
+        // drops before it reaches gilrs' standard names.
+        #[cfg(feature = "diag")]
+        if let Some(pad) = ctx.gamepads().next() {
+            // No `Unknown` here: gilrs' `is_pressed` asserts the
+            // question is a real name, and asking it panics.
+            const WATCH: [frost::Button; 19] = [
+                frost::Button::South,
+                frost::Button::East,
+                frost::Button::North,
+                frost::Button::West,
+                frost::Button::C,
+                frost::Button::Z,
+                frost::Button::LeftTrigger,
+                frost::Button::LeftTrigger2,
+                frost::Button::RightTrigger,
+                frost::Button::RightTrigger2,
+                frost::Button::Select,
+                frost::Button::Start,
+                frost::Button::Mode,
+                frost::Button::LeftThumb,
+                frost::Button::RightThumb,
+                frost::Button::DPadUp,
+                frost::Button::DPadDown,
+                frost::Button::DPadLeft,
+                frost::Button::DPadRight,
+            ];
+            let now: Vec<frost::Button> = WATCH
+                .iter()
+                .copied()
+                .filter(|b| pad.is_pressed(*b))
+                .collect();
+            if now != self.pad_probe {
+                self.pad_probe = now.clone();
+                let names: Vec<String> = now.iter().map(|b| format!("{b:?}")).collect();
+                log::info!("pad: [{}]", names.join(", "));
+            }
+        }
         // The overlay breathes: toward one while a menu is up, toward
         // zero when the hill takes the screen back. The page it
         // paints follows the live page in, and holds the last one
@@ -5225,14 +2051,31 @@ impl Process for Demo {
         // leaving — never whatever page happens to be behind it.
         let target = if self.page == Page::Game { 0.0 } else { 1.0 };
         if target > 0.0 {
-            self.menu_page = self.page;
+            self.menu.page = self.page;
         }
-        self.menu_alpha += (target - self.menu_alpha) * (1.0 - (-dt / 0.15).exp());
-        if (self.menu_alpha - target).abs() < 0.002 {
-            self.menu_alpha = target;
+        self.menu.alpha += (target - self.menu.alpha) * (1.0 - (-dt / 0.15).exp());
+        if (self.menu.alpha - target).abs() < 0.002 {
+            self.menu.alpha = target;
         }
-        if self.window_policy_pending {
-            self.window_policy_pending = false;
+        // The blur breathes with the overlay: the world behind a
+        // menu melts as it fades in and sharpens as the hill takes
+        // the screen back, on the same rail and the same seconds.
+        // Two percent of the frame height is the radius — enough
+        // that the menu is the only sharp thing on screen, at any
+        // resolution, because the engine counts it in fractions —
+        // and the engine pays its one extra pass only while the
+        // number is nonzero, which is exactly the menu's own
+        // breathing time.
+        ctx.set_backdrop_blur(self.menu.alpha * BACKDROP_BLUR);
+        // The plate region lives as long as the overlay is on
+        // screen, and `draw_menu` renews it every frame it paints;
+        // the moment the fade has fully left, the sharp region
+        // retires with it.
+        if self.menu.alpha <= 0.002 {
+            ctx.set_backdrop_sharp_rect(None);
+        }
+        if self.window.pending {
+            self.window.pending = false;
             self.apply_window_policy(ctx);
         }
         // The glow, like the rest of the look: written every frame, so the
@@ -5244,198 +2087,7 @@ impl Process for Demo {
         } else {
             0.0
         });
-        // A window the compositor owns — tiled or snapped, by KWin's
-        // tiling editor or a window rule — re-asserts its own
-        // geometry no matter what the game asks for, and says so
-        // only through configure events. Watch those events: if the
-        // window is not at the requested size, re-ask, and say the
-        // quiet part aloud if it never comes. The letterbox keeps the
-        // game 16:9 and playable in whatever size survives.
-        //
-        // First the state the row is written against. Leaving fullscreen is
-        // the case that bites: an exit the desktop makes on its own leaves the
-        // row saying `on` while the window sits windowed, at the size the
-        // desktop saved before it went fullscreen — and no policy ever runs
-        // again, because the game believes its own row, so the tier's pixels
-        // and the pin that holds the aspect both stay off. Adopt what the
-        // window says and let the policy answer to *that*: the size comes
-        // back, the lock comes back, and the row tells the truth instead of
-        // the one the player pressed an hour ago. Not saved to the file — a
-        // gesture the desktop made on its own should not outlive the run.
-        if let Some(window) = ctx.window() {
-            let state = window.fullscreen().is_some();
-            if state == self.settings.fullscreen || self.in_flight() {
-                self.fullscreen_drift = 0;
-            } else {
-                self.fullscreen_drift += 1;
-                if self.fullscreen_drift == 60 {
-                    log::info!(
-                        "window policy: the desktop has it {}fullscreen, the row said otherwise",
-                        if state { "" } else { "out of " },
-                    );
-                    self.settings.fullscreen = state;
-                    self.apply_window_policy(ctx);
-                }
-            }
-        }
-        if let Some(ask) = self.window_expect
-            && let Some(window) = ctx.window()
-        {
-            {
-                let TierAsk {
-                    w,
-                    h,
-                    off,
-                    calm,
-                    asks,
-                } = ask;
-                let size = window.inner_size();
-                let at_tier = size.width.abs_diff(w) < 2 && size.height.abs_diff(h) < 2;
-                if at_tier && calm == 0 {
-                    // Arrived, and only now take the handle: locking pins to
-                    // the *current* size, so locking before arrival is how you
-                    // pin a window to the wrong one. Idempotent where the
-                    // compositor obeyed the hints, curative where a stomp left
-                    // them off.
-                    let px = frost::PhysicalSize::new(w, h);
-                    window.set_min_inner_size(Some(px));
-                    window.set_max_inner_size(Some(px));
-                    window.set_resizable(false);
-                    self.window_expect = Some(TierAsk {
-                        w,
-                        h,
-                        off: 0,
-                        calm: 1,
-                        asks,
-                    });
-                } else if at_tier {
-                    self.window_expect = if calm + 1 >= TierAsk::HOLD {
-                        log::info!(
-                            "window policy: {}x{} held for {} seconds, the tier stands",
-                            w,
-                            h,
-                            TierAsk::HOLD / 60,
-                        );
-                        None
-                    } else {
-                        Some(TierAsk {
-                            w,
-                            h,
-                            off,
-                            calm: calm + 1,
-                            asks,
-                        })
-                    };
-                } else if off > TierAsk::PATIENCE || asks > TierAsk::PATIENCE_ASKS {
-                    self.window_expect = None;
-                    println!(
-                        "antifrost: asked the window for {w}x{h} {} times, it stayed {}x{} \u{2014} \
-                         the desktop is keeping its own geometry: a tile or a snap, a window \
-                         rule, or a fullscreen exit that restored the shape the window had \
-                         before it went in. Take it out of the tile, or set the row back to \
-                         native and let the letterbox hold the 16:9.",
-                        asks, size.width, size.height,
-                    );
-                } else {
-                    // Not there yet, so ask again rather than only watch. One
-                    // ask is a bet that the first request still stands, and
-                    // two ordinary things take that bet away: an exit from
-                    // fullscreen restores the window's old shape *after* the
-                    // request made in the same breath as `set_fullscreen(None)`,
-                    // and a min/max pin left at the tier's size while the
-                    // window sits somewhere else is a hint the compositor has
-                    // no reason to obey. So unlock, ask, and leave it unlocked
-                    // until it arrives — which is the same order the policy
-                    // uses, because locking pins to the current size and the
-                    // current size is exactly what is wrong.
-                    if off % TierAsk::CADENCE == TierAsk::CADENCE - 1 {
-                        window.set_min_inner_size(None::<frost::PhysicalSize<u32>>);
-                        window.set_max_inner_size(None::<frost::PhysicalSize<u32>>);
-                        let again = window.request_inner_size(frost::PhysicalSize::new(w, h));
-                        if off == TierAsk::CADENCE - 1 {
-                            // Once, not on every re-ask. The line is there to
-                            // say the first ask was answered by something other
-                            // than the window arriving; the asks after it are
-                            // that same fact repeated.
-                            log::info!(
-                                "window policy: still {}x{}, not the {w}x{h} asked \
-                                 for — re-asking ({again:?})",
-                                size.width,
-                                size.height,
-                            );
-                        }
-                    }
-                    self.window_expect = Some(TierAsk {
-                        w,
-                        h,
-                        off: off + 1,
-                        calm: 0,
-                        asks: if off % TierAsk::CADENCE == TierAsk::CADENCE - 1 {
-                            asks + 1
-                        } else {
-                            asks
-                        },
-                    });
-                }
-            }
-        }
-        if self.window_move_queued && !self.in_flight() {
-            self.window_move_queued = false;
-            self.apply_window_policy(ctx);
-        }
-        if let Some(clock) = self.resize_probe {
-            let t = clock + dt;
-            self.resize_probe = Some(t);
-            // Edge-triggered, every one: a range check on a 60 Hz
-            // clock is a six-frame window, and six resize requests
-            // on Wayland — where configures land asynchronously —
-            // is six fights to watch in the log instead of one
-            // answer. Each threshold crosses exactly once.
-            if clock < 2.5 && t >= 2.5 {
-                log::info!("resize probe: cycling the real quality row");
-                self.settings.quality = self.settings.quality.next();
-                ctx.set_render_size(self.settings.quality.size());
-                self.apply_window_policy(ctx);
-            }
-            // High's `next` is native — which asks for no resize —
-            // so the probe cycles twice: unlock at High's exit, and
-            // the real 1080 -> 720 request at the next row.
-            if clock < 4.5 && t >= 4.5 {
-                log::info!("resize probe: cycling the real quality row again");
-                self.settings.quality = self.settings.quality.next();
-                ctx.set_render_size(self.settings.quality.size());
-                self.apply_window_policy(ctx);
-            }
-            // Cycling the rung is not the whole question. A windowed tier's
-            // size is asked for in the same breath as the fullscreen exit, and
-            // a compositor that answers the exit second wins: the window comes
-            // back at whatever shape it saved before it went in, which is the
-            // one thing the row is supposed to rule out. So the probe goes in,
-            // comes out, and says what survived — with the tier named, so the
-            // log answers whether the window agrees without anyone counting
-            // pixels on a screen.
-            if clock < 7.0 && t >= 7.0 {
-                log::info!("resize probe: into fullscreen");
-                self.settings.fullscreen = true;
-                self.apply_window_policy(ctx);
-            }
-            if clock < 9.0 && t >= 9.0 {
-                log::info!("resize probe: out of fullscreen");
-                self.settings.fullscreen = false;
-                self.apply_window_policy(ctx);
-            }
-            if clock < 12.0 && t >= 12.0 {
-                if let Some(window) = ctx.window() {
-                    log::info!(
-                        "resize probe: settled at {}x{}, tier asks {:?}",
-                        window.inner_size().width,
-                        window.inner_size().height,
-                        self.settings.quality.size(),
-                    );
-                }
-                self.resize_probe = None;
-            }
-        }
+        self.watch_window(ctx, dt);
         // The bench hourglass: seconds run and frames counted before
         // anything else decides whether this frame is spent on the
         // hill or the menu — every frame draws the same hill and
@@ -5481,11 +2133,96 @@ impl Process for Demo {
         if self.pressed(ctx, KeyCode::F11) {
             self.menu_action(ctx, Action::Fullscreen);
         }
+        // The hill's ear: whichever hand spoke last — keys struck,
+        // pointer moved, stick pushed, trigger squeezed — decides the
+        // voice of the tutorial's words. Level reads, not edges: a
+        // held stick is the pad still speaking, a still pad silent.
+        {
+            let pad_spoke = ctx.gamepads().next().is_some_and(|p| {
+                let axis = |a: frost::Axis| p.axis_data(a).map(|d| d.value()).unwrap_or(0.0);
+                let pressed = |b: frost::Button| p.is_pressed(b);
+                axis(frost::Axis::LeftStickX).abs() > 0.2
+                    || axis(frost::Axis::LeftStickY).abs() > 0.2
+                    || pressed(frost::Button::DPadUp)
+                    || pressed(frost::Button::DPadDown)
+                    || pressed(frost::Button::DPadLeft)
+                    || pressed(frost::Button::DPadRight)
+                    || pressed(frost::Button::South)
+                    || pressed(frost::Button::East)
+                    || pressed(frost::Button::West)
+                    || pressed(frost::Button::North)
+                    || pressed(frost::Button::LeftTrigger)
+                    || pressed(frost::Button::RightTrigger)
+                    || pressed(frost::Button::Start)
+                    || pressed(frost::Button::Select)
+            });
+            let pointer = ctx.mouse_position();
+            let keys_spoke = pointer != self.last_mouse
+                || ctx.mouse_button_down(MouseButton::Left)
+                || ctx.mouse_button_down(MouseButton::Right)
+                || [
+                    KeyCode::ArrowUp,
+                    KeyCode::ArrowDown,
+                    KeyCode::ArrowLeft,
+                    KeyCode::ArrowRight,
+                    KeyCode::KeyW,
+                    KeyCode::KeyA,
+                    KeyCode::KeyS,
+                    KeyCode::KeyD,
+                    KeyCode::Space,
+                    KeyCode::KeyZ,
+                    KeyCode::KeyR,
+                    KeyCode::ShiftLeft,
+                    KeyCode::ShiftRight,
+                    KeyCode::Enter,
+                    KeyCode::Escape,
+                ]
+                .iter()
+                .any(|k| ctx.key_down(*k));
+            self.last_mouse = pointer;
+            // Both in one frame belongs to the pad: keys held while
+            // a stick moved still left the player steering by thumb.
+            if pad_spoke {
+                self.last_input = InputMode::Pad;
+            } else if keys_spoke {
+                self.last_input = InputMode::Keys;
+            }
+        }
         // Escape answers its page: the hill yields to the menu, the
         // menu hands the hill back, settings step back to the menu.
         // Quitting belongs to the exit row alone. (`Config::escape_exits`
         // is off — the demo owns this key.)
-        if self.pressed(ctx, KeyCode::Escape) {
+        // Options is the pad's Escape — it opens the menu from the
+        // hill, steps off every page, and walks back out of a
+        // showing, exactly as the key does; Circle joins as the
+        // menus' own back, silent on the hill where Escape means
+        // pause. The three edges are read before the test so no
+        // short-circuit can strand one mid-air.
+        // The DualSense arrives on macOS often enough without a
+        // table-matched mapping that the menu trio — Create,
+        // Options, PS — land under whichever standard name the
+        // backend's guess gave them, and a heuristic match tends to
+        // drop them all. Rather than argue over which name Options
+        // kept, all three answer as Escape: none has another verb
+        // in this game, and the PS button is the system's own as
+        // often as not.
+        let esc = self.pressed(ctx, KeyCode::Escape);
+        let pad_esc = self.pad_pressed(ctx, frost::Button::Start)
+            || self.pad_pressed(ctx, frost::Button::Select)
+            || self.pad_pressed(ctx, frost::Button::Mode);
+        let pad_back = self.pad_pressed(ctx, frost::Button::East);
+        // Square is the pad's detach — the hill's third verb, read
+        // beside the menu buttons so its edge is never stranded on
+        // a frame the hill's branch skipped. The shoulder rewinds
+        // (the shove's twin: one steps back, the other shoves) and
+        // the big trigger behind it restarts — two separate
+        // buttons, so no squeeze meant as an undo can deepen into
+        // erasing the run. So the sulking hill's words have a pad
+        // telling that is not a lie.
+        let pad_detach = self.pad_pressed(ctx, frost::Button::West);
+        let pad_undo = self.pad_pressed(ctx, frost::Button::LeftTrigger);
+        let pad_restart = self.pad_pressed(ctx, frost::Button::LeftTrigger2);
+        if esc || pad_esc || (self.page != Page::Game && pad_back) {
             if self.replay.is_some() {
                 // Stepping off a showing returns to the ledger it
                 // came from, and the hill is wiped back to its own
@@ -5494,13 +2231,13 @@ impl Process for Demo {
                 self.replay = None;
                 self.load(hill);
                 self.page = Page::Progress;
-                self.drag = None;
+                self.menu.drag = None;
             } else {
                 match escape_nav(self.page) {
                     Escape::ToMenu => {
                         self.page = Page::Main;
-                        self.drag = None;
-                        self.menu_sel = 0;
+                        self.menu.drag = None;
+                        self.menu.sel = 0;
                     }
                     Escape::Resume => self.page = Page::Game,
                 }
@@ -5560,13 +2297,17 @@ impl Process for Demo {
                     action = Some((dir, shift));
                 }
             }
-            let detach = self.pressed(ctx, KeyCode::Space);
+            // The pad walks the keys' road: the same gate, the same
+            // shove, the same refusals — its step only stands where
+            // no key answered, and its shoulders are its Shift.
+            let action = action.or_else(|| self.pad_action(ctx));
+            let detach = self.pressed(ctx, KeyCode::Space) || pad_detach;
             let click_left = self.pressed_mouse(ctx, MouseButton::Left);
             let click_right = self.pressed_mouse(ctx, MouseButton::Right);
             // Right-click detaches; shift+left-click pushes instead.
             let detach_click = click_right;
-            let undo = self.pressed(ctx, KeyCode::KeyZ);
-            let restart = self.pressed(ctx, KeyCode::KeyR);
+            let undo = self.pressed(ctx, KeyCode::KeyZ) || pad_undo;
+            let restart = self.pressed(ctx, KeyCode::KeyR) || pad_restart;
             // The tutorial rail answers for the hill before the hill
             // is even handed out: while a school hill keeps a card
             // open, that card's act is the only input the gate lets
@@ -5867,8 +2608,8 @@ impl Process for Demo {
             && self.game.as_ref().is_some_and(|g| g.won)
         {
             self.page = Page::Won;
-            self.drag = None;
-            self.menu_sel = 0;
+            self.menu.drag = None;
+            self.menu.sel = 0;
         }
         // The verdict: when the hill is won and has not yet been told
         // its own name, draw one from the hat — the praise tier reads
@@ -5886,13 +2627,13 @@ impl Process for Demo {
                 } else {
                     ["YOUR DID IT", "GOOD JOB", "WELL DONE"]
                 };
-                let pick = self.leaf_rng.in_range(0.0, 2.999) as usize;
+                let pick = self.rng.in_range(0.0, 2.999) as usize;
                 let text = praise[pick].to_string();
                 // The word outlives its spin: the won panel reads it,
                 // in the same bright the splash burned.
                 self.verdict = Some((text.clone(), colour));
-                let grow = self.leaf_rng.in_range(1.875, 2.55);
-                let end = self.leaf_rng.in_range(-45.0, 45.0) * std::f32::consts::FRAC_PI_4 / 45.0;
+                let grow = self.rng.in_range(1.875, 2.55);
+                let end = self.rng.in_range(-45.0, 45.0) * std::f32::consts::FRAC_PI_4 / 45.0;
                 self.splash = Some(Splash {
                     text,
                     t: 0.0,
@@ -5979,114 +2720,10 @@ impl Process for Demo {
         self.draw_hud(ctx);
         self.draw_splash(ctx);
         self.draw_better(ctx);
-        if self.menu_alpha > 0.002 {
+        if self.menu.alpha > 0.002 {
             self.draw_menu(ctx);
         }
         self.draw_letterbox(ctx);
-    }
-}
-
-/// A browser has no stderr: route whatever log survives to the
-/// devtools console, and turn panics into console errors. (The crate
-/// compiles `log` calls out of release builds — `release_max_level_off`
-/// — and wasm builds are release builds, so in the shipped page this
-/// mostly catches panics; `web/index.html` carries a page-side probe
-/// for the rest.)
-#[cfg(target_arch = "wasm32")]
-fn init_logging() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        console_error_panic_hook::set_once();
-        struct Console;
-        impl log::Log for Console {
-            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
-                true
-            }
-            fn log(&self, record: &log::Record<'_>) {
-                let line = format!("[{:?}] {}", record.level(), record.args());
-                web_sys::console::log_1(&line.into());
-            }
-            fn flush(&self) {}
-        }
-        static LOGGER: Console = Console;
-        if log::set_logger(&LOGGER).is_ok() {
-            log::set_max_level(log::LevelFilter::Info);
-        }
-    });
-}
-
-/// Milliseconds on the wall clock: the browser's own clock in the
-/// page, epoch milliseconds on the desktop — one shape for the beat
-/// sentinel, whichever side of the wire it keeps time on.
-#[cfg(target_arch = "wasm32")]
-fn now_ms() -> f64 {
-    js_sys::Date::now()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn now_ms() -> f64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0.0, |d| d.as_secs_f64() * 1000.0)
-}
-
-/// One stutter line, said where the line lands: the devtools console
-/// on the web — where `log` calls have been compiled out of the
-/// release build the page ships — and the ordinary log on the
-/// desktop, where they have not.
-#[cfg(target_arch = "wasm32")]
-fn report_gap(gap: f64, page: Page) {
-    web_sys::console::warn_1(
-        &format!("antifrost: {gap:.2} s since the last frame ({page:?} up)").into(),
-    );
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn report_gap(gap: f64, page: Page) {
-    log::warn!("{gap:.2} s since the last frame ({page:?} up)");
-}
-
-/// The command line's arguments.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(clap::Parser)]
-struct Cli {
-    /// Present frames in sync with the display's vertical blank. `off`
-    /// uncaps the frame rate — the hill has the headroom (the experiment
-    /// hit 200 fps), but the cadence judders, and the tearing present
-    /// (`Immediate`) bypasses VRR, so vsync stays on unless this flag
-    /// says otherwise.
-    ///
-    /// An `Option`: a bare `bool` field is clap's zero-arg `--flag`,
-    /// which has no value to parse.
-    #[arg(long, value_name = "on|off", value_parser = parse_on_off)]
-    vsync: Option<bool>,
-
-    /// Run for SECONDS, log the mean frame rate, and quit on its own
-    /// — the A/B instrument the benchmarking notes ask of every
-    /// performance claim. Frames count only after the first two
-    /// seconds, so the clocks have time to wake; everything else the
-    /// launch decides, settings file included.
-    #[arg(long, value_name = "SECONDS")]
-    bench: Option<f32>,
-
-    /// Cycle the resolution row once on a timer, logging the window's
-    /// size before, answered, and settled — the diagnostic for
-    /// "did the window actually move". Not a feature; a probe.
-    #[arg(long)]
-    resize_probe: bool,
-}
-
-/// clap's value parser for the vsync flag: `on`/`off`, any case.
-#[cfg(not(target_arch = "wasm32"))]
-fn parse_on_off(s: &str) -> Result<bool, String> {
-    if s.eq_ignore_ascii_case("on") {
-        Ok(true)
-    } else if s.eq_ignore_ascii_case("off") {
-        Ok(false)
-    } else {
-        Err(format!("expected `on` or `off`, got `{s}`"))
     }
 }
 
@@ -6103,15 +2740,15 @@ fn main() {
     let mut settings = Settings::load();
     let progress = Progress::load();
     #[cfg(not(target_arch = "wasm32"))]
-    let (bench, resize_probe) = {
+    let (bench, resize_probe, unlock) = {
         let cli: Cli = clap::Parser::parse();
         if let Some(v) = cli.vsync {
             settings.vsync = v;
         }
-        (cli.bench, cli.resize_probe)
+        (cli.bench, cli.resize_probe, cli.unlock)
     };
     #[cfg(target_arch = "wasm32")]
-    let (bench, resize_probe) = (None, false);
+    let (bench, resize_probe, unlock) = (None, false, false);
     let vsync = settings.vsync;
     // Native logs to stderr; a browser has no stderr, so there the
     // panic hook surfaces failures in the devtools console instead of
@@ -6192,8 +2829,16 @@ fn main() {
         scene,
         {
             let mut d = Demo::new(ant_frames, ant_stencils, soil, settings.clone(), progress);
+            // `--unlock` opens every door, once and for the record:
+            // the write is the point, so the flag need not return.
+            // The ledger's numbers, routes, and depth are untouched
+            // — this opens doors, it does not wipe a ledger.
+            if unlock {
+                d.progress.open(d.levels.len());
+                d.progress.save();
+            }
             d.bench = bench;
-            d.resize_probe = resize_probe.then_some(0.0);
+            d.window.probe = resize_probe.then_some(0.0);
             d
         },
         frost::Config {
@@ -6248,25 +2893,51 @@ fn main() {
 }
 
 #[cfg(test)]
-mod click_tests {
+mod pad_tests {
     use super::*;
 
     #[test]
-    fn the_native_view_keeps_the_window_when_it_is_already_wide_enough() {
-        // Exact 16:9 passes through untouched: no bars to draw.
-        assert_eq!(fit_16x9(1920.0, 1080.0), (1920.0, 1080.0));
-        // A wide window loses height to bars; a tall one loses width.
-        let (w, h) = fit_16x9(1600.0, 1000.0);
-        assert_eq!((w, h), (1600.0, 900.0));
-        let (w, h) = fit_16x9(1000.0, 1000.0);
-        assert_eq!((w, h), (1000.0, 562.5));
-        // The box is always 16:9 and always inside the window.
-        for (ww, hh) in [(800.0, 600.0), (2560.0, 1080.0), (400.0, 900.0)] {
-            let (vw, vh) = fit_16x9(ww, hh);
-            assert!((vw / vh - 16.0 / 9.0).abs() < 1e-3, "{ww}x{hh}");
-            assert!(vw <= ww + 1e-3 && vh <= hh + 1e-3, "{ww}x{hh}");
-        }
+    fn the_pad_aim_maps_to_a_step() {
+        // The d-pad speaks first, and it speaks plainly.
+        assert_eq!(
+            Demo::pad_step([true, false, false, false], 0.0, 0.0),
+            Some(game::Dir::Up)
+        );
+        assert_eq!(
+            Demo::pad_step([false, true, false, false], 0.0, 0.0),
+            Some(game::Dir::Down)
+        );
+        assert_eq!(
+            Demo::pad_step([false, false, true, false], 0.0, 0.0),
+            Some(game::Dir::Left)
+        );
+        assert_eq!(
+            Demo::pad_step([false, false, false, true], 0.0, 0.0),
+            Some(game::Dir::Right)
+        );
+        // A pad held two ways aims nowhere: the hill takes no step
+        // from an ambiguous cross or an opposing pair.
+        assert_eq!(Demo::pad_step([true, false, true, false], 0.0, 0.0), None);
+        assert_eq!(Demo::pad_step([true, true, false, false], 0.0, 0.0), None);
+        // The stick: past the dead zone, the dominant axis walks,
+        // and `y` positive is up — the sign the hill thinks in.
+        assert_eq!(Demo::pad_step([false; 4], 0.9, 0.2), Some(game::Dir::Right));
+        assert_eq!(
+            Demo::pad_step([false; 4], -0.9, -0.2),
+            Some(game::Dir::Left)
+        );
+        assert_eq!(Demo::pad_step([false; 4], 0.2, 0.9), Some(game::Dir::Up));
+        assert_eq!(Demo::pad_step([false; 4], 0.0, -0.8), Some(game::Dir::Down));
+        // The dead zone keeps a resting stick from walking the trail
+        // on its own, and it is the same floor on both axes.
+        assert_eq!(Demo::pad_step([false; 4], 0.0, 0.0), None);
+        assert_eq!(Demo::pad_step([false; 4], 0.49, 0.49), None);
     }
+}
+
+#[cfg(test)]
+mod click_tests {
+    use super::*;
 
     /// A `Demo` is pure CPU work until `run_configured`: asset bake,
     /// level load, route math — all testable headless.
@@ -6325,1844 +2996,5 @@ mod click_tests {
         );
         assert_eq!(aim(1, 1), Some(game::Dir::Up), "straight up the shaft");
         assert_eq!(aim(1, 3), None, "aimed at your own feet, nobody shoves");
-    }
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod cli_tests {
-    use super::*;
-
-    fn vsync_of(args: &[&str]) -> bool {
-        <Cli as clap::Parser>::parse_from(std::iter::once("antifrost").chain(args.iter().copied()))
-            .vsync
-            .unwrap_or(true)
-    }
-
-    #[test]
-    fn vsync_defaults_to_on() {
-        assert!(
-            vsync_of(&[]),
-            "no flag: the display's cadence stays the pin"
-        );
-    }
-
-    #[test]
-    fn vsync_flag_toggles_either_way() {
-        assert!(!vsync_of(&["--vsync", "off"]), "off uncaps the frame rate");
-        assert!(vsync_of(&["--vsync", "on"]), "on is spellable out loud");
-        assert!(
-            !vsync_of(&["--vsync", "OFF"]),
-            "case is not part of the deal"
-        );
-    }
-
-    #[test]
-    fn any_other_vsync_value_is_rejected() {
-        let err = <Cli as clap::Parser>::try_parse_from(["antifrost", "--vsync", "maybe"]);
-        assert!(err.is_err(), "the flag speaks on or off, nothing else");
-    }
-}
-
-/// A merged occluder: columns `c0..=c1`, rows `r0..=r1`, inclusive grid
-/// cells — the shape the cache holds and each frame packs into a world
-/// rectangle.
-type OccBox = (i32, i32, i32, i32);
-
-/// The seed cover the fixpoint starts from, on its own so the bench can
-/// weigh the two against each other: maximal runs per row — `tiles`
-/// arrives row-major, so a run is a walk while the row holds and the
-/// column stays adjacent — then a stack of equal spans merged upward.
-/// Sorted by span, then row, so a stack of equal spans — the frame's
-/// sides, a pile's flank — sits adjacent in line for the upward merge.
-/// A row-major scan could never see it: a row with two runs puts the
-/// other column's run between the stack's own links, and the stack
-/// stayed one box per row, leaking a hairline of light through every
-/// seam it drew.
-fn seed_cover(tiles: &[(i32, i32, bool)]) -> Vec<OccBox> {
-    let mut runs: Vec<(i32, i32, i32)> = Vec::new();
-    let mut i = 0;
-    while i < tiles.len() {
-        let (row, col_s, _) = tiles[i];
-        let mut col_e = col_s;
-        let mut j = i + 1;
-        while j < tiles.len() && tiles[j].0 == row && tiles[j].1 == col_e + 1 {
-            col_e = tiles[j].1;
-            j += 1;
-        }
-        runs.push((col_s, col_e, row));
-        i = j;
-    }
-    runs.sort_unstable();
-    let mut boxes: Vec<OccBox> = Vec::new();
-    let mut k = 0;
-    while k < runs.len() {
-        let (col_s, col_e, row0) = runs[k];
-        let mut row1 = row0;
-        let mut m = k + 1;
-        while m < runs.len() && runs[m].0 == col_s && runs[m].1 == col_e && runs[m].2 == row1 + 1 {
-            row1 = runs[m].2;
-            m += 1;
-        }
-        boxes.push((col_s, col_e, row0, row1));
-        k = m;
-    }
-    boxes
-}
-
-/// The occluder-merge cache, as a pure function so the tests can walk it.
-///
-/// A box is `(col_s, col_e, row0, row1)`; the cover must hold every solid
-/// cell in some box and no box may hold an empty one — the hill's shadow
-/// is exactly the hill, and a box over a dug cell would wall light off
-/// from a tunnel. The seed cover is the two-stage scan the cache has
-/// always run: maximal runs per row, then a stack of equal spans merged
-/// upward. The fixpoint pass comes after it, and it sees what the seed
-/// cannot: two boxes of equal span split by a row whose run is wider —
-/// the bar of a cross, the headroom of a shaft — leaves that span's
-/// column stranded in two boxes, and whenever the stranded cells lie
-/// solid the pair is one box. So the pass loops, merging any pair whose
-/// bounding rectangle lies wholly inside the solids, until a round
-/// merges nothing.
-///
-/// The rule keeps the cover exact without consulting any other box: the
-/// merged rectangle holds only solid cells, and the pair's union already
-/// covered those cells' rows and columns, so every cell that was covered
-/// stays covered and nothing new joins the shadow — a merge may overlap
-/// its neighbours freely. Every merge deletes a box, so the rounds
-/// terminate, and the cover only ever shrinks toward the fewest boxes
-/// this rule can prove.
-fn merge_boxes(tiles: &[(i32, i32, bool)]) -> Vec<OccBox> {
-    use std::collections::HashSet;
-    let solid: HashSet<(i32, i32)> = tiles.iter().map(|&(row, col, _)| (row, col)).collect();
-    let mut boxes = seed_cover(tiles);
-
-    // The fixpoint. A pair may merge when its bounding rectangle is all
-    // solid cells; one merge per round, rescanned, so a merge that
-    // stretches a box is given its chance to enable the next. The count
-    // falls by one each time, so the rounds end.
-    let solid_rect = |c0: i32, c1: i32, r0: i32, r1: i32| {
-        (r0..=r1).all(|row| (c0..=c1).all(|col| solid.contains(&(row, col))))
-    };
-    loop {
-        let mut found: Option<(usize, usize, OccBox)> = None;
-        'pairs: for a in 0..boxes.len() {
-            for b in a + 1..boxes.len() {
-                let (c0, c1) = (boxes[a].0.min(boxes[b].0), boxes[a].1.max(boxes[b].1));
-                let (r0, r1) = (boxes[a].2.min(boxes[b].2), boxes[a].3.max(boxes[b].3));
-                // Two boxes are one box exactly when the rectangle that
-                // bounds the pair holds only solid cells — the all-solid
-                // test is also the whole exactness argument: no empty is
-                // ever covered. A rectangle no larger than `a` itself
-                // says `b` already lies inside `a`; nothing is to gain.
-                let rect = (c0, c1, r0, r1);
-                if rect != boxes[a] && solid_rect(c0, c1, r0, r1) {
-                    found = Some((a, b, rect));
-                    break 'pairs;
-                }
-            }
-        }
-        let Some((a, b, rect)) = found else { break };
-        boxes.remove(b);
-        boxes.remove(a);
-        boxes.push(rect);
-    }
-    boxes
-}
-
-#[cfg(test)]
-mod dig_tests {
-    use super::*;
-
-    /// The watch's arithmetic, frame by frame: a dig is born the
-    /// frame its dirt vanishes, at exactly the hop's length; it ages
-    /// with the clock; and the frame its countdown runs out is the
-    /// frame it is gone — never a node outliving its tile.
-    #[test]
-    fn a_dig_is_born_at_full_hop_and_eaten_by_its_end() {
-        let mut digs: Vec<(i32, i32, f32, f32)> = Vec::new();
-        let mut seen: Vec<(i32, i32)> = Vec::new();
-        let full = [(3, 4)];
-        // Dirt arriving is not a dig: a hill loaded is a hill with
-        // dirt, not a field of holes opening.
-        watch_digs(&mut digs, &seen, &full, 1.0 / 60.0);
-        seen = full.to_vec();
-        assert!(digs.is_empty());
-        // The move: the cell vanishes this frame, and the digest is
-        // born whole — its first tick is next frame's.
-        watch_digs(&mut digs, &seen, &[], 1.0 / 60.0);
-        seen = Vec::new();
-        assert_eq!(digs.len(), 1);
-        assert_eq!(digs[0].0, 3);
-        assert_eq!(digs[0].1, 4);
-        assert!(
-            (digs[0].2 - DIG_HOP).abs() < 1e-6,
-            "born at the full dig hop"
-        );
-        // The clock carries it; the seed rode from the first frame,
-        // so the pattern never shifts mid-bite. One tick spent is one
-        // tick spent — exact to the f32, plus the epsilon a
-        // subtract-and-compare deserves.
-        let seed = digs[0].3;
-        watch_digs(&mut digs, &seen, &[], 1.0 / 60.0);
-        assert!(digs[0].2 <= DIG_HOP - 1.0 / 60.0 + 1e-6);
-        assert_eq!(digs[0].3, seed);
-        // And it ends: past the dig hop's length the list empties,
-        // because the tile dissolved with the step that landed. Ninety
-        // frames at 60 fps is a second and a half, comfortably past
-        // the dig hop's four ordinary hops.
-        for _ in 0..90 {
-            watch_digs(&mut digs, &seen, &[], 1.0 / 60.0);
-        }
-        assert!(digs.is_empty(), "a dissolved tile outlives no node");
-    }
-
-    /// An undo puts the dirt back mid-bite: the tile stands again,
-    /// so the digest that was eating it stops — and one tile keeps
-    /// one node, never a stack of eaters on the same square.
-    #[test]
-    fn restored_dirt_cancels_and_undedirt_does_not_stack() {
-        let mut digs: Vec<(i32, i32, f32, f32)> = Vec::new();
-        let mut seen: Vec<(i32, i32)> = Vec::new();
-        let full = [(1, 1)];
-        // Dig.
-        watch_digs(&mut digs, &seen, &full, 0.01);
-        seen = full.to_vec();
-        watch_digs(&mut digs, &seen, &[], 0.01);
-        seen = Vec::new();
-        assert_eq!(digs.len(), 1);
-        // The undo: the hill has the cell again, the digest stops.
-        watch_digs(&mut digs, &seen, &full, 0.01);
-        seen = full.to_vec();
-        assert!(digs.is_empty(), "the tile stands, the eat stops");
-        // Dug again after the cancel: one fresh digest, and the same
-        // gone picture re-offered changes nothing — one tile is one
-        // node, and a cell only ever vanishes once per digest.
-        watch_digs(&mut digs, &seen, &[], 0.01);
-        seen = Vec::new();
-        assert_eq!(digs.len(), 1);
-        // Same picture again — `seen` never re-offers the gone cell,
-        // so the single dig just ages.
-        watch_digs(&mut digs, &seen, &[], 0.01);
-        assert_eq!(digs.len(), 1);
-    }
-}
-
-#[cfg(test)]
-mod merge_tests {
-    use super::*;
-
-    /// A solid-cell list in the shape's own coordinates, row-major like
-    /// the level's, in the tuple the cache keys on.
-    fn cells(list: &[(i32, i32)]) -> Vec<(i32, i32, bool)> {
-        let mut v: Vec<(i32, i32, bool)> =
-            list.iter().map(|&(row, col)| (row, col, true)).collect();
-        v.sort();
-        v
-    }
-
-    /// The cover contract, asserted rather than assumed: the boxes hold
-    /// every solid cell and no box holds an empty one — the shadow is
-    /// exactly the hill, in whichever fewest boxes the merge can prove.
-    fn assert_exact_cover(list: &[(i32, i32)], boxes: &[OccBox]) {
-        let solid: std::collections::HashSet<(i32, i32)> = list.iter().copied().collect();
-        let union: std::collections::HashSet<(i32, i32)> = boxes
-            .iter()
-            .flat_map(|&(c0, c1, r0, r1)| {
-                (r0..=r1).flat_map(move |r| (c0..=c1).map(move |c| (r, c)))
-            })
-            .collect();
-        assert_eq!(union, solid, "the boxes must cover the cells exactly");
-    }
-
-    fn merged(list: &[(i32, i32)]) -> Vec<OccBox> {
-        let boxes = merge_boxes(&cells(list));
-        assert_exact_cover(list, &boxes);
-        boxes
-    }
-
-    #[test]
-    fn rectangles_still_merge_to_one_box() {
-        let rect: Vec<(i32, i32)> = (0..4).flat_map(|r| (0..7).map(move |c| (r, c))).collect();
-        assert_eq!(merged(&rect), vec![(0, 6, 0, 3)], "a pile is one box");
-    }
-
-    #[test]
-    fn a_frame_stays_four_bars() {
-        // Rock's ring: no merge may ever cross its hollow middle.
-        let mut ring: Vec<(i32, i32)> = Vec::new();
-        for r in 0..5 {
-            for c in 0..5 {
-                if r == 0 || r == 4 || c == 0 || c == 4 {
-                    ring.push((r, c));
-                }
-            }
-        }
-        let boxes = merged(&ring);
-        assert_eq!(boxes.len(), 4, "top, bottom, and the two sides");
-    }
-
-    #[test]
-    fn the_fixpoint_sees_across_the_wider_row() {
-        // The plus: the seed's stack cannot link the column across the
-        // bar, because the bar's run is wider than the column's span.
-        // The fixpoint asks only whether the stranded cell is solid —
-        // and it is — so the post becomes one box beside the bar.
-        let plus = [(0, 1), (1, 0), (1, 1), (1, 2), (2, 1)];
-        let mut boxes = merged(&plus);
-        boxes.sort_unstable();
-        assert_eq!(
-            boxes,
-            vec![(0, 2, 1, 1), (1, 1, 0, 2)],
-            "a bar and a post, two boxes, exact"
-        );
-    }
-
-    #[test]
-    fn an_h_merges_its_stranded_posts() {
-        // Two columns joined by a middle row: the seed cuts both posts
-        // in four; the fixpoint welds each post whole.
-        let h: Vec<(i32, i32)> = (0..3)
-            .flat_map(|r| [(r, 0), (r, 2)])
-            .chain([(1, 1)])
-            .collect();
-        let mut boxes = merged(&h);
-        boxes.sort_unstable();
-        // Three boxes is the floor, and both shapes of cover reach it:
-        // the bar may shrink to its middle cell or keep its full width
-        // and overlap the posts — a cover is a union, and the merge
-        // never saw a reason to cut the bar's ends off. What the seed
-        // could not do and the fixpoint can: weld each stranded post
-        // whole across the bar's wider row.
-        assert_eq!(boxes.len(), 3, "two whole posts and the bar");
-        assert!(
-            boxes.contains(&(0, 0, 0, 2)) && boxes.contains(&(2, 2, 0, 2)),
-            "each post stands as one box: {boxes:?}"
-        );
-    }
-
-    #[test]
-    fn a_dug_gap_still_divides() {
-        // The merge must never wall a tunnel: two posts split by a dug
-        // cell stay two boxes whatever the fixpoint tries.
-        let split = [(0, 0), (1, 0), (3, 0), (4, 0)];
-        let mut boxes = merged(&split);
-        boxes.sort_unstable();
-        assert_eq!(
-            boxes,
-            vec![(0, 0, 0, 1), (0, 0, 3, 4)],
-            "the empty row is a wall the merge cannot cross"
-        );
-    }
-
-    #[test]
-    fn a_checkerboard_yields_its_cells() {
-        // No two cells share a bounding rectangle that lies solid: the
-        // fixpoint must leave every cell its own box.
-        let board: Vec<(i32, i32)> = (0..4)
-            .flat_map(|r| {
-                (0..4)
-                    .filter(move |c| (r + c) % 2 == 0)
-                    .map(move |c| (r, c))
-            })
-            .collect();
-        assert_eq!(merged(&board).len(), board.len(), "no merge is legal here");
-    }
-
-    #[test]
-    fn empty_hill_no_boxes() {
-        assert_eq!(merge_boxes(&[]), vec![]);
-    }
-
-    /// The house rule from `docs/benchmarking.md` §5, applied where the
-    /// fixpoint lives: A/B the mechanism, on the real hills and on a
-    /// worst case, and report the numbers whatever they say. The seed
-    /// cover is the old merge; `merge_boxes` is the seed plus the
-    /// fixpoint; the two differ by exactly the pass under test.
-    #[test]
-    fn the_fixpoint_cut_is_measured_not_claimed() {
-        // Every shipped hill, as the cache will see it.
-        let levels = level::load_levels(include_str!("../levels.ron"));
-        let mut shipped_gain = 0usize;
-        for lvl in &levels {
-            let tiles: Vec<(i32, i32, bool)> = (0..lvl.rows as i32)
-                .flat_map(|row| (0..lvl.cols as i32).map(move |col| (row, col)))
-                .filter_map(|(row, col)| {
-                    let t = lvl.tiles[row as usize * lvl.cols + col as usize];
-                    matches!(t, level::Tile::Rock | level::Tile::Dirt).then_some((
-                        row,
-                        col,
-                        matches!(t, level::Tile::Rock),
-                    ))
-                })
-                .collect();
-            let before = seed_cover(&tiles).len();
-            let after = merge_boxes(&tiles);
-            let list: Vec<(i32, i32)> = tiles.iter().map(|&(r, c, _)| (r, c)).collect();
-            assert_exact_cover(&list, &after);
-            shipped_gain += before - after.len();
-            eprintln!(
-                "merge bench: {}: {before} -> {} boxes",
-                lvl.name,
-                after.len()
-            );
-        }
-
-        // The worst case the fixpoint exists for: a dug hill whose
-        // tunnels cross, stranding every pillar the seed cuts loose.
-        let mut dug: Vec<(i32, i32)> = Vec::new();
-        for r in 0..24 {
-            for c in 0..32 {
-                if r % 4 != 2 || c % 5 != 3 {
-                    dug.push((r, c));
-                }
-            }
-        }
-        let before = seed_cover(&cells(&dug)).len();
-        let after = merged(&dug);
-        eprintln!(
-            "merge bench: crossing tunnels 24x32: {before} -> {} boxes",
-            after.len()
-        );
-        assert!(
-            after.len() * 2 < before,
-            "the fixpoint must at least halve a field of stranded pillars: \
-             {before} -> {}",
-            after.len()
-        );
-        // And the shipped hills are reported honestly whatever they say.
-        let _ = shipped_gain;
-    }
-}
-
-/// The menu, the Escape rule, and the settings file — the parts the
-/// request asked for that are pure CPU and can be nailed down without
-/// a window.
-#[cfg(test)]
-mod menu_tests {
-    use super::*;
-
-    fn demo() -> Demo {
-        let frames = ANT_FRAMES
-            .iter()
-            .map(|png| ant_frame(png).expect("shipped ant frames bake"))
-            .collect();
-        let stencils = ANT_STENCILS
-            .iter()
-            .map(|png| ant_frame(png).expect("shipped ant stencils bake"))
-            .collect();
-        let soil = frost::Shape::sprite_bytes(SOIL).expect("shipped soil bakes");
-        Demo::new(
-            frames,
-            stencils,
-            soil,
-            Settings::default(),
-            Progress::default(),
-        )
-    }
-
-    #[test]
-    fn the_progress_file_counts_hills_as_the_hud_does() {
-        assert_eq!(
-            Progress::default().text(),
-            "(\n    hill: 1,\n    reached: 1,\n    scores: [],\n    routes: [],\n)\n",
-            "a player who never moved stands on the first hill, ledger empty"
-        );
-        let p = Progress::parse("(\n    hill: 3,\n)\n");
-        assert_eq!(p.hill, 2, "the file counts from one, the code from zero");
-        assert_eq!(p.reached, 2, "a pre-depth file adopts its standing hill");
-        assert!(
-            p.scores.is_empty(),
-            "a file from before the ledger is no scores, not a broken file"
-        );
-        assert!(
-            p.routes.is_empty(),
-            "a file from before the routes is no routes either"
-        );
-        assert_eq!(
-            Progress {
-                hill: 1,
-                reached: 1,
-                ..Default::default()
-            }
-            .text(),
-            "(\n    hill: 2,\n    reached: 2,\n    scores: [],\n    routes: [],\n)\n"
-        );
-        assert_eq!(
-            Progress::parse("garbage").hill,
-            0,
-            "a broken file means the first hill, not a failed launch"
-        );
-        assert_eq!(
-            Progress::parse("(\n    hill: 0,\n)\n").hill,
-            0,
-            "nothing sits below the first hill"
-        );
-    }
-
-    #[test]
-    fn the_ledger_keeps_the_best_run_of_every_warm_hill() {
-        let mut p = Progress::default();
-        p.record(2, 40);
-        p.record(0, 55);
-        p.record(2, 34);
-        p.record(2, 41);
-        assert_eq!(
-            p.scores,
-            vec![(0, 55), (2, 34)],
-            "sorted, one entry per hill, the fewest moves kept"
-        );
-        let back = Progress::parse(&p.text());
-        assert_eq!(back, p, "the ledger round-trips through the file");
-        // And it reads back a hand-written list the same way it reads
-        // its own: quoted pairs counting hills from one, out-of-order
-        // folds to sorted, a hill named twice keeps its better number.
-        let p =
-            Progress::parse("(\n    hill: 4,\n    scores: [\"3 31\", \"1 47\", \"3 29\"],\n)\n");
-        assert_eq!(p.scores, vec![(0, 47), (2, 29)]);
-    }
-
-    #[test]
-    fn a_route_is_walkable_or_it_is_nothing() {
-        let run = [
-            game::Act::Move(game::Dir::Left),
-            game::Act::Move(game::Dir::Down),
-            game::Act::Push(game::Dir::Up),
-            game::Act::Detach,
-        ];
-        let glyphs = encode_run(&run);
-        assert_eq!(
-            glyphs, "ldUx",
-            "walks lowercase, shoves uppercase, leave-behind x"
-        );
-        assert_eq!(decode_run(&glyphs).as_deref(), Some(&run[..]));
-        assert_eq!(
-            decode_run("ldU!x"),
-            None,
-            "one stray letter is not a route with a typo — it is not a route"
-        );
-        // And the ledger keeps only walks: a hand may write a number,
-        // but it cannot plant a route the hill could never show.
-        let mut p = Progress::default();
-        p.remember(0, "qzzling");
-        assert!(
-            p.routes.is_empty(),
-            "unwalkable glyphs are refused at the door"
-        );
-    }
-
-    #[test]
-    fn the_walk_changes_only_when_the_score_does() {
-        let mut p = Progress::default();
-        p.record_run(1, 50, "rrrddd");
-        assert_eq!(
-            p.route_of(1),
-            Some("rrrddd"),
-            "a first win deposits number and walk"
-        );
-        p.record_run(1, 52, "ddd");
-        assert_eq!(p.scores, vec![(1, 50)], "a worse run moves no number");
-        assert_eq!(
-            p.route_of(1),
-            Some("rrrddd"),
-            "and carries no walk anywhere"
-        );
-        p.record_run(1, 50, "uuu");
-        assert_eq!(
-            p.route_of(1),
-            Some("rrrddd"),
-            "a tie over a kept walk leaves the elder in"
-        );
-        p.record_run(1, 44, "rrdd");
-        assert_eq!(
-            p.route_of(1),
-            Some("rrdd"),
-            "a better score carries a new walk in"
-        );
-        // A hill whose number predates the recordings backfills its
-        // walk on a tie — and only on a tie, because the walk that
-        // joins the ledger must walk exactly the count it joins.
-        let mut old = Progress::parse("(\n    hill: 2,\n    scores: [\"2 40\"],\n)\n");
-        assert_eq!(
-            old.route_of(1),
-            None,
-            "the old file has scores and no walks"
-        );
-        old.record_run(1, 41, "ldu");
-        assert_eq!(
-            old.route_of(1),
-            None,
-            "a run worse than the old number records nothing"
-        );
-        old.record_run(1, 40, "ruru");
-        assert_eq!(old.route_of(1), Some("ruru"), "the tie backfills the walk");
-        assert_eq!(old.scores, vec![(1, 40)], "and the number does not move");
-        old.record_run(1, 40, "dud");
-        assert_eq!(
-            old.route_of(1),
-            Some("ruru"),
-            "the elder backfill keeps its seat"
-        );
-        let back = Progress::parse(&old.text());
-        assert_eq!(
-            back, old,
-            "numbers and routes round-trip through the file together"
-        );
-    }
-
-    #[test]
-    fn a_showing_walks_its_recorded_run_and_scores_nothing() {
-        let mut d = demo();
-        d.load(0);
-        // A hand walks a short run on First Warm, exactly as the keys
-        // would: right, right, up from the start cell (1,3).
-        {
-            let g = d.game.as_mut().expect("a hill stands loaded");
-            for a in [
-                game::Act::Move(game::Dir::Right),
-                game::Act::Move(game::Dir::Right),
-                game::Act::Move(game::Dir::Up),
-            ] {
-                g.act(a).expect("legal on First Warm");
-            }
-        }
-        let walked = d.game.as_ref().expect("still loaded");
-        assert_eq!(walked.log.len(), 3, "the played hill wrote its walk down");
-        d.progress.remember(0, &encode_run(&walked.log));
-        let scores_before = d.progress.scores.clone();
-        // Now the ledger shows it back.
-        d.start_replay(0);
-        assert_eq!(d.page, Page::Game, "the showing opens on the hill");
-        assert!(
-            !d.game.as_ref().expect("replaying").record,
-            "a showing records nothing"
-        );
-        for _ in 0..3 {
-            d.replay_advance();
-        }
-        let shown = d.game.as_ref().expect("still replaying");
-        assert_eq!(
-            shown.player,
-            game::Cell::new(3, 2),
-            "the walk lands where it was walked"
-        );
-        assert_eq!(shown.moves, 3);
-        assert_eq!(d.replay.as_ref().expect("shown").shown, 3);
-        assert!(
-            !d.replay.as_ref().expect("arrived").playing,
-            "the run holds at its end"
-        );
-        // And the wheel runs backwards exactly: the hill rebuilt from
-        // its beginning, one action short.
-        d.replay_retreat();
-        let back = d.game.as_ref().expect("still replaying");
-        assert_eq!(
-            back.player,
-            game::Cell::new(3, 3),
-            "one step back, one cell back"
-        );
-        assert_eq!(back.moves, 2);
-        // The audience scored nothing: the ledger never shifted, and
-        // the won page never claimed the hill.
-        assert_eq!(d.progress.scores, scores_before, "a showing is not a run");
-        assert_eq!(d.page, Page::Game, "no verdict for a spectator");
-    }
-
-    #[test]
-    fn the_game_opens_where_the_player_stood() {
-        let frames = ANT_FRAMES
-            .iter()
-            .map(|png| ant_frame(png).expect("shipped ant frames bake"))
-            .collect();
-        let stencils = ANT_STENCILS
-            .iter()
-            .map(|png| ant_frame(png).expect("shipped ant stencils bake"))
-            .collect();
-        let soil = frost::Shape::sprite_bytes(SOIL).expect("shipped soil bakes");
-        let d = Demo::new(
-            frames,
-            stencils,
-            soil,
-            Settings::default(),
-            Progress {
-                hill: 1,
-                ..Default::default()
-            },
-        );
-        assert_eq!(d.idx, 1, "the saved hill is the opened hill");
-        assert!(d.game.is_some(), "and it arrives with its game loaded");
-        let mut d = d;
-        d.new_game();
-        assert_eq!(d.idx, 0, "New Game restarts the descent at the first hill");
-    }
-
-    #[test]
-    fn one_row_lives_under_the_pointer() {
-        let d = demo();
-        let rows = d.menu_rows(d.page, 1080.0);
-        for (i, r) in rows.iter().enumerate() {
-            assert_eq!(
-                row_under(&rows, [r.cx, r.cy]),
-                Some(i),
-                "a row's own center answers to it alone"
-            );
-        }
-        let above = [rows[0].cx, rows[0].cy - rows[0].hh - 1.0];
-        assert_eq!(
-            row_under(&rows, above),
-            None,
-            "just clear of the top row is nobody's"
-        );
-    }
-
-    #[test]
-    fn escape_walks_the_pages() {
-        // The hill yields to the menu, the menu hands the hill back,
-        // settings step back — the key never quits, only the exit row
-        // does.
-        assert_eq!(escape_nav(Page::Game), Escape::ToMenu);
-        assert_eq!(escape_nav(Page::Main), Escape::Resume);
-        assert_eq!(escape_nav(Page::Settings), Escape::ToMenu);
-    }
-
-    #[test]
-    fn the_hill_opens_paused_behind_the_menu() {
-        let d = demo();
-        assert_eq!(d.page, Page::Main, "launch is the menu, not the walk");
-        assert!(d.game.is_some(), "the hill is loaded and visible behind it");
-    }
-
-    #[test]
-    fn new_game_clears_the_moves() {
-        let mut d = demo();
-        {
-            let g = d.game.as_mut().expect("a hill is loaded");
-            // The click tests' First Warm: the queen walks the shaft up.
-            assert!(g.move_player(game::Dir::Up).is_ok());
-            assert_eq!(g.moves, 1, "one step on the board");
-        }
-        d.new_game();
-        assert_eq!(
-            d.game.as_ref().unwrap().moves,
-            0,
-            "the board forgot the step"
-        );
-        assert_eq!(d.page, Page::Game, "and the hill plays on");
-    }
-
-    #[test]
-    fn new_game_restores_the_empty_ledger() {
-        // The menu's New Game row rewinds the save to its empty
-        // default: every number, walk and depth the ledger ever
-        // kept is forgotten, and the descent restarts its record
-        // from the first hill. The settings keep their own file and
-        // are never part of the rewind.
-        let mut d = demo();
-        d.progress.record_run(3, 40, "rrrddd");
-        d.progress.stood(2);
-        assert!(
-            !d.progress.scores.is_empty() && d.progress.reached > 0,
-            "there must be a history to erase"
-        );
-        d.new_game();
-        assert_eq!(
-            d.progress,
-            Progress::default(),
-            "the save returns to its empty default"
-        );
-        assert_eq!(d.idx, 0, "the descent restarts at the first hill");
-    }
-
-    #[test]
-    fn the_first_hill_lessons_its_walk_card_by_card() {
-        let mut d = demo();
-        d.page = Page::Game;
-        let script: Vec<game::Act> = FIRST_WARM_LESSON.iter().map(|l| l.act).collect();
-        assert_eq!(
-            d.lesson().map(|l| l.act),
-            script.first().copied(),
-            "the hill opens on its first card"
-        );
-        for (i, a) in script.iter().enumerate() {
-            d.game
-                .as_mut()
-                .expect("the hill stands loaded")
-                .act(*a)
-                .expect("the lesson's walk is legal");
-            let next = d.lesson().map(|l| l.act);
-            if i + 1 < script.len() {
-                assert_eq!(
-                    next,
-                    script.get(i + 1).copied(),
-                    "card {i} hands over the next"
-                );
-            } else {
-                assert_eq!(next, None, "the won hill keeps no card");
-            }
-        }
-    }
-
-    #[test]
-    fn the_second_hill_lessons_the_straight_hall() {
-        let mut d = demo();
-        d.page = Page::Game;
-        d.load(1);
-        let script: Vec<game::Act> = ATTUNEMENT_LESSON.iter().map(|l| l.act).collect();
-        assert_eq!(
-            d.lesson().map(|l| l.act),
-            script.first().copied(),
-            "the hall opens on its first card"
-        );
-        for (i, a) in script.iter().enumerate() {
-            assert!(d.rail_opens(*a), "the hall's rail asks card {i}");
-            assert!(
-                !d.rail_opens(game::Act::Detach),
-                "and nothing else: card {i} admits the hall's one verb"
-            );
-            d.game
-                .as_mut()
-                .expect("the hall stands loaded")
-                .act(*a)
-                .expect("the hall's walk is legal");
-            if i == 1 {
-                // The lesson's own point, caught in the act: the
-                // collected ant sleeps on R in the queen's wake, no
-                // steps to spare.
-                assert_eq!(
-                    d.game.as_ref().expect("still walking").ants_asleep(),
-                    1,
-                    "the ant fell asleep on R in the wake"
-                );
-            }
-        }
-        let g = d.game.as_ref().expect("still loaded");
-        assert!(g.won, "five steps east and the hall is warm");
-        assert!(d.lesson().is_none(), "a warmed hall keeps no card");
-        assert!(
-            d.rail_opens(game::Act::Detach),
-            "and lifts its rail with the lesson"
-        );
-    }
-
-    #[test]
-    fn the_third_hill_lessons_the_dunk() {
-        let mut d = demo();
-        d.page = Page::Game;
-        // The dunk lesson is the hill's lesson after the cold tour;
-        // a warm hill — however it was warmed — opens on these cards.
-        d.progress.record(2, 40);
-        d.load(2);
-        let script: Vec<game::Act> = FIRST_COLD_LESSON.iter().map(|l| l.act).collect();
-        assert_eq!(
-            d.lesson().map(|l| l.act),
-            script.first().copied(),
-            "the cold ring opens on its first card"
-        );
-        for (i, a) in script.iter().enumerate() {
-            assert!(d.rail_opens(*a), "the ring's rail asks card {i}");
-            if *a != game::Act::Detach {
-                // The leave-behind answers only when the card asks
-                // for it: the verb is taught, not lying about loose.
-                assert!(
-                    !d.rail_opens(game::Act::Detach),
-                    "card {i} gates the leave-behind"
-                );
-            }
-            d.game
-                .as_mut()
-                .expect("the ring stands loaded")
-                .act(*a)
-                .expect("the ring's walk is legal");
-            if i == 4 {
-                assert_eq!(
-                    d.game.as_ref().expect("still walking").ants_asleep(),
-                    1,
-                    "the second shove dunks r onto R"
-                );
-            }
-        }
-        let g = d.game.as_ref().expect("still loaded");
-        assert!(g.won, "nine acts and the cold ring is warm");
-        assert!(d.lesson().is_none(), "a warmed ring keeps no card");
-        assert!(
-            d.rail_opens(game::Act::Detach),
-            "and lifts its rail with the lesson"
-        );
-    }
-
-    #[test]
-    fn the_oops_deck_forces_both_mistakes_and_teaches_the_restart() {
-        let mut d = demo();
-        d.page = Page::Game;
-        d.load(2);
-        // First Cold opens on the wrong foot, on purpose: the card
-        // asks for the wrong step, and nothing else answers the
-        // gate.
-        assert_eq!(
-            d.lesson().map(|l| l.act),
-            Some(MISTAKE_CARD.act),
-            "the ring opens on a mistake, asked for out loud"
-        );
-        assert!(!d.rail_opens(game::Act::Move(game::Dir::Left)));
-        // The step lands and the hill sulks: no card is open, and
-        // the rail answers nothing — not even the step straight
-        // back — until the undo comes.
-        d.game
-            .as_mut()
-            .expect("the ring stands loaded")
-            .act(game::Act::Move(game::Dir::Right))
-            .expect("the forced step is still a legal one");
-        assert!(d.mistake_standing(), "the mistake is the whole walk");
-        assert!(d.lesson().is_none(), "a sulking hill keeps no card");
-        assert!(!d.rail_opens(game::Act::Move(game::Dir::Left)));
-        assert!(!d.rail_opens(game::Act::Move(game::Dir::Right)));
-        assert!(!d.rail_opens(game::Act::Detach));
-        // The Z takes the step back — no bill, moves and record
-        // rolled under — and the hill re-baits the very same trap:
-        // the wrong step is asked again, and this time it is asked
-        // twice.
-        d.mistake_shown = true;
-        let g = d.game.as_mut().expect("still sulking");
-        assert!(g.undo());
-        assert_eq!(g.moves, 0, "the mistake leaves no bill");
-        assert_eq!(
-            d.lesson().map(|l| l.act),
-            Some(MISTAKE_CARD.act),
-            "the same trap, re-baited"
-        );
-        let g = d.game.as_mut().expect("re-baited");
-        g.act(game::Act::Move(game::Dir::Right))
-            .expect("the second first step is legal");
-        assert_eq!(
-            d.lesson().map(|l| l.act),
-            Some(DOUBLE_CARD.act),
-            "and the pair asks its second step"
-        );
-        let g = d.game.as_mut().expect("mid-pair");
-        g.act(game::Act::Move(game::Dir::Right))
-            .expect("the second wrong step is legal too");
-        // The deep sulk: the pair stands, no card answers, and the
-        // rail is shut as tight as before — this time for the R.
-        assert!(d.disaster_standing(), "twice right is twice wrong");
-        assert!(d.lesson().is_none(), "the deep sulk keeps no card");
-        assert!(!d.rail_opens(game::Act::Move(game::Dir::Left)));
-        assert!(!d.rail_opens(game::Act::Move(game::Dir::Right)));
-        assert!(!d.rail_opens(game::Act::Detach));
-        // The R — what the restart handler retires, this test
-        // mirrors by hand — restarts the hill onto the cold tour,
-        // at its own first card, never re-baited again; the
-        // answer's words stay unspent until the tour earns them.
-        d.oops_retired = true;
-        let level = d.game.as_ref().expect("disastered").level.clone();
-        d.game = Some(game::Game::start(level));
-        assert!(!d.oopsy_visit(), "a retired deck never re-baits");
-        assert_eq!(
-            d.lesson().map(|l| l.act),
-            Some(COLD_TOUR_LESSON[0].act),
-            "the restart lands on the long walk, as promised"
-        );
-        assert!(d.rail_opens(COLD_TOUR_LESSON[0].act));
-    }
-
-    #[test]
-    fn the_cold_tour_walks_the_long_way_before_the_lesson() {
-        let mut d = demo();
-        d.page = Page::Game;
-        d.load(2);
-        // The oops deck had its whole turn first: both mistakes
-        // made, the restart restarted out of them — the deck's own
-        // test walks that above.
-        d.mistake_shown = true;
-        d.oops_retired = true;
-        let script: Vec<game::Act> = COLD_TOUR_LESSON.iter().map(|l| l.act).collect();
-        assert_eq!(
-            d.lesson().map(|l| l.act),
-            script.first().copied(),
-            "the cold ring opens on its long way"
-        );
-        for (i, a) in script.iter().enumerate() {
-            assert!(d.rail_opens(*a), "the rail asks tour card {i}");
-            d.game
-                .as_mut()
-                .expect("the ring stands loaded")
-                .act(*a)
-                .expect("the tour's walk is legal");
-            if i == 4 {
-                assert_eq!(
-                    d.game.as_ref().expect("still walking").ants_asleep(),
-                    1,
-                    "the wake carries r home while the walk goes on"
-                );
-            }
-        }
-        let (won, moves) = {
-            let g = d.game.as_ref().expect("still walking");
-            (g.won, g.moves)
-        };
-        assert!(won, "the long way is still a way");
-        assert_eq!(moves, 18, "eighteen moves where nine will do");
-        // And the tour's ledger is the lesson's opening: the update
-        // loop records this same walk and restarts the hill on the
-        // win tick; a warm hill answers only to the better script.
-        d.progress.record(2, moves);
-        d.load(2);
-        d.game
-            .as_mut()
-            .expect("reloaded")
-            .act(game::Act::Move(game::Dir::Left))
-            .expect("both decks open with the same grab");
-        assert_eq!(
-            d.lesson().map(|l| l.act),
-            Some(game::Act::Detach),
-            "the warmed hill teaches the leave-behind, not the walk"
-        );
-    }
-
-    #[test]
-    fn the_dig_tour_walks_the_long_way_then_digs_the_short() {
-        let mut d = demo();
-        d.page = Page::Game;
-        d.load(3);
-        let tour: Vec<game::Act> = DIG_TOUR_LESSON.iter().map(|l| l.act).collect();
-        assert_eq!(
-            d.lesson().map(|l| l.act),
-            tour.first().copied(),
-            "the cheap dig opens on its long way"
-        );
-        for (i, a) in tour.iter().enumerate() {
-            assert!(d.rail_opens(*a), "the rail asks tour card {i}");
-            d.game
-                .as_mut()
-                .expect("the dig stands loaded")
-                .act(*a)
-                .expect("the tour's walk is legal");
-        }
-        let (won, moves, dirt) = {
-            let g = d.game.as_ref().expect("still walking");
-            (g.won, g.moves, g.tile(game::Cell::new(5, 2)))
-        };
-        assert!(won, "the long way is still a way");
-        assert_eq!(moves, 14, "fourteen moves where ten will do");
-        assert!(
-            matches!(dirt, level::Tile::Dirt),
-            "the long walk misses the dirt entirely"
-        );
-        // Warm now, the hill re-deals on the cheap script — and
-        // this time the wall's dirt cell is the lesson.
-        d.progress.record(3, moves);
-        d.load(3);
-        let dig: Vec<game::Act> = DIG_LESSON.iter().map(|l| l.act).collect();
-        assert_eq!(
-            d.lesson().map(|l| l.act),
-            dig.first().copied(),
-            "the warmed hill teaches the dig"
-        );
-        for (i, a) in dig.iter().enumerate() {
-            assert!(d.rail_opens(*a), "the rail asks dig card {i}");
-            d.game
-                .as_mut()
-                .expect("the dig stands warm")
-                .act(*a)
-                .expect("the dig's walk is legal");
-        }
-        let (won, moves, gave_way) = {
-            let g = d.game.as_ref().expect("still digging");
-            (g.won, g.moves, g.tile(game::Cell::new(5, 2)))
-        };
-        assert!(won, "the dig wins");
-        assert_eq!(moves, 10, "ten moves, every one of them needed");
-        assert!(
-            matches!(gave_way, level::Tile::Tunnel),
-            "walking into dirt was the dig"
-        );
-        assert!(d.lesson().is_none(), "the lesson ends with the walk");
-    }
-
-    #[test]
-    fn a_step_off_the_lesson_silences_it_and_undo_calls_it_back() {
-        let mut d = demo();
-        d.page = Page::Game;
-        assert!(d.lesson().is_some(), "the first hill opens with a card");
-        // The first card says right; a walk up is legal and off the
-        // line, and the hill keeps its own counsel about it.
-        d.game
-            .as_mut()
-            .expect("a hill is loaded")
-            .act(game::Act::Move(game::Dir::Up))
-            .expect("the shaft above the start is open");
-        assert!(d.lesson().is_none(), "off the script, silence");
-        d.game.as_mut().expect("still loaded").undo();
-        assert_eq!(
-            d.lesson().map(|l| l.act),
-            Some(game::Act::Move(game::Dir::Right)),
-            "the undone step puts the card back"
-        );
-    }
-
-    #[test]
-    fn no_other_hill_and_no_other_page_keeps_a_lesson_open() {
-        let mut d = demo();
-        d.page = Page::Game;
-        d.load(4);
-        assert!(d.lesson().is_none(), "the fifth hill teaches nothing");
-        d.load(3);
-        assert!(
-            d.lesson().is_some(),
-            "the fourth hill keeps its cards since the swap"
-        );
-        d.load(2);
-        assert!(d.lesson().is_some(), "the third hill keeps its cards too");
-        d.load(0);
-        assert!(d.lesson().is_some(), "back on the first, the card is up");
-        d.page = Page::Main;
-        assert!(d.lesson().is_none(), "behind the menu the lesson waits");
-    }
-
-    #[test]
-    fn the_pool_hands_on_no_shadow_listeners() {
-        // The deep parallax sheet listens on the shadow layer from
-        // the pool's last slot, and a bigger hill hands that very
-        // node to another role. Fitting the pool must hand the
-        // listener back to plain layer 0 — a stale one would draw the
-        // hill's tile shadows onto an ant shell or a bed, surfaces
-        // the hill shadows nothing.
-        let mut root = SceneNode::default();
-        fit_pool(&mut root, 3);
-        root.children[2].lit_layers = LightLayers::default() | BG_SHADOW_LAYER;
-        fit_pool(&mut root, 5);
-        assert!(
-            root.children[..5]
-                .iter()
-                .all(|n| n.lit_layers == LightLayers::default()),
-            "the grown pool carries no leftover listener"
-        );
-        // And the sweep asks nothing of the slot: a listener planted
-        // anywhere in the pool answers to the default after a fit,
-        // whatever the pool's new size.
-        root.children[0].lit_layers = BG_SHADOW_LAYER;
-        fit_pool(&mut root, 2);
-        assert_eq!(root.children.len(), 2, "the fit hands back the size");
-        assert_eq!(
-            root.children[0].lit_layers,
-            LightLayers::default(),
-            "the shrunken pool carries no leftover listener either"
-        );
-    }
-
-    #[test]
-    fn the_wash_takes_the_light_back_at_the_threshold() {
-        // The bug this pays for: a dig wore its fx at a tail slot,
-        // the next hill counts smaller, and the backdrop now dresses
-        // that very slot — shape, colour, light — while `emission`
-        // and `glow` stay from the dig and read as sky on fire.
-        let rest = Color {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 0.0,
-        };
-        let mut root = SceneNode::default();
-        fit_pool(&mut root, 4);
-        root.children[3].emission = Color {
-            r: 1.0,
-            g: 0.4,
-            b: 0.14,
-            a: 1.0,
-        };
-        root.children[3].glow = Some(Color {
-            r: 0.9,
-            g: 0.6,
-            b: 0.2,
-            a: 1.0,
-        });
-        // A hill swap — smaller this time — slides the tail down over
-        // the worn slot; the wash is what the draw spends per swap.
-        fit_pool(&mut root, 3);
-        wash_pool(&mut root);
-        for (i, n) in root.children.iter().enumerate() {
-            assert_eq!(n.emission, rest, "slot {i} still holds emission");
-            assert!(n.glow.is_none(), "slot {i} still wears a halo");
-        }
-        // And the wash asks nothing else of a dressed node: the
-        // backdrop's own colour and depth survive the threshold,
-        // because every other field belongs to its band, not the
-        // pool's memory.
-        root.children[2].modulate = Color {
-            r: 0.45,
-            g: 0.4,
-            b: 0.38,
-            a: 1.0,
-        };
-        root.children[2].order = -0.5;
-        root.children[2].lit = true;
-        wash_pool(&mut root);
-        assert_eq!(root.children[2].order, -0.5, "the wash touches no dress");
-        assert!(root.children[2].lit, "the wash touches no dress");
-        assert_eq!(
-            root.children[2].modulate.a, 1.0,
-            "the wash touches no dress"
-        );
-        // A grown pool needs no wash to be clean — new slots are born
-        // at rest — but a wash spends nothing on the pretence.
-        fit_pool(&mut root, 6);
-        assert_eq!(root.children[5].emission, rest);
-        assert_eq!(root.children[5].glow, None);
-    }
-
-    #[test]
-    fn the_tutorial_hill_answers_to_the_card_alone() {
-        let mut d = demo();
-        d.page = Page::Game;
-        // The first card walks right; nothing else opens the gate.
-        for a in [
-            game::Act::Move(game::Dir::Left),
-            game::Act::Move(game::Dir::Up),
-            game::Act::Move(game::Dir::Down),
-            game::Act::Push(game::Dir::Right),
-            game::Act::Detach,
-        ] {
-            assert!(
-                !d.rail_opens(a),
-                "the rail refuses {a:?} while the card says right"
-            );
-        }
-        assert!(d.rail_opens(game::Act::Move(game::Dir::Right)));
-        // The gate follows the cards: a log walked through the
-        // script is asked each act in its turn — and once the hill
-        // sleeps, the gate lifts with the lesson.
-        for l in &FIRST_WARM_LESSON {
-            assert!(d.rail_opens(l.act), "the open card admits its own act");
-            d.game
-                .as_mut()
-                .expect("the hill stands loaded")
-                .act(l.act)
-                .expect("the script is legal");
-        }
-        assert!(d.rail_opens(game::Act::Detach), "a won hill keeps no rail");
-    }
-
-    #[test]
-    fn the_tutorial_rail_walks_its_click_route_by_the_card() {
-        let mut d = demo();
-        d.page = Page::Game;
-        // The open card walks right; a click route that says left
-        // dies at the gate — no hop, no turn, and the hill says
-        // where to look.
-        d.route = vec![game::Dir::Left];
-        d.walk_the_route();
-        assert!(d.route.is_empty(), "the off-card route is cut");
-        assert!(d.spin.is_none(), "and it never even began to turn");
-        assert_eq!(
-            d.game.as_ref().expect("a hill is loaded").log.len(),
-            0,
-            "no step was taken"
-        );
-        assert_eq!(d.note, RAIL_NOTE, "the gate answered with its word");
-        // The card's own step walks.
-        d.note.clear();
-        d.note_t = 0.0;
-        d.route = vec![game::Dir::Right];
-        d.walk_the_route();
-        let g = d.game.as_ref().expect("still loaded");
-        assert_eq!(g.log.len(), 1, "the card's step was taken");
-        assert_eq!(g.log[0], game::Act::Move(game::Dir::Right));
-        assert!(d.note.is_empty(), "a walked card needs no word");
-        // And the other hills keep no rail: every verb answers.
-        d.load(4);
-        assert!(
-            d.rail_opens(game::Act::Detach) && d.rail_opens(game::Act::Move(game::Dir::Down)),
-            "the other forty-six answer to everything"
-        );
-    }
-
-    #[test]
-    fn settings_round_trip_through_their_own_text() {
-        let s = Settings {
-            vsync: false,
-            nearest: true,
-            fullscreen: false,
-            quality: Quality::Ultra,
-            ambient: 0.25,
-            light: 1.75,
-            lamp_glow: false,
-            leaves_lit: false,
-            shadows: Shadow::Four,
-        };
-        assert_eq!(Settings::parse(&s.text()), s, "what is written is read");
-    }
-
-    #[test]
-    fn a_broken_file_is_answered_with_defaults() {
-        assert_eq!(
-            Settings::parse("not ron at all ((("),
-            Settings::default(),
-            "a garbage file must not out-vote the launch"
-        );
-        // A half-known file keeps what it knows, defaults the rest,
-        // and clamps what wandered off its range.
-        let s = Settings::parse("(vsync: false, ambient: 9.0, bogus: 1)");
-        assert!(!s.vsync, "one line survived");
-        assert_eq!(s.ambient, 1.0, "clamped back onto the slider's top");
-        assert_eq!(s.quality, Quality::High, "the untouched rows stand");
-    }
-
-    #[test]
-    fn the_ambient_slider_hinges_on_the_shipped_night() {
-        // The middle of the track — the default — is exactly the
-        // night the game shipped with; the bottom is the full dark;
-        // the top leaves no dimming at all.
-        assert_eq!(
-            Settings::default().ambient,
-            0.5,
-            "the slider starts on the shipped look"
-        );
-        let mid = ambient_floor(0.5);
-        assert_eq!((mid.r, mid.g, mid.b), (C_NIGHT.r, C_NIGHT.g, C_NIGHT.b));
-        let dark = ambient_floor(0.0);
-        assert_eq!((dark.r, dark.g, dark.b), (0.0, 0.0, 0.0));
-        let day = ambient_floor(1.0);
-        assert!(
-            (day.r - 1.0).abs() < 1e-6 && (day.g - 1.0).abs() < 1e-6 && (day.b - 1.0).abs() < 1e-6,
-            "at full track the floor is white: nothing dims"
-        );
-    }
-
-    #[test]
-    fn quality_tiers_round_trip() {
-        for q in [
-            Quality::Medium,
-            Quality::High,
-            Quality::VeryHigh,
-            Quality::Ultra,
-        ] {
-            assert_eq!(
-                Quality::parse(q.label()),
-                Some(q),
-                "the file speaks in labels"
-            );
-        }
-        assert_eq!(
-            Quality::High.next(),
-            Quality::VeryHigh,
-            "the shipped tier steps up"
-        );
-        assert_eq!(Quality::Ultra.next(), Quality::Medium, "and the row cycles");
-        assert_eq!(
-            Quality::Ultra.size(),
-            None,
-            "native is no fixed buffer at all"
-        );
-        assert_eq!(
-            Quality::Medium.size(),
-            Some([1280, 720]),
-            "720p is the floor"
-        );
-        assert_eq!(Quality::parse("bogus"), None, "unknown words name no tier");
-        let fresh = Settings::parse("(\n    resolution: \"1920 x 1080\",\n)\n");
-        assert_eq!(
-            fresh.quality,
-            Quality::High,
-            "the file speaks in resolutions"
-        );
-    }
-    #[test]
-    fn a_slide_clamps_to_its_track() {
-        assert_eq!(slide_value(-999.0, MENU_TRACK_CX, MENU_TRACK_HALF), 0.0);
-        assert_eq!(slide_value(999.0, MENU_TRACK_CX, MENU_TRACK_HALF), 1.0);
-        let mid = slide_value(MENU_TRACK_CX, MENU_TRACK_CX, MENU_TRACK_HALF);
-        assert!((mid - 0.5).abs() < 1e-6, "the middle of the track is half");
-    }
-
-    #[test]
-    fn the_selection_walks_wraps_the_page() {
-        // Arrows wrap: one step down from the last row is the first,
-        // one step up from the first is the last, and an empty page
-        // holds still.
-        assert_eq!(step_sel(0, 4, 1), 1);
-        assert_eq!(step_sel(3, 4, 1), 0, "past the bottom wraps to the top");
-        assert_eq!(step_sel(0, 4, -1), 3, "past the top wraps to the bottom");
-        assert_eq!(step_sel(2, 4, -1), 1);
-        assert_eq!(step_sel(7, 0, 1), 0, "no rows, no movement");
-    }
-
-    #[test]
-    fn the_control_pages_list_the_controls_in_font_safe_words() {
-        let mut d = demo();
-        for (page, firsts) in [
-            (
-                Page::Keyboard,
-                &[
-                    "wasd or arrows to move",
-                    "space to detach",
-                    "shift wasd or arrows to push",
-                    "z to undo",
-                    "r to reset level",
-                ][..],
-            ),
-            (
-                Page::Mouse,
-                &[
-                    "left click to move",
-                    "right click to detach",
-                    "shift click to push",
-                ][..],
-            ),
-        ] {
-            d.page = page;
-            let rows = d.menu_rows(d.page, 720.0);
-            let texts: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
-            for want in firsts {
-                assert!(texts.contains(want), "{page:?} must list {want:?}");
-            }
-            assert_eq!(texts.last(), Some(&"back"), "every list ends the way out");
-            for t in texts {
-                assert!(
-                    t.chars().all(|c| c.is_ascii_alphanumeric() || c == ' '),
-                    "{t:?} must wear only glyphs the font owns"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn escape_leaves_the_control_pages_for_the_menu() {
-        assert_eq!(escape_nav(Page::Keyboard), Escape::ToMenu);
-        assert_eq!(escape_nav(Page::Mouse), Escape::ToMenu);
-        assert_eq!(escape_nav(Page::Progress), Escape::ToMenu);
-    }
-
-    #[test]
-    fn the_plate_centres_itself_at_every_height() {
-        // The composed plate — title band, rows, trailing row — must
-        // hang symmetric about the view's centre whatever the height,
-        // and the whole menu block must clear the view at any height
-        // the game will actually run (540 and up).
-        for h in [540.0, 720.0, 1080.0, 2160.0] {
-            let d = demo();
-            for page in [Page::Main, Page::Settings, Page::Keyboard, Page::Mouse] {
-                let rows = d.menu_rows(page, h);
-                let top = rows.iter().map(|r| r.cy).fold(f32::MIN, f32::max);
-                let bot = rows.iter().map(|r| r.cy).fold(f32::MAX, f32::min);
-                let plate_top = top + plate_top_pad(h);
-                let plate_bot = bot - plate_bottom_pad(page, h);
-                assert!(
-                    (plate_top + plate_bot).abs() < 0.01,
-                    "{page:?} at {h}: the plate hangs off-centre: {plate_top} / {plate_bot}"
-                );
-                let lowest_ink = bot - 24.0;
-                let highest_ink = top + plate_top_pad(h).min(96.0);
-                assert!(
-                    plate_bot.min(lowest_ink) >= -h / 2.0 && highest_ink <= h / 2.0,
-                    "{page:?} at {h}: ink escaped the view"
-                );
-            }
-        }
-    }
-
-    /// The ledger's columns, held apart by measured ink: these four
-    /// budgets are the real widths of the widest things a row can
-    /// carry, laid out by the engine's shaper in the shipped Barrfont
-    /// at the ledger's size — the longest authored name (370.0,
-    /// "Three Cold Nights"), the fullest score the moves cap allows
-    /// (199.2, "999 moves"), a two-digit hill number (46.3), and the
-    /// card that the cell's own caps can never grow past (190.0). If a
-    /// new hill out-owns this ink, the first assertion fails here
-    /// rather than painting a collision.
-    #[test]
-    #[allow(clippy::assertions_on_constants)] // constant-on-constant is the point: these are layout guards over `const` widths, and the test earns its keep the day one of them moves
-    fn the_ledger_columns_never_touch() {
-        const NUM: f32 = 48.0;
-        const NAME: f32 = 372.0;
-        const SCORE: f32 = 205.0;
-        const CARD: f32 = 235.0;
-        assert!(
-            PROGRESS_NUM_X + NUM + 20.0 <= PROGRESS_NAME_X,
-            "the number column must hand off to the name with room"
-        );
-        assert!(
-            PROGRESS_NAME_X + NAME + 20.0 <= PROGRESS_SCORE_R - SCORE,
-            "the widest name must stop short of the shortest score's left edge"
-        );
-        assert!(
-            PROGRESS_SCORE_R + 20.0 <= PROGRESS_MAP_CX - CARD / 2.0,
-            "the score must stop short of the map card"
-        );
-        assert!(
-            PROGRESS_MAP_CX + CARD / 2.0 + 10.0 <= PROGRESS_PLATE,
-            "the map card must sit inside the plate"
-        );
-        assert!(
-            PROGRESS_PLATE <= 480.0,
-            "the plate must fit the half-width of the smallest window the game lays out for"
-        );
-    }
-
-    #[test]
-    fn the_wrap_chevrons_stand_at_both_ends() {
-        // The chevrons no longer ask whether something hides beyond
-        // the window — they promise the far end is one press away —
-        // so they light on every descent with a far end to reach.
-        assert_eq!(
-            progress_marks(1),
-            (false, false),
-            "a hill of one has no other end"
-        );
-        assert_eq!(
-            progress_marks(2),
-            (true, true),
-            "two hills promise each other"
-        );
-        assert_eq!(progress_marks(20), (true, true), "at any depth");
-        // The top chevron's landing: the last hill of the ledger, and
-        // the window leans so that hill stands in view — bottom row
-        // of a window bottomed out.
-        assert_eq!(wrap_to_last(20, 12), (8, 11));
-        // A descent shallower than the window leans nowhere: the last
-        // hill already stands.
-        assert_eq!(wrap_to_last(3, 12), (0, 2));
-        // And an empty ledger stands still.
-        assert_eq!(wrap_to_last(0, 12), (0, 0));
-    }
-
-    #[test]
-    fn a_held_arrow_waits_then_walks() {
-        // The first repeat waits out the whole delay — a hand still
-        // travelling to the key pays no steps — ...
-        let mut left = NAV_HOLD;
-        let mut frames = 0;
-        while !key_repeat(&mut left, 1.0 / 60.0) {
-            frames += 1;
-            assert!(frames < 600, "the delay never let go");
-        }
-        assert!(
-            (frames as f32 + 1.0) / 60.0 >= NAV_HOLD,
-            "the first repeat cheated the delay: {frames} frames"
-        );
-        // ...and then the clock walks, one step per beat, no beat
-        // wider than the rate by more than a frame's rounding.
-        for beat in 1..6 {
-            let mut gap = 0;
-            while !key_repeat(&mut left, 1.0 / 60.0) {
-                gap += 1;
-                assert!(gap < 60, "beat {beat} never came");
-            }
-            let span = (gap + 1) as f32 / 60.0;
-            assert!(
-                (NAV_RATE..=NAV_RATE + 2.0 / 60.0).contains(&span),
-                "beat {beat} came at {span}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_ledger_never_writes_more_than_the_cap() {
-        let mut p = Progress::default();
-        p.record(0, 1234);
-        assert_eq!(
-            p.scores,
-            vec![(0, MOVES_CAP)],
-            "a wandering win records the cap, not the wander"
-        );
-        p.record(0, 940);
-        assert_eq!(p.scores, vec![(0, 940)], "and a better run still beats it");
-        let p = Progress::parse(&format!(
-            "(\n    hill: 1,\n    scores: [\"1 {}\"],\n)\n",
-            MOVES_CAP + 235
-        ));
-        assert_eq!(
-            p.scores,
-            vec![(0, MOVES_CAP)],
-            "the file passes the same door"
-        );
-    }
-
-    #[test]
-    fn the_progress_page_is_a_window_over_the_descent() {
-        let mut d = demo();
-        d.page = Page::Progress;
-        // Even with nothing warm, the hill you stand on owns a row.
-        let rows = d.menu_rows(d.page, 1080.0);
-        assert_eq!(
-            rows.first().map(|r| r.action),
-            Some(Action::Hill(0)),
-            "the first hill is stood on, so it is listed"
-        );
-        assert_eq!(rows.last().map(|r| r.action), Some(Action::Back));
-        for hill in 0..20 {
-            d.progress.record(hill, 30 + hill as i32);
-        }
-        let fits = progress_fits(1080.0);
-        let rows = d.menu_rows(d.page, 1080.0);
-        assert_eq!(
-            rows.len(),
-            fits + 1,
-            "the window shows its plate-full of hills and pins back under them"
-        );
-        assert_eq!(
-            rows.last().map(|r| r.action),
-            Some(Action::Back),
-            "and the way out rides below the last visible row"
-        );
-        d.progress_top = 10;
-        let rows = d.menu_rows(d.page, 1080.0);
-        assert_eq!(
-            rows.first().map(|r| r.action),
-            Some(Action::Hill(10)),
-            "slide the window and its rows come with it"
-        );
-        let lowest = rows.iter().map(|r| r.cy).fold(f32::MAX, f32::min);
-        assert!(
-            lowest >= progress_top_y(1080.0) - fits as f32 * progress_step(1080.0) - 0.01,
-            "the pinned back row escaped its place: {lowest}"
-        );
-    }
-
-    #[test]
-    fn the_whole_descent_hangs_open_and_unwarmed_hills_keep_silence() {
-        let mut d = demo();
-        d.page = Page::Progress;
-        d.load(2); // three hills stood on, none warmed.
-        d.progress.stood(2);
-        let rows = d.menu_rows(d.page, 1080.0);
-        // The ledger is no gate: every hill is selectable from the
-        // first day, so the window fills with the descent itself,
-        // not with the ground already walked.
-        assert_eq!(
-            rows.iter()
-                .filter(|r| matches!(r.action, Action::Hill(_)))
-                .count(),
-            progress_fits(1080.0),
-            "the window hangs full of descent, standing or not"
-        );
-        assert!(
-            !rows[0].text.contains("moves"),
-            "an unscored hill keeps its score column empty"
-        );
-        // And the last hill of the descent is a door like the first:
-        // scrolled to the bottom, it stands in the window.
-        d.progress_top = d.levels.len() - 1;
-        assert!(
-            d.menu_rows(d.page, 1080.0)
-                .iter()
-                .any(|r| r.action == Action::Hill(d.levels.len() - 1)),
-            "the deepest hill is selectable like the shallowest"
-        );
-        d.progress_top = 0;
-        // A run that overshot par reads its debt; its amount belongs
-        // to `the_ledger_owes_the_imperfect_runs_first`'s fixture.
-        d.progress.record(1, 40);
-        let rows = d.menu_rows(d.page, 1080.0);
-        assert_eq!(rows[1].action, Action::Hill(1));
-        assert!(
-            rows[1].text.contains("40 of 5"),
-            "a best over par wears `moves of par`: {}",
-            rows[1].text
-        );
-        assert!(
-            !rows[2].text.contains("moves"),
-            "and its neighbours keep their word"
-        );
-    }
-
-    #[test]
-    fn the_ledger_owes_the_imperfect_runs_first() {
-        let mut d = demo();
-        d.page = Page::Progress;
-        d.load(5);
-        d.progress.stood(5); // six hills stood on, of fifty open.
-        // Perfect the 2nd and 4th (their pars are 5 and 10), overshoot
-        // the 5th, and leave the rest of the descent unwarmed.
-        d.progress.record(1, 3);
-        d.progress.record(3, 8);
-        d.progress.record(4, 30);
-        let rows = d.menu_rows(d.page, 1080.0);
-        let acts: Vec<Action> = rows.iter().map(|r| r.action).collect();
-        // The owed runs — over-par with the never-walked — lead in
-        // hill order; the perfected sink below the fold of a descent
-        // that no longer closes.
-        assert_eq!(
-            &acts[..4],
-            &[
-                Action::Hill(0),
-                Action::Hill(2),
-                Action::Hill(4),
-                Action::Hill(5),
-            ],
-            "the owed runs lead in hill order — the unwarmed with the over-par"
-        );
-        assert!(
-            !acts.contains(&Action::Hill(1)) && !acts.contains(&Action::Hill(3)),
-            "the perfected have sunk below this window"
-        );
-        // And the sweep is only resting, not gone: scrolled to the
-        // very bottom of the descent, the perfected rows wait there
-        // in their own hill order.
-        d.progress_top = d.levels.len() - 2;
-        let last = d.menu_rows(d.page, 1080.0);
-        assert_eq!(
-            last.iter().map(|r| r.action).collect::<Vec<_>>(),
-            vec![Action::Hill(1), Action::Hill(3), Action::Back],
-            "the clean sweeps settle to the bottom of the scroll"
-        );
-    }
-
-    #[test]
-    fn next_leads_the_owed_hill_or_the_new_one() {
-        let mut d = demo();
-        // Warm the first two hills and stand on the deepest: at the
-        // frontier of the descent, the never-walked hill below
-        // answers first, whatever the hills behind may owe.
-        d.load(2);
-        d.progress.stood(2);
-        d.progress.record(0, 1);
-        d.progress.record(1, 1);
-        assert_eq!(
-            d.next_hill(),
-            3,
-            "at the frontier of the descent, the never-walked hill below answers first"
-        );
-        // Walk down to the sixth hill and back to the first, leaving
-        // the third unwarmed: from shallow ground `next` leads to the
-        // nearest owed hill ahead, not past it to the new one.
-        d.load(5);
-        d.progress.stood(5);
-        for hill in 3..6 {
-            d.progress.record(hill, 1);
-        }
-        d.load(0);
-        assert_eq!(d.next_hill(), 2, "the hill still owed ahead leads");
-        // Warm that one too, and the walked ground holds nothing to
-        // owe: the new hill below takes the key.
-        d.progress.record(2, 1);
-        d.load(1);
-        assert_eq!(
-            d.next_hill(),
-            6,
-            "nothing owed on walked ground: the new hill below answers"
-        );
-        // And when the whole authored descent is perfect, `next` is
-        // what it always was: the plain next hill, wrapping.
-        for hill in 0..d.levels.len() {
-            d.progress.record(hill, 1);
-        }
-        assert_eq!(
-            d.next_hill(),
-            2,
-            "a perfected descent: `next` just moves on"
-        );
-    }
-
-    #[test]
-    fn next_greys_when_the_hill_underfoot_is_all_that_is_owed() {
-        // A player who never moved has whole hills still to walk:
-        // the key is wide awake.
-        assert!(demo().next_owed());
-        let mut d = demo();
-        let last = d.levels.len() - 1;
-        // Walk the whole descent and perfect every hill but the
-        // third. With that one hill underfoot, `next` leads nowhere
-        // the player is not already standing — and greys.
-        d.load(last);
-        d.progress.stood(last);
-        for hill in 0..d.levels.len() {
-            if hill != 2 {
-                d.progress.record(hill, 1);
-            }
-        }
-        d.load(2);
-        assert!(
-            !d.next_owed(),
-            "the only owed hill is the one underfoot: `next` is spent"
-        );
-        // Step aside to a perfected hill and the owed one waits
-        // ahead again — the grey is the hill's, not the page's.
-        d.load(3);
-        assert!(d.next_owed(), "from perfected ground the owed hill waits");
-        // Warm the last owed hill and the descent owes nothing; a
-        // perfected `next` has nowhere to move on to either.
-        d.load(2);
-        d.progress.record(2, 1);
-        assert!(
-            !d.next_owed(),
-            "a perfected descent leaves `next` nothing to lead to"
-        );
-    }
-
-    #[test]
-    fn the_settings_page_offers_every_setting() {
-        let mut d = demo();
-        d.page = Page::Settings;
-        let rows = d.menu_rows(d.page, 1080.0);
-        let actions: Vec<Action> = rows.iter().map(|r| r.action).collect();
-        for a in [
-            Action::Vsync,
-            Action::Filter,
-            Action::Fullscreen,
-            Action::Quality,
-            Action::Ambient,
-            Action::Light,
-            Action::Leaves,
-            Action::Back,
-        ] {
-            assert!(actions.contains(&a), "the page must answer {a:?}");
-        }
-        assert_eq!(
-            rows.iter().filter(|r| r.slider.is_some()).count(),
-            2,
-            "two sliders: ambient and light"
-        );
-    }
-
-    #[test]
-    fn the_main_menu_is_the_seven_rows_requested() {
-        let d = demo();
-        let actions: Vec<Action> = d
-            .menu_rows(d.page, 1080.0)
-            .iter()
-            .map(|r| r.action)
-            .collect();
-        assert_eq!(
-            actions,
-            vec![
-                Action::New,
-                Action::Resume,
-                Action::OpenSettings,
-                Action::OpenProgress,
-                Action::Keyboard,
-                Action::Mouse,
-                Action::Exit,
-            ]
-        );
-    }
-
-    #[test]
-    fn the_won_page_hangs_low_enough_for_its_verdict() {
-        // At 720 the verdict's strip runs from the plate's top
-        // (top + 130) to the score banner's bottom (h/2 - 93) and
-        // must hold the full 64-unit word clear of both.
-        let mut d = demo();
-        d.page = Page::Won;
-        let rows = d.menu_rows(d.page, 720.0);
-        let plate_top = rows.iter().map(|r| r.cy).fold(f32::MIN, f32::max) + plate_top_pad(1080.0);
-        let band = 720.0 / 2.0 - 93.0;
-        assert!(
-            band - plate_top >= 64.0 + 16.0,
-            "the strip holds only {}",
-            band - plate_top
-        );
-    }
-
-    #[test]
-    fn a_finished_hill_offers_next_and_retry() {
-        // The two ways off a won hill — and the only two: they hang
-        // under the verdict splash, not on the main menu.
-        let mut d = demo();
-        d.page = Page::Won;
-        let actions: Vec<Action> = d
-            .menu_rows(d.page, 1080.0)
-            .iter()
-            .map(|r| r.action)
-            .collect();
-        assert_eq!(actions, vec![Action::Next, Action::Retry]);
-        assert_eq!(escape_nav(Page::Won), Escape::ToMenu);
     }
 }

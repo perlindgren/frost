@@ -22,7 +22,7 @@ pub struct Watch {
     target: std::path::PathBuf,
     /// The stamp at the last look, `None` while the file did not
     /// exist: no stamp is a stamp of its own.
-    stamp: Option<std::time::SystemTime>,
+    stamp: Option<(std::time::SystemTime, u64)>,
 }
 
 impl Watch {
@@ -50,21 +50,36 @@ impl Watch {
     }
 }
 
-/// The file's stamp — its last-modified time — or `None` while it
-/// cannot be asked: absent, or a target without a filesystem. Both
-/// answer the same, and both are honest: nothing has changed that
-/// can be seen.
-fn stamp(target: &std::path::Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(target).and_then(|m| m.modified()).ok()
+/// The file's stamp — its last-modified time and its length — or
+/// `None` while it cannot be asked: absent, or a target without a
+/// filesystem. Both answer the same, and both are honest: nothing
+/// has changed that can be seen.
+///
+/// The length rides with the time because time alone lies at the
+/// tick: a filesystem stamps writes no finer than its own resolution
+/// — 100 ns on NTFS, two seconds on FAT, and anything a real-time
+/// scanner or a syncing temp folder does to the metadata in between —
+/// so two writes inside one tick carry one stamp and a watcher built
+/// on time alone sleeps through the second. Length asks the same
+/// `stat` for nothing, and the rewrite that keeps its exact length
+/// to the byte *and* lands inside one tick is a collision test
+/// suites manufacture and no editor has ever delivered.
+fn stamp(target: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
+    let meta = std::fs::metadata(target).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A scratch file with a name of its own, gone when the test is.
+    /// A scratch file inside a claimed scratch directory: the name
+    /// is taken by `create_dir`, never assumed — see
+    /// [`crate::scratch`] for why a pid-shaped assumption is a
+    /// Windows sharing violation waiting to be misread as Access
+    /// denied.
     fn scratch(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("frost_watch_{name}_{}", std::process::id()))
+        crate::scratch::claim(&format!("frost_watch_{name}")).join("watched")
     }
 
     /// The quiet case first: a file nobody touches never reports.
@@ -86,7 +101,7 @@ mod tests {
         let path = scratch("rewrite");
         std::fs::write(&path, b"one").unwrap();
         let mut w = Watch::new(&path);
-        std::fs::write(&path, b"two").unwrap();
+        std::fs::write(&path, b"two, rewritten").unwrap();
         assert!(w.changed());
         assert!(!w.changed());
         std::fs::remove_file(&path).ok();

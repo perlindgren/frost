@@ -18,7 +18,6 @@
 //! real edges — cannot do this; this test is the pin.
 
 use super::super::windowing::{content_fit, fit_bytes};
-use crate::backend::app::block_on;
 use crate::shaders::BLIT_SHADER;
 use std::borrow::Cow;
 use wgpu::*;
@@ -27,15 +26,9 @@ use wgpu::*;
 /// read back as the surface's red channel, row-major from the top. `None`
 /// when the machine has no GPU to ask, as in every other bridge here.
 fn stretch(surface: (u32, u32), fit: (f32, f32)) -> Option<Vec<u32>> {
-    let instance = Instance::default();
-    let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
-        eprintln!("letterbox bridge: no adapter on this machine — the bars go unverified!");
-        return None;
-    };
-    let Ok((device, queue)) = block_on(adapter.request_device(&DeviceDescriptor::default())) else {
-        eprintln!("letterbox bridge: no device — the bars go unverified!");
-        return None;
-    };
+    // The thread's shared GPU: see [`super::machine`].
+    let machine = super::machine::machine()?;
+    let (device, queue) = (&machine.device, &machine.queue);
     let (w, h) = surface;
 
     // One white texel stands in for the frame buffer and for every dormant
@@ -81,7 +74,11 @@ fn stretch(surface: (u32, u32), fit: (f32, f32)) -> Option<Vec<u32>> {
         usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    queue.write_buffer(&uniform, 0, &fit_bytes(fit, [0.0; 6], 0.0));
+    queue.write_buffer(
+        &uniform,
+        0,
+        &fit_bytes(fit, [0.0; 6], 0.0, 0.0, (0.0, 0.0), (-1.0, -1.0)),
+    );
 
     let texture_entry = BindingType::Texture {
         sample_type: TextureSampleType::Float { filterable: true },
@@ -281,7 +278,7 @@ fn stretch(surface: (u32, u32), fit: (f32, f32)) -> Option<Vec<u32>> {
     readback
         .slice(..)
         .map_async(MapMode::Read, |r| r.expect("map"));
-    let _ = device.poll(PollType::wait_indefinitely());
+    super::machine::drain(device);
     let bytes = readback.get_mapped_range(..).expect("mapped").to_vec();
     readback.unmap();
     let mut red = Vec::with_capacity((w * h) as usize);

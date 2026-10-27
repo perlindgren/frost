@@ -69,3 +69,46 @@ sequence (the documented frame-invariant contract), `handle_input`
 field), and the HUD/overlay (its `restart` reaches everywhere). The
 plants-and-water driver (~300, thin over `plant.rs`) remains the only
 runner-up.
+
+## The antifrost binary split — DONE (branch `antifrost_refactor`)
+
+The crate's domain half (`game`, `level`, `ledger`, `settings`,
+`route`, the solver) was already exemplary; the whole presentation
+half sat in one 8,168-line `main.rs`. Six pure-move branches off
+`main`, landed as one branch, same rules as the immortal split —
+`use crate::*` modules, `pub(crate)` at the seams, no behavior change
+anywhere. Gate-green end to end: `cargo fmt`, workspace clippy at zero
+warnings (the pre-commit hook ran it per commit), the same 21 lib +
+61 bin tests before and after, `cargo check --target
+wasm32-unknown-unknown -p antifrost`, `--features diag`, and doc-link
+warnings at the `main` baseline of one (`ambient_floor`, pre-existing).
+
+| move | effect |
+|---|---|
+| `shadow.rs` (427) — the dig watch, `OccBox`, `seed_cover`/`merge_boxes`, `dig_tests`, `merge_tests` | the cover math is pure cell functions with its proofs beside it |
+| `cli.rs` (145) — `Cli`, `parse_on_off`, `init_logging`, `now_ms`, `report_gap`, `cli_tests`; `main()` stays at the front door | the binary's plumbing reads as plumbing |
+| `lessons.rs` (635) — `Lesson`, every authored script array, the tour state machine (`warmed`/`cold_tour`/`dig_tour`/`oopsy_visit`/`script`/`rail_opens`) and the rail's marks | the hill's teaching is content, not renderer |
+| `window.rs` (438) — `fit_16x9`, `TierAsk`, `apply_window_policy`, `draw_letterbox`, and the ~200-line compositor watch lifted out of `process()` into `watch_window` | the frame loop reads as an orchestration again |
+| `menu.rs` (2,809) — `Page`/`Escape`/`Action`/`Row`/`Slider`, the menu geometry, the rows a page presents, its input and painting, and the 1,428-line `menu_tests` module beside what it tests | the biggest single win, and the tests finally live where the code does |
+| `world.rs` (1,237) — `Hop`/`Zzz`/`Splash`/`Glide`/`Leaf`/`Sky`, the weather, breath, zs, shadows, ant painting, the verdict splash | the living hill, one file |
+
+`main.rs`: 8,168 → 2,586. Left in place deliberately: the asset
+constants (one reading list for the hill's look), the `Demo` struct,
+`load`, camera, gameplay input, `refresh`, the replay walker, the HUD,
+and `process()`'s frame contract.
+
+The `Demo` field clusters followed on the same branch — not pure
+moves, so each its own commit, each gate-green (21+61, clippy, wasm,
+diag, doc-links at baseline):
+
+- `WindowPolicy` (`window.rs`) — `pending`, `probe`, `move_queued`,
+  `expect`, `drift` grouped beside the watch that keeps them.
+- `Weather` (`world.rs`) — `leaves`, `seeded`, `active`, `t`, kept
+  whole in the system that steps it (`leaf_rng` stays where the zs and
+  gusts share it).
+- `MenuNav` (`menu.rs`) — `sel`, `last_pointer`, `nav_timer`, `drag`,
+  `progress_top`, `alpha`, `page`, grouped beside the pages.
+
+`Demo` is now the field count it is worth being: the render half, the
+game-state half, and one field each for the window, the weather, and
+the menu.

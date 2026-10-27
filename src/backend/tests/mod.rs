@@ -1,7 +1,7 @@
 //! The backend's unit tests, split by topic into the sibling modules:
 //! scissor, transform, scene, nodes, context, particles, uniforms,
 //! fields, layers, camera, repeat, sprites, text, tilemap, draw cost,
-//! light cost, emission, bloom, the present harness, tone map, frame
+//! light cost, emission, the shared machine, bloom, the present harness, tone map, frame
 //! buffer, the letterbox probe, the sRGB envelope probe and config.
 //!
 //! Each module imports the backend's public items and this module's
@@ -20,6 +20,7 @@ mod frame_buffer;
 mod layers;
 mod letterbox;
 mod light_cost;
+mod machine;
 mod nodes;
 mod particle_cost;
 mod particles;

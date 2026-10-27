@@ -118,3 +118,21 @@ is pinning one driver's opinion except at the endpoints.
 means the Raphael iGPU, with the discrete card idle, while the 4K
 display hangs off the iGPU. Correct for the current display setup;
 revisit if a monitor moves to the discrete card.
+
+## NVIDIA's sRGB store, one step shy
+
+Measured from the field — a Windows 11 GeForce over D3D12, July 2026,
+a player's own test run: outside the stacked washes, where every
+pixel is a single store and the two frame buffers were sworn
+identical, the 8-bit sRGB attachment landed **one code** off the
+test's f32 reference encode. The wash stack in the same run stayed
+within the GPU's one step. The A/B test's table carries the family by
+PCI vendor (0x10DE): a step allowed outside the washes, two inside —
+the observed step plus the step a per-store disagreement can borrow
+from accumulation. These are the *observed* numbers, not the
+envelope: `backend/tests/srgb_envelope.rs` (ignored) has never run on
+NVIDIA hardware, and whoever has one plugged in should run it and
+replace this row with a signature the way llvmpipe's section carries
+its measurements. What stays exact for NVIDIA as for every adapter:
+the over-range clamp and the assertion that the wash still exercises
+rounding at all.

@@ -184,7 +184,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_sidecar_never_dresses_a_sprite() {
-        let dir = std::env::temp_dir().join(format!("frost_assets_sidecar_{}", std::process::id()));
+        let dir = crate::scratch::claim("frost_assets_sidecar");
         std::fs::create_dir_all(dir.join("sprites")).unwrap();
         std::fs::write(dir.join("sprites/tiles.png.ron"), b"(atlas: [2, 8])").unwrap();
         const SIDE: Table = &[("sprites/tiles.png", b"table bytes")];
@@ -211,7 +211,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_loose_file_outranks_the_table() {
-        let dir = std::env::temp_dir().join(format!("frost_assets_{}", std::process::id()));
+        let dir = crate::scratch::claim("frost_assets");
         std::fs::create_dir_all(dir.join("sprites")).unwrap();
         std::fs::write(dir.join("sprites/grass.png"), b"loose grass").unwrap();
         let assets = Assets::embedded(SHIP).with_dir(&dir);
@@ -234,7 +234,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_case_slip_refuses_rather_than_forges() {
-        let dir = std::env::temp_dir().join(format!("frost_assets_case_{}", std::process::id()));
+        let dir = crate::scratch::claim("frost_assets_case");
         std::fs::create_dir_all(dir.join("sprites")).unwrap();
         std::fs::write(dir.join("sprites/grass.png"), b"loose grass").unwrap();
         const NOTHING: Table = &[];

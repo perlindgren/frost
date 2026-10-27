@@ -166,7 +166,6 @@ fn sprite_loader_reports_a_missing_file_as_io() {
 // No adapter: skip, loudly.
 #[test]
 fn the_sprite_paints_what_the_contract_promise() {
-    use crate::backend::app::block_on;
     use crate::backend::frame::sprite_uniform_data;
     use crate::shaders::SPRITE_SHADER;
     use std::borrow::Cow;
@@ -260,15 +259,11 @@ fn the_sprite_paints_what_the_contract_promise() {
     };
     *uv_rect = [0.25, 0.25, 0.75, 0.75];
 
-    let instance = Instance::default();
-    let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
-        eprintln!("GPU bridge: no adapter on this machine — the shader goes unverified!");
+    // The thread's shared GPU: see [`super::machine`].
+    let Some(machine) = super::machine::machine() else {
         return;
     };
-    let Ok((device, queue)) = block_on(adapter.request_device(&DeviceDescriptor::default())) else {
-        eprintln!("GPU bridge: no device — the shader goes unverified!");
-        return;
-    };
+    let (device, queue) = (&machine.device, &machine.queue);
     let texture = device.create_texture(&TextureDescriptor {
         label: Some("sprite bridge atlas"),
         size: Extent3d {
@@ -495,7 +490,7 @@ fn the_sprite_paints_what_the_contract_promise() {
     readback.slice(..).map_async(MapMode::Read, |_| {
         DONE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     });
-    let _ = device.poll(PollType::wait_indefinitely());
+    super::machine::drain(device);
     assert_eq!(
         DONE.load(std::sync::atomic::Ordering::SeqCst),
         1,

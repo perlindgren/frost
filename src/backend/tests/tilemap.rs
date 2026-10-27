@@ -171,8 +171,7 @@ fn dress(q: [f32; 2], flips: u32, rot: u32) -> [f32; 2] {
 /// tile-map instances over a given atlas into a `SPAN`-square
 /// transparent target and hands back the framebuffer.
 struct Gpu {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    machine: &'static super::machine::Machine,
     pipeline: wgpu::RenderPipeline,
 }
 
@@ -181,21 +180,12 @@ impl Gpu {
     /// machine cannot run shaders at all. A green skip there is a
     /// hole, never a pass; hence the warning.
     fn new() -> Option<Gpu> {
-        use crate::backend::app::block_on;
         use crate::shaders::TILEMAP_SHADER;
         use std::borrow::Cow;
         use wgpu::*;
-        let instance = Instance::default();
-        let Ok(adapter) = block_on(instance.request_adapter(&RequestAdapterOptions::default()))
-        else {
-            eprintln!("GPU bridge: no adapter on this machine — the shader goes unverified!");
-            return None;
-        };
-        let Ok((device, queue)) = block_on(adapter.request_device(&DeviceDescriptor::default()))
-        else {
-            eprintln!("GPU bridge: no device — the shader goes unverified!");
-            return None;
-        };
+        // The thread's shared GPU: see [`super::machine`].
+        let machine = super::machine::machine()?;
+        let device = &machine.device;
         let module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("bridge tilemap"),
             source: ShaderSource::Wgsl(Cow::Borrowed(TILEMAP_SHADER)),
@@ -230,11 +220,7 @@ impl Gpu {
             multiview_mask: None,
             cache: None,
         });
-        Some(Gpu {
-            device,
-            queue,
-            pipeline,
-        })
+        Some(Gpu { machine, pipeline })
     }
 
     /// Render `count` packed instances over an `aw × ah` RGBA8 atlas
@@ -258,7 +244,7 @@ impl Gpu {
         use wgpu::util::{BufferInitDescriptor, DeviceExt};
         use wgpu::*;
         let texture = |label: &str, w: u32, h: u32, usage: TextureUsages| {
-            self.device.create_texture(&TextureDescriptor {
+            self.machine.device.create_texture(&TextureDescriptor {
                 label: Some(label),
                 size: Extent3d {
                     width: w,
@@ -279,7 +265,7 @@ impl Gpu {
             ah,
             TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
         );
-        self.queue.write_texture(
+        self.machine.queue.write_texture(
             TexelCopyTextureInfo {
                 texture: &atlas_tex,
                 mip_level: 0,
@@ -304,16 +290,19 @@ impl Gpu {
             SPAN,
             TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
         );
-        let uniform = self.device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("bridge uniform"),
-            contents: &tilemap_uniform_data(
-                [SPAN as f32, SPAN as f32],
-                color,
-                lit,
-                LightLayers::default(),
-            ),
-            usage: BufferUsages::UNIFORM,
-        });
+        let uniform = self
+            .machine
+            .device
+            .create_buffer_init(&BufferInitDescriptor {
+                label: Some("bridge uniform"),
+                contents: &tilemap_uniform_data(
+                    [SPAN as f32, SPAN as f32],
+                    color,
+                    lit,
+                    LightLayers::default(),
+                ),
+                usage: BufferUsages::UNIFORM,
+            });
         // The spliced pipeline declares the two fields; wgpu demands
         // every declaration be bound, light or not. Padded past any
         // adapter's minimum storage-binding size, dead bytes the
@@ -325,32 +314,44 @@ impl Gpu {
             }
             v
         };
-        let field_buf = self.device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("bridge light field"),
-            contents: &padded(lights),
-            usage: BufferUsages::STORAGE,
-        });
-        let occl_buf = self.device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("bridge occluder field"),
-            contents: &padded(occluders),
-            usage: BufferUsages::STORAGE,
-        });
-        let inst_buf = self.device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("bridge instances"),
-            contents: instances,
-            usage: BufferUsages::STORAGE,
-        });
+        let field_buf = self
+            .machine
+            .device
+            .create_buffer_init(&BufferInitDescriptor {
+                label: Some("bridge light field"),
+                contents: &padded(lights),
+                usage: BufferUsages::STORAGE,
+            });
+        let occl_buf = self
+            .machine
+            .device
+            .create_buffer_init(&BufferInitDescriptor {
+                label: Some("bridge occluder field"),
+                contents: &padded(occluders),
+                usage: BufferUsages::STORAGE,
+            });
+        let inst_buf = self
+            .machine
+            .device
+            .create_buffer_init(&BufferInitDescriptor {
+                label: Some("bridge instances"),
+                contents: instances,
+                usage: BufferUsages::STORAGE,
+            });
         let index_bytes: Vec<u8> = [0u32, 1, 2, 2, 1, 3]
             .iter()
             .flat_map(|x| x.to_ne_bytes())
             .collect();
-        let index_buf = self.device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("bridge indices"),
-            contents: &index_bytes,
-            usage: BufferUsages::INDEX,
-        });
+        let index_buf = self
+            .machine
+            .device
+            .create_buffer_init(&BufferInitDescriptor {
+                label: Some("bridge indices"),
+                contents: &index_bytes,
+                usage: BufferUsages::INDEX,
+            });
         let view = atlas_tex.create_view(&TextureViewDescriptor::default());
-        let sampler = self.device.create_sampler(&SamplerDescriptor {
+        let sampler = self.machine.device.create_sampler(&SamplerDescriptor {
             label: Some("bridge sampler"),
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
@@ -360,7 +361,7 @@ impl Gpu {
             mipmap_filter: MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        let bind = self.device.create_bind_group(&BindGroupDescriptor {
+        let bind = self.machine.device.create_bind_group(&BindGroupDescriptor {
             label: Some("bridge bind"),
             layout: &self.pipeline.get_bind_group_layout(0),
             entries: &[
@@ -406,13 +407,14 @@ impl Gpu {
                 },
             ],
         });
-        let readback = self.device.create_buffer(&BufferDescriptor {
+        let readback = self.machine.device.create_buffer(&BufferDescriptor {
             label: Some("bridge readback"),
             size: u64::from(SPAN) * u64::from(SPAN) * 4,
             usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
         let mut encoder = self
+            .machine
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
         {
@@ -463,7 +465,7 @@ impl Gpu {
                 depth_or_array_layers: 1,
             },
         );
-        self.queue.submit(Some(encoder.finish()));
+        self.machine.queue.submit(Some(encoder.finish()));
         use std::sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -476,7 +478,7 @@ impl Gpu {
                 done.store(true, Ordering::SeqCst);
             });
         }
-        let _ = self.device.poll(PollType::wait_indefinitely());
+        super::machine::drain(&self.machine.device);
         assert!(done.load(Ordering::SeqCst), "the readback never mapped");
         let shot = readback
             .get_mapped_range(..)
