@@ -23,10 +23,12 @@
 //!   the soft edge stays inside what similar triangles allow. None of these needs
 //!   a model of the tap set, which is the lesson §20 learned the hard way when a
 //!   CPU twin disagreed with an unmodified shader on 692 of 4096 pixels.
-//! * **Fingerprints**, pinned per scene. Exact to the byte, and honest about
-//!   being a fact about this driver: they catch a change that leaves every
-//!   property above intact, which is precisely what "bit-for-bit identical"
-//!   promised. When the renderer changes *legitimately* the pinned numbers are
+//! * **Fingerprints**, pinned per scene *and per chip*. Exact to the byte, and
+//!   honest about being a fact about one driver: they catch a change that leaves
+//!   every property above intact, which is precisely what "bit-for-bit
+//!   identical" promised. The chip is part of what a number means — see [`PINS`],
+//!   which is `docs/benchmarking.md` §37's finding about a frame rate, applied to
+//!   a frame. When the renderer changes *legitimately* the pinned numbers are
 //!   wrong, and the remedy is deliberate — run the printer, read the geometry
 //!   tests, re-pin.
 //!
@@ -361,14 +363,51 @@ fn regular6() -> Caster {
 /// The three scenes the fingerprint guard was written with, in the same order:
 /// hexagons at nine taps, hexagons at four, circles at nine. The first two are
 /// §22's and §23's own; the third is the scene §34 left behind it, once a circle
-/// stopped being traced. The numbers in
-/// [`the_polygon_fingerprints_print_themselves`] are what those three are on this
-/// machine today, which is the claim the document could make but no longer
-/// support on its own.
-fn scenes() -> Vec<(&'static str, Caster, f32, u32, u64)> {
+/// stopped being traced. What they are worth is stated per chip, in [`PINS`].
+fn scenes() -> Vec<(&'static str, Caster, f32, u32)> {
     let disc = Caster::Circle(RADIUS);
     vec![
-        // Taken on this machine on the day the guard was written, from the
+        ("hexagon, nine rays", regular6(), DISK, 9),
+        ("hexagon, four rays", regular6(), DISK, 4),
+        ("disc, nine rays", disc, DISK, 9),
+    ]
+}
+
+/// The three numbers one chip wrote for [`scenes`], in that order.
+struct Pins {
+    /// What the driver calls itself, matched exactly: wgpu's `AdapterInfo::name`
+    /// — the same string [`crate::adapter_name`] records and a benchsuite
+    /// baseline names its own file after.
+    chip: &'static str,
+    fingerprints: [u64; 3],
+}
+
+/// The pins, one row per chip that has written them.
+///
+/// A frame and a frame rate are the same kind of number. `docs/benchmarking.md`
+/// §37 found that a baseline walked on one chip judges nothing on another — the
+/// committed `taps-9 16.0` is a Radeon 610M's and the M4 Max reads that row at
+/// 213.1 — and these fingerprints were the same defect sitting inside the test
+/// suite, where a wrong verdict costs a debugging session rather than a wrong
+/// sentence. All three were taken on the M4 Max, by §32, and the file said so in
+/// prose a `cargo test` cannot read; an RTX 4090 under D3D12 has been failing
+/// them ever since on a build that changed nothing.
+///
+/// And it is rounding, not a picture: this box's hexagon puts the umbra at 3.14
+/// and 2.68 rows and the darkness at 16.23 and 24.67 against the M4 Max row's
+/// 3.13, 2.68, 16.23 and 24.67, and its disc agrees to a hundredth of a row too.
+/// Same shadow, different bytes, because a store and a blend land a code apart
+/// between vendors — `frame_buffer.rs` measures that step on NVIDIA and names the
+/// vendor to allow for it, and `srgb_envelope.rs` probes it on demand. A hash
+/// over every byte of a frame notices a code the way it notices a ray, which is
+/// the instrument working and the pin needing a chip to go with it.
+///
+/// A chip with no row here is refused, not passed: a guard that has nothing to
+/// say on a new box has stopped guarding, and the honest thing is to say this
+/// box's numbers out loud so its row can be written.
+const PINS: &[Pins] = &[
+    Pins {
+        // Taken on the M4 Max on the day the guard was written, from the
         // corrected meter's scene — the geometry tests above all pass with them.
         //
         // The disc's number moved once, when §34 put a circle record under it,
@@ -390,27 +429,62 @@ fn scenes() -> Vec<(&'static str, Caster, f32, u32, u64)> {
         // reads now, and it is why this number had to move rather than be argued about:
         // 49 shadowed pocket pixels were lit at radius 14 and 100 at radius 40, and a
         // fingerprint that pins a wrong frame is only a receipt for it.
-        (
-            "hexagon, nine rays",
-            regular6(),
-            DISK,
-            9,
+        chip: "Apple M4 Max",
+        fingerprints: [
             0x3cd0_d60c_58d7_9dce,
-        ),
-        (
-            "hexagon, four rays",
-            regular6(),
-            DISK,
-            4,
             0x33a2_a3a4_bbf0_90c5,
-        ),
-        ("disc, nine rays", disc, DISK, 9, 0x0781_7531_400c_416f),
-    ]
+            0x0781_7531_400c_416f,
+        ],
+    },
+    Pins {
+        // Walked on the Windows box, D3D12, 2026-10-28, with the geometry tests
+        // above all passing. No renderer change earned these: the frames this box
+        // writes are byte-for-byte the frames `a54871f` wrote, which is the commit
+        // that walked the row above — the four rays' hexagon and the disc's are
+        // stable across four runs and across single- and multi-threaded suites.
+        chip: "NVIDIA GeForce RTX 4090",
+        fingerprints: [
+            0x3c71_7dd1_584e_e550,
+            0xb527_0f97_6c05_4241,
+            0xaed8_eec1_a21e_4920,
+        ],
+    },
+];
+
+/// The chip these numbers are being judged on, said the way its driver says it.
+///
+/// Read off the machine the test just opened rather than assumed, which is how
+/// [`declared`] reads the caster's transform off the record instead of
+/// recomputing it: this file asks a question about one particular GPU, so it had
+/// better be able to name it.
+fn chip() -> String {
+    super::machine::machine()
+        .expect("the fingerprint guard asks a GPU a question and has no answer without one")
+        .info()
+        .name
+}
+
+/// What this box writes for these scenes, right now, in their own order.
+fn fingerprints(scenes: &[(&'static str, Caster, f32, u32)]) -> Vec<u64> {
+    scenes
+        .iter()
+        .map(|(_, caster, penumbra, taps)| fingerprint(caster, *penumbra, *taps))
+        .collect()
+}
+
+/// A row of pins the way the prose writes them: sixteen digits, commas between.
+fn said(numbers: &[u64]) -> String {
+    numbers
+        .iter()
+        .map(|number| format!("{number:016x}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The guard. A byte anywhere in either half of either scene's target changes
 /// the number, so an optimisation that claims to preserve the picture has to
-/// say so to this test.
+/// say so to this test — on the chip that wrote the number, since [`PINS`] is
+/// where a chip's own numbers live.
 ///
 /// When it fails, the first question is which it is: the geometry tests passing
 /// means the picture changed in a way no property of it notices, which is either
@@ -419,29 +493,69 @@ fn scenes() -> Vec<(&'static str, Caster, f32, u32, u64)> {
 /// favour. Re-pin only by running
 /// `cargo test --lib the_polygon_fingerprints_print_themselves -- --ignored --nocapture`,
 /// reading the profiles it prints, and changing the constants on purpose.
+///
+/// A chip with no row in [`PINS`] fails the same way rather than going green:
+/// there is no cross-chip version of this claim, and §37's note is the alternative
+/// — say what this box reads, and let it write its own ruler.
 #[test]
 fn the_polygon_scenes_fingerprint_what_they_always_did() {
-    for (name, caster, penumbra, taps, pinned) in scenes() {
-        let now = fingerprint(&caster, penumbra, taps);
+    let chip = chip();
+    let scenes = scenes();
+    let now = fingerprints(&scenes);
+    let Some(pins) = PINS.iter().find(|pins| pins.chip == chip) else {
+        panic!(
+            "{chip} has no row in PINS, so these scenes have nothing to be judged by here. What it \
+             writes today is {}; the rows on file belong to {}. That is §37 all over again — two \
+             drivers rounding one picture, not a renderer that moved — so read the profiles with \
+             `cargo test --lib the_polygon_fingerprints_print_themselves -- --ignored --nocapture`, \
+             check the geometry tests above, and add {chip}'s row to PINS on purpose.",
+            said(&now),
+            PINS.iter()
+                .map(|pins| pins.chip)
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    };
+    for (((name, _, _, taps), now), pinned) in scenes.iter().zip(&now).zip(&pins.fingerprints) {
         assert_eq!(
             now, pinned,
-            "{name} at {taps} rays: the frame is {:016x} and the pinned fingerprint is \
-             {pinned:016x}. If the renderer was meant to change, re-pin deliberately.",
-            now,
+            "{name} at {taps} rays on {chip}: the frame is {now:016x} and the fingerprint \
+             {chip} pinned is {pinned:016x}. If the renderer was meant to change, re-pin \
+             deliberately.",
         );
     }
 }
 
 /// The printer, and the reading that has to happen before anything is re-pinned.
+/// It says which chip is answering first, because a number without that is a
+/// number about nothing.
 #[test]
 #[ignore = "prints; run it to re-pin the fingerprints above"]
 fn the_polygon_fingerprints_print_themselves() {
-    for (name, caster, penumbra, taps, pinned) in scenes() {
-        let now = fingerprint(&caster, penumbra, taps);
-        println!("{name:18} at {taps} rays: {now:016x}  (pinned {pinned:016x})");
+    let chip = chip();
+    let scenes = scenes();
+    let now = fingerprints(&scenes);
+    let pins = PINS.iter().find(|pins| pins.chip == chip);
+    println!("chip:   {chip}");
+    println!(
+        "pinned: {}",
+        pins.map_or(
+            "nothing — this chip has no row in PINS".to_string(),
+            |pins| said(&pins.fingerprints)
+        )
+    );
+    println!("now:    {}", said(&now));
+    for (index, ((name, caster, penumbra, taps), now)) in scenes.iter().zip(&now).enumerate() {
+        println!(
+            "{name:18} at {taps} rays: {now:016x}  (pinned {})",
+            pins.map_or("-".to_string(), |pins| format!(
+                "{:016x}",
+                pins.fingerprints[index]
+            ))
+        );
         for probe in [NEAR_PROBE, FAR_PROBE] {
-            let p = profile_with(&caster, penumbra, taps, probe);
-            let (t, b) = silhouette(&p, taps);
+            let p = profile_with(caster, *penumbra, *taps, probe);
+            let (t, b) = silhouette(&p, *taps);
             println!(
                 "    probe {probe}: outline {t:.2}..{b:.2} (half {:.2}) | umbra half {:.2} | \
                  darkness {:.2} rows",
