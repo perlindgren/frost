@@ -246,7 +246,9 @@ impl Drop for Teller {
 /// are folder litter as much as crashed apps' cards are. A process
 /// we cannot signal looks departed — the folder is dev furniture,
 /// and the cost of that lie is one deleted file a live stranger
-/// republishes on its next telling.
+/// republishes on its next telling. What the probe cannot answer is
+/// not that lie and does not borrow it: see [`alive`], which
+/// declines to guess and so prunes nothing.
 fn prune(dir: &Path, me: u32) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -309,8 +311,21 @@ fn alive(pid: u32) -> bool {
     // as its no-match line. The line's PROSE is localized — German
     // Windows words absence differently — which is why the question
     // is the pid's own quoted CSV field, a fact no locale rewords.
-    // A machine where `tasklist` itself cannot run grants the card
-    // the same benefit of the doubt as a broken `/bin/kill`: a
+    //
+    // The exit status is a different question from the answer, and
+    // this is where the two roads part: `/bin/kill`'s status IS the
+    // answer (exit 1 = "no such process"), while `tasklist`'s says
+    // only whether it managed to answer at all. Measured on this box:
+    // a live pid, exit 0 with its row; a dead one in range, exit 0
+    // with the no-match `INFO:` line; a pid past what the filter will
+    // parse, exit 1 and `ERROR: Invalid query`; and a token that may
+    // not read the process list — a sandbox, a service session — exit
+    // 1 with `ERROR: Access denied`. The last two are a refused
+    // question, and reading one as the first is the loud failure:
+    // every app on the machine goes departed at once, so `prune`
+    // deletes the cards and tellings of living strangers and
+    // `announce` lists an empty folder on a machine full of running
+    // apps. Which is the one thing this folder promises not to do: a
     // broken question prunes nothing.
     let asked = std::process::Command::new("tasklist")
         .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
@@ -318,7 +333,7 @@ fn alive(pid: u32) -> bool {
         .stderr(std::process::Stdio::null())
         .output();
     match asked {
-        Ok(out) => {
+        Ok(out) if out.status.success() => {
             let text = String::from_utf8_lossy(&out.stdout);
             let wanted = pid.to_string();
             text.lines().any(|line| {
@@ -327,7 +342,10 @@ fn alive(pid: u32) -> bool {
                     .is_some_and(|field| field == wanted)
             })
         }
-        Err(_) => true,
+        // Refused, unparseable, or not there to be run: no answer, so
+        // no verdict — the same benefit of the doubt as a missing
+        // `/bin/kill`.
+        Ok(_) | Err(_) => true,
     }
 }
 
@@ -341,6 +359,51 @@ mod tests {
     /// test then narrated a stale folder as if it were its own.
     fn scratch(who: &str) -> PathBuf {
         crate::scratch::claim(&format!("frost_tell_{who}"))
+    }
+
+    /// A pid no author of this folder could ever have worn: two short of the
+    /// 32-bit ceiling. It names a stale card only on a machine that cannot say
+    /// who is gone at all, where its own liveness is beside the point — and it
+    /// is worth knowing about for itself, because `tasklist` will not even
+    /// parse it (`ERROR: Invalid query`, exit 1). A refused question is not an
+    /// answer of *gone*, which is exactly what the first draft of these tests
+    /// read it as, on the road where an empty stdout meant no such process.
+    const NEVER_MINE: u32 = 4_294_967_290;
+
+    /// A pid this machine has just seen living and no longer sees: a child
+    /// spawned, watched, waited for, and released. The departed the folder
+    /// exists to recognise, manufactured rather than assumed — and asked of the
+    /// same probe the folder asks, so a machine that cannot answer gets the
+    /// same answer in both places instead of a test that believes its own
+    /// fiction.
+    ///
+    /// `None` means the probe cannot be trusted here: it called the living
+    /// child dead, or still calls the dead one living, which is what a sandbox
+    /// or a restricted token does when the process list is shut to it. The
+    /// callers then assert the other promise — a broken question prunes nothing
+    /// — rather than passing a question nobody answered.
+    fn a_departed_pid() -> Option<u32> {
+        // A child that lives about a second: long enough to be seen living,
+        // short enough that nobody notices it.
+        #[cfg(windows)]
+        let (command, args): (&str, &[&str]) = ("cmd", &["/c", "ping", "-n", "2", "127.0.0.1"]);
+        #[cfg(not(windows))]
+        let (command, args): (&str, &[&str]) = ("/bin/sleep", &["1"]);
+        let mut child = std::process::Command::new(command)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let pid = child.id();
+        let lived = alive(pid);
+        let _ = child.wait();
+        // The last handle goes here, and it is the handle that keeps a dead
+        // process in the list: probing before this drop would ask about a pid
+        // the child still nominally holds.
+        drop(child);
+        (lived && !alive(pid)).then_some(pid)
     }
 
     /// The opening of a telling: boot publishes rev 1 to the live
@@ -385,28 +448,53 @@ mod tests {
     }
 
     /// The folder heals itself: a card whose author is gone — a
-    /// crashed app, here a pid that cannot be ours — is pruned
+    /// crashed app, here a child this test watched die — is pruned
     /// together with the live file it pointed at, when any new app
     /// opens the folder.
+    ///
+    /// Where nothing can answer who is gone, the promise that holds is
+    /// the other one and is asserted in its place: the folder leaves
+    /// every file a stranger left alone, because a file deleted on a
+    /// guess is a card and a telling of a running app.
     #[test]
     fn a_departed_card_is_pruned_with_its_file() {
         let dir = scratch("prune");
         fs::create_dir_all(&dir).unwrap();
-        let ghost = "ghost-4294967290";
+        let departed = a_departed_pid();
+        let told = departed.is_some();
+        let gone = departed.unwrap_or(NEVER_MINE);
+        let ghost = format!("ghost-{gone}");
         fs::write(dir.join(format!("{ghost}.card.ron")), "// stale\n").unwrap();
         fs::write(dir.join(format!("{ghost}.live.ron")), "// stale\n").unwrap();
-        let orphan = "orphan-4294967291";
+        let orphan = format!("orphan-{gone}");
         fs::write(
             dir.join(format!("{orphan}.live.ron")),
             "// document without a card\n",
         )
         .unwrap();
+        if !told {
+            println!(
+                "tell: no probe on this machine can say who has departed — the pruning itself \
+                 goes unverified, and what is checked here is that it deleted nothing"
+            );
+        }
         let tell = Teller::open(&dir, "prune");
-        assert!(!dir.join(format!("{ghost}.card.ron")).exists());
-        assert!(!dir.join(format!("{ghost}.live.ron")).exists());
-        assert!(
-            !dir.join(format!("{orphan}.live.ron")).exists(),
-            "orphans heal too"
+        // One expectation per file, in whichever direction the answer went:
+        // told, the departed's litter is gone; not told, it all stands.
+        assert_eq!(
+            dir.join(format!("{ghost}.card.ron")).exists(),
+            !told,
+            "the departed lose their card — and a question that cannot be answered prunes nothing"
+        );
+        assert_eq!(
+            dir.join(format!("{ghost}.live.ron")).exists(),
+            !told,
+            "the telling goes with the card it was named in"
+        );
+        assert_eq!(
+            dir.join(format!("{orphan}.live.ron")).exists(),
+            !told,
+            "orphans heal too, and are left alone by the same broken question"
         );
         assert!(dir.join(format!("prune-{}.card.ron", tell.pid)).exists());
         fs::remove_dir_all(&dir).ok();
@@ -441,23 +529,46 @@ mod tests {
     /// folder: a card of a living pid is listed (a ghost's is not),
     /// and its telling reads back with rev from the header and
     /// structure from the root.
+    ///
+    /// A machine that cannot answer the liveness question lists the ghost too,
+    /// and that is the same promise the folder makes when it prunes: an
+    /// unanswered question hides nobody and deletes nothing.
     #[test]
     fn a_guest_reads_the_folder_and_the_telling() {
         let dir = scratch("guest");
         let me = std::process::id();
         let tell = Teller::open(&dir, "guest");
         assert_eq!(tell.name, "guest");
+        let departed = a_departed_pid();
+        let told = departed.is_some();
+        let gone = departed.unwrap_or(NEVER_MINE);
         fs::write(
-            dir.join("ghost-4294967290.card.ron"),
-            "// stale\n(\n    name: \"ghost\",\n    pid: 4294967290,\n    asset_root: \"/nowhere\",\n    live_file: \"ghost.live.ron\",\n)\n",
+            dir.join(format!("ghost-{gone}.card.ron")),
+            format!(
+                "// stale\n(\n    name: \"ghost\",\n    pid: {gone},\n    asset_root: \"/nowhere\",\n    live_file: \"ghost.live.ron\",\n)\n"
+            ),
         )
         .unwrap();
+        if !told {
+            println!(
+                "tell: no probe on this machine can say who has departed — the ghost rides with \
+                 the living here, which is the promise that holds when the question is refused"
+            );
+        }
         let cards = Teller::announce(&dir);
-        assert_eq!(cards.len(), 1, "only the living are listed");
-        assert_eq!(cards[0].name, "guest");
-        assert_eq!(cards[0].pid, me);
+        assert_eq!(
+            cards.len(),
+            if told { 1 } else { 2 },
+            "only the living are listed, and where nothing can pronounce a pid dead a stranger's \
+             card is listed rather than hidden or deleted"
+        );
+        let mine = cards
+            .iter()
+            .find(|card| card.name == "guest")
+            .expect("an app standing on a machine has its own card listed there");
+        assert_eq!(mine.pid, me);
         // The app had not published yet — nothing to read.
-        assert!(Teller::tiding(&cards[0]).is_none());
+        assert!(Teller::tiding(mine).is_none());
         // Now it tells, by hand: header rev and rooted being.
         let being = crate::ron::record_named(&[("told", crate::ron::text("guest"))]);
         let text = format!(
@@ -465,7 +576,7 @@ mod tests {
             crate::ron::to_text_doc("", &being, "")
         );
         fs::write(tell.live_file(), &text).unwrap();
-        let tiding = Teller::tiding(&cards[0]).expect("the telling reads");
+        let tiding = Teller::tiding(mine).expect("the telling reads");
         assert_eq!(tiding.rev, 7);
         assert_eq!(
             crate::ron::field(&tiding.being, "told")

@@ -136,3 +136,47 @@ replace this row with a signature the way llvmpipe's section carries
 its measurements. What stays exact for NVIDIA as for every adapter:
 the over-range clamp and the assertion that the wash still exercises
 rounding at all.
+
+## `tasklist` answers nothing to a token that may not read the process list
+
+**Symptom.** Every running app looks departed at once. `Teller::announce`
+lists an empty folder on a machine full of running apps, and `prune`
+— the pass that heals the folder by deleting what the departed left —
+deletes the cards *and the tellings of living strangers*. Surfaced as
+one red test, `tell::tests::a_guest_reads_the_folder_and_the_telling`,
+on a Windows box under a sandbox that will not let a child process
+read the process list.
+
+**Cause.** `src/tell.rs` asks `tasklist` the way the unix side asks
+`/bin/kill -0`, and the two exit statuses mean different things:
+`/bin/kill`'s *is* the answer (1 = no such process), while
+`tasklist`'s says only whether it managed to answer at all. The arm
+read a refused question's empty stdout as *gone*, and granted the
+benefit of the doubt only to a spawn that failed outright.
+
+**Evidence.** Measured on this box, Windows 11 over D3D12, 2026-10-28:
+
+| asked of `tasklist /FI "PID eq …" /FO CSV /NH` | stdout | exit |
+|---|---|---|
+| a living pid | `"powershell.exe","44816","Console","1","67 608 K"` | 0 |
+| a dead pid in range | `INFO: No tasks are running which match…` | 0 |
+| a pid past what the filter parses | nothing (`ERROR: Invalid query`) | 1 |
+| any pid under a denied token | nothing (`ERROR: Access denied`) | 1 |
+
+The third row costs the tests as much as the engine: `4294967290` was
+the ghost pid in both telling tests, chosen as *a pid that cannot be
+ours*. Under a correct `alive` it reads **refused**, which is not an
+answer of *gone*, so the number cannot be the tests' control any
+more. They manufacture a departed pid instead — a child spawned, seen
+living, waited for, and released, the last handle dropped because the
+handle is what keeps a dead process in the list — and ask the control
+question of the same probe the folder asks. A machine that cannot
+answer then says so and asserts the other promise instead of believing
+its own fiction.
+
+**What we do.** `alive` reads existence from the pid's own CSV field
+and whether there is an answer at all from the exit status; refused or
+absent, it declines to guess. On a box where the probe cannot answer,
+the folder lists every card and deletes none — which is what it
+promises — and the two telling tests take that branch by observation,
+printing that the pruning itself went unverified there.
