@@ -170,13 +170,20 @@ answer of *gone*, so the number cannot be the tests' control any
 more. They manufacture a departed pid instead — a child spawned, seen
 living, waited for, and released, the last handle dropped because the
 handle is what keeps a dead process in the list — and ask the control
-question of the same probe the folder asks. A machine that cannot
-answer then says so and asserts the other promise instead of believing
-its own fiction.
+question of the same probe the folder asks. A box that cannot answer
+gets no verdict out of that probe either: the two tests that turn on a
+departure fail there and name the probe as the suspect, rather than
+passing on a question nobody was able to ask.
 
 **What we do.** `alive` reads existence from the pid's own CSV field
 and whether there is an answer at all from the exit status; refused or
-absent, it declines to guess. On a box where the probe cannot answer,
-the folder lists every card and deletes none — which is what it
-promises — and the two telling tests take that branch by observation,
-printing that the pruning itself went unverified there.
+absent, it declines to guess. On a box where the probe cannot answer
+the folder lists every card and deletes none, which is what it
+promises — but the tests do not report that state as health. A box
+that knows it is silent says so once, where it is configured, and
+`FROST_TELL_PROBE_UNAVAILABLE=1 cargo test` then checks the claim that
+does survive a refused question: nothing deleted, nobody hidden.
+Proven on this box in both directions — plainly, the refusal surfaces
+as two failures naming it; under the declaration, the folder's actual
+behaviour, the stale card standing and still listed, is exactly what
+the tests assert.

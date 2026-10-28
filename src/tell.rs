@@ -428,15 +428,24 @@ mod tests {
     ///
     /// So this fails, with the reason and the hand-probe to run, unless the box
     /// has already declared the limitation in its environment: with
-    /// `FROST_TELL_PROBE_UNAVAILABLE` set to anything it returns `true` and the
-    /// caller carries on to the promise that does survive a refused question —
-    /// a broken question prunes nothing and hides nobody. That is the weaker
+    /// `FROST_TELL_PROBE_UNAVAILABLE` set to anything it says nothing and
+    /// returns, and the caller keeps the answer it actually has — that the
+    /// departure went untold, so the folder owes the weaker promise that a
+    /// broken question prunes nothing and hides nobody. That is the weaker
     /// claim, and a box that wants it has to ask for it by name rather than
     /// fall into it. A message would not do: libtest hides the output of a test
     /// that passes, which is precisely the case this is for.
-    fn probe_declined() -> bool {
+    ///
+    /// It answers no question on purpose. The first draft returned whether the
+    /// limitation was declared, both call sites wrote `told = … ||
+    /// probe_declined()`, and so a declared box — the only kind that ever
+    /// arrives here — was told its departed had been pruned and its ghosts
+    /// listed, in a folder that had correctly done neither, and the escape
+    /// hatch failed on every machine it was built for. Whether the box may
+    /// speak is not whether the departure was told; only the caller knows that.
+    fn probe_declined() {
         if std::env::var_os("FROST_TELL_PROBE_UNAVAILABLE").is_some() {
-            return true;
+            return;
         }
         panic!(
             "no probe on this machine could tell a living child from a dead one, so the \
@@ -510,7 +519,14 @@ mod tests {
         let dir = scratch("prune");
         fs::create_dir_all(&dir).unwrap();
         let departed = a_departed_pid();
-        let told = departed.is_some() || probe_declined();
+        // Whether the box may go on asking is not whether the departure was
+        // told. A declared box goes on, and what it goes on to is `false`: the
+        // folder never got an answer, so the litter stands and the ghost rides
+        // with the living, and that is the claim checked below.
+        let told = departed.is_some();
+        if !told {
+            probe_declined();
+        }
         let gone = departed.unwrap_or(NEVER_MINE);
         let ghost = format!("ghost-{gone}");
         fs::write(dir.join(format!("{ghost}.card.ron")), "// stale\n").unwrap();
@@ -586,7 +602,10 @@ mod tests {
         let tell = Teller::open(&dir, "guest");
         assert_eq!(tell.name, "guest");
         let departed = a_departed_pid();
-        let told = departed.is_some() || probe_declined();
+        let told = departed.is_some();
+        if !told {
+            probe_declined();
+        }
         let gone = departed.unwrap_or(NEVER_MINE);
         fs::write(
             dir.join(format!("ghost-{gone}.card.ron")),
