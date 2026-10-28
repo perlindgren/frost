@@ -483,6 +483,14 @@ const EMBER_FLOOR: f32 = 0.24;
 /// new range, not something it replaced.
 const EMBER_PER_LAMP: f32 = 0.15;
 
+/// How far the night comes down while a menu is up, as a fraction of the
+/// ambient floor the settings ask for. It is a floor, not an exposure:
+/// `lighting.wgsl` composes a lit pixel as `base * (ambient + Σ lights)`,
+/// so this takes the light between the lamps away and leaves what the lamps
+/// themselves throw where it is. Zero is the night with nothing held back;
+/// 1.0 is no dim at all.
+const MENU_DIM: f32 = 0.28;
+
 /// The halo per lamp: what the bloom chain gets to blur, over and above the
 /// shell's own color. Not one to one with the light's brightness, because the
 /// emissive channel is the sprite's pixels times its tint times this — the
@@ -1666,6 +1674,34 @@ impl Demo {
         })
     }
 
+    /// How far the night has come down while a menu is up: 1.0 with the
+    /// overlay away, [`MENU_DIM`] at full breath.
+    ///
+    /// The banner does not read this — it rides above where the veil used to
+    /// be, deliberately fully lit while any menu is up, and immediate draws
+    /// take no node modulate, so it carries on unchanged. The note and the
+    /// showing sat *under* the veil and do read it, because a footnote that
+    /// stays bright over a darkened hill is the one thing that would show
+    /// this is a multiply wearing a veil's job.
+    pub(crate) fn world_dim(&self) -> f32 {
+        1.0 - (1.0 - MENU_DIM) * self.menu.alpha
+    }
+
+    /// A colour as it reads while the world is dimmed for a menu: the
+    /// multiply the scene tree gets, applied by hand to the handful of
+    /// immediate draws that used to sit under the veil. The banner is not
+    /// among them — it rode above the veil, fully lit by intent, and an
+    /// immediate draw takes no node modulate either way.
+    pub(crate) fn dimmed(&self, c: Color) -> Color {
+        let k = self.world_dim();
+        Color {
+            r: c.r * k,
+            g: c.g * k,
+            b: c.b * k,
+            a: c.a,
+        }
+    }
+
     fn draw_hud(&self, ctx: &mut Context) {
         let Some(game) = &self.game else { return };
         let (_, h) = self.view(ctx);
@@ -1720,12 +1756,12 @@ impl Demo {
                 self.note.clone(),
                 34.0,
                 600.0,
-                Color {
+                self.dimmed(Color {
                     r: C_NOTE.r,
                     g: C_NOTE.g,
                     b: C_NOTE.b,
                     a,
-                },
+                }),
                 UI + 1.0,
             );
         }
@@ -1755,7 +1791,7 @@ impl Demo {
                 line,
                 34.0,
                 600.0,
-                C_NOTE,
+                self.dimmed(C_NOTE),
                 UI + 1.0,
             );
         }
@@ -2224,7 +2260,20 @@ impl Process for Demo {
         // decides whether it joins the lit world, and the lamp scale
         // rides every light the draw declares below.
         {
-            ctx.scene().ambient = ambient_floor(self.settings.ambient);
+            // The night the menu asks for, on the same rail the settings
+            // already ride: the floor is the shipped one scaled by the
+            // overlay's breath, so the hill loses its ambient light while
+            // the plate is up and takes it back the moment the fade leaves.
+            // Not an exposure change — the lamps keep throwing what they
+            // throw, and only the dark between them gets darker.
+            let floor = ambient_floor(self.settings.ambient);
+            let k = self.world_dim();
+            ctx.scene().ambient = Color {
+                r: floor.r * k,
+                g: floor.g * k,
+                b: floor.b * k,
+                a: floor.a,
+            };
             let lit = self.settings.leaves_lit;
             for node in ctx.scene().root.children[..LEAVES.len()].iter_mut() {
                 node.lit = lit;

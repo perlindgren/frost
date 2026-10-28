@@ -649,7 +649,7 @@ impl Demo {
             word.to_string(),
             34.0,
             600.0,
-            C_NOTE,
+            self.dimmed(C_NOTE),
             UI + 1.0,
         );
     }

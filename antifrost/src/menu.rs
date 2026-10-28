@@ -378,25 +378,18 @@ impl Demo {
     /// the point of Resume is that you can see what you are taking
     /// back — and the hovered row lifts a whisper of white.
     pub(crate) fn draw_menu(&self, ctx: &mut Context) {
-        let (w, h) = self.view(ctx);
+        let (_, h) = self.view(ctx);
         let z = UI + 10.0;
-        // Everything the overlay owns breathes together — veil,
-        // plate, rows, verdict — through one alpha held by `process`.
+        // Everything the overlay owns breathes together — plate, rows,
+        // verdict — through one alpha held by `process`. The world behind
+        // it is no longer painted over: `world_dim` darkens the hill by
+        // multiplying the scene, so the only thing laid on the screen here
+        // is the menu's own. Which is why the veil's colour is gone rather
+        // than set to zero — its cold cast was a decision of the same day,
+        // and a darkening that also tints is a different ask from one that
+        // just goes down.
         let a = self.menu.alpha;
         let fade = |c: Color| Color { a: c.a * a, ..c };
-        ctx.rectangle(
-            0.0,
-            0.0,
-            w / 2.0,
-            h / 2.0,
-            Color {
-                r: 0.012,
-                g: 0.014,
-                b: 0.022,
-                a: 0.72 * a,
-            },
-            z,
-        );
         let rows = self.menu_rows(self.menu.page, h);
         if rows.is_empty() {
             return;

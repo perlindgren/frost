@@ -1151,7 +1151,7 @@ impl Demo {
             note.to_string(),
             BETTER_EM,
             600.0,
-            C_TEXT,
+            self.dimmed(C_TEXT),
             UI + 1.0,
         );
     }
