@@ -2236,7 +2236,83 @@ guard on the other eight.
 **What is now safe to attempt.** The angular wedge has an oracle, a monotone umbra, and three pinned
 frames. If it changes the picture, some test here says which property moved and by how many rows, and
 re-pinning is a sentence in a commit message rather than a sixteen-digit number nobody can produce again.
+*(§33 priced that attempt and found the wedge inert — not too weak to bother with, incapable in principle
+of rejecting anything the slab in front of the walk has not already rejected. The guard did its job here
+too: it is what proved the point, by failing to change a byte.)*
 Also corrected in passing: this file's `silhouette` said "the column is all shadow" when its walk found
 no dark row at all, which sent one debugging session the wrong way through a scene whose reference frame
 was the thing actually at fault — the reference render was carrying the caster, because a painted box is
 skipped when the frame is unshadowed and a declared polygon was not.
+
+---
+
+## 33. The wedge is priced, and the pricing kills it (2026-10-28, Apple M4 Max)
+
+§32 ended by calling the angular wedge safe to attempt. That was worth doing in the other order — price
+it first, §19 is the lesson — and the pricing says it is not safe so much as empty, for a reason that is
+not a matter of degree.
+
+**What the walk is worth, measured by deleting it.** Side B is a build that is wrong on purpose: polygons
+occlude as their bounding box, so `clip_planes` is never reached for a shape. Its output is not to be
+trusted a second — §32's own over-blocker test says exactly which rows it falsifies — but its *time* is
+the ceiling of anything that only avoids plane walks. Five alternating passes, side A unmodified, canary
+rows in the same invocation each time:
+
+| row | walk runs | walk removed | delta |
+|---|---|---|---|
+| `taps-9-polys` — hexagons, nine rays | 11.848 ms | 4.890 ms | **−6.96 ms, −59 %** |
+| `taps-9-discs` — sixteen-sided, nine rays | 23.419 ms | 5.033 ms | **−18.39 ms, −78 %** |
+| `taps-9` — boxes, nine rays *(cannot be affected)* | 4.417 ms | 4.333 ms | −1.9 % |
+| `polys-60` — hexagons, one ray | 3.761 ms | 3.772 ms | +0.3 % |
+
+Spread inside a side was under 1 % for the first four passes and rising in the fifth; the canary says how
+much of the −1.9 % is the machine rather than the code, which is to say most of it. Two things fall out.
+The deltas are **6.96 ms for six edges and 18.39 ms for sixteen, a ratio of 2.64 against the shapes'
+2.67** — the walk costs the plane count and nothing else, to within one per cent. And with the walk gone a
+sixteen-sided disc costs what a hexagon costs, 5.03 against 4.89, so the whole 11.57 ms that separates the
+two rows is the number of edges a *round* shape is charged for. `polys-60` did not move at all: at one ray
+the walk is not where the time is.
+
+**The wedge, written.** An angular reject for polygons, in the shape's own space: how far the shape's
+centre stands from the *line* each ray runs along, past the bounds' circumscribed radius and the ray cannot
+meet the shape. Per record that is a cross product and two lengths; the tap's own contribution comes
+through the triangle inequality as the single scalar |w|, and the ladder has only three values of that —
+nothing, one radius, a corner's √2 — so a record decides two booleans and a tap costs one comparison
+against a walk of four flops an edge, sixteen edges, twice over for a pair.
+
+It changed **no pixel in any of the three guarded scenes** — all three fingerprints byte-identical — and
+it was 2 to 3 % slower on the polygon rows. That is not a loose bound. It is an inert one, and here is the
+proof, which is short enough that it should have been done before any of the code:
+
+> The plane walk runs only if some tap's *segment* cuts the record's bounding box, because that is what
+> `a_open` and `b_open` mean. Every point of that box lies within |half| of its centre — the radius the test
+> uses — so such a segment meets the circle, so its line meets the circle, so the test keeps that tap. And
+> if no tap's segment cuts the box, the walk does not run whatever the test concludes.
+
+Two cases, identical behaviour in both. And it generalises past my particular algebra: an angular test can
+only reject by putting the shape *outside* a cone from the ray, which is the same as putting the ray outside
+the shape's enclosing circle, and the bounding box already contains that circle. The slab sitting in front
+of the walk therefore dominates every rejection an angular test could deliver. §32 named this the biggest
+remaining lever on the polygon path. **It is not a lever; it is not smaller than one; it cannot be one.**
+Withdrawn, and the shader is back as it was.
+
+**Where the money the pricing actually found has gone.** The walk is not being asked to reject things it
+should have rejected — it is being *asked*, a great many times, by shapes that genuinely are in the way. So
+the levers left are about how much an answer costs and who pays it:
+
+* **A circle should not be sixteen planes.** `DISC_SIDES` is `MAX_PLANES`, so every drawn circle in the
+  occluder field is a sixteen-sided polygon and pays 2.67 times a hexagon to be round, which on this suite
+  is 11.57 ms of the disc row. A record that says *circle* — centre, radius, ray-versus-circle interval, no
+  plane list at all — is aimed at the largest single number in this section. Predicted, not measured: the
+  walk's cost is measured to be linear in edge count, and a circle is the edge count going to zero, but the
+  interval test has its own cost and the guard would have to grow a circle caster before the claim means
+  anything.
+* **A tighter volume could pay, but not for these shapes.** An oriented box per polygon is cheaper than the
+  walk it short-circuits and, unlike a cone, tighter than the axis-aligned bounds — which is the only thing
+  an extra volume can be to earn its place. It would win on a rotated plank or a fence rail and do nothing
+  for a hexagon, and benchsuite contains no rotated thin shape at all: the suite cannot currently see the
+  lever, so the honest next step there is a row, not an optimisation.
+* **The drift in these runs is the whole reason the numbers above are deltas.** Side A's own polygon row
+  went 11.85 → 12.02 → 13.11 ms across three passes two minutes apart, and the box canary with it, 4.42 →
+  4.91 ms, 11 %. §31's sharpening again, seen from inside: the levels are not comparable across passes, and
+  only the paired rows within a pass are.
