@@ -1,5 +1,18 @@
 # benchsuite baseline — one name and median fps per line
 # walked 2026-10-28 on NVIDIA GeForce RTX 4090, 1920x1080 px in a window, 3 reps per row — see docs/benchmarking.md
+# The driver held Max Frame Rate pinned at 117 with Vertical sync on Fast for
+# the first rows taken here, and they came out 117 flat: `taps-9 117.1`, and
+# `fill-1080p`, a row a Radeon 610M renders at 1002.7, at 117.2 with its three
+# reps agreeing to a fifth of a percent — which is exactly what a clamp looks
+# like, because a clamp is the most repeatable thing on any machine. Both
+# settings are OFF for every number below, so nothing in the driver paces a
+# presented frame. Conditions the tool cannot read for itself: a 3840x2160
+# panel at 60 Hz, a 1920x1080 window, frame limiter off, vertical sync off,
+# noise floor 1.4× on the two chunks taken in one piece. The rows run 511 to
+# 3004 fps, eight to fifty times the refresh rate, which is the proof that
+# nothing is pacing them — turn sync back on and every row here reads 60.0,
+# the most misleading number this box can produce. The shape reading, the
+# capped numbers in full and what is still owed: docs/benchmarking.md §38.
 fill-1080p 3004.7
 lamps-4 2961.5
 lamps-10 2912.4

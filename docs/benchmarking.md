@@ -2913,6 +2913,20 @@ should not cost what it costs on a laptop unless the machine is not the one
 paying. That is the question to take up next, and the offscreen meter is where to
 ask it.
 
+**A row measured alone is not the same row.** Once the file existed, `--only
+taps-9` on the unchanged build read 2438.0 — reps 2425.2, 2442.9 and 2438.0,
+agreeing to 0.7 %, so not a fluke — against the 2156.9 on file, a **+13 %**
+improvement from no change whatsoever. Taking the same row beside its two
+neighbours at five reps gave 2153.4, 2155.3 and 2153.9 fps for one, four and nine
+taps, all within 0.2 % of the file, and eight rows re-measured as a set came back
+between −1.5 % and +5.9 %. So the file reproduces; what does not reproduce is a
+single row taken by itself. The obvious suspect is clock state — one scenario
+sustains one load where a chunk interleaves seven — and nothing here reads clocks,
+so it is named as a suspect and left there. The consequence is a trap rather than
+a curiosity, because the judgement threshold is 5 %: a one-row spot check against
+this file reports a phantom 13 % speedup as an improvement. Take a row with a
+neighbour, or take the suite.
+
 **One hazard the walk fell next to, which §37 half fixed.** §37's title names the
 save path, and the save path now merges instead of overwriting — but it merges
 into whatever name it is given, and the note saying *this GPU's own file would be
