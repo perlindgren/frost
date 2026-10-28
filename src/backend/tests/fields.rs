@@ -3,7 +3,7 @@
 use super::super::*;
 use super::*;
 use crate::canvas::Occluder;
-use crate::collision::{Convex, DISC_SIDES};
+use crate::collision::Convex;
 use crate::objects::*;
 
 fn field_f32(data: &[u8], offset: usize) -> f32 {
@@ -674,18 +674,24 @@ fn a_polygon_record_carries_its_edges_and_the_next_record_follows_them() {
 }
 
 #[test]
-fn a_flagged_circle_is_packed_as_the_polygon_cut_from_it() {
-    // Painting a circle and flagging it used to be a silent no-op: the field
-    // only had room for rectangles. It now has edges, so the round silhouette
-    // the author drew reaches the light as the sixteen-gon inscribed in it,
-    // with the record's box left holding the bounds the shader rejects a ray
-    // against before it clips a single edge.
+fn a_flagged_circle_is_packed_as_a_circle() {
+    // A painted circle that occludes reaches the field as what it is: one record,
+    // no planes at all, and a negative edge count telling the shader that the
+    // shape behind the bounds is the disc the bounds were cut around.
+    //
+    // This replaced a test asserting the opposite — that a painted circle was
+    // packed as the sixteen-edge polygon `Convex::disc` cuts, which is what
+    // happened, faithfully, until §33 measured the shadow path being charged per
+    // edge for a shape the GPU can answer with one quadratic. The edges are still
+    // what `Convex::disc` hands anyone who asks a `Convex`; they are simply no
+    // longer what the field ships, and the difference is 18.39 ms of a 23.42 ms
+    // row plus a shadow whose edge sat 1.9 % inside the circle someone drew.
     let radius = 12.0;
     let painted = Draw::Shape {
         diagnostic: false,
         emission: black(),
         glow: None,
-        world: Transform::translate([10.0, 20.0]),
+        world: Transform::identity(),
         center: [3.0, -4.0],
         params: [radius, radius],
         kind: 0.0,
@@ -698,29 +704,31 @@ fn a_flagged_circle_is_packed_as_the_polygon_cut_from_it() {
         lit_layers: LightLayers::default(),
         occludes_layers: LightLayers::default(),
     };
-    let want = Convex::disc([3.0, -4.0], radius);
     let field = pack_occluder_field(&[painted], &[], VIEW);
     assert_eq!(field.count, 1);
     assert_eq!(
         field.data.len(),
-        OCCLUDER_FIELD_HEADER + OCCLUDER_RECORD + DISC_SIDES * OCCLUDER_PLANE,
-        "a painted circle should cost one record and its own sixteen edges"
+        OCCLUDER_FIELD_HEADER + OCCLUDER_RECORD,
+        "a circle rides no planes, so one record is the whole of it — the same          size as a box's, where the polygon it used to be cut into cost sixteen more"
     );
     let record = OCCLUDER_FIELD_HEADER;
-    assert_eq!(field_f32(&field.data, record + 40), DISC_SIDES as f32);
     assert_eq!(
-        field_f32(&field.data, record + 24),
-        3.0,
-        "the polygon's centre"
+        field_f32(&field.data, record + 40),
+        -1.0,
+        "the count that means circle: a count no polygon can have, so the stride          stays the box's and nothing downstream has to be told about scale"
     );
-    assert_eq!(field_f32(&field.data, record + 32), radius);
-    assert_eq!(field_f32(&field.data, record + 36), radius);
-    for (k, plane) in want.planes().iter().enumerate() {
-        let at = record + OCCLUDER_RECORD + k * OCCLUDER_PLANE;
-        assert_eq!(field_f32(&field.data, at), plane[0]);
-        assert_eq!(field_f32(&field.data, at + 4), plane[1]);
-        assert_eq!(field_f32(&field.data, at + 8), plane[2]);
-    }
+    assert_eq!(field_f32(&field.data, record + 24), 3.0, "the centre");
+    assert_eq!(field_f32(&field.data, record + 28), -4.0, "the centre");
+    assert_eq!(
+        field_f32(&field.data, record + 32),
+        radius,
+        "the radius, in the half-extent the shader reads it from"
+    );
+    assert_eq!(
+        field_f32(&field.data, record + 36),
+        radius,
+        "and the bounds are the square around it, so the cheap reject and the          per-light cull answer for a circle exactly as they do for a box"
+    );
 }
 
 #[test]

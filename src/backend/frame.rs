@@ -1239,6 +1239,46 @@ fn occ_world_bounds(world: &Transform, center: &[f32; 2], half: &[f32; 2]) -> [f
     [c[0] - ex, c[1] - ey, c[0] + ex, c[1] + ey]
 }
 
+/// What sits behind a record's bounds, and so what its `rec.z` will say.
+///
+/// The field has spoken two of these since polygons arrived — no edges means the
+/// bounds *are* the shape, a count means clip against that many half-planes —
+/// and a circle is the third: a shape whose bounds were cut around it, which the
+/// GPU can answer with one quadratic instead of sixteen edge clips. It is written
+/// as a negative edge count rather than a new slot because a negative count is a
+/// thing a polygon can never be, the record's stride is then the box's stride,
+/// and the radius is already sitting in the half-extents the record carries.
+enum OccShape<'a> {
+    /// The bounds are the shape.
+    Box,
+    /// Half-planes in the record's own space, as [`Convex::planes`] hands them out.
+    Polygon(&'a [[f32; 4]]),
+    /// A circle of this radius about the record's centre.
+    Circle(f32),
+}
+
+impl<'a> OccShape<'a> {
+    /// The record's local half-extents: a circle's are its radius twice over,
+    /// which is both the tightest box around it and where the shader will read
+    /// the radius from.
+    fn half(&self, given: [f32; 2]) -> [f32; 2] {
+        match self {
+            OccShape::Circle(radius) => [*radius, *radius],
+            OccShape::Box | OccShape::Polygon(_) => given,
+        }
+    }
+
+    /// The edges that ride along behind the record, and the count written in
+    /// `rec.z` — negative for a circle, which is how the shader tells.
+    fn planes(&self) -> (&'a [[f32; 4]], f32) {
+        match self {
+            OccShape::Box => (&[], 0.0),
+            OccShape::Polygon(planes) => (*planes, planes.len() as f32),
+            OccShape::Circle(_) => (&[], -1.0),
+        }
+    }
+}
+
 /// Builds one master record — bytes, plane count, world bounds — and pushes
 /// it; a transform that cannot invert collapses the box to a line or point,
 /// occludes nothing, and earns no record.
@@ -1247,17 +1287,19 @@ fn push_master(
     world: &Transform,
     center: &[f32; 2],
     half: &[f32; 2],
-    planes: &[[f32; 4]],
+    shape: OccShape<'_>,
     layers: LightLayers,
 ) {
+    let half = shape.half(*half);
+    let (planes, _) = shape.planes();
     let mut bytes = Vec::with_capacity(OCCLUDER_RECORD + planes.len() * OCCLUDER_PLANE);
     let mut cursor = 0usize;
-    if write_occluder_record(&mut bytes, &mut cursor, world, center, half, planes, layers) != 1 {
+    if write_occluder_record(&mut bytes, &mut cursor, world, center, &half, shape, layers) != 1 {
         return;
     }
     master.push(OccRecord {
         bytes,
-        bounds: occ_world_bounds(world, center, half),
+        bounds: occ_world_bounds(world, center, &half),
     });
 }
 
@@ -1507,16 +1549,28 @@ pub(crate) fn pack_occluder_field(
         // it, so passing it on would trade a silent no-op for a panic in the
         // frame path, which is the worse of the two by a wide margin.
         match *kind {
-            1.0 => push_master(&mut master, world, center, params, &[], *occludes_layers),
+            1.0 => push_master(
+                &mut master,
+                world,
+                center,
+                params,
+                OccShape::Box,
+                *occludes_layers,
+            ),
             0.0 if params[0] > 0.0 && params[0].is_finite() => {
-                let polygon = Convex::disc(*center, params[0]);
-                let bounds = polygon.bounds_as_box();
+                // The circle goes to the field as a circle. It used to be cut
+                // into `Convex::disc`'s sixteen edges here, because the shadow
+                // wants edges where the painting wants a distance — but the
+                // shadow pays per edge for the privilege, and the cut was also
+                // quietly wrong: a sixteen-sided coin's edge sits 1.9 % inside
+                // the circle the author drew, so every disc shadow in the game
+                // was the shadow of a slightly smaller, faceted thing.
                 push_master(
                     &mut master,
                     world,
-                    &bounds.center,
-                    &bounds.half,
-                    polygon.planes(),
+                    center,
+                    &[params[0], params[0]],
+                    OccShape::Circle(params[0]),
                     *occludes_layers,
                 );
             }
@@ -1525,12 +1579,20 @@ pub(crate) fn pack_occluder_field(
     }
     for o in declared {
         // A box brings no edges; a polygon brings its own, already in the
-        // space the record's inverse transform points at.
-        let planes = match &o.polygon {
-            Some(polygon) => polygon.planes(),
-            None => &[],
+        // space the record's inverse transform points at — unless it knows it
+        // is a circle, which is the one shape whose edges are all an
+        // approximation of something the GPU can answer exactly.
+        let (center, shape) = match o.polygon.as_ref().and_then(Convex::circle) {
+            Some((center, radius)) => (center, OccShape::Circle(radius)),
+            None => (
+                o.center,
+                match &o.polygon {
+                    Some(polygon) => OccShape::Polygon(polygon.planes()),
+                    None => OccShape::Box,
+                },
+            ),
         };
-        push_master(&mut master, &o.world, &o.center, &o.half, planes, o.layers);
+        push_master(&mut master, &o.world, &center, &o.half, shape, o.layers);
     }
     // The lights, in the order the light field packed them — the shader
     // indexes the table by that same order.
@@ -1613,9 +1675,10 @@ fn write_occluder_record(
     world: &Transform,
     center: &[f32; 2],
     half: &[f32; 2],
-    planes: &[[f32; 4]],
+    shape: OccShape<'_>,
     layers: LightLayers,
 ) -> u32 {
+    let (planes, edge_count) = shape.planes();
     let Some(inverse) = world.invert() else {
         return 0;
     };
@@ -1641,7 +1704,7 @@ fn write_occluder_record(
     // record for receivers whose light layers it does not name.
     write_f32_at(data, off + 32, half[0]);
     write_f32_at(data, off + 36, half[1]);
-    write_f32_at(data, off + 40, planes.len() as f32);
+    write_f32_at(data, off + 40, edge_count);
     data[off + 44..off + 48].copy_from_slice(&layers.bits().to_le_bytes());
     // And the edges themselves, in the occluder's own space: each an outward
     // unit normal and the offset it sits at, ready to clip a ray against

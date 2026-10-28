@@ -65,7 +65,7 @@ const FAR_PROBE: u32 = 56;
 /// A regular polygon of `sides` edges, centred on the origin — the hexagon §22
 /// and §23 measured, built here rather than through the engine so that the
 /// shape under test is the test's own claim.
-fn regular(sides: usize, radius: f32) -> Convex {
+pub(super) fn regular(sides: usize, radius: f32) -> Convex {
     let step = std::f32::consts::TAU / sides as f32;
     let points: Vec<[f32; 2]> = (0..sides)
         .map(|k| {
@@ -344,6 +344,14 @@ fn scenes() -> Vec<(&'static str, Caster, f32, u32, u64)> {
     vec![
         // Taken on this machine on the day the guard was written, from the
         // corrected meter's scene — the geometry tests above all pass with them.
+        //
+        // The disc's number moved once, when §34 put a circle record under it,
+        // and the reading that let it move is there: neither hexagon budged, the
+        // disc's outline is byte-identical, and what moved was the light it eats
+        // — 24.67 rows to 26.22 at the far probe, against the sixteen-sided coin
+        // holding 97.4 % of the circle's area it stands in for. A shape corrected
+        // towards what it claims to be should remove a little more light, and it
+        // removed a little more light.
         (
             "hexagon, nine rays",
             regular6(),
@@ -358,7 +366,7 @@ fn scenes() -> Vec<(&'static str, Caster, f32, u32, u64)> {
             4,
             0x33a2_a3a4_bbf0_90c5,
         ),
-        ("disc, nine rays", disc, DISK, 9, 0xc7e0_1395_7ba7_7c16),
+        ("disc, nine rays", disc, DISK, 9, 0xc076_0736_e312_8d33),
     ]
 }
 

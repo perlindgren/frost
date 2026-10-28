@@ -50,7 +50,7 @@ use super::shadows::paint;
 use super::*;
 use crate::Canvas;
 use crate::canvas::Occluder;
-use crate::collision::{Collider, Convex, OrientedBox};
+use crate::collision::{Circle, Collider, Convex, OrientedBox};
 use crate::objects;
 use crate::objects::*;
 
@@ -84,6 +84,9 @@ pub(super) enum Caster {
 /// The light's disk radius, and the axis its centre sits on.
 const DISK: f32 = 3.0;
 const AXIS: f32 = 32.0;
+/// Where the lamp stands in every scene here, and the one place the sweep in
+/// [`wherever_a_light_lands_in_a_column_that_column_keeps_its_light`] moves it from.
+const LAMP: [f32; 2] = [8.0, AXIS];
 
 /// One column of the scene, shadowed or lit alone. `shadowed` false drops the
 /// caster from the draw list and leaves the light, the surface and their
@@ -91,6 +94,18 @@ const AXIS: f32 = 32.0;
 /// fraction with the falloff cancelled — not by assumption, but by dividing by
 /// the frame that measured it.
 pub(super) fn plane(caster: &Caster, penumbra: f32, taps: u32, shadowed: bool) -> Vec<u8> {
+    plane_at(caster, LAMP, penumbra, taps, shadowed)
+}
+
+/// [`plane`] with the lamp moved. Only [`wherever_a_light_lands_in_a_column_that_column_keeps_its_light`]
+/// needs this; everything else in the file stands on [`LAMP`].
+pub(super) fn plane_at(
+    caster: &Caster,
+    lamp: [f32; 2],
+    penumbra: f32,
+    taps: u32,
+    shadowed: bool,
+) -> Vec<u8> {
     let surface = Draw::Shape {
         world: Transform::identity(),
         center: [32.0, AXIS],
@@ -136,7 +151,7 @@ pub(super) fn plane(caster: &Caster, penumbra: f32, taps: u32, shadowed: bool) -
         occludes_layers: LightLayers::default(),
     };
     let light = Draw::Light {
-        pos: [8.0, AXIS],
+        pos: lamp,
         radius: 1000.0,
         intensity: 1.0,
         color: objects::Color {
@@ -177,16 +192,20 @@ pub(super) fn plane(caster: &Caster, penumbra: f32, taps: u32, shadowed: bool) -
     paint(&draws, &declared).expect("this test needs an adapter")
 }
 
-/// One column of [`plane`]'s target, as bytes per row: what every measurement in
-/// this file walks, and what [`super::polygon`] fingerprints a step before this.
-pub(super) fn column(
+/// One column of [`plane_at`]'s target, as bytes per row: what every measurement
+/// in this file walks, and what [`super::polygon`] fingerprints a step before this.
+///
+/// It used to be the only column there was, with the lamp fixed at [`LAMP`]; the
+/// lamp gained an argument when a test needed to stand it on a texel centre.
+pub(super) fn column_at(
     caster: &Caster,
+    lamp: [f32; 2],
     penumbra: f32,
     taps: u32,
     probe_x: u32,
     shadowed: bool,
 ) -> Vec<f32> {
-    let red = plane(caster, penumbra, taps, shadowed);
+    let red = plane_at(caster, lamp, penumbra, taps, shadowed);
     (0..SPAN)
         .map(|y| f32::from(red[(y as usize * SPAN as usize) + probe_x as usize]))
         .collect()
@@ -209,6 +228,12 @@ pub(super) fn column(
 /// on the first; under-blocking on the second.
 pub(super) struct CpuCaster {
     box_: Option<OrientedBox>,
+    /// A shape the engine knows is a circle is answered as one here too — by
+    /// `Collider::Circle`, which is a different piece of collision code from the
+    /// half-plane walk, which is precisely why it is worth asking. A shadow that
+    /// stopped agreeing with it would be a shadow that stopped agreeing with the
+    /// circle the app declared, and would not care that the edges agree.
+    circle: Option<([f32; 2], f32)>,
     polygon: Option<Convex>,
     to_local: Transform,
 }
@@ -218,6 +243,7 @@ impl CpuCaster {
         match caster {
             Caster::Box(half) => Self {
                 box_: Some(OrientedBox::rotated([24.0, AXIS], *half, 0.0)),
+                circle: None,
                 polygon: None,
                 to_local: Transform::identity(),
             },
@@ -226,6 +252,7 @@ impl CpuCaster {
                 canvas.occluder_polygon(Transform::translate([24.0 - AXIS, 0.0]), polygon);
                 Self {
                     box_: None,
+                    circle: polygon.circle(),
                     polygon: Some(*polygon),
                     to_local: canvas.occluders[0]
                         .world
@@ -238,10 +265,19 @@ impl CpuCaster {
 
     /// Whether the segment from a lamp-side origin to a pixel meets the caster.
     pub(super) fn hits(&self, from: [f32; 2], to: [f32; 2]) -> bool {
-        match (&self.box_, &self.polygon) {
-            (Some(b), _) => Collider::Box(*b).occludes(from, to),
-            (None, Some(p)) => p.occludes(self.to_local.apply(from), self.to_local.apply(to)),
-            (None, None) => false,
+        match (&self.box_, &self.circle, &self.polygon) {
+            (Some(b), _, _) => Collider::Box(*b).occludes(from, to),
+            (None, Some((center, radius)), _) => {
+                // The circle lives in the shape's own space, like the planes do,
+                // so the question arrives in that space too.
+                Collider::Circle(Circle {
+                    center: *center,
+                    radius: *radius,
+                })
+                .occludes(self.to_local.apply(from), self.to_local.apply(to))
+            }
+            (None, None, Some(p)) => p.occludes(self.to_local.apply(from), self.to_local.apply(to)),
+            (None, None, None) => false,
         }
     }
 }
@@ -313,12 +349,71 @@ pub(super) fn profile(penumbra: f32, taps: u32, probe_x: u32) -> Vec<f32> {
 /// The same meter on any caster: this is the whole reason the box scene's
 /// profile is a function rather than a fixture.
 pub(super) fn profile_with(caster: &Caster, penumbra: f32, taps: u32, probe_x: u32) -> Vec<f32> {
-    let lit = column(caster, penumbra, taps, probe_x, false);
-    let shaded = column(caster, penumbra, taps, probe_x, true);
+    profile_at(caster, LAMP, penumbra, taps, probe_x)
+}
+
+/// [`profile_with`] with the lamp moved.
+pub(super) fn profile_at(
+    caster: &Caster,
+    lamp: [f32; 2],
+    penumbra: f32,
+    taps: u32,
+    probe_x: u32,
+) -> Vec<f32> {
+    let lit = column_at(caster, lamp, penumbra, taps, probe_x, false);
+    let shaded = column_at(caster, lamp, penumbra, taps, probe_x, true);
     lit.iter()
         .zip(&shaded)
         .map(|(l, s)| if *l > 1.0 { s / l } else { 1.0 })
         .collect()
+}
+
+/// Wherever a light lands in a column, that column keeps its light.
+///
+/// The pixel a light stands on is asked the strangest question the occlusion walk
+/// answers: where does a segment of no length cross the shape? Nowhere is the
+/// answer, because a point that is not inside a box blocks nothing, and the box's
+/// slab tests refuse it by the branch that catches a ray parallel to a slab and
+/// outside it. §34 learned that this is load-bearing the wrong way round — a
+/// circle branch inserted beside those slabs moved them behind a "is there a
+/// direction at all" guard, the degenerate ray stopped being refused, and every
+/// one of this suite's tests passed anyway.
+///
+/// The lamp is swept across a pixel rather than placed on one, because which
+/// offset is the degenerate one belongs to the shader's pixel-centre convention
+/// and this test should not have to know it: one of these nine lands exactly on a
+/// texel centre whichever way the convention runs — it turns out to be the far
+/// corner of the four, and the near ones cost nothing to include — and the
+/// assertion is the plain thing that holds on all of them. Both interval roads are walked — the box's slabs and
+/// the circle's quadratic — at the two ends of the ladder, since the centre tap is
+/// the degenerate one and the outer taps are the ones that still see the caster.
+#[test]
+fn wherever_a_light_lands_in_a_column_that_column_keeps_its_light() {
+    for (what, caster) in [
+        ("box", Caster::Box(CASTER)),
+        ("circle", Caster::Polygon(Convex::disc([0.0, 0.0], 4.0))),
+    ] {
+        for taps in [1u32, 9] {
+            for dx in [0.0f32, 0.5] {
+                for dy in [0.0f32, 0.5] {
+                    let p = profile_at(
+                        &caster,
+                        [LAMP[0] + dx, AXIS + dy],
+                        if taps == 1 { 0.0 } else { DISK },
+                        taps,
+                        (LAMP[0] + dx) as u32,
+                    );
+                    let darkest = p.iter().copied().fold(1.0f32, f32::min);
+                    assert!(
+                        darkest > 0.99,
+                        "the {what} at {taps} rays dims the column of a light set \
+                         {dx} by {dy} off its pixel to {darkest}: a ray with no \
+                         direction was allowed to claim it had crossed the shape"
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Walk in from `from` towards `toward` and report where the profile first

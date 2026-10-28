@@ -2300,7 +2300,9 @@ Withdrawn, and the shader is back as it was.
 should have rejected — it is being *asked*, a great many times, by shapes that genuinely are in the way. So
 the levers left are about how much an answer costs and who pays it:
 
-* **A circle should not be sixteen planes.** `DISC_SIDES` is `MAX_PLANES`, so every drawn circle in the
+* **A circle should not be sixteen planes.** *(§34 built this one and it held: −75.7 % on the disc row, and
+  the disc/hexagon cost ratio went from 2.01 to 0.45. Read that section for the tax that came with it.)*
+  `DISC_SIDES` is `MAX_PLANES`, so every drawn circle in the
   occluder field is a sixteen-sided polygon and pays 2.67 times a hexagon to be round, which on this suite
   is 11.57 ms of the disc row. A record that says *circle* — centre, radius, ray-versus-circle interval, no
   plane list at all — is aimed at the largest single number in this section. Predicted, not measured: the
@@ -2316,3 +2318,121 @@ the levers left are about how much an answer costs and who pays it:
   went 11.85 → 12.02 → 13.11 ms across three passes two minutes apart, and the box canary with it, 4.42 →
   4.91 ms, 11 %. §31's sharpening again, seen from inside: the levels are not comparable across passes, and
   only the paired rows within a pass are.
+
+## 34. The circle record: §33's prediction, paid for, and the tax it comes with (2026-10-28, Apple M4 Max)
+
+§33 left one lever standing and labelled it *predicted, not measured*: a circle should not be sixteen
+planes. It is built now, guarded, and measured, and it is worth what §33's linearity said it would be —
+minus about three quarters of the row. It also came with two things I had not predicted: a cost on scenes
+with no circles in them, and a bug that every test in the suite let through.
+
+**What a circle record is.** `Convex::disc`'s result now remembers the radius it was cut from
+([`Convex::circle`](../src/collision.rs)), the occluder packer writes a negative edge count instead of
+sixteen planes, and both occlusion walks answer the ray with one quadratic. The marker is `-1` in the slot
+that holds the edge count because that is a count no polygon can have, which leaves the record's stride the
+box's three vec4s, and because the radius was already sitting in the half-extents the record carries.
+Nothing new is stored; a disc's record went from nineteen vec4s to three, and the cull and the cheap
+whole-disk reject answer for it exactly as they did for a box, since the bounds are the square around it.
+What the GPU does per ray changed from sixteen edge clips to two dot products, a multiply and a square
+root — and, this being a quadratic and not an approximation of one, from a shape 1.9 % inside the circle
+the author drew to the circle.
+
+**What it is worth.** Four alternating passes, side A unmodified, side D the circle record, canary rows in
+the same invocation every time. Medians, with the paired delta taken inside each pass:
+
+| row | unmodified | circle record | median paired delta |
+|---|---|---|---|
+| `taps-9-discs` | 34.07 ms | 8.08 ms | **−25.56 ms (−75.7 %)**, range −26.7 … −18.6 |
+| `taps-9-polys` | 17.23 ms | 17.79 ms | +0.00 … +1.25 ms |
+| `taps-9` | 6.43 ms | 7.13 ms | +0.16 … +1.25 ms |
+| `polys-60` | 5.46 ms | 5.98 ms | +0.02 … +0.83 ms |
+
+The number I would show a stranger is the ratio, because a ratio taken inside one side cannot be touched by
+the drift this machine has been showing. On side A a disc row costs **2.01 times** the hexagon row. On side
+D it costs **0.45 times** it. The ordering of the two shapes inverted, and the only thing that changed
+between the sides is how a circle is written down. Within side D, sixty discs sweeping nine rays per pixel
+now cost about a millisecond more than sixty boxes do — which is roughly what a circle should cost, since a
+box is two slab tests and a circle is one quadratic.
+
+Side B from §33 — the build that skipped the walk but kept the planes — is not in this table on purpose. It
+was measured on a machine running this suite one and a half to two times faster than it runs today, and
+levels do not cross sessions. What can be said about B without a number is that D beats it in kind: B still
+streamed sixteen planes per disc record and declined to clip against them; D has no planes in the frame at
+all, which is also why the row stopped moving between passes (D's disc row: 8.22, 8.11, 8.04, 6.35 ms; A's:
+33.78, 34.84, 34.36, 24.94).
+
+**The tax, because it is there.** The control rows contain no circles: their field bytes are identical on
+both sides, so any difference in them is the added code existing — a `rec.z < 0.0` and a `select` per record
+per pixel in each walk, and a tenth argument and an early return in `tap_interval`. It measures real:
+`polys-60` came out positive in **eleven of eleven** paired readings across two runs, `taps-9` in nine of
+ten, and the medians are +3.8 % and +2.5 %. Those are the *conservative* medians — the first run measured
+side A first in every pass, which is an artefact waiting to happen, so the second run flipped the order per
+pass. The tax survived the flip (A-first +5.45 %, D-first +3.84 % on `polys-60`); the flip accounts for a
+point or so, not for the effect. Mechanism not isolated: the build that would isolate it is this shader with
+the packer forbidden from ever emitting a circle, and until someone runs it the sentence above is a
+candidate list, not an explanation.
+
+**What the guard says the picture did.** Not "nothing", which is what I was going to write. Before-state
+taken from a worktree at HEAD, after-state from the working tree, same ignored printer:
+
+| scene | before | after |
+|---|---|---|
+| hexagon, nine rays | `3cd0d60c58d79dce`, umbra 3.13 / 2.68, darkness 16.23 / 24.67 | byte-identical |
+| hexagon, four rays | `33a2a3a4bbf090c5`, umbra 4.08 / 6.08, darkness 16.24 / 24.24 | byte-identical |
+| disc, outline | 17.51..44.51 and 7.51..53.51 | identical at both probes |
+| disc, umbra half | 3.68 at probe 40, 4.68 at probe 56 | identical at both probes |
+| disc, darkness | 17.11 and 25.99 rows | 17.23 and 26.22 rows |
+| disc, fingerprint | `c7e013957ba77c16` | `c0760736e3128d33` |
+
+So neither hexagon moved at all, which is the control, and the disc's shadow kept its outline and its umbra
+and removed 0.12 more rows of light near the caster and 0.23 more far from it — +0.70 % and +0.89 %. That is
+the right size for the change: the sixteen-sided coin holds 97.4 % of the disc's area, and only the part of
+that missing 2.6 % which lies inside the penumbra band the probe column crosses can have been doing
+anything. The fingerprint moved because a hash over every byte of two frames notices a tenth of a row; that
+is the instrument working, not the picture changing underneath it.
+
+**The correction I nearly shipped.** I had the disc's old umbra at 2.68 rows and its old darkness at 24.67.
+Those are the *hexagon's* numbers, two lines above the disc's in the same printer output; I read down the
+wrong row and the sentence was already written. The real before-state existed only in a build that was no
+longer in the tree, so the fix was to measure it: a worktree at HEAD, its own target directory, the printer
+run there. Worth recording as method, not just as a slip — when a claim needs a before-state, the
+before-state is a thing you can still go and build, and reading it out of your own scrollback is how the
+neighbouring line gets promoted to a fact.
+
+**The bug the change brought in.** The circle branch went in beside the box's slab tests, and the slabs went
+behind a guard that reads perfectly sensibly — only walk them if the ray has a direction at all — which is
+wrong in exactly one case: a segment of no length. That case is the pixel a light stands on, and once the
+slabs' parallel branches stop running, the interval stays the whole of [0, 1], the "cuts through the
+bounds" test passes, and *a box anywhere in the scene shadows the pixel under its own light*. All 446 tests
+passed with it in. Fixed by restoring the slabs verbatim behind a plain `else`, which is what the guard now
+says out loud in a comment.
+
+`wherever_a_light_lands_in_a_column_that_column_keeps_its_light` owns it: the lamp is swept across a pixel
+and the column it stands in must keep its light, on both interval roads (the box's slabs, the circle's
+quadratic) and both ends of the tap ladder. It fails on the broken build — *the box at 1 rays dims the
+column of a light set 0.5 by 0.5 off its pixel to 0* — and passes on this one. Two things it also settled:
+the degenerate landing is at half-integer coordinates, so that is the pixel-centre convention, written down
+somewhere at last; and the first version of the test did not work. I had put the lamp on an integer, which
+is a texel's corner, so the ray still had a direction and both the broken and the fixed build passed it. A
+test that has not been seen to fail is a decoration.
+
+**Collision, since the question came up mid-flight.** Unchanged, and unchanged in kind: `Collider` has had an
+analytic `Circle` since it existed, and `Convex` is still documented as the occluder's shape rather than a
+physics body. What changed is a divergence worth knowing about. An occluding disc's *shadow* is now the true
+circle, while an author's collision outline built from `Convex::disc` is still the 16-gon, so the two answers
+about one object can be up to 1.9 % of the radius apart on the flats. The right way round, on the grounds
+that the shadow has to match the thing being drawn and the physics code was already living with the polygon —
+but a difference all the same, and three doc comments that asserted the old arrangement have been rewritten:
+§33's "the shadow is the only consumer that cannot have it", bake's "tessellated here and nowhere earlier",
+and `MAX_PLANES`'s roundness argument, which now governs only shapes that genuinely have edges.
+
+**What is now safe to attempt.**
+
+* Price the tax with the isolation build above. If it is the per-record parse, it wants hoisting out of the
+  per-record loop, and that is a change whose cost can be measured on these same control rows.
+* The rotated thin shape row, before any oriented-box-per-record idea (§33): the suite still cannot see that
+  lever at all.
+* The box scene's per-row oracle test (§32). The polygon scenes have the strong per-row check; the box scene
+  has outline containment, and §34's degenerate-ray bug is precisely the class of thing containment misses.
+* A circle *is* now the cheap shape, which is worth saying to anyone tempted to "optimise" a drawn circle
+  into a polygon somewhere upstream: that would make it 2.2 times more expensive in the field, and wrong.

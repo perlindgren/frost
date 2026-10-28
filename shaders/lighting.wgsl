@@ -139,7 +139,11 @@ fn occluded(li: u32, recv: u32, l: vec2<f32>, p: vec2<f32>) -> bool {
     let end = u32(range.y);
     while (base < end) {
         let rec = occluders.occluders[base + 2u];
-        let edges = u32(rec.z);
+        // A negative count is a shape a polygon cannot be: it says what stands
+        // behind these bounds is the circle the bounds were cut around, and that
+        // it rides in no planes at all, so the stride stays the box's.
+        let round = rec.z < 0.0;
+        let edges = select(u32(rec.z), 0u, round);
         // The record's layer mask, in the w that used to be zero padding:
         // one shared layer and the shadow can land on this receiver;
         // none, and the walk steps over the record — its planes included,
@@ -160,31 +164,46 @@ fn occluded(li: u32, recv: u32, l: vec2<f32>, p: vec2<f32>) -> bool {
         // For a polygon the record's extents are only its bounds, so stepping
         // inside the bounds is not yet stepping inside the shape.
         var inside = all(abs(lp - center) <= half);
-        if (inside && edges > 0u) {
+        if (round) {
+            let to = lp - center;
+            inside = dot(to, to) <= half.x * half.x;
+        } else if (inside && edges > 0u) {
             inside = in_planes(base + 3u, edges, lp);
         }
         var blocked = false;
         if (!inside) {
             // The interval of t in [0, 1] where the segment ll + t * (lp - ll)
-            // lies inside the bounds, built slab by slab.
-            let d = lp - ll;
+            // lies inside the bounds, built slab by slab — or solved directly
+            // for a circle, which is one quadratic rather than two slabs and
+            // then the shape's edges on top.
             var tmin = 0.0;
             var tmax = 1.0;
-            if (abs(d.x) > 1e-6) {
-                let t1 = (center.x - half.x - ll.x) / d.x;
-                let t2 = (center.x + half.x - ll.x) / d.x;
-                tmin = max(tmin, min(t1, t2));
-                tmax = min(tmax, max(t1, t2));
-            } else if (ll.x < center.x - half.x || ll.x > center.x + half.x) {
-                tmax = -1.0; // parallel to the slab, outside it: no crossing
-            }
-            if (abs(d.y) > 1e-6) {
-                let t1 = (center.y - half.y - ll.y) / d.y;
-                let t2 = (center.y + half.y - ll.y) / d.y;
-                tmin = max(tmin, min(t1, t2));
-                tmax = min(tmax, max(t1, t2));
-            } else if (ll.y < center.y - half.y || ll.y > center.y + half.y) {
-                tmax = -1.0;
+            if (round) {
+                let iv = circle_interval(ll, lp, center, half.x);
+                tmin = iv.x;
+                tmax = iv.y;
+            } else {
+                // The original two slabs, untouched: their parallel branches are
+                // what keeps a segment of no length from claiming the whole
+                // interval, and a test that a light sits exactly on its own
+                // pixel is not a thing anyone wants to rediscover as a shadow.
+                let d = lp - ll;
+                if (abs(d.x) > 1e-6) {
+                    let t1 = (center.x - half.x - ll.x) / d.x;
+                    let t2 = (center.x + half.x - ll.x) / d.x;
+                    tmin = max(tmin, min(t1, t2));
+                    tmax = min(tmax, max(t1, t2));
+                } else if (ll.x < center.x - half.x || ll.x > center.x + half.x) {
+                    tmax = -1.0; // parallel to the slab, outside it: no crossing
+                }
+                if (abs(d.y) > 1e-6) {
+                    let t1 = (center.y - half.y - ll.y) / d.y;
+                    let t2 = (center.y + half.y - ll.y) / d.y;
+                    tmin = max(tmin, min(t1, t2));
+                    tmax = min(tmax, max(t1, t2));
+                } else if (ll.y < center.y - half.y || ll.y > center.y + half.y) {
+                    tmax = -1.0;
+                }
             }
             // The segment cuts through the bounds when the interval has
             // positive length and reaches into the open segment (0, 1): the
@@ -277,6 +296,31 @@ const SHADOW_TAPS = array<vec2<f32>, 9>(
 // `src` is the disk's centre, `rad` its radius in pixels, `ca`/`sa` the
 // per-pixel rotation that keeps the sample grid from banding, and `t` which tap
 // of the ladder this ray starts from — the caller walks the first `taps` of them.
+// Where a segment lies inside a circle, in the same [tmin, tmax] shape the box's
+// slab tests produce — so that everything downstream of it, including the
+// "does this reach the open segment" test and the polygon's edge clip, reads a
+// circle exactly as it reads a box.
+//
+// This is what a record shaped like a circle is paid for. The same question for
+// the same disc used to be asked of sixteen half-planes, once per pair of rays,
+// which §33 measured as 18.39 ms of a 23.42 ms row; here it is two dot products,
+// one multiply and one square root, and the answer is the disc the author drew
+// rather than the sixteen-sided coin its edges sat 1.9 % inside.
+fn circle_interval(ll: vec2<f32>, lp: vec2<f32>, center: vec2<f32>, radius: f32) -> vec2<f32> {
+    let o = ll - center;
+    let d = lp - ll;
+    let a = dot(d, d);
+    let b = dot(o, d);
+    let disc = b * b - a * (dot(o, o) - radius * radius);
+    // An empty interval, which is what `tmax <= tmin` already means downstream: a
+    // ray that is a point, and a line whose closest approach misses the circle.
+    if (disc <= 0.0 || a <= 1e-12) {
+        return vec2<f32>(0.0, -1.0);
+    }
+    let s = sqrt(disc);
+    return vec2<f32>(max(0.0, (-b - s) / a), min(1.0, (-b + s) / a));
+}
+
 // One ray of the penumbra disk against an occluder's bounds, in the occluder's
 // own space: where the ray starts (`ll`) and the interval its slab test found
 // along the segment to the pixel. Returned as one vec4 so a caller can hold a
@@ -292,12 +336,17 @@ fn tap_interval(
     m: vec4<f32>,
     center: vec2<f32>,
     half: vec2<f32>,
+    round: bool,
 ) -> vec4<f32> {
     // The ladder's order is the only choice to make here: the rung has already
     // decided which prefixes exist, and every prefix is a superset of the last.
     let o = SHADOW_TAPS[t] * rad;
     let q = vec2<f32>(ca * o.x - sa * o.y, sa * o.x + ca * o.y);
     let ll = vec2<f32>(lc.x + m.x * q.x + m.z * q.y, lc.y + m.y * q.x + m.w * q.y);
+    if (round) {
+        let iv = circle_interval(ll, lp, center, half.x);
+        return vec4<f32>(ll.x, ll.y, iv.x, iv.y);
+    }
     let d = lp - ll;
     var tmin = 0.0;
     var tmax = 1.0;
@@ -345,7 +394,11 @@ fn occluded_taps(
     let end = u32(range.y);
     while (base < end) {
         let rec = occluders.occluders[base + 2u];
-        let edges = u32(rec.z);
+        // A negative count is a shape a polygon cannot be: it says what stands
+        // behind these bounds is the circle the bounds were cut around, and that
+        // it rides in no planes at all, so the stride stays the box's.
+        let round = rec.z < 0.0;
+        let edges = select(u32(rec.z), 0u, round);
         if (bitcast<u32>(rec.w) & recv) == 0u {
             base += 3u + edges;
             continue;
@@ -416,11 +469,11 @@ fn occluded_taps(
             // here is four floats at a time and nothing else.
             var t = 0u;
             while (t < taps) {
-                let a = tap_interval(t, rad, ca, sa, lc, lp, m, center, half);
+                let a = tap_interval(t, rad, ca, sa, lc, lp, m, center, half, round);
                 let u = t + 1u;
                 var b = vec4<f32>(0.0);
                 if (u < taps) {
-                    b = tap_interval(u, rad, ca, sa, lc, lp, m, center, half);
+                    b = tap_interval(u, rad, ca, sa, lc, lp, m, center, half, round);
                 }
                 let a_open = ((blocked >> t) & 1u) == 0u && a.w > a.z && a.w > 0.0 && a.z < 1.0;
                 let b_open = u < taps && ((blocked >> u) & 1u) == 0u && b.w > b.z && b.w > 0.0

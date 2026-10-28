@@ -436,7 +436,9 @@ pub fn reflect(vel: [f32; 2], n: [f32; 2], e: f32) -> [f32; 2] {
 ///
 /// One number serves both because the GPU cost of a polygon is per edge: every
 /// shadow ray clips against every edge of every occluder, and a light with a
-/// penumbra fires nine rays per pixel. Sixteen is enough to be round — the
+/// penumbra fires nine rays per pixel. Which is also why the round shape this cap
+/// used to exist for is a record kind of its own now — see [`Convex::circle`],
+/// and note that the cap still governs every shape that genuinely has edges. Sixteen is enough to be round — the
 /// sixteen-gon inscribed in a disc stays within two percent of its radius,
 /// which at any size a player can see is under a pixel or two of edge
 /// travel — and small enough that a hundred lights still cost a fragment
@@ -471,6 +473,23 @@ pub struct Convex {
     /// The polygon's own axis-aligned bounds, so a caller can reject a ray
     /// that misses it without touching a single edge.
     bounds: ([f32; 2], [f32; 2]),
+    /// Set when this polygon is not merely like a circle but *is* one: the
+    /// centre and radius [`Convex::disc`] cut it from, in the same space as the
+    /// planes.
+    ///
+    /// This is a memory of origin, not an approximation of the planes: the
+    /// half-planes stay the shape's definition for every question asked of a
+    /// `Convex`, and nothing here changes what a collision test answers. It
+    /// exists because the shadow path pays per edge, and a ray meeting a
+    /// sixteen-sided approximation of a coin answers the same question a
+    /// circle's quadratic answers — for sixteen times the arithmetic and with
+    /// the edge of the coin 1.9 % inside where the author drew it. A record
+    /// that knows it came from a circle can say so to the GPU and be exact
+    /// while doing it. [`Canvas::occluder_polygon`] is where the two diverge.
+    ///
+    /// Equality sees it, deliberately: a shape that knows what it is and a
+    /// shape that merely resembles one are not the same shape.
+    circle: Option<[f32; 3]>,
 }
 
 impl Convex {
@@ -565,17 +584,27 @@ impl Convex {
             planes,
             count: ordered.len() as u8,
             bounds: (lo, hi),
+            // A traced outline is a traced outline, however round it looks:
+            // only [`Convex::disc`] can claim to have come from a radius.
+            circle: None,
         })
     }
 
     /// A regular `DISC_SIDES`-sided polygon with its corners on the circle of
-    /// `radius` about `center`: the shape a disc becomes on the way to the
-    /// occluder field, where a curved edge has to be told to the GPU as flat
-    /// ones.
+    /// `radius` about `center`: the shape a disc becomes when something needs
+    /// edges, and — since §34 — the only form the shadow path no longer asks for.
+    ///
+    /// The result remembers where it came from, so a caller that can answer a
+    /// question exactly still can: [`Convex::circle`] says which of these
+    /// polygons is a circle, and the occluder field ships that instead of the
+    /// sixteen edges, at a sixth of the cost for a disc and with the outline the
+    /// author drew. Every other consumer gets the half-planes and the same answer
+    /// it always got — [`Convex::occludes`], [`Convex::cast`], the bounds, all of
+    /// them walked edge by edge.
     ///
     /// The disc's own exact form stays available as [`Circle`] — physics wants
-    /// the round normal, and the shadow is the only consumer that cannot have
-    /// it. The gap between the two is bounded by the polygon's inradius,
+    /// the round normal and has always had it. What changed is only who else may
+    /// now use it. The gap between the two is bounded by the polygon's inradius,
     /// `radius * cos(pi / DISC_SIDES)`, and pinned by a test, because it is
     /// the tolerance every GPU-versus-CPU shadow comparison over a circle has
     /// to be measured against.
@@ -589,7 +618,22 @@ impl Convex {
             .collect();
         // Regular, convex and within the cap by construction, so there is no
         // error to return; a radius that is not a number is the author's.
-        Self::new(&points).expect("a regular polygon is convex")
+        let mut disc = Self::new(&points).expect("a regular polygon is convex");
+        disc.circle = Some([center[0], center[1], radius]);
+        disc
+    }
+
+    /// The circle this polygon was cut from, as centre and radius, when it was
+    /// built by [`Convex::disc`] — which is how a shape gets to know what it is.
+    ///
+    /// The half-planes remain the shape for every question a `Convex` answers;
+    /// this is for the one caller that can ask better, the occluder field, which
+    /// ships a record that says *circle* instead of shipping sixteen planes and
+    /// clipping a ray against each. A polygon traced by hand is `None` however
+    /// round it looks, because the engine did not cut it from a radius and will
+    /// not guess that it could have been.
+    pub fn circle(&self) -> Option<([f32; 2], f32)> {
+        self.circle.map(|[x, y, r]| ([x, y], r))
     }
 
     /// The edges as `(n.x, n.y, c, _)`, in the order they run around the

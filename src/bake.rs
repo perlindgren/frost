@@ -390,13 +390,15 @@ impl Baked {
     /// any angle enters the light field exactly as a hand-written
     /// [`Canvas::occluder`] call would.
     ///
-    /// A baked circle is tessellated here and nowhere earlier:
-    /// [`Convex::disc`](crate::Convex::disc) cuts it into the polygon the field
-    /// carries, the one place a round shape has to become flat ones. The bake
-    /// had every right to keep it a circle, so the approximation is made once,
-    /// at the last moment, by the only function that needs it. An authored
-    /// polygon arrives at that moment already flat — it goes to
-    /// [`Canvas::occluder_polygon`] as the outline it was drawn with.
+    /// A baked circle stays a circle the whole way down. It is handed to
+    /// [`Canvas::occluder_polygon`] as a [`Convex::disc`](crate::Convex::disc),
+    /// which is a polygon with the memory of being a circle, and the occluder
+    /// packer ships that memory rather than the edges — so nothing on this path
+    /// approximates a round shape any more, and the bake is not where such a
+    /// decision could have been made anyway, since it had every right to keep the
+    /// circle. An authored polygon is the other case, and the easy one: it goes
+    /// to [`Canvas::occluder_polygon`] as the outline it was drawn with, and the
+    /// field carries every edge of it.
     pub fn declare_occluders(&self, canvas: &mut Canvas, world: Transform) {
         for b in &self.occluders {
             let to_node = Transform::rotate(b.angle).compose(&Transform::translate(b.center));
@@ -803,10 +805,13 @@ mod tests {
     }
 
     #[test]
-    fn an_occluding_circle_stays_round_and_reaches_the_field_as_a_polygon() {
+    fn an_occluding_circle_stays_round_and_reaches_the_field_as_a_circle() {
         // The round case, end to end: honoured rather than refused, kept round
-        // by the bake, put to the CPU's shadow question as a circle, and cut
-        // into edges only at the last step — the declared record.
+        // by the bake, put to the CPU's shadow question as a circle, and handed
+        // to the field still knowing what it is. The edges get cut — a declared
+        // occluder carries a `Convex`, and a `Convex` is edges — but they are no
+        // longer what the GPU is told about a round shape: the polygon arrives at
+        // the packer with the memory of its radius, and §34 is why that matters.
         let mut baker = Baker::new();
         let rejected = baker.add(
             Placement::IDENTITY,
@@ -849,6 +854,11 @@ mod tests {
             declared.planes().len(),
             crate::collision::DISC_SIDES,
             "the declared disc should carry every edge the tessellation has"
+        );
+        assert_eq!(
+            declared.circle(),
+            Some(([4.0, -3.0], 12.0)),
+            "the bake's last job is that the shape still knows it is a circle:              that memory is the only thing standing between this disc and sixteen              edge clips per ray, and it is carried, not rediscovered"
         );
         let bounds = declared.bounds_as_box();
         assert_eq!(
