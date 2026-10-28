@@ -378,10 +378,10 @@ mod tests {
     /// fiction.
     ///
     /// `None` means the probe cannot be trusted here: it called the living
-    /// child dead, or still calls the dead one living, which is what a sandbox
-    /// or a restricted token does when the process list is shut to it. The
-    /// callers then assert the other promise — a broken question prunes nothing
-    /// — rather than passing a question nobody answered.
+    /// child dead, or would not let go of the dead one, which is what a
+    /// sandbox or a restricted token does when the process list is shut to
+    /// it. Callers answer a `None` with [`probe_declined`], which is loud on
+    /// purpose: an unobserved question is not a passing answer.
     fn a_departed_pid() -> Option<u32> {
         // A child that lives about a second: long enough to be seen living,
         // short enough that nobody notices it.
@@ -403,7 +403,53 @@ mod tests {
         // process in the list: probing before this drop would ask about a pid
         // the child still nominally holds.
         drop(child);
-        (lived && !alive(pid)).then_some(pid)
+        if !lived {
+            return None;
+        }
+        // The list is not obliged to forget the child the instant the last
+        // handle closes, so the departure is watched for rather than caught at
+        // one instant: a stubborn entry says something about the machine, not
+        // about the child, and half a second of asking is the cheapest way to
+        // tell the two apart.
+        for _ in 0..20 {
+            if !alive(pid) {
+                return Some(pid);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        None
+    }
+
+    /// The probe could not say who has departed — and that is not a result, so
+    /// it cannot be a green either. The GPU test tree already refuses this
+    /// shape outright for a missing adapter, and the polygon fingerprint guard
+    /// for a chip with no row of its own: a guard that passes on a question it
+    /// was never able to ask hides exactly the thing it exists to notice.
+    ///
+    /// So this fails, with the reason and the hand-probe to run, unless the box
+    /// has already declared the limitation in its environment: with
+    /// `FROST_TELL_PROBE_UNAVAILABLE` set to anything it returns `true` and the
+    /// caller carries on to the promise that does survive a refused question —
+    /// a broken question prunes nothing and hides nobody. That is the weaker
+    /// claim, and a box that wants it has to ask for it by name rather than
+    /// fall into it. A message would not do: libtest hides the output of a test
+    /// that passes, which is precisely the case this is for.
+    fn probe_declined() -> bool {
+        if std::env::var_os("FROST_TELL_PROBE_UNAVAILABLE").is_some() {
+            return true;
+        }
+        panic!(
+            "no probe on this machine could tell a living child from a dead one, so the \
+             departure these tests turn on went unobserved — which is not a passing answer. \
+             Either the process list will not answer here (a sandbox, a restricted token, a \
+             service session), or it would not release the child within half a second; either \
+             way the probe is the suspect, and the question to ask by hand and read the exit \
+             status of is `tasklist /FI \"PID eq <pid>\" /FO CSV /NH` on Windows, \
+             `/bin/kill -0 <pid>` elsewhere. A box that knows it \
+             cannot answer should say so once, where it is configured: \
+             `FROST_TELL_PROBE_UNAVAILABLE=1 cargo test` then checks the promise that survives \
+             a refused question — that nothing is deleted and nobody is hidden."
+        );
     }
 
     /// The opening of a telling: boot publishes rev 1 to the live
@@ -455,13 +501,16 @@ mod tests {
     /// Where nothing can answer who is gone, the promise that holds is
     /// the other one and is asserted in its place: the folder leaves
     /// every file a stranger left alone, because a file deleted on a
-    /// guess is a card and a telling of a running app.
+    /// guess is a card and a telling of a running app. That weaker
+    /// claim is only available to a box which has said it cannot ask —
+    /// see [`probe_declined`] — because a green here that observed
+    /// nothing would be reporting on the machine, not on the folder.
     #[test]
     fn a_departed_card_is_pruned_with_its_file() {
         let dir = scratch("prune");
         fs::create_dir_all(&dir).unwrap();
         let departed = a_departed_pid();
-        let told = departed.is_some();
+        let told = departed.is_some() || probe_declined();
         let gone = departed.unwrap_or(NEVER_MINE);
         let ghost = format!("ghost-{gone}");
         fs::write(dir.join(format!("{ghost}.card.ron")), "// stale\n").unwrap();
@@ -472,12 +521,6 @@ mod tests {
             "// document without a card\n",
         )
         .unwrap();
-        if !told {
-            println!(
-                "tell: no probe on this machine can say who has departed — the pruning itself \
-                 goes unverified, and what is checked here is that it deleted nothing"
-            );
-        }
         let tell = Teller::open(&dir, "prune");
         // One expectation per file, in whichever direction the answer went:
         // told, the departed's litter is gone; not told, it all stands.
@@ -532,7 +575,10 @@ mod tests {
     ///
     /// A machine that cannot answer the liveness question lists the ghost too,
     /// and that is the same promise the folder makes when it prunes: an
-    /// unanswered question hides nobody and deletes nothing.
+    /// unanswered question hides nobody and deletes nothing. Reaching that
+    /// branch takes a declared `FROST_TELL_PROBE_UNAVAILABLE`; without one the
+    /// test fails where the probe cannot speak, rather than passing a question
+    /// nobody was able to ask.
     #[test]
     fn a_guest_reads_the_folder_and_the_telling() {
         let dir = scratch("guest");
@@ -540,7 +586,7 @@ mod tests {
         let tell = Teller::open(&dir, "guest");
         assert_eq!(tell.name, "guest");
         let departed = a_departed_pid();
-        let told = departed.is_some();
+        let told = departed.is_some() || probe_declined();
         let gone = departed.unwrap_or(NEVER_MINE);
         fs::write(
             dir.join(format!("ghost-{gone}.card.ron")),
@@ -549,12 +595,6 @@ mod tests {
             ),
         )
         .unwrap();
-        if !told {
-            println!(
-                "tell: no probe on this machine can say who has departed — the ghost rides with \
-                 the living here, which is the promise that holds when the question is refused"
-            );
-        }
         let cards = Teller::announce(&dir);
         assert_eq!(
             cards.len(),
