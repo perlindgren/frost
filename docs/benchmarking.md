@@ -2342,17 +2342,24 @@ the same invocation every time. Medians, with the paired delta taken inside each
 
 | row | unmodified | circle record | median paired delta |
 |---|---|---|---|
-| `taps-9-discs` | 34.07 ms | 8.08 ms | **−25.56 ms (−75.7 %)**, range −26.7 … −18.6 |
+| `taps-9-discs` | 34.07 ms | 8.08 ms | **−25.94 ms (−76.1 %)**, range −26.7 … −18.6 |
 | `taps-9-polys` | 17.23 ms | 17.79 ms | +0.00 … +1.25 ms |
 | `taps-9` | 6.43 ms | 7.13 ms | +0.16 … +1.25 ms |
 | `polys-60` | 5.46 ms | 5.98 ms | +0.02 … +0.83 ms |
 
 The number I would show a stranger is the ratio, because a ratio taken inside one side cannot be touched by
-the drift this machine has been showing. On side A a disc row costs **2.01 times** the hexagon row. On side
+the drift this machine has been showing. On side A a disc row costs **1.98 times** the hexagon row. On side
 D it costs **0.45 times** it. The ordering of the two shapes inverted, and the only thing that changed
 between the sides is how a circle is written down. Within side D, sixty discs sweeping nine rays per pixel
 now cost about a millisecond more than sixty boxes do — which is roughly what a circle should cost, since a
 box is two slab tests and a circle is one quadratic.
+
+*Two arithmetic slips in this table, corrected here rather than in the pass notes where they came from. The
+paired deltas this section prints further down are −25.56, −26.73, −26.32 and −18.59, whose median is −25.94
+and not the −25.56 first written in the row above: what was quoted there was the smallest-magnitude pass of
+the three that agreed, which flattered nothing and understated the effect by 0.38 ms, and against the side-A
+median of 34.07 it is −76.1 %, not −75.7 %. The ratio is 34.07 / 17.23 = 1.98, not 2.01. Both were found by
+recomputing the section's own arithmetic, which is the cheapest audit there is and the one nobody schedules.*
 
 Side B from §33 — the build that skipped the walk but kept the planes — is not in this table on purpose. It
 was measured on a machine running this suite one and a half to two times faster than it runs today, and
@@ -2473,9 +2480,20 @@ differ in what the field has to know about a shape and in nothing else. `taps-9-
 circle, `taps-9-poly16` is new and is a traced 16-gon: the plane walk at its cap, which is the row §34's
 change quietly removed from the suite when a circle stopped being a polygon.
 
+**Withdrawn the next day, by §36, and what went was the row rather than the arithmetic.** `taps-9-discs`
+declared boxes. Its scenario sets `poly_sides: 0`, because a circle has no sides, and the builder tested the
+box branch before it ever looked at the `circle` flag — so the circle row and the box row were one and the
+same scene, and the delta of −0.00 ms below is a control that was read as a result. The `taps-9-poly16` row
+is real and its numbers are its own, but every comparison in this table that says "the circle" is a
+comparison against boxes. Two other claims in the same paragraph go with it: the order was not flipped every
+pass, because `select()` sorted a named list back into suite order, so `--only a,b` and `--only b,a` were
+the same command; and `polys-60` below has been sixty hexagons, not boxes, since §21. What this section
+measured is what a traced polygon costs against a box, and on that question it still stands. What it says
+about circles was never measured, and §36 measures it.*
+
 | row | the casters, nine rays | median ms | paired vs `taps-9` | paired vs the circle |
 |---|---|---|---|---|
-| `polys-60` | boxes, one ray | 3.97 | −0.62 | — |
+| `polys-60` | sixty hexagons, one ray | 3.97 | −0.62 | — |
 | `taps-9` | boxes, nine rays | 4.59 | — | — |
 | `taps-9-discs` | sixty circles | 4.59 | −0.00 (1/8 positive, at zero) | — |
 | `taps-9-polys` | sixty traced hexagons | 11.97 | +7.38 (+161 %) | +7.38 |
@@ -2484,17 +2502,21 @@ change quietly removed from the suite when a circle stopped being a polygon.
 Every row repeated to within 0.02 ms across all eight passes, which is the quietest this suite has been
 all day, so the deltas below are not a machine-state story.
 
-* **A circle costs a scene nothing over a box.** 4.59 against 4.59, paired delta −0.00 ms, no pass in which
-  the circle row was slower by a measurable amount. Whatever §34's +2.5…4 % tax on circle-free scenes is,
-  it is not the circle arithmetic: that arithmetic is not findable at this resolution.
+* **~~A circle costs a scene nothing over a box.~~** *Withdrawn by §36: both rows were boxes. Measured
+  properly, one binary, eight paired passes, a declared circle costs **+0.77 ms over a box at nine taps,
+  +16 %**, in all eight passes, spread 0.00 ms — which is the same order §34 read across builds and about
+  what a quadratic per tap against a box's whole-disk reject should cost.*
 * **The polygon walk still costs the plane count and nothing else.** `(23.36 − 4.59) / (11.97 − 4.59) =
   2.54` against the shapes' own `16/6 = 2.67` — five per cent under, the same direction and a little further
   than §33's 2.64-against-2.67. Two sections and one deleted abstraction later, the law held.
 * **Tracing a round shape by hand instead of declaring it costs 80.4 % of the row**, or 5.09× the other way
-  round. That is the number §34's closing bullet gestured at with a 2.2, which was six edges' worth: with
-  the cap in play the gap is twice as wide again.
-* One asymmetry, against the number rather than for it: the 16-gon's bounds square is 2.5 % larger than the
-  circle's (28 224 px² against 27 532), so marginally more of its taps survive the reject and reach the
+  round. *The 80.4 % and the 5.09× were taken against a box wearing a circle's name. Against the circle the
+  row names, §36: the traced 16-gon is **4.30× the circle**, +18.03 ms on a 5.47 ms row, and the +409 %
+  above is correctly read as 16-gons over **boxes**. The direction never moved; the size does by a seventh.*
+  That is the number §34's closing bullet gestured at with a 2.2, which was six edges' worth: with the cap in
+  play the gap is twice as wide again.
+* One asymmetry, against the number rather than for it: the 16-gon's bounds square is 2.6 % larger than the
+  circle's (28 224 px² against 27 502, `4r²` with `r = 82.92`), so marginally more of its taps survive the reject and reach the
   walk. The polygon is paying for a slightly bigger box as well as for its edges, and the honest split
   between those two is not in this table.
 
@@ -2598,16 +2620,60 @@ change moved it again the reader of that section has already been shown a disc p
 is exactly the situation a pinned frame is worst at: it receipts whatever the renderer did, including being
 wrong in four corners that no probe reads.
 
-**What it costs is not measured, and the reason it is not is itself a finding.** Prediction rather than
-measurement, and labelled as such: nothing. The fix is one subtract, one dot and one compare per *circle*
-record on a road that has already loaded the record and carried the pixel through its inverse, and the
-single-ray road has carried the same three operations since §34 without showing. The reason it stays a
-prediction is that the suite cannot price it right now: `taps-9-discs` sets `poly_sides: 0` alongside
-`circle: true`, and the builder's `poly_sides == 0` branch returns a box before the `circle` flag is ever
-consulted, so that row draws sixty boxes. §35's circle row is measured against that row, which is the same
-scene twice, and its "costs nothing over a box" is a control being read as a result. That correction belongs
-to §35 and is not made here; what belongs here is that the pricing of this fix is blocked behind it, and
-until the branch is hoisted there is no circle row to time.
+**What it costs, measured the next hour.** The branch was hoisted first, so the circle row declares what its
+name says — `taps-9-discs: 60 occluders declared as circles`, which the suite now prints per row, because the
+row names in a table are prose and that line is the fixture. Then two runs, `--reps 3`, 4112 × 2572
+fullscreen, canary in every invocation.
+
+One binary, this build, eight passes, the four rows asked in one order on the odd passes and the reverse on
+the even ones — an order the suite now honours, having previously sorted a named list back into table order,
+which is why §35's "flipped every pass" flipped nothing:
+
+| row | the casters, nine rays | median ms | paired Δ vs `taps-9` | spread |
+|---|---|---|---|---|
+| `lamps-10` | no casters | 1.36 | −3.33 | 0.01 ms |
+| `taps-9` | sixty boxes | 4.70 | — | 0.00 ms |
+| `taps-9-discs` | **sixty circles** | 5.47 | **+0.77 ms (+16 %)** | 0.00 ms |
+| `taps-9-poly16` | sixty traced 16-gons | 23.50 | +18.80 ms (+400 %) | 0.06 ms |
+
+All eight passes paired and every one of them agreeing, which is why the §35 numbers that this replaces were
+not a machine-state story either — they were a fixture story. Three readings:
+
+* **A declared circle costs +0.77 ms over a box at nine taps, +16 %.** Not nothing, and not a mystery: a box
+  answers a tap with two slabs and can be dropped whole by the disk reject, while a circle answers every tap
+  that reaches it with a quadratic and a square root. §34 read "about a millisecond more" across two builds;
+  §34 was right about the size and this is the same quantity measured inside one.
+* **Tracing the same area by hand is 4.30× the circle** — 23.50 against 5.47, +18.03 ms — where §35 printed
+  5.09× against what was actually a box. The +400 % in the table above is the 16-gon over boxes and should be
+  quoted as that.
+* The one-ray polygon law of §33 and §35, `(poly16 − box) / (hexagon − box) ≈ 2.54` against `16/6 = 2.67`,
+  uses the box and hexagon rows and is untouched by any of this.
+
+Two builds, six pairs, alternating which goes first, the before-side a worktree at `f901c80` with this same
+bench compiled against it, so the only difference between the columns is §36's three lines in the walk:
+
+| row | with the fix | without | paired Δ | per pair |
+|---|---|---|---|---|
+| `lamps-10` | 1.37 | 1.37 | −0.002 ms | six at ±0.01 |
+| `taps-9` | 4.70 | 4.59 | **+0.106 ms (+2.3 %)** | +0.10 … +0.11, 6/6 |
+| `taps-9-discs` | 5.47 | 5.49 | **−0.015 ms** | −0.02, 6/6 |
+
+So the fix is free on the row it acts on — 0.015 ms is under the 0.03 ms that the reported fps can resolve at
+183 frames — and it is **not** free on a scene of boxes, where it costs 0.106 ms in all six pairs and in both
+orders. That was not predicted, and the prediction it replaces said "nothing", so the miss is the finding:
+for a box the new `round` branch never executes its body, the arithmetic is untouched, and a single extra
+test per record still moved a 4.6 ms row by 2.3 % repeatably. The plausible mechanism is not the compare —
+it is the fused walk's register budget, which the extra live `to` vector raises for every record and not just
+the round ones. That is a guess about a mechanism and is written as one; the number needs no mechanism to be
+true. It also lands inside the +2.5…4 % circle-free tax §34 could not price, which makes that tax's follow-up
+more interesting than it was this morning: the walk is apparently paying for the *shape of its own code*, and
+the first thing to try is spelling the same rule so a box's path is textually what it was — `round ? disc
+test : (bounds && planes)` — and re-running these six pairs.
+
+Canary throughout both phases: `p50 0.34 / p99 0.37 ms`, excess 0.01–0.03, once 0.14, nothing near the 3.5 ms
+gate. Two invocations of the second phase carried a `worst` of 17.24 and 11.43 ms — single wakes, with p50
+and p99 unmoved and the paired deltas of those two pairs identical to the other four, which is the pattern
+the gate is drawn to catch rather than the one it is drawn to stop.
 
 **The invariant to keep.** A new kind in `OccluderShape` has to refine `inside` on *both* roads. One walk is
 written as a loop over taps and one as a single ray, they were derived from each other, and nothing in the

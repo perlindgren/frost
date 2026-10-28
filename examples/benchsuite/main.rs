@@ -23,10 +23,12 @@
 //! * `taps-1/4/9`        — the penumbra ladder and its divergence; the
 //!   ninth rung is the cliff, heaviest by a mile and the row where a GPU's
 //!   real throughput has to show.
-//! * `polys-60`, `taps-9-polys`, `taps-9-discs` — the casters' *shape*:
-//!   sixty hexagons and sixty 16-sided discs at the boxes' own area, so the
-//!   rows against `taps-1` and `taps-9` say what a polygon's edges cost on
-//!   top of the box's bounds. Without them the polygon path is unmeasured.
+//! * `polys-60`, `taps-9-polys`, `taps-9-discs`, `taps-9-poly16` — the
+//!   casters' *shape*: hexagons at six sides, a traced ring at `MAX_PLANES`,
+//!   and a declared circle, all at the boxes' own area, so the rows against
+//!   `taps-1` and `taps-9` say what a shape costs on top of the box's bounds.
+//!   Without them the polygon path is unmeasured, and without the last two
+//!   there is nothing to say what *not* tracing a circle is worth.
 //! * `taps-9-clear`      — a control, not a rung: nine rays a pixel with
 //!   an empty block to walk, so `taps-9` minus it is the walk and it minus
 //!   `lamps-10` is the rays. It says whether the penumbra ladder is spent
@@ -369,10 +371,16 @@ const SCENARIOS: &[Scenario] = &[
         p_lit: false,
     },
     Scenario {
-        // Sixty circles, declared as circles. This is the row §34 measured at
-        // −75.7 % against the same sixty as a sixteen-sided polygon, and it keeps
-        // its name so that number stays comparable down the years: the covered
-        // area is unchanged, only the shape's form.
+        // Sixty circles, declared as circles — through `Canvas::occluder_circle`,
+        // which is the road an author takes now that nothing traces one.
+        //
+        // The name is §34's, and it outlived what it named for exactly one
+        // section: under §34 this row reached the field as a circle only because
+        // the packer recognised the radius a hand-built disc remembered, and
+        // from §35 until this comment it drew boxes instead, its own circle
+        // branch sitting below the `poly_sides == 0` return it never got past.
+        // Sixty boxes is not a comparison, so read §36 for what this row is
+        // worth and §35's withdrawal for what it was mistakenly said to be worth.
         name: "taps-9-discs",
         lamps: 10,
         occluders: 60,
@@ -760,20 +768,23 @@ impl Process for Suite {
         // moving camera must; positions ride the same scatter.
         for i in 0..s.occluders {
             let [x, y] = scatter(i + s.lamps * 7919);
-            if s.poly_sides == 0 {
-                ctx.occluder(Transform::translate([x, y]), [0.0, 0.0], [90.0, 60.0]);
-                continue;
-            }
-            // Same area as the suite's 180x120 box, so the rows differ in
-            // their shape and not in how much of the screen they cover: a
-            // regular polygon's area is (1/2) n R^2 sin(2 pi / n).
+            // The form is asked before the cheap case, not after it. A circle has
+            // no sides, so it arrives with `poly_sides: 0`, and a box branch
+            // tested first returned sixty boxes from the circle row, and the
+            // number reached the table under a shape the fixture had never
+            // declared — which is how §35 came to print a control, the same
+            // scene measured twice, as a result of −0.00 ms.
             if s.circle {
                 // Same covered area as the suite's 180x120 box — a circle's area
-                // is pi r squared — so the disc row and the box row shade the same
-                // amount of screen and differ only in what the field has to know
-                // about the shape.
+                // is pi r squared — so the disc row and the box row shade the
+                // same amount of screen and differ only in what the field has to
+                // know about the shape.
                 let radius = (21600.0 / std::f32::consts::PI).sqrt();
                 ctx.occluder_circle(Transform::translate([x, y]), [0.0, 0.0], radius);
+                continue;
+            }
+            if s.poly_sides == 0 {
+                ctx.occluder(Transform::translate([x, y]), [0.0, 0.0], [90.0, 60.0]);
                 continue;
             }
             // Same area as the suite's 180x120 box, so the rows differ in their
@@ -810,6 +821,13 @@ impl Process for Suite {
                 self.finish(ctx);
                 return;
             }
+            let next = self.queue[self.idx];
+            log::info!(
+                "{}: {} occluders declared as {}",
+                next.name,
+                next.occluders,
+                form(next)
+            );
             let next = self.queue[self.idx];
             ctx.scene().root.children = build(next).into_iter().map(Box::new).collect();
         }
@@ -964,14 +982,37 @@ fn parse_baseline(text: &str) -> Vec<(String, f32)> {
 }
 
 /// `--only` filtering: names in the order the suite gave them.
+/// What a row's casters actually are, in three words. The table's row names are
+/// prose; this is read off the fixture's own flags, which is the difference
+/// between a claim and a receipt — `taps-9-discs` was declared boxes for one
+/// whole section while its name said circles.
+fn form(s: &Scenario) -> &'static str {
+    if s.circle {
+        "circles"
+    } else if s.poly_sides == 0 {
+        "boxes"
+    } else {
+        "polygons"
+    }
+}
+
+/// The rows to run, in the order they were asked for.
+///
+/// The order is the answer and not a detail: the house discipline asks the same
+/// rows in both orders inside one invocation, because a row measured second in a
+/// process reads differently from the same row measured first. This used to sort
+/// the request back into suite order, so `--only a,b` and `--only b,a` were the
+/// same command, and every pass that believed it had flipped its rows had
+/// measured one order twice — the §36 pass that found this is the receipt. An
+/// absent `--only` still runs the table's own order, which is the only order the
+/// full suite has.
 fn select<'a>(only: &Option<String>, scenarios: &'a [Scenario]) -> Vec<&'a Scenario> {
     match only {
         None => scenarios.iter().collect(),
         Some(list) => {
             let want: Vec<&str> = list.split(',').map(str::trim).collect();
-            scenarios
-                .iter()
-                .filter(|s| want.contains(&s.name))
+            want.iter()
+                .filter_map(|name| scenarios.iter().find(|s| s.name == *name))
                 .collect()
         }
     }
@@ -1033,6 +1074,18 @@ struct Cli {
 }
 
 fn main() {
+    // A row that asks for two forms at once would have to be given one of them
+    // by the builder's order, and the order is exactly the thing that went wrong
+    // once. The fixture refuses instead of choosing.
+    for s in SCENARIOS {
+        assert!(
+            !(s.circle && s.poly_sides > 0),
+            "`{}` sets circle and poly_sides {}; the builder would have to pick, \
+             and the row would mean whichever it lost",
+            s.name,
+            s.poly_sides
+        );
+    }
     env_logger::init();
     let cli: Cli = clap::Parser::parse();
     let chosen = select(&cli.only, SCENARIOS);
@@ -1093,6 +1146,12 @@ fn main() {
         b: 0.20,
         a: 1.0,
     };
+    log::info!(
+        "{}: {} occluders declared as {}",
+        first.name,
+        first.occluders,
+        form(first)
+    );
     scene.root.children = build(first).into_iter().map(Box::new).collect();
     if let Err(err) = run_configured(
         scene,
@@ -1210,12 +1269,25 @@ mod tests {
     }
 
     #[test]
-    fn only_selects_by_name_in_suite_order() {
-        let chosen = select(&Some("taps-9, fill-1080p".into()), SCENARIOS)
-            .into_iter()
-            .map(|s| s.name)
-            .collect::<Vec<_>>();
-        assert_eq!(chosen, ["fill-1080p", "taps-9"]);
+    fn only_runs_the_rows_in_the_order_they_were_asked_for() {
+        let order = |list: &str| {
+            select(&Some(list.into()), SCENARIOS)
+                .into_iter()
+                .map(|s| s.name)
+                .collect::<Vec<_>>()
+        };
+        // The one row that matters is that these two differ. Sorted back into
+        // suite order they were the same command, and an order effect could not
+        // be seen even by someone looking for it.
+        assert_eq!(order("taps-9, fill-1080p"), ["taps-9", "fill-1080p"]);
+        assert_eq!(order("fill-1080p, taps-9"), ["fill-1080p", "taps-9"]);
+        // Without `--only` the suite runs itself in table order, and a name that
+        // is not in the suite is dropped — loudly, by the caller, which refuses
+        // an empty selection.
+        // `warm` is not a scenario — it rides the front of the queue in `main`,
+        // so it cannot be selected, skipped or judged.
+        assert_eq!(select(&None, SCENARIOS)[0].name, "fill-1080p");
+        assert!(select(&Some("nonsense".into()), SCENARIOS).is_empty());
     }
 
     #[test]
