@@ -12,6 +12,28 @@ use crate::text;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// What a declared occluder's shape is, in its own space.
+///
+/// Three kinds because the light field answers three different questions, and the
+/// cheapest one belongs to the shape with the fewest parts: a box is two slab
+/// tests, a circle is one quadratic, a polygon is a clip per edge. A circle used to
+/// have to arrive as the third of those — cut into edges, because a curved boundary
+/// had no way to say itself to hardware — which §34 measured as three quarters of a
+/// disc row and 1.9 % of shadow inside the shape the author drew.
+#[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)] // the polygon rides by value, as `Convex` does everywhere else in
+// the crate: an occluder was already carrying one inline, and the shape is read once per occluder per
+// frame by the packer, which is not where a polygon wants to start allocating
+pub(crate) enum OccluderShape {
+    /// The box the record's `center` and `half` describe.
+    Box,
+    /// A convex polygon, in the same local space as `center` and `half`, which
+    /// hold the box around it.
+    Polygon(Convex),
+    /// A circle of this radius about `center`.
+    Circle(f32),
+}
+
 /// One occluder the app declared for this frame: a box in its own space,
 /// placed by a world transform, added to the frame's occluder field beside
 /// the shapes flagged `occludes` (see [`Canvas::occluder`]).
@@ -19,17 +41,17 @@ pub(crate) struct Occluder {
     /// The occluder's local-to-pixel transform, the canvas scale folded in —
     /// the same space and the same meaning as a [`Draw::Shape`]'s `world`.
     pub(crate) world: Transform,
-    /// The box's center in the occluder's own space.
+    /// The shape's center in the occluder's own space.
     pub(crate) center: [f32; 2],
-    /// The box's half-extents in the occluder's own space: the full size is
+    /// The shape's half-extents in the occluder's own space: the full size is
     /// `2 * half`, the [`Canvas::rectangle`] convention. For a polygon this is
-    /// the box around it, and the field uses it to reject a ray with four
-    /// comparisons before any edge is clipped.
+    /// the box around it, and for a circle it is the radius twice over — the
+    /// field uses either to reject a ray with four comparisons before it clips
+    /// an edge or solves a curve.
     pub(crate) half: [f32; 2],
-    /// The shape's edges, when it is a polygon rather than a box: the
-    /// half-planes [`Convex`] holds, in the same local space as `center` and
-    /// `half`. `None` is the box.
-    pub(crate) polygon: Option<Convex>,
+    /// Which of the three shapes this is, and the parts the bounds do not
+    /// carry: [`OccluderShape`].
+    pub(crate) shape: OccluderShape,
     /// The light layers this occluder's shadow lands on, matched against
     /// each receiver's [`SceneNode::lit_layers`]. The
     /// [`Canvas::occluder`] constructors keep it at
@@ -267,7 +289,7 @@ impl Canvas {
             world: to_pixel,
             center,
             half: [half[0].max(0.0), half[1].max(0.0)],
-            polygon: None,
+            shape: OccluderShape::Box,
             layers,
         });
     }
@@ -275,10 +297,11 @@ impl Canvas {
     /// Declares a convex polygon occluder: [`Convex`] in the node's own space,
     /// placed by the same kind of `world` transform [`Canvas::occluder`] takes.
     ///
-    /// This is how an occluder that is neither a rectangle nor a disc reaches
-    /// the light field — a rock, a sloped roof, a hit box with corners — and
-    /// the disc reaches it the same way, as the polygon it is cut into for the
-    /// GPU, since a curved edge has to be told to hardware as flat ones.
+    /// This is how an occluder that is neither a rectangle nor a circle reaches
+    /// the light field — a rock, a sloped roof, a hit box with corners. A circle
+    /// does not come this way: it has a form of its own, [`Canvas::occluder_circle`],
+    /// because a polygon stood in for it would cost an edge clip per edge and
+    /// quietly cast the shadow of a slightly smaller shape.
     ///
     /// The polygon never leaves its own space. Its edges ship next to the same
     /// inverse transform a box ships, so an instance that is turned or
@@ -308,7 +331,51 @@ impl Canvas {
             world: to_pixel,
             center: bounds.center,
             half: bounds.half,
-            polygon: Some(*polygon),
+            shape: OccluderShape::Polygon(*polygon),
+            layers,
+        });
+    }
+
+    /// Declares a circular occluder: a `radius` about `center`, in the node's own
+    /// space, placed by the same kind of `world` transform [`Canvas::occluder`]
+    /// takes.
+    ///
+    /// This is the cheap shape, and worth knowing about for that reason alone: a
+    /// circle is one ray-versus-circle test per occluder, where a polygon is a clip
+    /// per edge, and §34 measured the difference on sixty of them as three quarters
+    /// of the row. It is also the exact shape — a polygon standing in for a disc
+    /// shadows a sixteen-sided coin whose flats sit 1.9 % inside the circle, so a
+    /// round occluder traced by hand rather than declared is both the more expensive
+    /// and the less faithful of the two.
+    ///
+    /// The circle never leaves its own space either, so a scaled or turned `world`
+    /// needs no second shape: the ray is brought to it, which is also what keeps it a
+    /// circle under a zoom it has no opinion about.
+    ///
+    /// Like the box and polygon forms, this casts shadows only; it stops no body.
+    /// Collision is [`Collider::Circle`](crate::Collider::Circle), asked a different
+    /// question of the same radius — and the two now agree exactly, which they did
+    /// not when the shadow was a polygon.
+    pub fn occluder_circle(&mut self, world: Transform, center: [f32; 2], radius: f32) {
+        self.occluder_circle_layers(world, center, radius, LightLayers::default());
+    }
+
+    /// Declares a circular occluder whose shadow lands only on receivers lit from
+    /// one of `layers`, the circle sibling of [`Canvas::occluder_layers`].
+    pub fn occluder_circle_layers(
+        &mut self,
+        world: Transform,
+        center: [f32; 2],
+        radius: f32,
+        layers: LightLayers,
+    ) {
+        let to_pixel = world.compose(&self.user_to_pixel());
+        let radius = radius.max(0.0);
+        self.occluders.push(Occluder {
+            world: to_pixel,
+            center,
+            half: [radius, radius],
+            shape: OccluderShape::Circle(radius),
             layers,
         });
     }

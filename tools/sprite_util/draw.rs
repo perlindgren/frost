@@ -193,10 +193,10 @@ impl Demo {
         // The authored shapes: the sidecar's `shapes:` entries drawn
         // over the sprite in the texture's pixels — the author's own
         // view of the geometry a bake will one day take. Rectangles and
-        // polygons get their outline stroked; a circle gets stroked as
-        // the 16-gon the light field actually shadows with —
-        // `Convex::disc`'s own vertex ring — so what sits on the desk
-        // is the edge the shadow will have. Every entry whose geometry
+        // polygons get their outline stroked; a circle gets stroked as a ring,
+        // because a stroke needs corners and a circle has none — `sidecar`'s
+        // `OUTLINE_SIDES`, finer than the field ever used and matching nothing in
+        // it, since the shadow answers a circle directly. Every entry whose geometry
         // read draws, whatever else the reading refused beside it; the
         // refusals speak on the bar's notes. Like the position markers,
         // the overlay is the sprite's own furniture: panned off the

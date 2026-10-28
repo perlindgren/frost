@@ -80,6 +80,9 @@ pub(super) enum Caster {
     Box([f32; 2]),
     /// A convex polygon, centred on the axis at x = 24.
     Polygon(Convex),
+    /// A circle of this radius, centred on the axis at x = 24 — the third shape
+    /// the field speaks, and the one it answers without walking anything.
+    Circle(f32),
 }
 /// The light's disk radius, and the axis its centre sits on.
 const DISK: f32 = 3.0;
@@ -171,10 +174,12 @@ pub(super) fn plane_at(
     };
     let behind: Vec<Draw> = match caster {
         Caster::Box(_) => vec![box_caster],
-        Caster::Polygon(_) => Vec::new(),
+        Caster::Polygon(_) | Caster::Circle(_) => Vec::new(),
     };
     let declared: Vec<Occluder> = match (caster, shadowed) {
-        (Caster::Box(_), _) | (Caster::Polygon(_), false) => Vec::new(),
+        (Caster::Box(_), _) | (Caster::Polygon(_), false) | (Caster::Circle(_), false) => {
+            Vec::new()
+        }
         (Caster::Polygon(polygon), true) => {
             let mut canvas = Canvas::new((SPAN, SPAN), 1.0);
             // The declare channel takes user space and folds the canvas's own
@@ -182,6 +187,11 @@ pub(super) fn plane_at(
             // pixel space. The map at scale 1 is pixel = (32 + x, 32 − y), so
             // the caster's post on the axis at pixel x = 24 is user (−8, 0).
             canvas.occluder_polygon(Transform::translate([-8.0, 0.0]), polygon);
+            canvas.occluders
+        }
+        (Caster::Circle(radius), true) => {
+            let mut canvas = Canvas::new((SPAN, SPAN), 1.0);
+            canvas.occluder_circle(Transform::translate([-8.0, 0.0]), [0.0, 0.0], *radius);
             canvas.occluders
         }
     };
@@ -252,8 +262,28 @@ impl CpuCaster {
                 canvas.occluder_polygon(Transform::translate([24.0 - AXIS, 0.0]), polygon);
                 Self {
                     box_: None,
-                    circle: polygon.circle(),
+                    circle: None,
                     polygon: Some(*polygon),
+                    to_local: canvas.occluders[0]
+                        .world
+                        .invert()
+                        .expect("a non-degenerate caster"),
+                }
+            }
+            Caster::Circle(radius) => {
+                // Declared through the canvas like the polygon, so the space this
+                // answers in is the space the record was packed with rather than a
+                // space the test assumed.
+                let mut canvas = Canvas::new((SPAN, SPAN), 1.0);
+                canvas.occluder_circle(
+                    Transform::translate([24.0 - AXIS, 0.0]),
+                    [0.0, 0.0],
+                    *radius,
+                );
+                Self {
+                    box_: None,
+                    circle: Some(([0.0, 0.0], *radius)),
+                    polygon: None,
                     to_local: canvas.occluders[0]
                         .world
                         .invert()
@@ -391,7 +421,7 @@ pub(super) fn profile_at(
 fn wherever_a_light_lands_in_a_column_that_column_keeps_its_light() {
     for (what, caster) in [
         ("box", Caster::Box(CASTER)),
-        ("circle", Caster::Polygon(Convex::disc([0.0, 0.0], 4.0))),
+        ("circle", Caster::Circle(4.0)),
     ] {
         for taps in [1u32, 9] {
             for dx in [0.0f32, 0.5] {

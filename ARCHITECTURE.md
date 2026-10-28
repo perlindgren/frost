@@ -311,21 +311,23 @@ never count (`Diagnostics` excludes them like backgrounds).
   child for that); `SceneNode::occludes`
   makes a shape's transformed silhouette block every light's path to pixels
   behind it — a shadow caster. A wall can be `lit + occludes` at once. A
-  painted rectangle reaches the field as itself and a painted circle as the
-  sixteen-gon inscribed in it, because a curve still has to be told to
-  hardware as flat edges; `Shape::Sprite` has no silhouette to pack at all, so
+  painted rectangle reaches the field as itself, and so does a painted circle —
+  as one radius, the field's third shape and its cheapest, where a curve used to
+  be told to hardware as flat edges and paid per edge for the privilege;
+  `Shape::Sprite` has no silhouette to pack at all, so
   anything else that must cast, a sprite body, one tile of a map, a physics hit
   box, declares itself with
   `Canvas::occluder(world, center, half)`: a box in its own space plus a world
   transform, joining the same field after the painted occluders. Both channels
   keep the shape local, which is why a non-uniformly scaled caster still throws
   square-cornered shadows — the shader pulls the pixel into the shape's space
-  rather than pushing a sheared box out. A shape that is neither a rectangle nor
-  aligned in its own space declares with `Canvas::occluder_polygon(world,
-  &Convex)` instead, and a *disc* occludes that way too: a curved edge has to be
-  told to hardware as flat ones, so a disc ships the sixteen-gon inscribed in it
-  (its corners on the circle, within two percent of its radius) while physics
-  keeps the round `Circle` and its exact normal.
+  rather than pushing a sheared box out. A shape with corners declares with
+  `Canvas::occluder_polygon(world, &Convex)`; a *disc* declares with
+  `Canvas::occluder_circle(world, center, radius)` and stays a disc all the way
+  into the shader, which solves it as one quadratic instead of clipping a ray
+  against sixteen edges of a polygon whose flats sat 1.9 % inside the circle
+  drawn. Physics always had the round `Circle` and its exact normal; the shadow
+  now answers about that same shape, so a round body and its shadow agree.
 - The backend packs the frame into two **storage buffers** bound to every
   draw: the light field (32-byte header — count and the scene's ambient —
   plus one 64-byte record per light) and the occluder field (16-byte header
@@ -714,10 +716,11 @@ nothing but data in and flat lists out.
 - Two exits close the loop: `declare_occluders(canvas, world)` feeds the fused
   boxes to `Canvas::occluder` under the node's transform, each box's own turn
   folded into that transform so the shape stays local, and the round and
-  polygonal lists to `Canvas::occluder_polygon` — the discs as `Convex::disc`,
-  the authored outlines as drawn — the tessellation happens here,
-  at the border and once, which is why nothing upstream of it is an
-  approximation; and `occluder_colliders()` hands the same shapes — the discs
+  polygonal lists to `Canvas::occluder_circle` and `Canvas::occluder_polygon`,
+  each carrying the shape it was authored as; nothing on this path approximates
+  anything, which is a sentence that used to end with where the tessellation
+  happened and now simply describes the lists; and `occluder_colliders()` hands
+  the same shapes — the discs
   still round, because asking the CPU about the polygon would fold the answer
   into the question — to `occluded` / `visible`, so the gameplay answer and the
   pixel answer come from one bake.
@@ -1080,13 +1083,14 @@ may assert. Notable test areas:
   side alone, so this is the one place a drift between the CPU's slab test and
   the shader's can be caught; with no adapter it prints that the shadow went
   unverified rather than passing quietly. A box is required to agree exactly,
-  away from where its shadow edge crosses between neighbouring pixels; a disc
-  gets the tessellation's own bound instead, which needs no invented epsilon
-  because containment does the work — the sixteen-gon contains the circle it
-  inscribes and is contained in the one it is inscribed in, and a shadow grows
-  with the shape casting it, so its shadow must sit between theirs (outside the
-  disc, where the receiver-inside rule is silent for all three), with the
-  disagreement counted to show the band is as thin as `DISC_SIDES` claims.
+  away from where its shadow edge crosses between neighbouring pixels, and a disc
+  is required to agree exactly for the shorter reason that `Collider::Circle` and
+  the field's record are answers about one shape. It used to be graded on a bound
+  instead of an equality — the polygon's shadow sandwiched between the shadows of
+  the circles it inscribes and is inscribed in, with the disagreeing pixels counted
+  to show the band was as thin as the tessellation claimed — and that whole
+  argument retired with the tessellation, which is the sort of thing deleting an
+  approximation buys that no timing row shows.
 - `src/diagnostics.rs` — press-edge detection for all eight shortcuts, the
   display-scale clamp, and the line-extent re-measure on scale change.
 - `src/ui/menu.rs` — the bar's state machine without a canvas, and the
@@ -1344,8 +1348,9 @@ Each module's `mod tests` holds the tests that pin its subject. The
 |              | reorder by press-drag; a list entry's marker shows its seat         |
 |              | number on the sprite. A `shapes:` key draws over the                |
 |              | sprite as amber outlines — rects by their edges,                    |
-|              | circles as the 16-gon the light field shadows with,                 |
-|              | polygons as authored (View ▸ Shapes toggles the                     |
+|              | circles as a 32-segment ring (a stroke needs corners, a circle      |
+|              | has none, and the field answers a circle directly), polygons as     |
+|              | authored (View ▸ Shapes toggles the                                 |
 |              | drawing, never the validation); the bar's notes then                |
 |              | voice the first refusal of a mis-authored entry.                    |
 | widgets      | the `Ui` layer: a draggable Tomato panel (three color sliders, a    |

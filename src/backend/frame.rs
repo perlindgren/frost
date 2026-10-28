@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use crate::canvas::Occluder;
-use crate::collision::Convex;
+use crate::canvas::{Occluder, OccluderShape};
 use crate::objects::*;
 use crate::particles::Particle;
 
@@ -1539,15 +1538,14 @@ pub(crate) fn pack_occluder_field(
         if *occludes != 1.0 {
             continue;
         }
-        // The two kinds the paint pipeline draws and the field can hold. A
-        // rectangle is its own record; a circle is the polygon the field
-        // speaks, cut here rather than in the shape shader because the shadow
-        // wants edges where the painting wants a distance, and the record's
-        // inverse transform then carries the turn or mirror for free. A circle
-        // without a usable radius is skipped for the very reason a collapsed
-        // transform is: it occludes nothing — and no polygon can be cut from
-        // it, so passing it on would trade a silent no-op for a panic in the
-        // frame path, which is the worse of the two by a wide margin.
+        // The two kinds the paint pipeline draws and the field can hold, each
+        // recorded as itself: a rectangle is two slab tests' worth of record, a
+        // circle one quadratic's. A circle used to be cut into a polygon here,
+        // because the shadow wants edges where the painting wants a distance —
+        // which charged it per edge and left its shadow 1.9 % inside the shape
+        // that was drawn; §34 priced that and §35 deleted it. A circle without a
+        // usable radius is still skipped, for the reason a collapsed transform is:
+        // it occludes nothing, and the walk would pay to step over the record.
         match *kind {
             1.0 => push_master(
                 &mut master,
@@ -1578,21 +1576,16 @@ pub(crate) fn pack_occluder_field(
         }
     }
     for o in declared {
-        // A box brings no edges; a polygon brings its own, already in the
-        // space the record's inverse transform points at — unless it knows it
-        // is a circle, which is the one shape whose edges are all an
-        // approximation of something the GPU can answer exactly.
-        let (center, shape) = match o.polygon.as_ref().and_then(Convex::circle) {
-            Some((center, radius)) => (center, OccShape::Circle(radius)),
-            None => (
-                o.center,
-                match &o.polygon {
-                    Some(polygon) => OccShape::Polygon(polygon.planes()),
-                    None => OccShape::Box,
-                },
-            ),
+        // Three kinds, and the record says which: a box brings no edges and no
+        // radius, a polygon brings its own edges — already in the space the
+        // record's inverse transform points at — and a circle brings one number
+        // the shader solves instead of a list it would have to walk.
+        let shape = match &o.shape {
+            OccluderShape::Box => OccShape::Box,
+            OccluderShape::Polygon(polygon) => OccShape::Polygon(polygon.planes()),
+            OccluderShape::Circle(radius) => OccShape::Circle(*radius),
         };
-        push_master(&mut master, &o.world, &center, &o.half, shape, o.layers);
+        push_master(&mut master, &o.world, &o.center, &o.half, shape, o.layers);
     }
     // The lights, in the order the light field packed them — the shader
     // indexes the table by that same order.

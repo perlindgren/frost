@@ -839,7 +839,7 @@ mod tests {
     use super::*;
     use crate::bake::{Baker, Placement};
     use crate::canvas::Canvas;
-    use crate::collision::{Circle, Collider, DISC_SIDES};
+    use crate::collision::{Circle, Collider};
     use crate::objects::Transform;
     use crate::ron;
 
@@ -943,14 +943,16 @@ mod tests {
         let mut canvas = Canvas::new((64, 64), 1.0);
         baked.declare_occluders(&mut canvas, Transform::identity());
         assert_eq!(canvas.occluders.len(), 1);
-        let declared = canvas.occluders[0]
-            .polygon
-            .expect("a disc declares itself as a polygon");
-        assert_eq!(declared.planes().len(), DISC_SIDES);
+        let declared = &canvas.occluders[0];
+        assert!(
+            matches!(declared.shape, crate::canvas::OccluderShape::Circle(r) if (r - 6.0).abs() < 1e-6),
+            "a baked disc declares itself as a circle; it used to arrive here \
+             as the polygon it was cut into, and the assertion was its edge count"
+        );
         assert_eq!(
-            declared.bounds_as_box().center,
+            declared.center,
             [0.0, 6.0],
-            "the polygon is the circle the author drew at the node's [0, 6]"
+            "the circle is the one the author drew, at the node's [0, 6]"
         );
     }
 
@@ -972,9 +974,10 @@ mod tests {
         let mut canvas = Canvas::new((64, 64), 1.0);
         baked.declare_occluders(&mut canvas, Transform::identity());
         assert_eq!(canvas.occluders.len(), 1);
-        let declared = canvas.occluders[0]
-            .polygon
-            .expect("a polygon occluder carries edges of its own");
+        let declared = match &canvas.occluders[0].shape {
+            crate::canvas::OccluderShape::Polygon(polygon) => polygon,
+            other => panic!("a polygon occluder carries edges of its own, got {other:?}"),
+        };
         assert_eq!(
             declared.planes(),
             want.planes(),
@@ -1237,20 +1240,23 @@ mod tests {
         assert_eq!(
             canvas.occluders.len(),
             3,
-            "the box record, the cut circle, and the authored triangle"
+            "the box record, the circle, and the authored triangle"
         );
-        assert!(canvas.occluders[0].polygon.is_none());
+        assert!(matches!(
+            canvas.occluders[0].shape,
+            crate::canvas::OccluderShape::Box
+        ));
         assert_eq!(canvas.occluders[0].half, [16.0, 4.0]);
-        assert_eq!(
-            canvas.occluders[1].polygon.as_ref().unwrap().planes().len(),
-            DISC_SIDES
-        );
+        assert!(matches!(
+            canvas.occluders[1].shape,
+            crate::canvas::OccluderShape::Circle(_)
+        ));
         let want = Convex::new(&[[-16.0, 16.0], [-4.0, 12.0], [-14.0, 2.0]])
             .expect("the authored triangle is convex");
-        let triangle = canvas.occluders[2]
-            .polygon
-            .as_ref()
-            .expect("the polygon occluder carries its own edges");
+        let triangle = match &canvas.occluders[2].shape {
+            crate::canvas::OccluderShape::Polygon(polygon) => polygon,
+            other => panic!("the polygon occluder carries its own edges, got {other:?}"),
+        };
         assert_eq!(triangle.planes(), want.planes());
     }
 

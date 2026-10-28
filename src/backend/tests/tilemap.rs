@@ -738,7 +738,7 @@ fn a_shadow_falls_on_a_lit_map() {
         world: crate::objects::Transform::identity(),
         center: [64.0, 64.0],
         half: [6.0, 28.0],
-        polygon: None,
+        shape: crate::canvas::OccluderShape::Box,
 
         layers: LightLayers::default(),
     };

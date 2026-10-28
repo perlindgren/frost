@@ -39,7 +39,7 @@ use super::penumbra::{
 };
 use super::shadows::SPAN;
 use crate::Canvas;
-use crate::collision::Convex;
+use crate::collision::{Circle, Collider, Convex};
 use crate::objects::*;
 
 /// The caster's radius, and the axis it is centred on. Four, not the box
@@ -76,23 +76,36 @@ pub(super) fn regular(sides: usize, radius: f32) -> Convex {
     Convex::new(&points).expect("a regular polygon is convex")
 }
 
-/// The scenes the walk is judged on: a hexagon, six edges, and a sixteen-sided
-/// disc, which is `DISC_SIDES` — the widest polygon the type allows and the
-/// shape a drawn circle becomes in the field.
+/// The scenes the walk is judged on: a hexagon, six edges, and a circle, which is
+/// no polygon at all. They used to be a hexagon and a sixteen-sided disc — the
+/// widest polygon the type allows, and what a drawn circle became on its way to the
+/// field — and the pair was chosen to grade the walk against an approximation of
+/// itself. The circle stays because the walk has to be judged against something it
+/// is not: `Collider::Circle`, asked exactly, with nothing in between.
 fn casters() -> Vec<(&'static str, Caster)> {
     vec![
         ("hexagon", Caster::Polygon(regular(6, RADIUS))),
-        ("disc", Caster::Polygon(Convex::disc([0.0, 0.0], RADIUS))),
+        ("disc", Caster::Circle(RADIUS)),
     ]
 }
 
-/// The polygon's own declared record, so the test asks the CPU in the frame the
+/// The caster's own declared record, so the test asks the CPU in the frame the
 /// GPU will use: the canvas builds the local-to-pixel map itself, including the
 /// y-flip, so the test reads the map back off the record instead of recomputing
 /// it and sharing the arithmetic it is meant to be checking.
-fn declared(caster: &Convex) -> (Transform, Transform) {
+fn declared(caster: &Caster) -> (Transform, Transform) {
     let mut canvas = Canvas::new((SPAN, SPAN), 1.0);
-    canvas.occluder_polygon(Transform::translate([CASTER_X - AXIS, 0.0]), caster);
+    match caster {
+        Caster::Polygon(polygon) => {
+            canvas.occluder_polygon(Transform::translate([CASTER_X - AXIS, 0.0]), polygon)
+        }
+        Caster::Circle(radius) => canvas.occluder_circle(
+            Transform::translate([CASTER_X - AXIS, 0.0]),
+            [0.0, 0.0],
+            *radius,
+        ),
+        Caster::Box(_) => panic!("the box scene is penumbra.rs's, not this file's"),
+    }
     let record = &canvas.occluders[0];
     (
         record.world,
@@ -100,16 +113,30 @@ fn declared(caster: &Convex) -> (Transform, Transform) {
     )
 }
 
-/// The rows a polygon blocks from a point light, walked by the collision code
+/// The rows the caster blocks from a point light, walked by the collision code
 /// rather than by the shader: `(top, bottom)` in pixels, from the first blocked
-/// row to the last. `from_local` is the lamp in the caster's own space, where
-/// `Convex::occludes` works.
-fn cpu_shadow(from_local: [f32; 2], to_local: &Transform, caster: &Convex) -> (f32, f32) {
+/// row to the last. `from_local` is the lamp in the caster's own space, where both
+/// walks work — `Convex::occludes` for the edges, `Collider::Circle` for the
+/// circle, which is collision's own answer and written without reference to the
+/// shadow path. That is the point of the circle arm: the two engines are asked
+/// about one shape and expected to agree exactly, with no tessellation between them
+/// to grade the agreement on.
+fn cpu_shadow(from_local: [f32; 2], to_local: &Transform, caster: &Caster) -> (f32, f32) {
+    let circle = Collider::Circle(Circle {
+        center: [0.0, 0.0],
+        radius: match caster {
+            Caster::Circle(radius) => *radius,
+            _ => 0.0,
+        },
+    });
     let blocked = |y: u32| {
         // The probe column's centre in pixels; +0.5 is the sample convention
         // the shader uses and this file inherits from the meter.
         let p = to_local.apply([NEAR_PROBE as f32 + 0.5, y as f32 + 0.5]);
-        caster.occludes(from_local, p)
+        match caster {
+            Caster::Polygon(polygon) => polygon.occludes(from_local, p),
+            _ => circle.occludes(from_local, p),
+        }
     };
     let lit_rows: Vec<u32> = (0..SPAN).filter(|y| !blocked(*y)).collect();
     let dark: Vec<u32> = (0..SPAN).filter(|y| blocked(*y)).collect();
@@ -133,12 +160,9 @@ fn cpu_shadow(from_local: [f32; 2], to_local: &Transform, caster: &Convex) -> (f
 #[test]
 fn a_polygons_hard_shadow_is_the_one_the_collision_walk_finds() {
     for (name, caster) in casters() {
-        let Caster::Polygon(polygon) = &caster else {
-            unreachable!("casters() returns polygons");
-        };
-        let (to_pixel, to_local) = declared(polygon);
+        let (to_pixel, to_local) = declared(&caster);
         let from_local = to_local.apply(LAMP);
-        let (cpu_top, cpu_bottom) = cpu_shadow(from_local, &to_local, polygon);
+        let (cpu_top, cpu_bottom) = cpu_shadow(from_local, &to_local, &caster);
         let (gpu_top, gpu_bottom) = silhouette(&profile_with(&caster, 0.0, 1, NEAR_PROBE), 1);
         assert!(
             (gpu_top - cpu_top).abs() <= 1.0 && (gpu_bottom - cpu_bottom).abs() <= 1.0,
@@ -340,7 +364,7 @@ fn regular6() -> Caster {
 /// machine today, which is the claim the document could make but no longer
 /// support on its own.
 fn scenes() -> Vec<(&'static str, Caster, f32, u32, u64)> {
-    let disc = Caster::Polygon(Convex::disc([0.0, 0.0], RADIUS));
+    let disc = Caster::Circle(RADIUS);
     vec![
         // Taken on this machine on the day the guard was written, from the
         // corrected meter's scene — the geometry tests above all pass with them.
@@ -468,12 +492,9 @@ fn nothing_the_reach_region_cannot_shade_is_shaded() {
 #[ignore = "prints the two dark runs side by side"]
 fn the_polygon_hard_shadow_shows_its_rows() {
     for (name, caster) in casters() {
-        let Caster::Polygon(polygon) = &caster else {
-            unreachable!("casters() returns polygons");
-        };
-        let (_, to_local) = declared(polygon);
+        let (_, to_local) = declared(&caster);
         let from_local = to_local.apply(LAMP);
-        let (cpu_top, cpu_bottom) = cpu_shadow(from_local, &to_local, polygon);
+        let (cpu_top, cpu_bottom) = cpu_shadow(from_local, &to_local, &caster);
         let red = plane(&caster, 0.0, 1, true);
         let rows: Vec<usize> = (0..SPAN as usize)
             .filter(|y| red[(y * SPAN as usize) + NEAR_PROBE as usize] < 128)

@@ -2426,6 +2426,12 @@ but a difference all the same, and three doc comments that asserted the old arra
 §33's "the shadow is the only consumer that cannot have it", bake's "tessellated here and nowhere earlier",
 and `MAX_PLANES`'s roundness argument, which now governs only shapes that genuinely have edges.
 
+**Withdrawn one section later, and by itself.** §35 deleted `Convex::disc`, so there is no authored 16-gon
+standing in for a circle anywhere in the engine and no divergence to describe: a round body and its shadow
+are answers about one shape again. The paragraph stays because the reasoning in it — that the shadow must
+match the thing being drawn — is what made the deletion worth doing, and because "the two answers can be
+1.9 % apart" was true and measured for the span it was written.
+
 **What is now safe to attempt.**
 
 * Price the tax with the isolation build above. If it is the per-record parse, it wants hoisting out of the
@@ -2436,3 +2442,92 @@ and `MAX_PLANES`'s roundness argument, which now governs only shapes that genuin
   has outline containment, and §34's degenerate-ray bug is precisely the class of thing containment misses.
 * A circle *is* now the cheap shape, which is worth saying to anyone tempted to "optimise" a drawn circle
   into a polygon somewhere upstream: that would make it 2.2 times more expensive in the field, and wrong.
+
+## 35. The tessellation deleted, and the price of an approximation once someone can trace one (2026-10-28, Apple M4 Max)
+
+§34 bought the circle record by way of a polygon that remembered being a circle: `Convex::disc` cut a disc
+into `DISC_SIDES` edges, `Convex::circle` handed the radius back to the packer, and the packer wrote three
+vec4s instead of nineteen. That worked, and it left behind a shape with two answers — the shadow got a
+circle, anyone who built a collision outline the same way got a 16-gon — plus a generator whose only honest
+remaining customers were a bench row, a test fixture and the editor's amber outline. §35 is the smaller
+version: the generator goes, the circle becomes a kind of occluder rather than a memory a polygon carries,
+and the one thing worth keeping out of the generator — the bench row — is rebuilt by hand so the plane walk
+does not lose its worst case.
+
+**What changed, in the API and in the type.** `Convex::disc`, `Convex::circle` and `DISC_SIDES` are gone:
+three public items out, `Canvas::occluder_circle` and `Canvas::occluder_circle_layers` in. A declared
+occluder now holds `OccluderShape::{Box, Polygon, Circle(f32)}` instead of `polygon: Option<Convex>`, so
+"this is a circle" is a fact about the occluder rather than a note attached to a list of edges, and the
+packer's `match` replaced a `(center, shape)` tuple that existed only to route the memory past the polygon.
+`MAX_PLANES` keeps its two-percent roundness argument, because that claim is about polygons someone traced
+and is still true; the test for it now builds its ring from points instead of asking for a disc, which is
+what the claim always ought to have rested on. The desk keeps a ring too — `OUTLINE_SIDES = 32` in
+`sprite_util`, purely for stroking, since a line primitive has no opinion about curvature — and its comment
+says that instead of the old sentence about showing the edge the shadow will have, which is no longer true
+of any ring.
+
+**What was worth measuring, and is.** One binary, both shapes in it, eight passes, run order flipped every
+pass, `--reps 3`, 4112 × 2572 fullscreen, sixty occluders and ten lamps at penumbra 6 in every row. Both
+round rows cover 21600 px² per occluder — the circle by `πr²`, the polygon by `½nR²sin(2π/n)` — so the rows
+differ in what the field has to know about a shape and in nothing else. `taps-9-discs` is the declared
+circle, `taps-9-poly16` is new and is a traced 16-gon: the plane walk at its cap, which is the row §34's
+change quietly removed from the suite when a circle stopped being a polygon.
+
+| row | the casters, nine rays | median ms | paired vs `taps-9` | paired vs the circle |
+|---|---|---|---|---|
+| `polys-60` | boxes, one ray | 3.97 | −0.62 | — |
+| `taps-9` | boxes, nine rays | 4.59 | — | — |
+| `taps-9-discs` | sixty circles | 4.59 | −0.00 (1/8 positive, at zero) | — |
+| `taps-9-polys` | sixty traced hexagons | 11.97 | +7.38 (+161 %) | +7.38 |
+| `taps-9-poly16` | sixty traced 16-gons | 23.36 | +18.77 (+409 %) | +18.78 (+409 %, 8/8) |
+
+Every row repeated to within 0.02 ms across all eight passes, which is the quietest this suite has been
+all day, so the deltas below are not a machine-state story.
+
+* **A circle costs a scene nothing over a box.** 4.59 against 4.59, paired delta −0.00 ms, no pass in which
+  the circle row was slower by a measurable amount. Whatever §34's +2.5…4 % tax on circle-free scenes is,
+  it is not the circle arithmetic: that arithmetic is not findable at this resolution.
+* **The polygon walk still costs the plane count and nothing else.** `(23.36 − 4.59) / (11.97 − 4.59) =
+  2.54` against the shapes' own `16/6 = 2.67` — five per cent under, the same direction and a little further
+  than §33's 2.64-against-2.67. Two sections and one deleted abstraction later, the law held.
+* **Tracing a round shape by hand instead of declaring it costs 80.4 % of the row**, or 5.09× the other way
+  round. That is the number §34's closing bullet gestured at with a 2.2, which was six edges' worth: with
+  the cap in play the gap is twice as wide again.
+* One asymmetry, against the number rather than for it: the 16-gon's bounds square is 2.5 % larger than the
+  circle's (28 224 px² against 27 532), so marginally more of its taps survive the reject and reach the
+  walk. The polygon is paying for a slightly bigger box as well as for its edges, and the honest split
+  between those two is not in this table.
+
+**§34's −75.7 % and this −80.4 % are not the same measurement.** That one was a generated disc beside its
+own circle, and it settled whether the record was worth building. This one is what an author chooses
+between — a traced round outline against a declared circle — which is why it had to be taken after the
+generator was gone rather than inferred from the row before. The directions agree, and the older number is
+untouched.
+
+**The guard got stronger for free, which is the part no timing row shows.**
+`a_disc_shadows_the_gpu_the_way_the_cpu_says_it_should` used to need two comparisons and a piece of geometry
+argument to be honest: the GPU against the CPU's own 16-gon exactly, *and* the 16-gon's shadow sandwiched
+between the shadows of the circles it inscribes and is inscribed in, with a band of disagreeing pixels
+counted and upper-bounded because the tessellation was expected to differ from the round shape and "by how
+little" was the only fair question. With one shape on both sides the test is a sentence: the shader agrees
+with `Collider::Circle` exactly, everywhere the shadow edge is not crossing between neighbouring pixels.
+The band, the sandwich and the containment argument are gone, and what replaced them is stricter.
+
+**A fixture retyped from memory is a bug, and here is the receipt.** Writing that test I typed the scene's
+two `Draw` literals again instead of taking them from the file, and got `lit: 0.0` on the receiver instead of
+`1.0`. The surface then drew its own colour, lit or not, so the frame had no shadow in it at all; the test
+reported 678 pixels where the CPU said shade and the picture said 255, which reads exactly like the shader
+having lost the circle. It had not: `git show HEAD:…` and splice, and the same assertions passed untouched.
+Two things to keep — a suite that fails because a fixture lost a field is doing its job, and a diff that
+rewrites an unrelated literal is the thing to look at first, not the thing you assume about the change.
+
+**What is now safe to attempt.**
+
+* The tax, still unpriced and now cheaper to isolate: the circle row sits level with the box row, so the
+  isolation build (§34's "shader parses, circles never emitted") can only be about the parse.
+* The box scene's per-row oracle test, unchanged from §32 and §34's lists, and now the only scene in the
+  suite without the strong check.
+* `taps-9-poly16` is a row worth keeping an eye on for a different reason than cost: it is the only place
+  the suite still measures a polygon at `MAX_PLANES`, so any change to the walk's shape — an oriented box
+  per record, a coarser reject — shows up there first and shows up large.
+

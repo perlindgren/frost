@@ -118,10 +118,17 @@ struct Scenario {
     p_cover: f32,
     p_radius: f32,
     p_lit: bool,
-    /// The casters' shape: 0 is the suite's box, otherwise the side count
-    /// of a regular polygon of the same area — 16 being `DISC_SIDES`, the
-    /// packer's plane cap and the engine's own disc.
+    /// The casters' shape: 0 is the suite's box, otherwise the side count of a
+    /// traced regular polygon of the same area — 16 being `MAX_PLANES`, the plane
+    /// cap, and therefore the polygon walk's worst case. Traced matters: a shape
+    /// an author rounds off by hand really does pay per edge, which is the thing
+    /// this row exists to price now that a circle no longer arrives that way.
     poly_sides: u8,
+    /// Whether the casters are declared circles instead, at the same covered area.
+    /// A circle is the field's third shape and its cheapest: one quadratic per
+    /// ray against `poly_sides` edge clips, which is the comparison §34 measured
+    /// and §35 kept as a row so neither number can go stale quietly.
+    circle: bool,
 }
 
 const LAMP_REACH: f32 = 380.0;
@@ -143,6 +150,7 @@ const WARM: Scenario = Scenario {
     reach: LAMP_REACH,
     moving: true,
     poly_sides: 0,
+    circle: false,
     particles: 0,
     p_cover: 0.0,
     p_radius: 0.0,
@@ -161,6 +169,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 0,
         p_cover: 0.0,
         p_radius: 0.0,
@@ -175,6 +184,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 0,
         p_cover: 0.0,
         p_radius: 0.0,
@@ -189,6 +199,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 0,
         p_cover: 0.0,
         p_radius: 0.0,
@@ -203,6 +214,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: true,
         poly_sides: 0,
+        circle: false,
         particles: 0,
         p_cover: 0.0,
         p_radius: 0.0,
@@ -217,6 +229,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 0,
         p_cover: 0.0,
         p_radius: 0.0,
@@ -231,6 +244,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 0,
         p_cover: 0.0,
         p_radius: 0.0,
@@ -245,6 +259,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 0,
         p_cover: 0.0,
         p_radius: 0.0,
@@ -259,6 +274,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 0,
         p_cover: 0.0,
         p_radius: 0.0,
@@ -273,6 +289,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 0,
         p_cover: 0.0,
         p_radius: 0.0,
@@ -287,6 +304,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 0,
         p_cover: 0.0,
         p_radius: 0.0,
@@ -307,6 +325,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 0,
         p_cover: 0.0,
         p_radius: 0.0,
@@ -328,6 +347,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 6,
+        circle: false,
         particles: 0,
         p_cover: 0.0,
         p_radius: 0.0,
@@ -342,12 +362,17 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 6,
+        circle: false,
         particles: 0,
         p_cover: 0.0,
         p_radius: 0.0,
         p_lit: false,
     },
     Scenario {
+        // Sixty circles, declared as circles. This is the row §34 measured at
+        // −75.7 % against the same sixty as a sixteen-sided polygon, and it keeps
+        // its name so that number stays comparable down the years: the covered
+        // area is unchanged, only the shape's form.
         name: "taps-9-discs",
         lamps: 10,
         occluders: 60,
@@ -355,7 +380,28 @@ const SCENARIOS: &[Scenario] = &[
         taps: 9,
         reach: LAMP_REACH,
         moving: false,
+        poly_sides: 0,
+        circle: true,
+        particles: 0,
+        p_cover: 0.0,
+        p_radius: 0.0,
+        p_lit: false,
+    },
+    Scenario {
+        // Sixty traced sixteen-gons: the plane walk at its cap, which is what an
+        // author gets for rounding a shape off by hand and is the row this suite
+        // lost when a circle stopped being a polygon. `taps-9-discs` beside it is
+        // the same covered area answered without edges, so the gap between these
+        // two rows *is* the price of an approximation, measured rather than argued.
+        name: "taps-9-poly16",
+        lamps: 10,
+        occluders: 60,
+        penumbra: LAMP_PENUMBRA,
+        taps: 9,
+        reach: LAMP_REACH,
+        moving: false,
         poly_sides: 16,
+        circle: false,
         particles: 0,
         p_cover: 0.0,
         p_radius: 0.0,
@@ -381,6 +427,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 1_000,
         p_cover: 0.25,
         p_radius: 0.0,
@@ -395,6 +442,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 10_000,
         p_cover: 0.25,
         p_radius: 0.0,
@@ -409,6 +457,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 100_000,
         p_cover: 0.25,
         p_radius: 0.0,
@@ -423,6 +472,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 10_000,
         p_cover: 1.0,
         p_radius: 0.0,
@@ -442,6 +492,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 200,
         p_cover: 0.0,
         p_radius: 500.0,
@@ -472,6 +523,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 10_000,
         p_cover: 0.25,
         p_radius: 0.0,
@@ -486,6 +538,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 10_000,
         p_cover: 0.25,
         p_radius: 0.0,
@@ -504,6 +557,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 10_000,
         p_cover: 0.25,
         p_radius: 0.0,
@@ -518,6 +572,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 10_000,
         p_cover: 0.25,
         p_radius: 0.0,
@@ -532,6 +587,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 10_000,
         p_cover: 0.25,
         p_radius: 0.0,
@@ -546,6 +602,7 @@ const SCENARIOS: &[Scenario] = &[
         reach: LAMP_REACH,
         moving: false,
         poly_sides: 0,
+        circle: false,
         particles: 10_000,
         p_cover: 0.25,
         p_radius: 0.0,
@@ -710,19 +767,27 @@ impl Process for Suite {
             // Same area as the suite's 180x120 box, so the rows differ in
             // their shape and not in how much of the screen they cover: a
             // regular polygon's area is (1/2) n R^2 sin(2 pi / n).
+            if s.circle {
+                // Same covered area as the suite's 180x120 box — a circle's area
+                // is pi r squared — so the disc row and the box row shade the same
+                // amount of screen and differ only in what the field has to know
+                // about the shape.
+                let radius = (21600.0 / std::f32::consts::PI).sqrt();
+                ctx.occluder_circle(Transform::translate([x, y]), [0.0, 0.0], radius);
+                continue;
+            }
+            // Same area as the suite's 180x120 box, so the rows differ in their
+            // shape and not in how much of the screen they cover: a regular
+            // polygon's area is (1/2) n R^2 sin(2 pi / n).
             let n = s.poly_sides as f32;
             let radius = (2.0 * 21600.0 / (n * (2.0 * std::f32::consts::PI / n).sin())).sqrt();
-            let shape = if s.poly_sides >= 16 {
-                Convex::disc([0.0, 0.0], radius)
-            } else {
-                let points: Vec<[f32; 2]> = (0..s.poly_sides as usize)
-                    .map(|k| {
-                        let a = 2.0 * std::f32::consts::PI * k as f32 / n;
-                        [a.cos() * radius, a.sin() * radius]
-                    })
-                    .collect();
-                Convex::new(&points).expect("a regular polygon is convex")
-            };
+            let points: Vec<[f32; 2]> = (0..s.poly_sides as usize)
+                .map(|k| {
+                    let a = 2.0 * std::f32::consts::PI * k as f32 / n;
+                    [a.cos() * radius, a.sin() * radius]
+                })
+                .collect();
+            let shape = Convex::new(&points).expect("a regular polygon is convex");
             ctx.occluder_polygon(Transform::translate([x, y]), &shape);
         }
         self.t += dt;

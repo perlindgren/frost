@@ -266,10 +266,19 @@ pub(crate) fn shapes_note(errs: &frost::ShapeErrors) -> Option<String> {
     })
 }
 
+/// How many segments the desk draws a circle with.
+///
+/// Purely the desk's own concern. A circle's shadow is a circle now — the light
+/// field solves it as one, since §34 priced what it cost to walk a polygon on a
+/// disc's behalf — but a stroked overlay needs corners, because a line primitive has
+/// no opinion about curvature. Thirty-two of them sit 0.4 % inside the radius, which
+/// is under a pixel at every zoom the desk reaches, so the outline reads as the round
+/// thing it stands for rather than as the faceted thing the field used to shadow.
+pub(crate) const OUTLINE_SIDES: usize = 32;
+
 /// One authored shape's outline in window space, closed by the caller's
-/// neighbour-walking: a rect's four corners, a circle's inscribed
-/// [`frost::DISC_SIDES`]-gon — the very ring `Convex::disc` sends to the
-/// occluder field, so the desk shows the edge the shadow will have —
+/// neighbour-walking: a rect's four corners, a circle's [`OUTLINE_SIDES`] segments
+/// — the desk's own drawing of a round shape, and nothing the engine reproduces —
 /// and a polygon's own corners, added to its entry's `at` as authored.
 /// The map is the desk's one, shared by the markers and the click math:
 /// texture pixels measured y down from the image's top-left, the window
@@ -294,8 +303,8 @@ pub(crate) fn shape_corners(
         frost::AuthoredShape::Circle { radius } => {
             let r = radius * zoom;
             let (cx, cy) = (wx(sh.at[0]), wy(sh.at[1]));
-            let step = std::f32::consts::TAU / frost::DISC_SIDES as f32;
-            (0..frost::DISC_SIDES)
+            let step = std::f32::consts::TAU / OUTLINE_SIDES as f32;
+            (0..OUTLINE_SIDES)
                 .map(|k| {
                     let (sin, cos) = (k as f32 * step).sin_cos();
                     [cx + r * cos, cy + r * sin]
@@ -405,15 +414,17 @@ mod tests {
             [[-1.0, -7.0], [15.0, -7.0], [15.0, 1.0], [-1.0, 1.0]]
         );
 
-        // A disc draws as the ring `Convex::disc` sends to the field:
-        // `DISC_SIDES` corners, the first at +x, radius scaled by the
-        // zoom like everything else on the desk.
+        // A disc draws as the desk's own ring: `OUTLINE_SIDES` corners, the
+        // first at +x, radius scaled by the zoom like everything else here.
+        // The count is the desk's business — the shadow gets a circle, not a
+        // polygon — so what this pins is the geometry of the drawing, that the
+        // first corner lands on +x at the scaled radius and the ring closes.
         let disc = frost::Authored {
             shape: frost::AuthoredShape::Circle { radius: 3.0 },
             ..rect.clone()
         };
         let corners = shape_corners(&disc, [32.0, 16.0], view, 2.0);
-        assert_eq!(corners.len(), frost::DISC_SIDES);
+        assert_eq!(corners.len(), OUTLINE_SIDES);
         assert!((corners[0][0] - 13.0).abs() < 1e-3, "{corners:?}");
         assert!((corners[0][1] + 3.0).abs() < 1e-3, "{corners:?}");
 

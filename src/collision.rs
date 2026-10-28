@@ -431,24 +431,23 @@ pub fn reflect(vel: [f32; 2], n: [f32; 2], e: f32) -> [f32; 2] {
     [vel[0] - k * n[0], vel[1] - k * n[1]]
 }
 
-/// The most edges a [`Convex`] may have, and the number of sides a
-/// [`Convex::disc`] is cut into.
+/// The most edges a [`Convex`] may have.
 ///
-/// One number serves both because the GPU cost of a polygon is per edge: every
-/// shadow ray clips against every edge of every occluder, and a light with a
-/// penumbra fires nine rays per pixel. Which is also why the round shape this cap
-/// used to exist for is a record kind of its own now — see [`Convex::circle`],
-/// and note that the cap still governs every shape that genuinely has edges. Sixteen is enough to be round — the
-/// sixteen-gon inscribed in a disc stays within two percent of its radius,
-/// which at any size a player can see is under a pixel or two of edge
-/// travel — and small enough that a hundred lights still cost a fragment
-/// nothing. Shapes needing more are the author's to simplify, not the
-/// renderer's to approximate.
+/// The GPU cost of a polygon is per edge: every shadow ray clips against every
+/// edge of every occluder, and a light with a penumbra fires nine rays per pixel,
+/// so the cap is what keeps a shape authored with too many clicks from charging
+/// the frame for all of them. Sixteen is enough to look round — the sixteen-gon
+/// inscribed in a disc stays within two percent of its radius, which at any size a
+/// player can see is under a pixel or two of edge travel — and small enough that a
+/// hundred lights still cost a fragment nothing. Shapes needing more are the
+/// author's to simplify, not the renderer's to approximate.
+///
+/// The round shape this cap used to be the ceiling for no longer lives under it. A
+/// circle is a record kind of its own now, [`Canvas::occluder_circle`](crate::Canvas::occluder_circle),
+/// with no edges to count and no approximation to be inside of: §34 measured what
+/// paying per edge for one cost, and §35 took the tessellation out. What is left
+/// here governs what genuinely has corners, which is the population a limit is for.
 pub const MAX_PLANES: usize = 16;
-
-/// The number of sides [`Convex::disc`] uses: the widest polygon the type
-/// allows, so the tessellated circle is as round as the cap permits.
-pub const DISC_SIDES: usize = MAX_PLANES;
 
 /// A convex polygon, held as the half-plane of each of its edges.
 ///
@@ -473,23 +472,6 @@ pub struct Convex {
     /// The polygon's own axis-aligned bounds, so a caller can reject a ray
     /// that misses it without touching a single edge.
     bounds: ([f32; 2], [f32; 2]),
-    /// Set when this polygon is not merely like a circle but *is* one: the
-    /// centre and radius [`Convex::disc`] cut it from, in the same space as the
-    /// planes.
-    ///
-    /// This is a memory of origin, not an approximation of the planes: the
-    /// half-planes stay the shape's definition for every question asked of a
-    /// `Convex`, and nothing here changes what a collision test answers. It
-    /// exists because the shadow path pays per edge, and a ray meeting a
-    /// sixteen-sided approximation of a coin answers the same question a
-    /// circle's quadratic answers — for sixteen times the arithmetic and with
-    /// the edge of the coin 1.9 % inside where the author drew it. A record
-    /// that knows it came from a circle can say so to the GPU and be exact
-    /// while doing it. [`Canvas::occluder_polygon`] is where the two diverge.
-    ///
-    /// Equality sees it, deliberately: a shape that knows what it is and a
-    /// shape that merely resembles one are not the same shape.
-    circle: Option<[f32; 3]>,
 }
 
 impl Convex {
@@ -584,56 +566,7 @@ impl Convex {
             planes,
             count: ordered.len() as u8,
             bounds: (lo, hi),
-            // A traced outline is a traced outline, however round it looks:
-            // only [`Convex::disc`] can claim to have come from a radius.
-            circle: None,
         })
-    }
-
-    /// A regular `DISC_SIDES`-sided polygon with its corners on the circle of
-    /// `radius` about `center`: the shape a disc becomes when something needs
-    /// edges, and — since §34 — the only form the shadow path no longer asks for.
-    ///
-    /// The result remembers where it came from, so a caller that can answer a
-    /// question exactly still can: [`Convex::circle`] says which of these
-    /// polygons is a circle, and the occluder field ships that instead of the
-    /// sixteen edges, at a sixth of the cost for a disc and with the outline the
-    /// author drew. Every other consumer gets the half-planes and the same answer
-    /// it always got — [`Convex::occludes`], [`Convex::cast`], the bounds, all of
-    /// them walked edge by edge.
-    ///
-    /// The disc's own exact form stays available as [`Circle`] — physics wants
-    /// the round normal and has always had it. What changed is only who else may
-    /// now use it. The gap between the two is bounded by the polygon's inradius,
-    /// `radius * cos(pi / DISC_SIDES)`, and pinned by a test, because it is
-    /// the tolerance every GPU-versus-CPU shadow comparison over a circle has
-    /// to be measured against.
-    pub fn disc(center: [f32; 2], radius: f32) -> Self {
-        let step = std::f32::consts::TAU / DISC_SIDES as f32;
-        let points: Vec<[f32; 2]> = (0..DISC_SIDES)
-            .map(|k| {
-                let (sin, cos) = (k as f32 * step).sin_cos();
-                [center[0] + radius * cos, center[1] + radius * sin]
-            })
-            .collect();
-        // Regular, convex and within the cap by construction, so there is no
-        // error to return; a radius that is not a number is the author's.
-        let mut disc = Self::new(&points).expect("a regular polygon is convex");
-        disc.circle = Some([center[0], center[1], radius]);
-        disc
-    }
-
-    /// The circle this polygon was cut from, as centre and radius, when it was
-    /// built by [`Convex::disc`] — which is how a shape gets to know what it is.
-    ///
-    /// The half-planes remain the shape for every question a `Convex` answers;
-    /// this is for the one caller that can ask better, the occluder field, which
-    /// ships a record that says *circle* instead of shipping sixteen planes and
-    /// clipping a ray against each. A polygon traced by hand is `None` however
-    /// round it looks, because the engine did not cut it from a radius and will
-    /// not guess that it could have been.
-    pub fn circle(&self) -> Option<([f32; 2], f32)> {
-        self.circle.map(|[x, y, r]| ([x, y], r))
     }
 
     /// The edges as `(n.x, n.y, c, _)`, in the order they run around the
@@ -1304,22 +1237,34 @@ mod tests {
     }
 
     #[test]
-    fn a_tessellated_disc_stays_within_two_percent_of_the_round_one() {
-        // The tolerance every GPU shadow over a circle is measured against:
-        // the sixteen-gon's corners are on the circle and its edges cut
-        // inside, so the two shapes differ only in the thin band between the
-        // inradius and the radius — never outside the circle, never inside
-        // the inradius.
+    fn sixteen_edges_are_within_two_percent_of_a_circle() {
+        // What [`MAX_PLANES`]'s doc claims, measured: a sixteen-sided polygon with
+        // its corners on a circle differs from that circle only in the thin band
+        // between the inradius and the radius — never outside the circle, never
+        // inside the inradius.
+        //
+        // This used to be the tolerance every GPU-versus-CPU shadow over a circle
+        // was measured against, because a disc reached the light field as exactly
+        // this polygon. It no longer is: a circle is declared as one, and the
+        // shadow is the shape. What survives is the reason to declare it — anyone
+        // tracing a round outline by hand gets the polygon below, and so shadows
+        // a shape 1.9 % inside the one they drew, at sixteen edge clips a ray.
         let radius = 40.0;
-        let polygon = Convex::disc([0.0, 0.0], radius);
+        let points: Vec<[f32; 2]> = (0..MAX_PLANES)
+            .map(|k| {
+                let a = std::f32::consts::TAU * k as f32 / MAX_PLANES as f32;
+                [radius * a.cos(), radius * a.sin()]
+            })
+            .collect();
+        let polygon = Convex::new(&points).expect("a regular polygon is convex");
         let circle = Collider::Circle(Circle {
             center: [0.0, 0.0],
             radius,
         });
-        let inradius = radius * (std::f32::consts::PI / DISC_SIDES as f32).cos();
+        let inradius = radius * (std::f32::consts::PI / MAX_PLANES as f32).cos();
         assert!(
             inradius > radius * 0.98,
-            "a {DISC_SIDES}-gon should sit within two percent of its circle"
+            "a {MAX_PLANES}-gon should sit within two percent of its circle"
         );
         for k in 0..720 {
             let a = std::f32::consts::TAU * k as f32 / 720.0;

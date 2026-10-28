@@ -245,9 +245,11 @@ person making it.
    refusal and the existing `status:` line as the voice
    (`"shapes: that outline is concave"`). **Done:** the tool reads the active
    sidecar's tree every frame with `frost::read_shapes` and strokes what it
-   read in amber over the sprite — a rect by its four edges, a circle as the
-   very `DISC_SIDES`-gon `Convex::disc` sends to the occluder field (the desk
-   shows the edge the shadow will have), a polygon by its authored corners —
+   read in amber over the sprite — a rect by its four edges, a circle as a
+   32-segment ring because a stroke needs corners and a circle has none (the
+   field answers a circle on its own now, so this ring is the desk's drawing of
+   one and not the edge the shadow will have), a polygon by its authored
+   corners —
    all through the same texture→window map the position markers use, pinned
    against it by a test. An entry whose *geometry* read draws even when the
    reading refused something else about it, and the first refusal — with a

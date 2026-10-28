@@ -86,8 +86,9 @@ struct Scenario {
     occ2: u32,
     /// Marks a row that needs the layers' fields to exist at all.
     layered: bool,
-    /// The casters' shape: 0 is the suite's box, otherwise the side count of
-    /// a regular polygon of the box's area — 16 being `DISC_SIDES`.
+    /// The casters' shape: 0 is the suite's box, otherwise the side count of a
+    /// traced regular polygon of the box's area — 16 being `MAX_PLANES`, the
+    /// plane cap this suite's cost column is measured against.
     poly_sides: u8,
 }
 
@@ -447,7 +448,7 @@ fn frame_draws(s: &Scenario, t: f32) -> Vec<crate::backend::frame::Draw> {
 /// a moving camera must, at the scatter's occluder offsets, the same
 /// 180-by-120 pixel footprints.
 fn declared(s: &Scenario) -> Vec<crate::canvas::Occluder> {
-    use crate::canvas::Occluder;
+    use crate::canvas::{Occluder, OccluderShape};
     use crate::objects::{LightLayers, Transform};
     (0..s.occluders)
         .map(|i| {
@@ -467,8 +468,8 @@ fn declared(s: &Scenario) -> Vec<crate::canvas::Occluder> {
             // row's cost is about its edges and not about its coverage. The
             // footprint stays the box the walk rejects on first — the bounds
             // around the shape, which is what the packer ships.
-            let (half, polygon) = if s.poly_sides == 0 {
-                ([90.0, 60.0], None)
+            let (half, shape) = if s.poly_sides == 0 {
+                ([90.0, 60.0], OccluderShape::Box)
             } else {
                 let n = s.poly_sides as f32;
                 let radius = (2.0 * 21600.0 / (n * (2.0 * std::f32::consts::PI / n).sin())).sqrt();
@@ -484,14 +485,16 @@ fn declared(s: &Scenario) -> Vec<crate::canvas::Occluder> {
                 ];
                 (
                     half,
-                    Some(crate::Convex::new(&points).expect("a regular polygon is convex")),
+                    OccluderShape::Polygon(
+                        crate::Convex::new(&points).expect("a regular polygon is convex"),
+                    ),
                 )
             };
             Occluder {
                 world: Transform::translate([x + W / 2.0, y + H / 2.0]),
                 center: [0.0, 0.0],
                 half,
-                polygon,
+                shape,
 
                 layers: LightLayers::from_bits(mask),
             }

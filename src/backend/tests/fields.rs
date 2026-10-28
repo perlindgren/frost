@@ -2,7 +2,7 @@
 
 use super::super::*;
 use super::*;
-use crate::canvas::Occluder;
+use crate::canvas::{Occluder, OccluderShape};
 use crate::collision::Convex;
 use crate::objects::*;
 
@@ -429,7 +429,7 @@ fn occluder_field_appends_declared_occluders_after_the_drawn_ones() {
             world: Transform::translate([50.0, -20.0]),
             center: [1.0, 2.0],
             half: [10.0, 20.0],
-            polygon: None,
+            shape: OccluderShape::Box,
 
             layers: LightLayers::default(),
         },
@@ -437,7 +437,7 @@ fn occluder_field_appends_declared_occluders_after_the_drawn_ones() {
             world: Transform::rotate(std::f32::consts::FRAC_PI_2),
             center: [0.0, 0.0],
             half: [4.0, 6.0],
-            polygon: None,
+            shape: OccluderShape::Box,
 
             layers: LightLayers::default(),
         },
@@ -490,14 +490,14 @@ fn a_declared_occluder_carries_its_layers_in_the_records_padding() {
             world: Transform::translate([10.0, 0.0]),
             center: [0.0, 0.0],
             half: [4.0, 6.0],
-            polygon: None,
+            shape: OccluderShape::Box,
             layers: LightLayers::layer(1),
         },
         Occluder {
             world: Transform::identity(),
             center: [0.0, 0.0],
             half: [1.0, 1.0],
-            polygon: None,
+            shape: OccluderShape::Box,
             layers: LightLayers::default(),
         },
     ];
@@ -533,7 +533,7 @@ fn occluder_field_skips_a_declared_occluder_it_cannot_invert() {
             world: Transform::scale([0.0, 1.0]),
             center: [0.0, 0.0],
             half: [10.0, 10.0],
-            polygon: None,
+            shape: OccluderShape::Box,
 
             layers: LightLayers::default(),
         },
@@ -541,7 +541,7 @@ fn occluder_field_skips_a_declared_occluder_it_cannot_invert() {
             world: Transform::translate([7.0, 0.0]),
             center: [0.0, 0.0],
             half: [3.0, 4.0],
-            polygon: None,
+            shape: OccluderShape::Box,
 
             layers: LightLayers::default(),
         },
@@ -606,7 +606,7 @@ fn a_polygon_record_carries_its_edges_and_the_next_record_follows_them() {
             world: Transform::translate([10.0, 0.0]),
             center: [0.0, 0.0],
             half: [3.0, 4.0],
-            polygon: None,
+            shape: OccluderShape::Box,
 
             layers: LightLayers::default(),
         },
@@ -614,7 +614,7 @@ fn a_polygon_record_carries_its_edges_and_the_next_record_follows_them() {
             world: Transform::identity(),
             center: bounds.center,
             half: bounds.half,
-            polygon: Some(rock),
+            shape: OccluderShape::Polygon(rock),
 
             layers: LightLayers::default(),
         },
@@ -622,7 +622,7 @@ fn a_polygon_record_carries_its_edges_and_the_next_record_follows_them() {
             world: Transform::translate([0.0, 5.0]),
             center: [1.0, 1.0],
             half: [2.0, 2.0],
-            polygon: None,
+            shape: OccluderShape::Box,
 
             layers: LightLayers::default(),
         },
@@ -680,12 +680,12 @@ fn a_flagged_circle_is_packed_as_a_circle() {
     // shape behind the bounds is the disc the bounds were cut around.
     //
     // This replaced a test asserting the opposite — that a painted circle was
-    // packed as the sixteen-edge polygon `Convex::disc` cuts, which is what
-    // happened, faithfully, until §33 measured the shadow path being charged per
-    // edge for a shape the GPU can answer with one quadratic. The edges are still
-    // what `Convex::disc` hands anyone who asks a `Convex`; they are simply no
-    // longer what the field ships, and the difference is 18.39 ms of a 23.42 ms
-    // row plus a shadow whose edge sat 1.9 % inside the circle someone drew.
+    // packed as a sixteen-edge polygon, which is what happened, faithfully, until
+    // §33 measured the shadow path being charged per edge for a shape the GPU can
+    // answer with one quadratic. Nothing cuts a circle into edges anywhere now: the
+    // generator that used to do it is gone, and what §34 measured for deleting its
+    // output is three quarters of a row of discs — plus a shadow that stops sitting
+    // 1.9 % inside the circle someone drew.
     let radius = 12.0;
     let painted = Draw::Shape {
         diagnostic: false,
@@ -709,13 +709,17 @@ fn a_flagged_circle_is_packed_as_a_circle() {
     assert_eq!(
         field.data.len(),
         OCCLUDER_FIELD_HEADER + OCCLUDER_RECORD,
-        "a circle rides no planes, so one record is the whole of it — the same          size as a box's, where the polygon it used to be cut into cost sixteen more"
+        "a circle rides no planes, so one record is the whole of it — \
+         the same size as a box's, where the polygon it used to be cut into \
+         cost sixteen more"
     );
     let record = OCCLUDER_FIELD_HEADER;
     assert_eq!(
         field_f32(&field.data, record + 40),
         -1.0,
-        "the count that means circle: a count no polygon can have, so the stride          stays the box's and nothing downstream has to be told about scale"
+        "the count that means circle: a count no polygon can have, so \
+         the stride stays the box's and nothing downstream has to be told \
+         about scale"
     );
     assert_eq!(field_f32(&field.data, record + 24), 3.0, "the centre");
     assert_eq!(field_f32(&field.data, record + 28), -4.0, "the centre");
@@ -727,7 +731,8 @@ fn a_flagged_circle_is_packed_as_a_circle() {
     assert_eq!(
         field_f32(&field.data, record + 36),
         radius,
-        "and the bounds are the square around it, so the cheap reject and the          per-light cull answer for a circle exactly as they do for a box"
+        "and the bounds are the square around it, so the cheap reject \
+         and the per-light cull answer for a circle exactly as they do for a box"
     );
 }
 
@@ -797,7 +802,7 @@ fn cull_box(center: [f32; 2], half: f32) -> Occluder {
         world: Transform::identity(),
         center,
         half: [half, half],
-        polygon: None,
+        shape: OccluderShape::Box,
 
         layers: LightLayers::default(),
     }
@@ -836,7 +841,7 @@ fn cull_cast() -> (Vec<Draw>, Vec<Occluder>) {
         world: Transform::identity(),
         center: [20.0, -10.0],
         half: [5.0, 5.0],
-        polygon: Some(Convex::disc([20.0, -10.0], 5.0)),
+        shape: OccluderShape::Circle(5.0),
 
         layers: LightLayers::default(),
     };
