@@ -2670,6 +2670,48 @@ more interesting than it was this morning: the walk is apparently paying for the
 the first thing to try is spelling the same rule so a box's path is textually what it was — `round ? disc
 test : (bounds && planes)` — and re-running these six pairs.
 
+**The reorder was tried, and it answered a different question than the one it was aimed at.** Six passes,
+three binaries, rotating which goes first: `A` the shipped spelling, `B` a worktree at `f901c80`, `C` the same
+rule written so a box's path is textually what it was — `if (inside && edges > 0u)` first, `else if (round)`
+after. Semantics identical, a circle having no planes to consult: the pocket guard, both fingerprints and the
+two disc tests pass on `C` with no edit.
+
+| row | `A` shipped | `B` no fix | `C` reordered | A−B | C−B | C−A |
+|---|---|---|---|---|---|---|
+| `lamps-10` | 1.36 | 1.37 | 1.37 | −0.002 | −0.001 | +0.002 |
+| `taps-9` | 4.70 | 4.59 | 4.67 | +0.108 | +0.085 | −0.022 |
+| `taps-9-discs` | 5.47 | 5.49 | 5.60 | −0.015 | **+0.111** | +0.126 |
+| `taps-9-clear` | 1.42 | 1.42 | 1.41 | +0.002 | −0.003 | −0.003 |
+
+* **The arm order is not the tax.** A box pays +0.085 ms in the reordered spelling against +0.108 in the
+  shipped one — same order of size, six pairs out of six, in both starting orders. Rearranging the tests did
+  not buy the box path back, so `C` does not ship.
+* **The reorder costs circles 0.111 ms, and that says something for the shipped one.** Written
+  `bounds → planes → round`, the bounds test feeds the first condition and cannot be removed, so a circle
+  pays the square *and* the disc. Written the shipped way the `round` arm overwrites `inside` before the
+  bounds value is ever read, and the compiler drops the redundant test — which is why the shipped circle row
+  is indistinguishable from the unfixed one at −0.015 ms. The dot implies the bounds test for a circle; only
+  one of the two spellings lets the compiler see it.
+* **`taps-9-clear` carries no tax in any build** (+0.002, −0.003). Nine rays over an empty block visit no
+  records, and there the cost is not. The charge is levied per record visited — not per pixel, and not per
+  shape reached.
+
+**The mechanism, corrected, including what this section got wrong.** The paragraph above claimed one added
+operation could not account for 2.3 % of a frame because a record's body runs a hundred-odd operations. That
+counted the whole body. Most record *visits* never reach it: the whole-disk reject `continue`s past the tap
+loop, and §22 found the walk dominating the cliff precisely because there are so many visits. Sixty casters
+at ten lamps bound the visits per pixel at six hundred before the per-light blocks and the reject cut them,
+and at 10.6 Mpx one extra op per visit lands at about 0.1 ms on this machine — which is the number measured,
+in both spellings, and on the circle row as well the moment a spelling forces the extra test. So the tax is
+the arithmetic after all, charged where the walk runs most often rather than where it does most work, and the
+register-pressure story this section reached for is not needed.
+
+Which is as far as §34's unpriced tax goes today: a test added per record visit costs on the order of 0.1 ms
+at this screen size and record count, no circle has to exist for it to be paid, and that is the same 2–4 %
+§34 measured on scenes with nothing round in them. The lever it points at is not cleverness about the circle
+case — it is fewer tests per visit, the shape test folded into the reject that already ran rather than a
+second gate standing after it.
+
 Canary throughout both phases: `p50 0.34 / p99 0.37 ms`, excess 0.01–0.03, once 0.14, nothing near the 3.5 ms
 gate. Two invocations of the second phase carried a `worst` of 17.24 and 11.43 ms — single wakes, with p50
 and p99 unmoved and the paired deltas of those two pairs identical to the other four, which is the pattern
