@@ -2821,3 +2821,120 @@ own ruler rather than lending someone else's. A CI performance testbed is the
 same design at larger scale: a box is a baseline file, so a farm is a directory
 of them, and nothing in this needs to change when that arrives. And the row
 count stays honest: twenty-six rows, since `warm` is a warmup and not a row.
+
+## 38. The 4090 box wrote its own ruler, and its first number was a fiction (2026-10-28, Windows 11, Ryzen 9 5900X + RTX 4090)
+
+§37 ended by saying how the empty boxes get filled — run the suite there once,
+in chunks, and the box writes its own ruler. This is that walk, on the box §17
+left open, and it very nearly wrote a lie. It is also the first section of this
+document not written on the M4 Max since §16, which is worth saying out loud in a
+file that has spent twenty-one sections meaning one machine by "this box".
+
+**The first number this box ever wrote was a fiction.** `taps-9 117.1`, its three
+reps 117.2 / 117.0 / 117.1 — agreeing to 0.17 %, which is the figure you want to
+see. The noise floor reported 1.4×, quiet, and was entirely correct: the canary
+measures wake latency and the duration of a fixed quantum of arithmetic, and a
+box can be perfectly silent while every frame it presents is held back by
+something else. What held them was the NVIDIA driver's Max Frame Rate, set to
+117, outvoting the suite's own `vsync: false`. The row that gave it away was
+`fill-1080p`, a near-blank frame that a Radeon 610M renders at 1002.7 fps: it
+read **117.2**, three reps identical to the first decimal.
+
+**Repeatability was the camouflage.** The test everyone applies to a suspicious
+number — run it three times and see whether it agrees — is the test a clamp
+passes best, because a clamp is the most repeatable thing on the machine. Those
+reps agreed to 0.17 % against the 1.8 % the same row shows unpaced. What caught
+it instead was dividing two rows that share nothing, which the suite had been
+printing for years without anyone comparing: `fill-1080p ÷ taps-9` is **62.7×**
+on the 610M, **3.81×** on the M4 Max, **1.39×** on this box unpaced, and
+**1.0009×** under the limiter. A machine that renders a blank frame and a
+nine-ray shadow field at the same rate is not a fast machine; it is a machine
+being paced by something that is not frost. Note that the honest ratio on this
+box is already down at 1.39, so the gap from the clamp is 39 % and not an order
+of magnitude: such a check has to be a check, with a threshold written down, and
+not a glance at a number that looks low.
+
+**The whole thing was a checkbox.** Max Frame Rate off, Vertical sync off, and
+`fill-1080p` on the unchanged binary went from 117.2 to **3004.7** — twenty-five
+fold, from a driver setting that no program here could have read, which is what
+§17 meant when it said the refresh setting cannot be read from inside a shell
+and has to be recorded like any other condition. The conditions of this file are
+therefore: windowed 1080p, three reps, a 3840×2160 panel at 60 Hz, frame limiter
+off, vertical sync off, canary at 1.4× on both chunks that were walked in one
+piece. The rows land between 511 and 3004 fps, eight to fifty times the panel
+rate, which is the evidence that nothing is pacing them — and the reason the
+60 Hz still belongs on the record is that the moment someone turns sync back on
+every row in the file reads 60.0, which is the most misleading number available
+here because it looks like a dead engine rather than a paced one.
+
+**The ladder, in milliseconds, with the caveat printed beside it.**
+
+| row | RTX 4090, 1080p window | M4 Max, 4112×2572 fullscreen |
+| --- | --- | --- |
+| `fill-1080p` | 0.333 | 1.232 |
+| `lamps-40` | 0.349 | 4.523 |
+| `taps-1` | 0.464 | 2.994 |
+| `taps-9` | 0.464 | 4.693 |
+| `taps-9-discs` | 0.474 | 5.467 |
+| `taps-9-polys` | 1.120 | 12.09 |
+| `taps-9-poly16` | 1.954 | 23.47 |
+| `parts-100k` | 1.326 | 1.404 |
+| `parts-huge` | 1.807 | 8.230 |
+
+The Mac rows were walked at 5.1× the pixel count in a different present mode, so
+those columns are both measured and neither comparable — §37's defect again, this
+time arriving in the display rather than the judgement, which is how one knows
+it was never about the file format.
+
+**Nine taps turned out not to cost anything, here.** 2155.2, 2159.5 and 2156.9
+fps at one, four and nine taps: indistinguishable, and 0.464 ms at both ends of
+the range. The Mac falls 334.0 → 263.6 → 213.1 across the same three rows, a 36 %
+loss. Subtracting the blank frame, the whole shadow walk costs this box 0.13 ms
+and the Mac 3.46 ms; normalising the Mac's 5.1× pixels leaves it about five times
+dearer per pixel. So "nine taps cost 36 %" was never a property of the engine —
+it was a property of two machines, and this one, a third data point, disagrees
+with both. It does not make §22 wrong, it makes it a claim about hardware, which
+is the thing this section keeps being about.
+
+**The cliff is the polygon walk on both vendors, and only its multiplier
+survives.** 0.46 → 1.95 ms here, 4.69 → 23.5 ms there: 4.2× and 5.0×. The
+absolute cost is twelve-fold apart, the shape is within 20 %, which is the
+strongest argument this document has never quite made for reading its own tables
+as ratios first and megahertz second. And §23's other finding reproduces on
+hardware that was not in the room when it was written: discs are nearly free
+(0.474 ms against 0.464) while sixty polys put a hundred discs' worth of walk in
+the same frame and cost a second and a half.
+
+**One row where the two boxes agree, which is suspicious.** `parts-100k` reads
+1.326 ms here and 1.404 ms there, on machines twelve-fold apart in every other
+row of that table. Something in that row costs about 1.4 ms regardless of what is
+asked of the GPU, and nobody here has named it; a 100 k-particle frame on a 4090
+should not cost what it costs on a laptop unless the machine is not the one
+paying. That is the question to take up next, and the offscreen meter is where to
+ask it.
+
+**One hazard the walk fell next to, which §37 half fixed.** §37's title names the
+save path, and the save path now merges instead of overwriting — but it merges
+into whatever name it is given, and the note saying *this GPU's own file would be
+X* prints **after** the write. So on a box whose chip file does not exist yet, a walk that names the
+historical default loads §14's ten rows, writes this box's numbers over them,
+and then mentions the chip file as a suggestion afterwards. The default stays
+that way on purpose — `chip_file`'s own comment argues that quietly moving the
+ruler under a run that never asked for one is a worse surprise than a warning —
+so the duty sits with whoever walks a new box: name the chip file — this walk's
+is `benchsuite.baseline.nvidia-geforce-rtx-4090` — which
+does not exist yet and so starts from empty and says so out loud. What the tool
+could still do is print which file it merged *from* before the write, rather than
+only noting the better target after it.
+
+**What is still open, named as such.** §18's RTX 4090 row is still empty: what
+this box has now is frost's ladder, and §18 wants the same ladder built in Godot,
+with §14's gate met on the machine doing it. The ceiling check above is described
+and not written — the canary says whether a box is quiet, and nothing yet says
+whether it is unbounded, which is the difference between this file and the one
+this section nearly wrote. A fair cross-machine row needs `--fullscreen
+--render-size` matched on both sides per §17, which neither column in that table
+has. And the same chip-dependence reached the test tree a day earlier: the
+fingerprint guard gained a row per chip in `b33fc3c`, because a byte-exact claim
+is conditioned on the GPU exactly as a frame rate is — which is why this box
+arrived with a failing test and no guilty commit behind it.
