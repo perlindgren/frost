@@ -82,6 +82,14 @@
 //! (`tools/noisefloor`) — and a run whose floor is too loud prints its
 //! numbers and exits **3** without judging or saving a baseline. A machine
 //! that is busy being something else is allowed to report, not to conclude.
+//!
+//! Quiet is not the same condition as composited, and the floor cannot tell the
+//! two apart, so every run also prints the window's `minimized` and `focused`
+//! state, and a minimized or unfocused window prints its numbers and exits **3**
+//! the same way. A window nothing composites goes down a different present path,
+//! worth 8 to 18 % on the rows short enough to notice it — and it is the state a
+//! background shell produces without anyone choosing it
+//! (`docs/benchmarking.md` §38).
 
 use std::path::{Path, PathBuf};
 
@@ -923,6 +931,10 @@ impl Suite {
         // it), and a fullscreen request settles wherever the platform likes
         // — so the geometry is part of the record, not a detail to infer
         // afterwards. `docs/benchmarking.md` §17 is what inferring cost.
+        // The window's state as well as its shape: `(minimized, focused)`, or
+        // `None` when there was no window at all — which is its own honest case,
+        // since a present path cannot bias a frame that is never presented.
+        let mut composed: Option<(bool, bool)> = None;
         if let Some(window) = ctx.window() {
             let inner = window.inner_size();
             let scale = window.scale_factor().max(0.01);
@@ -944,8 +956,21 @@ impl Suite {
                     )
                 })
                 .unwrap_or_else(|| "with no monitor reported".into());
+            // Focus belongs in the record beside size, because a window nothing
+            // composites goes down a different present path: §38 measured 8 to
+            // 18 % on the rows short enough for that path to be on the critical
+            // path. `is_visible` is not that fact and never was — winit means by
+            // it only that nobody has hidden the window — so it stays printed and
+            // stops being relied on.
+            // Winit answers `None` for minimization where a platform will not
+            // say, which reads here as "not proven minimized" and leaves focus to
+            // carry the check — refusing on a platform's silence would mean the
+            // gate could never be run there at all.
+            let minimized = window.is_minimized().unwrap_or(false);
+            let focused = window.has_focus();
+            composed = Some((minimized, focused));
             println!(
-                "benchsuite: drew into {}x{} px ({}x{} at {:.2}x) {}, fullscreen: {}, visible: {:?}",
+                "benchsuite: drew into {}x{} px ({}x{} at {:.2}x) {}, fullscreen: {}, minimized: {}, focused: {}, visible: {:?}",
                 inner.width,
                 inner.height,
                 logical_w,
@@ -953,6 +978,8 @@ impl Suite {
                 scale,
                 monitor,
                 window.fullscreen().is_some(),
+                minimized,
+                focused,
                 window.is_visible()
             );
         }
@@ -981,6 +1008,25 @@ impl Suite {
             );
             std::process::exit(3);
         }
+        if let Some(reason) =
+            uncomposed_reason(composed).filter(|_| self.save.is_some() || !self.baseline.is_empty())
+        {
+            // The same refusal as a loud floor, for the same reason: this run
+            // measured something, just not the thing a baseline records. §38
+            // measured the cost on the RTX 4090 — 8 to 18 % on every row short
+            // enough for the present path to show in it, close to a constant 40
+            // microseconds a frame — and the mirror image is worse than the
+            // inflation: a run from an unfocused window reads −10.3 % against a
+            // file walked from a focused one, so the tool would report a
+            // regression that landed in the safe direction, which is precisely
+            // the one nobody stops to question. Reporting stays allowed, exactly
+            // as it does for a busy machine; concluding does not.
+            println!("benchsuite: {reason} — printing the numbers, declining to judge or to save");
+            println!(
+                "benchsuite: a window nothing composites is a different present path, not a slower engine — docs/benchmarking.md §38"
+            );
+            std::process::exit(3);
+        }
         if let Some(path) = &self.save {
             if self.existing.unparsed > 0 {
                 // Refusing beats representing. A file with lines this tool
@@ -1003,8 +1049,17 @@ impl Suite {
                 })
                 .unwrap_or_else(|| "an offscreen box".into());
             let chip = frost::adapter_name().unwrap_or("a GPU the engine never named");
+            // The state that opened the gate is written down beside the rest of
+            // it, so a file says whether a window was composited while it was
+            // being made instead of leaving that to whoever remembers.
+            let window_state = match composed {
+                None => "with no window",
+                Some((true, _)) => "minimized",
+                Some((false, false)) => "unfocused",
+                Some((false, true)) => "focused",
+            };
             let provenance = format!(
-                "# walked {} on {}, {} in {}, {} reps per row — see docs/benchmarking.md",
+                "# walked {} on {}, {} in {}, {} reps per row, window {} — see docs/benchmarking.md",
                 utc_today(),
                 chip,
                 box_of_it,
@@ -1013,7 +1068,8 @@ impl Suite {
                 } else {
                     "a window"
                 },
-                self.reps.max(1)
+                self.reps.max(1),
+                window_state
             );
             let merged = Baseline {
                 header: self.existing.header.clone(),
@@ -1490,6 +1546,35 @@ fn main() {
     }
 }
 
+/// Why this run cannot be trusted to have measured a presented frame, or `None`
+/// when it can.
+///
+/// The input is the window's `(minimized, focused)` state, or `None` when the run
+/// had no window at all — and no window is a complete answer rather than a missing
+/// one, because a frame that is never presented cannot be paced or clamped by a
+/// present path. That is the offscreen meter's whole argument, and
+/// `docs/benchmarking.md` §38 is what assuming visibility instead cost: twenty-two
+/// of twenty-six rows moved 8 to 18 % when the window went from uncomposited to on
+/// screen, by a near-constant 40 microseconds a frame.
+///
+/// Focus is a proxy and is treated as one. Occlusion is not queryable portably, so
+/// this refuses the two states that are, and names which one it saw. A focused
+/// window with something drawn over it remains possible and remains unrecordable —
+/// the point of these numbers is to make a reader distrust that case, not to
+/// pretend the check covers it.
+fn uncomposed_reason(window: Option<(bool, bool)>) -> Option<&'static str> {
+    match window {
+        None => None,
+        Some((true, _)) => Some(
+            "the window is minimized, so what the GPU drew here was never a frame the screen was asked to show",
+        ),
+        Some((false, false)) => Some(
+            "the window has no focus, so nothing may be compositing it and the present path is doing different work",
+        ),
+        Some((false, true)) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1723,5 +1808,26 @@ mod tests {
             let [x, y] = scatter(i);
             assert!(x.abs() < W / 2.0 && y.abs() < H / 2.0);
         }
+    }
+
+    /// §38: whether anything was compositing the window moved the
+    /// present-bound rows 8 to 18 %, so a run in that state may print its
+    /// numbers and must not judge or write. Minimized outranks focus because
+    /// it says something stronger — not that composition is doubtful, but that
+    /// there was no presented frame at all.
+    #[test]
+    fn a_window_nothing_composites_may_report_but_not_conclude() {
+        assert!(uncomposed_reason(Some((true, false))).is_some());
+        assert!(uncomposed_reason(Some((true, true))).is_some());
+        assert!(uncomposed_reason(Some((false, false))).is_some());
+        assert_eq!(uncomposed_reason(Some((false, true))), None);
+    }
+
+    /// The case a present path cannot reach: with no window there is nothing
+    /// to pace, so the absence is not an unknown to refuse on. This is why the
+    /// offscreen meter is the instrument §38 sends the reader to instead.
+    #[test]
+    fn an_offscreen_run_has_no_present_path_to_distrust() {
+        assert_eq!(uncomposed_reason(None), None);
     }
 }

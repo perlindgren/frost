@@ -2952,19 +2952,25 @@ So this file is a ruler for a window that is **on screen**. Run it from anything
 whose window ends up behind something else — an agent's shell, a scheduled task, a
 runner with no console — and every row fast enough to be present-bound reports up to
 13 % of free improvement against a threshold of 5 %, in the direction that reads as
-success rather than as trouble. What the tool should do is record `is_minimized()`
-and `has_focus()` beside the box size, and refuse to write a baseline from a window
-that is not up the way it refuses a loud box; it does neither yet, so for now the
-condition lives in this paragraph and in the file's header, which is exactly how
-§17's refresh rate had to be carried too.
+success rather than as trouble. The tool says so now, and refuses to be
+accountable for it: `is_minimized()` and `has_focus()` print beside the box size —
+underneath the `visible: Some(true)` that was the only clue available and meant
+nothing — and a minimized or unfocused window prints its numbers and exits 3
+without judging or saving, in the same shape as a loud floor: allowed to report,
+not to conclude. Any file it does write carries `window focused` in its provenance
+line, so the condition travels with the numbers instead of living in prose the way
+§17's refresh rate had to. Both calls happen once, after the last rep of the last
+row, so neither can touch what they describe.
 
 The effect replicates from the other side now that the file is conditioned
 properly: the same build, run minutes later from a shell whose window is not
-composited, reads `taps-9` at 2169.0 against the 2418.3 above, and the tool says
-**REGRESSED −10.3 %** and exits non-zero. Nothing changed in the engine, nothing
+composited, reads `taps-9` at 2169.0 against the 2418.3 above, and the tool said
+**REGRESSED −10.3 %** and exited non-zero. Nothing changed in the engine, nothing
 changed in the driver, and a false regression is as damaging as a false pass — the
-difference being that this one appears in the conservative direction, which is
+difference being that this one lands in the conservative direction, which is
 precisely why nobody would stop to check whether the GPU had really got slower.
+That was the behaviour before the gate; the same run now stops at exit 3 instead of
+handing down a verdict nobody earned.
 
 **One hazard the walk fell next to, which §37 half fixed.** §37's title names the
 save path, and the save path now merges instead of overwriting — but it merges
@@ -2985,7 +2991,12 @@ this box has now is frost's ladder, and §18 wants the same ladder built in Godo
 with §14's gate met on the machine doing it. The ceiling check above is described
 and not written — the canary says whether a box is quiet, and nothing yet says
 whether it is unbounded, which is the difference between this file and the one
-this section nearly wrote. A fair cross-machine row needs `--fullscreen
+this section nearly wrote. The focus gate has a hole of its own worth naming
+before anyone leans on it: the state is read once, after the last row, so a walk
+that lost focus mid-way and got it back would pass. The canary samples
+continuously for exactly this reason; the honest fix is to count `Focused(false)`
+transitions while the rows run and refuse on any of them, which is a few lines and
+is not written. A fair cross-machine row needs `--fullscreen
 --render-size` matched on both sides per §17, which neither column in that table
 has. And the same chip-dependence reached the test tree a day earlier: the
 fingerprint guard gained a row per chip in `b33fc3c`, because a byte-exact claim
