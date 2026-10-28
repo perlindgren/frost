@@ -104,6 +104,71 @@ and *never* memories, and the very watcher that powers hot reload is the
 bus — tool→app for edits, app→tool for state. Godot's bidirectional
 scene-editing is the coupling this refuses.
 
+## The seam the frame doesn't have (dim a world, keep an interface)
+
+The smallest ask that shows where an engine's frame ends: a pause menu
+wants the world behind it darker and its own plate untouched. Every
+engine answers with one of three mechanisms, and which ones are available
+is decided by a single structural fact — *is there a seam in the frame,
+and does the interface sit past it.*
+
+| engine | the seam | what the dim costs |
+|--------|----------|--------------------|
+| Unity / Unreal | the interface is composited after the scene's post pass (a second camera, a widget pass) | a full-screen quad under the UI layer, no engine code involved |
+| Godot | `CanvasLayer` is a real stacking scope over the world canvas | the same rectangle, the same nothing |
+| frost | none — one frame, one z ladder, interface and world interleaved inside it | the dim must live in the scene tree or the light field, or bring back per-region machinery |
+
+Read out of the code, frost's line is exact: the scene root's subtree
+**joins the base group, which is where the immediate draws already live**
+(`src/canvas.rs:545`), and the one scene-wide post-side lever is
+`set_tone_map` (`src/lib.rs:502`), which the present blit applies to the
+*composed* frame before `encode_srgb` (`shaders/blit.wgsl:191`) — the
+menu included. So the three options, all of them arithmetic on the same
+composition, `pixel = base * (ambient + Σ lights)`
+(`shaders/lighting.wgsl:560`):
+
+- **Cover it.** A rectangle at a z above the world and under the plate —
+  what antifrost did until 2026-10-28. Linear, exact, one blended
+  fullscreen quad of fill, and it dims everything the frame holds, which
+  is the mechanism doing its job rather than a limitation of it.
+- **Modulate the tree.** `modulate` composes root to leaf, so a root
+  modulate darkens every surface — and every lamp, because
+  `color: light.color.mul(modulate)` (`src/canvas.rs:975`). Immediate
+  draws take no node modulate (`src/canvas.rs:184`), so the interface
+  keeps its brightness *for free*, which is the genuinely nice property
+  here. The price is that the factor lands twice, on the base and on the
+  lights, while the ambient floor is a scene uniform nothing multiplies:
+  at k, lit pixels fall to k² and unlit ones to k. Uniformity needs the
+  ambient matched to the modulate, which puts both at √k.
+- **Turn the lights down.** Scale the ambient, the lamp colours and the
+  emission; leave the surfaces alone. One factor, exactly linear. Layers
+  make it cheap: a layer owns a root node and therefore a modulate
+  (`src/objects.rs:1704`), a light draws no pixels at all
+  (`src/canvas.rs:946`) so a layer of only lamps has no pixels to
+  reorder; and the groups are merged into a single paint-ordered draw
+  list (`src/canvas.rs:676`) feeding one frame and one light field, so
+  those lamps go on lighting the base group.
+
+**What frost holds that the seam-ful engines don't.** Because the
+emitters are tree members, a modulate dims *a subtree of lamps*: tint one
+parent and one room of lights goes down while the rest of the level is
+untouched. Godot cannot say that sentence — `CanvasModulate` takes the
+canvas items down and leaves `PointLight2D` energy where it was, which is
+also why the conventional Godot dim is the same full-screen rectangle
+frost reaches for, set on a layer instead of a z. Their ease and this
+reach are one decision seen from opposite ends: frost put the emitters
+inside the graph, so the graph can reach them.
+
+*Provenance: the frost row and all three mechanisms were read out of the
+cited paths on 2026-10-28, in the session that withdrew the menu's
+backdrop blur — an effect whose sharp region was a fourth answer to the
+same question, per-region machinery bought out of the stretch uniform's
+padding. The Unity / Unreal / Godot row is the author's recollection,
+written down on a day web search was unavailable, and it is unverified:
+a `PointLight2D` under a `CanvasModulate` in Godot 4.x, dimmed with and
+without HDR 2D, settles the interesting half. Correct it here rather
+than in memory.*
+
 ## Scoreboard
 
 Status of each rung, updated as work lands. `[ ]` = claim, `[x]` = fact.
