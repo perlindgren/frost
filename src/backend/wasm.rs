@@ -138,6 +138,7 @@ impl<P: Process> ApplicationHandler for WebFrost<P> {
                         )
                     })?;
                 log::info!("using adapter: {:?}", adapter.get_info().name);
+                crate::record_adapter_name(&adapter.get_info().name);
                 let (device, queue) = adapter
                     .request_device(&DeviceDescriptor::default())
                     .await

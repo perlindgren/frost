@@ -1,0 +1,28 @@
+# benchsuite baseline — one name and median fps per line
+# walked 2026-10-28 on Apple M4 Max, 4112x2572 px in fullscreen, 3 reps per row — see docs/benchmarking.md
+fill-1080p 811.9
+lamps-4 806.5
+lamps-10 720.8
+lamps-40 221.1
+lamps-40-static 221.2
+occluders-10 556.8
+occluders-100 319.5
+taps-1 334.0
+taps-4 263.6
+taps-9 213.1
+taps-9-clear 703.5
+polys-60 252.6
+taps-9-polys 82.7
+taps-9-discs 182.9
+taps-9-poly16 42.6
+parts-1k 811.8
+parts-10k 817.1
+parts-100k 712.1
+parts-10k-big 813.4
+parts-huge 121.5
+parts-10k-cliff 205.8
+parts-10k-cliff-lit 146.2
+parts-10k-shadow 320.3
+parts-10k-shadow-lit 228.6
+parts-10k-lamps 671.5
+parts-10k-lit 520.7

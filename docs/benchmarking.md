@@ -835,6 +835,11 @@ numbers:
 The fleet is this box, a 5900X with an RTX 4090, and the Apple M4 of §6–13. The name
 was invented; the numbers were not, and the header now says 610M.
 
+*Eleven days later §37 is what this paragraph was always pointing at: on the M4 the
+committed file judges nothing at all, and the save path could erase this provenance with
+one `--only` run. A baseline now names its chip, a box keeps its own file once it has
+written one, and a cross-chip comparison prints a note where it used to print a verdict.*
+
 **What the correction is worth.** The committed table *is* this box's baseline, so the
 suite referees from here today with no re-walk and no second file. And TODO's standing
 instruction to price the emission gate, which read *on the 780M* until this section was
@@ -2720,3 +2725,99 @@ the gate is drawn to catch rather than the one it is drawn to stop.
 **The invariant to keep.** A new kind in `OccluderShape` has to refine `inside` on *both* roads. One walk is
 written as a loop over taps and one as a single ray, they were derived from each other, and nothing in the
 build makes them agree — only the pocket test does, and only for as long as a circle is the only round kind.
+
+## 37. The baseline belonged to another GPU, and the save path could not tell you (2026-10-28, Apple M4 Max)
+
+§36 ended with a shape row worth +0.77 ms and an open item saying the committed
+baseline judged ten rows of twenty-seven. Going to look at that number was the
+mistake, because ten was optimistic.
+
+**Every row on this box was unjudged.** `benchsuite.baseline` is a ten-row file
+whose own header says it was walked on 2026-10-19 on a Radeon 610M iGPU, and
+`taps-9 16.0` in it is true of that chip. This machine reads the same row at
+213.1. Judged against it, every number here is a twelve-to-thirteen-fold
+improvement on a build that changed nothing, which is why the documented recipe
+says `--baseline none` and why I have been typing it for two days without
+asking what it meant: the suite had no ruler for the machine it was running on,
+and the way to avoid a wrong verdict was to take none.
+
+**The save path made that unfixable rather than merely unfixed.** `--save-baseline`
+built its output from scratch: one generic comment line, then only the rows the
+run had measured. So the obvious remedy — walk the missing rows — was the one
+thing guaranteed to destroy evidence: `--only taps-9 --save-baseline
+benchsuite.baseline` would have left §14's ten-row provenance header and nine of
+its rows on the floor, under a line claiming the file was a baseline, with a
+13× "improvement" as the reward for the person who next trusted it. This is the
+same defect as §36's dead bench row one layer up: an instrument storing less
+than the operator believes it stored, and reporting success while doing it.
+
+**What the tool does now.** A baseline is a type that keeps what it finds — the
+header verbatim, the rows, and a count of lines it could not represent, and it
+refuses with exit 3 to overwrite a file it cannot reproduce. Saving *merges*: a
+measured row replaces itself where it stands, an unmeasured one keeps its
+number and its place, a new name is appended. A baseline can therefore be walked
+in pieces, which is not a convenience — it is what a noisy afternoon and a
+26-row suite require. The file to use is now the GPU's own when it has written
+one (`benchsuite.baseline.apple-m4-max`), the shared default otherwise, and an
+explicit `--baseline` beats both. Whatever gets chosen prints with its own
+`# walked` line, and a file that does not name the GPU under it says so:
+
+```
+benchsuite: judging against benchsuite.baseline (10 row(s))
+benchsuite:   # walked 2026-10-19 on the Radeon 610M iGPU (RADV RAPHAEL_MENDOCINO), reps
+benchsuite:   NOTE this GPU is Apple M4 Max and the file above does not name it — a
+              cross-chip diff is not a regression; see docs/benchmarking.md §14
+```
+
+That note is the whole point; everything else is plumbing in service of it. The
+engine had to be able to say which GPU it got, which it previously only wrote to
+the log at startup and never exposed — hence [`frost::adapter_name`], recorded
+once where the adapter is requested, `None` before that.
+
+**The first full walk failed, and correctly.** All twenty-six rows in one
+invocation is five and a half minutes, and the canary called it: burn quanta
+p50 97 µs against p99 412 µs, 4.3× — cores rationed, whatever the wake side
+said — and the run refused to write its own file. Five and a half minutes of
+numbers printed, no ruler, exit 3. That is the gate doing the job, and the fix
+is not a looser gate: the same twenty-six rows walked as four chunks of seven
+came in at 3.1×, 1.6×, 2.0× and 1.8×, every chunk under the 3.5 limit, each
+saving into the same file and each merging with what was already there. A
+longer run is a bigger window for someone else's workload, and chunking is what
+shrinks the window without shrinking the ruler — and it also means a loud
+afternoon now costs one chunk rather than the suite.
+
+**The result agrees with the paired experiment, which is new.** Four rows in the
+new file can be checked against §36's within-invocation deltas, measured hours
+earlier on binaries built before any of this, and they land inside a
+three-hundredth of a millisecond:
+
+| row | this box's baseline | §36's paired run |
+|---|---|---|
+| `taps-9` | 213.1 fps — 4.693 ms | 4.70 ms |
+| `taps-9-discs` | 182.9 fps — 5.468 ms | 5.47 ms |
+| `taps-9-poly16` | 42.6 fps — 23.474 ms | 23.50 ms |
+| `taps-9-clear` | 703.5 fps — 1.421 ms | 1.42 ms |
+
+That is not proof the baseline is right — a baseline is a ruler, and §26's rule
+still stands that only within-invocation pairs are quotable as effects. It is
+evidence that the box was behaving, which is the most a single sitting can
+establish, and it is the first time this suite has had the two agree at all
+because the first time this suite had a ruler for the box holding it.
+
+**Two defects in the new code, found by the new code.** The baseline loaded
+every frame instead of once, because a flag was read and never set — six
+identical lines in the smoke test before it was visible; and the provenance
+probe matched the word `walked` anywhere in a header line, which in the
+historical file's wrapped third paragraph matches "this box re-walked them on",
+so the tool quoted a footnote about a second walk as the account of the first.
+Both are now pinned by tests, including one that a file gains a provenance line
+exactly once and never stacks a second claim under the first.
+
+**What is still open, named as such.** Only this chip has a file. The 610M's
+stands as §14's and nobody here can re-walk it today; the Radeon 7900 XTX and
+the RTX 4090 columns in §18 are still empty, and this is the mechanism by which
+they get filled — run the suite there once, in chunks, and the box writes its
+own ruler rather than lending someone else's. A CI performance testbed is the
+same design at larger scale: a box is a baseline file, so a farm is a directory
+of them, and nothing in this needs to change when that arrives. And the row
+count stays honest: twenty-six rows, since `warm` is a warmup and not a row.

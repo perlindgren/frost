@@ -940,6 +940,35 @@ impl Default for Config {
     }
 }
 
+/// The GPU this process draws on, as its driver names it — `"Apple M4 Max"`,
+/// `"RADV RAPHAEL_MENDOCINO"`, `"NVIDIA GeForce RTX 4090"` — or `None` before
+/// startup has asked for an adapter.
+///
+/// Recorded once, where the adapter is requested. It is worth an API because a
+/// GPU's numbers belong to that GPU: the committed bench baseline says
+/// `taps-9 16.0 fps`, which is true of a Radeon 610M, and the same row on an
+/// M4 Max reads 212.9 — so a tool that judges one against the other reports a
+/// twelve-fold speedup on a build that changed nothing. Anything that stores a
+/// measurement has to store which chip produced it, and it cannot do that
+/// unless the engine says. This is the GPU as the driver sees it, not the CPU,
+/// not the OS, and not necessarily stable across a driver update — which is
+/// why callers that name a file after it also keep the full name inside it.
+pub fn adapter_name() -> Option<&'static str> {
+    ADAPTER_NAME.get().map(String::as_str)
+}
+
+/// The name [`adapter_name`] reports, fixed on first use: the first adapter
+/// this process asked for is the one it draws on, and a later probe on another
+/// thread must not overwrite the answer with a different device's name.
+pub(crate) fn record_adapter_name(name: &str) {
+    let _ = ADAPTER_NAME.set(name.to_string());
+}
+
+/// See [`adapter_name`]. `OnceLock` rather than a field because the name
+/// outlives every handle: a baseline written after the window has closed still
+/// has to be able to say what it measured.
+static ADAPTER_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 /// Opens the window and runs the event loop, calling `process` once per
 /// frame and drawing `scene` after each call.
 ///
@@ -970,6 +999,7 @@ pub fn run_configured<P: Process>(
     let adapter = block_on(instance.request_adapter(&RequestAdapterOptions::default()))
         .expect("no suitable GPU adapter found");
     log::info!("using adapter: {:?}", adapter.get_info().name);
+    record_adapter_name(&adapter.get_info().name);
 
     let (device, queue) = block_on(adapter.request_device(&DeviceDescriptor::default()))
         .expect("failed to create GPU device");

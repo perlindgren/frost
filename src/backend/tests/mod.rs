@@ -17,6 +17,7 @@ mod draw_cost;
 mod emission;
 mod fields;
 mod frame_buffer;
+mod identity;
 mod layers;
 mod letterbox;
 mod light_cost;

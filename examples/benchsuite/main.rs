@@ -83,7 +83,7 @@
 //! numbers and exits **3** without judging or saving a baseline. A machine
 //! that is busy being something else is allowed to report, not to conclude.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use frost::{
     Color, Config, Context, Convex, Light, Particle, ParticleShape, ParticleSystem, Process, Scene,
@@ -738,6 +738,20 @@ struct Suite {
     results: Vec<(&'static str, f32)>,
     baseline: Vec<(String, f32)>,
     save: Option<PathBuf>,
+    /// Where the ruler lives, settled on the first frame — see
+    /// [`Suite::load_baseline`].
+    baseline_path: PathBuf,
+    /// Whether `--baseline` named a file. Asked-for wins; the tool only gets to
+    /// prefer this GPU's own file when nobody pointed at one.
+    baseline_asked: bool,
+    /// What the file we write to already holds, so a run adds its rows to it
+    /// instead of replacing it.
+    existing: Baseline,
+    loaded: bool,
+    /// `--reps`, and whether the frames came out of a fullscreen box: a
+    /// baseline header says how its numbers were arrived at, not only what.
+    reps: usize,
+    fullscreen: bool,
     /// The witness, awake from before the first scenario to after the last.
     /// `Option` because it is handed in at construction and taken once at the
     /// verdict; nothing else may look at it, and a taken canary must not be
@@ -750,6 +764,9 @@ impl Process for Suite {
     fn process(&mut self, ctx: &mut Context, dt: f32) {
         if self.done {
             return;
+        }
+        if !self.loaded {
+            self.load_baseline();
         }
         let s = self.queue[self.idx];
         // The lamps drift — the little drift a living game has: awake
@@ -835,6 +852,70 @@ impl Process for Suite {
 }
 
 impl Suite {
+    /// Read the baseline once, on the first frame — which is the first moment
+    /// the process knows the GPU it actually got, and per-chip files only work
+    /// if the lookup waits for that.
+    ///
+    /// Precedence is the human's, then this GPU's own file, then the shared
+    /// default: `--baseline` (or `--save-baseline`, whose target is the file to
+    /// merge into) wins outright; else `benchsuite.baseline.<chip>` when it
+    /// exists; else `benchsuite.baseline`, the historical file the notes cite.
+    /// Whatever gets chosen is printed with its own provenance line, and a
+    /// header that does not name this GPU is called out — that mismatch is how
+    /// an M4 came to be judged by a 610M's numbers for a week without anyone
+    /// meaning it to.
+    fn load_baseline(&mut self) {
+        self.loaded = true;
+        if !self.baseline_asked
+            && self.save.is_none()
+            && let Some(chip) = frost::adapter_name()
+        {
+            let own = chip_file(&self.baseline_path, chip);
+            if own.exists() {
+                self.baseline_path = own;
+            }
+        }
+        let target = self
+            .save
+            .clone()
+            .unwrap_or_else(|| self.baseline_path.clone());
+        let text = match std::fs::read_to_string(&target) {
+            Ok(text) => text,
+            Err(_) => {
+                println!(
+                    "benchsuite: nothing at {} — printing numbers with no verdict",
+                    target.display()
+                );
+                self.existing = Baseline::empty();
+                return;
+            }
+        };
+        let read = Baseline::read(&text);
+        if self.save.is_some() {
+            println!(
+                "benchsuite: merging into {} ({} row(s) already on file)",
+                target.display(),
+                read.rows.len()
+            );
+        } else {
+            println!(
+                "benchsuite: judging against {} ({} row(s))",
+                target.display(),
+                read.rows.len()
+            );
+            if let Some(line) = read.provenance_line() {
+                println!("benchsuite:   {line}");
+            }
+            if let Some(chip) = frost::adapter_name().filter(|chip| !read.names_chip(chip)) {
+                println!(
+                    "benchsuite:   NOTE this GPU is {chip} and the file above does not name it — a cross-chip diff is not a regression; see docs/benchmarking.md §14"
+                );
+            }
+            self.baseline = read.rows.clone();
+        }
+        self.existing = read;
+    }
+
     fn finish(&mut self, ctx: &mut Context) {
         self.done = true;
         // Print the box the frames came out of beside the frames themselves.
@@ -901,9 +982,60 @@ impl Suite {
             std::process::exit(3);
         }
         if let Some(path) = &self.save {
-            match std::fs::write(path, serialize(&medians)) {
-                Ok(()) => println!("benchsuite: baseline written to {}", path.display()),
+            if self.existing.unparsed > 0 {
+                // Refusing beats representing. A file with lines this tool
+                // cannot hold would come back shorter and tidier than it went
+                // in, and the rows it lost would be missing in the way only a
+                // green run produces: nobody the wiser. Exit 3 is the same
+                // "measured, declined to conclude" the loud floor gets.
+                println!(
+                    "benchsuite: {} holds {} line(s) this tool cannot represent — not overwriting a baseline it cannot reproduce",
+                    path.display(),
+                    self.existing.unparsed
+                );
+                std::process::exit(3);
+            }
+            let box_of_it = ctx
+                .window()
+                .map(|w| {
+                    let size = w.inner_size();
+                    format!("{}x{} px", size.width, size.height)
+                })
+                .unwrap_or_else(|| "an offscreen box".into());
+            let chip = frost::adapter_name().unwrap_or("a GPU the engine never named");
+            let provenance = format!(
+                "# walked {} on {}, {} in {}, {} reps per row — see docs/benchmarking.md",
+                utc_today(),
+                chip,
+                box_of_it,
+                if self.fullscreen {
+                    "fullscreen"
+                } else {
+                    "a window"
+                },
+                self.reps.max(1)
+            );
+            let merged = Baseline {
+                header: self.existing.header.clone(),
+                rows: merge_rows(&self.existing.rows, &medians),
+                unparsed: 0,
+            };
+            let kept = merged.rows.len();
+            let wrote = medians.len();
+            match std::fs::write(path, merged.write(&provenance)) {
+                Ok(()) => println!(
+                    "benchsuite: baseline written to {} — {wrote} row(s) walked on {chip}, {kept} on file",
+                    path.display()
+                ),
                 Err(err) => eprintln!("benchsuite: cannot write baseline: {err}"),
+            }
+            if chip_file(&PathBuf::from("benchsuite.baseline"), chip) != *path
+                && frost::adapter_name().is_some()
+            {
+                println!(
+                    "benchsuite: this GPU's own file would be {} — a baseline walked elsewhere judges nothing here",
+                    chip_file(&PathBuf::from("benchsuite.baseline"), chip).display()
+                );
             }
         } else if !self.baseline.is_empty() {
             let mut regressed = false;
@@ -961,24 +1093,207 @@ fn medians(results: &[(&'static str, f32)]) -> Vec<(String, f32)> {
     out
 }
 
-/// The baseline file: one `name fps` pair per line. Plain, diffable,
-/// and readable by hand in a commit.
-fn serialize(results: &[(String, f32)]) -> String {
-    let mut out = String::from("# benchsuite baseline — one name and median fps per line\n");
-    for (name, fps) in results {
-        out.push_str(&format!("{name} {fps:.1}\n"));
+/// A baseline file, kept as it was found.
+///
+/// One `name fps` pair per line, plain and diffable — and a header, which is
+/// the only thing in the file saying *whose* numbers these are. That is not
+/// decoration: the committed `benchsuite.baseline` was walked on a Radeon 610M
+/// and says `taps-9 16.0`, while an M4 Max reads the same row at 212.9, so
+/// judging one against the other reports a twelve-fold speedup on a build that
+/// changed nothing. A file whose header got overwritten in a rewrite is a
+/// number with no owner, and the next box to read it has no way to know.
+struct Baseline {
+    /// Every `#` line, in the order found. Written back verbatim.
+    header: String,
+    /// The rows, in file order.
+    rows: Vec<(String, f32)>,
+    /// Lines that were neither comment nor row. Kept to refuse with, not to
+    /// guess at: rewriting a file the tool cannot fully represent is how
+    /// provenance dies.
+    unparsed: usize,
+}
+
+impl Baseline {
+    const TITLE: &'static str = "# benchsuite baseline — one name and median fps per line";
+
+    fn read(text: &str) -> Self {
+        let mut header = String::new();
+        let mut rows = Vec::new();
+        let mut unparsed = 0;
+        for line in text.lines() {
+            if line.trim_start().starts_with('#') {
+                header.push_str(line);
+                header.push('\n');
+            } else if line.trim().is_empty() {
+                continue;
+            } else {
+                match line
+                    .rsplit_once(' ')
+                    .and_then(|(n, f)| Some((n.trim().to_string(), f.trim().parse::<f32>().ok()?)))
+                {
+                    Some(row) => rows.push(row),
+                    None => unparsed += 1,
+                }
+            }
+        }
+        Self {
+            header,
+            rows,
+            unparsed,
+        }
+    }
+
+    fn empty() -> Self {
+        Self {
+            header: format!("{}\n", Self::TITLE),
+            rows: Vec::new(),
+            unparsed: 0,
+        }
+    }
+
+    /// The file as it goes back to disk: header, then this walk's provenance
+    /// line, then the rows. The provenance line is where the chip, the
+    /// resolution and the rep count live, because a number without them is a
+    /// rumour — see `docs/benchmarking.md` §14 for what inferring cost.
+    fn write(&self, provenance: &str) -> String {
+        let mut out = String::new();
+        if self.header.is_empty() {
+            out.push_str(Self::TITLE);
+            out.push('\n');
+        } else {
+            out.push_str(&self.header);
+        }
+        if !out.lines().any(|l| l.trim_start().starts_with("# walked")) {
+            out.push_str(provenance);
+            out.push('\n');
+        }
+        for (name, fps) in &self.rows {
+            out.push_str(&format!("{name} {fps:.1}\n"));
+        }
+        out
+    }
+
+    /// The header's own account of where it came from, for printing beside a
+    /// verdict: the line that says when and on what.
+    fn provenance_line(&self) -> Option<&str> {
+        // `# walked`, at the start of a line, rather than the word anywhere:
+        // the historical header is a wrapped paragraph and its third line
+        // reads "this box re-walked them on", which is a footnote about a
+        // second walk, not the account of the first.
+        let mut walked = None;
+        for line in self.header.lines() {
+            if line.trim_start().starts_with("# walked") {
+                walked = Some(line);
+            }
+        }
+        walked.or_else(|| self.header.lines().last())
+    }
+
+    /// Whether the header names the GPU this process is drawing on. The test
+    /// is on normalised words rather than the slug, because driver strings
+    /// arrive punctuated every way a driver can: the 610M's file says
+    /// `RADV RAPHAEL_MENDOCINO` and the driver says the same, and neither has
+    /// to agree with how a file name would have spelled it.
+    fn names_chip(&self, chip: &str) -> bool {
+        let words = |t: &str| {
+            t.to_lowercase().chars().fold(String::new(), |mut a, c| {
+                if c.is_ascii_alphanumeric() {
+                    a.push(c);
+                } else {
+                    a.push(' ');
+                }
+                a
+            })
+        };
+        let hay = words(&self.header);
+        let needle = words(chip);
+        !needle.is_empty() && hay.contains(needle.trim())
+    }
+}
+
+/// Fold a run's medians into the rows already on file: names just measured are
+/// replaced where they stand, names not measured keep their numbers, and names
+/// the file has never seen are appended.
+///
+/// This is what makes a baseline walkable in pieces. A loud day retires one
+/// row; `--only that-row` puts it back without touching the other twenty-six —
+/// which is the whole reason a partial run may not simply rewrite the file,
+/// the way it used to, reducing a ten-row ruler to the one row asked for.
+fn merge_rows(existing: &[(String, f32)], measured: &[(String, f32)]) -> Vec<(String, f32)> {
+    let mut out = existing.to_vec();
+    for (name, fps) in measured {
+        match out.iter_mut().find(|(n, _)| n == name) {
+            Some(slot) => slot.1 = *fps,
+            None => out.push((name.clone(), *fps)),
+        }
     }
     out
 }
 
-fn parse_baseline(text: &str) -> Vec<(String, f32)> {
-    text.lines()
-        .filter(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty())
-        .filter_map(|l| {
-            let (name, fps) = l.rsplit_once(' ')?;
-            Some((name.trim().to_string(), fps.trim().parse().ok()?))
-        })
-        .collect()
+/// `Apple M4 Max` becomes `apple-m4-max`, for a file that says which chip it
+/// was walked on. Driver strings do change between updates, which is why the
+/// full name also lives inside the file and not only in its name.
+fn adapter_slug(chip: &str) -> String {
+    let mut out = String::new();
+    for c in chip.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.extend(c.to_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+/// Which baseline file to use: the one asked for, else this GPU's own file when
+/// it has written one, else the shared default.
+///
+/// The default stays `benchsuite.baseline` — the historical file the
+/// benchmarking notes cite — because quietly moving the ruler under a run that
+/// never asked for a new one is a worse surprise than a warning. Once a box
+/// has written `benchsuite.baseline.apple-m4-max`, judging against it is the
+/// obvious intent, and it is the tool's job to know that rather than leave it
+/// to the command line.
+fn chip_file(default: &Path, chip: &str) -> PathBuf {
+    let slug = adapter_slug(chip);
+    if slug.is_empty() {
+        return default.to_path_buf();
+    }
+    let stem = default
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "benchsuite.baseline".into());
+    default.with_file_name(format!("{stem}.{slug}"))
+}
+
+/// Today, UTC, as `YYYY-MM-DD`, out of the clock alone.
+///
+/// The date sits in a baseline header beside the chip for the same reason the
+/// chip does: numbers are conditioned, and "when" is one of the conditions.
+/// Standard days-from-civil inversion rather than a date crate, so an example
+/// stays an example; the fixed epochs in the tests below are what say it works.
+fn utc_today() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+    civil_from_days(secs.div_euclid(86_400))
+}
+
+/// The inverse of Howard Hinnant's `days_from_civil`: epoch day zero is
+/// 1970-01-01, and the shifts put the year at the point where the leap
+/// exceptions fall at the end rather than the start.
+fn civil_from_days(days: i64) -> String {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    format!("{:04}-{:02}-{:02}", if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 /// `--only` filtering: names in the order the suite gave them.
@@ -1120,25 +1435,14 @@ fn main() {
         queue.extend(chosen.iter().copied());
     }
     let first = queue[0];
+    // Which file, and what it holds, is settled on the first frame rather than
+    // here: the process does not know its own GPU until startup has asked for
+    // one, and per-chip baselines are the whole point of the lookup.
     let baseline_path = cli
         .baseline
         .clone()
         .unwrap_or_else(|| PathBuf::from("benchsuite.baseline"));
-    let baseline = if cli.save_baseline.is_none() {
-        std::fs::read_to_string(&baseline_path)
-            .map(|t| {
-                let b = parse_baseline(&t);
-                println!(
-                    "benchsuite: judging against {} ({})",
-                    baseline_path.display(),
-                    b.len()
-                );
-                b
-            })
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let baseline_asked = cli.baseline.is_some();
     let mut scene = Scene::new(SceneNode::default());
     scene.ambient = Color {
         r: 0.15,
@@ -1162,8 +1466,14 @@ fn main() {
             frames: 0,
             secs: cli.seconds,
             results: Vec::new(),
-            baseline,
+            baseline: Vec::new(),
             save: cli.save_baseline,
+            baseline_path,
+            baseline_asked,
+            existing: Baseline::empty(),
+            loaded: false,
+            reps: cli.reps,
+            fullscreen: cli.fullscreen,
             canary: Some(noisefloor::Canary::start()),
             done: false,
         },
@@ -1252,20 +1562,137 @@ mod tests {
 
     #[test]
     fn baselines_round_trip_through_their_own_text() {
-        let rows = vec![
-            ("fill-1080p".to_string(), 86.7),
-            ("taps-9".to_string(), 4.4),
+        let on_file = Baseline::read(
+            "# benchsuite baseline — one name and median fps per line\n\ntaps-9 16.0\n",
+        );
+        let written = on_file.write("# walked 2026-10-28 on a test box");
+        let back = Baseline::read(&written);
+        assert_eq!(back.rows.len(), 1, "the row survives its own text");
+        assert_eq!(back.rows[0].0, "taps-9");
+        assert!((back.rows[0].1 - 16.0).abs() < 0.01);
+        assert!(
+            back.header.contains("one name and median fps"),
+            "writing a file must not cost it its title"
+        );
+        assert!(
+            back.header.contains("walked 2026-10-28"),
+            "a file with no provenance gains this walk's"
+        );
+        // And only ever once: provenance describes where the rows came from,
+        // so a second walk must leave the first account standing rather than
+        // stack a second claim under it.
+        let again = back.write("# walked 2027-01-01 on a different box");
+        assert_eq!(
+            again.lines().filter(|l| l.contains("walked ")).count(),
+            1,
+            "one provenance line, the original one: {} / {}",
+            again.lines().filter(|l| l.contains("walked ")).count(),
+            again
+        );
+    }
+
+    /// The defect this replaces: `--save-baseline` wrote one generic comment
+    /// line and only the rows just measured, so a partial run cut the file
+    /// down to itself. Merging is what lets a baseline be walked in pieces —
+    /// one loud row re-asked with `--only`, twenty-five neighbours untouched.
+    #[test]
+    fn a_partial_walk_adds_to_a_baseline_instead_of_replacing_it() {
+        let on_file = vec![
+            ("fill-1080p".to_string(), 1002.7),
+            ("taps-9".to_string(), 16.0),
+            ("lamps-10".to_string(), 354.9),
         ];
-        let back = parse_baseline(&serialize(&rows));
-        assert_eq!(back.len(), 2);
-        assert_eq!(back[0].0, "fill-1080p");
-        assert!((back[1].1 - 4.4).abs() < 0.01);
+        let today = vec![
+            ("taps-9".to_string(), 14.2),
+            ("taps-9-discs".to_string(), 12.8),
+        ];
+        let merged = merge_rows(&on_file, &today);
+        assert_eq!(merged.len(), 4, "one row re-measured, one row new");
+        assert_eq!(
+            merged[0],
+            ("fill-1080p".to_string(), 1002.7),
+            "an unmeasured row keeps its number and its place"
+        );
+        assert_eq!(
+            merged[1].1, 14.2,
+            "a measured row is replaced where it stood"
+        );
+        assert_eq!(merged.last().unwrap().0, "taps-9-discs");
+    }
+
+    /// A line that is neither comment nor row is counted, not guessed at and
+    /// not quietly dropped on the way back out — the save path refuses to
+    /// overwrite a file it cannot fully represent.
+    #[test]
+    fn a_baseline_counts_what_it_cannot_read() {
+        let b = Baseline::read("# header\n\ntaps-9 16.0\nregressed on a tuesday\n");
+        assert_eq!(b.rows.len(), 1);
+        assert_eq!(b.unparsed, 1);
+        assert!(b.header.starts_with("# header"));
+    }
+
+    /// Whose numbers a file holds has to be readable from it. The 610M's own
+    /// file names the chip with underscores and a vendor prefix, so the test
+    /// is on normalised words rather than on the spelling a file name would
+    /// have chosen — and a chip that is genuinely absent must still fail it.
+    #[test]
+    fn the_chip_that_wrote_a_baseline_is_readable_from_it() {
+        let igpu = Baseline::read(
+            "# walked 2026-10-19 on the Radeon 610M iGPU (RADV RAPHAEL_MENDOCINO)\n",
+        );
+        assert!(igpu.names_chip("RADV RAPHAEL_MENDOCINO"));
+        assert!(igpu.names_chip("radv raphael mendocino"));
+        assert!(
+            !igpu.names_chip("Apple M4 Max"),
+            "another chip's file must not pass for this one's"
+        );
+        assert!(!igpu.names_chip(""), "an empty name matches nothing");
+        assert!(
+            igpu.provenance_line()
+                .unwrap()
+                .contains("walked 2026-10-19")
+        );
+    }
+
+    #[test]
+    fn a_chip_gets_a_file_named_after_it() {
+        let d = PathBuf::from("benchsuite.baseline");
+        assert_eq!(adapter_slug("Apple M4 Max"), "apple-m4-max");
+        assert_eq!(
+            chip_file(&d, "Apple M4 Max"),
+            PathBuf::from("benchsuite.baseline.apple-m4-max")
+        );
+        assert_eq!(
+            chip_file(&d, "NVIDIA GeForce RTX 4090"),
+            PathBuf::from("benchsuite.baseline.nvidia-geforce-rtx-4090")
+        );
+        assert_eq!(
+            chip_file(&d, "  "),
+            d,
+            "a name with nothing in it gets the shared file, not a file called `.`"
+        );
+    }
+
+    /// The header's date comes from the clock and no dependency, so the
+    /// conversion is pinned to epochs whose answers are known rather than to
+    /// today. Day 0 is the epoch; day −1 is the day before it, which is where
+    /// a naive `/ 86400` would land on 1970 instead.
+    #[test]
+    fn the_clock_gives_a_date_a_header_can_carry() {
+        assert_eq!(civil_from_days(0), "1970-01-01");
+        assert_eq!(civil_from_days(-1), "1969-12-31");
+        assert_eq!(civil_from_days(20_023), "2024-10-27");
+        assert_eq!(civil_from_days(20_754), "2026-10-28");
+        assert_eq!(civil_from_days(0).len(), 10);
+        assert_eq!(utc_today().len(), 10, "today parses as YYYY-MM-DD");
+        assert_eq!(&utc_today()[4..5], "-");
     }
 
     #[test]
     fn baseline_comments_and_blanks_are_skipped() {
-        let b = parse_baseline("# a comment\n\nfill 80.0\n");
-        assert_eq!(b.len(), 1);
+        let b = Baseline::read("# a comment\n\nfill 80.0\n");
+        assert_eq!(b.rows.len(), 1);
+        assert_eq!(b.unparsed, 0);
     }
 
     #[test]
