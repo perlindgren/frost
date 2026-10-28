@@ -2513,6 +2513,11 @@ little" was the only fair question. With one shape on both sides the test is a s
 with `Collider::Circle` exactly, everywhere the shadow edge is not crossing between neighbouring pixels.
 The band, the sandwich and the containment argument are gone, and what replaced them is stricter.
 
+*Annotated two days later, by the section that found the sentence was only true of one of the two roads a
+light can take: §36. The test above runs at penumbra 0 and walks the single ray, where the claim always held.
+At any penumbra above 0 the picture disagreed with `Collider::Circle` over four pockets, and did so inside
+the frame this section pinned.*
+
 **A fixture retyped from memory is a bug, and here is the receipt.** Writing that test I typed the scene's
 two `Draw` literals again instead of taking them from the file, and got `lit: 0.0` on the receiver instead of
 `1.0`. The surface then drew its own colour, lit or not, so the frame had no shadow in it at all; the test
@@ -2531,3 +2536,79 @@ rewrites an unrelated literal is the thing to look at first, not the thing you a
   the suite still measures a polygon at `MAX_PLANES`, so any change to the walk's shape — an oriented box
   per record, a coarser reject — shows up there first and shows up large.
 
+
+## 36. The soft shadow and the hard shadow disagreed about a circle, in the four corners of a square (2026-10-28, Apple M4 Max)
+
+**This one came out of reading, not out of a frame.** No timing row moved, no canary coughed, and nothing on
+screen was reported wrong. During a sweep of the repo for places where the code and its description had
+drifted apart, the two shadow walks in `lighting.wgsl` went side by side on screen and said different things
+about the same question.
+
+**The question is where the pixel is standing.** An occluder does not shadow its own surface — a pixel on or
+inside a shape is lit by a light on the other side of it, which is why a wall does not cast a shadow across
+its own bricks. Both walks open with the cheap form of that test, `all(abs(lp - center) <= half)`, and `half`
+is a *half-extent*: for a box it is the shape, and for a circle it is half the square drawn around it. Each
+walk then refines the answer for a shape that is not its own bounds. The polygon's refinement consults its
+planes. §34 gave the single-ray walk a refinement for a circle too, the exact one:
+
+```wgsl
+if (round) { let to = lp - center; inside = dot(to, to) <= half.x * half.x; }
+```
+
+The fused nine-tap walk never got it. Its refinement runs `if (inside && edges > 0u)`, and a circle record
+carries no planes, so on that road the answer for a circle stayed *inside the square*.
+
+**The pocket.** Square minus disc is `(4 − π) r²`, about a fifth of the square, all of it at the diagonals —
+four pockets, since a circle's bounds square has corners and a circle does not. A receiver pixel in a pocket
+is outside the disc, so the disc can shadow it, and the single-ray walk shadows it. The nine-tap walk told it
+that it was standing on the occluder and handed it its direct light back. It is not a softness effect and not
+a light-shape effect: the receiver can be a floor, a sprite or a lit particle, and all the light does is pick
+which walk runs. `lc.w > 0.0` takes the fused road, so a disc's shadow changes discontinuously as a penumbra
+is dragged from `0` to `0.25`.
+
+**Measured, in pixels rather than milliseconds.** One process, one 80×80 offscreen scene, lamp at `[8, 8.5]`,
+a caster at user `[6, −10]` turned 0.4 rad, the rung forced to nine through the feather slot. The column that
+matters is how many pixels are more than 64 levels apart between the frame at penumbra 0 and the frame at
+penumbra 0.25 — with a disk a quarter of a pixel across, the two frames are nine rays from the same point
+against one ray, and a pixel they resolve differently is the walk answering differently.
+
+| caster | radius | as shipped | with the fix |
+|---|---|---|---|
+| circle | 14 | 95 px | 10 px |
+| circle | 40 | 380 px | 0 px |
+| hexagon | 14 | 11 px | 11 px |
+| hexagon | 40 | 0 px | 0 px |
+
+The hexagon is the control and it is why the table is readable: its containment is exact on both roads
+because its planes are consulted, so the 11 pixels it shows at radius 14 are the umbra's own edge crossing
+between neighbouring samples. The circle's 10 after the fix are that same edge, which is parity. Before the
+fix the circle's 95 and 380 were all in pockets, at distances 14.1 to 16.0 from a centre whose radius was 14.
+
+**The number the shipped guard reports** is sharper, because it counts only pixels the hard ray actually
+shadows: 49 pocket pixels were lit at radius 14 and 100 at radius 40, where the hexagon lit 2 and 1. The
+guard, `both_roads_shadow_the_pocket_between_a_disc_and_its_bounds`, asserts a circle gets no more slack than
+a hexagon of the same radius measured in the same invocation, so it needs no threshold borrowed from a
+machine, and it refuses to pass on an empty region — it requires more than 50 pocket pixels in the frame and
+more than a quarter of them in shadow.
+
+**Why nothing had seen it, in three parts.** Every profile in `penumbra.rs` and `polygon.rs` reads one column
+of pixels along the lamp's axis, and a pocket is on a diagonal. The disc's exactness test runs at penumbra 0,
+which is the walk that was right. And the fingerprint moved once already, legitimately, in §34 — so when this
+change moved it again the reader of that section has already been shown a disc pin moving for a reason, which
+is exactly the situation a pinned frame is worst at: it receipts whatever the renderer did, including being
+wrong in four corners that no probe reads.
+
+**What it costs is not measured, and the reason it is not is itself a finding.** Prediction rather than
+measurement, and labelled as such: nothing. The fix is one subtract, one dot and one compare per *circle*
+record on a road that has already loaded the record and carried the pixel through its inverse, and the
+single-ray road has carried the same three operations since §34 without showing. The reason it stays a
+prediction is that the suite cannot price it right now: `taps-9-discs` sets `poly_sides: 0` alongside
+`circle: true`, and the builder's `poly_sides == 0` branch returns a box before the `circle` flag is ever
+consulted, so that row draws sixty boxes. §35's circle row is measured against that row, which is the same
+scene twice, and its "costs nothing over a box" is a control being read as a result. That correction belongs
+to §35 and is not made here; what belongs here is that the pricing of this fix is blocked behind it, and
+until the branch is hoisted there is no circle row to time.
+
+**The invariant to keep.** A new kind in `OccluderShape` has to refine `inside` on *both* roads. One walk is
+written as a loop over taps and one as a single ray, they were derived from each other, and nothing in the
+build makes them agree — only the pocket test does, and only for as long as a circle is the only round kind.

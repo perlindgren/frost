@@ -671,7 +671,9 @@ fn a_lamp_lights_no_further_than_its_radius() {
 /// round shape and the only honest question was by how little. A declared circle is a
 /// circle now, so `Collider::Circle` on the CPU and the record on the GPU are the same
 /// shape and there is no band left to argue about: they agree exactly, everywhere the
-/// shadow's edge is not passing between neighbouring pixels.
+/// shadow's edge is not passing between neighbouring pixels. Down one road — the
+/// single ray this scene runs at penumbra `0`. The nine-tap road is the next test's
+/// business, and §36 is why it needed one.
 #[test]
 fn a_disc_shadows_the_gpu_the_way_the_cpu_says_it_should() {
     let surface = Draw::Shape {
@@ -738,7 +740,8 @@ fn a_disc_shadows_the_gpu_the_way_the_cpu_says_it_should() {
     assert_eq!(
         declared.half,
         [radius, radius],
-        "a circle's bounds are its radius twice over — the reject the field does          first, and still four comparisons"
+        "a circle's bounds are its radius twice over — the reject the field \
+         does first, and still four comparisons"
     );
 
     let red = match paint(&draws, &canvas.occluders) {
@@ -808,6 +811,159 @@ fn a_disc_shadows_the_gpu_the_way_the_cpu_says_it_should() {
         "only {checked} of {} pixels sat away from the disc's shadow edge",
         SPAN * SPAN
     );
+}
+
+/// The two roads a light takes to a pixel — one hard ray at penumbra `0`, nine
+/// taps at any penumbra above it — asked about the same frame and the same
+/// occluder, and only about the part of the frame where they were ever found to
+/// disagree about a circle.
+///
+/// That region is the *pocket*: everything between a disc and the square the
+/// record stores as its bounds. A receiver pixel standing there is outside the
+/// disc, so the disc can shadow it, and in this frame about half the pocket sits
+/// in exactly that shadow. The penumbra is a quarter of a pixel, so the nine rays
+/// start from essentially the same point as the hard one; a pocket pixel the two
+/// roads resolve differently is the walk answering differently from the ray, with
+/// no softness in the light to explain it.
+///
+/// The bound is a hexagon of the same radius measured in the same invocation. A
+/// hexagon is exact on both roads because its planes are consulted where a circle
+/// has none, so whatever slack it shows is the umbra's own edge crossing between
+/// neighbouring samples — the only slack a circle is entitled to as well. Measured
+/// this way, both shapes sit between nought and two pixels out of a hundred and
+/// sixty-eight.
+///
+/// Nothing here looked at the pocket before. Every guard in front of it reads the
+/// shadow along an axis or at a single ray, and the square and the disc agree on
+/// both; the disagreement lived on the diagonals, in the four corners of the
+/// square, where a pixel was told it stood on the occluder and handed its direct
+/// light back — 95 pixels of it at radius 14, 380 at 40 (§36).
+#[test]
+fn both_roads_shadow_the_pocket_between_a_disc_and_its_bounds() {
+    let surface = Draw::Shape {
+        world: Transform::identity(),
+        center: [32.0, 32.0],
+        params: [80.0, 80.0],
+        kind: 1.0,
+        aa: 1.0,
+        color: objects::Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        },
+        emission: black(),
+        glow: None,
+        lit: 1.0,
+        occludes: 0.0,
+        z: 0.0,
+        diagnostic: false,
+
+        lit_layers: LightLayers::default(),
+        occludes_layers: LightLayers::default(),
+    };
+    let light = |penumbra: f32| Draw::Light {
+        pos: [8.0, 8.5],
+        radius: 1000.0,
+        intensity: 1.0,
+        color: objects::Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        },
+        penumbra,
+        dir: [1.0, 0.0],
+        cos_half: -1.0,
+        // The rung rides the feather slot, as everywhere in this file: without
+        // it the soft frame would walk one ray too and agree with itself.
+        feather: if penumbra > 0.0 { 9.0 } else { 0.0 },
+        z: 0.0,
+
+        layers: LightLayers::default(),
+    };
+    // Turned, because the pocket belongs to the shape and not to the screen: a
+    // circle's square is drawn in the shape's own space, so asking about it here
+    // asks in local space, through the record's inverse, as the walk does.
+    let world = Transform::rotate(0.4).compose(&Transform::translate([6.0, -10.0]));
+    let circle = |canvas: &mut Canvas, radius: f32| {
+        canvas.occluder_circle(world, [0.0, 0.0], radius);
+    };
+    let hexagon = |canvas: &mut Canvas, radius: f32| {
+        let points: Vec<[f32; 2]> = (0..6)
+            .map(|k| {
+                let a = std::f32::consts::TAU * k as f32 / 6.0;
+                [radius * a.cos(), radius * a.sin()]
+            })
+            .collect();
+        let shape = crate::collision::Convex::new(&points).expect("a regular hexagon is convex");
+        canvas.occluder_polygon(world, &shape);
+    };
+    // Pocket pixels, how many of them the hard ray shadows, and how many the two
+    // roads resolve differently.
+    let ask = |declare: &dyn Fn(&mut Canvas, f32), radius: f32| -> Option<(usize, usize, usize)> {
+        let mut canvas = Canvas::new((SPAN, SPAN), 1.0);
+        declare(&mut canvas, radius);
+        let to_local = canvas.occluders[0]
+            .world
+            .invert()
+            .expect("a non-degenerate world");
+        let hard = paint(&[light(0.0), surface.clone()], &canvas.occluders)?;
+        let soft = paint(&[light(0.25), surface.clone()], &canvas.occluders)?;
+        let mut pocket = 0usize;
+        let mut shaded = 0usize;
+        let mut apart = 0usize;
+        for y in 0..SPAN {
+            for x in 0..SPAN {
+                let [lx, ly] = to_local.apply([x as f32 + 0.5, y as f32 + 0.5]);
+                let away = (lx * lx + ly * ly).sqrt();
+                // Past the shape's own boundary by more than a pixel, and inside
+                // the square: the pocket, and nothing else.
+                if away <= radius + 1.0 || lx.abs() > radius || ly.abs() > radius {
+                    continue;
+                }
+                let i = (y * SPAN + x) as usize;
+                pocket += 1;
+                if hard[i] < 128 {
+                    shaded += 1;
+                }
+                if hard[i] != soft[i] {
+                    apart += 1;
+                }
+            }
+        }
+        Some((pocket, shaded, apart))
+    };
+    for radius in [14.0f32, 40.0] {
+        let Some((pocket, shaded, apart)) = ask(&circle, radius) else {
+            return;
+        };
+        let Some((control_pocket, _, control_apart)) = ask(&hexagon, radius) else {
+            return;
+        };
+        assert_eq!(
+            pocket, control_pocket,
+            "the pocket is the same region whatever is cast, so the two scenes \
+             are not being asked about different pixels"
+        );
+        assert!(
+            pocket > 50,
+            "only {pocket} pixels lay between the caster and its bounds square \
+             (measured: 100 at radius 14, 168 at 40), which is too little to ask \
+             a question about"
+        );
+        assert!(
+            shaded * 4 > pocket,
+            "the hard ray shadowed {shaded} of {pocket} pocket pixels, so the two \
+             roads agreeing about the rest would prove nothing"
+        );
+        assert!(
+            apart <= control_apart + 1,
+            "the nine-tap road handed {apart} shadowed pocket pixels their light \
+             back where the single ray shadowed them; a hexagon of the same \
+             radius, exact on both roads, handed {control_apart} back"
+        );
+    }
 }
 
 /// The same circle reaching the light field by the other road: painted and

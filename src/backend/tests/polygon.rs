@@ -358,8 +358,10 @@ fn regular6() -> Caster {
     Caster::Polygon(regular(6, RADIUS))
 }
 
-/// The three scenes §22 and §23 fingerprinted, in the same order: hexagons at
-/// nine taps, hexagons at four, sixteen-sided discs at nine. The numbers in
+/// The three scenes the fingerprint guard was written with, in the same order:
+/// hexagons at nine taps, hexagons at four, circles at nine. The first two are
+/// §22's and §23's own; the third is the scene §34 left behind it, once a circle
+/// stopped being traced. The numbers in
 /// [`the_polygon_fingerprints_print_themselves`] are what those three are on this
 /// machine today, which is the claim the document could make but no longer
 /// support on its own.
@@ -376,6 +378,18 @@ fn scenes() -> Vec<(&'static str, Caster, f32, u32, u64)> {
         // holding 97.4 % of the circle's area it stands in for. A shape corrected
         // towards what it claims to be should remove a little more light, and it
         // removed a little more light.
+        //
+        // It moved a second time for §36, and this time the reason is on the record
+        // rather than in the reading: the nine-tap road asked whether a pixel stood on
+        // the occluder by testing the square drawn around the disc instead of the disc,
+        // so four pockets on the diagonals were handed their direct light back. The
+        // hexagons did not budge again — a hexagon's planes were always consulted —
+        // and neither did the disc's outline, because a pocket is not on an axis and no
+        // profile in this file reads a diagonal. That region is what
+        // [`super::shadows::both_roads_shadow_the_pocket_between_a_disc_and_its_bounds`]
+        // reads now, and it is why this number had to move rather than be argued about:
+        // 49 shadowed pocket pixels were lit at radius 14 and 100 at radius 40, and a
+        // fingerprint that pins a wrong frame is only a receipt for it.
         (
             "hexagon, nine rays",
             regular6(),
@@ -390,7 +404,7 @@ fn scenes() -> Vec<(&'static str, Caster, f32, u32, u64)> {
             4,
             0x33a2_a3a4_bbf0_90c5,
         ),
-        ("disc, nine rays", disc, DISK, 9, 0xc076_0736_e312_8d33),
+        ("disc, nine rays", disc, DISK, 9, 0x0781_7531_400c_416f),
     ]
 }
 

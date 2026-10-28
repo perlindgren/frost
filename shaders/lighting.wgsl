@@ -416,8 +416,16 @@ fn occluded_taps(
         let lc = vec2<f32>(m.x * src.x + m.z * src.y + tv.x, m.y * src.x + m.w * src.y + tv.y);
         // The occluder never shadows its own surface, and which surface the
         // pixel sits on does not depend on which tap is being asked about.
+        // The refinement is the single ray's, unchanged. A circle's bounds are
+        // a square, and a pixel in the pocket between that square and the disc
+        // is a receiver like any other: left as a bounds test here it was told
+        // it stood on the occluder, so a disc shadowed it at penumbra 0 and
+        // stepped aside at any penumbra above (§36).
         var inside = all(abs(lp - center) <= half);
-        if (inside && edges > 0u) {
+        if (round) {
+            let to = lp - center;
+            inside = dot(to, to) <= half.x * half.x;
+        } else if (inside && edges > 0u) {
             inside = in_planes(base + 3u, edges, lp);
         }
         // The whole-disk reject, boxes only. Every point of a tap's segment
