@@ -488,7 +488,15 @@ const EMBER_PER_LAMP: f32 = 0.15;
 /// `lighting.wgsl` composes a lit pixel as `base * (ambient + Σ lights)`,
 /// so this takes the light between the lamps away and leaves what the lamps
 /// themselves throw where it is. Zero is the night with nothing held back;
-/// 1.0 is no dim at all.
+/// 1.0 is no dim at all — and note the direction, because the name invites
+/// reading it the other way: 0.28 is the share of the floor *left standing*,
+/// not a dimming of 28 %.
+///
+/// The value is inherited rather than earned. It is where the cover this
+/// replaced left the world — a 0.72 quad multiplied the composed pixel by
+/// 0.28 — but a cover and a floor are different quantities, so the number
+/// is a starting point that happens to be familiar, and the eye is the
+/// judge of it.
 const MENU_DIM: f32 = 0.28;
 
 /// The halo per lamp: what the bloom chain gets to blur, over and above the
@@ -1675,23 +1683,21 @@ impl Demo {
     }
 
     /// How far the night has come down while a menu is up: 1.0 with the
-    /// overlay away, [`MENU_DIM`] at full breath.
-    ///
-    /// The banner does not read this — it rides above where the veil used to
-    /// be, deliberately fully lit while any menu is up, and immediate draws
-    /// take no node modulate, so it carries on unchanged. The note and the
-    /// showing sat *under* the veil and do read it, because a footnote that
-    /// stays bright over a darkened hill is the one thing that would show
-    /// this is a multiply wearing a veil's job.
+    /// overlay away, [`MENU_DIM`] at full breath. Written once as the
+    /// ambient floor in `process`; read here by the few immediate draws
+    /// that have no part in the light field.
     pub(crate) fn world_dim(&self) -> f32 {
         1.0 - (1.0 - MENU_DIM) * self.menu.alpha
     }
 
-    /// A colour as it reads while the world is dimmed for a menu: the
-    /// multiply the scene tree gets, applied by hand to the handful of
-    /// immediate draws that used to sit under the veil. The banner is not
-    /// among them — it rode above the veil, fully lit by intent, and an
-    /// immediate draw takes no node modulate either way.
+    /// A colour as it reads while the night is down for a menu.
+    ///
+    /// Nothing dims these by itself: the hill sinks because its ambient
+    /// floor comes down, and a floor reaches scene nodes — an immediate
+    /// draw's colour belongs to no node, so the handful of lines that used
+    /// to sit under the cover's rectangle are scaled here instead. The
+    /// banner is deliberately not among them; it was fully lit while any
+    /// menu was up before the cover went as well, and it stays that way.
     pub(crate) fn dimmed(&self, c: Color) -> Color {
         let k = self.world_dim();
         Color {

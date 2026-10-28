@@ -382,9 +382,9 @@ impl Demo {
         let z = UI + 10.0;
         // Everything the overlay owns breathes together — plate, rows,
         // verdict — through one alpha held by `process`. The world behind
-        // it is no longer painted over: `world_dim` darkens the hill by
-        // multiplying the scene, so the only thing laid on the screen here
-        // is the menu's own. Which is why the veil's colour is gone rather
+        // it is no longer painted over: `world_dim` pulls the ambient floor
+        // down while the plate is up, so the only thing laid on the screen
+        // here is the menu's own. Which is why the veil's colour is gone rather
         // than set to zero — its cold cast was a decision of the same day,
         // and a darkening that also tints is a different ask from one that
         // just goes down.

@@ -1234,11 +1234,12 @@ impl Demo {
                 (*text).to_string(),
                 size,
                 weight,
-                // One over the veil's head (its base, below the plate
-                // and rows): the hill's record rides above the fade,
-                // fully lit while any menu is up — a simple z, where
-                // colours pushed past 1.0 would only meet the 8-bit
-                // buffer's clamp.
+                // One over the plate's head: the hill's record rides
+                // fully lit while any menu is up, by intent before the
+                // cover went and by arithmetic after it — an immediate
+                // draw has no part in the light field the night comes
+                // down through. A simple z, where colours pushed past
+                // 1.0 would only meet the 8-bit buffer's clamp.
                 *colour,
                 UI + 10.5,
             );
