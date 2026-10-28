@@ -1,41 +1,40 @@
 # benchsuite baseline — one name and median fps per line
 # walked 2026-10-28 on NVIDIA GeForce RTX 4090, 1920x1080 px in a window, 3 reps per row — see docs/benchmarking.md
-# The driver held Max Frame Rate pinned at 117 with Vertical sync on Fast for
-# the first rows taken here, and they came out 117 flat: `taps-9 117.1`, and
-# `fill-1080p`, a row a Radeon 610M renders at 1002.7, at 117.2 with its three
-# reps agreeing to a fifth of a percent — which is exactly what a clamp looks
-# like, because a clamp is the most repeatable thing on any machine. Both
-# settings are OFF for every number below, so nothing in the driver paces a
-# presented frame. Conditions the tool cannot read for itself: a 3840x2160
-# panel at 60 Hz, a 1920x1080 window, frame limiter off, vertical sync off,
-# noise floor 1.4× on the two chunks taken in one piece. The rows run 511 to
-# 3004 fps, eight to fifty times the refresh rate, which is the proof that
-# nothing is pacing them — turn sync back on and every row here reads 60.0,
-# the most misleading number this box can produce. The shape reading, the
-# capped numbers in full and what is still owed: docs/benchmarking.md §38.
-fill-1080p 3004.7
-lamps-4 2961.5
-lamps-10 2912.4
-lamps-40 2868.8
-lamps-40-static 2864.5
-occluders-10 2700.0
-occluders-100 1853.8
-taps-1 2155.2
-taps-4 2159.5
-taps-9 2156.9
-taps-9-clear 2934.5
-polys-60 2067.0
-taps-9-polys 893.2
-taps-9-discs 2108.2
-taps-9-poly16 511.7
-parts-1k 2714.1
-parts-10k 2452.4
-parts-100k 754.0
-parts-10k-big 2383.2
-parts-huge 553.5
-parts-10k-cliff 1866.1
-parts-10k-cliff-lit 1739.8
-parts-10k-shadow 1875.5
-parts-10k-shadow-lit 1872.3
-parts-10k-lamps 2379.6
-parts-10k-lit 2413.1
+# Conditions the tool cannot read for itself: a 3840x2160 panel at 60 Hz, a
+# 1920x1080 window, frame limiter off, vertical sync off, the window actually on
+# screen, and the machine otherwise idle. The driver held Max Frame Rate at 117
+# with Vertical sync on Fast for the first rows ever taken on this box, and they
+# came out 117 flat — `fill-1080p`, a row a Radeon 610M renders at 1002.7, at
+# 117.2 with its three reps agreeing to a fifth of a percent, which is what a
+# clamp looks like. And even with both settings off, a walk whose window is not
+# being composited reads the present-bound rows 8 to 18 percent slow, close to a
+# constant 40 microseconds a frame, which is why this file was written twice in
+# an hour: the numbers below are the second take, from a terminal with the window
+# visible. Shape reading, the discarded numbers and what is still owed are
+# docs/benchmarking.md §38.
+fill-1080p 3369.5
+lamps-4 3340.6
+lamps-10 3287.7
+lamps-40 3231.5
+lamps-40-static 3233.4
+occluders-10 2949.5
+occluders-100 2109.9
+taps-1 2431.4
+taps-4 2431.9
+taps-9 2418.3
+taps-9-clear 3248.8
+polys-60 2299.0
+taps-9-polys 898.8
+taps-9-discs 2383.3
+taps-9-poly16 535.9
+parts-1k 3060.2
+parts-10k 2736.0
+parts-100k 887.7
+parts-10k-big 2680.9
+parts-huge 558.7
+parts-10k-cliff 2118.4
+parts-10k-cliff-lit 1757.4
+parts-10k-shadow 2095.7
+parts-10k-shadow-lit 2092.2
+parts-10k-lamps 2627.0
+parts-10k-lit 2623.6

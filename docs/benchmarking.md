@@ -2856,76 +2856,115 @@ not a glance at a number that looks low.
 
 **The whole thing was a checkbox.** Max Frame Rate off, Vertical sync off, and
 `fill-1080p` on the unchanged binary went from 117.2 to **3004.7** — twenty-five
-fold, from a driver setting that no program here could have read, which is what
+fold, rising to 3369.5 again once the window was genuinely on screen — from a
+driver setting that no program here could have read, which is what
 §17 meant when it said the refresh setting cannot be read from inside a shell
 and has to be recorded like any other condition. The conditions of this file are
 therefore: windowed 1080p, three reps, a 3840×2160 panel at 60 Hz, frame limiter
-off, vertical sync off, canary at 1.4× on both chunks that were walked in one
-piece. The rows land between 511 and 3004 fps, eight to fifty times the panel
-rate, which is the evidence that nothing is pacing them — and the reason the
-60 Hz still belongs on the record is that the moment someone turns sync back on
-every row in the file reads 60.0, which is the most misleading number available
-here because it looks like a dead engine rather than a paced one.
+off, vertical sync off, **the window actually on screen** and the machine
+otherwise idle; the canary stayed between 1.4× and 1.9× on every run taken here,
+mine and the terminal's alike. The rows land between 536 and 3369 fps, nine to
+fifty-six times the panel rate, which is the evidence that nothing is pacing them
+— and the reason the 60 Hz still belongs on the record is that the moment someone
+turns sync back on every row in the file reads 60.0, which is the most misleading
+number available here because it looks like a dead engine rather than a paced one.
 
 **The ladder, in milliseconds, with the caveat printed beside it.**
 
 | row | RTX 4090, 1080p window | M4 Max, 4112×2572 fullscreen |
 | --- | --- | --- |
-| `fill-1080p` | 0.333 | 1.232 |
-| `lamps-40` | 0.349 | 4.523 |
-| `taps-1` | 0.464 | 2.994 |
-| `taps-9` | 0.464 | 4.693 |
-| `taps-9-discs` | 0.474 | 5.467 |
-| `taps-9-polys` | 1.120 | 12.09 |
-| `taps-9-poly16` | 1.954 | 23.47 |
-| `parts-100k` | 1.326 | 1.404 |
-| `parts-huge` | 1.807 | 8.230 |
+| `fill-1080p` | 0.297 | 1.232 |
+| `lamps-40` | 0.309 | 4.523 |
+| `taps-1` | 0.411 | 2.994 |
+| `taps-9` | 0.414 | 4.693 |
+| `taps-9-discs` | 0.420 | 5.467 |
+| `taps-9-polys` | 1.113 | 12.09 |
+| `taps-9-poly16` | 1.866 | 23.47 |
+| `parts-100k` | 1.127 | 1.404 |
+| `parts-huge` | 1.790 | 8.230 |
 
 The Mac rows were walked at 5.1× the pixel count in a different present mode, so
 those columns are both measured and neither comparable — §37's defect again, this
 time arriving in the display rather than the judgement, which is how one knows
 it was never about the file format.
 
-**Nine taps turned out not to cost anything, here.** 2155.2, 2159.5 and 2156.9
-fps at one, four and nine taps: indistinguishable, and 0.464 ms at both ends of
-the range. The Mac falls 334.0 → 263.6 → 213.1 across the same three rows, a 36 %
-loss. Subtracting the blank frame, the whole shadow walk costs this box 0.13 ms
-and the Mac 3.46 ms; normalising the Mac's 5.1× pixels leaves it about five times
-dearer per pixel. So "nine taps cost 36 %" was never a property of the engine —
-it was a property of two machines, and this one, a third data point, disagrees
-with both. It does not make §22 wrong, it makes it a claim about hardware, which
-is the thing this section keeps being about.
+**Nine taps turned out not to cost anything, here.** 2431.4, 2431.9 and 2418.3
+fps at one, four and nine taps: 0.411 ms at both ends of the range, and a spread
+of 0.5 % between nine taps and one. The Mac falls 334.0 → 263.6 → 213.1 across the
+same three rows, a 36 % loss. Subtracting the blank frame, the whole shadow walk
+costs this box 0.117 ms and the Mac 3.46 ms; normalising the Mac's 5.1× pixels
+leaves it nearly six times dearer per pixel. So "nine taps cost 36 %" was never a
+property of the engine — it was a property of two machines, and this one, a third
+data point, disagrees with both. It does not make §22 wrong, it makes it a claim
+about hardware, which is the thing this section keeps being about. It is also the
+one finding here that a worse-conditioned walk and a better one both agree on,
+because a cost that is zero relative to its neighbour survives the 40 µs that
+moved everything else.
 
 **The cliff is the polygon walk on both vendors, and only its multiplier
-survives.** 0.46 → 1.95 ms here, 4.69 → 23.5 ms there: 4.2× and 5.0×. The
-absolute cost is twelve-fold apart, the shape is within 20 %, which is the
-strongest argument this document has never quite made for reading its own tables
-as ratios first and megahertz second. And §23's other finding reproduces on
-hardware that was not in the room when it was written: discs are nearly free
-(0.474 ms against 0.464) while sixty polys put a hundred discs' worth of walk in
-the same frame and cost a second and a half.
+survives.** 0.414 → 1.866 ms here, 4.693 → 23.47 ms there: 4.5× and 5.0×, which the
+re-take below tightened from 4.2× — the agreement between the two machines got
+better when the conditions got honest, which is not what one expects from noise.
+The absolute cost is twelve-fold apart, the shape is not, and that is the strongest
+argument this document has never quite made for reading its own tables as ratios
+first and megahertz second. And §23's other finding reproduces on hardware that was
+not in the room when it was written: discs are nearly free (0.420 ms against 0.414)
+while the same frame carrying sixty polys instead costs 1.113 ms.
 
-**One row where the two boxes agree, which is suspicious.** `parts-100k` reads
-1.326 ms here and 1.404 ms there, on machines twelve-fold apart in every other
-row of that table. Something in that row costs about 1.4 ms regardless of what is
-asked of the GPU, and nobody here has named it; a 100 k-particle frame on a 4090
-should not cost what it costs on a laptop unless the machine is not the one
-paying. That is the question to take up next, and the offscreen meter is where to
-ask it.
+**The row I most suspected is the one that moved most.** The first version of this
+section reported `parts-100k` at 1.326 ms against the Mac's 1.404 — a suspicious
+agreement between machines twelve-fold apart everywhere else — and guessed that
+something in that row was not being paid for by the GPU. Re-taken properly it reads
+1.127 ms, the largest single movement in the file at +17.7 %, so the agreement was
+an artefact of the worse walk and the claim goes with it. What survives is smaller
+and better founded: a hundred thousand particles cost 1.13 ms against a blank
+frame's 0.30, and the particle row that barely moved across the two walks is
+`parts-huge` at 1.79 ms, which is the one place a machine-independent cost might
+still be hiding. The offscreen meter is where to ask it, not a window.
 
-**A row measured alone is not the same row.** Once the file existed, `--only
-taps-9` on the unchanged build read 2438.0 — reps 2425.2, 2442.9 and 2438.0,
-agreeing to 0.7 %, so not a fluke — against the 2156.9 on file, a **+13 %**
-improvement from no change whatsoever. Taking the same row beside its two
-neighbours at five reps gave 2153.4, 2155.3 and 2153.9 fps for one, four and nine
-taps, all within 0.2 % of the file, and eight rows re-measured as a set came back
-between −1.5 % and +5.9 %. So the file reproduces; what does not reproduce is a
-single row taken by itself. The obvious suspect is clock state — one scenario
-sustains one load where a chunk interleaves seven — and nothing here reads clocks,
-so it is named as a suspect and left there. The consequence is a trap rather than
-a curiosity, because the judgement threshold is 5 %: a one-row spot check against
-this file reports a phantom 13 % speedup as an improvement. Take a row with a
-neighbour, or take the suite.
+**The window's state was the variable, and it moved the file by thirteen percent.**
+What stood here before explained a lone `--only taps-9` run reading 2438.0 against
+the 2156.9 then on file as the difference between a row taken by itself and a row
+taken beside its neighbours, with clock state named as the suspect. That explanation
+was wrong, and the re-take is what proves it: **2438.0 was the good measurement.**
+The whole file was walked again from a terminal, window on screen and the machine
+otherwise idle, and twenty-two of the twenty-six rows came in 8.7 to 17.7 % faster —
+`taps-9` at 2418.3 where the file had said 2156.9. The spot check was right and the
+walk was wrong, which is the whole trouble with a condition nobody records: every
+one of those runs printed `visible: Some(true)`, and in winit that means only *not
+explicitly hidden*.
+
+And what changed is not a clock. Sorted by movement, three rows did not move at all
+— `taps-9-polys` 1.120 → 1.113 ms, `parts-huge` 1.807 → 1.790, `parts-10k-cliff-lit`
+0.575 → 0.569 — and those are the rows carrying the most GPU work per frame, while
+each of the twenty-two that did move differs from the old file by a near-constant
+0.03 to 0.065 ms rather than by a ratio. A clock or a power state scales with the
+work: `parts-huge` at 1.79 ms would have gained near 0.2 ms where it gained 0.017.
+What fits is a fixed cost of roughly 40 µs on a presented frame, on the critical
+path only when the frame is short enough for it to be there at all — the signature
+of a present path doing different work when nothing is compositing the window, the
+same machinery §17 found making a windowed Mac read differently from a fullscreen
+one. `taps-9-poly16` (+4.7 %) and `parts-100k` (+17.7 %) move by more than the
+constant and are not accounted for: the evidence supports *something fixed per frame
+left the measurement*, not *every row is now explained*.
+
+So this file is a ruler for a window that is **on screen**. Run it from anything
+whose window ends up behind something else — an agent's shell, a scheduled task, a
+runner with no console — and every row fast enough to be present-bound reports up to
+13 % of free improvement against a threshold of 5 %, in the direction that reads as
+success rather than as trouble. What the tool should do is record `is_minimized()`
+and `has_focus()` beside the box size, and refuse to write a baseline from a window
+that is not up the way it refuses a loud box; it does neither yet, so for now the
+condition lives in this paragraph and in the file's header, which is exactly how
+§17's refresh rate had to be carried too.
+
+The effect replicates from the other side now that the file is conditioned
+properly: the same build, run minutes later from a shell whose window is not
+composited, reads `taps-9` at 2169.0 against the 2418.3 above, and the tool says
+**REGRESSED −10.3 %** and exits non-zero. Nothing changed in the engine, nothing
+changed in the driver, and a false regression is as damaging as a false pass — the
+difference being that this one appears in the conservative direction, which is
+precisely why nobody would stop to check whether the GPU had really got slower.
 
 **One hazard the walk fell next to, which §37 half fixed.** §37's title names the
 save path, and the save path now merges instead of overwriting — but it merges
