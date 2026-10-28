@@ -25,8 +25,6 @@ fn context_reports_held_keys() {
             render_size: &mut None,
             bloom: &mut 0.0,
             tone_map: &mut 0.0,
-            backdrop_blur: &mut 0.0,
-            backdrop_sharp: &mut None,
             window: None,
             expected_fps: None,
             mouse: None,
@@ -55,8 +53,6 @@ fn context_reports_held_keys() {
         render_size: &mut None,
         bloom: &mut 0.0,
         tone_map: &mut 0.0,
-        backdrop_blur: &mut 0.0,
-        backdrop_sharp: &mut None,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -96,8 +92,6 @@ fn context_reports_typed_character_of_held_key() {
         render_size: &mut None,
         bloom: &mut 0.0,
         tone_map: &mut 0.0,
-        backdrop_blur: &mut 0.0,
-        backdrop_sharp: &mut None,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -134,8 +128,6 @@ fn context_reports_mouse_position() {
         render_size: &mut None,
         bloom: &mut 0.0,
         tone_map: &mut 0.0,
-        backdrop_blur: &mut 0.0,
-        backdrop_sharp: &mut None,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -162,8 +154,6 @@ fn context_reports_mouse_position() {
         render_size: &mut None,
         bloom: &mut 0.0,
         tone_map: &mut 0.0,
-        backdrop_blur: &mut 0.0,
-        backdrop_sharp: &mut None,
         window: None,
         expected_fps: None,
         mouse: Some([12.0, -34.0]),
@@ -200,8 +190,6 @@ fn context_reports_held_mouse_button() {
             render_size: &mut None,
             bloom: &mut 0.0,
             tone_map: &mut 0.0,
-            backdrop_blur: &mut 0.0,
-            backdrop_sharp: &mut None,
             window: None,
             expected_fps: None,
             mouse: None,
@@ -230,8 +218,6 @@ fn context_reports_held_mouse_button() {
         render_size: &mut None,
         bloom: &mut 0.0,
         tone_map: &mut 0.0,
-        backdrop_blur: &mut 0.0,
-        backdrop_sharp: &mut None,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -268,8 +254,6 @@ fn context_reports_mouse_wheel_delta() {
         render_size: &mut None,
         bloom: &mut 0.0,
         tone_map: &mut 0.0,
-        backdrop_blur: &mut 0.0,
-        backdrop_sharp: &mut None,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -305,8 +289,6 @@ fn context_reports_no_gamepads_without_gilrs() {
         render_size: &mut None,
         bloom: &mut 0.0,
         tone_map: &mut 0.0,
-        backdrop_blur: &mut 0.0,
-        backdrop_sharp: &mut None,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -350,8 +332,6 @@ fn render_size_flips_mid_run() {
         render_size: &mut render_size,
         bloom: &mut 0.0,
         tone_map: &mut 0.0,
-        backdrop_blur: &mut 0.0,
-        backdrop_sharp: &mut None,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -389,8 +369,6 @@ fn context_moves_the_look_knobs() {
     let mut vsync = true;
     let mut bloom = 0.0f32;
     let mut tone_map = 0.0f32;
-    let mut backdrop_blur = 0.0f32;
-    let mut backdrop_sharp: Option<[f32; 4]> = None;
     let mut ctx = Context {
         frame_diagnostic_draw_calls: 0,
         canvas: &mut canvas,
@@ -402,8 +380,6 @@ fn context_moves_the_look_knobs() {
         render_size: &mut None,
         bloom: &mut bloom,
         tone_map: &mut tone_map,
-        backdrop_blur: &mut backdrop_blur,
-        backdrop_sharp: &mut backdrop_sharp,
         window: None,
         expected_fps: None,
         mouse: None,
@@ -420,14 +396,6 @@ fn context_moves_the_look_knobs() {
     ctx.set_bloom(0.7);
     ctx.set_tone_map(0.15);
     assert_eq!((ctx.bloom(), ctx.tone_map()), (0.7, 0.15));
-    ctx.set_backdrop_blur(0.02);
-    assert_eq!(ctx.backdrop_blur(), 0.02);
-    ctx.set_backdrop_blur(9.0);
-    assert_eq!(
-        ctx.backdrop_blur(),
-        0.2,
-        "a wild radius clamps to a fifth of the frame"
-    );
     // Both are values an app may write every frame, so taking them back to
     // zero has to be as ordinary as setting them.
     ctx.set_bloom(0.0);

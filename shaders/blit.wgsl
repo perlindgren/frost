@@ -12,12 +12,7 @@ var frame_sampler: sampler;
 
 struct BlitUniforms {
     fit: vec2<f32>, // content extent as a fraction of the surface; (1, 1) fills it
-    // The centre of the one region a backdrop blur must leave sharp —
-    // the menu's plate, in the frame's own uv — where the old padding
-    // sat. A zero-sized sharp region at the origin blurs the whole
-    // frame; the engine writes (-1, -1) half-extents when no region
-    // is asked for at all, which the mix below reads as blur-everything.
-    sharp_center: vec2<f32>, // lands at 8
+    pad: vec2<f32>,
     // One weight per bloom slot — fine to coarse — already multiplied by the
     // user's strength, so all zero is how "no bloom" reaches this shader, and
     // the slots past the preset's length are zero the same way: bound to a
@@ -29,16 +24,6 @@ struct BlitUniforms {
     bloom_a: vec4<f32>, // levels 0..4, fine first
     bloom_b: vec4<f32>, // levels 4..6; z and w are the vec4's own padding
     tone: f32, // lands at 48, where the second vec4 leaves the struct
-    // The backdrop's blur radius as a fraction of the frame's height,
-    // zero when the frame goes to the window sharp. The menu asks for
-    // it while it fades; the frame parks in the offscreen buffer and
-    // this pass smears it on the way out.
-    blur: f32, // lands at 52
-    // The sharp region's half-extents, in the frame's uv, closing the
-    // struct at its sixty-fourth byte: the blur feathers back in over
-    // this distance beyond the rect, so no hard seam ever meets the
-    // melt. Negative is the engine's `no region` sentinel.
-    sharp_half: vec2<f32>, // lands at 56
 };
 
 @group(0) @binding(2)
@@ -84,11 +69,6 @@ struct VsOut {
 // `true` when it builds this pipeline for a linear surface — and the
 // false form keeps the file valid, dormant WGSL on its own.
 const ENCODE_GAMMA: bool = /*@gamma@*/false;
-
-// The golden angle: successive taps of the backdrop spiral sit a
-// half-integer's fraction of a turn apart, which is how the disc
-// fills evenly — the same angle sunflowers count their seeds by.
-const GOLDEN_ANGLE: f32 = 2.399963229728653;
 
 /// The exact sRGB transfer curve (IEC 61966-2-1), per channel.
 fn encode_srgb(c: vec3<f32>) -> vec3<f32> {
@@ -172,45 +152,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // the sampled color always covers the pixel: no blending needed, the
     // pass writes it straight to the window.
     var c = textureSampleLevel(frame_buf, frame_sampler, in.uv, 0.0);
-    // The backdrop blur: thirteen taps — the centre exact, twelve in a
-    // golden-angle spiral whose radii spread by sqrt so the disc holds
-    // even area — and Gaussian weights, so the menu's world melts
-    // without a visible ring anywhere in the smear. The spiral turns
-    // by a half-integer's fraction of a circle per tap, so no number
-    // of taps ever repeats a spoke. The radius rides height, and x
-    // carries the frame's own aspect, so one radius means one circle
-    // on every buffer shape. At zero, the single sample above is the
-    // whole story and this loop never runs: the sharp path pays
-    // nothing.
-    if (u.blur > 0.0) {
-        let dims = textureDimensions(frame_buf);
-        let aspect = f32(dims.x) / f32(max(dims.y, 1u));
-        let r0 = vec2<f32>(u.blur * aspect, u.blur);
-        var sum = c;
-        var weight = 1.0;
-        for (var i: i32 = 1; i <= 12; i = i + 1) {
-            let t = (f32(i) - 0.5) / 12.0;
-            let ang = f32(i) * GOLDEN_ANGLE;
-            let o = r0 * sqrt(t) * vec2<f32>(cos(ang), sin(ang));
-            let w = exp(-2.0 * t);
-            sum += textureSampleLevel(frame_buf, frame_sampler, in.uv + o, 0.0) * w;
-            weight += w;
-        }
-        // What survives of the smear is decided per pixel: inside the
-        // sharp region the frame keeps every tap of its own — the
-        // menu's words are not scenery — and beyond the feather the
-        // melt is whole. Between the two the mix slides smooth, over
-        // half the blur's own radius, so the stone's edge meets a
-        // softening world rather than a cut in it.
-        let melted = sum / weight;
-        if (u.sharp_half.x >= 0.0) {
-            let du = abs(in.uv - u.sharp_center) - u.sharp_half;
-            let outside = length(max(du, vec2<f32>(0.0)));
-            c = mix(c, melted, smoothstep(0.0, u.blur * 0.5, outside));
-        } else {
-            c = melted;
-        }
-    }
     // Bloom is light, so it joins in the frame's own linear space, before any
     // encoding: added after the transfer curve it would be summed in a space
     // where doubling a number does not double its brightness, and a
