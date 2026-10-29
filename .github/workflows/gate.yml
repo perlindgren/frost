@@ -33,6 +33,15 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# A branch pushed twice in a minute does not need two gates finishing. The
+# second run is the truth about the branch and the first is only evidence about a
+# commit that no longer exists, so the older one is cancelled rather than left to
+# spend five minutes proving something nobody will read. Scoped per ref: a push to
+# `main` and a push to a branch never cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   gate:
     # Pinned rather than `ubuntu-latest`, which migrated its image on 19 October
