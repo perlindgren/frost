@@ -109,6 +109,11 @@ three endings below) and `/examples` can join the list without costing anything.
   lands a patch, and there is no contributor agreement — so the day a stranger's
   commit is accepted, this file needs a line about what terms contributions
   arrive under, or the ability to relicense later depends on finding them.
+  Settled 2026-10-29 as a decision rather than a gap: no contributors are
+  expected, so no agreement is written and the README says nothing about
+  inbound terms. This bullet is the trigger to revisit, not an action item —
+  the first commit from anyone else reopens it, and the cost of reopening
+  grows with every patch accepted before it is written.
 - **Before any real `cargo publish`.** Packaging is proven; uploading is not, and
   cargo already says part of it: `manifest has no description, documentation,
   homepage or repository`. `noisefloor` is also a path dev-dependency of the

@@ -85,6 +85,20 @@ else before `main` will accept it.
 
 ## License
 
-The `assets/fonts/FiraCode-VariableFont_wght.ttf` is a redistribution under OFL.
+The engine is free: `frost`, `frost_shaders` and the tools under `tools/` are
+MIT OR Apache-2.0, the same terms as the Rust project itself. The full texts are
+in [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE), and
+[assets/fonts/OFL.txt](assets/fonts/OFL.txt) carries the SIL Open Font License
+under which Fira Code is redistributed.
 
-Copyright to the Developers (Per Lindgren/Iris Hulsman), for other assets and code. We will keep development sources available for now, hopefully we can find a license allowing the sources to be open and available (giving back to the game dev community), while protecting all rights to releases and distributions.
+What is built *with* the engine is not free in the same way. `antifrost/` and
+`examples/immortal/` are the games, and they are under no licence: all rights
+reserved, deliberately not inheriting the workspace terms, so "the engine is
+open" and "a game built on it is open" are separate decisions. The assets under
+`assets/` follow the same split — the handful the engine itself needs travel
+with it, the rest belong to the games.
+
+[docs/licensing.md](docs/licensing.md) is the ledger: which package carries
+which terms, which assets the engine shares with the games, and what is still
+unresolved — provenance for three fonts and every sound file, the partition of
+the asset tree, and the packaging a real `cargo publish` would want.
