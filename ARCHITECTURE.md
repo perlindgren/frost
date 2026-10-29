@@ -87,7 +87,7 @@ assets/               the art the engine's own examples draw: sprites/*.png
                       (+ .pxo sidecars; worm crops, the tomato's two leaves,
                       plant1..3 with their anchor .ron files, …), fonts/
                       (FiraCode Variable, JameGem08, Leofont + licenses),
-                      audio/*.wav, ron/garden.ron (ron_view). The game's 47
+                      audio/*.wav, ron/garden.ron (ron_view). The game's 78
                       files live in `immortal/assets/` under the same
                       `assets/…` keys — immortal/src/assets_load.rs is the
                       resolver that reads both homes

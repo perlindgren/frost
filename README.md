@@ -119,7 +119,7 @@ game built on it is open" are separate decisions. `immortal/` was an example
 *target* of the engine's own package until 2026-10-29, which meant the only
 licence statement anywhere near it was a claim about a crate it was not; as a
 package it names no `license`, and naming nothing is how a manifest says all
-rights reserved. The art follows the same split — 47 files moved to
+rights reserved. The art follows the same split — 78 files live in
 `immortal/assets/`, the ten the engine's examples draw as well stayed at the
 repository root, and both homes are addressed by the same keys.
 
