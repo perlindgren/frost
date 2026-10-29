@@ -174,6 +174,19 @@ pub(crate) struct Frost<P: Process> {
     /// 9,420 identical lines, which is an hour of log in an afternoon and
     /// buries the handful of lines that actually explain the pause.
     surface_gone: Option<(&'static str, u32)>,
+    /// The swap-chain format a host chose when it built its surface, or
+    /// `None` for frost's own window, where the engine picks.
+    ///
+    /// Only [`Self::attach_surface`] records one: a guest's surface comes
+    /// from outside, and a swap chain built on a format the host did not
+    /// choose would be a surprise handed to whoever composites it.
+    surface_format: Option<TextureFormat>,
+    /// Whether the surface has a swap chain at all. `false` until a
+    /// configure succeeds, and the reason [`Self::acquire_frame`] refuses
+    /// to ask a surface for a texture — which wgpu takes as a panic.
+    /// Distinct from [`Self::format`], which is also `None` while a
+    /// configured chain waits for its pipelines to be rebuilt.
+    surface_unconfigured: bool,
     /// The last size the resize line spoke about, so a window told its own
     /// size twice by a chatty compositor does not report that it resized
     /// twice. The work `resize` does is not skipped, only the sentence.
@@ -387,6 +400,12 @@ pub(crate) struct Frost<P: Process> {
     /// press recorded no matter which modifiers moved in between, and the
     /// character a shortcut matches never changes while the key is held.
     typed: HashMap<KeyCode, char>,
+    /// The physical code of the most recent key press, so a character the
+    /// host reports as its own event (see [`Self::note_key_char`]) can find
+    /// the key that typed it. A windowed app never needs the pairing — its
+    /// press carries the character — but a host translates key events and
+    /// text events separately, which is how every GUI toolkit sends them.
+    last_pressed: Option<KeyCode>,
     /// The `Config`'s escape policy: when true, an Escape press ends
     /// the app; when false the key belongs to the process, which
     /// closes through `Context::exit` when it means to (see
@@ -824,6 +843,10 @@ impl<P: Process> Frost<P> {
             scale: 1.0,
             surface: None,
             surface_gone: None,
+            surface_format: None,
+            // No surface exists yet, and nothing may ask one for a texture
+            // until a configure says a swap chain is there.
+            surface_unconfigured: true,
             resize_logged: (0, 0, 0, 0),
             resize_pending: PendingResize::default(),
             line_pipeline: None,
@@ -874,6 +897,7 @@ impl<P: Process> Frost<P> {
             scene,
             keys: HashSet::new(),
             typed: HashMap::new(),
+            last_pressed: None,
             mouse: None,
             mouse_buttons: HashSet::new(),
             mouse_wheel: 0.0,
@@ -885,6 +909,230 @@ impl<P: Process> Frost<P> {
             exit_requested: false,
             keys_frozen: false,
         }
+    }
+}
+
+/// The frame and its input, for whoever drives them.
+///
+/// Everything here is one thing the winit arms used to do inline, lifted so
+/// a host that owns the window can ask for the same effect: [`Self::step`]
+/// is the body of a redraw, the setters are the arms that write the input
+/// state, and [`Self::attach_surface`] is what [`Self::attach_window`] does
+/// once a window exists, minus the window. The arms below call these rather
+/// than keeping a second copy of the writes, so there is one definition of
+/// a frame and one place the held keys live — a process cannot tell a
+/// frame drawn by winit from one drawn by a host's timer, and that is the
+/// point.
+impl<P: Process> Frost<P> {
+    /// Takes over a surface the host made: sizes from the host's physical
+    /// pixels and scale, configures a swap chain on the format the host
+    /// chose, builds the pipelines, and draws the first frame before
+    /// returning.
+    ///
+    /// This is the surviving half of the old `resumed`/`attach_window`
+    /// pair for a guest — the half that needed a window only to ask it for
+    /// a size, a scale, and something to present to. A lost surface comes
+    /// back through here too: the scene, the texture caches, and the
+    /// uniform arena ride through a replacement untouched, because none of
+    /// them were ever built against a swap chain.
+    pub(crate) fn attach_surface(
+        &mut self,
+        surface: Surface<'static>,
+        surface_format: TextureFormat,
+        physical: (u32, u32),
+        scale_factor: f64,
+    ) {
+        let scale = scale_factor.max(0.01);
+        self.scale = scale as f32;
+        self.logical_size = (
+            (physical.0 as f64 / scale).max(1.0).round() as u32,
+            (physical.1 as f64 / scale).max(1.0).round() as u32,
+        );
+        // No monitor to ask: with no vsync there is no expected rate, and
+        // the host's timer is the only cadence there is (see
+        // `Context::expected_fps`).
+        self.expected_fps = None;
+        self.surface = Some(surface);
+        self.surface_format = Some(surface_format);
+        // The new chain has proven nothing yet: the format the old one
+        // settled on does not carry over, and until `reconfigure_surface`
+        // restates it every frame skips at the guard in `acquire_frame`. A
+        // same-format re-attach rebuilds its pipelines once more here — the
+        // price of an honest `None` meaning "this chain has no format yet",
+        // and once per lost spell is nothing.
+        self.format = None;
+        self.surface_unconfigured = true;
+        // A fresh chain is a fresh chance; the gone spell, if any, ends.
+        self.surface_gone = None;
+        log::info!(
+            "host surface attached ({}x{} @ {:.2}x)",
+            self.logical_size.0,
+            self.logical_size.1,
+            self.scale
+        );
+        match self.reconfigure_surface() {
+            Some(config) => log::info!(
+                "host surface configured at {}x{}, format {:?}, present_mode {:?}",
+                config.width,
+                config.height,
+                config.format,
+                config.present_mode
+            ),
+            // Say it once, at the call that could not do the work, rather
+            // than once per skipped frame for the rest of the session.
+            None => log::warn!(
+                "host surface would not configure at {}x{}; frames skip until it will",
+                physical.0,
+                physical.1
+            ),
+        }
+        // Draw before returning: a setup that cannot present says so here,
+        // at construction, not at the host's first timer tick.
+        self.render();
+    }
+
+    /// One frame, from whoever asks: settle a resize that has come to rest,
+    /// then draw. This is the whole of what a redraw does — for winit's loop
+    /// the `RedrawRequested` arm below, for a host [`crate::embedded`] — and
+    /// it says nothing about who should be woken next, because that is not
+    /// frost's business any more than choosing the cadence is.
+    pub(crate) fn step(&mut self) {
+        self.apply_pending_resize();
+        self.render();
+        if self.exit_requested {
+            log::debug!("process requested exit; the host decides");
+        }
+    }
+
+    /// A size the host reports, taken the way a live resize has always been
+    /// taken: noted, and honoured once it comes to rest (see
+    /// [`Self::note_resize`]).
+    pub(crate) fn host_resize(&mut self, physical: (u32, u32)) {
+        if physical.0 > 0 && physical.1 > 0 {
+            self.note_resize(PhysicalSize::new(physical.0, physical.1));
+        }
+    }
+
+    /// A scale factor the host reports, applied at once — the path a
+    /// `ScaleFactorChanged` event always took, which never waited for the
+    /// settle: the surface is sized from the current scale on the next
+    /// configure, and a density move is one event, not a flight of sizes.
+    pub(crate) fn host_scale_factor(&mut self, scale_factor: f32) {
+        if (self.scale - scale_factor).abs() <= f32::EPSILON {
+            return;
+        }
+        self.scale = scale_factor;
+        self.resize();
+    }
+
+    /// Whether the surface has stopped handing over frames — the spell
+    /// [`Self::acquire_frame`] counts. A host reads this to know a fresh
+    /// surface is wanted; [`Self::attach_surface`] ends the spell.
+    pub(crate) fn surface_lost(&self) -> bool {
+        self.surface_gone.is_some()
+    }
+
+    /// The scene the engine draws every frame, reachable between frames as
+    /// well as from inside one (the `Process` sees the same through
+    /// `Context::scene`).
+    pub(crate) fn scene(&mut self) -> &mut Scene {
+        &mut self.scene
+    }
+
+    /// Whether the process asked to leave (see `Context::exit`). Nothing
+    /// ends: a windowed app's loop closes on the flag, a guest's host reads
+    /// it and decides what an exit means in there.
+    pub(crate) fn exit_requested(&self) -> bool {
+        self.exit_requested
+    }
+
+    /// Answers an exit request without leaving, if the host so chooses.
+    pub(crate) fn clear_exit(&mut self) {
+        self.exit_requested = false;
+    }
+
+    // The input state, one destination per fact. Each of these is the arm it
+    // replaces and is called by that arm: the windowed path and the host
+    // write the same state, so a process cannot tell them apart.
+
+    /// A physical key went down or up. A press drops any character the key
+    /// carried from an earlier hold — an auto-repeat may type a different
+    /// one now, and a host sends the character as its own event, which is
+    /// what [`Self::note_key_char`] is for.
+    pub(crate) fn set_key(&mut self, code: KeyCode, down: bool) {
+        if down {
+            self.keys.insert(code);
+            self.typed.remove(&code);
+            self.last_pressed = Some(code);
+        } else {
+            self.keys.remove(&code);
+            self.typed.remove(&code);
+        }
+    }
+
+    /// The character the most recent press typed, attached to the key that
+    /// is still held (see `Context::char_down`). A character with no live
+    /// press is the host describing a key frost does not track, and passes.
+    pub(crate) fn note_key_char(&mut self, ch: char) {
+        if let Some(code) = self.last_pressed
+            && self.keys.contains(&code)
+        {
+            self.typed.insert(code, ch);
+        }
+    }
+
+    /// The cursor, in the physical pixels winit reports and [`Self::mouse`]
+    /// keeps — the space the frame's canvas works in.
+    fn set_cursor_physical(&mut self, x: f32, y: f32) {
+        self.mouse = Some([x, y]);
+    }
+
+    /// The cursor moved, in the host's **logical** pixels (the unit its own
+    /// widgets count in), y down from the surface's corner. The scale the
+    /// host reported turns them into the physical pair the frame works in;
+    /// a host whose events already carry physical pixels would otherwise
+    /// have to know which of the two this is.
+    pub(crate) fn set_cursor(&mut self, x: f64, y: f64) {
+        let scale = self.scale as f64;
+        self.set_cursor_physical((x * scale) as f32, (y * scale) as f32);
+    }
+
+    /// The cursor left the surface: its position reads as absent, and held
+    /// buttons are dropped because a release outside may never arrive.
+    pub(crate) fn cursor_left(&mut self) {
+        self.mouse = None;
+        self.mouse_buttons.clear();
+    }
+
+    /// A mouse button went down or up.
+    pub(crate) fn set_mouse_button(&mut self, button: MouseButton, down: bool) {
+        if down {
+            self.mouse_buttons.insert(button);
+        } else {
+            self.mouse_buttons.remove(&button);
+        }
+    }
+
+    /// Wheel movement in lines, accumulated until the frame's `Context`
+    /// reports it (see `Context::mouse_wheel`). A host holding pixel deltas
+    /// divides by the nominal 120 first, the conversion the wheel arm
+    /// applies.
+    pub(crate) fn scroll(&mut self, dy: f32) {
+        self.mouse_wheel += dy;
+    }
+
+    /// Focus went away, so nothing stays held: the releases may never
+    /// arrive, exactly as for a windowed app whose window was tabbed away
+    /// from. Gaining focus remembers nothing.
+    pub(crate) fn set_focused(&mut self, focused: bool) {
+        if focused {
+            return;
+        }
+        self.keys.clear();
+        self.typed.clear();
+        self.last_pressed = None;
+        self.mouse = None;
+        self.mouse_buttons.clear();
     }
 }
 
@@ -939,13 +1187,8 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                 // report them to the process on the next frame.
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match event.state {
-                        ElementState::Pressed => {
-                            self.keys.insert(code);
-                        }
-                        ElementState::Released => {
-                            self.keys.remove(&code);
-                            self.typed.remove(&code);
-                        }
+                        ElementState::Pressed => self.set_key(code, true),
+                        ElementState::Released => self.set_key(code, false),
                     }
                     // Record what a press typed so shortcuts can follow the
                     // character of the user's layout instead of the
@@ -972,17 +1215,13 @@ impl<P: Process> ApplicationHandler for Frost<P> {
             WindowEvent::CursorMoved { position, .. } => {
                 // `position` is already in physical pixels, the same space
                 // the frame's `Canvas` works in; flip it to user coordinates
-                // when building the `Context`.
-                self.mouse = Some([position.x as f32, position.y as f32]);
+                // when building the `Context`. A host's cursor arrives in
+                // logical ones and comes through `set_cursor` instead.
+                self.set_cursor_physical(position.x as f32, position.y as f32);
             }
-            WindowEvent::MouseInput { state, button, .. } => match state {
-                ElementState::Pressed => {
-                    self.mouse_buttons.insert(button);
-                }
-                ElementState::Released => {
-                    self.mouse_buttons.remove(&button);
-                }
-            },
+            WindowEvent::MouseInput { state, button, .. } => {
+                self.set_mouse_button(button, state == ElementState::Pressed);
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Accumulate the vertical movement in wheel lines:
                 // `LineDelta` is already in lines, and `PixelDelta` is
@@ -991,27 +1230,19 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                 // several notches in one frame add up and an unread frame
                 // discards them.
                 match delta {
-                    MouseScrollDelta::LineDelta(_, y) => self.mouse_wheel += y,
+                    MouseScrollDelta::LineDelta(_, y) => self.scroll(y),
                     MouseScrollDelta::PixelDelta(position) => {
-                        self.mouse_wheel += position.y as f32 / 120.0
+                        self.scroll(position.y as f32 / 120.0)
                     }
                 }
             }
-            WindowEvent::CursorLeft { .. } => {
-                self.mouse = None;
-                // A release outside the window may never arrive, so drop
-                // the held buttons rather than stick them.
-                self.mouse_buttons.clear();
-            }
-            WindowEvent::Focused(false) => {
-                // The window lost focus: key and button releases may never
-                // arrive, so drop the held state rather than stick the
-                // controls. The cursor position may likewise be stale.
-                self.keys.clear();
-                self.typed.clear();
-                self.mouse = None;
-                self.mouse_buttons.clear();
-            }
+            // A release outside the window may never arrive, so the held
+            // buttons go with the cursor.
+            WindowEvent::CursorLeft { .. } => self.cursor_left(),
+            // Key and button releases may never arrive when the window
+            // loses focus, so nothing stays held. The cursor position may
+            // likewise be stale.
+            WindowEvent::Focused(false) => self.set_focused(false),
             WindowEvent::CloseRequested => {
                 if self.close_exits {
                     log::info!("window close requested, exiting");
@@ -1044,8 +1275,7 @@ impl<P: Process> ApplicationHandler for Frost<P> {
                 log::info!("window occluded: {occluded}");
             }
             WindowEvent::RedrawRequested => {
-                self.apply_pending_resize();
-                self.render();
+                self.step();
                 // A process that asked to leave has its last frame drawn
                 // and queued; the loop now ends, exactly as when the
                 // window's close button is pressed.
@@ -1202,6 +1432,8 @@ impl<P: Process> Frost<P> {
         // apply the user's vsync request explicitly.
         config.present_mode = present_mode_for(self.vsync);
         surface.configure(&self.device, &config);
+        // There is a swap chain now, so the guard in `acquire_frame` opens.
+        self.surface_unconfigured = false;
         self.surface_vsync = self.vsync;
         log::info!(
             "surface configured at {}x{}, format {:?}, present_mode {:?}",
@@ -1271,16 +1503,49 @@ impl<P: Process> Frost<P> {
     /// now runs with, or `None` while no surface exists.
     fn reconfigure_surface(&mut self) -> Option<SurfaceConfiguration> {
         let pixel_size = self.pixel_size();
-        let config = {
-            let surface = self.surface.as_ref()?;
-            let mut config = surface
-                .get_default_config(&self.adapter, pixel_size.0, pixel_size.1)
-                .expect("no compatible surface format");
-            prefer_srgb_format(&mut config, surface, &self.adapter);
-            config.present_mode = present_mode_for(self.vsync);
+        let configured = self.surface.as_ref().and_then(|surface| {
+            // A surface and an adapter with no format in common is a fact
+            // about the world outside this frame — a panel whose adapter
+            // went away, a surface built before its window had a size — and
+            // `expect` here would end someone else's application over it.
+            // So it is recorded, frames skip, and the next frame asks again.
+            let mut config =
+                surface.get_default_config(&self.adapter, pixel_size.0, pixel_size.1)?;
+            match self.surface_format {
+                // A host chose this format when it built its surface: keep it
+                // while the chain actually supports it, and say plainly when
+                // it does not rather than present a surprise.
+                Some(want) => {
+                    let formats = surface.get_capabilities(&self.adapter).formats;
+                    if formats.contains(&want) {
+                        config.format = want;
+                    } else {
+                        prefer_srgb_format(&mut config, surface, &self.adapter);
+                        log::warn!(
+                            "host surface format {:?} is not offered by this surface ({:?}); \
+                             configuring {:?} instead",
+                            want,
+                            formats,
+                            config.format
+                        );
+                    }
+                }
+                // frost's own window: winit's default, upgraded to its sRGB
+                // twin where the hardware offers one.
+                None => prefer_srgb_format(&mut config, surface, &self.adapter),
+            }
+            // A guest never holds the host's main thread across a display
+            // refresh, whatever the vsync flag says; a windowed app gets the
+            // mode its request maps to.
+            config.present_mode = present_mode_for(self.window.is_some() && self.vsync);
             surface.configure(&self.device, &config);
-            config
+            Some(config)
+        });
+        let Some(config) = configured else {
+            self.surface_unconfigured = true;
+            return None;
         };
+        self.surface_unconfigured = false;
         self.surface_vsync = self.vsync;
         // Pipelines depend only on the surface format, not the size, so they
         // are rebuilt only if the format actually changed.
@@ -1384,6 +1649,17 @@ impl<P: Process> Frost<P> {
     /// makes every other frame a no-op.
     fn apply_vsync_change(&mut self) {
         if self.surface_vsync == self.vsync {
+            return;
+        }
+        // A guest's swap chain is not negotiable: it presents as soon as a
+        // frame is rendered, whatever the flag says, because the host's main
+        // thread is not frost's to hold across a refresh. The flag still
+        // reads back — `Context::set_vsync` is how a process asks, and a
+        // process has no idea whose thread it is on — it simply moves no
+        // chain here. The mirror follows so this stays a no-op rather than a
+        // question asked once per frame.
+        if self.window.is_none() {
+            self.surface_vsync = self.vsync;
             return;
         }
         // Tear the chain down before building the new one: a whole
@@ -2530,6 +2806,13 @@ impl<P: Process> Frost<P> {
                 }
             }
         }
+        // A chain that has never configured is asked again every frame: a
+        // compositor that came back, a surface handed over before its
+        // window had a size. Once one configures, the guard in
+        // `acquire_frame` opens and the frames resume on their own.
+        if self.surface_unconfigured {
+            self.reconfigure_surface();
+        }
         let (output, reconfigure) = self.acquire_frame();
         if reconfigure {
             self.resize();
@@ -3348,6 +3631,15 @@ impl<P: Process> Frost<P> {
         let Some(surface) = self.surface.as_ref() else {
             return (None, false);
         };
+        if self.surface_unconfigured {
+            // Asking a chain that was never configured is a wgpu panic, and
+            // a panic is not something a guest may hand the host's thread.
+            // The frame is skipped and counted; `render` asks the surface to
+            // configure again, and `surface_lost` is how the host learns a
+            // new surface may be the answer.
+            self.surface_gone("surface not configured");
+            return (None, false);
+        }
         match surface.get_current_texture() {
             CurrentSurfaceTexture::Success(tex) => {
                 self.surface_back();

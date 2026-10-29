@@ -2,7 +2,8 @@
 //! scissor, transform, scene, nodes, context, particles, uniforms,
 //! fields, layers, camera, repeat, sprites, text, tilemap, draw cost,
 //! light cost, emission, the shared machine, bloom, the present harness, tone map, frame
-//! buffer, the letterbox probe, the sRGB envelope probe and config.
+//! buffer, the letterbox probe, the sRGB envelope probe, the guest path's
+//! device limits and config.
 //!
 //! Each module imports the backend's public items and this module's
 //! shared [`black`] helper; every test keeps the name it had when the
@@ -14,6 +15,7 @@ mod camera;
 mod config;
 mod context;
 mod draw_cost;
+mod embed;
 mod emission;
 mod fields;
 mod frame_buffer;

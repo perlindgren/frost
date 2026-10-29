@@ -1133,10 +1133,26 @@ impl Process for Diagnostics {
             // logical user space and the physical panel never do — one
             // app pixel per screen pixel, the case with nothing to say,
             // keeps the line bare.
-            let physical = ctx.window().map(|wnd| wnd.inner_size());
+            // The physical panel behind that user space. A window answers
+            // for itself; a guest has no window to ask, and the scale the
+            // host reported is the truth there, so `logical × scale` is the
+            // physical size the surface carries. In fixed render size mode
+            // that scale is `1.0` and the surface may still differ from the
+            // buffer, so the line then says only what the engine knows.
+            let physical = ctx.window().map_or_else(
+                || {
+                    let factor = ctx.scale_factor();
+                    ((factor - 1.0).abs() > f32::EPSILON)
+                        .then(|| ((w * factor).round() as u32, (h * factor).round() as u32))
+                },
+                |wnd| {
+                    let px = wnd.inner_size();
+                    Some((px.width, px.height))
+                },
+            );
             let mut size_text = match physical {
-                Some(px) if (px.width, px.height) != (w as u32, h as u32) => {
-                    format!("{}x{} ({}x{})", w as u32, h as u32, px.width, px.height)
+                Some((pw, ph)) if (pw, ph) != (w as u32, h as u32) => {
+                    format!("{}x{} ({}x{})", w as u32, h as u32, pw, ph)
                 }
                 _ => format!("{}x{}", w as u32, h as u32),
             };

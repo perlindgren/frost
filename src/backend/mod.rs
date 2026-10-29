@@ -2,7 +2,9 @@
 //! pipeline that turns a frame's draw list into scissored draw calls.
 //!
 //! Everything here is internal to the crate; the public API (`Canvas`,
-//! `Context`, `Process`, [`run`](crate::run)) lives in the crate root.
+//! `Context`, `Process`, [`run`](crate::run)) lives in the crate root. The
+//! one exception is [`embed`], the guest path, re-exported at the root as
+//! [`crate::embedded`] because a host reaches it by name.
 //! Each frame the backend runs the user's [`Process`] through a
 //! [`Context`], updates the scene tree, draws it into a fresh draw list,
 //! expands text into glyph quads, sorts the frame's [`Draw`]ings by z, and
@@ -13,6 +15,9 @@ mod bloom;
 pub(crate) use app::*;
 
 mod copy;
+
+/// The guest path: frost driven on a surface someone else made.
+pub mod embed;
 
 mod frame;
 pub(crate) use frame::*;

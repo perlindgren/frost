@@ -39,6 +39,14 @@ impl Machine {
     pub(crate) fn info(&self) -> AdapterInfo {
         self._adapter.get_info()
     }
+
+    /// The adapter behind the device. The guest path's tests need it
+    /// because a host asks the same questions before it has a device:
+    /// `frost::embedded::device_limits` is answered from an adapter, and
+    /// the answer is only worth what the adapter it was read off has.
+    pub(crate) fn adapter(&self) -> &Adapter {
+        &self._adapter
+    }
 }
 
 thread_local! {

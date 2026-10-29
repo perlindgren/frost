@@ -145,6 +145,13 @@ use winit::event_loop::EventLoop;
 mod backend;
 use backend::*;
 
+/// frost as a guest: a scene and a [`Process`] drawn on a window, device,
+/// and cadence somebody else owns. A host calls
+/// [`embedded::Embedded::frame`] once per redraw and feeds its own OS
+/// events through the input setters; [`run`] remains the ordinary way to
+/// start an app of one's own, and is built on the same frame.
+pub use backend::embed as embedded;
+
 mod objects;
 pub use objects::*;
 
