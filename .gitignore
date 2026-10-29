@@ -35,3 +35,14 @@ web/.watch-stamp
 # from scratch scripts as well as running them: bytecode lands next to a
 # tracked file on the first import and is never wanted.
 __pycache__/
+
+# A cargo home is a cache, never source. The reason to name it explicitly rather
+# than trust "nobody would commit a cache": the plugin project this engine is
+# being joined by keeps its cargo home in the tree, and that directory holds a
+# full unpacked Steinberg ASIO SDK — headers, the licensing agreement, the logo
+# artwork, 48 files and 10 MB of it. Steinberg's licence for that SDK is
+# proprietary, incompatible with this repository's `MIT OR Apache-2.0`, and it
+# is fetched by a build script into exactly this path (`CPAL_ASIO_DIR`). One
+# `git add -A` beside such a tree would publish someone else's SDK from a public
+# MIT repository, which is a thing a repository cannot undo by deleting a commit.
+.cargohome/

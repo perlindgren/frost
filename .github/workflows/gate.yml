@@ -61,6 +61,20 @@ jobs:
             exit 1
           fi
 
+      # The same question `.githooks/pre-commit` asks, for a push from a clone
+      # that never installed the hooks. A cargo home is a cache, and cpal's build
+      # script downloads the Steinberg ASIO SDK into one — which is precisely the
+      # directory a `git add -A` next to a plugin project sweeps in. The SDK is
+      # proprietary and this repository is `MIT OR Apache-2.0`, so one commit
+      # containing it publishes someone else's licensed tree from a public repo,
+      # which no amount of force-pushing afterwards undoes.
+      - name: No third-party proprietary SDK in the tree
+        run: |
+          if git ls-files | grep -E '(^|/)\.cargohome/|(^|/)asiosdk/|(^|/)(asio\.h|iasiodrv\.h|asiodrvr\.cpp|asiolist\.cpp|hostsample\.cpp)$|[Ss]teinberg'; then
+            echo '::error::Steinberg ASIO SDK files above are proprietary and this repository is MIT OR Apache-2.0; git rm --cached them and point CPAL_ASIO_DIR outside the tree.'
+            exit 1
+          fi
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown

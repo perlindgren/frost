@@ -28,7 +28,11 @@ staged=$(git diff --name-only --cached)
 # `grep`, and tested with Git's usr/bin off PATH it printed `grep: command not
 # found` and exited 0: a guard that fails open is worse than none, because it is
 # trusted. Nothing here can be missing. (Like the re-stage loop below, paths
-# containing spaces would split — an accepted trade in a tree without any.)
+# containing spaces would split. That was written as an accepted trade in a tree
+# without any, and the SDK scan below broke the premise: `Steinberg ASIO
+# Licensing Agreement.pdf` is refused on the word `Steinberg` and printed in two
+# pieces, which was measured, not imagined. Refusing is the part that has to
+# work; the name is complete in `git status`, two commands from the fix.)
 #
 # Only additions, copies, modifications and renames are examined, never
 # deletions: without that filter the commit whose whole job is to remove a
@@ -46,6 +50,39 @@ if [ -n "$junk" ]; then
     printf 'pre-commit: refusing to commit OS/build droppings:\n' >&2
     for f in $junk; do printf '  %s\n' "$f" >&2; done
     printf 'pre-commit: git rm --cached <path>, delete the file, commit again.\n' >&2
+    exit 1
+fi
+
+# Third-party proprietary SDKs never get in, and `git add -A` is the way they
+# would. A cargo home beside a project is a cache, but the plugin project this
+# engine is being joined by keeps one in its tree — and inside it sits a complete
+# unpacked Steinberg ASIO SDK: 48 files, 10 MB, `asio.h` and `iasiodrv.h`, the
+# licensing agreement PDF and 3 MB of logo artwork. Steinberg's licence for that
+# SDK is proprietary, incompatible with this repository's `MIT OR Apache-2.0`,
+# and cpal's build script downloads it into exactly that path (`CPAL_ASIO_DIR`).
+# `.gitignore` now says `.cargohome/`, and the lesson of the droppings scan above
+# is that an ignore rule speaks only to *untracked* files — so the check is here
+# as well, on what is actually staged, builtins only for the same reason.
+sdk=
+for f in $(git diff --cached --name-only --diff-filter=ACMR); do
+    case $f in
+        .cargohome/*|*/.cargohome/*)
+            sdk="$sdk $f" ;;
+        asiosdk/*|*/asiosdk/*)
+            sdk="$sdk $f" ;;
+        asio.h|*/asio.h|iasiodrv.h|*/iasiodrv.h)
+            sdk="$sdk $f" ;;
+        asiodrvr.cpp|*/asiodrvr.cpp|asiolist.cpp|*/asiolist.cpp|hostsample.cpp|*/hostsample.cpp)
+            sdk="$sdk $f" ;;
+        *Steinberg*|*steinberg*)
+            sdk="$sdk $f" ;;
+    esac
+done
+if [ -n "$sdk" ]; then
+    printf 'pre-commit: refusing to commit a third-party proprietary SDK.\n' >&2
+    for f in $sdk; do printf '  %s\n' "$f" >&2; done
+    printf 'pre-commit: the Steinberg ASIO SDK is proprietary, not MIT/Apache-2.0.\n' >&2
+    printf 'pre-commit: keep it outside the repository (CPAL_ASIO_DIR may point anywhere else).\n' >&2
     exit 1
 fi
 
