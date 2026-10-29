@@ -7,10 +7,20 @@
 # enforce; the parts it cannot judge are named below and in the step names, not
 # quietly omitted.
 #
-# One runner, `ubuntu-latest`, on purpose. It never compiles the Windows code
-# path — the platform this engine is developed and shipped on — which is the
-# known cost of the cheap option, and the first thing to add back when queue
-# time stops being the constraint.
+# One runner, pinned to `ubuntu-24.04` rather than `ubuntu-latest`, which moved its
+# image on 19 October 2026 without asking: a gate whose machine shifts underneath it
+# silently is §37 in a different costume, and the image carries the system libraries,
+# linker and toolchain this file judges code with. It never compiles the Windows code
+# path — the platform this engine is developed and shipped on — which is the known
+# cost of the cheap option, and the first thing to add back when queue time stops
+# being the constraint.
+#
+# Both ways this file has failed are on the record, because each taught something:
+# the commit that introduced it was rejected before a job existed, a Rust module path
+# ending a YAML line having read as a key indicator; the run after died twenty-six
+# seconds into clippy for want of the ALSA and udev headers. A gate that cannot start
+# and a gate that cannot build look identical from the commit list unless someone
+# writes it down.
 name: gate
 
 on:
@@ -25,9 +35,13 @@ env:
 
 jobs:
   gate:
-    runs-on: ubuntu-latest
+    # Pinned rather than `ubuntu-latest`, which migrated its image on 19 October
+    # 2026 without asking anyone: a gate whose machine changes underneath it
+    # silently is §37 in a different costume, and the runner image carries the
+    # system libraries, the linker and the toolchain this file judges code with.
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # The check `.githooks/pre-commit` runs, in the same spirit: nothing here
       # needs a display, a GPU, or a process list that answers.
@@ -43,6 +57,17 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
+
+      # cpal (through rodio) and gilrs ask pkg-config for a system library before
+      # a single line of Rust is compiled: `alsa-sys` wants libasound2,
+      # `libudev-sys` wants libudev. A runner without those headers fails inside a
+      # build script about twenty-five seconds in, and all the log says is cargo's
+      # exit code 101. They are not optional here any more than they are on a
+      # Linux machine that wants to play sound or read a gamepad.
+      - name: System libraries the audio and gamepad backends need
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pkg-config libasound2-dev libudev-dev
 
       - name: Formatting
         run: cargo fmt --all --check
