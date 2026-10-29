@@ -11,50 +11,206 @@
 # uniform arena's NonZeroU64 import (164679f) sat broken across six commits
 # until someone ran the check by hand.
 #
-# Every push runs every check, `main` included. The hook used to force-pass
-# pushes that touched `main`, and to wave a clone through when the wasm target
-# was missing, on the grounds that a machine should only be asked to check what
-# it can check. With no CI anywhere in this repository, those two passings
-# through added up to the suite running only when someone remembered — and a
-# check that runs when remembered is not a gate, it is a habit. So the target is
-# a requirement now:
+# The suite runs on every push that could change its answer. The hook used to
+# force-pass pushes that touched `main`, and to wave a clone through when the
+# wasm target was missing, on the grounds that a machine should only be asked to
+# check what it can check. With no CI anywhere in this repository, those two
+# passings through added up to the suite running only when someone remembered —
+# and a check that runs when remembered is not a gate, it is a habit. So the
+# wasm target is a requirement now:
 #
 #     rustup target add wasm32-unknown-unknown
 #
-# The way out was never a branch name. `--no-verify` skips the hooks, by name
-# and in the open (README.md, "Repository hooks").
+# What gets skipped is decided by what can change the answer, never by which
+# branch is named, and every skip states its reason on the way past. The way out
+# was always a flag rather than a branch name: `--no-verify` skips the hooks, by
+# name and in the open (README.md, "Repository hooks").
+#
+# WHY A LOCAL SKIP IS NOT A HOLE. `gate` on the runner is unconditional. It
+# builds, lints, packages, compiles for the web and runs the suite for every
+# commit that reaches any ref, whatever this file concluded, and `main` will not
+# move until that check has passed on the commit. So the worst outcome of a skip
+# here is that the first run happens on the runner instead of here, a couple of
+# minutes later and costing someone a browser refresh — never that an unverified
+# commit lands. This cache decides where the first run happens. It cannot decide
+# whether one happens.
+
+git_rev() { git rev-parse --verify --quiet "$1" 2>/dev/null; }
 
 fail() {
     printf 'pre-push: %s failed - push aborted.\n' "$*" >&2
     exit 1
 }
 
-# A delete push ships nothing. git says so on stdin by sending an all-zero local
-# sha for each ref it is removing, and there is no new object on the far side to
-# have broken, yet the hook used to run the whole suite first anyway: three
-# minutes spent testing code in the act of being deleted. That is not caution,
-# it is a tax whose only lesson is that hooks are an obstacle, and the habit it
-# teaches is `--no-verify` — which is the outcome this file exists to make
-# unnecessary. Anything carrying commits, including one push that both creates
-# and deletes refs, still runs everything below.
-#
-# Builtins only, because a missing `grep` once turned a guard like this into a
-# pass. And an unreadable stdin counts as a push: no refs read means run the
-# gate, not skip it.
+# --- what is being pushed ------------------------------------------------
+# git hands the ref list on stdin: local ref, local sha, remote ref, remote sha.
+# An all-zero local sha means a deletion, which ships no objects: three minutes
+# spent testing code in the act of being removed teaches the habit `--no-verify`
+# names out loud, which is the outcome this file exists to make unnecessary.
+ZERO=0000000000000000000000000000000000000000
 deletes_only=yes
 refs=0
+pushed=
 while read -r local_ref local_sha remote_ref remote_sha; do
     refs=$((refs + 1))
+    pushed="$pushed $local_sha"
     case $local_sha in
-        0000000000000000000000000000000000000000) ;;
+        "$ZERO") ;;
         *) deletes_only=no ;;
     esac
 done
+
 if [ "$refs" -gt 0 ] && [ "$deletes_only" = yes ]; then
     printf 'pre-push: %s ref(s) deleted, nothing pushed — no tests to run.\n' "$refs"
     exit 0
 fi
 
+# Anything carrying commits — including one push that both creates and deletes
+# refs — continues. So does the case nobody expects, an empty ref list: no refs
+# read is not evidence that nothing is being pushed, and ambiguity runs the gate.
+
+# --- the verdict, and everything that would change it ---------------------
+# A verdict is a claim about a tree, a toolchain, this file, the environment the
+# suite reads, and the driver the GPU tests measure against. Change any of the
+# five and the old verdict is not answering the new question, so all five go into
+# the key — as one key rather than five separate excuses, because a guard with
+# five ways to go stale has five ways to be wrong.
+#
+# FROST_GATE_DIR names the directory the verdict lives in — the directory itself,
+# nothing appended — so a test can point it at a scratch directory and be certain
+# it is not writing a claim into a real clone.
+gate_dir=${FROST_GATE_DIR:-}
+if [ -z "$gate_dir" ]; then
+    g=$(git rev-parse --git-dir 2>/dev/null)
+    [ -n "$g" ] || g=.git
+    gate_dir="$g/frost-gate"
+fi
+verdict="$gate_dir/verdict"
+
+trees=
+for sha in $pushed; do
+    [ "$sha" = "$ZERO" ] && continue
+    t=$(git_rev "$sha^{tree}")
+    if [ -n "$t" ]; then trees="$trees $t"; else trees="$trees unknown"; fi
+done
+
+if command -v nvidia-smi >/dev/null 2>&1; then
+    gpu=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>&1 | head -n 1)
+    [ -n "$gpu" ] || gpu=nvidia-smi-silent
+else
+    gpu=no-nvidia-smi
+fi
+
+key=$(
+    echo "trees:$trees"
+    echo "toolchain:${FROST_GATE_TOOLCHAIN-$(rustc -V 2>&1; cargo -V 2>&1)}"
+    echo "hook:$(cksum <"$0" 2>/dev/null | cut -d' ' -f1)"
+    echo "tell:${FROST_TELL_PROBE_UNAVAILABLE-unset}"
+    echo "gpu:$gpu"
+)
+key=$(printf '%s' "$key" | cksum | cut -d' ' -f1)
+
+# The working tree is not part of the pushed tree, yet `cargo test` tests the
+# working tree. A dirty tree therefore cannot earn a verdict: recording one would
+# credit a commit with work it does not contain.
+dirty=$(git status --porcelain 2>/dev/null)
+
+record() {
+    first=$(printf '%s' "$pushed" | cut -d' ' -f2)
+    mkdir -p "$gate_dir" 2>/dev/null || return 0
+    {
+        echo "key=$key"
+        echo "trees=$trees"
+        echo "when=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        echo "subject=$(git log -1 --format=%s "$first" 2>/dev/null)"
+    } >"$verdict" 2>/dev/null ||
+        printf 'pre-push: cannot write %s — this verdict will not be reused.\n' \
+            "$verdict" >&2
+}
+
+changed=$(mktemp 2>/dev/null)
+
+# --- skip 1: nothing the suite can see has changed ------------------------
+if [ -z "${FROST_GATE_FORCE:-}" ] && [ -f "$verdict" ]; then
+    case $trees in
+        *unknown*) : ;;
+        *)
+            vkey=$(sed -n 's/^key=//p' "$verdict" 2>/dev/null)
+            if [ -n "$vkey" ] && [ "$vkey" = "$key" ]; then
+                printf 'pre-push: same trees, toolchain, hook and environment as the run recorded %s.\n' \
+                    "$(sed -n 's/^when=//p' "$verdict" 2>/dev/null)"
+                printf 'pre-push: verdict reused, suite not re-run. FROST_GATE_FORCE=1 to insist.\n'
+                [ -n "$changed" ] && rm -f "$changed"
+                exit 0
+            fi
+            ;;
+    esac
+fi
+
+# --- skip 2: the change cannot reach a test -------------------------------
+# Inert means no crate compiles it, no manifest reads it, and no build script or
+# `include_bytes!` embeds it. The list is deliberately short: being wrong in this
+# direction costs a test run, and being wrong the other way costs a green.
+inert=no
+# The first tree of the last full run, compared against the first tree being
+# pushed now. A push of several refs at once is judged by its primary ref, which
+# is what `git push origin HEAD:main` names first; the rest still travel with a
+# commit the runner will check whether or not this file did.
+base=$(sed -n 's/^trees= *//p' "$verdict" 2>/dev/null | cut -d' ' -f1)
+now=$(printf '%s' "$trees" | cut -d' ' -f2)
+if [ -z "${FROST_GATE_FORCE:-}" ] && [ -n "$changed" ] &&
+    [ -n "$base" ] && [ "$base" != unknown ] && [ -n "$now" ] && [ "$now" != unknown ] &&
+    [ "$base" != "$now" ]; then
+    if git diff --name-only "$base" "$now" >"$changed" 2>/dev/null; then
+        inert=yes
+        while IFS= read -r f; do
+            case $f in
+                docs/* | *.md | .github/* | LICENSE | LICENSE-*) ;;
+                *) inert=no; break ;;
+            esac
+        done <"$changed"
+    fi
+fi
+
+# That list is inert only while nothing embeds what it names. Checked against the
+# tree rather than assumed, with builtins only — a missing `grep` once turned a
+# guard in this repository into a pass by not being on PATH — and a scan that
+# cannot read every source file answers "relevant".
+if [ "$inert" = yes ]; then
+    scan_ok=yes
+    rs=$(git ls-files '*.rs' 2>/dev/null)
+    [ -n "$rs" ] || scan_ok=no
+    for f in $rs; do
+        [ -r "$f" ] || { scan_ok=no; break; }
+        while IFS= read -r line || [ -n "$line" ]; do
+            case $line in
+                *include_bytes!* | *include_str!* | *include!*)
+                    case $line in
+                        *docs/* | *.md* | *.github*) scan_ok=no; break ;;
+                    esac
+                    ;;
+            esac
+        done <"$f"
+        [ "$scan_ok" = no ] && break
+    done
+    [ "$scan_ok" = yes ] || inert=no
+fi
+
+if [ "$inert" = yes ]; then
+    printf 'pre-push: every changed file is outside what the suite can read — tests not run.\n'
+    n=0
+    while IFS= read -r f; do
+        n=$((n + 1))
+        [ $n -le 12 ] && printf 'pre-push:   %s\n' "$f"
+    done <"$changed"
+    [ $n -gt 12 ] && printf 'pre-push:   ... and %d more\n' $((n - 12))
+    printf 'pre-push: the runner checks this commit regardless. FROST_GATE_FORCE=1 to insist.\n'
+    [ -n "$changed" ] && rm -f "$changed"
+    exit 0
+fi
+[ -n "$changed" ] && rm -f "$changed"
+
+# --- the suite ------------------------------------------------------------
 printf 'pre-push: running `cargo test`...\n'
 cargo test || fail 'cargo test'
 
@@ -62,9 +218,9 @@ printf 'pre-push: running `cargo test -p antifrost`...\n'
 cargo test -p antifrost || fail 'cargo test -p antifrost'
 
 # The web target shares the library and nothing else, so it gets its own line
-# rather than hiding inside the host's. Missing toolchain is a failure rather
-# than a warning: the check that cannot run is exactly the hole the check
-# exists to close, so the remedy travels with the refusal.
+# rather than hiding inside the host's. A missing toolchain is a failure rather
+# than a warning: the check that cannot run is exactly the hole the check exists
+# to close, so the remedy travels with the refusal.
 wasm_target=wasm32-unknown-unknown
 if ! command -v rustup >/dev/null 2>&1; then
     printf 'pre-push: no rustup on PATH - the web target cannot be checked.\n' >&2
@@ -81,5 +237,14 @@ fi
 printf 'pre-push: checking the web target (%s)...\n' "$wasm_target"
 cargo check --quiet -p antifrost --target "$wasm_target" ||
     fail 'cargo check for wasm32 (the web target)'
+
+# --- record ----------------------------------------------------------------
+if [ -n "$dirty" ]; then
+    printf 'pre-push: passed, but the working tree was dirty — no verdict recorded.\n'
+    printf 'pre-push:         the suite tests this directory, not the commit; a verdict\n'
+    printf 'pre-push:         here would credit the commit with work it does not contain.\n'
+else
+    record
+fi
 
 exit 0

@@ -27,20 +27,41 @@ $env:RUST_LOG="info"; cargo run --example gizmos
 
 ## Repository hooks
 
-The versioned hooks in `.githooks/` gate commits (fmt + clippy) and pushes
-(tests, plus a `wasm32-unknown-unknown` check of the web target — every other
-gate compiles the host target only, so a `cfg`-gated import in the backend
-walks through all of them and breaks `web/build.sh` later). Every push runs
-every check, `main` included, and a clone missing the wasm target is refused
-rather than warned, with the remedy printed beside the refusal:
+The versioned hooks in `.githooks/` gate commits (fmt + clippy) and pushes (the
+test suite, plus a `wasm32-unknown-unknown` check — every other gate compiles the
+host target only, so a `cfg`-gated import in the backend walks through all of them
+and breaks `web/build.sh` later; that has happened).
+
+The suite runs on every push that could change its answer, `main` included, and a
+clone missing the wasm target is refused rather than warned, with the remedy
+printed beside the refusal:
 
 ```shell
 rustup target add wasm32-unknown-unknown
 ```
 
-The one exception is a push that ships nothing: deleting a ref carries no commits,
-so no tests run for it, and the hook says so on one line rather than skipping in
-silence. A push that mixes deletions with commits runs everything.
+Three pushes are skipped, each with its reason printed rather than silence:
+a deletion, which ships no objects; a tree the last run already passed, keyed on
+the pushed trees, `rustc -V` and `cargo -V`, a checksum of the hook itself,
+`FROST_TELL_PROBE_UNAVAILABLE` and the graphics driver version — because a green
+recorded with the tell probe suppressed, or before a driver update, is not the
+same claim (`docs/benchmarking.md` §37 is about measurements moving while nobody
+changed the code); and a diff whose every file is outside anything the suite can
+read — `docs/`, `*.md`, `.github/`, the licence texts. That last list is checked
+against the tree rather than trusted: every `.rs` file in the index is scanned for
+an `include_bytes!` or `include_str!` naming one of those paths, and if any does,
+the list is void. `FROST_GATE_FORCE=1` insists on a full run whatever the hook
+concludes.
+
+A dirty working tree earns nothing. `cargo test` tests the directory, not the
+commit, so a push from a dirty tree runs the suite, passes, and records no verdict
+— otherwise the commit would be credited with work it does not contain.
+
+None of this is a hole, and the reason is worth stating next to the skipping: the
+runner is unconditional. Whatever the local hook decides, `gate` builds, lints,
+packages, compiles for the web and tests the commit, and `main` will not move
+until that has passed. A local skip decides where the first run happens, never
+whether one happens.
 
 There is CI behind this repository now, and it is the reason the hooks stopped
 being the last line. `.github/workflows/gate.yml` runs the same rules on a
