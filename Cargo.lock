@@ -846,8 +846,6 @@ dependencies = [
  "naga",
  "noisefloor",
  "rodio",
- "ron",
- "serde",
  "swash",
  "web-sys",
  "wgpu",
@@ -1055,6 +1053,18 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+]
+
+[[package]]
+name = "immortal"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "env_logger",
+ "frost",
+ "log",
+ "ron",
+ "serde",
 ]
 
 [[package]]

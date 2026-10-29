@@ -1,12 +1,13 @@
-//! Startup asset loading for the `immortal` example.
+//! Startup asset loading for `immortal`.
 //!
-//! Every sprite, sound, and font the example uses is compiled into the
+//! Every sprite, sound, and font the game uses is compiled into the
 //! binary in one [`Table`](frost::Table), keyed by root-relative path
-//! — the same words the asset documents speak — so the example runs
+//! — the same words the asset documents speak — so the game runs
 //! with no asset files on disk, in any working directory, and on
-//! targets without a file system. Development admits the project
-//! root's loose files too, where a saved edit outranks its table
-//! entry — the same code, both worlds, no fork. The older call sites
+//! targets without a file system. Development admits loose files
+//! too — the game's own `assets/` first, the repository's behind it —
+//! where a saved edit outranks its table entry: the same code, both
+//! worlds, no fork. The older call sites
 //! still speak short names, and [`key_of`] is the app's own
 //! housekeeping: a name maps to the table's one path of that stem,
 //! and an ambiguous name is a build error the app refuses to guess.
@@ -22,7 +23,7 @@ const IMMORTALITY_ALPHA: f32 = 0.2;
 const ASSETS: frost::Table = &[
     (
         "assets/game/gameplay.ron",
-        include_bytes!("../../assets/game/gameplay.ron"),
+        include_bytes!("../assets/game/gameplay.ron"),
     ),
     (
         "assets/sprites/grass.png",
@@ -30,23 +31,23 @@ const ASSETS: frost::Table = &[
     ),
     (
         "assets/sprites/water_can_outline.png",
-        include_bytes!("../../assets/sprites/water_can_outline.png"),
+        include_bytes!("../assets/sprites/water_can_outline.png"),
     ),
     (
         "assets/sprites/Spray1.png",
-        include_bytes!("../../assets/sprites/Spray1.png"),
+        include_bytes!("../assets/sprites/Spray1.png"),
     ),
     (
         "assets/sprites/Spray2.png",
-        include_bytes!("../../assets/sprites/Spray2.png"),
+        include_bytes!("../assets/sprites/Spray2.png"),
     ),
     (
         "assets/sprites/spade.png",
-        include_bytes!("../../assets/sprites/spade.png"),
+        include_bytes!("../assets/sprites/spade.png"),
     ),
     (
         "assets/sprites/Tweezers.png",
-        include_bytes!("../../assets/sprites/Tweezers.png"),
+        include_bytes!("../assets/sprites/Tweezers.png"),
     ),
     (
         "assets/sprites/Waspeye1.png",
@@ -54,19 +55,19 @@ const ASSETS: frost::Table = &[
     ),
     (
         "assets/sprites/Waspeye2.png",
-        include_bytes!("../../assets/sprites/Waspeye2.png"),
+        include_bytes!("../assets/sprites/Waspeye2.png"),
     ),
     (
         "assets/sprites/Bug1a.png",
-        include_bytes!("../../assets/sprites/Bug1a.png"),
+        include_bytes!("../assets/sprites/Bug1a.png"),
     ),
     (
         "assets/sprites/Bug2a.png",
-        include_bytes!("../../assets/sprites/Bug2a.png"),
+        include_bytes!("../assets/sprites/Bug2a.png"),
     ),
     (
         "assets/sprites/Bug3a.png",
-        include_bytes!("../../assets/sprites/Bug3a.png"),
+        include_bytes!("../assets/sprites/Bug3a.png"),
     ),
     (
         "assets/sprites/Worm1_crop.png",
@@ -74,23 +75,23 @@ const ASSETS: frost::Table = &[
     ),
     (
         "assets/sprites/Worm2_crop.png",
-        include_bytes!("../../assets/sprites/Worm2_crop.png"),
+        include_bytes!("../assets/sprites/Worm2_crop.png"),
     ),
     (
         "assets/sprites/Lice1.png",
-        include_bytes!("../../assets/sprites/Lice1.png"),
+        include_bytes!("../assets/sprites/Lice1.png"),
     ),
     (
         "assets/sprites/Lice2.png",
-        include_bytes!("../../assets/sprites/Lice2.png"),
+        include_bytes!("../assets/sprites/Lice2.png"),
     ),
     (
         "assets/sprites/items.png",
-        include_bytes!("../../assets/sprites/items.png"),
+        include_bytes!("../assets/sprites/items.png"),
     ),
     (
         "assets/sprites/held_items.png",
-        include_bytes!("../../assets/sprites/held_items.png"),
+        include_bytes!("../assets/sprites/held_items.png"),
     ),
     (
         "assets/sprites/plant1.png",
@@ -106,15 +107,15 @@ const ASSETS: frost::Table = &[
     ),
     (
         "assets/sprites/plant4.png",
-        include_bytes!("../../assets/sprites/plant4.png"),
+        include_bytes!("../assets/sprites/plant4.png"),
     ),
     (
         "assets/sprites/plant5.png",
-        include_bytes!("../../assets/sprites/plant5.png"),
+        include_bytes!("../assets/sprites/plant5.png"),
     ),
     (
         "assets/sprites/flower.png",
-        include_bytes!("../../assets/sprites/flower.png"),
+        include_bytes!("../assets/sprites/flower.png"),
     ),
     (
         "assets/sprites/tomato.png",
@@ -126,15 +127,15 @@ const ASSETS: frost::Table = &[
     ),
     (
         "assets/sprites/BasketBack.png",
-        include_bytes!("../../assets/sprites/BasketBack.png"),
+        include_bytes!("../assets/sprites/BasketBack.png"),
     ),
     (
         "assets/sprites/BasketFront.png",
-        include_bytes!("../../assets/sprites/BasketFront.png"),
+        include_bytes!("../assets/sprites/BasketFront.png"),
     ),
     (
         "assets/sprites/sustainable_immortality.png",
-        include_bytes!("../../assets/sprites/sustainable_immortality.png"),
+        include_bytes!("../assets/sprites/sustainable_immortality.png"),
     ),
     (
         "assets/fonts/Leofont-Regular.ttf",
@@ -146,63 +147,63 @@ const ASSETS: frost::Table = &[
     ),
     (
         "assets/audio/ChatterLow.wav",
-        include_bytes!("../../assets/audio/ChatterLow.wav"),
+        include_bytes!("../assets/audio/ChatterLow.wav"),
     ),
     (
         "assets/audio/ChatterMid.wav",
-        include_bytes!("../../assets/audio/ChatterMid.wav"),
+        include_bytes!("../assets/audio/ChatterMid.wav"),
     ),
     (
         "assets/audio/ChatterHigh.wav",
-        include_bytes!("../../assets/audio/ChatterHigh.wav"),
+        include_bytes!("../assets/audio/ChatterHigh.wav"),
     ),
     (
         "assets/audio/bugs_plopp1.wav",
-        include_bytes!("../../assets/audio/bugs_plopp1.wav"),
+        include_bytes!("../assets/audio/bugs_plopp1.wav"),
     ),
     (
         "assets/audio/bugs_plopp2.wav",
-        include_bytes!("../../assets/audio/bugs_plopp2.wav"),
+        include_bytes!("../assets/audio/bugs_plopp2.wav"),
     ),
     (
         "assets/audio/bugs_plopp3.wav",
-        include_bytes!("../../assets/audio/bugs_plopp3.wav"),
+        include_bytes!("../assets/audio/bugs_plopp3.wav"),
     ),
     (
         "assets/audio/Ouch1.wav",
-        include_bytes!("../../assets/audio/Ouch1.wav"),
+        include_bytes!("../assets/audio/Ouch1.wav"),
     ),
     (
         "assets/audio/Ouch2.wav",
-        include_bytes!("../../assets/audio/Ouch2.wav"),
+        include_bytes!("../assets/audio/Ouch2.wav"),
     ),
     (
         "assets/audio/Ouch3.wav",
-        include_bytes!("../../assets/audio/Ouch3.wav"),
+        include_bytes!("../assets/audio/Ouch3.wav"),
     ),
     (
         "assets/audio/Ouch4.wav",
-        include_bytes!("../../assets/audio/Ouch4.wav"),
+        include_bytes!("../assets/audio/Ouch4.wav"),
     ),
     (
         "assets/audio/bugsDeath.wav",
-        include_bytes!("../../assets/audio/bugsDeath.wav"),
+        include_bytes!("../assets/audio/bugsDeath.wav"),
     ),
     (
         "assets/audio/WaterFlowSoft.wav",
-        include_bytes!("../../assets/audio/WaterFlowSoft.wav"),
+        include_bytes!("../assets/audio/WaterFlowSoft.wav"),
     ),
     (
         "assets/audio/Spray.wav",
-        include_bytes!("../../assets/audio/Spray.wav"),
+        include_bytes!("../assets/audio/Spray.wav"),
     ),
     (
         "assets/audio/TomatoDrop.wav",
-        include_bytes!("../../assets/audio/TomatoDrop.wav"),
+        include_bytes!("../assets/audio/TomatoDrop.wav"),
     ),
 ];
 
-/// The audio output and every clip the example plays: the device, opened
+/// The audio output and every clip the game plays: the device, opened
 /// once at startup, and the clips it plays through — the swarm's random
 /// picks, the chatter, plopp, and Ouch arrays, and the named singles: the
 /// bug death, the watering loop, the spray hiss, and the tomato drop.
@@ -273,7 +274,7 @@ impl Sounds {
     }
 }
 
-/// Everything the example loads at startup: the sprite shapes, the
+/// Everything the game loads at startup: the sprite shapes, the
 /// game-over overlay's font, the diagnostics overlay's font, and the audio
 /// — the output and every clip — embedded at compile time with
 /// `include_bytes!` and decoded by [`Assets::load`].
@@ -346,7 +347,7 @@ pub struct Assets {
     /// The diagnostics overlay's font bytes, embedded at compile time: the
     /// readout lines and the strip charts are built from them.
     pub diag_font: std::borrow::Cow<'static, [u8]>,
-    /// The audio output and every clip the example plays, decoded once at
+    /// The audio output and every clip the game plays, decoded once at
     /// startup.
     pub sounds: Sounds,
 }
@@ -377,9 +378,18 @@ impl Assets {
     }
 
     fn assemble(device: Option<frost::Audio>) -> Self {
-        // The resolver of this run: the table beneath, the loose
-        // directories above it when this working directory has them.
-        let store = frost::Assets::embedded(ASSETS).with_dir(env!("CARGO_MANIFEST_DIR"));
+        // Two roots, in the order that decides an argument. The game's
+        // own `assets/` first, so an edit under `immortal/assets/` is
+        // what the next load sees. The repository's `assets/` behind it,
+        // for the files this game and the engine's examples read alike —
+        // `grass.png`, the tomato's two leaves, the plant slices, the
+        // fonts — which stay where the engine can reach them. Both are
+        // addressed by the same keys, because a key is a path within the
+        // shipped world, not a place on disk: not one entry in the table
+        // changed spelling when the files moved.
+        let store = frost::Assets::embedded(ASSETS)
+            .with_dir(env!("CARGO_MANIFEST_DIR"))
+            .with_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
         let mut immortality = sprite(&store, "sustainable_immortality");
         if let frost::Shape::Sprite { alpha, .. } = &mut immortality {
             *alpha = IMMORTALITY_ALPHA;
@@ -471,7 +481,7 @@ fn ask(store: &frost::Assets, name: &str, exts: &[&str]) -> std::borrow::Cow<'st
 /// The table's one path whose file stem is this name — the app's
 /// housekeeping over its own keys, not the resolver's guessing:
 /// a stem no entry wears, or two entries wearing one stem, are both
-/// build errors this example refuses at the first load rather than
+/// build errors this game refuses at the first load rather than
 /// choices it would have to live with.
 fn key_of(name: &str) -> &'static str {
     let found: Vec<&'static str> = ASSETS
@@ -487,5 +497,30 @@ fn key_of(name: &str) -> &'static str {
         [one] => one,
         [] => panic!("the asset table wears no '{name}'"),
         many => panic!("the asset table wears {name} twice: {many:?} — a stem is one asset"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Both asset homes answer the keys the table wears: the file that
+    /// moved into this package (`immortal/assets/`) and the one left at the
+    /// repository's root because an engine example draws it too. This is the
+    /// guard on the lift's one non-mechanical edit — `CARGO_MANIFEST_DIR` is
+    /// package-relative, so it silently changed meaning the day the game
+    /// became a package, and every other test would have gone on passing
+    /// from the table alone while the dev loop's loose files went unread.
+    #[test]
+    fn both_asset_homes_answer_the_same_keys() {
+        let assets = Assets::load_silent();
+        let moved = assets.store.bytes("assets/sprites/Bug1a.png");
+        let shared = assets.store.bytes("assets/sprites/grass.png");
+        assert!(moved.is_some(), "the game's own assets/ does not answer");
+        assert!(shared.is_some(), "the repository's assets/ does not answer");
+        // A root is a lookup, not a wildcard: exact case, exact path, and
+        // nothing at all for a file neither home wears.
+        assert!(assets.store.bytes("assets/sprites/Grass.png").is_none());
+        assert!(assets.store.bytes("assets/sprites/nobody.png").is_none());
     }
 }

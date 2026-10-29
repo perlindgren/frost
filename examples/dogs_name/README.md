@@ -12,7 +12,8 @@ as 8-bit RGBA PNGs.
 Because the folder is not named `main.rs`, both examples are declared
 explicitly in `Cargo.toml` (cargo only auto-discovers `examples/*.rs` and
 `examples/*/main.rs`). `centipede.rs` also has a side module, `rig.rs`,
-beside it — an example's own folder is a module path, like `immortal`'s.
+beside it — an example's own folder is a module path. (`immortal` outgrew that
+shape for a package of its own; these two still share one folder.)
 
 ## The parts
 

@@ -27,8 +27,9 @@ Cargo.toml            deps: gilrs 0.11 (gamepads), image 0.25 (png),
                       (audio); wasm32-only: web-sys,
                       console_error_panic_hook; dev-deps: arboard 3.6 (the
                       text_input example's clipboard), clap, env_logger,
-                      naga 30.0.0 (shader validation, no GPU needed),
-                      serde + ron 0.8 (the immortal example's save file)
+                      naga 30.0.0 (shader validation, no GPU needed).
+                      serde and ron left with the game; the engine's RON
+                      is src/ron.rs, hand-written
 src/lib.rs            crate docs + public API: Canvas, Context, Process, Config,
                       run / run_configured, draw_scene, paint_order, expand_text,
                       gamepad re-exports (gilrs Axis / Button / Gamepad)
@@ -82,12 +83,14 @@ shaders/*.wgsl        nine pipelines (line, polyline, circle, rectangle, shape,
                       sprite, particles, tilemap, blit) plus lighting.wgsl, the
                       lighting vocabulary the four lit ones are built on
 examples/             40 runnable demos, filed into folders (see table below)
-assets/               sprites/*.png (+ .pxo sidecars; immortal art, worm
-                      crops, …), fonts/ (FiraCode Variable, JameGem08,
-                      Leofont + licenses), audio/*.wav (swoof, waterflow,
-                      bug/wasp clips, …), sprites/plant1..5.ron (the
-                      immortal plant's anchor files), ron/garden.ron
-                      (ron_view)
+assets/               the art the engine's own examples draw: sprites/*.png
+                      (+ .pxo sidecars; worm crops, the tomato's two leaves,
+                      plant1..3 with their anchor .ron files, …), fonts/
+                      (FiraCode Variable, JameGem08, Leofont + licenses),
+                      audio/*.wav, ron/garden.ron (ron_view). The game's 47
+                      files live in `immortal/assets/` under the same
+                      `assets/…` keys — immortal/src/assets_load.rs is the
+                      resolver that reads both homes
 tests/                integration tests over the dogs_name flipbook art
                       (headless Shape::sprite reads: frame fit, ink stats)
 ```
@@ -1519,7 +1522,7 @@ better numbers.
 
 ## Direction
 
-The queue moved into the game it serves: `examples/immortal/TODO.md` carries
+The queue moved into the game it serves: `immortal/TODO.md` carries
 the immortal wish-list — graphics (shop icon, progression toward immortality,
 level indicators), sound effects, music, and the fruit's ripen-rot-fall cycle.
 The library's last queue entry, the `Body` type, shipped as `src/physics.rs`
@@ -1929,6 +1932,6 @@ cargo run --example authored_hall   # bricks' shadows and bounces come from
                            # closing the window exits 0
 cargo run --example widgets  # panels drag, widgets drive the face; exits 0
 cargo run --example tomato_sprite   # overlay check; window exits 0
-cargo run --example immortal   # 1920x1080 window: grass fills it 1:1; exits 0
+cargo run -p immortal        # 1920x1080 window: grass fills it 1:1; exits 0
 cargo run -p sprite_util     # the tool, run from the workspace root; -i <png|folder>
 ```

@@ -1,0 +1,33 @@
+[package]
+name = "immortal"
+version = "0.1.0"
+edition = "2024"
+# The absence of a `license` field is the point of this file. Engine-side
+# packages inherit `MIT OR Apache-2.0` by asking for it with
+# `license.workspace = true`; this one does not ask, and declaring nothing means
+# all rights reserved. Until the game was a package of its own, the only licence
+# statement anywhere near it was the `license` field of the crate it was an
+# example *inside* — a claim about a directory whose files it does not describe.
+# `docs/licensing.md` is the table of who carries what, including the three fonts
+# and every `.wav` in `assets/` whose provenance is still unrecorded.
+publish = false
+
+[dependencies]
+frost = { path = ".." }
+# The save file's data model: `frost::ron` reads and writes the tree, serde
+# derives the types the tree is mapped onto. Both came here with the game —
+# measured before the move, not assumed: no engine source, test or example uses
+# either crate, so the published engine lost two dev-dependencies it never needed.
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
+# Three more the game was borrowing without asking. As an example target it
+# stood inside the `frost` package and could name any of that package's
+# dependencies and dev-dependencies as if they were its own; as a member it can
+# name only what it declares, and the build said so. Declared here because they
+# are the game's own: the command line's `--seed` and `--load`, the logger it
+# installs before the window opens, and the diagnostics it logs while running.
+# `log` carries no feature flags: the release-stripping opinion is the engine's
+# to hold, and cargo unifies the feature across the one copy in the graph.
+log = "0.4"
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"

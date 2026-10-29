@@ -136,10 +136,13 @@ one at a time, with the surface it is committing named out loud first.
 
 An argument for this layout that has nothing to do with dependencies: `cargo
 clippy --all-targets` does not compile example targets with `cfg(test)`, so the
-test code inside the ~48 remaining examples has never been linted — `immortal`'s
-hundred-odd tests among them. Binary test harnesses *are* linted, which is why
-moving this one tool surfaced five warnings on the spot, proven by compiling a
-byte-identical copy of the file both ways: zero as an example, five as a binary.
+test code inside the ~48 remaining examples has never been linted. Binary test
+harnesses *are* linted, which is why moving this one tool surfaced five warnings
+on the spot, proven by compiling a byte-identical copy of the file both ways:
+zero as an example, five as a binary. `immortal`'s hundred-odd tests were the
+largest holding in that gap and became a member's on 2026-10-29 — and note the
+order: the four lints hiding in them were found the week the target first asked
+for its tests, not the week it moved. The gap is not measured in lines of code.
 
 So every tool that moves into `tools/` gains lint coverage for free, and the
 gap left behind in `examples/` is a backlog whose size nobody has measured. It is
@@ -171,10 +174,12 @@ than to deliver one.
 
 ## Games come too, later, one at a time
 
-The games follow the same road — `dogs_name` and `immortal` as workspace
-members, and eventually their own crates. Not now, because nothing forces it and
-the move is churn for its own sake. Two things worth noticing when it does
-happen.
+One game has taken the road. `immortal` is a workspace member since 2026-10-29,
+with its own manifest, its own `assets/`, and the licence statement its
+example-hood could not carry. `dogs_name` and `centipede` follow when something
+forces the move rather than when tidiness suggests it: a move earns its churn by
+carrying a manifest a reader needs, not by relocating files. Three things worth
+noticing about the one that moved.
 
 A game becoming a binary target buys the same thing the tools bought: its test
 code starts being linted, because clippy compiles bin harnesses and not example
@@ -186,3 +191,7 @@ this repository to what a stranger writes — it sees `frost` only through the
 published surface, with no shared manifest and no path shortcuts — and once
 every game is a member of the workspace, that view is gone. The games are the
 author's; the example is the user's, and the two fail in different ways.
+`dogs_name` and `centipede` hold that post today, and `immortal` could have kept
+it: what membership costs is only the accident of having the engine's
+dependencies in scope, which is exactly how a game came to name `log`, `clap`
+and `env_logger` for years without ever declaring them anywhere.

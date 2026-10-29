@@ -108,13 +108,16 @@ impl SegmentAnchors {
 }
 
 /// The five anchor files, embedded into the binary like every other
-/// immortal asset, so the example runs with no asset files on disk.
+/// immortal asset, so the game runs with no asset files on disk. Two homes:
+/// slices 1 to 3 sit in the repository's `assets/` because their sprites are
+/// art the engine's examples draw as well, and slices 4 and 5 sit in this
+/// package's own `assets/`, beside the sprites they pose.
 const ANCHOR_FILES: [&str; 5] = [
     include_str!("../../assets/sprites/plant1.ron"),
     include_str!("../../assets/sprites/plant2.ron"),
     include_str!("../../assets/sprites/plant3.ron"),
-    include_str!("../../assets/sprites/plant4.ron"),
-    include_str!("../../assets/sprites/plant5.ron"),
+    include_str!("../assets/sprites/plant4.ron"),
+    include_str!("../assets/sprites/plant5.ron"),
 ];
 
 /// The anchor files parsed once, in chain order, on first use — each

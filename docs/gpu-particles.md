@@ -223,7 +223,7 @@ tests green (including the naga parse test and the `ParticlesUniforms`
 byte-layout tests for both the WGSL offsets and the CPU-side
 `particles_uniform_data`), all examples build, and
 `cargo run --example particles` renders the fading fountain in one instanced
-draw. `examples/immortal/`'s water and spray streams were also migrated to the
+draw. the game's water and spray streams (immortal/src/) were also migrated to the
 batched path (one `ctx.particles` call per stream) — pixel-identical, since
 both stream colors have alpha 1.0 and the per-particle fade is exactly the
 one the batch computes from `life / max_life`; the simulation stays CPU-side

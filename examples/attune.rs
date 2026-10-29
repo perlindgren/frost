@@ -19,7 +19,7 @@ fn main() {
     // sentinel of an app seen running but not yet telling.
     let mut known: HashMap<u32, (u64, usize)> = HashMap::new();
     println!(
-        "[attune] listening to {TELL_DIR} — start an application (say `cargo run --example immortal`) and it will speak here."
+        "[attune] listening to {TELL_DIR} — start an application (say `cargo run -p immortal`) and it will speak here."
     );
     loop {
         let cards = frost::Teller::announce(TELL_DIR);

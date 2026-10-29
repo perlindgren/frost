@@ -286,8 +286,8 @@
 //! a run is fully reproducible:
 //!
 //! ```text
-//! cargo run --example immortal -- --load
-//! cargo run --example immortal -- --seed 42
+//! cargo run -p immortal -- --load
+//! cargo run -p immortal -- --seed 42
 //! ```
 //!
 //! A text field mid top of the window shows the frame's time scale —
@@ -304,7 +304,7 @@
 //! with:
 //!
 //! ```text
-//! cargo run --example immortal
+//! cargo run -p immortal
 //! ```
 
 mod assets_load;

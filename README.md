@@ -113,13 +113,17 @@ in [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE), and
 under which Fira Code is redistributed.
 
 What is built *with* the engine is not free in the same way. `antifrost/` and
-`examples/immortal/` are the games, and they are under no licence: all rights
-reserved, deliberately not inheriting the workspace terms, so "the engine is
-open" and "a game built on it is open" are separate decisions. The assets under
-`assets/` follow the same split — the handful the engine itself needs travel
-with it, the rest belong to the games.
+`immortal/` are the games, and they are under no licence: all rights reserved,
+deliberately not inheriting the workspace terms, so "the engine is open" and "a
+game built on it is open" are separate decisions. `immortal/` was an example
+*target* of the engine's own package until 2026-10-29, which meant the only
+licence statement anywhere near it was a claim about a crate it was not; as a
+package it names no `license`, and naming nothing is how a manifest says all
+rights reserved. The art follows the same split — 47 files moved to
+`immortal/assets/`, the ten the engine's examples draw as well stayed at the
+repository root, and both homes are addressed by the same keys.
 
 [docs/licensing.md](docs/licensing.md) is the ledger: which package carries
 which terms, which assets the engine shares with the games, and what is still
-unresolved — provenance for three fonts and every sound file, the partition of
-the asset tree, and the packaging a real `cargo publish` would want.
+unresolved — provenance for three fonts and every sound file, what is left of
+the asset tree's partition, and the packaging a real `cargo publish` would want.

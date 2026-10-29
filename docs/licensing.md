@@ -19,7 +19,7 @@ the world by an accident of packaging.
 | `frost_shaders` | inherited: `license.workspace = true` | games borrow programs from the shelf; a lender cannot hand out what it does not hold |
 | `tools/sprite_util`, `tools/noisefloor` | inherited: `license.workspace = true` | engine-side tooling; `noisefloor` is a dev-dependency of the engine's benches, so its terms cannot be stranger than the engine's |
 | `antifrost` (Ember Hill) | none — all rights reserved | a game and its art; it does not ask for the workspace licence, and `publish = false` marks the silence as a decision |
-| `immortal` (`examples/immortal`) | none — all rights reserved, but stated only as prose: a comment in `Cargo.toml` and this row. There is no manifest to check it against | 13,135 lines of game wearing an example's name. It is an example *target* of the `frost` package, so cargo's `license` field on that package is a claim about a directory whose game files it does not describe — the strongest argument for the lift below. Excluded from the published crate (`^examples/` → no files). Its 111 unit tests had never been compiled by any gate — no example's tests are, unless the target asks — until it asked, on 2026-10-29 |
+| `immortal` (`immortal/`) | none — all rights reserved, stated by the manifest's silence: a `[package]` with no `license` key, in a workspace where engine-side packages inherit `MIT OR Apache-2.0` only by asking for it | The garden game, 13,135 lines, a package of its own since 2026-10-29. Before that it was an example *target* of the `frost` package, which meant the nearest licence statement was a claim about a crate it was not, and the only record of its terms was a comment and this row — nothing a distributor could check. `publish = false`, no `include` list, and 47 art files of its own |
 
 Inheriting is **opt-in**, which is the only reason a workspace default is safe to
 state: a game added to `members` tomorrow is not licensed by a decision it never
@@ -97,19 +97,30 @@ three endings below) and `/examples` can join the list without costing anything.
 
 ## What is still open, named as such
 
-- **The engine's examples embed the game's art.** 11 files under `assets/` are
-  referenced by `immortal` *and* by engine-side code — `tomato.png`, `grass.png`,
-  `plant1..3.png`, `Waspeye1.png`, `Worm1_crop.png` among them — so a demo like
-  `examples/shapes/tomato.rs` compiles a game's sprite into the MIT package. Three
-  honest endings: give the engine's examples their own fixture art (cleanest),
-  license that art MIT/Apache as well, or move those examples out with the game.
-  Undecided as of this writing; the `include` list keeps the *published crate*
-  honest meanwhile, which is why it was written first.
-- **39 asset files belong to `immortal` alone** and should move to an
-  `immortal/assets/` when it is lifted into a package — `antifrost/assets/`
-  already holds 30 of its own, so the shape exists.
-- **76 asset files are referenced by nothing** and still sit in the tree. Out of
-  the crate now, but still repo content whose owner a reader cannot tell.
+- **The engine's examples still draw the game's art.** Ten files the game embeds
+  are named by engine code too — `grass.png`, `tomato.png`, `tomato_fg.png`,
+  `plant1..3.png`, `Waspeye1.png`, `Worm1_crop.png`, and the two fonts — plus
+  `plant1.ron`, the anchor sidecar the game reads loose and `sprite_util` reads
+  as a fixture. They stayed at the repository's root when the game took the rest
+  of its art, so a demo like `examples/shapes/tomato.rs` still compiles a game's
+  sprite into an MIT-named target. Three honest endings, unchanged: give the
+  engine's examples their own fixture art (cleanest), license that art
+  MIT/Apache as well, or move those examples out with the game. Undecided as of
+  this writing; the `include` list keeps the *published crate* honest meanwhile,
+  which is why it was written first.
+- **The asset tree is half partitioned now, on purpose.** 47 files moved into
+  `immortal/assets/` with the package on 2026-10-29: 35 named by its table and
+  12 more because a sprite never leaves its `.pxo`/`.ron` sidecars — a rule the
+  naive split would have broken twelve times over, silently. The keys did not
+  change, because a key names a path inside the shipped world rather than a place
+  on disk: the store admits both roots and the game's own answers first. What
+  stays unsorted is the ten shared files above, and `antifrost`'s art, which
+  already lives beside its own package and needs nothing.
+- **76 asset files are named by no code at all** and still sit in `assets/`. Out
+  of the crate, and unmovable without an owner: no game's table names them, nor
+  does any tool or test, so whoever drew them is unknown. That is the provenance
+  gap below in its worst form — a font at least ships a licence file saying who
+  made it.
 - **Three fonts and every sound have no provenance note.** `assets/fonts/OFL.txt`
   and `assets/fonts/README.txt` cover Fira Code properly — that instinct was
   already here. Leofont, JameGem08 and Barrfont say nothing about who made them,

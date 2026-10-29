@@ -5,10 +5,11 @@ edition = "2024"
 # The engine is dual licensed, and so is everything engine-side — the shader
 # shelf and the tools inherit it from `[workspace.package]` below rather than
 # restating it, because four hand-typed copies of a licence are four chances to
-# forget one. The games opt out by naming nothing: antifrost and the `immortal`
-# example are their own terms, and `docs/licensing.md` is the table of who
-# carries what, because a `license` field is a claim about one package's files
-# and nothing else.
+# forget one. The games opt out by naming nothing: `antifrost` and `immortal`
+# are their own terms, each saying so with the absence of a `license` key in a
+# manifest of its own. `docs/licensing.md` is the table of who carries what,
+# because a `license` field is a claim about one package's files and nothing
+# else.
 license.workspace = true
 # What a published `frost` would contain: the engine, its shaders, and the
 # three files its own `include_bytes!` reaches for. Stated rather than
@@ -46,9 +47,16 @@ include = [
 # `frost`'s benches read it as a dev-dependency, so the witness of a
 # measurement travels with the measurement instead of drifting away from it
 # in some other package.
+# `immortal` is the garden game: 13,135 lines that were an example target of this
+# package until its licence became the problem. A directory of a game's own,
+# carrying a stranger's art, sitting inside a crate that declares MIT, is the
+# arrangement docs/licensing.md exists to warn about — and an example inherits
+# whatever its package claims, having no manifest of its own to say otherwise.
+# As a member it declares nothing, which is how a package says all rights
+# reserved; `publish = false` keeps it out of any tarball.
 [workspace]
-members = ["antifrost", "frost_shaders", "tools/sprite_util", "tools/noisefloor"]
-default-members = [".", "antifrost", "frost_shaders", "tools/sprite_util", "tools/noisefloor"]
+members = ["antifrost", "frost_shaders", "immortal", "tools/sprite_util", "tools/noisefloor"]
+default-members = [".", "antifrost", "frost_shaders", "immortal", "tools/sprite_util", "tools/noisefloor"]
 # Edition 2024 implies resolver 3; stated explicitly so the workspace
 # resolver cannot drift from the packages' editions.
 resolver = "3"
@@ -339,20 +347,13 @@ name = "benchsuite"
 path = "examples/benchsuite/main.rs"
 test = true
 
-# The other four examples carrying unit tests, named for the same reason and in
-# the same one line each. `test` defaults to false for example targets, so
-# `cargo test` never built any of these: `immortal` carries 111 of them across its
-# modules, `centipede` fifteen, `courtyard` five, `ron_view` three, `vrr` three.
-# They are unit tests over save snapshots, z-order, the plant's growth table, the
-# fall geometry — the arithmetic of a game, which is exactly the kind of thing that
-# reads as maintained because the target compiles under `clippy --all-targets` and
-# no gate ever reached an assertion in it. `docs/licensing.md` has the count of
-# what that cost; these four lines are why it will not recur quietly.
-[[example]]
-name = "immortal"
-path = "examples/immortal/main.rs"
-test = true
-
+# The other examples carrying unit tests, named for the same reason and in the
+# same one line each. `test` defaults to false for example targets, so `cargo test`
+# never built any of these: `courtyard` five, `ron_view` three, `vrr` three, plus
+# `centipede`'s fifteen with its own comment above. `immortal` carried 111 and left
+# the list the day it became a package; a member's tests are built without being
+# asked, which is the whole reason the lift was worth doing before the licence
+# argument won on its own.
 [[example]]
 name = "courtyard"
 path = "examples/courtyard.rs"
@@ -378,11 +379,11 @@ env_logger = "0.11.11"
 # validates the .wgsl files with the exact frontend
 # `Device::create_shader_module` runs — no GPU or window required.
 naga = { version = "30.0.1", features = ["wgsl-in"] }
-# Serialization for the `immortal` example's save/reload: `serde`
-# derives the snapshot's data model, and `ron` encodes it as human-
-# readable, comment-friendly text on disk.
-serde = { version = "1", features = ["derive"] }
-ron = "0.12"
+# Nothing here serves the game any more: `serde` and `ron` moved to
+# `immortal/Cargo.toml` with it, leaving the engine's dev-dependencies to the
+# engine. The RON the engine speaks is its own — src/ron.rs, hand-written, no
+# external parser — which is why two crates could leave without one `use`
+# statement changing anywhere else.
 
 # Cross-platform system clipboard for the `text_input` example's Ctrl-C /
 # Ctrl-V; winit 0.30 has no clipboard API of its own. Gated to native

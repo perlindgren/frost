@@ -1,4 +1,8 @@
 /target
+# A member's tests fall back to `<member>/target` when the temp folder is
+# unusable (src/scratch.rs), so every package can grow one of its own —
+# build output and scratch both, never source.
+**/target/
 # Only the wasm build output is disposable (web/build.sh regenerates
 # it); the page and the web scripts beside it are source — keep them
 # tracked so any machine can `rustup target add wasm32-unknown-unknown
