@@ -216,3 +216,69 @@ identically in a real browser. Suspects that nothing has questioned are rumours.
   to the port, *"this integer must survive a float's bit pattern"* belongs above the struct that
   does it — the lesson of this entry is that an undocumented pun is a suspect that never gets
   cleared.
+
+## The host-role test driver (frost plays the guest)
+
+**The possibility.** A test that behaves like a stranger's application rather than like a game:
+it asks for the device and the surface itself, constructs the embeddable engine through the
+public API, feeds input as data, calls `frame()` on a rhythm of its own choosing, and asserts
+what the engine did with all of it. Not a mock of a DAW — a mock of *any* host, which is the
+only kind of host this repo can test against, and the only one whose bad behaviour has to be
+survivable.
+
+**Why it matters.**
+
+- The embedded path is where frost stops owning the process, and it would land with no test at
+  all. nice-tuner carries the engine in `vendor/frost/` with `src/backend/tests/` deleted, so
+  the entire plugin path is verified by launching Reaper; that arrangement is what produced the
+  fork, and shipping `frost::embedded` upstream without a driver reproduces it in the place
+  where the churn actually happens.
+- The churn will come from this side. A change that breaks only the guest — a setter that stops
+  clearing held keys, resize settling that honours every call instead of the quiet tenth of a
+  second, a present mode that starts waiting — fails nothing here today, and surfaces as a
+  frozen GUI in someone else's process.
+- Being in `tests/` rather than `src/backend/tests/` is the substance, not the location: an
+  integration test cannot reach `pub(crate)`, so a green run proves an outsider can drive the
+  engine, which is what `pub` promises and what a unit test could quietly fail to establish.
+- Panics are the case no other test can make. In a host a panic is the host's crash, and the
+  fork's `Embedded::new` *asserts* on the host's device limits — a third party's configuration
+  mistake, detected correctly and then reported by unwinding through their event loop. The
+  driver's first assertion is that a device requested with downlevel limits yields `Err`, not a
+  panic.
+
+**What already stands.**
+
+- `tests/monster_means.rs` and `tests/monster_sprites.rs`: driving the engine from outside the
+  crate is already a shape this repo uses, so this extends a pattern rather than opening a
+  directory.
+- The input state is the seam the port extracts anyway: the `WindowEvent` arms become the
+  setters both drivers share, so a fake host feeds the same code the winit loop feeds instead of
+  a copy of it that can drift.
+- Item 1 of this file is the enabling half of the stronger assertions. *The same scene through
+  the guest path produces the same bytes as through the offscreen meter* needs exactly the
+  readback machinery the headless harness wants and `docs/benchmarking.md` §38's ceiling check
+  wants — one buildable thing, three debts paid.
+- `winit` is already a dependency, so the driver can open a window nobody sees and hand its
+  surface to the engine as a dev-dependency, costing consumers nothing.
+
+**What to build.**
+
+- A `FakeHost` in `tests/host_role.rs`: instance, adapter, device requested via
+  `frost::embedded::device_limits`, a hidden window for the surface, and a clock the test owns,
+  with `resize`, `key`, `pointer`, `scroll`, `focus`, `occluded`, `frame`, `advance(Duration)`.
+- The assertions that need no pixel, which is most of the contract: `dt` measured rather than
+  assumed (drive at 7 ms, then at 90 ms, and check what the `Process` was told); a resize
+  settling after the motion stops rather than once per call; losing focus clearing held keys and
+  buttons; a zero-sized surface and a lost surface reporting the documented `FrameError`s; an
+  exit request standing until the host clears it.
+- The pixel assertions behind item 1 and behind the per-chip fingerprint guard (`b33fc3c`),
+  because a byte-exact claim is conditioned on the GPU exactly as a frame rate is.
+- The constructor failures, each an `Err` carrying a sentence a host can act on and each
+  reachable only from outside the crate: downlevel limits, an adapter from a different
+  `Instance`, a surface format whose sRGB twin the hardware does not offer.
+- **Deliberately not here.** baseview and nice-plug specifics, editor-open latency, a DAW moving
+  the panel to another display: those belong in nice-tuner's gate, where the DAW is. The line
+  worth holding is one sentence — frost tests that the contract holds when a stranger drives it,
+  nice-tuner tests that one particular stranger keeps its end — and the contract itself goes in
+  `docs/embedding.md` when the port lands, so both suites cite one text instead of each keeping
+  its own guess.
