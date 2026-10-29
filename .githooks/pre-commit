@@ -17,6 +17,38 @@
 # so a fresh clone opts in once:
 #     sh .githooks/install.sh
 staged=$(git diff --name-only --cached)
+
+# OS and build droppings never get in, however they were staged. `.gitignore`
+# has carried `**/.DS_Store` for a long time and three of them were still
+# tracked, because an ignore rule speaks only to *untracked* files: once a
+# dropper lands it stays through every rule written afterwards, and `git add -f`
+# defeats the rule anyway. So the check is here, before cargo is invoked at all.
+#
+# Builtins only — `case`, `printf`, no `grep` and no `sed`. The first draft used
+# `grep`, and tested with Git's usr/bin off PATH it printed `grep: command not
+# found` and exited 0: a guard that fails open is worse than none, because it is
+# trusted. Nothing here can be missing. (Like the re-stage loop below, paths
+# containing spaces would split — an accepted trade in a tree without any.)
+#
+# Only additions, copies, modifications and renames are examined, never
+# deletions: without that filter the commit whose whole job is to remove a
+# dropper would be refused by the guard built to punish it.
+junk=
+for f in $(git diff --cached --name-only --diff-filter=ACMR); do
+    case $f in
+        .DS_Store|*/.DS_Store|Thumbs.db|*/Thumbs.db|desktop.ini|*/desktop.ini|._*|*/._*)
+            junk="$junk $f" ;;
+        __pycache__/*|*/__pycache__/*|*.pyc|*.orig|*.rej)
+            junk="$junk $f" ;;
+    esac
+done
+if [ -n "$junk" ]; then
+    printf 'pre-commit: refusing to commit OS/build droppings:\n' >&2
+    for f in $junk; do printf '  %s\n' "$f" >&2; done
+    printf 'pre-commit: git rm --cached <path>, delete the file, commit again.\n' >&2
+    exit 1
+fi
+
 cargo fmt --all || exit 1
 for f in $staged; do
     case $f in
