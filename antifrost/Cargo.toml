@@ -6,6 +6,12 @@
 name = "antifrost"
 version = "0.1.0"
 edition = "2024"
+# A game, not a library: Ember Hill and its art are offered on their own terms,
+# which are not the engine's (../docs/licensing.md). So this package does not
+# ask for the workspace licence — inheriting is opt-in, and asking would grant
+# the world rights over the art. `publish = false` marks the silence as a
+# decision rather than an oversight: "all rights reserved" is what is meant.
+publish = false
 
 [dependencies]
 frost = { path = ".." }

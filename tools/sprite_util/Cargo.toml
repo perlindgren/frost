@@ -6,6 +6,9 @@
 name = "sprite_util"
 version = "0.1.0"
 edition = "2024"
+# Engine-side tooling: the licence is inherited, not restated, so it cannot
+# quietly fall out of step with the engine it serves (../docs/licensing.md).
+license.workspace = true
 
 # The source sits at the package root, not in `src/` — it is a tool, and the
 # layout says so.

@@ -9,5 +9,9 @@
 name = "noisefloor"
 version = "0.1.0"
 edition = "2024"
+# Engine-side, inherited rather than restated — and it has to stay engine-side,
+# because `frost`'s benches read this as a dev-dependency and a witness cannot
+# be offered on terms the subject's users do not get (../../docs/licensing.md).
+license.workspace = true
 
 [dependencies]

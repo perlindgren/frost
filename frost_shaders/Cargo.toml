@@ -2,6 +2,10 @@
 name = "frost_shaders"
 version = "0.1.0"
 edition = "2024"
+# Engine-side: the shelf inherits the engine's terms rather than restating them,
+# because a game borrows programs from it and a lender cannot hand out what it
+# does not hold (docs/licensing.md).
+license.workspace = true
 
 # The shelf for reusable frost shader programs: sources a game can
 # hang on a shape with `Shape::with_program` / `Shape::painted_by`

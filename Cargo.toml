@@ -2,6 +2,38 @@
 name = "frost"
 version = "0.1.0"
 edition = "2024"
+# The engine is dual licensed, and so is everything engine-side — the shader
+# shelf and the tools inherit it from `[workspace.package]` below rather than
+# restating it, because four hand-typed copies of a licence are four chances to
+# forget one. The games opt out by naming nothing: antifrost and the `immortal`
+# example are their own terms, and `docs/licensing.md` is the table of who
+# carries what, because a `license` field is a claim about one package's files
+# and nothing else.
+license.workspace = true
+# What a published `frost` would contain: the engine, its shaders, and the
+# three files its own `include_bytes!` reaches for. Stated rather than
+# defaulted because the default is "everything git tracks" — measured at 372
+# files, among them every sprite, sound and scene under `assets/`, most of
+# which are a game's art and are not ours to license.
+#
+# Naming the font does not ship it: `include_bytes!` targets ride along past
+# this list whether named or not. Naming `OFL.txt` does. Nothing in any source
+# file mentions that text, so an `include` list without it would drop the one
+# file that makes redistributing Fira Code lawful — silently, with nothing
+# failing anywhere to say so. `assets/fonts/README.txt` is named for the same
+# reason: it is the provenance, and provenance is referenced by nobody.
+include = [
+  "/src",
+  "/shaders",
+  "/assets/fonts/FiraCode-VariableFont_wght.ttf",
+  "/assets/fonts/Leofont-Regular.ttf",
+  "/assets/fonts/OFL.txt",
+  "/assets/fonts/README.txt",
+  "/assets/ron/garden.ron",
+  "/LICENSE-APACHE",
+  "/LICENSE-MIT",
+  "/README.md",
+]
 
 # The engine plus its tools (docs/tooling.md). The tools are separate
 # packages so their dependencies — `clap`, `env_logger`, … — stay out of
@@ -20,6 +52,14 @@ default-members = [".", "antifrost", "frost_shaders", "tools/sprite_util", "tool
 # Edition 2024 implies resolver 3; stated explicitly so the workspace
 # resolver cannot drift from the packages' editions.
 resolver = "3"
+
+# The engine's own terms, written once. Engine-side packages ask for this with
+# `license.workspace = true`; a package that does not ask declares nothing, and
+# declaring nothing means all rights reserved. Inheriting is therefore opt-in,
+# which is the only reason the default is safe to state: a new game added to
+# `members` is not accidentally licensed by a decision it never made.
+[workspace.package]
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 gilrs = "0.11.2"
