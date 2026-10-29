@@ -83,8 +83,11 @@ jobs:
       # walked on one chip judges nothing on another, and a runner's software
       # rasterizer is a chip with no row. Refusing is right for a guard and
       # wrong for a gate, so the gate says outright that it did not ask.
+      # Quoted because YAML ends a plain scalar at a colon that ends the line,
+      # and a module path ends in one: unquoted, this file is rejected before any
+      # job is created and the only sign is a red run that ran for no time at all.
       - name: Tests (the GPU tree is not judged here — see the step below)
-        run: cargo test --no-fail-fast -- --skip backend::tests::
+        run: "cargo test --no-fail-fast -- --skip backend::tests::"
 
       # Deliberately not gating. This compiles the whole GPU test tree and runs
       # it, so a runner that cannot ground an assertion still cannot break the
@@ -93,4 +96,4 @@ jobs:
       # wanted — the step's own name says which of the two it is.
       - name: GPU test tree — informational, not a verdict
         continue-on-error: true
-        run: cargo test --no-fail-fast --lib -- backend::tests:: --nocapture
+        run: "cargo test --no-fail-fast --lib -- backend::tests:: --nocapture"
