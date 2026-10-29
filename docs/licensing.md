@@ -19,7 +19,7 @@ the world by an accident of packaging.
 | `frost_shaders` | inherited: `license.workspace = true` | games borrow programs from the shelf; a lender cannot hand out what it does not hold |
 | `tools/sprite_util`, `tools/noisefloor` | inherited: `license.workspace = true` | engine-side tooling; `noisefloor` is a dev-dependency of the engine's benches, so its terms cannot be stranger than the engine's |
 | `antifrost` (Ember Hill) | none — all rights reserved | a game and its art; it does not ask for the workspace licence, and `publish = false` marks the silence as a decision |
-| `immortal` (`examples/immortal`) | none — all rights reserved | 12,044 lines of game wearing an example's name; still packaged with the engine until it is lifted out, which is the open item below |
+| `immortal` (`examples/immortal`) | none — all rights reserved, but stated only as prose: a comment in `Cargo.toml` and this row. There is no manifest to check it against | 13,135 lines of game wearing an example's name. It is an example *target* of the `frost` package, so cargo's `license` field on that package is a claim about a directory whose game files it does not describe — the strongest argument for the lift below. Excluded from the published crate (`^examples/` → no files), and none of its 111 unit tests have ever been compiled |
 
 Inheriting is **opt-in**, which is the only reason a workspace default is safe to
 state: a game added to `members` tomorrow is not licensed by a decision it never
@@ -55,15 +55,26 @@ Verified rather than assumed: `src/backend/diagnostics.rs` embeds both
 embeds `assets/ron/garden.ron`. Those three files belong to the crate forever,
 whatever the list says.
 
-And the outcome, from `cargo package --list -p frost` with the list in place:
-**93 files** — 69 under `src/`, 11 shaders, both licence texts, the two embedded
-fonts, `garden.ron`, `OFL.txt`, its provenance README, and cargo's own three
-metadata files. **Zero** sprites, sounds, scenes or maps; **zero** `.DS_Store`.
-The engine's crate is the engine.
+And the outcome, from `cargo package --list --allow-dirty -p frost` with the list in
+place: **92 files** — 69 under `src/`, 11 shaders, 5 under `assets/` (the two
+embedded fonts, `garden.ron`, `OFL.txt` and its provenance README), both licence
+texts, `README.md`, and the four files cargo generates for every package:
+`Cargo.toml`, `Cargo.toml.orig`, `Cargo.lock`, `.cargo_vcs_info.json`. **Zero**
+sprites, sounds, scenes or maps; **zero** `.DS_Store`. The engine's crate is the
+engine.
+
+This row read 93 until it was recounted, and the breakdown behind it summed to
+neither — worth recording because both ways it went wrong are easy to repeat.
+Counting needs `-p frost`: run without it in this workspace, cargo lists every
+default member with paths relative to each package, so antifrost's sprites arrive
+as bare `assets/sprites/…` and the engine appears to be shipping a game. And on
+Windows cargo prints `\`, so any filter written with `/` matches nothing in silence
+— the same trap that once reported "zero source files" here.
 
 ## What the published crate cannot do, and why that is the deal
 
-`include` omits `examples/`, while the manifest still names 41 of them. Tested in
+`include` omits `examples/`, while the manifest names 42 of them explicitly and
+cargo resolves 57 example targets in all. Tested in
 a scratch package rather than argued from documentation, because the answer is
 not what the intuition says:
 
@@ -86,6 +97,15 @@ three endings below) and `/examples` can join the list without costing anything.
 
 ## What is still open, named as such
 
+- **137 tests sit in example targets that cargo will not build.** `test` defaults to
+  `false` for examples, so `cargo test` never compiles their `#[test]` functions —
+  not locally, not in CI, not ever. Counted: `immortal` 111, `dogs_name` 15, the
+  top-level examples 5, `ron_view` 3, `vrr` 3. Of 57 example targets exactly one says
+  `test = true` — `benchsuite`, since the commit that noticed its sixteen tests had
+  never run — so 16 of 153 example tests have been in a gate. Nothing ever said
+  otherwise, because nothing asked: the target exists, compiles under
+  `clippy --all-targets`, and its assertions are simply never reached. One line per
+  target is the fix; for `immortal` the lift below is the fix.
 - **The engine's examples embed the game's art.** 11 files under `assets/` are
   referenced by `immortal` *and* by engine-side code — `tomato.png`, `grass.png`,
   `plant1..3.png`, `Waspeye1.png`, `Worm1_crop.png` among them — so a demo like
