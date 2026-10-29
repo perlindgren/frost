@@ -121,14 +121,14 @@ fn shape_scissor_under_non_uniform_scale() {
         lit_layers: LightLayers::default(),
         occludes_layers: LightLayers::default(),
     };
-    // The local box (25 Ã‚Â± 10.375, 50 Ã‚Â± 10.375) stretches to
+    // The local box (25 ± 10.375, 50 ± 10.375) stretches to
     // x: [29.25, 70.75] and y: [39.625, 60.375].
     assert_eq!(draw.scissor_rect([100, 100]), Some([29, 39, 42, 22]));
 }
 
 #[test]
 fn shape_scissor_under_rotation() {
-    // The center is chosen so that the 45Ã‚Â° rotation (about the origin)
+    // The center is chosen so that the 45° rotation (about the origin)
     // maps it onto (50, 50).
     let center = [50.0 * std::f32::consts::SQRT_2, 0.0];
     let draw = Draw::Shape {
@@ -148,7 +148,7 @@ fn shape_scissor_under_rotation() {
         lit_layers: LightLayers::default(),
         occludes_layers: LightLayers::default(),
     };
-    // The Ã‚Â±10.75 box rotated 45Ã‚Â° has half-extent 10.75 * sqrt(2), so the
+    // The ±10.75 box rotated 45° has half-extent 10.75 * sqrt(2), so the
     // axis-aligned box is [34.797, 65.203] on both axes.
     assert_eq!(draw.scissor_rect([100, 100]), Some([34, 34, 32, 32]));
 }
@@ -198,15 +198,15 @@ fn sprite_scissor_is_the_texture_box_plus_aa_band() {
 
         lit_layers: LightLayers::default(),
     };
-    // The box is (50 Ã‚Â± 20.75, 50 Ã‚Â± 10.75), i.e. [29.25, 70.75] on x and
+    // The box is (50 ± 20.75, 50 ± 10.75), i.e. [29.25, 70.75] on x and
     // [39.25, 60.75] on y.
     assert_eq!(draw.scissor_rect([100, 100]), Some([29, 39, 42, 22]));
 }
 
 #[test]
 fn sprite_scissor_under_rotation() {
-    // A 45Ã‚Â° rotation about the sprite's own center: the local box
-    // (Ã‚Â±20.75, Ã‚Â±10.75) rotates to an axis-aligned box with half-extent
+    // A 45° rotation about the sprite's own center: the local box
+    // (±20.75, ±10.75) rotates to an axis-aligned box with half-extent
     // (20.75 + 10.75) / sqrt(2) = 22.274 on both axes, centered on
     // (50, 50).
     let draw = Draw::Sprite {

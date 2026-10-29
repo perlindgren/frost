@@ -16,7 +16,7 @@ const VIEW: [f32; 2] = [128.0, 128.0];
 
 #[test]
 fn light_field_packs_an_empty_header_with_the_ambient() {
-    // No lights: just the 32-byte header Ã¢â‚¬â€ count 0, 12 padding bytes, the
+    // No lights: just the 32-byte header — count 0, 12 padding bytes, the
     // ambient channels at 16..32.
     let ambient = Color {
         r: 0.3,
@@ -120,9 +120,9 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
     assert_eq!(field_f32(&field.data, 20), 0.2);
     assert_eq!(field_f32(&field.data, 24), 0.4);
     assert_eq!(field_f32(&field.data, 28), 1.0);
-    // Record 0 @ 32: (60, 30, 16, 2), then (1, 0.5, 0, 8) Ã¢â‚¬â€ the color
-    // vec4's w now carries the penumbra radius Ã¢â‚¬â€ then the cone
-    // (0.6, 0.8, 0, 0.25) Ã¢â‚¬â€ the feather rides the cone vec4's w.
+    // Record 0 @ 32: (60, 30, 16, 2), then (1, 0.5, 0, 8) — the color
+    // vec4's w now carries the penumbra radius — then the cone
+    // (0.6, 0.8, 0, 0.25) — the feather rides the cone vec4's w.
     let r0 = LIGHT_FIELD_HEADER;
     assert_eq!(field_f32(&field.data, r0), 60.0);
     assert_eq!(field_f32(&field.data, r0 + 4), 30.0);
@@ -136,8 +136,8 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
     assert_eq!(field_f32(&field.data, r0 + 36), 0.8);
     assert_eq!(field_f32(&field.data, r0 + 40), 0.0);
     assert_eq!(field_f32(&field.data, r0 + 44), 0.25);
-    // Record 1 @ 80: (-12.5, 8.25, 0, 0.5), then (0, 1, 1, 0) Ã¢â‚¬â€ the
-    // penumbra is zero here Ã¢â‚¬â€ then the omni cone (0, -1, -1, 0).
+    // Record 1 @ 80: (-12.5, 8.25, 0, 0.5), then (0, 1, 1, 0) — the
+    // penumbra is zero here — then the omni cone (0, -1, -1, 0).
     let r1 = LIGHT_FIELD_HEADER + LIGHT_RECORD;
     assert_eq!(field_f32(&field.data, r1), -12.5);
     assert_eq!(field_f32(&field.data, r1 + 4), 8.25);
@@ -151,7 +151,7 @@ fn light_field_packs_the_header_ambient_and_each_light_record() {
     assert_eq!(field_f32(&field.data, r1 + 36), -1.0);
     assert_eq!(field_f32(&field.data, r1 + 40), -1.0);
     assert_eq!(field_f32(&field.data, r1 + 44), 0.0);
-    // Record 2 @ 128: the directional light Ã¢â‚¬â€ the sentinel radius (-1)
+    // Record 2 @ 128: the directional light — the sentinel radius (-1)
     // rides through the packer exactly, the position stays whatever the
     // node carried (the shader ignores it for this kind), and the penumbra
     // disk radius reaches the shader in the color vec4's w as usual.
@@ -219,7 +219,7 @@ fn a_light_record_carries_its_layers_in_the_fourth_vec4() {
 
 #[test]
 fn occluder_field_packs_an_empty_header() {
-    // No occluders: just the 16-byte header Ã¢â‚¬â€ count 0, 12 padding bytes Ã¢â‚¬â€
+    // No occluders: just the 16-byte header — count 0, 12 padding bytes —
     // and no records.
     let field = pack_occluder_field(
         &[Draw::Light {
@@ -381,9 +381,9 @@ fn occluder_field_packs_flagged_rectangles_with_the_inverse_transform() {
         u32::from_le_bytes(field.data[o + 44..o + 48].try_into().unwrap()),
         LightLayers::default().bits()
     );
-    // Record 1 @ 64: the 90Ã‚Â° rotation's inverse is the -90Ã‚Â° rotation,
+    // Record 1 @ 64: the 90° rotation's inverse is the -90° rotation,
     // column-major (m00, m10, m01, m11) = (0, -1, 1, 0); the translation is
-    // zero. The diagonals are cos(90Ã‚Â°) in f32, so they are ~1e-8 rather
+    // zero. The diagonals are cos(90°) in f32, so they are ~1e-8 rather
     // than exactly 0.
     let o = OCCLUDER_FIELD_HEADER + OCCLUDER_RECORD;
     assert!(field_f32(&field.data, o).abs() < 1e-6);
@@ -558,7 +558,7 @@ fn occluder_field_skips_a_declared_occluder_it_cannot_invert() {
 fn field_buffer_sizes_floor_at_the_wgsl_minimum_binding_size() {
     // A lightless or occluder-less frame still binds both field buffers,
     // and the WGSL layout's minimum binding size is the header plus one
-    // vec4 Ã¢â‚¬â€ the buffer must never be sized below it, or wgpu rejects the
+    // vec4 — the buffer must never be sized below it, or wgpu rejects the
     // bind group.
     assert_eq!(light_field_buffer_size(0), LIGHT_FIELD_BUFFER_MIN as u64);
     assert_eq!(

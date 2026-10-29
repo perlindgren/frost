@@ -65,7 +65,7 @@ fn a_repeating_layer_draws_only_the_copies_reaching_the_window() {
     // The window spans user x in [-50, 50]: with a period of 100, the
     // circle straddling the bottom edge is visible in its base copy at
     // the left edge and in its copy displaced by one period at the
-    // right edge Ã¢â‚¬â€ two copies, and no copy further out, because the
+    // right edge — two copies, and no copy further out, because the
     // one displaced by -100 lies fully off the window.
     let scene = repeat_layer_scene([100.0, 0.0]);
     canvas.draw_scene(&scene);
@@ -91,7 +91,7 @@ fn repeat_offsets_follow_the_camera() {
     // A camera at user x = 60 shifts the window to layer x in
     // [10, 110]: the circle's base copy has scrolled fully off the
     // window's left edge, and only its copy displaced by one period
-    // reaches it Ã¢â‚¬â€ at the window's bottom edge.
+    // reaches it — at the window's bottom edge.
     let scene = Scene {
         root: SceneNode {
             diagnostic: false,
@@ -137,7 +137,7 @@ fn a_copy_from_a_tile_the_window_does_not_overlap_reaches_the_window() {
     // at layer x = -60 lies in the tile [-100, 0), and the window's
     // box [-50, 50] overlaps only the tiles [-100, 0) and [0, 100).
     // The circle's copy displaced by one period is at 40, inside the
-    // window, though its tile [100, 200) does not overlap it Ã¢â‚¬â€ it must
+    // window, though its tile [100, 200) does not overlap it — it must
     // be drawn, or it would pop into the middle of the window the
     // moment a moving camera's box crossed the tile boundary at 100.
     let mut canvas = Canvas::new((100, 100), 1.0);
@@ -317,7 +317,7 @@ fn an_object_wider_than_its_repeat_aborts() {
 #[test]
 fn repeat_is_per_axis() {
     // Both axes repeat: the circle straddling the bottom-left corner
-    // is visible at all four corners of the window Ã¢â‚¬â€ four copies.
+    // is visible at all four corners of the window — four copies.
     let mut canvas = Canvas::new((100, 100), 1.0);
     let scene = repeat_layer_scene([100.0, 100.0]);
     canvas.draw_scene(&scene);
@@ -336,7 +336,7 @@ fn a_camera_followed_object_in_a_repeating_layer_stays_at_the_window_center() {
     // The camera-followed-object case (the parallax player): an object
     // that moves through the layer's space while the camera follows it.
     // The object's base copy is drawn whenever the object is inside
-    // the window's box Ã¢â‚¬â€ which, under the following camera, is always Ã¢â‚¬â€
+    // the window's box — which, under the following camera, is always —
     // so the object stays at the window's center no matter how far it
     // wanders. Its wrapped copies, one full period away, sit off the
     // window's edges, because the period is at least the window size.

@@ -1,5 +1,5 @@
 //! The look and metrics of the [`Ui`](crate::ui::Ui): colors, sizes,
-//! and gaps â€” every field public, so a game can re-skin the widgets
+//! and gaps — every field public, so a game can re-skin the widgets
 //! without touching the code that draws them.
 
 use super::Ui;
