@@ -28,8 +28,14 @@ use std::path::PathBuf;
 /// system temp first and the workspace's `target` after it. Panics
 /// only if both refuse — a machine where no writable folder can be
 /// claimed has larger problems than this test, and says so.
+///
+/// The fallback is measured against *this* crate's manifest, so a
+/// downstream consumer of the published engine gets the checkout cargo
+/// compiled `frost` from, not its own: a dependency's directory is not a
+/// promise of writable space. Anything that wants a folder of its own
+/// beside its own build claims it there.
 #[must_use]
-pub(crate) fn claim(tag: &str) -> PathBuf {
+pub fn claim(tag: &str) -> PathBuf {
     let pid = std::process::id();
     let dirs = [
         std::env::temp_dir(),

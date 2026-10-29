@@ -290,7 +290,7 @@ impl Demo {
             if was_falling && fall.phase != FallPhase::Falling {
                 // The fall reached the ground this frame: the drop clip
                 // plays exactly once, on this flip.
-                self.sounds.device.play_once(&self.sounds.tomato_drop, None);
+                self.sounds.play_once(&self.sounds.tomato_drop, None);
             }
             // Lay the pivot out from the body position, the scale factors,
             // and the wheel rotation: the body's center sits at the body

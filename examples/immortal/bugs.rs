@@ -1255,6 +1255,7 @@ mod tests {
             alpha: 1.0,
             filter: frost::SpriteFilter::Linear,
             generation: 0,
+            program: None,
         };
         let dt = 0.05;
         let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
@@ -1305,6 +1306,7 @@ mod tests {
             alpha: 1.0,
             filter: frost::SpriteFilter::Linear,
             generation: 0,
+            program: None,
         };
         let dt = 0.05;
         let scale = BUG_SIZE / 10.0;
@@ -1407,13 +1409,13 @@ mod tests {
             bugs.layout(&mut node, &[&frame; 3]);
             for (k, &i) in marked_idx.iter().enumerate() {
                 let b = &bugs.bugs[i];
-                if b.dying.is_some() {
+                if let Some(dying) = b.dying {
                     let (x0, frame0, facing0, grow0) = frozen[k];
                     assert_eq!(b.pos[0], x0[0], "bug {i} slid sideways while dying");
                     assert_eq!(b.frame, frame0, "bug {i} walked while dying");
                     assert_eq!(b.facing, facing0, "bug {i} turned while dying");
                     assert_eq!(b.grow, grow0, "bug {i} kept growing while dying");
-                    if b.dying.unwrap() < BOUNCE_TIME {
+                    if dying < BOUNCE_TIME {
                         assert_eq!(b.pos[1], x0[1], "bug {i} sank during the bounce");
                         // Mid-bounce, the laid-out center rides the arc
                         // strictly above the death spot.
@@ -1569,6 +1571,7 @@ mod tests {
             alpha: 1.0,
             filter: frost::SpriteFilter::Linear,
             generation: 0,
+            program: None,
         };
         let dt = 0.05;
         let scale = BUG_SIZE / 10.0;
@@ -1591,7 +1594,7 @@ mod tests {
         // last round is the killing blow.
         for _ in 0..HITS_TO_KILL {
             for p in &pos {
-                assert!(bugs.hit_at(*p).ajs.len() >= 1, "a drop found no bug");
+                assert!(!bugs.hit_at(*p).ajs.is_empty(), "a drop found no bug");
             }
             for _ in 0..5 {
                 bugs.step(dt, &ANCHORS, &ALIVE);
@@ -1652,6 +1655,7 @@ mod tests {
             alpha: 1.0,
             filter: frost::SpriteFilter::Linear,
             generation: 0,
+            program: None,
         };
         let dt = 0.05;
         let scale = BUG_SIZE / 10.0;
@@ -1741,6 +1745,7 @@ mod tests {
             alpha: 1.0,
             filter: frost::SpriteFilter::Linear,
             generation: 0,
+            program: None,
         };
         let dt = 0.05;
         let scale = BUG_SIZE / 10.0;
@@ -1841,6 +1846,7 @@ mod tests {
             alpha: 1.0,
             filter: frost::SpriteFilter::Linear,
             generation: 0,
+            program: None,
         };
         let dt = 0.05;
         let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
@@ -1944,6 +1950,7 @@ mod tests {
             alpha: 1.0,
             filter: frost::SpriteFilter::Linear,
             generation: 0,
+            program: None,
         };
         let dt = 0.05;
         let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
@@ -1992,6 +1999,7 @@ mod tests {
             alpha: 1.0,
             filter: frost::SpriteFilter::Linear,
             generation: 0,
+            program: None,
         };
         let dt = 0.05;
         let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
@@ -2031,6 +2039,7 @@ mod tests {
             alpha: 1.0,
             filter: frost::SpriteFilter::Linear,
             generation: 0,
+            program: None,
         };
         let dt = 0.05;
         let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
@@ -2071,6 +2080,7 @@ mod tests {
             alpha: 1.0,
             filter: frost::SpriteFilter::Linear,
             generation: 0,
+            program: None,
         };
         let dt = 0.05;
         let mut bugs = Bugs::new(&[&frame; 3], Species::bug());
@@ -2099,6 +2109,7 @@ mod tests {
             alpha: 1.0,
             filter: frost::SpriteFilter::Linear,
             generation: 0,
+            program: None,
         }
     }
 

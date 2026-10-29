@@ -315,10 +315,13 @@ name = "dogs_name"
 path = "examples/dogs_name/dogs_name.rs"
 
 # The centipede lives in the same folder as the monster it is cut from, and
-# shares its `assets/sprites`; its gait module sits beside it as `rig.rs`.
+# shares its `assets/sprites`; its gait module sits beside it as `rig.rs`, which
+# is where most of this target's tests are — fifteen between the two files, none
+# of them built until the line below.
 [[example]]
 name = "centipede"
 path = "examples/dogs_name/centipede.rs"
+test = true
 
 # The text-input example lives in the `examples/text/` folder.
 [[example]]
@@ -334,6 +337,35 @@ path = "examples/text/text_input.rs"
 [[example]]
 name = "benchsuite"
 path = "examples/benchsuite/main.rs"
+test = true
+
+# The other four examples carrying unit tests, named for the same reason and in
+# the same one line each. `test` defaults to false for example targets, so
+# `cargo test` never built any of these: `immortal` carries 111 of them across its
+# modules, `centipede` fifteen, `courtyard` five, `ron_view` three, `vrr` three.
+# They are unit tests over save snapshots, z-order, the plant's growth table, the
+# fall geometry — the arithmetic of a game, which is exactly the kind of thing that
+# reads as maintained because the target compiles under `clippy --all-targets` and
+# no gate ever reached an assertion in it. `docs/licensing.md` has the count of
+# what that cost; these four lines are why it will not recur quietly.
+[[example]]
+name = "immortal"
+path = "examples/immortal/main.rs"
+test = true
+
+[[example]]
+name = "courtyard"
+path = "examples/courtyard.rs"
+test = true
+
+[[example]]
+name = "ron_view"
+path = "examples/ron_view/main.rs"
+test = true
+
+[[example]]
+name = "vrr"
+path = "examples/vrr/main.rs"
 test = true
 
 [dev-dependencies]

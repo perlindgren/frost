@@ -246,9 +246,13 @@ pub use rng::*;
 #[cfg(not(target_arch = "wasm32"))]
 mod audio;
 
-/// The tests' scratch folders, claimed rather than assumed.
-#[cfg(test)]
-pub(crate) mod scratch;
+/// Scratch folders for anything that needs one on disk: claimed rather than
+/// assumed. Public because an example is a separate crate from this one's
+/// tests and can reach neither a `pub(crate)` helper nor a `#[cfg(test)]`
+/// module — so `courtyard`'s telling test invented its own
+/// `temp_dir()`-and-pid naming, the exact pattern the module exists to
+/// retire, and failed on every run whose shell handed cargo a POSIX `TMP`.
+pub mod scratch;
 #[cfg(not(target_arch = "wasm32"))]
 pub use audio::{Audio, AudioError, Sound};
 

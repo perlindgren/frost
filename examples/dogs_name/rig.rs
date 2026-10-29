@@ -1061,10 +1061,8 @@ mod tests {
             body[3].grow =
                 (((frame as f32 / 60.0) / GROW_SECONDS) * (1.0 - GROW_START) + GROW_START).min(1.0);
             for print in pressed_prints(&rig, &body, frame as f32 / 60.0, &mut prev) {
-                if print.segment == 3 {
-                    if body[3].grow < 1.0 {
-                        seen_newcomer = true; // must never happen
-                    }
+                if print.segment == 3 && body[3].grow < 1.0 {
+                    seen_newcomer = true; // must never happen
                 }
             }
         }

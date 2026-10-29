@@ -621,6 +621,7 @@ mod tests {
                 alpha: 1.0,
                 filter: frost::SpriteFilter::Linear,
                 generation: 0,
+                program: None,
             },
             frost::Shape::Sprite {
                 data: std::sync::Arc::new([1u8; 1]),
@@ -635,6 +636,7 @@ mod tests {
                 alpha: 1.0,
                 filter: frost::SpriteFilter::Linear,
                 generation: 0,
+                program: None,
             },
         ]
     }
@@ -825,13 +827,11 @@ mod tests {
                             saw_emerge = true;
                         }
                     }
-                    Phase::Burrowing => {
-                        if w.phase_t > 0.0 {
-                            let full = worms.scale[w.frame as usize];
-                            let y = c.scale[1];
-                            assert!(y > 0.0 && y < full, "mid-burrow y scale {y}");
-                            saw_burrow = true;
-                        }
+                    Phase::Burrowing if w.phase_t > 0.0 => {
+                        let full = worms.scale[w.frame as usize];
+                        let y = c.scale[1];
+                        assert!(y > 0.0 && y < full, "mid-burrow y scale {y}");
+                        saw_burrow = true;
                     }
                     _ => {}
                 }

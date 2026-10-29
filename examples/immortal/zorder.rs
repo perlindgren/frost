@@ -164,6 +164,6 @@ mod tests {
         let y = 108_000.0; // a full half-height of an extreme window.
         assert!(GRASS < ground(y));
         assert!(UI > upper(5, -y));
-        assert!(OVERLAY > UI);
+        const _: () = assert!(OVERLAY > UI);
     }
 }

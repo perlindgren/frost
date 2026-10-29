@@ -866,9 +866,9 @@ impl Demo {
         if pouring != self.pouring {
             self.pouring = pouring;
             if pouring {
-                self.sounds.device.play_loop(&self.sounds.pour);
+                self.sounds.play_pour();
             } else {
-                self.sounds.device.stop_loop();
+                self.sounds.stop_loop();
             }
         }
 

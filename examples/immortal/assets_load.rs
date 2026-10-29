@@ -208,8 +208,10 @@ const ASSETS: frost::Table = &[
 /// bug death, the watering loop, the spray hiss, and the tomato drop.
 pub struct Sounds {
     /// The audio output, opened once at startup; every clip plays through
-    /// it.
-    pub device: frost::Audio,
+    /// it. `None` only under [`Assets::load_silent`], which is how the tests
+    /// load on a machine with no sound card — see there for why the game
+    /// never does.
+    pub device: Option<frost::Audio>,
     /// The three bug chatter clips (low, mid, high), decoded once at
     /// startup; a bug that reaches its destination while another bug is
     /// on the grass within 50 px of it chatters on one of them, the
@@ -240,6 +242,35 @@ pub struct Sounds {
     /// at startup; it plays, at the default volume, on the frame a
     /// fallen, overgrown tomato reaches its destination.
     pub tomato_drop: frost::Sound,
+}
+
+impl Sounds {
+    /// Play a clip once, if this machine has somewhere to play it. The
+    /// question is asked here rather than at the eleven places that make a
+    /// sound, so a run without an output reads as silence in one spot
+    /// instead of as a game that forgot to make any.
+    pub fn play_once(&self, sound: &frost::Sound, volume: Option<f32>) {
+        if let Some(device) = &self.device {
+            device.play_once(sound, volume);
+        }
+    }
+
+    /// Start the watering loop. Named for its clip rather than left a
+    /// `play_loop(&self.sounds.pour)` at the call site because the loop is
+    /// the output's single slot: the borrow that starts it owns the whole
+    /// `Sounds`, and the clip it plays lives inside that same `Sounds`.
+    pub fn play_pour(&mut self) {
+        if let Some(device) = &mut self.device {
+            device.play_loop(&self.pour);
+        }
+    }
+
+    /// Stop the loop — if there is one, and somewhere to stop it in.
+    pub fn stop_loop(&mut self) {
+        if let Some(device) = &mut self.device {
+            device.stop_loop();
+        }
+    }
 }
 
 /// Everything the example loads at startup: the sprite shapes, the
@@ -326,6 +357,26 @@ impl Assets {
     /// the way in.
     pub fn load() -> Self {
         let audio = frost::Audio::new().expect("failed to open the audio output device");
+        Self::assemble(Some(audio))
+    }
+
+    /// Everything [`load`] decodes, with the audio output left shut: the
+    /// sprites, the fonts and every clip are still resolved and decoded —
+    /// only nothing can be heard. The game does not use this: it opens the
+    /// device and refuses to start without one, which is the right answer
+    /// to give a player. The tests use it, because a runner has no sound
+    /// card and whether a plant withers at half the growth pace is not a
+    /// question decided by the presence of a speaker. Until the first
+    /// headless run said otherwise, every one of them was answering that
+    /// question by dying at `Audio::new` before it got to the garden.
+    ///
+    /// [`load`]: Assets::load
+    #[cfg(test)]
+    pub fn load_silent() -> Self {
+        Self::assemble(None)
+    }
+
+    fn assemble(device: Option<frost::Audio>) -> Self {
         // The resolver of this run: the table beneath, the loose
         // directories above it when this working directory has them.
         let store = frost::Assets::embedded(ASSETS).with_dir(env!("CARGO_MANIFEST_DIR"));
@@ -366,7 +417,7 @@ impl Assets {
             font: ask(&store, "Leofont-Regular", &["ttf"]),
             diag_font: ask(&store, "FiraCode-VariableFont_wght", &["ttf"]),
             sounds: Sounds {
-                device: audio,
+                device,
                 chatters: [
                     sound(&store, "ChatterLow"),
                     sound(&store, "ChatterMid"),

@@ -1124,7 +1124,7 @@ impl frost::Process for Demo {
         if !self.over && game_over_due(&self.plants, self.ever_planted) {
             self.over = true;
             if self.pouring {
-                self.sounds.device.stop_loop();
+                self.sounds.stop_loop();
                 self.pouring = false;
             }
         }
@@ -1842,14 +1842,10 @@ impl Demo {
     /// plays one of the plopp clips.
     fn play_bug_events(&mut self, events: &bugs::StepEvents) {
         for clip in &events.chatters {
-            self.sounds
-                .device
-                .play_once(&self.sounds.chatters[*clip], None);
+            self.sounds.play_once(&self.sounds.chatters[*clip], None);
         }
         for clip in &events.plops {
-            self.sounds
-                .device
-                .play_once(&self.sounds.plops[*clip], None);
+            self.sounds.play_once(&self.sounds.plops[*clip], None);
         }
     }
 
@@ -2009,7 +2005,7 @@ impl Demo {
                     // upright.
                     if self.burst.is_none() {
                         self.burst = Some(0.0);
-                        self.sounds.device.play_once(&self.sounds.spray, Some(0.5));
+                        self.sounds.play_once(&self.sounds.spray, Some(0.5));
                         // PingPong is the tween's default: `0 ->
                         // BURST_ANGLE` in `BURST_HALF` seconds and back in the
                         // same time, so the tilting and the return take
@@ -2147,12 +2143,10 @@ impl Demo {
             for swarm in [&mut self.bugs, &mut self.lice] {
                 let hit = swarm.hit_at(p.pos);
                 for clip in hit.ajs {
-                    self.sounds
-                        .device
-                        .play_once(&self.sounds.ajs[clip], Some(0.35));
+                    self.sounds.play_once(&self.sounds.ajs[clip], Some(0.35));
                 }
                 for _ in 0..hit.deaths {
-                    self.sounds.device.play_once(&self.sounds.death, None);
+                    self.sounds.play_once(&self.sounds.death, None);
                 }
             }
         }
@@ -2246,7 +2240,7 @@ impl Demo {
     fn restart(&mut self, ctx: &mut frost::Context) {
         // The pour loop stops, if it plays.
         if self.pouring {
-            self.sounds.device.stop_loop();
+            self.sounds.stop_loop();
             self.pouring = false;
         }
         // The bench goes bare again: every slot a fresh, invisible seed,
@@ -2430,7 +2424,7 @@ impl Demo {
         // The pour loop stops, if it plays: tick_tool re-arms it the frame
         // the restored can is fully tilted, if it is.
         if self.pouring {
-            self.sounds.device.stop_loop();
+            self.sounds.stop_loop();
             self.pouring = false;
         }
         self.time = snapshot.time;
@@ -2647,7 +2641,7 @@ mod tests {
     /// seeded — nothing is falling, and no pour loop is running.
     #[test]
     fn the_initial_state_mirrors_the_seeded_scene() {
-        let demo = Demo::new(Assets::load());
+        let demo = Demo::new(Assets::load_silent());
         assert_eq!(demo.active, None);
         assert_eq!(demo.held, None);
         assert!(demo.picking.is_none());
@@ -2674,7 +2668,7 @@ mod tests {
     /// embedded font.
     #[test]
     fn the_speed_field_starts_at_one() {
-        let demo = Demo::new(Assets::load());
+        let demo = Demo::new(Assets::load_silent());
         assert_eq!(demo.speed, 0, "1x at launch");
         assert!(demo.speed_press.is_none());
         for label in &demo.speed_labels {
@@ -2935,8 +2929,8 @@ mod tests {
         // too low shows up here as one shallow bay, long before it shows up
         // on the panel as a tool floating above its board.
         let first = BAYS[0][1] - bay_ceiling(0) - BAY_INSET;
-        for i in 1..SLOTS {
-            let h = BAYS[i][1] - bay_ceiling(i) - BAY_INSET;
+        for (i, bay) in BAYS.iter().enumerate().skip(1) {
+            let h = bay[1] - bay_ceiling(i) - BAY_INSET;
             assert!(
                 (h - first).abs() < 10.0,
                 "bay {i} stands {h} tall against bay 0's {first}, and the boards are evenly spaced"
@@ -3186,7 +3180,7 @@ mod tests {
     /// and not bare as soon as one plant is planted.
     #[test]
     fn the_bench_is_bare_only_when_nothing_is_planted() {
-        let demo = Demo::new(Assets::load());
+        let demo = Demo::new(Assets::load_silent());
         assert!(bench_is_bare(&demo.plants));
         let mut planted = demo.plants;
         planted[0].planted = true;
@@ -3198,7 +3192,7 @@ mod tests {
     /// over, and a planted bench never is one.
     #[test]
     fn the_game_over_is_due_only_after_a_planting() {
-        let demo = Demo::new(Assets::load());
+        let demo = Demo::new(Assets::load_silent());
         assert!(!game_over_due(&demo.plants, false));
         assert!(game_over_due(&demo.plants, true));
         let mut planted = demo.plants;
@@ -3297,7 +3291,7 @@ mod tests {
     fn the_bench_stays_bare_until_a_seed_lands() {
         // A long frame with the bench bare: nothing would grow or drain
         // even if the clocks ran.
-        let mut demo = Demo::new(Assets::load());
+        let mut demo = Demo::new(Assets::load_silent());
         let (active, started) = demo.grow_plants(9.0);
         assert_eq!(active, 0);
         assert_eq!(started, [false; PLANT_POS.len()]);
@@ -3335,7 +3329,7 @@ mod tests {
     #[test]
     fn planted_plants_grow_side_by_side() {
         let dt = 1.0 / 60.0;
-        let mut demo = Demo::new(Assets::load());
+        let mut demo = Demo::new(Assets::load_silent());
         demo.plants[0].planted = true;
         demo.plants[2].planted = true;
         // Twenty real seconds — 6⅔ growth-clock seconds — every planted
@@ -3366,7 +3360,7 @@ mod tests {
     #[test]
     fn a_completely_withered_plant_is_gone_and_frees_its_slot() {
         let dt = 1.0 / 60.0;
-        let mut demo = Demo::new(Assets::load());
+        let mut demo = Demo::new(Assets::load_silent());
         // A fully grown plant — no ripe fruit, so nothing holds its
         // clock above zero — left dry withers back to nothing.
         demo.plants[0].planted = true;
@@ -3437,7 +3431,7 @@ mod tests {
     #[test]
     fn a_dry_plant_withers_at_half_the_growth_pace() {
         let dt = 1.0 / 60.0;
-        let mut demo = Demo::new(Assets::load());
+        let mut demo = Demo::new(Assets::load_silent());
         // A planted plant, fully grown — all five slices — and dry: the
         // withering runs.
         demo.plants[0].planted = true;
@@ -3474,7 +3468,7 @@ mod tests {
     #[test]
     fn a_dry_plant_yellows_and_a_watered_one_regreens() {
         let dt = 1.0 / 60.0;
-        let mut demo = Demo::new(Assets::load());
+        let mut demo = Demo::new(Assets::load_silent());
         demo.plants[0].planted = true;
         demo.plants[0].plant.step(5.0);
         assert_eq!(demo.plants[0].dryness, 0.0);
@@ -3523,7 +3517,7 @@ mod tests {
     /// continues the exact same streams.
     #[test]
     fn a_snapshot_round_trips_the_demo_state() {
-        let mut demo = Demo::new(Assets::load());
+        let mut demo = Demo::new(Assets::load_silent());
         demo.picking = Some(Pick::Plant(0, 2));
         demo.flying = Some(Fly {
             tween: frost::Tween::new([10.0, 20.0], [30.0, 40.0], FLY_TIME)
@@ -3624,7 +3618,7 @@ mod tests {
     /// rejected, and one written by this version parses.
     #[test]
     fn a_snapshot_from_another_version_is_rejected() {
-        let demo = Demo::new(Assets::load());
+        let demo = Demo::new(Assets::load_silent());
         let mut snapshot = demo.capture_state();
         let text = ron::to_string(&snapshot).unwrap();
         assert_eq!(save::parse(&text).unwrap().version, save::VERSION);
@@ -3640,10 +3634,12 @@ mod tests {
     /// when nothing else is usable.
     #[test]
     fn an_unusable_snapshot_candidate_falls_back_to_the_next_one() {
-        let dir = std::env::temp_dir().join(format!("frost-save-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let demo = Demo::new(Assets::load());
+        // Claimed, not assumed (see `frost::scratch`): the folder is the
+        // one part of this test not under test, and a POSIX `TMP` inherited
+        // from the shell turns an assumed path into an impossible one —
+        // `/tmp` here means a `C:\tmp` a normal user may not create.
+        let dir = frost::scratch::claim("frost_save_test");
+        let demo = Demo::new(Assets::load_silent());
         let snapshot = demo.capture_state();
 
         // The first candidate's parent is a plain file: the folder cannot
@@ -3683,7 +3679,10 @@ mod tests {
             "the error should name the mismatch: {message}"
         );
 
-        std::fs::remove_dir_all(&dir).unwrap();
+        // Best effort, unlike the claim above: everything this test owed is
+        // already asserted, and a folder a scanner still holds open is not
+        // a failing test.
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The turn state's round trip: the captured tween's ends, elapsed
@@ -3712,7 +3711,7 @@ mod tests {
     /// the data tier read, the names the table ships, six beds.
     #[test]
     fn the_garden_tells_a_being_a_tool_can_read() {
-        let demo = Demo::new(Assets::load());
+        let demo = Demo::new(Assets::load_silent());
         assert!(demo.teller.live_file().exists(), "boot published a being");
         let body = frost::ron::to_text_doc("", &demo.state_of_affairs(), "");
         let doc = frost::ron::parse_doc(&body).expect("the being is RON");

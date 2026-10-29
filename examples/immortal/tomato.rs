@@ -347,9 +347,10 @@ mod tests {
     /// A fruit stamped ripe at aging-clock moment `ripened`, for the
     /// staleness tests: they run the aging clock on from a ripe fruit.
     fn stamped(ripened: f32) -> Tomato {
-        let mut t = Tomato::default();
-        t.ripened_at = Some(ripened);
-        t
+        Tomato {
+            ripened_at: Some(ripened),
+            ..Tomato::default()
+        }
     }
 
     /// The [Tomato::stale] curve: zero until [STALE_DELAY] seconds after
@@ -419,7 +420,10 @@ mod tests {
     /// it always did.
     #[test]
     fn the_shiver_fits_inside_the_stale_period() {
-        assert!(
+        // A relation between two constants, so the compiler can check it and
+        // does, whether or not this test is ever run: the day someone moves
+        // one of these numbers past the other, the crate stops building.
+        const _: () = assert!(
             SHIVER_TIME < STALE_TIME,
             "the shiver must fit inside the darkening, not follow it"
         );
@@ -432,7 +436,7 @@ mod tests {
             t.shiver(opens + 0.001) > 0.0,
             "the shiver is the tail of the darkening"
         );
-        assert_eq!(t.is_overgrown(fall - 0.001), false, "the fall is unchanged");
+        assert!(!t.is_overgrown(fall - 0.001), "the fall is unchanged");
         assert!(t.is_overgrown(fall), "the fall is unchanged");
     }
 

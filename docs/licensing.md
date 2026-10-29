@@ -19,7 +19,7 @@ the world by an accident of packaging.
 | `frost_shaders` | inherited: `license.workspace = true` | games borrow programs from the shelf; a lender cannot hand out what it does not hold |
 | `tools/sprite_util`, `tools/noisefloor` | inherited: `license.workspace = true` | engine-side tooling; `noisefloor` is a dev-dependency of the engine's benches, so its terms cannot be stranger than the engine's |
 | `antifrost` (Ember Hill) | none — all rights reserved | a game and its art; it does not ask for the workspace licence, and `publish = false` marks the silence as a decision |
-| `immortal` (`examples/immortal`) | none — all rights reserved, but stated only as prose: a comment in `Cargo.toml` and this row. There is no manifest to check it against | 13,135 lines of game wearing an example's name. It is an example *target* of the `frost` package, so cargo's `license` field on that package is a claim about a directory whose game files it does not describe — the strongest argument for the lift below. Excluded from the published crate (`^examples/` → no files), and none of its 111 unit tests have ever been compiled |
+| `immortal` (`examples/immortal`) | none — all rights reserved, but stated only as prose: a comment in `Cargo.toml` and this row. There is no manifest to check it against | 13,135 lines of game wearing an example's name. It is an example *target* of the `frost` package, so cargo's `license` field on that package is a claim about a directory whose game files it does not describe — the strongest argument for the lift below. Excluded from the published crate (`^examples/` → no files). Its 111 unit tests had never been compiled by any gate — no example's tests are, unless the target asks — until it asked, on 2026-10-29 |
 
 Inheriting is **opt-in**, which is the only reason a workspace default is safe to
 state: a game added to `members` tomorrow is not licensed by a decision it never
@@ -97,15 +97,6 @@ three endings below) and `/examples` can join the list without costing anything.
 
 ## What is still open, named as such
 
-- **137 tests sit in example targets that cargo will not build.** `test` defaults to
-  `false` for examples, so `cargo test` never compiles their `#[test]` functions —
-  not locally, not in CI, not ever. Counted: `immortal` 111, `dogs_name` 15, the
-  top-level examples 5, `ron_view` 3, `vrr` 3. Of 57 example targets exactly one says
-  `test = true` — `benchsuite`, since the commit that noticed its sixteen tests had
-  never run — so 16 of 153 example tests have been in a gate. Nothing ever said
-  otherwise, because nothing asked: the target exists, compiles under
-  `clippy --all-targets`, and its assertions are simply never reached. One line per
-  target is the fix; for `immortal` the lift below is the fix.
 - **The engine's examples embed the game's art.** 11 files under `assets/` are
   referenced by `immortal` *and* by engine-side code — `tomato.png`, `grass.png`,
   `plant1..3.png`, `Waspeye1.png`, `Worm1_crop.png` among them — so a demo like

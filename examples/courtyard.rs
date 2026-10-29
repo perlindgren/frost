@@ -393,7 +393,14 @@ mod tests {
     /// this pin runs in its own temp folder and leaves nothing.)
     #[test]
     fn the_courtyard_tells_what_stands() {
-        let dir = std::env::temp_dir().join(format!("frost-courtyard-tell-{}", std::process::id()));
+        // Claimed, not assumed: `temp_dir().join(pid)` — the naming this
+        // test used until it ran for the first time — is the pattern
+        // `frost::scratch` exists to retire, and under a shell that hands
+        // cargo a POSIX `TMP` it resolves to a folder that cannot be
+        // created at all. `Teller::open` swallows that (an app must not
+        // die over a dev folder), so what the test was really asserting
+        // was that the folder existed, and calling it silence.
+        let dir = frost::scratch::claim("frost_courtyard_tell");
         let mut teller = frost::Teller::open(&dir, "courtyard-test");
         let stands = Courtyard {
             lamp: None,

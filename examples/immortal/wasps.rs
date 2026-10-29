@@ -434,6 +434,7 @@ mod tests {
             alpha: 1.0,
             filter: frost::SpriteFilter::Linear,
             generation: 0,
+            program: None,
         }
     }
 
