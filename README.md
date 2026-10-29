@@ -38,10 +38,37 @@ rather than warned, with the remedy printed beside the refusal:
 rustup target add wasm32-unknown-unknown
 ```
 
-There is no CI behind this repository, so the hook is the only gate the history
-has — and a check that runs only when someone remembered was not a check. Git
-runs them only once this clone points at them — the trigger is a per-clone
-setting, never cloned itself. After every fresh clone, once:
+The one exception is a push that ships nothing: deleting a ref carries no commits,
+so no tests run for it, and the hook says so on one line rather than skipping in
+silence. A push that mixes deletions with commits runs everything.
+
+There is CI behind this repository now, and it is the reason the hooks stopped
+being the last line. `.github/workflows/gate.yml` runs the same rules on a
+runner — the dropper scan, `fmt`, clippy over every target, the packaging
+assertions, the web build, the test suite — and the `main-gate` ruleset requires
+that check before `main` may move. That is precisely what a hook cannot be: the
+hooks live in per-clone config and `--no-verify` walks past them, while the
+server refuses whatever it has not seen pass. Refusing is not theoretical:
+
+```text
+remote: error: GH013: Repository rule violations found for refs/heads/main.
+remote: - Required status check "gate" is failing.
+! [remote rejected] ci-refusal-probe -> main (push declined due to repository rule violations)
+```
+
+which is what pushing a commit whose gate had failed printed, verbatim. The
+consequence for anyone working here: `main` takes a commit only after that commit
+passed on another ref, so work arrives by branch.
+
+Two things the CI does not do are worth knowing before relying on it. It runs on
+Linux only, so the Windows code path — the platform this engine is developed and
+shipped on — is compiled only on a machine like yours. And the GPU test tree
+reports without judging: a runner with no framebuffer cannot ground a pixel
+assertion, and a measurement that cannot be taken must refuse rather than come
+back green (`docs/benchmarking.md` §37).
+
+Git runs the hooks only once this clone points at them — the trigger is a
+per-clone setting, never cloned itself. After every fresh clone, once:
 
 ```shell
 sh .githooks/install.sh
@@ -52,7 +79,9 @@ the step). On Windows from PowerShell or cmd, where `sh` is usually not on
 the PATH, the script's whole job is the one command:
 `git config core.hooksPath .githooks` — run it from any shell (from Git
 Bash, `sh .githooks/install.sh` works as everywhere). They are a gate you
-opt into, not a wall: `--no-verify` skips them by design.
+opt into, not a wall: `--no-verify` skips them by design. What it skips is the
+local half — a commit that skips its hooks still has to pass `gate` somewhere
+else before `main` will accept it.
 
 ## License
 
