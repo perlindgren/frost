@@ -325,6 +325,17 @@ path = "examples/dogs_name/centipede.rs"
 name = "text_input"
 path = "examples/text/text_input.rs"
 
+# The measurement harness, named because it is the one example carrying tests.
+# An example's unit tests are not built by `cargo test` unless the target asks:
+# `test` defaults to false for examples, so the harness's sixteen tests — the
+# median, the provenance probe, the gate that refuses to judge an uncomposited
+# window — had never run in any gate until this line. They are the cheapest
+# defence the benchmark's honesty has, so the target says so.
+[[example]]
+name = "benchsuite"
+path = "examples/benchsuite/main.rs"
+test = true
+
 [dev-dependencies]
 # Command line parsing for the `repeat` example (`--repeat_x`, `--repeat_y`).
 clap = { version = "4", features = ["derive"] }

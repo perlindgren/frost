@@ -1,0 +1,96 @@
+# The gate that does not depend on anyone's clone.
+#
+# `.githooks/` is real but optional: it lives in per-clone config, `--no-verify`
+# walks past it, and `git merge` never invokes `pre-commit` at all. This is the
+# copy of the same rules that runs whether or not the machine that pushed wanted
+# it to. What it enforces is what a machine without a display can honestly
+# enforce; the parts it cannot judge are named below and in the step names, not
+# quietly omitted.
+#
+# One runner, `ubuntu-latest`, on purpose. It never compiles the Windows code
+# path — the platform this engine is developed and shipped on — which is the
+# known cost of the cheap option, and the first thing to add back when queue
+# time stops being the constraint.
+name: gate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The check `.githooks/pre-commit` runs, in the same spirit: nothing here
+      # needs a display, a GPU, or a process list that answers.
+      - name: No OS or build droppings in the tree
+        run: |
+          if git ls-files | grep -E '(^|/)(\.DS_Store|Thumbs\.db|desktop\.ini|._[^/]+)$|__pycache__/|\.pyc$'; then
+            echo '::error::tracked files above are droppings; git rm --cached them and delete them.'
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy, zero warnings, every target
+        run: cargo clippy --all-targets -- -D warnings
+
+      # The engine's own claim, checked rather than trusted: docs/licensing.md
+      # records why these specific lines exist. A published crate that loses
+      # assets/fonts/OFL.txt loses the permission to ship a font with it, and
+      # nothing else in the build would ever mention that.
+      - name: The published crate is the engine and nothing else
+        run: |
+          cargo package --list --allow-dirty -p frost > files.txt
+          for must in assets/fonts/OFL.txt assets/ron/garden.ron LICENSE-MIT LICENSE-APACHE; do
+            grep -qx "$must" files.txt || { echo "::error::$must is missing from the package"; exit 1; }
+          done
+          if grep -E '^assets/(sprites|audio|game|maps|tilesets)/' files.txt; then
+            echo '::error::a game asset is being packaged with the engine'
+            exit 1
+          fi
+          if grep -q '^examples/' files.txt; then
+            echo '::error::examples are in the package; the include list says otherwise'
+            exit 1
+          fi
+
+      - name: The engine compiles for the web
+        run: cargo check --target wasm32-unknown-unknown -p antifrost
+
+      # `--no-fail-fast` is not a nicety: without it the first failing target
+      # hides every target after it, which on this repo means ten of thirteen
+      # — the integration tests, `frost_shaders`, `noisefloor`, `sprite_util`
+      # and all doc-tests — going unreported behind one red.
+      #
+      # `--skip backend::tests::` names what this machine cannot judge. That
+      # module's guards ask a GPU for numbers and refuse to answer on a chip
+      # they have no row for; `docs/benchmarking.md` §37 settled that a ruler
+      # walked on one chip judges nothing on another, and a runner's software
+      # rasterizer is a chip with no row. Refusing is right for a guard and
+      # wrong for a gate, so the gate says outright that it did not ask.
+      - name: Tests (the GPU tree is not judged here — see the step below)
+        run: cargo test --no-fail-fast -- --skip backend::tests::
+
+      # Deliberately not gating. This compiles the whole GPU test tree and runs
+      # it, so a runner that cannot ground an assertion still cannot break the
+      # build; what it does buy is that the tree compiles, and a log that prints
+      # what an unpinned chip refuses. A green here would be a lie and is not
+      # wanted — the step's own name says which of the two it is.
+      - name: GPU test tree — informational, not a verdict
+        continue-on-error: true
+        run: cargo test --no-fail-fast --lib -- backend::tests:: --nocapture
