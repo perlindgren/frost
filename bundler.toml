@@ -1,0 +1,6 @@
+# Metadata for `cargo xtask bundle` (nice-plug-xtask), which reads this file
+# from the workspace root — it `chdir`s there and opens `./Cargo.toml`, so a
+# copy inside the member directory is not found and the bundle silently has no
+# name. Bundles land in `target/bundled/`.
+[nice-tuner]
+name = "Nice Tuner"

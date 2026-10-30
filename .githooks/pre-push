@@ -217,6 +217,17 @@ cargo test || fail 'cargo test'
 printf 'pre-push: running `cargo test -p antifrost`...\n'
 cargo test -p antifrost || fail 'cargo test -p antifrost'
 
+# Named, not swept in. `cargo test` above follows `default-members` — the engine
+# and its games — so a change that broke only the tuner would be met with 460
+# passing engine tests and a green hook. Two things are worth this minute here:
+# the plugin compiling against `frost::embedded`, which is the engine's newest
+# surface, and `pitch`'s frame-budget test, which measures the wall-clock cost
+# the workspace root's `opt-level = 3` pin is what pays for. Its feature
+# combinations, the standalone link and bundling stay in
+# `nice-tuner/scripts/check.sh`, where a DAW and an ASIO SDK can join in.
+printf 'pre-push: running `cargo test -p nice-tuner -p pitch`...\n'
+cargo test -p nice-tuner -p pitch || fail 'cargo test -p nice-tuner -p pitch'
+
 # The web target shares the library and nothing else, so it gets its own line
 # rather than hiding inside the host's. A missing toolchain is a failure rather
 # than a warning: the check that cannot run is exactly the hole the check exists

@@ -99,4 +99,18 @@ cargo clippy --all-targets -- -D warnings || {
     exit 1
 }
 
+# The plugin and its pitch detector are members but not *default* members, so
+# the command above never compiles them: `cargo clippy` with no `-p` follows
+# `default-members`, which stays the engine and its games on purpose. A member
+# nothing lints is a member that regresses quietly, so it is named here. The
+# tuner's own gate (nice-tuner/scripts/check.sh) covers its feature
+# combinations, its standalone link and bundling; this line covers the part
+# that a change to the engine breaks first — the plugin compiling against
+# `frost::embedded` at all.
+printf 'pre-commit: clippy -D warnings (the plugin and its detector)...\n'
+cargo clippy -p nice-tuner -p pitch --all-targets -- -D warnings || {
+    printf 'pre-commit: clippy failed in nice-tuner/pitch - commit aborted.\n' >&2
+    exit 1
+}
+
 exit 0

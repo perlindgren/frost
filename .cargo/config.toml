@@ -1,2 +1,41 @@
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# `cargo xtask bundle <plugin> --release` — the plugin's bundling step, whose
+# driver lives in `nice-tuner/xtask`. An alias here is visible from every
+# directory in the workspace; a member's own `.cargo/config.toml` would not be,
+# because cargo reads config from the working directory *upward* and both the
+# hooks and the gate run at this root.
+[alias]
+xtask = "run --package xtask --"
+
+# `asio-sys`'s build script wants the unpacked Steinberg ASIO SDK and dials
+# steinberg.net without it. `relative = true` anchors the path at this file's
+# parent — this repository's root — and `force = false` lets a real environment
+# variable win, which is the form to prefer: the SDK's licence is proprietary,
+# incompatible with this repository's `MIT OR Apache-2.0`, so keeping it
+# somewhere outside the tree and exporting `CPAL_ASIO_DIR` there is worth more
+# than a path that happens to be ignored. The ignore rule and the two guards
+# (`.githooks/pre-commit`, the gate's own assertion) exist because `relative`
+# makes it easy to grow that directory *inside* the tree, where `git add -A`
+# would find it.
+#
+# Nothing in the gate builds this: ASIO is behind the `standalone-asio` feature
+# and no step anywhere uses `--all-features`.
+[env]
+CPAL_ASIO_DIR = { value = ".cargohome/asiosdk", relative = true, force = false }
+
+# A decision written down rather than inherited. That `+crt-static` above is the
+# engine's own choice — a game that ships as one file with no VC redist to
+# install — and the plugin joined this workspace under it. A VST3 `.dll` built
+# with a static CRT carries its own C runtime and heap beside the host's, which
+# is a thing a plugin is generally advised not to do; the standalone binary the
+# SDK examples ship is built without it. Nothing here has been measured against
+# a real host, so the honest state is: this flag now applies to the plugin, and
+# a bundle you intend to load in somebody's DAW should be built without it,
+# explicitly, for that one command —
+#
+#     $env:RUSTFLAGS = ""        # the environment wins over `rustflags` above
+#     cargo xtask bundle nice-tuner --release
+#
+# and measured in a host before it is trusted either way.

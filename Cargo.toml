@@ -55,7 +55,15 @@ include = [
 # As a member it declares nothing, which is how a package says all rights
 # reserved; `publish = false` keeps it out of any tarball.
 [workspace]
-members = ["antifrost", "frost_shaders", "immortal", "tools/sprite_util", "tools/noisefloor"]
+members = ["antifrost", "frost_shaders", "immortal", "nice-tuner", "nice-tuner/crates/pitch", "nice-tuner/xtask", "tools/sprite_util", "tools/noisefloor"]
+# The plugin is a member and not a default member, which is a deliberate split.
+# `members` is what `cargo fmt --all` and the lock resolution cover, so the
+# plugin's sources are formatted and versioned with the engine; `default-members`
+# is what a bare `cargo build`, `test`, or `clippy` selects, and a plugin GUI
+# does not belong in the engine's gate by accident — it builds a `cdylib` under
+# nice-plug's `assert_process_allocs`, and its pitch test measures a wall-clock
+# budget that only holds with the dev profile below. Those checks run by name:
+# `-p nice-tuner -p pitch`, in the hook and in the gate.
 default-members = [".", "antifrost", "frost_shaders", "immortal", "tools/sprite_util", "tools/noisefloor"]
 # Edition 2024 implies resolver 3; stated explicitly so the workspace
 # resolver cannot drift from the packages' editions.
@@ -409,4 +417,20 @@ noisefloor = { path = "tools/noisefloor" }
 opt-level = 3
 
 [profile.dev.package.png]
+opt-level = 3
+
+# The plugin's pitch detector, for the same reason the two above are here and
+# with a sharper edge: detection is bursty (one window search per ~85 ms of
+# audio) and runs in the editor's frost frame pump — the host's UI thread.
+# Measured there, unoptimized a burst costs ~2.3 ms against a 60 fps frame
+# budget and optimized ~0.26 ms. It is a `profile.dev.package` pin rather than
+# an `opt-level` on the crate so `pitch` keeps its debuginfo and the tuner's own
+# code stays debuggable.
+#
+# A pin in a member manifest is ignored — profiles are read from the workspace
+# root and nowhere else — which makes this the one place it can live, and
+# `nice-tuner/crates/pitch/tests/callback_budget.rs` the guard that says so:
+# without this block that test fails, and fails looking like a flaky timing test
+# on a busy machine.
+[profile.dev.package.pitch]
 opt-level = 3

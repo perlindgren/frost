@@ -157,9 +157,21 @@ three endings below) and `/examples` can join the list without costing anything.
 
 ## Where nice-tuner fits
 
-If it joins the workspace it brings its own manifest, and its terms are its own
-business — MIT/Apache today, changeable later in one file without touching the
-engine. The arrangement to avoid is the one it is in now: a vendored copy of the
-engine sitting inside a crate that declares `MIT OR Apache-2.0`, while the engine
-declared nothing at all. That is how a wrong licence gets shipped — not by
-decision, but by adjacency.
+It is a member now, and it declares its terms in one inherited line —
+`license.workspace = true` — so the plugin and the engine say the same thing in
+two places rather than two things in one. That inheritance is opt-in, exactly as
+above: a package that does not ask declares nothing.
+
+The arrangement this section was written against is the one it came from: a
+vendored copy of the engine inside a crate declaring `MIT OR Apache-2.0`, while
+the engine declared nothing at all. That is how a wrong licence gets shipped —
+not by decision, but by adjacency. The copy is gone; the plugin depends on the
+engine by path, so there is one copy of each file with one set of terms, and no
+tarball can pick up the engine under a licence the engine never granted.
+
+What the plugin takes out of `assets/` is one font, Fira Code, under the SIL Open
+Font Licence — a licence that permits embedding on the condition that its text
+travels with the font. The engine's sprites, maps and audio stay all rights
+reserved and do not appear in the plugin or its bundles; the bundler does not yet
+carry the OFL text at all, which is recorded against `nice-tuner/src/gui.rs`
+rather than assumed.

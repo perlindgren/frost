@@ -1,0 +1,10 @@
+[package]
+name = "pitch"
+version = "0.1.0"
+edition = "2021"
+description = "Real-time monophonic pitch detection (YIN) for a hardware-instrument tuner, std-only."
+license = "MIT"
+
+
+[dependencies]
+# none: std only, by design

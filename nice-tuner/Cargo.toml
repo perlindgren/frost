@@ -1,0 +1,106 @@
+[package]
+name = "nice-tuner"
+version = "0.1.0"
+edition = "2024"
+description = "A stringed-instrument tuner plugin with a frost-derived embedded GUI"
+license.workspace = true
+publish = false
+
+[lib]
+# `lib` beside `cdylib` for two reasons: the standalone target links it, and so
+# does `tests/rt_handoff_no_alloc.rs` — with `cdylib` alone there is no rlib to
+# link and `cargo test -p nice-tuner` builds nothing at all.
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+# Must NOT equal the lib target name: on MSVC the linker writes a
+# `<name>.pdb` per artifact into target/<profile>/deps/, so a cdylib and an
+# exe sharing the base name collide ("output file collision" on
+# nice_tuner.pdb). macOS hides this (lib-prefixed dylib, embedded DWARF).
+# The collision matters more now that the plugin shares one `target/` with the
+# engine and its games: this split is what keeps the plugin's artifacts from
+# landing on top of frost's.
+name = "nice-tuner-standalone"
+path = "src/main.rs"
+required-features = ["standalone"]
+
+[features]
+default = []
+# Builds the standalone app binary (src/main.rs): the audio-device backends
+# (cpal, jack, midir) arrive with it and nowhere else, so a plain
+# `cargo build` of the plugin is a cdylib with no device code of its own.
+# What it no longer keeps out is cpal altogether: the engine proper is a
+# dependency now, and frost carries rodio (→ cpal) and gilrs on every native
+# target for its games' sound and gamepads. The plugin simply never calls
+# `frost::Audio::new`; the linker still meets ALSA and udev, on Linux as on
+# any other platform where frost plays a sound.
+standalone = ["nice-plug/standalone", "dep:cpal", "dep:windows-sys", "dep:raw-window-handle"]
+# Windows only (a no-op elsewhere; nice-plug gates all ASIO code on
+# target_os = "windows"). Compiles cpal's ASIO host into the standalone
+# binary and adds the `--backend asio` option. Without it, `--backend asio`
+# is not even a recognized value. Implies `standalone`.
+#
+# Building this needs the Steinberg ASIO SDK, whose licence is proprietary: it
+# lives outside the repository and `CPAL_ASIO_DIR` in `.cargo/config.toml`
+# points at it. Nothing in the gate asks for it, and no step anywhere uses
+# `--all-features`, which would invoke that build script on every platform.
+standalone-asio = ["standalone", "nice-plug/standalone-asio", "asio-host"]
+# cfg-visible alias for cpal/asio (cfg cannot test "cpal/asio" directly);
+# drives the ASIO arms in src/devices.rs.
+asio-host = ["cpal/asio", "dep:asio-sys"]
+
+[dependencies]
+nice-plug = { version = "0.4.2", default-features = false, features = [
+    "editor",
+    "vst3",
+    "tracing-subscriber",
+    # Debug-build guard: fails loudly if `process()` allocates.
+    "assert_process_allocs",
+] }
+# Pinned to what nice-plug 0.4.2's byo_gui_wgpu example was built against.
+# NOTE: baseview 0.3.7+ moved the WindowHandler trait; nice-plug `main` already
+# tracks baseview 0.4.1 — revisit this pin when nice-plug releases again.
+baseview = { version = "=0.3.3", features = ["tracing"] }
+# The same wgpu the engine builds against, and it has to be: a `wgpu::Surface`
+# and `wgpu::Device` cross the boundary into `frost::embedded`, and two copies
+# of wgpu would be two types with one name — a type error, not a slower build.
+# The lock resolves both to 30.0.1; re-check that after any lock refresh.
+wgpu = "30"
+pollster = "0.4"
+crossbeam = "0.8"
+# baseview 0.3.3 does not re-export it; its Event::Keyboard carries this type
+keyboard-types = "0.8.3"
+# Settings panel persistence (main thread only; never touched by the audio path)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Direct cpal dependency for device enumeration in the settings panel
+# (standalone only). Same version nice-plug resolves to; features are
+# additive on the unified dependency graph.
+cpal = { version = "0.18", optional = true }
+pitch = { path = "crates/pitch" }
+# RT↔UI analysis handoff (audio thread: producer; editor frame: consumer).
+# Already in the graph via nice-plug standalone. The engine's own rtrb is 0.3,
+# a semver-incompatible neighbour: two copies coexist, each used by its own
+# side, which is a few kilobytes of ring buffer and nothing worse.
+rtrb = "0.4"
+# The engine, as a member beside this one. The GUI hands it a surface and drives
+# it one `frame()` per redraw; see `frost::embedded`.
+frost = { path = ".." }
+
+# Standalone top-level window geometry (position restore/centering):
+# baseview 0.3.3 has no position API, so the Windows build reaches for
+# SetWindowPos/GetWindowRect directly. Compiles only on Windows, only for
+# the standalone build (the target table drops it elsewhere).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# baseview 0.3.3 speaks raw-window-handle 0.6; same version required to
+# read its PlatformHandle's HWND.
+raw-window-handle = { version = "0.6", optional = true }
+# Direct ASIO access (same version cpal 0.18 pins): reading a driver's
+# PREFERRED buffer size — which cpal discards — in the streamless child
+# (--list-devices). Sequential with cpal's use; never concurrent.
+asio-sys = { version = "0.4", optional = true }

@@ -20,6 +20,19 @@
 antifrost.settings.ron
 antifrost.progress.ron
 
+# The plugin's standalone writes its settings the same way, in whatever
+# directory it was started from — and the `*` below is not tidiness: a run
+# before a cold-start test left a `nice-tuner-settings.json.backup-pre-coldtest`
+# sitting in the tree, untracked and unignorable, because the rule named the
+# file exactly. Bundled instruments are the other half: a `.vst3` or `.clap` is
+# a binary another application consumes, built by `cargo xtask bundle`, and
+# `dist/` is where that tool puts one when it is told a different output dir.
+nice-tuner-settings.json
+nice-tuner-settings.json.*
+*.vst3
+*.clap
+dist/
+
 # self-signed certificates for `serve.py --tls` — minted locally, never committed
 web/.tls/
 web/.watch-stamp

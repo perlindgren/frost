@@ -228,11 +228,14 @@ survivable.
 
 **Why it matters.**
 
-- The embedded path is where frost stops owning the process, and it would land with no test at
-  all. nice-tuner carries the engine in `vendor/frost/` with `src/backend/tests/` deleted, so
-  the entire plugin path is verified by launching Reaper; that arrangement is what produced the
-  fork, and shipping `frost::embedded` upstream without a driver reproduces it in the place
-  where the churn actually happens.
+- The embedded path is where frost stops owning the process. It landed with
+  three unit tests (`src/backend/tests/embed.rs`) that measure the adapter and
+  lay out the pipeline's bind group — enough to catch a wrong limits claim, not
+  enough to catch a wrong frame. nice-tuner is a workspace member now and its
+  tests run in the gate, but none of them drives a frame: what is still missing
+  is a host in this repository that calls `frame()` and reads the consequences,
+  which is the thing a plugin cannot contribute because the plugin is the
+  stranger being tested against.
 - The churn will come from this side. A change that breaks only the guest — a setter that stops
   clearing held keys, resize settling that honours every call instead of the quiet tenth of a
   second, a present mode that starts waiting — fails nothing here today, and surfaces as a
@@ -282,3 +285,36 @@ survivable.
   nice-tuner tests that one particular stranger keeps its end — and the contract itself goes in
   `docs/embedding.md` when the port lands, so both suites cite one text instead of each keeping
   its own guess.
+
+## What joining the workspace left open
+
+Three things the member move deliberately did not finish, each with the shape of
+its verification written down so the next person does not mistake it for a detail.
+
+- **`docs/embedding.md`, now that the port has landed.** The paragraph above
+  asks for one text both suites cite: what a host owns and what frost owns, the
+  two rules (never block the caller's thread, never panic at a bad frame), what
+  `surface_lost()` means and what ends it, which units each setter takes and
+  why the cursor's differ from winit's, and that `dt` is measured. Today that
+  contract exists in module documentation spread over `backend/embed.rs` and in
+  a commit message, which is where a contract goes when nobody has to agree to
+  it. The `FakeHost` above should be written against this file.
+- **A shipped bundle carries no licence text for the font it embeds.**
+  `nice-tuner/src/gui.rs` embeds `assets/fonts/FiraCode-VariableFont_wght.ttf`,
+  which is OFL: the licence permits embedding on condition that its text
+  travels with the font. Measured, `nice-plug-xtask` 0.1.1 has no resource step
+  at all — a bundle it builds contains `Contents/<target>/<name>.vst3` and
+  nothing else — so `assets/fonts/OFL.txt` has to be put into the bundle (or the
+  installer) by whoever ships one. The engine's own package is guarded against
+  losing the same file by a step in `gate.yml`; the bundle has no equivalent,
+  and the reason it can be forgotten is that the font is compiled in and never
+  seen as a file.
+- **The plugin now inherits `-C target-feature=+crt-static`.** That flag is in
+  `.cargo/config.toml` at the workspace root for the engine's reason — a game
+  that ships as one file with no VC redist — and it applies to every target in
+  the workspace, including a VST3 that loads into somebody else's process, where
+  a second static CRT and heap is generally the wrong shape. `check.ps1` and
+  `check.sh` clear `RUSTFLAGS` for the plugin's own build, and the bundle in this
+  session was built that way; neither fact has been measured in a host. Load
+  `target/bundled/Nice Tuner.vst3` in a DAW both ways and then decide which is
+  right, rather than keeping whichever was inherited.
