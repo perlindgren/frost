@@ -39,34 +39,67 @@ plugin, and passes whether or not this crate compiles.
 cargo check -p nice-tuner                    # plugin lib (cdylib) — CLAP/VST3 body
 cargo test -p nice-tuner -p pitch            # the tuner's and the detector's tests
 cargo run -p nice-tuner --features standalone --bin nice-tuner-standalone
-# mono input (e.g. the built-in "MacBook Pro Microphone") needs the second,
-# 1-in/1-out audio layout, since standalone matches input channel counts
-# exactly and defaults to layout 1 (stereo):
-./target/debug/nice-tuner-standalone -l 2 --input-device "MacBook Pro Microphone"
-
-# Windows + ASIO (e.g. a Komplete Audio interface): build with the ASIO
-# feature, then select the backend and driver. The device name must match
-# the ASIO driver name exactly; passing a bogus name prints the full list.
-# ASIO is duplex, so omitting --output-device plays back on the same box.
-# The ASIO SDK itself is proprietary and is not in this repository: point
-# CPAL_ASIO_DIR at an unpacked copy kept outside the tree (`.cargo/config.toml`
-# carries a default that is gitignored precisely so it cannot be committed).
-cargo build -p nice-tuner --features standalone-asio --bin nice-tuner-standalone
-target/debug/nice-tuner-standalone --backend asio --input-device "Komplete Input 1/2"
-
-# The default `--backend auto` tries JACK FIRST on every platform (nice-plug
-# upstream). If a libjack64.dll sits on PATH (Bitwig Studio ships one), you get
-# scary but harmless "cannot connect to named pipe server_jack_default_0" noise
-# before it falls back to WASAPI. Pin the backend to skip the probe entirely.
-
-# Coexisting with a DAW on one ASIO device (the NI Komplete driver allows
-# multi-process ASIO): all clients must use the SAME buffer size — run the
-# tuner with -p matching the DAW (e.g. -p 64) or the second open fails/glitches.
-
-# nice-plug's --input-latency default (150 ms of input-vs-output alignment
-# slack) is audibly wrong for a tuner; the standalone lowers it to 5 ms on
-# its own. Override either way with an explicit --input-latency.
 ```
+
+**The standalone binary does not read its own command line.** `main.rs` hands
+nice-plug an argument list synthesized from `nice-tuner-settings.json`
+(`settings::effective_args`), so a driver is only ever reached through a value
+the settings page wrote — never through a flag, and never by accident of an
+unset one (an unset backend is `dummy`, not nice-plug's jack-first `auto`). The
+one exception is `--list-devices [backend] [input] [output]`, which prints one
+line of JSON and exits without a window or a stream; it exists so a process that
+holds no ASIO driver can enumerate drivers the live app cannot see.
+
+```sh
+./target/debug/nice-tuner-standalone --list-devices wasapi
+# {"inputs":["Input 1/2 (Komplete Audio 6 MK2)",…],"outputs":[…],"def_in":…,"rates":[…]}
+```
+
+Everything else is the panel: **SETTINGS** top-right — backend, sample rate,
+buffer size, input and output devices, channel. A mono-only input (the built-in
+laptop microphone) is a channel choice there, not a `-l 2` on a command line the
+app never hears. The file lands in the current directory as
+`nice-tuner-settings.json`; command-line flags used to outrank it, and no longer
+exist.
+
+### Windows + ASIO
+
+```sh
+cargo build -p nice-tuner --features standalone-asio --bin nice-tuner-standalone
+./target/release/nice-tuner-standalone     # …then SETTINGS → backend: ASIO → device → APPLY
+```
+
+Without this feature ASIO is not even a value the binary knows — measured, its
+`--list-devices asio` returns `"inputs":[]`. With it, on this machine:
+`["FlexASIO","Komplete Audio ASIO Driver","ReaRoute ASIO (x64)"]`, with
+`driver_rate` and `buffer_pref` read from the driver itself.
+
+Nothing in this repository configures the ASIO SDK, which is proprietary and
+stays out of the tree. cpal's build script finds it in three steps —
+`CPAL_ASIO_DIR`, else `<temp>/asio_sdk`, else download it from
+<https://www.steinberg.net/asiosdk> — and cpal's own README says the last one
+should just work. It does, unless `%TEMP%` sits under a user name with a space:
+asio-sys 0.4.0 interpolates `-OutFile <path>` **unquoted** into a PowerShell
+command (`build.rs:303-311`), so the path splits and the build dies with
+`Failed to download ASIO SDK` behind a `PositionalParameterNotFound`. Measured
+twice on one machine with the same folder spelled two ways —
+`C:\Users\Per Lindgren\…` fails, `C:\Users\PERLIN~1\…` downloads 8,910,208 bytes
+and builds in 33 s. Until that is quoted upstream, either set `CPAL_ASIO_DIR` in
+your own environment to an unpacked SDK outside the repository (one `setx`, no
+repo change), or build with a space-free `TMP`/`TEMP`. The engine's
+gate never builds this feature, so no CI machine fetches anything either way.
+
+Two facts about ASIO on Windows that the panel cannot fix: **one driver per
+process** (asio-sys loads exactly one, and a refused open is usually the
+previous instance or Reaper still releasing it — hence the four startup retries),
+and **one buffer size per driver**, so a tuner sharing a driver with a DAW must
+be set to the DAW's number. nice-plug's `--input-latency` default of 150 ms is
+audibly wrong for a tuner; the standalone asks for 5 ms unless the file says
+otherwise.
+
+The `Open error: is JACK server running?` lines some builds print at startup come
+from nice-plug probing JACK before the chosen backend; they are stderr noise on
+an unused path and say nothing about the device you asked for.
 
 ### Producing plugin binaries
 

@@ -9,21 +9,46 @@ rustflags = ["-C", "target-feature=+crt-static"]
 [alias]
 xtask = "run --package xtask --"
 
-# `asio-sys`'s build script wants the unpacked Steinberg ASIO SDK and dials
-# steinberg.net without it. `relative = true` anchors the path at this file's
-# parent — this repository's root — and `force = false` lets a real environment
-# variable win, which is the form to prefer: the SDK's licence is proprietary,
-# incompatible with this repository's `MIT OR Apache-2.0`, so keeping it
-# somewhere outside the tree and exporting `CPAL_ASIO_DIR` there is worth more
-# than a path that happens to be ignored. The ignore rule and the two guards
-# (`.githooks/pre-commit`, the gate's own assertion) exist because `relative`
-# makes it easy to grow that directory *inside* the tree, where `git add -A`
-# would find it.
+# Deliberately no `[env] CPAL_ASIO_DIR` here, and putting one back would break
+# the very thing it looks like it configures.
 #
-# Nothing in the gate builds this: ASIO is behind the `standalone-asio` feature
-# and no step anywhere uses `--all-features`.
-[env]
-CPAL_ASIO_DIR = { value = ".cargohome/asiosdk", relative = true, force = false }
+# `asio-sys` finds the ASIO SDK in three steps, in order: use `CPAL_ASIO_DIR` if
+# it is set — without checking that the path exists — else use `<temp>/asio_sdk`
+# if the SDK is already unpacked there, else download it from
+# https://www.steinberg.net/asiosdk and unpack it there. cpal's README ends that
+# section "in an ideal situation you don't need to worry about this step", and
+# an entry in this file takes all three away: it *selects step one*, silently
+# disarming the fallback. That is exactly how it failed while this entry existed
+# — it pointed at `.cargohome/asiosdk`, a path carried over from the plugin's
+# previous repository that does not exist here, asio-sys compiled against three
+# nonexistent `-I` directories, and the error was a wall of `cl.exe` arguments
+# rather than one sentence about a missing SDK.
+#
+# Whether step three works depends on the machine, and the reason is upstream.
+# asio-sys 0.4.0 builds its download command as
+#
+#     powershell -NoProfile -Command "Invoke-WebRequest -Uri <url> -OutFile <path>"
+#
+# with `<path>` interpolated unquoted (build.rs:303-311), so a `%TEMP%` under a
+# user name containing a space — most Windows names, this one included — is
+# split by PowerShell into `PositionalParameterNotFound` and then
+# `panic!("Failed to download ASIO SDK")`. Measured on this machine both ways,
+# same folder, two spellings: `C:\Users\Per Lindgren\...` fails as above,
+# `C:\Users\PERLIN~1\...` downloads 8,910,208 bytes, unpacks 48 files with
+# `asio.h`, and builds in 32.9 s. So zero-configuration is genuinely available,
+# just not from a path with a space in it, and neither remedy is a repository
+# fact: a space-free temp dir, or `CPAL_ASIO_DIR` set in the developer's own
+# environment, where it wins because it is theirs and not ours. The one-line
+# upstream fix — quote the path — is recorded in `TODO.md`.
+#
+# Nothing here needs the SDK either. ASIO sits behind the `standalone-asio`
+# feature; no step in the hooks or the gate builds it, so no CI machine ever
+# fetches it, and no step anywhere uses `--all-features`.
+#
+# The SDK's licence is proprietary and this repository is `MIT OR Apache-2.0`,
+# which is a reason to keep it out of the *tree* — where the ignore rule and the
+# two guards (`.githooks/pre-commit`, the gate's own assertion) stand — and no
+# reason to configure a path to it. `<temp>` is not the tree.
 
 # A decision written down rather than inherited. That `+crt-static` above is the
 # engine's own choice — a game that ships as one file with no VC redist to

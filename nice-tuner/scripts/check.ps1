@@ -2,10 +2,14 @@
 #   [ScriptBlock]::Create((Get-Content nice-tuner\scripts\check.ps1 -Raw)).Invoke()
 # (the ScriptBlock dance bypasses machine AllSigned policy).
 #
-# CPAL_ASIO_DIR no longer needs to be set by hand: `.cargo/config.toml` at the
-# workspace root provides it. Point it at an ASIO SDK kept outside the tree —
-# the SDK is proprietary and this repository is MIT/Apache, and the pre-commit
-# hook refuses an `asiosdk` that grows into the tree anyway.
+# CPAL_ASIO_DIR is not set here, and deliberately so: asio-sys finds the SDK on
+# its own (env var, then <temp>\asio_sdk, then a download from steinberg.net).
+# That third step dies on an unquoted -OutFile when %TEMP% sits under a user
+# name with a space — asio-sys 0.4.0 build.rs:303-311 — in which case set
+# CPAL_ASIO_DIR in your own environment to an unpacked SDK kept outside the
+# tree. The SDK's licence is proprietary and this repository is MIT/Apache, so
+# it stays out of the tree regardless, and the pre-commit hook refuses an
+# `asiosdk` that grows into it anyway.
 #
 # Why this exists next to check.sh:
 # - msys bash cannot initialize inside confined shells (0xC0000142), and

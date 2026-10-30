@@ -318,3 +318,20 @@ its verification written down so the next person does not mistake it for a detai
   session was built that way; neither fact has been measured in a host. Load
   `target/bundled/Nice Tuner.vst3` in a DAW both ways and then decide which is
   right, rather than keeping whichever was inherited.
+- **Quote one path upstream and a build-time setup disappears.** `asio-sys`
+  0.4.0 — a member of the cpal workspace, so the report belongs in
+  RustAudio/cpal — downloads the ASIO SDK when it cannot find one:
+  `Command::new("powershell").arg("-Command").arg(format!("Invoke-WebRequest
+  -Uri {URL} -OutFile {}", path.display()))` at `build.rs:303-311`. The path is
+  interpolated **unquoted**, so when `%TEMP%` lives under a user name containing
+  a space — the majority of Windows machines, including the one measured here —
+  PowerShell splits the argument, answers `PositionalParameterNotFound`, and
+  asio-sys turns that into `panic!("Failed to download ASIO SDK")` with nothing
+  about the space in it. Measured twice on one machine, same folder, two
+  spellings: `C:\Users\Per Lindgren\…` fails, `C:\Users\PERLIN~1\…` downloads
+  8,910,208 bytes, unpacks 48 files with `asio.h`, and builds in 32.9 s. The fix
+  is `{}` → `"{}"`. It is worth a pull request rather than a local workaround
+  because the failure looks like a missing SDK, and the person it stops is likely
+  to go and configure a path they never needed — which is how
+  `.cargo/config.toml` grew a `CPAL_ASIO_DIR` default that quietly disabled the
+  fallback for everyone and had to be deleted.

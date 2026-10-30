@@ -24,8 +24,11 @@ cargo fmt --all -- --check
 echo "== clippy (the plugin's own configs, deny warnings) =="
 cargo clippy -p nice-tuner -p pitch -p xtask --all-targets -- -D warnings
 cargo clippy -p nice-tuner --features standalone --all-targets -- -D warnings
-# Inert on non-Windows (cpal gates its ASIO host by target); real there. Needs
-# the Steinberg ASIO SDK outside the tree, pointed at by CPAL_ASIO_DIR.
+# Inert on non-Windows (cpal gates its ASIO host by target); real there. cpal's
+# build script finds the Steinberg SDK itself — CPAL_ASIO_DIR, then
+# <temp>/asio_sdk, then a download — but the download step passes an unquoted
+# path to PowerShell, so a %TEMP% under a user name with a space needs
+# CPAL_ASIO_DIR set by the developer instead. See nice-tuner/README.md.
 cargo clippy -p nice-tuner --features standalone-asio --all-targets -- -D warnings
 
 echo "== plugin lib (cdylib) check =="
