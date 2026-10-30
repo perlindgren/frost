@@ -84,9 +84,21 @@ command (`build.rs:303-311`), so the path splits and the build dies with
 `Failed to download ASIO SDK` behind a `PositionalParameterNotFound`. Measured
 twice on one machine with the same folder spelled two ways —
 `C:\Users\Per Lindgren\…` fails, `C:\Users\PERLIN~1\…` downloads 8,910,208 bytes
-and builds in 33 s. Until that is quoted upstream, either set `CPAL_ASIO_DIR` in
-your own environment to an unpacked SDK outside the repository (one `setx`, no
-repo change), or build with a space-free `TMP`/`TEMP`. The engine's
+and builds in 33 s. Until that is quoted upstream there are three ways out, and
+the one worth taking is neither of the ones that touches a build: **put the SDK
+at `%TEMP%\asio_sdk` once** — step two of cpal's lookup, a plain `exists()`
+check in Rust with no PowerShell in it, so no quoting bug and no variable to
+carry. Measured: with that directory present and `CPAL_ASIO_DIR` unset, the
+build script announces `CPAL_ASIO_DIR is set at …\AppData\Local\Temp\asio_sdk`
+and gets on with it.
+
+```powershell
+# once per machine; asio-sys would have put it there itself
+Copy-Item "C:\path\to\asiosdk" "$env:TEMP\asio_sdk" -Recurse
+```
+
+Otherwise `setx CPAL_ASIO_DIR C:\path\to\asiosdk` — one variable, no repo change —
+or build with a space-free `TMP`/`TEMP`. The engine's
 gate never builds this feature, so no CI machine fetches anything either way.
 
 Two facts about ASIO on Windows that the panel cannot fix: **one driver per
