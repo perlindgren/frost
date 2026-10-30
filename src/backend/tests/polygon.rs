@@ -449,6 +449,28 @@ const PINS: &[Pins] = &[
             0xaed8_eec1_a21e_4920,
         ],
     },
+    Pins {
+        // Walked on this box's own chip — the 7950X3D's iGPU, RADV under Mesa
+        // 26.2.5-arch1.1 — on 2026-10-30, the day the guard first named its
+        // chip, with the geometry tests above all passing and the three
+        // numbers stable across four walks and across single- and
+        // multi-threaded suites. No renderer change earned these; they are
+        // this chip's first numbers for the scenes, and what says the picture
+        // is right is that the profiles agree with the M4 Max row's reading to
+        // a hundredth of a row everywhere: the hexagon's umbra identical at
+        // 3.13 and 2.68, its darkness one hundredth low at 16.22 and 24.66,
+        // the disc's far probe 26.21 against 26.22. Same shadows, different
+        // bytes — §37's rounding, now with a third vendor rounding it its own
+        // way. A Mesa update can move these bytes the way a Windows driver
+        // update can move the row above, and the refusal is designed for that
+        // day as much as for this one.
+        chip: "AMD Ryzen 9 7950X3D 16-Core Processor (RADV RAPHAEL_MENDOCINO)",
+        fingerprints: [
+            0x3b1a_2d69_57aa_9fb0,
+            0x9319_6d64_3acd_fcc9,
+            0xe3eb_278c_0cf7_b67c,
+        ],
+    },
 ];
 
 /// The chip these numbers are being judged on, said the way its driver says it.
