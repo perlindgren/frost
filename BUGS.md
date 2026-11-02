@@ -48,6 +48,58 @@ size against the surface's belief every frame and reconfigures the
 surface on disagreement (A/B: free). Aspect correction is deferred
 out of the event (`snap_aspect`).
 
+## Reconfiguring a surface while its texture is still in hand
+
+**Symptom.** `nice-tuner-standalone --release` dies with
+
+```
+thread 'unnamed' panicked at 'wgpu error: Validation Error
+Caused by:
+    In Surface::configure
+        The `SurfaceOutput` returned by `get_current_texture` must be
+        dropped before re-configuring via `configure` or retrieving a
+        new texture via `get_current_texture`.
+```
+
+and the same words arrive from any host of `frost::embedded`, because
+the frame that panics is the engine's. In a plugin there is no second
+frame to learn from: the panic unwinds the host's editor thread.
+
+**Cause.** `get_current_texture` answers `Suboptimal` by handing back a
+texture *and* asking for a reconfigure in one breath — the chain is
+stale, usually because the window's extent moved under it. `render`
+took both halves at face value: it kept the texture in `output` and
+called `resize()`, whose `surface.configure` reconfigures the very
+chain the live output belongs to. Neither host installs an
+uncaptured-error handler, and wgpu 30's default is
+`fn default_error_handler(err) -> !` — `panic!("wgpu error: {err}")`,
+which is where the exact shape of the words above comes from. Nothing
+about the frame is wrong; the order of two drops is.
+
+**Evidence.** Reproduced 2026-11-02 on this box. The suboptimal answer
+is a driver's opinion and cannot be commanded, so it was summoned
+rather than waited for: with `Success` answered as `Suboptimal` once,
+on the first frame, the release binary aborted with exactly the text
+above, `Frost::reconfigure_surface` under `Frost::render` under
+`Embedded::new`. With the texture dropped before the configure, the
+same forced answer survives, and the frame drawn is byte-identical to
+the frame a plain `Success` draws — same SHA-256 as the known-good
+capture — so the repair costs neither the frame nor a visible beat.
+Why a given machine answered `Suboptimal` at all is not knowable from
+the message: an extent change is the usual reason, and the first frame
+after a configure is a known place to meet it.
+
+**What we do.** `render` puts the texture down before asking the chain
+to change, reconfigures, and acquires another from the chain that now
+matches the window. The rule now holds at both places a frame
+reconfigures: `apply_vsync_change` already ran after the `present` that
+consumes the output, so its texture was gone by the time it asked.
+Nothing tests the arm, because the answer comes from a driver: a
+standing test needs a seam to answer `Suboptimal` on demand, which the
+engine does not have — the evidence above came from hand-patching the
+`Success` arm, and whoever builds that seam should leave the patch's
+memory here.
+
 ## Measuring on this workstation
 
 **Symptom.** Benchmark numbers from the agent sandbox are absurd and

@@ -2814,8 +2814,18 @@ impl<P: Process> Frost<P> {
             self.reconfigure_surface();
         }
         let (output, reconfigure) = self.acquire_frame();
+        // A texture in hand is the surface's current output, and wgpu
+        // lets the chain be neither reconfigured nor asked again while
+        // it lives — the validation error it answers with is a panic
+        // here, in whoever's thread the frame runs in. So a suboptimal
+        // texture is put back before the chain is reconfigured, and a
+        // fresh one is taken from the chain that now matches the
+        // window; the frame is drawn with that rather than lost.
+        let mut output = output;
         if reconfigure {
+            drop(output.take());
             self.resize();
+            output = self.acquire_frame().0;
         }
         let Some(output) = output else {
             return;
