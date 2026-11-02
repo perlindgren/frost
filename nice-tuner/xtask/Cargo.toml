@@ -2,6 +2,12 @@
 name = "xtask"
 version = "0.1.0"
 edition = "2021"
+# This manifest carried no `license` at all until 2026-11-02, and silence in
+# this workspace is the games' way of claiming all rights reserved — a true
+# thing to say of a game's art and a false one about the driver that bundles a
+# plugin whose own manifest already inherits these terms. The engine-side
+# neighbours (`frost_shaders`, `tools/*`) all inherit; now this does.
+license.workspace = true
 publish = false
 
 [dependencies]
