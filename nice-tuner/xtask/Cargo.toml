@@ -12,3 +12,8 @@ publish = false
 
 [dependencies]
 nice-plug-xtask = "0.1"
+# `nice-plug-xtask` re-exports its `Result` and not its `Error`, and the bundling
+# step below has failures of its own to name (a licence text that is gone, a
+# bundle directory that is not where the build landed). anyhow is already in the
+# graph through it, so this buys a phrase and not a dependency.
+anyhow = "1.0"

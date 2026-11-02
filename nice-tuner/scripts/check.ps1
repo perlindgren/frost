@@ -62,4 +62,25 @@ if ($hits) {
 Write-Output "step [winit grep] -> exit 0"
 Step "standalone bin build (linker gate)" "cargo build -p nice-tuner --features standalone --bin nice-tuner-standalone"
 Step "plugin bundling" "cargo xtask bundle nice-tuner --release"
+Add-Content $log "`n`n== the font licence travels with the bundle =="
+# Same assertion as check.sh. The editor compiles Fira Code in (src/gui.rs) and
+# OFL 1.1 permits that on the condition that the licence text travels with the
+# font; nice-plug-xtask has no resource step, so xtask writes the text into the
+# VST3 bundle and beside the CLAP, and this proves it arrived and arrived as the
+# tree's own copy.
+$ofl = Get-Item assets\fonts\OFL.txt
+foreach ($shipped in @(
+    'target\bundled\Nice Tuner.vst3\Contents\Resources\OFL.txt',
+    'target\bundled\OFL.txt'
+)) {
+    if (-not (Test-Path $shipped)) {
+        Write-Output "step [font licence in bundle] -> FAIL ($shipped is missing)"
+        exit 1
+    }
+    if ((Get-FileHash $shipped).Hash -ne (Get-FileHash $ofl).Hash) {
+        Write-Output "step [font licence in bundle] -> FAIL ($shipped is not the tree's OFL.txt)"
+        exit 1
+    }
+}
+Write-Output "step [font licence in bundle] -> exit 0"
 Write-Output "ALL GATES PASSED (full log: $log)"

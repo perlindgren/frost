@@ -299,16 +299,16 @@ its verification written down so the next person does not mistake it for a detai
   contract exists in module documentation spread over `backend/embed.rs` and in
   a commit message, which is where a contract goes when nobody has to agree to
   it. The `FakeHost` above should be written against this file.
-- **A shipped bundle carries no licence text for the font it embeds.**
+- **The font licence is in the bundle; the archive is somebody else's hands.**
   `nice-tuner/src/gui.rs` embeds `assets/fonts/FiraCode-VariableFont_wght.ttf`,
-  which is OFL: the licence permits embedding on condition that its text
-  travels with the font. Measured, `nice-plug-xtask` 0.1.1 has no resource step
-  at all — a bundle it builds contains `Contents/<target>/<name>.vst3` and
-  nothing else — so `assets/fonts/OFL.txt` has to be put into the bundle (or the
-  installer) by whoever ships one. The engine's own package is guarded against
-  losing the same file by a step in `gate.yml`; the bundle has no equivalent,
-  and the reason it can be forgotten is that the font is compiled in and never
-  seen as a file.
+  which is OFL: embedding is permitted on condition that the licence text travels
+  with the font. Closed on the build side — `cargo xtask bundle` writes
+  `assets/fonts/OFL.txt` into the VST3 bundle at `Contents/Resources/OFL.txt` and
+  lays a copy at `target/bundled/OFL.txt`, and `nice-tuner/scripts/check.sh` fails
+  if either is missing or is not the tree's own copy byte for byte. What stays open
+  cannot be closed here: a CLAP is deliberately one file, so its text reaches a user
+  only if whoever packs the installer takes it along, and no check in this repository
+  can see into the artefact someone eventually zips.
 - **The plugin now inherits `-C target-feature=+crt-static`.** That flag is in
   `.cargo/config.toml` at the workspace root for the engine's reason — a game
   that ships as one file with no VC redist — and it applies to every target in
