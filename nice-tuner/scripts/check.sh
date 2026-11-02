@@ -56,7 +56,12 @@ echo "== no event loop of ours, anywhere in the plugin =="
 # is its front door — so the guard moved to the code that is actually ours: a
 # plugin that builds its own event loop inside a host's process is the one
 # mistake this design cannot survive, and it would be a quiet one.
-if grep -rn "EventLoop\|ActiveEventLoop\|ApplicationHandler\|WindowAttributes" src --include='*.rs' \
+#
+# The path is qualified because this script runs at the workspace root, where a
+# bare `src` is the engine's — and the engine's answers that grep with nineteen
+# lines across four files, so the guard failed on someone else's code and never
+# reached ours. `check.ps1` already read `nice-tuner\src`.
+if grep -rn "EventLoop\|ActiveEventLoop\|ApplicationHandler\|WindowAttributes" nice-tuner/src --include='*.rs' \
    | grep -v '//' | grep -v '///'; then
   echo "FAIL: nice-tuner drives a winit event loop; it is a guest, see frost::embedded"
   exit 1
