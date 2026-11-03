@@ -18,14 +18,21 @@ the world by an accident of packaging.
 | `frost` (engine) | `MIT OR Apache-2.0`, **defines the default** in `[workspace.package]` | the library, its shaders, and the three files its own `include_bytes!` reaches for — `include` in the manifest is what makes that the crate rather than the repo |
 | `frost_shaders` | inherited: `license.workspace = true` | games borrow programs from the shelf; a lender cannot hand out what it does not hold |
 | `tools/sprite_util`, `tools/noisefloor` | inherited: `license.workspace = true` | engine-side tooling; `noisefloor` is a dev-dependency of the engine's benches, so its terms cannot be stranger than the engine's |
+| `nice-tuner`, `nice-tuner/crates/pitch`, `nice-tuner/xtask` | inherited: `license.workspace = true` | The plugin joined the workspace on 2026-10-30 already asking for the default. Two of its three manifests said something else, and both said it by accident: `pitch` carried `license = "MIT"`, the narrower grant rather than a different one — the MIT option stays open to anyone who wants only MIT, so nothing already given was withdrawn and one route less was offered to whoever comes next — and `xtask` carried no `license` at all, which this table reads the way it reads the games' silence, all rights reserved, a true thing about a game's art and a false thing about the driver that bundles a plugin carrying these terms. It depends on `nice-plug-xtask` and emits a bundle; the terms of what it builds and the terms of the builder now agree |
 | `antifrost` (Ember Hill) | none — all rights reserved | a game and its art; it does not ask for the workspace licence, and `publish = false` marks the silence as a decision |
 | `immortal` (`immortal/`) | none — all rights reserved, stated by the manifest's silence: a `[package]` with no `license` key, in a workspace where engine-side packages inherit `MIT OR Apache-2.0` only by asking for it | The garden game, 13,135 lines, a package of its own since 2026-10-29. Before that it was an example *target* of the `frost` package, which meant the nearest licence statement was a claim about a crate it was not, and the only record of its terms was a comment and this row — nothing a distributor could check. `publish = false`, no `include` list, and 78 art files of its own |
 
 Inheriting is **opt-in**, which is the only reason a workspace default is safe to
 state: a game added to `members` tomorrow is not licensed by a decision it never
 made. `cargo metadata --no-deps` is the check, because it prints what cargo
-resolved rather than what a manifest appears to say — and it prints four packages
-carrying `MIT OR Apache-2.0` and `antifrost` carrying nothing.
+resolved rather than what a manifest appears to say. Measured 2026-11-02 across the
+nine members: **seven** carry `MIT OR Apache-2.0` — `frost`, `frost_shaders`,
+`sprite_util`, `noisefloor`, `nice-tuner`, `pitch`, `xtask` — and **two** carry
+nothing, `antifrost` and `immortal`. Those two are the policy in one line: the games
+keep their own terms, and everything engine-side, the plugin and its detector and its
+bundling driver included, speaks one licence. (This paragraph read *four packages and
+antifrost carrying nothing* until the recount, which is what a document says when the
+workspace grows by two and nobody re-runs the command.)
 
 They stay separate packages rather than modules of `frost` for reasons already in
 their own manifests: `sprite_util` brings `clap`, `env_logger`, `rfd` and `image`,

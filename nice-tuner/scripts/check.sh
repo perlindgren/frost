@@ -56,7 +56,12 @@ echo "== no event loop of ours, anywhere in the plugin =="
 # is its front door — so the guard moved to the code that is actually ours: a
 # plugin that builds its own event loop inside a host's process is the one
 # mistake this design cannot survive, and it would be a quiet one.
-if grep -rn "EventLoop\|ActiveEventLoop\|ApplicationHandler\|WindowAttributes" src --include='*.rs' \
+#
+# The path is qualified because this script runs at the workspace root, where a
+# bare `src` is the engine's — and the engine's answers that grep with nineteen
+# lines across four files, so the guard failed on someone else's code and never
+# reached ours. `check.ps1` already read `nice-tuner\src`.
+if grep -rn "EventLoop\|ActiveEventLoop\|ApplicationHandler\|WindowAttributes" nice-tuner/src --include='*.rs' \
    | grep -v '//' | grep -v '///'; then
   echo "FAIL: nice-tuner drives a winit event loop; it is a guest, see frost::embedded"
   exit 1
@@ -67,5 +72,20 @@ cargo build -p nice-tuner --features standalone --bin nice-tuner-standalone
 
 echo "== plugin bundling =="
 cargo xtask bundle nice-tuner --release
+
+echo "== the font licence travels with the bundle =="
+# The editor compiles Fira Code in (`src/gui.rs`), and OFL 1.1 permits embedding on
+# the condition that the licence text travels with the font. A font that is
+# compiled in is a file nobody ever reaches for, and `nice-plug-xtask` has no
+# resource step at all, so this assertion is the mechanism that keeps the duty in
+# the build rather than in a person's memory. `xtask` writes the text; this proves
+# it arrived, arrived in both shapes a bundle has, and arrived as the tree's own
+# copy — the file a distributor ships, not a summary of it.
+for shipped in \
+  "target/bundled/Nice Tuner.vst3/Contents/Resources/OFL.txt" \
+  "target/bundled/OFL.txt"; do
+  test -f "$shipped" || { echo "FAIL: $shipped is missing — the CLAP is a single file, so its copy is the archive's to carry"; exit 1; }
+  cmp -s assets/fonts/OFL.txt "$shipped" || { echo "FAIL: $shipped is not the tree's assets/fonts/OFL.txt"; exit 1; }
+done
 
 echo "ALL GATES PASSED"

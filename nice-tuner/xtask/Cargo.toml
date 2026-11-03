@@ -2,7 +2,18 @@
 name = "xtask"
 version = "0.1.0"
 edition = "2021"
+# This manifest carried no `license` at all until 2026-11-02, and silence in
+# this workspace is the games' way of claiming all rights reserved — a true
+# thing to say of a game's art and a false one about the driver that bundles a
+# plugin whose own manifest already inherits these terms. The engine-side
+# neighbours (`frost_shaders`, `tools/*`) all inherit; now this does.
+license.workspace = true
 publish = false
 
 [dependencies]
 nice-plug-xtask = "0.1"
+# `nice-plug-xtask` re-exports its `Result` and not its `Error`, and the bundling
+# step below has failures of its own to name (a licence text that is gone, a
+# bundle directory that is not where the build landed). anyhow is already in the
+# graph through it, so this buys a phrase and not a dependency.
+anyhow = "1.0"

@@ -3,7 +3,13 @@ name = "pitch"
 version = "0.1.0"
 edition = "2021"
 description = "Real-time monophonic pitch detection (YIN) for a hardware-instrument tuner, std-only."
-license = "MIT"
+# The workspace's dual terms, taken rather than restated. Nothing here depends
+# on the engine, so this is authorship choosing and not a lender's limit — and
+# `MIT OR Apache-2.0` is the wider promise of the two: a reader who wants MIT
+# alone can still have it, so the line this manifest carried until 2026-11-02,
+# `license = "MIT"`, narrowed nothing that anyone had been given and offered
+# one route less to whoever comes next.
+license.workspace = true
 
 
 [dependencies]

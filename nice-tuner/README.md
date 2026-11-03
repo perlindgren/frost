@@ -227,8 +227,13 @@ One-time verification checklist in Reaper (load the CLAP from `target/bundled`):
 - **The engine's art is not part of this crate and was never ours to ship**:
   sprites and maps under `assets/` are all rights reserved. The plugin takes one
   file out of `assets/` — the OFL-licensed Fira Code — and OFL permits that
-  knowingly, on the condition that the licence text travels with the font. A
-  bundle built here carries no licence text at all yet; see `src/gui.rs`.
+  knowingly, on the condition that the licence text travels with the font. It
+  does now: `cargo xtask bundle` writes that file into the VST3 bundle at
+  `Contents/Resources/OFL.txt`, and a copy sits beside the bundles for the CLAP,
+  which is a single file by design and so cannot carry one — `scripts/check.sh`
+  fails the build if either copy is missing or is not the tree's own byte for
+  byte. Whoever builds an archive out of a `.clap` still has to take the text
+  along; nothing in a plugin binary can do that part.
 - Third-party: nice-plug (ISC), vst3 (ISC), baseview (MIT/Apache-2.0). No
   Steinberg VST3 SDK is used anywhere — the VST3 surface is pure Rust. The ASIO
   SDK, for a developer building `standalone-asio`, is proprietary and stays
