@@ -12,11 +12,7 @@ pub struct UiStyle {
     /// The label text color.
     pub text: Color,
     /// How far below a menu line's center its text anchor sits, as a
-    /// fraction of `font_size`: the ascent+descent box the text widget
-    /// centers on reaches higher above the caps than below the
-    /// baseline, so letters centered on it ride high — this nudge
-    /// brings them back to the visual middle. The tree view's `lift`,
-    /// in the menu's clothes.
+    /// fraction of `font_size`. Zero centers the visible glyphs in the row.
     pub menu_lift: f32,
     /// The color of the dimmed value readout on the right of a slider.
     pub text_muted: Color,
@@ -129,7 +125,7 @@ impl Default for UiStyle {
                 a: 1.0,
             },
             font_size: 15.0,
-            menu_lift: 0.344,
+            menu_lift: 0.0,
             font_weight: 600.0,
             row_h: 28.0,
             row_gap: 6.0,

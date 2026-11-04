@@ -115,7 +115,7 @@ pub struct TreeLine<'a> {
 /// The metrics and colors of a tree view.
 ///
 /// `Default` is the RON sidecar's look: 16 px rows 20 px high with 9.6 px
-/// character advance, a 0.344 lift, 12 px body inset, 6 px row padding,
+/// character advance, centered text, 12 px body inset, 6 px row padding,
 /// the usual view-size limits, and the sidecar's palette of slate, moss
 /// and ember.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -126,7 +126,8 @@ pub struct TreeStyle {
     pub row_h: f32,
     /// The character advance (pixels per character).
     pub adv: f32,
-    /// The text lift above the row center (fraction of the size).
+    /// The text offset below the row center (fraction of the size).
+    /// Zero centers the visible glyphs.
     pub lift: f32,
     /// The body inset: the distance from the body's left edge to the text.
     pub inset: f32,
@@ -175,7 +176,7 @@ impl Default for TreeStyle {
             size: 16.0,
             row_h: 20.0,
             adv: 9.6,
-            lift: 0.344,
+            lift: 0.0,
             inset: 12.0,
             pad: 6.0,
             min_chars: 8,
