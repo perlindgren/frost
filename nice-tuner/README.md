@@ -49,6 +49,7 @@ exposes only the safe operations this example needs:
 | [`core-audio-device`](crates/core-audio-device/src/lib.rs) | Read-only device names, preferred channel pairs and buffer frame counts | Native CoreAudio calls, output sizes and CFString ownership |
 | [`window-position`](crates/window-position/src/lib.rs) | Restore, center and read a borrowed Windows window's position | Win32 placement calls; enabled by its `unsafe` feature |
 | [`plugin-buffer`](crates/plugin-buffer/src/lib.rs) | Scoped access to preallocated planar audio buffers | nice-plug's unsafe buffer-slice setup, storage lifetimes and disjoint channels |
+| [`macos-frame-sync`](crates/macos-frame-sync/src/lib.rs) | Main-thread display-synchronized editor callbacks | AppKit callback registration, ownership, cancellation and panic containment |
 
 The buffer wrapper uses fixed-capacity `heapless` sample storage, boxed once
 during setup to keep its address stable. The call to the plugin's `process`
@@ -57,7 +58,8 @@ method is safe and remains in the application.
 Each wrapper documents its unsafe invariants and validation in its own
 `SAFETY.md`: [CoreAudio](crates/core-audio-device/SAFETY.md),
 [window placement](crates/window-position/SAFETY.md) and
-[plugin buffers](crates/plugin-buffer/SAFETY.md). Tests cover bounds, error paths,
+[plugin buffers](crates/plugin-buffer/SAFETY.md) and
+[macOS frame scheduling](crates/macos-frame-sync/SAFETY.md). Tests cover bounds, error paths,
 ownership and allocation behavior; compile-fail examples check that borrowed
 audio buffers cannot escape their processing call. Safety depends on maintaining
 these contracts, not merely moving an unsafe block into another crate.
@@ -78,6 +80,7 @@ crates/pitch      pure-Rust YIN pitch detector (unit-tested, no deps)
 crates/core-audio-device  safe read-only CoreAudio queries
 crates/window-position   safe Windows placement, behind the unsafe feature
 crates/plugin-buffer     safe nice-plug buffer setup and heapless sample storage
+crates/macos-frame-sync  macOS display-synchronized callbacks with scoped ownership
 xtask             `cargo xtask bundle`, thin wrapper over nice-plug-xtask
 ../src/backend/embed.rs   the engine's guest path — frost proper, not a copy
 ```
@@ -94,6 +97,38 @@ cargo check -p nice-tuner                    # plugin lib (cdylib) — CLAP/VST3
 cargo test -p nice-tuner -p pitch            # the tuner's and the detector's tests
 cargo run -p nice-tuner --features standalone --bin nice-tuner-standalone
 ```
+
+Enable frost's editor diagnostics with `--features diag` for plugin builds,
+or `--features standalone,diag` for the standalone app:
+
+```sh
+cargo run -p nice-tuner --features standalone,diag
+cargo xtask bundle nice-tuner --release --features diag
+```
+
+The overlay shows editor FPS, frame intervals, processing times and rendering
+statistics. It receives the actual frame delta before tuner animation clamping
+and stays active on the settings page as well. These are GUI measurements, not
+DAW audio callback timing. The feature is disabled by default.
+
+### Editor frame scheduling
+
+On macOS 14 and newer, standalone and DAW-hosted editors submit frames from
+AppKit's view-bound display callbacks through our `macos-frame-sync` wrapper.
+The cadence follows the display containing the editor. A fixed 60 Hz display
+provides a 60 Hz scheduling source; missed deadlines and OS scheduling can still
+reduce the observed FPS. No precise FPS guarantee is implied.
+
+The display callback runs on the main UI thread and pauses when the view is
+hidden or off-screen. Baseview continues to own the window and input events;
+its internal 15 ms timer remains installed but performs no rendering in this
+mode. The renderer keeps non-VSync presentation to avoid deliberately waiting
+for a refresh in a DAW's UI callback.
+
+On older macOS versions, or if display callback setup fails, the editor falls
+back to baseview's existing frame timer. Other platforms retain their original
+scheduling. Startup logs state which scheduler was selected. The `diag` feature
+measures actual editor frame intervals with either scheduler.
 
 The optional `unsafe` feature is forwarded to our `window-position` wrapper; combining
 `--features standalone,unsafe` enables native Windows centering and saved-position
@@ -112,12 +147,39 @@ holds no ASIO driver can enumerate drivers the live app cannot see.
 # {"inputs":["Input 1/2 (Komplete Audio 6 MK2)",…],"outputs":[…],"def_in":…,"rates":[…]}
 ```
 
-Everything else is the panel: **SETTINGS** top-right — backend, sample rate,
+For a synthetic input instead of microphone samples:
+
+```sh
+cargo run -p nice-tuner --release --features standalone -- --test_freq 440.0
+```
+
+`--test_freq <Hz>` (also `--test_freq=<Hz>`) replaces every input channel with
+an amplitude-1.0 sine before normal plugin processing. Its phase is continuous
+across callbacks. It uses the configured input stream's sample rate and timing,
+so select/apply an audio backend as usual. The value must be finite, positive
+and below half the input sample rate. It lasts for this launch, including live
+Apply changes, and is not saved in the settings file.
+
+To compare GUI pacing with pitch detection disabled, add `--note_freq <Hz>`:
+
+```sh
+cargo run -p nice-tuner --release --features standalone,diag -- --test_freq 440 --note_freq 440
+```
+
+`--note_freq` supplies the detected frequency directly, without constructing or
+running the pitch detector. Audio capture, metering, waveform history, the
+A-tuned scope and normal rendering continue. It can be used with real input or
+with `--test_freq`; both options also accept `=<Hz>` and are independent.
+The supplied frequency must be finite and positive. Input-level gating remains
+active, so silence still hides the reading. This is a launch-only diagnostic
+override, not a saved tuning setting.
+
+Audio configuration is in the panel: **SETTINGS** top-right — backend, sample rate,
 buffer size, input and output devices, channel. A mono-only input (the built-in
 laptop microphone) is a channel choice there, not a `-l 2` on a command line the
 app never hears. The file lands in the current directory as
-`nice-tuner-settings.json`; command-line flags used to outrank it, and no longer
-exist.
+`nice-tuner-settings.json`; the test-tone option does not override those device
+settings.
 
 ### Linux + JACK
 
@@ -358,7 +420,7 @@ them to the settings file, which seeds them at next launch.
 | DSP, editor, GUI, RT path | identical code | identical code |
 | Device / backend / sample rate | own process, cpal | host's device & rate |
 | Param controls | settings panel (plays host) | host's plugin UI & automation |
-| UI pump | own event loop, ~60 fps | host pumps the editor window |
+| UI pump | display callbacks on macOS 14+, otherwise baseview timer | same scheduler on the host UI thread |
 | Editor lifecycle | closing the window ends the app | close/reopen freely, audio unaffected |
 
 The last two rows are environment properties only a real host can prove.

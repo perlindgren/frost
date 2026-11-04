@@ -28,6 +28,31 @@ fn main() {
         }
     }
 
+    let (test_frequency, note_frequency) = match parse_frequencies(std::env::args().skip(1)) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!(
+                "nice-tuner: {error}\nUsage: nice-tuner-standalone [--test_freq <Hz>] [--note_freq <Hz>]"
+            );
+            std::process::exit(2);
+        }
+    };
+    if let Some(hz) = test_frequency {
+        if let Err(error) = nice_tuner::standalone::set_test_frequency(hz) {
+            eprintln!("nice-tuner: {error}");
+            std::process::exit(2);
+        }
+        eprintln!("nice-tuner: overriding audio input with a {hz} Hz sine (amplitude 1.0)");
+    }
+
+    if let Some(hz) = note_frequency {
+        if let Err(error) = nice_tuner::standalone::set_note_frequency(hz) {
+            eprintln!("nice-tuner: {error}");
+            std::process::exit(2);
+        }
+        eprintln!("nice-tuner: bypassing pitch detection with {hz} Hz");
+    }
+
     nice_tuner::STANDALONE_MODE.store(true, Ordering::Relaxed);
 
     let (settings, warning) = Settings::load();
@@ -93,5 +118,60 @@ fn main() {
     if let Err(error) = nice_tuner::standalone::run(applied) {
         eprintln!("nice-tuner: {error}");
         std::process::exit(1);
+    }
+}
+
+fn parse_frequencies(
+    args: impl IntoIterator<Item = String>,
+) -> Result<(Option<f64>, Option<f64>), String> {
+    let mut args = args.into_iter();
+    let (mut test, mut note) = (None, None);
+    while let Some(arg) = args.next() {
+        let (name, inline) = arg
+            .split_once('=')
+            .map_or((arg.as_str(), None), |(n, v)| (n, Some(v)));
+        let destination = match name {
+            "--test_freq" => &mut test,
+            "--note_freq" => &mut note,
+            _ => return Err(format!("Unknown argument '{arg}'")),
+        };
+        if destination.is_some() {
+            return Err(format!("{name} may only be specified once"));
+        }
+        let value = inline
+            .map(str::to_owned)
+            .or_else(|| args.next())
+            .ok_or_else(|| format!("{name} requires a frequency in Hz"))?;
+        let hz: f64 = value
+            .parse()
+            .map_err(|_| format!("{name} must be a number in Hz"))?;
+        if !hz.is_finite() || hz <= 0.0 {
+            return Err(format!("{name} must be finite and greater than zero"));
+        }
+        *destination = Some(hz);
+    }
+    Ok((test, note))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_frequencies;
+    #[test]
+    fn frequency_options_are_independent_and_validate_values() {
+        let parse = |args: &[&str]| parse_frequencies(args.iter().map(|s| (*s).to_owned()));
+        assert_eq!(parse(&[]), Ok((None, None)));
+        assert_eq!(parse(&["--test_freq", "440.5"]), Ok((Some(440.5), None)));
+        assert_eq!(parse(&["--note_freq=110"]), Ok((None, Some(110.0))));
+        assert_eq!(
+            parse(&["--test_freq=440", "--note_freq", "440"]),
+            Ok((Some(440.0), Some(440.0)))
+        );
+        for flag in ["--note_freq", "--test_freq"] {
+            assert!(parse(&[flag]).is_err());
+            for value in ["NaN", "inf", "0", "-1", "abc"] {
+                assert!(parse(&[flag, value]).is_err());
+            }
+            assert!(parse(&[flag, "440", flag, "220"]).is_err());
+        }
     }
 }

@@ -26,6 +26,8 @@ required-features = ["standalone"]
 
 [features]
 default = []
+# frost editor diagnostics in standalone and DAW-hosted builds.
+diag = []
 # Builds the standalone app binary (src/main.rs): the audio-device backends
 # (CPAL and native device queries) arrive with it, so a plain
 # `cargo build` of the plugin is a cdylib with no device code of its own.
@@ -107,6 +109,7 @@ window-position = { path = "crates/window-position", optional = true }
 asio-sys = { version = "0.4", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+macos-frame-sync = { path = "crates/macos-frame-sync" }
 core-audio-device = { path = "crates/core-audio-device", optional = true }
 
 [dev-dependencies]
