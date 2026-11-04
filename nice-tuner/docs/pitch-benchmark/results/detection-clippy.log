@@ -1,0 +1,75 @@
+   Compiling autocfg v1.5.1
+    Checking strength_reduce v0.2.4
+    Checking hound v3.5.1
+   Compiling num-traits v0.2.19
+    Checking num-integer v0.1.47
+    Checking num-complex v0.4.6
+    Checking primal-check v0.3.4
+    Checking transpose v0.2.3
+    Checking rustfft v6.4.1
+    Checking pitch-detection-review v0.0.0 (/private/tmp/frost-pitch-study.dCQMLv/detection-tests)
+error: variable does not need to be mutable
+  --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detection-0.3.0/src/utils/buffer.rs:68:9
+   |
+68 |     for mut s in arr {
+   |         ----^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: `-D unused-mut` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(unused_mut)]`
+
+error: the following explicit lifetimes could be elided: 'a
+  --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detection-0.3.0/src/utils/buffer.rs:67:24
+   |
+67 | pub fn modulus_squared<'a, T: Float>(arr: &'a mut [Complex<T>]) {
+   |                        ^^                  ^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#needless_lifetimes
+   = note: `-D clippy::needless-lifetimes` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::needless_lifetimes)]`
+help: elide the lifetimes
+   |
+67 - pub fn modulus_squared<'a, T: Float>(arr: &'a mut [Complex<T>]) {
+67 + pub fn modulus_squared<T: Float>(arr: &mut [Complex<T>]) {
+   |
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detection-0.3.0/src/utils/buffer.rs:135:19
+    |
+135 |         Rc::clone(&self.real_buffers.last().unwrap())
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `self.real_buffers.last().unwrap()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#needless_borrow
+    = note: `-D clippy::needless-borrow` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_borrow)]`
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detection-0.3.0/src/utils/buffer.rs:142:19
+    |
+142 |         Rc::clone(&self.complex_buffers.last().unwrap())
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `self.complex_buffers.last().unwrap()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#needless_borrow
+
+error: redundant closure
+   --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detection-0.3.0/src/utils/buffer.rs:151:18
+    |
+151 |             .map(|buf| Rc::clone(buf))
+    |                  ^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the method itself: `Rc::clone`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#redundant_closure
+    = note: `-D clippy::redundant-closure` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::redundant_closure)]`
+
+error: redundant closure
+   --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detection-0.3.0/src/utils/buffer.rs:162:18
+    |
+162 |             .map(|buf| Rc::clone(buf))
+    |                  ^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the method itself: `Rc::clone`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#redundant_closure
+
+error: could not compile `pitch-detection-review` (lib) due to 6 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `pitch-detection-review` (lib test) due to 6 previous errors

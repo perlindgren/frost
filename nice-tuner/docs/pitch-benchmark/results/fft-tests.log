@@ -1,0 +1,76 @@
+   Compiling pitch_detector-review v0.0.0 (/private/tmp/frost-pitch-study.dCQMLv/pitch_detector-tests)
+warning: function `zero_crossing_count` is never used
+ --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detector-0.3.1/src/pitch/core.rs:6:4
+  |
+6 | fn zero_crossing_count<I>(signal: I) -> usize
+  |    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `zero_crossing_rate` is never used
+  --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detector-0.3.1/src/pitch/core.rs:19:8
+   |
+19 | pub fn zero_crossing_rate<I>(signal: I, sample_rate: f64) -> f64
+   |        ^^^^^^^^^^^^^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detector-0.3.1/src/core/fft_space.rs:107:24
+    |
+107 |     pub fn freq_domain(&self, square_rooted: bool) -> utils::FreqDomainIter {
+    |                        ^^^^^                          ^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                        |
+    |                        the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+107 |     pub fn freq_domain(&self, square_rooted: bool) -> utils::FreqDomainIter<'_> {
+    |                                                                            ++++
+
+warning: function `test_noise` is never used
+   --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detector-0.3.1/src/pitch/hanned_fft.rs:125:8
+    |
+125 |     fn test_noise() -> anyhow::Result<()> {
+    |        ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `pitch_detector-review` (lib) generated 3 warnings (run `cargo fix --lib -p pitch_detector-review` to apply 1 suggestion)
+warning: `pitch_detector-review` (lib test) generated 2 warnings (1 duplicate)
+    Finished `release` profile [optimized] target(s) in 3.73s
+     Running unittests /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detector-0.3.1/src/lib.rs (../other-test-target/release/deps/pitch_detector-3c52b70b4dfbdcca)
+
+running 7 tests
+test pitch::core::tests::zero_crossing_rates ... FAILED
+test pitch::cepstrum::tests::test_power ... FAILED
+test note::note_detection_result::tests::pitch_from_f64_works ... ok
+test pitch::core::tests::zero_crossings ... FAILED
+test pitch::hanned_fft::tests::test_from_sample_files ... FAILED
+test pitch::core::tests::zero_rate_crossing_sine ... ok
+test pitch::hanned_fft::tests::test_from_sine_wave ... ok
+
+failures:
+
+---- pitch::core::tests::zero_crossing_rates stdout ----
+Error: No such file or directory (os error 2)
+
+---- pitch::cepstrum::tests::test_power stdout ----
+Error: No such file or directory (os error 2)
+
+---- pitch::core::tests::zero_crossings stdout ----
+Error: No such file or directory (os error 2)
+
+---- pitch::hanned_fft::tests::test_from_sample_files stdout ----
+Error: No such file or directory (os error 2)
+
+
+failures:
+    pitch::cepstrum::tests::test_power
+    pitch::core::tests::zero_crossing_rates
+    pitch::core::tests::zero_crossings
+    pitch::hanned_fft::tests::test_from_sample_files
+
+test result: FAILED. 3 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

@@ -1,0 +1,50 @@
+   Compiling pitch v0.1.0 (/Users/pln/Documents/rust/frost/nice-tuner/crates/pitch)
+    Finished `release` profile [optimized] target(s) in 0.33s
+     Running unittests src/lib.rs (target/release/deps/pitch-9f060b90a44ae2c3)
+
+running 7 tests
+test note::tests::a4_maps_to_a4 ... ok
+test note::tests::a_sharp4 ... ok
+test note::tests::c0_and_c8_octaves ... ok
+test note::tests::boundary_is_plus_minus_50 ... ok
+test note::tests::low_e2 ... ok
+test note::tests::invalid_input_degrades ... ok
+test alloc_tests::push_samples_does_not_allocate_in_steady_state ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/callback_budget.rs (target/release/deps/callback_budget-9c920a2b329eab9b)
+
+running 1 test
+test search_burst_stays_inside_the_frame_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/detect.rs (target/release/deps/detect-cfd5101a09fe8fbd)
+
+running 9 tests
+test note_a_sharp4_and_boundary ... ok
+test silence_produces_no_confident_detection ... ok
+test guitar_e4_sine ... ok
+test a4_sine_freq_note_and_clarity ... ok
+test sawtooth_110hz_no_octave_error ... ok
+test low_e2_sine ... ok
+test rms_tracks_input_level ... ok
+test white_noise_never_confident ... ok
+test streaming_irregular_chunks_matches_bulk ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/no_alloc.rs (target/release/deps/no_alloc-365639922d13b890)
+
+running 1 test
+test detection_path_never_allocates_when_warm ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+   Doc-tests pitch
+
+running 1 test
+test nice-tuner/crates/pitch/src/lib.rs - PitchDetector (line 180) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s

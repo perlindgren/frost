@@ -1,0 +1,66 @@
+   Compiling strength_reduce v0.2.4
+   Compiling hound v3.5.1
+   Compiling num-traits v0.2.19
+   Compiling num-integer v0.1.47
+   Compiling num-complex v0.4.6
+   Compiling transpose v0.2.3
+   Compiling primal-check v0.3.4
+   Compiling rustfft v6.4.1
+   Compiling pitch-detection-review v0.0.0 (/private/tmp/frost-pitch-study.dCQMLv/detection-tests)
+warning: variable does not need to be mutable
+  --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detection-0.3.0/src/utils/buffer.rs:68:9
+   |
+68 |     for mut s in arr {
+   |         ----^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `pitch-detection-review` (lib) generated 1 warning (run `cargo fix --lib -p pitch-detection-review` to apply 1 suggestion)
+warning: `pitch-detection-review` (lib test) generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.57s
+     Running unittests /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detection-0.3.0/src/lib.rs (/private/tmp/frost-pitch-study.dCQMLv/detection-test-target/debug/deps/pitch_detection-518f72a6047148cf)
+
+running 6 tests
+test detector::internals::tests::yin_normalized_square_error_test ... ok
+test utils::peak::tests::detect_peaks_test ... ok
+test utils::buffer::test_buffers ... ok
+test utils::peak::tests::peak_correction ... ok
+test detector::internals::tests::windowed_autocorrelation_test ... ok
+test detector::internals::tests::windowed_square_error_test ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detection-0.3.0/tests/main.rs (/private/tmp/frost-pitch-study.dCQMLv/detection-test-target/debug/deps/published_tests-9bf9ca32a41a9622)
+
+running 19 tests
+test mcleod_tenor_trombone_db3 ... ok
+test autocorrelation_violin_f4 ... ok
+test mcleod_tenor_trombone_c3 ... ok
+test mcleod_violin_d4 ... ok
+test autocorrelation_violin_d4 ... ok
+test mcleod_tenor_trombone_b3 ... ok
+test autocorrelation_violin_g4 ... ok
+test mcleod_tenor_trombone_ab3 ... ok
+test mcleod_violin_f4 ... ok
+test mcleod_violin_g4 ... ok
+test autocorrelation_square_signal ... ok
+test mcleod_square_signal ... ok
+test mcleod_triangle_signal ... ok
+test autocorrelation_sin_signal ... ok
+test yin_triangle_signal ... ok
+test mcleod_sin_signal ... ok
+test autocorrelation_triangle_signal ... ok
+test yin_square_signal ... ok
+test yin_sin_signal ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s
+
+   Doc-tests pitch_detection
+
+running 2 tests
+test /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detection-0.3.0/src/utils/buffer.rs - utils::buffer::BufferPool (line 87) ... ok
+test /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detection-0.3.0/src/lib.rs - (line 15) ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
