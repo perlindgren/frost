@@ -582,9 +582,9 @@ struct Line {
     shape: Option<Shape>,
     /// The laid-out width of `text`, in pixels.
     width: f32,
-    /// Visible height, used to anchor this centered line at its top edge.
+    /// Ink top above the shared capital-height center.
     /// Stacking still advances by the fixed `Diagnostics::line_extent`.
-    height: f32,
+    top_offset: f32,
 }
 
 impl Line {
@@ -595,7 +595,7 @@ impl Line {
             size: 0.0,
             shape: None,
             width: 0.0,
-            height: 0.0,
+            top_offset: 0.0,
         }
     }
 
@@ -613,7 +613,8 @@ impl Line {
         });
         let (min, max) = bounds.unwrap_or(([0.0; 2], [0.0; 2]));
         self.width = max[0] - min[0];
-        self.height = max[1] - min[1];
+        self.top_offset =
+            max[1] - crate::canvas::text_cap_center(font, size, WEIGHT).unwrap_or(0.0);
     }
 }
 
@@ -630,13 +631,13 @@ struct LineDraw {
 /// `line_top`.
 fn line_draw(line: &Line, line_top: f32, w: f32, margin: f32) -> Option<LineDraw> {
     let shape = line.shape.clone()?;
-    // The renderer centers visible ink on the node's origin. Half its
-    // height and width therefore anchor its top and left edges.
+    // Horizontal ink is centered; the vertical origin uses capital height.
+    // Account for this line's actual ink top when anchoring the overlay.
     Some(LineDraw {
         shape,
         pos: [
             -w / 2.0 + margin + line.width / 2.0,
-            line_top - line.height / 2.0,
+            line_top - line.top_offset,
         ],
     })
 }

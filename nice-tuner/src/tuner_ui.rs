@@ -512,6 +512,7 @@ impl Process for TunerUi {
         // and `+` versus `−` carry visibly different ink widths, so the
         // whole line shifted a hair whenever the sign flipped. Slotted
         // layout cannot: nothing depends on what the glyphs look like.
+        // Anchor the decimal slot at x = 0, exactly where the idle dash sits.
         // No signal, no reading: a bare dash, not a confident "+00.0¢".
         let cents_s = if signal {
             let cents = self.cents_shown;
@@ -528,25 +529,27 @@ impl Process for TunerUi {
             0.0,
             -52.0 * fit,
             &cents_s,
+            '.',
             50.4 * fit,
             600.0,
             main,
             0.2,
         );
-        // frequency + reference — same tabular rule: always exactly six
-        // glyphs before " Hz" (zero-padded width incl. the dot), and the
-        // idle bar spans the same six, so even the "· A4=" tail cannot
-        // shift.
-        let freq_s = if signal {
-            format!(
-                "{} Hz  ·  A4={:.0}",
-                trim_zeros(&format!("{:06.1}", self.freq_shown)),
-                a4
-            )
-        } else {
-            format!("——————  ·  A4={:.0}", a4)
-        };
-        ctx.text(0.0, -104.0 * fit, font, freq_s, 39.6 * fit, 550.0, DIM, 0.2);
+        // Right-align the frequency before fixed Hz and reference columns.
+        // The midpoint marker stays on the panel center in both idle and
+        // detected states; the decimal replaces the idle frequency dash.
+        let freq_s = frequency_readout(signal.then_some(self.freq_shown), a4);
+        self.draw_tabular(
+            ctx,
+            0.0,
+            -104.0 * fit,
+            &freq_s,
+            '·',
+            39.6 * fit,
+            550.0,
+            DIM,
+            0.2,
+        );
         // ---- input meter with a real dBFS scale ----------------------------
         // 0 dBFS right, -48 left, ticks every 6 dB, as wide as the needle
         // sweep. Driven by meter_db (continuous), so it shows input level
@@ -736,12 +739,9 @@ fn clip(s: &str, n: usize) -> String {
     }
 }
 
-/// Pad-with-zeros output, pruned to ONE anchor zero: "0055.0" → " 055.0",
-/// "+00.7¢" → "+ 0.7¢", while "0440.0" → " 440.0" and a lone "0.7" keeps
-/// its integer zero. The glyph COUNT is untouched, so the slotted
-/// (draw_tabular) layout stays as immovable as with full zero padding —
-/// only the ink changes: leading zeros that merely fill space become
-/// blanks, the last zero stays as the digit the eye anchors on.
+/// Blank every leading integer zero without moving the remaining slots:
+/// "0055.0" → "  55.0", "+00.7¢" → "+  .7¢", "0.0" → " .0".
+/// Fractional zeros remain visible; only the integer prefix is hidden.
 fn trim_zeros(s: &str) -> String {
     let mut c: Vec<char> = s.chars().collect();
     // Skip a leading sign so the zero run is found where it lives.
@@ -753,10 +753,30 @@ fn trim_zeros(s: &str) -> String {
     while end < c.len() && c[end] == '0' {
         end += 1;
     }
-    for x in &mut c[start..end.saturating_sub(1).max(start)] {
+    for x in &mut c[start..end] {
         *x = ' ';
     }
     c.into_iter().collect()
+}
+
+/// Place the requested anchor glyph at the origin, or center the slots if it
+/// is absent (the idle cents dash). Blanks occupy slots without being drawn.
+fn tabular_glyphs(text: &str, pitch: f32, anchor: char) -> impl Iterator<Item = (char, f32)> + '_ {
+    let anchor = text
+        .chars()
+        .position(|ch| ch == anchor)
+        .map_or_else(|| (text.chars().count() as f32 - 1.0) / 2.0, |i| i as f32);
+    text.chars()
+        .enumerate()
+        .filter_map(move |(i, ch)| (ch != ' ').then_some((ch, (i as f32 - anchor) * pitch)))
+}
+
+fn frequency_readout(frequency: Option<f64>, a4: f64) -> String {
+    let frequency = frequency.map_or_else(
+        || "    — ".to_owned(),
+        |hz| trim_zeros(&format!("{hz:06.1}")),
+    );
+    format!("{frequency} Hz  ·  A4={a4:.0}")
 }
 
 fn fmt_rate(r: f32) -> String {
@@ -1614,10 +1634,9 @@ impl TunerUi {
 
     /// Draw `text` glyph-by-glyph on a fixed advance pitch (FiraCode is
     /// monospaced, so one digit's width is THE pitch). Each glyph is
-    /// ink-centered inside its own slot, so the line's layout depends
-    /// only on the character COUNT — signs, dots and the ¢ mark can no
-    /// longer push neighbours around. Whole-string `ctx.text` cannot
-    /// promise that: its centering follows the ink box, and glyph ink
+    /// ink-centered inside its own slot. The selected anchor stays fixed when
+    /// signs, hidden zeros or the number of digits change. Whole-string `ctx.text`
+    /// cannot promise that: its centering follows the ink box, and glyph ink
     /// varies (+ vs −, and future fonts).
     #[allow(clippy::too_many_arguments)] // immediate-mode draw call, as in frost
     fn draw_tabular(
@@ -1626,6 +1645,7 @@ impl TunerUi {
         cx: f32,
         cy: f32,
         text: &str,
+        anchor: char,
         size: f32,
         weight: f32,
         color: Color,
@@ -1639,14 +1659,10 @@ impl TunerUi {
             ctx.text(cx, cy, &font, text, size, weight, color, z);
             return;
         }
-        let n = text.chars().count() as f32;
-        for (i, ch) in text.chars().enumerate() {
-            if ch == ' ' {
-                continue; // blanks carry layout, not ink
-            }
+        for (ch, offset) in tabular_glyphs(text, pitch, anchor) {
             let mut buf = [0u8; 4];
             ctx.text(
-                cx + (i as f32 - (n - 1.0) / 2.0) * pitch,
+                cx + offset,
                 cy,
                 &font,
                 ch.encode_utf8(&mut buf),
@@ -2220,7 +2236,9 @@ impl TunerUi {
 #[cfg(test)]
 mod tests {
     use super::{Dropdown, TunerUi};
-    use super::{GAUGE_KNEE_OPTIONS, cents_to_units, fmt_rate, trim_zeros};
+    use super::{
+        GAUGE_KNEE_OPTIONS, cents_to_units, fmt_rate, frequency_readout, tabular_glyphs, trim_zeros,
+    };
     use crate::TunerSharedState;
     use std::sync::Arc;
 
@@ -2484,19 +2502,66 @@ mod tests {
     }
 
     #[test]
-    fn trim_zeros_prunes_fill_keeps_anchor() {
-        // Extra leading zeros become blanks…
-        assert_eq!(trim_zeros("0055.0"), " 055.0");
-        assert_eq!(trim_zeros("0005.0"), "  05.0");
-        assert_eq!(trim_zeros("+00.7¢"), "+ 0.7¢");
-        // …a single leading zero is the anchor and stays…
-        assert_eq!(trim_zeros("0440.0"), "0440.0");
-        assert_eq!(trim_zeros("+05.2¢"), "+05.2¢");
-        assert_eq!(trim_zeros("0.7"), "0.7");
-        // …no leading zeros: untouched; glyph counts are preserved.
+    fn trim_zeros_hides_integer_prefix_and_preserves_fractional_zeros() {
+        assert_eq!(trim_zeros("0055.0"), "  55.0");
+        assert_eq!(trim_zeros("0005.0"), "   5.0");
+        assert_eq!(trim_zeros("+00.7¢"), "+  .7¢");
+        assert_eq!(trim_zeros("−00.0¢"), "−  .0¢");
+        assert_eq!(trim_zeros("0440.0"), " 440.0");
+        assert_eq!(trim_zeros("+05.2¢"), "+ 5.2¢");
+        assert_eq!(trim_zeros("0.7"), " .7");
+        assert_eq!(trim_zeros("0.0"), " .0");
         assert_eq!(trim_zeros("440.0"), "440.0");
         for s in ["0055.0", "0440.0", "440.0", "+00.7¢", "0.7"] {
             assert_eq!(trim_zeros(s).chars().count(), s.chars().count());
+        }
+    }
+
+    #[test]
+    fn cents_decimal_replaces_idle_dash_at_the_same_position() {
+        let idle: Vec<_> = tabular_glyphs("—", 12.0, '.').collect();
+        assert_eq!(idle, [('—', 0.0)]);
+        for (reading, visible) in [
+            ("+00.0¢", "+.0¢"),
+            ("−00.7¢", "−.7¢"),
+            ("+05.2¢", "+5.2¢"),
+            ("−50.0¢", "−50.0¢"),
+            ("+100.0¢", "+100.0¢"),
+        ] {
+            let text = trim_zeros(reading);
+            let glyphs: Vec<_> = tabular_glyphs(&text, 12.0, '.').collect();
+            assert_eq!(
+                glyphs.iter().find(|(ch, _)| *ch == '.').unwrap().1,
+                idle[0].1
+            );
+            assert_eq!(glyphs.iter().find(|(ch, _)| *ch == '¢').unwrap().1, 24.0);
+            assert_eq!(glyphs.iter().map(|(ch, _)| ch).collect::<String>(), visible);
+        }
+    }
+
+    #[test]
+    fn frequency_is_right_aligned_with_fixed_units_marker_and_reference() {
+        let idle = frequency_readout(None, 440.0);
+        let idle_glyphs: Vec<_> = tabular_glyphs(&idle, 12.0, '·').collect();
+        let position =
+            |glyphs: &[(char, f32)], ch| glyphs.iter().find(|(glyph, _)| *glyph == ch).unwrap().1;
+        for (hz, visible) in [
+            (0.7, ".7"),
+            (5.2, "5.2"),
+            (55.0, "55.0"),
+            (440.0, "440.0"),
+            (1000.0, "1000.0"),
+            (9999.96, "10000.0"),
+        ] {
+            let text = frequency_readout(Some(hz), 442.0);
+            assert_eq!(text.split(" Hz").next().unwrap().trim(), visible);
+            assert!(text.ends_with("A4=442"));
+            let glyphs: Vec<_> = tabular_glyphs(&text, 12.0, '·').collect();
+            assert_eq!(position(&glyphs, '·'), 0.0);
+            assert_eq!(position(&glyphs, '.'), position(&idle_glyphs, '—'));
+            for ch in ['H', 'z', 'A', '='] {
+                assert_eq!(position(&glyphs, ch), position(&idle_glyphs, ch));
+            }
         }
     }
 

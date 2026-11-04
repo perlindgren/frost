@@ -547,7 +547,7 @@ impl Demo {
             match r.slider {
                 None => ctx.text(
                     r.cx,
-                    r.cy - 10.0,
+                    r.cy,
                     &self.font,
                     r.text.clone(),
                     30.0,
@@ -564,7 +564,7 @@ impl Demo {
                 Some(frac) => {
                     ctx.text(
                         MENU_TRACK_CX - MENU_TRACK_HALF - 160.0,
-                        r.cy - 10.0,
+                        r.cy,
                         &self.font,
                         r.text.clone(),
                         30.0,
@@ -648,7 +648,7 @@ impl Demo {
         let w_name = ctx.text_width(&self.font, name, 30.0, 500.0);
         let fade = |c: Color| Color { a: c.a * a, ..c };
         let ink = if hot { fade(C_TEXT) } else { fade(C_DIM) };
-        let cy = r.cy - 10.0;
+        let cy = r.cy;
         ctx.text(
             PROGRESS_NUM_X + w_num / 2.0,
             cy,
@@ -746,11 +746,8 @@ impl Demo {
             let cell = ((progress_step(h) - 12.0) / rows_n)
                 .min(225.0 / cols)
                 .min(5.6);
-            // The card centres on the row itself — the selection band
-            // spans ±24 about `r.cy` — not on the row's text, which
-            // sits ten low for its baseline. An earlier draft stole
-            // four of those points for the baseline too, and the maps
-            // read a touch sunken in their rows.
+            // Text, card and selection band share the row center. frost
+            // supplies the capital-height baseline offset for the text.
             let (cx, cy) = (PROGRESS_MAP_CX, r.cy);
             // The dark card first, so the tiles land on it: a map
             // reads as a framed thing beside its row, not as spill.

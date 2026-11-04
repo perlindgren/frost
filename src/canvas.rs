@@ -1342,9 +1342,10 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
                 let r = text::rasterize(font, id, *size, *weight)?;
                 Some([r.left as f32, r.top as f32, r.width as f32, r.height as f32])
             })?;
+            let cap = text_cap_center(font, *size, *weight)?;
             Some((
                 "text",
-                [0.0, 0.0],
+                [0.0, (min[1] + max[1]) / 2.0 - cap],
                 [(max[0] - min[0]) / 2.0, (max[1] - min[1]) / 2.0],
             ))
         }
@@ -1425,6 +1426,18 @@ fn atlas_side(raster: f32) -> u32 {
     ((4.0 * raster).ceil() as u32)
         .next_multiple_of(64)
         .clamp(512, 2048)
+}
+
+/// Fixed vertical center of the capital H, in baseline coordinates.
+/// Every string in this font/size/weight shares this reference, including
+/// lowercase letters, punctuation and symbols.
+pub(crate) fn text_cap_center(font: &[u8], size: f32, weight: f32) -> Option<f32> {
+    let layout = text::layout(font, "H", size, weight)?;
+    let (min, max) = text_ink_bounds(&layout, |id| {
+        let r = text::rasterize(font, id, size, weight)?;
+        Some([r.left as f32, r.top as f32, r.width as f32, r.height as f32])
+    })?;
+    Some((min[1] + max[1]) / 2.0)
 }
 
 /// Visible bounds in baseline coordinates, y up. The callback supplies
@@ -1540,8 +1553,8 @@ fn expand_text_list(
                 // scale, so it stays a constant number of panel pixels.
                 let [sx, sy] = world.compose(&user_to_pixel).scales();
                 let aa = AA_BAND / sx.max(sy).max(1e-9);
-                // Center the visible glyphs, rather than the font's line
-                // metrics: a label and its button must share the same center.
+                // Center horizontal ink; use the same capital-height vertical
+                // reference for every string, independent of its glyphs.
                 // Measure the actual raster size so this also holds on Retina.
                 let Some((min, max)) = text_ink_bounds(&layout, |id| {
                     let c = atlas.cell(id)?;
@@ -1551,7 +1564,9 @@ fn expand_text_list(
                 };
                 let origin = [
                     -(min[0] + max[0]) * inv_scale / 2.0,
-                    -(min[1] + max[1]) * inv_scale / 2.0,
+                    -text_cap_center(&font, raster, weight)
+                        .unwrap_or((layout.ascent - layout.descent) / 2.0)
+                        * inv_scale,
                 ];
                 let (atlas_w, atlas_h) = (atlas.width as f32, atlas.height as f32);
                 for glyph in &layout.glyphs {
@@ -1626,7 +1641,7 @@ mod tests {
     use crate::*;
 
     #[test]
-    fn text_ink_is_centered_at_the_requested_position() {
+    fn text_uses_horizontal_ink_and_a_shared_capital_height_reference() {
         let fonts: [&[u8]; 3] = [
             include_bytes!("../assets/fonts/FiraCode-VariableFont_wght.ttf"),
             include_bytes!("../assets/fonts/Leofont-Regular.ttf"),
@@ -1635,11 +1650,20 @@ mod tests {
         for font in fonts {
             let font: Arc<[u8]> = Arc::from(font);
             for scale in [1.0, 1.5, 2.0] {
-                for label in ["SETTINGS", "Agjp", "  SETTINGS  ", "+", "−"] {
+                for label in ["H", "SETTINGS", "Agjp", "  SETTINGS  ", "+", "−", ".", "a"] {
                     let mut canvas = Canvas::new((640, 400), scale);
                     let anchor = [258.0, 182.0];
                     canvas.text(anchor[0], anchor[1], &font, label, 19.8, 650.0, WHITE, 0.0);
-                    let expected = canvas.user_to_pixel().apply(anchor);
+                    let mut expected = canvas.user_to_pixel().apply(anchor);
+                    let raster = 19.8 * scale;
+                    let layout = text::layout(&font, label, raster, 650.0).unwrap();
+                    let (lo, hi) = text_ink_bounds(&layout, |id| {
+                        let r = text::rasterize(&font, id, raster, 650.0)?;
+                        Some([r.left as f32, r.top as f32, r.width as f32, r.height as f32])
+                    })
+                    .unwrap();
+                    expected[1] -=
+                        (lo[1] + hi[1]) / 2.0 - text_cap_center(&font, raster, 650.0).unwrap();
                     canvas.expand_text(&mut HashMap::new());
                     let mut min = [f32::INFINITY; 2];
                     let mut max = [f32::NEG_INFINITY; 2];
