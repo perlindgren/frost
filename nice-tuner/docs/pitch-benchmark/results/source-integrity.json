@@ -1,0 +1,26 @@
+[
+  {
+    "package": "pitch-estimate-0.1.0",
+    "edition": "2021",
+    "archive_checksum_matches": true,
+    "source_files_modified": []
+  },
+  {
+    "package": "pitch-detection-0.3.0",
+    "edition": "2021",
+    "archive_checksum_matches": true,
+    "source_files_modified": []
+  },
+  {
+    "package": "pitch-detector-0.3.1",
+    "edition": "2021",
+    "archive_checksum_matches": true,
+    "source_files_modified": []
+  },
+  {
+    "package": "pitch-0.2.0",
+    "edition": "2024",
+    "archive_checksum_matches": true,
+    "source_files_modified": []
+  }
+]

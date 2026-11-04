@@ -1,0 +1,13 @@
+[package]
+name = "frost-pitch-study"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[workspace]
+[dependencies]
+local_pitch = { package = "pitch", path = "../../crates/pitch" }
+pitch-estimate = "=0.1.0"
+pitch-detection = "=0.3.0"
+
+pitch-detector = "=0.3.1"
+registry_pitch = {package="pitch",version="=0.2.0"}

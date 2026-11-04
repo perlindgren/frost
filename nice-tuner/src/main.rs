@@ -1,7 +1,7 @@
 //! Standalone target for testing the tuner without a DAW.
 
-use nice_plug::prelude::*;
-use nice_tuner::TunerPlugin;
+#![deny(unsafe_code)]
+
 use nice_tuner::settings::{self, Settings};
 use std::sync::atomic::Ordering;
 
@@ -11,7 +11,7 @@ fn main() {
     // a window or a stream. The whole point is a process that holds no
     // ASIO driver, so it can see drivers the live app cannot. This flag
     // is the app's INTERNAL parent-child protocol, not a user interface:
-    // the tuner itself hears no command line (settings::effective_args).
+    // the tuner itself reads device settings from its settings file.
     {
         let argv: Vec<String> = std::env::args().collect();
         if argv.get(1).map(String::as_str) == Some("--list-devices") {
@@ -35,21 +35,8 @@ fn main() {
         eprintln!("nice-tuner: {warning}");
     }
 
-    // "(default)" sample rate means the rate the DRIVER is set to (the NI
-    // control panel's number), not nice-plug's hard-coded 48 kHz. Resolve
-    // it once here; an explicit rate in the file still wins (that is what
-    // effective_args speaks).
-    // The answer is WRITTEN BACK — but only when a file ALREADY exists:
-    // a configured install remembers its rate, while a cold start stays
-    // a clean slate (the settings page shows unset rows as dashes until
-    // the user has actually chosen anything).
-    // Warm = a file AND a decision inside it: a file carrying nothing
-    // but window geometry (written by merely moving the window) is
-    // still a cold slate, and a cold slate stays untouched until the
-    // user chooses something.
-    // And no backend chosen = no driver to ask: the tuner boots silent
-    // (dummy, see settings::BACKEND_WHEN_UNSET) and the rate resolves
-    // on the first boot that HAS a chosen backend.
+    // Preserve the existing saved input-rate preference. Unset output fields
+    // continue to follow the output device's independently queried defaults.
     let warm = Settings::exists() && !settings.is_blank();
     let mut settings = settings;
     if settings.sample_rate.is_none()
@@ -66,59 +53,45 @@ fn main() {
         }
     }
 
-    // Open-attempt loop: ASIO is exclusive per driver, so "device refuses
-    // to open" is usually transient — the previous instance (Apply &
-    // restart) is still releasing it, or a host like Reaper owns it right
-    // now. A run that dies within its first seconds is a failed startup,
-    // so retry briefly; a run that lasted is a normal window close.
-    const ATTEMPTS: u32 = 4;
-    for attempt in 1..=ATTEMPTS {
-        // argv speaks only what the settings file decided — the app's own
-        // command line is deliberately unheard (see effective_args).
-        let args = settings::effective_args(&settings);
-        let started = std::time::Instant::now();
-        nice_export_standalone_with_args::<TunerPlugin, _>(args);
-
-        // The settings page's "Apply & restart" unwinds the editor through
-        // a deliberate window close; honor it with a fresh process — new
-        // settings are read from the file at its startup, which is the point.
-        if nice_tuner::restart_requested() {
-            respawn();
-        }
-        if started.elapsed() >= std::time::Duration::from_secs(3) {
-            return; // user closed a working window
-        }
-        if attempt < ATTEMPTS {
-            eprintln!(
-                "nice-tuner: audio device would not open (attempt {attempt}/{ATTEMPTS}); \
-                 it may still be releasing from a restart or held by another app (Reaper?). \
-                 Retrying in 700 ms — Ctrl+C to stop."
-            );
-            std::thread::sleep(std::time::Duration::from_millis(700));
+    // A device-level buffer must have one value even when settings were
+    // edited externally. Resolve implicit default devices before comparing.
+    if let Some(backend) = settings.backend.as_deref() {
+        let (default_in, default_out) = nice_tuner::devices::default_device_names(backend);
+        if settings::buffers_must_match(
+            backend,
+            settings.input_device.as_deref().or(default_in.as_deref()),
+            settings.output_device.as_deref().or(default_out.as_deref()),
+        ) {
+            settings.output_period_size = settings.period_size;
         }
     }
-    eprintln!(
-        "nice-tuner: could not open the audio device after {ATTEMPTS} attempts. \
-         Close any app using it (Reaper's audio system, another tuner window) \
-         and start again."
-    );
-}
 
-/// Apply & restart: spawn a bare instance — nothing to carry, the fresh
-/// process reads the settings file, and that is the whole protocol.
-fn respawn() -> ! {
-    let exe = std::env::current_exe().expect("locate own executable for restart");
-    // The dying parent may still hold the audio driver: ASIO drivers are
-    // per-process exclusive DLLs whose teardown completes asynchronously
-    // after the stream drop. Spawning immediately races the new process
-    // against the release — the classic "device refuses to open" on Apply
-    // & restart. A short pause makes the child the sole claimant.
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    match std::process::Command::new(exe).spawn() {
-        Ok(_child) => std::process::exit(0),
-        Err(e) => {
-            eprintln!("nice-tuner: restart failed ({e}) — start the tuner again by hand");
-            std::process::exit(1);
+    let boot = match settings.backend.as_deref() {
+        None | Some("dummy") => Ok(settings.clone()),
+        Some(backend) => nice_tuner::devices::snapshot(
+            backend,
+            settings.input_device.as_deref(),
+            settings.output_device.as_deref(),
+        )
+        .resolve_settings(&settings),
+    };
+    let applied = match boot {
+        Ok(applied) => {
+            let mut reported = settings.clone();
+            reported.input_channel = applied.input_channel;
+            let _ = nice_tuner::STANDALONE_BOOT.set((reported, None));
+            applied
         }
+        Err(error) => {
+            eprintln!("nice-tuner: {error}; opening settings with audio stopped");
+            let silent = Settings::default();
+            let _ = nice_tuner::STANDALONE_BOOT.set((silent.clone(), Some(error)));
+            silent
+        }
+    };
+    let _ = tracing_subscriber::fmt().with_target(false).try_init();
+    if let Err(error) = nice_tuner::standalone::run(applied) {
+        eprintln!("nice-tuner: {error}");
+        std::process::exit(1);
     }
 }

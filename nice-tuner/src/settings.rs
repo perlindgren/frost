@@ -1,11 +1,8 @@
-//! Standalone audio-settings persistence and argv synthesis.
+//! Standalone audio-settings persistence.
 //!
-//! nice-plug's standalone wrapper builds its audio streams from the parsed
-//! CLI config before the plugin exists, and tears them down when the editor
-//! closes — it cannot be reconfigured from inside the plugin. So the settings
-//! panel persists changes here and the standalone entry respawns the process:
-//! from the user's seat, a blink. Hosts never consult these values — in a
-//! DAW the host owns the device — so the settings page does not exist there.
+//! The standalone application owns its CPAL streams and applies validated
+//! settings in place. Plugin hosts own their audio devices and ignore these
+//! standalone device settings.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -13,17 +10,14 @@ use std::path::PathBuf;
 /// Read from and written to the process's working directory.
 pub const FILE_NAME: &str = "nice-tuner-settings.json";
 
-/// nice-plug's own `--input-latency` default (150 ms) is audible slap-back
-/// for a live tuner; we stand in with this when neither the command line nor
-/// the settings file has an opinion.
+/// Additional monitoring buffering in seconds. Explicit settings override it;
+/// device buffer sizes are queried separately.
 pub const OUR_INPUT_LATENCY_DEFAULT: f32 = 0.005;
 
 /// Audio-system settings — the tuner's whole say over its own audio.
-/// The panel writes this file and the file alone speaks: startup argv is
-/// synthesized from it (see `effective_args`), and the command line has
-/// no voice. `None` means "not chosen here" — for every field that is
-/// its honest follow-the-default state; for `backend` it means silence
-/// (see `BACKEND_WHEN_UNSET`).
+/// The application resolves saved choices against queried device defaults before
+/// opening streams. Audio command-line flags are ignored. `None` means follow
+/// the reported default; an unset backend means silence.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -34,21 +28,27 @@ pub struct Settings {
     /// ("Komplete Input 1/2"), not a port/endpoint name.
     pub input_device: Option<String>,
     pub output_device: Option<String>,
+    /// Physical output route; absent follows a device-reported default.
+    pub output_channels: Option<OutputChannels>,
     pub sample_rate: Option<f32>,
+    pub output_sample_rate: Option<f32>,
     pub period_size: Option<u32>,
+    /// Output stream buffer size. `period_size` remains the input setting
+    /// so existing settings files retain their chosen input size.
+    pub output_period_size: Option<u32>,
     /// The alignment slack, in seconds, nice-plug inserts between its
     /// independent input and output streams.
     pub input_latency: Option<f32>,
     /// Plugin params, standalone-only. Inside a host these belong to the
     /// host (state save/load); standalone has no host, so the settings page
-    /// plays that role. Never wrapper args — the editor reads them from
-    /// this file itself, never through `effective_args`.
+    /// plays that role. The editor reads these values directly.
     pub a4_ref: Option<f32>,
     pub gate_db: Option<f32>,
-    /// Input channel, 1-based; absent = channel 1 (the tuner's default
-    /// single-instrument cable). An explicit 0 selects auto (hottest
-    /// channel). A noisy sibling makes auto wrong — the right input
-    /// should be picked explicitly.
+    /// Input channel, 1-based; absent = no channel selected (or follow a
+    /// backend-reported default, when available). Legacy Auto (0) loads as
+    /// unset. The audio path uses its safe fallback while unset;
+    /// that fallback is not a device-reported default in the settings UI.
+    #[serde(deserialize_with = "deserialize_input_channel")]
     pub input_channel: Option<u32>,
     /// Tuning-verdict half-width and gauge curvature, cents (None = 3.0 /
     /// 5.0). Look-and-judgement values read by the editor itself, also in
@@ -59,6 +59,64 @@ pub struct Settings {
     /// in logical units). None = never saved → the window centers itself
     /// on first launch. Hosts own their windows; this is standalone-only.
     pub window: Option<WindowGeom>,
+}
+
+fn deserialize_input_channel<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u32>, D::Error> {
+    Ok(Option::<u32>::deserialize(deserializer)?.filter(|&channel| channel > 0))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "channels", rename_all = "snake_case")]
+pub enum OutputChannels {
+    Mono(u32),
+    Stereo([u32; 2]),
+}
+
+impl OutputChannels {
+    pub fn channels(self) -> Vec<u32> {
+        match self {
+            Self::Mono(channel) => vec![channel],
+            Self::Stereo(channels) => channels.to_vec(),
+        }
+    }
+    pub fn raw(self) -> String {
+        match self {
+            Self::Mono(channel) => channel.to_string(),
+            Self::Stereo([left, right]) => format!("{left},{right}"),
+        }
+    }
+    pub fn label(self) -> String {
+        match self {
+            Self::Mono(channel) => format!("{channel} (mono)"),
+            Self::Stereo([left, right]) => format!("{left}–{right} (stereo)"),
+        }
+    }
+    pub fn parse(raw: &str) -> Option<Self> {
+        let channels = raw
+            .split(',')
+            .map(str::parse::<u32>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        match channels.as_slice() {
+            [channel] if *channel > 0 => Some(Self::Mono(*channel)),
+            [left, right] if *left > 0 && *right > 0 && left != right => {
+                Some(Self::Stereo([*left, *right]))
+            }
+            _ => None,
+        }
+    }
+    pub fn fits(self, count: u32) -> bool {
+        let channels = self.channels();
+        channels
+            .iter()
+            .all(|&channel| channel > 0 && channel <= count)
+            && (channels.len() == 1 || channels[0] != channels[1])
+    }
+    pub fn required_channels(self) -> u32 {
+        self.channels().into_iter().max().unwrap_or(0)
+    }
 }
 
 /// Serialized window placement for the standalone binary. `x`/`y` are
@@ -105,8 +163,11 @@ impl Settings {
         self.backend.is_none()
             && self.input_device.is_none()
             && self.output_device.is_none()
+            && self.output_channels.is_none()
             && self.sample_rate.is_none()
+            && self.output_sample_rate.is_none()
             && self.period_size.is_none()
+            && self.output_period_size.is_none()
             && self.input_latency.is_none()
             && self.a4_ref.is_none()
             && self.gate_db.is_none()
@@ -154,6 +215,14 @@ impl Settings {
 /// never an accident of a missing value.
 pub const BACKEND_WHEN_UNSET: &str = "dummy";
 
+/// CoreAudio configures buffer frame size per device; ASIO shares it
+/// across the input/output sides of one driver. Other backends are not
+/// assumed to require a shared size merely because names match.
+pub fn buffers_must_match(backend: &str, input: Option<&str>, output: Option<&str>) -> bool {
+    matches!(backend, "core-audio" | "coreaudio" | "asio")
+        && input.is_some_and(|name| !name.is_empty() && Some(name) == output)
+}
+
 fn format_rate(r: f32) -> String {
     if r.fract() == 0.0 {
         format!("{}", r as u32)
@@ -191,11 +260,22 @@ pub fn effective_args(settings: &Settings) -> Vec<String> {
     if let Some(d) = settings.output_device.as_deref() {
         push("--output-device", d.to_owned());
     }
+    if let Some(channels) = settings.output_channels {
+        push("--output-channels", channels.raw());
+    }
     if let Some(r) = settings.sample_rate {
         push("--sample-rate", format_rate(r));
     }
-    if let Some(p) = settings.period_size {
+    if let Some(p) = settings.output_period_size {
         push("--period-size", p.to_string());
+    }
+    if settings.period_size.is_some() || settings.output_period_size.is_some() {
+        // The wrapper's legacy omission means "same as output". An unset
+        // input setting instead follows its own 512-frame default.
+        push(
+            "--input-period-size",
+            settings.period_size.unwrap_or(512).to_string(),
+        );
     }
     push(
         "--input-latency",
@@ -210,6 +290,134 @@ pub fn effective_args(settings: &Settings) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_sample_rate_round_trips_and_is_independent_of_input() {
+        let settings = Settings {
+            sample_rate: Some(48000.0),
+            output_sample_rate: Some(44100.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::from_str::<Settings>(&serde_json::to_string(&settings).unwrap()).unwrap(),
+            settings
+        );
+        assert_eq!(
+            serde_json::from_str::<Settings>(r#"{"sample_rate":48000}"#)
+                .unwrap()
+                .output_sample_rate,
+            None
+        );
+        assert!(
+            !Settings {
+                output_sample_rate: Some(44100.0),
+                ..Default::default()
+            }
+            .is_blank()
+        );
+    }
+
+    #[test]
+    fn output_channel_configuration_round_trips_and_legacy_files_follow_default() {
+        for route in [OutputChannels::Mono(2), OutputChannels::Stereo([3, 4])] {
+            assert_eq!(OutputChannels::parse(&route.raw()), Some(route));
+            let settings = Settings {
+                output_channels: Some(route),
+                ..Default::default()
+            };
+            let restored: Settings =
+                serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            assert_eq!(restored.output_channels, Some(route));
+            assert!(!restored.is_blank());
+            let args = effective_args(&restored);
+            let at = args
+                .iter()
+                .position(|arg| arg == "--output-channels")
+                .unwrap();
+            assert_eq!(args[at + 1], route.raw());
+        }
+        assert_eq!(
+            serde_json::from_str::<Settings>("{}")
+                .unwrap()
+                .output_channels,
+            None
+        );
+        assert_eq!(OutputChannels::parse("0"), None);
+        assert_eq!(OutputChannels::parse("2,2"), None);
+    }
+
+    #[test]
+    fn buffer_sizes_are_saved_and_passed_independently() {
+        let settings = Settings {
+            period_size: Some(64),
+            output_period_size: Some(256),
+            ..Default::default()
+        };
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(restored, settings);
+        let args = effective_args(&restored);
+        let input = args
+            .iter()
+            .position(|arg| arg == "--input-period-size")
+            .unwrap();
+        let output = args.iter().position(|arg| arg == "--period-size").unwrap();
+        assert_eq!(args[input + 1], "64");
+        assert_eq!(args[output + 1], "256");
+        let output_only = effective_args(&Settings {
+            output_period_size: Some(256),
+            ..Default::default()
+        });
+        let input = output_only
+            .iter()
+            .position(|arg| arg == "--input-period-size")
+            .unwrap();
+        assert_eq!(output_only[input + 1], "512");
+        let legacy: Settings = serde_json::from_str(r#"{"period_size":128}"#).unwrap();
+        assert_eq!(legacy.period_size, Some(128));
+        assert_eq!(legacy.output_period_size, None);
+        assert!(
+            !Settings {
+                output_period_size: Some(64),
+                ..Default::default()
+            }
+            .is_blank()
+        );
+    }
+
+    #[test]
+    fn buffer_linking_requires_a_shared_device_and_backend_rule() {
+        for backend in ["core-audio", "coreaudio", "asio"] {
+            assert!(buffers_must_match(
+                backend,
+                Some("Interface"),
+                Some("Interface")
+            ));
+            assert!(!buffers_must_match(
+                backend,
+                Some("Microphone"),
+                Some("Speakers")
+            ));
+            assert!(!buffers_must_match(backend, None, None));
+        }
+        assert!(!buffers_must_match(
+            "wasapi",
+            Some("Interface"),
+            Some("Interface")
+        ));
+    }
+
+    #[test]
+    fn input_channel_loads_legacy_auto_as_unset() {
+        for json in ["{}", r#"{"input_channel":null}"#, r#"{"input_channel":0}"#] {
+            let settings: Settings = serde_json::from_str(json).unwrap();
+            assert_eq!(settings.input_channel, None);
+        }
+        let settings: Settings = serde_json::from_str(r#"{"input_channel":3}"#).unwrap();
+        assert_eq!(settings.input_channel, Some(3));
+        let unset = serde_json::to_value(Settings::default()).unwrap();
+        assert!(unset["input_channel"].is_null());
+    }
 
     #[test]
     fn window_geometry_round_trips_and_defaults_absent() {
@@ -299,7 +507,8 @@ mod tests {
             Some("Komplete Audio ASIO Driver")
         );
         assert_eq!(value_of("--sample-rate").as_deref(), Some("48000"));
-        assert_eq!(value_of("--period-size").as_deref(), Some("64"));
+        assert_eq!(value_of("--input-period-size").as_deref(), Some("64"));
+        assert_eq!(value_of("--period-size"), None);
     }
 
     #[test]

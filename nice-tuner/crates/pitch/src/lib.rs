@@ -56,6 +56,8 @@
 //! summed, which silently raises the effective minimum detectable frequency
 //! (never a panic or a garbage result).
 
+#![forbid(unsafe_code)]
+
 mod note;
 
 pub use note::{freq_to_note, Note};
@@ -432,86 +434,40 @@ fn sanitize_freq_bounds(cfg: &mut Config) {
 }
 
 // ---------------------------------------------------------------------------
-// Test-only allocation counting.
-//
-// A `GlobalAlloc` wrapper affects the whole process, but the counter only
-// ticks while the *current thread's* `ARMED` flag is set, so unrelated test
-// threads running in parallel cannot pollute the measurement. The flag is a
-// const-initialized `Cell<bool>` thread-local: no lazy-init heap allocation
-// happens inside the allocator itself.
+// Allocation regression test. The counter is a test-only dependency; production
+// pitch detection remains std-only. No allocator implementation lives here.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod alloc_tests {
     use super::*;
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::cell::Cell;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    thread_local! {
-        /// Only count allocations made by the armed thread.
-        static ARMED: Cell<bool> = const { Cell::new(false) };
-    }
-
-    /// Allocation count (alloc calls) attributed to armed threads.
-    static COUNT: AtomicUsize = AtomicUsize::new(0);
-
-    struct CountingAlloc;
-
-    unsafe impl GlobalAlloc for CountingAlloc {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            if ARMED.with(|a| a.get()) {
-                COUNT.fetch_add(1, Ordering::Relaxed);
-            }
-            System.alloc(layout)
-        }
-
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            System.dealloc(ptr, layout)
-        }
-    }
-
-    #[global_allocator]
-    static ALLOC: CountingAlloc = CountingAlloc;
-
-    /// Spec test 7: after warm-up, `push_samples` must not touch the heap.
     #[test]
     fn push_samples_does_not_allocate_in_steady_state() {
-        // Sanity: the counting allocator must actually count on this thread,
-        // otherwise the zero-assertion below would be vacuous.
-        COUNT.store(0, Ordering::Relaxed);
-        ARMED.with(|a| a.set(true));
-        let probe: Vec<u8> = (0..1024usize).map(|i| i as u8).collect();
-        let probe_count = COUNT.load(Ordering::Relaxed);
-        drop(probe);
+        let probe = allocation_counter::measure(|| {
+            std::hint::black_box(vec![0u8; 1024]);
+        });
         assert!(
-            probe_count > 0,
-            "counting allocator not observing allocations (test harness broken)"
+            probe.count_total > 0,
+            "allocation measurement must be active"
         );
-        COUNT.store(0, Ordering::Relaxed);
-
         let sr = 48000.0f64;
-        let sig: Vec<f32> = (0..sr as usize)
+        let signal: Vec<f32> = (0..sr as usize)
             .map(|i| (0.5 * (2.0 * std::f64::consts::PI * 440.0 * i as f64 / sr).sin()) as f32)
             .collect();
-
-        let mut det = PitchDetector::new(Config::default());
-        det.push_samples(&sig); // warm-up: reach steady state
-
-        COUNT.store(0, Ordering::Relaxed);
-        // (still armed from the probe above)
-        let mut n_det = 0usize;
-        for chunk in sig.chunks(512) {
-            if det.push_samples(chunk).is_some() {
-                n_det += 1;
+        let mut detector = PitchDetector::new(Config::default());
+        detector.push_samples(&signal);
+        let mut detections = 0;
+        let allocations = allocation_counter::measure(|| {
+            for chunk in signal.chunks(512) {
+                if detector.push_samples(chunk).is_some() {
+                    detections += 1;
+                }
             }
-        }
-        let count = COUNT.load(Ordering::Relaxed);
-        ARMED.with(|a| a.set(false));
-
-        assert!(n_det > 0, "sanity: expected detections for a 440 Hz sine");
+        });
+        assert!(detections > 0, "expected detections for a 440 Hz sine");
         assert_eq!(
-            count, 0,
-            "push_samples allocated {count} times in steady state"
+            allocations.count_total, 0,
+            "pitch detection allocated after warm-up"
         );
     }
 }

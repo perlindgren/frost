@@ -1315,8 +1315,8 @@ fn check_layer_repeat_extent(
 /// (`Shape::Background`) or cannot be measured (a broken font, or a live
 /// particle batch, whose extent is dynamic).
 ///
-/// A text block is its laid-out width by its `ascent + descent`, centered
-/// on the node's origin like its glyphs (see `expand_text_list`).
+/// A text block uses its visible glyph bounds, centered on the node's
+/// origin like its glyphs (see `expand_text_list`).
 fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> {
     match shape {
         Shape::Circle { center, radius, .. } => Some(("circle", *center, [*radius, *radius])),
@@ -1338,10 +1338,14 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
             ..
         } => {
             let layout = text::layout(font, text, *size, *weight)?;
+            let (min, max) = text_ink_bounds(&layout, |id| {
+                let r = text::rasterize(font, id, *size, *weight)?;
+                Some([r.left as f32, r.top as f32, r.width as f32, r.height as f32])
+            })?;
             Some((
                 "text",
                 [0.0, 0.0],
-                [layout.width / 2.0, (layout.ascent + layout.descent) / 2.0],
+                [(max[0] - min[0]) / 2.0, (max[1] - min[1]) / 2.0],
             ))
         }
         // A polyline's local box is the box over its points, grown by half
@@ -1411,6 +1415,39 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
     }
 }
 
+/// The atlas side for a text raster size. Font vertical metrics lie —
+/// display fonts mask far taller than their claimed span — so the
+/// budget comes from the em itself: four em to a side covers several
+/// shelves of masks up to about 1.2 em tall, which is a dozen or more
+/// glyph cells at any size. In whole 64-pixel steps, between the
+/// default side and a ceiling for screen-filling text.
+fn atlas_side(raster: f32) -> u32 {
+    ((4.0 * raster).ceil() as u32)
+        .next_multiple_of(64)
+        .clamp(512, 2048)
+}
+
+/// Visible bounds in baseline coordinates, y up. The callback supplies
+/// each glyph's raster placement: left, top, width, height. Using atlas
+/// cells here lets rendering measure cached glyphs without rasterizing again.
+pub(crate) fn text_ink_bounds(
+    layout: &text::TextLayout,
+    mut placement: impl FnMut(u16) -> Option<[f32; 4]>,
+) -> Option<([f32; 2], [f32; 2])> {
+    let mut min = [f32::INFINITY; 2];
+    let mut max = [f32::NEG_INFINITY; 2];
+    for glyph in &layout.glyphs {
+        let Some([left, top, width, height]) = placement(glyph.id) else {
+            continue;
+        };
+        let x = glyph.x + left;
+        let y = glyph.y + top;
+        min = [min[0].min(x), min[1].min(y - height)];
+        max = [max[0].max(x + width), max[1].max(y)];
+    }
+    min[0].is_finite().then_some((min, max))
+}
+
 /// Expands every [`Draw::Text`] in the list into one [`Draw::Sprite`] per
 /// shaped glyph, spliced in at the text draw's position so the stable
 /// z-sort keeps the glyph quads where the text node was.
@@ -1431,18 +1468,6 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
 /// carries the raster size, never the requested one: the same font at two
 /// display densities rasterizes two atlases, each at its own resolution,
 /// and neither ever stretches the other's glyphs.
-/// The atlas side for a text raster size. Font vertical metrics lie —
-/// display fonts mask far taller than their claimed span — so the
-/// budget comes from the em itself: four em to a side covers several
-/// shelves of masks up to about 1.2 em tall, which is a dozen or more
-/// glyph cells at any size. In whole 64-pixel steps, between the
-/// default side and a ceiling for screen-filling text.
-fn atlas_side(raster: f32) -> u32 {
-    ((4.0 * raster).ceil() as u32)
-        .next_multiple_of(64)
-        .clamp(512, 2048)
-}
-
 fn expand_text_list(
     user_to_pixel: Transform,
     draws: Vec<Draw>,
@@ -1515,13 +1540,18 @@ fn expand_text_list(
                 // scale, so it stays a constant number of panel pixels.
                 let [sx, sy] = world.compose(&user_to_pixel).scales();
                 let aa = AA_BAND / sx.max(sy).max(1e-9);
-                // Center the text block (width by ascent + descent, baseline
-                // at the pen-space origin, y up) on the node's origin. The
-                // metrics come back in raster pixels; every one below is
-                // divided by the scale factor back into the text's units.
+                // Center the visible glyphs, rather than the font's line
+                // metrics: a label and its button must share the same center.
+                // Measure the actual raster size so this also holds on Retina.
+                let Some((min, max)) = text_ink_bounds(&layout, |id| {
+                    let c = atlas.cell(id)?;
+                    Some([c.left as f32, c.top as f32, c.width as f32, c.height as f32])
+                }) else {
+                    continue; // Empty strings and spaces have no visible bounds.
+                };
                 let origin = [
-                    -layout.width * inv_scale / 2.0,
-                    (layout.ascent - layout.descent) * inv_scale / 2.0,
+                    -(min[0] + max[0]) * inv_scale / 2.0,
+                    -(min[1] + max[1]) * inv_scale / 2.0,
                 ];
                 let (atlas_w, atlas_h) = (atlas.width as f32, atlas.height as f32);
                 for glyph in &layout.glyphs {
@@ -1594,6 +1624,64 @@ fn expand_text_list(
 mod tests {
     use super::*;
     use crate::*;
+
+    #[test]
+    fn text_ink_is_centered_at_the_requested_position() {
+        let fonts: [&[u8]; 3] = [
+            include_bytes!("../assets/fonts/FiraCode-VariableFont_wght.ttf"),
+            include_bytes!("../assets/fonts/Leofont-Regular.ttf"),
+            include_bytes!("../assets/fonts/Barrfont-Regular.ttf"),
+        ];
+        for font in fonts {
+            let font: Arc<[u8]> = Arc::from(font);
+            for scale in [1.0, 1.5, 2.0] {
+                for label in ["SETTINGS", "Agjp", "  SETTINGS  ", "+", "−"] {
+                    let mut canvas = Canvas::new((640, 400), scale);
+                    let anchor = [258.0, 182.0];
+                    canvas.text(anchor[0], anchor[1], &font, label, 19.8, 650.0, WHITE, 0.0);
+                    let expected = canvas.user_to_pixel().apply(anchor);
+                    canvas.expand_text(&mut HashMap::new());
+                    let mut min = [f32::INFINITY; 2];
+                    let mut max = [f32::NEG_INFINITY; 2];
+                    for draw in &canvas.draws {
+                        let Draw::Sprite { world, size, .. } = draw else {
+                            panic!("text must expand to glyph sprites");
+                        };
+                        for corner in [
+                            [-size[0] / 2.0, -size[1] / 2.0],
+                            [size[0] / 2.0, size[1] / 2.0],
+                        ] {
+                            let p = world.apply(corner);
+                            for axis in 0..2 {
+                                min[axis] = min[axis].min(p[axis]);
+                                max[axis] = max[axis].max(p[axis]);
+                            }
+                        }
+                    }
+                    for axis in 0..2 {
+                        let center = (min[axis] + max[axis]) / 2.0;
+                        assert!(
+                            (center - expected[axis]).abs() < 0.001,
+                            "{label:?} at scale {scale}: ink center {center}, expected {} on axis {axis}",
+                            expected[axis],
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn text_without_ink_does_not_produce_sprites() {
+        let font: Arc<[u8]> =
+            Arc::from(include_bytes!("../assets/fonts/FiraCode-VariableFont_wght.ttf").as_slice());
+        for label in ["", "   "] {
+            let mut canvas = Canvas::new((640, 400), 2.0);
+            canvas.text(0.0, 0.0, &font, label, 19.8, 650.0, WHITE, 0.0);
+            canvas.expand_text(&mut HashMap::new());
+            assert!(canvas.draws.is_empty());
+        }
+    }
 
     /// The user-to-pixel transform of a `(100, 100)` canvas:
     /// `(x, y) -> (x + 50, 50 - y)`.

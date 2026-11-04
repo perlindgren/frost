@@ -4,37 +4,14 @@
 //! The buffers (`window`, `d`, `cmnd`) are allocated in `PitchDetector::new`
 //! (run by `TunerUi`, on the UI thread); the per-window analysis contract
 //! then requires silence from the allocator on every push. This test enforces
-//! that contract at the DSP level with a counting global allocator. The
+//! that contract through a safe allocation-measurement API. The
 //! complementary RT-side contract (audio thread → ring handoff) is gated by
 //! nice-tuner/tests/rt_handoff_no_alloc.rs, and nice-plug's
 //! `assert_process_allocs` guards the full `process()` callback at runtime.
 //!
-//! Kept to one test in its own binary so the counting window has no other
-//! allocator traffic: the libtest harness is parked while this runs.
+//! Counts are local to the measured thread and stay active in release builds.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-static COUNTING: AtomicBool = AtomicBool::new(false);
-static ALLOCS: AtomicUsize = AtomicUsize::new(0);
-
-struct Counting;
-
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
-        }
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-
-#[global_allocator]
-static ALLOCATOR: Counting = Counting;
+#![forbid(unsafe_code)]
 
 /// Feed `sample_rate`-Hz audio to the detector and assert the measured
 /// stretch allocated nothing.
@@ -71,17 +48,22 @@ fn detection_path_never_allocates_when_warm() {
     }
 
     // Measured stretch: ten full seconds of detections must stay dark.
-    ALLOCS.store(0, Ordering::Relaxed);
-    COUNTING.store(true, Ordering::Relaxed);
+    let probe = allocation_counter::measure(|| {
+        std::hint::black_box(vec![0u8; 1024]);
+    });
+    assert!(
+        probe.count_total > 0,
+        "allocation measurement must be active"
+    );
     let mut detections = 0usize;
-    for chunk in signal[warm..].chunks(512) {
-        if detector.push_samples(chunk).is_some() {
-            detections += 1;
+    let allocations = allocation_counter::measure(|| {
+        for chunk in signal[warm..].chunks(512) {
+            if detector.push_samples(chunk).is_some() {
+                detections += 1;
+            }
         }
-    }
-    COUNTING.store(false, Ordering::Relaxed);
-
-    let allocs = ALLOCS.load(Ordering::Relaxed);
+    });
+    let allocs = allocations.count_total;
     // Sanity: the signal really did drive detections, otherwise the zero
     // below would be vacuous.
     assert!(

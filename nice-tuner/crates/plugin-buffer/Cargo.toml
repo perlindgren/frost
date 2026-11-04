@@ -1,0 +1,14 @@
+[package]
+name = "plugin-buffer"
+version = "0.1.0"
+edition = "2024"
+description = "Owned planar storage with scoped access to nice-plug Buffer"
+license.workspace = true
+publish = false
+
+[dependencies]
+nice-plug-core = { version = "0.4.2", default-features = false }
+heapless = { version = "=0.9.3", default-features = false }
+
+[dev-dependencies]
+allocation-counter = "=0.8.1"

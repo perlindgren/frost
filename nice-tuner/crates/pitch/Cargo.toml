@@ -14,3 +14,7 @@ license.workspace = true
 
 [dependencies]
 # none: std only, by design
+
+[dev-dependencies]
+# Safe measurement API for allocation tests; no handwritten allocator hooks.
+allocation-counter = "=0.8.1"

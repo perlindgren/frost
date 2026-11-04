@@ -582,15 +582,9 @@ struct Line {
     shape: Option<Shape>,
     /// The laid-out width of `text`, in pixels.
     width: f32,
-    /// The line's ink top, in pixels above its baseline: the highest ink
-    /// pixel, over every glyph that has one. It anchors the line's ink in
-    /// its box; the stacking advances by the font-level extent
-    /// (`Diagnostics::line_extent`) instead, so a line's own ink never
-    /// moves the lines below it.
-    ink_top: f32,
-    /// The renderer's baseline offset from the node's origin — half the
-    /// font's ascent minus descent — in pixels.
-    baseline_offset: f32,
+    /// Visible height, used to anchor this centered line at its top edge.
+    /// Stacking still advances by the fixed `Diagnostics::line_extent`.
+    height: f32,
 }
 
 impl Line {
@@ -601,8 +595,7 @@ impl Line {
             size: 0.0,
             shape: None,
             width: 0.0,
-            ink_top: 0.0,
-            baseline_offset: 0.0,
+            height: 0.0,
         }
     }
 
@@ -613,22 +606,14 @@ impl Line {
             return;
         };
         self.shape = Shape::text_bytes(font, &self.text, size).ok();
-        self.width = layout.width;
         self.size = size;
-        self.baseline_offset = (layout.ascent - layout.descent) / 2.0;
-        // The line's ink top, the highest ink pixel over every glyph that
-        // has one — initialized at the font's ascent so an all-space text
-        // still gets a finite value. It anchors this line's ink in its
-        // box; the stacking's advance is the font-level extent
-        // (`Diagnostics::line_extent`), so the digits' ink differences
-        // never move the lines below.
-        let mut ink_top = layout.ascent;
-        for glyph in &layout.glyphs {
-            if let Some(raster) = crate::text::rasterize(font, glyph.id, size, WEIGHT) {
-                ink_top = ink_top.max(glyph.y + raster.top as f32);
-            }
-        }
-        self.ink_top = ink_top;
+        let bounds = crate::canvas::text_ink_bounds(&layout, |id| {
+            let r = crate::text::rasterize(font, id, size, WEIGHT)?;
+            Some([r.left as f32, r.top as f32, r.width as f32, r.height as f32])
+        });
+        let (min, max) = bounds.unwrap_or(([0.0; 2], [0.0; 2]));
+        self.width = max[0] - min[0];
+        self.height = max[1] - min[1];
     }
 }
 
@@ -645,15 +630,13 @@ struct LineDraw {
 /// `line_top`.
 fn line_draw(line: &Line, line_top: f32, w: f32, margin: f32) -> Option<LineDraw> {
     let shape = line.shape.clone()?;
-    // The renderer centers a text block on the node's origin with the
-    // baseline `baseline_offset` above it, so a line's node origin sits its
-    // top (plus the baseline offset) below the line's top y, and its width
-    // (plus the margin) in from the left edge.
+    // The renderer centers visible ink on the node's origin. Half its
+    // height and width therefore anchor its top and left edges.
     Some(LineDraw {
         shape,
         pos: [
             -w / 2.0 + margin + line.width / 2.0,
-            line_top - line.ink_top - line.baseline_offset,
+            line_top - line.height / 2.0,
         ],
     })
 }

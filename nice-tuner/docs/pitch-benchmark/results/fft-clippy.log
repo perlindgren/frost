@@ -1,0 +1,103 @@
+    Checking serde v1.0.229
+    Checking pitch_detector-review v0.0.0 (/private/tmp/frost-pitch-study.dCQMLv/pitch_detector-tests)
+error: function `zero_crossing_count` is never used
+ --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detector-0.3.1/src/pitch/core.rs:6:4
+  |
+6 | fn zero_crossing_count<I>(signal: I) -> usize
+  |    ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `-D dead-code` implied by `-D warnings`
+  = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: function `zero_crossing_rate` is never used
+  --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detector-0.3.1/src/pitch/core.rs:19:8
+   |
+19 | pub fn zero_crossing_rate<I>(signal: I, sample_rate: f64) -> f64
+   |        ^^^^^^^^^^^^^^^^^^
+
+error: using `chunks_exact` with a constant chunk size
+  --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detector-0.3.1/src/core/utils.rs:23:14
+   |
+23 |             .chunks_exact(2)
+   |              ^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks::<2>().0.iter()`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#chunks_exact_to_as_chunks
+   = note: `-D clippy::chunks-exact-to-as-chunks` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::chunks_exact_to_as_chunks)]`
+
+error: called `.iter().cloned().collect()` on a slice to create a `Vec`
+  --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detector-0.3.1/src/core/utils.rs:52:72
+   |
+52 |       let y_vals: Vec<f64> = spectrum[peak_begin_idx..=peak_end_idx_incl]
+   |  ________________________________________________________________________^
+53 | |         .iter()
+54 | |         .cloned()
+55 | |         .collect();
+   | |__________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#iter_cloned_collect
+   = note: `-D clippy::iter-cloned-collect` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::iter_cloned_collect)]`
+help: calling `.to_vec()` is both faster and more readable
+   |
+52 -     let y_vals: Vec<f64> = spectrum[peak_begin_idx..=peak_end_idx_incl]
+53 -         .iter()
+54 -         .cloned()
+55 -         .collect();
+52 +     let y_vals: Vec<f64> = spectrum[peak_begin_idx..=peak_end_idx_incl].to_vec();
+   |
+
+error: this `impl` can be derived
+  --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detector-0.3.1/src/pitch/cepstrum.rs:15:1
+   |
+15 | / impl Default for PowerCepstrum {
+16 | |     fn default() -> Self {
+17 | |         Self { fft_space: None }
+18 | |     }
+19 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#derivable_impls
+   = note: `-D clippy::derivable-impls` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::derivable_impls)]`
+help: replace the manual implementation with a derive attribute
+   |
+ 9 + #[derive(Default)]
+10 | pub struct PowerCepstrum {
+   |
+
+error: this `impl` can be derived
+  --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detector-0.3.1/src/pitch/hanned_fft.rs:16:1
+   |
+16 | / impl Default for HannedFftDetector {
+17 | |     fn default() -> Self {
+18 | |         Self { fft_space: None }
+19 | |     }
+20 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#derivable_impls
+help: replace the manual implementation with a derive attribute
+   |
+10 + #[derive(Default)]
+11 | pub struct HannedFftDetector {
+   |
+
+error: hiding a lifetime that's elided elsewhere is confusing
+   --> /private/tmp/frost-pitch-study.dCQMLv/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/pitch-detector-0.3.1/src/core/fft_space.rs:107:24
+    |
+107 |     pub fn freq_domain(&self, square_rooted: bool) -> utils::FreqDomainIter {
+    |                        ^^^^^                          ^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                        |
+    |                        the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `-D mismatched-lifetime-syntaxes` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(mismatched_lifetime_syntaxes)]`
+help: use `'_` for type paths
+    |
+107 |     pub fn freq_domain(&self, square_rooted: bool) -> utils::FreqDomainIter<'_> {
+    |                                                                            ++++
+
+error: could not compile `pitch_detector-review` (lib) due to 7 previous errors
+warning: build failed, waiting for other jobs to finish...
