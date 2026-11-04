@@ -17,6 +17,31 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+static TEST_FREQUENCY: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+
+/// Override incoming standalone audio with a unit-amplitude sine tone.
+/// Must be set before starting the audio host; the override survives Apply.
+pub fn set_test_frequency(hz: f64) -> Result<(), String> {
+    if !hz.is_finite() || hz <= 0.0 {
+        return Err("test_freq must be a finite, positive frequency in Hz".into());
+    }
+    TEST_FREQUENCY
+        .set(hz)
+        .map_err(|_| "test_freq was already set".into())
+}
+
+pub(crate) static NOTE_FREQUENCY: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+
+/// Supply a fixed detected frequency, bypassing pitch estimation in the editor.
+pub fn set_note_frequency(hz: f64) -> Result<(), String> {
+    if !hz.is_finite() || hz <= 0.0 {
+        return Err("note_freq must be finite and greater than zero".into());
+    }
+    NOTE_FREQUENCY
+        .set(hz)
+        .map_err(|_| "note_freq was already set".into())
+}
+
 const RETRIES: usize = 3;
 
 /// One owner destroys the old streams before opening replacements. It retains

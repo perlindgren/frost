@@ -26,6 +26,8 @@ required-features = ["standalone"]
 
 [features]
 default = []
+# frost editor diagnostics in standalone and DAW-hosted builds.
+diag = []
 # Builds the standalone app binary (src/main.rs): the audio-device backends
 # (CPAL and native device queries) arrive with it, so a plain
 # `cargo build` of the plugin is a cdylib with no device code of its own.

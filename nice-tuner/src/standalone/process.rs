@@ -50,6 +50,13 @@ impl ProcessContext<TunerPlugin> for Context {
 }
 
 pub(super) fn activate(plugin: &mut TunerPlugin, channels: usize, rate: f32) -> Result<(), String> {
+    if let Some(&hz) = super::TEST_FREQUENCY.get()
+        && hz >= f64::from(rate) / 2.0
+    {
+        return Err(format!(
+            "Test frequency {hz} Hz must be below half the input sample rate ({rate} Hz)"
+        ));
+    }
     let layout = TunerPlugin::AUDIO_IO_LAYOUTS
         .iter()
         .find(|layout| layout.main_input_channels.map(|n| n.get() as usize) == Some(channels))
@@ -75,6 +82,7 @@ pub(super) struct Processor {
     buffer: plugin_buffer::PlanarBuffer<{ 2 * BLOCK }>,
     channels: usize,
     context: Context,
+    tone: Option<TestTone>,
     plugin: Arc<Mutex<TunerPlugin>>,
 }
 impl Processor {
@@ -83,6 +91,9 @@ impl Processor {
             buffer: plugin_buffer::PlanarBuffer::new(channels, BLOCK),
             channels,
             context: Context::new(rate),
+            tone: super::TEST_FREQUENCY
+                .get()
+                .map(|&hz| TestTone::new(hz, rate)),
             plugin,
         }
     }
@@ -98,9 +109,10 @@ impl Processor {
         for block in interleaved.chunks(BLOCK * self.channels) {
             let frames = block.len() / self.channels;
             self.buffer.with_buffer(frames, |buffer| {
-                for (channel, planar) in buffer.as_slice().iter_mut().enumerate() {
-                    for (frame, sample) in planar.iter_mut().enumerate() {
-                        *sample = f32::from_sample(block[frame * self.channels + channel]);
+                for (frame, input) in block.chunks_exact(self.channels).enumerate() {
+                    let tone = self.tone.as_mut().map(TestTone::next);
+                    for (channel, planar) in buffer.as_slice().iter_mut().enumerate() {
+                        planar[frame] = tone.unwrap_or_else(|| f32::from_sample(input[channel]));
                     }
                 }
                 let mut auxiliary = AuxiliaryBuffers {
@@ -127,9 +139,45 @@ impl Processor {
     }
 }
 
+struct TestTone {
+    phase: f64,
+    step: f64,
+}
+impl TestTone {
+    fn new(hz: f64, rate: f32) -> Self {
+        Self {
+            phase: 0.0,
+            step: hz / f64::from(rate),
+        }
+    }
+    fn next(&mut self) -> f32 {
+        let sample = (std::f64::consts::TAU * self.phase).sin() as f32;
+        self.phase = (self.phase + self.step).fract();
+        sample
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn test_tone_overrides_all_channels_and_keeps_phase_between_callbacks() {
+        let mut plugin = TunerPlugin::default();
+        activate(&mut plugin, 2, 48000.0).unwrap();
+        plugin.shared.input_channel.store(2);
+        let mut adapter = Processor::new(Arc::new(Mutex::new(plugin)), 2, 48000.0);
+        adapter.tone = Some(TestTone::new(1000.0, 48000.0));
+        let mut output = Vec::new();
+        for frames in [13, 1050, 41] {
+            adapter.run(&vec![0.37f32; frames * 2], |sample| output.push(sample));
+        }
+        for (i, sample) in output.iter().enumerate() {
+            let expected = (std::f64::consts::TAU * i as f64 / 48.0).sin() as f32;
+            assert!((sample - expected).abs() < 1e-5);
+        }
+        assert!((output[12] - 1.0).abs() < 1e-6);
+    }
+
     #[test]
     fn standalone_runs_the_plugin_and_preserves_the_selected_channel_at_input_rate() {
         let mut plugin = TunerPlugin::default();

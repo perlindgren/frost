@@ -84,6 +84,8 @@ pub fn static_scene() -> Scene {
 pub struct TunerUi {
     shared: Arc<TunerSharedState>,
     font: Arc<[u8]>,
+    #[cfg(feature = "diag")]
+    diag: frost::Diagnostics,
     // smoothed display state
     needle_cents: f32, // EMA'd cents shown on the gauge
     latch_midi: i16,   // -1 = nothing latched
@@ -155,6 +157,8 @@ pub struct TunerUi {
     rb: Option<rtrb::Consumer<f32>>,
     detector: Option<pitch::PitchDetector>,
     det_rate: f64,
+    note_frequency: Option<f64>,
+    waveform: Waveform,
 }
 
 #[cfg(feature = "standalone")]
@@ -180,9 +184,15 @@ impl TunerUi {
         if let Some(rb) = rb.as_mut() {
             while rb.pop().is_ok() {}
         }
+        #[cfg(feature = "diag")]
+        let diag =
+            frost::Diagnostics::from_bytes(&crate::gui::font(), frost::DiagnosticsFlags::all())
+                .expect("The tuner font must support diagnostics");
         Self {
             shared,
             font,
+            #[cfg(feature = "diag")]
+            diag,
             needle_cents: 0.0,
             latch_midi: -1,
             meter: crate::meter::PeakMeter::new(crate::now_epoch_ms()),
@@ -227,6 +237,11 @@ impl TunerUi {
             rb,
             detector: None,
             det_rate: 0.0,
+            #[cfg(feature = "standalone")]
+            note_frequency: crate::standalone::NOTE_FREQUENCY.get().copied(),
+            #[cfg(not(feature = "standalone"))]
+            note_frequency: None,
+            waveform: Waveform::default(),
         }
     }
 
@@ -237,24 +252,31 @@ impl TunerUi {
     fn analyze(&mut self) {
         let Some(rb) = self.rb.as_mut() else { return };
         let rate = self.shared.sample_rate_hz.load();
-        if rate > 0.0 && (self.detector.is_none() || self.det_rate != rate) {
-            self.detector = Some(pitch::PitchDetector::new(pitch::Config {
-                sample_rate: rate,
-                min_freq: 30.0,   // 5-string bass B0
-                max_freq: 2100.0, // harmonics up past the guitar's E7 territory
-                ..Default::default()
-            }));
+        if rate > 0.0
+            && (self.det_rate != rate || (self.note_frequency.is_none() && self.detector.is_none()))
+        {
+            self.detector = self.note_frequency.is_none().then(|| {
+                pitch::PitchDetector::new(pitch::Config {
+                    sample_rate: rate,
+                    min_freq: 30.0,   // 5-string bass B0
+                    max_freq: 2100.0, // harmonics up past the guitar's E7 territory
+                    ..Default::default()
+                })
+            });
             self.det_rate = rate;
+            self.waveform.reset(rate);
         }
-        let Some(detector) = self.detector.as_mut() else {
+        if self.det_rate <= 0.0 {
             return;
-        };
+        }
         // Catch-up cap: after a long pump stall, analyze the most recent
         // audio rather than grinding through a stale backlog. Older samples
         // are dropped from the head (Consumer side: legal in SPSC).
         const MAX_DRAIN: usize = 16384; // ~0.34 s
         if rb.slots() > MAX_DRAIN {
+            self.waveform.samples.clear();
             let skip = rb.slots() - MAX_DRAIN;
+            self.waveform.pending_frames += skip;
             for _ in 0..skip {
                 let _ = rb.pop();
             }
@@ -270,8 +292,20 @@ impl TunerUi {
             if rb.pop_entire_slice(&mut buf[..want]).is_err() {
                 break;
             }
+            self.waveform.push(&buf[..want]);
             drained = true;
-            if let Some(d) = detector.push_samples(&buf[..want]) {
+            if let Some(hz) = self.note_frequency {
+                self.shared.freq_hz.store(hz);
+                self.shared.clarity.store(1.0);
+                self.shared.rms.store(self.shared.input_rms.load());
+                self.shared
+                    .last_detection_ms
+                    .store(crate::now_epoch_ms(), Ordering::Relaxed);
+            } else if let Some(d) = self
+                .detector
+                .as_mut()
+                .and_then(|detector| detector.push_samples(&buf[..want]))
+            {
                 self.shared.freq_hz.store(d.freq_hz);
                 self.shared.clarity.store(d.clarity);
                 self.shared.rms.store(d.rms);
@@ -309,6 +343,8 @@ impl TunerUi {
 
 impl Process for TunerUi {
     fn process(&mut self, ctx: &mut Context, dt: f32) {
+        #[cfg(feature = "diag")]
+        self.diag.process(ctx, dt);
         let dt = dt.clamp(0.0, 0.25); // tolerate host pauses
         // First frame: read the settings file. Look-and-judgement values
         // (verdict window, gauge curve) apply in hosts too — nothing RT
@@ -334,6 +370,7 @@ impl Process for TunerUi {
         #[cfg(feature = "standalone")]
         self.poll_audio_apply();
         self.analyze();
+        self.waveform.advance(dt);
 
         // ---- read shared state (updated by analyze(), above) --------------
         // The detector already applied its clarity gate
@@ -461,6 +498,34 @@ impl Process for TunerUi {
         let in_tune_cents = self.settings.in_tune_cents.unwrap_or(IN_TUNE_CENTS as f32);
         let x = cents_to_units(self.needle_cents, knee) * fit;
 
+        // Three periods of the ideal note frequency (including A tuning), in the free area
+        // above the gauge. All sample retention and drawing stay on the UI thread.
+        if signal {
+            let sweep_hz = freq_to_note(self.freq_shown, a4).nearest_freq;
+            let traces = self.waveform.traces(sweep_hz, 481);
+            for (i, points) in traces.iter().enumerate() {
+                let ink = if i == 0 {
+                    Color {
+                        a: main.a * 0.3,
+                        ..main
+                    }
+                } else {
+                    main
+                };
+                for pair in points.windows(2) {
+                    ctx.line(
+                        pair[0][0] * 240.0 * fit,
+                        (95.0 + pair[0][1] * 38.0) * fit,
+                        pair[1][0] * 240.0 * fit,
+                        (95.0 + pair[1][1] * 38.0) * fit,
+                        ink,
+                        1.5 * fit,
+                        0.2,
+                    );
+                }
+            }
+        }
+
         // Gauge ticks: dynamic (they follow the panel-adjustable curve),
         // sharing the needle's mapping so they can never lie about it.
         for cents in (-50..=50).step_by(10) {
@@ -505,14 +570,26 @@ impl Process for TunerUi {
         } else {
             format!("{}{}", self.latch_name, self.latch_oct)
         };
-        ctx.text(0.0, 95.0 * fit, font, label, 86.4 * fit, 700.0, main, 0.2);
+        // Fixed columns on the original cents row; neither depends on the
+        // current note width, cents sign or number of visible digits.
+        ctx.text(
+            -140.0 * fit,
+            -52.0 * fit,
+            font,
+            label,
+            39.6 * fit,
+            700.0,
+            main,
+            0.2,
+        );
+        ctx.text(0.0, -52.0 * fit, font, "·", 39.6 * fit, 600.0, main, 0.2);
         // cents readout: TABULAR on a fixed pitch — every glyph lands in
         // its own digit-width slot (see draw_tabular). Constant glyph
         // count alone was not enough: `ctx.text` centers the INK box,
         // and `+` versus `−` carry visibly different ink widths, so the
         // whole line shifted a hair whenever the sign flipped. Slotted
         // layout cannot: nothing depends on what the glyphs look like.
-        // Anchor the decimal slot at x = 0, exactly where the idle dash sits.
+        // Anchor the decimal to the right column, where its idle dash sits.
         // No signal, no reading: a bare dash, not a confident "+00.0¢".
         let cents_s = if signal {
             let cents = self.cents_shown;
@@ -526,18 +603,18 @@ impl Process for TunerUi {
         };
         self.draw_tabular(
             ctx,
-            0.0,
+            140.0 * fit,
             -52.0 * fit,
             &cents_s,
             '.',
-            50.4 * fit,
+            39.6 * fit,
             600.0,
             main,
             0.2,
         );
         // Right-align the frequency before fixed Hz and reference columns.
-        // The midpoint marker stays on the panel center in both idle and
-        // detected states; the decimal replaces the idle frequency dash.
+        // The midpoint marker keeps both columns fixed; the decimal
+        // replaces the idle frequency dash.
         let freq_s = frequency_readout(signal.then_some(self.freq_shown), a4);
         self.draw_tabular(
             ctx,
@@ -736,6 +813,94 @@ fn clip(s: &str, n: usize) -> String {
         s.to_owned()
     } else {
         format!("{}…", s.chars().take(n - 1).collect::<String>())
+    }
+}
+
+/// UI-owned rolling history; 0.22 seconds covers two three-period sweeps near the
+/// detector's 30 Hz lower bound. No changes to the audio callback are needed.
+#[derive(Default)]
+struct Waveform {
+    samples: std::collections::VecDeque<f32>,
+    rate: f64,
+    limit: usize,
+    sweep_time: f64,
+    pending_frames: usize,
+}
+
+impl Waveform {
+    fn reset(&mut self, rate: f64) {
+        self.rate = rate;
+        self.sweep_time = 0.0;
+        self.pending_frames = 0;
+        self.limit = (rate * 0.22).ceil() as usize + 2;
+        self.samples = std::collections::VecDeque::with_capacity(self.limit);
+    }
+
+    // Predict elapsed sweep time using the frame dt, then correct to the
+    // actual audio clock. Callback batches and UI stalls must not introduce
+    // phase jitter; with no new audio, keep the last capture stationary.
+    fn advance(&mut self, dt: f32) {
+        if self.rate <= 0.0 {
+            return;
+        }
+        let dt = f64::from(dt.max(0.0));
+        let predicted = self.sweep_time + dt;
+        self.sweep_time = predicted + (self.pending_frames as f64 / self.rate - dt);
+        self.pending_frames = 0;
+    }
+
+    fn push(&mut self, samples: &[f32]) {
+        self.pending_frames += samples.len();
+        for &sample in samples {
+            if self.samples.len() == self.limit {
+                self.samples.pop_front();
+            }
+            self.samples
+                .push_back(if sample.is_finite() { sample } else { 0.0 });
+        }
+    }
+
+    // Keep the last complete sweep and overlay the current partial sweep.
+    // Never splice samples of different ages inside a single connected trace.
+    fn traces(&self, frequency: f64, count: usize) -> [Vec<[f32; 2]>; 2] {
+        let empty = || [Vec::new(), Vec::new()];
+        if !frequency.is_finite() || frequency <= 0.0 || count < 2 || self.samples.is_empty() {
+            return empty();
+        }
+        let span = 3.0 * self.rate / frequency;
+        if !span.is_finite() || span <= 0.0 {
+            return empty();
+        }
+        let end = self.sweep_time * self.rate - 1.0;
+        let boundary = (end / span).floor() * span;
+        let oldest = end - (self.samples.len() - 1) as f64;
+        let peak = self
+            .samples
+            .iter()
+            .fold(0.0f32, |p, v| p.max(v.abs()))
+            .max(1e-6);
+        let sample = |at: f64| {
+            let index = (at - oldest).clamp(0.0, (self.samples.len() - 1) as f64);
+            let lo = index.floor() as usize;
+            let hi = (lo + 1).min(self.samples.len() - 1);
+            (self.samples[lo] * (1.0 - index.fract() as f32)
+                + self.samples[hi] * index.fract() as f32)
+                / peak
+        };
+        let trace = |start: f64, stop: f64| {
+            if start < oldest || start < 0.0 || stop <= start {
+                return Vec::new();
+            }
+            let fraction = ((stop - start) / span).min(1.0);
+            let steps = ((count - 1) as f64 * fraction).ceil() as usize;
+            (0..=steps)
+                .map(|i| {
+                    let t = (i as f64 / (count - 1) as f64).min(fraction);
+                    [(t * 2.0 - 1.0) as f32, sample(start + t * span)]
+                })
+                .collect()
+        };
+        [trace(boundary - span, boundary), trace(boundary, end)]
     }
 }
 
@@ -2502,6 +2667,91 @@ mod tests {
     }
 
     #[test]
+    fn waveform_shows_three_periods_ending_at_the_latest_sample() {
+        let mut waveform = super::Waveform::default();
+        waveform.reset(48000.0);
+        let samples: Vec<_> = (0..6000)
+            .map(|i| (std::f64::consts::TAU * i as f64 / 100.0).sin() as f32)
+            .collect();
+        waveform.push(&samples);
+        waveform.advance(0.016);
+        assert_eq!(waveform.samples.len(), samples.len().min(waveform.limit));
+        let [points, current] = waveform.traces(480.0, 301);
+        assert_eq!(points.len(), 301);
+        assert_eq!(points[0][0], -1.0);
+        assert_eq!(points[300][0], 1.0);
+        assert!((current.last().unwrap()[1] - samples[5999]).abs() < 1e-5);
+        for (i, point) in points.iter().enumerate() {
+            assert!((point[1] - samples[5400 + i]).abs() < 1e-5);
+        }
+        waveform.reset(44100.0);
+        assert!(waveform.traces(440.0, 301).iter().all(Vec::is_empty));
+        assert!(waveform.traces(f64::NAN, 301).iter().all(Vec::is_empty));
+    }
+
+    #[test]
+    fn scope_is_phase_stable_with_irregular_frame_times_and_audio_batches() {
+        let rate = 48000.0;
+        let hz = pitch::freq_to_note(82.41, 440.0).nearest_freq;
+        let mut scope = super::Waveform::default();
+        scope.reset(rate);
+        let mut index = 0usize;
+        for (frames, dt) in [(6000, 0.016), (743, 0.021), (1297, 0.009), (0, 0.1)] {
+            let samples: Vec<_> = (index..index + frames)
+                .map(|i| (std::f64::consts::TAU * hz * i as f64 / rate).sin() as f32)
+                .collect();
+            index += frames;
+            scope.push(&samples);
+            scope.advance(dt);
+            for [x, y] in scope.traces(hz, 481).into_iter().flatten() {
+                let expected = (3.0 * std::f64::consts::TAU * (f64::from(x) + 1.0) / 2.0).sin();
+                assert!((f64::from(y) - expected).abs() < 0.001);
+            }
+        }
+    }
+
+    #[test]
+    fn scope_retraces_only_at_edges_and_current_trace_reaches_newest_sample() {
+        let mut scope = super::Waveform::default();
+        scope.reset(48000.0);
+        scope.push(&(0..6000).map(|i| i as f32).collect::<Vec<_>>());
+        scope.advance(0.016);
+        let traces = scope.traces(480.0, 301);
+        for trace in &traces {
+            assert_eq!(trace.first().unwrap()[0], -1.0);
+            for pair in trace.windows(2) {
+                assert!(pair[1][0] > pair[0][0]);
+                assert!(pair[1][1] >= pair[0][1]);
+            }
+        }
+        assert_eq!(traces[0].last().unwrap()[0], 1.0);
+        assert!(traces[1].last().unwrap()[0] < 1.0);
+        assert_eq!(traces[1].last().unwrap()[1], 1.0);
+    }
+
+    #[test]
+    fn forced_note_drains_waveform_without_creating_a_pitch_detector() {
+        let mut ui = channel_ui();
+        let (mut producer, consumer) = rtrb::RingBuffer::new(1024);
+        ui.rb = Some(consumer);
+        ui.note_frequency = Some(440.0);
+        ui.shared.sample_rate_hz.store(48000.0);
+        ui.shared.input_rms.store(0.5);
+        producer.push_entire_slice(&[0.25; 512]).unwrap();
+        ui.analyze();
+        assert!(ui.detector.is_none());
+        assert_eq!(ui.shared.freq_hz.load(), 440.0);
+        assert_eq!(ui.shared.rms.load(), 0.5);
+        assert_eq!(ui.waveform.samples.len(), 512);
+        assert!(
+            ui.shared
+                .last_detection_ms
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > 0
+        );
+    }
+
+    #[test]
     fn trim_zeros_hides_integer_prefix_and_preserves_fractional_zeros() {
         assert_eq!(trim_zeros("0055.0"), "  55.0");
         assert_eq!(trim_zeros("0005.0"), "   5.0");
@@ -2540,7 +2790,7 @@ mod tests {
     }
 
     #[test]
-    fn frequency_is_right_aligned_with_fixed_units_marker_and_reference() {
+    fn frequency_is_right_aligned_with_fixed_units_and_reference() {
         let idle = frequency_readout(None, 440.0);
         let idle_glyphs: Vec<_> = tabular_glyphs(&idle, 12.0, '·').collect();
         let position =

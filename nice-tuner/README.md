@@ -95,6 +95,19 @@ cargo test -p nice-tuner -p pitch            # the tuner's and the detector's te
 cargo run -p nice-tuner --features standalone --bin nice-tuner-standalone
 ```
 
+Enable frost's editor diagnostics with `--features diag` for plugin builds,
+or `--features standalone,diag` for the standalone app:
+
+```sh
+cargo run -p nice-tuner --features standalone,diag
+cargo xtask bundle nice-tuner --release --features diag
+```
+
+The overlay shows editor FPS, frame intervals, processing times and rendering
+statistics. It receives the actual frame delta before tuner animation clamping
+and stays active on the settings page as well. These are GUI measurements, not
+DAW audio callback timing. The feature is disabled by default.
+
 The optional `unsafe` feature is forwarded to our `window-position` wrapper; combining
 `--features standalone,unsafe` enables native Windows centering and saved-position
 restoration/persistence. It never relaxes the app's unsafe-code guard. Without
@@ -112,12 +125,39 @@ holds no ASIO driver can enumerate drivers the live app cannot see.
 # {"inputs":["Input 1/2 (Komplete Audio 6 MK2)",…],"outputs":[…],"def_in":…,"rates":[…]}
 ```
 
-Everything else is the panel: **SETTINGS** top-right — backend, sample rate,
+For a synthetic input instead of microphone samples:
+
+```sh
+cargo run -p nice-tuner --release --features standalone -- --test_freq 440.0
+```
+
+`--test_freq <Hz>` (also `--test_freq=<Hz>`) replaces every input channel with
+an amplitude-1.0 sine before normal plugin processing. Its phase is continuous
+across callbacks. It uses the configured input stream's sample rate and timing,
+so select/apply an audio backend as usual. The value must be finite, positive
+and below half the input sample rate. It lasts for this launch, including live
+Apply changes, and is not saved in the settings file.
+
+To compare GUI pacing with pitch detection disabled, add `--note_freq <Hz>`:
+
+```sh
+cargo run -p nice-tuner --release --features standalone,diag -- --test_freq 440 --note_freq 440
+```
+
+`--note_freq` supplies the detected frequency directly, without constructing or
+running the pitch detector. Audio capture, metering, waveform history, the
+A-tuned scope and normal rendering continue. It can be used with real input or
+with `--test_freq`; both options also accept `=<Hz>` and are independent.
+The supplied frequency must be finite and positive. Input-level gating remains
+active, so silence still hides the reading. This is a launch-only diagnostic
+override, not a saved tuning setting.
+
+Audio configuration is in the panel: **SETTINGS** top-right — backend, sample rate,
 buffer size, input and output devices, channel. A mono-only input (the built-in
 laptop microphone) is a channel choice there, not a `-l 2` on a command line the
 app never hears. The file lands in the current directory as
-`nice-tuner-settings.json`; command-line flags used to outrank it, and no longer
-exist.
+`nice-tuner-settings.json`; the test-tone option does not override those device
+settings.
 
 ### Linux + JACK
 
