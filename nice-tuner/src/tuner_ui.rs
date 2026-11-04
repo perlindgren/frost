@@ -713,6 +713,21 @@ fn point_in(p: Option<[f32; 2]>, cx: f32, cy: f32, hw: f32, hh: f32) -> bool {
     p.is_some_and(|[x, y]| (x - cx).abs() <= hw && (y - cy).abs() <= hh)
 }
 
+fn clip_port(s: &str, n: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= n {
+        return s.to_owned();
+    }
+    // Keep the channel/port suffix visible, where JACK names usually differ.
+    let head = n / 3;
+    let tail = n.saturating_sub(head + 1);
+    format!(
+        "{}…{}",
+        chars[..head].iter().collect::<String>(),
+        chars[chars.len() - tail..].iter().collect::<String>()
+    )
+}
+
 fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_owned()
@@ -771,6 +786,8 @@ impl TunerUi {
             }
             self.refresh_devices();
             self.devices_loaded = true;
+        } else if self.settings.backend.as_deref() == Some("jack") {
+            self.refresh_devices();
         }
         self.open_dropdown = None;
         self.page = Page::Settings;
@@ -868,6 +885,12 @@ impl TunerUi {
         } else {
             Some(in_proc())
         };
+        if let Some(frames) = self.live_jack_buffer()
+            && let Some(snapshot) = self.snap.as_mut()
+        {
+            snapshot.buffer_pref = Some(frames);
+            snapshot.output_buffer_pref = Some(frames);
+        }
     }
 
     /// The snapshot's stream side onto the option lists, with the
@@ -987,6 +1010,12 @@ impl TunerUi {
             // child spin-up would just pay the same cost again.
             self.apply_stream_snap();
         }
+        // JACK choices are graph ports: never add a vanished selection back
+        // into the list of available routes. Its saved name remains visible
+        // in the field, and Apply explains why it must be replaced.
+        if self.settings.backend.as_deref() == Some("jack") {
+            return;
+        }
         // A saved device the current enumeration does not list is KEPT,
         // not dropped: ASIO enumeration is driver-flaky (cold starts,
         // driver-busy moments), and silently nulling the user's choice
@@ -1030,6 +1059,7 @@ impl TunerUi {
 
     fn dropdown_disabled(&self, dd: Dropdown) -> bool {
         self.is_applying()
+            || (dd == Dropdown::InputCh && self.settings.backend.as_deref() == Some("jack"))
             || (dd == Dropdown::OutputBuffer && self.buffers_linked)
             || (matches!(dd, Dropdown::OutputCh | Dropdown::OutputRate)
                 && (self
@@ -1151,8 +1181,34 @@ impl TunerUi {
             .store(self.settings.input_channel.unwrap_or(1));
     }
 
-    /// A queried backend/device default, never a guessed wrapper constant.
+    /// PipeWire can apply its quantum only after a JACK client activates.
+    /// CPAL's earlier device query is then stale; the audio callback publishes
+    /// the actual block size. Use it only for the currently applied backend.
+    fn live_jack_buffer(&self) -> Option<u32> {
+        if cfg!(all(target_os = "linux", feature = "standalone"))
+            && self.settings.backend.as_deref() == Some("jack")
+            && self.applied.backend.as_deref() == Some("jack")
+            && !self.is_applying()
+        {
+            let frames = self.shared.buffer_frames.load();
+            return (frames > 0).then_some(frames);
+        }
+        None
+    }
+
+    fn displayed_jack_buffer(&self) -> Option<u32> {
+        // A pending selection must stay visible until Apply succeeds.
+        (self.settings.period_size == self.applied.period_size
+            && self.settings.output_period_size == self.applied.output_period_size)
+            .then(|| self.live_jack_buffer())
+            .flatten()
+    }
+
+    /// A live JACK block size or queried backend/device default.
     fn buffer_default(&self, dd: Dropdown) -> Option<u32> {
+        if let Some(frames) = self.live_jack_buffer() {
+            return Some(frames);
+        }
         #[cfg(feature = "standalone")]
         {
             self.snap.as_ref().and_then(|snapshot| {
@@ -1214,6 +1270,21 @@ impl TunerUi {
     /// a snapshot. Pairs are (display label, raw value); second item of
     /// the tuple is the default row's raw value ("follow" sentinel).
     fn dropdown_rows(&self, dd: Dropdown) -> (Vec<(String, String)>, String) {
+        if self.settings.backend.as_deref() == Some("jack") && dd == Dropdown::OutputCh {
+            let left = self
+                .settings
+                .output_device
+                .as_ref()
+                .or(self.default_out.as_ref());
+            let mut rows = vec![("Mono (no right output)".into(), String::new())];
+            rows.extend(
+                self.output_opts
+                    .iter()
+                    .filter(|name| Some(*name) != left)
+                    .map(|name| (name.clone(), name.clone())),
+            );
+            return (rows, String::new());
+        }
         // Plain options: (display label, raw value it selects).
         let opts: Vec<(String, String)> = match dd {
             Dropdown::Backend => self
@@ -1294,6 +1365,9 @@ impl TunerUi {
 
     /// The raw value the default row selects ("" = unknowable default).
     fn default_raw(&self, dd: Dropdown) -> String {
+        if self.settings.backend.as_deref() == Some("jack") && dd == Dropdown::OutputCh {
+            return String::new();
+        }
         match dd {
             // "" = no default to follow (see default_label).
             Dropdown::Backend => String::new(),
@@ -1329,6 +1403,9 @@ impl TunerUi {
     /// The raw value the row shows right now (unset settings resolve to
     /// their default — that IS the current truth).
     fn current_raw(&self, dd: Dropdown) -> String {
+        if self.settings.backend.as_deref() == Some("jack") && dd == Dropdown::OutputCh {
+            return self.settings.jack_output_right.clone().unwrap_or_default();
+        }
         match dd {
             Dropdown::Backend => self.settings.backend.clone().unwrap_or_default(),
             Dropdown::Input => self
@@ -1361,11 +1438,14 @@ impl TunerUi {
                 } else {
                     self.settings.output_period_size
                 };
-                period.map(|p| p.to_string()).unwrap_or_else(|| {
-                    self.buffer_default(dd)
-                        .map(|value| value.to_string())
-                        .unwrap_or_default()
-                })
+                self.displayed_jack_buffer()
+                    .or(period)
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| {
+                        self.buffer_default(dd)
+                            .map(|value| value.to_string())
+                            .unwrap_or_default()
+                    })
             }
             Dropdown::OutputCh => self
                 .settings
@@ -1430,6 +1510,7 @@ impl TunerUi {
                 // road that may go looking for jack.
                 self.settings.backend = if at_default { None } else { Some(raw) };
                 self.settings.input_channel = None;
+                self.settings.jack_output_right = None;
                 self.refresh_devices();
                 #[cfg(feature = "standalone")]
                 self.adopt_backend_defaults();
@@ -1450,6 +1531,15 @@ impl TunerUi {
             }
             Dropdown::Output => {
                 self.settings.output_device = if at_default { None } else { Some(raw) };
+                if self.settings.jack_output_right.as_ref()
+                    == self
+                        .settings
+                        .output_device
+                        .as_ref()
+                        .or(self.default_out.as_ref())
+                {
+                    self.settings.jack_output_right = None;
+                }
                 self.settings.output_channels = None;
                 self.settings.output_sample_rate = None;
                 self.settings.output_period_size = None;
@@ -1458,6 +1548,9 @@ impl TunerUi {
                 self.refresh_stream_options();
                 #[cfg(feature = "standalone")]
                 self.adopt_stream_defaults();
+            }
+            Dropdown::OutputCh if self.settings.backend.as_deref() == Some("jack") => {
+                self.settings.jack_output_right = if raw.is_empty() { None } else { Some(raw) };
             }
             Dropdown::OutputCh => {
                 self.settings.output_channels = if at_default {
@@ -1578,6 +1671,42 @@ impl TunerUi {
     }
 
     fn value_text(&self, dd: Dropdown) -> String {
+        if self.settings.backend.as_deref() == Some("jack") {
+            match dd {
+                Dropdown::OutputCh => {
+                    return self
+                        .settings
+                        .jack_output_right
+                        .as_deref()
+                        .map(|name| clip_port(name, 26))
+                        .unwrap_or_else(|| "Mono".into());
+                }
+                Dropdown::Input => {
+                    return self
+                        .settings
+                        .input_device
+                        .as_ref()
+                        .or(self.default_in.as_ref())
+                        .map(|name| clip_port(name, 26))
+                        .unwrap_or_else(|| "—".into());
+                }
+                Dropdown::Output => {
+                    return self
+                        .settings
+                        .output_device
+                        .as_ref()
+                        .or(self.default_out.as_ref())
+                        .map(|name| clip_port(name, 26))
+                        .unwrap_or_else(|| "—".into());
+                }
+                _ => {}
+            }
+        }
+        if matches!(dd, Dropdown::InputBuffer | Dropdown::OutputBuffer)
+            && let Some(frames) = self.displayed_jack_buffer()
+        {
+            return frames.to_string();
+        }
         match dd {
             Dropdown::Backend => match self.settings.backend.as_deref() {
                 // Nothing chosen yet: a bare dash. The tuner boots SILENT
@@ -1686,6 +1815,7 @@ impl TunerUi {
         a.backend != s.backend
             || a.input_device != s.input_device
             || a.output_device != s.output_device
+            || a.jack_output_right != s.jack_output_right
             || a.output_channels != s.output_channels
             || a.sample_rate != s.sample_rate
             || a.output_sample_rate != s.output_sample_rate
@@ -1703,6 +1833,7 @@ impl TunerUi {
         a.backend != s.backend
             || a.input_device != s.input_device
             || a.output_device != s.output_device
+            || a.jack_output_right != s.jack_output_right
             || a.output_channels != s.output_channels
             || a.sample_rate != s.sample_rate
             || a.output_sample_rate != s.output_sample_rate
@@ -1784,12 +1915,22 @@ impl TunerUi {
         }
 
         for (i, (label, dd)) in ROWS.iter().enumerate() {
+            let label = if self.settings.backend.as_deref() == Some("jack") {
+                match dd {
+                    Dropdown::Input => "Input source",
+                    Dropdown::Output => "Output left / mono",
+                    Dropdown::OutputCh => "Output right",
+                    _ => *label,
+                }
+            } else {
+                *label
+            };
             let y = row_y(i);
             let disabled = self.dropdown_disabled(*dd);
             let open = !disabled && self.open_dropdown == Some(*dd);
             let hov = !disabled && point_in(mouse, bx, y, bhw, bhh);
             let lw = ctx.text_width(&font, label, 21.6 * fit, 550.0);
-            ctx.text(lx + lw / 2.0, y, &font, *label, 21.6 * fit, 550.0, DIM, z);
+            ctx.text(lx + lw / 2.0, y, &font, label, 21.6 * fit, 550.0, DIM, z);
             ctx.rectangle(bx, y, bhw, bhh, if open || hov { HOVER } else { TRACK }, z);
             ctx.text(
                 bx,
@@ -1960,7 +2101,13 @@ impl TunerUi {
                     bx,
                     iy,
                     &font,
-                    clip(label, 36),
+                    if self.settings.backend.as_deref() == Some("jack")
+                        && matches!(dd, Dropdown::Input | Dropdown::Output | Dropdown::OutputCh)
+                    {
+                        clip_port(label, 36)
+                    } else {
+                        clip(label, 36)
+                    },
                     18.7 * fit,
                     if sel { 700.0 } else { 550.0 },
                     if idx == 0 && self.default_label(dd).is_some() {
@@ -1986,6 +2133,11 @@ impl TunerUi {
             } else {
                 for (i, (_, dd)) in ROWS.iter().enumerate() {
                     if !self.dropdown_disabled(*dd) && point_in(mouse, bx, row_y(i), bhw, bhh) {
+                        if self.settings.backend.as_deref() == Some("jack")
+                            && matches!(dd, Dropdown::Input | Dropdown::Output | Dropdown::OutputCh)
+                        {
+                            self.refresh_devices();
+                        }
                         self.open_dropdown = Some(*dd);
                         self.list_scroll = 0.0;
                         break;
@@ -2133,12 +2285,100 @@ mod tests {
         assert_eq!(ui.buffer_default(Dropdown::OutputBuffer), None);
         assert_eq!(ui.value_text(Dropdown::InputBuffer), "—");
         assert_eq!(ui.value_text(Dropdown::OutputBuffer), "—");
-        ui.settings.backend = Some("jack".into());
+        ui.settings.backend = Some("unsupported-backend".into());
         assert!(
             ui.apply_blocker()
                 .unwrap()
                 .contains("not supported by the standalone application")
         );
+    }
+
+    #[cfg(all(target_os = "linux", feature = "standalone"))]
+    #[test]
+    fn jack_picker_preserves_named_destinations_and_supports_optional_right_output() {
+        let mut ui = channel_ui();
+        ui.settings.backend = Some("jack".into());
+        ui.default_in = Some("instrument:capture_1".into());
+        ui.default_out = Some("interface:playback_L".into());
+        ui.output_opts = vec!["interface:playback_L".into(), "interface:playback_R".into()];
+        ui.output_channel_opts = vec![crate::settings::OutputChannels::Mono(1)];
+        ui.applied = ui.settings.clone();
+        ui.saved = ui.settings.clone();
+        let (rows, _) = ui.dropdown_rows(Dropdown::OutputCh);
+        assert_eq!(
+            rows,
+            vec![
+                ("Mono (no right output)".into(), String::new()),
+                ("interface:playback_R".into(), "interface:playback_R".into()),
+            ]
+        );
+        assert!(!ui.dropdown_disabled(Dropdown::OutputCh));
+        assert!(ui.dropdown_disabled(Dropdown::InputCh));
+        ui.pick(Dropdown::OutputCh, 1);
+        assert_eq!(
+            ui.settings.jack_output_right.as_deref(),
+            Some("interface:playback_R")
+        );
+        assert_eq!(ui.current_raw(Dropdown::OutputCh), "interface:playback_R");
+        assert!(ui.audio_dirty());
+        assert!(ui.apply_dirty());
+        ui.pick(Dropdown::OutputCh, 0);
+        assert_eq!(ui.settings.jack_output_right, None);
+        assert_eq!(ui.value_text(Dropdown::OutputCh), "Mono");
+        assert!(!ui.audio_dirty());
+        let long = "Very long audio interface name:playback_FR";
+        let label = super::clip_port(long, 26);
+        assert_eq!(label.chars().count(), 26);
+        assert!(label.ends_with("playback_FR"));
+    }
+
+    #[cfg(all(target_os = "linux", feature = "standalone"))]
+    #[test]
+    fn jack_buffer_display_follows_callbacks_instead_of_saved_or_probed_size() {
+        let mut ui = channel_ui();
+        ui.settings.backend = Some("jack".into());
+        ui.settings.period_size = Some(1024);
+        ui.settings.output_period_size = Some(1024);
+        ui.applied = ui.settings.clone();
+        ui.saved = ui.settings.clone();
+        ui.set_buffers_linked(true);
+        ui.buffer_opts = crate::devices::JACK_BUFFER_CHOICES
+            .iter()
+            .map(u32::to_string)
+            .collect();
+        ui.snap = Some(crate::devices::Snapshot {
+            buffer_pref: Some(1024),
+            output_buffer_pref: Some(1024),
+            ..Default::default()
+        });
+        assert_eq!(ui.value_text(Dropdown::InputBuffer), "1024");
+        for frames in [64, 48, 32] {
+            ui.shared.buffer_frames.store(frames);
+            for dd in [Dropdown::InputBuffer, Dropdown::OutputBuffer] {
+                assert_eq!(ui.value_text(dd), frames.to_string());
+                assert_eq!(ui.current_raw(dd), frames.to_string());
+                assert_eq!(ui.buffer_default(dd), Some(frames));
+                assert_eq!(ui.dropdown_disabled(dd), dd == Dropdown::OutputBuffer);
+                assert!(ui.is_default(dd));
+            }
+            assert!(!ui.audio_dirty());
+            assert!(!ui.apply_dirty());
+        }
+        let rows = ui.dropdown_rows(Dropdown::InputBuffer).0;
+        let index = rows.iter().position(|(_, raw)| raw == "128").unwrap();
+        ui.pick(Dropdown::InputBuffer, index);
+        assert_eq!(ui.value_text(Dropdown::InputBuffer), "128");
+        assert_eq!(ui.value_text(Dropdown::OutputBuffer), "128");
+        assert!(ui.audio_dirty());
+        ui.settings = ui.applied.clone();
+        // Displaying the live answer must not rewrite the startup request.
+        assert_eq!(ui.settings.period_size, Some(1024));
+        ui.settings.backend = Some("alsa".into());
+        assert_eq!(ui.live_jack_buffer(), None);
+        assert_eq!(ui.value_text(Dropdown::InputBuffer), "1024");
+        ui.settings.backend = Some("jack".into());
+        ui.applied.backend = None;
+        assert_eq!(ui.live_jack_buffer(), None);
     }
 
     #[test]

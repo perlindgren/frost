@@ -34,7 +34,7 @@ default = []
 # target for its games' sound and gamepads. The plugin simply never calls
 # `frost::Audio::new`; the linker still meets ALSA and udev, on Linux as on
 # any other platform where frost plays a sound.
-standalone = ["dep:cpal", "dep:tracing", "dep:tracing-subscriber", "dep:core-audio-device", "dep:plugin-buffer"]
+standalone = ["dep:jack", "dep:cpal", "dep:tracing", "dep:tracing-subscriber", "dep:core-audio-device", "dep:plugin-buffer"]
 # Opt in to native Windows placement inside the wrapper crate only.
 # nice-tuner itself always denies unsafe code.
 unsafe = ["dep:window-position", "window-position/unsafe"]
@@ -91,8 +91,15 @@ rtrb = "0.4"
 # it one `frame()` per redraw; see `frost::embedded`.
 frost = { path = ".." }
 
-# Native placement is implemented only by our opt-in Windows wrapper.
+[target.'cfg(target_os = "linux")'.dependencies]
+# Enable JACK with the ordinary standalone build, on Linux only. The optional
+# dependency is still activated by `standalone`; plugin-only builds omit it.
+cpal = { version = "0.18", features = ["jack"], optional = true }
+# Public JACK control API; same version already pulled in by CPAL.
+jack = { version = "0.13.5", optional = true }
+
 [target.'cfg(windows)'.dependencies]
+# Native placement is implemented only by our opt-in Windows wrapper.
 window-position = { path = "crates/window-position", optional = true }
 # Direct ASIO access (same version cpal 0.18 pins): reading a driver's
 # PREFERRED buffer size — which cpal discards — in the streamless child

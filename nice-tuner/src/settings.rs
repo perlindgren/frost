@@ -1,6 +1,6 @@
 //! Standalone audio-settings persistence.
 //!
-//! The standalone application owns its CPAL streams and applies validated
+//! The standalone application owns its CPAL streams or JACK client and applies validated
 //! settings in place. Plugin hosts own their audio devices and ignore these
 //! standalone device settings.
 
@@ -24,11 +24,14 @@ pub struct Settings {
     /// A nice-plug `BackendType` value (clap spellings): `auto`, `jack`,
     /// `alsa`, `core-audio`, `wasapi`, `asio`, `dummy`.
     pub backend: Option<String>,
-    /// Exact cpal device name — for ASIO, the ASIO *driver* name
-    /// ("Komplete Input 1/2"), not a port/endpoint name.
+    /// Exact CPAL device name (ASIO driver name), or a full named JACK
+    /// audio source port. For JACK, output_device is the left/mono destination.
     pub input_device: Option<String>,
     pub output_device: Option<String>,
-    /// Physical output route; absent follows a device-reported default.
+    /// Optional second named JACK playback destination. Both destinations
+    /// receive the full mono signal; absent means a single destination.
+    pub jack_output_right: Option<String>,
+    /// CPAL physical output route; JACK uses named destinations instead.
     pub output_channels: Option<OutputChannels>,
     pub sample_rate: Option<f32>,
     pub output_sample_rate: Option<f32>,
@@ -140,6 +143,17 @@ impl Settings {
         if self.backend.as_deref() == Some("coreaudio") {
             self.backend = Some("core-audio".to_string());
         }
+        if self.backend.as_deref() == Some("jack") {
+            // Replace the old CPAL virtual-device labels with graph defaults.
+            if self.input_device.as_deref() == Some("JACK Input") {
+                self.input_device = None;
+                self.input_channel = None;
+            }
+            if self.output_device.as_deref() == Some("JACK Output") {
+                self.output_device = None;
+            }
+            self.output_channels = None;
+        }
     }
 
     pub fn path() -> PathBuf {
@@ -163,6 +177,7 @@ impl Settings {
         self.backend.is_none()
             && self.input_device.is_none()
             && self.output_device.is_none()
+            && self.jack_output_right.is_none()
             && self.output_channels.is_none()
             && self.sample_rate.is_none()
             && self.output_sample_rate.is_none()
@@ -216,11 +231,14 @@ impl Settings {
 pub const BACKEND_WHEN_UNSET: &str = "dummy";
 
 /// CoreAudio configures buffer frame size per device; ASIO shares it
-/// across the input/output sides of one driver. Other backends are not
-/// assumed to require a shared size merely because names match.
+/// across the input/output sides of one driver. JACK's server controls the
+/// buffer for all clients, including separate input/output virtual devices.
+/// Other backends are not assumed to require a shared size merely because
+/// names match.
 pub fn buffers_must_match(backend: &str, input: Option<&str>, output: Option<&str>) -> bool {
-    matches!(backend, "core-audio" | "coreaudio" | "asio")
-        && input.is_some_and(|name| !name.is_empty() && Some(name) == output)
+    (cfg!(target_os = "linux") && backend == "jack")
+        || matches!(backend, "core-audio" | "coreaudio" | "asio")
+            && input.is_some_and(|name| !name.is_empty() && Some(name) == output)
 }
 
 fn format_rate(r: f32) -> String {
@@ -404,6 +422,16 @@ mod tests {
             "wasapi",
             Some("Interface"),
             Some("Interface")
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn jack_buffers_follow_one_server_across_different_virtual_devices() {
+        assert!(buffers_must_match(
+            "jack",
+            Some("JACK Input"),
+            Some("JACK Output")
         ));
     }
 
@@ -600,5 +628,32 @@ mod tests {
         };
         ok.normalize();
         assert_eq!(ok.backend.as_deref(), Some("wasapi"));
+    }
+
+    #[test]
+    fn named_jack_destinations_round_trip_and_legacy_virtual_devices_migrate() {
+        let mut settings = Settings {
+            backend: Some("jack".into()),
+            input_device: Some("JACK Input".into()),
+            output_device: Some("JACK Output".into()),
+            input_channel: Some(2),
+            output_channels: Some(OutputChannels::Stereo([1, 2])),
+            jack_output_right: Some("interface:playback_R".into()),
+            ..Default::default()
+        };
+        settings.normalize();
+        assert_eq!(settings.input_device, None);
+        assert_eq!(settings.output_device, None);
+        assert_eq!(settings.input_channel, None);
+        assert_eq!(settings.output_channels, None);
+        let serialized = serde_json::to_string(&settings).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Settings>(&serialized).unwrap(),
+            settings
+        );
+        assert_eq!(
+            settings.jack_output_right.as_deref(),
+            Some("interface:playback_R")
+        );
     }
 }

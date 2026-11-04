@@ -15,8 +15,10 @@ use cpal::traits::{DeviceTrait, HostTrait};
 
 #[cfg(target_os = "macos")]
 mod core_audio;
+#[cfg(target_os = "linux")]
+pub(crate) mod jack;
 
-/// A selectable backend: nice-plug's `BackendType` value + a display label.
+/// A selectable standalone backend key and its display label.
 #[derive(Debug, Clone)]
 pub struct BackendOption {
     pub id: String,
@@ -24,7 +26,7 @@ pub struct BackendOption {
 }
 
 fn host_id_value(id: cpal::HostId) -> Option<(&'static str, &'static str)> {
-    // Only hosts nice-plug's BackendType can actually select via cpal.
+    // Only hosts the application's standalone audio path supports.
     // Each variant exists only where cpal builds it (platform/feature cfg);
     // if-chains keep that exhaustiveness-free.
     // cpal builds the Asio variant only on Windows, feature or not.
@@ -43,6 +45,10 @@ fn host_id_value(id: cpal::HostId) -> Option<(&'static str, &'static str)> {
         // file and the next startup dies at argv parsing, never reaching the
         // device. Reads tolerate both spellings (see settings migration).
         return Some(("core-audio", "macOS Core Audio"));
+    }
+    #[cfg(target_os = "linux")]
+    if id == cpal::HostId::Jack {
+        return Some(("jack", "Linux JACK"));
     }
     #[cfg(target_os = "linux")]
     if id == cpal::HostId::Alsa {
@@ -66,6 +72,10 @@ fn host_id_from_value(value: &str) -> Option<cpal::HostId> {
         return Some(cpal::HostId::CoreAudio);
     }
     #[cfg(target_os = "linux")]
+    if value == "jack" {
+        return Some(cpal::HostId::Jack);
+    }
+    #[cfg(target_os = "linux")]
     if value == "alsa" {
         return Some(cpal::HostId::Alsa);
     }
@@ -73,10 +83,9 @@ fn host_id_from_value(value: &str) -> Option<cpal::HostId> {
     None
 }
 
-/// Every backend the running binary can offer, nice-plug `auto` first.
-/// (ASIO appears only when compiled via `--features standalone-asio`, since
-/// `available_hosts` reports compiled hosts; `jack` is nice-plug's own
-/// backend, always a valid choice to name even where no server runs.)
+/// Every backend the running binary can offer, system default first.
+/// JACK is Linux-only and remains selectable without a running server.
+/// ASIO appears only when compiled via `--features standalone-asio`.
 pub fn available_backends() -> Vec<BackendOption> {
     let mk = |id: &str, label: &str| BackendOption {
         id: id.to_owned(),
@@ -99,9 +108,19 @@ pub(crate) fn open_host(backend: &str) -> Option<cpal::Host> {
     cpal::host_from_id(host_id_from_value(backend)?).ok()
 }
 
-fn device_names(devices: impl Iterator<Item = cpal::Device>) -> Vec<String> {
+fn device_names(
+    devices: impl Iterator<Item = cpal::Device>,
+    backend: &str,
+    direction: cpal::DeviceDirection,
+) -> Vec<String> {
     let mut v: Vec<String> = devices
-        .filter_map(|d| d.description().ok().map(|x| x.name().to_owned()))
+        .filter_map(|d| {
+            let description = d.description().ok()?;
+            // JACK's capability queries report formats for both directions,
+            // even on its direction-specific virtual devices.
+            (backend != "jack" || description.direction() == direction)
+                .then(|| description.name().to_owned())
+        })
         .collect();
     v.sort();
     v.dedup();
@@ -109,16 +128,24 @@ fn device_names(devices: impl Iterator<Item = cpal::Device>) -> Vec<String> {
 }
 
 pub fn list_input_devices(backend: &str) -> Vec<String> {
+    #[cfg(target_os = "linux")]
+    if backend == "jack" {
+        return jack::snapshot().inputs;
+    }
     open_host(backend)
         .and_then(|h| h.input_devices().ok())
-        .map(device_names)
+        .map(|devices| device_names(devices, backend, cpal::DeviceDirection::Input))
         .unwrap_or_default()
 }
 
 pub fn list_output_devices(backend: &str) -> Vec<String> {
+    #[cfg(target_os = "linux")]
+    if backend == "jack" {
+        return jack::snapshot().outputs;
+    }
     open_host(backend)
         .and_then(|h| h.output_devices().ok())
-        .map(device_names)
+        .map(|devices| device_names(devices, backend, cpal::DeviceDirection::Output))
         .unwrap_or_default()
 }
 
@@ -127,6 +154,11 @@ pub fn list_output_devices(backend: &str) -> Vec<String> {
 /// name what "(default)" actually is — a dropdown row saying the word is
 /// a row saying nothing.
 pub fn default_device_names(backend: &str) -> (Option<String>, Option<String>) {
+    #[cfg(target_os = "linux")]
+    if backend == "jack" {
+        let snapshot = jack::snapshot();
+        return (snapshot.def_in, snapshot.def_out);
+    }
     if backend == "asio" {
         // ASIO has no system default: cpal nominates the FIRST driver.
         // Refine that to the first driver that can actually serve the
@@ -166,8 +198,12 @@ pub fn driver_default_rate(
     input: Option<&str>,
     output: Option<&str>,
 ) -> Option<f32> {
-    if backend == "jack" || backend == "dummy" {
-        return None; // no cpal device behind these (JACK: the server decides)
+    #[cfg(target_os = "linux")]
+    if backend == "jack" {
+        return jack::snapshot().driver_rate;
+    }
+    if backend == "dummy" {
+        return None;
     }
     let host = if backend == "auto" || backend.is_empty() {
         cpal::default_host()
@@ -273,7 +309,18 @@ fn input_channel_count(backend: &str, input: Option<&str>) -> Option<u32> {
                 .map(|config| u32::from(config.channels()))
                 .filter(|&channels| channels > 0)
         })
+        // The tuner processes mono/stereo input; JACK advertises up to 64
+        // virtual ports, which would otherwise offer unusable input choices.
+        .map(|channels| {
+            if backend == "jack" {
+                channels.min(2)
+            } else {
+                channels
+            }
+        })
 }
+
+pub(crate) const JACK_BUFFER_CHOICES: [u32; 8] = [32, 48, 64, 96, 128, 256, 512, 1024];
 
 const DEFAULT_RATES: [f32; 4] = [44100.0, 48000.0, 88200.0, 96000.0];
 /// Every size offered when the device permits it — the ladder reaches from
@@ -491,7 +538,8 @@ impl Snapshot {
         if !matches!(
             backend,
             "auto" | "core-audio" | "coreaudio" | "wasapi" | "asio" | "alsa"
-        ) {
+        ) && !(cfg!(target_os = "linux") && backend == "jack")
+        {
             return Err("This audio backend is not supported by the standalone application".into());
         }
         resolved.input_device = resolved.input_device.or_else(|| self.def_in.clone());
@@ -520,6 +568,15 @@ impl Snapshot {
             .or(self.default_output_channels)
             .filter(|route| self.output_channel_options.contains(route))
             .ok_or("Select an output channel configuration")?;
+        if cfg!(target_os = "linux")
+            && backend == "jack"
+            && let Some(right) = &resolved.jack_output_right
+            && (!self.outputs.contains(right) || Some(right) == resolved.output_device.as_ref())
+        {
+            return Err(
+                "Select a different available JACK destination for the right output".into(),
+            );
+        }
         let rate = resolved
             .sample_rate
             .or(self.driver_rate)
@@ -545,12 +602,29 @@ impl Snapshot {
                 .or(self.output_buffer_pref)
                 .ok_or("Select an output buffer size")?
         };
+        let jack = cfg!(target_os = "linux") && backend == "jack";
+        if jack
+            && !JACK_BUFFER_CHOICES.contains(&input_buffer)
+            && Some(input_buffer) != self.buffer_pref
+        {
+            return Err("Select a JACK buffer size from the offered choices".into());
+        }
+        let supports = |format: &StreamFormat, rate, buffer| {
+            if jack {
+                // JACK reports only its current quantum, not supported alternatives.
+                let mut format = format.clone();
+                format.buffer_range = None;
+                format.supports(rate, buffer)
+            } else {
+                format.supports(rate, buffer)
+            }
+        };
         let _layout = [2, 1]
             .into_iter()
             .position(|channels| {
                 channel <= channels
                     && self.input_formats.iter().any(|format| {
-                        format.channels == channels && format.supports(rate, input_buffer)
+                        format.channels == channels && supports(format, rate, input_buffer)
                     })
             })
             .ok_or(
@@ -558,7 +632,7 @@ impl Snapshot {
             )?;
         if !self.output_formats.iter().any(|format| {
             format.channels >= output_route.required_channels()
-                && format.supports(output_rate, output_buffer)
+                && supports(format, output_rate, output_buffer)
         }) {
             return Err(
                 "The output device does not support these channels, sample rate and buffer size"
@@ -600,6 +674,10 @@ fn asio_buffer_pref(_name: &str) -> Option<u32> {
 
 /// In-process snapshot: every enumeration call, once.
 pub fn snapshot(backend: &str, input: Option<&str>, output: Option<&str>) -> Snapshot {
+    #[cfg(target_os = "linux")]
+    if backend == "jack" {
+        return jack::snapshot();
+    }
     let (def_in, def_out) = default_device_names(backend);
     let (rates, mut buffers, mut output_buffers, input_formats, output_formats) =
         stream_options(backend, input, output);
@@ -741,6 +819,90 @@ pub fn snapshot_via_child(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_backends_include_jack_without_connecting_to_a_server() {
+        let backends = available_backends();
+        assert_eq!(backends.iter().filter(|b| b.id == "jack").count(), 1);
+        assert!(backends.iter().any(|b| b.id == "alsa"));
+        assert!(
+            !backends
+                .iter()
+                .any(|b| b.id == "asio" || b.id == "core-audio")
+        );
+        assert_eq!(host_id_from_value("jack"), Some(cpal::HostId::Jack));
+        assert_eq!(
+            host_id_value(cpal::HostId::Jack),
+            Some(("jack", "Linux JACK"))
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn jack_allows_trial_buffers_but_rejects_sample_rate_overrides() {
+        let mut snapshot = microphone_snapshot();
+        snapshot.buffers_linked = true;
+        snapshot.buffer_pref = Some(192);
+        snapshot.output_buffer_pref = Some(192);
+        for format in snapshot
+            .input_formats
+            .iter_mut()
+            .chain(&mut snapshot.output_formats)
+        {
+            format.min_rate = 96000;
+            format.max_rate = 96000;
+            format.buffer_range = Some((192, 192));
+        }
+        snapshot.driver_rate = Some(96000.0);
+        snapshot.default_output_rate = Some(96000.0);
+        let settings = crate::settings::Settings {
+            backend: Some("jack".into()),
+            ..Default::default()
+        };
+        let resolved = snapshot.resolve_settings(&settings).unwrap();
+        assert_eq!(resolved.sample_rate, Some(96000.0));
+        assert_eq!(resolved.output_sample_rate, Some(96000.0));
+        assert_eq!(resolved.period_size, Some(192));
+        assert_eq!(resolved.output_period_size, Some(192));
+        for frames in JACK_BUFFER_CHOICES {
+            let resolved = snapshot
+                .resolve_settings(&crate::settings::Settings {
+                    period_size: Some(frames),
+                    ..settings.clone()
+                })
+                .unwrap();
+            assert_eq!(resolved.period_size, Some(frames));
+            assert_eq!(resolved.output_period_size, Some(frames));
+        }
+        assert!(
+            snapshot
+                .resolve_settings(&crate::settings::Settings {
+                    sample_rate: Some(48000.0),
+                    ..settings
+                })
+                .is_err()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a running JACK server (or pw-jack)"]
+    fn jack_server_defaults_resolve_without_manual_device_settings() {
+        let snapshot = snapshot("jack", None, None);
+        let resolved = snapshot
+            .resolve_settings(&crate::settings::Settings {
+                backend: Some("jack".into()),
+                ..Default::default()
+            })
+            .expect("JACK server must expose usable input/output defaults");
+        assert_eq!(resolved.sample_rate, resolved.output_sample_rate);
+        assert_eq!(resolved.period_size, resolved.output_period_size);
+        assert!(snapshot.buffers_linked);
+        assert!(snapshot.inputs.iter().all(|name| name.contains(':')));
+        assert!(snapshot.outputs.iter().all(|name| name.contains(':')));
+        assert_eq!(snapshot.input_channels, Some(1));
+    }
 
     fn microphone_snapshot() -> Snapshot {
         Snapshot {

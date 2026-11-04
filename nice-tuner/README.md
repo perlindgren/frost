@@ -101,7 +101,7 @@ restoration/persistence. It never relaxes the app's unsafe-code guard. Without
 that feature, placement is left to baseview and the operating system.
 
 **The standalone binary reads audio settings from `nice-tuner-settings.json`.**
-The application owns its CPAL streams and keeps the plugin and editor alive when
+The application owns its CPAL streams or JACK client and keeps the plugin and editor alive when
 Apply replaces those streams. An unset backend opens a silent application. The
 one exception is `--list-devices [backend] [input] [output]`, which prints one
 line of JSON and exits without a window or a stream; it exists so a process that
@@ -118,6 +118,50 @@ laptop microphone) is a channel choice there, not a `-l 2` on a command line the
 app never hears. The file lands in the current directory as
 `nice-tuner-settings.json`; command-line flags used to outrank it, and no longer
 exist.
+
+### Linux + JACK
+
+The normal `--features standalone` build includes **Linux JACK** in SETTINGS →
+backend, alongside ALSA. JACK is offered only on Linux; Windows retains its
+WASAPI/optional ASIO backends and macOS uses Core Audio.
+
+Building on Linux requires JACK development files discoverable through
+`pkg-config` (for example, `jack2` on Arch or `libjack-jackd2-dev` on Debian).
+Start a JACK server before selecting JACK, or launch with `pw-jack` when using
+PipeWire's JACK compatibility library:
+
+```sh
+pw-jack ./target/debug/nice-tuner-standalone
+```
+
+Select **Linux JACK**, then choose an input buffer size and **Apply**. The tuner
+offers trial sizes of **32, 48, 64, 96, 128, 256, 512, and 1024 frames**. JACK
+does not enumerate supported alternatives; these are requests, not guarantees.
+Apply requests the selected size through JACK's public control API and verifies
+that both audio callbacks actually use it. A rejection or a different negotiated
+size produces an error and restores the previous audio configuration. The sample
+rate continues to follow the server. Input and output buffers share one quantum,
+so the output buffer follows the input selection. With no running server, no ports are available
+and Apply stays disabled. An unset backend remains silent.
+
+While JACK is streaming, the buffer fields display the actual audio callback
+size unless a new size is being selected for Apply. Start with plain `pw-jack`:
+an explicit `pw-jack -p`/`PIPEWIRE_QUANTUM` override may compete with the app's
+selection; a resulting mismatch is reported as an error.
+
+JACK settings list actual named audio ports from the running graph, including
+hardware and other applications. Select **Input source** and **Output left / mono**.
+For stereo monitoring, select a second destination under **Output right**; choose
+**Mono (no right output)** to use only the first destination. Each JACK port is
+mono, so the numeric input channel is fixed to 1. Both selected destinations
+receive the full instrument signal at identical amplitude, with no halving or
+pan-law attenuation. The tuner connects only the selected ports, without automatic
+hardware routing. JACK processes input and both outputs in a single duplex
+callback, so it does not need the CPAL path's independent-clock monitor buffer.
+Missing or wrong-direction ports and failed connections report an error; a failed
+Apply restores the previous routing. Older `JACK Input`/`JACK Output` settings
+migrate to the discovered defaults. Full port names are saved even when long
+labels are shortened on screen.
 
 ### Windows + ASIO
 
