@@ -2,6 +2,8 @@
 //! Plugin/Editor interfaces; its standalone wrapper is neither built nor patched.
 mod audio;
 pub mod control;
+#[cfg(target_os = "linux")]
+mod jack_audio;
 mod process;
 mod resample;
 

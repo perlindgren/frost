@@ -26,7 +26,29 @@ pub(super) trait Session {
     fn failure(&self) -> Option<Failure>;
 }
 
-pub(super) struct Streams {
+pub(super) enum Streams {
+    Cpal(CpalStreams),
+    #[cfg(target_os = "linux")]
+    Jack(super::jack_audio::Streams),
+}
+impl Session for Streams {
+    fn wait_started(&mut self) -> Result<(), Failure> {
+        match self {
+            Self::Cpal(streams) => streams.wait_started(),
+            #[cfg(target_os = "linux")]
+            Self::Jack(streams) => streams.wait_started(),
+        }
+    }
+    fn failure(&self) -> Option<Failure> {
+        match self {
+            Self::Cpal(streams) => streams.failure(),
+            #[cfg(target_os = "linux")]
+            Self::Jack(streams) => streams.failure(),
+        }
+    }
+}
+
+pub(super) struct CpalStreams {
     // Dropping the capture stream joins its callback before the plugin can
     // be reactivated. The output stream never borrows or locks the plugin.
     _input: Stream,
@@ -35,7 +57,7 @@ pub(super) struct Streams {
     output_seen: Arc<AtomicBool>,
     errors: Receiver<Failure>,
 }
-impl Session for Streams {
+impl Session for CpalStreams {
     fn wait_started(&mut self) -> Result<(), Failure> {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
@@ -230,9 +252,13 @@ pub(super) fn open(
     settings: &Settings,
     plugin: Arc<Mutex<TunerPlugin>>,
 ) -> Result<Streams, Failure> {
+    #[cfg(target_os = "linux")]
+    if settings.backend.as_deref() == Some("jack") {
+        return super::jack_audio::open(settings, plugin).map(Streams::Jack);
+    }
     let mut direction = "input";
     let mut name = settings.input_device.clone().unwrap_or_default();
-    let result = (|| -> Result<Streams, String> {
+    let result = (|| -> Result<CpalStreams, String> {
         let backend = settings
             .backend
             .as_deref()
@@ -356,7 +382,7 @@ pub(super) fn open(
         name = settings.output_device.clone().unwrap();
         tracing::info!("Starting output device '{name}': {output_config:?}");
         output_stream.play().map_err(|e| e.to_string())?;
-        Ok(Streams {
+        Ok(CpalStreams {
             _input: input_stream,
             _output: output_stream,
             input_seen,
@@ -364,7 +390,7 @@ pub(super) fn open(
             errors: failure,
         })
     })();
-    result.map_err(|message| Failure {
+    result.map(Streams::Cpal).map_err(|message| Failure {
         message: format!("Attempt to open {direction} device '{name}' failed:\n{message}"),
         invalidated: false,
     })
@@ -373,6 +399,7 @@ pub(super) fn open(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn routing_duplicates_selected_mono_only_to_the_selected_pair() {
         let samples = [0.25, -0.5];
