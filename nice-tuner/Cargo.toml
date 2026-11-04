@@ -27,29 +27,32 @@ required-features = ["standalone"]
 [features]
 default = []
 # Builds the standalone app binary (src/main.rs): the audio-device backends
-# (cpal, jack, midir) arrive with it and nowhere else, so a plain
+# (CPAL and native device queries) arrive with it, so a plain
 # `cargo build` of the plugin is a cdylib with no device code of its own.
 # What it no longer keeps out is cpal altogether: the engine proper is a
 # dependency now, and frost carries rodio (→ cpal) and gilrs on every native
 # target for its games' sound and gamepads. The plugin simply never calls
 # `frost::Audio::new`; the linker still meets ALSA and udev, on Linux as on
 # any other platform where frost plays a sound.
-standalone = ["nice-plug/standalone", "dep:cpal", "dep:windows-sys", "dep:raw-window-handle"]
-# Windows only (a no-op elsewhere; nice-plug gates all ASIO code on
-# target_os = "windows"). Compiles cpal's ASIO host into the standalone
-# binary and adds the `--backend asio` option. Without it, `--backend asio`
-# is not even a recognized value. Implies `standalone`.
+standalone = ["dep:cpal", "dep:tracing", "dep:tracing-subscriber", "dep:core-audio-device", "dep:plugin-buffer"]
+# Opt in to native Windows placement inside the wrapper crate only.
+# nice-tuner itself always denies unsafe code.
+unsafe = ["dep:window-position", "window-position/unsafe"]
+# Windows only: compiles CPAL's ASIO host into the standalone binary
+# and makes ASIO available in the settings panel. Implies `standalone`.
 #
 # Building this needs the Steinberg ASIO SDK, whose licence is proprietary: it
 # lives outside the repository and `CPAL_ASIO_DIR` in `.cargo/config.toml`
 # points at it. Nothing in the gate asks for it, and no step anywhere uses
 # `--all-features`, which would invoke that build script on every platform.
-standalone-asio = ["standalone", "nice-plug/standalone-asio", "asio-host"]
+standalone-asio = ["standalone", "asio-host"]
 # cfg-visible alias for cpal/asio (cfg cannot test "cpal/asio" directly);
 # drives the ASIO arms in src/devices.rs.
 asio-host = ["cpal/asio", "dep:asio-sys"]
 
 [dependencies]
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"], optional = true }
 nice-plug = { version = "0.4.2", default-features = false, features = [
     "editor",
     "vst3",
@@ -78,6 +81,7 @@ serde_json = "1"
 # additive on the unified dependency graph.
 cpal = { version = "0.18", optional = true }
 pitch = { path = "crates/pitch" }
+plugin-buffer = { path = "crates/plugin-buffer", optional = true }
 # RT↔UI analysis handoff (audio thread: producer; editor frame: consumer).
 # Already in the graph via nice-plug standalone. The engine's own rtrb is 0.3,
 # a semver-incompatible neighbour: two copies coexist, each used by its own
@@ -87,20 +91,17 @@ rtrb = "0.4"
 # it one `frame()` per redraw; see `frost::embedded`.
 frost = { path = ".." }
 
-# Standalone top-level window geometry (position restore/centering):
-# baseview 0.3.3 has no position API, so the Windows build reaches for
-# SetWindowPos/GetWindowRect directly. Compiles only on Windows, only for
-# the standalone build (the target table drops it elsewhere).
+# Native placement is implemented only by our opt-in Windows wrapper.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", optional = true, features = [
-    "Win32_Foundation",
-    "Win32_Graphics_Gdi",
-    "Win32_UI_WindowsAndMessaging",
-] }
-# baseview 0.3.3 speaks raw-window-handle 0.6; same version required to
-# read its PlatformHandle's HWND.
-raw-window-handle = { version = "0.6", optional = true }
+window-position = { path = "crates/window-position", optional = true }
 # Direct ASIO access (same version cpal 0.18 pins): reading a driver's
 # PREFERRED buffer size — which cpal discards — in the streamless child
 # (--list-devices). Sequential with cpal's use; never concurrent.
 asio-sys = { version = "0.4", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-audio-device = { path = "crates/core-audio-device", optional = true }
+
+[dev-dependencies]
+# Safe measurement API for allocation tests; no handwritten allocator hooks.
+allocation-counter = "=0.8.1"

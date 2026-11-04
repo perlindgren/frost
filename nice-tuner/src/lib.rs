@@ -5,6 +5,8 @@
 //! The triangle placeholder renderer is replaced by the frost-derived
 //! embedded engine in M3/M4 (see docs/VIABILITY.md).
 
+#![deny(unsafe_code)]
+
 use baseview::{HandlerError, WindowContext, WindowSettings};
 use crossbeam::atomic::AtomicCell;
 use nice_plug::context::gui::GuiContext;
@@ -151,6 +153,8 @@ pub mod devices;
 mod gui;
 pub mod meter;
 pub mod settings;
+#[cfg(feature = "standalone")]
+pub mod standalone;
 mod tuner_ui;
 
 /// True when running as the standalone app (set by its `main` before the
@@ -158,18 +162,11 @@ mod tuner_ui;
 /// owns the audio system inside a DAW, so device choices would lie there.
 pub static STANDALONE_MODE: AtomicBool = AtomicBool::new(false);
 
-/// Raised by the settings page's "Apply & restart"; the standalone entry
-/// respawns the process when the run unwinds. Never raised inside a host —
-/// the page that sets it does not exist there.
-static RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-pub fn request_restart() {
-    RESTART_REQUESTED.store(true, Ordering::Relaxed);
-}
-
-pub fn restart_requested() -> bool {
-    RESTART_REQUESTED.load(Ordering::Relaxed)
-}
+/// Actual startup configuration, which may be silent when saved settings
+/// are incomplete. Keep the saved draft available for correction in the UI.
+#[cfg(feature = "standalone")]
+pub static STANDALONE_BOOT: std::sync::OnceLock<(settings::Settings, Option<String>)> =
+    std::sync::OnceLock::new();
 
 /// Standalone param ownership: with no host to drive `FloatParam`s, the
 /// saved file (and later the settings page) owns A4/gate. Pure function of
@@ -226,17 +223,14 @@ pub struct TunerEditor {
     shared: Arc<TunerSharedState>,
 }
 
-impl Editor for TunerEditor {
-    type Handle = TunerEditorHandle;
-
-    fn spawn(
+impl TunerEditor {
+    fn spawn_window(
         &self,
         parent: Option<ParentWindowHandle>,
         wait_for_parent: bool,
         fallback_scale_factor: Option<f64>,
-        gui_context: GuiContext,
         host: Option<HostMethods>,
-    ) -> Result<SpawnedEditor<Self::Handle>, Box<dyn Error>> {
+    ) -> Result<SpawnedEditor<TunerEditorHandle>, Box<dyn Error>> {
         let params = Arc::clone(&self.params);
         let shared = Arc::clone(&self.shared);
 
@@ -310,7 +304,7 @@ impl Editor for TunerEditor {
                 .with_wait_for_parent(wait_for_parent)
                 .with_fallback_scale_factor(fallback_scale_factor),
             move |window: WindowContext| -> Result<gui::TunerWindow, HandlerError> {
-                gui::TunerWindow::new(window, gui_context, params, shared, redraw_requested_2)
+                gui::TunerWindow::new(window, params, shared, redraw_requested_2)
             },
             host,
         )?;
@@ -324,6 +318,21 @@ impl Editor for TunerEditor {
             },
             window,
         })
+    }
+}
+
+impl Editor for TunerEditor {
+    type Handle = TunerEditorHandle;
+
+    fn spawn(
+        &self,
+        parent: Option<ParentWindowHandle>,
+        wait_for_parent: bool,
+        fallback_scale_factor: Option<f64>,
+        _gui_context: GuiContext,
+        host: Option<HostMethods>,
+    ) -> Result<SpawnedEditor<Self::Handle>, Box<dyn Error>> {
+        self.spawn_window(parent, wait_for_parent, fallback_scale_factor, host)
     }
 
     fn size(&self) -> NativeSize<u32> {
@@ -467,6 +476,12 @@ impl Default for TunerPlugin {
             // leaves the mirrors alone in this mode (see below).
             let (s, _warning) = settings::Settings::load();
             seed_standalone_params(&shared, &s);
+            #[cfg(feature = "standalone")]
+            if let Some((applied, _)) = STANDALONE_BOOT.get() {
+                shared
+                    .input_channel
+                    .store(applied.input_channel.unwrap_or(1));
+            }
         }
         Self {
             params: Arc::new(TunerParams::default()),

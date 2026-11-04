@@ -286,6 +286,41 @@ survivable.
   `docs/embedding.md` when the port lands, so both suites cite one text instead of each keeping
   its own guess.
 
+## nice-tuner: migrate native CoreAudio queries to a safe wrapper
+
+The app currently uses our project-owned `nice-tuner/crates/core-audio-device`
+wrapper, which isolates the native calls and exposes a safe, read-only API.
+Its [safety review](nice-tuner/crates/core-audio-device/SAFETY.md) documents the
+contracts and checks. The following remains a future upstream migration:
+
+- [ ] Replace `nice-tuner/src/devices/core_audio.rs` with public safe APIs from
+  the `coreaudio` crate once upstream has addressed the safety issues identified
+  in the [review of version 0.6.2](nice-tuner/docs/coreaudio-review.md).
+  Re-review the fixed release and its regression tests before adopting it;
+  do not patch or vendor the dependency locally.
+
+  The review identified:
+  - Safe construction of custom property descriptors allows a caller to label
+    numeric data as a CFString. `get_custom` trusts that label and can interpret
+    the returned number as an invalid pointer. The misuse compiled without
+    unsafe code; it was deliberately not executed.
+  - Several range/format decoders and encoders use typed pointer reads/writes
+    on `Vec<u8>` storage without guaranteeing the required alignment. This is
+    a source-level safety defect; no resulting crash was demonstrated.
+  - `BufferFrameSizeRange::valid_sizes()` can overflow while doubling a `u32`:
+    an artificial boundary case reproduced a debug panic and can loop after
+    wrapping with release overflow checks disabled. Its power-of-two buffer
+    list and the sample-rate helper's range minima also need care when
+    presenting device options.
+
+  Preserve queried input/output channel defaults, current buffer sizes and
+  `None` for unsupported properties. Validate the replacement with read-only
+  queries on real devices, including missing/disconnected devices. This
+  migration replaces our local CoreAudio wrapper only. The standalone
+  audio-buffer setup is isolated in `nice-tuner/crates/plugin-buffer`, and
+  optional Windows placement in `nice-tuner/crates/window-position`;
+  nice-tuner itself denies unsafe code in every feature configuration.
+
 ## What joining the workspace left open
 
 Three things the member move deliberately did not finish, each with the shape of

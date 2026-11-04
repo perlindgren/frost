@@ -1,7 +1,29 @@
 # Nice Tuner
 
-A stringed-instrument chromatic tuner audio plugin (CLAP + VST3 + standalone),
-built on:
+Nice Tuner is an example project whose primary purpose is to showcase
+[frost](../README.md) as a GUI toolkit for **VST3 and CLAP plugin development**.
+A working chromatic tuner for stringed instruments provides the application:
+pitch detection, a tuning display, parameters and interactive settings.
+
+Its second purpose is to demonstrate **safe integration with external crates
+through thin, project-owned wrappers**, keeping third-party source unchanged
+instead of maintaining a large vendored fork.
+
+## frost in a plugin
+
+The example shows how to embed frost's renderer in a DAW-owned plugin window,
+translate window events into GUI input, and share audio analysis and parameter
+state with the editor. nice-plug supplies the VST3/CLAP integration; baseview
+provides the window and events; frost builds and renders the interface.
+
+The standalone build makes debugging and inspecting logs easier outside a DAW.
+It uses the same plugin processing implementation, frost UI and baseview window
+integration as the plugin builds. Its application-owned audio host supplies the
+streams that a DAW would normally manage. This keeps it useful for developing
+the actual plugin, while host automation, editor lifecycle and other DAW-specific
+behavior still need testing in a real host. See [Standalone fidelity](#standalone-fidelity-what-you-see-embedded).
+
+The main layers are:
 
 | layer | crate | role |
 |---|---|---|
@@ -16,6 +38,35 @@ and [docs/SCENE.md](docs/SCENE.md) for the UI design. VIABILITY.md was written
 when the answer was "fork the engine"; the engine grew the embedded path
 instead, so read that document as the reasoning that got here, not the plan.
 
+## Safe integration through thin wrappers
+
+Both nice-tuner targets unconditionally use `#![deny(unsafe_code)]`. Where an
+external API requires unsafe calls, a small local crate owns that boundary and
+exposes only the safe operations this example needs:
+
+| Local crate | Safe interface | Boundary it handles |
+|---|---|---|
+| [`core-audio-device`](crates/core-audio-device/src/lib.rs) | Read-only device names, preferred channel pairs and buffer frame counts | Native CoreAudio calls, output sizes and CFString ownership |
+| [`window-position`](crates/window-position/src/lib.rs) | Restore, center and read a borrowed Windows window's position | Win32 placement calls; enabled by its `unsafe` feature |
+| [`plugin-buffer`](crates/plugin-buffer/src/lib.rs) | Scoped access to preallocated planar audio buffers | nice-plug's unsafe buffer-slice setup, storage lifetimes and disjoint channels |
+
+The buffer wrapper uses fixed-capacity `heapless` sample storage, boxed once
+during setup to keep its address stable. The call to the plugin's `process`
+method is safe and remains in the application.
+
+Each wrapper documents its unsafe invariants and validation in its own
+`SAFETY.md`: [CoreAudio](crates/core-audio-device/SAFETY.md),
+[window placement](crates/window-position/SAFETY.md) and
+[plugin buffers](crates/plugin-buffer/SAFETY.md). Tests cover bounds, error paths,
+ownership and allocation behavior; compile-fail examples check that borrowed
+audio buffers cannot escape their processing call. Safety depends on maintaining
+these contracts, not merely moving an unsafe block into another crate.
+
+The integration uses public dependency APIs. Dependencies are not modified,
+patched or vendored. The wrappers keep our assumptions and platform-specific
+code small enough to review, while the upstream crates retain their own
+implementations. This is the pattern the example is intended to demonstrate.
+
 ## Layout
 
 ```
@@ -24,6 +75,9 @@ src/gui.rs        baseview WindowHandler driving `frost::embedded::Embedded` (su
 src/tuner_ui.rs   frost scene: gauge, needle, note readout, input meter (`Process` impl)
 src/main.rs       standalone target (`--features standalone`)
 crates/pitch      pure-Rust YIN pitch detector (unit-tested, no deps)
+crates/core-audio-device  safe read-only CoreAudio queries
+crates/window-position   safe Windows placement, behind the unsafe feature
+crates/plugin-buffer     safe nice-plug buffer setup and heapless sample storage
 xtask             `cargo xtask bundle`, thin wrapper over nice-plug-xtask
 ../src/backend/embed.rs   the engine's guest path — frost proper, not a copy
 ```
@@ -41,11 +95,14 @@ cargo test -p nice-tuner -p pitch            # the tuner's and the detector's te
 cargo run -p nice-tuner --features standalone --bin nice-tuner-standalone
 ```
 
-**The standalone binary does not read its own command line.** `main.rs` hands
-nice-plug an argument list synthesized from `nice-tuner-settings.json`
-(`settings::effective_args`), so a driver is only ever reached through a value
-the settings page wrote — never through a flag, and never by accident of an
-unset one (an unset backend is `dummy`, not nice-plug's jack-first `auto`). The
+The optional `unsafe` feature is forwarded to our `window-position` wrapper; combining
+`--features standalone,unsafe` enables native Windows centering and saved-position
+restoration/persistence. It never relaxes the app's unsafe-code guard. Without
+that feature, placement is left to baseview and the operating system.
+
+**The standalone binary reads audio settings from `nice-tuner-settings.json`.**
+The application owns its CPAL streams and keeps the plugin and editor alive when
+Apply replaces those streams. An unset backend opens a silent application. The
 one exception is `--list-devices [backend] [input] [output]`, which prints one
 line of JSON and exits without a window or a stream; it exists so a process that
 holds no ASIO driver can enumerate drivers the live app cannot see.
@@ -65,7 +122,7 @@ exist.
 ### Windows + ASIO
 
 ```sh
-cargo build -p nice-tuner --features standalone-asio --bin nice-tuner-standalone
+cargo build -p nice-tuner --features standalone-asio,unsafe --bin nice-tuner-standalone
 ./target/release/nice-tuner-standalone     # …then SETTINGS → backend: ASIO → device → APPLY
 ```
 
@@ -101,17 +158,74 @@ Otherwise `setx CPAL_ASIO_DIR C:\path\to\asiosdk` — one variable, no repo chan
 or build with a space-free `TMP`/`TEMP`. The engine's
 gate never builds this feature, so no CI machine fetches anything either way.
 
-Two facts about ASIO on Windows that the panel cannot fix: **one driver per
-process** (asio-sys loads exactly one, and a refused open is usually the
-previous instance or Reaper still releasing it — hence the four startup retries),
-and **one buffer size per driver**, so a tuner sharing a driver with a DAW must
-be set to the DAW's number. nice-plug's `--input-latency` default of 150 ms is
-audibly wrong for a tuner; the standalone asks for 5 ms unless the file says
-otherwise.
+ASIO uses one driver per process and one buffer size per driver. The settings
+panel links input and output buffer sizes when they belong to the same driver.
+The standalone application's monitoring latency defaults to 5 ms of additional
+buffering unless the settings file specifies otherwise.
 
-The `Open error: is JACK server running?` lines some builds print at startup come
-from nice-plug probing JACK before the chosen backend; they are stderr noise on
-an unused path and say nothing about the device you asked for.
+### Output channels
+
+With an output device selected, **Output channels** offers its physical mono
+channels and stereo pairs. CoreAudio's preferred output channels supply the
+green default; unsupported or unreported defaults remain unset. Apply validates
+the route against the device's supported stream configurations.
+
+Standalone output monitors the selected mono input. A stereo pair receives the
+same signal at unity gain on both channels; unselected outputs stay silent.
+Input analysis reads the original channels before duplication. Plugin-host mode
+retains its existing passthrough behavior. The route is saved as `output_channels`
+and audio changes continue to use the live Apply path on CoreAudio.
+
+### Output sample rate
+
+**Input sample rate** and **Output sample rate** query their respective devices.
+The output dropdown lists supported output rates and selects the device-reported
+default in green. If no default is reported, the value stays unset until chosen;
+without an output device, the dropdown is disabled. The output selection is saved
+as `output_sample_rate`, with an absent value following the queried default.
+Separate devices can use different rates. The plugin runs at the input device's
+rate; the application's streaming band-limited resampler converts its output to
+the output device's rate. Physical channel routing follows conversion. When both
+streams use the same physical device, their selected sample rates must match.
+
+### Independent stream buffers
+
+The settings panel has **Input buffer size** and **Output buffer size** rows,
+in frames. Each list is queried from its own device. Different devices can
+use different sizes. When input and output are the same CoreAudio device or
+ASIO driver, output follows input and its control is gray and disabled.
+Changing to separate devices enables the output control again.
+
+The existing JSON `period_size` field now selects the input buffer;
+`output_period_size` selects the output buffer. CoreAudio defaults come from
+native device queries: the preferred primary input channel and current device
+buffer frame size. Failed or unsupported queries stay unset; the UI does not
+invent channel 1 or a 512-frame default.
+
+**APPLY** is enabled only when the selected CPAL devices have complete, supported
+settings. It replaces the audio streams while keeping the process, plugin and
+window alive. A failure leaves the draft unsaved and restores the previous audio
+configuration where possible. If recovery fails, the window remains usable with
+audio stopped. Ordinary tuning parameters still apply live.
+
+### Standalone audio ownership
+
+The standalone host lives in `src/standalone/`. It calls the same
+`TunerPlugin::activate`, `reset` and `process` implementation as the VST3/CLAP
+wrappers. CPAL callbacks use preallocated buffers and a single-producer,
+single-consumer ring. Output conversion uses a polyphase windowed-sinc filter,
+with clock-drift correction and silence during startup or underflow. Same-rate
+monitoring uses linear interpolation with one frame of delay.
+
+The GUI sends nonblocking Apply requests to a device-owning worker. The worker
+drops the old streams before activating replacements, acknowledges successful
+input and output callbacks, and rolls back failed changes. Transient stream
+invalidations receive bounded retries.
+
+nice-plug remains the unmodified registry dependency at version 0.4.2; its
+standalone feature is not used. There is no vendored copy or Cargo dependency
+patch. The application uses only public plugin and editor interfaces. DAW builds
+continue to use nice-plug's original plugin wrappers and host-managed audio.
 
 ### Producing plugin binaries
 
@@ -165,22 +279,20 @@ registered ASIO driver, so the first open can pause a moment where several are
 installed).
 
 - **Persistence**: `APPLY` writes `nice-tuner-settings.json` to the **current
-  directory**; it is read again at every startup. The button reads
-  `APPLY & RESTART` only when a change actually needs new audio streams
-  (backend, devices, rate, buffer) — everything else goes live on save.
+  directory**; it is read again at every startup. CoreAudio stream changes
+  are saved after the new stream starts; APPLY stays disabled for incomplete
+  or unsupported configurations.
   `RESET` (centre button) restores every default, including window geometry.
 - **Window geometry**: the last window position and size are remembered too —
   written ~2 s after the window settles and on Apply, restored at launch; with
   no settings file the window opens centred. Position is Windows-only (the
   window toolkit exposes no position API elsewhere; size still round-trips).
-- **Applied directly** = save, plus an automatic process respawn (~a blink)
-  when audio settings changed. The respawn is how nice-plug's standalone
-  wrapper reopens the audio stream — a plugin cannot reconfigure it from
-  inside (same ownership story as
-  [RustAudio/nice-plug#93](https://codeberg.org/RustAudio/nice-plug/issues/93)
-  below).
-- **Precedence**: command-line flags > settings file > defaults (including our
-  5 ms `--input-latency` default).
+- **Applied directly**: CoreAudio stream changes use a background worker and
+  preserve the window. Mono input devices select the mono plugin layout.
+  Incomplete saved settings open the settings page with audio stopped.
+- **Precedence**: explicit settings > queried device defaults. The standalone
+  application ignores audio flags on its command line. Monitoring adds 5 ms of
+  buffering unless the settings file specifies otherwise.
 - **Inside a DAW there is deliberately no panel** (the footer reads
   `audio: host-managed`): the host owns the audio device; a per-plugin device
   picker would lie.
@@ -249,7 +361,7 @@ One-time verification checklist in Reaper (load the CLAP from `target/bundled`):
 - [x] M5 DSP→GUI wiring (analysis gated on editor open; shared atomics, zero RT allocs)
 - [x] M6 `scripts/check.sh` all gates green, incl. `Nice Tuner.clap`/`.vst3` bundling
 - [x] Standalone settings panel: backend/device/buffer dropdowns, JSON in CWD,
-      apply-by-respawn; host-managed honesty inside DAWs
+      application-owned CPAL streams and live Apply; host-managed audio inside DAWs
 - [x] The fork is gone: `frost::embedded` lives in the engine, which this crate
       now depends on by path. M3's "313 fork tests" were the fork's copy of the
       engine's suite; the engine's own is larger, and the guest path has tests of

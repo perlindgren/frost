@@ -1,0 +1,15 @@
+[package]
+name = "window-position"
+version = "0.1.0"
+edition = "2024"
+description = "Minimal safe Windows window placement for nice-tuner"
+license.workspace = true
+publish = false
+
+[features]
+default = []
+unsafe = ["dep:windows-sys"]
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
+windows-sys = { version = "0.52", optional = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }

@@ -1,0 +1,11 @@
+[package]
+name = "core-audio-device"
+version = "0.1.0"
+edition = "2024"
+description = "Read-only, typed CoreAudio device queries for nice-tuner"
+license.workspace = true
+publish = false
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFString"] }

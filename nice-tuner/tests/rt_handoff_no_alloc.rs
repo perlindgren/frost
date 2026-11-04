@@ -4,32 +4,9 @@
 //! the stream bit-exact. Detection itself lives on the UI side of this ring
 //! (TunerUi::analyze), guarded separately by crates/pitch/tests/no_alloc.rs.
 //!
-//! Kept in its own test binary so the counting window has no other allocator
-//! traffic: the libtest harness is parked while this runs.
+//! Measurement uses a safe, thread-local API and stays active in release builds.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-static COUNTING: AtomicBool = AtomicBool::new(false);
-static ALLOCS: AtomicUsize = AtomicUsize::new(0);
-
-struct Counting;
-
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
-        }
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-
-#[global_allocator]
-static ALLOCATOR: Counting = Counting;
+#![forbid(unsafe_code)]
 
 #[test]
 fn rt_handoff_never_allocates_and_is_lossless() {
@@ -45,28 +22,32 @@ fn rt_handoff_never_allocates_and_is_lossless() {
     let n = consumer.slots().min(out.len());
     consumer.pop_entire_slice(&mut out[..n]).unwrap();
 
-    ALLOCS.store(0, Ordering::Relaxed);
-    COUNTING.store(true, Ordering::Relaxed);
+    let probe = allocation_counter::measure(|| {
+        std::hint::black_box(vec![0u8; 1024]);
+    });
+    assert!(
+        probe.count_total > 0,
+        "allocation measurement must be active"
+    );
 
     let mut pushed = 0usize;
     let mut popped = 0usize;
-    for _ in 0..500 {
-        // "Audio thread"
-        producer.push_entire_slice(&block).unwrap();
-        pushed += block.len();
-        // "UI frame"
-        let n = consumer.slots().min(out.len());
-        consumer.pop_entire_slice(&mut out[..n]).unwrap();
-        // No allocates here: compare in place against the repeating block.
-        for (i, v) in out[..n].iter().enumerate() {
-            assert_eq!(*v, block[i % block.len()], "sample {i} corrupted");
+    let allocations = allocation_counter::measure(|| {
+        for _ in 0..500 {
+            // "Audio thread"
+            producer.push_entire_slice(&block).unwrap();
+            pushed += block.len();
+            // "UI frame"
+            let n = consumer.slots().min(out.len());
+            consumer.pop_entire_slice(&mut out[..n]).unwrap();
+            // No allocates here: compare in place against the repeating block.
+            for (i, v) in out[..n].iter().enumerate() {
+                assert_eq!(*v, block[i % block.len()], "sample {i} corrupted");
+            }
+            popped += n;
         }
-        popped += n;
-    }
-
-    COUNTING.store(false, Ordering::Relaxed);
-
-    let allocs = ALLOCS.load(Ordering::Relaxed);
+    });
+    let allocs = allocations.count_total;
     assert_eq!(popped, pushed, "the handoff must not lose samples");
     assert_eq!(allocs, 0, "RT handoff performed {allocs} heap allocations");
 }
