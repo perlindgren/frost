@@ -4,7 +4,7 @@
 //! Responsibilities:
 //! - own the wgpu surface on the plugin's own `wgpu::Instance`
 //! - build the frost static scene + `Embedded` engine once
-//! - drive `frame()` from baseview's host-side timer (`on_frame`)
+//! - drive frames from AppKit display callbacks, with a baseview timer fallback
 //! - reconfigure on `resized`, recreate on surface `Lost`
 //! - translate `baseview::Event` → frost input injection (docs/SCENE.md table)
 
@@ -14,6 +14,7 @@ use frost::embedded::{Embedded, EmbeddedConfig, FrameError};
 #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
 use std::cell::Cell;
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::{Arc, atomic::AtomicBool};
 
 // Native placement is opt-in and isolated in the wrapper crate.
@@ -48,7 +49,11 @@ pub fn font() -> Arc<[u8]> {
 pub struct TunerWindow {
     window: WindowContext,
 
-    engine: RefCell<Option<TunerEngine>>,
+    frame: Rc<FrameDriver>,
+    #[cfg(target_os = "macos")]
+    display_sync: RefCell<Option<macos_frame_sync::DisplaySync>>,
+    #[cfg(target_os = "macos")]
+    frame_error: Rc<RefCell<Option<HandlerError>>>,
     /// Kept for upcoming interactive controls (a4 nudge); the readout itself
     /// flows through the shared atomics, mirrored by the audio thread.
     #[allow(dead_code)]
@@ -87,9 +92,18 @@ impl TunerWindow {
         shared: Arc<TunerSharedState>,
         redraw: Arc<AtomicBool>,
     ) -> Result<Self, HandlerError> {
+        let frame = Rc::new(FrameDriver {
+            window: window.clone(),
+            engine: RefCell::new(None),
+            shared: Arc::clone(&shared),
+        });
         let this = Self {
             window,
-            engine: RefCell::new(None),
+            frame,
+            #[cfg(target_os = "macos")]
+            display_sync: RefCell::new(None),
+            #[cfg(target_os = "macos")]
+            frame_error: Rc::new(RefCell::new(None)),
             params,
             shared,
             _redraw_requested: redraw,
@@ -100,7 +114,9 @@ impl TunerWindow {
             #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
             geom_saved: Cell::new(None),
         };
-        this.spawn_engine()?;
+        this.frame.spawn_engine()?;
+        #[cfg(target_os = "macos")]
+        this.start_display_sync();
         // Standalone top-level: honour the saved spot, or centre when no
         // geometry was ever saved. A host-embedded child is left exactly
         // where the host put it (STANDALONE_MODE gate inside).
@@ -110,6 +126,30 @@ impl TunerWindow {
             let _ = place::restore(&this.window.platform_handle(), saved);
         }
         Ok(this)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn start_display_sync(&self) {
+        let frame = Rc::downgrade(&self.frame);
+        let errors = Rc::clone(&self.frame_error);
+        match macos_frame_sync::DisplaySync::new(&self.window.platform_handle(), move || {
+            let Some(frame) = frame.upgrade() else {
+                return false;
+            };
+            match frame.tick() {
+                Ok(()) => true,
+                Err(error) => {
+                    *errors.borrow_mut() = Some(error);
+                    false
+                }
+            }
+        }) {
+            Ok(sync) => {
+                *self.display_sync.borrow_mut() = Some(sync);
+                eprintln!("nice-tuner: editor rendering is display-synchronized");
+            }
+            Err(error) => eprintln!("nice-tuner: {error}; using baseview frame timer"),
+        }
     }
 
     /// Standalone geometry write-back (Windows): watch the top-left each
@@ -181,7 +221,129 @@ impl TunerWindow {
             self.geom_saved.set(Some((x, y, width, height)));
         }
     }
+}
 
+impl WindowHandler for TunerWindow {
+    fn on_frame(&self) -> Result<(), HandlerError> {
+        #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
+        self.track_geometry();
+        #[cfg(target_os = "macos")]
+        if let Some(sync) = self.display_sync.borrow().as_ref() {
+            if let Some(error) = self.frame_error.borrow_mut().take() {
+                return Err(error);
+            }
+            if sync.has_panicked() {
+                return Err(HandlerError::from_boxed("display callback panicked".into()));
+            }
+            return Ok(()); // AppKit drives rendering; don't render twice.
+        }
+        self.frame.tick()
+    }
+
+    fn on_event(&self, event: baseview::Event) -> EventStatus {
+        use baseview::{Event as B, MouseEvent as M, WindowEvent as W};
+        use keyboard_types::KeyState;
+        #[cfg(target_os = "macos")]
+        if matches!(&event, B::Window(W::WillClose)) {
+            self.display_sync.borrow_mut().take();
+        }
+        let mut guard = self.frame.engine.borrow_mut();
+        if let Some(engine) = guard.as_mut() {
+            let size = self.window.size();
+            let scale = size.scale_factor;
+            match event {
+                B::Keyboard(ke) => {
+                    let down = ke.state == KeyState::Down;
+                    if let Some(code) = crate::tuner_ui::map_key(&ke.key) {
+                        engine.embedded.set_key(code, down);
+                    }
+                    // keyboard_types 0.8: typed characters ride in
+                    // `key: Key::Character` on key-down events
+                    if down && let keyboard_types::Key::Character(s) = &ke.key {
+                        for ch in s.chars() {
+                            engine.embedded.add_text(ch);
+                        }
+                    }
+                    use keyboard_types::Modifiers;
+                    engine.embedded.set_modifiers(
+                        ke.modifiers.contains(Modifiers::SHIFT),
+                        ke.modifiers.contains(Modifiers::CONTROL),
+                        ke.modifiers.contains(Modifiers::ALT),
+                        ke.modifiers.contains(Modifiers::META),
+                    );
+                }
+                B::Mouse(mouse) => match mouse {
+                    // baseview 0.3.3 macOS delivers PHYSICAL px (view.rs
+                    // to_physical); frost's set_cursor wants logical px,
+                    // y-down from the surface top-left -> just un-scale.
+                    M::CursorMoved { position, .. } => {
+                        engine
+                            .embedded
+                            .set_cursor(position.x / scale, position.y / scale);
+                    }
+                    M::ButtonPressed { button, .. } => {
+                        if let Some(btn) = crate::tuner_ui::map_mouse(button) {
+                            engine.embedded.set_mouse_button(btn, true);
+                        }
+                    }
+                    M::ButtonReleased { button, .. } => {
+                        if let Some(btn) = crate::tuner_ui::map_mouse(button) {
+                            engine.embedded.set_mouse_button(btn, false);
+                        }
+                    }
+                    M::WheelScrolled { delta, .. } => {
+                        // frost's scroll dy is in LINES (raw); pixels /120
+                        let (dx, dy) = match delta {
+                            baseview::ScrollDelta::Lines { y, .. } => (0.0, y as f64),
+                            baseview::ScrollDelta::Pixels { y, .. } => (0.0, y as f64 / 120.0),
+                        };
+                        engine.embedded.scroll(dx, dy);
+                    }
+                    M::CursorLeft => engine.embedded.cursor_left(),
+                    _ => {}
+                },
+                B::Window(W::Focused) => engine.embedded.set_focused(true),
+                B::Window(W::Unfocused) => engine.embedded.set_focused(false),
+                // window lifecycle stays with the host
+                B::Window(W::WillClose) => {
+                    // Flush a pending (debounced) geometry save on the way
+                    // out, so a quit right after a move still remembers.
+                    #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
+                    self.flush_geom();
+                }
+                _ => {}
+            }
+            // Rendering is driven by AppKit on supported macOS versions,
+            // otherwise by baseview's on_frame timer.
+        }
+        baseview::EventStatus::Captured
+    }
+
+    fn resized(&self, new_size: baseview::WindowSize) -> Result<(), HandlerError> {
+        self.shared.logical_size.store(new_size.logical.cast());
+        self.shared.scale_factor.store(new_size.scale_factor);
+
+        let mut guard = self.frame.engine.borrow_mut();
+        if let Some(engine) = guard.as_mut() {
+            // Embedded debounces swap-chain rebuilds internally (settles 100ms
+            // after the last size event; scale changes apply instantly).
+            engine.embedded.resize(
+                (new_size.physical.width, new_size.physical.height),
+                new_size.scale_factor,
+            );
+        }
+        Ok(())
+    }
+}
+
+// Shared only on the UI thread. The display callback holds a Weak reference,
+// so dropping an editor cannot leave a retained renderer or callback cycle.
+struct FrameDriver {
+    window: WindowContext,
+    engine: RefCell<Option<TunerEngine>>,
+    shared: Arc<TunerSharedState>,
+}
+impl FrameDriver {
     fn spawn_engine(&self) -> Result<(), HandlerError> {
         let size = self.window.size();
         let scale = size.scale_factor;
@@ -251,13 +413,10 @@ impl TunerWindow {
         });
         Ok(())
     }
-}
-
-impl WindowHandler for TunerWindow {
-    fn on_frame(&self) -> Result<(), HandlerError> {
-        #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
-        self.track_geometry();
-        let mut guard = self.engine.borrow_mut();
+    fn tick(&self) -> Result<(), HandlerError> {
+        let Ok(mut guard) = self.engine.try_borrow_mut() else {
+            return Ok(());
+        };
         match guard.as_mut() {
             Some(engine) => match engine.embedded.frame() {
                 // SizeInvalid = zero-sized panel mid-collapse: nothing to
@@ -293,95 +452,11 @@ impl WindowHandler for TunerWindow {
             None => self.spawn_engine(),
         }
     }
+}
 
-    fn on_event(&self, event: baseview::Event) -> EventStatus {
-        use baseview::{Event as B, MouseEvent as M, WindowEvent as W};
-        use keyboard_types::KeyState;
-        let mut guard = self.engine.borrow_mut();
-        if let Some(engine) = guard.as_mut() {
-            let size = self.window.size();
-            let scale = size.scale_factor;
-            match event {
-                B::Keyboard(ke) => {
-                    let down = ke.state == KeyState::Down;
-                    if let Some(code) = crate::tuner_ui::map_key(&ke.key) {
-                        engine.embedded.set_key(code, down);
-                    }
-                    // keyboard_types 0.8: typed characters ride in
-                    // `key: Key::Character` on key-down events
-                    if down && let keyboard_types::Key::Character(s) = &ke.key {
-                        for ch in s.chars() {
-                            engine.embedded.add_text(ch);
-                        }
-                    }
-                    use keyboard_types::Modifiers;
-                    engine.embedded.set_modifiers(
-                        ke.modifiers.contains(Modifiers::SHIFT),
-                        ke.modifiers.contains(Modifiers::CONTROL),
-                        ke.modifiers.contains(Modifiers::ALT),
-                        ke.modifiers.contains(Modifiers::META),
-                    );
-                }
-                B::Mouse(mouse) => match mouse {
-                    // baseview 0.3.3 macOS delivers PHYSICAL px (view.rs
-                    // to_physical); frost's set_cursor wants logical px,
-                    // y-down from the surface top-left -> just un-scale.
-                    M::CursorMoved { position, .. } => {
-                        engine
-                            .embedded
-                            .set_cursor(position.x / scale, position.y / scale);
-                    }
-                    M::ButtonPressed { button, .. } => {
-                        if let Some(btn) = crate::tuner_ui::map_mouse(button) {
-                            engine.embedded.set_mouse_button(btn, true);
-                        }
-                    }
-                    M::ButtonReleased { button, .. } => {
-                        if let Some(btn) = crate::tuner_ui::map_mouse(button) {
-                            engine.embedded.set_mouse_button(btn, false);
-                        }
-                    }
-                    M::WheelScrolled { delta, .. } => {
-                        // frost's scroll dy is in LINES (raw); pixels /120
-                        let (dx, dy) = match delta {
-                            baseview::ScrollDelta::Lines { y, .. } => (0.0, y as f64),
-                            baseview::ScrollDelta::Pixels { y, .. } => (0.0, y as f64 / 120.0),
-                        };
-                        engine.embedded.scroll(dx, dy);
-                    }
-                    M::CursorLeft => engine.embedded.cursor_left(),
-                    _ => {}
-                },
-                B::Window(W::Focused) => engine.embedded.set_focused(true),
-                B::Window(W::Unfocused) => engine.embedded.set_focused(false),
-                // window lifecycle stays with the host
-                B::Window(W::WillClose) => {
-                    // Flush a pending (debounced) geometry save on the way
-                    // out, so a quit right after a move still remembers.
-                    #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
-                    self.flush_geom();
-                }
-                _ => {}
-            }
-            // No explicit redraw call: baseview's frame timer drives `on_frame`
-            // continuously (~64 Hz on macOS), and the tuner animates anyway.
-        }
-        baseview::EventStatus::Captured
-    }
-
-    fn resized(&self, new_size: baseview::WindowSize) -> Result<(), HandlerError> {
-        self.shared.logical_size.store(new_size.logical.cast());
-        self.shared.scale_factor.store(new_size.scale_factor);
-
-        let mut guard = self.engine.borrow_mut();
-        if let Some(engine) = guard.as_mut() {
-            // Embedded debounces swap-chain rebuilds internally (settles 100ms
-            // after the last size event; scale changes apply instantly).
-            engine.embedded.resize(
-                (new_size.physical.width, new_size.physical.height),
-                new_size.scale_factor,
-            );
-        }
-        Ok(())
+impl Drop for TunerWindow {
+    fn drop(&mut self) {
+        #[cfg(target_os = "macos")]
+        self.display_sync.get_mut().take();
     }
 }
