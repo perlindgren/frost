@@ -83,4 +83,18 @@ foreach ($shipped in @(
     }
 }
 Write-Output "step [font licence in bundle] -> exit 0"
+$iconLicence = Get-Item nice-tuner\assets\fonts\LICENSE-FluentSystemIcons.txt
+foreach ($shipped in @(
+    'target\bundled\Nice Tuner.vst3\Contents\Resources\LICENSE-FluentSystemIcons.txt',
+    'target\bundled\LICENSE-FluentSystemIcons.txt'
+)) {
+    if (-not (Test-Path $shipped)) {
+        Write-Output "step [icon font licence in bundle] -> FAIL ($shipped is missing)"
+        exit 1
+    }
+    if ((Get-FileHash $shipped).Hash -ne (Get-FileHash $iconLicence).Hash) {
+        Write-Output "step [icon font licence in bundle] -> FAIL ($shipped differs from the icon font's MIT notice)"
+        exit 1
+    }
+}
 Write-Output "ALL GATES PASSED (full log: $log)"

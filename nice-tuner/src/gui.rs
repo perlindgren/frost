@@ -11,7 +11,7 @@
 use crate::{TunerParams, TunerSharedState};
 use baseview::{EventStatus, HandlerError, WindowContext, WindowHandler};
 use frost::embedded::{Embedded, EmbeddedConfig, FrameError};
-#[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
+#[cfg(feature = "standalone")]
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -31,17 +31,18 @@ use window_position as place;
 /// font still rebuilds this crate, and `publish = false` means no tarball ever
 /// has to carry a file from outside the package.
 ///
-/// What is *not* done, and was claimed here until it was checked: the SIL Open
-/// Font Licence wants its text to travel with every copy of the font, and a
-/// bundled `.vst3` carries none. `nice-plug-xtask` 0.1.1 has no resource step at
-/// all — it writes `Contents/<target>/<name>.vst3` and, on macOS, an Info.plist,
-/// and copies nothing else — so a bundle intended for release needs
-/// `assets/fonts/OFL.txt` added to it by hand, or the installer has to carry it.
-/// Recorded in the repository's TODO: the obligation is the font's, not the
-/// bundler's, and not saying so is how a licence goes missing between crates.
+/// Our xtask ships the font licences inside VST3 bundles and beside CLAP files.
 pub fn font() -> Arc<[u8]> {
     use std::sync::OnceLock;
     static BYTES: &[u8] = include_bytes!("../../assets/fonts/FiraCode-VariableFont_wght.ttf");
+    static FONT: OnceLock<Arc<[u8]>> = OnceLock::new();
+    FONT.get_or_init(|| Arc::from(BYTES)).clone()
+}
+
+/// Unmodified Fluent System Icons Regular; its MIT notice ships with bundles.
+pub fn icon_font() -> Arc<[u8]> {
+    use std::sync::OnceLock;
+    static BYTES: &[u8] = include_bytes!("../assets/fonts/FluentSystemIcons-Regular.ttf");
     static FONT: OnceLock<Arc<[u8]>> = OnceLock::new();
     FONT.get_or_init(|| Arc::from(BYTES)).clone()
 }
@@ -61,14 +62,9 @@ pub struct TunerWindow {
     shared: Arc<TunerSharedState>,
     _redraw_requested: Arc<AtomicBool>,
 
-    /// Geometry write-back: debounce — persist 2 s after the window
-    /// stops moving, and flush on WillClose.
-    #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
-    geom_seen: Cell<Option<(i32, i32, f32, f32)>>,
-    #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
-    geom_due_ms: Cell<u64>,
-    #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
-    geom_saved: Cell<Option<(i32, i32, f32, f32)>>,
+    /// Last geometry successfully written; size changes persist on every OS.
+    #[cfg(feature = "standalone")]
+    geom_saved: Cell<Option<crate::settings::WindowGeom>>,
 }
 
 struct TunerEngine {
@@ -107,11 +103,7 @@ impl TunerWindow {
             params,
             shared,
             _redraw_requested: redraw,
-            #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
-            geom_seen: Cell::new(None),
-            #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
-            geom_due_ms: Cell::new(0),
-            #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
+            #[cfg(feature = "standalone")]
             geom_saved: Cell::new(None),
         };
         this.frame.spawn_engine()?;
@@ -125,6 +117,11 @@ impl TunerWindow {
             let saved = *this.shared.pending_geom.lock().unwrap();
             let _ = place::restore(&this.window.platform_handle(), saved);
         }
+        this.shared
+            .logical_size
+            .store(this.window.size().logical.cast());
+        #[cfg(feature = "standalone")]
+        this.persist_geometry();
         Ok(this)
     }
 
@@ -152,73 +149,42 @@ impl TunerWindow {
         }
     }
 
-    /// Standalone geometry write-back (Windows): watch the top-left each
-    /// frame — one syscall, nanoseconds — debounce two seconds past the
-    /// last move/resize, then merge into the settings file. An abrupt
-    /// quit loses at most the last two seconds of dragging.
+    /// Poll placement where the platform wrapper exposes it. Size persistence
+    /// runs directly in resized() on all platforms.
     #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
     fn track_geometry(&self) {
         if !crate::STANDALONE_MODE.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
-        let Ok((x, y)) = place::top_left(&self.window.platform_handle()) else {
-            return;
-        };
-        *self.shared.window_pos.lock().unwrap() = Some((x, y));
-        let ls = self.shared.logical_size();
-        let geom = (x, y, ls.width, ls.height);
-        if Some(geom) == self.geom_saved.get() {
-            self.geom_due_ms.set(0);
-            self.geom_seen.set(Some(geom));
-            return;
-        }
-        if self.geom_seen.get() != Some(geom) {
-            self.geom_seen.set(Some(geom));
-            self.geom_due_ms.set(crate::now_epoch_ms() + 2_000);
-        }
-        let due = self.geom_due_ms.get();
-        if due != 0 && crate::now_epoch_ms() >= due {
-            self.geom_due_ms.set(0);
-            self.persist_geom();
+        if let Ok(position) = place::top_left(&self.window.platform_handle()) {
+            *self.shared.window_pos.lock().unwrap() = Some(position);
+            self.persist_geometry();
         }
     }
 
-    /// Flush a debounced geometry save (close, or anything else ending
-    /// the session before the debounce elapses).
-    #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
-    fn flush_geom(&self) {
-        if self.geom_due_ms.get() != 0 {
-            self.geom_due_ms.set(0);
-            self.persist_geom();
-        }
-    }
-
-    /// Merge-only write: never touch a user's other settings here.
-    #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
-    fn persist_geom(&self) {
+    #[cfg(feature = "standalone")]
+    fn persist_geometry(&self) {
         use crate::settings::{Settings, WindowGeom};
-        // COLD RULE: while no settings file exists, NOTHING here
-        // writes one. Without this guard, a plain window move 2 s
-        // after a cold start materialised the file in the background —
-        // the settings page's cold dashes were undone at the very next
-        // boot (warm by an accident nobody chose), and every run
-        // renewed the accident. A file is born only when the user
-        // chooses: APPLY or RESET.
-        if !Settings::exists() {
+        if !crate::STANDALONE_MODE.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
-        let Some((x, y, width, height)) = self.geom_seen.get() else {
-            return;
+        let size = self.shared.logical_size();
+        if size.width <= 0.0 || size.height <= 0.0 {
+            return; // Minimization must not replace the last usable size.
+        }
+        let position = *self.shared.window_pos.lock().unwrap();
+        let geometry = WindowGeom {
+            x: position.map(|point| point.0),
+            y: position.map(|point| point.1),
+            width: size.width,
+            height: size.height,
         };
-        let (mut s, _) = Settings::load();
-        s.window = Some(WindowGeom {
-            x: Some(x),
-            y: Some(y),
-            width,
-            height,
-        });
-        if s.save().is_ok() {
-            self.geom_saved.set(Some((x, y, width, height)));
+        if self.geom_saved.get() == Some(geometry) {
+            return;
+        }
+        match Settings::save_window(geometry) {
+            Ok(()) => self.geom_saved.set(Some(geometry)),
+            Err(error) => eprintln!("nice-tuner: could not save window geometry: {error}"),
         }
     }
 }
@@ -306,10 +272,8 @@ impl WindowHandler for TunerWindow {
                 B::Window(W::Unfocused) => engine.embedded.set_focused(false),
                 // window lifecycle stays with the host
                 B::Window(W::WillClose) => {
-                    // Flush a pending (debounced) geometry save on the way
-                    // out, so a quit right after a move still remembers.
-                    #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
-                    self.flush_geom();
+                    #[cfg(feature = "standalone")]
+                    self.persist_geometry();
                 }
                 _ => {}
             }
@@ -322,6 +286,8 @@ impl WindowHandler for TunerWindow {
     fn resized(&self, new_size: baseview::WindowSize) -> Result<(), HandlerError> {
         self.shared.logical_size.store(new_size.logical.cast());
         self.shared.scale_factor.store(new_size.scale_factor);
+        #[cfg(feature = "standalone")]
+        self.persist_geometry();
 
         let mut guard = self.frame.engine.borrow_mut();
         if let Some(engine) = guard.as_mut() {

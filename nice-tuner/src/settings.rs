@@ -217,6 +217,53 @@ impl Settings {
         let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         std::fs::write(Self::path(), text).map_err(|e| format!("{}: {e}", Self::path().display()))
     }
+
+    /// Update only window geometry, preserving saved preferences and unknown
+    /// fields. Resizing must never commit the settings panel's draft.
+    pub fn save_window(window: WindowGeom) -> Result<(), String> {
+        Self::save_window_to(&Self::path(), window)
+    }
+
+    fn save_window_to(path: &std::path::Path, window: WindowGeom) -> Result<(), String> {
+        if !window.width.is_finite()
+            || !window.height.is_finite()
+            || window.width <= 0.0
+            || window.height <= 0.0
+        {
+            return Err("Cannot save an invalid window size".into());
+        }
+        let mut value: serde_json::Value = match std::fs::read_to_string(path) {
+            Ok(text) if text.trim().is_empty() => serde_json::json!({}),
+            Ok(text) => serde_json::from_str(&text)
+                .map_err(|error| format!("{}: {error}", path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+            Err(error) => return Err(format!("{}: {error}", path.display())),
+        };
+        let original = value.clone();
+        let object = value
+            .as_object_mut()
+            .ok_or("Settings file must contain a JSON object")?;
+        let geometry = object.entry("window").or_insert(serde_json::json!({}));
+        if geometry.is_null() {
+            *geometry = serde_json::json!({});
+        }
+        let geometry = geometry
+            .as_object_mut()
+            .ok_or("Window settings must contain a JSON object")?;
+        geometry.insert("width".into(), window.width.into());
+        geometry.insert("height".into(), window.height.into());
+        if let Some(x) = window.x {
+            geometry.insert("x".into(), x.into());
+        }
+        if let Some(y) = window.y {
+            geometry.insert("y".into(), y.into());
+        }
+        if value != original {
+            let text = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
+            std::fs::write(path, text).map_err(|error| format!("{}: {error}", path.display()))?;
+        }
+        Ok(())
+    }
 }
 
 /// What an unset `backend` boots as: `dummy` — NO audio, no device, no
@@ -308,6 +355,67 @@ pub fn effective_args(settings: &Settings) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn geometry_test_path() -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "nice-tuner-geometry-{}-{unique}.json",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn resizing_updates_only_geometry_and_preserves_saved_and_unknown_preferences() {
+        let path = geometry_test_path();
+        let initial = serde_json::json!({
+            "backend": "jack", "a4_ref": 432.0, "future_option": {"enabled": true},
+            "window": {"x": 10, "y": 20, "width": 640.0, "height": 400.0, "future_window_option": 7}
+        });
+        std::fs::write(&path, initial.to_string()).unwrap();
+        let size = WindowGeom {
+            x: None,
+            y: None,
+            width: 900.0,
+            height: 600.0,
+        };
+        Settings::save_window_to(&path, size).unwrap();
+        let updated: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let mut expected = initial;
+        expected["window"]["width"] = 900.0.into();
+        expected["window"]["height"] = 600.0.into();
+        assert_eq!(updated, expected);
+        // An unchanged size must leave even the file's formatting untouched.
+        let compact = updated.to_string();
+        std::fs::write(&path, &compact).unwrap();
+        Settings::save_window_to(&path, size).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), compact);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn resizing_can_create_a_geometry_only_config_and_never_overwrites_corrupt_json() {
+        let path = geometry_test_path();
+        let size = WindowGeom {
+            x: None,
+            y: None,
+            width: 800.0,
+            height: 500.0,
+        };
+        Settings::save_window_to(&path, size).unwrap();
+        let restored: Settings =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(restored.window, Some(size));
+        assert!(restored.is_blank());
+        std::fs::write(&path, "broken config").unwrap();
+        assert!(Settings::save_window_to(&path, size).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "broken config");
+        assert!(Settings::save_window_to(&path, WindowGeom { width: 0.0, ..size }).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn output_sample_rate_round_trips_and_is_independent_of_input() {

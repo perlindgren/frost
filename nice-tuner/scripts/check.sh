@@ -88,4 +88,10 @@ for shipped in \
   cmp -s assets/fonts/OFL.txt "$shipped" || { echo "FAIL: $shipped is not the tree's assets/fonts/OFL.txt"; exit 1; }
 done
 
+for shipped in \
+  "target/bundled/Nice Tuner.vst3/Contents/Resources/LICENSE-FluentSystemIcons.txt" \
+  "target/bundled/LICENSE-FluentSystemIcons.txt"; do
+  cmp -s nice-tuner/assets/fonts/LICENSE-FluentSystemIcons.txt "$shipped" || { echo "FAIL: $shipped is missing or differs from the icon font's MIT notice"; exit 1; }
+done
+
 echo "ALL GATES PASSED"
