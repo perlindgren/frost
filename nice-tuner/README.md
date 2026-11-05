@@ -75,6 +75,7 @@ implementations. This is the pattern the example is intended to demonstrate.
 src/lib.rs        plugin: TunerPlugin (params, process), TunerEditor (baseview spawn)
 src/gui.rs        baseview WindowHandler driving `frost::embedded::Embedded` (surface, inputs)
 src/tuner_ui.rs   frost scene: gauge, needle, note readout, input meter (`Process` impl)
+assets/fonts     Fluent System Icons Regular, upstream glyph map and MIT notice
 src/main.rs       standalone target (`--features standalone`)
 crates/pitch      pure-Rust YIN pitch detector (unit-tested, no deps)
 crates/core-audio-device  safe read-only CoreAudio queries
@@ -174,7 +175,7 @@ The supplied frequency must be finite and positive. Input-level gating remains
 active, so silence still hides the reading. This is a launch-only diagnostic
 override, not a saved tuning setting.
 
-Audio configuration is in the panel: **SETTINGS** top-right — backend, sample rate,
+Audio configuration is in the panel: the **settings cogwheel** top-right — backend, sample rate,
 buffer size, input and output devices, channel. A mono-only input (the built-in
 laptop microphone) is a channel choice there, not a `-l 2` on a command line the
 app never hears. The file lands in the current directory as
@@ -183,7 +184,7 @@ settings.
 
 ### Linux + JACK
 
-The normal `--features standalone` build includes **Linux JACK** in SETTINGS →
+The normal `--features standalone` build includes **Linux JACK** under the settings cogwheel →
 backend, alongside ALSA. JACK is offered only on Linux; Windows retains its
 WASAPI/optional ASIO backends and macOS uses Core Audio.
 
@@ -229,7 +230,7 @@ labels are shortened on screen.
 
 ```sh
 cargo build -p nice-tuner --features standalone-asio,unsafe --bin nice-tuner-standalone
-./target/release/nice-tuner-standalone     # …then SETTINGS → backend: ASIO → device → APPLY
+./target/release/nice-tuner-standalone     # …then settings cogwheel → backend: ASIO → device → APPLY
 ```
 
 Without this feature ASIO is not even a value the binary knows — measured, its
@@ -377,7 +378,7 @@ Windows); the bundling step clears `RUSTFLAGS`, explained in the script and in
 
 ## Settings panel (standalone)
 
-The standalone app's tuner screen has a `SETTINGS` button (top-right) opening a
+The standalone app's tuner screen has a settings cogwheel (top-right) opening a
 panel for **backend, sample rate, buffer size, input/output devices and
 channel — and the A4/gate params** — device dropdowns are enumerated live via cpal (ASIO appears
 only in builds with `--features standalone-asio`; enumeration loads each
@@ -385,14 +386,16 @@ registered ASIO driver, so the first open can pause a moment where several are
 installed).
 
 - **Persistence**: `APPLY` writes `nice-tuner-settings.json` to the **current
-  directory**; it is read again at every startup. CoreAudio stream changes
-  are saved after the new stream starts; APPLY stays disabled for incomplete
-  or unsupported configurations.
-  `RESET` (centre button) restores every default, including window geometry.
-- **Window geometry**: the last window position and size are remembered too —
-  written ~2 s after the window settles and on Apply, restored at launch; with
-  no settings file the window opens centred. Position is Windows-only (the
-  window toolkit exposes no position API elsewhere; size still round-trips).
+  directory** after audio changes succeed, then returns directly to the tuner.
+  Audio or file-save errors keep the settings panel open. `BACK` and Escape
+  discard draft preferences without saving; `RESET` selects draft defaults
+  that are saved only by Apply. Back and Reset wait while an Apply is pending.
+- **Window geometry**: the current size is saved immediately on resize on every
+  platform and restored at launch. Geometry updates merge only the window fields,
+  preserving saved preferences and never committing drafts from the settings panel.
+  A new installation can therefore have a geometry-only config while audio stays
+  unconfigured. Known position is preserved too; native position tracking is
+  Windows-only with the optional placement wrapper. Reset leaves geometry alone.
 - **Applied directly**: CoreAudio stream changes use a background worker and
   preserve the window. Mono input devices select the mono plugin layout.
   Incomplete saved settings open the settings page with audio stopped.
@@ -452,6 +455,11 @@ One-time verification checklist in Reaper (load the CLAP from `target/bundled`):
   fails the build if either copy is missing or is not the tree's own byte for
   byte. Whoever builds an archive out of a `.clap` still has to take the text
   along; nothing in a plugin binary can do that part.
+- Fluent System Icons Regular is embedded from this member's local
+  [`assets/fonts`](assets/fonts/README.md), under Microsoft's MIT licence.
+  `cargo xtask bundle` ships `LICENSE-FluentSystemIcons.txt` inside VST3 resources
+  and beside CLAP files. Standalone packages must carry this notice and Fira
+  Code's `OFL.txt` too.
 - Third-party: nice-plug (ISC), vst3 (ISC), baseview (MIT/Apache-2.0). No
   Steinberg VST3 SDK is used anywhere — the VST3 surface is pure Rust. The ASIO
   SDK, for a developer building `standalone-asio`, is proprietary and stays

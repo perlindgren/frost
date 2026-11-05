@@ -1342,7 +1342,7 @@ fn shape_local_box(shape: &Shape) -> Option<(&'static str, [f32; 2], [f32; 2])> 
                 let r = text::rasterize(font, id, *size, *weight)?;
                 Some([r.left as f32, r.top as f32, r.width as f32, r.height as f32])
             })?;
-            let cap = text_cap_center(font, *size, *weight)?;
+            let cap = text_cap_center(font, *size, *weight).unwrap_or((min[1] + max[1]) / 2.0);
             Some((
                 "text",
                 [0.0, (min[1] + max[1]) / 2.0 - cap],
@@ -1431,7 +1431,11 @@ fn atlas_side(raster: f32) -> u32 {
 /// Fixed vertical center of the capital H, in baseline coordinates.
 /// Every string in this font/size/weight shares this reference, including
 /// lowercase letters, punctuation and symbols.
+/// Icon fonts without H have no capital reference; callers center their ink.
 pub(crate) fn text_cap_center(font: &[u8], size: f32, weight: f32) -> Option<f32> {
+    if swash::FontRef::from_index(font, 0)?.charmap().map('H') == 0 {
+        return None;
+    }
     let layout = text::layout(font, "H", size, weight)?;
     let (min, max) = text_ink_bounds(&layout, |id| {
         let r = text::rasterize(font, id, size, weight)?;
@@ -1555,6 +1559,7 @@ fn expand_text_list(
                 let aa = AA_BAND / sx.max(sy).max(1e-9);
                 // Center horizontal ink; use the same capital-height vertical
                 // reference for every string, independent of its glyphs.
+                // Fonts without capitals (such as icon fonts) center visible ink.
                 // Measure the actual raster size so this also holds on Retina.
                 let Some((min, max)) = text_ink_bounds(&layout, |id| {
                     let c = atlas.cell(id)?;
@@ -1564,8 +1569,7 @@ fn expand_text_list(
                 };
                 let origin = [
                     -(min[0] + max[0]) * inv_scale / 2.0,
-                    -text_cap_center(&font, raster, weight)
-                        .unwrap_or((layout.ascent - layout.descent) / 2.0)
+                    -text_cap_center(&font, raster, weight).unwrap_or((min[1] + max[1]) / 2.0)
                         * inv_scale,
                 ];
                 let (atlas_w, atlas_h) = (atlas.width as f32, atlas.height as f32);

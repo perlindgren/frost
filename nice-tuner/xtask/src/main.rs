@@ -1,8 +1,7 @@
 //! Plugin bundler entry point: `cargo xtask bundle nice-tuner --release`.
 //!
 //! Everything about assembling the plugin is `nice-plug-xtask`'s. This file adds
-//! the one thing it cannot know about: a font this plugin compiles into its
-//! editor, and the licence that embedding buys a duty for.
+//! the font licence notices that must accompany the embedded editor assets.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,7 +15,13 @@ use anyhow::{bail, Context};
 /// `nice-plug-xtask` 0.1.1 contains the binary and nothing else, because that step
 /// does not exist upstream. This puts the text where a distributor meets it rather
 /// than remembers it.
-const FONT_LICENCE: &str = "assets/fonts/OFL.txt";
+const FONT_LICENCES: &[(&str, &str)] = &[
+    ("assets/fonts/OFL.txt", "OFL.txt"),
+    (
+        "nice-tuner/assets/fonts/LICENSE-FluentSystemIcons.txt",
+        "LICENSE-FluentSystemIcons.txt",
+    ),
+];
 
 fn main() -> anyhow::Result<()> {
     nice_plug_xtask::chdir_workspace_root()?;
@@ -27,21 +32,23 @@ fn main() -> anyhow::Result<()> {
     // reason to stop, not a reason to spend two minutes compiling and then mention
     // it. `chdir_workspace_root` is idempotent, so `main` calling it again for its
     // own sake costs nothing.
-    let licence = if bundling {
-        Some(fs::read(root.join(FONT_LICENCE)).with_context(|| {
-            format!(
-                "the editor embeds a font whose licence this step ships; '{}' is not there",
-                FONT_LICENCE
-            )
-        })?)
+    let licences = if bundling {
+        FONT_LICENCES
+            .iter()
+            .map(|(source, name)| {
+                fs::read(root.join(source))
+                    .map(|bytes| (*name, bytes))
+                    .with_context(|| format!("the embedded font licence '{source}' is missing"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?
     } else {
-        None
+        Vec::new()
     };
 
     nice_plug_xtask::main()?;
 
-    if let Some(licence) = licence {
-        ship_font_licence(&root, &licence)?;
+    for (name, licence) in licences {
+        ship_font_licence(&root, name, &licence)?;
     }
     Ok(())
 }
@@ -55,7 +62,7 @@ fn main() -> anyhow::Result<()> {
 /// nothing goes inside it; the text lands beside the bundles with a line saying so,
 /// because from there the duty belongs to whoever builds the archive, and the only
 /// defence against forgetting is making it unavoidable.
-fn ship_font_licence(root: &Path, licence: &[u8]) -> anyhow::Result<()> {
+fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<()> {
     // `nice-plug-xtask` resolves the real target directory through
     // `cargo metadata`; this repeats the part of that rule a build here can hit. A
     // `[build] target-dir` in a cargo config would land elsewhere, and that case
@@ -77,12 +84,12 @@ fn ship_font_licence(root: &Path, licence: &[u8]) -> anyhow::Result<()> {
     let mut single_file_bundles = 0usize;
     for entry in entries {
         let path = entry?.path();
-        let name = path
+        let bundle_name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if path.is_dir() && name.ends_with(".vst3") {
-            let target = path.join("Contents").join("Resources").join("OFL.txt");
+        if path.is_dir() && bundle_name.ends_with(".vst3") {
+            let target = path.join("Contents").join("Resources").join(name);
             let dir = target
                 .parent()
                 .context("a VST3 bundle path has no parent to create")?;
@@ -93,14 +100,14 @@ fn ship_font_licence(root: &Path, licence: &[u8]) -> anyhow::Result<()> {
                 target.display()
             );
             written += 1;
-        } else if path.is_file() && name.ends_with(".clap") {
+        } else if path.is_file() && bundle_name.ends_with(".clap") {
             single_file_bundles += 1;
         }
     }
 
     if single_file_bundles > 0 {
         // One copy per bundle directory rather than per plugin: same font, same text.
-        let target = bundled.join("OFL.txt");
+        let target = bundled.join(name);
         fs::write(&target, licence)?;
         println!(
             "Added the font licence at '{}' — a CLAP is a single file, so this text travels in \

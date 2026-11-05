@@ -13,8 +13,11 @@
 //!   ▂▃▅ level ▅▃▂        dBFS meter, y −150, halfwidth 240 (0 to −48 dB)
 //! ```
 
+mod dropdown;
+
 use crate::TunerSharedState;
 use crate::settings::Settings;
+use dropdown::DropdownLayout;
 use frost::{Color, Context, Process, Scene, SceneNode, Shape};
 use pitch::freq_to_note;
 use std::sync::{Arc, atomic::Ordering};
@@ -84,6 +87,7 @@ pub fn static_scene() -> Scene {
 pub struct TunerUi {
     shared: Arc<TunerSharedState>,
     font: Arc<[u8]>,
+    icon_font: Arc<[u8]>,
     #[cfg(feature = "diag")]
     diag: frost::Diagnostics,
     // smoothed display state
@@ -121,6 +125,7 @@ pub struct TunerUi {
     devices_loaded: bool,
     open_dropdown: Option<Dropdown>,
     list_scroll: f32,
+    dropdown_scroll_drag: bool,
     backend_opts: Vec<(String, String)>,
     input_opts: Vec<String>,
     output_opts: Vec<String>,
@@ -191,6 +196,7 @@ impl TunerUi {
         Self {
             shared,
             font,
+            icon_font: crate::gui::icon_font(),
             #[cfg(feature = "diag")]
             diag,
             needle_cents: 0.0,
@@ -213,6 +219,7 @@ impl TunerUi {
             devices_loaded: false,
             open_dropdown: None,
             list_scroll: 0.0,
+            dropdown_scroll_drag: false,
             backend_opts: Vec::new(),
             input_opts: Vec::new(),
             output_opts: Vec::new(),
@@ -453,24 +460,24 @@ impl Process for TunerUi {
             return;
         }
         if crate::STANDALONE_MODE.load(Ordering::Relaxed) {
-            let gx = w / 2.0 - 62.0 * fit;
-            let gy = h / 2.0 - 18.0 * fit;
-            let hov = point_in(ctx.mouse_position(), gx, gy, 50.0 * fit, 11.0 * fit);
+            let gx = w / 2.0 - 26.0 * fit;
+            let gy = h / 2.0 - 22.0 * fit;
+            let hov = point_in(ctx.mouse_position(), gx, gy, 16.0 * fit, 16.0 * fit);
             ctx.rectangle(
                 gx,
                 gy,
-                50.0 * fit,
-                11.0 * fit,
+                16.0 * fit,
+                16.0 * fit,
                 if hov { HOVER } else { TRACK },
                 0.4,
             );
             ctx.text(
                 gx,
                 gy,
-                &self.font,
-                "SETTINGS",
-                19.8 * fit,
-                650.0,
+                &self.icon_font,
+                "\u{f6aa}", // ic_fluent_settings_24_regular (see local glyph map)
+                24.0 * fit,
+                400.0,
                 if hov { AMBER } else { DIM },
                 0.41,
             );
@@ -904,9 +911,8 @@ impl Waveform {
     }
 }
 
-/// Blank every leading integer zero without moving the remaining slots:
-/// "0055.0" → "  55.0", "+00.7¢" → "+  .7¢", "0.0" → " .0".
-/// Fractional zeros remain visible; only the integer prefix is hidden.
+/// Blank padding zeros without moving the remaining slots. Keep the zero
+/// immediately before a decimal point: "+00.7¢" → "+ 0.7¢", "0.0" → "0.0".
 fn trim_zeros(s: &str) -> String {
     let mut c: Vec<char> = s.chars().collect();
     // Skip a leading sign so the zero run is found where it lives.
@@ -917,6 +923,9 @@ fn trim_zeros(s: &str) -> String {
     let mut end = start;
     while end < c.len() && c[end] == '0' {
         end += 1;
+    }
+    if end > start && c.get(end) == Some(&'.') {
+        end -= 1;
     }
     for x in &mut c[start..end] {
         *x = ' ';
@@ -951,8 +960,6 @@ fn fmt_rate(r: f32) -> String {
         format!("{r:.1} Hz")
     }
 }
-
-const VISIBLE_ITEMS: usize = 8;
 
 impl TunerUi {
     fn open_settings_page(&mut self) {
@@ -1321,16 +1328,7 @@ impl TunerUi {
                 self.applied = pending.settings.clone();
                 self.applied.input_channel =
                     self.applied.input_channel.or(self.default_input_channel);
-                match pending.settings.save() {
-                    Ok(()) => {
-                        self.saved = pending.settings;
-                        self.save_note = Some("saved — applied live".into());
-                    }
-                    Err(error) => {
-                        self.save_note = Some(format!("audio applied, but save failed: {error}"))
-                    }
-                }
-                self.refresh_devices();
+                self.save_applied_settings(pending.settings);
             }
             Err(error) => {
                 self.shared
@@ -1340,6 +1338,111 @@ impl TunerUi {
                 self.save_note = Some(format!("Could not apply audio settings: {error}"));
             }
         }
+    }
+
+    /// Window geometry is independent of the draft and may have changed while
+    /// an audio Apply was pending. Always capture its latest value before saving.
+    fn with_current_window(&self, mut settings: Settings) -> Settings {
+        let size = self.shared.logical_size();
+        let position = *self.shared.window_pos.lock().unwrap();
+        let previous = Settings::load().0.window.or(settings.window);
+        let (width, height) = if size.width.is_finite()
+            && size.height.is_finite()
+            && size.width > 0.0
+            && size.height > 0.0
+        {
+            (size.width, size.height)
+        } else {
+            // An audio Apply can finish while the window is minimized.
+            previous
+                .filter(|window| {
+                    window.width > 0.0
+                        && window.height > 0.0
+                        && window.width.is_finite()
+                        && window.height.is_finite()
+                })
+                .map(|window| (window.width, window.height))
+                .unwrap_or((crate::DEFAULT_SIZE.width, crate::DEFAULT_SIZE.height))
+        };
+        settings.window = Some(crate::settings::WindowGeom {
+            x: position
+                .map(|point| point.0)
+                .or(previous.and_then(|window| window.x)),
+            y: position
+                .map(|point| point.1)
+                .or(previous.and_then(|window| window.y)),
+            width,
+            height,
+        });
+        settings
+    }
+
+    fn save_applied_settings(&mut self, settings: Settings) {
+        let settings = self.with_current_window(settings);
+        let result = settings.save();
+        self.record_apply_save(settings, result);
+    }
+
+    fn record_apply_save(&mut self, settings: Settings, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                self.settings = settings.clone();
+                self.saved = settings.clone();
+                self.applied = settings;
+                self.applied.input_channel =
+                    self.applied.input_channel.or(self.default_input_channel);
+                self.cold = false;
+                self.page = Page::Main;
+                self.open_dropdown = None;
+                self.dropdown_scroll_drag = false;
+                self.devices_loaded = false;
+                self.save_note = None;
+            }
+            Err(error) => {
+                self.page = Page::Settings;
+                self.save_note = Some(format!("Could not save settings: {error}"));
+            }
+        }
+    }
+
+    fn reset_settings_draft(&mut self) {
+        let window = self.settings.window;
+        self.settings = Settings {
+            window,
+            ..Default::default()
+        };
+        self.shared
+            .a4_ref_bits
+            .store(440f64.to_bits(), Ordering::Relaxed);
+        self.shared.gate_db.store(-60.0);
+        self.shared.input_channel.store(1);
+        self.refresh_devices();
+        self.save_note = Some("Defaults selected — Apply to save".into());
+    }
+
+    fn leave_settings(&mut self) {
+        // An in-flight Apply must finish before another navigation action can
+        // race its save. BACK and Escape are temporarily disabled while waiting.
+        if self.is_applying() {
+            return;
+        }
+        self.settings = self.applied.clone();
+        self.shared.a4_ref_bits.store(
+            (self.settings.a4_ref.unwrap_or(440.0) as f64).to_bits(),
+            Ordering::Relaxed,
+        );
+        self.shared
+            .gate_db
+            .store(self.settings.gate_db.unwrap_or(-60.0));
+        self.shared
+            .input_channel
+            .store(self.settings.input_channel.unwrap_or(1));
+        self.page = Page::Main;
+        self.open_dropdown = None;
+        self.dropdown_scroll_drag = false;
+        self.list_scroll = 0.0;
+        self.devices_loaded = false;
+        self.save_note = None;
     }
 
     /// Reconcile a channel selection with the selected device's real
@@ -2006,8 +2109,8 @@ impl TunerUi {
     }
 
     /// Anything to write at all: draft differs from the last save.
-    /// Window GEOMETRY is excluded — it persists on its own (moved or
-    /// resized, debounced; plus a flush at close), so counting it
+    /// Window GEOMETRY is excluded — it persists directly on resize
+    /// independently of draft preferences, so counting it
     /// would keep APPLY perpetually "dirty" for merely using the app.
     fn apply_dirty(&self) -> bool {
         let (a, s) = (&self.saved, &self.settings);
@@ -2044,8 +2147,7 @@ impl TunerUi {
                 self.open_dropdown = None;
                 self.list_scroll = 0.0;
             } else {
-                self.page = Page::Main;
-                self.save_note = None;
+                self.leave_settings();
                 return;
             }
         }
@@ -2087,13 +2189,6 @@ impl TunerUi {
         let bhw = 165.0 * fit + 3.0 * charw;
         let bx = w / 2.0 - 18.0 * fit - bhw;
         let bhh = 11.0 * fit;
-
-        // Wheel scrolls the open dropdown.
-        if let Some(dd) = self.open_dropdown {
-            let n = self.dropdown_items(dd).len();
-            let max_scroll = n.saturating_sub(VISIBLE_ITEMS) as f32;
-            self.list_scroll = (self.list_scroll + ctx.mouse_wheel() * 0.5).clamp(0.0, max_scroll);
-        }
 
         for (i, (label, dd)) in ROWS.iter().enumerate() {
             let label = if self.settings.backend.as_deref() == Some("jack") {
@@ -2139,7 +2234,8 @@ impl TunerUi {
         // Nothing differs from the last save: the button stays, greyed,
         // and swallows nothing — there is no click when there is no do.
         let dirty = (self.apply_dirty() || self.audio_dirty()) && blocker.is_none();
-        let back = point_in(mouse, -w / 2.0 + 90.0 * fit, by, 65.0 * fit, 15.0 * fit);
+        let back = !self.is_applying()
+            && point_in(mouse, -w / 2.0 + 90.0 * fit, by, 65.0 * fit, 15.0 * fit);
         let reset = !self.is_applying() && point_in(mouse, 0.0, by, 65.0 * fit, 15.0 * fit);
         let apply = dirty && point_in(mouse, ax, by, aw, 15.0 * fit);
         ctx.rectangle(
@@ -2157,7 +2253,13 @@ impl TunerUi {
             "BACK",
             23.4 * fit,
             650.0,
-            if back { AMBER } else { FG },
+            if self.is_applying() {
+                DIM
+            } else if back {
+                AMBER
+            } else {
+                FG
+            },
             z + 0.01,
         );
         ctx.rectangle(
@@ -2227,42 +2329,101 @@ impl TunerUi {
         if let Some(dd) = self.open_dropdown {
             let items = self.dropdown_items(dd);
             let row = ROWS.iter().position(|(_, d)| *d == dd).unwrap_or(0);
-            let ih = 13.0 * fit;
-            let step = ih * 2.0 + 5.0 * fit;
-            let skip = self.list_scroll as usize;
-            let shown = items.len().saturating_sub(skip).min(VISIBLE_ITEMS);
-            let slot_y =
-                |i: usize| row_y(row) - (i as f32 - self.list_scroll) * step - ih - 8.0 * fit;
-
-            // Backing panel: opaque, padded past the item stack on every
-            // side, with a one-unit lighter rim. The list must read as its
-            // own surface lifted off the page — not rows floating across the
-            // tuner chrome. Drawn under the items (z), over everything else.
-            if shown > 0 {
-                let pad = 9.0 * fit;
-                let top = slot_y(skip) + ih;
-                let bottom = slot_y(skip + shown - 1) - ih;
-                let py = (top + bottom) * 0.5;
-                let ph = (top - bottom) * 0.5 + pad;
-                let pw = bhw + pad;
-                ctx.rectangle(bx, py, pw + 1.5 * fit, ph + 1.5 * fit, HOVER, 0.44);
-                ctx.rectangle(bx, py, pw, ph, MENU_BG, 0.445);
+            let layout =
+                DropdownLayout::new([w, h], [bx, row_y(row)], [bhw, bhh], fit, items.len());
+            let max_scroll = items.len().saturating_sub(layout.visible) as f32;
+            self.list_scroll = (self.list_scroll + ctx.mouse_wheel() * 0.5).clamp(0.0, max_scroll);
+            if !ctx.mouse_button_down(frost::MouseButton::Left) {
+                self.dropdown_scroll_drag = false;
             }
-
-            for (idx, label) in items
+            let scrollable = max_scroll > 0.0;
+            let thumb_half = if scrollable {
+                (layout.track_half[1] * layout.visible as f32 / items.len() as f32)
+                    .max(6.0 * fit)
+                    .min(layout.track_half[1])
+            } else {
+                0.0
+            };
+            let travel = (2.0 * (layout.track_half[1] - thumb_half)).max(0.0);
+            let over_track = scrollable
+                && point_in(
+                    mouse,
+                    layout.track_x,
+                    layout.center[1],
+                    layout.track_half[0],
+                    layout.track_half[1],
+                );
+            if clicked && over_track {
+                self.dropdown_scroll_drag = true;
+            }
+            if self.dropdown_scroll_drag
+                && scrollable
+                && travel > 0.0
+                && let Some([_, mouse_y]) = mouse
+            {
+                let fraction = ((layout.center[1] + layout.track_half[1] - thumb_half - mouse_y)
+                    / travel)
+                    .clamp(0.0, 1.0);
+                self.list_scroll = (fraction * max_scroll).round();
+            }
+            let skip = self.list_scroll.floor() as usize;
+            let [px, py] = layout.center;
+            let [pw, ph] = layout.half;
+            ctx.rectangle(px, py, pw, ph, HOVER, 0.44);
+            ctx.rectangle(
+                px,
+                py,
+                (pw - layout.border).max(0.0),
+                (ph - layout.border).max(0.0),
+                MENU_BG,
+                0.445,
+            );
+            if scrollable {
+                ctx.rectangle(
+                    layout.track_x,
+                    py,
+                    layout.track_half[0],
+                    layout.track_half[1],
+                    TRACK,
+                    0.45,
+                );
+                let thumb_y =
+                    py + layout.track_half[1] - thumb_half - skip as f32 / max_scroll * travel;
+                ctx.rectangle(
+                    layout.track_x,
+                    thumb_y,
+                    layout.track_half[0],
+                    thumb_half,
+                    if over_track || self.dropdown_scroll_drag {
+                        AMBER
+                    } else {
+                        DIM
+                    },
+                    0.46,
+                );
+            }
+            let menu_size = (18.7 * fit).min(layout.item_half[1] * (18.7 / 13.0));
+            let char_width = ctx.text_width(&font, "0", menu_size, 700.0).max(fit);
+            let max_chars = ((2.0 * layout.item_half[0] - 4.0 * fit) / char_width)
+                .floor()
+                .max(1.0) as usize;
+            let selected = self.selected_index(dd);
+            for (slot, (idx, label)) in items
                 .iter()
                 .enumerate()
                 .skip(skip)
-                .take(VISIBLE_ITEMS)
-                .collect::<Vec<_>>()
+                .take(layout.visible)
+                .enumerate()
             {
-                let iy = slot_y(idx);
-                let sel = self.selected_index(dd) == idx;
-                let hov = point_in(mouse, bx, iy, bhw, ih);
+                let iy = layout.row_y(slot);
+                let ix = layout.item_x;
+                let [iw, ih] = layout.item_half;
+                let sel = selected == idx;
+                let hov = point_in(mouse, ix, iy, iw, ih);
                 ctx.rectangle(
-                    bx,
+                    ix,
                     iy,
-                    bhw,
+                    iw,
                     ih,
                     if hov {
                         HOVER
@@ -2279,17 +2440,17 @@ impl TunerUi {
                     z + 0.05,
                 );
                 ctx.text(
-                    bx,
+                    ix,
                     iy,
                     &font,
                     if self.settings.backend.as_deref() == Some("jack")
                         && matches!(dd, Dropdown::Input | Dropdown::Output | Dropdown::OutputCh)
                     {
-                        clip_port(label, 36)
+                        clip_port(label, max_chars)
                     } else {
-                        clip(label, 36)
+                        clip(label, max_chars)
                     },
-                    18.7 * fit,
+                    menu_size,
                     if sel { 700.0 } else { 550.0 },
                     if idx == 0 && self.default_label(dd).is_some() {
                         GREEN
@@ -2304,6 +2465,9 @@ impl TunerUi {
                     self.pick(dd, idx);
                     return;
                 }
+            }
+            if clicked && point_in(mouse, px, py, pw, ph) {
+                return; // The popup surface consumes clicks between its rows too.
             }
         }
 
@@ -2320,51 +2484,19 @@ impl TunerUi {
                             self.refresh_devices();
                         }
                         self.open_dropdown = Some(*dd);
-                        self.list_scroll = 0.0;
+                        self.list_scroll = self.selected_index(*dd) as f32;
+                        self.dropdown_scroll_drag = false;
                         break;
                     }
                 }
                 if back {
-                    self.page = Page::Main;
-                    self.save_note = None;
+                    self.leave_settings();
+                    return;
                 }
                 if reset {
-                    // Reset is a command, not a draft: defaults land in
-                    // memory, in the live param atomics, and on disk at
-                    // once. Audio streams keep running on the old config;
-                    // Apply remains subject to complete stream validation.
-                    self.settings = Settings::default();
-                    self.shared
-                        .a4_ref_bits
-                        .store(440f64.to_bits(), Ordering::Relaxed);
-                    self.shared.gate_db.store(-60.0);
-                    self.shared.input_channel.store(1);
-                    self.refresh_devices();
-                    self.save_note = match self.settings.save() {
-                        Ok(()) => {
-                            self.saved = self.settings.clone();
-                            Some("settings reset to defaults".to_string())
-                        }
-                        Err(e) => Some(format!("save failed: {e}")),
-                    };
+                    self.reset_settings_draft();
                 }
                 if apply {
-                    // Carry the window's current geometry along: "last
-                    // screen position and size" is a setting like any
-                    // other, saved when the user says Apply. On Windows
-                    // the live rect feeds it (see gui.rs); elsewhere
-                    // only the size is knowable, position is preserved.
-                    #[cfg(feature = "standalone")]
-                    {
-                        let ls = self.shared.logical_size();
-                        let pos = *self.shared.window_pos.lock().unwrap();
-                        self.settings.window = Some(crate::settings::WindowGeom {
-                            x: pos.map(|p| p.0).or(self.settings.window.and_then(|g| g.x)),
-                            y: pos.map(|p| p.1).or(self.settings.window.and_then(|g| g.y)),
-                            width: ls.width,
-                            height: ls.height,
-                        });
-                    }
                     #[cfg(feature = "standalone")]
                     if self.audio_dirty() {
                         let request = self
@@ -2385,13 +2517,7 @@ impl TunerUi {
                         }
                         return;
                     }
-                    match self.settings.save() {
-                        Ok(()) => {
-                            self.saved = self.settings.clone();
-                            self.save_note = Some("saved — applied live".into());
-                        }
-                        Err(error) => self.save_note = Some(format!("save failed: {error}")),
-                    }
+                    self.save_applied_settings(self.settings.clone());
                 }
             }
         }
@@ -2409,6 +2535,84 @@ mod tests {
 
     fn channel_ui() -> TunerUi {
         TunerUi::new(Arc::new(TunerSharedState::new()), Arc::from([]))
+    }
+
+    #[test]
+    fn successful_apply_returns_to_main_but_save_failure_stays_in_settings() {
+        let mut ui = channel_ui();
+        ui.page = super::Page::Settings;
+        let next = crate::settings::Settings {
+            backend: Some("dummy".into()),
+            a4_ref: Some(432.0),
+            ..Default::default()
+        };
+        ui.record_apply_save(next.clone(), Err("disk is read-only".into()));
+        assert!(ui.page == super::Page::Settings);
+        assert_eq!(ui.saved, crate::settings::Settings::default());
+        assert!(ui.save_note.as_ref().unwrap().contains("disk is read-only"));
+        ui.record_apply_save(next.clone(), Ok(()));
+        assert!(ui.page == super::Page::Main);
+        assert_eq!(ui.saved, next);
+        assert!(!ui.audio_dirty());
+        assert!(!ui.apply_dirty());
+        assert!(ui.save_note.is_none());
+    }
+
+    #[test]
+    fn back_and_reset_do_not_commit_drafts_and_back_restores_live_preferences() {
+        let mut ui = channel_ui();
+        let saved = crate::settings::Settings {
+            backend: Some("dummy".into()),
+            a4_ref: Some(432.0),
+            gate_db: Some(-48.0),
+            ..Default::default()
+        };
+        ui.record_apply_save(saved.clone(), Ok(()));
+        ui.page = super::Page::Settings;
+        ui.reset_settings_draft();
+        assert_eq!(ui.saved, saved);
+        assert_eq!(ui.shared.a4_ref(), 440.0);
+        ui.leave_settings();
+        assert!(ui.page == super::Page::Main);
+        assert_eq!(ui.settings, saved);
+        assert_eq!(ui.saved, saved);
+        assert_eq!(ui.shared.a4_ref(), 432.0);
+        assert_eq!(ui.shared.gate_db.load(), -48.0);
+    }
+
+    #[test]
+    fn apply_captures_size_changes_that_happened_while_audio_was_pending() {
+        let ui = channel_ui();
+        let pending = crate::settings::Settings {
+            window: Some(crate::settings::WindowGeom {
+                x: None,
+                y: None,
+                width: 640.0,
+                height: 400.0,
+            }),
+            ..Default::default()
+        };
+        ui.shared
+            .set_logical_size(nice_plug::editor::dpi::LogicalSize::new(900.0, 600.0));
+        *ui.shared.window_pos.lock().unwrap() = Some((30, 40));
+        let current = ui.with_current_window(pending).window.unwrap();
+        assert_eq!((current.width, current.height), (900.0, 600.0));
+        assert_eq!((current.x, current.y), (Some(30), Some(40)));
+    }
+
+    #[cfg(feature = "standalone")]
+    #[test]
+    fn back_waits_for_an_in_flight_apply_to_finish() {
+        let mut ui = channel_ui();
+        ui.page = super::Page::Settings;
+        let (_reply, result) = crossbeam::channel::bounded(1);
+        ui.pending_apply = Some(super::PendingAudioApply {
+            result,
+            settings: ui.settings.clone(),
+        });
+        ui.leave_settings();
+        assert!(ui.page == super::Page::Settings);
+        assert!(ui.pending_apply.is_some());
     }
 
     #[test]
@@ -2752,15 +2956,15 @@ mod tests {
     }
 
     #[test]
-    fn trim_zeros_hides_integer_prefix_and_preserves_fractional_zeros() {
+    fn trim_zeros_hides_padding_but_keeps_the_zero_before_the_decimal() {
         assert_eq!(trim_zeros("0055.0"), "  55.0");
         assert_eq!(trim_zeros("0005.0"), "   5.0");
-        assert_eq!(trim_zeros("+00.7¢"), "+  .7¢");
-        assert_eq!(trim_zeros("−00.0¢"), "−  .0¢");
+        assert_eq!(trim_zeros("+00.7¢"), "+ 0.7¢");
+        assert_eq!(trim_zeros("−00.0¢"), "− 0.0¢");
         assert_eq!(trim_zeros("0440.0"), " 440.0");
         assert_eq!(trim_zeros("+05.2¢"), "+ 5.2¢");
-        assert_eq!(trim_zeros("0.7"), " .7");
-        assert_eq!(trim_zeros("0.0"), " .0");
+        assert_eq!(trim_zeros("0.7"), "0.7");
+        assert_eq!(trim_zeros("0.0"), "0.0");
         assert_eq!(trim_zeros("440.0"), "440.0");
         for s in ["0055.0", "0440.0", "440.0", "+00.7¢", "0.7"] {
             assert_eq!(trim_zeros(s).chars().count(), s.chars().count());
@@ -2772,8 +2976,8 @@ mod tests {
         let idle: Vec<_> = tabular_glyphs("—", 12.0, '.').collect();
         assert_eq!(idle, [('—', 0.0)]);
         for (reading, visible) in [
-            ("+00.0¢", "+.0¢"),
-            ("−00.7¢", "−.7¢"),
+            ("+00.0¢", "+0.0¢"),
+            ("−00.7¢", "−0.7¢"),
             ("+05.2¢", "+5.2¢"),
             ("−50.0¢", "−50.0¢"),
             ("+100.0¢", "+100.0¢"),
@@ -2796,7 +3000,7 @@ mod tests {
         let position =
             |glyphs: &[(char, f32)], ch| glyphs.iter().find(|(glyph, _)| *glyph == ch).unwrap().1;
         for (hz, visible) in [
-            (0.7, ".7"),
+            (0.7, "0.7"),
             (5.2, "5.2"),
             (55.0, "55.0"),
             (440.0, "440.0"),

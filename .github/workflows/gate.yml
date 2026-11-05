@@ -83,14 +83,15 @@ jobs:
 
       # cpal (through rodio) and gilrs ask pkg-config for a system library before
       # a single line of Rust is compiled: `alsa-sys` wants libasound2,
-      # `libudev-sys` wants libudev. A runner without those headers fails inside a
+      # `libudev-sys` wants libudev, and the standalone JACK backend needs JACK
+      # development files. A runner without those headers fails inside a
       # build script about twenty-five seconds in, and all the log says is cargo's
       # exit code 101. They are not optional here any more than they are on a
       # Linux machine that wants to play sound or read a gamepad.
       - name: System libraries the audio and gamepad backends need
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq pkg-config libasound2-dev libudev-dev
+          sudo apt-get install -y -qq pkg-config libasound2-dev libudev-dev libjack-jackd2-dev
 
       - name: Formatting
         run: cargo fmt --all --check
@@ -105,6 +106,9 @@ jobs:
       # `.githooks/pre-commit` names it.
       - name: Clippy, zero warnings, the plugin and its detector
         run: cargo clippy -p nice-tuner -p pitch --all-targets -- -D warnings
+
+      - name: Clippy, zero warnings, the standalone tuner
+        run: cargo clippy -p nice-tuner --features standalone --all-targets -- -D warnings
 
       # The engine's own claim, checked rather than trusted: docs/licensing.md
       # records why these specific lines exist. A published crate that loses
@@ -142,25 +146,27 @@ jobs:
       # Quoted because YAML ends a plain scalar at a colon that ends the line,
       # and a module path ends in one: unquoted, this file is rejected before any
       # job is created and the only sign is a red run that ran for no time at all.
-      - name: Tests (the GPU tree is not judged here — see the step below)
+      - name: Tests (GPU tests are compiled but not executed)
         run: "cargo test --no-fail-fast -- --skip backend::tests::"
 
       # The plugin and its pitch detector, named rather than swept in: the step
-      # above follows `default-members` and would pass, at length, without ever
-      # compiling the tuner. What this buys on Linux specifically is not the
-      # Windows window code but the two shared edges — the plugin building
-      # against `frost::embedded`, and `pitch`'s frame-budget test measuring the
-      # wall clock the root `opt-level = 3` pin pays for. Its feature
-      # combinations, standalone link and bundling stay in
-      # `nice-tuner/scripts/check.sh`, next to a DAW and an ASIO SDK.
-      - name: The plugin and its detector
-        run: "cargo test --no-fail-fast -p nice-tuner -p pitch"
+      # above follows `default-members` and would pass without compiling the
+      # tuner. Enable standalone to cover device validation, audio processing,
+      # settings Apply/recovery, and monitoring allocation checks as well.
+      # Never execute device/server-dependent tests or machine-speed benchmarks
+      # here. Explicit skips also protect the live JACK checks if their local
+      # ignore annotations change. All tests still compile and link. Functional
+      # tests use generated samples, mock devices and synthetic configuration.
+      # Platform-specific checks and bundling remain in the local check scripts.
+      - name: Hardware-independent standalone tuner and detector tests
+        run: >-
+          cargo test --no-fail-fast -p nice-tuner -p pitch --features nice-tuner/standalone --
+          --skip search_burst_stays_inside_the_frame_budget
+          --skip jack_server_defaults_resolve_without_manual_device_settings
+          --skip named_routes_preserve_full_level_on_both_outputs_and_restore_after_failure
 
-      # Deliberately not gating. This compiles the whole GPU test tree and runs
-      # it, so a runner that cannot ground an assertion still cannot break the
-      # build; what it does buy is that the tree compiles, and a log that prints
-      # what an unpinned chip refuses. A green here would be a lie and is not
-      # wanted — the step's own name says which of the two it is.
-      - name: GPU test tree — informational, not a verdict
-        continue-on-error: true
-        run: "cargo test --no-fail-fast --lib -- backend::tests:: --nocapture"
+      # Compile and link the engine's library tests, including the GPU tree,
+      # without executing them on an uncalibrated runner. Compilation errors
+      # are failures; GPU runtime measurements remain a local hardware check.
+      - name: GPU test tree compiles and links
+        run: cargo test -p frost --lib --no-run
