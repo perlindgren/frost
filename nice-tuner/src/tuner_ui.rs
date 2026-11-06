@@ -198,7 +198,8 @@ impl TunerUi {
         #[cfg(feature = "diag")]
         let diag =
             frost::Diagnostics::from_bytes(&crate::gui::font(), frost::DiagnosticsFlags::all())
-                .expect("The tuner font must support diagnostics");
+                .expect("The tuner font must support diagnostics")
+                .expose_vsync(false);
         Self {
             shared,
             font,

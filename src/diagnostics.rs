@@ -69,7 +69,8 @@
 //! first), Alt-T toggles the readout lines, Alt-F flips the engine's
 //! stretch filter between bilinear and nearest (see the scaling line and
 //! [`crate::Context::set_blit_filter`]), and Alt-V flips vsync (see the
-//! vsync readout on the size line and [`crate::Context::set_vsync`]);
+//! vsync readout on the size line and [`crate::Context::set_vsync`]), unless
+//! disabled with [`Diagnostics::expose_vsync`];
 //! Alt+'+' and Alt+'-' — the keys that
 //! type those signs wherever the user's layout puts them, the
 //! numpad pair included — grow
@@ -338,7 +339,7 @@ impl DiagnosticsFlags {
     /// Alt-F flips between bilinear and nearest. A readout line only — it
     /// has no chart.
     pub const SCALING: Self = Self(1 << 4);
-    /// The vsync readout: `VSync: on` to the right of the window-size line
+    /// The vsync readout (unless disabled with [`Diagnostics::expose_vsync`]): `VSync: on` to the right of the window-size line
     /// (the resolution it caps rides on the same line), which Alt-V flips
     /// (see [`crate::Context::set_vsync`]). Part of the size line, not a
     /// line of its own, and it has no chart.
@@ -425,7 +426,8 @@ impl std::ops::BitOrAssign for DiagnosticsFlags {
 /// [`Self::toggle_text`] methods — and the layout reflows around whatever
 /// is hidden. Alt-F flips the engine's stretch filter (the scaling line)
 /// and Alt-V flips vsync (the readout on the size line), both acting on
-/// the [`crate::Context`] rather than on the overlay. The
+/// the [`crate::Context`] rather than on the overlay. Use
+/// [`Self::expose_vsync`] to disable the VSync readout and shortcut. The
 /// overlay also scales as a whole — Alt+'+' and Alt+'-'
 /// step it, [`Self::set_scale`] sets it — every dimension following, the
 /// font included.
@@ -543,6 +545,7 @@ pub struct Diagnostics {
     /// the vsync flip, kept out of `prev_combos` for the same reason as
     /// `prev_scaling_combo`: it acts on the engine, not on the overlay.
     prev_vsync_combo: bool,
+    expose_vsync: bool,
 }
 
 /// The readout's line slots, in append order: the window-size line first
@@ -739,7 +742,18 @@ impl Diagnostics {
             prev_combos: [false; 8],
             prev_scaling_combo: false,
             prev_vsync_combo: false,
+            expose_vsync: true,
         })
+    }
+
+    /// Controls whether diagnostics exposes VSync. Enabled by default.
+    /// When disabled, hides the VSync readout and ignores Alt-V, even when
+    /// [`DiagnosticsFlags::VSYNC`] is enabled. Useful for embedded renderers
+    /// whose presentation policy is controlled externally.
+    pub fn expose_vsync(mut self, expose: bool) -> Self {
+        self.expose_vsync = expose;
+        self.prev_vsync_combo = false;
+        self
     }
 
     /// The line for `slot`.
@@ -943,6 +957,9 @@ impl Diagnostics {
     /// performs the action — flipping vsync through the `Context` — since
     /// the edge detector shares nothing with the overlay's display state.
     fn vsync_press(&mut self, held: bool) -> bool {
+        if !self.expose_vsync {
+            return false;
+        }
         let edge = held && !self.prev_vsync_combo;
         self.prev_vsync_combo = held;
         edge
@@ -1033,8 +1050,8 @@ impl Process for Diagnostics {
         // now, the swap chain reconfigures at this frame's end, and the
         // readout on the size line names the new mode in the same frame.
         // The shortcut is live whether or not the readout or the overlay
-        // is visible.
-        let vsync_combo = alt && ctx.key_down(KeyCode::KeyV);
+        // is visible, unless expose_vsync is disabled.
+        let vsync_combo = self.expose_vsync && alt && ctx.key_down(KeyCode::KeyV);
         if self.vsync_press(vsync_combo) {
             let next = !ctx.vsync();
             ctx.set_vsync(next);
@@ -1144,7 +1161,7 @@ impl Process for Diagnostics {
             // caps (`1920x1080  VSync: on`), Alt-V flipping it. The mode
             // is the engine's live state: the swap chain agrees with a
             // frame's delay, the readout does not wait for it.
-            if self.flags.contains(DiagnosticsFlags::VSYNC) {
+            if self.expose_vsync && self.flags.contains(DiagnosticsFlags::VSYNC) {
                 size_text.push_str(if ctx.vsync() {
                     "  VSync: on"
                 } else {
@@ -1422,6 +1439,18 @@ mod tests {
         assert!(!d.vsync_press(true));
         // Released, then pressed again: a fresh edge.
         assert!(!d.vsync_press(false));
+        assert!(d.vsync_press(true));
+    }
+
+    #[test]
+    fn disabled_vsync_ignores_shortcuts_even_with_all_flags() {
+        let mut d = overlay().expose_vsync(false);
+        assert!(d.flags.contains(DiagnosticsFlags::VSYNC));
+        assert!(!d.vsync_press(true));
+        assert!(!d.vsync_press(false));
+        assert!(!d.vsync_press(true));
+        assert!(!d.prev_vsync_combo);
+        let mut d = d.expose_vsync(true);
         assert!(d.vsync_press(true));
     }
 
