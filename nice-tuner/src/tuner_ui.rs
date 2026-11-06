@@ -90,6 +90,7 @@ pub struct TunerUi {
     font: Arc<[u8]>,
     icon_font: Arc<[u8]>,
     host_controls: Option<HostControls>,
+    received_samples: u64,
     #[cfg(feature = "diag")]
     diag: frost::Diagnostics,
     // smoothed display state
@@ -203,6 +204,7 @@ impl TunerUi {
             font,
             icon_font: crate::gui::icon_font(),
             host_controls: None,
+            received_samples: 0,
             #[cfg(feature = "diag")]
             diag,
             needle_cents: 0.0,
@@ -427,6 +429,7 @@ impl TunerUi {
                 break;
             }
             self.waveform.push(&buf[..want]);
+            self.received_samples = self.received_samples.wrapping_add(want as u64);
             drained = true;
             if let Some(hz) = self.note_frequency {
                 self.shared.freq_hz.store(hz);
@@ -2523,6 +2526,50 @@ impl TunerUi {
             },
             z + 0.01,
         );
+
+        if self.is_hosted() {
+            let shared = &self.shared;
+            let level = |peak: f32| {
+                if peak > 0.0 {
+                    format!("{:.0} dB", 20.0 * peak.log10())
+                } else {
+                    "silent".into()
+                }
+            };
+            for (offset, text) in [
+                (
+                    57.0,
+                    format!(
+                        "Calls {} · Feed {} · Read {} · Lost {}",
+                        shared.process_calls.load(Ordering::Relaxed),
+                        shared.feed_samples.load(Ordering::Relaxed),
+                        self.received_samples,
+                        shared.dropped_samples.load(Ordering::Relaxed)
+                    ),
+                ),
+                (
+                    39.0,
+                    format!(
+                        "{} ch · L {} · R {} · editor {}",
+                        shared.process_channels.load(),
+                        level(shared.channel_peaks[0].load()),
+                        level(shared.channel_peaks[1].load()),
+                        if shared.is_open() { "on" } else { "off" }
+                    ),
+                ),
+            ] {
+                ctx.text(
+                    0.0,
+                    by + offset * fit,
+                    &font,
+                    text,
+                    15.0 * fit,
+                    550.0,
+                    DIM,
+                    z,
+                );
+            }
+        }
 
         // Transient status only, on demand — no standing banner text.
         if let Some(note) = self.save_note.as_ref().or(blocker.as_ref()) {

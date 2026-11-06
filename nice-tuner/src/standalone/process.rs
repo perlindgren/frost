@@ -161,6 +161,50 @@ impl TestTone {
 mod tests {
     use super::*;
     #[test]
+    fn analysis_handoff_survives_48_frame_blocks_and_size_changes() {
+        let mut plugin = TunerPlugin::default();
+        activate(&mut plugin, 2, 48000.0).unwrap();
+        let shared = Arc::clone(&plugin.shared);
+        shared
+            .open
+            .store(true, std::sync::atomic::Ordering::Release);
+        let mut consumer = shared.take_consumer().unwrap();
+        let mut adapter = Processor::new(Arc::new(Mutex::new(plugin)), 2, 48000.0);
+        let mut samples = 0;
+        for (call, frames) in [48, 32, 48, 96, 256, 48, 1024, 48].into_iter().enumerate() {
+            adapter.run(&vec![0.375f32; frames * 2], |_| {});
+            samples += frames as u64;
+            assert_eq!(
+                shared
+                    .process_calls
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                call as u64 + 1
+            );
+            assert_eq!(
+                shared
+                    .feed_samples
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                samples
+            );
+            assert_eq!(
+                shared
+                    .dropped_samples
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                0
+            );
+            assert_eq!(shared.process_channels.load(), 2);
+            assert_eq!(shared.channel_peaks[0].load(), 0.375);
+            assert_eq!(shared.channel_peaks[1].load(), 0.375);
+            assert_eq!(shared.buffer_frames.load(), frames as u32);
+            assert_eq!(shared.input_peak.load(), 0.375);
+            assert_eq!(consumer.slots(), frames);
+            for _ in 0..frames {
+                assert_eq!(consumer.pop().unwrap(), 0.375);
+            }
+        }
+    }
+
+    #[test]
     fn test_tone_overrides_all_channels_and_keeps_phase_between_callbacks() {
         let mut plugin = TunerPlugin::default();
         activate(&mut plugin, 2, 48000.0).unwrap();

@@ -57,6 +57,12 @@ pub struct TunerSharedState {
     /// with — the driver's answer, not the requested one. The settings
     /// page shows it as the buffer default; 0 until the first callback.
     pub buffer_frames: AtomicCell<u32>,
+    /// Live handoff diagnostics. Counters never reset during an instance's life.
+    pub process_calls: AtomicU64,
+    pub feed_samples: AtomicU64,
+    pub dropped_samples: AtomicU64,
+    pub process_channels: AtomicCell<u32>,
+    pub channel_peaks: [AtomicCell<f32>; 2],
     /// Standalone top-level window position, physical px (top-left),
     /// polled by the gui on Windows; read when geometry is persisted.
     pub window_pos: std::sync::Mutex<Option<(i32, i32)>>,
@@ -105,6 +111,11 @@ impl TunerSharedState {
             input_peak: AtomicCell::new(0.0),
             input_channel: AtomicCell::new(1),
             buffer_frames: AtomicCell::new(0),
+            process_calls: AtomicU64::new(0),
+            feed_samples: AtomicU64::new(0),
+            dropped_samples: AtomicU64::new(0),
+            process_channels: AtomicCell::new(0),
+            channel_peaks: std::array::from_fn(|_| AtomicCell::new(0.0)),
             window_pos: std::sync::Mutex::new(None),
             pending_geom: std::sync::Mutex::new(None),
             last_detection_ms: AtomicU64::new(0),
@@ -655,6 +666,8 @@ impl Plugin for TunerPlugin {
 
         // One relaxed store per block: the size the driver gave us.
         self.shared.buffer_frames.store(buffer.samples() as u32);
+        self.shared.process_calls.fetch_add(1, Ordering::Relaxed);
+        self.shared.process_channels.store(buffer.channels() as u32);
 
         if self.shared.is_open() {
             // Buffer is in-place (the framework copied host input into it);
@@ -705,7 +718,15 @@ impl Plugin for TunerPlugin {
                 // whole. A torn stream would poison detections; stale
                 // atomics read as silence (freshness gate) — the honest
                 // failure is a paused needle, never a glitch or a wrong note.
-                let _ = self.audio_ring.push_entire_slice(&mono[..n]);
+                let counter = if self.audio_ring.push_entire_slice(&mono[..n]).is_ok() {
+                    &self.shared.feed_samples
+                } else {
+                    &self.shared.dropped_samples
+                };
+                counter.fetch_add(n as u64, Ordering::Relaxed);
+            }
+            for (peak, value) in self.shared.channel_peaks.iter().zip(pks) {
+                peak.store(value);
             }
             if frames > 0 {
                 let pick = if sel_ch >= 1 && (sel_ch as usize) <= MAX_CH {
