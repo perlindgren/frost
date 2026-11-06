@@ -435,18 +435,23 @@ through cpal, which enumerates once at that moment.
 - **Precedence**: explicit settings > queried device defaults. The standalone
   application ignores audio flags on its command line. Monitoring adds 5 ms of
   buffering unless the settings file specifies otherwise.
-- **Inside a DAW there is deliberately no panel** (the footer reads
-  `audio: host-managed`): the host owns the audio device; a per-plugin device
-  picker would lie.
+- **Inside a DAW**, the cogwheel opens settings with editable A4 reference,
+  input gate, in-tune window, and gauge curve. Changes take effect immediately
+  through host parameters, support automation, and are saved with the DAW project.
+  `DONE` or `BACK` closes the panel; `RESET` restores these four host parameters.
+  No standalone settings file is read or written. Host-controlled audio fields
+  show the active input/output bus counts, sample rate, and block size, and are
+  disabled. Before the first audio callback, the block field shows the host's
+  configured maximum. Physical device names are not exposed by the host.
+  The main screen also shows the input/output counts and sample rate.
 
 ## Standalone fidelity (what you see embedded)
 
 The standalone binary links the *same* lib as the CLAP/VST3 artifacts — same
 `TunerPlugin`, same editor/window code, same param objects, same RT
-discipline. What differs is the environment around it, and the panel closes
-the one functional gap: **params**. nice-plug gives plugins no way to move
-their own `FloatParam`s (the host owns them), so in standalone the settings
-page plays the host: the A4/gate pickers write the very same shared atomics
+discipline. What differs is the environment around it. In a plugin, the settings
+page changes parameters through nice-plug's host parameter API. In standalone,
+the A4/gate pickers write the very same shared atomics
 that `process()` mirrors from params in host mode (`process()` skips the
 mirror in standalone so your picks survive). Picks are live; `APPLY` persists
 them to the settings file, which seeds them at next launch.
@@ -455,7 +460,7 @@ them to the settings file, which seeds them at next launch.
 |---|---|---|
 | DSP, editor, GUI, RT path | identical code | identical code |
 | Device / backend / sample rate | own process, cpal | host's device & rate |
-| Param controls | settings panel (plays host) | host's plugin UI & automation |
+| Param controls | settings panel, saved to JSON | settings panel & host automation, saved by DAW |
 | UI pump | display callbacks on macOS 14+, otherwise baseview timer | same scheduler on the host UI thread |
 | Editor lifecycle | closing the window ends the app | close/reopen freely, audio unaffected |
 

@@ -179,6 +179,19 @@ mod tests {
     }
 
     #[test]
+    fn activation_publishes_mono_and_stereo_operating_conditions() {
+        let mut plugin = TunerPlugin::default();
+        for (channels, rate) in [(1, 44100.0), (2, 48000.0)] {
+            activate(&mut plugin, channels, rate).unwrap();
+            assert_eq!(plugin.shared.input_channels.load(), channels as u32);
+            assert_eq!(plugin.shared.output_channels.load(), channels as u32);
+            assert_eq!(plugin.shared.sample_rate_hz.load(), rate as f64);
+            assert_eq!(plugin.shared.max_buffer_frames.load(), BLOCK as u32);
+            assert_eq!(plugin.shared.buffer_frames.load(), 0);
+        }
+    }
+
+    #[test]
     fn standalone_runs_the_plugin_and_preserves_the_selected_channel_at_input_rate() {
         let mut plugin = TunerPlugin::default();
         activate(&mut plugin, 2, 44100.0).unwrap();

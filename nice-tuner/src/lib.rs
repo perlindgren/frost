@@ -76,6 +76,10 @@ pub struct TunerSharedState {
     /// Sample rate reported by `activate()`; the UI-thread detector is
     /// (re)built against this value whenever it changes.
     pub sample_rate_hz: AtomicCell<f64>,
+    /// Active main-bus channel counts and the host's configured maximum block.
+    pub input_channels: AtomicCell<u32>,
+    pub output_channels: AtomicCell<u32>,
+    pub max_buffer_frames: AtomicCell<u32>,
     /// Analysis-feed consumer, parked here while no editor is open.
     /// `TunerUi` borrows it on open and returns it on close (Drop) — main
     /// thread only; the audio thread only ever holds the `Producer` half.
@@ -107,6 +111,9 @@ impl TunerSharedState {
             a4_ref_bits: AtomicU64::new(440.0f64.to_bits()),
             gate_db: AtomicCell::new(-60.0),
             sample_rate_hz: AtomicCell::new(0.0),
+            input_channels: AtomicCell::new(0),
+            output_channels: AtomicCell::new(0),
+            max_buffer_frames: AtomicCell::new(0),
             consumer_slot: std::sync::Mutex::new(None),
         }
     }
@@ -151,6 +158,7 @@ impl TunerSharedState {
 #[cfg(feature = "standalone")]
 pub mod devices;
 mod gui;
+mod host_controls;
 pub mod meter;
 pub mod settings;
 #[cfg(feature = "standalone")]
@@ -188,6 +196,19 @@ pub fn seed_standalone_params(shared: &TunerSharedState, s: &settings::Settings)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_parameters_include_tuning_and_display_preferences_with_stable_ids() {
+        let params = TunerParams::default();
+        let ids: Vec<_> = params
+            .param_map()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        assert_eq!(ids, ["a4_ref", "gate", "in_tune_cents", "gauge_knee_cents"]);
+        assert_eq!(params.in_tune_cents.value(), 3.0);
+        assert_eq!(params.gauge_knee_cents.value(), 5.0);
+    }
 
     #[test]
     fn standalone_seeding_applies_params_and_skips_absences() {
@@ -230,6 +251,7 @@ impl TunerEditor {
         wait_for_parent: bool,
         fallback_scale_factor: Option<f64>,
         host: Option<HostMethods>,
+        gui_context: Option<GuiContext>,
     ) -> Result<SpawnedEditor<TunerEditorHandle>, Box<dyn Error>> {
         let params = Arc::clone(&self.params);
         let shared = Arc::clone(&self.shared);
@@ -304,7 +326,7 @@ impl TunerEditor {
                 .with_wait_for_parent(wait_for_parent)
                 .with_fallback_scale_factor(fallback_scale_factor),
             move |window: WindowContext| -> Result<gui::TunerWindow, HandlerError> {
-                gui::TunerWindow::new(window, params, shared, redraw_requested_2)
+                gui::TunerWindow::new(window, params, shared, redraw_requested_2, gui_context)
             },
             host,
         )?;
@@ -329,10 +351,16 @@ impl Editor for TunerEditor {
         parent: Option<ParentWindowHandle>,
         wait_for_parent: bool,
         fallback_scale_factor: Option<f64>,
-        _gui_context: GuiContext,
+        gui_context: GuiContext,
         host: Option<HostMethods>,
     ) -> Result<SpawnedEditor<Self::Handle>, Box<dyn Error>> {
-        self.spawn_window(parent, wait_for_parent, fallback_scale_factor, host)
+        self.spawn_window(
+            parent,
+            wait_for_parent,
+            fallback_scale_factor,
+            host,
+            Some(gui_context),
+        )
     }
 
     fn size(&self) -> NativeSize<u32> {
@@ -457,9 +485,13 @@ pub struct TunerParams {
     /// A4 concert pitch reference, in Hz.
     #[id = "a4_ref"]
     pub a4_ref: FloatParam,
-    /// Input gain feeding the detector only (audio passthrough is unaffected).
+    /// Detection gate in dBFS (audio passthrough is unaffected).
     #[id = "gate"]
     pub gate_db: FloatParam,
+    #[id = "in_tune_cents"]
+    pub in_tune_cents: FloatParam,
+    #[id = "gauge_knee_cents"]
+    pub gauge_knee_cents: FloatParam,
 }
 
 impl Default for TunerPlugin {
@@ -513,8 +545,27 @@ impl Default for TunerParams {
                 },
             )
             .with_unit(" dB")
-            .with_value_to_string(formatters::v2s_f32_gain_to_db(1))
-            .with_string_to_value(formatters::s2v_f32_gain_to_db()),
+            .with_step_size(1.0),
+            in_tune_cents: FloatParam::new(
+                "In-tune Window",
+                3.0,
+                FloatRange::Linear {
+                    min: 1.0,
+                    max: 10.0,
+                },
+            )
+            .with_unit(" cents")
+            .with_step_size(1.0),
+            gauge_knee_cents: FloatParam::new(
+                "Gauge Curve",
+                5.0,
+                FloatRange::Linear {
+                    min: 3.0,
+                    max: 20.0,
+                },
+            )
+            .with_unit(" cents")
+            .with_step_size(1.0),
         }
     }
 }
@@ -557,7 +608,7 @@ impl Plugin for TunerPlugin {
 
     fn activate(
         &mut self,
-        _audio_io_layout: &AudioIOLayout,
+        audio_io_layout: &AudioIOLayout,
         buffer_config: &BufferConfig,
         _context: &mut impl ActivateContext<Self>,
     ) -> bool {
@@ -567,6 +618,20 @@ impl Plugin for TunerPlugin {
         self.shared
             .sample_rate_hz
             .store(buffer_config.sample_rate as f64);
+        self.shared.input_channels.store(
+            audio_io_layout
+                .main_input_channels
+                .map_or(0, |count| count.get()),
+        );
+        self.shared.output_channels.store(
+            audio_io_layout
+                .main_output_channels
+                .map_or(0, |count| count.get()),
+        );
+        self.shared
+            .max_buffer_frames
+            .store(buffer_config.max_buffer_size);
+        self.shared.buffer_frames.store(0);
         true
     }
 

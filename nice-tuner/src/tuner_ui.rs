@@ -16,6 +16,7 @@
 mod dropdown;
 
 use crate::TunerSharedState;
+use crate::host_controls::{HostControls, HostParameter};
 use crate::settings::Settings;
 use dropdown::DropdownLayout;
 use frost::{Color, Context, Process, Scene, SceneNode, Shape};
@@ -88,6 +89,7 @@ pub struct TunerUi {
     shared: Arc<TunerSharedState>,
     font: Arc<[u8]>,
     icon_font: Arc<[u8]>,
+    host_controls: Option<HostControls>,
     #[cfg(feature = "diag")]
     diag: frost::Diagnostics,
     // smoothed display state
@@ -102,7 +104,7 @@ pub struct TunerUi {
     freq_shown: f64,
     stable_ms: f32,
     green_t: f32, // 0 = amber, 1 = green (lerped) // decayed meter fill, 0..1
-    // ---- settings page (standalone-only UI; inert state elsewhere) ----
+    // ---- settings page (host audio fields are read-only) ----
     page: Page,
     prev_mouse_down: bool,
     settings: Settings,
@@ -200,6 +202,7 @@ impl TunerUi {
             shared,
             font,
             icon_font: crate::gui::icon_font(),
+            host_controls: None,
             #[cfg(feature = "diag")]
             diag,
             needle_cents: 0.0,
@@ -254,6 +257,126 @@ impl TunerUi {
             note_frequency: None,
             waveform: Waveform::default(),
         }
+    }
+
+    pub(crate) fn set_host_controls(&mut self, controls: HostControls) {
+        self.host_controls = Some(controls);
+        self.settings = Settings::default();
+        self.settings_loaded = true; // A hosted editor never reads standalone JSON.
+        self.cold = false;
+        self.sync_host_settings();
+        self.applied = self.settings.clone();
+        self.saved = self.settings.clone();
+    }
+
+    fn is_hosted(&self) -> bool {
+        self.host_controls.is_some()
+    }
+
+    fn sync_host_settings(&mut self) {
+        let Some(host) = &self.host_controls else {
+            return;
+        };
+        let a4 = host.params.a4_ref.value();
+        let gate = host.params.gate_db.value();
+        self.settings.a4_ref = Some(a4);
+        self.settings.gate_db = Some(gate);
+        self.settings.in_tune_cents = Some(host.params.in_tune_cents.value());
+        self.settings.gauge_knee_cents = Some(host.params.gauge_knee_cents.value());
+        self.shared
+            .a4_ref_bits
+            .store((a4 as f64).to_bits(), Ordering::Relaxed);
+        self.shared.gate_db.store(gate);
+    }
+
+    fn is_audio_field(dd: Dropdown) -> bool {
+        matches!(
+            dd,
+            Dropdown::Backend
+                | Dropdown::Input
+                | Dropdown::InputCh
+                | Dropdown::Output
+                | Dropdown::OutputCh
+                | Dropdown::InputBuffer
+                | Dropdown::OutputBuffer
+                | Dropdown::Rate
+                | Dropdown::OutputRate
+        )
+    }
+
+    fn host_audio_value(&self, dd: Dropdown) -> Option<String> {
+        let host = self.host_controls.as_ref()?;
+        let inputs = self.shared.input_channels.load();
+        let outputs = self.shared.output_channels.load();
+        let channels = |count| {
+            if count > 0 {
+                format!(
+                    "{count} {}",
+                    if count == 1 { "channel" } else { "channels" }
+                )
+            } else {
+                "Unavailable".into()
+            }
+        };
+        let rate = self.shared.sample_rate_hz.load();
+        Some(match dd {
+            Dropdown::Backend => format!("{} host", host.api),
+            Dropdown::Input => channels(inputs),
+            Dropdown::Output => channels(outputs),
+            Dropdown::InputCh => {
+                if inputs > 0 {
+                    format!("{} (analysis)", self.shared.input_channel.load())
+                } else {
+                    "Unavailable".into()
+                }
+            }
+            Dropdown::OutputCh => match outputs {
+                0 => "Unavailable".into(),
+                1 => "Mono".into(),
+                2 => "Stereo".into(),
+                _ => channels(outputs),
+            },
+            Dropdown::Rate | Dropdown::OutputRate => {
+                if rate.is_finite() && rate > 0.0 {
+                    fmt_rate(rate as f32)
+                } else {
+                    "Unavailable".into()
+                }
+            }
+            Dropdown::InputBuffer | Dropdown::OutputBuffer => {
+                let frames = self.shared.buffer_frames.load();
+                let maximum = self.shared.max_buffer_frames.load();
+                if frames > 0 {
+                    format!("{frames} frames")
+                } else if maximum > 0 {
+                    format!("Up to {maximum} frames")
+                } else {
+                    "Unavailable".into()
+                }
+            }
+            _ => return None,
+        })
+    }
+
+    fn host_audio_summary(&self) -> String {
+        let count = |value: u32| {
+            if value > 0 {
+                value.to_string()
+            } else {
+                "?".into()
+            }
+        };
+        let rate = self.shared.sample_rate_hz.load();
+        let rate = if rate.is_finite() && rate > 0.0 {
+            fmt_rate(rate as f32)
+        } else {
+            "rate unavailable".into()
+        };
+        format!(
+            "{} in · {} out · {rate}",
+            count(self.shared.input_channels.load()),
+            count(self.shared.output_channels.load())
+        )
     }
 
     /// Drain the RT feed and run pitch detection — on this (UI) thread, so
@@ -357,9 +480,8 @@ impl Process for TunerUi {
         #[cfg(feature = "diag")]
         self.diag.process(ctx, dt);
         let dt = dt.clamp(0.0, 0.25); // tolerate host pauses
-        // First frame: read the settings file. Look-and-judgement values
-        // (verdict window, gauge curve) apply in hosts too — nothing RT
-        // consumes them; audio settings stay standalone-only by design.
+        // Standalone reads its settings file on the first frame. Hosted editors
+        // already seeded their settings from parameters in set_host_controls().
         if !self.settings_loaded {
             let (settings, _) = Settings::load();
             // Cold: no file, or a file that holds no decision (a bare
@@ -378,8 +500,11 @@ impl Process for TunerUi {
                 }
             }
         }
+        self.sync_host_settings();
         #[cfg(feature = "standalone")]
-        self.poll_audio_apply();
+        if !self.is_hosted() {
+            self.poll_audio_apply();
+        }
         self.analyze();
         self.waveform.advance(dt);
 
@@ -463,7 +588,7 @@ impl Process for TunerUi {
             self.process_settings_page(ctx, clicked);
             return;
         }
-        if crate::STANDALONE_MODE.load(Ordering::Relaxed) {
+        {
             let gx = w / 2.0 - 26.0 * fit;
             let gy = h / 2.0 - 22.0 * fit;
             let hov = point_in(ctx.mouse_position(), gx, gy, 16.0 * fit, 16.0 * fit);
@@ -490,15 +615,16 @@ impl Process for TunerUi {
                 return;
             }
         }
-        if !crate::STANDALONE_MODE.load(Ordering::Relaxed) {
-            // Inside a host there is no settings page on purpose: the host
-            // owns the device, a per-plugin device picker would lie.
+        if self.is_hosted() {
+            let summary = self.host_audio_summary();
+            let size = 16.2 * fit;
+            let half_width = ctx.text_width(&self.font, &summary, size, 550.0) / 2.0;
             ctx.text(
-                -w / 2.0 + 78.0 * fit,
-                h / 2.0 - 16.0 * fit,
+                -w / 2.0 + 16.0 * fit + half_width,
+                h / 2.0 - 18.0 * fit,
                 &self.font,
-                "audio: host-managed",
-                18.0 * fit,
+                summary,
+                size,
                 550.0,
                 DIM,
                 0.4,
@@ -967,6 +1093,13 @@ fn fmt_rate(r: f32) -> String {
 
 impl TunerUi {
     fn open_settings_page(&mut self) {
+        if self.is_hosted() {
+            self.sync_host_settings();
+            self.open_dropdown = None;
+            self.save_note = None;
+            self.page = Page::Settings;
+            return;
+        }
         // File contents arrive on the first frame (see process); opening
         // the page additionally pays for device enumeration, which can
         // load ASIO drivers and must stay lazy.
@@ -1273,7 +1406,8 @@ impl TunerUi {
     }
 
     fn dropdown_disabled(&self, dd: Dropdown) -> bool {
-        self.is_applying()
+        (self.is_hosted() && Self::is_audio_field(dd))
+            || self.is_applying()
             || (dd == Dropdown::InputCh && self.settings.backend.as_deref() == Some("jack"))
             // One ASIO driver per process is asio-sys law, not this app's
             // policy. The output row already mirrors the input driver, so
@@ -1308,6 +1442,9 @@ impl TunerUi {
     }
 
     fn apply_blocker(&self) -> Option<String> {
+        if self.is_hosted() {
+            return None;
+        }
         if self.is_applying() {
             return Some("Applying audio settings…".into());
         }
@@ -1435,6 +1572,18 @@ impl TunerUi {
     }
 
     fn reset_settings_draft(&mut self) {
+        if let Some(host) = &self.host_controls {
+            for (parameter, value) in [
+                (HostParameter::A4, 440.0),
+                (HostParameter::Gate, -60.0),
+                (HostParameter::InTune, 3.0),
+                (HostParameter::GaugeCurve, 5.0),
+            ] {
+                host.set(parameter, value);
+            }
+            self.save_note = None;
+            return;
+        }
         let window = self.settings.window;
         self.settings = Settings {
             window,
@@ -1452,6 +1601,13 @@ impl TunerUi {
         // An in-flight Apply must finish before another navigation action can
         // race its save. BACK and Escape are temporarily disabled while waiting.
         if self.is_applying() {
+            return;
+        }
+        if self.is_hosted() {
+            self.page = Page::Main;
+            self.open_dropdown = None;
+            self.dropdown_scroll_drag = false;
+            self.save_note = None;
             return;
         }
         self.settings = self.applied.clone();
@@ -1773,7 +1929,7 @@ impl TunerUi {
                 .or(self.default_input_channel)
                 .map(|ch| ch.to_string())
                 .unwrap_or_default(),
-            Dropdown::A4 => format!("{:.0}", self.shared.a4_ref()),
+            Dropdown::A4 => (self.shared.a4_ref() as f32).to_string(),
             Dropdown::Gate => format!("{:.0}", self.shared.gate_db.load()),
             Dropdown::InTune => format!(
                 "{:.0}",
@@ -1920,6 +2076,26 @@ impl TunerUi {
                 self.settings.gauge_knee_cents = if at_default { None } else { Some(v) };
             }
         }
+        if let Some(host) = &self.host_controls {
+            let change = match dd {
+                Dropdown::A4 => Some((HostParameter::A4, self.settings.a4_ref.unwrap_or(440.0))),
+                Dropdown::Gate => {
+                    Some((HostParameter::Gate, self.settings.gate_db.unwrap_or(-60.0)))
+                }
+                Dropdown::InTune => Some((
+                    HostParameter::InTune,
+                    self.settings.in_tune_cents.unwrap_or(IN_TUNE_CENTS as f32),
+                )),
+                Dropdown::GaugeCurve => Some((
+                    HostParameter::GaugeCurve,
+                    self.settings.gauge_knee_cents.unwrap_or(GAUGE_KNEE_CENTS),
+                )),
+                _ => None,
+            };
+            if let Some((parameter, value)) = change {
+                host.set(parameter, value);
+            }
+        }
         self.open_dropdown = None;
         self.list_scroll = 0.0;
     }
@@ -1979,6 +2155,9 @@ impl TunerUi {
     }
 
     fn value_text(&self, dd: Dropdown) -> String {
+        if let Some(value) = self.host_audio_value(dd) {
+            return value;
+        }
         if self.settings.backend.as_deref() == Some("jack") {
             match dd {
                 Dropdown::OutputCh => {
@@ -2218,7 +2397,13 @@ impl TunerUi {
         let bhh = 11.0 * fit;
 
         for (i, (label, dd)) in ROWS.iter().enumerate() {
-            let label = if self.settings.backend.as_deref() == Some("jack") {
+            let label = if self.is_hosted() {
+                match dd {
+                    Dropdown::Input => "Host inputs",
+                    Dropdown::Output => "Host outputs",
+                    _ => *label,
+                }
+            } else if self.settings.backend.as_deref() == Some("jack") {
                 match dd {
                     Dropdown::Input => "Input source",
                     Dropdown::Output => "Output left / mono",
@@ -2254,13 +2439,14 @@ impl TunerUi {
         // Apply is enabled only when a complete, supported configuration
         // can be applied without restarting the application.
         let by = -h / 2.0 + 30.0 * fit;
-        let apply_label = "APPLY";
+        let apply_label = if self.is_hosted() { "DONE" } else { "APPLY" };
         let blocker = self.apply_blocker();
         let aw = (ctx.text_width(&font, apply_label, 23.4 * fit, 700.0) + 26.0 * fit) / 2.0;
         let ax = w / 2.0 - 32.0 * fit - aw; // right-aligned with a margin
         // Nothing differs from the last save: the button stays, greyed,
         // and swallows nothing — there is no click when there is no do.
-        let dirty = (self.apply_dirty() || self.audio_dirty()) && blocker.is_none();
+        let dirty =
+            (self.is_hosted() || self.apply_dirty() || self.audio_dirty()) && blocker.is_none();
         let back = !self.is_applying()
             && point_in(mouse, -w / 2.0 + 90.0 * fit, by, 65.0 * fit, 15.0 * fit);
         let reset = !self.is_applying() && point_in(mouse, 0.0, by, 65.0 * fit, 15.0 * fit);
@@ -2524,6 +2710,10 @@ impl TunerUi {
                     self.reset_settings_draft();
                 }
                 if apply {
+                    if self.is_hosted() {
+                        self.leave_settings();
+                        return;
+                    }
                     #[cfg(feature = "standalone")]
                     if self.audio_dirty() {
                         let request = self
@@ -2640,6 +2830,105 @@ mod tests {
         ui.leave_settings();
         assert!(ui.page == super::Page::Settings);
         assert!(ui.pending_apply.is_some());
+    }
+
+    fn hosted_ui(
+        events: std::rc::Rc<std::cell::RefCell<Vec<(crate::host_controls::HostParameter, f32)>>>,
+    ) -> TunerUi {
+        let mut ui = channel_ui();
+        ui.set_host_controls(crate::host_controls::HostControls::for_test(
+            Arc::new(crate::TunerParams::default()),
+            move |parameter, value| events.borrow_mut().push((parameter, value)),
+        ));
+        ui
+    }
+
+    #[test]
+    fn hosted_audio_fields_are_read_only_and_report_actual_operating_conditions() {
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut ui = hosted_ui(events.clone());
+        assert!(ui.settings_loaded);
+        assert!(ui.settings.backend.is_none());
+        assert_eq!(ui.value_text(Dropdown::Rate), "Unavailable");
+        assert_eq!(ui.value_text(Dropdown::InputBuffer), "Unavailable");
+        ui.shared.input_channels.store(2);
+        ui.shared.output_channels.store(1);
+        ui.shared.sample_rate_hz.store(44100.0);
+        ui.shared.max_buffer_frames.store(512);
+        assert_eq!(ui.value_text(Dropdown::InputBuffer), "Up to 512 frames");
+        ui.shared.buffer_frames.store(128);
+        assert_eq!(ui.host_audio_summary(), "2 in · 1 out · 44100 Hz");
+        assert_eq!(ui.value_text(Dropdown::Input), "2 channels");
+        assert_eq!(ui.value_text(Dropdown::Output), "1 channel");
+        assert_eq!(ui.value_text(Dropdown::OutputCh), "Mono");
+        assert_eq!(ui.value_text(Dropdown::InputBuffer), "128 frames");
+        assert_eq!(ui.value_text(Dropdown::OutputRate), "44100 Hz");
+        for dd in [
+            Dropdown::Backend,
+            Dropdown::Input,
+            Dropdown::InputCh,
+            Dropdown::Output,
+            Dropdown::OutputCh,
+            Dropdown::Rate,
+            Dropdown::OutputRate,
+            Dropdown::InputBuffer,
+            Dropdown::OutputBuffer,
+        ] {
+            assert!(ui.dropdown_disabled(dd));
+            let before = ui.settings.clone();
+            ui.pick(dd, 0);
+            assert_eq!(ui.settings, before);
+        }
+        assert!(events.borrow().is_empty());
+    }
+
+    #[test]
+    fn hosted_preferences_notify_the_host_and_navigation_never_saves_standalone_settings() {
+        use crate::host_controls::HostParameter;
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut ui = hosted_ui(events.clone());
+        ui.open_settings_page();
+        assert!(ui.page == super::Page::Settings);
+        for (dd, raw) in [
+            (Dropdown::A4, "442"),
+            (Dropdown::Gate, "-40"),
+            (Dropdown::InTune, "7"),
+            (Dropdown::GaugeCurve, "10"),
+        ] {
+            assert!(!ui.dropdown_disabled(dd));
+            let index = ui
+                .dropdown_rows(dd)
+                .0
+                .iter()
+                .position(|(_, value)| value == raw)
+                .unwrap();
+            ui.pick(dd, index);
+        }
+        assert_eq!(
+            *events.borrow(),
+            vec![
+                (HostParameter::A4, 442.0),
+                (HostParameter::Gate, -40.0),
+                (HostParameter::InTune, 7.0),
+                (HostParameter::GaugeCurve, 10.0)
+            ]
+        );
+        let saved = ui.saved.clone();
+        ui.leave_settings();
+        assert!(ui.page == super::Page::Main);
+        assert_eq!(ui.saved, saved); // Host mode has no JSON save/commit operation.
+        assert_eq!(events.borrow().len(), 4); // Closing must not undo live host edits.
+        events.borrow_mut().clear();
+        ui.reset_settings_draft();
+        assert_eq!(
+            *events.borrow(),
+            vec![
+                (HostParameter::A4, 440.0),
+                (HostParameter::Gate, -60.0),
+                (HostParameter::InTune, 3.0),
+                (HostParameter::GaugeCurve, 5.0)
+            ]
+        );
     }
 
     #[test]

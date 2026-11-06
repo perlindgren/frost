@@ -182,7 +182,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         Err("The audio owner stopped during startup".into())
     } else {
         editor
-            .spawn_window(None, false, None, None)
+            .spawn_window(None, false, None, None, None)
             .map_err(|e| e.to_string())
             .and_then(|spawned| {
                 let result =
