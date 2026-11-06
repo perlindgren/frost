@@ -239,3 +239,107 @@ Proven on this box in both directions — plainly, the refusal surfaces
 as two failures naming it; under the declaration, the folder's actual
 behaviour, the stale card standing and still listed, is exactly what
 the tests assert.
+
+## nice-tuner — opening the settings page silences live ASIO audio
+
+**Symptom.** On Windows with the ASIO backend and a driver that has both
+directions (measured with the Komplete Audio ASIO Driver, running with
+`--test_freq 220` so the answer does not depend on anything being plugged in).
+Audio is fine after launch. The moment the settings page opens, the tone stops
+and the waveform is gone — before any dropdown is touched, before APPLY. It
+never comes back for any input channel; quitting and restarting restores it.
+Nothing is reported anywhere: APPLY does not fail, the status line stays empty,
+and the settings file is written correctly, which is why the same configuration
+works on the next cold start.
+
+Reported first as "input channel 2 shows no waveform after APPLY", because the
+page has to be open to change the channel: the teardown happened on opening the
+page and the channel change was merely the next thing noticed.
+
+**Cause.** A capability query shuts down the driver the running stream is
+using. ASIO permits one loaded driver per process, and `asio-sys` 0.4.0 guards
+a second load with a handle stored on the `Asio` *value* that loaded it
+(`bindings/mod.rs:445-458`) — so `Asio::new().load_driver(name)`, which is what
+a query does, finds an empty guard and is granted. The temporary `Driver` then
+goes out of scope at the end of the query, and `Drop for DriverInner`
+(`:1035`) runs `stop`, `dispose_buffers`, `ASIOExit` and `remove_current_driver`
+(`:1017`, `:987-997`) against the driver the stream is still holding. The stream
+is never told; its callbacks simply stop.
+
+The query path in `nice-tuner/src/devices.rs` opened its own `Asio` for every
+capability question, and opening the settings page asks several. The
+`DriverAlreadyExists` error the documentation expected to see here was never
+reachable across handles, so nothing refused and nothing reported.
+
+**Evidence.** `--test_freq` substitutes its tone inside the audio callback, so
+its disappearance means the callback stopped rather than the meter misreading a
+channel; it stops exactly on page open, on both input channels, and survives
+neither wait nor repeat. Reading of the two sources above, and the fact that a
+restart — which reloads the driver from scratch — is the only thing that cures
+it. The earlier suspicion that cpal's duplex buffer hand-off on reconfigure was
+involved is retired: no reconfigure is needed to reproduce this, and a
+channel-only change does not restart the streams at all
+(`tuner_ui::audio_dirty` has no `input_channel`).
+
+**What we do.** The audio path claims the driver before cpal loads anything and
+holds the claim in the value that owns the streams, after them, so it is
+released only once both are gone; capability queries then answer unknown rather
+than load (`devices::asio_stream_live`, `devices::asio_caps_answered`, pinned
+by the test `a_capability_query_is_refused_while_a_stream_owns_the_driver`). The
+settings page loses nothing, because its ASIO answers already come from a child
+process that loads drivers in a process of its own.
+
+**Confirmed.** 2026-11-06, on this machine: with `--test_freq 220` the tone now
+survives opening the settings page. The mute that remained on *picking a
+channel* was a second defect, and it is the entry below.
+
+## nice-tuner — picking an input channel mutes the tuner and APPLY cannot undo it
+
+**Symptom.** Measured once the page-open teardown above was fixed, so nothing
+but the pick itself was in play. With the tuner running on channel 1, choosing
+**channel 2** in the settings dropdown mutes it *immediately, before APPLY*.
+APPLY does not bring the sound back. BACK returns to the tuner with the pitch
+still being decoded and no monitoring at all. Re-opening settings and selecting
+channel 1 restores the sound at once, on the pick, without APPLY.
+
+**Cause.** Two decisions that agreed with each other and were both wrong. The
+dropdown wrote `shared.input_channel` the moment a row was picked — its comment
+read "Channel select is live for both meter and detection. No restart" — while
+`standalone::audio` opens the stream with exactly as many input planes as the
+*applied* setting names. A pick above the applied width therefore aims the
+selected-plane index in `standalone::process` (`Processor::run`) past the end of
+the buffer; `.get()` yields nothing, and neither the meter nor the monitor is
+fed, while the plugin still analyses the channels it actually has — which is
+precisely why the display decoded a pitch with no sound. That the draft was
+already in the audio state also made APPLY pointless: `audio_dirty()` did not
+list `input_channel`, so APPLY filed the change as a parameter and reopened
+nothing.
+
+**Evidence.** Reproduced by observation in both directions, three times, with
+`--test_freq 220` so the audible tone is the instrument: mute on pick, no
+recovery on APPLY, recovery on picking the width the stream actually has. The
+reading of `audio_dirty` and `Processor::run` explains all three behaviours
+without further instrumentation.
+
+**What we do.** A draft is a draft: the dropdown, the defaults button and the
+snapshot's channel reconciliation touch `settings` only. The live atomic is
+written from applied state — by `standalone::audio` when it opens a stream, and
+by `leave_settings` when a draft is discarded. And `input_channel` is now in
+`audio_dirty()`, so APPLY rebuilds the stream at the width the channel names.
+Pinned by `a_wider_channel_is_an_audio_change_not_a_live_parameter`; the two
+older channel tests asserted the draft wrote live state and now assert that it
+does not.
+
+**Confirmed.** 2026-11-06, same machine, `--test_freq 220`: picking a wider
+channel leaves the tone alone, APPLY drops it for the moment the stream takes to
+reopen and it returns on the new width. That pause is the change itself — a
+channel is a property of the stream, so asking for a different one means a new
+stream, and no wording in the panel can make that instantaneous.
+
+**Consequence worth knowing.** Asking for a wider channel means asking cpal for
+more input planes, and the stream layer accepts one or two, so channels beyond 2
+now fail at APPLY with the unsupported-configuration message instead of opening
+a stream the meter cannot read. That is the ASIO port limit
+(`docs/asio-host-review.md`) surfacing as an error rather than as silence, which
+is the smaller wrong.
+
