@@ -56,6 +56,11 @@ pub(super) struct CpalStreams {
     input_seen: Arc<AtomicBool>,
     output_seen: Arc<AtomicBool>,
     errors: Receiver<Failure>,
+    // Declared last so it drops last: ASIO capability queries stay refused
+    // until both streams are gone, because a query loads the driver a running
+    // stream is using and its Drop shuts that driver down. See
+    // `devices::asio_stream_live`.
+    _asio: Option<crate::devices::AsioStreamGuard>,
 }
 impl Session for CpalStreams {
     fn wait_started(&mut self) -> Result<(), Failure> {
@@ -98,7 +103,9 @@ fn device(host: &cpal::Host, name: &str, input: bool) -> Result<Device, String> 
                 .ok()
                 .is_some_and(|description| description.name() == name)
         })
-        .ok_or_else(|| format!("Device '{name}' is no longer available"))
+        .ok_or_else(|| {
+            format!("Device '{name}' reports no audio channels, or is no longer available")
+        })
 }
 fn config(
     device: &Device,
@@ -263,6 +270,9 @@ pub(super) fn open(
             .backend
             .as_deref()
             .ok_or("Select an audio backend")?;
+        // Claim the driver before cpal loads anything, so that nothing on the
+        // GUI thread can load it a second time while these streams run.
+        let asio = (backend == "asio").then(crate::devices::asio_stream_guard);
         let host = crate::devices::open_host(backend)
             .ok_or_else(|| format!("Audio backend '{backend}' is unavailable"))?;
         let input = device(&host, &name, true)?;
@@ -388,6 +398,7 @@ pub(super) fn open(
             input_seen,
             output_seen,
             errors: failure,
+            _asio: asio,
         })
     })();
     result.map(Streams::Cpal).map_err(|message| Failure {

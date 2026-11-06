@@ -234,9 +234,22 @@ cargo build -p nice-tuner --features standalone-asio,unsafe --bin nice-tuner-sta
 ```
 
 Without this feature ASIO is not even a value the binary knows — measured, its
-`--list-devices asio` returns `"inputs":[]`. With it, on this machine:
-`["FlexASIO","Komplete Audio ASIO Driver","ReaRoute ASIO (x64)"]`, with
-`driver_rate` and `buffer_pref` read from the driver itself.
+`--list-devices asio` returns `"inputs":[]`. With it the list is every driver
+registered under `HKLM\SOFTWARE\ASIO`, read **without loading one**: nine names
+on this machine, `["Audio 8 DJ","DJM-250MK2 ASIO","FlexASIO","Focusrite
+Thunderbolt ASIO","Focusrite USB ASIO","Komplete Audio ASIO Driver","MOTU M
+Series","NUX Audio","ReaRoute ASIO (x64)"]`. Six of those nine have no hardware
+connected and report no channels; they are listed anyway, and asking one yields
+an unknown rather than a guess. `driver_rate` and `buffer_pref` are read from
+the driver itself, for the driver named on the command line.
+
+One row is narrower than it looks: **Input channel** lists one entry per physical
+input, but cpal's ASIO host binds a stream's buffers to the first *n* ports, so only
+channel 1 and channel 2 lead anywhere and the rest fail at APPLY.
+[docs/asio-host-review.md](docs/asio-host-review.md) records why, and what would
+make the rest real. The row is a property of the stream, not a live control like
+the A4 reference: picking a channel changes nothing until APPLY, which reopens the
+stream with that many input ports.
 
 Nothing in this repository configures the ASIO SDK, which is proprietary and
 stays out of the tree. cpal's build script finds it in three steps —
@@ -380,11 +393,31 @@ Windows); the bundling step clears `RUSTFLAGS`, explained in the script and in
 
 The standalone app's tuner screen has a settings cogwheel (top-right) opening a
 panel for **backend, sample rate, buffer size, input/output devices and
-channel — and the A4/gate params** — device dropdowns are enumerated live via cpal (ASIO appears
-only in builds with `--features standalone-asio`; enumeration loads each
-registered ASIO driver, so the first open can pause a moment where several are
-installed).
+channel — and the A4/gate params** — device dropdowns are enumerated live (ASIO
+appears only in builds with `--features standalone-asio`). The ASIO rows are the
+registry's driver names, which loads nothing at all; channels, sample rate and
+buffer sizes come from `ASIOGetChannels`, `ASIOGetSampleRate`,
+`ASIOGetBufferSize` and `ASIOCanSampleRate` on **the driver the user picked**,
+asked through `asio-sys` rather than through cpal — whose enumeration loads
+every registered driver to build its list, which costs seconds on a machine
+whose audio gear left a dozen vendor drivers behind. Measured on one with nine
+still registered: a settings snapshot on ASIO with no driver chosen was 1785 ms,
+now **159 ms**, against 79 ms for the same binary on the dummy backend, which is
+the process's own start. With a driver chosen it is **332 ms**, one load of that
+driver and nothing else — `snapshot` gathers its answers once and every question
+below asks the gathered copy, so a driver whose hardware is off is refused once
+per pass rather than once per row (206 ms for that). Opening the stream goes
+through cpal, which enumerates once at that moment.
 
+- **One ASIO driver**: selecting ASIO pins the output device row to the input
+  driver — it shows that name and is gray, because a second driver cannot be
+  loaded in this process to be anything else — and that driver's single buffer
+  size and single sample rate govern both directions, so the output buffer and
+  output rate rows follow the input ones and are gray. Resolving the stream says
+  the same: an output rate left behind by an older settings file is replaced by
+  the driver's rate rather than refused at Apply. Core Audio shares only the
+  buffer rule, when input and output are the same device; its independent output
+  rate is what the output rate row exists to set.
 - **Persistence**: `APPLY` writes `nice-tuner-settings.json` to the **current
   directory** after audio changes succeed, then returns directly to the tuner.
   Audio or file-save errors keep the settings panel open. `BACK` and Escape

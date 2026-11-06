@@ -44,6 +44,8 @@ pub(super) fn snapshot() -> Snapshot {
         buffers: JACK_BUFFER_CHOICES.to_vec(),
         output_buffers: JACK_BUFFER_CHOICES.to_vec(),
         buffers_linked: true,
+        // The JACK server runs one rate for every client, in and out.
+        rates_linked: true,
         buffer_pref: Some(frames),
         output_buffer_pref: Some(frames),
         input_channels: Some(1),

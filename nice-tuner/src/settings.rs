@@ -288,6 +288,14 @@ pub fn buffers_must_match(backend: &str, input: Option<&str>, output: Option<&st
             && input.is_some_and(|name| !name.is_empty() && Some(name) == output)
 }
 
+/// One ASIO driver is clocked at one sample rate for both directions, so a
+/// separate output rate is not something it can be asked for. Narrower than
+/// the buffer rule above: CoreAudio keeps its independent per-device rates,
+/// which the output rate picker exists to express.
+pub fn rates_must_match(backend: &str, input: Option<&str>, output: Option<&str>) -> bool {
+    backend == "asio" && input.is_some_and(|name| !name.is_empty() && Some(name) == output)
+}
+
 fn format_rate(r: f32) -> String {
     if r.fract() == 0.0 {
         format!("{}", r as u32)
@@ -528,6 +536,25 @@ mod tests {
         }
         assert!(!buffers_must_match(
             "wasapi",
+            Some("Interface"),
+            Some("Interface")
+        ));
+    }
+
+    /// Rate-linking is ASIO's alone: one driver, one clock. CoreAudio keeps
+    /// the independent output rate its picker exists for, even where the two
+    /// names are the same device.
+    #[test]
+    fn rate_linking_is_asio_alone() {
+        assert!(rates_must_match(
+            "asio",
+            Some("Interface"),
+            Some("Interface")
+        ));
+        assert!(!rates_must_match("asio", Some("Mic"), Some("Speakers")));
+        assert!(!rates_must_match("asio", None, None));
+        assert!(!rates_must_match(
+            "core-audio",
             Some("Interface"),
             Some("Interface")
         ));
