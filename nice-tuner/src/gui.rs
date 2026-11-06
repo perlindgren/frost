@@ -55,10 +55,6 @@ pub struct TunerWindow {
     display_sync: RefCell<Option<macos_frame_sync::DisplaySync>>,
     #[cfg(target_os = "macos")]
     frame_error: Rc<RefCell<Option<HandlerError>>>,
-    /// Kept for upcoming interactive controls (a4 nudge); the readout itself
-    /// flows through the shared atomics, mirrored by the audio thread.
-    #[allow(dead_code)]
-    params: Arc<TunerParams>,
     shared: Arc<TunerSharedState>,
     _redraw_requested: Arc<AtomicBool>,
 
@@ -87,11 +83,14 @@ impl TunerWindow {
         params: Arc<TunerParams>,
         shared: Arc<TunerSharedState>,
         redraw: Arc<AtomicBool>,
+        gui_context: Option<nice_plug::context::gui::GuiContext>,
     ) -> Result<Self, HandlerError> {
         let frame = Rc::new(FrameDriver {
             window: window.clone(),
             engine: RefCell::new(None),
             shared: Arc::clone(&shared),
+            params,
+            gui_context,
         });
         let this = Self {
             window,
@@ -100,7 +99,6 @@ impl TunerWindow {
             display_sync: RefCell::new(None),
             #[cfg(target_os = "macos")]
             frame_error: Rc::new(RefCell::new(None)),
-            params,
             shared,
             _redraw_requested: redraw,
             #[cfg(feature = "standalone")]
@@ -308,6 +306,8 @@ struct FrameDriver {
     window: WindowContext,
     engine: RefCell<Option<TunerEngine>>,
     shared: Arc<TunerSharedState>,
+    params: Arc<TunerParams>,
+    gui_context: Option<nice_plug::context::gui::GuiContext>,
 }
 impl FrameDriver {
     fn spawn_engine(&self) -> Result<(), HandlerError> {
@@ -352,7 +352,13 @@ impl FrameDriver {
         surface.configure(&device, &surface_config);
         let format = surface_config.format;
 
-        let ui = crate::tuner_ui::TunerUi::new(Arc::clone(&self.shared), font());
+        let mut ui = crate::tuner_ui::TunerUi::new(Arc::clone(&self.shared), font());
+        if let Some(context) = &self.gui_context {
+            ui.set_host_controls(crate::host_controls::HostControls::new(
+                Arc::clone(&self.params),
+                context.clone(),
+            ));
+        }
         let scene = crate::tuner_ui::static_scene();
 
         // The instance and the adapter move in: frost keeps both for capability
