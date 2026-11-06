@@ -364,15 +364,17 @@ pub fn effective_args(settings: &Settings) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// A folder this tree can vouch for, not one it hopes for. These two
+    /// tests `unwrap()` every write, so an unusable `%TEMP%` — redirected,
+    /// locked by a sync client, denied by the confinement a test runner
+    /// happens to live under, or simply full — reports a failure of the
+    /// settings code when the only thing wrong is the folder; measured here
+    /// as `Access is denied. (os error 5)` on a machine that never denied a
+    /// permission. `frost::scratch` claims a directory rather than assuming a
+    /// name, and falls back to the workspace's own `target` when temp refuses
+    /// (see `src/scratch.rs`, and the note in `.gitignore` about `**/target/`).
     fn geometry_test_path() -> std::path::PathBuf {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "nice-tuner-geometry-{}-{unique}.json",
-            std::process::id()
-        ))
+        frost::scratch::claim("nice-tuner-geometry").join("settings.json")
     }
 
     #[test]
