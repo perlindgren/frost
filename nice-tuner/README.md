@@ -110,7 +110,9 @@ cargo xtask bundle nice-tuner --release --features diag
 The overlay shows editor FPS, frame intervals, processing times and rendering
 statistics. It receives the actual frame delta before tuner animation clamping
 and stays active on the settings page as well. These are GUI measurements, not
-DAW audio callback timing. The feature is disabled by default.
+DAW audio callback timing. The VSync readout and Alt-V shortcut are disabled
+because the embedded renderer controls presentation independently of that flag.
+The feature is disabled by default.
 
 ### Editor frame scheduling
 
