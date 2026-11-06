@@ -152,6 +152,9 @@ pub struct TunerUi {
     buffer_opts: Vec<String>,
     output_buffer_opts: Vec<String>,
     buffers_linked: bool,
+    /// One ASIO driver clocks both directions: the output rate mirrors the
+    /// sample rate and cannot be picked apart from it.
+    rates_linked: bool,
     save_note: Option<String>,
     #[cfg(feature = "standalone")]
     pending_apply: Option<PendingAudioApply>,
@@ -238,6 +241,7 @@ impl TunerUi {
             buffer_opts: Vec::new(),
             output_buffer_opts: Vec::new(),
             buffers_linked: false,
+            rates_linked: false,
             save_note: None,
             #[cfg(feature = "standalone")]
             pending_apply: None,
@@ -1001,16 +1005,16 @@ impl TunerUi {
     /// new backend cannot offer fall back to "(system default)".
     /// Read the current backend ONCE: devices, defaults, rates, buffers.
     ///
-    /// ASIO must be asked through a child process while this one
-    /// streams: asio-sys keeps exactly ONE driver loaded (the live
-    /// stream's) and refuses every other load, so in-process
-    /// enumeration here sees only the driver already in use — device
-    /// lists come back near-empty and stream options fall through to
-    /// canned guesses (a hard-wired 64 …). A child opens no stream, so
-    /// it sees every registered driver and can ask the SELECTED device
-    /// for its real rates and buffer ranges. The live audio is never
-    /// touched: nothing is closed, nothing restarts. The parent's own
-    /// (partial) view is unioned in, so neither side's blind spot wins.
+    /// ASIO is asked through a child process, because asking in process is not
+    /// free while audio runs: the SDK keeps ONE loaded driver per process and
+    /// the temporary handle a capability query opens shuts that driver down on
+    /// the way out (`asio-sys` 0.4.0 `bindings/mod.rs:1035`), so a query here
+    /// would silence the live stream with nothing reported. The child opens no
+    /// stream, so it loads the SELECTED driver freely and answers its real
+    /// rates, channels and buffer ranges. The parent's own view is unioned in
+    /// as well — while a stream is running its ASIO capability answers are
+    /// unknowns by design (see `devices::asio_stream_live`), so the union adds
+    /// driver names, which cost nothing to read, and nothing else.
     #[cfg(feature = "standalone")]
     fn take_snapshot(&mut self) {
         let backend = self.backend_key().to_owned();
@@ -1106,6 +1110,7 @@ impl TunerUi {
         self.buffer_opts = s.buffers.iter().map(|b| b.to_string()).collect();
         self.output_buffer_opts = s.output_buffers.iter().map(|b| b.to_string()).collect();
         self.set_buffers_linked(s.buffers_linked);
+        self.set_rates_linked(s.rates_linked);
         self.apply_input_channels(s.input_channels, s.default_input_channel);
         self.output_channel_opts = s.output_channel_options.clone();
         self.default_output_channels = s.default_output_channels;
@@ -1185,6 +1190,7 @@ impl TunerUi {
                 self.snap.as_ref().and_then(|s| s.output_buffer_pref);
         }
         self.sync_linked_buffers();
+        self.sync_linked_rates();
     }
 
     fn refresh_devices(&mut self) {
@@ -1249,10 +1255,33 @@ impl TunerUi {
         }
     }
 
+    /// The rate pair mirrors the buffer pair, including who may call it:
+    /// the standalone snapshot applies it, and the tests apply it by hand.
+    #[cfg(any(feature = "standalone", test))]
+    fn set_rates_linked(&mut self, linked: bool) {
+        self.rates_linked = linked;
+        self.sync_linked_rates();
+        if linked && self.open_dropdown == Some(Dropdown::OutputRate) {
+            self.open_dropdown = None;
+        }
+    }
+
+    fn sync_linked_rates(&mut self) {
+        if self.rates_linked {
+            self.settings.output_sample_rate = self.settings.sample_rate;
+        }
+    }
+
     fn dropdown_disabled(&self, dd: Dropdown) -> bool {
         self.is_applying()
             || (dd == Dropdown::InputCh && self.settings.backend.as_deref() == Some("jack"))
+            // One ASIO driver per process is asio-sys law, not this app's
+            // policy. The output row already mirrors the input driver, so
+            // offering to repoint it only offers a pair that cannot open —
+            // and a second driver cannot even be loaded to be asked.
+            || (dd == Dropdown::Output && self.settings.backend.as_deref() == Some("asio"))
             || (dd == Dropdown::OutputBuffer && self.buffers_linked)
+            || (dd == Dropdown::OutputRate && self.rates_linked)
             || (matches!(dd, Dropdown::OutputCh | Dropdown::OutputRate)
                 && (self
                     .settings
@@ -1415,7 +1444,6 @@ impl TunerUi {
             .a4_ref_bits
             .store(440f64.to_bits(), Ordering::Relaxed);
         self.shared.gate_db.store(-60.0);
-        self.shared.input_channel.store(1);
         self.refresh_devices();
         self.save_note = Some("Defaults selected — Apply to save".into());
     }
@@ -1462,11 +1490,9 @@ impl TunerUi {
         if self.settings.input_channel.is_none() {
             self.settings.input_channel = self.default_input_channel;
         }
-        // The audio implementation still needs a concrete channel while the
-        // settings remain unset. Its fallback must not appear as a default.
-        self.shared
-            .input_channel
-            .store(self.settings.input_channel.unwrap_or(1));
+        // Draft only. The running stream's channel count is whatever was
+        // applied, and `standalone::audio` publishes that to the plugin when it
+        // opens the stream; a draft must not reach the audio state.
     }
 
     /// PipeWire can apply its quantum only after a JACK client activates.
@@ -1852,6 +1878,7 @@ impl TunerUi {
             }
             Dropdown::Rate => {
                 self.settings.sample_rate = if at_default { None } else { raw.parse().ok() };
+                self.sync_linked_rates();
             }
             Dropdown::InputBuffer => {
                 self.settings.period_size = if at_default { None } else { raw.parse().ok() };
@@ -1860,16 +1887,13 @@ impl TunerUi {
             Dropdown::OutputBuffer => {
                 self.settings.output_period_size = if at_default { None } else { raw.parse().ok() };
             }
-            // Channel select is live for both meter and detection.
-            // No restart; APPLY persists. The empty default row stays None.
+            // The input channel belongs to the stream: it is opened with as
+            // many planes as the applied setting names. A draft must therefore
+            // not reach the audio state — picking a channel the running stream
+            // does not have selects a plane that is not there, which is silence
+            // for the meter and the monitor until APPLY rebuilds the stream.
             Dropdown::InputCh => {
                 self.settings.input_channel = if at_default { None } else { raw.parse().ok() };
-                self.shared.input_channel.store(
-                    self.settings
-                        .input_channel
-                        .or(self.default_input_channel)
-                        .unwrap_or(1),
-                );
             }
             // Params are live the moment they are picked (no restart needed);
             // APPLY only decides whether they persist to the next launch.
@@ -2103,6 +2127,9 @@ impl TunerUi {
             || a.output_channels != s.output_channels
             || a.sample_rate != s.sample_rate
             || a.output_sample_rate != s.output_sample_rate
+            // The stream is opened with as many input planes as this names, so
+            // a wider selection is a different stream — not a live parameter.
+            || a.input_channel != s.input_channel
             || a.period_size != s.period_size
             || a.output_period_size != s.output_period_size
             || a.input_latency != s.input_latency
@@ -2791,6 +2818,38 @@ mod tests {
         assert_eq!(ui.settings.output_period_size, None);
     }
 
+    /// One ASIO driver per process is asio-sys law: the output row carries
+    /// the input driver's name, cannot be repointed, and its buffer and rate
+    /// are the driver's single values.
+    #[test]
+    fn asio_locks_output_device_buffer_and_rate_to_the_input_driver() {
+        let mut ui = channel_ui();
+        ui.settings.backend = Some("asio".into());
+        ui.settings.input_device = Some("FlexASIO".into());
+        ui.settings.output_device = Some("FlexASIO".into());
+        assert!(ui.dropdown_disabled(Dropdown::Output));
+        assert!(!ui.dropdown_disabled(Dropdown::Input));
+        assert_eq!(ui.value_text(Dropdown::Output), "FlexASIO");
+        ui.set_buffers_linked(true);
+        assert!(ui.dropdown_disabled(Dropdown::OutputBuffer));
+        let before = ui.settings.output_device.clone();
+        ui.pick(Dropdown::Output, 1);
+        assert_eq!(
+            ui.settings.output_device, before,
+            "a disabled row must not change"
+        );
+        ui.settings.sample_rate = Some(44100.0);
+        ui.settings.output_sample_rate = Some(48000.0);
+        ui.set_rates_linked(true);
+        assert!(ui.dropdown_disabled(Dropdown::OutputRate));
+        assert_eq!(ui.settings.output_sample_rate, Some(44100.0), "one clock");
+        ui.pick(Dropdown::OutputRate, 0);
+        assert_eq!(ui.settings.output_sample_rate, Some(44100.0));
+        ui.settings.sample_rate = Some(48000.0);
+        ui.sync_linked_rates();
+        assert_eq!(ui.settings.output_sample_rate, Some(48000.0));
+    }
+
     #[test]
     fn separate_output_buffer_can_be_changed_without_changing_input() {
         let mut ui = channel_ui();
@@ -2829,7 +2888,7 @@ mod tests {
         ui.apply_input_channels(Some(2), None);
         ui.pick(Dropdown::InputCh, 2);
         assert_eq!(ui.settings.input_channel, Some(2));
-        assert_eq!(ui.shared.input_channel.load(), 2);
+        assert_eq!(ui.shared.input_channel.load(), 1);
         assert_eq!(ui.value_text(Dropdown::InputCh), "channel 2");
         ui.pick(Dropdown::InputCh, 0);
         assert_eq!(ui.settings.input_channel, None);
@@ -2842,7 +2901,7 @@ mod tests {
         let mut ui = channel_ui();
         ui.apply_input_channels(Some(4), Some(3));
         assert_eq!(ui.settings.input_channel, Some(3));
-        assert_eq!(ui.shared.input_channel.load(), 3);
+        assert_eq!(ui.shared.input_channel.load(), 1);
         assert_eq!(ui.value_text(Dropdown::InputCh), "channel 3");
         let rows = ui.dropdown_rows(Dropdown::InputCh).0;
         assert_eq!(rows[0], ("3".into(), "3".into()));
@@ -2856,6 +2915,36 @@ mod tests {
         ui.settings.input_channel = Some(0); // legacy Auto
         ui.apply_input_channels(Some(1), None);
         assert_eq!(ui.settings.input_channel, None);
+    }
+
+    /// The channel belongs to the stream, which is opened with as many input
+    /// planes as the applied setting names. Picking a wider channel must
+    /// therefore be APPLY's business — and APPLY must rebuild the stream —
+    /// rather than silently aim the meter and the monitor at a plane that is
+    /// not there, which is what a live pick did: instant silence, no error, and
+    /// an APPLY that changed nothing because the draft was already stored.
+    #[test]
+    fn a_wider_channel_is_an_audio_change_not_a_live_parameter() {
+        let mut ui = channel_ui();
+        ui.apply_input_channels(Some(4), Some(1));
+        ui.applied.input_channel = Some(1);
+        ui.settings.input_channel = Some(1);
+        ui.shared.input_channel.store(1);
+        assert!(!ui.audio_dirty());
+        let third = ui
+            .dropdown_rows(Dropdown::InputCh)
+            .0
+            .iter()
+            .position(|(_, raw)| *raw == "3")
+            .expect("a four-port driver offers channel 3");
+        ui.pick(Dropdown::InputCh, third);
+        assert_eq!(ui.settings.input_channel, Some(3));
+        assert_eq!(
+            ui.shared.input_channel.load(),
+            1,
+            "the running stream still has one plane"
+        );
+        assert!(ui.audio_dirty(), "a wider channel needs a wider stream");
     }
 
     #[test]

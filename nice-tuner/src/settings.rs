@@ -288,6 +288,14 @@ pub fn buffers_must_match(backend: &str, input: Option<&str>, output: Option<&st
             && input.is_some_and(|name| !name.is_empty() && Some(name) == output)
 }
 
+/// One ASIO driver is clocked at one sample rate for both directions, so a
+/// separate output rate is not something it can be asked for. Narrower than
+/// the buffer rule above: CoreAudio keeps its independent per-device rates,
+/// which the output rate picker exists to express.
+pub fn rates_must_match(backend: &str, input: Option<&str>, output: Option<&str>) -> bool {
+    backend == "asio" && input.is_some_and(|name| !name.is_empty() && Some(name) == output)
+}
+
 fn format_rate(r: f32) -> String {
     if r.fract() == 0.0 {
         format!("{}", r as u32)
@@ -356,15 +364,17 @@ pub fn effective_args(settings: &Settings) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// A folder this tree can vouch for, not one it hopes for. These two
+    /// tests `unwrap()` every write, so an unusable `%TEMP%` — redirected,
+    /// locked by a sync client, denied by the confinement a test runner
+    /// happens to live under, or simply full — reports a failure of the
+    /// settings code when the only thing wrong is the folder; measured here
+    /// as `Access is denied. (os error 5)` on a machine that never denied a
+    /// permission. `frost::scratch` claims a directory rather than assuming a
+    /// name, and falls back to the workspace's own `target` when temp refuses
+    /// (see `src/scratch.rs`, and the note in `.gitignore` about `**/target/`).
     fn geometry_test_path() -> std::path::PathBuf {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "nice-tuner-geometry-{}-{unique}.json",
-            std::process::id()
-        ))
+        frost::scratch::claim("nice-tuner-geometry").join("settings.json")
     }
 
     #[test]
@@ -528,6 +538,25 @@ mod tests {
         }
         assert!(!buffers_must_match(
             "wasapi",
+            Some("Interface"),
+            Some("Interface")
+        ));
+    }
+
+    /// Rate-linking is ASIO's alone: one driver, one clock. CoreAudio keeps
+    /// the independent output rate its picker exists for, even where the two
+    /// names are the same device.
+    #[test]
+    fn rate_linking_is_asio_alone() {
+        assert!(rates_must_match(
+            "asio",
+            Some("Interface"),
+            Some("Interface")
+        ));
+        assert!(!rates_must_match("asio", Some("Mic"), Some("Speakers")));
+        assert!(!rates_must_match("asio", None, None));
+        assert!(!rates_must_match(
+            "core-audio",
             Some("Interface"),
             Some("Interface")
         ));

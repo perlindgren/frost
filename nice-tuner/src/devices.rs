@@ -108,6 +108,208 @@ pub(crate) fn open_host(backend: &str) -> Option<cpal::Host> {
     cpal::host_from_id(host_id_from_value(backend)?).ok()
 }
 
+/// ASIO driver names, read from the registry.
+///
+/// Loading a driver is the only way to learn what it can do, and cpal's
+/// enumeration loads EVERY registered driver to build its list — a moment
+/// each, per direction, per query, on a machine whose audio gear left a
+/// dozen vendor drivers behind. Names alone need nothing at all, so the
+/// settings dropdowns are populated from here and the capability question
+/// is put to the single driver the user actually picks.
+#[cfg(all(windows, feature = "asio-host"))]
+fn asio_driver_names() -> Vec<String> {
+    let mut names = asio_sys::Asio::new().driver_names();
+    names.sort();
+    names.dedup();
+    names
+}
+
+#[cfg(not(all(windows, feature = "asio-host")))]
+fn asio_driver_names() -> Vec<String> {
+    Vec::new()
+}
+
+/// What one ASIO driver answers about itself, gathered in a single load.
+///
+/// ASIO carries no portable description of a driver: `ASIOGetChannels`,
+/// `ASIOGetSampleRate`, `ASIOGetBufferSize` and `ASIOCanSampleRate` are the
+/// only answers there are, and each of them needs the driver loaded. cpal
+/// asks all four of EVERY registered driver to build its device list; we ask
+/// the one driver the user picked. `None` is the honest answer everywhere it
+/// applies — a driver whose hardware is switched off, and any question asked
+/// while this process is streaming, where the answer is not worth what the
+/// load would cost. See [`asio_stream_live`].
+#[derive(Clone)]
+#[cfg_attr(not(all(windows, feature = "asio-host")), allow(dead_code))]
+struct AsioCaps {
+    inputs: u32,
+    outputs: u32,
+    /// The rate the driver is set to right now, which is what its own
+    /// control panel shows. Some drivers report 0 until a stream runs.
+    rate: Option<f32>,
+    buffer_range: Option<(u32, u32)>,
+    buffer_pref: Option<u32>,
+    /// The common ladder this driver answers `ASIOCanSampleRate` to,
+    /// plus the rate it is currently on. cpal probes the same ladder
+    /// internally to build its supported-config list, so the panel's
+    /// rate options are the ones it offered before.
+    rates: Vec<f32>,
+}
+
+/// How many ASIO streams this process holds open right now.
+///
+/// ASIO permits one loaded driver per process, and `asio-sys` guards a second
+/// load with a handle stored **on the `Asio` value** that performed the first
+/// one (`asio-sys` 0.4.0, `bindings/mod.rs:445-458`). A capability query opens
+/// its own `Asio::new()`, so that guard is empty, the load is granted, and the
+/// temporary `Driver`'s `Drop` — `stop`, `dispose_buffers`, `ASIOExit`,
+/// `remove_current_driver` (`:1035`, `:1017`, `:987-997`) — runs against the
+/// driver a running stream is using. Live audio is therefore one capability
+/// query away from silence, with nothing reported anywhere; measured on this
+/// machine as the tuner's waveform dying the moment the settings page opened
+/// and never returning until restart (`BUGS.md`).
+static ASIO_STREAMS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Whether this process is streaming through an ASIO driver right now.
+pub fn asio_stream_live() -> bool {
+    ASIO_STREAMS.load(std::sync::atomic::Ordering::Acquire) > 0
+}
+
+/// Marks this process as the owner of the ASIO driver until it is dropped.
+///
+/// The audio path takes one before it asks cpal for a device and stores it in
+/// the value that holds the streams, after them, so it is released only once
+/// both are gone. While one is held, [`Snapshot`] answers ASIO capability
+/// questions with unknowns; the settings page reads its ASIO answers from a
+/// child process, which loads drivers in a process of its own.
+#[derive(Debug)]
+pub struct AsioStreamGuard;
+
+/// Take an [`AsioStreamGuard`].
+pub fn asio_stream_guard() -> AsioStreamGuard {
+    ASIO_STREAMS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    AsioStreamGuard
+}
+
+impl Drop for AsioStreamGuard {
+    fn drop(&mut self) {
+        ASIO_STREAMS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// The rule in front of every capability load: a process that is streaming
+/// does not ask, whatever the answer would have cost it to ask.
+fn asio_caps_answered(name: &str, load: impl FnOnce(&str) -> Option<AsioCaps>) -> Option<AsioCaps> {
+    if asio_stream_live() { None } else { load(name) }
+}
+
+#[cfg(all(windows, feature = "asio-host"))]
+fn asio_caps(name: &str) -> Option<AsioCaps> {
+    asio_caps_answered(name, load_asio_caps)
+}
+
+#[cfg(all(windows, feature = "asio-host"))]
+fn load_asio_caps(name: &str) -> Option<AsioCaps> {
+    use asio_sys::bindings::BufferPreference;
+    let driver = asio_sys::Asio::new().load_driver(name).ok()?;
+    let channels = driver.channels().ok()?;
+    let count = |n: i32| u32::try_from(n).unwrap_or(0);
+    let rate = driver
+        .sample_rate()
+        .ok()
+        .filter(|rate| *rate > 0.0)
+        .map(|rate| rate as f32);
+    let range = driver.buffersize_range().ok();
+    let buffer_range = range.and_then(|range| {
+        let min = u32::try_from(range.min).ok()?;
+        let max = u32::try_from(range.max).ok()?;
+        (max > 0).then_some((min, max))
+    });
+    let buffer_pref = range
+        .map(|range| match range.preferred {
+            BufferPreference::Only(frames) | BufferPreference::Preferred(frames) => frames,
+            BufferPreference::Stepped { preferred, .. } => preferred,
+        })
+        .filter(|frames| *frames > 0);
+    let mut rates: Vec<f32> = DEFAULT_RATES
+        .into_iter()
+        .filter(|rate| driver.can_sample_rate(f64::from(*rate)).unwrap_or(false))
+        .collect();
+    if let Some(rate) = rate.filter(|rate| !rates.contains(rate)) {
+        rates.push(rate);
+        rates.sort_by(f32::total_cmp);
+    }
+    Some(AsioCaps {
+        inputs: count(channels.ins),
+        outputs: count(channels.outs),
+        rate,
+        buffer_range,
+        buffer_pref,
+        rates,
+    })
+}
+
+#[cfg(not(all(windows, feature = "asio-host")))]
+fn asio_caps(name: &str) -> Option<AsioCaps> {
+    // Nothing to load here; the rule still runs through the same path.
+    asio_caps_answered(name, |_| None)
+}
+
+/// Buffer sizes this driver permits, from its own min and max.
+fn asio_buffer_options(range: Option<(u32, u32)>) -> Vec<u32> {
+    let (min, max) = range.unwrap_or((0, 0));
+    if max == 0 {
+        return Vec::new();
+    }
+    BUFFER_CANDIDATES
+        .into_iter()
+        .filter(|frames| *frames >= min && *frames <= max)
+        .collect()
+}
+
+/// Answers gathered on demand, at most once per driver per pass.
+///
+/// ASIO permits one loaded driver per process, so what can be held between
+/// questions is the ANSWER, never the handle — and the scope is one
+/// `snapshot`, because a driver's current rate is its own control panel's to
+/// change. A value carried in from an earlier pass would be a claim about now,
+/// made from then. Failures are held too: a driver whose hardware is off is
+/// asked once per pass, not once per question.
+#[derive(Default)]
+struct AsioCapsCache {
+    entries: Vec<(String, Option<AsioCaps>)>,
+}
+
+impl AsioCapsCache {
+    fn caps(&mut self, name: Option<&str>) -> Option<AsioCaps> {
+        let name = name?;
+        if let Some((_, held)) = self.entries.iter().find(|(held, _)| held == name) {
+            return held.clone();
+        }
+        let loaded = asio_caps(name);
+        self.entries.push((name.to_owned(), loaded.clone()));
+        loaded
+    }
+}
+
+/// The rate the picked input driver is on, falling back to the output one.
+fn asio_rate(caps: &mut AsioCapsCache, input: Option<&str>, output: Option<&str>) -> Option<f32> {
+    let rate = caps.caps(input).and_then(|caps| caps.rate);
+    rate.or_else(|| caps.caps(output).and_then(|caps| caps.rate))
+}
+
+/// The picked output driver's own rate, without falling back to input.
+fn asio_output_rate(caps: &mut AsioCapsCache, output: Option<&str>) -> Option<f32> {
+    caps.caps(output).and_then(|caps| caps.rate)
+}
+
+/// The picked input driver's input width; zero stays unknown.
+fn asio_input_channels(caps: &mut AsioCapsCache, input: Option<&str>) -> Option<u32> {
+    caps.caps(input)
+        .map(|caps| caps.inputs)
+        .filter(|&inputs| inputs > 0)
+}
+
 fn device_names(
     devices: impl Iterator<Item = cpal::Device>,
     backend: &str,
@@ -132,6 +334,9 @@ pub fn list_input_devices(backend: &str) -> Vec<String> {
     if backend == "jack" {
         return jack::snapshot().inputs;
     }
+    if backend == "asio" {
+        return asio_driver_names();
+    }
     open_host(backend)
         .and_then(|h| h.input_devices().ok())
         .map(|devices| device_names(devices, backend, cpal::DeviceDirection::Input))
@@ -142,6 +347,9 @@ pub fn list_output_devices(backend: &str) -> Vec<String> {
     #[cfg(target_os = "linux")]
     if backend == "jack" {
         return jack::snapshot().outputs;
+    }
+    if backend == "asio" {
+        return asio_driver_names();
     }
     open_host(backend)
         .and_then(|h| h.output_devices().ok())
@@ -160,15 +368,14 @@ pub fn default_device_names(backend: &str) -> (Option<String>, Option<String>) {
         return (snapshot.def_in, snapshot.def_out);
     }
     if backend == "asio" {
-        // ASIO has no system default: cpal nominates the FIRST driver.
-        // Refine that to the first driver that can actually serve the
-        // direction — an output-only driver must never be nominated
-        // as the tuner's input. (list_*_devices already filters by
-        // channel capability, in registry order.)
-        return (
-            list_input_devices(backend).into_iter().next(),
-            list_output_devices(backend).into_iter().next(),
-        );
+        // ASIO has no system default. cpal's convention is to nominate the
+        // FIRST registered driver, and the only way to know whether that one
+        // can serve a direction is to load it — and the next, and the next.
+        // So nothing is nominated: the dropdown lists every registered name
+        // at no cost, and everything below stays unknown until the user names
+        // a driver. A cold start under ASIO shows dashes and waits for a
+        // choice, which is the honest reading of "no device chosen yet".
+        return (None, None);
     }
     let host = if backend == "auto" || backend.is_empty() {
         cpal::default_host()
@@ -205,17 +412,23 @@ pub fn driver_default_rate(
     if backend == "dummy" {
         return None;
     }
+    if backend == "asio" {
+        // ASIO's current rate belongs to one driver. There is no host-wide
+        // rate to ask, and no reason to load a driver nobody chose.
+        return asio_rate(&mut AsioCapsCache::default(), input, output);
+    }
     let host = if backend == "auto" || backend.is_empty() {
         cpal::default_host()
     } else {
         open_host(backend)?
     };
+    // A named device that cannot be found stays unknown. Falling back to the
+    // system default here would report some other device's rate under the
+    // name the user picked — and since ASIO's dropdown lists every registered
+    // driver, a pick whose hardware is off is now an ordinary case, not an
+    // impossible one.
     let in_dev = match input {
-        Some(n) => host
-            .input_devices()
-            .ok()
-            .and_then(|d| find_named(d, n))
-            .or_else(|| host.default_input_device()),
+        Some(n) => host.input_devices().ok().and_then(|d| find_named(d, n)),
         None => host.default_input_device(),
     };
     if let Some(rate) = in_dev
@@ -226,11 +439,7 @@ pub fn driver_default_rate(
         return Some(rate);
     }
     let out_dev = match output {
-        Some(n) => host
-            .output_devices()
-            .ok()
-            .and_then(|d| find_named(d, n))
-            .or_else(|| host.default_output_device()),
+        Some(n) => host.output_devices().ok().and_then(|d| find_named(d, n)),
         None => host.default_output_device(),
     };
     out_dev
@@ -241,6 +450,9 @@ pub fn driver_default_rate(
 
 /// Query the selected output device's own default, without falling back to input.
 fn output_default_rate(backend: &str, output: Option<&str>) -> Option<f32> {
+    if backend == "asio" {
+        return asio_output_rate(&mut AsioCapsCache::default(), output);
+    }
     let host = if backend == "auto" || backend.is_empty() {
         cpal::default_host()
     } else {
@@ -285,6 +497,13 @@ fn find_named(mut devs: impl Iterator<Item = cpal::Device>, want: &str) -> Optio
 /// The selected input device's channel count. A missing device or failed
 /// query remains unknown; it must not turn into a guessed eight-channel list.
 fn input_channel_count(backend: &str, input: Option<&str>) -> Option<u32> {
+    if backend == "asio" {
+        // The one driver the user picked, asked directly. Nothing picked
+        // means nothing loaded and no channel count known — the alternative
+        // is loading drivers until one answers, which is the sweep this
+        // whole path exists to avoid.
+        return asio_input_channels(&mut AsioCapsCache::default(), input);
+    }
     let host = if backend == "auto" || backend.is_empty() {
         cpal::default_host()
     } else {
@@ -365,7 +584,67 @@ pub type StreamOptions = (
     Vec<StreamFormat>,
 );
 
+/// The stream shapes one ASIO direction can actually take: one entry per
+/// channel count from one to the port count, per rate the driver agreed to.
+///
+/// `ASIOCreateBuffers` accepts fewer buffers than the hardware has ports, so
+/// a six-input driver still opens a mono stream — which is what the tuner's
+/// input always is. Listing the device only at its full width, as cpal's
+/// per-rate/per-count expansion does not, makes every real configuration look
+/// unsupported. Each entry pins one rate, as cpal does: a span between the
+/// lowest and highest rate the driver likes would also claim the ones in
+/// between, which the driver was never asked about.
+fn asio_formats(rates: &[f32], buffer_range: Option<(u32, u32)>, ports: u32) -> Vec<StreamFormat> {
+    rates
+        .iter()
+        .flat_map(|rate| {
+            (1..=ports).map(move |channels| StreamFormat {
+                channels,
+                min_rate: *rate as u32,
+                max_rate: *rate as u32,
+                buffer_range,
+            })
+        })
+        .collect()
+}
+
+/// The ASIO shape of `stream_options`: one load of the chosen driver, and
+/// nothing at all while no driver is chosen. Rates come from
+/// `ASIOCanSampleRate`, buffer sizes from `ASIOGetBufferSize`, widths from
+/// `ASIOGetChannels` — the same three questions cpal puts to every registered
+/// driver on the machine, put once to the one about to carry the audio.
+fn asio_stream_options(
+    caps: &mut AsioCapsCache,
+    input: Option<&str>,
+    output: Option<&str>,
+) -> StreamOptions {
+    let input_caps = caps.caps(input);
+    let output_caps = caps.caps(output);
+    let input_formats = input_caps
+        .as_ref()
+        .map(|caps| asio_formats(&caps.rates, caps.buffer_range, caps.inputs))
+        .unwrap_or_default();
+    let output_formats = output_caps
+        .as_ref()
+        .map(|caps| asio_formats(&caps.rates, caps.buffer_range, caps.outputs))
+        .unwrap_or_default();
+    (
+        input_caps
+            .as_ref()
+            .or(output_caps.as_ref())
+            .map(|caps| caps.rates.clone())
+            .unwrap_or_default(),
+        asio_buffer_options(input_caps.as_ref().and_then(|caps| caps.buffer_range)),
+        asio_buffer_options(output_caps.as_ref().and_then(|caps| caps.buffer_range)),
+        input_formats,
+        output_formats,
+    )
+}
+
 pub fn stream_options(backend: &str, input: Option<&str>, output: Option<&str>) -> StreamOptions {
+    if backend == "asio" {
+        return asio_stream_options(&mut AsioCapsCache::default(), input, output);
+    }
     let host = if backend == "auto" || backend.is_empty() {
         Some(cpal::default_host())
     } else {
@@ -495,6 +774,10 @@ pub struct Snapshot {
     pub buffers: Vec<u32>,
     pub output_buffers: Vec<u32>,
     pub buffers_linked: bool,
+    /// One driver owns both directions, so its single sample rate clocks the
+    /// output stream whatever a settings file once said.
+    #[serde(default)]
+    pub rates_linked: bool,
     pub output_buffer_pref: Option<u32>,
     pub driver_rate: Option<f32>,
     pub input_formats: Vec<StreamFormat>,
@@ -581,10 +864,14 @@ impl Snapshot {
             .sample_rate
             .or(self.driver_rate)
             .ok_or("Select a sample rate")?;
-        let output_rate = resolved
-            .output_sample_rate
-            .or(self.default_output_rate)
-            .ok_or("Select an output sample rate")?;
+        let output_rate = if self.rates_linked {
+            rate
+        } else {
+            resolved
+                .output_sample_rate
+                .or(self.default_output_rate)
+                .ok_or("Select an output sample rate")?
+        };
         if resolved.input_device == resolved.output_device && output_rate != rate {
             return Err(
                 "The same audio device requires matching input and output sample rates".into(),
@@ -649,55 +936,56 @@ impl Snapshot {
     }
 }
 
-/// The driver's preferred buffer size for an ASIO device, by direct
-/// asio-sys call. Runs where cpal has just finished loading and
-/// releasing its driver handles (the child), so the brief second load
-/// cannot collide with anything. Everywhere else — and on any failure,
-/// including this process merely streaming (`DriverAlreadyExists`) —
-/// honestly None.
-#[cfg(all(windows, feature = "asio-host"))]
-fn asio_buffer_pref(name: &str) -> Option<u32> {
-    use asio_sys::bindings::BufferPreference;
-    let driver = asio_sys::Asio::new().load_driver(name).ok()?;
-    let pref = driver.buffersize_range().ok()?.preferred;
-    let n = match pref {
-        BufferPreference::Only(n) | BufferPreference::Preferred(n) => n,
-        BufferPreference::Stepped { preferred, .. } => preferred,
-    };
-    (n > 0).then_some(n)
-}
-
-#[cfg(not(all(windows, feature = "asio-host")))]
-fn asio_buffer_pref(_name: &str) -> Option<u32> {
-    None
-}
-
 /// In-process snapshot: every enumeration call, once.
 pub fn snapshot(backend: &str, input: Option<&str>, output: Option<&str>) -> Snapshot {
     #[cfg(target_os = "linux")]
     if backend == "jack" {
         return jack::snapshot();
     }
+    // One pass, one load per ASIO driver: every question below is answered
+    // from a single gathering, so picking a driver loads it once. Other
+    // backends never touch this.
+    let asio = backend == "asio";
+    let mut caps = AsioCapsCache::default();
     let (def_in, def_out) = default_device_names(backend);
-    let (rates, mut buffers, mut output_buffers, input_formats, output_formats) =
-        stream_options(backend, input, output);
+    let (rates, mut buffers, mut output_buffers, input_formats, output_formats) = if asio {
+        asio_stream_options(&mut caps, input, output)
+    } else {
+        stream_options(backend, input, output)
+    };
     let buffers_linked = crate::settings::buffers_must_match(
         backend,
         input.or(def_in.as_deref()),
         output.or(def_out.as_deref()),
     );
-    let driver_rate = driver_default_rate(backend, input, output);
-    let default_output_rate = output_default_rate(backend, output);
+    let rates_linked = crate::settings::rates_must_match(
+        backend,
+        input.or(def_in.as_deref()),
+        output.or(def_out.as_deref()),
+    );
+    let driver_rate = if asio {
+        asio_rate(&mut caps, input, output)
+    } else {
+        driver_default_rate(backend, input, output)
+    };
+    let default_output_rate = if asio {
+        asio_output_rate(&mut caps, output)
+    } else {
+        output_default_rate(backend, output)
+    };
     let output_rates = output_rate_options(&output_formats, default_output_rate);
-    let input_channels = input_channel_count(backend, input);
+    let input_channels = if asio {
+        asio_input_channels(&mut caps, input)
+    } else {
+        input_channel_count(backend, input)
+    };
     // Preferred buffer: a property of the input device (the one whose
     // clock runs the show), or of whatever the default input is.
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-    let mut buffer_pref = (backend == "asio")
+    let mut buffer_pref = asio
         .then(|| input.map(str::to_owned).or_else(|| def_in.clone()))
         .flatten()
-        .as_deref()
-        .and_then(asio_buffer_pref);
+        .and_then(|name| caps.caps(Some(&name)).and_then(|caps| caps.buffer_pref));
     let mut output_buffer_pref = if buffers_linked { buffer_pref } else { None };
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut default_input_channel = None;
@@ -757,6 +1045,7 @@ pub fn snapshot(backend: &str, input: Option<&str>, output: Option<&str>) -> Sna
         buffers,
         output_buffers,
         buffers_linked,
+        rates_linked,
         output_buffer_pref,
         input_formats,
         output_formats,
@@ -819,6 +1108,57 @@ pub fn snapshot_via_child(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ASIO rows are the registry's driver list, identical in both
+    /// directions: a driver whose hardware is switched off stays listed and
+    /// is refused when picked, rather than hidden or guessed about.
+    #[cfg(all(windows, feature = "asio-host"))]
+    #[test]
+    fn asio_lists_registered_names_in_both_directions() {
+        let inputs = list_input_devices("asio");
+        assert_eq!(inputs, asio_driver_names());
+        assert_eq!(inputs, list_output_devices("asio"));
+        let mut sorted = inputs.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(inputs, sorted);
+    }
+
+    /// A name no driver answers to is an unknown, not zero channels.
+    #[cfg(all(windows, feature = "asio-host"))]
+    #[test]
+    fn an_unregistered_asio_name_has_no_known_channels() {
+        assert!(asio_caps("no such ASIO driver").is_none());
+        assert_eq!(
+            input_channel_count("asio", Some("no such ASIO driver")),
+            None
+        );
+    }
+
+    /// Nothing chosen means nothing loaded: no rates, no buffer sizes, no
+    /// channel count, and nothing invented in their place.
+    #[test]
+    fn asio_knows_nothing_before_a_driver_is_chosen() {
+        let (rates, buffers, output_buffers, inputs, outputs) =
+            asio_stream_options(&mut AsioCapsCache::default(), None, None);
+        assert!(rates.is_empty());
+        assert!(buffers.is_empty());
+        assert!(output_buffers.is_empty());
+        assert!(inputs.is_empty() && outputs.is_empty());
+        assert_eq!(input_channel_count("asio", None), None);
+        assert_eq!(default_device_names("asio"), (None, None));
+    }
+
+    /// A driver that will not load is asked once per pass: the refusal is
+    /// held, so a dead device costs one attempt, not one per dropdown row.
+    #[cfg(all(windows, feature = "asio-host"))]
+    #[test]
+    fn the_cache_holds_a_refusal_so_a_pass_asks_once() {
+        let mut caps = AsioCapsCache::default();
+        assert!(caps.caps(Some("no such ASIO driver")).is_none());
+        assert!(caps.caps(Some("no such ASIO driver")).is_none());
+        assert_eq!(caps.entries.len(), 1, "the second ask was a second load");
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -902,6 +1242,100 @@ mod tests {
         assert!(snapshot.inputs.iter().all(|name| name.contains(':')));
         assert!(snapshot.outputs.iter().all(|name| name.contains(':')));
         assert_eq!(snapshot.input_channels, Some(1));
+    }
+
+    /// One ASIO driver is clocked once, for both directions: an output rate
+    /// saved from an older configuration is replaced by the driver's own
+    /// rate rather than refused at Apply.
+    #[test]
+    fn one_driver_clocks_both_directions() {
+        let mut snapshot = microphone_snapshot();
+        snapshot.rates_linked = true;
+        let settings = crate::settings::Settings {
+            backend: Some("asio".into()),
+            sample_rate: Some(48000.0),
+            output_sample_rate: Some(44100.0),
+            ..Default::default()
+        };
+        let resolved = snapshot.resolve_settings(&settings).unwrap();
+        assert_eq!(resolved.output_sample_rate, Some(48000.0));
+    }
+
+    /// The bug this pins. A capability query opens its own `Asio`, so
+    /// `asio-sys`'s already-loaded guard — which lives on that value — is
+    /// empty, the load is granted, and the temporary handle's `Drop` stops and
+    /// exits the driver a running stream is using. While a stream owns the
+    /// driver, the question must not be put at all.
+    #[test]
+    fn a_capability_query_is_refused_while_a_stream_owns_the_driver() {
+        // Both halves in one test on purpose: the counter is a process-wide
+        // fact, so a test holding a guard elsewhere would make either half's
+        // answer depend on the order tests happen to run in.
+        static ASKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let asked = || ASKED.load(std::sync::atomic::Ordering::Relaxed);
+        let load = |_: &str| {
+            ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some(AsioCaps {
+                inputs: 6,
+                outputs: 2,
+                rate: Some(48_000.0),
+                buffer_range: Some((8, 2_048)),
+                buffer_pref: Some(32),
+                rates: vec![44_100.0, 48_000.0],
+            })
+        };
+        let driver = "Komplete Audio ASIO Driver";
+        assert!(!asio_stream_live());
+        assert!(asio_caps_answered(driver, load).is_some());
+        assert_eq!(asked(), 1);
+        let owned = asio_stream_guard();
+        assert!(asio_stream_live());
+        assert!(asio_caps_answered(driver, load).is_none());
+        assert_eq!(asked(), 1, "a refused question must not load a driver");
+        drop(owned);
+        assert!(!asio_stream_live());
+        assert!(asio_caps_answered(driver, load).is_some());
+    }
+
+    /// A six-port driver opens a mono stream: ASIO takes fewer buffers than
+    /// the hardware has ports, so the format list must carry every count from
+    /// one to the port count, each pinned to one rate.
+    #[test]
+    fn an_asio_driver_offers_every_channel_count_up_to_its_ports() {
+        let formats = asio_formats(&[44100.0, 48000.0], Some((64, 1024)), 6);
+        assert_eq!(formats.len(), 12);
+        for channels in 1..=6 {
+            assert!(formats.iter().any(|format| format.channels == channels
+                && format.min_rate == 44100
+                && format.max_rate == 44100
+                && format.buffer_range == Some((64, 1024))));
+        }
+        assert!(asio_formats(&[48000.0], None, 0).is_empty());
+        assert!(asio_formats(&[], Some((64, 1024)), 6).is_empty());
+    }
+
+    /// The panel that prompted this: ASIO, Komplete Audio ASIO Driver, mono
+    /// input at 48000/128, stereo output. It has to resolve.
+    #[test]
+    fn a_port_limited_driver_opens_the_mono_input_the_tuner_needs() {
+        let mut snapshot = microphone_snapshot();
+        snapshot.rates = vec![44100.0, 48000.0];
+        snapshot.input_formats = asio_formats(&snapshot.rates, Some((64, 1024)), 6);
+        snapshot.output_formats = asio_formats(&snapshot.rates, Some((64, 1024)), 2);
+        snapshot.input_channels = Some(6);
+        snapshot.rates_linked = true;
+        snapshot.buffers_linked = true;
+        let settings = crate::settings::Settings {
+            backend: Some("asio".into()),
+            sample_rate: Some(48000.0),
+            period_size: Some(128),
+            ..Default::default()
+        };
+        let resolved = snapshot.resolve_settings(&settings).unwrap();
+        assert_eq!(resolved.sample_rate, Some(48000.0));
+        assert_eq!(resolved.output_sample_rate, Some(48000.0));
+        assert_eq!(resolved.period_size, Some(128));
+        assert_eq!(resolved.output_period_size, Some(128));
     }
 
     fn microphone_snapshot() -> Snapshot {

@@ -370,3 +370,50 @@ its verification written down so the next person does not mistake it for a detai
   to go and configure a path they never needed — which is how
   `.cargo/config.toml` grew a `CPAL_ASIO_DIR` default that quietly disabled the
   fallback for everyone and had to be deleted.
+
+## nice-tuner: own the ASIO host side of the stream
+
+**The possibility.** nice-tuner opens its ASIO stream itself — one
+`ASIOCreateBuffers` carrying input and output together, each buffer bound to the
+port the user named — instead of asking cpal for *n* channels and accepting
+whichever ports that happens to mean. The shape to design against: a guitar
+through a preamp on input 3, tuned with the stream holding that one input port
+and no other. The ASIO SDK's own sample host is the reference.
+
+**Why it matters.**
+
+- It is the difference between a tuner that can follow a signal and one that
+  cannot. On a six-input driver under ASIO today, inputs 3 to 6 are unreachable:
+  cpal's ASIO host binds buffers to `channel_num: 0..n` and nothing in
+  `asio-sys` 0.4.0 lets a caller say otherwise, so the panel's channel list runs
+  to six while the stream layer accepts one or two.
+- It removes a class of restart-shaped bugs rather than one instance. With one
+  owner, no other code path can be holding a driver handle whose `Drop` shuts
+  the running stream down — the defect now recorded in `BUGS.md`, found while
+  chasing the channel-2 silence, and guarded today only by a flag the rest of
+  the process has to remember to respect.
+- It puts the SDK under our own build script: one place that quotes its paths,
+  verifies the headers it needs, and says one sentence when they are absent.
+
+**What already stands.** The settings panel no longer asks cpal anything on the
+ASIO path — names come from the registry, and channels, rate and buffer sizes from
+one `asio_caps` load per driver per pass, answered by a child process whenever a
+stream owns the driver (`nice-tuner/src/devices.rs`). The
+output device, buffer and rate rows follow the input under ASIO, because one driver
+owns them. The review that maps the terrain, including a public-API experiment that
+might deliver most of the feature with no new code at all, is
+`nice-tuner/docs/asio-host-review.md`; the upstream quoting fix for the SDK download
+is the bullet immediately above.
+
+**What to build.** First the experiment, because it is cheap and it decides the
+rest: mutate `channel_num` on a carried `AsioStream` and see whether a real driver
+delivers on the port named, which needs a multi-input interface and someone able to
+feed input 3. If it holds, depend on nothing new and expose real port selection. If
+it does not, the crate: `frost-asio` beside the four existing `nice-tuner/crates`
+members, carrying SDK discovery and compilation, driver load, the duplex buffer
+setup, the sample-type conversions for whatever format the driver reports, and a
+`SAFETY.md` like its neighbours — with cpal's ASIO host compiled out so exactly one
+thing owns the driver, and `devices.rs` no longer mapping `"asio"` onto a cpal
+`HostId`. In parallel, the small upstream ask: an explicit-port variant of
+`prepare_input_stream` and `prepare_output_stream`, so the durable version of this
+is a public API rather than our own FFI.
