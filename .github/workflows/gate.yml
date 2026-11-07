@@ -118,6 +118,10 @@ jobs:
       # host: on Windows that feature names the ASIO host, whose SDK is
       # proprietary and refused in-tree by the scan above.
       - name: Clippy, zero warnings, the model plugin and the shared crate
+        env:
+          # Same reason as the test step below: the Linux engine refuses to build
+          # at rustc's default x86-64 baseline.
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
         run: cargo clippy -p nice-nam -p nice-common --all-targets -- -D warnings
 
       # The engine's own claim, checked rather than trusted: docs/licensing.md
@@ -192,7 +196,19 @@ jobs:
       # oversight: `asio-host` is a `cfg(windows)` dependency, so on this runner
       # it is not in the graph to test, and its SDK is proprietary — see the scan
       # that refuses it in the tree.
+      #
+      # `RUSTFLAGS` here is the prefix `nice-nam/README.md` already tells a Linux
+      # builder to use, and CI is where forgetting it shows up. NeuralAmpModeler-rs
+      # refuses to build below its SIMD baseline, and what it examines is the
+      # target features rustc enables, not the runner's silicon: a default x86-64
+      # target answers it with `fxsr,sse,sse2`, so the build script exits 1 on a
+      # machine whose CPU has AVX2 and AVX-512. The flag is set on these two steps
+      # rather than in `.cargo/config.toml`, because that file would raise the
+      # instruction-set floor for everything else in this repository, antifrost
+      # included, and that is a release decision rather than a build fix.
       - name: Tests, the model plugin and the shared crate
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
         run: |
           cargo test --no-fail-fast -p nice-nam -p nice-common
           cargo test --no-fail-fast -p nice-common --features standalone
