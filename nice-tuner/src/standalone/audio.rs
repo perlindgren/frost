@@ -1,8 +1,5 @@
 //! Device ownership and physical output routing for the standalone host.
-use super::{
-    process::{self, Processor},
-    resample::Monitor,
-};
+use super::process::{self, Processor};
 use crate::{
     TunerPlugin,
     settings::{OutputChannels, Settings},
@@ -10,6 +7,7 @@ use crate::{
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream, StreamConfig, SupportedStreamConfigRange};
 use crossbeam::channel::{Receiver, Sender, bounded};
+use nice_common::resample::Monitor;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -246,7 +244,7 @@ where
             *config,
             move |data: &mut [T], _| {
                 monitor.begin_block();
-                route(data, channels, destination, || monitor.next());
+                route(data, channels, destination, || monitor.next_sample());
                 seen.store(true, Ordering::Release);
             },
             error_callback(errors, "Output", name),

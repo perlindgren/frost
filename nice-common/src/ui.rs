@@ -1077,7 +1077,7 @@ mod persistence_tests {
         value: Option<u32>,
     }
     impl Preferences for App {
-        const FILE_NAME: &'static str = "nice-settings-ui-tests.json";
+        const FILE_NAME: &'static str = "nice-common-ui-tests.json";
         const APP_NAME: &'static str = "test";
         fn is_blank(&self) -> bool {
             self.value.is_none()

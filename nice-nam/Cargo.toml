@@ -17,8 +17,14 @@ crate-type = ["cdylib", "lib"]
 
 [features]
 default = []
-# Application-owned standalone host.
-standalone = ["nice-settings/ui", "dep:cpal", "dep:jack", "dep:plugin-buffer", "dep:tracing"]
+# Application-owned standalone host. ASIO comes with it on Windows, through the
+# optional `asio-host` dependency below, and is absent on every other platform.
+standalone = ["nice-common/ui", "nice-common/standalone", "dep:cpal", "dep:jack", "dep:plugin-buffer", "dep:tracing", "asio-host"]
+# Native Windows placement for the standalone window: open where the last session
+# left it, or centred in the primary work area when no position was ever stored.
+# The unsafe code stays inside the wrapper crate; nice-nam keeps denying it, and a
+# window inside a host is never touched — the host owns its children.
+unsafe = ["dep:window-position", "window-position/unsafe"]
 diag = []
 
 [dependencies]
@@ -31,7 +37,7 @@ rtrb = "0.4"
 cpal = { version = "0.18", optional = true }
 plugin-buffer = { path = "../nice-tuner/crates/plugin-buffer", optional = true }
 tracing = { version = "0.1", optional = true }
-nice-settings = { path = "../nice-settings" }
+nice-common = { path = "../nice-common" }
 nice-plug = { version = "0.4.2", default-features = false, features = ["editor", "vst3", "assert_process_allocs"] }
 frost = { path = ".." }
 serde = { version = "1", features = ["derive"] }
@@ -45,8 +51,15 @@ audio-float = { path = "crates/audio-float" }
 nam_engine = { package = "NeuralAmpModeler-rs", version = "=2.0.0", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-# Reserved for the Windows implementation; processing remains a stub initially.
+# The Windows engine: no cabinet, and a model asking for another sample rate is
+# refused rather than run at the wrong one.
 nam_windows = { package = "nam-rs", version = "=0.4.0" }
+# ASIO in a Windows standalone build's device list, and nothing anywhere else:
+# `standalone` names it, and this section means no other platform can see it.
+asio-host = { path = "../nice-tuner/crates/asio-host", optional = true }
+# Placement is implemented only by our opt-in Windows wrapper, which is also the
+# only place in this build that contains unsafe code.
+window-position = { path = "../nice-tuner/crates/window-position", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 macos-frame-sync = { path = "../nice-tuner/crates/macos-frame-sync" }

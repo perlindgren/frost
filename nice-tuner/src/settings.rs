@@ -1,11 +1,11 @@
 //! Tuner preferences layered on the shared standalone audio configuration.
-pub use nice_settings::settings::{
+pub use nice_common::settings::{
     BACKEND_WHEN_UNSET, OUR_INPUT_LATENCY_DEFAULT, OutputChannels, WindowGeom, buffers_must_match,
     effective_args, rates_must_match,
 };
 use serde::{Deserialize, Serialize};
 pub const FILE_NAME: &str = "nice-tuner-settings.json";
-pub type Settings = nice_settings::Settings<TunerPreferences>;
+pub type Settings = nice_common::Settings<TunerPreferences>;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -15,7 +15,7 @@ pub struct TunerPreferences {
     pub in_tune_cents: Option<f32>,
     pub gauge_knee_cents: Option<f32>,
 }
-impl nice_settings::Preferences for TunerPreferences {
+impl nice_common::Preferences for TunerPreferences {
     const FILE_NAME: &'static str = FILE_NAME;
     const APP_NAME: &'static str = "nice-tuner";
     fn is_blank(&self) -> bool {

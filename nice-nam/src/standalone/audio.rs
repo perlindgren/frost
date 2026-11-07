@@ -1,8 +1,5 @@
 //! Device ownership and physical output routing for the standalone host.
-use super::{
-    process::{self, Processor},
-    resample::Monitor,
-};
+use super::process::{self, Processor};
 use crate::{
     NamPlugin,
     settings::{OutputChannels, Settings},
@@ -10,6 +7,7 @@ use crate::{
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream, StreamConfig, SupportedStreamConfigRange};
 use crossbeam::channel::{Receiver, Sender, bounded};
+use nice_common::resample::Monitor;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -158,16 +156,27 @@ fn config(
     ))
 }
 
+/// Whether a backend error is the audio thread missing its deadline rather than
+/// the stream itself going bad. Split out because the two deserve different
+/// reactions — a gap is counted and carried on, a broken stream is reported — and
+/// because the difference is the whole content of this callback.
+fn is_gap(kind: cpal::ErrorKind) -> bool {
+    kind == cpal::ErrorKind::Xrun
+}
+
 fn error_callback(
     sender: Sender<Failure>,
     direction: &'static str,
     name: String,
 ) -> impl FnMut(cpal::Error) + Send + 'static {
     move |error| {
-        if matches!(
-            error.kind(),
-            cpal::ErrorKind::Xrun | cpal::ErrorKind::DeviceChanged
-        ) {
+        if is_gap(error.kind()) {
+            // Not worth interrupting anyone for, and much too important to
+            // discard: this is the only place that knows the audio thread missed.
+            crate::DROP_OUTS.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        if error.kind() == cpal::ErrorKind::DeviceChanged {
             return;
         }
         let _ = sender.try_send(Failure {
@@ -246,7 +255,7 @@ where
             *config,
             move |data: &mut [T], _| {
                 monitor.begin_block();
-                route(data, channels, destination, || monitor.next());
+                route(data, channels, destination, || monitor.next_sample());
                 seen.store(true, Ordering::Release);
             },
             error_callback(errors, "Output", name),
@@ -256,6 +265,10 @@ where
 }
 
 pub(super) fn open(settings: &Settings, plugin: Arc<Mutex<NamPlugin>>) -> Result<Streams, Failure> {
+    // The number on screen belongs to the streams you can see, so a new pair of
+    // them starts at zero: otherwise a device change leaves the old count under
+    // the new device, which is exactly the misreading a counter invites.
+    crate::DROP_OUTS.store(0, Ordering::Relaxed);
     #[cfg(target_os = "linux")]
     if settings.backend.as_deref() == Some("jack") {
         return super::jack_audio::open(settings, plugin).map(Streams::Jack);
@@ -407,6 +420,16 @@ pub(super) fn open(settings: &Settings, plugin: Arc<Mutex<NamPlugin>>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gap_is_counted_while_a_dead_stream_still_reaches_the_user() {
+        // Decided apart on purpose: a gap is a missed deadline that the show
+        // carries on through, an invalidated stream is a device that has gone,
+        // and a counter that mixed the two would stop meaning anything.
+        assert!(is_gap(cpal::ErrorKind::Xrun));
+        assert!(!is_gap(cpal::ErrorKind::DeviceChanged));
+        assert!(!is_gap(cpal::ErrorKind::StreamInvalidated));
+    }
 
     #[test]
     fn routing_duplicates_selected_mono_only_to_the_selected_pair() {

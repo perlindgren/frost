@@ -113,4 +113,17 @@ cargo clippy -p nice-tuner -p pitch --all-targets -- -D warnings || {
     exit 1
 }
 
+# The model plugin and the crate the two plugins share, for the reason stated
+# above — and one more, specific to them: `nice-nam` is written twice, once per
+# engine, and which half a commit compiles is decided by the machine committing
+# it. The runner has one Linux job, so a Windows commit is the only place the
+# nam-rs half is ever compiled automatically. Not `--features standalone`: on
+# Windows that names the ASIO host, and a hook that fails because CPAL_ASIO_DIR
+# is unset is a hook that teaches people to type `--no-verify`.
+printf 'pre-commit: clippy -D warnings (the model plugin and the shared crate)...\n'
+cargo clippy -p nice-nam -p nice-common --all-targets -- -D warnings || {
+    printf 'pre-commit: clippy failed in nice-nam/nice-common - commit aborted.\n' >&2
+    exit 1
+}
+
 exit 0

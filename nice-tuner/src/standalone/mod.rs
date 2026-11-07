@@ -5,7 +5,6 @@ pub mod control;
 #[cfg(target_os = "linux")]
 mod jack_audio;
 mod process;
-mod resample;
 
 use crate::{TunerEditor, TunerEditorHandle, TunerPlugin, settings::Settings};
 use audio::{Failure, Session};
@@ -108,7 +107,7 @@ where
 fn audio_worker(
     plugin: Arc<Mutex<TunerPlugin>>,
     initial: Settings,
-    commands: Receiver<control::Command>,
+    commands: Receiver<control::Command<Settings>>,
     pending: Arc<AtomicBool>,
     ready: crossbeam::channel::Sender<()>,
 ) {

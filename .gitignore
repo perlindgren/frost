@@ -29,6 +29,11 @@ antifrost.progress.ron
 # `dist/` is where that tool puts one when it is told a different output dir.
 nice-tuner-settings.json
 nice-tuner-settings.json.*
+# The model plugin's standalone writes beside it, same habit and same reason, and
+# a model session records more per-machine detail still: the ASIO driver's name and
+# the folder the user's captures live in.
+nice-nam-settings.json
+nice-nam-settings.json.*
 *.vst3
 *.clap
 dist/

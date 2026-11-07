@@ -20,8 +20,8 @@ pub trait Preferences: Clone + Default + Serialize + serde::de::DeserializeOwned
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct NoPreferences {}
 impl Preferences for NoPreferences {
-    const FILE_NAME: &'static str = "nice-settings.json";
-    const APP_NAME: &'static str = "nice-settings";
+    const FILE_NAME: &'static str = "nice-common.json";
+    const APP_NAME: &'static str = "nice-common";
     fn is_blank(&self) -> bool {
         true
     }

@@ -265,6 +265,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "asio-host"
+version = "0.1.0"
+dependencies = [
+ "nice-common",
+]
+
+[[package]]
 name = "asio-sys"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1999,6 +2006,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nice-common"
+version = "0.1.0"
+dependencies = [
+ "allocation-counter",
+ "asio-sys",
+ "core-audio-device",
+ "cpal",
+ "crossbeam",
+ "frost",
+ "jack",
+ "rtrb 0.4.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nice-log"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2014,6 +2037,7 @@ version = "0.1.0"
 dependencies = [
  "NeuralAmpModeler-rs",
  "allocation-counter",
+ "asio-host",
  "audio-float",
  "baseview",
  "cpal",
@@ -2023,8 +2047,8 @@ dependencies = [
  "keyboard-types",
  "macos-frame-sync",
  "nam-rs",
+ "nice-common",
  "nice-plug",
- "nice-settings",
  "plugin-buffer",
  "pollster",
  "rfd",
@@ -2033,6 +2057,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "wgpu",
+ "window-position",
 ]
 
 [[package]]
@@ -2116,24 +2141,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "nice-settings"
-version = "0.1.0"
-dependencies = [
- "asio-sys",
- "core-audio-device",
- "cpal",
- "crossbeam",
- "frost",
- "jack",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "nice-tuner"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "asio-host",
  "baseview",
  "cpal",
  "crossbeam",
@@ -2141,8 +2153,8 @@ dependencies = [
  "jack",
  "keyboard-types",
  "macos-frame-sync",
+ "nice-common",
  "nice-plug",
- "nice-settings",
  "pitch",
  "plugin-buffer",
  "pollster",

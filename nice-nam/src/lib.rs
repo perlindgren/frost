@@ -16,14 +16,25 @@ use editor::NamEditorHandle;
 use nice_plug::editor::dpi::LogicalSize;
 use std::sync::{
     Mutex,
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 const MIN_SIZE: LogicalSize<f32> = LogicalSize::new(640.0, 620.0);
 const DEFAULT_SIZE: LogicalSize<f32> = LogicalSize::new(900.0, 620.0);
 const RESIZE_HINT: ResizeHint = ResizeHint::resizable().with_min_logical_size(MIN_SIZE);
 pub static STANDALONE_MODE: AtomicBool = AtomicBool::new(false);
+/// Gaps the audio device reported since the streams were opened, counted in the
+/// standalone's cpal error callback and read by the main view.
+///
+/// A static, like `STANDALONE_MODE`, because a cpal error callback is built per
+/// stream and is handed no reference to the plugin's shared state. It counts what
+/// the backend reports and nothing more: WASAPI reports a gap when the buffer
+/// comes back flagged `DATA_DISCONTINUITY` — an actual hole in the playback — and
+/// the ASIO host reports one when it cannot keep up. A backend that never reports
+/// keeps this at zero, so zero means the device said nothing, which is why the
+/// label states the count instead of declaring the audio healthy.
+pub static DROP_OUTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "standalone")]
-pub use nice_settings::devices;
+pub use nice_common::devices;
 
 use nice_plug::prelude::*;
 use std::num::NonZeroU32;
@@ -35,6 +46,12 @@ pub struct NamSharedState {
     open: AtomicBool,
     #[cfg(feature = "standalone")]
     window_pos: Mutex<Option<(i32, i32)>>,
+    /// A saved top-left, queued by the standalone host and applied once by the
+    /// window handler through the platform API — baseview has no position
+    /// concept. Only placement reads it, so it must not warn without placement.
+    #[cfg(feature = "standalone")]
+    #[cfg_attr(not(all(windows, feature = "unsafe")), allow(dead_code))]
+    pending_geom: Mutex<Option<(i32, i32)>>,
     pub input_channel: AtomicCell<u32>,
     pub buffer_frames: AtomicU32,
     engine: Arc<engine::EngineState>,
@@ -73,6 +90,8 @@ impl Default for NamPlugin {
             open: AtomicBool::new(false),
             #[cfg(feature = "standalone")]
             window_pos: Mutex::new(None),
+            #[cfg(feature = "standalone")]
+            pending_geom: Mutex::new(None),
             input_channel: AtomicCell::new(1),
             buffer_frames: AtomicU32::new(0),
             engine,

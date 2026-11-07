@@ -17,7 +17,7 @@ use crate::TunerSharedState;
 use crate::host_controls::{HostControls, HostParameter};
 use crate::settings::Settings;
 use frost::{Color, Context, Process, Scene, SceneNode, Shape};
-use nice_settings::dropdown::DropdownLayout;
+use nice_common::dropdown::DropdownLayout;
 use pitch::freq_to_note;
 use std::sync::{Arc, atomic::Ordering};
 
@@ -108,7 +108,7 @@ pub struct TunerUi {
     prev_mouse_down: bool,
     settings: Settings,
     #[cfg(feature = "standalone")]
-    audio_panel: Option<nice_settings::ui::AudioPanel<crate::settings::TunerPreferences>>,
+    audio_panel: Option<nice_common::ui::AudioPanel<crate::settings::TunerPreferences>>,
     /// Rising-edge memory for Escape on the settings page.
     esc_held: bool,
     /// The audio settings currently running, updated after a successful
@@ -2355,7 +2355,7 @@ impl TunerUi {
 
     #[cfg(feature = "standalone")]
     fn process_shared_audio_panel(&mut self, ctx: &mut Context, clicked: bool) {
-        use nice_settings::ui::{AudioPanel, Event, ExtraRow};
+        use nice_common::ui::{AudioPanel, Event, ExtraRow};
         let mut panel = self.audio_panel.take().unwrap_or_else(|| {
             let mut panel = AudioPanel::new(
                 self.settings.clone(),
@@ -2401,7 +2401,7 @@ impl TunerUi {
         })
         .collect();
         let size = self.shared.logical_size();
-        let window = nice_settings::ui::window_geometry(
+        let window = nice_common::ui::window_geometry(
             [size.width, size.height],
             *self.shared.window_pos.lock().unwrap(),
             panel.draft.window,

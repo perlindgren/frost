@@ -1,4 +1,4 @@
-# nice-settings
+# nice-common
 
 Shared standalone audio configuration, persistence, and device discovery for
 nice-tuner and nice-nam. With the `ui` feature it also provides their shared
@@ -27,7 +27,7 @@ implement the `--list-devices <backend> <input> <output>` JSON protocol in its o
 standalone executable, as nice-tuner does. Nice NAM has no executable yet.
 
 ```sh
-cargo test -p nice-settings --features devices
+cargo test -p nice-common --features devices
 ```
 
 ## Shared settings panel
@@ -45,4 +45,4 @@ UI crate. `ExtraRow`/`Event` let nice-tuner append its four live preferences wit
 putting tuner-specific fields in this crate. Hosted audio remains owned by the
 DAW; nice-tuner's hosted read-only operating-condition display stays in its editor.
 
-Enable with `nice-settings/ui` in standalone builds; it includes `devices`.
+Enable with `nice-common/ui` in standalone builds; it includes `devices`.

@@ -1,8 +1,8 @@
 [package]
-name = "nice-settings"
+name = "nice-common"
 version = "0.1.0"
 edition = "2024"
-description = "Shared standalone audio configuration and device discovery for frost plugins"
+description = "Shared settings, device discovery and standalone host machinery for frost plugins"
 license.workspace = true
 publish = false
 
@@ -11,6 +11,9 @@ default = []
 ui = ["devices", "dep:frost", "dep:crossbeam"]
 devices = ["dep:cpal", "dep:jack", "dep:core-audio-device"]
 asio-host = ["devices", "cpal/asio", "dep:asio-sys"]
+# The parts a standalone application needs from its host: the command endpoint
+# between panel and audio owner, and the rate conversion the plugin never sees.
+standalone = ["dep:crossbeam", "dep:rtrb"]
 
 [dependencies]
 frost = { path = "..", optional = true }
@@ -18,6 +21,7 @@ crossbeam = { version = "0.8", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 cpal = { version = "0.18", optional = true }
+rtrb = { version = "0.4", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "0.18", features = ["jack"], optional = true }
@@ -28,3 +32,15 @@ core-audio-device = { path = "../nice-tuner/crates/core-audio-device", optional 
 
 [target.'cfg(windows)'.dependencies]
 asio-sys = { version = "0.4", optional = true }
+
+[dev-dependencies]
+# Safe measurement API for the allocation witness; no handwritten allocator hooks.
+allocation-counter = "=0.8.1"
+# The test drives the converter through the same ring buffer the callback uses.
+rtrb = "0.4"
+
+# The converter exists only for a standalone host, so the target that measures it
+# names the feature that carries it.
+[[test]]
+name = "resample_never_allocates"
+required-features = ["standalone"]
