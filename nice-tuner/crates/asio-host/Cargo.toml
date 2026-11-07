@@ -1,0 +1,13 @@
+[package]
+name = "asio-host"
+version = "0.1.0"
+edition = "2024"
+description = "Windows-only carrier of CPAL's ASIO host, switched on by `standalone`"
+license.workspace = true
+publish = false
+
+# Declared under a target only, and that is the whole design: a feature's
+# implications are the same on every platform, so the thing `standalone` can
+# name has to be a dependency that exists on one platform. See `src/lib.rs`.
+[target.'cfg(windows)'.dependencies]
+nice-common = { path = "../../../nice-common", features = ["asio-host"] }

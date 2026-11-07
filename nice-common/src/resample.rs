@@ -5,7 +5,7 @@ use rtrb::Consumer;
 const TAPS: usize = 128;
 const PHASES: usize = 1024;
 
-pub(super) struct Monitor {
+pub struct Monitor {
     input: Consumer<f32>,
     history: [f32; TAPS],
     head: usize,
@@ -92,7 +92,7 @@ impl Monitor {
         self.ratio = self.nominal_ratio * (1.0 + correction);
     }
 
-    pub fn next(&mut self) -> f32 {
+    pub fn next_sample(&mut self) -> f32 {
         if !self.started {
             return 0.0;
         }
@@ -145,7 +145,9 @@ mod tests {
             usize::MAX,
         );
         monitor.begin_block();
-        (0..output_rate - 128).map(|_| monitor.next()).collect()
+        (0..output_rate - 128)
+            .map(|_| monitor.next_sample())
+            .collect()
     }
     #[test]
     fn conversion_preserves_pitch_and_level_in_both_directions() {
@@ -185,11 +187,11 @@ mod tests {
         monitor.begin_block();
         assert_eq!(
             [
-                monitor.next(),
-                monitor.next(),
-                monitor.next(),
-                monitor.next(),
-                monitor.next()
+                monitor.next_sample(),
+                monitor.next_sample(),
+                monitor.next_sample(),
+                monitor.next_sample(),
+                monitor.next_sample()
             ],
             [0.0, 0.25, -0.5, 0.75, 0.0]
         );

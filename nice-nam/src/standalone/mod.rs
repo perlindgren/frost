@@ -5,7 +5,6 @@ pub mod control;
 #[cfg(target_os = "linux")]
 mod jack_audio;
 mod process;
-mod resample;
 
 use crate::{NamEditor, NamEditorHandle, NamPlugin, settings::Settings};
 use audio::{Failure, Session};
@@ -83,7 +82,7 @@ where
 fn audio_worker(
     plugin: Arc<Mutex<NamPlugin>>,
     initial: Settings,
-    commands: Receiver<control::Command>,
+    commands: Receiver<control::Command<Settings>>,
     pending: Arc<AtomicBool>,
     ready: crossbeam::channel::Sender<()>,
 ) {
@@ -148,6 +147,11 @@ pub fn run(settings: Settings) -> Result<(), String> {
                 window.width.max(crate::MIN_SIZE.width),
                 window.height.max(crate::MIN_SIZE.height),
             ));
+        // Size rides in through `logical_size`, which baseview understands.
+        // Position does not exist in baseview at all, so it queues here and the
+        // window handler applies it once, or centres the window when the file
+        // never recorded one.
+        *plugin.shared.pending_geom.lock().unwrap() = window.x.zip(window.y);
     }
     let editor = NamEditor {
         params: Arc::clone(&plugin.params),

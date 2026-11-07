@@ -228,6 +228,30 @@ cargo test -p antifrost || fail 'cargo test -p antifrost'
 printf 'pre-push: running `cargo test -p nice-tuner -p pitch`...\n'
 cargo test -p nice-tuner -p pitch || fail 'cargo test -p nice-tuner -p pitch'
 
+# The model plugin and the crate the two plugins share. Named by the same logic
+# as above — a member nothing tests is a member that regresses quietly — and
+# worth more here than anywhere else, because `nice-nam` is written twice: once
+# against nam-rs, once against NeuralAmpModeler-rs, and this line runs whichever
+# half the pushing machine is on. The runner has one Linux job, so a Windows push
+# is the only automatic hearing the nam-rs engine gets, including the gain
+# staging read off a model file's own calibration and the files it refuses. The
+# test that holds both engines to one gain convention needs one engine on each
+# machine, which is why it sits in the suite both of them run.
+#
+# `--features standalone` stays out of this, as it does above: on Windows it
+# names the ASIO host, whose SDK lives outside the tree by necessity, and the
+# cheaper lesson of a hook that fails on an unset variable is that people learn
+# `--no-verify`. The plugin shape compiles the engine, the refusals and the
+# picker, which is the part that breaks.
+printf 'pre-push: running `cargo test -p nice-nam -p nice-common`...\n'
+cargo test -p nice-nam -p nice-common || fail 'cargo test -p nice-nam -p nice-common'
+
+# The resampler's no-allocation witness hides behind that feature, and the
+# feature is crossbeam and rtrb — no device, no SDK, no platform to disappoint.
+printf 'pre-push: running `cargo test -p nice-common --features standalone`...\n'
+cargo test -p nice-common --features standalone \
+    || fail 'cargo test -p nice-common --features standalone'
+
 # The web target shares the library and nothing else, so it gets its own line
 # rather than hiding inside the host's. A missing toolchain is a failure rather
 # than a warning: the check that cannot run is exactly the hole the check exists

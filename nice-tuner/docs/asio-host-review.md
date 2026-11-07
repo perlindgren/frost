@@ -17,8 +17,9 @@ evidence and not established, it says so.
 
 - `cpal` 0.18.2, `src/host/asio/` — `device.rs`, `host.rs`, `stream.rs`.
 - `asio-sys` 0.4.0, `src/bindings/mod.rs` and `build.rs`. Same crate cpal pins;
-  also a direct optional dependency here, behind `standalone-asio`
-  ([`Cargo.toml`](../Cargo.toml) lines 50 and 53).
+  reached through `nice-common`' `asio-host` feature, which the `asio-host`
+  carrier crate turns on for a Windows `standalone` build
+  ([`crates/asio-host`](../crates/asio-host/Cargo.toml)).
 - The ASIO SDK as fetched by `asio-sys`'s build script from
   <https://www.steinberg.net/asiosdk>; its `common/asio.cpp` and `host/asiodrivers.cpp`
   are compiled into every Windows build that enables this feature.
@@ -113,11 +114,14 @@ set the variable is argued in [`.cargo/config.toml`](../../.cargo/config.toml)
 lines 12-51.
 
 **What a fresh clone gets.** `default = []`, so `cargo build -p nice-tuner` touches
-none of this. `--features standalone` pulls cpal without its `asio` feature, so
-`asio-sys` never enters the graph. Only `--features standalone-asio` on Windows
-needs the SDK and an MSVC toolchain, and only that build can meet the download
-failure. Non-Windows targets are exempt at the source: `build.rs:27-33` emits stub
-bindings for any target that is not Windows.
+none of this, and on Linux and macOS `--features standalone` still pulls cpal
+without its `asio` feature: the carrier dependency is declared under
+`cfg(windows)`, so `asio-sys` cannot enter those graphs at all. On Windows
+`--features standalone` does bring ASIO, so a Windows standalone build on a
+machine with neither the SDK nor a working download fails instead of shipping
+silently without ASIO — the deliberate trade — and only that build can meet the
+download failure. Non-Windows targets are exempt at the source too:
+`build.rs:27-33` emits stub bindings for any target that is not Windows.
 
 ## The cheap experiment that might be enough, and is unproven
 

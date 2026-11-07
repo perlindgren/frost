@@ -85,7 +85,7 @@ fn host_id_from_value(value: &str) -> Option<cpal::HostId> {
 
 /// Every backend the running binary can offer, system default first.
 /// JACK is Linux-only and remains selectable without a running server.
-/// ASIO appears only when compiled via `--features standalone-asio`.
+/// ASIO appears in a Windows standalone build, which brings `asio-host` with it.
 pub fn available_backends() -> Vec<BackendOption> {
     let mk = |id: &str, label: &str| BackendOption {
         id: id.to_owned(),
@@ -1086,7 +1086,7 @@ pub fn snapshot_via_child(
     let out = cmd.output().ok()?;
     if !out.status.success() {
         eprintln!(
-            "nice-settings: device-helper exited {:?}: {}",
+            "nice-common: device-helper exited {:?}: {}",
             out.status,
             String::from_utf8_lossy(&out.stderr).trim()
         );
@@ -1096,7 +1096,7 @@ pub fn snapshot_via_child(
         Ok(s) => Some(s),
         Err(e) => {
             eprintln!(
-                "nice-settings: device-helper output unreadable: {e}: {}",
+                "nice-common: device-helper output unreadable: {e}: {}",
                 String::from_utf8_lossy(&out.stdout)
                     .chars()
                     .take(160)

@@ -41,9 +41,13 @@ xtask = "run --package xtask --"
 # environment, where it wins because it is theirs and not ours. The one-line
 # upstream fix — quote the path — is recorded in `TODO.md`.
 #
-# Nothing here needs the SDK either. ASIO sits behind the `standalone-asio`
-# feature; no step in the hooks or the gate builds it, so no CI machine ever
-# fetches it, and no step anywhere uses `--all-features`.
+# Nothing here needs the SDK either. ASIO rides with the `standalone` feature and
+# only on Windows, through the `asio-host` carrier crate, and no step in the hooks
+# or the gate builds a Windows standalone — so no CI machine ever fetches the SDK,
+# and `--all-features` on Linux or macOS cannot reach it because the dependency is
+# declared under `cfg(windows)` and does not exist for those targets. A Windows
+# `--features standalone` build does need it, which is what the three steps above
+# are for.
 #
 # The SDK's licence is proprietary and this repository is `MIT OR Apache-2.0`,
 # which is a reason to keep it out of the *tree* — where the ignore rule and the

@@ -115,7 +115,7 @@ because the embedded renderer controls presentation independently of that flag.
 The feature is disabled by default.
 
 Standalone audio configuration, persistence, device queries and validation are
-shared with nice-nam through the workspace's `nice-settings` crate. Tuner-only
+shared with nice-nam through the workspace's `nice-common` crate. Tuner-only
 preferences remain in `src/settings.rs`, and the existing flat
 `nice-tuner-settings.json` format and filename are preserved. The standalone audio panel and dropdown behavior are also shared. Tuner-specific
 controls, hosted operating-condition displays and the audio stream owner remain
@@ -238,7 +238,7 @@ labels are shortened on screen.
 ### Windows + ASIO
 
 ```sh
-cargo build -p nice-tuner --features standalone-asio,unsafe --bin nice-tuner-standalone
+cargo build -p nice-tuner --features standalone,unsafe --bin nice-tuner-standalone
 ./target/release/nice-tuner-standalone     # …then settings cogwheel → backend: ASIO → device → APPLY
 ```
 
@@ -403,7 +403,8 @@ Windows); the bundling step clears `RUSTFLAGS`, explained in the script and in
 The standalone app's tuner screen has a settings cogwheel (top-right) opening a
 panel for **backend, sample rate, buffer size, input/output devices and
 channel — and the A4/gate params** — device dropdowns are enumerated live (ASIO
-appears only in builds with `--features standalone-asio`). The ASIO rows are the
+appears in Windows builds made with `--features standalone`, which brings ASIO
+with it). The ASIO rows are the
 registry's driver names, which loads nothing at all; channels, sample rate and
 buffer sizes come from `ASIOGetChannels`, `ASIOGetSampleRate`,
 `ASIOGetBufferSize` and `ASIOCanSampleRate` on **the driver the user picked**,
@@ -509,7 +510,7 @@ One-time verification checklist in Reaper (load the CLAP from `target/bundled`):
   Code's `OFL.txt` too.
 - Third-party: nice-plug (ISC), vst3 (ISC), baseview (MIT/Apache-2.0). No
   Steinberg VST3 SDK is used anywhere — the VST3 surface is pure Rust. The ASIO
-  SDK, for a developer building `standalone-asio`, is proprietary and stays
+  SDK, for a developer building a Windows standalone, is proprietary and stays
   outside the repository.
 
 ## Status

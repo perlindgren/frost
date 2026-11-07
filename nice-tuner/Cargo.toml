@@ -36,24 +36,25 @@ diag = []
 # target for its games' sound and gamepads. The plugin simply never calls
 # `frost::Audio::new`; the linker still meets ALSA and udev, on Linux as on
 # any other platform where frost plays a sound.
-standalone = ["dep:jack", "dep:cpal", "dep:tracing", "dep:tracing-subscriber", "nice-settings/ui", "dep:plugin-buffer"]
+standalone = ["dep:jack", "dep:cpal", "dep:tracing", "dep:tracing-subscriber", "nice-common/ui", "nice-common/standalone", "dep:plugin-buffer", "asio-host"]
 # Opt in to native Windows placement inside the wrapper crate only.
 # nice-tuner itself always denies unsafe code.
 unsafe = ["dep:window-position", "window-position/unsafe"]
-# Windows only: compiles CPAL's ASIO host into the standalone binary
-# and makes ASIO available in the settings panel. Implies `standalone`.
+# ASIO arrives with `standalone` and nowhere else, through the optional
+# `asio-host` dependency declared under cfg(windows) below: a feature cannot
+# imply different things per platform, but it can name a dependency that only
+# exists on one. There is deliberately no `standalone-asio` to remember, and no
+# feature named `asio-host` in this file — the implicit one the dependency
+# creates is what `cfg(feature = "asio-host")` reads at the call sites.
 #
-# Building this needs the Steinberg ASIO SDK, whose licence is proprietary: it
-# lives outside the repository and `CPAL_ASIO_DIR` in `.cargo/config.toml`
-# points at it. Nothing in the gate asks for it, and no step anywhere uses
-# `--all-features`, which would invoke that build script on every platform.
-standalone-asio = ["standalone", "asio-host"]
-# cfg-visible alias for cpal/asio (cfg cannot test "cpal/asio" directly);
-# forwards ASIO discovery to the shared nice-settings crate.
-asio-host = ["cpal/asio", "nice-settings/asio-host"]
+# A Windows `standalone` build needs the Steinberg ASIO SDK, whose licence is
+# proprietary and which stays outside the tree; `asio-sys` finds it in the
+# developer's environment or downloads it, and `.cargo/config.toml` explains why
+# nothing there points at it. Plugin-only builds and every other platform never
+# reach it, so nothing in the gate asks for it.
 
 [dependencies]
-nice-settings = { path = "../nice-settings" }
+nice-common = { path = "../nice-common" }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"], optional = true }
 nice-plug = { version = "0.4.2", default-features = false, features = [
@@ -104,6 +105,10 @@ jack = { version = "0.13.5", optional = true }
 [target.'cfg(windows)'.dependencies]
 # Native placement is implemented only by our opt-in Windows wrapper.
 window-position = { path = "crates/window-position", optional = true }
+# Named by `standalone` without `dep:`, so that the implicit feature it creates
+# is the cfg the ASIO code reads; absent everywhere else, and inert here unless
+# `standalone` is on. See `crates/asio-host/src/lib.rs`.
+asio-host = { path = "crates/asio-host", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 macos-frame-sync = { path = "crates/macos-frame-sync" }

@@ -17,8 +17,16 @@ mod tests {
         }
     }
     fn fixture() -> Fixture {
-        let root = frost::scratch::claim("nice-nam-dsp");
-        Fixture(root)
+        // Named after the test, so no two tests in this binary scan the same
+        // `{tag}-{pid}-{n}` sequence: a directory one test is deleting answers the
+        // next test's `CreateDirectory` with access denied, which `claim` reports
+        // as an unwritable machine. See `nice-nam/tests/dsp_windows.rs`.
+        let this_thread = std::thread::current();
+        let who = this_thread
+            .name()
+            .and_then(|name| name.rsplit("::").next())
+            .unwrap_or("test");
+        Fixture(frost::scratch::claim(&format!("nice-nam-dsp-{who}")))
     }
     fn model(root: &std::path::Path) -> NamPreferences {
         let path = root.join("gain.nam");
@@ -104,5 +112,50 @@ mod tests {
         assert!((captured[latency] - 1.0).abs() < 1e-4);
         let allocations = allocation_counter::measure(|| chain.process(&input, &mut output));
         assert_eq!(allocations.count_total, 0);
+    }
+    #[test]
+    fn the_derivation_the_windows_engine_uses_agrees_with_this_loader() {
+        // Windows has no loader to ask: it computes NAM's gain staging from the
+        // file's own numbers. This platform does have one, so hold both to the
+        // same file and require the same pair of multipliers. A change to the
+        // convention, or to either engine's reading of it, fails here rather than
+        // showing up as a level difference between two builds of one plugin.
+        use nam_engine::prelude::{LoadOptions, SystemSnapshot, load_and_build_model};
+        let root = fixture();
+        let path = root.0.join("calibrated.nam");
+        let mut weights = vec![0.0f32; 70];
+        *weights.last_mut().unwrap() = 0.125;
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "version": "0.5.4",
+                "metadata": { "loudness": -20.5, "input_level_dbu": 18.3 },
+                "architecture": "LSTM",
+                "config": { "num_layers": 1, "hidden_size": 3 },
+                "weights": weights, "sample_rate": 48000
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let pair = load_and_build_model(
+            &path,
+            &SystemSnapshot::capture(),
+            false,
+            LoadOptions::default(),
+        )
+        .unwrap();
+        let (input, output) = dsp::calibration(Some(18.3), Some(-20.5));
+        // That loader converts through a 0.1 dB table, so exact arithmetic is
+        // allowed to differ by a hair — and only by a hair.
+        assert!(
+            (input - pair.input_mult_adj).abs() < 1e-3,
+            "input: {input} against the loader's {}",
+            pair.input_mult_adj
+        );
+        assert!(
+            (output - pair.output_mult_adj).abs() < 1e-3,
+            "output: {output} against the loader's {}",
+            pair.output_mult_adj
+        );
     }
 }

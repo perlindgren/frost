@@ -7,6 +7,8 @@ use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, atomic::AtomicBool};
+#[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
+use window_position as place;
 
 /// The engine's own OFL-licensed Fira Code, one copy for both: the plugin
 /// draws its readout with the font frost ships, so the bytes come from the
@@ -99,6 +101,14 @@ impl NamWindow {
         this.frame.spawn_engine()?;
         #[cfg(target_os = "macos")]
         this.start_display_sync();
+        // Standalone top-level: honour the saved spot, or centre when no
+        // position was ever saved. A window inside a host is left exactly where
+        // the host put it (STANDALONE_MODE gate inside).
+        #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
+        if crate::STANDALONE_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+            let saved = *this.shared.pending_geom.lock().unwrap();
+            let _ = place::restore(&this.window.platform_handle(), saved);
+        }
         this.shared
             .logical_size
             .store(this.window.size().logical.cast());
@@ -131,6 +141,19 @@ impl NamWindow {
         }
     }
 
+    /// Poll placement where the platform wrapper exposes it. Size persistence
+    /// runs directly in the resize path on all platforms.
+    #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
+    fn track_geometry(&self) {
+        if !crate::STANDALONE_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        if let Ok(position) = place::top_left(&self.window.platform_handle()) {
+            *self.shared.window_pos.lock().unwrap() = Some(position);
+            self.persist_geometry();
+        }
+    }
+
     #[cfg(feature = "standalone")]
     fn persist_geometry(&self) {
         use crate::settings::{Settings, WindowGeom};
@@ -160,6 +183,8 @@ impl NamWindow {
 
 impl WindowHandler for NamWindow {
     fn on_frame(&self) -> Result<(), HandlerError> {
+        #[cfg(all(windows, feature = "standalone", feature = "unsafe"))]
+        self.track_geometry();
         #[cfg(target_os = "macos")]
         if let Some(sync) = self.display_sync.borrow().as_ref() {
             if let Some(error) = self.frame_error.borrow_mut().take() {

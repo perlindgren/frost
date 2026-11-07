@@ -110,6 +110,16 @@ jobs:
       - name: Clippy, zero warnings, the standalone tuner
         run: cargo clippy -p nice-tuner --features standalone --all-targets -- -D warnings
 
+      # The model plugin and the crate the two plugins share. The same omission
+      # the comment above describes, found by reading the list rather than
+      # trusting it: `nice-nam` and `nice-common` joined as members, never as
+      # named ones, so every check in this file and in `.githooks/` passed while
+      # compiling neither. Not run with `--features standalone`, whatever the
+      # host: on Windows that feature names the ASIO host, whose SDK is
+      # proprietary and refused in-tree by the scan above.
+      - name: Clippy, zero warnings, the model plugin and the shared crate
+        run: cargo clippy -p nice-nam -p nice-common --all-targets -- -D warnings
+
       # The engine's own claim, checked rather than trusted: docs/licensing.md
       # records why these specific lines exist. A published crate that loses
       # assets/fonts/OFL.txt loses the permission to ship a font with it, and
@@ -164,6 +174,28 @@ jobs:
           --skip search_burst_stays_inside_the_frame_budget
           --skip jack_server_defaults_resolve_without_manual_device_settings
           --skip named_routes_preserve_full_level_on_both_outputs_and_restore_after_failure
+
+      # The model plugin and the shared crate, and this is the step that matters
+      # most for them: `nice-nam` splits by platform, so a Linux runner is the
+      # only automatic place its NeuralAmpModeler-rs half is compiled at all — the
+      # nam-rs half exists solely on a Windows machine, where `.githooks/pre-push`
+      # runs the same line for that platform. The gain staging is held to one
+      # convention by a test that compares the two engines, and until now neither
+      # machine could compile the side it was written against.
+      #
+      # `--features standalone` is not here for nice-nam, unlike the tuner above:
+      # it is believed to build on Linux (the ALSA and JACK libraries this job
+      # installs are the ones it needs, and `rfd`'s default backend is the pure
+      # Rust portal one), but believed is not run, and a step that turns red for
+      # a reason nobody has seen is a step that gets muted. It belongs here once
+      # it has been green somewhere. ASIO is not missing from this list by
+      # oversight: `asio-host` is a `cfg(windows)` dependency, so on this runner
+      # it is not in the graph to test, and its SDK is proprietary — see the scan
+      # that refuses it in the tree.
+      - name: Tests, the model plugin and the shared crate
+        run: |
+          cargo test --no-fail-fast -p nice-nam -p nice-common
+          cargo test --no-fail-fast -p nice-common --features standalone
 
       # Compile and link the engine's library tests, including the GPU tree,
       # without executing them on an uncalibrated runner. Compilation errors
