@@ -166,6 +166,15 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
             .draft
             .output_period_size
             .or(self.snapshot.output_buffer_pref);
+        // Persist the concrete output route reported for this device. It is
+        // an actual channel configuration, even when it matches the default.
+        // JACK routes through named ports instead of physical channel indices.
+        if self.backend() != "jack" {
+            self.draft.output_channels = self
+                .draft
+                .output_channels
+                .or(self.snapshot.default_output_channels);
+        }
         self.sync_linked();
     }
     fn buffer_default(&self, field: Field) -> Option<u32> {
@@ -402,7 +411,9 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
             Field::InputCh => self.draft.input_channel = value.and_then(|v| v.parse().ok()),
             Field::OutputCh if self.backend() == "jack" => self.draft.jack_output_right = value,
             Field::OutputCh => {
-                self.draft.output_channels = value.and_then(|v| OutputChannels::parse(&v))
+                // An explicitly selected default route must survive saving.
+                // An unknown default still has an empty raw value and stays None.
+                self.draft.output_channels = OutputChannels::parse(&raw)
             }
             Field::Rate => self.draft.sample_rate = value.and_then(|v| v.parse().ok()),
             Field::OutputRate => self.draft.output_sample_rate = value.and_then(|v| v.parse().ok()),
@@ -1126,5 +1137,55 @@ mod persistence_tests {
             Some(Event::Applied)
         ));
         assert_eq!(p.applied.preferences.value, Some(1));
+    }
+}
+
+#[cfg(test)]
+mod output_route_persistence_tests {
+    use super::*;
+    use crate::settings::NoPreferences;
+    #[test]
+    fn selected_default_output_route_is_serialized_as_a_concrete_configuration() {
+        let mut panel = AudioPanel::<NoPreferences>::new(
+            Settings::default(),
+            Settings::default(),
+            Settings::default(),
+            false,
+        );
+        panel.draft.backend = Some("core-audio".into());
+        panel.draft.output_device = Some("Speakers".into());
+        let stereo = OutputChannels::Stereo([1, 2]);
+        panel.snapshot.default_output_channels = Some(stereo);
+        panel.snapshot.output_channel_options = vec![OutputChannels::Mono(1), stereo];
+        panel.adopt_stream_defaults();
+        assert_eq!(panel.draft.output_channels, Some(stereo));
+        panel.draft.output_channels = None;
+        panel.pick(Field::OutputCh, 0);
+        assert_eq!(panel.draft.output_channels, Some(stereo));
+        assert_eq!(panel.selected_index(Field::OutputCh), 0);
+        let window = WindowGeom {
+            x: None,
+            y: None,
+            width: 900.0,
+            height: 620.0,
+        };
+        assert!(matches!(
+            panel.save_with(panel.draft.clone(), Some(window), |settings| {
+                let json = serde_json::to_value(settings).unwrap();
+                assert_eq!(
+                    json["output_channels"],
+                    serde_json::json!({"kind": "stereo", "channels": [1, 2]})
+                );
+                let restored: Settings = serde_json::from_value(json).unwrap();
+                assert_eq!(restored.output_channels, Some(stereo));
+                Ok(())
+            }),
+            Some(Event::Applied)
+        ));
+        panel.snapshot.default_output_channels = None;
+        panel.draft.output_channels = None;
+        panel.adopt_stream_defaults();
+        panel.pick(Field::OutputCh, 0);
+        assert_eq!(panel.draft.output_channels, None);
     }
 }
