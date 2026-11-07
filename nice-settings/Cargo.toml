@@ -1,0 +1,30 @@
+[package]
+name = "nice-settings"
+version = "0.1.0"
+edition = "2024"
+description = "Shared standalone audio configuration and device discovery for frost plugins"
+license.workspace = true
+publish = false
+
+[features]
+default = []
+ui = ["devices", "dep:frost", "dep:crossbeam"]
+devices = ["dep:cpal", "dep:jack", "dep:core-audio-device"]
+asio-host = ["devices", "cpal/asio", "dep:asio-sys"]
+
+[dependencies]
+frost = { path = "..", optional = true }
+crossbeam = { version = "0.8", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+cpal = { version = "0.18", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { version = "0.18", features = ["jack"], optional = true }
+jack = { version = "0.13.5", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-audio-device = { path = "../nice-tuner/crates/core-audio-device", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+asio-sys = { version = "0.4", optional = true }

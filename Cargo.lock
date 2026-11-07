@@ -1977,13 +1977,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nice-settings"
+version = "0.1.0"
+dependencies = [
+ "asio-sys",
+ "core-audio-device",
+ "cpal",
+ "crossbeam",
+ "frost",
+ "jack",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nice-tuner"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
- "asio-sys",
  "baseview",
- "core-audio-device",
  "cpal",
  "crossbeam",
  "frost",
@@ -1991,6 +2003,7 @@ dependencies = [
  "keyboard-types",
  "macos-frame-sync",
  "nice-plug",
+ "nice-settings",
  "pitch",
  "plugin-buffer",
  "pollster",

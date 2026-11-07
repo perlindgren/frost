@@ -13,13 +13,11 @@
 //!   ▂▃▅ level ▅▃▂        dBFS meter, y −150, halfwidth 240 (0 to −48 dB)
 //! ```
 
-mod dropdown;
-
 use crate::TunerSharedState;
 use crate::host_controls::{HostControls, HostParameter};
 use crate::settings::Settings;
-use dropdown::DropdownLayout;
 use frost::{Color, Context, Process, Scene, SceneNode, Shape};
+use nice_settings::dropdown::DropdownLayout;
 use pitch::freq_to_note;
 use std::sync::{Arc, atomic::Ordering};
 
@@ -109,6 +107,8 @@ pub struct TunerUi {
     page: Page,
     prev_mouse_down: bool,
     settings: Settings,
+    #[cfg(feature = "standalone")]
+    audio_panel: Option<nice_settings::ui::AudioPanel<crate::settings::TunerPreferences>>,
     /// Rising-edge memory for Escape on the settings page.
     esc_held: bool,
     /// The audio settings currently running, updated after a successful
@@ -220,6 +220,8 @@ impl TunerUi {
             page: Page::Main,
             prev_mouse_down: false,
             settings: Settings::default(),
+            #[cfg(feature = "standalone")]
+            audio_panel: None,
             esc_held: false,
             applied: Settings::default(),
             saved: Settings::default(),
@@ -1097,10 +1099,20 @@ fn fmt_rate(r: f32) -> String {
 
 impl TunerUi {
     fn open_settings_page(&mut self) {
+        #[cfg(feature = "standalone")]
+        {
+            self.audio_panel = None;
+        }
+
         if self.is_hosted() {
             self.sync_host_settings();
             self.open_dropdown = None;
             self.save_note = None;
+            self.page = Page::Settings;
+            return;
+        }
+        #[cfg(feature = "standalone")]
+        if crate::standalone::control::available() {
             self.page = Page::Settings;
             return;
         }
@@ -2341,7 +2353,120 @@ impl TunerUi {
             || a.gauge_knee_cents != s.gauge_knee_cents
     }
 
+    #[cfg(feature = "standalone")]
+    fn process_shared_audio_panel(&mut self, ctx: &mut Context, clicked: bool) {
+        use nice_settings::ui::{AudioPanel, Event, ExtraRow};
+        let mut panel = self.audio_panel.take().unwrap_or_else(|| {
+            let mut panel = AudioPanel::new(
+                self.settings.clone(),
+                self.applied.clone(),
+                self.saved.clone(),
+                self.cold,
+            );
+            panel.refresh();
+            panel.note = self.save_note.clone();
+            panel
+        });
+        panel.live_frames = Some(self.shared.buffer_frames.load());
+        let extras: Vec<ExtraRow> = [
+            Dropdown::A4,
+            Dropdown::Gate,
+            Dropdown::InTune,
+            Dropdown::GaugeCurve,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, dd)| {
+            let label = [
+                "A4 reference",
+                "Input gate",
+                "In-tune window",
+                "Gauge curve",
+            ][i]
+                .to_string();
+            let default = self.default_raw(dd);
+            let current = match dd {
+                Dropdown::A4 => panel.draft.a4_ref,
+                Dropdown::Gate => panel.draft.gate_db,
+                Dropdown::InTune => panel.draft.in_tune_cents,
+                _ => panel.draft.gauge_knee_cents,
+            }
+            .map(|v| format!("{v:.0}"));
+            ExtraRow {
+                label,
+                default,
+                current,
+                options: self.dropdown_rows(dd).0,
+            }
+        })
+        .collect();
+        let size = self.shared.logical_size();
+        let window = nice_settings::ui::window_geometry(
+            [size.width, size.height],
+            *self.shared.window_pos.lock().unwrap(),
+            panel.draft.window,
+        );
+        let event = panel.process(
+            ctx,
+            &self.font,
+            clicked,
+            extras,
+            window,
+            crate::standalone::control::available(),
+            crate::standalone::control::request,
+        );
+        match event {
+            Some(Event::ExtraPicked(index, raw)) => {
+                let value = raw.and_then(|v| v.parse::<f32>().ok());
+                match index {
+                    0 => panel.draft.a4_ref = value,
+                    1 => panel.draft.gate_db = value,
+                    2 => panel.draft.in_tune_cents = value,
+                    _ => panel.draft.gauge_knee_cents = value,
+                }
+            }
+            Some(Event::Back) => {
+                self.page = Page::Main;
+                self.devices_loaded = false;
+            }
+            Some(Event::Applied) => {
+                self.applied = panel.applied.clone();
+                self.saved = panel.saved.clone();
+                self.cold = false;
+                self.page = Page::Main;
+                self.devices_loaded = false;
+                self.shared.input_channel.store(
+                    panel
+                        .snapshot
+                        .resolve_settings(&panel.applied)
+                        .ok()
+                        .and_then(|s| s.input_channel)
+                        .unwrap_or(1),
+                );
+            }
+            Some(Event::Reset) | None => {}
+        }
+        self.applied = panel.applied.clone();
+        self.saved = panel.saved.clone();
+        self.cold = panel.cold;
+        self.settings = panel.draft.clone();
+        self.shared.a4_ref_bits.store(
+            (self.settings.a4_ref.unwrap_or(440.0) as f64).to_bits(),
+            Ordering::Relaxed,
+        );
+        self.shared
+            .gate_db
+            .store(self.settings.gate_db.unwrap_or(-60.0));
+        self.audio_panel = Some(panel);
+    }
+
     fn process_settings_page(&mut self, ctx: &mut Context, clicked: bool) {
+        #[cfg(feature = "standalone")]
+        if !self.is_hosted() {
+            self.process_shared_audio_panel(ctx, clicked);
+            return;
+        }
+
         let (w, h) = ctx.size();
         let fit = (w / 720.0).min(h / 440.0).max(0.45);
         let mouse = ctx.mouse_position();
@@ -2807,8 +2932,11 @@ mod tests {
         let mut ui = channel_ui();
         ui.page = super::Page::Settings;
         let next = crate::settings::Settings {
+            preferences: crate::settings::TunerPreferences {
+                a4_ref: Some(432.0),
+                ..Default::default()
+            },
             backend: Some("dummy".into()),
-            a4_ref: Some(432.0),
             ..Default::default()
         };
         ui.record_apply_save(next.clone(), Err("disk is read-only".into()));
@@ -2827,9 +2955,12 @@ mod tests {
     fn back_and_reset_do_not_commit_drafts_and_back_restores_live_preferences() {
         let mut ui = channel_ui();
         let saved = crate::settings::Settings {
+            preferences: crate::settings::TunerPreferences {
+                a4_ref: Some(432.0),
+                gate_db: Some(-48.0),
+                ..Default::default()
+            },
             backend: Some("dummy".into()),
-            a4_ref: Some(432.0),
-            gate_db: Some(-48.0),
             ..Default::default()
         };
         ui.record_apply_save(saved.clone(), Ok(()));

@@ -1,6 +1,6 @@
 //! Popup geometry in window coordinates (center origin, y up).
 
-pub(super) struct DropdownLayout {
+pub struct DropdownLayout {
     pub center: [f32; 2],
     pub half: [f32; 2],
     pub border: f32,

@@ -3,7 +3,7 @@ use super::{JACK_BUFFER_CHOICES, Snapshot, StreamFormat};
 use crate::settings::OutputChannels;
 use jack::{Client, ClientOptions, PortFlags, PortSpec};
 
-pub(crate) const CLIENT_PREFIX: &str = "nice-tuner-";
+pub const CLIENT_PREFIX: &str = "nice-tuner-";
 
 pub(super) fn snapshot() -> Snapshot {
     let Ok((client, _)) = Client::new("nice-tuner-discovery", ClientOptions::NO_START_SERVER)

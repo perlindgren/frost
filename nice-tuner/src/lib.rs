@@ -229,8 +229,11 @@ mod tests {
         seed_standalone_params(
             &shared,
             &settings::Settings {
-                a4_ref: Some(432.0),
-                gate_db: Some(-45.0),
+                preferences: crate::settings::TunerPreferences {
+                    a4_ref: Some(432.0),
+                    gate_db: Some(-45.0),
+                    ..Default::default()
+                },
                 input_channel: Some(1),
                 ..Default::default()
             },
