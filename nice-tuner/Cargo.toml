@@ -36,7 +36,7 @@ diag = []
 # target for its games' sound and gamepads. The plugin simply never calls
 # `frost::Audio::new`; the linker still meets ALSA and udev, on Linux as on
 # any other platform where frost plays a sound.
-standalone = ["dep:jack", "dep:cpal", "dep:tracing", "dep:tracing-subscriber", "dep:core-audio-device", "dep:plugin-buffer"]
+standalone = ["dep:jack", "dep:cpal", "dep:tracing", "dep:tracing-subscriber", "nice-settings/ui", "dep:plugin-buffer"]
 # Opt in to native Windows placement inside the wrapper crate only.
 # nice-tuner itself always denies unsafe code.
 unsafe = ["dep:window-position", "window-position/unsafe"]
@@ -49,10 +49,11 @@ unsafe = ["dep:window-position", "window-position/unsafe"]
 # `--all-features`, which would invoke that build script on every platform.
 standalone-asio = ["standalone", "asio-host"]
 # cfg-visible alias for cpal/asio (cfg cannot test "cpal/asio" directly);
-# drives the ASIO arms in src/devices.rs.
-asio-host = ["cpal/asio", "dep:asio-sys"]
+# forwards ASIO discovery to the shared nice-settings crate.
+asio-host = ["cpal/asio", "nice-settings/asio-host"]
 
 [dependencies]
+nice-settings = { path = "../nice-settings" }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"], optional = true }
 nice-plug = { version = "0.4.2", default-features = false, features = [
@@ -103,14 +104,9 @@ jack = { version = "0.13.5", optional = true }
 [target.'cfg(windows)'.dependencies]
 # Native placement is implemented only by our opt-in Windows wrapper.
 window-position = { path = "crates/window-position", optional = true }
-# Direct ASIO access (same version cpal 0.18 pins): reading a driver's
-# PREFERRED buffer size — which cpal discards — in the streamless child
-# (--list-devices). Sequential with cpal's use; never concurrent.
-asio-sys = { version = "0.4", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 macos-frame-sync = { path = "crates/macos-frame-sync" }
-core-audio-device = { path = "crates/core-audio-device", optional = true }
 
 [dev-dependencies]
 # Safe measurement API for allocation tests; no handwritten allocator hooks.

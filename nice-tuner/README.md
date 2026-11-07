@@ -114,6 +114,13 @@ DAW audio callback timing. The VSync readout and Alt-V shortcut are disabled
 because the embedded renderer controls presentation independently of that flag.
 The feature is disabled by default.
 
+Standalone audio configuration, persistence, device queries and validation are
+shared with nice-nam through the workspace's `nice-settings` crate. Tuner-only
+preferences remain in `src/settings.rs`, and the existing flat
+`nice-tuner-settings.json` format and filename are preserved. The standalone audio panel and dropdown behavior are also shared. Tuner-specific
+controls, hosted operating-condition displays and the audio stream owner remain
+part of nice-tuner.
+
 ### Editor frame scheduling
 
 On macOS 14 and newer, standalone and DAW-hosted editors submit frames from
