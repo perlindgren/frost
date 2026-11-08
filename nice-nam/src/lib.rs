@@ -41,6 +41,12 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 pub struct NamSharedState {
+    pub input_rms: AtomicCell<f32>,
+    pub input_peak: AtomicCell<f32>,
+    pub output_rms: AtomicCell<f32>,
+    pub output_peak: AtomicCell<f32>,
+    pub gate_db: AtomicCell<f32>,
+    pub meter_updated: AtomicU64,
     logical_size: AtomicCell<LogicalSize<f32>>,
     scale_factor: AtomicCell<f64>,
     open: AtomicBool,
@@ -71,6 +77,7 @@ pub struct NamPlugin {
     incoming: rtrb::Consumer<Box<dsp::Chain>>,
     retiring: rtrb::Producer<Box<dsp::Chain>>,
     chain: Option<Box<dsp::Chain>>,
+    gate_gain: f32,
 }
 #[derive(Default, Params)]
 struct NamParams {
@@ -84,7 +91,14 @@ impl Default for NamPlugin {
             *params.paths.lock().unwrap() = settings::Settings::load().0.preferences;
         }
         let (engine, incoming, retiring) = engine::start(Arc::clone(&params.paths));
+        let gate_db = params.paths.lock().unwrap().gate_db.unwrap_or(-60.0);
         let shared = Arc::new(NamSharedState {
+            input_rms: AtomicCell::new(0.0),
+            input_peak: AtomicCell::new(0.0),
+            output_rms: AtomicCell::new(0.0),
+            output_peak: AtomicCell::new(0.0),
+            gate_db: AtomicCell::new(gate_db),
+            meter_updated: AtomicU64::new(0),
             logical_size: AtomicCell::new(DEFAULT_SIZE),
             scale_factor: AtomicCell::new(1.0),
             open: AtomicBool::new(false),
@@ -102,6 +116,7 @@ impl Default for NamPlugin {
             incoming,
             retiring,
             chain: None,
+            gate_gain: 1.0,
         }
     }
 }
@@ -140,6 +155,9 @@ impl Plugin for NamPlugin {
         _: &mut impl ActivateContext<Self>,
     ) -> bool {
         self.shared
+            .gate_db
+            .store(self.params.paths.lock().unwrap().gate_db.unwrap_or(-60.0));
+        self.shared
             .engine
             .rate
             .store(config.sample_rate as u32, Ordering::Release);
@@ -166,19 +184,63 @@ impl Plugin for NamPlugin {
             context.set_latency_samples(self.chain.as_ref().map_or(0, |chain| chain.latency()));
         }
         let rate = self.shared.engine.rate.load(Ordering::Relaxed);
+        let mut input_energy = 0.0f64;
+        let mut output_energy = 0.0f64;
+        let mut input_peak = 0.0f32;
+        let mut output_peak = 0.0f32;
+        let mut count = 0usize;
+        let threshold = 10.0f32.powf(self.shared.gate_db.load() / 20.0);
         for (_, block) in buffer.iter_blocks(dsp::BLOCK) {
             let n = block.samples();
             let mut input = [0.0; dsp::BLOCK];
             let mut output = [0.0; dsp::BLOCK];
             input[..n].copy_from_slice(&block.get(0).unwrap()[..n]);
+            let energy = input[..n]
+                .iter()
+                .map(|&x| f64::from(x).powi(2))
+                .sum::<f64>();
+            input_energy += energy;
+            input_peak = input[..n]
+                .iter()
+                .fold(input_peak, |peak, x| peak.max(x.abs()));
+            let target = if n > 0 && (energy / n as f64).sqrt() >= f64::from(threshold) {
+                1.0
+            } else {
+                0.0
+            };
+            let seconds = if target > self.gate_gain { 0.005 } else { 0.05 };
+            let coefficient = 1.0 - (-1.0 / (rate.max(1) as f32 * seconds)).exp();
+            for sample in &mut input[..n] {
+                self.gate_gain += (target - self.gate_gain) * coefficient;
+                *sample *= self.gate_gain;
+            }
             if let Some(chain) = self.chain.as_mut().filter(|chain| chain.rate == rate) {
                 chain.process(&input[..n], &mut output[..n]);
             } else {
                 output[..n].copy_from_slice(&input[..n]);
             }
+            output_energy += output[..n]
+                .iter()
+                .map(|&x| f64::from(x).powi(2))
+                .sum::<f64>();
+            output_peak = output[..n]
+                .iter()
+                .fold(output_peak, |peak, x| peak.max(x.abs()));
+            count += n;
             for channel in block.into_iter() {
                 channel.copy_from_slice(&output[..n]);
             }
+        }
+        if count > 0 {
+            self.shared
+                .input_rms
+                .store((input_energy / count as f64).sqrt() as f32);
+            self.shared
+                .output_rms
+                .store((output_energy / count as f64).sqrt() as f32);
+            self.shared.input_peak.store(input_peak);
+            self.shared.output_peak.store(output_peak);
+            self.shared.meter_updated.store(now_ms(), Ordering::Relaxed);
         }
         ProcessStatus::Normal
     }
@@ -200,3 +262,10 @@ impl Vst3Plugin for NamPlugin {
 
 nice_export_clap!(NamPlugin);
 nice_export_vst3!(NamPlugin);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
