@@ -2685,7 +2685,7 @@ impl TunerUi {
 
     #[cfg(feature = "standalone")]
     fn process_shared_audio_panel(&mut self, ctx: &mut Context, clicked: bool) {
-        use nice_common::ui::{AudioPanel, Event, ExtraRow};
+        use nice_common::ui::{AudioPanel, Event};
         let mut panel = self.audio_panel.take().unwrap_or_else(|| {
             let mut panel = AudioPanel::new(
                 self.settings.clone(),
@@ -2698,38 +2698,9 @@ impl TunerUi {
             panel
         });
         panel.live_frames = Some(self.shared.buffer_frames.load());
-        let extras: Vec<ExtraRow> = [
-            Dropdown::A4,
-            Dropdown::Gate,
-            Dropdown::InTune,
-            Dropdown::GaugeCurve,
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(i, dd)| {
-            let label = [
-                "A4 reference",
-                "Input gate",
-                "In-tune window",
-                "Gauge curve",
-            ][i]
-                .to_string();
-            let default = self.default_raw(dd);
-            let current = match dd {
-                Dropdown::A4 => panel.draft.a4_ref,
-                Dropdown::Gate => panel.draft.gate_db,
-                Dropdown::InTune => panel.draft.in_tune_cents,
-                _ => panel.draft.gauge_knee_cents,
-            }
-            .map(|v| format!("{v:.0}"));
-            ExtraRow {
-                label,
-                default,
-                current,
-                options: self.dropdown_rows(dd).0,
-            }
-        })
-        .collect();
+        // No extra rows: the shared panel is the audio panel here, exactly the one
+        // nice-nam shows. The tuner's params live on its main view.
+        let extras = Vec::new();
         let size = self.shared.logical_size();
         let window = nice_common::ui::window_geometry(
             [size.width, size.height],
@@ -2746,15 +2717,7 @@ impl TunerUi {
             crate::standalone::control::request,
         );
         match event {
-            Some(Event::ExtraPicked(index, raw)) => {
-                let value = raw.and_then(|v| v.parse::<f32>().ok());
-                match index {
-                    0 => panel.draft.a4_ref = value,
-                    1 => panel.draft.gate_db = value,
-                    2 => panel.draft.in_tune_cents = value,
-                    _ => panel.draft.gauge_knee_cents = value,
-                }
-            }
+            Some(Event::ExtraPicked(..)) => {}
             Some(Event::Back) => {
                 self.page = Page::Main;
                 self.devices_loaded = false;
@@ -2818,10 +2781,10 @@ impl TunerUi {
         }
         self.esc_held = esc;
 
-        // Audio block first, in signal order (what feeds me, which channel
-        // of it, what I answer through, then the stream's shape), then a
-        // gap, then the live param block.
-        const ROWS: [(&str, Dropdown); 13] = [
+        // Audio only, in signal order: what feeds me, which channel of it, what I
+        // answer through, then the stream's shape. The four live params are not here
+        // any more - they are chosen on the main view, where their effect is shown.
+        const ROWS: [(&str, Dropdown); 9] = [
             ("Backend", Dropdown::Backend),
             ("Input device", Dropdown::Input),
             ("Input channel", Dropdown::InputCh),
@@ -2831,16 +2794,10 @@ impl TunerUi {
             ("Output buffer size", Dropdown::OutputBuffer),
             ("Input sample rate", Dropdown::Rate),
             ("Output sample rate", Dropdown::OutputRate),
-            ("A4 reference", Dropdown::A4),
-            ("Input gate", Dropdown::Gate),
-            ("In-tune window", Dropdown::InTune),
-            ("Gauge curve", Dropdown::GaugeCurve),
         ];
-        // Thirteen rows, with a gap before the tuning parameters, fit
-        // above the bottom action buttons at the original window size.
-        let row_y = |i: usize| {
-            h / 2.0 - 32.0 * fit - i as f32 * 24.0 * fit - if i >= 9 { 10.0 } else { 0.0 } * fit
-        };
+        // Nine rows fit above the bottom action buttons at the original window size,
+        // with no second block to separate from.
+        let row_y = |i: usize| h / 2.0 - 32.0 * fit - i as f32 * 24.0 * fit;
         // Left column: genuinely LEFT-aligned. ctx.text centers INK, so
         // each label is centered at margin + half its measured width —
         // long names can no longer spill past the left screen edge.
