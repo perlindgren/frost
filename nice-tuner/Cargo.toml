@@ -54,7 +54,7 @@ unsafe = ["dep:window-position", "window-position/unsafe"]
 # reach it, so nothing in the gate asks for it.
 
 [dependencies]
-nice-common = { path = "../nice-common" }
+nice-common = { path = "../nice-common", features = ["widgets"] }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"], optional = true }
 nice-plug = { version = "0.4.2", default-features = false, features = [

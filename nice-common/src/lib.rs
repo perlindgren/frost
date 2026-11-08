@@ -17,3 +17,7 @@ pub mod devices;
 
 #[cfg(feature = "ui")]
 pub mod ui;
+
+pub mod meter;
+#[cfg(feature = "widgets")]
+pub mod tooltip;

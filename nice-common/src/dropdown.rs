@@ -264,3 +264,8 @@ mod tests {
         );
     }
 }
+
+#[cfg(feature = "widgets")]
+mod selector;
+#[cfg(feature = "widgets")]
+pub use selector::{DropdownResponse, Placement, draw_dropdown};
