@@ -117,7 +117,7 @@ The feature is disabled by default.
 Standalone audio configuration, persistence, device queries and validation are
 shared with nice-nam through the workspace's `nice-common` crate. Tuner-only
 preferences remain in `src/settings.rs`, and the existing flat
-`nice-tuner-settings.json` format and filename are preserved. The standalone audio panel and dropdown behavior are also shared. Tuner-specific
+`nice-tuner-settings.ron` format and filename are preserved. The standalone audio panel and dropdown behavior are also shared. Tuner-specific
 controls, hosted operating-condition displays and the audio stream owner remain
 part of nice-tuner.
 
@@ -145,11 +145,11 @@ The optional `unsafe` feature is forwarded to our `window-position` wrapper; com
 restoration/persistence. It never relaxes the app's unsafe-code guard. Without
 that feature, placement is left to baseview and the operating system.
 
-**The standalone binary reads audio settings from `nice-tuner-settings.json`.**
+**The standalone binary reads audio settings from `nice-tuner-settings.ron`.**
 The application owns its CPAL streams or JACK client and keeps the plugin and editor alive when
 Apply replaces those streams. An unset backend opens a silent application. The
 one exception is `--list-devices [backend] [input] [output]`, which prints one
-line of JSON and exits without a window or a stream; it exists so a process that
+line of RON and exits without a window or a stream; it exists so a process that
 holds no ASIO driver can enumerate drivers the live app cannot see.
 
 ```sh
@@ -188,7 +188,7 @@ Audio configuration is in the panel: the **settings cogwheel** top-right — bac
 buffer size, input and output devices, channel. A mono-only input (the built-in
 laptop microphone) is a channel choice there, not a `-l 2` on a command line the
 app never hears. The file lands in the current directory as
-`nice-tuner-settings.json`; the test-tone option does not override those device
+`nice-tuner-settings.ron`; the test-tone option does not override those device
 settings.
 
 ### Linux + JACK
@@ -243,7 +243,7 @@ cargo build -p nice-tuner --features standalone,unsafe --bin nice-tuner-standalo
 ```
 
 Without this feature ASIO is not even a value the binary knows — measured, its
-`--list-devices asio` returns `"inputs":[]`. With it the list is every driver
+`--list-devices asio` returns `inputs:[]`. With it the list is every driver
 registered under `HKLM\SOFTWARE\ASIO`, read **without loading one**: nine names
 on this machine, `["Audio 8 DJ","DJM-250MK2 ASIO","FlexASIO","Focusrite
 Thunderbolt ASIO","Focusrite USB ASIO","Komplete Audio ASIO Driver","MOTU M
@@ -325,7 +325,7 @@ use different sizes. When input and output are the same CoreAudio device or
 ASIO driver, output follows input and its control is gray and disabled.
 Changing to separate devices enables the output control again.
 
-The existing JSON `period_size` field now selects the input buffer;
+The existing `period_size` field now selects the input buffer;
 `output_period_size` selects the output buffer. CoreAudio defaults come from
 native device queries: the preferred primary input channel and current device
 buffer frame size. Failed or unsupported queries stay unset; the UI does not
@@ -428,7 +428,7 @@ through cpal, which enumerates once at that moment.
   the driver's rate rather than refused at Apply. Core Audio shares only the
   buffer rule, when input and output are the same device; its independent output
   rate is what the output rate row exists to set.
-- **Persistence**: `APPLY` writes `nice-tuner-settings.json` to the **current
+- **Persistence**: `APPLY` writes `nice-tuner-settings.ron` to the **current
   directory** after audio changes succeed, then returns directly to the tuner.
   Audio or file-save errors keep the settings panel open. `BACK` and Escape
   discard draft preferences without saving; `RESET` selects draft defaults
@@ -470,7 +470,7 @@ them to the settings file, which seeds them at next launch.
 |---|---|---|
 | DSP, editor, GUI, RT path | identical code | identical code |
 | Device / backend / sample rate | own process, cpal | host's device & rate |
-| Param controls | settings panel, saved to JSON | settings panel & host automation, saved by DAW |
+| Param controls | settings panel, saved to RON | settings panel & host automation, saved by DAW |
 | UI pump | display callbacks on macOS 14+, otherwise baseview timer | same scheduler on the host UI thread |
 | Editor lifecycle | closing the window ends the app | close/reopen freely, audio unaffected |
 
@@ -522,7 +522,7 @@ One-time verification checklist in Reaper (load the CLAP from `target/bundled`):
 - [x] M4 baseview→frost adapter (`src/gui.rs`) + tuner scene (`src/tuner_ui.rs`)
 - [x] M5 DSP→GUI wiring (analysis gated on editor open; shared atomics, zero RT allocs)
 - [x] M6 `scripts/check.sh` all gates green, incl. `Nice Tuner.clap`/`.vst3` bundling
-- [x] Standalone settings panel: backend/device/buffer dropdowns, JSON in CWD,
+- [x] Standalone settings panel: backend/device/buffer dropdowns, RON in CWD,
       application-owned CPAL streams and live Apply; host-managed audio inside DAWs
 - [x] The fork is gone: `frost::embedded` lives in the engine, which this crate
       now depends on by path. M3's "313 fork tests" were the fork's copy of the

@@ -4,7 +4,7 @@ pub use nice_common::settings::{
     effective_args, rates_must_match,
 };
 use serde::{Deserialize, Serialize};
-pub const FILE_NAME: &str = "nice-tuner-settings.json";
+pub const FILE_NAME: &str = "nice-tuner-settings.ron";
 pub type Settings = nice_common::Settings<TunerPreferences>;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -30,6 +30,36 @@ impl nice_common::Preferences for TunerPreferences {
 mod tests {
     use super::*;
 
+    fn encode_ron(settings: &Settings) -> Result<String, ron::Error> {
+        ron::ser::to_string(settings)
+    }
+
+    fn decode_ron_result(text: &str) -> Result<Settings, String> {
+        Settings::from_ron(text)
+    }
+
+    fn decode_ron(text: &str) -> Settings {
+        decode_ron_result(text).unwrap()
+    }
+
+    #[test]
+    fn application_preferences_round_trip_through_ron() {
+        let path = frost::scratch::claim("nice-tuner-ron").join("settings.ron");
+        let settings = Settings {
+            backend: Some("core-audio".into()),
+            preferences: TunerPreferences {
+                a4_ref: Some(432.0),
+                gate_db: Some(-40.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        settings.save_to(&path).unwrap();
+        let (restored, warning) = Settings::load_from(&path);
+        assert_eq!(warning, None);
+        assert_eq!(restored, settings);
+    }
+
     /// A folder this tree can vouch for, not one it hopes for. These two
     /// tests `unwrap()` every write, so an unusable `%TEMP%` — redirected,
     /// locked by a sync client, denied by the confinement a test runner
@@ -40,17 +70,20 @@ mod tests {
     /// name, and falls back to the workspace's own `target` when temp refuses
     /// (see `src/scratch.rs`, and the note in `.gitignore` about `**/target/`).
     fn geometry_test_path() -> std::path::PathBuf {
-        frost::scratch::claim("nice-tuner-geometry").join("settings.json")
+        frost::scratch::claim("nice-tuner-geometry").join("settings.ron")
     }
 
     #[test]
     fn resizing_updates_only_geometry_and_preserves_saved_and_unknown_preferences() {
         let path = geometry_test_path();
-        let initial = serde_json::json!({
+        let initial: ron::Value = ron::from_str(
+            r#"{
             "backend": "jack", "a4_ref": 432.0, "future_option": {"enabled": true},
             "window": {"x": 10, "y": 20, "width": 640.0, "height": 400.0, "future_window_option": 7}
-        });
-        std::fs::write(&path, initial.to_string()).unwrap();
+        }"#,
+        )
+        .unwrap();
+        std::fs::write(&path, ron::ser::to_string(&initial).unwrap()).unwrap();
         let size = WindowGeom {
             x: None,
             y: None,
@@ -58,14 +91,19 @@ mod tests {
             height: 600.0,
         };
         Settings::save_window_to(&path, size).unwrap();
-        let updated: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let updated: ron::Value = ron::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let mut expected = initial;
-        expected["window"]["width"] = 900.0.into();
-        expected["window"]["height"] = 600.0.into();
+        let ron::Value::Map(root) = &mut expected else {
+            panic!("expected settings map");
+        };
+        let ron::Value::Map(window) = root.get_mut(&ron::Value::from("window")).unwrap() else {
+            panic!("expected window map");
+        };
+        window.insert("width", 900.0f32);
+        window.insert("height", 600.0f32);
         assert_eq!(updated, expected);
         // An unchanged size must leave even the file's formatting untouched.
-        let compact = updated.to_string();
+        let compact = ron::ser::to_string(&updated).unwrap();
         std::fs::write(&path, &compact).unwrap();
         Settings::save_window_to(&path, size).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), compact);
@@ -73,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn resizing_can_create_a_geometry_only_config_and_never_overwrites_corrupt_json() {
+    fn resizing_can_create_a_geometry_only_config_and_never_overwrites_corrupt_ron() {
         let path = geometry_test_path();
         let size = WindowGeom {
             x: None,
@@ -82,8 +120,8 @@ mod tests {
             height: 500.0,
         };
         Settings::save_window_to(&path, size).unwrap();
-        let restored: Settings =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let (restored, warning) = Settings::load_from(&path);
+        assert_eq!(warning, None);
         assert_eq!(restored.window, Some(size));
         assert!(restored.is_blank());
         std::fs::write(&path, "broken config").unwrap();
@@ -101,11 +139,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            serde_json::from_str::<Settings>(&serde_json::to_string(&settings).unwrap()).unwrap(),
+            decode_ron_result(&encode_ron(&settings).unwrap()).unwrap(),
             settings
         );
         assert_eq!(
-            serde_json::from_str::<Settings>(r#"{"sample_rate":48000}"#)
+            decode_ron_result(r#"{"sample_rate":48000}"#)
                 .unwrap()
                 .output_sample_rate,
             None
@@ -127,8 +165,7 @@ mod tests {
                 output_channels: Some(route),
                 ..Default::default()
             };
-            let restored: Settings =
-                serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            let restored: Settings = decode_ron_result(&encode_ron(&settings).unwrap()).unwrap();
             assert_eq!(restored.output_channels, Some(route));
             assert!(!restored.is_blank());
             let args = effective_args(&restored);
@@ -138,12 +175,7 @@ mod tests {
                 .unwrap();
             assert_eq!(args[at + 1], route.raw());
         }
-        assert_eq!(
-            serde_json::from_str::<Settings>("{}")
-                .unwrap()
-                .output_channels,
-            None
-        );
+        assert_eq!(decode_ron_result("{}").unwrap().output_channels, None);
         assert_eq!(OutputChannels::parse("0"), None);
         assert_eq!(OutputChannels::parse("2,2"), None);
     }
@@ -155,8 +187,7 @@ mod tests {
             output_period_size: Some(256),
             ..Default::default()
         };
-        let restored: Settings =
-            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        let restored: Settings = decode_ron_result(&encode_ron(&settings).unwrap()).unwrap();
         assert_eq!(restored, settings);
         let args = effective_args(&restored);
         let input = args
@@ -175,7 +206,7 @@ mod tests {
             .position(|arg| arg == "--input-period-size")
             .unwrap();
         assert_eq!(output_only[input + 1], "512");
-        let legacy: Settings = serde_json::from_str(r#"{"period_size":128}"#).unwrap();
+        let legacy: Settings = decode_ron_result(r#"{"period_size":128}"#).unwrap();
         assert_eq!(legacy.period_size, Some(128));
         assert_eq!(legacy.output_period_size, None);
         assert!(
@@ -240,14 +271,14 @@ mod tests {
 
     #[test]
     fn input_channel_loads_legacy_auto_as_unset() {
-        for json in ["{}", r#"{"input_channel":null}"#, r#"{"input_channel":0}"#] {
-            let settings: Settings = serde_json::from_str(json).unwrap();
+        for text in ["{}", r#"{"input_channel":()}"#, r#"{"input_channel":0}"#] {
+            let settings: Settings = decode_ron_result(text).unwrap();
             assert_eq!(settings.input_channel, None);
         }
-        let settings: Settings = serde_json::from_str(r#"{"input_channel":3}"#).unwrap();
+        let settings: Settings = decode_ron_result(r#"{"input_channel":3}"#).unwrap();
         assert_eq!(settings.input_channel, Some(3));
-        let unset = serde_json::to_value(Settings::default()).unwrap();
-        assert!(unset["input_channel"].is_null());
+        let unset = decode_ron(&encode_ron(&Settings::default()).unwrap());
+        assert_eq!(unset.input_channel, None);
     }
 
     #[test]
@@ -261,16 +292,16 @@ mod tests {
             }),
             ..Default::default()
         };
-        let json = serde_json::to_string(&s).unwrap();
-        let back: Settings = serde_json::from_str(&json).unwrap();
+        let text = encode_ron(&s).unwrap();
+        let back: Settings = decode_ron_result(&text).unwrap();
         assert_eq!(back, s);
         // Old files (no window key) load as "never saved" → the window
         // centres itself on the next start.
-        let old: Settings = serde_json::from_str("{}").unwrap();
+        let old: Settings = decode_ron_result("{}").unwrap();
         assert_eq!(old.window, None);
         // Size-only entries (platforms without a position API omit x/y).
         let size_only: Settings =
-            serde_json::from_str(r#"{"window":{"width":800.0,"height":500.0}}"#).unwrap();
+            decode_ron_result(r#"{"window":{"width":800.0,"height":500.0}}"#).unwrap();
         assert_eq!(
             size_only.window,
             Some(WindowGeom {
@@ -399,27 +430,8 @@ mod tests {
     }
 
     #[test]
-    fn json_round_trip_and_lenient_reading() {
-        let s = Settings {
-            preferences: crate::settings::TunerPreferences {
-                a4_ref: Some(432.0),
-                in_tune_cents: Some(2.0),
-                gauge_knee_cents: Some(7.0),
-                ..Default::default()
-            },
-            backend: Some("asio".into()),
-            input_device: Some("Komplete Input 1/2".into()),
-            period_size: Some(64),
-            input_channel: Some(1),
-
-            ..Default::default()
-        };
-        let text = serde_json::to_string(&s).unwrap();
-        let back: Settings = serde_json::from_str(&text).unwrap();
-        assert_eq!(back, s);
-        // Unknown fields ignored, missing fields None — forward compatible.
-        let loose: Settings =
-            serde_json::from_str(r#"{"backend":"wasapi","future_thing":42}"#).unwrap();
+    fn ron_reading_ignores_unknown_fields_and_defaults_missing_fields() {
+        let loose = decode_ron(r#"{"backend":"wasapi","future_thing":42}"#);
         assert_eq!(loose.backend.as_deref(), Some("wasapi"));
         assert_eq!(loose.period_size, None);
     }
@@ -457,11 +469,8 @@ mod tests {
         assert_eq!(settings.output_device, None);
         assert_eq!(settings.input_channel, None);
         assert_eq!(settings.output_channels, None);
-        let serialized = serde_json::to_string(&settings).unwrap();
-        assert_eq!(
-            serde_json::from_str::<Settings>(&serialized).unwrap(),
-            settings
-        );
+        let serialized = encode_ron(&settings).unwrap();
+        assert_eq!(decode_ron_result(&serialized).unwrap(), settings);
         assert_eq!(
             settings.jack_output_right.as_deref(),
             Some("interface:playback_R")

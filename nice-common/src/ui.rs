@@ -1077,7 +1077,7 @@ mod persistence_tests {
         value: Option<u32>,
     }
     impl Preferences for App {
-        const FILE_NAME: &'static str = "nice-common-ui-tests.json";
+        const FILE_NAME: &'static str = "nice-common-ui-tests.ron";
         const APP_NAME: &'static str = "test";
         fn is_blank(&self) -> bool {
             self.value.is_none()
@@ -1171,12 +1171,10 @@ mod output_route_persistence_tests {
         };
         assert!(matches!(
             panel.save_with(panel.draft.clone(), Some(window), |settings| {
-                let json = serde_json::to_value(settings).unwrap();
-                assert_eq!(
-                    json["output_channels"],
-                    serde_json::json!({"kind": "stereo", "channels": [1, 2]})
-                );
-                let restored: Settings = serde_json::from_value(json).unwrap();
+                let path = frost::scratch::claim("output-route-ron").join("settings.ron");
+                settings.save_to(&path)?;
+                let (restored, warning): (Settings, _) = Settings::load_from(&path);
+                assert_eq!(warning, None);
                 assert_eq!(restored.output_channels, Some(stereo));
                 Ok(())
             }),

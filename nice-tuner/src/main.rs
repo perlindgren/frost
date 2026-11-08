@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 
 fn main() {
     // Helper mode for the settings panel (see devices::snapshot_via_child):
-    // enumerate one backend, print JSON on stdout, exit — WITHOUT opening
+    // enumerate one backend, print RON on stdout, exit — WITHOUT opening
     // a window or a stream. The whole point is a process that holds no
     // ASIO driver, so it can see drivers the live app cannot. This flag
     // is the app's INTERNAL parent-child protocol, not a user interface:
@@ -23,7 +23,11 @@ fn main() {
             let inp = argv.get(3).filter(|s| !s.is_empty()).map(String::as_str);
             let outp = argv.get(4).filter(|s| !s.is_empty()).map(String::as_str);
             let snap = nice_tuner::devices::snapshot(&backend, inp, outp);
-            print!("{}", serde_json::to_string(&snap).unwrap_or_default());
+            print!(
+                "{}",
+                snap.to_ron()
+                    .expect("device snapshot must serialize to RON")
+            );
             return;
         }
     }
