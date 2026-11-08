@@ -75,7 +75,7 @@ sets the floating-point mode required by NAM and restores the caller's state.
 The application itself denies unsafe code.
 
 Standalone model name, model path, cabinet path, audio settings and window size
-are stored in `nice-nam-settings.json` in the working directory. Only successful
+are stored in `nice-nam-settings.ron` in the working directory. Only successful
 asset preparations are saved. DAW instances persist asset paths through nice-plug
 state instead; they do not read or write the standalone configuration or probe
 host-owned audio devices. Asset files remain external and must stay available.
@@ -100,3 +100,10 @@ configuration round-trips and monitoring conversion. Native listening, real
 community models, multi-instance DAW use and plugin bundling require further
 integration testing. Models using mirrored memory also need native POSIX shared
 memory permissions; a restricted process may refuse their allocation.
+
+The main view has input and output RMS/peak-hold meters along the bottom. The
+input meter measures before the gate; the output meter measures after the model
+and cabinet. Click the input meter to choose its gate threshold (default −60 dBFS);
+hovering shows the current value. The standalone saves `gate_db` in
+`nice-nam-settings.ron`. Gate gain opens over 5 ms and closes over 50 ms before
+the model; its threshold is evaluated on each processing chunk's input RMS.

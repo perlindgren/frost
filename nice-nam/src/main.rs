@@ -8,7 +8,12 @@ fn main() {
             args.get(3).filter(|s| !s.is_empty()).map(String::as_str),
             args.get(4).filter(|s| !s.is_empty()).map(String::as_str),
         );
-        println!("{}", serde_json::to_string(&snapshot).unwrap());
+        println!(
+            "{}",
+            snapshot
+                .to_ron()
+                .expect("device snapshot must serialize to RON")
+        );
         return;
     }
     nice_nam::STANDALONE_MODE.store(true, std::sync::atomic::Ordering::Relaxed);

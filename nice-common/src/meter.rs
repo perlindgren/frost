@@ -67,6 +67,96 @@ impl PeakMeter {
     }
 }
 
+#[cfg(feature = "widgets")]
+impl PeakMeter {
+    /// Draw the input RMS bar, peak hold and -48..0 dBFS scale. Returns whether
+    /// the pointer is over the bar or its scale, for a caller's gate control.
+    pub fn draw(
+        &self,
+        ctx: &mut frost::Context,
+        font: &std::sync::Arc<[u8]>,
+        center: [f32; 2],
+        half_width: f32,
+        fit: f32,
+        main: frost::Color,
+    ) -> bool {
+        use frost::Color;
+        let [cx, y] = center;
+        let half = half_width;
+        ctx.rectangle(cx, y, half, 2.5 * fit, Color { a: 0.5, ..TRACK }, 0.05);
+        // dBFS scale: 0 at the right end, -48 at the left, every 6 dB.
+        // Short ticks (±4) with numerals well below — digit tops must
+        // not crowd the ticks.
+        for i in 0..=8u32 {
+            let xv = cx + half - i as f32 * (half / 4.0);
+            ctx.rectangle(xv, y, 1.0 * fit, 4.0 * fit, Color { a: 0.6, ..DIM }, 0.06);
+            ctx.text(
+                xv,
+                y - 26.0 * fit,
+                font,
+                format!("{}", -(6 * i as i32)),
+                16.0 * fit,
+                550.0,
+                DIM,
+                0.06,
+            );
+        }
+        // Bar: current level.
+        let m = self.level_db().clamp(-48.0, 0.0);
+        let xv = half * (1.0 + m / 24.0);
+        if xv > -half + 0.5 {
+            ctx.rectangle(
+                cx + (-half + xv) / 2.0,
+                y,
+                (xv + half) / 2.0,
+                2.5 * fit,
+                // Same amber→green state as note and needle (main lerps).
+                main,
+                0.07,
+            );
+        }
+        // Peak marker: a thin bright line at the held peak, above the
+        // bar in z; sits at the bar while rising, sticks after it falls.
+        let p = self.peak_db().clamp(-48.0, 0.0);
+        let px = half * (1.0 + p / 24.0);
+        if p > -47.5 {
+            ctx.rectangle(
+                cx + px,
+                y,
+                1.5 * fit,
+                6.0 * fit,
+                Color { a: 0.9, ..FG },
+                0.08,
+            );
+        }
+
+        ctx.mouse_position().is_some_and(|[mx, my]| {
+            (mx - cx).abs() <= half && (my - (y - 13.0 * fit)).abs() <= 17.0 * fit
+        })
+    }
+}
+#[cfg(feature = "widgets")]
+const TRACK: frost::Color = frost::Color {
+    r: 42.0 / 255.0,
+    g: 36.0 / 255.0,
+    b: 61.0 / 255.0,
+    a: 1.0,
+};
+#[cfg(feature = "widgets")]
+const DIM: frost::Color = frost::Color {
+    r: 107.0 / 255.0,
+    g: 114.0 / 255.0,
+    b: 128.0 / 255.0,
+    a: 1.0,
+};
+#[cfg(feature = "widgets")]
+const FG: frost::Color = frost::Color {
+    r: 230.0 / 255.0,
+    g: 230.0 / 255.0,
+    b: 234.0 / 255.0,
+    a: 1.0,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

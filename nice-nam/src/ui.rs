@@ -155,6 +155,11 @@ pub struct NamUi {
     shared: Arc<NamSharedState>,
     font: Arc<[u8]>,
     icon_font: Arc<[u8]>,
+    input_meter: nice_common::meter::PeakMeter,
+    output_meter: nice_common::meter::PeakMeter,
+    gate_open: bool,
+    gate_scroll: f32,
+    gate_drag: bool,
     pressed: bool,
     armed: Option<usize>,
     settings_page: bool,
@@ -174,6 +179,11 @@ impl NamUi {
             shared,
             font: font.clone(),
             icon_font: crate::gui::icon_font(),
+            input_meter: nice_common::meter::PeakMeter::new(crate::now_ms()),
+            output_meter: nice_common::meter::PeakMeter::new(crate::now_ms()),
+            gate_open: false,
+            gate_scroll: 0.0,
+            gate_drag: false,
             pressed: false,
             armed: None,
             settings_page: false,
@@ -254,6 +264,15 @@ impl NamUi {
 }
 impl Process for NamUi {
     fn process(&mut self, ctx: &mut Context, _dt: f32) {
+        self.shared.gate_db.store(
+            self.shared
+                .engine
+                .paths
+                .lock()
+                .unwrap()
+                .gate_db
+                .unwrap_or(-60.0),
+        );
         #[cfg(feature = "standalone")]
         if let Some(error) = crate::standalone::control::take_error() {
             self.message = error;
@@ -267,7 +286,9 @@ impl Process for NamUi {
                 && self.saved_paths.as_ref() != Some(&paths)
             {
                 let mut settings = Settings::load().0;
+                let gate = settings.gate_db;
                 settings.preferences = paths.clone();
+                settings.gate_db = gate;
                 match settings.save() {
                     Ok(()) => self.saved_paths = Some(paths),
                     Err(error) => self.message = error,
@@ -293,8 +314,11 @@ impl Process for NamUi {
             });
             panel.live_frames = Some(self.shared.buffer_frames.load(Ordering::Relaxed));
             if let Some(paths) = self.shared.engine.accepted.lock().unwrap().clone() {
+                let gate = panel.draft.gate_db;
                 panel.draft.preferences = paths.clone();
+                panel.draft.gate_db = gate;
                 panel.saved.preferences = paths;
+                panel.saved.gate_db = gate;
             }
             let size = self.shared.logical_size();
             let window = nice_common::ui::window_geometry(
@@ -383,6 +407,66 @@ impl Process for NamUi {
                 self.text(ctx, 95.0 + i as f32 * 23.0, line, 15.0, rgb(235, 230, 241));
             }
         }
+        let (w, h) = ctx.size();
+        let fit = (w / 900.0).clamp(0.45, 1.0);
+        let now = crate::now_ms();
+        let live = now.saturating_sub(self.shared.meter_updated.load(Ordering::Relaxed)) < 250;
+        let db = |value: f32| {
+            if live && value > 1e-7 {
+                20.0 * value.log10()
+            } else {
+                -120.0
+            }
+        };
+        self.input_meter.tick(
+            db(self.shared.input_rms.load()),
+            db(self.shared.input_peak.load()),
+            now,
+        );
+        self.output_meter.tick(
+            db(self.shared.output_rms.load()),
+            db(self.shared.output_peak.load()),
+            now,
+        );
+        let meter_y = -h / 2.0 + 48.0 * fit;
+        let half = w * 0.20;
+        let input_hover = self.input_meter.draw(
+            ctx,
+            &self.font,
+            [-w / 4.0, meter_y],
+            half,
+            fit,
+            rgb(103, 237, 175),
+        );
+        self.output_meter.draw(
+            ctx,
+            &self.font,
+            [w / 4.0, meter_y],
+            half,
+            fit,
+            rgb(103, 237, 175),
+        );
+        for (x, label) in [(-w / 4.0, "INPUT"), (w / 4.0, "OUTPUT")] {
+            ctx.text(
+                x,
+                meter_y + 20.0 * fit,
+                &self.font,
+                label,
+                14.0 * fit,
+                TEXT_WEIGHT,
+                rgb(235, 230, 241),
+                1.0,
+            );
+        }
+        if !self.gate_open && input_hover {
+            nice_common::tooltip::draw(
+                ctx,
+                &self.font,
+                &format!("INPUT GATE  {:.0} dB", self.shared.gate_db.load()),
+                fit,
+            );
+        }
+        const GATE_BUTTON: usize = usize::MAX - 1;
         const SETTINGS_BUTTON: usize = usize::MAX;
         let cog = !self.settings_page && crate::STANDALONE_MODE.load(Ordering::Relaxed);
         let size = self.shared.logical_size();
@@ -409,6 +493,12 @@ impl Process for NamUi {
             );
         }
         let hover = ctx.mouse_position().and_then(|[x, y]| {
+            if self.gate_open {
+                return None;
+            }
+            if input_hover {
+                return Some(GATE_BUTTON);
+            }
             if cog_hover {
                 return Some(SETTINGS_BUTTON);
             }
@@ -435,9 +525,61 @@ impl Process for NamUi {
         } else {
             None
         };
+        let rising = down && !self.pressed;
         self.pressed = down;
+        if self.gate_open {
+            if ctx.key_down(frost::KeyCode::Escape) {
+                self.gate_open = false;
+            }
+            let items: Vec<_> = [-80, -70, -60, -50, -40, -30, -20]
+                .into_iter()
+                .map(|db| (format!("{db} dB"), db.to_string()))
+                .collect();
+            let gate = self.shared.gate_db.load();
+            let selected = items
+                .iter()
+                .position(|(_, raw)| raw.parse::<f32>().ok() == Some(gate))
+                .unwrap_or(2);
+            let response = nice_common::dropdown::draw_dropdown(
+                ctx,
+                &self.font,
+                [w, h],
+                fit,
+                nice_common::dropdown::Placement::Centred([110.0 * fit, 11.0 * fit]),
+                1.1,
+                rising,
+                &items,
+                selected,
+                "-60",
+                "INPUT GATE",
+                false,
+                &mut self.gate_scroll,
+                &mut self.gate_drag,
+            );
+            if let Some(index) = response.picked {
+                let gate = items[index].1.parse::<f32>().unwrap();
+                self.shared.gate_db.store(gate);
+                let value = (gate != -60.0).then_some(gate);
+                self.shared.engine.paths.lock().unwrap().gate_db = value;
+                #[cfg(feature = "standalone")]
+                if crate::STANDALONE_MODE.load(Ordering::Relaxed) {
+                    let mut settings = Settings::load().0;
+                    settings.gate_db = value;
+                    if let Err(error) = settings.save() {
+                        self.message = error;
+                    }
+                }
+                self.gate_open = false;
+            } else if rising && !response.consumed {
+                self.gate_open = false;
+            }
+        }
         if let Some(row) = click {
-            if row == SETTINGS_BUTTON {
+            if row == GATE_BUTTON {
+                self.gate_open = true;
+                self.gate_scroll = 0.0;
+                self.gate_drag = false;
+            } else if row == SETTINGS_BUTTON {
                 #[cfg(feature = "standalone")]
                 {
                     self.panel = None;
@@ -454,7 +596,7 @@ impl Process for NamUi {
         }
         self.text(
             ctx,
-            265.0,
+            h / 2.0 - 105.0,
             &self.message.chars().take(75).collect::<String>(),
             14.0,
             rgb(250, 190, 115),

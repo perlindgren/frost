@@ -4,6 +4,7 @@
 //! settings in place. Plugin hosts own their audio devices and ignore these
 //! standalone device settings.
 
+use ron::Value;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -20,7 +21,7 @@ pub trait Preferences: Clone + Default + Serialize + serde::de::DeserializeOwned
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct NoPreferences {}
 impl Preferences for NoPreferences {
-    const FILE_NAME: &'static str = "nice-common.json";
+    const FILE_NAME: &'static str = "nice-common.ron";
     const APP_NAME: &'static str = "nice-common";
     fn is_blank(&self) -> bool {
         true
@@ -79,11 +80,54 @@ fn deserialize_input_channel<'de, D: serde::Deserializer<'de>>(
     Ok(Option::<u32>::deserialize(deserializer)?.filter(|&channel| channel > 0))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "channels", rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputChannels {
     Mono(u32),
     Stereo([u32; 2]),
+}
+
+impl<'de> Deserialize<'de> for OutputChannels {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Channels {
+            Mono(u32),
+            Stereo([u32; 2]),
+        }
+        #[derive(Deserialize)]
+        struct Route {
+            kind: String,
+            channels: Channels,
+        }
+        let route = Route::deserialize(deserializer)?;
+        match (route.kind.as_str(), route.channels) {
+            ("mono", Channels::Mono(channel)) => Ok(Self::Mono(channel)),
+            ("stereo", Channels::Stereo(channels)) => Ok(Self::Stereo(channels)),
+            _ => Err(serde::de::Error::custom(
+                "Expected mono channel or stereo channel pair",
+            )),
+        }
+    }
+}
+
+// Keep the discriminant a string so RON's untyped tree retains it when a
+// geometry update rewrites the file (Value deliberately does not retain enums).
+impl Serialize for OutputChannels {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut value = serializer.serialize_struct("OutputChannels", 2)?;
+        match self {
+            Self::Mono(channel) => {
+                value.serialize_field("kind", "mono")?;
+                value.serialize_field("channels", channel)?;
+            }
+            Self::Stereo(channels) => {
+                value.serialize_field("kind", "stereo")?;
+                value.serialize_field("channels", channels)?;
+            }
+        }
+        value.end()
+    }
 }
 
 impl OutputChannels {
@@ -200,28 +244,45 @@ impl<P: Preferences> Settings<P> {
     /// A missing file is the default; a corrupt file is the default plus a
     /// warning to show. Startup must never depend on a file that can rot.
     pub fn load() -> (Self, Option<String>) {
-        match std::fs::read_to_string(Self::path()) {
-            Err(_) => (Self::default(), None),
-            Ok(text) if text.trim().is_empty() => (Self::default(), None),
-            Ok(text) => match serde_json::from_str::<Self>(&text) {
-                Ok(mut s) => {
-                    s.normalize();
-                    (s, None)
+        Self::load_from(&Self::path())
+    }
+
+    /// Read the RON settings file at the supplied path.
+    pub fn load_from(path: &std::path::Path) -> (Self, Option<String>) {
+        let result = std::fs::read_to_string(path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                if text.trim().is_empty() {
+                    return Ok(Self::default());
                 }
-                Err(e) => (
-                    Self::default(),
-                    Some(format!(
-                        "ignoring unreadable {}: {e}",
-                        Self::path().display()
-                    )),
-                ),
-            },
+                Self::from_ron(&text)
+            });
+        match result {
+            Ok(mut settings) => {
+                settings.normalize();
+                (settings, None)
+            }
+            Err(_) if !path.exists() => (Self::default(), None),
+            Err(error) => (
+                Self::default(),
+                Some(format!("ignoring unreadable {}: {error}", path.display())),
+            ),
         }
     }
 
+    /// Decode RON settings, including the original bare-value/`()` option spelling.
+    pub fn from_ron(text: &str) -> Result<Self, String> {
+        Self::deserialize(SettingsValue(read_value(text)?)).map_err(|e| e.to_string())
+    }
+
     pub fn save(&self) -> Result<(), String> {
-        let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(Self::path(), text).map_err(|e| format!("{}: {e}", Self::path().display()))
+        self.save_to(&Self::path())
+    }
+
+    pub fn save_to(&self, path: &std::path::Path) -> Result<(), String> {
+        let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
+            .map_err(|e| e.to_string())?;
+        std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// Update only window geometry, preserving saved preferences and unknown
@@ -239,35 +300,45 @@ impl<P: Preferences> Settings<P> {
         {
             return Err("Cannot save an invalid window size".into());
         }
-        let mut value: serde_json::Value = match std::fs::read_to_string(path) {
-            Ok(text) if text.trim().is_empty() => serde_json::json!({}),
-            Ok(text) => serde_json::from_str(&text)
-                .map_err(|error| format!("{}: {error}", path.display()))?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        let mut value: Value = match std::fs::read_to_string(path) {
+            Ok(text) if text.trim().is_empty() => Value::Map(ron::Map::new()),
+            Ok(text) => {
+                read_value(&text).map_err(|error| format!("{}: {error}", path.display()))?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Value::Map(ron::Map::new())
+            }
             Err(error) => return Err(format!("{}: {error}", path.display())),
         };
         let original = value.clone();
-        let object = value
-            .as_object_mut()
-            .ok_or("Settings file must contain a JSON object")?;
-        let geometry = object.entry("window").or_insert(serde_json::json!({}));
-        if geometry.is_null() {
-            *geometry = serde_json::json!({});
+        let Value::Map(object) = &mut value else {
+            return Err("Settings file must contain a map".into());
+        };
+        let key = Value::from("window");
+        if object.get(&key).is_none() {
+            object.insert(key.clone(), Value::Map(ron::Map::new()));
         }
-        let geometry = geometry
-            .as_object_mut()
-            .ok_or("Window settings must contain a JSON object")?;
-        geometry.insert("width".into(), window.width.into());
-        geometry.insert("height".into(), window.height.into());
+        let mut geometry = object.get_mut(&key).unwrap();
+        if matches!(geometry, Value::Unit | Value::Option(None)) {
+            *geometry = Value::Map(ron::Map::new());
+        }
+        // Typed RON writes Some(window); the original RON schema used a bare map.
+        if let Value::Option(Some(inner)) = geometry {
+            geometry = inner;
+        }
+        let Value::Map(geometry) = geometry else {
+            return Err("Window settings must contain a map".into());
+        };
+        geometry.insert("width", window.width);
+        geometry.insert("height", window.height);
         if let Some(x) = window.x {
-            geometry.insert("x".into(), x.into());
+            geometry.insert("x", Value::from(Some(x)));
         }
         if let Some(y) = window.y {
-            geometry.insert("y".into(), y.into());
+            geometry.insert("y", Value::from(Some(y)));
         }
         if value != original {
-            let text = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
-            std::fs::write(path, text).map_err(|error| format!("{}: {error}", path.display()))?;
+            write_value(path, &value)?;
         }
         Ok(())
     }
@@ -376,5 +447,215 @@ impl<P> std::ops::Deref for Settings<P> {
 impl<P> std::ops::DerefMut for Settings<P> {
     fn deref_mut(&mut self) -> &mut P {
         &mut self.preferences
+    }
+}
+
+// Use a self-describing map for the flattened application fields. In RON,
+// keys are strings. This also lets geometry
+// updates preserve unknown fields without decoding them into application types.
+// Adapt RON's tree to Serde while accepting both explicit Some/None and the
+// original settings spelling (bare values / unit). Recurse through maps and
+// sequences so nested geometry and flattened preferences follow the same rules.
+struct SettingsValue(Value);
+impl<'de> serde::de::IntoDeserializer<'de, ron::Error> for SettingsValue {
+    type Deserializer = Self;
+    fn into_deserializer(self) -> Self {
+        self
+    }
+}
+impl<'de> serde::Deserializer<'de> for SettingsValue {
+    type Error = ron::Error;
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string bytes byte_buf
+        unit unit_struct newtype_struct seq tuple tuple_struct map struct enum identifier ignored_any
+    }
+    fn deserialize_any<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        match self.0 {
+            Value::Map(map) => visitor.visit_map(serde::de::value::MapDeserializer::new(
+                map.into_iter()
+                    .map(|(key, value)| (SettingsValue(key), SettingsValue(value))),
+            )),
+            Value::Seq(seq) => visitor.visit_seq(serde::de::value::SeqDeserializer::new(
+                seq.into_iter().map(SettingsValue),
+            )),
+            Value::Option(Some(inner)) => visitor.visit_some(SettingsValue(*inner)),
+            value => value.deserialize_any(visitor),
+        }
+    }
+    fn deserialize_option<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        match self.0 {
+            Value::Unit | Value::Option(None) => visitor.visit_none(),
+            Value::Option(Some(inner)) => visitor.visit_some(SettingsValue(*inner)),
+            value => visitor.visit_some(SettingsValue(value)),
+        }
+    }
+}
+
+fn read_value(text: &str) -> Result<Value, String> {
+    ron::from_str(text).map_err(|e| e.to_string())
+}
+fn write_value(path: &std::path::Path, value: &Value) -> Result<(), String> {
+    let text = ron::ser::to_string_pretty(value, ron::ser::PrettyConfig::default())
+        .map_err(|e| e.to_string())?;
+    std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+#[cfg(all(test, feature = "widgets"))]
+mod persistence_tests {
+    use super::*;
+
+    fn field<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+        match value {
+            Value::Map(map) => map.get(&Value::from(key)),
+            _ => None,
+        }
+    }
+
+    fn path() -> PathBuf {
+        frost::scratch::claim("nice-common-ron").join("settings.ron")
+    }
+
+    #[test]
+    fn ron_round_trips_audio_routes_and_unset_values() {
+        let path = path();
+        let settings = Settings::<NoPreferences> {
+            backend: Some("core-audio".into()),
+            output_channels: Some(OutputChannels::Stereo([1, 2])),
+            sample_rate: Some(48000.0),
+            ..Default::default()
+        };
+        settings.save_to(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(ron::from_str::<Value>(&text).is_ok());
+        let (restored, warning) = Settings::<NoPreferences>::load_from(&path);
+        assert_eq!(warning, None);
+        assert_eq!(restored, settings);
+    }
+
+    #[test]
+    fn original_ron_option_spelling_preserves_routes_and_geometry() {
+        let text = r#"{
+            "backend": "core-audio", "input_device": (),
+            "output_channels": {"kind":"stereo", "channels":[1,2]},
+            "window": {"x":12,"y":(),"width":900.0,"height":620.0}
+        }"#;
+        let settings = Settings::<NoPreferences>::from_ron(text).unwrap();
+        assert_eq!(settings.input_device, None);
+        assert_eq!(
+            settings.output_channels,
+            Some(OutputChannels::Stereo([1, 2]))
+        );
+        let path = path();
+        settings.save_to(&path).unwrap();
+        Settings::<NoPreferences>::save_window_to(
+            &path,
+            WindowGeom {
+                x: None,
+                y: Some(24),
+                width: 1000.0,
+                height: 700.0,
+            },
+        )
+        .unwrap();
+        let (restored, warning) = Settings::<NoPreferences>::load_from(&path);
+        assert_eq!(warning, None);
+        assert_eq!(restored.output_channels, settings.output_channels);
+        let window = restored.window.unwrap();
+        assert_eq!(window.x, Some(12));
+        assert_eq!(window.y, Some(24));
+        assert_eq!(window.width, 1000.0);
+    }
+
+    #[test]
+    fn old_json_file_is_ignored_when_ron_is_absent() {
+        let path = path();
+        let legacy = path.with_extension("json");
+        let text = r#"{"backend":"core-audio","gate_db":-40}"#;
+        std::fs::write(&legacy, text).unwrap();
+        let (settings, warning) = Settings::<NoPreferences>::load_from(&path);
+        assert_eq!(settings, Settings::default());
+        assert_eq!(warning, None);
+        Settings::<NoPreferences>::save_window_to(
+            &path,
+            WindowGeom {
+                x: None,
+                y: None,
+                width: 900.0,
+                height: 620.0,
+            },
+        )
+        .unwrap();
+        let value = read_value(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(field(&value, "backend").is_none());
+        assert!(field(&value, "gate_db").is_none());
+        assert_eq!(std::fs::read_to_string(legacy).unwrap(), text);
+    }
+
+    #[test]
+    fn ron_geometry_save_preserves_unknown_fields() {
+        let path = path();
+        let text = r#"{"backend":"coreaudio","gate_db":-40,"future":{"enabled":true},"window":{"width":640,"height":400,"x":12,"extra":7}}"#;
+        std::fs::write(&path, text).unwrap();
+        let (settings, warning) = Settings::<NoPreferences>::load_from(&path);
+        assert_eq!(warning, None);
+        assert_eq!(settings.backend.as_deref(), Some("core-audio"));
+        Settings::<NoPreferences>::save_window_to(
+            &path,
+            WindowGeom {
+                x: None,
+                y: None,
+                width: 900.0,
+                height: 620.0,
+            },
+        )
+        .unwrap();
+        let value = read_value(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            field(field(&value, "future").unwrap(), "enabled"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(field(&value, "gate_db"), Some(&Value::from(-40i8)));
+        assert_eq!(
+            field(field(&value, "window").unwrap(), "extra"),
+            Some(&Value::from(7u8))
+        );
+        assert_eq!(
+            field(field(&value, "window").unwrap(), "x"),
+            Some(&Value::from(12u8))
+        );
+        let before = std::fs::read_to_string(&path).unwrap();
+        Settings::<NoPreferences>::save_window_to(
+            &path,
+            WindowGeom {
+                x: None,
+                y: None,
+                width: 900.0,
+                height: 620.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        // A resize must not overwrite a malformed RON file.
+        std::fs::write(&path, "broken (").unwrap();
+        assert!(Settings::<NoPreferences>::load_from(&path).1.is_some());
+        assert!(
+            Settings::<NoPreferences>::save_window_to(
+                &path,
+                WindowGeom {
+                    x: None,
+                    y: None,
+                    width: 900.0,
+                    height: 620.0
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "broken (");
     }
 }

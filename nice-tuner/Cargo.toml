@@ -54,7 +54,7 @@ unsafe = ["dep:window-position", "window-position/unsafe"]
 # reach it, so nothing in the gate asks for it.
 
 [dependencies]
-nice-common = { path = "../nice-common" }
+nice-common = { path = "../nice-common", features = ["widgets"] }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"], optional = true }
 nice-plug = { version = "0.4.2", default-features = false, features = [
@@ -79,7 +79,6 @@ crossbeam = "0.8"
 keyboard-types = "0.8.3"
 # Settings panel persistence (main thread only; never touched by the audio path)
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 # Direct cpal dependency for device enumeration in the settings panel
 # (standalone only). Same version nice-plug resolves to; features are
 # additive on the unified dependency graph.
@@ -114,5 +113,6 @@ asio-host = { path = "crates/asio-host", optional = true }
 macos-frame-sync = { path = "crates/macos-frame-sync" }
 
 [dev-dependencies]
+ron = "=0.12.2"
 # Safe measurement API for allocation tests; no handwritten allocator hooks.
 allocation-counter = "=0.8.1"

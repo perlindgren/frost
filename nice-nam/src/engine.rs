@@ -39,7 +39,8 @@ pub fn start(
             let Some(state) = weak.upgrade() else {
                 break;
             };
-            let paths = state.paths.lock().unwrap().clone();
+            let mut paths = state.paths.lock().unwrap().clone();
+            paths.gate_db = None;
             let rate = state.rate.load(Ordering::Acquire);
             let revision = state.revision.load(Ordering::Acquire);
             if previous.as_ref() != Some(&(paths.clone(), rate, revision)) {

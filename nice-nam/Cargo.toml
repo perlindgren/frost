@@ -37,11 +37,10 @@ rtrb = "0.4"
 cpal = { version = "0.18", optional = true }
 plugin-buffer = { path = "../nice-tuner/crates/plugin-buffer", optional = true }
 tracing = { version = "0.1", optional = true }
-nice-common = { path = "../nice-common" }
+nice-common = { path = "../nice-common", features = ["widgets"] }
 nice-plug = { version = "0.4.2", default-features = false, features = ["editor", "vst3", "assert_process_allocs"] }
 frost = { path = ".." }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 # Rust File Dialog: model and cabinet pickers will run on the UI thread.
 rfd = "=0.17.2"
 
@@ -69,4 +68,7 @@ cpal = { version = "0.18", features = ["jack"], optional = true }
 jack = { version = "0.13.5", optional = true }
 
 [dev-dependencies]
+ron = "=0.12.2"
+# NAM model fixtures use the model format, independently of RON settings.
+serde_json = "1"
 allocation-counter = "=0.8.1"

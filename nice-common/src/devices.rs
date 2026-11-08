@@ -758,7 +758,7 @@ fn output_routes(
 
 /// Everything the settings page can learn about a backend in one pass.
 /// Built in-process — or, when that is provably blind (ASIO, below), in
-/// a throwaway child process and shipped back as JSON.
+/// a throwaway child process and shipped back as RON.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Snapshot {
     pub inputs: Vec<String>,
@@ -798,6 +798,16 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// Encode the standalone discovery helper's stdout protocol.
+    pub fn to_ron(&self) -> Result<String, ron::Error> {
+        ron::ser::to_string(self)
+    }
+
+    /// Decode the same protocol in the parent process.
+    pub fn from_ron(bytes: &[u8]) -> Result<Self, ron::error::SpannedError> {
+        ron::de::from_bytes(bytes)
+    }
+
     /// Resolve real device defaults and validate a complete duplex session.
     /// Resolve every stream field before handing it to the application audio owner.
     pub fn resolve_settings<P: crate::Preferences>(
@@ -1092,7 +1102,7 @@ pub fn snapshot_via_child(
         );
         return None;
     }
-    match serde_json::from_slice(&out.stdout) {
+    match Snapshot::from_ron(&out.stdout) {
         Ok(s) => Some(s),
         Err(e) => {
             eprintln!(
@@ -1110,6 +1120,45 @@ pub fn snapshot_via_child(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovery_protocol_round_trips_defaults_formats_and_routes() {
+        let snapshot = Snapshot {
+            inputs: vec!["Mic \"one\"".into()],
+            outputs: vec!["Speakers".into()],
+            def_in: Some("Mic \"one\"".into()),
+            rates: vec![44100.0, 48000.0],
+            input_channels: Some(1),
+            default_input_channel: Some(1),
+            buffers: vec![64, 128, 512],
+            input_formats: vec![StreamFormat {
+                channels: 1,
+                min_rate: 44100,
+                max_rate: 96000,
+                buffer_range: Some((32, 1024)),
+            }],
+            output_formats: vec![StreamFormat {
+                channels: 2,
+                min_rate: 48000,
+                max_rate: 48000,
+                buffer_range: None,
+            }],
+            output_channel_options: vec![
+                crate::OutputChannels::Mono(1),
+                crate::OutputChannels::Stereo([1, 2]),
+            ],
+            default_output_channels: Some(crate::OutputChannels::Stereo([1, 2])),
+            ..Default::default()
+        };
+        let text = snapshot.to_ron().unwrap();
+        let restored = Snapshot::from_ron(text.as_bytes()).unwrap();
+        assert_eq!(restored.to_ron().unwrap(), text);
+        assert_eq!(
+            restored.default_output_channels,
+            snapshot.default_output_channels
+        );
+        assert!(Snapshot::from_ron(b"invalid (").is_err());
+    }
 
     /// The ASIO rows are the registry's driver list, identical in both
     /// directions: a driver whose hardware is switched off stays listed and

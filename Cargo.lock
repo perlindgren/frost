@@ -2016,9 +2016,9 @@ dependencies = [
  "crossbeam",
  "frost",
  "jack",
+ "ron",
  "rtrb 0.4.1",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -2052,6 +2052,7 @@ dependencies = [
  "plugin-buffer",
  "pollster",
  "rfd",
+ "ron",
  "rtrb 0.4.1",
  "serde",
  "serde_json",
@@ -2158,9 +2159,9 @@ dependencies = [
  "pitch",
  "plugin-buffer",
  "pollster",
+ "ron",
  "rtrb 0.4.1",
  "serde",
- "serde_json",
  "tracing",
  "tracing-subscriber",
  "wgpu",

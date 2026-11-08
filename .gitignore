@@ -64,3 +64,9 @@ __pycache__/
 # `git add -A` beside such a tree would publish someone else's SDK from a public
 # MIT repository, which is a thing a repository cannot undo by deleting a commit.
 .cargohome/
+
+# Standalone RON settings (local device choices and model paths).
+nice-tuner-settings.ron
+nice-tuner-settings.ron.*
+nice-nam-settings.ron
+nice-nam-settings.ron.*

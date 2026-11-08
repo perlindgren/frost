@@ -170,7 +170,7 @@ impl TunerSharedState {
 pub mod devices;
 mod gui;
 mod host_controls;
-pub mod meter;
+pub use nice_common::meter;
 pub mod settings;
 #[cfg(feature = "standalone")]
 pub mod standalone;
