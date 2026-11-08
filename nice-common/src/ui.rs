@@ -110,6 +110,26 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
             extras: Vec::new(),
         }
     }
+    /// Only audio settings belong to this panel's Apply action. App preferences
+    /// are controlled live by the main view and must not enable Apply.
+    pub fn audio_dirty(&self) -> bool {
+        !audio_equal(&self.saved, &self.draft) || !audio_equal(&self.applied, &self.draft)
+    }
+
+    fn cancel_audio_draft(&mut self) {
+        let preferences = self.draft.preferences.clone();
+        self.draft = self.applied.clone();
+        self.draft.preferences = preferences;
+    }
+
+    fn reset_audio_draft(&mut self) {
+        self.draft = Settings {
+            window: self.draft.window,
+            preferences: self.draft.preferences.clone(),
+            ..Default::default()
+        };
+    }
+
     pub fn is_applying(&self) -> bool {
         self.pending.is_some()
     }
@@ -603,7 +623,7 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
             if self.open_dropdown.take().is_some() {
                 self.list_scroll = 0.0;
             } else {
-                self.draft = self.applied.clone();
+                self.cancel_audio_draft();
                 return Some(Event::Back);
             }
         }
@@ -632,9 +652,8 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
             ctx.text(bx, y, &font, value, 23.4 * fit, 550.0, color, z + 0.01);
         }
         let blocker = self.blocker(available);
-        let dirty = (!audio_equal(&self.saved, &self.draft)
-            || self.saved.preferences != self.draft.preferences
-            || !audio_equal(&self.applied, &self.draft))
+        let dirty = (self.audio_dirty()
+            || (!self.extras.is_empty() && self.saved.preferences != self.draft.preferences))
             && blocker.is_none();
         let by = -h / 2.0 + 30.0 * fit;
         let aw = (ctx.text_width(&font, "APPLY", 23.4 * fit, 700.0) + 26.0 * fit) / 2.0;
@@ -856,15 +875,11 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
                     }
                 }
                 if back {
-                    self.draft = self.applied.clone();
+                    self.cancel_audio_draft();
                     return Some(Event::Back);
                 }
                 if reset {
-                    let window = self.draft.window;
-                    self.draft = Settings {
-                        window,
-                        ..Default::default()
-                    };
+                    self.reset_audio_draft();
                     self.refresh();
                     return Some(Event::Reset);
                 }
@@ -1122,6 +1137,33 @@ mod persistence_tests {
         assert_eq!(p.applied.preferences.value, Some(2));
         assert!(!p.cold);
     }
+    #[test]
+    fn main_view_preferences_do_not_dirty_apply_or_get_reverted_by_audio_navigation() {
+        let mut panel = AudioPanel::<App>::new(
+            Settings::default(),
+            Settings::default(),
+            Settings::default(),
+            false,
+        );
+        panel.draft.preferences.value = Some(42);
+        assert!(!panel.audio_dirty());
+        panel.draft.backend = Some("dummy".into());
+        assert!(panel.audio_dirty());
+        panel.cancel_audio_draft();
+        assert!(!panel.audio_dirty());
+        assert_eq!(panel.draft.preferences.value, Some(42));
+        panel.applied.backend = Some("dummy".into());
+        panel.saved.backend = Some("dummy".into());
+        panel.draft.backend = Some("dummy".into());
+        panel.reset_audio_draft();
+        assert!(panel.audio_dirty());
+        assert_eq!(panel.draft.preferences.value, Some(42));
+        // Successfully running but unsaved audio must still enable a save retry.
+        panel.draft = panel.applied.clone();
+        panel.saved.backend = None;
+        assert!(panel.audio_dirty());
+    }
+
     #[test]
     fn preference_only_changes_do_not_require_a_device_or_an_audio_worker() {
         let mut p = AudioPanel::<App>::new(

@@ -2153,7 +2153,7 @@ impl TunerUi {
                 self.settings.input_channel = if at_default { None } else { raw.parse().ok() };
             }
             // Params are live the moment they are picked (no restart needed);
-            // APPLY only decides whether they persist to the next launch.
+            // Main-view selections also persist immediately in standalone mode.
             Dropdown::A4 => {
                 let v: f32 = raw.parse().unwrap_or(440.0);
                 self.shared
@@ -2167,7 +2167,7 @@ impl TunerUi {
                 self.settings.gate_db = if at_default { None } else { Some(v) };
             }
             // Editor look/judgement: applied the instant they are picked
-            // (draw + verdict re-read settings every frame); APPLY persists.
+            // (draw + verdict re-read settings every frame); main-view picks save below.
             Dropdown::InTune => {
                 let v: f32 = raw.parse().unwrap_or(IN_TUNE_CENTS as f32);
                 self.settings.in_tune_cents = if at_default { None } else { Some(v) };
@@ -2195,6 +2195,21 @@ impl TunerUi {
             };
             if let Some((parameter, value)) = change {
                 host.set(parameter, value);
+            }
+        }
+        if self.page == Page::Main && !Self::is_audio_field(dd) {
+            // These controls have already changed the running view/DSP. Keep
+            // the audio baseline, and persist only the live preferences.
+            self.applied.preferences = self.settings.preferences.clone();
+            if crate::STANDALONE_MODE.load(Ordering::Relaxed) && !self.is_hosted() {
+                let mut settings = self.with_current_window(self.saved.clone());
+                settings.preferences = self.settings.preferences.clone();
+                match settings.save() {
+                    Ok(()) => self.saved = settings,
+                    Err(error) => {
+                        self.save_note = Some(format!("Could not save settings: {error}"))
+                    }
+                }
             }
         }
         self.open_dropdown = None;

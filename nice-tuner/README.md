@@ -431,8 +431,9 @@ through cpal, which enumerates once at that moment.
 - **Persistence**: `APPLY` writes `nice-tuner-settings.ron` to the **current
   directory** after audio changes succeed, then returns directly to the tuner.
   Audio or file-save errors keep the settings panel open. `BACK` and Escape
-  discard draft preferences without saving; `RESET` selects draft defaults
-  that are saved only by Apply. Back and Reset wait while an Apply is pending.
+  discard draft audio changes without saving; `RESET` selects draft audio defaults
+  that are saved only by Apply. Main-view preferences remain unchanged.
+  Back and Reset wait while an Apply is pending.
 - **Window geometry**: the current size is saved immediately on resize on every
   platform and restored at launch. Geometry updates merge only the window fields,
   preserving saved preferences and never committing drafts from the settings panel.
@@ -463,8 +464,8 @@ discipline. What differs is the environment around it. In a plugin, the settings
 page changes parameters through nice-plug's host parameter API. In standalone,
 the A4/gate pickers write the very same shared atomics
 that `process()` mirrors from params in host mode (`process()` skips the
-mirror in standalone so your picks survive). Picks are live; `APPLY` persists
-them to the settings file, which seeds them at next launch.
+mirror in standalone so your picks survive). Main-view picks take effect and save immediately in standalone mode.
+The audio panel’s `APPLY` tracks only audio changes.
 
 | Aspect | Standalone | Embedded |
 |---|---|---|
