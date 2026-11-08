@@ -640,6 +640,18 @@ impl Process for TunerUi {
         let knee = self.settings.gauge_knee_cents.unwrap_or(GAUGE_KNEE_CENTS);
         let in_tune_cents = self.settings.in_tune_cents.unwrap_or(IN_TUNE_CENTS as f32);
         let x = cents_to_units(self.needle_cents, knee) * fit;
+        // The drawn extents, named once. The click regions at the end of this
+        // function use these same values, so a resized window or a steeper curve
+        // moves what answers to a click along with what is on screen.
+        let gauge_y = -2.0 * fit;
+        let band_hh = 9.0 * fit;
+        let gauge_hh = 16.0 * fit;
+        let band_half = cents_to_units(in_tune_cents, knee) * fit;
+        let gauge_half = cents_to_units(50.0, knee) * fit;
+        let meter_half = 240.0 * fit;
+        let meter_y = -150.0 * fit;
+        let tick_drop = 26.0 * fit;
+        let freq_y = -104.0 * fit;
 
         // Three periods of the ideal note frequency (including A tuning), in the free area
         // above the gauge. All sample retention and drawing stay on the UI thread.
@@ -676,7 +688,7 @@ impl Process for TunerUi {
             let long = cents % 50 == 0;
             ctx.rectangle(
                 tx,
-                -2.0 * fit,
+                gauge_y,
                 0.75 * fit,
                 if long { 9.0 } else { 4.5 } * fit,
                 if long { DIM } else { TRACK },
@@ -689,18 +701,18 @@ impl Process for TunerUi {
         // reads ±the configured window
         ctx.rectangle(
             0.0,
-            -2.0 * fit,
-            cents_to_units(in_tune_cents, knee) * fit,
-            9.0 * fit,
+            gauge_y,
+            band_half,
+            band_hh,
             Color { a: 0.15, ..GREEN },
             0.05,
         );
         // needle
         ctx.line(
             x,
-            (-2.0 - 16.0) * fit,
+            gauge_y - gauge_hh,
             x,
-            (-2.0 + 16.0) * fit,
+            gauge_y + gauge_hh,
             main,
             2.5 * fit,
             0.2,
@@ -759,24 +771,14 @@ impl Process for TunerUi {
         // The midpoint marker keeps both columns fixed; the decimal
         // replaces the idle frequency dash.
         let freq_s = frequency_readout(signal.then_some(self.freq_shown), a4);
-        self.draw_tabular(
-            ctx,
-            0.0,
-            -104.0 * fit,
-            &freq_s,
-            '·',
-            39.6 * fit,
-            550.0,
-            DIM,
-            0.2,
-        );
+        self.draw_tabular(ctx, 0.0, freq_y, &freq_s, '·', 39.6 * fit, 550.0, DIM, 0.2);
         // ---- input meter with a real dBFS scale ----------------------------
         // 0 dBFS right, -48 left, ticks every 6 dB, as wide as the needle
         // sweep. Driven by meter_db (continuous), so it shows input level
         // always — silent room reads silence, no detection required.
         {
-            let half = 240.0 * fit;
-            let y = -150.0 * fit;
+            let half = meter_half;
+            let y = meter_y;
             ctx.rectangle(0.0, y, half, 2.5 * fit, Color { a: 0.5, ..TRACK }, 0.05);
             // dBFS scale: 0 at the right end, -48 at the left, every 6 dB.
             // Short ticks (±4) with numerals well below — digit tops must
@@ -786,7 +788,7 @@ impl Process for TunerUi {
                 ctx.rectangle(xv, y, 1.0 * fit, 4.0 * fit, Color { a: 0.6, ..DIM }, 0.06);
                 ctx.text(
                     xv,
-                    y - 26.0 * fit,
+                    y - tick_drop,
                     font,
                     format!("{}", -(6 * i as i32)),
                     16.0 * fit,
@@ -816,6 +818,92 @@ impl Process for TunerUi {
             if p > -47.5 {
                 ctx.rectangle(px, y, 1.5 * fit, 6.0 * fit, Color { a: 0.9, ..FG }, 0.08);
             }
+        }
+
+        // Escape closes an open dropdown: the same rising edge the settings page
+        // uses, and the same rule - it un-changes, it never writes.
+        let esc = ctx.key_down(frost::KeyCode::Escape);
+        if esc && !self.esc_held && self.open_dropdown.take().is_some() {
+            self.list_scroll = 0.0;
+        }
+        self.esc_held = esc;
+        // Clicking a control where it is shown opens the setting it displays: the
+        // green band is the in-tune window, the gauge behind it its curve, the dB
+        // scale the gate, and the frequency column the A4 reference it is computed
+        // from. The inner region is tested first on purpose — the band sits inside
+        // the gauge, and the one you aimed at must be the one that answers.
+        // Selection goes through the same `pick` the settings page uses, so dirty
+        // state, Apply and persistence cannot diverge between the two.
+        let mouse = ctx.mouse_position();
+        // The band is the drawn band, the gauge reaches its outermost tick, the meter
+        // covers the bar and the numerals hung below it, and the frequency column
+        // takes the reference — all of it scaled by the same it the drawing uses.
+        let wanted = if point_in(mouse, 0.0, gauge_y, band_half, band_hh) {
+            Some(Dropdown::InTune)
+        } else if point_in(mouse, 0.0, gauge_y, gauge_half, gauge_hh) {
+            Some(Dropdown::GaugeCurve)
+        } else if point_in(
+            mouse,
+            0.0,
+            meter_y - tick_drop / 2.0,
+            meter_half,
+            tick_drop / 2.0 + 4.0 * fit,
+        ) {
+            Some(Dropdown::Gate)
+        } else if point_in(mouse, 0.0, freq_y, meter_half, 20.0 * fit) {
+            Some(Dropdown::A4)
+        } else {
+            None
+        };
+        // The popup is drawn over these regions, so it takes the click first and the
+        // regions only see what it refused.
+        let mut consumed = false;
+        if self.open_dropdown.is_some() {
+            consumed = self.draw_dropdown(
+                ctx,
+                [w, h],
+                fit,
+                Placement::Centred([110.0 * fit, 11.0 * fit]),
+                0.5,
+                clicked,
+            );
+        }
+        if clicked && !consumed {
+            match wanted {
+                Some(dd) if self.open_dropdown == Some(dd) => self.open_dropdown = None,
+                Some(dd) => {
+                    self.open_dropdown = Some(dd);
+                    self.list_scroll = 0.0;
+                    self.dropdown_scroll_drag = false;
+                }
+                None => self.open_dropdown = None,
+            }
+        }
+        // Hovering one of those regions says what it is and what it currently holds,
+        // in the same words the dropdown will use, so the click is not a guess about
+        // an unlabelled strip of pixels. Suppressed while a dropdown is open: the
+        // popup covers this part of the view and a tooltip under it would be noise.
+        if self.open_dropdown.is_none()
+            && let (Some(dd), Some([mx, my])) = (wanted, mouse)
+        {
+            let mut rows = self.dropdown_rows(dd).0;
+            let at = self.selected_index(dd).min(rows.len() - 1);
+            let text = format!("{}  {}", setting_name(dd), rows.swap_remove(at).0);
+            let size = 15.0 * fit;
+            let half_w = ctx.text_width(&self.font, &text, size, 550.0) / 2.0 + 9.0 * fit;
+            let half_h = 12.0 * fit;
+            let margin = 6.0 * fit;
+            // Up and to the right of the pointer, then pushed back inside the
+            // window: the gauge and the meter run to both edges, so a tooltip that
+            // only knew its preferred offset would leave the screen.
+            let cx = (mx + half_w + 16.0 * fit)
+                .min(w / 2.0 - margin - half_w)
+                .max(-w / 2.0 + margin + half_w);
+            let cy = (my + half_h + 22.0 * fit)
+                .min(h / 2.0 - margin - half_h)
+                .max(-h / 2.0 + margin + half_h);
+            ctx.rectangle(cx, cy, half_w, half_h, MENU_BG, 0.6);
+            ctx.text(cx, cy, &self.font, text, size, 550.0, FG, 0.61);
         }
     }
 }
@@ -895,6 +983,14 @@ pub fn map_mouse(button: baseview::MouseButton) -> Option<frost::MouseButton> {
 // edges); the static scene underneath is page-agnostic.
 // ============================================================================
 
+/// Where an open dropdown is put: hanging under the control that opened it, as a
+/// settings row does, or in the middle of the window for a control painted on the
+/// main view, which has no row beneath it.
+enum Placement {
+    Row([f32; 2], [f32; 2]),
+    Centred([f32; 2]),
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
     Main,
@@ -920,6 +1016,26 @@ enum Dropdown {
     /// Editor look/judgement params (verdict window, gauge steepness).
     InTune,
     GaugeCurve,
+}
+
+/// What a centred popup calls the setting it is offering: it floats in the middle
+/// of the window with no row beside it to say where it came from.
+fn setting_name(dd: Dropdown) -> &'static str {
+    match dd {
+        Dropdown::Backend => "AUDIO BACKEND",
+        Dropdown::Rate => "SAMPLE RATE",
+        Dropdown::InputBuffer => "INPUT BUFFER SIZE",
+        Dropdown::OutputBuffer => "OUTPUT BUFFER SIZE",
+        Dropdown::Input => "INPUT DEVICE",
+        Dropdown::Output => "OUTPUT DEVICE",
+        Dropdown::OutputCh => "OUTPUT CHANNELS",
+        Dropdown::OutputRate => "OUTPUT SAMPLE RATE",
+        Dropdown::InputCh => "INPUT CHANNEL",
+        Dropdown::A4 => "A4 REFERENCE",
+        Dropdown::Gate => "INPUT GATE",
+        Dropdown::InTune => "IN-TUNE WINDOW",
+        Dropdown::GaugeCurve => "GAUGE CURVE",
+    }
 }
 
 /// Sensible tuning-standards list; 440 sits mid-list.
@@ -1832,6 +1948,18 @@ impl TunerUi {
         // Raw value of the default row ("" when unknowable: the row
         // still exists — "\u{2014}" — and still means follow).
         let def_raw = self.default_raw(dd);
+        // The four tuner params are tables whose entries are the values themselves,
+        // the default included. A default row would lift `5` out of its place between
+        // 4 and 7 and put it on top, where it reads as a value the list was arranged
+        // around; they keep the table's own order, and the default is marked in place.
+        // Everything else — devices, rates, channels — has a default that is not one
+        // of its own options ("Default", "System default") and needs its own row.
+        if matches!(
+            dd,
+            Dropdown::A4 | Dropdown::Gate | Dropdown::InTune | Dropdown::GaugeCurve
+        ) {
+            return (opts, def_raw);
+        }
         let head = self.default_label(dd).unwrap_or_else(|| "\u{2014}".into());
         let mut rows = vec![(head, def_raw.clone())];
         rows.extend(
@@ -1839,14 +1967,6 @@ impl TunerUi {
                 .filter(|(_, raw)| raw.is_empty() || raw != &def_raw),
         );
         (rows, def_raw)
-    }
-
-    fn dropdown_items(&self, dd: Dropdown) -> Vec<String> {
-        self.dropdown_rows(dd)
-            .0
-            .into_iter()
-            .map(|(label, _)| label)
-            .collect()
     }
 
     /// The raw value the default row selects ("" = unknowable default).
@@ -1976,6 +2096,216 @@ impl TunerUi {
         current.is_empty() || current == self.default_raw(dd)
     }
 
+    /// The open dropdown, drawn last so it floats above whichever page asked for
+    /// it. `Some(anchor)` hangs the list off that control, as a settings row does;
+    /// `None` puts it in the middle of the window, which is what a control painted
+    /// on the main view needs - there is no row under it to hang from. Returns true
+    /// when the popup consumed the click, so the caller stops routing that click.
+    fn draw_dropdown(
+        &mut self,
+        ctx: &mut Context,
+        window: [f32; 2],
+        fit: f32,
+        place: Placement,
+        z: f32,
+        clicked: bool,
+    ) -> bool {
+        let mouse = ctx.mouse_position();
+        // Cloned, not borrowed: the body calls `self.pick` while laying out rows, and
+        // an immutable borrow of the font would still be held there.
+        let font = self.font.clone();
+
+        // Open dropdown: drawn last (on top), items hit first.
+        if let Some(dd) = self.open_dropdown {
+            let items = self.dropdown_rows(dd).0;
+            // A named popup gets a row for its name, so the box is measured one row
+            // taller and every item shifts down by it.
+            let header = matches!(place, Placement::Centred(_));
+            let extra = header as usize;
+            let layout = match place {
+                Placement::Row(at, half) => {
+                    DropdownLayout::new(window, at, half, fit, items.len() + extra)
+                }
+                Placement::Centred(half) => {
+                    DropdownLayout::centred(window, half, fit, items.len() + extra)
+                }
+            };
+            let visible_items = layout.visible.saturating_sub(extra).max(1);
+            let max_scroll = items.len().saturating_sub(visible_items) as f32;
+            self.list_scroll = (self.list_scroll + ctx.mouse_wheel() * 0.5).clamp(0.0, max_scroll);
+            // The list keeps its own order: opening does not lift the current value to
+            // the top, which read as a re-sort. The scroll is only nudged when the
+            // selection would otherwise be off the visible rows, and then only as far
+            // as bringing it in - never to the front.
+            let sel_idx = self.selected_index(dd);
+            let shown_from = self.list_scroll.floor() as usize;
+            if sel_idx < shown_from {
+                self.list_scroll = (sel_idx as f32).min(max_scroll);
+            } else if sel_idx >= shown_from + visible_items {
+                self.list_scroll = ((sel_idx + 1 - visible_items) as f32).clamp(0.0, max_scroll);
+            }
+            if !ctx.mouse_button_down(frost::MouseButton::Left) {
+                self.dropdown_scroll_drag = false;
+            }
+            let scrollable = max_scroll > 0.0;
+            let thumb_half = if scrollable {
+                (layout.track_half[1] * visible_items as f32 / items.len() as f32)
+                    .max(6.0 * fit)
+                    .min(layout.track_half[1])
+            } else {
+                0.0
+            };
+            let travel = (2.0 * (layout.track_half[1] - thumb_half)).max(0.0);
+            let over_track = scrollable
+                && point_in(
+                    mouse,
+                    layout.track_x,
+                    layout.center[1],
+                    layout.track_half[0],
+                    layout.track_half[1],
+                );
+            if clicked && over_track {
+                self.dropdown_scroll_drag = true;
+            }
+            if self.dropdown_scroll_drag
+                && scrollable
+                && travel > 0.0
+                && let Some([_, mouse_y]) = mouse
+            {
+                let fraction = ((layout.center[1] + layout.track_half[1] - thumb_half - mouse_y)
+                    / travel)
+                    .clamp(0.0, 1.0);
+                self.list_scroll = (fraction * max_scroll).round();
+            }
+            let skip = self.list_scroll.floor() as usize;
+            let [px, py] = layout.center;
+            let [pw, ph] = layout.half;
+            ctx.rectangle(px, py, pw, ph, HOVER, 0.44);
+            ctx.rectangle(
+                px,
+                py,
+                (pw - layout.border).max(0.0),
+                (ph - layout.border).max(0.0),
+                MENU_BG,
+                0.445,
+            );
+            if scrollable {
+                ctx.rectangle(
+                    layout.track_x,
+                    py,
+                    layout.track_half[0],
+                    layout.track_half[1],
+                    TRACK,
+                    0.45,
+                );
+                let thumb_y =
+                    py + layout.track_half[1] - thumb_half - skip as f32 / max_scroll * travel;
+                ctx.rectangle(
+                    layout.track_x,
+                    thumb_y,
+                    layout.track_half[0],
+                    thumb_half,
+                    if over_track || self.dropdown_scroll_drag {
+                        AMBER
+                    } else {
+                        DIM
+                    },
+                    0.46,
+                );
+            }
+            let menu_size = (18.7 * fit).min(layout.item_half[1] * (18.7 / 13.0));
+            let char_width = ctx.text_width(&font, "0", menu_size, 700.0).max(fit);
+            let max_chars = ((2.0 * layout.item_half[0] - 4.0 * fit) / char_width)
+                .floor()
+                .max(1.0) as usize;
+            let selected = self.selected_index(dd);
+            let def_raw = self.default_raw(dd);
+            if header {
+                let hy = layout.row_y(0);
+                ctx.text(
+                    layout.item_x,
+                    hy,
+                    &font,
+                    setting_name(dd),
+                    menu_size,
+                    700.0,
+                    DIM,
+                    z + 0.06,
+                );
+                // Half a step below the name is exactly midway to the first row.
+                ctx.rectangle(
+                    layout.center[0],
+                    hy - (hy - layout.row_y(1)) / 2.0,
+                    layout.item_half[0],
+                    (1.0 * fit).max(0.5),
+                    Color { a: 0.5, ..TRACK },
+                    z + 0.06,
+                );
+            }
+            for (slot, (idx, (label, raw))) in items
+                .iter()
+                .enumerate()
+                .skip(skip)
+                .take(visible_items)
+                .enumerate()
+            {
+                let iy = layout.row_y(slot + extra);
+                let ix = layout.item_x;
+                let [iw, ih] = layout.item_half;
+                let sel = selected == idx;
+                let hov = point_in(mouse, ix, iy, iw, ih);
+                ctx.rectangle(
+                    ix,
+                    iy,
+                    iw,
+                    ih,
+                    if hov {
+                        HOVER
+                    } else if sel {
+                        TRACK
+                    } else {
+                        Color {
+                            a: 0.0,
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                        }
+                    },
+                    z + 0.05,
+                );
+                ctx.text(
+                    ix,
+                    iy,
+                    &font,
+                    if self.settings.backend.as_deref() == Some("jack")
+                        && matches!(dd, Dropdown::Input | Dropdown::Output | Dropdown::OutputCh)
+                    {
+                        clip_port(label, max_chars)
+                    } else {
+                        clip(label, max_chars)
+                    },
+                    menu_size,
+                    if sel { 700.0 } else { 550.0 },
+                    if !def_raw.is_empty() && *raw == def_raw {
+                        GREEN
+                    } else if sel || hov {
+                        AMBER
+                    } else {
+                        FG
+                    },
+                    z + 0.06,
+                );
+                if clicked && hov {
+                    self.pick(dd, idx);
+                    return true;
+                }
+            }
+            if clicked && point_in(mouse, px, py, pw, ph) {
+                return true; // The popup surface consumes clicks between its rows too.
+            }
+        }
+        false
+    }
     fn pick(&mut self, dd: Dropdown, idx: usize) {
         if self.dropdown_disabled(dd) {
             return;
@@ -2712,149 +3042,19 @@ impl TunerUi {
         }
 
         // Open dropdown: drawn last (on top), items hit first.
-        if let Some(dd) = self.open_dropdown {
-            let items = self.dropdown_items(dd);
-            let row = ROWS.iter().position(|(_, d)| *d == dd).unwrap_or(0);
-            let layout =
-                DropdownLayout::new([w, h], [bx, row_y(row)], [bhw, bhh], fit, items.len());
-            let max_scroll = items.len().saturating_sub(layout.visible) as f32;
-            self.list_scroll = (self.list_scroll + ctx.mouse_wheel() * 0.5).clamp(0.0, max_scroll);
-            if !ctx.mouse_button_down(frost::MouseButton::Left) {
-                self.dropdown_scroll_drag = false;
-            }
-            let scrollable = max_scroll > 0.0;
-            let thumb_half = if scrollable {
-                (layout.track_half[1] * layout.visible as f32 / items.len() as f32)
-                    .max(6.0 * fit)
-                    .min(layout.track_half[1])
-            } else {
-                0.0
-            };
-            let travel = (2.0 * (layout.track_half[1] - thumb_half)).max(0.0);
-            let over_track = scrollable
-                && point_in(
-                    mouse,
-                    layout.track_x,
-                    layout.center[1],
-                    layout.track_half[0],
-                    layout.track_half[1],
-                );
-            if clicked && over_track {
-                self.dropdown_scroll_drag = true;
-            }
-            if self.dropdown_scroll_drag
-                && scrollable
-                && travel > 0.0
-                && let Some([_, mouse_y]) = mouse
-            {
-                let fraction = ((layout.center[1] + layout.track_half[1] - thumb_half - mouse_y)
-                    / travel)
-                    .clamp(0.0, 1.0);
-                self.list_scroll = (fraction * max_scroll).round();
-            }
-            let skip = self.list_scroll.floor() as usize;
-            let [px, py] = layout.center;
-            let [pw, ph] = layout.half;
-            ctx.rectangle(px, py, pw, ph, HOVER, 0.44);
-            ctx.rectangle(
-                px,
-                py,
-                (pw - layout.border).max(0.0),
-                (ph - layout.border).max(0.0),
-                MENU_BG,
-                0.445,
-            );
-            if scrollable {
-                ctx.rectangle(
-                    layout.track_x,
-                    py,
-                    layout.track_half[0],
-                    layout.track_half[1],
-                    TRACK,
-                    0.45,
-                );
-                let thumb_y =
-                    py + layout.track_half[1] - thumb_half - skip as f32 / max_scroll * travel;
-                ctx.rectangle(
-                    layout.track_x,
-                    thumb_y,
-                    layout.track_half[0],
-                    thumb_half,
-                    if over_track || self.dropdown_scroll_drag {
-                        AMBER
-                    } else {
-                        DIM
-                    },
-                    0.46,
-                );
-            }
-            let menu_size = (18.7 * fit).min(layout.item_half[1] * (18.7 / 13.0));
-            let char_width = ctx.text_width(&font, "0", menu_size, 700.0).max(fit);
-            let max_chars = ((2.0 * layout.item_half[0] - 4.0 * fit) / char_width)
-                .floor()
-                .max(1.0) as usize;
-            let selected = self.selected_index(dd);
-            for (slot, (idx, label)) in items
-                .iter()
-                .enumerate()
-                .skip(skip)
-                .take(layout.visible)
-                .enumerate()
-            {
-                let iy = layout.row_y(slot);
-                let ix = layout.item_x;
-                let [iw, ih] = layout.item_half;
-                let sel = selected == idx;
-                let hov = point_in(mouse, ix, iy, iw, ih);
-                ctx.rectangle(
-                    ix,
-                    iy,
-                    iw,
-                    ih,
-                    if hov {
-                        HOVER
-                    } else if sel {
-                        TRACK
-                    } else {
-                        Color {
-                            a: 0.0,
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                        }
-                    },
-                    z + 0.05,
-                );
-                ctx.text(
-                    ix,
-                    iy,
-                    &font,
-                    if self.settings.backend.as_deref() == Some("jack")
-                        && matches!(dd, Dropdown::Input | Dropdown::Output | Dropdown::OutputCh)
-                    {
-                        clip_port(label, max_chars)
-                    } else {
-                        clip(label, max_chars)
-                    },
-                    menu_size,
-                    if sel { 700.0 } else { 550.0 },
-                    if idx == 0 && self.default_label(dd).is_some() {
-                        GREEN
-                    } else if sel || hov {
-                        AMBER
-                    } else {
-                        FG
-                    },
-                    z + 0.06,
-                );
-                if clicked && hov {
-                    self.pick(dd, idx);
-                    return;
-                }
-            }
-            if clicked && point_in(mouse, px, py, pw, ph) {
-                return; // The popup surface consumes clicks between its rows too.
-            }
+        let row = ROWS
+            .iter()
+            .position(|(_, d)| Some(*d) == self.open_dropdown)
+            .unwrap_or(0);
+        if self.draw_dropdown(
+            ctx,
+            [w, h],
+            fit,
+            Placement::Row([bx, row_y(row)], [bhw, bhh]),
+            z,
+            clicked,
+        ) {
+            return;
         }
 
         if clicked {
@@ -2870,7 +3070,7 @@ impl TunerUi {
                             self.refresh_devices();
                         }
                         self.open_dropdown = Some(*dd);
-                        self.list_scroll = self.selected_index(*dd) as f32;
+                        self.list_scroll = 0.0;
                         self.dropdown_scroll_drag = false;
                         break;
                     }
