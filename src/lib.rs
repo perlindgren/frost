@@ -674,6 +674,24 @@ impl std::ops::DerefMut for Context<'_> {
 /// `1.0`s to absorb stalls). Use it to advance animation state such as a
 /// [`Tween`].
 pub trait Process {
+    /// Native standalone event-loop access for auxiliary windows. Embedded and
+    /// web backends do not call this hook; no second event loop should be run.
+    fn native_about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {}
+    /// Return true when an event belongs to an auxiliary window and was handled.
+    fn native_window_event(
+        &mut self,
+        _event_loop: &winit::event_loop::ActiveEventLoop,
+        _id: winit::window::WindowId,
+        _event: &winit::event::WindowEvent,
+    ) -> bool {
+        false
+    }
+
+    /// An OS file dropped onto a native standalone window.
+    fn file_dropped(&mut self, _path: std::path::PathBuf) {}
+    /// Native file drag entered the window, or was cancelled/completed.
+    fn file_hovered(&mut self, _path: Option<std::path::PathBuf>) {}
+
     fn process(&mut self, ctx: &mut Context, dt: f32);
 }
 

@@ -284,6 +284,9 @@ impl WindowHandler for TunerWindow {
     fn resized(&self, new_size: baseview::WindowSize) -> Result<(), HandlerError> {
         self.shared.logical_size.store(new_size.logical.cast());
         self.shared.scale_factor.store(new_size.scale_factor);
+        #[cfg(target_os = "macos")]
+        macos_metal_view::prepare(&self.window.platform_handle(), new_size.scale_factor)
+            .map_err(|error| HandlerError::from(std::io::Error::other(error)))?;
         #[cfg(feature = "standalone")]
         self.persist_geometry();
 
@@ -314,6 +317,9 @@ impl FrameDriver {
         let size = self.window.size();
         let scale = size.scale_factor;
 
+        #[cfg(target_os = "macos")]
+        macos_metal_view::prepare(&self.window.platform_handle(), scale)
+            .map_err(|error| HandlerError::from(std::io::Error::other(error)))?;
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = pollster::block_on(async {
             let surface = instance.create_surface(self.window.platform_handle())?;

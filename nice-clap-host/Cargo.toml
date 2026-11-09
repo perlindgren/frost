@@ -1,0 +1,17 @@
+[package]
+name = "nice-clap-host"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+description = "Project-owned CLAP hosting adapter for nice-rack"
+
+[dependencies]
+raw-window-handle = "0.6"
+rtrb = "0.4"
+nice-rack-engine = { path = "../nice-rack-engine" }
+clack-host = "=0.2.0"
+clack-extensions = { version = "=0.2.0", features = ["clack-host", "audio-ports", "state", "latency", "gui", "params", "raw-window-handle_06"] }
+
+[dev-dependencies]
+allocation-counter = "=0.8.1"

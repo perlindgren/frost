@@ -21,3 +21,6 @@ pub mod ui;
 pub mod meter;
 #[cfg(feature = "widgets")]
 pub mod tooltip;
+
+#[cfg(feature = "audio-io")]
+pub mod audio_io;

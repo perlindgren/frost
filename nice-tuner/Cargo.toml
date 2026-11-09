@@ -110,6 +110,7 @@ window-position = { path = "crates/window-position", optional = true }
 asio-host = { path = "crates/asio-host", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+macos-metal-view = { path = "../nice-common/crates/macos-metal-view" }
 macos-frame-sync = { path = "crates/macos-frame-sync" }
 
 [dev-dependencies]

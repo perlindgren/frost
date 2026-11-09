@@ -55,7 +55,7 @@ include = [
 # As a member it declares nothing, which is how a package says all rights
 # reserved; `publish = false` keeps it out of any tarball.
 [workspace]
-members = ["antifrost", "frost_shaders", "immortal", "nice-tuner", "nice-nam", "nice-nam/crates/audio-float", "nice-common", "nice-tuner/crates/pitch", "nice-tuner/crates/core-audio-device", "nice-tuner/crates/window-position", "nice-tuner/crates/macos-frame-sync", "nice-tuner/crates/plugin-buffer", "nice-tuner/crates/asio-host", "nice-tuner/xtask", "tools/sprite_util", "tools/noisefloor"]
+members = ["antifrost", "frost_shaders", "immortal", "nice-tuner", "nice-nam", "nice-nam/crates/audio-float", "nice-common", "nice-common/crates/macos-metal-view", "nice-rack", "nice-rack-engine", "nice-clap-host", "nice-rack/crates/standalone", "nice-rack/crates/window-input", "nice-tuner/crates/pitch", "nice-tuner/crates/core-audio-device", "nice-tuner/crates/window-position", "nice-tuner/crates/macos-frame-sync", "nice-tuner/crates/plugin-buffer", "nice-tuner/crates/asio-host", "nice-tuner/xtask", "tools/sprite_util", "tools/noisefloor"]
 # The plugin is a member and not a default member, which is a deliberate split.
 # `members` is what `cargo fmt --all` and the lock resolution cover, so the
 # plugin's sources are formatted and versioned with the engine; `default-members`

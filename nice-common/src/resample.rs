@@ -1,13 +1,55 @@
-//! Streaming, band-limited mono conversion owned by the standalone application.
+//! Streaming, band-limited frame conversion owned by the standalone application.
 //! The plugin itself always processes at the input device's rate.
 use rtrb::Consumer;
+use std::ops::{Add, AddAssign, Mul, Sub};
+
+pub trait Frame:
+    Copy + Default + Add<Output = Self> + AddAssign + Sub<Output = Self> + Mul<f32, Output = Self>
+{
+}
+impl<T> Frame for T where
+    T: Copy
+        + Default
+        + Add<Output = Self>
+        + AddAssign
+        + Sub<Output = Self>
+        + Mul<f32, Output = Self>
+{
+}
+
+/// Both channels share one queue, interpolation phase and clock correction.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct StereoFrame(pub [f32; 2]);
+impl Add for StereoFrame {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        Self([self.0[0] + rhs.0[0], self.0[1] + rhs.0[1]])
+    }
+}
+impl AddAssign for StereoFrame {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+impl Sub for StereoFrame {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self {
+        Self([self.0[0] - rhs.0[0], self.0[1] - rhs.0[1]])
+    }
+}
+impl Mul<f32> for StereoFrame {
+    type Output = Self;
+    fn mul(self, rhs: f32) -> Self {
+        Self([self.0[0] * rhs, self.0[1] * rhs])
+    }
+}
 
 const TAPS: usize = 128;
 const PHASES: usize = 1024;
 
-pub struct Monitor {
-    input: Consumer<f32>,
-    history: [f32; TAPS],
+pub struct Monitor<F: Frame = f32> {
+    input: Consumer<F>,
+    history: [F; TAPS],
     head: usize,
     phase: f64,
     needed: usize,
@@ -20,9 +62,9 @@ pub struct Monitor {
     same_rate: bool,
 }
 
-impl Monitor {
+impl<F: Frame> Monitor<F> {
     pub fn new(
-        input: Consumer<f32>,
+        input: Consumer<F>,
         input_rate: f64,
         output_rate: f64,
         target: usize,
@@ -57,7 +99,7 @@ impl Monitor {
         }
         Self {
             input,
-            history: [0.0; TAPS],
+            history: [F::default(); TAPS],
             head: 0,
             phase: 0.0,
             needed: 1,
@@ -92,14 +134,14 @@ impl Monitor {
         self.ratio = self.nominal_ratio * (1.0 + correction);
     }
 
-    pub fn next_sample(&mut self) -> f32 {
+    pub fn next_sample(&mut self) -> F {
         if !self.started {
-            return 0.0;
+            return F::default();
         }
         while self.needed > 0 {
             let Ok(sample) = self.input.pop() else {
                 self.started = false;
-                return 0.0;
+                return F::default();
             };
             self.head = (self.head + 1) % TAPS;
             self.history[self.head] = sample;
@@ -112,9 +154,9 @@ impl Monitor {
             previous + (self.history[self.head] - previous) * self.phase as f32
         } else {
             let kernel = &self.kernels[((self.phase * PHASES as f64) as usize).min(PHASES - 1)];
-            let mut value = 0.0;
+            let mut value = F::default();
             for (tap, coefficient) in kernel.iter().enumerate() {
-                value += self.history[(self.head + TAPS - tap) % TAPS] * coefficient;
+                value += self.history[(self.head + TAPS - tap) % TAPS] * *coefficient;
             }
             value
         };
@@ -195,5 +237,35 @@ mod tests {
             ],
             [0.0, 0.25, -0.5, 0.75, 0.0]
         );
+    }
+}
+
+#[cfg(test)]
+mod stereo_tests {
+    use super::*;
+    #[test]
+    fn stereo_channels_share_clock_phase_through_rate_conversion_and_underflow() {
+        let (mut producer, consumer) = rtrb::RingBuffer::new(8192);
+        for frame in 0..4096 {
+            let sample = (frame as f32 * 0.03).sin();
+            producer.push(StereoFrame([sample, -sample])).unwrap();
+        }
+        let mut monitor = Monitor::new(consumer, 48000.0, 44100.0, 128, 64);
+        for frame in 0..6000 {
+            if frame % 73 == 0 {
+                monitor.begin_block();
+            }
+            let [left, right] = monitor.next_sample().0;
+            assert_eq!(left, -right);
+        }
+        for frame in 0..1024 {
+            let sample = (frame as f32 * 0.03).sin();
+            producer.push(StereoFrame([sample, -sample])).unwrap();
+        }
+        monitor.begin_block();
+        for _ in 0..512 {
+            let [left, right] = monitor.next_sample().0;
+            assert_eq!(left, -right);
+        }
     }
 }

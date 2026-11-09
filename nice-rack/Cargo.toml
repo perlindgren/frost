@@ -1,0 +1,21 @@
+[package]
+name = "nice-rack"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+description = "Foundation for a frost CLAP/VST3 rack host"
+
+[dependencies]
+winit = "0.30.13"
+rack-window-input = { path = "crates/window-input" }
+nice-common = { path = "../nice-common", features = ["ui", "audio-io", "asio-host"] }
+nice-rack-engine = { path = "../nice-rack-engine" }
+serde = { version = "1", features = ["derive"] }
+
+nice-clap-host = { path = "../nice-clap-host" }
+frost = { path = ".." }
+crossbeam = "0.8"
+
+[dev-dependencies]
+rtrb = "0.4"
