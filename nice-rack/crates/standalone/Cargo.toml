@@ -1,0 +1,18 @@
+[package]
+name = "nice-rack-standalone"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "nice-rack"
+path = "src/main.rs"
+
+[dependencies]
+nice-rack = { path = "../.." }
+nice-clap-host = { path = "../../../nice-clap-host" }
+nice-common = { path = "../../../nice-common", features = ["devices"] }
+
+[dev-dependencies]
+rtrb = "0.4"

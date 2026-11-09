@@ -591,6 +591,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "clack-common"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ca905d78f46117492bce49e64a765f8b3f5c71794486a1369242721860e2640"
+dependencies = [
+ "bitflags 2.13.2",
+ "clap-sys",
+]
+
+[[package]]
+name = "clack-extensions"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "733d43b7ebd76a65931e8de2aa077200add4902514f4bda941c99326c14937dd"
+dependencies = [
+ "bitflags 2.13.2",
+ "clack-common",
+ "clack-host",
+ "clap-sys",
+ "raw-window-handle",
+]
+
+[[package]]
+name = "clack-host"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "103a00f784a6477d82dc4580ea125e875074729c2703ccb29e5e9fb40bea5308"
+dependencies = [
+ "clack-common",
+ "clap-sys",
+ "libloading 0.8.9",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "clang-sys"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1824,6 +1859,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "macos-metal-view"
+version = "0.1.0"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-quartz-core 0.3.2",
+ "raw-window-handle",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2006,6 +2051,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nice-clap-host"
+version = "0.1.0"
+dependencies = [
+ "allocation-counter",
+ "clack-extensions",
+ "clack-host",
+ "nice-rack-engine",
+ "raw-window-handle",
+ "rtrb 0.4.1",
+]
+
+[[package]]
 name = "nice-common"
 version = "0.1.0"
 dependencies = [
@@ -2046,6 +2103,7 @@ dependencies = [
  "jack",
  "keyboard-types",
  "macos-frame-sync",
+ "macos-metal-view",
  "nam-rs",
  "nice-common",
  "nice-plug",
@@ -2142,6 +2200,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "nice-rack"
+version = "0.1.0"
+dependencies = [
+ "crossbeam",
+ "frost",
+ "nice-clap-host",
+ "nice-common",
+ "nice-rack-engine",
+ "rack-window-input",
+ "rtrb 0.4.1",
+ "serde",
+ "winit",
+]
+
+[[package]]
+name = "nice-rack-engine"
+version = "0.1.0"
+dependencies = [
+ "allocation-counter",
+]
+
+[[package]]
+name = "nice-rack-standalone"
+version = "0.1.0"
+dependencies = [
+ "nice-clap-host",
+ "nice-common",
+ "nice-rack",
+ "rtrb 0.4.1",
+]
+
+[[package]]
 name = "nice-tuner"
 version = "0.1.0"
 dependencies = [
@@ -2154,6 +2244,7 @@ dependencies = [
  "jack",
  "keyboard-types",
  "macos-frame-sync",
+ "macos-metal-view",
  "nice-common",
  "nice-plug",
  "pitch",
@@ -2912,6 +3003,15 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "rack-window-input"
+version = "0.1.0"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "raw-window-handle",
+]
 
 [[package]]
 name = "rand"

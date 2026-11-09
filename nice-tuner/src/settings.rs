@@ -10,6 +10,7 @@ pub type Settings = nice_common::Settings<TunerPreferences>;
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TunerPreferences {
+    pub muted: Option<bool>,
     pub a4_ref: Option<f32>,
     pub gate_db: Option<f32>,
     pub in_tune_cents: Option<f32>,
@@ -19,7 +20,8 @@ impl nice_common::Preferences for TunerPreferences {
     const FILE_NAME: &'static str = FILE_NAME;
     const APP_NAME: &'static str = "nice-tuner";
     fn is_blank(&self) -> bool {
-        self.a4_ref.is_none()
+        self.muted.is_none()
+            && self.a4_ref.is_none()
             && self.gate_db.is_none()
             && self.in_tune_cents.is_none()
             && self.gauge_knee_cents.is_none()
@@ -48,6 +50,7 @@ mod tests {
         let settings = Settings {
             backend: Some("core-audio".into()),
             preferences: TunerPreferences {
+                muted: Some(true),
                 a4_ref: Some(432.0),
                 gate_db: Some(-40.0),
                 ..Default::default()

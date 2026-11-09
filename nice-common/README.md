@@ -91,3 +91,16 @@ The device-discovery helper protocol uses RON.
 
 Settings serialize directly through RON; geometry edits use `ron::Value`.
 `nice-common` has no `serde_json` dependency.
+
+## Plugin-independent stereo device transport
+
+`audio-io` enables `audio_io::open` for resolved settings. Device callbacks move
+samples through bounded rings and own no plugin handles. The caller runs DSP on
+a separate worker, allowing it to stop without another device callback. The
+transport reports native error text and callback counters for control-thread
+health checks. It currently requires physical CPAL input/output devices.
+
+The selected input channel is duplicated to stereo; processed stereo frames use
+one SPSC queue and one `Monitor<StereoFrame>` clock/phase for independent-rate
+playback. Existing `Monitor<f32>` callers remain source-compatible. The rack uses
+this transport; the established tuner/NAM stream owners remain unchanged.

@@ -70,3 +70,7 @@ nice-tuner-settings.ron
 nice-tuner-settings.ron.*
 nice-nam-settings.ron
 nice-nam-settings.ron.*
+
+# Rack-local audio device configuration.
+nice-rack-settings.ron
+nice-rack-settings.ron.*

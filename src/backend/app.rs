@@ -1149,7 +1149,8 @@ impl<P: Process> ApplicationHandler for Frost<P> {
         ));
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.process.native_about_to_wait(event_loop);
         // Drain the gamepad events accumulated since the last poll, so the
         // state gilrs keeps for its connected gamepads is current before
         // the loop waits for new events. gilrs applies every input event
@@ -1174,7 +1175,19 @@ impl<P: Process> ApplicationHandler for Frost<P> {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        if self
+            .process
+            .native_window_event(event_loop, _window_id, &event)
+        {
+            return;
+        }
         match event {
+            WindowEvent::DroppedFile(path) => {
+                self.process.file_hovered(None);
+                self.process.file_dropped(path);
+            }
+            WindowEvent::HoveredFile(path) => self.process.file_hovered(Some(path)),
+            WindowEvent::HoveredFileCancelled => self.process.file_hovered(None),
             WindowEvent::KeyboardInput { event, .. } => {
                 // Debug, not info: this arrives for every press, every release
                 // and every auto-repeat the OS sends while a key is held, and it

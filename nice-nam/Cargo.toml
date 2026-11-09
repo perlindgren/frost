@@ -61,6 +61,7 @@ asio-host = { path = "../nice-tuner/crates/asio-host", optional = true }
 window-position = { path = "../nice-tuner/crates/window-position", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+macos-metal-view = { path = "../nice-common/crates/macos-metal-view" }
 macos-frame-sync = { path = "../nice-tuner/crates/macos-frame-sync" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
