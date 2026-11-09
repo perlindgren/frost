@@ -9,6 +9,7 @@ pub(crate) enum HostParameter {
     Gate,
     InTune,
     GaugeCurve,
+    Mute,
 }
 
 #[derive(Clone)]
@@ -27,11 +28,18 @@ impl HostControls {
             api,
             setter: Rc::new(move |parameter, value| {
                 let setter = context.param_setter();
+                if parameter == HostParameter::Mute {
+                    setter.begin_set_parameter(&owned.mute);
+                    setter.set_parameter(&owned.mute, value >= 0.5);
+                    setter.end_set_parameter(&owned.mute);
+                    return;
+                }
                 let parameter = match parameter {
                     HostParameter::A4 => &owned.a4_ref,
                     HostParameter::Gate => &owned.gate_db,
                     HostParameter::InTune => &owned.in_tune_cents,
                     HostParameter::GaugeCurve => &owned.gauge_knee_cents,
+                    HostParameter::Mute => unreachable!(),
                 };
                 setter.begin_set_parameter(parameter);
                 setter.set_parameter(parameter, value);

@@ -555,3 +555,13 @@ The repository's own hooks run on every push and cover the plugin too:
 `.github/workflows/gate.yml` name `-p nice-tuner -p pitch` explicitly, because a
 bare `cargo test` in this workspace means the engine and its games and would
 pass without ever compiling this crate.
+
+### Output meter and mute
+
+The main view shows input and output meters side by side. Click the output meter
+or its label to switch Mute on/off. Input analysis continues while muted. The
+output meter measures the signal after muting; its peak hold decays normally.
+Mute defaults off and takes effect immediately. Standalone stores `muted` in
+its RON preferences; CLAP/VST3 expose the automatable boolean parameter `mute`,
+saved through the host's plugin state. Mute is separate from host bypass: bypass
+normally passes the input through, while mute writes silence to every output.

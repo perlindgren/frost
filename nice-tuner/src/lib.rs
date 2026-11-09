@@ -48,6 +48,9 @@ pub struct TunerSharedState {
     /// silent sibling by up to 6 dB — hosts meter the live channel.
     pub input_rms: AtomicCell<f32>,
     pub input_peak: AtomicCell<f32>,
+    pub output_rms: AtomicCell<f32>,
+    pub output_peak: AtomicCell<f32>,
+    pub muted: AtomicBool,
     /// Selected input channel: 0 = auto, n = 1-based channel for BOTH the
     /// meter and the analyzed mono feed. Defaults to 1 (the tuner's normal
     /// single-instrument cable; auto would drift onto a noisy sibling);
@@ -109,6 +112,9 @@ impl TunerSharedState {
             rms: AtomicCell::new(0.0),
             input_rms: AtomicCell::new(0.0),
             input_peak: AtomicCell::new(0.0),
+            output_rms: AtomicCell::new(0.0),
+            output_peak: AtomicCell::new(0.0),
+            muted: AtomicBool::new(false),
             input_channel: AtomicCell::new(1),
             buffer_frames: AtomicCell::new(0),
             process_calls: AtomicU64::new(0),
@@ -191,6 +197,9 @@ pub static STANDALONE_BOOT: std::sync::OnceLock<(settings::Settings, Option<Stri
 /// saved file (and later the settings page) owns A4/gate. Pure function of
 /// (state, settings) so it is unit-testable without process-global mode.
 pub fn seed_standalone_params(shared: &TunerSharedState, s: &settings::Settings) {
+    shared
+        .muted
+        .store(s.muted.unwrap_or(false), Ordering::Relaxed);
     if let Some(a4) = s.a4_ref {
         shared
             .a4_ref_bits
@@ -209,6 +218,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn output_mute_silences_all_channels_and_metering() {
+        let mut left = [0.25f32; 32];
+        let mut right = [-0.5f32; 32];
+        assert_eq!(
+            meter_output(&mut [&mut left, &mut right], false),
+            (0.5, 0.5)
+        );
+        assert_eq!(meter_output(&mut [&mut left, &mut right], true), (0.0, 0.0));
+        assert_eq!(left, [0.0; 32]);
+        assert_eq!(right, [0.0; 32]);
+    }
+
+    #[test]
     fn host_parameters_include_tuning_and_display_preferences_with_stable_ids() {
         let params = TunerParams::default();
         let ids: Vec<_> = params
@@ -216,7 +238,16 @@ mod tests {
             .into_iter()
             .map(|(id, _, _)| id)
             .collect();
-        assert_eq!(ids, ["a4_ref", "gate", "in_tune_cents", "gauge_knee_cents"]);
+        assert_eq!(
+            ids,
+            [
+                "a4_ref",
+                "gate",
+                "in_tune_cents",
+                "gauge_knee_cents",
+                "mute"
+            ]
+        );
         assert_eq!(params.in_tune_cents.value(), 3.0);
         assert_eq!(params.gauge_knee_cents.value(), 5.0);
     }
@@ -506,6 +537,9 @@ pub struct TunerParams {
     pub in_tune_cents: FloatParam,
     #[id = "gauge_knee_cents"]
     pub gauge_knee_cents: FloatParam,
+    /// Output silence, independently of analysis and host bypass.
+    #[id = "mute"]
+    pub mute: BoolParam,
 }
 
 impl Default for TunerPlugin {
@@ -540,6 +574,7 @@ impl Default for TunerPlugin {
 impl Default for TunerParams {
     fn default() -> Self {
         Self {
+            mute: BoolParam::new("Mute", false),
             a4_ref: FloatParam::new(
                 "A4 Reference",
                 440.0,
@@ -665,6 +700,9 @@ impl Plugin for TunerPlugin {
                 Ordering::Relaxed,
             );
             self.shared.gate_db.store(self.params.gate_db.value());
+            self.shared
+                .muted
+                .store(self.params.mute.value(), Ordering::Relaxed);
         }
 
         // One relaxed store per block: the size the driver gave us.
@@ -674,7 +712,7 @@ impl Plugin for TunerPlugin {
 
         if self.shared.is_open() {
             // Buffer is in-place (the framework copied host input into it);
-            // we never write to it — passthrough — and only read it here.
+            // analysis reads the input before output muting below.
             // Stack-only downmix + a push into the preallocated ring: the
             // audio thread's entire analysis contribution is this copy.
             // (assert_process_allocs guards the callback in debug builds;
@@ -753,8 +791,34 @@ impl Plugin for TunerPlugin {
             }
         }
 
+        // Muting happens after the analysis feed; an open editor's detector
+        // keeps seeing the original input while output is muted.
+        let muted = self.shared.muted.load(Ordering::Relaxed);
+        let (rms, peak) = meter_output(buffer.as_slice(), muted);
+        self.shared.output_rms.store(rms as f32);
+        self.shared.output_peak.store(peak);
         ProcessStatus::Normal
     }
+}
+
+/// Meter the hottest output channel after applying mute to every channel.
+fn meter_output(channels: &mut [&mut [f32]], muted: bool) -> (f64, f32) {
+    let mut peak = 0.0f32;
+    let mut rms = 0.0f64;
+    for channel in channels {
+        if muted {
+            channel.fill(0.0);
+        }
+        let mut sum = 0.0f64;
+        for &sample in channel.iter() {
+            peak = peak.max(sample.abs());
+            sum += f64::from(sample).powi(2);
+        }
+        if !channel.is_empty() {
+            rms = rms.max((sum / channel.len() as f64).sqrt());
+        }
+    }
+    (rms, peak)
 }
 
 pub(crate) fn now_epoch_ms() -> u64 {

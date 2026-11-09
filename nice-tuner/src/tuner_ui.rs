@@ -94,6 +94,7 @@ pub struct TunerUi {
     /// Input meter ballistics (bar + sticky peak marker), fully unit-tested
     /// in [`crate::meter`].
     meter: nice_common::meter::PeakMeter,
+    output_meter: nice_common::meter::PeakMeter,
     latch_name: &'static str,
     latch_oct: i8,
     cents_shown: f64,
@@ -208,6 +209,7 @@ impl TunerUi {
             needle_cents: 0.0,
             latch_midi: -1,
             meter: nice_common::meter::PeakMeter::new(crate::now_epoch_ms()),
+            output_meter: nice_common::meter::PeakMeter::new(crate::now_epoch_ms()),
             latch_name: "–",
             latch_oct: 0,
             cents_shown: 0.0,
@@ -279,6 +281,9 @@ impl TunerUi {
         let Some(host) = &self.host_controls else {
             return;
         };
+        let muted = host.params.mute.value();
+        self.settings.muted = Some(muted);
+        self.shared.muted.store(muted, Ordering::Relaxed);
         let a4 = host.params.a4_ref.value();
         let gate = host.params.gate_db.value();
         self.settings.a4_ref = Some(a4);
@@ -475,6 +480,16 @@ impl TunerUi {
         };
         self.meter
             .tick(rms_db, frame_peak_db, crate::now_epoch_ms());
+        let (output_rms, output_peak) = if drained {
+            (
+                db_of(self.shared.output_rms.load() as f64),
+                db_of(self.shared.output_peak.load() as f64),
+            )
+        } else {
+            (-120.0, -120.0)
+        };
+        self.output_meter
+            .tick(output_rms, output_peak, crate::now_epoch_ms());
     }
 }
 
@@ -768,9 +783,63 @@ impl Process for TunerUi {
         // replaces the idle frequency dash.
         let freq_s = frequency_readout(signal.then_some(self.freq_shown), a4);
         self.draw_tabular(ctx, 0.0, freq_y, &freq_s, '·', 39.6 * fit, 550.0, DIM, 0.2);
-        let meter_hovered = self
-            .meter
-            .draw(ctx, font, [0.0, meter_y], meter_half, fit, main);
+        let meter_hovered =
+            self.meter
+                .draw(ctx, font, [-126.0 * fit, meter_y], 112.0 * fit, fit, main);
+        let output_hovered =
+            self.output_meter
+                .draw(ctx, font, [126.0 * fit, meter_y], 112.0 * fit, fit, main);
+        let muted = self.shared.muted.load(Ordering::Relaxed);
+        ctx.text(
+            -126.0 * fit,
+            meter_y + 17.0 * fit,
+            font,
+            "INPUT",
+            12.0 * fit,
+            550.0,
+            DIM,
+            0.2,
+        );
+        ctx.text(
+            126.0 * fit,
+            meter_y + 17.0 * fit,
+            font,
+            if muted {
+                "OUTPUT — MUTED"
+            } else {
+                "OUTPUT — MUTE OFF"
+            },
+            12.0 * fit,
+            550.0,
+            if muted { main } else { DIM },
+            0.2,
+        );
+        if clicked
+            && self.open_dropdown.is_none()
+            && (output_hovered
+                || point_in(
+                    ctx.mouse_position(),
+                    126.0 * fit,
+                    meter_y + 17.0 * fit,
+                    112.0 * fit,
+                    10.0 * fit,
+                ))
+        {
+            self.set_muted(!muted);
+            return;
+        }
+        if output_hovered && self.open_dropdown.is_none() {
+            nice_common::tooltip::draw(
+                ctx,
+                font,
+                if muted {
+                    "Output muted — click to unmute"
+                } else {
+                    "Output active — click to mute"
+                },
+                fit,
+            );
+        }
 
         // Escape closes an open dropdown: the same rising edge the settings page
         // uses, and the same rule - it un-changes, it never writes.
@@ -2841,6 +2910,25 @@ impl TunerUi {
     }
 }
 
+impl TunerUi {
+    fn set_muted(&mut self, muted: bool) {
+        self.shared.muted.store(muted, Ordering::Relaxed);
+        self.settings.muted = Some(muted);
+        if let Some(host) = &self.host_controls {
+            host.set(HostParameter::Mute, if muted { 1.0 } else { 0.0 });
+        }
+        self.applied.preferences = self.settings.preferences.clone();
+        if crate::STANDALONE_MODE.load(Ordering::Relaxed) && !self.is_hosted() {
+            let mut settings = self.with_current_window(self.saved.clone());
+            settings.preferences = self.settings.preferences.clone();
+            match settings.save() {
+                Ok(()) => self.saved = settings,
+                Err(error) => self.save_note = Some(format!("Could not save settings: {error}")),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Dropdown, TunerUi};
@@ -3035,6 +3123,23 @@ mod tests {
                 (HostParameter::GaugeCurve, 5.0)
             ]
         );
+    }
+
+    #[test]
+    fn mute_is_a_live_host_parameter_and_does_not_dirty_audio_settings() {
+        use crate::host_controls::HostParameter;
+        use std::sync::atomic::Ordering;
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut ui = hosted_ui(events.clone());
+        let baseline = ui.saved.clone();
+        ui.set_muted(true);
+        assert!(ui.shared.muted.load(Ordering::Relaxed));
+        assert_eq!(ui.settings.muted, Some(true));
+        assert_eq!(*events.borrow(), vec![(HostParameter::Mute, 1.0)]);
+        assert!(!ui.audio_dirty());
+        assert_eq!(ui.saved, baseline);
+        ui.set_muted(false);
+        assert_eq!(events.borrow().last(), Some(&(HostParameter::Mute, 0.0)));
     }
 
     #[test]
