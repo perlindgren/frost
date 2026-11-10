@@ -471,6 +471,26 @@ const PINS: &[Pins] = &[
             0xe3eb_278c_0cf7_b67c,
         ],
     },
+    Pins {
+        // Walked on the 7950X3D box on 2026-11-10, through Mesa's software
+        // rasteriser — what that box renders when no render node stands open
+        // to the process — with the geometry tests above all passing and the
+        // three numbers stable across four walks and across single- and
+        // multi-threaded suites. What says the picture is right is the
+        // comparison with the row §32 wrote: every number here is
+        // byte-identical to the M4 Max's, a CPU-side rasteriser and an Apple
+        // GPU agreeing on every byte of both scenes, and the profiles read
+        // the same to a hundredth of a row. The refusal this row answers was
+        // the missing ruler, not a moved picture. The chip is named by the
+        // exact driver string, so the next LLVM bump refuses rather than
+        // judges — by design.
+        chip: "llvmpipe (LLVM 23.1.4, 256 bits)",
+        fingerprints: [
+            0x3cd0_d60c_58d7_9dce,
+            0x33a2_a3a4_bbf0_90c5,
+            0x0781_7531_400c_416f,
+        ],
+    },
 ];
 
 /// The chip these numbers are being judged on, said the way its driver says it.
