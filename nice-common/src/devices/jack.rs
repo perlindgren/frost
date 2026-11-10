@@ -4,6 +4,10 @@ use crate::settings::OutputChannels;
 use jack::{Client, ClientOptions, PortFlags, PortSpec};
 
 pub const CLIENT_PREFIX: &str = "nice-tuner-";
+/// Own audio clients must not list themselves: the rack's transport registers
+/// ports under this prefix, and the settings page that opened them has no use
+/// for reading them back as routable peers.
+pub const TRANSPORT_PREFIX: &str = "nice-rack-";
 
 pub(super) fn snapshot() -> Snapshot {
     let Ok((client, _)) = Client::new("nice-tuner-discovery", ClientOptions::NO_START_SERVER)
@@ -14,7 +18,8 @@ pub(super) fn snapshot() -> Snapshot {
     let audio_type = audio.jack_port_type();
     let ports = |flags| {
         let mut names = client.ports(None, Some(audio_type), flags);
-        names.retain(|name| !name.starts_with(CLIENT_PREFIX));
+        names
+            .retain(|name| !name.starts_with(CLIENT_PREFIX) && !name.starts_with(TRANSPORT_PREFIX));
         names.sort();
         names.dedup();
         names

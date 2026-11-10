@@ -54,9 +54,16 @@ requested configuration asynchronously and preserves supported plugin state.
 Settings are written to `nice-rack-settings.ron` in the working directory; window
 geometry is saved independently. Missing settings boot silently.
 
-This first transport requires physical CPAL input and output devices. Named JACK
-port I/O is not implemented for the rack yet; selecting it returns an explicit
-error. The existing tuner/NAM JACK implementations are unchanged. Capture selects
+On Windows and macOS the transport is built from the selected physical CPAL
+input and output devices. On Linux the same panel also offers named JACK
+ports: the rack registers one `input` and one `left` port under its own
+client and connects them to the selected JACK source and destination, or a
+`right` port as well when a second, different destination is selected. A
+single destination carries the mono average because JACK ports are mono; the
+pair carries the true stereo graph output. The server's sample rate and
+quantum govern both directions, and the rack requests its buffer size from
+the offered quanta. The rack never offers its own audio ports to itself. The
+existing tuner/NAM JACK implementations are unchanged. Capture selects
 the configured physical mono channel and duplicates it into the rack input. The
 processed stereo signal is routed to the selected output pair, or averaged if a
 mono destination was explicitly selected. Stereo resampling uses one shared clock

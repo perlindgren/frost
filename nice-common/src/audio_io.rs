@@ -12,6 +12,9 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+#[cfg(target_os = "linux")]
+mod jack_io;
+
 #[derive(Default)]
 pub struct Counters {
     pub input: AtomicU64,
@@ -22,15 +25,31 @@ pub struct Endpoints {
     pub input: rtrb::Consumer<[f32; 2]>,
     pub output: rtrb::Producer<StereoFrame>,
 }
+/// Owner of whatever carries the two rings. The variants differ only in who
+/// runs the callbacks; both sides of the transport and the application DSP
+/// owner are identical, so recovery does not depend on the backend.
+enum Streams {
+    Cpal {
+        _input: Stream,
+        _output: Stream,
+        _asio: Option<crate::devices::AsioStreamGuard>,
+    },
+    #[cfg(target_os = "linux")]
+    Jack(Box<jack_io::Transport>),
+}
 pub struct DeviceStreams {
-    _input: Stream,
-    _output: Stream,
+    streams: Streams,
     errors: Receiver<String>,
     pub counters: Arc<Counters>,
-    _asio: Option<crate::devices::AsioStreamGuard>,
 }
 impl DeviceStreams {
     pub fn failure(&self) -> Option<String> {
+        #[cfg(target_os = "linux")]
+        if let Streams::Jack(streams) = &self.streams
+            && let failure @ Some(_) = streams.failure()
+        {
+            return failure;
+        }
         self.errors.try_recv().ok()
     }
 }
@@ -178,6 +197,50 @@ fn playback<T: cpal::SizedSample + cpal::FromSample<f32>>(
         )
         .map_err(|error| error.to_string())
 }
+/// The two rings and the converter between them, sized from the same numbers
+/// every backend must answer: the two rates, the two quanta, and the
+/// application's input-latency target. Backend owners hand these to their
+/// callbacks; the application owns the other ends through `Endpoints`.
+pub(super) struct Rings {
+    pub capture: rtrb::Producer<[f32; 2]>,
+    pub input: rtrb::Consumer<[f32; 2]>,
+    pub output: rtrb::Producer<StereoFrame>,
+    pub monitor: Monitor<StereoFrame>,
+}
+pub(super) fn rings(
+    input_rate: f64,
+    output_rate: f64,
+    input_frames: u32,
+    output_frames: u32,
+    input_latency: Option<f32>,
+) -> Result<Rings, String> {
+    let (input_frames, output_frames) = (input_frames as usize, output_frames as usize);
+    if !(1..=65536).contains(&input_frames) || !(1..=65536).contains(&output_frames) {
+        return Err("Buffer sizes must be between 1 and 65536 frames".into());
+    }
+    let tolerance =
+        input_frames.max((output_frames as f64 * input_rate / output_rate).ceil() as usize);
+    let target = tolerance
+        + (input_latency
+            .unwrap_or(crate::settings::OUR_INPUT_LATENCY_DEFAULT)
+            .clamp(0.001, 0.5) as f64
+            * input_rate) as usize;
+    let capacity = (target * 8)
+        .max(input_rate as usize / 2)
+        .next_power_of_two();
+    if capacity > 4 * 1024 * 1024 {
+        return Err("Audio transport buffer budget exceeded".into());
+    }
+    let (capture, input) = rtrb::RingBuffer::new(capacity);
+    let (output, drain) = rtrb::RingBuffer::new(capacity);
+    let monitor = Monitor::new(drain, input_rate, output_rate, target, tolerance);
+    Ok(Rings {
+        capture,
+        input,
+        output,
+        monitor,
+    })
+}
 /// Call off the UI thread. Settings must already be resolved against a snapshot.
 /// Capture selects a physical input channel and duplicates it into the rack's
 /// stereo input. The graph's stereo output is routed without mono downmixing
@@ -187,10 +250,14 @@ pub fn open<P: Preferences>(settings: &Settings<P>) -> Result<(DeviceStreams, En
         .backend
         .as_deref()
         .ok_or("Select an audio backend")?;
-    if matches!(backend, "dummy" | "jack") {
-        return Err(
-            "Rack device transport currently requires a physical CPAL input/output backend".into(),
-        );
+    if backend == "jack" {
+        #[cfg(target_os = "linux")]
+        return jack_io::open(settings);
+        #[cfg(not(target_os = "linux"))]
+        return Err("JACK is offered by the Linux settings page only".into());
+    }
+    if backend == "dummy" {
+        return Err("The dummy backend opens no devices; leave audio off instead".into());
     }
     let asio = (backend == "asio").then(crate::devices::asio_stream_guard);
     let host = crate::devices::open_host(backend).ok_or("Audio backend is unavailable")?;
@@ -221,38 +288,22 @@ pub fn open<P: Preferences>(settings: &Settings<P>) -> Result<(DeviceStreams, En
     if !route.fits(output_config.channels as u32) {
         return Err("Output route is outside the device layout".into());
     }
-    let input_frames = settings.period_size.ok_or("Select input buffer size")? as usize;
+    let input_frames = settings.period_size.ok_or("Select input buffer size")?;
     let output_frames = settings
         .output_period_size
-        .ok_or("Select output buffer size")? as usize;
-    if !(1..=65536).contains(&input_frames) || !(1..=65536).contains(&output_frames) {
-        return Err("Buffer sizes must be between 1 and 65536 frames".into());
-    }
-    let tolerance = input_frames.max(
-        (output_frames as f64 * input_config.sample_rate as f64 / output_config.sample_rate as f64)
-            .ceil() as usize,
-    );
-    let target = tolerance
-        + (settings
-            .input_latency
-            .unwrap_or(crate::settings::OUR_INPUT_LATENCY_DEFAULT)
-            .clamp(0.001, 0.5)
-            * input_config.sample_rate as f32) as usize;
-    let capacity = (target * 8)
-        .max(input_config.sample_rate as usize / 2)
-        .next_power_of_two();
-    if capacity > 4 * 1024 * 1024 {
-        return Err("Audio transport buffer budget exceeded".into());
-    }
-    let (capture_queue, input_queue) = rtrb::RingBuffer::new(capacity);
-    let (output_queue, output_input) = rtrb::RingBuffer::new(capacity);
-    let monitor = Monitor::new(
-        output_input,
+        .ok_or("Select output buffer size")?;
+    let Rings {
+        capture: capture_queue,
+        input: input_queue,
+        output: output_queue,
+        monitor,
+    } = rings(
         input_config.sample_rate as f64,
         output_config.sample_rate as f64,
-        target,
-        tolerance,
-    );
+        input_frames,
+        output_frames,
+        settings.input_latency,
+    )?;
     let counter = Arc::new(Counters::default());
     let (sender, receiver) = bounded(16);
     macro_rules! output_stream {
@@ -317,11 +368,13 @@ pub fn open<P: Preferences>(settings: &Settings<P>) -> Result<(DeviceStreams, En
         .map_err(|error| format!("Attempt to start input device '{input_name}' failed: {error}"))?;
     Ok((
         DeviceStreams {
-            _input: input_stream,
-            _output: output_stream,
+            streams: Streams::Cpal {
+                _input: input_stream,
+                _output: output_stream,
+                _asio: asio,
+            },
             errors: receiver,
             counters: counter,
-            _asio: asio,
         },
         Endpoints {
             input: input_queue,
