@@ -246,6 +246,13 @@ cargo test -p nice-tuner -p pitch || fail 'cargo test -p nice-tuner -p pitch'
 printf 'pre-push: running `cargo test -p nice-nam -p nice-common`...\n'
 cargo test -p nice-nam -p nice-common || fail 'cargo test -p nice-nam -p nice-common'
 
+# The wah, by the same named-not-swept-in logic, and its suite earns the
+# minute twice over: the Goertzel assertions are the filter's contract with
+# acoustics, and `tests/no_alloc.rs` is the audio thread's witness that a
+# block — and an automation move — cost the allocator nothing.
+printf 'pre-push: running `cargo test -p nice-wah`...\n'
+cargo test -p nice-wah || fail 'cargo test -p nice-wah'
+
 # The resampler's no-allocation witness hides behind that feature, and the
 # feature is crossbeam and rtrb — no device, no SDK, no platform to disappoint.
 printf 'pre-push: running `cargo test -p nice-common --features standalone`...\n'
