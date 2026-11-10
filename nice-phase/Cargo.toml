@@ -1,0 +1,63 @@
+[package]
+name = "nice-phase"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+description = "A five-setting phaser (script and block wirings, four stages or two) as a CLAP/VST3 plugin with a frost editor"
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "nice-phase-standalone"
+path = "src/main.rs"
+required-features = ["standalone"]
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+default = []
+# Application-owned standalone host. The device transport is nice-common's
+# `audio_io` — the same cpal/JACK/ASIO plumbing the rack opens — and the
+# settings page is the shared `AudioPanel`, so this crate adds no device
+# code of its own: only the plugin adapter between the two rings.
+standalone = [
+    "nice-common/ui",
+    "nice-common/audio-io",
+    "nice-common/asio-host",
+    "dep:plugin-buffer",
+    "dep:serde",
+]
+# Native Windows placement for the standalone window: open where the last session
+# left it, or centred when no position was ever stored. The unsafe code stays
+# inside the wrapper crate; nice-phase keeps denying it, and a window inside a
+# host is never touched — the host owns its children.
+unsafe = ["dep:window-position", "window-position/unsafe"]
+
+[dependencies]
+baseview = { version = "=0.3.3", features = ["tracing"] }
+wgpu = "30"
+pollster = "0.4"
+keyboard-types = "0.8.3"
+crossbeam = "0.8"
+plugin-buffer = { path = "../nice-tuner/crates/plugin-buffer", optional = true }
+nice-common = { path = "../nice-common", features = ["widgets"] }
+nice-plug = { version = "0.4.2", default-features = false, features = ["editor", "vst3", "assert_process_allocs"] }
+frost = { path = ".." }
+serde = { version = "1", features = ["derive"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+# Window placement is implemented only by our opt-in Windows wrapper, which
+# is also the only place in this build that contains unsafe code.
+window-position = { path = "../nice-tuner/crates/window-position", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+macos-metal-view = { path = "../nice-common/crates/macos-metal-view" }
+macos-frame-sync = { path = "../nice-tuner/crates/macos-frame-sync" }
+
+[dev-dependencies]
+allocation-counter = "=0.8.1"
+# The settings round-trip test reads the saved file as RON.
+ron = "=0.12.2"
+# The pump test drives the transport's rings the way the device callbacks do.
+rtrb = "0.4"
