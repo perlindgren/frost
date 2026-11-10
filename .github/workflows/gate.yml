@@ -124,6 +124,22 @@ jobs:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
         run: cargo clippy -p nice-nam -p nice-common --all-targets -- -D warnings
 
+      # The wah, named by the same logic as its siblings: a member `cargo
+      # clippy` with no `-p` would never compile, and the lesson above is
+      # that membership is not coverage. No RUSTFLAGS here, unlike the
+      # model plugin's step — nice-wah depends on no SIMD engine, and
+      # raising the instruction-set floor for nothing is not free.
+      - name: Clippy, zero warnings, the wah
+        run: cargo clippy -p nice-wah --all-targets -- -D warnings
+
+      # The standalone half, linted like the tuner's beside it: the binary
+      # and the audio owner are behind `standalone`, and a step that never
+      # turns the feature on would lint a source tree with the app missing
+      # from it. The ASIO SDK is still fetched only where the host has one;
+      # nothing here vendors it.
+      - name: Clippy, zero warnings, the standalone wah
+        run: cargo clippy -p nice-wah --features standalone --all-targets -- -D warnings
+
       # The engine's own claim, checked rather than trusted: docs/licensing.md
       # records why these specific lines exist. A published crate that loses
       # assets/fonts/OFL.txt loses the permission to ship a font with it, and
@@ -212,6 +228,18 @@ jobs:
         run: |
           cargo test --no-fail-fast -p nice-nam -p nice-common
           cargo test --no-fail-fast -p nice-common --features standalone
+
+      # The wah, same named-not-swept-in reason as every plugin above, and no
+      # RUSTFLAGS for the same opposite reason as its clippy step beside the
+      # engine: nothing in its graph refuses the default baseline, and the
+      # filter is plain Rust that must build there like everything else. The
+      # standalone half runs too, like nice-common's beside it: every test in
+      # it is hardware-independent — ring plumbing, settings resolve, the
+      # dummy-backend path — and none of them opens a device.
+      - name: Tests, the wah
+        run: |
+          cargo test --no-fail-fast -p nice-wah
+          cargo test --no-fail-fast -p nice-wah --features standalone
 
       # Compile and link the engine's library tests, including the GPU tree,
       # without executing them on an uncalibrated runner. Compilation errors

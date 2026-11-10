@@ -126,4 +126,13 @@ cargo clippy -p nice-nam -p nice-common --all-targets -- -D warnings || {
     exit 1
 }
 
+# The wah, named like the others rather than swept in: it shares nice-nam's
+# shape — a cdylib under nice-plug's assert_process_allocs, an editor under
+# frost::embedded — and nothing in default-members would ever compile it.
+printf 'pre-commit: clippy -D warnings (the wah)...\n'
+cargo clippy -p nice-wah --all-targets -- -D warnings || {
+    printf 'pre-commit: clippy failed in nice-wah - commit aborted.\n' >&2
+    exit 1
+}
+
 exit 0
