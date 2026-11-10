@@ -92,14 +92,24 @@ project-owned modules, not vendored third-party code.
 cargo build -p nice-nam --release
 cargo test -p nice-nam -p audio-float --features nice-nam/standalone,nice-nam/diag
 cargo clippy -p nice-nam --all-targets --features standalone,diag -- -D warnings
+cargo xtask bundle nice-nam --release
 ```
+
+`cargo xtask bundle` (the same `nice-plug-xtask` driver as nice-tuner, with
+`Nice NAM` named in the workspace-root `bundler.toml`) detects the exported
+CLAP and VST3 entry points in the built library and writes both bundles to
+`target/bundled/`: the single-file `Nice NAM.clap` and the `Nice NAM.vst3/`
+directory, with the embedded fonts' licence texts shipped alongside, as for
+nice-tuner. On x86_64 Linux the `RUSTFLAGS` prefix stated above applies to this
+command too.
 
 Tests include synthetic LSTM inference, variable block sizes, allocation counting,
 cabinet impulse response/latency, missing files/rate mismatches, output routing,
 configuration round-trips and monitoring conversion. Native listening, real
-community models, multi-instance DAW use and plugin bundling require further
-integration testing. Models using mirrored memory also need native POSIX shared
-memory permissions; a restricted process may refuse their allocation.
+community models, multi-instance DAW use and loading the bundles in a real host
+require further integration testing. Models using mirrored memory also need
+native POSIX shared memory permissions; a restricted process may refuse their
+allocation.
 
 The main view has input and output RMS/peak-hold meters along the bottom. The
 input meter measures before the gate; the output meter measures after the model
