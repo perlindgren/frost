@@ -2260,6 +2260,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "nice-wah"
+version = "0.1.0"
+dependencies = [
+ "allocation-counter",
+ "baseview",
+ "crossbeam",
+ "frost",
+ "keyboard-types",
+ "macos-frame-sync",
+ "macos-metal-view",
+ "nice-common",
+ "nice-plug",
+ "plugin-buffer",
+ "pollster",
+ "ron",
+ "rtrb 0.4.1",
+ "serde",
+ "wgpu",
+ "window-position",
+]
+
+[[package]]
 name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
