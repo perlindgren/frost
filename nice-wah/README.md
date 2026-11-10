@@ -84,15 +84,18 @@ whatever the buttons did last.
 
 | Voice | Heel | Toe | Q | Taper | Trim | The shape it chases |
 | --- | --- | --- | --- | --- | --- | --- |
-| VOX '70 | 350 Hz | 2.2 kHz | 2.2 | +0.6 | −4 dB | The Shakespeare inductor's damped, heel-biased choke wah. |
-| CRY BABY | 90 Hz | 4 kHz | 4.0 | 0 | 0 dB | The wide-open Dunlop sweep, the archetype the defaults ship at. |
-| SLASH | 350 Hz | 4.5 kHz | 3.5 | −0.4 | +3 dB | Heel raised out of the mud, the singing band gathered toward the toe. |
+| TOX '70 | 350 Hz | 2.2 kHz | 2.2 | +0.6 | −4 dB | The Shakespeare inductor's damped, heel-biased choke wah. |
+| SKY BABY | 90 Hz | 4 kHz | 4.0 | 0 | 0 dB | The wide-open modern sweep, the archetype the defaults ship at. |
+| CLASH | 350 Hz | 4.5 kHz | 3.5 | −0.4 | +3 dB | Heel raised out of the mud, the singing band gathered toward the toe. |
 
-No manufacturer has ever published these curves. The numbers are the measured
-consensus of published circuit analyses — the Vox's high-DCR inductor self-
-damping its Q near 2, the Cry Baby's 500 mH Fasel choke sweeping a narrow
-band a full four decades, the hot-rodded mod's raised heel and toe-weighted
-taper — not datasheet transcriptions, and nobody should pretend otherwise.
+The names are ours — a voice is a set of parameter values, and the value set
+earns no protection from the pedal it was measured off. No manufacturer has
+ever published these curves. The numbers are the measured
+consensus of published circuit analyses — the vintage UK voice's high-DCR
+inductor self-damping its Q near 2, the modern standard's 500 mH choke
+sweeping a narrow band a full four decades, the hot-rodded mod's raised heel
+and toe-weighted taper — not datasheet transcriptions, and nobody should
+pretend otherwise.
 
 ## How it sounds, mechanically
 
