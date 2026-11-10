@@ -9,6 +9,7 @@ use crate::dsp::{VOICES, Voice};
 use crate::{WahParams, WahSharedState};
 use crossbeam::atomic::AtomicCell;
 use frost::{Color, Context, Process, Scene, SceneNode, Shape};
+use nice_common::knob;
 use nice_common::meter::PeakMeter;
 use nice_plug::context::gui::GuiContext;
 use std::sync::Arc;
@@ -31,8 +32,10 @@ const METER_LIVE_MS: u64 = 250;
 
 /// The knob drag that carries a parameter from one end of its range to the
 /// other, in logical pixels; holding Shift stretches it for fine moves.
-const KNOB_TRAVEL: f32 = 200.0;
-const KNOB_TRAVEL_FINE: f32 = 800.0;
+/// The two numbers — and the knob's whole look — now live in
+/// `nice_common::knob`, shared with the phaser and every plugin to come.
+const KNOB_TRAVEL: f32 = knob::TRAVEL;
+const KNOB_TRAVEL_FINE: f32 = knob::TRAVEL_FINE;
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color {
@@ -53,9 +56,6 @@ const BG: Color = {
 };
 /// The face of every knob, button and rail.
 const PANEL: Color = rgb(65, 57, 82);
-/// The bore of a knob, a shade under its face so the pointer has something
-/// to sit on.
-const BORE: Color = rgb(46, 40, 60);
 /// The house green: the position the pedal and envelope actually put the
 /// filter at.
 const GREEN: Color = rgb(103, 237, 175);
@@ -549,8 +549,7 @@ impl Process for WahUi {
                 }
             }
             for (i, knob) in Knob::ALL.iter().enumerate() {
-                let (kx, ky) = (knob_x(i), y_knob);
-                if (mx - kx).abs() <= knob_radius + 4.0 && (my - ky).abs() <= knob_radius + 4.0 {
+                if knob::contains([knob_x(i), y_knob], knob_radius, [mx, my]) {
                     hover = Some(Hover::Knob(*knob));
                 }
             }
@@ -771,75 +770,26 @@ impl Process for WahUi {
             MUTED,
         );
 
-        // Knobs: a face, a bore, the end ticks, and a pointer. There is no
-        // arc in frost's immediate canvas, and a sweep of short chords from
-        // the start tick to the pointer says "this far along" well enough
-        // to be worth its lines.
-        for (i, knob) in Knob::ALL.iter().enumerate() {
+        // Knobs: the family's shared draw — face, bore, ticks, pointer,
+        // caption and readout, all of it in `nice_common::knob`, so the
+        // wah's row and the phaser's move together forever.
+        for (i, kind) in Knob::ALL.iter().enumerate() {
             let (kx, ky) = (knob_x(i), y_knob);
-            let param = knob.param(&params);
-            let value = self.knob_value(&params, *knob);
+            let param = kind.param(&params);
+            let value = self.knob_value(&params, *kind);
             let t = param.range().normalize(value).clamp(0.0, 1.0);
-            let touched = matches!(self.hovered, Some(Hover::Knob(k)) if k == *knob)
-                || matches!(self.drag, Some(Drag::Knob(k)) if k == *knob);
-            ctx.circle(kx, ky, knob_radius, PANEL, 0.5);
-            ctx.circle(kx, ky, knob_radius * 0.66, BORE, 0.52);
-            let angle = |t: f32| (t * 270.0 - 135.0).to_radians();
-            // The value sweep, in ten-degree steps so it reads as a ring.
-            let steps = (t * 27.0) as i32;
-            for s in 0..=steps {
-                let a = angle(s as f32 / 27.0);
-                let (sx, sy) = (a.sin(), a.cos());
-                ctx.line(
-                    kx + sx * knob_radius * 1.06,
-                    ky + sy * knob_radius * 1.06,
-                    kx + sx * knob_radius * 1.22,
-                    ky + sy * knob_radius * 1.22,
-                    if touched { AMBER } else { GREEN },
-                    2.0 * fit,
-                    0.45,
-                );
-            }
-            // The far tick, muted: the ring only reaches it when the knob
-            // bottoms out, and a player should see how much rail is left.
-            if t < 1.0 {
-                let a = angle(1.0);
-                let (sx, sy) = (a.sin(), a.cos());
-                ctx.line(
-                    kx + sx * knob_radius * 1.06,
-                    ky + sy * knob_radius * 1.22,
-                    kx + sx * knob_radius * 1.3,
-                    ky + sy * knob_radius * 1.3,
-                    MUTED,
-                    2.0 * fit,
-                    0.44,
-                );
-            }
-            let a = angle(t);
-            ctx.line(
-                kx,
-                ky,
-                kx + a.sin() * knob_radius * 0.9,
-                ky + a.cos() * knob_radius * 0.9,
-                if touched { AMBER } else { TEXT },
-                3.0 * fit,
-                0.55,
-            );
-            self.text(
+            let touched = matches!(self.hovered, Some(Hover::Knob(k)) if k == *kind)
+                || matches!(self.drag, Some(Drag::Knob(k)) if k == *kind);
+            knob::draw(
                 ctx,
-                kx,
-                ky - knob_radius - 14.0 * fit,
-                knob.label().into(),
-                13.0 * fit,
-                MUTED,
-            );
-            self.text(
-                ctx,
-                kx,
-                ky - knob_radius - 30.0 * fit,
-                knob.readout(value),
-                14.0 * fit,
-                TEXT,
+                &self.font,
+                [kx, ky],
+                knob_radius,
+                t,
+                touched,
+                kind.label(),
+                kind.readout(value),
+                fit,
             );
         }
 
