@@ -4,3 +4,6 @@
 # name. Bundles land in `target/bundled/`.
 [nice-tuner]
 name = "Nice Tuner"
+
+[nice-nam]
+name = "Nice NAM"
