@@ -135,4 +135,13 @@ cargo clippy -p nice-wah --all-targets -- -D warnings || {
     exit 1
 }
 
+# The phaser, named like the others rather than swept in: it shares the wah's
+# shape — a cdylib under nice-plug's assert_process_allocs, an editor under
+# frost::embedded — and nothing in default-members would ever compile it.
+printf 'pre-commit: clippy -D warnings (the phaser)...\n'
+cargo clippy -p nice-phase --all-targets -- -D warnings || {
+    printf 'pre-commit: clippy failed in nice-phase - commit aborted.\n' >&2
+    exit 1
+}
+
 exit 0

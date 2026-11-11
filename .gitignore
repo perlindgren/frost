@@ -72,6 +72,8 @@ nice-nam-settings.ron
 nice-nam-settings.ron.*
 nice-wah-settings.ron
 nice-wah-settings.ron.*
+nice-phase-settings.ron
+nice-phase-settings.ron.*
 
 # Rack-local audio device configuration.
 nice-rack-settings.ron

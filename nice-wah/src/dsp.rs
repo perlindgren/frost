@@ -72,16 +72,18 @@ pub struct Voice {
 
 /// The voices, in the order the editor will list them. The numbers are the
 /// well-documented consensus of each circuit, not manufacturer figures —
-/// none of the three ever printed a sweep table. The Vox is the Shakespeare
-/// inductor's small, dark world, self-damped to a hill of a resonance, with
-/// most of its travel below the first kilohertz. The Cry Baby is the wide
-/// modern sweep, tall and even per octave, loud the way the buffer makes it
-/// loud. Slash's is the 535Q under a gain stage: raised off the mud, the
-/// toe's resolution parked on the singing band, and a trim up for the amp in
-/// front of it.
+/// none of the three ever printed a sweep table. The names are theirs, not
+/// anybody else's: a voice is a handful of parameter values, and a set of
+/// values earns no protection from the pedal it was measured off. The TOX
+/// is the Shakespeare inductor's small, dark world, self-damped to a hill
+/// of a resonance, with most of its travel below the first kilohertz. The
+/// SKY BABY is the wide modern sweep, tall and even per octave, loud the
+/// way the buffer makes it loud. The CLASH is the hot-wound custom under a
+/// gain stage: raised off the mud, the toe's resolution parked on the
+/// singing band, and a trim up for the amp in front of it.
 pub const VOICES: [Voice; 3] = [
     Voice {
-        name: "VOX '70",
+        name: "TOX '70",
         heel_hz: 350.0,
         toe_hz: 2_200.0,
         q: 2.2,
@@ -89,7 +91,7 @@ pub const VOICES: [Voice; 3] = [
         trim_db: -4.0,
     },
     Voice {
-        name: "CRY BABY",
+        name: "SKY BABY",
         heel_hz: 90.0,
         toe_hz: 4_000.0,
         q: 4.0,
@@ -97,7 +99,7 @@ pub const VOICES: [Voice; 3] = [
         trim_db: 0.0,
     },
     Voice {
-        name: "SLASH",
+        name: "CLASH",
         heel_hz: 350.0,
         toe_hz: 4_500.0,
         q: 3.5,

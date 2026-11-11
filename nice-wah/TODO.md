@@ -44,7 +44,7 @@ what `tests/no_alloc.rs` polices.
 **The '70's voice partly lives in the cable.** The Thomas Organ circuit's
 high-impedance input forms a resonator with guitar-cable capacitance; the
 weepy, pre-swept low-pass of a real VOX through fifteen feet of cable is
-that interaction, not the filter. A truthful VOX voice either models source
+that interaction, not the filter. A truthful TOX '70 voice either models source
 impedance — one input pole, a `cable_pf` control, roughly 100 kΩ — or the
 README says so plainly and the voice stops pretending.
 
@@ -71,7 +71,7 @@ harness in `src/dsp.rs` answers "how loud does a pure tone come out"
 exactly. The procedure is one swept sine (or the `tools/noisefloor` rig)
 through real units — or published netlists of the Plunkett lineage where
 units are unavailable — then a per-voice fit: `q(t)` control points, the
-peak-level curve, a five-point taper table, the cable pole for the VOX, and
+peak-level curve, a five-point taper table, the cable pole for the TOX '70, and
 the saturation knee. After that the voices are measured; before it, they are
 argued.
 

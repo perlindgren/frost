@@ -253,11 +253,26 @@ cargo test -p nice-nam -p nice-common || fail 'cargo test -p nice-nam -p nice-co
 printf 'pre-push: running `cargo test -p nice-wah`...\n'
 cargo test -p nice-wah || fail 'cargo test -p nice-wah'
 
+# The phaser, by the same named-not-swept-in logic, and its suite earns the
+# minute twice over: the sweep assertions are the allpass chain's contract
+# with acoustics, and `tests/no_alloc.rs` is the audio thread's witness that
+# a block — and a mode switch — cost the allocator nothing.
+printf 'pre-push: running `cargo test -p nice-phase`...\n'
+cargo test -p nice-phase || fail 'cargo test -p nice-phase'
+
 # The resampler's no-allocation witness hides behind that feature, and the
 # feature is crossbeam and rtrb — no device, no SDK, no platform to disappoint.
 printf 'pre-push: running `cargo test -p nice-common --features standalone`...\n'
 cargo test -p nice-common --features standalone \
     || fail 'cargo test -p nice-common --features standalone'
+
+# The shared knob hides behind `widgets`, and the plugins' own suites test
+# it only as a dependency's pixels, never as their own assertions; the
+# grab radii and fine-drag geometry are the family's touch contract, so
+# the tests run where the widget lives.
+printf 'pre-push: running `cargo test -p nice-common --features widgets`...\n'
+cargo test -p nice-common --features widgets \
+    || fail 'cargo test -p nice-common --features widgets'
 
 # The web target shares the library and nothing else, so it gets its own line
 # rather than hiding inside the host's. A missing toolchain is a failure rather

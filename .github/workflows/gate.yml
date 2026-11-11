@@ -140,6 +140,22 @@ jobs:
       - name: Clippy, zero warnings, the standalone wah
         run: cargo clippy -p nice-wah --features standalone --all-targets -- -D warnings
 
+      # The phaser plain, named like the wah's step beside it: the
+      # standalone leg below compiles everything except what hides behind
+      # `cfg(not(standalone))`, and the plugin's host-facing half is
+      # exactly what lives there. No RUSTFLAGS either — the same plain-
+      # Rust graph as its sibling.
+      - name: Clippy, zero warnings, the phaser
+        run: cargo clippy -p nice-phase --all-targets -- -D warnings
+
+      # The phaser's standalone half, linted like the wah's beside it: the
+      # binary and the audio owner are behind `standalone`, and a step that
+      # never turns the feature on would lint a source tree with the app
+      # missing from it. The ASIO SDK is still fetched only where the host
+      # has one; nothing here vendors it.
+      - name: Clippy, zero warnings, the standalone phaser
+        run: cargo clippy -p nice-phase --features standalone --all-targets -- -D warnings
+
       # The engine's own claim, checked rather than trusted: docs/licensing.md
       # records why these specific lines exist. A published crate that loses
       # assets/fonts/OFL.txt loses the permission to ship a font with it, and
@@ -228,6 +244,10 @@ jobs:
         run: |
           cargo test --no-fail-fast -p nice-nam -p nice-common
           cargo test --no-fail-fast -p nice-common --features standalone
+          # The shared knob hides behind `widgets`, which neither line
+          # above implies; its tests are geometry and nothing else, and
+          # no other runner in this file asks for the feature.
+          cargo test --no-fail-fast -p nice-common --features widgets
 
       # The wah, same named-not-swept-in reason as every plugin above, and no
       # RUSTFLAGS for the same opposite reason as its clippy step beside the
@@ -235,11 +255,16 @@ jobs:
       # filter is plain Rust that must build there like everything else. The
       # standalone half runs too, like nice-common's beside it: every test in
       # it is hardware-independent — ring plumbing, settings resolve, the
-      # dummy-backend path — and none of them opens a device.
-      - name: Tests, the wah
+      # dummy-backend path — and none of them opens a device. The phaser is
+      # folded in here for the same reason and by the same two commands as
+      # its sibling's: one LFO chain, no device, nothing this runner cannot
+      # answer.
+      - name: Tests, the wah and the phaser
         run: |
           cargo test --no-fail-fast -p nice-wah
           cargo test --no-fail-fast -p nice-wah --features standalone
+          cargo test --no-fail-fast -p nice-phase
+          cargo test --no-fail-fast -p nice-phase --features standalone
 
       # Compile and link the engine's library tests, including the GPU tree,
       # without executing them on an uncalibrated runner. Compilation errors
