@@ -260,6 +260,19 @@ cargo test -p nice-wah || fail 'cargo test -p nice-wah'
 printf 'pre-push: running `cargo test -p nice-phase`...\n'
 cargo test -p nice-phase || fail 'cargo test -p nice-phase'
 
+# The Pi-Fase, by the same named-not-swept-in logic. Its suite today is the
+# interface rather than the acoustics — the fourteen parameters a host sees, the
+# positions each switch claims, the settings file's round trip, one frame moved
+# through a real plugin instance by the standalone pump, and `tests/no_alloc.rs`
+# as the audio thread's witness. That file carries no `cfg`, so it runs here and
+# not just on the Linux runner, unlike the wah's and the phaser's copies of it —
+# those inherited nice-nam's exclusion, which belonged to an engine Windows
+# cannot build and to nothing they do. When the filter lands, the ruler tests
+# join this line; until then it is the proof that the plugin a host loads is the
+# plugin this repository says it is.
+printf 'pre-push: running `cargo test -p nice-pi-face`...\n'
+cargo test -p nice-pi-face || fail 'cargo test -p nice-pi-face'
+
 # The resampler's no-allocation witness hides behind that feature, and the
 # feature is crossbeam and rtrb — no device, no SDK, no platform to disappoint.
 printf 'pre-push: running `cargo test -p nice-common --features standalone`...\n'

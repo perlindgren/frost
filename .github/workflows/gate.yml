@@ -156,6 +156,22 @@ jobs:
       - name: Clippy, zero warnings, the standalone phaser
         run: cargo clippy -p nice-phase --features standalone --all-targets -- -D warnings
 
+      # The Pi-Fase, for the reason this file has now learned four times:
+      # membership is not coverage, and a member no step names is a member
+      # nothing lints. No RUSTFLAGS, same as its three neighbours — nothing in
+      # its graph refuses the default baseline, and raising the instruction-set
+      # floor for nothing is not free.
+      - name: Clippy, zero warnings, the Pi-Fase
+        run: cargo clippy -p nice-pi-face --all-targets -- -D warnings
+
+      # Its standalone half, linted beside theirs: the binary and the audio
+      # owner live behind `standalone`, and a step that never turns it on would
+      # lint a source tree with the application missing from it. ASIO is not
+      # fetched here — `asio-host` is a `cfg(windows)` dependency, so this Linux
+      # runner does not see it in the graph at all.
+      - name: Clippy, zero warnings, the standalone Pi-Fase
+        run: cargo clippy -p nice-pi-face --features standalone --all-targets -- -D warnings
+
       # The engine's own claim, checked rather than trusted: docs/licensing.md
       # records why these specific lines exist. A published crate that loses
       # assets/fonts/OFL.txt loses the permission to ship a font with it, and
@@ -265,6 +281,19 @@ jobs:
           cargo test --no-fail-fast -p nice-wah --features standalone
           cargo test --no-fail-fast -p nice-phase
           cargo test --no-fail-fast -p nice-phase --features standalone
+
+      # The Pi-Fase, named like every plugin before it. Its suite today is the
+      # interface and the plumbing — the fourteen parameters a host sees, the
+      # positions each switch claims to have, the settings file's round trip, a
+      # frame moved through a real plugin instance by the standalone pump, and
+      # `tests/no_alloc.rs` — and none of it opens a device, so the standalone
+      # half runs here too. When the filter lands, the acoustics join this step;
+      # a Bi-Phase whose tests are only plumbing would be exactly as unverified
+      # as a pass-through wearing a nicer README.
+      - name: Tests, the Pi-Fase
+        run: |
+          cargo test --no-fail-fast -p nice-pi-face
+          cargo test --no-fail-fast -p nice-pi-face --features standalone
 
       # Compile and link the engine's library tests, including the GPU tree,
       # without executing them on an uncalibrated runner. Compilation errors
