@@ -398,7 +398,17 @@ impl Phase {
     pub fn notch_hz(&self, index: usize) -> f32 {
         let whole = self.stages.round();
         if (self.stages - whole).abs() < 1e-3 {
-            notch_hz(self.center, index, whole as usize, self.rate)
+            // The same sentinel the fractional branch gives for a notch
+            // past the chain's reach — which at a settled two-stage
+            // setting is the whole of notch one's family. The publisher
+            // asks for both cells every block whatever the mode, and the
+            // exact free function guards its index precisely because
+            // this method is the total one in front of it.
+            if index >= notch_count(whole as usize) {
+                0.0
+            } else {
+                notch_hz(self.center, index, whole as usize, self.rate)
+            }
         } else {
             let psi = (2.0 * index as f32 + 1.0) * std::f32::consts::PI / (2.0 * self.stages);
             if psi >= std::f32::consts::FRAC_PI_2 {
@@ -1024,6 +1034,36 @@ mod tests {
         // A 200 Hz sine at unity crosses at most sin(step) ≈ 0.026 per
         // sample; a real click would be an order of magnitude more.
         assert!(worst < 0.1, "worst sample step {worst}");
+    }
+
+    #[test]
+    fn the_second_notch_says_where_it_is_even_when_it_is_gone() {
+        // The publisher's exact query — both notch cells, every block —
+        // on every settled setting. A two-stage chain has one notch, and
+        // the documented answer for a notch the chain no longer reaches
+        // is `0.0`, not a debug assertion and not a garbage frequency:
+        // the standalone publishes through this method, so a settled '45
+        // mode once crashed the debug build on the audio thread.
+        for mode in MODES {
+            let controls = Controls {
+                mode: index_of(mode),
+                speed: 0.0,
+                ..stock()
+            };
+            let phaser = Phase::new(RATE, &controls);
+            let low = phaser.notch_hz(0);
+            let high = phaser.notch_hz(1);
+            if mode.stages == 2 {
+                assert!(low > 0.0, "{}: its one notch is real", mode.name);
+                assert_eq!(high, 0.0, "{}: the second notch does not exist", mode.name);
+            } else {
+                assert!(
+                    low > 0.0 && high > low,
+                    "{}: two notches, in order",
+                    mode.name
+                );
+            }
+        }
     }
 
     #[test]
