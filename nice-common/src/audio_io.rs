@@ -38,6 +38,14 @@ enum Streams {
     Jack(Box<jack_io::Transport>),
 }
 pub struct DeviceStreams {
+    /// Never read on purpose: owning these streams *is* what keeps the device
+    /// callbacks running, and dropping this value is what stops them. Only the
+    /// JACK branch of `failure` below reaches into the field, and only on Linux
+    /// — so on every other platform the linter sees an unread field where there
+    /// is really an owner. The gate never noticed, because its one runner is
+    /// Linux; the first Windows `--features standalone` clippy of any plugin is
+    /// what surfaced it.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     streams: Streams,
     errors: Receiver<String>,
     pub counters: Arc<Counters>,
