@@ -7,7 +7,15 @@
 //! `allocation_counter`'s counter — and rustc refuses the pair outright.
 //! So this binary includes the DSP source as a module of its own and
 //! measures against nothing but the filter.
-#![cfg(not(windows))]
+//!
+//! No platform `cfg`, whatever the file's shape suggests. nice-nam gates its
+//! RT tests off Windows because the NAM engine behind *that* DSP has no
+//! Windows build, and the line travelled into this file along with everything
+//! else about it. Nothing here earns it: the counter is a plain
+//! `#[global_allocator]` over `System`, and a one-pole envelope is the same
+//! arithmetic on every target. With the line in place this binary reported
+//! `running 0 tests` on the platform the plugin actually gets built on; the
+//! witnesses now measure zero on MSVC too.
 // This binary sees only the slice of the filter it measures; the rest of
 // `impl Wah` — the reset, the editor's readout — has no caller here.
 #[allow(dead_code)]

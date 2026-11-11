@@ -16,6 +16,7 @@
 use crate::{PiFaceParams, PiFaceSharedState};
 use crossbeam::atomic::AtomicCell;
 use frost::{Color, Context, Process, Scene, SceneNode, Shape};
+use nice_common::knob::{self, AMBER, BORE, GREEN, MUTED, PANEL, TEXT};
 use nice_common::meter::PeakMeter;
 use nice_plug::context::gui::GuiContext;
 use nice_plug::prelude::{FloatParam, IntParam, IntRange};
@@ -38,9 +39,12 @@ const TEXT_WEIGHT: f32 = 700.0;
 const METER_LIVE_MS: u64 = 250;
 
 /// The pointer travel that carries a dial from one end of its range to the
-/// other, in logical pixels; Shift stretches it for fine moves.
-const DIAL_TRAVEL: f32 = 220.0;
-const DIAL_TRAVEL_FINE: f32 = 880.0;
+/// other, in logical pixels; Shift stretches it for fine moves. The family's
+/// numbers rather than this window's: a drag should feel the same in any of
+/// these plugins whatever it is dragging, and this file had drifted to 220 and
+/// 880 by nothing more deliberate than my hand on the slider while tuning it.
+const DIAL_TRAVEL: f32 = knob::TRAVEL;
+const DIAL_TRAVEL_FINE: f32 = knob::TRAVEL_FINE;
 
 /// The three groups across the window. The controls name the group they belong
 /// to (`Control::group`), so this list is only the captions — a control cannot
@@ -56,18 +60,11 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color {
     }
 }
 
+/// The window's ground — the one colour in this file `knob` does not hand out,
+/// because the family paints its backgrounds its own way. `rgb` stays for this
+/// and for the cog's resting tint, a hand-mixed third of the way from MUTED to
+/// TEXT that no name in the palette covers.
 const BG: Color = rgb(32, 28, 44);
-/// The face of every bar and button.
-const PANEL: Color = rgb(65, 57, 82);
-/// The bore of a bar, a shade under its face so the fill has something to sit
-/// in.
-const BORE: Color = rgb(46, 40, 60);
-/// The house green: where a control actually sits.
-const GREEN: Color = rgb(103, 237, 175);
-/// The house amber: a grabbed control, a hovered thing, the active mode.
-const AMBER: Color = rgb(250, 190, 115);
-const TEXT: Color = rgb(235, 230, 241);
-const MUTED: Color = rgb(150, 142, 166);
 
 /// The continuous controls. Each names itself, the parameter it owns and its
 /// place in the layout, and nothing else about a dial lives here — value, range
