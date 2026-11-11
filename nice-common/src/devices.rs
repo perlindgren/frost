@@ -810,6 +810,16 @@ impl Snapshot {
 
     /// Resolve real device defaults and validate a complete duplex session.
     /// Resolve every stream field before handing it to the application audio owner.
+    ///
+    /// A question this snapshot cannot answer is not a prohibition. An ASIO
+    /// driver answers nothing while this process is streaming from it (see the
+    /// `AsioStreamGuard` rule above), and nothing at all when another process
+    /// owns it; a settings page and an audio owner ask the same questions from
+    /// different states, and the page may hold the answers while the owner does
+    /// not. What the owner cannot check, the device checks when the stream is
+    /// built — `audio_io::open` answers with `Input channel is outside the
+    /// device layout` and `Output route is outside the device layout` — so an
+    /// unknown here steps aside and a KNOWN answer still objects.
     pub fn resolve_settings<P: crate::Preferences>(
         &self,
         settings: &crate::settings::Settings<P>,
@@ -856,12 +866,20 @@ impl Snapshot {
         let channel = resolved
             .input_channel
             .or(self.default_input_channel)
-            .filter(|&ch| ch > 0 && self.input_channels.is_some_and(|count| ch <= count))
+            // A driver that reports no width is not a driver with no inputs:
+            // the count is unknown, and only a count that is KNOWN to be
+            // smaller than the pick can object to it.
+            .filter(|&ch| ch > 0 && self.input_channels.is_none_or(|count| ch <= count))
             .ok_or("Select an input channel")?;
         let output_route = resolved
             .output_channels
             .or(self.default_output_channels)
-            .filter(|route| self.output_channel_options.contains(route))
+            // Same rule for the route: an empty list is no answer, so the route
+            // a device did not describe is left for the device to refuse.
+            .filter(|route| {
+                self.output_channel_options.is_empty()
+                    || self.output_channel_options.contains(route)
+            })
             .ok_or("Select an output channel configuration")?;
         if cfg!(target_os = "linux")
             && backend == "jack"
@@ -918,21 +936,28 @@ impl Snapshot {
                 format.supports(rate, buffer)
             }
         };
-        let _layout = [2, 1]
-            .into_iter()
-            .position(|channels| {
+        // A device that listed no formats listed nothing, which is not a device
+        // that can do none of them; see the rule on this function. Only a list
+        // this device actually wrote can contradict the request.
+        if !self.input_formats.is_empty()
+            && ![2, 1].into_iter().any(|channels| {
                 channel <= channels
                     && self.input_formats.iter().any(|format| {
                         format.channels == channels && supports(format, rate, input_buffer)
                     })
             })
-            .ok_or(
-                "The input channel, rate and buffer size are not a supported stream configuration",
-            )?;
-        if !self.output_formats.iter().any(|format| {
-            format.channels >= output_route.required_channels()
-                && supports(format, output_rate, output_buffer)
-        }) {
+        {
+            return Err(
+                "The input channel, rate and buffer size are not a supported stream configuration"
+                    .into(),
+            );
+        }
+        if !self.output_formats.is_empty()
+            && !self.output_formats.iter().any(|format| {
+                format.channels >= output_route.required_channels()
+                    && supports(format, output_rate, output_buffer)
+            })
+        {
             return Err(
                 "The output device does not support these channels, sample rate and buffer size"
                     .into(),
@@ -1582,6 +1607,80 @@ mod tests {
         assert_eq!(
             buffer_options(&[config(64, 64), config(256, 256)]),
             vec![64, 256]
+        );
+    }
+
+    /// The panel that prompted this: ASIO, Komplete Audio ASIO Driver, channel
+    /// 1, output 1–2, 64 frames at 48000, refused on APPLY with `Select an
+    /// input channel` although the settings page had just resolved exactly that.
+    /// The page asks in a child process and gets answers; the audio owner asks
+    /// in the streaming process and gets silence, and silence is not an answer
+    /// that can blame the user's own selection.
+    #[test]
+    fn a_snapshot_that_answered_nothing_accepts_the_configuration_it_was_given() {
+        let driver = "Komplete Audio ASIO Driver";
+        let silent = Snapshot {
+            inputs: vec![driver.into()],
+            outputs: vec![driver.into()],
+            ..Default::default()
+        };
+        let settings = crate::settings::Settings::<crate::settings::NoPreferences> {
+            backend: Some("asio".into()),
+            input_device: Some(driver.into()),
+            output_device: Some(driver.into()),
+            input_channel: Some(1),
+            output_channels: Some(crate::settings::OutputChannels::Stereo([1, 2])),
+            sample_rate: Some(48000.0),
+            output_sample_rate: Some(48000.0),
+            period_size: Some(64),
+            output_period_size: Some(64),
+            ..Default::default()
+        };
+        let resolved = silent.resolve_settings(&settings).unwrap();
+        assert_eq!(resolved.input_channel, Some(1));
+        assert_eq!(resolved.period_size, Some(64));
+        // A hole in the configuration is a hole whether or not the device
+        // answered: nothing here is invented from silence.
+        let mut unfinished = settings.clone();
+        unfinished.input_channel = None;
+        assert_eq!(
+            silent.resolve_settings(&unfinished).unwrap_err(),
+            "Select an input channel"
+        );
+        unfinished.input_channel = Some(1);
+        unfinished.output_channels = None;
+        assert_eq!(
+            silent.resolve_settings(&unfinished).unwrap_err(),
+            "Select an output channel configuration"
+        );
+        // And a driver that DID answer still overrules a pick it cannot make.
+        let two_inputs = Snapshot {
+            input_channels: Some(2),
+            input_formats: vec![StreamFormat {
+                channels: 2,
+                min_rate: 48000,
+                max_rate: 48000,
+                buffer_range: Some((8, 1024)),
+            }],
+            output_channel_options: output_routes(2, None),
+            ..silent.clone()
+        };
+        assert!(two_inputs.resolve_settings(&settings).is_ok());
+        let wide = crate::settings::Settings::<crate::settings::NoPreferences> {
+            input_channel: Some(5),
+            ..settings.clone()
+        };
+        assert_eq!(
+            two_inputs.resolve_settings(&wide).unwrap_err(),
+            "Select an input channel"
+        );
+        let unknown_route = crate::settings::Settings::<crate::settings::NoPreferences> {
+            output_channels: Some(crate::settings::OutputChannels::Stereo([7, 8])),
+            ..settings
+        };
+        assert_eq!(
+            two_inputs.resolve_settings(&unknown_route).unwrap_err(),
+            "Select an output channel configuration"
         );
     }
 }
