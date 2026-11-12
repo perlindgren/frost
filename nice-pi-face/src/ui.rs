@@ -1,14 +1,15 @@
 //! The Pi-Fase editor view.
 //!
-//! **This is the scaffold's face, not the Bi-Phase's.** It gives every control
-//! a place on screen and a readout, so the plugin, its parameters, the host's
-//! automation and the standalone settings page can all be exercised while the
-//! DSP is still a pass-through. What the machine actually looked like — two
-//! lanes, lamps, the sweep between them — is the GUI phase's job, and the
-//! conventions it will use are already the ones in force here: absolute
-//! coordinates scaled by a `fit` factor, hit tests run against the same frame's
-//! geometry the drawing used, and a value read from the same place the control
-//! is written, so the two cannot disagree.
+//! **This is the family's face, not the Bi-Phase's.** It gives every control a
+//! place on screen and a readout, so the plugin, its parameters, the host's
+//! automation and the standalone settings page can all be exercised. The filter it
+//! drives is the real one — two lanes, twelve sections, two generators — and what
+//! this layout cannot yet show is the sweep itself. The GUI phase in `TODO.md` owns
+//! the lamps, the two lanes, and the moving element that reads
+//! `PiFace::sweep_position`; the conventions it will use are already the ones in
+//! force here: absolute coordinates scaled by a `fit` factor, hit tests run against
+//! the same frame's geometry the drawing used, and a value read from the same place
+//! the control is written, so the two cannot disagree.
 //!
 //! frost's window space has its origin at the window's centre and the y axis
 //! pointing up, so hit tests compare against `Context::mouse_position` in the
@@ -1034,17 +1035,6 @@ impl Process for PiFaceUi {
                 1.0,
             );
         }
-
-        // What this build actually is. Not a caption to sell the plugin: a
-        // pass-through that looks like a phaser would be worse than no plugin.
-        self.text(
-            ctx,
-            0.0,
-            -h / 2.0 + 28.0 * fit,
-            "NO DSP YET — AUDIO PASSES THROUGH".into(),
-            12.0 * fit,
-            MUTED,
-        );
 
         // The app's one line of news, and its drops counter: the two things a
         // host would otherwise be the player's only channel for.
