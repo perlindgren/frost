@@ -253,6 +253,10 @@ pub struct Runtime {
     healthy_since: Instant,
     retries: u8,
     retry: Option<Instant>,
+    /// Where a refused opening is going back to, kept because the first
+    /// retreat may itself fail before it was ever applied, and the retries that
+    /// follow it then have no other state to aim at.
+    retreat: Option<(Settings, Vec<Card>)>,
     pub closing: bool,
     diagnostic: Option<String>,
     halted: bool,
@@ -286,6 +290,7 @@ impl Runtime {
             healthy_since: Instant::now(),
             retries: 0,
             retry: None,
+            retreat: None,
             closing: false,
             diagnostic: None,
             halted: false,
@@ -391,6 +396,7 @@ impl Runtime {
             if self.action.is_none() && !self.closing && !self.halted {
                 self.recover(
                     native_error.unwrap_or_else(|| "Plugin requested an audio restart".into()),
+                    None,
                 );
             }
         }
@@ -417,7 +423,10 @@ impl Runtime {
             if self.closing {
                 self.message = text;
             } else {
-                self.recover(text);
+                self.recover(
+                    text,
+                    Some((&opening.action.settings, &opening.action.cards)),
+                );
             }
         }
         if self.closing {
@@ -463,7 +472,7 @@ impl Runtime {
                 && self.action.is_none()
                 && self.opening.is_none()
             {
-                self.recover(error);
+                self.recover(error, None);
             }
             if self.healthy_since.elapsed() > Duration::from_secs(10)
                 && self.last_audio.elapsed() < Duration::from_secs(1)
@@ -476,9 +485,13 @@ impl Runtime {
             && !self.busy()
         {
             self.retry = None;
+            let (settings, cards) = self
+                .retreat
+                .clone()
+                .unwrap_or_else(|| (self.applied.clone(), self.cards.clone()));
             self.begin(Action {
-                settings: self.applied.clone(),
-                cards: self.cards.clone(),
+                settings,
+                cards,
                 reply: None,
                 rollback: true,
             });
@@ -617,6 +630,7 @@ impl Runtime {
                 Ok(()) => {
                     self.applied = opening.action.settings;
                     self.cards = opening.action.cards;
+                    self.retreat = None;
                     self.states
                         .retain(|id, _| self.cards.iter().any(|card| card.id == *id));
                     self.message = if self.io.is_some() {
@@ -639,16 +653,13 @@ impl Runtime {
                     if let Some(reply) = opening.action.reply {
                         let _ = reply.send(Err(error));
                     }
-                    if !opening.action.rollback {
-                        self.begin(Action {
-                            settings: self.applied.clone(),
-                            cards: self.cards.clone(),
-                            reply: None,
-                            rollback: true,
-                        });
-                    } else if self.retries < 3 {
-                        self.retries += 1;
-                        self.retry = Some(Instant::now() + Duration::from_secs(1));
+                    if opening.action.rollback {
+                        if self.retries < 3 {
+                            self.retries += 1;
+                            self.retry = Some(Instant::now() + Duration::from_secs(1));
+                        }
+                    } else {
+                        self.retreat_to(&opening.action.settings, &opening.action.cards);
                     }
                 }
             }
@@ -710,7 +721,36 @@ impl Runtime {
         }
         self.last_save = Instant::now();
     }
-    fn recover(&mut self, error: String) {
+    /// Ask for the state a refused opening goes back out of. Once something has
+    /// been applied there is a state worth going back to, and that is what gets
+    /// asked for. Before anything has been applied there is nothing to go back
+    /// to but the empty rack [`Runtime::new`] started from — and the rack writes
+    /// what it holds into its settings file, so going back to that writes out an
+    /// empty rack and a saved chain is gone over a driver that would not open.
+    /// So until something has been applied, the chain of the action that failed
+    /// is kept and only its devices are dropped: the window keeps what it was
+    /// given, and the message says what was refused.
+    fn retreat_to(&mut self, asked: &Settings, cards: &[Card]) {
+        let (settings, cards) = if self.session.is_some() {
+            (self.applied.clone(), self.cards.clone())
+        } else {
+            (
+                Settings {
+                    backend: None,
+                    ..asked.clone()
+                },
+                cards.to_vec(),
+            )
+        };
+        self.retreat = Some((settings.clone(), cards.clone()));
+        self.begin(Action {
+            settings,
+            cards,
+            reply: None,
+            rollback: true,
+        });
+    }
+    fn recover(&mut self, error: String, asked: Option<(&Settings, &[Card])>) {
         self.message = error.clone();
         self.diagnostic = Some(error);
         if self.retries >= 3 {
@@ -718,12 +758,21 @@ impl Runtime {
             return;
         }
         self.retries += 1;
-        self.begin(Action {
-            settings: self.applied.clone(),
-            cards: self.cards.clone(),
-            reply: None,
-            rollback: true,
-        });
+        match asked {
+            Some((settings, cards)) => self.retreat_to(settings, cards),
+            None => {
+                let (settings, cards) = self
+                    .retreat
+                    .clone()
+                    .unwrap_or_else(|| (self.applied.clone(), self.cards.clone()));
+                self.begin(Action {
+                    settings,
+                    cards,
+                    reply: None,
+                    rollback: true,
+                });
+            }
+        }
     }
     fn close_audio_only(&mut self) {
         self.halted = true;
@@ -1198,6 +1247,84 @@ mod tests {
             println!("  + linger of {linger} ms over");
         }
     }
+    /// The rack writes what it holds into its settings file, so a chain that is
+    /// still standing in the rack is what gets written out. A retreat that
+    /// aimed at the state `Runtime::new` started from held nothing, and the
+    /// save two seconds later wrote an empty rack over a saved one: a chain the
+    /// user never removed went with a driver that had simply refused to open.
+    /// This is the case a rack meets on a machine where another program holds
+    /// the interface — this machine's ASIO driver belongs to REAPER while it
+    /// runs — and it is the reason the rack came back empty after a launch that
+    /// had said nothing but an error about devices. The chain the refused
+    /// opening came with is what the rack keeps, on the devices it can name:
+    /// none.
+    #[test]
+    #[ignore = "requires NICE_RACK_TEST_CLAP pointing to a freshly built repository CLAP export"]
+    #[allow(unsafe_code)]
+    fn a_refused_opening_keeps_the_chain_it_was_started_with() {
+        let path = PathBuf::from(
+            std::env::var_os("NICE_RACK_TEST_CLAP").expect("Set NICE_RACK_TEST_CLAP"),
+        );
+        // SAFETY: explicit test opt-in to this repository's own plugin export.
+        let entry = unsafe { nice_clap_host::Entry::load(&path).unwrap() };
+        let class = entry
+            .descriptors()
+            .unwrap()
+            .first()
+            .expect("the test export contains at least one plugin")
+            .id
+            .clone();
+        let card = Card::new(
+            NodeId(1),
+            path.clone(),
+            entry,
+            class.clone(),
+            "Test plugin".into(),
+        )
+        .unwrap();
+
+        // A backend no host answers: the opening refuses on every machine, in
+        // the same way a driver that is busy refuses, and no device of this one
+        // is touched on the way.
+        let mut settings = rack_settings();
+        settings.backend = Some("no-such-backend".into());
+        settings.input_device = None;
+        settings.output_device = None;
+
+        let file = frost::scratch::claim("rack-refused-opening").join("nice-rack-settings.ron");
+        let _ = std::fs::remove_file(&file);
+
+        // How a rack starts: the settings file, then the chain restored into the
+        // action that was built from them.
+        let mut runtime = Runtime::new(settings);
+        runtime.restore(vec![card], BTreeMap::new());
+        runtime.persistence_path = Some(file.clone());
+        settle(&mut runtime);
+        mark("the opening refused", &runtime);
+        assert!(!runtime.audio_running());
+        assert_eq!(runtime.cards.len(), 1, "{}", runtime.message);
+
+        runtime.last_save = Instant::now() - Duration::from_secs(3);
+        runtime.tick();
+        let (saved, warning) = Settings::load_from(&file);
+        assert_eq!(warning, None);
+        assert_eq!(
+            saved.preferences.plugins.len(),
+            1,
+            "the refused opening wrote an empty rack over the saved chain: {}",
+            runtime.message
+        );
+        assert_eq!(saved.preferences.plugins[0].class, class);
+        assert!(!runtime.busy());
+
+        runtime.close();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !runtime.stopped() {
+            runtime.tick();
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
     /// The control for the case above: the same two plugins, the same devices,
     /// the same rebuilds, with both libraries opened before the devices are
     /// asked for, so no code is loaded while a driver is streaming. If this
@@ -1327,7 +1454,7 @@ mod tests {
         let mut runtime = Runtime::new(Settings::default());
         runtime.action = None;
         runtime.retries = 3;
-        runtime.recover("Device sample rate changed".into());
+        runtime.recover("Device sample rate changed".into(), None);
         assert!(runtime.action.is_none());
         assert!(runtime.retry.is_none());
         assert_eq!(runtime.message, "Device sample rate changed");
