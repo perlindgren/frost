@@ -12,14 +12,16 @@
 //! Windows build; `nice-wah` copied the line along with the file's shape, and
 //! this file came from the wah. Nothing here earns an exclusion — the counter is
 //! a plain `#[global_allocator]` over `System` with no platform code in it, and
-//! the pass-through measures zero allocations on MSVC like anywhere else. The
-//! line cost more than a wrong cast did: it made a file the Linux gate lints
-//! read as empty on the machine doing the work. If the real filter ever earns an
-//! exclusion, it should arrive as a failing test with a reason, not as this line.
+//! the filter measures zero allocations on MSVC like anywhere else. The line cost
+//! more than a wrong cast did: it made a file the Linux gate lints read as empty
+//! on the machine doing the work. If a future DSP earns an exclusion, it should
+//! arrive as a failing test with a reason, not as this line.
 //!
-//! It is worth running now, before there is a filter: the pass-through is the
-//! floor, and the day the real one lands this file is the thing that says what
-//! it cost.
+//! This is what the filter cost the allocator: nothing. Twelve all-pass sections,
+//! two generators, the lamp's lag, the headroom and the switch matrix run a block
+//! between them without asking for a byte, and they keep doing it while every
+//! control moves — which is the moment a hidden allocation would surface, because
+//! automation does not arrive on a schedule the audio thread can plan for.
 // This binary sees only the slice of the filter it measures; the rest of
 // `impl PiFace` — the rate retune, the editor's readouts — has no caller here.
 #[allow(dead_code)]

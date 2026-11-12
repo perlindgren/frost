@@ -8,13 +8,24 @@ and the Phasor B Input switch, whose three positions *are* the machine's three
 basic modes of operation. The name is the user's spelling, *Pi-Fase*, chosen to
 clear any trademark; the thing it models is the machine documented below.
 
-**Current state: the chassis, not the sound.** The workspace member, the
-manifest and features, the parameter set, the CLAP and VST3 exports, the frost
-editor and the standalone host are all in place and compile; `dsp.rs` passes
-audio through and says so on screen. No filter, lamp or oscillator exists yet, so
-nothing in this crate should be quoted as a measurement of anything. The
-repository rule is *measure, never speculate*, and a pass-through at least claims
-nothing.
+**Current state: the sound is in; the face is not.** `dsp.rs` runs the whole
+signal path — two free-running generators, six lamp-swept all-pass sections a
+lane, the lamp's lag on the control signal, the feedback loop, the three
+routings — with a unit test for each claim it makes and an allocation witness
+over all three modes. What those claims are is written beside every number in
+that file, and they divide the way the documents do: the section count, the
+parts, the rate range, the input impedance and the three modes are quoted from
+the manual and the drawings or derived from their arithmetic, while the top of
+the sweep, the filament's time constant and the headroom knee are named
+assumptions. `TODO.md` keeps the list of what a scope across a real lane would
+settle, and until then those three are the crate's honest debts. The repository
+rule is *measure, never speculate*, which is why the division is in the open
+rather than smoothed over: a number with a source and a number without one sound
+the same in a comment nobody wrote.
+
+What is left is the editor. It has every control on the panel and works, but it
+has no sweep to show — no moving element for where the lamps are — and that is
+the GUI phase in `TODO.md`, not a DSP problem.
 
 Like its siblings, plugin and application are one codebase: the same
 `Plugin::process` and the same editor run in both. Only the answer to "who owns
@@ -40,10 +51,16 @@ checking against the image before a release depends on it.
 * **The variable element is a lamp, not a JFET.** The sweep reaches the lamps
   through a voltage-to-current converter (Q1/Q2, C1852, R98 220K, CR16/CR17
   1N4148, PM3/PM4). Filament temperature lags the drive current; that lag is what
-  makes the sweep smooth and is a large part of the pedal's compression. The
-  model will represent it as a first-order lag on the *control* signal, with its
-  corner well below the LFO's top rate, and will name it as the approximation it
-  is rather than tune it until it sounds right.
+  makes the sweep smooth and is a large part of the pedal's compression. The model
+  represents it as a first-order lag on the *control* signal, one per phasor — a
+  4 ms time constant, whose 40 Hz corner sits **above** the documented 18 Hz top
+  rate on purpose. An earlier note in this file asked for a corner below the top
+  rate; that would have strangled the third of the dial the manual calls the
+  loudest. At 18 Hz the sweep still arrives, 9% down, and a square wave's step
+  takes twelve milliseconds to land, which is the manual's "jumps the phasing from
+  one extreme of the sweep to the other" rather than a discontinuity in a
+  coefficient. The number is a guess in milliseconds and says so where it is
+  defined; it is not tuned until it sounds right.
 * **Two sweep generators, one per lane.** Lane A from 21A/21B (C33 .47,
   R70/R71/R72 shape network); lane B from 2HA/2HB (C34 .47, R90/R91/R94). S5/S6
   are SWEEP, S7 is SWEEP SYNC NORM/REV, S3/S4 are SHAPE, and S2 selects RATE
@@ -161,7 +178,13 @@ three basic modes of operation are the three positions of one rotary switch:
 * **`In A`** — the one input at Input A is applied to each phasor, "as if you were
   using a Y-cord": the manual's normal setting for **stereo** effects, and the one
   its stereo figure draws (with Sync on Rev, both Depths at 10 and both Feedbacks
-  at "8 or so").
+  at "8 or so"). A machine with one jack never had to say what its "single input"
+  is when the plugin is handed two channels; this one sums them, so both lanes hear
+  the same source and the stereo comes from where the manual put it — two phasors
+  drifting against each other. The dual-mono reading, one lane per side, already
+  exists and already has a name on the panel: `In B`. What summing costs is what a
+  Y-cord costs: two sides that are exact negatives cancel here as they do in the
+  cable, and a source whose life is in its sides wants `In B`.
 * **`Out A`** — phasor A's output feeds phasor B, in series: "a 12-stage phase
   shifter", which independently confirms the six stages per lane the schematic
   shows. "The normal setting for using the Bi-Phase with one instrument and one
@@ -169,8 +192,9 @@ three basic modes of operation are the three positions of one rotary switch:
 * **`In B`** — phasor B takes its own jack: a second instrument, or a stereo one,
   run through two phasors that need nothing from each other.
 
-The three wiring figures in the manual are these three positions, and each of
-them is a test the filter will eventually have to pass. What the earlier scaffold
+The three wiring figures in the manual are these three positions, and each of them
+is a test the filter runs: which lane a signal reached, which tap it comes back on,
+and what `Out A` does to a peak that only phasor A has. What the earlier scaffold
 called "Model I" is simply this machine, and `dsp::Routing` is a reading of
 `b_input`, not a parameter of its own — which is also why the parameter count went
 from fifteen to fourteen: a Mode control that duplicates a switch that already
@@ -231,15 +255,41 @@ cargo test -p nice-pi-face
 cargo test -p nice-pi-face --features standalone
 ```
 
-What is testable before there is a filter is the interface: that the host sees
-exactly the fourteen parameters promised, that every switch offers exactly the
-positions its labels claim, that the factory state is a configuration the manual
-actually describes, that a saved move seeds the audio thread and a control
-never moved keeps the plugin's own default, that the settings file round-trips,
-that the pump moves frames through a real plugin instance without adding or
-losing anything, and that a block and an automation move cost the allocator
-nothing (`tests/no_alloc.rs`, which links without nice-plug for that reason).
+The interface is what the scaffold could promise before there was a filter, and it
+still does: that the host sees exactly the fourteen parameters promised, that every
+switch offers exactly the positions its labels claim, that the factory state is a
+configuration the manual actually describes, that a saved move seeds the audio thread
+and a control never moved keeps the plugin's own default, that the settings file
+round-trips, that the pump moves frames through a real plugin instance without adding
+or losing anything, and that a block and an automation move cost the allocator nothing
+(`tests/no_alloc.rs`, which links without nice-plug for that reason).
 
-None of that is a test of a phaser. The acoustics arrive with the DSP, and they
-will be asked with rulers — a Goertzel bin, in nice-wah's manner — rather than
-tuned by ear and then described.
+The filter is asked with rulers rather than tuned by ear and then described — a
+Goertzel bin, in nice-wah's manner — against arithmetic the model has no standing to
+dispute:
+
+* a lane with its feedback down is unity magnitude at every frequency, which is what
+  the specification's "insertion loss under 1 dB" means for a chain of all-passes;
+* where a lane's loop peaks and dips: `tan 30°` and `tan 60°` for the peaks,
+  `tan 15°`, `tan 45°` and `tan 75°` for the dips, each times the warped corner,
+  answering `1/(1−f)` and `1/(1+f)` — six sections put those ratios there whatever the
+  corner happens to be;
+* the coefficient stays strictly inside the unit circle at every rate and every
+  position, which is the stability argument for twelve sections in series as much as
+  for one;
+* depth is how far the sweep travels and zero leaves the lane sitting at the bottom of
+  the band; NORM walks both lanes together and REV mirrors them, which is the manual's
+  reason for mentioning Sync at all ("there is no double-depth phasing");
+* a held pedal is a static filter and a moving one sweeps; Rate Control on Pedal spans
+  the documented .1–18 Hz and rests at the "very low rate" the manual describes; a
+  square sweep holds one extreme and jumps to the other;
+* two generators on different rates meet and part, and on one rate they agree — the
+  drift the manual calls two-speed phasing;
+* every routing, shape, sync, rate source and pedal position, at the top of controls
+  that reach their top, stays finite, and nothing any of them reaches leaves full
+  scale.
+
+What none of that tests is the three named assumptions — a 4 kHz top of the sweep, a
+4 ms filament, a knee at half scale. No test can check an assumption against a
+document that does not state it; those three are `TODO.md`'s, and they are what an
+afternoon with a scope and a PH3A lamp would retire.

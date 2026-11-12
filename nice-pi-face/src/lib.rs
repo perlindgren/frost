@@ -4,9 +4,11 @@
 //! `dsp`'s module documentation records what that means and what it does not.
 //!
 //! This file is the interface to the host: the parameters a host can automate,
-//! a shared view of the metering for the editor, and the two plugin-API
-//! identities. The signal path is in [`dsp`], and until it lands, the plugin
-//! passes audio through — the chassis is real, the filter is not.
+//! a shared view of the metering for the editor, the two plugin-API identities,
+//! and the block loop that hands samples to [`dsp`]. The filter snapshots these
+//! controls once a block and runs every sample in between against that snapshot,
+//! so what a host can say and what the lamps are doing never meet in the middle
+//! of a block.
 //!
 //! The control set is the original's, taken from its owner's manual: two sweep
 //! generators (Rate, Shape, and on generator 1 the Man/Ped rate source), and
@@ -213,11 +215,17 @@ const A_SWEEPS: [&str; 2] = ["Gen 1", "Pedal"];
 const SYNC: [&str; 2] = ["Norm", "Rev"];
 const B_SWEEPS: [&str; 3] = ["Gen 1", "Gen 2", "Pedal"];
 /// The Phasor B Input switch, printed in this order round the panel's rotary:
-/// `IN A`, `OUT A`, `IN B`. These three positions *are* the machine's three
-/// basic modes of operation — the manual says the switch "effectively selects
-/// one of the three basic modes of operation" — so no separate mode parameter
-/// exists to disagree with them.
-const B_INPUTS: [&str; 3] = ["In A", "Out A", "In B"];
+/// `IN A`, `OUT A`, `IN B`. The words are the filter's own [`dsp::Routing`], so the
+/// labels a host shows and the routing the DSP runs on are one list and cannot
+/// drift apart. These three positions *are* the machine's three basic modes of
+/// operation — the manual says the switch "effectively selects one of the three
+/// basic modes of operation" — so no separate mode parameter exists to disagree
+/// with them.
+const B_INPUTS: [&str; 3] = [
+    dsp::Routing::InA.label(),
+    dsp::Routing::OutA.label(),
+    dsp::Routing::InB.label(),
+];
 
 /// The parameters, each exactly as the host sees it. Floats for the continuous
 /// controls, stepped integers for what the original builds as switches.

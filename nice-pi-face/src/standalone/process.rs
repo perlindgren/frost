@@ -171,12 +171,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn activation_and_one_pump_move_audio_straight_through_the_plugin() {
+    fn activation_and_one_pump_move_audio_through_the_filter() {
         // The standalone's whole promise in one test: the same plugin the CLAP
         // entry point builds runs on this transport, frames in one ring and out
-        // the other, meters published, nothing allocated. Until the filter
-        // exists the frames come out as they went in, which is also worth a
-        // test: it says the plumbing adds and loses nothing.
+        // the other, meters published, nothing allocated. The frames come back
+        // filtered rather than as they went in — the filter is `dsp.rs`'s subject
+        // and its closed forms are argued there — so what the plumbing is held to
+        // here is its own share: the count, and audio arriving at the far end.
         let plugin = Arc::new(Mutex::new(PiFacePlugin::default()));
         {
             let mut instance = plugin.lock().unwrap();
@@ -189,9 +190,13 @@ mod tests {
             input,
             output: playback,
         };
+        // The same ramp on both channels. In the machine's single-input modes the
+        // two jacks are summed, so an anti-phase pair would cancel to silence
+        // before it reached a phasor — `dsp.rs` tests that as a routing behaviour,
+        // and here it would only hide the audio this test is looking for.
         for index in 0..4 {
             capture
-                .push([0.25 * index as f32, -0.25 * index as f32])
+                .push([0.25 * index as f32, 0.25 * index as f32])
                 .unwrap();
         }
         let mut buffer = plugin_buffer::PlanarBuffer::<{ 2 * BLOCK }>::new(2, BLOCK);
@@ -201,11 +206,17 @@ mod tests {
             4
         );
         assert_eq!(drain.slots(), 4);
-        for index in 0..4 {
-            let frame = drain.pop().unwrap();
-            assert!(frame.0[0].is_finite() && frame.0[1].is_finite());
-            assert_eq!(frame.0, [0.25 * index as f32, -0.25 * index as f32]);
+        let mut loudest = 0.0f32;
+        while let Ok(frame) = drain.pop() {
+            for sample in frame.0 {
+                assert!(sample.is_finite(), "the filter handed back {sample}");
+                loudest = loudest.max(sample.abs());
+            }
         }
+        // A ramp up to three quarters of full scale, and the phasors' insertion
+        // loss is under 1 dB, so anything this quiet means the trip through the
+        // two rings lost the signal rather than coloured it.
+        assert!(loudest > 0.1, "the standalone muted the audio: {loudest}");
         assert_eq!(
             shared.buffer_frames.load(Ordering::Relaxed),
             4,
