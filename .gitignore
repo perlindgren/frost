@@ -76,6 +76,8 @@ nice-phase-settings.ron
 nice-phase-settings.ron.*
 nice-pi-face-settings.ron
 nice-pi-face-settings.ron.*
+nice-echo-settings.ron
+nice-echo-settings.ron.*
 
 # Rack-local audio device configuration.
 nice-rack-settings.ron
