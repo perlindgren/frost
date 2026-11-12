@@ -42,10 +42,13 @@
 //!   deliberately modest, because the free-running loop (“cuts down on…
 //!   playback speed irregularities”) earns a steadier transport than a
 //!   capstan-pulled one.
-//! * **A-6** — the spring is a low-pass, then three first-order all-pass
-//!   sections with low-passes between them and a tail low-pass, fed from
-//!   the dry input in parallel with the tape path. The all-pass maths is
-//!   the family's own, from nice-phase.
+//! * **A-6** — the spring is an input low-pass, a short pre-delay (the lag
+//!   every spring reverb is known for), four parallel damped combs of
+//!   unequal length — each low-passing its own feedback, so the ring dims
+//!   treble-first — summed into a tail low-pass, fed from the dry input in
+//!   parallel with the tape path. The damped comb is the standard block;
+//!   every figure in it is this model's. (This replaces an all-pass homage
+//!   whose maths came from nice-phase; TODO.md carries that history.)
 //! * **A-7** — the echo/normal switch reads: NORMAL = dry and echo
 //!   together; ECHO = the dry is gone and what you hear is 100 % echo.
 //! * **A-8** — per-head HF loss: two-pole corners at 9 / 6 / 4 kHz (one
@@ -56,11 +59,24 @@
 //!   gives a hiss figure; the model needs one for a starker reason than
 //!   realism: a noise-free digital loop makes exact silence a fixed point
 //!   — tanh(0) = 0 and every filter passes zero — so the silence a burst
-//!   leaves on the tape re-records itself forever, hole and all.
+//!   leaves on the tape re-records itself forever, hole and all. The noise
+//!   breathes with the wow — hiss on a real machine tracks tape speed —
+//!   by ±40 % across the wow cycle, a figure as much this model's as the
+//!   ±1.5e-4 it modulates.
 //! * **A-10** — Intensity crosses unity loop gain at ≈ 0.74 of its travel;
 //!   [`feedback_gain`] tops out at 1.35. The sources say high levels
 //!   self-oscillate and give no threshold; where the crossover sits is this
 //!   model's choice.
+//! * **A-11** — tape wear: one minutes-long wander modulates the transport
+//!   — wow depth by ±35 %, tap spacing by ±0.3 %, each head's HF-loss
+//!   corner by ±8 %, the three heads placed at different points of the
+//!   cycle. The walk-through's own wear list (worn oxide, stretched loops)
+//!   says loops tire; nobody has measured how far, so the spans are ours.
+//! * **A-12** — the record path loses top end as it is driven: the write
+//!   corner slides from 18 kHz clean to 4 kHz fully driven, following a
+//!   one-pole envelope (≈ 21 ms) of the pre-saturation drive. Driven tape
+//!   losing HF is lore, not a quote; the corners and the time constant are
+//!   this model's.
 //!
 //! A block touches no allocator (see `tests/no_alloc.rs`): the loop and the
 //! tank's memory are allocated at activation and never again.
@@ -101,15 +117,45 @@ const WOW_DEPTH_S: f32 = 0.000_25;
 const FLUTTER_HZ: f32 = 6.1;
 const FLUTTER_DEPTH_S: f32 = 0.000_03;
 
-/// **A-6.** The spring tank: all-pass delays in seconds and low-pass corners
-/// in Hz, interleaved pre → (ap, lp)×3 → tail lp.
-const SPRING_AP_S: [f32; 3] = [0.004_2, 0.006_1, 0.008_9];
-const SPRING_LP_HZ: [f32; 4] = [3_200.0, 2_800.0, 2_200.0, 1_800.0];
-/// The spring's tail low-pass, after the third section.
+/// **A-9.** How much the hiss breathes with the wow: the noise amplitude is
+/// scaled by 1 ± HISS_BREATH across the wow cycle. Hiss tracking speed is
+/// the behaviour; this number is ours, like the amplitude it modulates.
+const HISS_BREATH: f32 = 0.4;
+
+/// **A-11.** Tape wear: one very slow wander — roughly one cycle every
+/// four minutes — that the transport ages with: wow depth, tap spacing and
+/// each head's HF-loss corner all ride it. Nobody has measured a tired
+/// loop; that loops tire is the walk-through's own wear list, the amounts
+/// are ours.
+const WEAR_HZ: f32 = 1.0 / 227.0;
+const WEAR_WOW_DEPTH: f32 = 0.35;
+const WEAR_TAP_SPAN: f32 = 0.003;
+const WEAR_HF_SPAN: f32 = 0.08;
+/// Where each head sits in the wander cycle, radians — spread across it so
+/// the three gaps drift against each other instead of in lockstep.
+const WEAR_PHASE: [f32; 3] = [0.0, 2.1, 4.2];
+
+/// **A-12.** The record pole: driven tape loses top end, so the corner the
+/// write signal passes through slides from 18 kHz (clean) to 4 kHz (fully
+/// driven) as the drive envelope rises. The direction of travel is tape
+/// lore; the corners and the envelope's ≈ 21 ms time constant are ours.
+const RECORD_HF_CLEAN_HZ: f32 = 18_000.0;
+const RECORD_HF_DRIVEN_HZ: f32 = 4_000.0;
+const REC_DRIVE_SLEW: f32 = 0.001;
+
+/// **A-6.** The spring tank: an input low-pass, then the pre-delay, then
+/// four damped combs of unequal length feeding one tail low-pass. Delays in
+/// seconds, the comb loop-gain, and the low-pass corners in Hz. The comb is
+/// the standard block; every number here is ours, stated so it can be
+/// argued with. The pre-delay is the spring's signature — energy arrives
+/// *late* — and the comb dampings are unequal so the ring dims treble-first.
+const SPRING_PRE_S: f32 = 0.003_5;
+const SPRING_PRE_LP_HZ: f32 = 3_200.0;
+const SPRING_COMB_S: [f32; 4] = [0.013_7, 0.018_1, 0.023_9, 0.029_3];
+const SPRING_COMB_G: f32 = 0.84;
+const SPRING_COMB_LP_HZ: [f32; 4] = [3_000.0, 2_400.0, 1_900.0, 1_500.0];
+/// The spring's tail low-pass, after the comb garden.
 const SPRING_TAIL_HZ: f32 = 2_400.0;
-/// The all-pass pole: 0.85 keeps each section ringing for a few cycles of
-/// its own delay, which is what turns a smear into a tail.
-const SPRING_AP_G: f32 = 0.85;
 
 /// How fast the tape speed chases its target, as a per-sample blend: a hand
 /// on the Repeat Rate knob takes about a quarter of a second to arrive, and
@@ -269,61 +315,79 @@ struct Head {
     lp2: f32,
 }
 
-/// One first-order all-pass with an integer delay — the spring's smear,
-/// built from the family's all-pass maths.
+/// One damped comb: a delay line whose output is low-passed and fed back
+/// into its own input. The block is old and standard; the numbers driving
+/// it here are A-6's.
 #[derive(Default)]
-struct Allpass {
-    x: Vec<f32>,
-    y: Vec<f32>,
+struct Comb {
+    buf: Vec<f32>,
     i: usize,
+    lp: f32,
 }
 
-impl Allpass {
+impl Comb {
     fn set_delay(&mut self, samples: usize) {
-        let n = samples.max(1);
-        self.x = vec![0.0; n];
-        self.y = vec![0.0; n];
+        self.buf = vec![0.0; samples.max(1)];
         self.i = 0;
+        self.lp = 0.0;
     }
 
-    fn run(&mut self, x_in: f32, g: f32) -> f32 {
-        let n = self.x.len();
-        let out = -g * x_in + self.x[self.i] + g * self.y[self.i];
-        self.x[self.i] = x_in;
-        self.y[self.i] = out;
-        self.i = (self.i + 1) % n;
+    /// Read what is on the line, damp it into the feedback path, write the
+    /// input plus the damped tail at the cursor. The low-pass inside the
+    /// loop is what makes the ring dim treble-first: each lap loses top
+    /// end before it loses level.
+    fn run(&mut self, x_in: f32, g: f32, a: f32) -> f32 {
+        let out = self.buf[self.i];
+        self.lp += a * (out - self.lp);
+        self.buf[self.i] = x_in + g * self.lp;
+        self.i += 1;
+        if self.i == self.buf.len() {
+            self.i = 0;
+        }
         out
     }
 }
 
-/// The tank: pre low-pass, three all-pass/low-pass pairs, tail low-pass.
-/// **A-6.**
+/// The tank: input low-pass, a short pre-delay — the spring's signature
+/// lag, energy arriving *late* — then four damped combs of unequal length
+/// summed, then the tail low-pass. **A-6.**
 #[derive(Default)]
 struct Spring {
-    ap: [Allpass; 3],
-    lp_state: [f32; 4],
+    pre: Vec<f32>,
+    pre_i: usize,
+    pre_lp: f32,
+    combs: [Comb; 4],
     tail_state: f32,
 }
 
 impl Spring {
     fn set_rate(&mut self, rate: f32) {
-        for (i, s) in SPRING_AP_S.iter().enumerate() {
-            self.ap[i].set_delay((s * rate).round() as usize);
+        self.pre = vec![0.0; (SPRING_PRE_S * rate).round() as usize];
+        self.pre_i = 0;
+        self.pre_lp = 0.0;
+        for (i, s) in SPRING_COMB_S.iter().enumerate() {
+            self.combs[i].set_delay((s * rate).round() as usize);
         }
-        self.lp_state = [0.0; 4];
         self.tail_state = 0.0;
     }
 
-    fn run(&mut self, x_in: f32, coeffs: &[f32; 4], tail_a: f32) -> f32 {
-        let mut y = x_in;
-        for (i, &a) in coeffs.iter().enumerate() {
-            self.lp_state[i] += a * (y - self.lp_state[i]);
-            y = self.lp_state[i];
-            if i < 3 {
-                y = self.ap[i].run(y, SPRING_AP_G);
-            }
+    fn run(&mut self, x_in: f32, coeffs: &[f32; 5], tail_a: f32) -> f32 {
+        self.pre_lp += coeffs[0] * (x_in - self.pre_lp);
+        // Read the pre-delay before writing: what comes out now was
+        // written SPRING_PRE_S seconds ago, so the first samples into a
+        // dead tank come out silent. The lag is the point.
+        let d = self.pre[self.pre_i];
+        self.pre[self.pre_i] = self.pre_lp;
+        self.pre_i += 1;
+        if self.pre_i == self.pre.len() {
+            self.pre_i = 0;
         }
-        self.tail_state += tail_a * (y - self.tail_state);
+        let mut sum = 0.0f32;
+        for (c, comb) in self.combs.iter_mut().enumerate() {
+            sum += comb.run(d, SPRING_COMB_G, coeffs[1 + c]);
+        }
+        let mix = sum * 0.25;
+        self.tail_state += tail_a * (mix - self.tail_state);
         self.tail_state
     }
 }
@@ -337,16 +401,22 @@ struct Tape {
     /// A-9's hiss generator, a plain LCG — identically seeded in both
     /// lanes so the one monophonic tape stays bit-exact across them.
     rng: u32,
+    /// A-12's drive envelope into the record head, and the record pole's
+    /// state. Per-lane, like everything the tape itself touches.
+    drive_env: f32,
+    rec_lp: f32,
 }
 
 impl Tape {
     /// The next hiss sample: high bits of the common 1_664_525 /
-    /// 1_013_904_223 linear congruential step, scaled to ±1.5e-4.
-    /// Deterministic, allocation-free, and — the part the mono-stays-mono
-    /// test leans on — the same sequence in every lane.
-    fn hiss(&mut self) -> f32 {
+    /// 1_013_904_223 linear congruential step, scaled to ±1.5e-4, and
+    /// breathing with the wow — `breath` is the shared −1..=1 wow position
+    /// and A-9's `HISS_BREATH` sets the depth. Deterministic,
+    /// allocation-free, and — the part the mono-stays-mono test leans on —
+    /// the same sequence and the same shared breath in every lane.
+    fn hiss(&mut self, breath: f32) -> f32 {
         self.rng = self.rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        ((self.rng >> 8) as f32 / 8_388_608.0 - 1.0) * 1.5e-4
+        ((self.rng >> 8) as f32 / 8_388_608.0 - 1.0) * 1.5e-4 * (1.0 + HISS_BREATH * breath)
     }
 }
 
@@ -409,11 +479,26 @@ pub struct Echo {
     /// Shared wow/flutter phases, in radians.
     wow_p: f32,
     flutter_p: f32,
-    /// Per-head pole coefficients, and the spring's and tone's, refreshed
-    /// with the sample rate.
+    /// A-11's shared wander: the phase, and sin/cos of the angle, so both
+    /// lanes and every head can read one slow transport truth for two
+    /// multiplies each.
+    wear_p: f32,
+    wear_s: f32,
+    wear_c: f32,
+    /// A-9: the wow LFO's own position (−1..=1), what the hiss breathes on.
+    wow_lfo: f32,
+    /// Per-head cos/sin of the wander's phase offsets, so a head's place
+    /// in the cycle costs no trig.
+    wear_phase_c: [f32; 3],
+    wear_phase_s: [f32; 3],
+    /// Per-head pole coefficients, and the spring's, record's and tone's,
+    /// refreshed with the sample rate.
     head_a: [f32; 3],
-    spring_a: [f32; 4],
+    spring_a: [f32; 5],
     spring_tail_a: f32,
+    /// A-12's record pole at the clean and the driven corner.
+    rec_a_clean: f32,
+    rec_a_driven: f32,
     tone_bass_a: f32,
     tone_treble_a: f32,
 }
@@ -428,9 +513,17 @@ impl Echo {
             speed: tape_speed(controls.repeat_rate),
             wow_p: 0.0,
             flutter_p: 0.0,
+            wear_p: 0.0,
+            wear_s: 0.0,
+            wear_c: 1.0,
+            wow_lfo: 0.0,
+            wear_phase_c: WEAR_PHASE.map(f32::cos),
+            wear_phase_s: WEAR_PHASE.map(f32::sin),
             head_a: [0.0; 3],
-            spring_a: [0.0; 4],
+            spring_a: [0.0; 5],
             spring_tail_a: 0.0,
+            rec_a_clean: 0.0,
+            rec_a_driven: 0.0,
             tone_bass_a: 0.0,
             tone_treble_a: 0.0,
         };
@@ -444,13 +537,18 @@ impl Echo {
         let rate = rate.max(8_000.0);
         self.rate = rate;
         // The longest delay the transport can ask for is the far head at
-        // slowest speed; the loop is that, with room for the modulation.
-        let longest = HEAD_TAP_S[HEAD_TAP_S.len() - 1] + WOW_DEPTH_S + FLUTTER_DEPTH_S;
+        // slowest speed, stretched by A-11's wander and riding the full
+        // wow depth; the loop is that, with room to spare.
+        let longest = HEAD_TAP_S[HEAD_TAP_S.len() - 1] * (1.0 + WEAR_TAP_SPAN)
+            + WOW_DEPTH_S * (1.0 + WEAR_WOW_DEPTH)
+            + FLUTTER_DEPTH_S;
         let len = ((longest * rate).ceil() as usize) + 16;
         for tape in &mut self.tapes {
             tape.line = vec![0.0; len];
             tape.write = 0;
             tape.heads = [Head::default(); 3];
+            tape.drive_env = 0.0;
+            tape.rec_lp = 0.0;
         }
         for spring in &mut self.springs {
             spring.set_rate(rate);
@@ -462,12 +560,15 @@ impl Echo {
             lp_coeff(HEAD_FC_HZ[2], rate),
         ];
         self.spring_a = [
-            lp_coeff(SPRING_LP_HZ[0], rate),
-            lp_coeff(SPRING_LP_HZ[1], rate),
-            lp_coeff(SPRING_LP_HZ[2], rate),
-            lp_coeff(SPRING_LP_HZ[3], rate),
+            lp_coeff(SPRING_PRE_LP_HZ, rate),
+            lp_coeff(SPRING_COMB_LP_HZ[0], rate),
+            lp_coeff(SPRING_COMB_LP_HZ[1], rate),
+            lp_coeff(SPRING_COMB_LP_HZ[2], rate),
+            lp_coeff(SPRING_COMB_LP_HZ[3], rate),
         ];
         self.spring_tail_a = lp_coeff(SPRING_TAIL_HZ, rate);
+        self.rec_a_clean = lp_coeff(RECORD_HF_CLEAN_HZ, rate);
+        self.rec_a_driven = lp_coeff(RECORD_HF_DRIVEN_HZ, rate);
         self.tone_bass_a = lp_coeff(160.0, rate);
         self.tone_treble_a = lp_coeff(4_500.0, rate);
     }
@@ -512,23 +613,42 @@ impl Echo {
 
     /// Advance the shared transport by one sample: the speed slews toward
     /// where the knob points — the smear the Repeat Rate knob is famous for
-    /// is this line doing its work — and the wow/flutter phases turn.
-    /// Returns the shared delay offset, in samples.
+    /// is this line doing its work — and the wow, flutter and wear phases
+    /// turn. Returns the shared delay offset, in samples.
     fn tick(&mut self, r: &Recipe) -> f32 {
         self.speed += (r.speed_target - self.speed) * SPEED_SLEW;
         self.wow_p += std::f32::consts::TAU * WOW_HZ / self.rate;
         self.flutter_p += std::f32::consts::TAU * FLUTTER_HZ / self.rate;
+        // A-11: the minutes-long wander, once per sample. Keeping sin and
+        // cos of the same angle means every head can be placed anywhere in
+        // its cycle for two multiplies.
+        self.wear_p += std::f32::consts::TAU * WEAR_HZ / self.rate;
+        if self.wear_p > std::f32::consts::TAU {
+            self.wear_p -= std::f32::consts::TAU;
+        }
+        self.wear_s = self.wear_p.sin();
+        self.wear_c = self.wear_p.cos();
         if self.wow_p > std::f32::consts::TAU {
             self.wow_p -= std::f32::consts::TAU;
         }
         if self.flutter_p > std::f32::consts::TAU {
             self.flutter_p -= std::f32::consts::TAU;
         }
-        (self.wow_p.sin() * WOW_DEPTH_S + self.flutter_p.sin() * FLUTTER_DEPTH_S) * self.rate
+        let wow = self.wow_p.sin();
+        // A-9: the hiss breathes on the raw wow position.
+        self.wow_lfo = wow;
+        // A-11: and the wow's own depth is deeper or shallower depending
+        // on where the wear has the transport today.
+        (wow * WOW_DEPTH_S * (1.0 + WEAR_WOW_DEPTH * self.wear_s)
+            + self.flutter_p.sin() * FLUTTER_DEPTH_S)
+            * self.rate
     }
 
     /// One sample of one lane, with the transport's shared offset applied.
     fn lane(&mut self, ch: usize, r: &Recipe, x: f32, wow_off: f32) -> f32 {
+        // A-11: where each head sits in the wear wander right now.
+        let (ws, wc) = (self.wear_s, self.wear_c);
+        let breath = self.wow_lfo;
         let tape = &mut self.tapes[ch];
         let len = tape.line.len() as f32;
         let write = tape.write;
@@ -540,20 +660,33 @@ impl Echo {
             // Read the heads before writing: they see the tape as it was
             // before this sample, which keeps every delay at least one
             // sample long.
-            let d = tap * self.rate / self.speed + wow_off;
+            let w = ws * self.wear_phase_c[h] + wc * self.wear_phase_s[h];
+            let d = tap * (1.0 + WEAR_TAP_SPAN * w) * self.rate / self.speed + wow_off;
             let v = read_line(&tape.line, write, d, len);
             let head = &mut tape.heads[h];
-            head.lp1 += self.head_a[h] * (v - head.lp1);
-            head.lp2 += self.head_a[h] * (head.lp1 - head.lp2);
+            // A-11 again: the head's HF-loss corner wanders with the tape,
+            // clamped short of instability the way lp_coeff already is.
+            let a = (self.head_a[h] * (1.0 + WEAR_HF_SPAN * w)).min(1.0);
+            head.lp1 += a * (v - head.lp1);
+            head.lp2 += a * (head.lp1 - head.lp2);
             echo_sum += head.lp2;
         }
 
         // Record: input plus however much echo the Intensity knob sends
-        // back around, plus a thread of hiss (A-9), through the saturation
-        // that bounds it. The feedback is the sum of the selected heads —
-        // the mixer model the mode table describes.
-        let fed = saturate(x + r.feedback * echo_sum + tape.hiss());
-        tape.line[write] = fed;
+        // back around, plus a thread of hiss (A-9) breathing with the wow,
+        // through the saturation that bounds it. The feedback is the sum of
+        // the selected heads — the mixer model the mode table describes.
+        let drive = x + r.feedback * echo_sum;
+        let fed = saturate(drive + tape.hiss(breath));
+        // A-12: pushed tape loses top end. The record pole's coefficient
+        // slides between the clean and the driven corner with a slow
+        // envelope of the pre-saturation drive; interpolating in
+        // coefficient space keeps the slide monotone and costs one fma.
+        let env = tape.drive_env;
+        tape.drive_env += REC_DRIVE_SLEW * (drive.abs() - env);
+        let rec_a = self.rec_a_clean + env.min(1.0) * (self.rec_a_driven - self.rec_a_clean);
+        tape.rec_lp += rec_a * (fed - tape.rec_lp);
+        tape.line[write] = tape.rec_lp;
         tape.write = (write + 1) % tape.line.len();
 
         // The tank always runs its state — a mode switch should not unfreeze
@@ -1043,6 +1176,9 @@ mod tests {
         }
         // Spring up, same mode: the burst comes back smeared, not as a
         // discrete echo, and it rings on past the nearest head's time.
+        // The window starts after the tank's own latency — the 3.5 ms
+        // pre-delay plus the shortest comb is ≈ 17 ms (A-6) — because the
+        // tank genuinely is silent before that now.
         let alive = controls_with(|c| {
             c.mode = 11;
             c.reverb_volume = 0.9;
@@ -1051,9 +1187,9 @@ mod tests {
         });
         let mut e = Echo::new(RATE, &alive);
         let out = burst_response(&mut e, &alive, (0.3 * RATE) as usize);
-        let head = rms_in(&out, 0.002, 0.010);
+        let head = rms_in(&out, 0.022, 0.060);
         let tail = rms_in(&out, 0.060, 0.100);
-        assert!(head > 0.01, "the tank answers at once: {head}");
+        assert!(head > 0.01, "the tank answers after its own lag: {head}");
         assert!(tail > 0.000_1, "and rings on: {tail}");
         // No head-window check here on purpose: the spring tail rings
         // through every head's time, so silence at those windows would be
@@ -1070,14 +1206,18 @@ mod tests {
         let mut e = Echo::new(RATE, &c);
         let out = burst_response(&mut e, &c, (0.5 * RATE) as usize);
         let bound = out.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-        assert!(bound <= 1.2, "all-pass energy stays bounded, saw {bound}");
+        assert!(
+            bound <= 1.2,
+            "damped comb energy stays bounded, saw {bound}"
+        );
         assert!(bound > 0.3, "and the burst is not swallowed, saw {bound}");
     }
 
     #[test]
     fn the_transport_wobbles_a_little_and_no_more() {
-        // A-5 in numbers: the modulation exists, it moves over the wow
-        // cycle, and it never exceeds the stated depths.
+        // A-5 in numbers, widened by the A-11 wear so that the wow can
+        // breathe by its stated ±35 %: the modulation exists, it moves
+        // over the wow cycle, and it never exceeds the stated depths.
         let c = Controls::default();
         let mut e = Echo::new(RATE, &c);
         let r = recipe(&c);
@@ -1087,12 +1227,216 @@ mod tests {
         }
         let mx = seen.iter().fold(-1e9f32, |m, s| m.max(*s));
         let mn = seen.iter().fold(1e9f32, |m, s| m.min(*s));
-        let depth = (WOW_DEPTH_S + FLUTTER_DEPTH_S) * RATE;
+        let depth = (WOW_DEPTH_S * (1.0 + WEAR_WOW_DEPTH) + FLUTTER_DEPTH_S) * RATE;
         assert!(
             mx <= depth + 1e-3 && mn >= -depth - 1e-3,
             "never exceeds the stated depths"
         );
         assert!(mx - mn > 3.0, "it really moves, saw {}", mx - mn);
+    }
+
+    #[test]
+    fn the_transport_wanders_slowly_and_stays_bounded() {
+        // A-11: one minutes-long wander, three heads seeing three phases
+        // of it. The nominal cycle is 227 s; under plain f32 phase
+        // accumulation — the increment is only a few ULPs of the phase —
+        // the effective cycle stretches to about 258 s, and the 280 s
+        // window here covers a full one of those. Every head's share must
+        // sweep nearly the full ±1, yet no single step may jump: the
+        // machine ages, it does not shudder.
+        let c = Controls::default();
+        let mut e = Echo::new(RATE, &c);
+        let r = recipe(&c);
+        let mut w_min = [1e9f32; 3];
+        let mut w_max = [-1e9f32; 3];
+        let mut w_at = [0usize; 3];
+        let mut step = 0.0f32;
+        let mut prev_s = e.wear_s;
+        let pc = WEAR_PHASE.map(f32::cos);
+        let ps = WEAR_PHASE.map(f32::sin);
+        let mut offset = 0.0f32;
+        let ticks = (280.0 * RATE) as usize;
+        for t in 0..ticks {
+            let tick = e.tick(&r);
+            offset = offset.max(tick.abs());
+            let d = (e.wear_s - prev_s).abs();
+            step = step.max(d);
+            prev_s = e.wear_s;
+            for h in 0..3 {
+                let w = e.wear_s * pc[h] + e.wear_c * ps[h];
+                if w > w_max[h] {
+                    w_max[h] = w;
+                    w_at[h] = t;
+                }
+                w_min[h] = w_min[h].min(w);
+            }
+        }
+        // tick() answers in samples, so the seconds of A-5's widened bound
+        // meet the rate before they meet the offset.
+        let bound = (WOW_DEPTH_S * (1.0 + WEAR_WOW_DEPTH) + FLUTTER_DEPTH_S) * RATE;
+        assert!(
+            offset <= bound + 1e-4,
+            "the wander stays inside A-5's widened bound"
+        );
+        assert!(step < 1e-3, "the tape ages, it does not shudder: {step}");
+        for h in 0..3 {
+            assert!(
+                w_max[h] > 0.95 && w_min[h] < -0.95,
+                "head {h} saw the whole cycle"
+            );
+        }
+        for a in 0..3 {
+            for b in a + 1..3 {
+                let gap = w_at[a].abs_diff(w_at[b]) as f32 / RATE;
+                assert!(
+                    gap > 10.0,
+                    "heads peak at different decades, saw {gap} s apart"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_hiss_breathes_with_the_wow() {
+        // A-9 as amended: hiss tracks tape speed, so the noise floor of
+        // the echo swell peaks a quarter into the wow cycle and troughs
+        // three quarters in. Measured at the head's own delay so we hear
+        // the hiss as it was recorded, tap-delayed, nothing else added.
+        let c = controls_with(|_| {});
+        let mut e = Echo::new(RATE, &c);
+        let mut out = Vec::with_capacity((2.0 * RATE) as usize);
+        let buf = [0.0f32; BLOCK];
+        let mut o = [0.0f32; BLOCK];
+        for _ in 0..(2.0 * RATE) as usize / BLOCK {
+            e.process_mono(&c, &buf, &mut o);
+            out.extend_from_slice(&o);
+        }
+        let tap = tap_seconds(0.0, 0);
+        let rms = |t: f32| rms_in(&out, t - 0.08 + tap, t + 0.08 + tap);
+        let peak = rms(0.25 / WOW_HZ);
+        let trough = rms(0.75 / WOW_HZ);
+        assert!(trough > 0.0, "the floor is there at all");
+        // ±40 % breath says 2.33:1; the claim fails well before that.
+        assert!(
+            peak > 1.5 * trough,
+            "the hiss breathes: peak {peak}, trough {trough}"
+        );
+    }
+
+    #[test]
+    fn the_record_path_loses_top_when_driven() {
+        // A-12: the same noise through the record path, quiet and pushed.
+        // Pushed tape loses top end, so the high-to-low energy ratio of
+        // what comes back off the head must fall when the input is loud.
+        let c = controls_with(|c| {
+            c.echo_volume = 1.0;
+        });
+        let measure = |amp: f32| -> f64 {
+            let mut e = Echo::new(RATE, &c);
+            let buf_len = (0.5 * RATE) as usize;
+            let mut out = Vec::with_capacity(buf_len);
+            let mut seed = 0xf00d_u32;
+            let mut buf = [0.0f32; BLOCK];
+            let mut o = [0.0f32; BLOCK];
+            for _ in 0..buf_len / BLOCK {
+                for s in buf.iter_mut() {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904);
+                    *s = ((seed >> 8) as f32 / 8_388_608.0 - 1.0) * amp;
+                }
+                e.process_mono(&c, &buf, &mut o);
+                out.extend_from_slice(&o);
+            }
+            // Skip the fill; the drive envelope's τ is ≈ 21 ms.
+            let seen = &out[(0.25 * RATE) as usize..];
+            let band_energy = || -> f64 {
+                let mut lp6 = 0.0f32;
+                let mut lp8 = 0.0f32;
+                let a6 = lp_coeff(600.0, RATE);
+                let a8 = lp_coeff(8_000.0, RATE);
+                let mut lf = 0.0f64;
+                let mut hf = 0.0f64;
+                for &x in seen {
+                    lp6 += a6 * (x - lp6);
+                    lp8 += a8 * (x - lp8);
+                    lf += (lp6 * lp6) as f64;
+                    hf += ((x - lp8) * (x - lp8)) as f64;
+                }
+                hf / lf
+            };
+            band_energy()
+        };
+        let quiet = measure(0.12);
+        // Pushed means into the red: mean |drive| ≈ 0.75, so the record
+        // corner sits close to A-12's fully-driven 4 kHz. Measured drift
+        // at this level is about −3 dB of treble against the clean run.
+        let loud = measure(1.5);
+        let drift = 10.0 * (loud / quiet).log10();
+        assert!(
+            drift < -1.5,
+            "driven tape is duller, saw {drift:.2} dB of treble drift"
+        );
+    }
+
+    #[test]
+    fn the_spring_lags_before_it_rings() {
+        // A-6 as amended: the tank has a pre-delay in front of the combs.
+        // Right after the burst arrives the output is genuinely empty —
+        // a smear that starts instantly is a reverb nobody hears on a
+        // spring line.
+        let c = controls_with(|c| {
+            c.mode = 11;
+            c.reverb_volume = 1.0;
+            c.echo_volume = 0.0;
+        });
+        let mut e = Echo::new(RATE, &c);
+        let out = burst_response(&mut e, &c, (0.2 * RATE) as usize);
+        let t0 = 4.0 * BLOCK as f32 / RATE; // when the burst hits
+        let early = rms_in(&out, t0 + 0.000_4, t0 + 0.002_4);
+        let onset = rms_in(&out, t0 + 0.006, t0 + 0.040);
+        assert!(onset > 0.01, "the window really contains the ring: {onset}");
+        assert!(
+            early < 0.02 * onset,
+            "the spring waits for its pre-delay: {early} vs {onset}"
+        );
+    }
+
+    #[test]
+    fn the_spring_rings_down_bright_first() {
+        // A-6 as amended: each comb low-passes its own feedback, so the
+        // ring loses treble as it decays. Compare the 4 kHz bin against
+        // the 200 Hz bin early and late; late, the treble bin must have
+        // collapsed toward the bass bin.
+        fn goertzel(x: &[f32], k: usize) -> f64 {
+            let n = x.len() as f32;
+            let c2 = 2.0 * (std::f32::consts::TAU * k as f32 / n).cos() as f64;
+            let (mut s1, mut s2) = (0.0f64, 0.0f64);
+            for &v in x {
+                let s0 = v as f64 + c2 * s1 - s2;
+                s2 = s1;
+                s1 = s0;
+            }
+            s1 * s1 + s2 * s2 - c2 * s1 * s2
+        }
+        let c = controls_with(|c| {
+            c.mode = 11;
+            c.reverb_volume = 1.0;
+            c.echo_volume = 0.0;
+        });
+        let mut e = Echo::new(RATE, &c);
+        let out = burst_response(&mut e, &c, (0.45 * RATE) as usize);
+        let t0 = 4.0 * BLOCK as f32 / RATE;
+        let window = |from: f32| {
+            let a = ((t0 + from) * RATE) as usize;
+            &out[a..a + 2400]
+        };
+        let ratio = |from: f32| goertzel(window(from), 200) / goertzel(window(from), 10);
+        let early = ratio(0.02);
+        let late = ratio(0.30);
+        assert!(early > 1e-6, "the early window rings: {early}");
+        assert!(
+            late < early * 0.2,
+            "the ring darkens as it dies: early {early:.3}, late {late:.6}"
+        );
     }
 
     #[test]

@@ -9,10 +9,11 @@ each claim and an allocation witness over every mode and every control. The
 member, the manifest and features, the nine parameters, the CLAP and VST3
 exports, the frost editor with its mode knob, the standalone host on
 `nice-common`'s transport and settings panel, and the gate and hook entries
-are all in place. What is left is the ten named assumptions the documents
-cannot settle — A-1 through A-10, catalogued in the README — and the
-things a machine on a bench would retire: the tank's realism, the second
-lane, the footswitch, and a taper.
+are all in place. What is left is the twelve named assumptions the
+documents cannot settle — A-1 through A-12, catalogued in the README —
+and the things a machine on a bench would retire: the hiss and wear
+magnitudes, the driven record corner, the second lane, the footswitch,
+and a taper.
 
 ## 1. Decided, and where the answer lives
 
@@ -70,12 +71,25 @@ Done, with the test that says so:
       and Intensity adds repeats monotonically below that.
 - [x] The spring: smears, bounded, alone in position 12, in parallel where
       the mode table says (`the_spring_smears_without_escaping_its_bound`,
-      `reverb_only_mode_is_the_spring_alone`).
+      `reverb_only_mode_is_the_spring_alone`); waits out its pre-delay
+      before the first arrival, and rings down treble-first
+      (`the_spring_lags_before_it_rings`,
+      `the_spring_rings_down_bright_first`).
 - [x] The tone stack a wire through when centred — bit-identical — and
       riding highs and lows where the knobs say (the four tone tests).
-- [x] The wow and flutter inside their A-5 depths and never wider
+- [x] The wow and flutter inside their A-5 depths — widened once for the
+      wear wander (A-11) — and never wider
       (`the_transport_wobbles_a_little_and_no_more`), and the free-loop
       argument for why the depths are modest is in the header, not folklore.
+- [x] The transport wanders on a minutes timescale, shared between the
+      lanes because one tape wanders once, bending tap spacing, wow depth
+      and HF loss together inside a bound
+      (`the_transport_wanders_slowly_and_stays_bounded`), and the hiss
+      breathes with the wow (A-9, `the_hiss_breathes_with_the_wow`).
+- [x] The record path loses its top as it is driven (A-12): the driven
+      corner walks toward A-12's floor with a slew of tens of
+      milliseconds, measured about −3 dB of treble on a pushed input
+      against the clean run (`the_record_path_loses_top_when_driven`).
 - [x] The output steps exactly the service notes' 8 and 20 dB
       (`output_steps_are_the_service_notes_numbers`).
 - [x] The mode table the README ships is the table the DSP runs, spring
@@ -87,40 +101,28 @@ Done, with the test that says so:
 
 Left:
 
-- [ ] **The spring is an homage, not a tank (A-6).** Low-pass, three
-      all-pass/low-pass sections, tail low-pass — the family's all-pass
-      maths from nice-phase doing a job nobody has measured on this
-      machine. A real tank has unequal delay lines with multiple taps,
-      pronounced late-"boing" dispersion, and a growl that tracks input
-      level. The measurable targets exist: a tank's impulse response has
-      its first significant energy late (spring reverb's signature lag),
-      and its ringing decay is strongly frequency-dependent. A first
-      pass would be an explicit multi-tap comb garden instead of
-      all-passes and a test that the energy onset lags the input.
+- [ ] **The tank's remaining realism (A-6).** The comb garden landed:
+      input low-pass, short pre-delay, four parallel combs of unequal
+      length each low-passing its own feedback, summed into a tail
+      low-pass, and both measurable shadows are tested (Done above,
+      `the_spring_lags_before_it_rings`,
+      `the_spring_rings_down_bright_first`). The all-pass sections the
+      first tank inherited from nice-phase are retired from this crate;
+      that is the history this line carries. What a bench would still
+      retire: the comb lengths and gains are named (A-6), not measured;
+      multiple taps per delay line and the growl that tracks input
+      level are not modelled.
 - [ ] **One tape in both lanes (§1).** The cheap stereo read is two record
       paths a few milliseconds apart writing two tapes — which is what
       players report dual-head-wired machines do — but no source in the
       pile documents a stereo RE-201, so it enters as another labelled
       assumption, not a "fix".
 - [ ] **The hiss floor (A-9) is a stability measure wearing a sound's
-      clothes.** ±1.5e-4 exists first to kill the digital loop's silence
-      fixed point; a real machine's noise is modulated — it breathes with
-      wow — and the number has never been compared with a tape transfer's
-      measured noise. Both halves are easy: modulate the existing noise by
-      the wow signal, then replace the magnitude when a measurement exists.
-- [ ] **Tape wear does not happen here.** The walk-through's own list —
-      worn oxide, stretched loops, a capstan that has seen tours — maps to
-      slow drift in tap spacing, wow depth, and HF loss. Nothing in this
-      model drifts on any timescale. The honest first step is a second
-      named assumption (call it A-11 when it lands) for a
-      minutes-timescale wander, with a test that the wander exists and is
-      bounded; the dishonest step is pretending the fixed constants are
-      the machine's steady state.
-- [ ] **The record path's HF behaviour with level.** Real tape saturates
-      and loses top end as it is driven harder; `tanh` here is symmetric
-      soft clipping with no frequency consequence. The measurable shadow is
-      a high-frequency-driven band losing its top faster than a low one at
-      the same level.
+      clothes.** Its magnitude — ±1.5e-4 — exists first to kill the
+      digital loop's silence fixed point and has never been compared
+      with a tape transfer's measured noise. The breathing half has
+      landed (the floor rides the wow, Done above); the number itself
+      waits for a transfer.
 - [ ] **The echo-switch crossfade is a hard read, not a transition.** The
       machine's switch is a switch; fine. But the A-7 reading — NORMAL is
       dry + echo, ECHO is the echoed input alone — should be checked

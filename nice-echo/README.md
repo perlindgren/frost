@@ -17,7 +17,7 @@ saturating record path, the spring tank, tone, and the three output trims —
 with a test for each claim it makes and an allocation witness over every
 mode and every control. The quotes that anchor it are below, and every
 number that is *not* one of those quotes carries a label, **A-1** through
-**A-10**, in the source and in this file, so a reader can tell the quoted
+**A-12**, in the source and in this file, so a reader can tell the quoted
 law ("the slower the tape, the longer the delay") from this model's tape
 speeds (A-3) at a glance. `TODO.md` keeps the list of what a tape machine
 on a bench would settle; until then those labels are the crate's honest
@@ -73,11 +73,13 @@ the rule is that a named assumption is worth more than a smoothed-over one:
 | **A-3** | Repeat Rate spans tape speeds 1.0× to 3.25× (fastest taps ≈ 34 / 68 / 102 ms) | The sources give the direction of travel, never the range. |
 | **A-4** | The twelve-position mode table below | Twelve positions and a spring-only position are quoted; the wiring of the other eleven is this model's, stated so it can be argued with. |
 | **A-5** | Wow 0.6 Hz ±0.25 ms, flutter 6.1 Hz ±0.03 ms | No figure exists to quote; the free-running loop is the sources' own argument for a steady transport. |
-| **A-6** | The spring tank's exact topology (low-pass, three all-pass/low-pass sections, tail low-pass, fed in parallel) | "Spring reverb unit" is all the sources say; the all-pass maths is the family's own, from nice-phase. |
+| **A-6** | The spring tank's exact topology (input low-pass, short pre-delay, four parallel damped combs of unequal length each low-passing its own feedback, summed into a tail low-pass, fed in parallel) | "Spring reverb unit" is all the sources say; the damped comb is the standard block and every figure in it is this model's. An earlier tank used the all-pass maths inherited from nice-phase; TODO.md carries that history. |
 | **A-7** | NORMAL = dry + echo; ECHO = dry gone, 100 % echo | Which integer means which position is this model's reading of the quote. |
 | **A-8** | Per-head two-pole HF loss at 9 / 6 / 4 kHz | Duller with distance is a fact of tape heads; the corners are chosen. |
-| **A-9** | A deterministic ±1.5e-4 bias noise in the record path | No hiss figure exists; and a noise-free digital loop makes silence a fixed point that re-records itself forever — the model needs *some* floor to stay alive. |
+| **A-9** | A deterministic ±1.5e-4 bias noise in the record path, breathing ±40 % across the wow cycle | No hiss figure exists; and a noise-free digital loop makes silence a fixed point that re-records itself forever — the model needs *some* floor to stay alive. The breath depth is as much this model's as the level it modulates. |
 | **A-10** | Intensity crosses unity loop gain at ≈ 0.74 of its travel | Self-oscillation at high settings is quoted; the threshold is this model's. |
+| **A-11** | Tape wear: one minutes-long wander — wow depth ±35 %, tap spacing ±0.3 %, each head's HF corner ±8 %, the three heads at different points of the cycle | The walk-through's wear list (worn oxide, stretched loops) says loops tire; nobody has measured how far, so the spans are ours. |
+| **A-12** | The record corner slides 18 kHz → 4 kHz as drive rises, on a ≈ 21 ms one-pole envelope of the pre-saturation level | Driven tape losing HF is lore, not a quote; corners and time constant are this model's. |
 
 ## Controls
 
@@ -224,21 +226,28 @@ against arithmetic the model has no standing to dispute:
   the same noise through each head's pole, wiggles measured);
 * Intensity adds repeats, full Intensity outlives the input — the quoted
   self-oscillation — and the loop gain crosses unity near the A-10 point;
-* the spring smears without escaping its bound, and position 12 is the
-  spring alone, echo gone;
+* the spring waits out its pre-delay before it answers, rings down
+  treble-first as its combs damp, and smears without escaping its bound;
+  position 12 is the spring alone, echo gone;
 * the output steps are the service notes' numbers: −8 and −20 dB;
 * the tone stack is a wire through when centred, rides the highs and the
   lows where the knobs say, and centred-plus-flat is bit-identical passthrough;
 * the transport wobbles a little and no more — the wow and flutter sit
-  inside their A-5 depths and never wider;
+  inside their A-5 depths widened for the wear wander (A-11) and never wider;
+* one minutes-long wander moves the whole transport: each head sees the
+  whole cycle from its own phase, the peaks land decades apart, no step
+  shudders, and the hiss floor breathes with the wow (A-9);
+* the same noise through the record path comes back duller when pushed —
+  the A-12 HF loss, measured as a treble-to-bass ratio at two levels;
 * turning Repeat Rate smears the delay on the way instead of jumping, and
   the saturation is odd, bounded, and never lets the loop out of full scale;
 * one tape is heard in both lanes: a mono input through stereo taps is the
   same echo twice, because there is one tape, not two.
 
-What none of that tests is the ten named assumptions — the spacing, the
+What none of that tests is the twelve named assumptions — the spacing, the
 speeds, the wiring of eleven mode positions, the transport's depths, the
-tank's topology, the corners, the hiss floor, the crossover. No test can
+tank's topology, the corners, the hiss floor and its breath, the crossover,
+the wear cycle and its spans, the driven record corner. No test can
 check an assumption against a document that does not state it; those
 belong to `TODO.md`, and they are what an afternoon with a tape machine and
 a bench would retire.
