@@ -14,9 +14,9 @@ use clack_host::{
 };
 use std::{
     ffi::CString,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
 };
@@ -79,12 +79,30 @@ pub struct Descriptor {
     pub description: String,
 }
 
+/// Every entry this process has opened, held for the life of the process.
+///
+/// A `.clap` file is not data with a lifetime, it is code. A plugin can leave
+/// a thread of its own running on after its last instance is gone — nice-nam
+/// starts a preparation thread per instance which wakes every twenty
+/// milliseconds and nothing joins it — and a library released underneath a
+/// thread still standing on it is an access violation reported against a
+/// module the loader has already unmapped, in a fault no host can catch and
+/// no stack trace explains. Hosts that have been shown this once keep plugins
+/// mapped until the process ends, and so do we: the price is one handle per
+/// distinct file, which the operating system takes back at exit anyway.
+static LOADED: Mutex<Vec<(PathBuf, PluginEntry)>> = Mutex::new(Vec::new());
+
 /// An entry whose lifetime is managed by Clack. Instantiation stays on the
 /// caller's main thread. Only explicitly trusted entries may be loaded.
 #[derive(Clone)]
 pub struct Entry(PluginEntry);
 impl Entry {
     /// Load native executable code, including any dynamic-library constructors.
+    ///
+    /// The library then stays mapped for the life of the process, whether or
+    /// not this handle and everything built from it is dropped, because a
+    /// plugin's own threads are not something a host can account for: see
+    /// [`LOADED`].
     ///
     /// # Safety
     /// The caller must ensure this library and its plugins are trustworthy and
@@ -93,10 +111,30 @@ impl Entry {
     /// crash isolation and must be called from the application's main thread.
     #[allow(unsafe_code)]
     pub unsafe fn load(path: &Path) -> Result<Self, String> {
+        // Two spellings of one file are one plugin, so a card dropped and
+        // dropped again does not ask the same entry to initialise twice.
+        let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let known = LOADED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .find(|(kept, _)| *kept == key)
+            .map(|(_, entry)| entry.clone());
+        if let Some(entry) = known {
+            return Ok(Self(entry));
+        }
         // SAFETY: caller accepts the same native-library and CLAP contracts.
-        unsafe { PluginEntry::load(path) }
-            .map(Self)
-            .map_err(|e| e.to_string())
+        // The lock above was released before this call: loading runs the
+        // plugin's own initialisation, and foreign code does not get to run
+        // while holding our mutex.
+        let entry = unsafe { PluginEntry::load(path) }
+            .map_err(|error| error.to_string())
+            .map(Self)?;
+        LOADED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((key, entry.0.clone()));
+        Ok(entry)
     }
 
     /// Query a class's currently selected main buses without activating DSP.
