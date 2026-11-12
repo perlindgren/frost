@@ -5,8 +5,9 @@
 //! automation and the standalone settings page can all be exercised. The tape
 //! path it drives is the real one — three heads, wow and flutter, the saturating
 //! record loop, the spring tank — and what this layout shows of the machine is
-//! honest: the Mode strip lights the panel position the DSP is actually using,
-//! and every readout is the parameter's own value, read back each frame. The
+//! honest: the Mode knob points at the panel position the DSP is actually
+//! using and names in words what that position routes, and every readout is
+//! the parameter's own value, read back each frame. The
 //! conventions are the family's: absolute coordinates scaled by a `fit` factor,
 //! hit tests run against the same frame's geometry the drawing used, and a
 //! value read from the same place the control is written, so the two cannot
@@ -115,7 +116,7 @@ impl Dial {
             Dial::Treble => "Treble on the record path — centred is passthrough",
             Dial::Bass => "Bass on the record path — centred is passthrough",
             Dial::ReverbVolume => {
-                "How much spring tank in the output; the mode strip decides whether there is any to hear"
+                "How much spring tank in the output; the mode knob decides whether there is any to hear"
             }
         }
     }
@@ -156,8 +157,9 @@ impl Dial {
 /// The switches — what the original builds as physical switching: the twelve-
 /// position Mode selector, the two-position Echo switch, and the three-way
 /// output-level selector for the machine's H, M and L jacks. The Mode selector
-/// has no slot: twelve names do not fit a column, so it gets the strip across
-/// the bottom and its position is clicked directly, as a rotary is.
+/// has no slot: twelve names do not fit a column, so it gets a stepped rotary
+/// of its own at the bottom — turned by drag or wheel, detenting through the
+/// twelve positions the way the panel switch does.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Switch {
     Mode,
@@ -238,13 +240,16 @@ impl Switch {
     }
 }
 
-/// Which of the strip's twelve segments a pointer x sits on, the strip centred
-/// at zero and half `half` wide. Clamped, because the hover test that gates the
-/// call already bounds the pointer and a click's arithmetic should still land
-/// somewhere real if a frame disagrees.
-fn strip_segment(half: f32, mx: f32) -> usize {
-    let t = ((mx + half) / (2.0 * half)).clamp(0.0, 1.0);
-    ((t * crate::dsp::MODES as f32) as usize).min(crate::dsp::MODES - 1)
+/// Which panel position a mode-knob drag has wound to: the drag's travel
+/// since the press, added in normalised space to the position the press
+/// started on and snapped to the nearest detent — a stepped rotary refuses
+/// to settle between two positions. Clamped at both ends, because the
+/// switch has stops and a hand dragged past either should stay on the last
+/// real position, not wrap or run off the panel.
+fn mode_detent(travel: f32, delta_px: f32, start: f32) -> usize {
+    let last = (crate::dsp::MODES - 1) as f32;
+    let t = (start + delta_px / travel).clamp(0.0, 1.0);
+    ((t * last).round() as usize).min(crate::dsp::MODES - 1)
 }
 
 /// What the pointer is on. A control of the view's own making: the cog is not a
@@ -259,8 +264,8 @@ enum Hit {
 /// Where a control sits, and what it is: the layout as data. Each control names
 /// its own column and row, so the compiler — not a table that can be forgotten
 /// — is what makes a new parameter appear on screen. `None` means the control
-/// sits outside the three-column grid: the Mode selector, which spans the whole
-/// window at the bottom and is clicked by position, not by cycling.
+/// sits outside the three-column grid: the Mode selector, a stepped rotary at
+/// the bottom centre, turned by drag or wheel rather than clicked.
 trait Placement {
     fn slot(&self) -> Option<(usize, usize)>;
 }
@@ -309,6 +314,10 @@ struct Row {
 #[derive(Clone, Copy)]
 enum Drag {
     Dial(Dial),
+    /// The Mode rotary: a drag winds through the twelve detents, and every
+    /// detent it crosses is written as it is crossed — the way turning a
+    /// panel switch makes the machine change as your hand moves.
+    Mode,
 }
 
 pub struct EchoUi {
@@ -431,16 +440,29 @@ impl EchoUi {
 
     fn set_switch(&mut self, params: &EchoParams, switch: Switch, position: i32) {
         let param = switch.param(params);
+        if let Some(context) = &self.context {
+            context.param_setter().begin_set_parameter(param);
+        }
+        self.write_switch(params, switch, position);
+        if let Some(context) = &self.context {
+            context.param_setter().end_set_parameter(param);
+        }
+        self.save_preferences();
+    }
+
+    /// A switch write without the automation door's begin/end pair or the
+    /// settings file. A drag brackets its whole travel in one pair of those
+    /// and saves once at the release, rather than announcing every detent
+    /// it crosses as a separate gesture the host would have to undo one by
+    /// one.
+    fn write_switch(&mut self, params: &EchoParams, switch: Switch, position: i32) {
+        let param = switch.param(params);
         let (min, max) = switch.bounds(params);
         let position = position.clamp(min, max);
         if let Some(context) = &self.context {
-            let setter = context.param_setter();
-            setter.begin_set_parameter(param);
-            setter.set_parameter(param, position);
-            setter.end_set_parameter(param);
+            context.param_setter().set_parameter(param, position);
         }
         switch.cell(&self.shared).store(position);
-        self.save_preferences();
     }
 
     /// Standalone persistence: what the player sets is what the next launch
@@ -477,7 +499,7 @@ impl EchoUi {
     /// This frame's rows, read from the controls' own slots: three groups across
     /// the window, each a caption and its controls. Built once and read by both
     /// the hit tests and the drawing, so the two cannot drift apart. The Mode
-    /// strip is not in here — it has no slot, and gets its own geometry.
+    /// knob is not in here — it has no slot, and gets its own geometry.
     fn rows(&self, params: &EchoParams, layout: &Layout) -> Vec<Row> {
         let mut rows: Vec<Row> = Vec::new();
         for dial in Dial::ALL {
@@ -586,6 +608,11 @@ struct Layout {
     y_head: f32,
     column_half: f32,
     bar_half: f32,
+    /// The Mode knob, bottom centre: the one control outside the grid, with
+    /// a number and a caption stacked under it the way the family's knobs
+    /// stack a readout, so the geometry lives with the rest of the geometry.
+    mode_radius: f32,
+    mode_y: f32,
 }
 
 impl Layout {
@@ -598,6 +625,8 @@ impl Layout {
             y_head: height / 2.0 - 150.0 * fit,
             column_half: span / GROUPS.len() as f32 - 10.0 * fit,
             bar_half: (span / GROUPS.len() as f32 - 10.0 * fit) * 0.42,
+            mode_radius: 34.0 * fit,
+            mode_y: -height / 2.0 + 120.0 * fit,
         }
     }
 
@@ -696,8 +725,8 @@ impl Process for EchoUi {
         let cog = crate::STANDALONE_MODE.load(Ordering::Relaxed);
         let cog_x = w / 2.0 - 26.0 * fit;
         let mode_x = 0.0;
-        let mode_y = -h / 2.0 + 66.0 * fit;
-        let mode_half = w / 2.0 - 120.0 * fit;
+        let mode_y = layout.mode_y;
+        let mode_radius = layout.mode_radius;
 
         let rows = self.rows(&params, &layout);
 
@@ -717,10 +746,7 @@ impl Process for EchoUi {
                     hover = Some(row.hit);
                 }
             }
-            if hover.is_none()
-                && (mx - mode_x).abs() <= mode_half
-                && (my - mode_y).abs() <= 11.0 * fit
-            {
+            if hover.is_none() && knob::contains([mode_x, mode_y], mode_radius, [mx, my]) {
                 hover = Some(Hit::Switch(Switch::Mode));
             }
             if cog && hover.is_none() && (mx - cog_x).abs() <= 16.0 && (my - y_title).abs() <= 16.0
@@ -744,26 +770,50 @@ impl Process for EchoUi {
                         .param_setter()
                         .begin_set_parameter(dial.param(&params));
                 }
+            } else if hover == Some(Hit::Switch(Switch::Mode)) {
+                // The knob is grabbed where it points: the drag is a delta
+                // from this detent, exactly as a dial's is from its value.
+                let last = crate::dsp::MODES as i32 - 1;
+                self.drag_start =
+                    self.switch_value(&params, Switch::Mode).clamp(0, last) as f32 / last as f32;
+                self.drag = Some(Drag::Mode);
+                if let Some(context) = &self.context {
+                    context.param_setter().begin_set_parameter(&params.mode);
+                }
             }
         }
         // A drag is a delta from where the press started, in normalised space,
         // so the number under the pointer never jumps however the control was
         // last set.
-        if let Some(Drag::Dial(dial)) = self.drag
+        if let Some(dragged) = self.drag
             && let Some([mx, _]) = mouse
         {
             let travel = if fine { DIAL_TRAVEL_FINE } else { DIAL_TRAVEL } * fit;
-            let param = dial.param(&params);
-            let t = (self.drag_start + (mx - self.drag_anchor) / travel).clamp(0.0, 1.0);
-            let value = param.range().unnormalize(t);
-            self.set_dial(&params, dial, value);
+            match dragged {
+                Drag::Dial(dial) => {
+                    let param = dial.param(&params);
+                    let t = (self.drag_start + (mx - self.drag_anchor) / travel).clamp(0.0, 1.0);
+                    let value = param.range().unnormalize(t);
+                    self.set_dial(&params, dial, value);
+                }
+                Drag::Mode => {
+                    // Every detent the hand crosses is written as it is
+                    // crossed; the sound follows the knob mid-turn.
+                    let detent = mode_detent(travel, mx - self.drag_anchor, self.drag_start);
+                    if detent as i32 != self.switch_value(&params, Switch::Mode) {
+                        self.write_switch(&params, Switch::Mode, detent as i32);
+                    }
+                }
+            }
         }
         if released {
-            if let Some(Drag::Dial(dial)) = self.drag.take() {
+            if let Some(dragged) = self.drag.take() {
                 if let Some(context) = &self.context {
-                    context
-                        .param_setter()
-                        .end_set_parameter(dial.param(&params));
+                    let setter = context.param_setter();
+                    match dragged {
+                        Drag::Dial(dial) => setter.end_set_parameter(dial.param(&params)),
+                        Drag::Mode => setter.end_set_parameter(&params.mode),
+                    }
                 }
                 self.save_preferences();
             }
@@ -777,25 +827,25 @@ impl Process for EchoUi {
                         }
                     }
                     Hit::Switch(switch) => {
-                        // The Mode strip is pointed at, the way a rotary is
-                        // turned to a named position; the column switches cycle,
-                        // the way a small switch under a thumb does.
-                        let position = if switch == Switch::Mode {
-                            let mx = mouse.map(|[mx, _]| mx).unwrap_or(mode_x) - mode_x;
-                            strip_segment(mode_half, mx) as i32
-                        } else {
+                        // A release over the mode knob that never turned
+                        // it says nothing: a rotary switches nothing until
+                        // it is turned, and every detent a real turn
+                        // crossed was written while the drag was still
+                        // moving. The column switches cycle, the way a
+                        // small switch under a thumb does.
+                        if switch != Switch::Mode {
                             let current = self.switch_value(&params, switch);
-                            Self::step_position(&params, switch, current, 1)
-                        };
-                        self.set_switch(&params, switch, position);
+                            let position = Self::step_position(&params, switch, current, 1);
+                            self.set_switch(&params, switch, position);
+                        }
                     }
                     Hit::Dial(_) => {}
                 }
             }
         }
         // Wheel: one percentile of the range per line for a dial, the same
-        // delta a mouse's notch is worth everywhere else; for the Mode strip,
-        // one position per line, wrapping.
+        // delta a mouse's notch is worth everywhere else; for the mode knob,
+        // one detent per line, wrapping.
         let wheel = ctx.mouse_wheel();
         if wheel != 0.0 {
             match hover {
@@ -960,47 +1010,74 @@ impl Process for EchoUi {
             );
         }
 
-        // The Mode strip, across the bottom, because twelve positions belong to
-        // no one group. The lit segment is the position the DSP is using — the
-        // strip and the sound read the same cell.
-        let mode_hovered = self.hovered == Some(Hit::Switch(Switch::Mode));
-        let mode_label = Switch::Mode.label();
-        let mode_label_w = self.text_width(ctx, mode_label, 13.0 * fit);
-        self.text(
-            ctx,
-            -w / 2.0 + 22.0 * fit + mode_label_w / 2.0,
-            mode_y,
-            mode_label.into(),
-            13.0 * fit,
-            if mode_hovered { AMBER } else { TEXT },
-        );
+        // The Mode knob, bottom centre, because twelve positions belong to
+        // no one group. The pointer and the lit detent both mark the
+        // position the DSP is using — knob and sound read the same cell —
+        // and the two lines under it name the position and say, in words
+        // the mode table itself writes, what that position routes.
+        let mode_hot = self.hovered == Some(Hit::Switch(Switch::Mode))
+            || matches!(self.drag, Some(Drag::Mode));
         let mode_value = self
             .switch_value(&params, Switch::Mode)
             .clamp(0, crate::dsp::MODES as i32 - 1) as usize;
-        let gap = 3.0 * fit;
-        let segment =
-            (2.0 * mode_half - gap * (crate::dsp::MODES - 1) as f32) / crate::dsp::MODES as f32;
-        for position in 0..crate::dsp::MODES {
-            let sx = mode_x - mode_half + segment / 2.0 + position as f32 * (segment + gap);
-            let on = position == mode_value;
-            ctx.rectangle(
-                sx,
-                mode_y,
-                segment / 2.0,
-                6.0 * fit,
-                if on { GREEN } else { BORE },
-                if on { 0.4 } else { 0.3 },
-            );
-        }
-        let mode_readout = Switch::Mode.readout(&params, mode_value as i32);
-        let mode_readout_w = self.text_width(ctx, &mode_readout, 13.0 * fit);
+        let mode_angle = |t: f32| (t * 270.0 - 135.0).to_radians();
         self.text(
             ctx,
-            mode_x + mode_half + 30.0 * fit + mode_readout_w / 2.0,
-            mode_y,
-            mode_readout,
+            mode_x,
+            mode_y + mode_radius + 14.0 * fit,
+            Switch::Mode.label().into(),
             13.0 * fit,
-            if mode_hovered { AMBER } else { TEXT },
+            if mode_hot { AMBER } else { MUTED },
+        );
+        // The detent ring: twelve marks on the family's sweep, the current
+        // one lit the way the panel's own switch clicks into a notch.
+        for position in 0..crate::dsp::MODES {
+            let a = mode_angle(position as f32 / (crate::dsp::MODES - 1) as f32);
+            let on = position == mode_value;
+            ctx.line(
+                mode_x + a.sin() * mode_radius * 1.06,
+                mode_y + a.cos() * mode_radius * 1.06,
+                mode_x + a.sin() * mode_radius * 1.22,
+                mode_y + a.cos() * mode_radius * 1.22,
+                if on {
+                    if mode_hot { AMBER } else { GREEN }
+                } else {
+                    MUTED
+                },
+                if on { 2.5 * fit } else { 2.0 * fit },
+                0.45,
+            );
+        }
+        ctx.circle(mode_x, mode_y, mode_radius, PANEL, 0.5);
+        ctx.circle(mode_x, mode_y, mode_radius * 0.66, BORE, 0.52);
+        let a = mode_angle(mode_value as f32 / (crate::dsp::MODES - 1) as f32);
+        ctx.line(
+            mode_x,
+            mode_y,
+            mode_x + a.sin() * mode_radius * 0.9,
+            mode_y + a.cos() * mode_radius * 0.9,
+            if mode_hot { AMBER } else { TEXT },
+            3.0 * fit,
+            0.55,
+        );
+        // The panel number, then what the position routes — the caption
+        // built from the mask the mixer itself reads, so label and sound
+        // cannot disagree.
+        self.text(
+            ctx,
+            mode_x,
+            mode_y - mode_radius - 18.0 * fit,
+            Switch::Mode.readout(&params, mode_value as i32),
+            16.0 * fit,
+            if mode_hot { AMBER } else { TEXT },
+        );
+        self.text(
+            ctx,
+            mode_x,
+            mode_y - mode_radius - 36.0 * fit,
+            crate::dsp::mode_caption(mode_value as i32),
+            12.0 * fit,
+            if mode_hot { AMBER } else { MUTED },
         );
 
         // The cog, last of the chrome: a plate, an icon, and — the one door the
@@ -1060,6 +1137,15 @@ impl Process for EchoUi {
                     dial.tip(),
                     dial.readout(self.dial_value(&params, dial))
                 )),
+                // The mode knob carries its own sentence under the dial, and a
+                // pointer that rests there should hear the same sentence: the
+                // number the panel is on *and* what that position routes.
+                Some(Hit::Switch(Switch::Mode)) => Some(format!(
+                    "{}: {} — {}",
+                    Switch::Mode.tip(),
+                    Switch::Mode.readout(&params, self.switch_value(&params, Switch::Mode)),
+                    crate::dsp::mode_caption(self.switch_value(&params, Switch::Mode))
+                )),
                 Some(Hit::Switch(switch)) => Some(format!(
                     "{}: {}",
                     switch.tip(),
@@ -1088,7 +1174,7 @@ pub fn map_mouse(button: baseview::MouseButton) -> Option<frost::MouseButton> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Dial, Layout, Placement, Switch, strip_segment};
+    use super::{Dial, Layout, Placement, Switch, mode_detent};
 
     #[test]
     fn every_control_has_a_caption_a_tip_and_a_place() {
@@ -1118,7 +1204,7 @@ mod tests {
         slots.sort_unstable();
         slots.dedup();
         assert_eq!(slots.len(), count, "two controls were given the same slot");
-        // The Mode strip is the one control outside the grid, and it is drawn
+        // The Mode knob is the one control outside the grid, and it is drawn
         // by name — so exactly one control may opt out.
         let outside = Dial::ALL
             .iter()
@@ -1132,19 +1218,61 @@ mod tests {
     }
 
     #[test]
-    fn the_mode_strip_lands_on_the_panel_position_it_draws() {
-        // A click on the strip sets the mode by where the pointer is. If that
-        // arithmetic were a segment off, the lit segment and the sound would
-        // part company — the exact disagreement this family's layout tests
-        // exist to prevent.
-        let half = 330.0; // the 900 px design width's mode_half
-        assert_eq!(strip_segment(half, -half), 0);
-        assert_eq!(strip_segment(half, -half + 1.0), 0);
-        assert_eq!(strip_segment(half, half - 1.0), crate::dsp::MODES - 1);
-        assert_eq!(strip_segment(half, half), crate::dsp::MODES - 1);
-        // The middle of segment five's strip slot is segment five.
-        let fifth = -half + (2.0 * half / 12.0) * 4.5;
-        assert_eq!(strip_segment(half, fifth), 4);
+    fn the_mode_knob_lands_on_the_detent_a_drag_points_at() {
+        // The knob turns by pixels, but the panel it stands for clicks between
+        // twelve positions. If the rounding were off by one detent, the pointer
+        // and the sound would part company — the dial would point at a
+        // position the mixer is not routing, the one disagreement a stepped
+        // knob can have with its panel, and the rounding is where it lives.
+        let travel = 200.0; // DIAL_TRAVEL at the design width's fit
+        let at = |position: usize| position as f32 / (crate::dsp::MODES - 1) as f32;
+
+        // A drag shorter than half a detent (200 px over 11 of them) has not
+        // reached the next one, and must not pretend it has.
+        assert_eq!(mode_detent(travel, 0.0, at(5)), 5, "a still knob holds");
+        assert_eq!(mode_detent(travel, 5.0, at(5)), 5, "5 px is not a detent");
+        assert_eq!(mode_detent(travel, -5.0, at(5)), 5);
+        // Past half a detent, it has arrived.
+        assert_eq!(mode_detent(travel, 10.0, at(5)), 6);
+        assert_eq!(mode_detent(travel, -10.0, at(5)), 4);
+        // Ends stop instead of wrapping: the panel switch has no position above
+        // twelve, and a drag that wrapped would put the sound somewhere the
+        // pointer never passed. A turn past the end parks on the end.
+        assert_eq!(mode_detent(travel, -400.0, at(5)), 0);
+        assert_eq!(mode_detent(travel, 400.0, at(5)), crate::dsp::MODES - 1);
+        assert_eq!(
+            mode_detent(travel, -50.0, at(0)),
+            0,
+            "position 1 has no below"
+        );
+        assert_eq!(mode_detent(travel, 50.0, at(11)), crate::dsp::MODES - 1);
+    }
+
+    #[test]
+    fn the_mode_knob_stays_inside_the_window_at_every_size() {
+        // The knob sits below the grid with a number and a caption stacked under
+        // it, so it has three things to keep in the window: its own label above,
+        // its caption below, and the grid's last row it must not crowd. The
+        // margins are the drawn extents, not guesses — `ctx.text` centres a
+        // block on its anchor, so half a cap height reaches past each one.
+        for (width, height) in [(620.0, 400.0), (900.0, 520.0), (2_000.0, 1_200.0)] {
+            let layout = Layout::new(width, height);
+            let fit = layout.fit;
+            // MODE label: anchored a label's gap above the rim, half a 13 px
+            // glyph past that.
+            let label_top = layout.mode_y + layout.mode_radius + 14.0 * fit + 7.0 * fit;
+            let last_row = layout.row_y(2);
+            assert!(
+                label_top < last_row - 6.0 * fit,
+                "the mode knob crowds the last grid row at {width}x{height}: {label_top} >= {last_row}"
+            );
+            // Caption: anchored under the number, half a 12 px glyph below it.
+            let caption_bottom = layout.mode_y - layout.mode_radius - 36.0 * fit - 6.0 * fit;
+            assert!(
+                caption_bottom > -height / 2.0,
+                "the mode caption falls off the bottom at {width}x{height}: {caption_bottom}"
+            );
+        }
     }
 
     #[test]

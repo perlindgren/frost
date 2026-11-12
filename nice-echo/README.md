@@ -128,6 +128,10 @@ The feedback around the loop is the sum of the *selected* heads — the mixer
 the table describes — so switching from "1" to "4" does not just add
 arrivals, it changes how much of the echo is re-recorded.
 
+The face shows the same sentence under its mode knob — `heads 1+2 + spring` —
+and builds it from the mask the mixer itself reads rather than from a second
+table, so the caption and the sound have no way to disagree.
+
 ## Build
 
 At the workspace root:
@@ -209,6 +213,9 @@ against arithmetic the model has no standing to dispute:
 * the mode table the README ships *is* the table the DSP runs, twelve
   positions, spring admitted from panel 5 upward, panel 12 the spring
   alone — and automation outside the selector clamps to it;
+* the caption under the mode knob is that same table read back in words: a
+  caption names a head exactly when its mask routes that head, and says
+  "spring" exactly when its mask routes the spring;
 * slower tape is longer delay for every head, the slowest taps sit exactly
   on the A-1 anchors, and the knob's span is exactly the A-3 ratio;
 * a burst arrives at each selected head at its tap time and at no

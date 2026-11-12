@@ -149,6 +149,35 @@ pub fn mode_mask(mode: i32) -> u8 {
     mode_table()[mode.clamp(0, MODES as i32 - 1) as usize]
 }
 
+/// What a panel position routes, in the words the view prints under the
+/// mode knob. The sentence is built from `mode_mask`'s own bits, so a
+/// caption can never name a head the DSP does not mix or a spring it does
+/// not feed — the panel label and the mixer read the same table, and the
+/// only way they can disagree is if the table itself changes meaning.
+pub fn mode_caption(mode: i32) -> String {
+    let mask = mode_mask(mode);
+    let mut heads = String::new();
+    for head in 0..3u8 {
+        if mask & (1 << head) != 0 {
+            if !heads.is_empty() {
+                heads.push('+');
+            }
+            heads.push(char::from(b'1' + head));
+        }
+    }
+    match (heads.is_empty(), mask & SPRING_BIT != 0) {
+        (true, true) => "spring only".to_string(),
+        // No mask in the shipped table routes nothing, but the clamp
+        // admits every integer to this function, so the honest answer for
+        // a table that stops meaning what it says is that nothing moves.
+        (true, false) => "nothing routed".to_string(),
+        (false, false) if heads.len() == 1 => format!("head {heads} only"),
+        (false, false) => format!("heads {heads}"),
+        (false, true) if heads.len() == 1 => format!("head {heads} + spring"),
+        (false, true) => format!("heads {heads} + spring"),
+    }
+}
+
 /// The tape speed the repeat-rate knob asks for: the knob's `0.0..=1.0`
 /// across the **A-3** range, linearly.
 pub fn tape_speed(rate: f32) -> f32 {
@@ -681,6 +710,47 @@ mod tests {
         }
         for m in 0..4 {
             assert_eq!(mode_mask(m) & SPRING_BIT, 0, "mode {} has no spring", m + 1);
+        }
+    }
+
+    #[test]
+    fn a_mode_caption_names_exactly_what_its_mask_routes() {
+        // The caption is built from the mask's bits; the test reads the
+        // caption back as English and demands it agree with those bits —
+        // and pins the twelve sentences the face shows, so that editing
+        // the README's panel table has to come with editing them.
+        let want: [&str; MODES] = [
+            "head 1 only",
+            "head 2 only",
+            "head 3 only",
+            "heads 1+2+3",
+            "head 1 + spring",
+            "head 2 + spring",
+            "head 3 + spring",
+            "heads 1+2 + spring",
+            "heads 2+3 + spring",
+            "heads 1+3 + spring",
+            "heads 1+2+3 + spring",
+            "spring only",
+        ];
+        for m in 0..MODES as i32 {
+            let caption = mode_caption(m);
+            assert_eq!(caption, want[m as usize], "mode {}", m + 1);
+            let mask = mode_mask(m);
+            for head in 0..3u8 {
+                assert_eq!(
+                    caption.contains(char::from(b'1' + head)),
+                    mask & (1 << head) != 0,
+                    "mode {}: caption \"{caption}\" against mask {mask:#06b}",
+                    m + 1
+                );
+            }
+            assert_eq!(
+                caption.contains("spring"),
+                mask & SPRING_BIT != 0,
+                "mode {}: caption \"{caption}\" against mask {mask:#06b}",
+                m + 1
+            );
         }
     }
 

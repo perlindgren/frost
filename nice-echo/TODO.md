@@ -7,7 +7,7 @@ parallel, the tone shelves, the three service-manual output trims, and the
 twelve-position mode selector driving all of it — with a measured test for
 each claim and an allocation witness over every mode and every control. The
 member, the manifest and features, the nine parameters, the CLAP and VST3
-exports, the frost editor with its mode strip, the standalone host on
+exports, the frost editor with its mode knob, the standalone host on
 `nice-common`'s transport and settings panel, and the gate and hook entries
 are all in place. What is left is the ten named assumptions the documents
 cannot settle — A-1 through A-10, catalogued in the README — and the
@@ -40,12 +40,14 @@ lane, the footswitch, and a taper.
 Still to decide:
 
 - **Whether Mode should expose the heads and the spring as separate
-  switches alongside the strip.** The twelve-position table (A-4) is one
+  switches alongside the knob.** The twelve-position table (A-4) is one
   integer because the machine has one selector, and a host automating an
   integer automates fine. But a player who wants "heads 1+3 without the
-  spring" has to hunt the strip for a position that does not exist — the
+  spring" has to hunt the knob for a position that does not exist — the
   wiring was chosen, not read. Leaving it is a defensible fidelity call;
-  it should be *made* rather than inherited.
+  it should be *made* rather than inherited. The caption under the knob
+  softens this rather than solving it: it says what a position routes, so
+  the hunting at least reads honestly.
 
 ## 2. The DSP
 
@@ -133,14 +135,17 @@ Left:
 ## 3. The face
 
 The editor is the family's: dials on grid-first slots, tooltips, the mode
-strip that lands on the drawn position, the meter row, the cog. What the
-GUI phase owes it:
+knob that detents through the twelve positions and names what the selected
+one routes, the meter row, the cog. What the GUI phase owes it:
 
-- [ ] **The strip should read as a selector, not twelve buttons.** It is
-  mechanically the machine's rotary switch; a click that lands between
-  positions, or a drawn gap that says "this is a knob with stops", is the
-    polish the current flat segments lack.
-- [ ] **The Reverb Volume should visibly go dead outside its positions.**
+- [x] **The mode control should read as a selector, not twelve buttons.** It
+  is a stepped rotary: twelve marks on the family's 270° sweep with the
+  current one lit, a pointer reading the same cell the DSP reads, turned by
+  drag or by wheel — one detent a notch, the ends stopping rather than
+  wrapping — with the panel number and a caption built from the mixer's own
+  mask stacked under it. A release that never turned the knob says nothing,
+  so a stray click cannot move the machine.
+- [ ] **A dead Reverb Volume the eye can see.**
   The behaviour is right and tested; the panel currently gives no hint
   that the knob is inert in modes 1–4, which reads as a broken knob to
   anyone coming from the machine. Dimming, not disabling — the machine's
