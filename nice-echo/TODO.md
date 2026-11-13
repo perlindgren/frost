@@ -200,3 +200,8 @@ position, and it is commented as such beside the default.
   gate they unblock; they change no behaviour. Bumping the pin means
   installing the new toolchain locally, running the gate, and fixing
   what the new clippy says — in the commit that changes the number.
+  The first pinned run learned one more thing: the install action uses
+  `--profile minimal`, so a pinned toolchain — unlike the runner's
+  preinstalled stable — carries no rustfmt or clippy unless named;
+  `components: rustfmt, clippy` is set beside the pin and travels with
+  every bump.
