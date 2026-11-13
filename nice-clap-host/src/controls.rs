@@ -1,7 +1,9 @@
-//! Main-thread controls; native parenting is the sole unsafe operation here.
+//! Main-thread controls; native parenting is the sole place we touch another
+//! module's window, and the Win32 calls at the end of this file only ever ask
+//! Windows about a child window we already own the parent of.
 use super::*;
 use clack_host::events::{Pckn, event_types::ParamValueEvent};
-use raw_window_handle::HasWindowHandle;
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 pub(in crate::graph) struct Editor {
     // Holds the native parent alive until after PluginGui::destroy.
@@ -132,6 +134,7 @@ impl LiveSession {
             // before releasing it. All operations use the main-thread handle.
             unsafe { gui.set_parent(&handle, window) }.map_err(|e| e.to_string())?;
             gui.show(&handle).map_err(|e| e.to_string())?;
+            ensure_editor_child_shown(parent.as_ref());
             Ok(([size.width, size.height], resizable))
         })();
         if result.is_err() {
@@ -317,5 +320,92 @@ fn platform_api() -> GuiApiType<'static> {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         GuiApiType::X11
+    }
+}
+/// Show the plugin's window if its own `show()` did not.
+///
+/// CLAP's `show` is a request, and a toolkit can answer it without doing
+/// anything. baseview 0.3.3, which every `nice-*` editor embeds, creates a
+/// parented child with the style `WS_CHILD` and nothing else
+/// (`wrappers/win32/style.rs`), and reaches `ShowWindow` from one arm of
+/// `WindowHandle::show()` only (`platform/win/window.rs`). That arm, and the one
+/// in `set_parent()`, both start by taking an unsynchronised
+/// `Cell<Option<WindowInitializer>>` which the plugin's own GUI thread takes too
+/// — its `run_until_closed()` calls `show()` as its first act — and whichever
+/// caller finds the cell already taken returns `Ok(())` having shown nothing. So
+/// our `gui.show()` can succeed truthfully while the child stays hidden, and a
+/// hidden child is not a window that merely has not painted yet: it receives no
+/// paint, no input, and no amount of invalidating the parent will reveal it. What
+/// is left on screen is our own editor window with nothing in it, and no error
+/// anywhere to explain it.
+///
+/// Asking Windows is only what the CLAP request already authorised, and it fixes
+/// any plugin whose toolkit answers the request as literally. `ShowWindowAsync`
+/// and not `ShowWindow`: the child belongs to the plugin's GUI thread, and a post
+/// cannot freeze the rack if that thread stops listening. The child may not exist
+/// yet either — it is created on that other thread — hence the short wait, which
+/// returns the moment a visible child is there. That is the ordinary case, and it
+/// costs one `FindWindowExW`; the half second it can spend is what an editor open
+/// may wait when the other thread is the one being slow.
+///
+/// The cost of doing it by window rather than by plugin: a toolkit that kept a
+/// helper window of its own hidden *directly inside* our editor window would get
+/// it shown too. Nothing in the CLAP contract gives a plugin a hidden child in a
+/// host window, and the alternative — trusting the one call that is documented to
+/// have done it already — is what left the editor empty, so the visible-by-default
+/// guarantee wins here.
+#[allow(unsafe_code)]
+fn ensure_editor_child_shown(parent: &dyn HasWindowHandle) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::ptr::null;
+        use std::thread::sleep;
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            FindWindowExW, GWL_STYLE, GetWindowLongPtrW, SW_SHOW, ShowWindowAsync, WS_VISIBLE,
+        };
+
+        let Ok(handle) = parent.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+            return;
+        };
+        let parent_hwnd = win32.hwnd.get();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut requests = 0;
+        loop {
+            // Walk the direct children of our editor window. The window exists
+            // to hold this one plugin's GUI, so any child inside it is the
+            // plugin's and is meant to be seen.
+            let mut child = unsafe { FindWindowExW(parent_hwnd, 0, null(), null()) };
+            let mut seen = false;
+            let mut hidden = None;
+            while child != 0 {
+                seen = true;
+                let style = unsafe { GetWindowLongPtrW(child, GWL_STYLE) };
+                if (style as u32) & WS_VISIBLE == 0 {
+                    hidden = Some(child);
+                    break;
+                }
+                child = unsafe { FindWindowExW(parent_hwnd, child, null(), null()) };
+            }
+            if let Some(child) = hidden {
+                if requests < 3 {
+                    unsafe { ShowWindowAsync(child, SW_SHOW) };
+                    requests += 1;
+                }
+            } else if seen {
+                return;
+            }
+            if Instant::now() >= deadline {
+                return;
+            }
+            sleep(Duration::from_millis(5));
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = parent;
     }
 }
