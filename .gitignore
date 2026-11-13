@@ -1,4 +1,10 @@
 /target
+# The repository root's own junk drawer — throwaway repro targets,
+# captured toolchain logs, anything a debugging session drops. Named
+# rather than tucked into a `target` ignore because a scratch log is
+# no one's build output; the name says what it is and what may happen
+# to it.
+/.scratch/
 # A member's tests fall back to `<member>/target` when the temp folder is
 # unusable (src/scratch.rs), so every package can grow one of its own —
 # build output and scratch both, never source.
