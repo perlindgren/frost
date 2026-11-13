@@ -190,3 +190,13 @@ position, and it is commented as such beside the default.
   and the licence pass sweeps every bundle present — nice-pi-face's TODO
   carries the same warning about stale binaries wearing fresh licences.
   Check timestamps before copying the folder anywhere a host can see it.
+- The gate now pins the Rust toolchain (`.github/workflows/gate.yml`
+  explains why). This branch paid the lesson: rustc 1.100.0 shipped the
+  day our first gate run ran, and its clippy caught six
+  `needless_range_loop` sites in `antifrost`, `immortal` and
+  `tools/sprite_util` — code byte-identical to `main`, so `main` would
+  have failed its next run the same way. The fixes (iterator loops,
+  no `#[allow]`) ride this branch only because the branch must pass the
+  gate they unblock; they change no behaviour. Bumping the pin means
+  installing the new toolchain locally, running the gate, and fixing
+  what the new clippy says — in the commit that changes the number.
