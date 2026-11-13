@@ -75,7 +75,19 @@ jobs:
             exit 1
           fi
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned for the same reason as the runner above, and this pin was paid
+      # for: rustc 1.100.0 was released on 12 November 2026, and a gate run on
+      # it at 20:38Z failed step by step on `needless_range_loop` hits in
+      # `antifrost`, `immortal` and `tools/sprite_util` — code the branch had
+      # not touched — while the identical tree on the previous stable had been
+      # green seven and a half hours earlier. A `@stable` tag is a moving
+      # window into someone else's release calendar; the day clippy learns a
+      # new rule is a decision about this repository, so it should arrive as
+      # a commit, made beside a local toolchain that answers the same
+      # questions, and not as a red run on an unrelated branch. Bumping the
+      # pin means: install that toolchain locally, run the gate, fix what the
+      # new clippy says, change the number, all in one commit.
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: wasm32-unknown-unknown
 
