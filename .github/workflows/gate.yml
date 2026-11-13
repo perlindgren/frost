@@ -75,8 +75,32 @@ jobs:
             exit 1
           fi
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned for the same reason as the runner above, and this pin was paid
+      # for: rustc 1.100.0 was released on 12 November 2026, and a gate run on
+      # it at 20:38Z failed step by step on `needless_range_loop` hits in
+      # `antifrost`, `immortal` and `tools/sprite_util` — code the branch had
+      # not touched — while the identical tree on the previous stable had been
+      # green seven and a half hours earlier. A `@stable` tag is a moving
+      # window into someone else's release calendar; the day clippy learns a
+      # new rule is a decision about this repository, so it should arrive as
+      # a commit, made beside a local toolchain that answers the same
+      # questions, and not as a red run on an unrelated branch. Bumping the
+      # pin means: install that toolchain locally, run the gate, fix what the
+      # new clippy says, change the number, all in one commit.
+      #
+      # Swapping `@stable` for a version number has one twist the first pinned
+      # run found the hard way. The action installs with `--profile minimal`
+      # and adds nothing else unless it is named: `@stable` only ever carried
+      # rustfmt and clippy because the runner image ships a full-profile stable
+      # and reinstalling the toolchain that is already there removes nothing.
+      # A pinned version arrives fresh and minimal, and `cargo fmt` then dies
+      # through rustup's proxy before reading a single file — exit 1, no diff,
+      # unreproducible on any real machine. So the components the gate judges
+      # with are named beside the pin. The bump ritual covers them too: they
+      # travel with the version.
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
+          components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
@@ -171,6 +195,20 @@ jobs:
       # runner does not see it in the graph at all.
       - name: Clippy, zero warnings, the standalone Pi-Fase
         run: cargo clippy -p nice-pi-face --features standalone --all-targets -- -D warnings
+
+      # The Space Echo, named like the four plugins above it for the reason
+      # this file has now learned five times. No RUSTFLAGS: the tape path is
+      # plain Rust, and nothing in its graph refuses the default baseline.
+      - name: Clippy, zero warnings, the Space Echo
+        run: cargo clippy -p nice-echo --all-targets -- -D warnings
+
+      # Its standalone half beside theirs: the binary, the audio owner and
+      # the settings file live behind `standalone`, and a step that never
+      # turns the feature on would lint a source tree with the application
+      # missing from it. ASIO is not fetched here — `asio-host` is a
+      # `cfg(windows)` dependency, invisible to this runner's graph.
+      - name: Clippy, zero warnings, the standalone Space Echo
+        run: cargo clippy -p nice-echo --features standalone --all-targets -- -D warnings
 
       # The engine's own claim, checked rather than trusted: docs/licensing.md
       # records why these specific lines exist. A published crate that loses
@@ -294,6 +332,18 @@ jobs:
         run: |
           cargo test --no-fail-fast -p nice-pi-face
           cargo test --no-fail-fast -p nice-pi-face --features standalone
+
+      # The Space Echo, named like every plugin before it. Its suite is the
+      # tape path — the mode table the README ships, delay that lengthens as
+      # the tape slows, heads that dull with distance, the spring inside its
+      # bound, the H/M/L steps from the service notes — plus the host-facing
+      # parameter list, the settings round trip, and `tests/no_alloc.rs` as
+      # the audio thread's witness. None of it opens a device, so the
+      # standalone half runs here too.
+      - name: Tests, the Space Echo
+        run: |
+          cargo test --no-fail-fast -p nice-echo
+          cargo test --no-fail-fast -p nice-echo --features standalone
 
       # Compile and link the engine's library tests, including the GPU tree,
       # without executing them on an uncalibrated runner. Compilation errors

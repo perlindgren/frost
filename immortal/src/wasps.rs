@@ -461,9 +461,9 @@ mod tests {
         // All of plant 0's layers, then plant 1's first: the homes
         // follow the layer order, five per plant.
         v.step(0.05, &c, &[5, 1, 0, 0, 0, 0]);
-        for i in 0..6 {
-            assert!(v.wasps[i].placed, "wasp {i} was not spawned");
-            assert_eq!(v.wasps[i].home, i / LAYERS, "wasp {i} homes wrong");
+        for (i, wasp) in v.wasps.iter().enumerate().take(6) {
+            assert!(wasp.placed, "wasp {i} was not spawned");
+            assert_eq!(wasp.home, i / LAYERS, "wasp {i} homes wrong");
         }
         assert!(!v.wasps[6].placed, "wasp 6 spawned early");
 
@@ -553,8 +553,8 @@ mod tests {
 
         v.step(0.05, &centers(), &[3, 0, 0, 0, 0, 0]);
         v.layout(&mut node, [&f, &f]);
-        for i in 0..3 {
-            assert!(node.children[i].shape.is_some(), "wasp {i} is invisible");
+        for (i, child) in node.children.iter().enumerate().take(3) {
+            assert!(child.shape.is_some(), "wasp {i} is invisible");
         }
         for (i, child) in node.children.iter().enumerate().skip(3) {
             assert!(child.shape.is_none(), "unspawned wasp {i} drew");

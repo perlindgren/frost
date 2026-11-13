@@ -537,8 +537,8 @@ impl Demo {
         // Chain link line: player → head → … → tail.
         if !game.trail.is_empty() {
             let mut pts: Vec<[f32; 2]> = vec![self.screen(self.player_at)];
-            for i in 0..game.trail.len() {
-                if let Some(g) = self.glides.get(&game.trail[i]) {
+            for t in &game.trail {
+                if let Some(g) = self.glides.get(t) {
                     pts.push(self.screen(g.at));
                 }
             }

@@ -3295,9 +3295,9 @@ mod tests {
         let (active, started) = demo.grow_plants(9.0);
         assert_eq!(active, 0);
         assert_eq!(started, [false; PLANT_POS.len()]);
-        for i in 0..PLANT_POS.len() {
-            assert_eq!(demo.plants[i].plant.grown_layers(), 0, "plant {i}");
-            assert_eq!(demo.plants[i].water, 1.0, "plant {i}");
+        for (i, plant) in demo.plants.iter().enumerate() {
+            assert_eq!(plant.plant.grown_layers(), 0, "plant {i}");
+            assert_eq!(plant.water, 1.0, "plant {i}");
         }
         // A seed lands in slot 3 and, kept watered, grows: 3⅓
         // growth-clock seconds is just past its base slice — so the
