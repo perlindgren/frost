@@ -2060,6 +2060,7 @@ dependencies = [
  "nice-rack-engine",
  "raw-window-handle",
  "rtrb 0.4.1",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
