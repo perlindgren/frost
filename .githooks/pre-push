@@ -282,6 +282,16 @@ cargo test -p nice-pi-face || fail 'cargo test -p nice-pi-face'
 printf 'pre-push: running `cargo test -p nice-echo`...\n'
 cargo test -p nice-echo || fail 'cargo test -p nice-echo'
 
+# The Echoplex, named like every plugin before it. Its suite is the tape
+# path itself — the delay taper and the wow welded to it, the feedback
+# crossover that stays finite, the front end that softens only what is
+# pushed through it, the dry that any knob leaves alone — plus the
+# host-facing parameter list, the settings round trip, and
+# `tests/no_alloc.rs` carrying no `cfg` so it runs here on Windows too,
+# where the editor's wgpu graph also compiles. None of it opens a device.
+printf 'pre-push: running `cargo test -p nice-ecomplex`...\n'
+cargo test -p nice-ecomplex || fail 'cargo test -p nice-ecomplex'
+
 # The resampler's no-allocation witness hides behind that feature, and the
 # feature is crossbeam and rtrb — no device, no SDK, no platform to disappoint.
 printf 'pre-push: running `cargo test -p nice-common --features standalone`...\n'

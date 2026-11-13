@@ -210,6 +210,20 @@ jobs:
       - name: Clippy, zero warnings, the standalone Space Echo
         run: cargo clippy -p nice-echo --features standalone --all-targets -- -D warnings
 
+      # The Echoplex, named like every plugin above it for the same reason.
+      # No RUSTFLAGS: the tape path is plain Rust, and nothing in its graph
+      # refuses the default baseline.
+      - name: Clippy, zero warnings, the Echoplex
+        run: cargo clippy -p nice-ecomplex --all-targets -- -D warnings
+
+      # Its standalone half beside theirs: the binary, the audio owner and
+      # the settings file live behind `standalone`, and a step that never
+      # turns the feature on would lint a source tree with the application
+      # missing from it. ASIO is not fetched here — `asio-host` is a
+      # `cfg(windows)` dependency, invisible to this runner's graph.
+      - name: Clippy, zero warnings, the standalone Echoplex
+        run: cargo clippy -p nice-ecomplex --features standalone --all-targets -- -D warnings
+
       # The engine's own claim, checked rather than trusted: docs/licensing.md
       # records why these specific lines exist. A published crate that loses
       # assets/fonts/OFL.txt loses the permission to ship a font with it, and
@@ -344,6 +358,18 @@ jobs:
         run: |
           cargo test --no-fail-fast -p nice-echo
           cargo test --no-fail-fast -p nice-echo --features standalone
+
+      # The Echoplex, named like every plugin before it. Its suite is the
+      # tape path — the delay-range taper and the wow coupled to it, the
+      # feedback crossover that stays finite, the tube front end's soft clip,
+      # the dry that survives any knob — plus the host-facing parameter list,
+      # the settings round trip, and `tests/no_alloc.rs` as the audio thread's
+      # witness. None of it opens a device, so the standalone half runs here
+      # too.
+      - name: Tests, the Echoplex
+        run: |
+          cargo test --no-fail-fast -p nice-ecomplex
+          cargo test --no-fail-fast -p nice-ecomplex --features standalone
 
       # Compile and link the engine's library tests, including the GPU tree,
       # without executing them on an uncalibrated runner. Compilation errors
