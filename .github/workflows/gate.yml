@@ -87,8 +87,20 @@ jobs:
       # questions, and not as a red run on an unrelated branch. Bumping the
       # pin means: install that toolchain locally, run the gate, fix what the
       # new clippy says, change the number, all in one commit.
+      #
+      # Swapping `@stable` for a version number has one twist the first pinned
+      # run found the hard way. The action installs with `--profile minimal`
+      # and adds nothing else unless it is named: `@stable` only ever carried
+      # rustfmt and clippy because the runner image ships a full-profile stable
+      # and reinstalling the toolchain that is already there removes nothing.
+      # A pinned version arrives fresh and minimal, and `cargo fmt` then dies
+      # through rustup's proxy before reading a single file — exit 1, no diff,
+      # unreproducible on any real machine. So the components the gate judges
+      # with are named beside the pin. The bump ritual covers them too: they
+      # travel with the version.
       - uses: dtolnay/rust-toolchain@1.100.0
         with:
+          components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
