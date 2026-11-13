@@ -14,8 +14,9 @@ clack-host = "=0.2.0"
 clack-extensions = { version = "=0.2.0", features = ["clack-host", "audio-ports", "state", "latency", "gui", "params", "raw-window-handle_06"] }
 
 [target.'cfg(windows)'.dependencies]
-# Reading a plugin's window style and asking Windows to show that window; see
-# `ensure_editor_child_shown` in src/controls.rs. Version
+# Reading a plugin's window style and asking Windows to show that window, and
+# posting to it to keep its frame clock running; see `ensure_editor_child_shown`
+# and `start_editor_frame_pump` in src/controls.rs. Version
 # and features match the one `nice-tuner/crates/window-position` already uses, so
 # this adds no new crate to the lock.
 windows-sys = { version = "0.52", features = [

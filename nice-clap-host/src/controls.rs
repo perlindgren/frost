@@ -1,6 +1,7 @@
-//! Main-thread controls; native parenting is the sole place we touch another
-//! module's window, and the Win32 calls at the end of this file only ever ask
-//! Windows about a child window we already own the parent of.
+//! Main-thread controls. Native parenting is where we hand a plugin a window of
+//! ours; the Win32 calls at the end of this file are the two places we then ask
+//! Windows about the child inside it — once to be sure it got shown, once to
+//! keep its frame clock running because our own UI thread starves it.
 use super::*;
 use clack_host::events::{Pckn, event_types::ParamValueEvent};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -135,6 +136,7 @@ impl LiveSession {
             unsafe { gui.set_parent(&handle, window) }.map_err(|e| e.to_string())?;
             gui.show(&handle).map_err(|e| e.to_string())?;
             ensure_editor_child_shown(parent.as_ref());
+            start_editor_frame_pump(parent.as_ref());
             Ok(([size.width, size.height], resizable))
         })();
         if result.is_err() {
@@ -403,6 +405,124 @@ fn ensure_editor_child_shown(parent: &dyn HasWindowHandle) {
             }
             sleep(Duration::from_millis(5));
         }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = parent;
+    }
+}
+/// Keep the plugin editor drawing when our own UI thread cannot clock it.
+///
+/// baseview paints a window from one source only: the `WM_TIMER` whose id is its
+/// private `WIN_FRAME_TIMER`, armed for 15 ms inside `BaseviewWindow::create`
+/// (`platform/win/window.rs`) on whichever thread called `set_parent` — for us
+/// that is frost's UI thread. The window procedure ignores that message unless
+/// `wparam` carries the id, and ignores everything else for painting, so nothing
+/// else can produce a frame.
+///
+/// Windows does not queue a `WM_TIMER` when the interval elapses; it generates
+/// one inside `GetMessage`/`PeekMessage`, and only when the thread's queue holds
+/// no other message. A UI thread that keeps handing work to itself therefore
+/// never produces timer messages at all, however diligently it pumps. Measured
+/// on the live rack, the thread owning the editor child used 36.3 % of a core
+/// with an editor open and 37.9 % with none — the spin is not the editor's — and
+/// 93.7 % with the rack window minimized, so its queue is never empty and the
+/// clock never fires. That is the whole bug: a window that exists, is visible,
+/// owns a working swapchain, and is never once asked to draw a frame, which
+/// leaves it the colour of its class background brush forever with no error
+/// anywhere to say so. Posting the tick by hand from outside the process changed
+/// that window from one colour to 247 within a second, while posting the same
+/// message with a different id changed nothing, which is what isolates the clock
+/// as the only broken link. REAPER's UI thread goes idle between frames, which
+/// is why the same plugin draws there and not here.
+///
+/// A thread of our own does the posting because a second `SetTimer` would starve
+/// in exactly the same way. `PostMessageW` does not wait for the receiver, so a
+/// plugin that stops listening cannot freeze the rack through us.
+///
+/// What is posted to is deliberately narrow: a direct child of *our* editor
+/// window whose class name starts with baseview's prefix, ticked only while it
+/// is visible and our window is not minimized, and only until that window stops
+/// existing. A plugin built on another toolkit is never sent anything, because
+/// its frame clock is its own business.
+///
+/// The coupling to own: 4242 is baseview's private timer id, not an API. A
+/// baseview that renamed or re-armed it would stop drawing silently again — the
+/// same silence that hid this bug — which is why the class check is there and
+/// why this comment names the file to look in. Nor does this fix the cause:
+/// frost's UI thread still burns about a third of a core with nothing on
+/// screen, and fixing that is what would make this pump unnecessary.
+#[allow(unsafe_code)]
+fn start_editor_frame_pump(parent: &dyn HasWindowHandle) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::ptr::null;
+        use std::thread::sleep;
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            FindWindowExW, GetClassNameW, IsIconic, IsWindow, IsWindowVisible, PostMessageW,
+            WM_TIMER,
+        };
+
+        /// baseview's `WIN_FRAME_TIMER`, and the period it arms it with.
+        const FRAME_TICK: usize = 4242;
+        const TICK_PERIOD: Duration = Duration::from_millis(15);
+        /// baseview names each window class `Baseview-` plus a GUID, so the
+        /// prefix identifies the toolkit without hard-coding the GUID.
+        const BASEVIEW: [u16; 9] = [
+            b'B' as u16,
+            b'a' as u16,
+            b's' as u16,
+            b'e' as u16,
+            b'v' as u16,
+            b'i' as u16,
+            b'e' as u16,
+            b'w' as u16,
+            b'-' as u16,
+        ];
+
+        let Ok(handle) = parent.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+            return;
+        };
+        let top = win32.hwnd.get();
+
+        let _ = std::thread::Builder::new()
+            .name("nice-clap-editor-tick".to_owned())
+            .spawn(move || {
+                // The window may still be on its way: baseview creates it on
+                // whichever thread answers the CLAP request first. Give it two
+                // seconds, then decide there is nothing of ours to clock.
+                let deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    let mut child = unsafe { FindWindowExW(top, 0, null(), null()) };
+                    let mut editor = 0;
+                    while child != 0 {
+                        let mut name = [0u16; 64];
+                        let len =
+                            unsafe { GetClassNameW(child, name.as_mut_ptr(), name.len() as i32) };
+                        if len as usize >= BASEVIEW.len() && name[..BASEVIEW.len()] == BASEVIEW {
+                            editor = child;
+                            break;
+                        }
+                        child = unsafe { FindWindowExW(top, child, null(), null()) };
+                    }
+                    if editor != 0 {
+                        // Ticking a hidden editor would be the plugin rendering
+                        // at sixty frames a second for nobody.
+                        let worth_drawing = unsafe { IsWindowVisible(editor) } != 0
+                            && unsafe { IsIconic(top) } == 0;
+                        if worth_drawing {
+                            let _ = unsafe { PostMessageW(editor, WM_TIMER, FRAME_TICK, 0) };
+                        }
+                    } else if Instant::now() >= deadline || unsafe { IsWindow(top) } == 0 {
+                        return;
+                    }
+                    sleep(TICK_PERIOD);
+                }
+            });
     }
     #[cfg(not(target_os = "windows"))]
     {
