@@ -857,8 +857,8 @@ mod tests {
         maps[1].set_cell(1, 1, 9, 0);
         assert!(erase_rect(&mut maps, [0, 0, 1, 1]));
         for m in &maps {
-            for i in 0..16 {
-                assert_eq!(m.cells[i], EMPTY_CELL);
+            for cell in &m.cells {
+                assert_eq!(*cell, EMPTY_CELL);
             }
         }
         // And a sweep over an empty rectangle changes nothing, so it

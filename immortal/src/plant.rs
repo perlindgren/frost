@@ -1153,9 +1153,9 @@ mod tests {
         let mut p = Plant::new([&s, &s, &s, &s, &s]);
         // One unit link per slice: the chain runs along +x, one step at a
         // time, from the root joint at the origin.
-        for i in 0..5 {
-            p.links[i].from = [i as f32, 0.0];
-            p.links[i].to = [i as f32 + 1.0, 0.0];
+        for (i, link) in p.links.iter_mut().enumerate() {
+            link.from = [i as f32, 0.0];
+            link.to = [i as f32 + 1.0, 0.0];
         }
         assert_eq!(
             p.layer_midpoints(),
