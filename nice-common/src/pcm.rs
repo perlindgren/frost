@@ -4,11 +4,12 @@
 //! one that asks the device does not. ASIO is the second kind: `ASIOGetChannelInfo`
 //! answers a sample type per channel and the host writes those bytes or hears
 //! noise. cpal hid that behind `SizedSample` and its `cpal::SampleFormat` list,
-//! which is one of the reasons the Windows path needed cpal at all. This module is
-//! the part of that job that is arithmetic rather than plumbing, so it is compiled
-//! and tested on every platform — the Windows-only transport below is the only
-//! thing that can call it in a real build, but the arithmetic is the part worth
-//! having a witness for, and a gate that runs on Linux should not be blind to it.
+//! which is why a Windows host that wanted to ask had to carry cpal to do it.
+//! azo asks per channel and reports the answer — `asio_io` makes one
+//! `channelInfo` call per opened channel and maps its type code here — so what
+//! is left of that job is the arithmetic, with no dependency attached to it and
+//! nothing platform about it. That is the part worth a witness, and a gate that
+//! runs on Linux should not be blind to it.
 //!
 //! Everything here converts between interleaved `f32` — the format frost's rings,
 //! monitors and plugins speak — and one channel's run of native bytes. The byte

@@ -849,8 +849,8 @@ pub fn open(wanted: Wanted<'_>, pump: impl Pump + 'static) -> Result<Transport, 
     }
 
     // One `channelInfo` per opened channel, both directions. The format is
-    // per-channel in ASIO and asio-sys asks channel 0 and assumes the rest agree
-    // (`asio-sys-0.4.0/src/bindings/mod.rs:1091-1098`); here a driver that mixes
+    // per-channel in ASIO, and the binding this workspace used before `azo`
+    // asked channel 0 and assumed the rest agree; here a driver that mixes
     // formats is refused by the channel that differs, in the words the driver
     // itself used to name it.
     let formats = |input: bool, count: u32| -> Result<Vec<Pcm>, String> {

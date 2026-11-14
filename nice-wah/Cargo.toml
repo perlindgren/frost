@@ -18,9 +18,10 @@ crate-type = ["cdylib", "lib"]
 [features]
 default = []
 # Application-owned standalone host. The device transport is nice-common's
-# `audio_io` — the same cpal/JACK/ASIO plumbing the rack opens — and the
-# settings page is the shared `AudioPanel`, so this crate adds no device
-# code of its own: only the plugin adapter between the two rings.
+# `audio_io` — ASIO through azo on Windows, cpal's hosts and JACK elsewhere,
+# the same opener the rack runs — and the settings page is the shared
+# `AudioPanel`, so this crate adds no device code of its own: only the plugin
+# adapter between the two rings.
 standalone = [
     "nice-common/ui",
     "nice-common/audio-io",

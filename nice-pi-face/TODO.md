@@ -158,9 +158,10 @@ measurement.
 
 - The standalone's choice of input channel is a device channel *number* on the
   way in and a channel *count* on the way out: `nice-common`'s
-  `audio_io::open` refuses a number outside the device's layout, while
-  `audio_io::config` hands the same number to cpal as the requested channel
-  count. Picking channel 3 therefore opens a three-channel capture and reads the
+  `audio_io::open` refuses a number outside the device's layout, while the
+  stream built from it takes that same number as its channel count — `config`
+  on cpal's hosts, `inputs: selected + 1` on ASIO. Picking channel 3 therefore
+  opens a three-channel capture and reads the
   third — right channel, three times the traffic — and a stereo-in plugin like
   this one only ever receives one real channel, duplicated into both sides.
   Harmless for a device whose input is one jack, which is what the hardware has;
