@@ -26,20 +26,18 @@
 antifrost.settings.ron
 antifrost.progress.ron
 
-# The plugin's standalone writes its settings the same way, in whatever
-# directory it was started from — and the `*` below is not tidiness: a run
-# before a cold-start test left a `nice-tuner-settings.json.backup-pre-coldtest`
-# sitting in the tree, untracked and unignorable, because the rule named the
-# file exactly. Bundled instruments are the other half: a `.vst3` or `.clap` is
-# a binary another application consumes, built by `cargo xtask bundle`, and
-# `dist/` is where that tool puts one when it is told a different output dir.
-nice-tuner-settings.json
-nice-tuner-settings.json.*
-# The model plugin's standalone writes beside it, same habit and same reason, and
-# a model session records more per-machine detail still: the ASIO driver's name and
-# the folder the user's captures live in.
-nice-nam-settings.json
-nice-nam-settings.json.*
+# Bundled instruments: a `.vst3` or `.clap` is a binary another application
+# consumes, built by `cargo xtask bundle`, and `dist/` is where that tool puts
+# one when it is told a different output dir.
+#
+# Four `.json` settings rules stood here — the tuner's and the model plugin's,
+# each with a `.*` sibling — and they are gone because nothing can create such a
+# file any more. The settings code reaches exactly one path, `current_dir()`
+# joined with the `FILE_NAME` its caller supplies, and every `FILE_NAME` in the
+# workspace ends in `.ron`; it writes with one `fs::write` to that same path and
+# has no second road to a file on disk (see `path()` and `save_to()` in
+# `nice-common/src/settings.rs`). A name no code can produce only sits here
+# waiting to be mistaken for a rule somebody forgot to finish.
 *.vst3
 *.clap
 dist/
@@ -71,7 +69,11 @@ __pycache__/
 # MIT repository, which is a thing a repository cannot undo by deleting a commit.
 .cargohome/
 
-# Standalone RON settings (local device choices and model paths).
+# Standalone settings (local device choices and model paths), written beside
+# whatever directory the app was launched from. The `.*` sibling on every name
+# is not tidiness: a run interrupted by a cold-start test once left a
+# `.backup-pre-coldtest` sitting in the tree, untracked and unignorable, because
+# the rule named the file exactly.
 nice-tuner-settings.ron
 nice-tuner-settings.ron.*
 nice-nam-settings.ron
