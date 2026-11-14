@@ -34,7 +34,6 @@ pollster = "0.4"
 keyboard-types = "0.8.3"
 crossbeam = "0.8"
 rtrb = "0.4"
-cpal = { version = "0.18", optional = true }
 plugin-buffer = { path = "../nice-tuner/crates/plugin-buffer", optional = true }
 tracing = { version = "0.1", optional = true }
 nice-common = { path = "../nice-common", features = ["widgets"] }
@@ -63,6 +62,13 @@ window-position = { path = "../nice-tuner/crates/window-position", optional = tr
 [target.'cfg(target_os = "macos")'.dependencies]
 macos-metal-view = { path = "../nice-common/crates/macos-metal-view" }
 macos-frame-sync = { path = "../nice-tuner/crates/macos-frame-sync" }
+
+[target.'cfg(not(windows))'.dependencies]
+# The CoreAudio/ALSA/JACK road. On Windows the model runs on the ASIO driver
+# through `asio_io` — one clock for the input from the guitar and the output to
+# the amp — so this crate declares no cpal there either, as `nice-common`
+# explains.
+cpal = { version = "0.18", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "0.18", features = ["jack"], optional = true }

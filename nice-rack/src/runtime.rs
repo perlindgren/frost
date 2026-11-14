@@ -1409,8 +1409,12 @@ mod tests {
             settings.output_device = None;
         }
         if settings.backend.is_none() {
+            // A rack that saved no backend still has to name one the backend
+            // rules accept, and on Windows that is ASIO: every other key is
+            // refused at resolve there, so naming the system host here would
+            // hand these tests a settings file their own code rejects.
             let backend = if cfg!(windows) {
-                "wasapi"
+                "asio"
             } else if cfg!(target_os = "macos") {
                 "core-audio"
             } else {

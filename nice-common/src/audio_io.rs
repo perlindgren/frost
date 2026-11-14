@@ -4,9 +4,19 @@ use crate::{
     OutputChannels, Preferences, Settings,
     resample::{Monitor, StereoFrame},
 };
+// The two roads this module can carry traffic on, and a Windows build is built
+// with one of them: cpal is a `cfg(not(windows))` dependency of this crate
+// (`Cargo.toml`), so everything below that speaks cpal is compiled away rather
+// than answering "no host" at run time. On Windows the road is
+// [`crate::asio_io`], and the code that could open a WASAPI stream is not linked
+// in to be asked.
+#[cfg(not(windows))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+#[cfg(not(windows))]
 use cpal::{Device, SampleFormat, Stream, StreamConfig, SupportedStreamConfigRange};
-use crossbeam::channel::{Receiver, Sender, bounded};
+#[cfg(not(windows))]
+use crossbeam::channel::Sender;
+use crossbeam::channel::{Receiver, bounded};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -29,22 +39,28 @@ pub struct Endpoints {
 /// runs the callbacks; both sides of the transport and the application DSP
 /// owner are identical, so recovery does not depend on the backend.
 enum Streams {
-    Cpal {
-        _input: Stream,
-        _output: Stream,
-        _asio: Option<crate::devices::AsioStreamGuard>,
-    },
+    /// Two `cpal::Stream`s, one per direction. This crate declares no cpal on
+    /// Windows, so there is nothing for this variant to hold: the transport it
+    /// stands for is not compiled there, rather than refused at run time.
+    #[cfg(not(windows))]
+    Cpal { _input: Stream, _output: Stream },
+    /// One driver carrying both directions, with its callbacks on the driver's
+    /// own thread. The value owns the process's one ASIO slot and the guard that
+    /// keeps the settings page from loading that driver behind its back, so it
+    /// is an owner even where only [`DeviceStreams::failure`] reads it.
+    #[cfg(all(windows, feature = "asio-host"))]
+    Asio(crate::asio_io::Transport),
     #[cfg(target_os = "linux")]
     Jack(Box<jack_io::Transport>),
 }
 pub struct DeviceStreams {
-    /// Never read on purpose: owning these streams *is* what keeps the device
-    /// callbacks running, and dropping this value is what stops them. Only the
-    /// JACK branch of `failure` below reaches into the field, and only on Linux
-    /// — so on every other platform the linter sees an unread field where there
-    /// is really an owner. The gate never noticed, because its one runner is
-    /// Linux; the first Windows `--features standalone` clippy of any plugin is
-    /// what surfaced it.
+    /// Never read as audio on purpose: owning these streams *is* what keeps the
+    /// device callbacks running, and dropping this value is what stops them.
+    /// Only the JACK and ASIO branches of `failure` below reach into the field,
+    /// and each only where it is compiled — so on a plain WASAPI or ALSA build the
+    /// linter sees an unread field where there is really an owner. The gate never
+    /// noticed, because its one runner is Linux; the first Windows
+    /// `--features standalone` clippy of any plugin is what surfaced it.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     streams: Streams,
     errors: Receiver<String>,
@@ -52,15 +68,42 @@ pub struct DeviceStreams {
 }
 impl DeviceStreams {
     pub fn failure(&self) -> Option<String> {
-        #[cfg(target_os = "linux")]
-        if let Streams::Jack(streams) = &self.streams
-            && let failure @ Some(_) = streams.failure()
-        {
-            return failure;
+        // A `match` rather than a chain of `if let`s, because on Windows this
+        // enum has exactly one variant left: an `if let` in front of the only
+        // thing a value can be is a pattern the compiler calls irrefutable, and
+        // the gate's clippy runs with `-D warnings`.
+        match &self.streams {
+            #[cfg(target_os = "linux")]
+            Streams::Jack(streams) => streams.failure().or_else(|| self.errors.try_recv().ok()),
+            // The ASIO transport distinguishes two kinds of news on its one
+            // channel: a stream the driver has made unusable, and one block the
+            // driver dropped. Only the first is a reason to reopen, and this
+            // transport's caller reopens on anything it hears
+            // (`nice-rack/src/runtime.rs:467-476`), while cpal delivered both
+            // through one error callback and could not tell them apart
+            // (`cpal-0.18.2/src/host/asio/stream.rs:1036-1042`). So a dropped
+            // block is counted here as the dropout it is, and the channel drained
+            // to the first message that means the stream has to go.
+            #[cfg(all(windows, feature = "asio-host"))]
+            Streams::Asio(stream) => {
+                while let Some(failure) = stream.failure() {
+                    if failure.invalidated {
+                        return Some(failure.message);
+                    }
+                    self.counters.dropped.fetch_add(1, Ordering::Relaxed);
+                }
+                self.errors.try_recv().ok()
+            }
+            #[cfg(not(windows))]
+            Streams::Cpal { .. } => self.errors.try_recv().ok(),
         }
-        self.errors.try_recv().ok()
     }
 }
+// Everything between here and `rings` is one host's idea of a device: a `Host`
+// to enumerate, a `Device` to ask for configurations, a `Stream` to build per
+// sample format. None of it exists on Windows, where the equivalents are
+// `azo`'s driver and [`crate::asio_io::open`].
+#[cfg(not(windows))]
 fn device(host: &cpal::Host, name: &str, input: bool) -> Result<Device, String> {
     let devices = if input {
         host.input_devices()
@@ -80,6 +123,7 @@ fn device(host: &cpal::Host, name: &str, input: bool) -> Result<Device, String> 
             format!("Device '{name}' reports no audio channels, or is no longer available")
         })
 }
+#[cfg(not(windows))]
 fn config(
     device: &Device,
     input: bool,
@@ -131,6 +175,11 @@ fn config(
     ))
 }
 
+/// cpal's one error channel per stream, worded the way this module's callers
+/// already read `failure()`. The ASIO transport reports on a channel of its own
+/// instead, with the two kinds of news kept apart
+/// ([`DeviceStreams::failure`]), which is why this sits with the cpal half.
+#[cfg(not(windows))]
 fn errors(
     sender: Sender<String>,
     direction: &'static str,
@@ -140,6 +189,7 @@ fn errors(
         let _ = sender.try_send(format!("{direction} device '{name}': {error}"));
     }
 }
+#[cfg(not(windows))]
 fn capture<T: cpal::SizedSample>(
     device: &Device,
     config: &StreamConfig,
@@ -170,6 +220,7 @@ where
         )
         .map_err(|error| error.to_string())
 }
+#[cfg(not(windows))]
 fn playback<T: cpal::SizedSample + cpal::FromSample<f32>>(
     device: &Device,
     config: &StreamConfig,
@@ -249,6 +300,153 @@ pub(super) fn rings(
         monitor,
     })
 }
+/// The device ends of the two rings, filled from the driver's own thread.
+///
+/// cpal gave each direction its own callback, its own sample type and its own
+/// conversion; [`crate::asio_io`] converts the driver's bytes once, on the way
+/// in and on the way out, and hands both directions as interleaved `f32`. So
+/// this is the whole bridge, for both directions at once — which is also the
+/// whole reason it can be one object: ASIO runs the input and the output off one
+/// clock, in one callback, and the two `cpal::Stream`s it replaces were two
+/// clocks pretending to be one.
+#[cfg(all(windows, feature = "asio-host"))]
+struct Driver {
+    capture: rtrb::Producer<[f32; 2]>,
+    monitor: Monitor<StereoFrame>,
+    route: OutputChannels,
+    counters: Arc<Counters>,
+    /// The settings page's 1-based input channel, minus one: the index into each
+    /// frame of the block, which carries `inputs` channels.
+    selected: usize,
+    inputs: usize,
+    outputs: usize,
+}
+
+#[cfg(all(windows, feature = "asio-host"))]
+impl crate::asio_io::Pump for Driver {
+    fn input(&mut self, interleaved: &[f32]) {
+        for frame in interleaved.chunks_exact(self.inputs) {
+            let sample = frame[self.selected];
+            if self.capture.push([sample, sample]).is_err() {
+                self.counters.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        self.counters.input.fetch_add(1, Ordering::Release);
+    }
+
+    fn output(&mut self, interleaved: &mut [f32]) {
+        self.monitor.begin_block();
+        for frame in interleaved.chunks_exact_mut(self.outputs) {
+            let [l, r] = self.monitor.next_sample().0;
+            match self.route {
+                // A channel this route does not name keeps the zero the
+                // transport put there before asking: zero is silence in every
+                // format it writes. cpal filled its whole buffer with
+                // `T::EQUILIBRIUM` for the same reason
+                // (`cpal-0.18.2/src/host/asio/stream.rs:648`).
+                OutputChannels::Mono(channel) => frame[channel as usize - 1] = (l + r) * 0.5,
+                OutputChannels::Stereo([a, b]) => {
+                    frame[a as usize - 1] = l;
+                    frame[b as usize - 1] = r;
+                }
+            }
+        }
+        self.counters.output.fetch_add(1, Ordering::Release);
+    }
+}
+
+/// Open the one ASIO driver both directions name, on the settings page's rate
+/// and period.
+///
+/// Nothing here is chosen. [`crate::asio_io::open`] takes the rate and the buffer
+/// it is handed or refuses in words, so what is left is the two translations the
+/// settings page's choices need — a 1-based input channel into a count of channels
+/// to open, a 1-based output route into a count — and the rings, sized from the
+/// same four numbers before the driver starts because the pump carries them in.
+#[cfg(all(windows, feature = "asio-host"))]
+fn open_asio<P: Preferences>(settings: &Settings<P>) -> Result<(DeviceStreams, Endpoints), String> {
+    let input_name = settings
+        .input_device
+        .as_deref()
+        .ok_or("Select an input device")?;
+    let output_name = settings
+        .output_device
+        .as_deref()
+        .ok_or("Select an output device")?;
+    let selected = settings
+        .input_channel
+        .ok_or("Select an input channel")?
+        .checked_sub(1)
+        .ok_or("Input channels start at 1")?;
+    let route = settings.output_channels.ok_or("Select output channels")?;
+    let wanted = crate::asio_io::Wanted {
+        input: input_name,
+        output: output_name,
+        input_rate: settings.sample_rate.ok_or("Missing sample rate")? as u32,
+        output_rate: settings
+            .output_sample_rate
+            .ok_or("Missing output sample rate")? as u32,
+        input_frames: settings.period_size.ok_or("Missing buffer size")?,
+        output_frames: settings
+            .output_period_size
+            .ok_or("Select output buffer size")?,
+        inputs: selected + 1,
+        outputs: route.required_channels(),
+    };
+    // `fits` is not redundant here even though `outputs` was derived from the
+    // route: a hand-edited settings file can name channel 0, or the same channel
+    // twice, and `required_channels` of `[0, 0]` is `0` — which would open a
+    // driver with no outputs and then index `frame[0 - 1]`.
+    if !route.fits(wanted.outputs) {
+        return Err("Output route is outside the device layout".into());
+    }
+    let Rings {
+        capture: capture_queue,
+        input: input_queue,
+        output: output_queue,
+        monitor,
+    } = rings(
+        wanted.input_rate as f64,
+        wanted.output_rate as f64,
+        wanted.input_frames,
+        wanted.output_frames,
+        settings.input_latency,
+    )?;
+    let counters = Arc::new(Counters::default());
+    // The pump has to know the shape of the block it will be handed, and `wanted`
+    // is taken by `open` — so the two counts it implies are read out first.
+    let (inputs, outputs) = (wanted.inputs as usize, wanted.outputs as usize);
+    let stream = crate::asio_io::open(
+        wanted,
+        Driver {
+            capture: capture_queue,
+            monitor,
+            route,
+            counters: counters.clone(),
+            selected: selected as usize,
+            inputs,
+            outputs,
+        },
+    )
+    .map_err(|error| format!("Attempt to open ASIO driver '{input_name}' failed: {error}"))?;
+    Ok((
+        DeviceStreams {
+            streams: Streams::Asio(stream),
+            // The ASIO transport reports on its own channel, held by
+            // `crate::asio_io::Transport`. This end is left with no sender, the
+            // same way the JACK transport leaves it
+            // (`audio_io/jack_io.rs:218`), so `failure` answers `None` from here
+            // for as long as the stream lives.
+            errors: bounded(16).1,
+            counters,
+        },
+        Endpoints {
+            input: input_queue,
+            output: output_queue,
+        },
+    ))
+}
+
 /// Call off the UI thread. Settings must already be resolved against a snapshot.
 /// Capture selects a physical input channel and duplicates it into the rack's
 /// stereo input. The graph's stereo output is routed without mono downmixing
@@ -267,7 +465,35 @@ pub fn open<P: Preferences>(settings: &Settings<P>) -> Result<(DeviceStreams, En
     if backend == "dummy" {
         return Err("The dummy backend opens no devices; leave audio off instead".into());
     }
-    let asio = (backend == "asio").then(crate::devices::asio_stream_guard);
+    if backend == "asio" {
+        // One driver, both directions, no cpal in the path: see `open_asio`.
+        #[cfg(all(windows, feature = "asio-host"))]
+        return open_asio(settings);
+        #[cfg(not(all(windows, feature = "asio-host")))]
+        return Err("ASIO is offered by the Windows standalone build only".into());
+    }
+    #[cfg(not(windows))]
+    return open_cpal(settings);
+    // And there is no third transport to fall back on. This crate declares no
+    // cpal on Windows (`Cargo.toml`), so a key that is neither
+    // `asio` nor `dummy` names a host this binary does not contain — a settings
+    // file from another platform, or one edited by hand — rather than a device
+    // this process could go and look for.
+    #[cfg(windows)]
+    return Err(format!(
+        "Audio backend '{backend}' is not built into a Windows host: this platform speaks ASIO or nothing"
+    ));
+}
+
+/// The two streams of the platform that has cpal: one device per direction, each
+/// with its own clock, its own sample format and its own error callback, with
+/// [`crate::resample::Monitor`] between them.
+#[cfg(not(windows))]
+fn open_cpal<P: Preferences>(settings: &Settings<P>) -> Result<(DeviceStreams, Endpoints), String> {
+    let backend = settings
+        .backend
+        .as_deref()
+        .ok_or("Select an audio backend")?;
     let host = crate::devices::open_host(backend).ok_or("Audio backend is unavailable")?;
     let input_name = settings
         .input_device
@@ -379,7 +605,6 @@ pub fn open<P: Preferences>(settings: &Settings<P>) -> Result<(DeviceStreams, En
             streams: Streams::Cpal {
                 _input: input_stream,
                 _output: output_stream,
-                _asio: asio,
             },
             errors: receiver,
             counters: counter,

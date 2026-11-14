@@ -18,11 +18,11 @@ fn main() {
             let backend = argv
                 .get(2)
                 .filter(|s| !s.is_empty())
-                .cloned()
-                .unwrap_or_else(|| "auto".to_owned());
+                .map(String::as_str)
+                .unwrap_or(nice_tuner::devices::LIST_BACKEND_WHEN_UNNAMED);
             let inp = argv.get(3).filter(|s| !s.is_empty()).map(String::as_str);
             let outp = argv.get(4).filter(|s| !s.is_empty()).map(String::as_str);
-            let snap = nice_tuner::devices::snapshot(&backend, inp, outp);
+            let snap = nice_tuner::devices::snapshot(backend, inp, outp);
             print!(
                 "{}",
                 snap.to_ron()

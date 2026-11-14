@@ -24,12 +24,14 @@ cargo fmt --all -- --check
 echo "== clippy (the plugin's own configs, deny warnings) =="
 cargo clippy -p nice-tuner -p pitch -p xtask --all-targets -- -D warnings
 cargo clippy -p nice-tuner --features standalone --all-targets -- -D warnings
-# Inert on non-Windows (cpal gates its ASIO host by target); real there. cpal's
-# build script finds the Steinberg SDK itself — CPAL_ASIO_DIR, then
-# <temp>/asio_sdk, then a download — but the download step passes an unquoted
-# path to PowerShell, so a %TEMP% under a user name with a space needs
-# CPAL_ASIO_DIR set by the developer instead. See nice-tuner/README.md.
-cargo clippy -p nice-tuner --features standalone-asio --all-targets -- -D warnings
+# No second feature set follows: ASIO arrives with `standalone` on Windows and
+# nowhere else, through the optional `asio-host` carrier (see the feature note
+# in nice-tuner/Cargo.toml), so there is nothing left to add to the line above.
+# The `--features standalone-asio` step that stood here asked for a feature the
+# manifest dropped in 3130e2e, so this script stopped at it on every platform:
+# `cargo clippy -p nice-tuner --features standalone-asio --all-targets` answers
+# "error: the package 'nice-tuner' does not contain this feature:
+# standalone-asio" with exit code 101, before compiling anything.
 
 echo "== plugin lib (cdylib) check =="
 cargo check -p nice-tuner
@@ -38,9 +40,13 @@ echo "== standalone check =="
 cargo check -p nice-tuner --features standalone
 
 echo "== windows target typecheck (cfg(windows) code a macOS run never compiles) =="
-# `standalone` WITHOUT asio here: ASIO's C++ build script cannot
-# cross-compile from macOS. This still type-and-name-checks all the
-# Win32 window-placement code, which no macOS pass ever sees.
+# What this step is for: the Win32 window-placement code and the ASIO transport,
+# neither of which a macOS pass ever compiles. The C++ build script that used to
+# make this impossible for the ASIO path is gone — `azo` declares the interfaces
+# by hand and builds nothing — so nothing about ASIO holds this step back any
+# more. Whether it now reaches that code from a macOS machine has not been
+# measured here; the workspace's Windows coverage runs on a Windows runner, in
+# the `windows` job of `.github/workflows/gate.yml`.
 if rustup target list --installed 2>/dev/null | grep -q x86_64-pc-windows-msvc; then
   cargo clippy -p nice-tuner --features standalone --target x86_64-pc-windows-msvc -- -D warnings
 else

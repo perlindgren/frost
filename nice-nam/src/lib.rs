@@ -23,15 +23,16 @@ const DEFAULT_SIZE: LogicalSize<f32> = LogicalSize::new(900.0, 620.0);
 const RESIZE_HINT: ResizeHint = ResizeHint::resizable().with_min_logical_size(MIN_SIZE);
 pub static STANDALONE_MODE: AtomicBool = AtomicBool::new(false);
 /// Gaps the audio device reported since the streams were opened, counted in the
-/// standalone's cpal error callback and read by the main view.
+/// standalone's stream error callback and read by the main view.
 ///
-/// A static, like `STANDALONE_MODE`, because a cpal error callback is built per
-/// stream and is handed no reference to the plugin's shared state. It counts what
-/// the backend reports and nothing more: WASAPI reports a gap when the buffer
-/// comes back flagged `DATA_DISCONTINUITY` — an actual hole in the playback — and
-/// the ASIO host reports one when it cannot keep up. A backend that never reports
-/// keeps this at zero, so zero means the device said nothing, which is why the
-/// label states the count instead of declaring the audio healthy.
+/// A static, like `STANDALONE_MODE`, because a stream error callback is built
+/// per stream and is handed no reference to the plugin's shared state. It counts
+/// what the backend reports and nothing more: a cpal backend on the platforms
+/// that still have one reports a gap — WASAPI flags `DATA_DISCONTINUITY`, an
+/// actual hole in the playback — and the ASIO transport reports one when it
+/// cannot keep up. A backend that never reports keeps this at zero, so zero
+/// means the device said nothing, which is why the label states the count
+/// instead of declaring the audio healthy.
 pub static DROP_OUTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "standalone")]
 pub use nice_common::devices;

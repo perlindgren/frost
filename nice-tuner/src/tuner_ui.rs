@@ -1264,14 +1264,18 @@ impl TunerUi {
     /// Read the current backend ONCE: devices, defaults, rates, buffers.
     ///
     /// ASIO is asked through a child process, because asking in process is not
-    /// free while audio runs: the SDK keeps ONE loaded driver per process and
-    /// the temporary handle a capability query opens shuts that driver down on
-    /// the way out (`asio-sys` 0.4.0 `bindings/mod.rs:1035`), so a query here
-    /// would silence the live stream with nothing reported. The child opens no
+    /// free while audio runs: ASIO allows one driver open per process, and a
+    /// capability query opens the driver it asks about — measured on the SDK
+    /// binding this workspace used before `azo`, where the second load answered
+    /// `DriverAlreadyExists` and the temporary handle shut the live driver down
+    /// on the way out, so a query here would silence the stream with nothing
+    /// reported. `azo` carries the same one-driver rule; what this process may
+    /// answer while a stream owns the driver is unknowns by design (see
+    /// `devices::asio_stream_live`). The child opens no
     /// stream, so it loads the SELECTED driver freely and answers its real
     /// rates, channels and buffer ranges. The parent's own view is unioned in
     /// as well — while a stream is running its ASIO capability answers are
-    /// unknowns by design (see `devices::asio_stream_live`), so the union adds
+    /// unknowns by design, so the union adds
     /// driver names, which cost nothing to read, and nothing else.
     #[cfg(feature = "standalone")]
     fn take_snapshot(&mut self) {
@@ -1413,14 +1417,16 @@ impl TunerUi {
         self.settings.period_size = None;
         self.settings.output_period_size = None;
         self.settings.output_channels = None;
-        // Devices fall to the probed defaults — for ASIO the first
-        // driver with at least one input channel (devices.rs filters
-        // the nomination by capability, registry order).
+        // Devices fall to the probed defaults — which under ASIO is NO
+        // device: `default_device_names("asio")` nominates nothing rather
+        // than loading registered drivers one by one until one reports an
+        // input, so the rows show dashes here and wait for the user to name
+        // one. Other backends do have a system default to fall to.
         self.settings.input_device.clone_from(&self.default_in);
         self.settings.output_device = if self.backend_key() == "asio" {
-            // One ASIO driver per process is not policy but asio-sys
-            // law: input and output must be the SAME interface, and
-            // the input-capable one owns that choice.
+            // One ASIO driver per process is not this application's policy
+            // but the API's own rule: input and output must be the SAME
+            // interface, and the input-capable one owns that choice.
             self.settings.input_device.clone()
         } else {
             self.default_out.clone()
@@ -2145,9 +2151,14 @@ impl TunerUi {
         let at_default = raw.is_empty() || raw == def_raw;
         match dd {
             Dropdown::Backend => {
-                // Row 0 (the platform host) means follow → None. A plain
-                // "auto" row is a CHOICE — kept as Some("auto"), the one
-                // road that may go looking for jack.
+                // A backend row is always a CHOICE, stored as `Some(key)`:
+                // this dropdown has no "follow the default" value, because
+                // booting silent until the user speaks is the rule
+                // (`BACKEND_WHEN_UNSET`), and a row that meant "whatever the
+                // system host is" would be exactly the accident that rule
+                // exists to prevent. On Windows the rows are ASIO and no
+                // audio: no `"auto"` row is offered there, because there is
+                // no system host for it to mean.
                 self.settings.backend = if at_default { None } else { Some(raw) };
                 self.settings.input_channel = None;
                 self.settings.jack_output_right = None;
@@ -3192,18 +3203,28 @@ mod tests {
     #[test]
     fn incomplete_audio_settings_disable_apply_and_unknown_defaults_stay_unset() {
         let mut ui = channel_ui();
-        ui.settings.backend = Some("core-audio".into());
+        // A backend this build offers, with nothing selected under it, so what
+        // blocks Apply here is the missing choices and not the backend word.
+        // Windows offers one backend, which is why this is a `cfg!` and not a
+        // constant: `"core-audio"` is refused there, and for other reasons.
+        ui.settings.backend = Some(if cfg!(windows) { "asio" } else { "core-audio" }.into());
         ui.snap = Some(crate::devices::Snapshot::default());
         assert!(ui.apply_blocker().is_some());
         assert_eq!(ui.buffer_default(Dropdown::InputBuffer), None);
         assert_eq!(ui.buffer_default(Dropdown::OutputBuffer), None);
         assert_eq!(ui.value_text(Dropdown::InputBuffer), "—");
         assert_eq!(ui.value_text(Dropdown::OutputBuffer), "—");
+        // A word no platform offers: refused, in the words this platform uses
+        // for a backend it cannot open.
         ui.settings.backend = Some("unsupported-backend".into());
+        let blocker = ui.apply_blocker().unwrap();
         assert!(
-            ui.apply_blocker()
-                .unwrap()
-                .contains("not supported by the standalone application")
+            blocker.contains(if cfg!(windows) {
+                "ASIO"
+            } else {
+                "not supported by the standalone application"
+            }),
+            "{blocker}"
         );
     }
 

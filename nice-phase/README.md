@@ -42,10 +42,10 @@ cargo run -p nice-phase --features standalone -- --list-devices
 
 The binary is an app-owned host: nice-plug's own standalone wrapper is
 neither built nor patched. The device transport is `nice_common::audio_io`
-— the same cpal, JACK and ASIO-guarded opener the rack runs — and the audio
-settings page behind the corner cog is the same panel nice-nam, nice-tuner,
-nice-wah and the rack show, so device names, rates and buffer choices mean
-one thing across the workspace. `--list-devices` prints what the current
+— ASIO on Windows, cpal's hosts and JACK elsewhere, the same opener the rack
+runs — and the audio settings page behind the corner cog is the same panel
+nice-nam, nice-tuner, nice-wah and the rack show, so device names, rates and
+buffer choices mean one thing across the workspace. `--list-devices` prints what the current
 backend sees and exits, without a window and without opening anything.
 
 Settings are `nice-phase-settings.ron` in the working directory: the audio

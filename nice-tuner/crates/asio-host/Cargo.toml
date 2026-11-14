@@ -2,7 +2,7 @@
 name = "asio-host"
 version = "0.1.0"
 edition = "2024"
-description = "Windows-only carrier of CPAL's ASIO host, switched on by `standalone`"
+description = "Windows-only carrier of the azo ASIO transport, switched on by `standalone`"
 license.workspace = true
 publish = false
 

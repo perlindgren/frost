@@ -2,20 +2,16 @@
 #   [ScriptBlock]::Create((Get-Content nice-tuner\scripts\check.ps1 -Raw)).Invoke()
 # (the ScriptBlock dance bypasses machine AllSigned policy).
 #
-# CPAL_ASIO_DIR is not set here, and deliberately so: asio-sys finds the SDK on
-# its own (env var, then <temp>\asio_sdk, then a download from steinberg.net).
-# That third step dies on an unquoted -OutFile when %TEMP% sits under a user
-# name with a space — asio-sys 0.4.0 build.rs:303-311 — in which case set
-# CPAL_ASIO_DIR in your own environment to an unpacked SDK kept outside the
-# tree. The SDK's licence is proprietary and this repository is MIT/Apache, so
-# it stays out of the tree regardless, and the pre-commit hook refuses an
-# `asiosdk` that grows into it anyway.
+# Nothing has to be installed for the ASIO path: the transport is `azo`, whose
+# FFI layer declares the ASIO COM interfaces in Rust, so there is no Steinberg
+# SDK to unpack and `.cargo/config.toml` sets no `CPAL_ASIO_DIR`. The SDK's
+# licence is proprietary and this repository is MIT/Apache, so it stays out of
+# the tree regardless, and the pre-commit hook still refuses an `asiosdk` that
+# grows into it anyway.
 #
 # Why this exists next to check.sh:
 # - msys bash cannot initialize inside confined shells (0xC0000142), and
-#   plain `bash` on PATH is WSL's, which is E_ACCESSDENIED there;
-# - asio-sys's build script wants the unpacked ASIO SDK and otherwise dials
-#   steinberg.net.
+#   plain `bash` on PATH is WSL's, which is E_ACCESSDENIED there.
 # Bundling is no longer skipped, as it was when this file was written: xtask's
 # dependency graph (goblin via nice-plug-xtask) is in the workspace lock now,
 # so the step runs here like anywhere else. What it produces has still never
@@ -39,7 +35,10 @@ function Step {
 Step "cargo fmt" "cargo fmt --all -- --check"
 Step "clippy plugin" "cargo clippy -p nice-tuner -p pitch -p xtask --all-targets -- -D warnings"
 Step "clippy standalone" "cargo clippy -p nice-tuner --features standalone --all-targets -- -D warnings"
-Step "clippy standalone-asio" "cargo clippy -p nice-tuner --features standalone-asio --all-targets -- -D warnings"
+# The `clippy standalone-asio` step that stood here asked for a feature the
+# manifest dropped in 3130e2e; cargo refuses an unknown feature before it
+# compiles anything, so this gate stopped here on every platform. ASIO comes
+# with `standalone` on Windows and nowhere else.
 Step "plugin lib check" "cargo check -p nice-tuner"
 Step "standalone check" "cargo check -p nice-tuner --features standalone"
 if (rustup target list --installed 2>$null | Select-String -Quiet 'x86_64-pc-windows-msvc') {

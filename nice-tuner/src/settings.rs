@@ -236,8 +236,13 @@ mod tests {
             ));
             assert!(!buffers_must_match(backend, None, None));
         }
+        // A backend the rules say nothing about does not link sizes just
+        // because the two names happen to match. `"alsa"` is the honest
+        // example: a real entry on the offer list, and not one that shares a
+        // buffer between its directions. (`"wasapi"` stood here while Windows
+        // still offered it; it is not a key any platform accepts now.)
         assert!(!buffers_must_match(
-            "wasapi",
+            "alsa",
             Some("Interface"),
             Some("Interface")
         ));
@@ -447,13 +452,15 @@ mod tests {
         };
         s.normalize();
         assert_eq!(s.backend.as_deref(), Some("core-audio"));
-        // Correct values pass through untouched.
+        // Correct values pass through untouched. `"asio"` is the example
+        // because every platform knows that key; `"wasapi"` stood here while
+        // Windows still offered it, and no platform accepts it now.
         let mut ok = Settings {
-            backend: Some("wasapi".into()),
+            backend: Some("asio".into()),
             ..Default::default()
         };
         ok.normalize();
-        assert_eq!(ok.backend.as_deref(), Some("wasapi"));
+        assert_eq!(ok.backend.as_deref(), Some("asio"));
     }
 
     #[test]

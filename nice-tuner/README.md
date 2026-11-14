@@ -146,14 +146,15 @@ restoration/persistence. It never relaxes the app's unsafe-code guard. Without
 that feature, placement is left to baseview and the operating system.
 
 **The standalone binary reads audio settings from `nice-tuner-settings.ron`.**
-The application owns its CPAL streams or JACK client and keeps the plugin and editor alive when
+The application owns its streams — the ASIO driver on Windows, cpal's devices
+and JACK clients elsewhere — and keeps the plugin and editor alive when
 Apply replaces those streams. An unset backend opens a silent application. The
 one exception is `--list-devices [backend] [input] [output]`, which prints one
 line of RON and exits without a window or a stream; it exists so a process that
 holds no ASIO driver can enumerate drivers the live app cannot see.
 
 ```sh
-./target/debug/nice-tuner-standalone --list-devices wasapi
+./target/debug/nice-tuner-standalone --list-devices asio
 # {"inputs":["Input 1/2 (Komplete Audio 6 MK2)",…],"outputs":[…],"def_in":…,"rates":[…]}
 ```
 
@@ -194,8 +195,9 @@ settings.
 ### Linux + JACK
 
 The normal `--features standalone` build includes **Linux JACK** under the settings cogwheel →
-backend, alongside ALSA. JACK is offered only on Linux; Windows retains its
-WASAPI/optional ASIO backends and macOS uses Core Audio.
+backend, alongside ALSA. JACK is offered only on Linux, and macOS uses Core Audio.
+Windows has no cpal backend in its offer at all: it lists ASIO and no audio, for
+the reason in the next section.
 
 Building on Linux requires JACK development files discoverable through
 `pkg-config` (for example, `jack2` on Arch or `libjack-jackd2-dev` on Debian).
@@ -253,39 +255,28 @@ an unknown rather than a guess. `driver_rate` and `buffer_pref` are read from
 the driver itself, for the driver named on the command line.
 
 One row is narrower than it looks: **Input channel** lists one entry per physical
-input, but cpal's ASIO host binds a stream's buffers to the first *n* ports, so only
+input, but the stream this application opens binds its buffers to the first *n*
+ports (`nice-common/src/asio_io.rs` asks the driver for channels `0..n`), so only
 channel 1 and channel 2 lead anywhere and the rest fail at APPLY.
 [docs/asio-host-review.md](docs/asio-host-review.md) records why, and what would
 make the rest real. The row is a property of the stream, not a live control like
 the A4 reference: picking a channel changes nothing until APPLY, which reopens the
 stream with that many input ports.
 
-Nothing in this repository configures the ASIO SDK, which is proprietary and
-stays out of the tree. cpal's build script finds it in three steps —
-`CPAL_ASIO_DIR`, else `<temp>/asio_sdk`, else download it from
-<https://www.steinberg.net/asiosdk> — and cpal's own README says the last one
-should just work. It does, unless `%TEMP%` sits under a user name with a space:
-asio-sys 0.4.0 interpolates `-OutFile <path>` **unquoted** into a PowerShell
-command (`build.rs:303-311`), so the path splits and the build dies with
-`Failed to download ASIO SDK` behind a `PositionalParameterNotFound`. Measured
-twice on one machine with the same folder spelled two ways —
-`C:\Users\Per Lindgren\…` fails, `C:\Users\PERLIN~1\…` downloads 8,910,208 bytes
-and builds in 33 s. Until that is quoted upstream there are three ways out, and
-the one worth taking is neither of the ones that touches a build: **put the SDK
-at `%TEMP%\asio_sdk` once** — step two of cpal's lookup, a plain `exists()`
-check in Rust with no PowerShell in it, so no quoting bug and no variable to
-carry. Measured: with that directory present and `CPAL_ASIO_DIR` unset, the
-build script announces `CPAL_ASIO_DIR is set at …\AppData\Local\Temp\asio_sdk`
-and gets on with it.
+The ASIO path needs nothing installed. It is
+[`azo`](https://github.com/LastExceed/azo), whose `azo-sys` layer declares the
+ASIO COM interfaces in Rust: no SDK to obtain, no C++ to compile, no
+`CPAL_ASIO_DIR` to point at a directory, and no licence question for a repository
+that is MIT/Apache-2.0 — `azo` is MIT. `.cargo/config.toml` sets nothing and says
+why, and the pre-commit hook still refuses a Steinberg SDK that grows into the
+tree anyway: the rule that proprietary sources never get committed is worth
+keeping for its own sake, not only for the dependency that used to want one.
 
-```powershell
-# once per machine; asio-sys would have put it there itself
-Copy-Item "C:\path\to\asiosdk" "$env:TEMP\asio_sdk" -Recurse
-```
-
-Otherwise `setx CPAL_ASIO_DIR C:\path\to\asiosdk` — one variable, no repo change —
-or build with a space-free `TMP`/`TEMP`. The engine's
-gate never builds this feature, so no CI machine fetches anything either way.
+cpal's ASIO host is out of the graph too — it sits behind a cpal feature this
+workspace does not enable, and the `windows` job of `.github/workflows/gate.yml`
+fails a build whose tree has no `azo` or still contains `asio-sys`. The SDK
+download bug that used to decide how a Windows build was configured is recorded
+against the crate it belongs to in the workspace `TODO.md`.
 
 ASIO uses one driver per process and one buffer size per driver. The settings
 panel links input and output buffer sizes when they belong to the same driver.
@@ -408,16 +399,19 @@ with it). The ASIO rows are the
 registry's driver names, which loads nothing at all; channels, sample rate and
 buffer sizes come from `ASIOGetChannels`, `ASIOGetSampleRate`,
 `ASIOGetBufferSize` and `ASIOCanSampleRate` on **the driver the user picked**,
-asked through `asio-sys` rather than through cpal — whose enumeration loads
-every registered driver to build its list, which costs seconds on a machine
-whose audio gear left a dozen vendor drivers behind. Measured on one with nine
-still registered: a settings snapshot on ASIO with no driver chosen was 1785 ms,
-now **159 ms**, against 79 ms for the same binary on the dummy backend, which is
-the process's own start. With a driver chosen it is **332 ms**, one load of that
-driver and nothing else — `snapshot` gathers its answers once and every question
-below asks the gathered copy, so a driver whose hardware is off is refused once
-per pass rather than once per row (206 ms for that). Opening the stream goes
-through cpal, which enumerates once at that moment.
+asked through `azo` — not through cpal, whose ASIO enumeration loads every
+registered driver to build its list, which cost seconds on a machine whose audio
+gear left a dozen vendor drivers behind. Measured on one with nine still
+registered, when that enumeration was what this path was: **1785 ms** for a
+snapshot on ASIO with no driver chosen, against 79 ms for the same binary on the
+dummy backend. Measured again today on the `azo` path, this tree's debug build:
+**74 ms** with no driver chosen, **77 ms** on dummy — within the noise of each
+other, which is what "loads nothing" looks like once the process's own start is
+the floor. With a driver chosen it is **201 ms**, one load of that driver and
+nothing else — `snapshot` gathers its answers once and every question below asks
+the gathered copy, so a driver whose hardware is off is refused once per pass
+rather than once per row. Opening the stream asks that one driver again, through
+`nice_common::asio_io`; nothing enumerates at that moment.
 
 - **One ASIO driver**: selecting ASIO pins the output device row to the input
   driver — it shows that name and is gray, because a second driver cannot be
@@ -509,10 +503,11 @@ One-time verification checklist in Reaper (load the CLAP from `target/bundled`):
   `cargo xtask bundle` ships `LICENSE-FluentSystemIcons.txt` inside VST3 resources
   and beside CLAP files. Standalone packages must carry this notice and Fira
   Code's `OFL.txt` too.
-- Third-party: nice-plug (ISC), vst3 (ISC), baseview (MIT/Apache-2.0). No
-  Steinberg VST3 SDK is used anywhere — the VST3 surface is pure Rust. The ASIO
-  SDK, for a developer building a Windows standalone, is proprietary and stays
-  outside the repository.
+- Third-party: nice-plug (ISC), vst3 (ISC), baseview (MIT/Apache-2.0), azo and
+  azo-sys (MIT), the last two read from their own manifests at 0.6.1 and 0.4.1.
+  No Steinberg SDK of either kind is used anywhere — the VST3 surface is pure
+  Rust, and ASIO is `azo`'s hand-declared COM interfaces rather than Steinberg's
+  headers compiled into the binary.
 
 ## Status
 

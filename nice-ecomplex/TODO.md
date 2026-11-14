@@ -174,14 +174,18 @@ and it is commented as such beside the default.
 
 ## 5. Loose ends outside this directory
 
-- The gate legs (`.githooks/pre-commit`, `.githooks/pre-push`,
-  `.github/workflows/gate.yml`) deliberately run nice-ecomplex clippy
-  *without* `--features standalone`: the standalone lane pulls the ASIO
-  host behind `cfg(windows)` and the Linux gate cannot exercise that path,
-  so the standalone clippy leg is run locally before any standalone change,
-  and the comments in both files say so. If a future CI matrix grows a
-  Windows runner, that leg belongs there and the local-workaround comments
-  should be deleted rather than left as archaeology.
+- The gate legs cover this crate on both platforms now, plain and with
+  `--features standalone`: the Linux job names it beside its neighbours,
+  and the Windows job lints and tests it in the shared command for the
+  plugins that take their audio from `nice_common::audio_io`. What this
+  bullet used to record — that the standalone leg had to be run by hand
+  because no runner could see that path — is the thing the Windows job was
+  added for, so it is deleted here rather than left as archaeology, as
+  asked. The two hooks still leave `--features standalone` out, and the
+  reason is no longer an SDK a clean checkout cannot have: `azo` needs
+  none. It is that a hook runs on every commit and every push, and seven
+  standalone graphs do not belong in either when the gate has a job for
+  them on both platforms.
 - The VST3 class id `FrostNiceEcmplx1` is 16 bytes of our own making (the
   family's pattern; nice-echo owns `FrostNiceEcho001`). Nothing outside
   this crate can collide with it today; if a registry of Frost class ids

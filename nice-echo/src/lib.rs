@@ -579,8 +579,9 @@ impl Vst3Plugin for EchoPlugin {
 }
 
 // The two plugin entry points, unconditional: the same `cdylib` answers for
-// both formats, and `standalone` is a separate concern that brings cpal, JACK
-// and the ASIO host with it. A plain comment rather than a doc comment:
+// both formats, and `standalone` is a separate concern that brings the device
+// transport with it — ASIO through azo on Windows, cpal's hosts and JACK
+// elsewhere. A plain comment rather than a doc comment:
 // rustdoc has nothing to attach here, and these macros do not carry docs
 // through.
 nice_export_clap!(EchoPlugin);

@@ -1,4 +1,18 @@
-//! cpal-backed enumeration for the standalone settings page.
+//! The standalone settings page's view of the audio systems it can offer.
+//!
+//! Two roads, and which of them a platform has is a decision, not a
+//! discovery: ASIO drivers read through azo, and cpal's hosts — where on
+//! Windows there are none to offer, because the Windows audio path is ASIO
+//! (see [`available_backends`] for the offer and
+//! [`Snapshot::resolve_settings`] for what a saved setting may name). The
+//! decision goes one step past the offer list: this crate declares no cpal on
+//! Windows — cpal still reaches the process through `frost`'s playback on
+//! `rodio`, but nothing in this module can ask it for a host — so the
+//! cpal-backed half of everything below is `cfg(not(windows))` rather than a
+//! runtime branch that answers "no host". A
+//! Windows page therefore asks azo and the registry, and reports *unknown*
+//! where it has no question left to ask — it cannot open a second clock even by
+//! accident, because the code that could open one is not linked in.
 //!
 //! Compiled into the standalone build only: a plugin inside a host must not
 //! enumerate audio systems it does not own. Everything here runs on the GUI
@@ -8,9 +22,12 @@
 //! Caveats the UI inherits and states honestly:
 //! - ASIO enumeration *loads* each registered driver to read its properties;
 //!   with several drivers installed, opening the page can pause for a moment.
-//! - Device lists are cpal's device names; for ASIO that is the driver name
-//!   (ports are not addressable through cpal, cf. README).
+//! - Device lists are cpal's device names, except under ASIO: there the list is
+//!   the driver names in the registry's `HKLM\SOFTWARE\ASIO` key, read by azo,
+//!   and a driver is a device — its ports are addressed by channel count, not
+//!   by name.
 
+#[cfg(not(windows))]
 use cpal::traits::{DeviceTrait, HostTrait};
 
 #[cfg(target_os = "macos")]
@@ -25,19 +42,22 @@ pub struct BackendOption {
     pub label: String,
 }
 
+/// The settings key for a cpal host.
+///
+/// Not compiled on Windows, because nothing on Windows asks: the forward
+/// mapping exists to build the offer list, and that list has no cpal hosts
+/// there — see [`available_backends`]. Adding a Windows arm would be adding a
+/// key this build refuses to open.
+#[cfg(not(windows))]
 fn host_id_value(id: cpal::HostId) -> Option<(&'static str, &'static str)> {
     // Only hosts the application's standalone audio path supports.
     // Each variant exists only where cpal builds it (platform/feature cfg);
     // if-chains keep that exhaustiveness-free.
-    // cpal builds the Asio variant only on Windows, feature or not.
-    #[cfg(all(windows, feature = "asio-host"))]
-    if id == cpal::HostId::Asio {
-        return Some(("asio", "ASIO"));
-    }
-    #[cfg(windows)]
-    if id == cpal::HostId::Wasapi {
-        return Some(("wasapi", "Windows WASAPI"));
-    }
+    // ASIO is deliberately absent too: it is not a cpal host any more, and
+    // `cpal::HostId::Asio` is not even declared unless cpal's own `asio`
+    // feature is on (cpal 0.18.2, `platform/mod.rs:905`), which this workspace
+    // no longer asks for. `available_backends` offers the `"asio"` key from azo
+    // instead, so a Windows build needs no Steinberg SDK to compile the path.
     #[cfg(target_os = "macos")]
     if id == cpal::HostId::CoreAudio {
         // Key must match nice-plug's clap ValueEnum spelling (`core-audio`,
@@ -58,15 +78,14 @@ fn host_id_value(id: cpal::HostId) -> Option<(&'static str, &'static str)> {
     None
 }
 
+/// The settings key back to a cpal host — the inverse of [`host_id_value`], so
+/// it accepts exactly the keys that one writes. Non-Windows with the two: on
+/// Windows there is no key at all, which is what makes a saved `"wasapi"` end
+/// up refused by `resolve_settings` with words rather than opened on a host
+/// nobody chose.
+#[cfg(not(windows))]
 fn host_id_from_value(value: &str) -> Option<cpal::HostId> {
-    #[cfg(all(windows, feature = "asio-host"))]
-    if value == "asio" {
-        return Some(cpal::HostId::Asio);
-    }
-    #[cfg(windows)]
-    if value == "wasapi" {
-        return Some(cpal::HostId::Wasapi);
-    }
+    // `"wasapi"` is not among the keys on any platform now.
     #[cfg(target_os = "macos")]
     if value == "coreaudio" || value == "core-audio" {
         return Some(cpal::HostId::CoreAudio);
@@ -83,27 +102,94 @@ fn host_id_from_value(value: &str) -> Option<cpal::HostId> {
     None
 }
 
-/// Every backend the running binary can offer, system default first.
-/// JACK is Linux-only and remains selectable without a running server.
-/// ASIO appears in a Windows standalone build, which brings `asio-host` with it.
+/// Every backend this binary can offer, and the only place that answer is
+/// written: [`Snapshot::resolve_settings`] refuses what this list does not
+/// contain, and the settings panel's backend rows are this list.
+///
+/// On Windows that answer is ASIO or silence. The decision is the reason this
+/// crate exists: ASIO gives the application one driver, one clock, and both
+/// directions in one callback, which is what the tuner's input and the model
+/// plugins' latency accounting are built on; cpal's WASAPI host gives two
+/// independently-clocked streams that nice-plug then aligns with an
+/// input-latency slack, and reports a playback hole (`DATA_DISCONTINUITY`)
+/// when that alignment slips — the gap the tuners' dropout counter counts on
+/// the platforms that still have that road. So Windows offers `"asio"` and
+/// `"dummy"`, and no `"auto"` row: there is no system host to follow, and a
+/// row that silently meant "not ASIO" would be an offer this build does not
+/// keep. `cpal::available_hosts()` is not asked here on Windows.
+///
+/// Elsewhere the list is the system default first, then every host cpal built,
+/// then silence. JACK is Linux-only and remains selectable without a running
+/// server. ASIO appears in a Windows standalone build, which brings
+/// `asio-host` with it; a Windows build *without* that carrier has no audio
+/// path at all, so it offers only silence, which is the truth rather than a
+/// host that would fail when opened.
 pub fn available_backends() -> Vec<BackendOption> {
     let mk = |id: &str, label: &str| BackendOption {
         id: id.to_owned(),
         label: label.to_owned(),
     };
-    let mut v = vec![mk("auto", "System default")];
-    for h in cpal::available_hosts() {
-        if let Some((id, label)) = host_id_value(h) {
-            v.push(mk(id, label));
+    // Windows writes its rows out instead of asking anything: two where the
+    // ASIO carrier is compiled in, and one where it is not.
+    #[cfg(windows)]
+    let offered = if cfg!(feature = "asio-host") {
+        vec![mk("asio", "ASIO"), mk("dummy", "no audio (dummy)")]
+    } else {
+        vec![mk("dummy", "no audio (dummy)")]
+    };
+    #[cfg(not(windows))]
+    let mut offered = vec![mk("auto", "System default")];
+    #[cfg(not(windows))]
+    for host in cpal::available_hosts() {
+        if let Some((id, label)) = host_id_value(host) {
+            offered.push(mk(id, label));
         }
     }
-    v.push(mk("dummy", "no audio (dummy)"));
-    v
+    #[cfg(not(windows))]
+    offered.push(mk("dummy", "no audio (dummy)"));
+    offered
 }
 
+/// The backend a `--list-devices` run uses when the command line names none.
+///
+/// The two halves of this internal protocol sit on either side of a process
+/// boundary — [`snapshot_via_child`] asks, each application's `main` answers —
+/// so the answer the child falls back to belongs beside the list it has to be
+/// a member of, not in seven copies. It is the platform's own path: the system
+/// default host where one exists, ASIO on Windows where none does. `"dummy"`
+/// would reply to a hand-run listing with silence and no driver names, and
+/// `"auto"` names a host a Windows build does not contain. The
+/// settings panel always names the backend it is asking about, so this default
+/// is only reachable by the protocol typed by hand.
+#[cfg(windows)]
+pub const LIST_BACKEND_WHEN_UNNAMED: &str = "asio";
+
+#[cfg(not(windows))]
+pub const LIST_BACKEND_WHEN_UNNAMED: &str = "auto";
+
+/// The platform's own default host, which is what `"auto"` and an unset backend
+/// mean. Non-Windows, like everything cpal-backed in this module: on Windows
+/// there is no default host to follow, which is the strongest possible form of
+/// the answer `"auto"` used to get there — see the module doc.
+#[cfg(not(windows))]
+fn default_host() -> cpal::Host {
+    cpal::default_host()
+}
+
+/// The cpal host behind a backend key.
+///
+/// `None` for the keys that do not go through cpal at all: `"asio"` is served
+/// by [`crate::asio_io`] over azo, `"dummy"` by the caller refusing to open
+/// anything, and anything unrecognised by the caller's own error — which is
+/// also what `"wasapi"` is now, on every platform, because [`host_id_value`]
+/// stopped writing that key. Every caller therefore has to handle `"asio"`
+/// before it reaches for a device, which is the honest shape of the choice
+/// rather than a host that would fail later. Not compiled on Windows, where
+/// those two keys are the whole offer and this function has no host to return.
+#[cfg(not(windows))]
 pub fn open_host(backend: &str) -> Option<cpal::Host> {
     if backend == "auto" || backend.is_empty() {
-        return Some(cpal::default_host());
+        return Some(default_host());
     }
     cpal::host_from_id(host_id_from_value(backend)?).ok()
 }
@@ -116,9 +202,22 @@ pub fn open_host(backend: &str) -> Option<cpal::Host> {
 /// dozen vendor drivers behind. Names alone need nothing at all, so the
 /// settings dropdowns are populated from here and the capability question
 /// is put to the single driver the user actually picks.
+///
+/// `azo` reads the names out of `HKLM\SOFTWARE\ASIO`. That is one key, in the
+/// view this process sees: a driver registered per-user, or only in the
+/// 32-bit view, would be missing here. Measured on this machine against the
+/// SDK walk `asio-sys` used instead, both answer the same nine names in the
+/// same order, and `HKCU\Software\ASIO` does not exist at all.
 #[cfg(all(windows, feature = "asio-host"))]
 fn asio_driver_names() -> Vec<String> {
-    let mut names = asio_sys::Asio::new().driver_names();
+    let mut names = azo::driver::Metadata::enumerate()
+        .map(|drivers| {
+            drivers
+                .into_iter()
+                .map(|driver| driver.description.to_string_lossy())
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
     names.sort();
     names.dedup();
     names
@@ -147,7 +246,11 @@ struct AsioCaps {
     /// The rate the driver is set to right now, which is what its own
     /// control panel shows. Some drivers report 0 until a stream runs.
     rate: Option<f32>,
-    buffer_range: Option<(u32, u32)>,
+    /// The sizes this driver will take, from `ASIOGetBufferSize`.
+    ladder: Ladder,
+    /// The size to seed a fresh setting with: the driver's own preference,
+    /// snapped to a size it accepts. Measured answer here, through `azo`
+    /// 0.6.1 on the Komplete Audio 6: 64 frames.
     buffer_pref: Option<u32>,
     /// The common ladder this driver answers `ASIOCanSampleRate` to,
     /// plus the rate it is currently on. cpal probes the same ladder
@@ -156,18 +259,171 @@ struct AsioCaps {
     rates: Vec<f32>,
 }
 
+/// What one driver will take as a buffer size.
+///
+/// `ASIOGetBufferSize` answers a minimum, a maximum and a granularity, and the
+/// granularity is not decoration. Measured on this machine with `azo` 0.6.1 on
+/// the Komplete Audio 6: min 8, max 2048, granularity `-1`, and of the sizes
+/// frost offers, 24, 48, 96, 192, 384 and 768 are all refused with
+/// `ASE_HWMALFUNCTION` while every power of two between is accepted. Filtering
+/// on `min..=max` alone — which is all this code did before — therefore offered
+/// exactly the six sizes that cannot be opened: the child's answer on this
+/// driver was
+/// `[8, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 2048]`, and
+/// with the granularity honoured it is `[8, 16, 32, 64, 128, 256, 512, 1024,
+/// 2048]`. Both lists measured on the same driver by the same command, either
+/// side of this change.
+///
+/// `pub(crate)` rather than private because the thing that has to honour it is
+/// the transport that talks to the driver, in [`crate::asio_io`] — see
+/// [`Ladder::accepts`] for why the panel is not the place that decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(all(windows, feature = "asio-host")), allow(dead_code))]
+pub(crate) struct Ladder {
+    pub(crate) min: u32,
+    pub(crate) max: u32,
+    pub(crate) steps: Steps,
+}
+
+/// How a driver fills the space between its minimum and maximum buffer size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(all(windows, feature = "asio-host")), allow(dead_code))]
+pub(crate) enum Steps {
+    /// Every frame count between [`Ladder::min`] and [`Ladder::max`].
+    Any,
+    /// `min`, `min + step`, `min + 2 * step`, …
+    Linear(u32),
+    /// `min`, `2 * min`, `4 * min`, … — the ASIO granularity of `-1`, which
+    /// `azo` calls `Exponential` and documents as `min * 2^n`
+    /// (`azo-0.6.1/src/dto.rs:76-82`).
+    ///
+    /// The ASIO text for `-1` is "limited to powers of two", which on a driver
+    /// whose minimum is itself a power of two — every one measured here,
+    /// minimum 8 — names the same sizes either way. On a driver that answered
+    /// `-1` with a minimum of, say, 6, "doublings from the minimum" and "powers
+    /// of two" would differ, and this machine has no such driver to ask. We
+    /// follow the doublings, as `azo` does.
+    Doubling,
+}
+
+#[cfg_attr(not(all(windows, feature = "asio-host")), allow(dead_code))]
+impl Ladder {
+    /// The answer for a driver that would not say.
+    pub(crate) const UNKNOWN: Ladder = Ladder {
+        min: 0,
+        max: 0,
+        steps: Steps::Any,
+    };
+
+    /// The one reading of `ASIOGetBufferSize` this workspace has, shared by the
+    /// panel's question and the transport's. Both ends used to hold their own
+    /// version of "what a granularity means" and drift; `azo` already folds the
+    /// driver's `-1` into `Exponential` for us (`azo-0.6.1/src/dto.rs:84-92`).
+    #[cfg(all(windows, feature = "asio-host"))]
+    pub(crate) fn from_size(size: &azo::dto::BufferSize) -> Self {
+        Ladder {
+            min: u32::try_from(size.min).unwrap_or(0),
+            max: u32::try_from(size.max).unwrap_or(0),
+            steps: match size.granularity {
+                Some(azo::dto::Granularity::Exponential) => Steps::Doubling,
+                Some(azo::dto::Granularity::Linear { step }) if step.get() > 0 => {
+                    Steps::Linear(step.get() as u32)
+                }
+                // `None`, or a step that is not `-1` and not positive: the
+                // driver said nothing usable, and min..=max is all we know —
+                // which is all this code used before.
+                _ => Steps::Any,
+            },
+        }
+    }
+
+    /// The smallest and largest sizes we may ever ask this driver for, if it
+    /// named any.
+    fn range(&self) -> Option<(u32, u32)> {
+        (self.max > 0).then_some((self.min, self.max))
+    }
+
+    /// Whether this driver takes exactly this frame count.
+    ///
+    /// This is the rule the transport enforces before it asks for the size, not
+    /// a hint for the panel: a saved setting can name a size the panel never
+    /// offered — a `period_size` of 24 written while the driver's granularity was
+    /// `-1`, or copied from another driver — and the panel's own check only
+    /// validates the `min..=max` span, so such a setting resolves happily right up
+    /// to the driver refusing `createBuffers`. Asking the driver is the only
+    /// answer, and refusing it here is what turns that refusal into a sentence.
+    pub(crate) fn accepts(&self, frames: u32) -> bool {
+        if self.max == 0 || frames < self.min || frames > self.max {
+            return false;
+        }
+        match self.steps {
+            // A driver that named only a range: `granularity == 0`, or a step
+            // of `-2` or less that is not the `-1` meaning doublings. min..=max
+            // is then all anyone can know. See the note on `azo`'s `BufferSize`
+            // about how loosely this triple is answered in the wild.
+            Steps::Any => true,
+            // `max(1)` so a hand-built `Linear(0)` behaves as `Any` instead of
+            // dividing by zero; a driver cannot produce one, `Granularity`
+            // carries a `NonZeroI32`.
+            Steps::Linear(step) => (frames - self.min).is_multiple_of(step.max(1)),
+            Steps::Doubling => {
+                let mut size = self.min;
+                while size < frames {
+                    // A doubling that stops growing (a minimum of zero) can
+                    // never reach anything, rather than spinning forever.
+                    match size.checked_mul(2).filter(|next| *next > size) {
+                        Some(next) => size = next,
+                        None => return false,
+                    }
+                }
+                size == frames
+            }
+        }
+    }
+
+    /// The size to seed a fresh setting with, which has to be one of the sizes
+    /// [`asio_buffer_options`] offers or the panel would preselect a choice
+    /// nobody can make. Falls back to the driver's minimum when it reports no
+    /// preference — the only number it has given us — and to `None` when
+    /// nothing in our candidate ladder fits.
+    fn snap(&self, preferred: Option<u32>) -> Option<u32> {
+        let wanted = preferred.filter(|frames| *frames > 0).unwrap_or(self.min);
+        BUFFER_CANDIDATES
+            .into_iter()
+            .find(|frames| *frames >= wanted && self.accepts(*frames))
+            .or_else(|| {
+                BUFFER_CANDIDATES
+                    .into_iter()
+                    .rev()
+                    .find(|frames| self.accepts(*frames))
+            })
+    }
+}
+
 /// How many ASIO streams this process holds open right now.
 ///
-/// ASIO permits one loaded driver per process, and `asio-sys` guards a second
-/// load with a handle stored **on the `Asio` value** that performed the first
-/// one (`asio-sys` 0.4.0, `bindings/mod.rs:445-458`). A capability query opens
-/// its own `Asio::new()`, so that guard is empty, the load is granted, and the
-/// temporary `Driver`'s `Drop` — `stop`, `dispose_buffers`, `ASIOExit`,
-/// `remove_current_driver` (`:1035`, `:1017`, `:987-997`) — runs against the
-/// driver a running stream is using. Live audio is therefore one capability
-/// query away from silence, with nothing reported anywhere; measured on this
-/// machine as the tuner's waveform dying the moment the settings page opened
-/// and never returning until restart (`BUGS.md`).
+/// ASIO permits one loaded driver per process, and `asio-sys` — which still
+/// carries the stream — guards a second load with a handle stored **on the
+/// `Asio` value** that performed the first one (`asio-sys` 0.4.0,
+/// `bindings/mod.rs:445-458`). A capability query opened its own `Asio::new()`,
+/// so that guard was empty, the load was granted, and the temporary `Driver`'s
+/// `Drop` — `stop`, `dispose_buffers`, `ASIOExit`, `remove_current_driver`
+/// (`:1035`, `:1017`, `:987-997`) — ran against the driver a running stream was
+/// using. Live audio was therefore one capability query away from silence, with
+/// nothing reported anywhere; measured on this machine as the tuner's waveform
+/// dying the moment the settings page opened and never returning until restart
+/// (`BUGS.md`).
+///
+/// The queries now go through `azo`, which has no such guard and no teardown to
+/// trigger: a second instance of the same driver was measured opening beside the
+/// first and answering the same questions, and `azo`'s handles carry no `Drop`
+/// at all (`azo-0.6.1/src/driver.rs:157-172`, `:210-234` — the only `Drop` in the
+/// crate is `COMInit`'s `CoUninitialize`, `src/utils.rs:68`), so letting a query
+/// go releases one COM reference and sends the driver no `stop`, no
+/// `dispose_buffers` and no `exit`. What remains unmeasured is the driver's own
+/// reaction to that release, which is driver behaviour and only becomes visible
+/// on a stream that was running. Until that has been watched, the rule stands on
+/// both paths: asking is cheap, and losing the audio of a live rack is not.
 static ASIO_STREAMS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Whether this process is streaming through an ASIO driver right now.
@@ -208,42 +464,70 @@ fn asio_caps(name: &str) -> Option<AsioCaps> {
     asio_caps_answered(name, load_asio_caps)
 }
 
+/// The registered driver a saved setting names, if it is still registered.
+///
+/// A saved setting names a driver by the string `asio_driver_names` gave, which
+/// is this `description`. Measured on the nine drivers here, they are the same
+/// strings the previous binding enumerated, so nothing saved stops matching.
+/// Should one ever disagree, the answer is `None`: the panel shows a driver
+/// without capabilities, and the transport says the driver is not registered,
+/// rather than either of them guessing at another one.
+#[cfg(all(windows, feature = "asio-host"))]
+pub(crate) fn asio_driver(name: &str) -> Option<azo::driver::Metadata> {
+    azo::driver::Metadata::enumerate()
+        .ok()?
+        .into_iter()
+        .find(|meta| meta.description.to_string_lossy() == name)
+}
+
 #[cfg(all(windows, feature = "asio-host"))]
 fn load_asio_caps(name: &str) -> Option<AsioCaps> {
-    use asio_sys::bindings::BufferPreference;
-    let driver = asio_sys::Asio::new().load_driver(name).ok()?;
-    let channels = driver.channels().ok()?;
+    use azo::driver::{Driver, SafeHandle};
+
+    let clsid = asio_driver(name)?.clsid;
+    // `SafeHandle::new` is what calls `CoInitializeEx`, on this thread, and it
+    // pairs the matching `CoUninitialize` when the handle is dropped
+    // (`azo-0.6.1/src/driver.rs:157-164`). A thread already initialized in the
+    // other model therefore fails here, and `None` — no capabilities, no
+    // invented numbers — is what the panel reads.
+    let driver = SafeHandle::new(&clsid).ok()?;
+    // `init` is `ASIOInit`. Every question below needs a driver that has been
+    // initialized, and it reports failure as `false` rather than as an error.
+    if !driver.init(None) {
+        return None;
+    }
     let count = |n: i32| u32::try_from(n).unwrap_or(0);
+    let channels = driver.channel_counts().ok()?;
     let rate = driver
-        .sample_rate()
+        .get_sample_rate()
         .ok()
         .filter(|rate| *rate > 0.0)
         .map(|rate| rate as f32);
-    let range = driver.buffersize_range().ok();
-    let buffer_range = range.and_then(|range| {
-        let min = u32::try_from(range.min).ok()?;
-        let max = u32::try_from(range.max).ok()?;
-        (max > 0).then_some((min, max))
-    });
-    let buffer_pref = range
-        .map(|range| match range.preferred {
-            BufferPreference::Only(frames) | BufferPreference::Preferred(frames) => frames,
-            BufferPreference::Stepped { preferred, .. } => preferred,
-        })
-        .filter(|frames| *frames > 0);
+    // Asked once: this driver's answer is the same before and after the rate
+    // probes below, measured in one run of the same instance, and there is no
+    // reason to ask a driver the same question twice per load.
+    let sizes = driver.buffer_size().ok();
+    let ladder = match sizes.as_ref() {
+        Some(size) => Ladder::from_size(size),
+        None => Ladder::UNKNOWN,
+    };
+    let preferred = sizes
+        .as_ref()
+        .and_then(|size| u32::try_from(size.preferred).ok());
+    let buffer_pref = ladder.snap(preferred);
     let mut rates: Vec<f32> = DEFAULT_RATES
         .into_iter()
-        .filter(|rate| driver.can_sample_rate(f64::from(*rate)).unwrap_or(false))
+        .filter(|rate| driver.can_sample_rate(f64::from(*rate)).is_ok())
         .collect();
     if let Some(rate) = rate.filter(|rate| !rates.contains(rate)) {
         rates.push(rate);
         rates.sort_by(f32::total_cmp);
     }
     Some(AsioCaps {
-        inputs: count(channels.ins),
-        outputs: count(channels.outs),
+        inputs: count(channels.in_),
+        outputs: count(channels.out),
         rate,
-        buffer_range,
+        ladder,
         buffer_pref,
         rates,
     })
@@ -255,15 +539,18 @@ fn asio_caps(name: &str) -> Option<AsioCaps> {
     asio_caps_answered(name, |_| None)
 }
 
-/// Buffer sizes this driver permits, from its own min and max.
-fn asio_buffer_options(range: Option<(u32, u32)>) -> Vec<u32> {
-    let (min, max) = range.unwrap_or((0, 0));
-    if max == 0 {
+/// Buffer sizes this driver permits, from its own min, max and granularity.
+///
+/// `pub(crate)` for the same reason as [`Ladder::accepts`]: when the transport
+/// refuses a size the user chose, the useful part of the message is the list the
+/// driver actually gave, which is this function's answer.
+pub(crate) fn asio_buffer_options(ladder: Option<Ladder>) -> Vec<u32> {
+    let Some(ladder) = ladder else {
         return Vec::new();
-    }
+    };
     BUFFER_CANDIDATES
         .into_iter()
-        .filter(|frames| *frames >= min && *frames <= max)
+        .filter(|frames| ladder.accepts(*frames))
         .collect()
 }
 
@@ -310,6 +597,7 @@ fn asio_input_channels(caps: &mut AsioCapsCache, input: Option<&str>) -> Option<
         .filter(|&inputs| inputs > 0)
 }
 
+#[cfg(not(windows))]
 fn device_names(
     devices: impl Iterator<Item = cpal::Device>,
     backend: &str,
@@ -337,10 +625,21 @@ pub fn list_input_devices(backend: &str) -> Vec<String> {
     if backend == "asio" {
         return asio_driver_names();
     }
-    open_host(backend)
-        .and_then(|h| h.input_devices().ok())
-        .map(|devices| device_names(devices, backend, cpal::DeviceDirection::Input))
-        .unwrap_or_default()
+    // What is left after `"asio"` and `"dummy"` answered themselves is a key
+    // outside the offer, and `resolve_settings` refuses that; on Windows there
+    // is nothing to enumerate it with either. Enumerating a host the settings
+    // page will not accept is how a second clock gets into a tuner.
+    #[cfg(windows)]
+    {
+        Vec::new()
+    }
+    #[cfg(not(windows))]
+    {
+        open_host(backend)
+            .and_then(|h| h.input_devices().ok())
+            .map(|devices| device_names(devices, backend, cpal::DeviceDirection::Input))
+            .unwrap_or_default()
+    }
 }
 
 pub fn list_output_devices(backend: &str) -> Vec<String> {
@@ -351,10 +650,17 @@ pub fn list_output_devices(backend: &str) -> Vec<String> {
     if backend == "asio" {
         return asio_driver_names();
     }
-    open_host(backend)
-        .and_then(|h| h.output_devices().ok())
-        .map(|devices| device_names(devices, backend, cpal::DeviceDirection::Output))
-        .unwrap_or_default()
+    #[cfg(windows)]
+    {
+        Vec::new()
+    }
+    #[cfg(not(windows))]
+    {
+        open_host(backend)
+            .and_then(|h| h.output_devices().ok())
+            .map(|devices| device_names(devices, backend, cpal::DeviceDirection::Output))
+            .unwrap_or_default()
+    }
 }
 
 /// The system-default input/output device NAMES under this backend
@@ -377,22 +683,28 @@ pub fn default_device_names(backend: &str) -> (Option<String>, Option<String>) {
         // choice, which is the honest reading of "no device chosen yet".
         return (None, None);
     }
-    let host = if backend == "auto" || backend.is_empty() {
-        cpal::default_host()
-    } else {
-        match open_host(backend) {
-            Some(h) => h,
-            None => return (None, None),
-        }
-    };
-    let name = |d: Option<cpal::Device>| {
-        d.and_then(|d| d.description().ok())
-            .map(|x| x.name().to_owned())
-    };
-    (
-        name(host.default_input_device()),
-        name(host.default_output_device()),
-    )
+    // Nothing is nominated on Windows either, for the same reason ASIO gives
+    // two lines up: there is no host to nominate one with. The dropdowns list
+    // the registered drivers and wait for the user to name one.
+    #[cfg(windows)]
+    {
+        (None, None)
+    }
+    #[cfg(not(windows))]
+    {
+        // `open_host` is the one place that decides what `"auto"` means.
+        let Some(host) = open_host(backend) else {
+            return (None, None);
+        };
+        let name = |d: Option<cpal::Device>| {
+            d.and_then(|d| d.description().ok())
+                .map(|x| x.name().to_owned())
+        };
+        (
+            name(host.default_input_device()),
+            name(host.default_output_device()),
+        )
+    }
 }
 
 /// The sample rate the DRIVER is currently set to. For ASIO this is
@@ -417,35 +729,40 @@ pub fn driver_default_rate(
         // rate to ask, and no reason to load a driver nobody chose.
         return asio_rate(&mut AsioCapsCache::default(), input, output);
     }
-    let host = if backend == "auto" || backend.is_empty() {
-        cpal::default_host()
-    } else {
-        open_host(backend)?
-    };
-    // A named device that cannot be found stays unknown. Falling back to the
-    // system default here would report some other device's rate under the
-    // name the user picked — and since ASIO's dropdown lists every registered
-    // driver, a pick whose hardware is off is now an ordinary case, not an
-    // impossible one.
-    let in_dev = match input {
-        Some(n) => host.input_devices().ok().and_then(|d| find_named(d, n)),
-        None => host.default_input_device(),
-    };
-    if let Some(rate) = in_dev
-        .as_ref()
-        .and_then(|d| d.default_input_config().ok())
-        .map(|c| c.sample_rate() as f32)
+    // On Windows the only rate there is belongs to the driver picked above, and
+    // a host-wide rate to fall back on does not exist.
+    #[cfg(windows)]
     {
-        return Some(rate);
+        None
     }
-    let out_dev = match output {
-        Some(n) => host.output_devices().ok().and_then(|d| find_named(d, n)),
-        None => host.default_output_device(),
-    };
-    out_dev
-        .as_ref()
-        .and_then(|d| d.default_output_config().ok())
-        .map(|c| c.sample_rate() as f32)
+    #[cfg(not(windows))]
+    {
+        let host = open_host(backend)?;
+        // A named device that cannot be found stays unknown. Falling back to the
+        // system default here would report some other device's rate under the
+        // name the user picked — and since ASIO's dropdown lists every registered
+        // driver, a pick whose hardware is off is now an ordinary case, not an
+        // impossible one.
+        let in_dev = match input {
+            Some(n) => host.input_devices().ok().and_then(|d| find_named(d, n)),
+            None => host.default_input_device(),
+        };
+        if let Some(rate) = in_dev
+            .as_ref()
+            .and_then(|d| d.default_input_config().ok())
+            .map(|c| c.sample_rate() as f32)
+        {
+            return Some(rate);
+        }
+        let out_dev = match output {
+            Some(n) => host.output_devices().ok().and_then(|d| find_named(d, n)),
+            None => host.default_output_device(),
+        };
+        out_dev
+            .as_ref()
+            .and_then(|d| d.default_output_config().ok())
+            .map(|c| c.sample_rate() as f32)
+    }
 }
 
 /// Query the selected output device's own default, without falling back to input.
@@ -453,19 +770,22 @@ fn output_default_rate(backend: &str, output: Option<&str>) -> Option<f32> {
     if backend == "asio" {
         return asio_output_rate(&mut AsioCapsCache::default(), output);
     }
-    let host = if backend == "auto" || backend.is_empty() {
-        cpal::default_host()
-    } else {
-        open_host(backend)?
-    };
-    let device = match output {
-        Some(name) => find_named(host.output_devices().ok()?, name),
-        None => host.default_output_device(),
-    }?;
-    device
-        .default_output_config()
-        .ok()
-        .map(|config| config.sample_rate() as f32)
+    #[cfg(windows)]
+    {
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        let host = open_host(backend)?;
+        let device = match output {
+            Some(name) => find_named(host.output_devices().ok()?, name),
+            None => host.default_output_device(),
+        }?;
+        device
+            .default_output_config()
+            .ok()
+            .map(|config| config.sample_rate() as f32)
+    }
 }
 
 fn output_rate_options(formats: &[StreamFormat], default: Option<f32>) -> Vec<f32> {
@@ -490,6 +810,7 @@ fn output_rate_options(formats: &[StreamFormat], default: Option<f32>) -> Vec<f3
     rates
 }
 
+#[cfg(not(windows))]
 fn find_named(mut devs: impl Iterator<Item = cpal::Device>, want: &str) -> Option<cpal::Device> {
     devs.find(|d| d.description().ok().is_some_and(|x| x.name() == want))
 }
@@ -504,39 +825,42 @@ fn input_channel_count(backend: &str, input: Option<&str>) -> Option<u32> {
         // whole path exists to avoid.
         return asio_input_channels(&mut AsioCapsCache::default(), input);
     }
-    let host = if backend == "auto" || backend.is_empty() {
-        cpal::default_host()
-    } else {
-        open_host(backend)?
-    };
-    let device = match input {
-        Some(name) => find_named(host.input_devices().ok()?, name)?,
-        None => host.default_input_device()?,
-    };
-    device
-        .supported_input_configs()
-        .ok()
-        .into_iter()
-        .flatten()
-        .map(|config| u32::from(config.channels()))
-        .filter(|&channels| channels > 0)
-        .max()
-        .or_else(|| {
-            device
-                .default_input_config()
-                .ok()
-                .map(|config| u32::from(config.channels()))
-                .filter(|&channels| channels > 0)
-        })
-        // The tuner processes mono/stereo input; JACK advertises up to 64
-        // virtual ports, which would otherwise offer unusable input choices.
-        .map(|channels| {
-            if backend == "jack" {
-                channels.min(2)
-            } else {
-                channels
-            }
-        })
+    #[cfg(windows)]
+    {
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        let host = open_host(backend)?;
+        let device = match input {
+            Some(name) => find_named(host.input_devices().ok()?, name)?,
+            None => host.default_input_device()?,
+        };
+        device
+            .supported_input_configs()
+            .ok()
+            .into_iter()
+            .flatten()
+            .map(|config| u32::from(config.channels()))
+            .filter(|&channels| channels > 0)
+            .max()
+            .or_else(|| {
+                device
+                    .default_input_config()
+                    .ok()
+                    .map(|config| u32::from(config.channels()))
+                    .filter(|&channels| channels > 0)
+            })
+            // The tuner processes mono/stereo input; JACK advertises up to 64
+            // virtual ports, which would otherwise offer unusable input choices.
+            .map(|channels| {
+                if backend == "jack" {
+                    channels.min(2)
+                } else {
+                    channels
+                }
+            })
+    }
 }
 
 pub const JACK_BUFFER_CHOICES: [u32; 8] = [32, 48, 64, 96, 128, 256, 512, 1024];
@@ -549,6 +873,7 @@ const BUFFER_CANDIDATES: [u32; 16] = [
 ];
 
 /// Buffer candidates supported by at least one stream configuration.
+#[cfg(not(windows))]
 fn buffer_options(configs: &[cpal::SupportedStreamConfigRange]) -> Vec<u32> {
     let ranges: Vec<_> = configs
         .iter()
@@ -622,11 +947,11 @@ fn asio_stream_options(
     let output_caps = caps.caps(output);
     let input_formats = input_caps
         .as_ref()
-        .map(|caps| asio_formats(&caps.rates, caps.buffer_range, caps.inputs))
+        .map(|caps| asio_formats(&caps.rates, caps.ladder.range(), caps.inputs))
         .unwrap_or_default();
     let output_formats = output_caps
         .as_ref()
-        .map(|caps| asio_formats(&caps.rates, caps.buffer_range, caps.outputs))
+        .map(|caps| asio_formats(&caps.rates, caps.ladder.range(), caps.outputs))
         .unwrap_or_default();
     (
         input_caps
@@ -634,8 +959,8 @@ fn asio_stream_options(
             .or(output_caps.as_ref())
             .map(|caps| caps.rates.clone())
             .unwrap_or_default(),
-        asio_buffer_options(input_caps.as_ref().and_then(|caps| caps.buffer_range)),
-        asio_buffer_options(output_caps.as_ref().and_then(|caps| caps.buffer_range)),
+        asio_buffer_options(input_caps.as_ref().map(|caps| caps.ladder)),
+        asio_buffer_options(output_caps.as_ref().map(|caps| caps.ladder)),
         input_formats,
         output_formats,
     )
@@ -645,57 +970,64 @@ pub fn stream_options(backend: &str, input: Option<&str>, output: Option<&str>) 
     if backend == "asio" {
         return asio_stream_options(&mut AsioCapsCache::default(), input, output);
     }
-    let host = if backend == "auto" || backend.is_empty() {
-        Some(cpal::default_host())
-    } else {
-        open_host(backend)
-    };
-    let in_dev = host.as_ref().and_then(|host| match input {
-        Some(name) => find_named(host.input_devices().ok()?, name),
-        None => host.default_input_device(),
-    });
-    let out_dev = host.as_ref().and_then(|host| match output {
-        Some(name) => find_named(host.output_devices().ok()?, name),
-        None => host.default_output_device(),
-    });
-    let in_cfgs = in_dev
-        .as_ref()
-        .and_then(|d| d.supported_input_configs().ok())
-        .map(|c| c.collect::<Vec<_>>())
-        .unwrap_or_default();
-    let out_cfgs = out_dev
-        .as_ref()
-        .and_then(|d| d.supported_output_configs().ok())
-        .map(|c| c.collect::<Vec<_>>())
-        .unwrap_or_default();
-    let rate_src = if in_cfgs.is_empty() {
-        &out_cfgs
-    } else {
-        &in_cfgs
-    };
-    let mut rates = Vec::new();
-    for config in rate_src {
-        let (lo, hi) = (config.min_sample_rate(), config.max_sample_rate());
-        if lo == hi {
-            rates.push(lo as f32);
-        } else {
-            rates.extend(
-                DEFAULT_RATES
-                    .into_iter()
-                    .filter(|r| *r >= lo as f32 && *r <= hi as f32),
-            );
-        }
+    // Everything a Windows build can ask about a stream it might open came back
+    // from `asio_stream_options` above: one driver, one clock, both directions.
+    // An empty answer is not a failure here — it is the shape of "this build has
+    // no second kind of stream to describe".
+    #[cfg(windows)]
+    {
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
     }
-    rates.sort_by(f32::total_cmp);
-    rates.dedup();
+    #[cfg(not(windows))]
+    {
+        let host = open_host(backend);
+        let in_dev = host.as_ref().and_then(|host| match input {
+            Some(name) => find_named(host.input_devices().ok()?, name),
+            None => host.default_input_device(),
+        });
+        let out_dev = host.as_ref().and_then(|host| match output {
+            Some(name) => find_named(host.output_devices().ok()?, name),
+            None => host.default_output_device(),
+        });
+        let in_cfgs = in_dev
+            .as_ref()
+            .and_then(|d| d.supported_input_configs().ok())
+            .map(|c| c.collect::<Vec<_>>())
+            .unwrap_or_default();
+        let out_cfgs = out_dev
+            .as_ref()
+            .and_then(|d| d.supported_output_configs().ok())
+            .map(|c| c.collect::<Vec<_>>())
+            .unwrap_or_default();
+        let rate_src = if in_cfgs.is_empty() {
+            &out_cfgs
+        } else {
+            &in_cfgs
+        };
+        let mut rates = Vec::new();
+        for config in rate_src {
+            let (lo, hi) = (config.min_sample_rate(), config.max_sample_rate());
+            if lo == hi {
+                rates.push(lo as f32);
+            } else {
+                rates.extend(
+                    DEFAULT_RATES
+                        .into_iter()
+                        .filter(|r| *r >= lo as f32 && *r <= hi as f32),
+                );
+            }
+        }
+        rates.sort_by(f32::total_cmp);
+        rates.dedup();
 
-    (
-        rates,
-        buffer_options(&in_cfgs),
-        buffer_options(&out_cfgs),
-        in_cfgs.iter().map(StreamFormat::from).collect(),
-        out_cfgs.iter().map(StreamFormat::from).collect(),
-    )
+        (
+            rates,
+            buffer_options(&in_cfgs),
+            buffer_options(&out_cfgs),
+            in_cfgs.iter().map(StreamFormat::from).collect(),
+            out_cfgs.iter().map(StreamFormat::from).collect(),
+        )
+    }
 }
 
 /// A supported combination, retained so Apply can validate whole stream
@@ -708,6 +1040,7 @@ pub struct StreamFormat {
     pub buffer_range: Option<(u32, u32)>,
 }
 
+#[cfg(not(windows))]
 impl From<&cpal::SupportedStreamConfigRange> for StreamFormat {
     fn from(config: &cpal::SupportedStreamConfigRange) -> Self {
         Self {
@@ -784,9 +1117,19 @@ pub struct Snapshot {
     pub output_formats: Vec<StreamFormat>,
     pub output_channel_options: Vec<crate::settings::OutputChannels>,
     pub default_output_channels: Option<crate::settings::OutputChannels>,
-    /// The device's OWN preferred buffer size (ASIOGetBufferSize's
-    /// `pref` — the manufacturer panel's number). cpal discards it;
-    /// the streamless child asks asio-sys directly.
+    /// The size to start someone who has never chosen with: the driver's own
+    /// `ASIOGetBufferSize` preference (the manufacturer panel's number), snapped
+    /// to a size the driver accepts. 64 frames on the driver measured here, and
+    /// the same 64 through the previous binding on the same path — this field is
+    /// not where the ladder changes anything, the list above it is.
+    ///
+    /// One footnote kept on purpose: a standalone `asio-sys` probe, asking this
+    /// same driver the same question in a different order, got `Only(2048)` for
+    /// its preference. Whether that answer depends on what was asked first is
+    /// unmeasured — the experiment to find out was stopped — and `azo`'s 64 is
+    /// the number the manufacturer's own panel shows and the driver accepts, so
+    /// that is the one used. cpal discards the preference; nothing else here
+    /// carries it to the panel.
     pub buffer_pref: Option<u32>,
     /// Number of channels reported by the selected input device.
     #[serde(default)]
@@ -840,11 +1183,41 @@ impl Snapshot {
             };
             return Ok(silent);
         }
+        // The keys this build accepts are the keys it offers, and
+        // [`available_backends`] is where that list is written.
+        #[cfg(windows)]
+        if backend != "asio" {
+            // A saved choice that no longer exists gets an answer in words, not
+            // a rewrite into the one road that works. `"auto"` used to mean "the
+            // system host", and on Windows the system host was WASAPI;
+            // `"wasapi"` said it outright. Both are refused here rather than
+            // mapped, because the panel then shows the stored value in its own
+            // row and says why Apply is objecting, and the user decides — while
+            // a silent mapping would open a driver nobody picked and call the
+            // settings file repaired. A Windows build compiled without the ASIO
+            // carrier is accepted by this line and refused one line further
+            // down, where it lists no drivers to select.
+            return Err(if backend == "auto" || backend.is_empty() {
+                "Windows has no system-default audio host: choose ASIO, or no audio".into()
+            } else {
+                "Windows standalone audio is ASIO or no audio: pick ASIO in the backend row, then a driver".into()
+            });
+        }
+        #[cfg(not(windows))]
         if !matches!(
             backend,
-            "auto" | "core-audio" | "coreaudio" | "wasapi" | "asio" | "alsa"
+            "auto" | "core-audio" | "coreaudio" | "asio" | "alsa"
         ) && !(cfg!(target_os = "linux") && backend == "jack")
         {
+            // `"wasapi"` is deliberately not tolerated here either: it names a
+            // host cpal does not even build on this platform, so accepting the
+            // string would be accepting nothing. `"asio"` is kept, on the other
+            // hand: the key is part of this application's vocabulary on every
+            // platform, and the rules it selects — one driver, one clock, one
+            // buffer — are shared and tested here even though only a Windows
+            // build can load a driver. A mac or Linux settings file that says
+            // `"asio"` is refused one line further down, where the backend
+            // lists no drivers to select.
             return Err("This audio backend is not supported by the standalone application".into());
         }
         resolved.input_device = resolved.input_device.or_else(|| self.def_in.clone());
@@ -1095,14 +1468,18 @@ pub fn snapshot(backend: &str, input: Option<&str>, output: Option<&str>) -> Sna
     }
 }
 
-/// ASIO enumeration from THIS process is blind while a stream is open:
-/// asio-sys keeps ONE driver loaded globally (the running stream's) and
-/// refuses every other (`DriverAlreadyExists`), and destroying drivers
+/// ASIO enumeration from THIS process is blind while a stream is open: the API
+/// keeps ONE driver loaded per process, the running stream's, and refuses every
+/// other — azo states the rule as a law of ASIO, and it is what this workspace
+/// measured through the previous binding, loading a second driver while the
+/// first was loaded (`DriverAlreadyExists`). Destroying drivers
 /// mid-enumeration would tear at the live one. The panel cannot close
 /// the device while the application owns its live stream, and the user must not have
 /// to restart. So: ask a CHILD process, which opens no stream at all
 /// and therefore sees every registered driver. The parent's audio
 /// never stops; nothing is closed; the child enumerates and dies.
+/// Which binding the child asks through cannot matter to the parent, and the
+/// child now asks `azo`.
 pub fn snapshot_via_child(
     backend: &str,
     input: Option<&str>,
@@ -1326,6 +1703,38 @@ mod tests {
         assert_eq!(snapshot.input_channels, Some(1));
     }
 
+    /// The Windows half of the offer, and the reason the offer exists: on
+    /// Windows the audio path is the azo transport, so the panel may offer
+    /// ASIO and silence and nothing that would open a second clock.
+    #[cfg(all(windows, feature = "asio-host"))]
+    #[test]
+    fn windows_offers_asio_or_silence_and_nothing_else() {
+        let offered = available_backends();
+        let ids: Vec<&str> = offered.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, vec!["asio", "dummy"]);
+        // Neither of the words this policy retires can be picked, and neither
+        // can be applied from a settings file that still holds it.
+        for retired in ["auto", "wasapi"] {
+            assert!(!ids.contains(&retired), "{retired} is still offered");
+            let refused = Snapshot::default().resolve_settings(&crate::settings::Settings::<
+                crate::settings::NoPreferences,
+            > {
+                backend: Some(retired.into()),
+                ..Default::default()
+            });
+            let error = refused.expect_err("a retired backend must not resolve");
+            assert!(
+                error.contains("ASIO"),
+                "{retired} was refused without saying what to pick instead: {error}"
+            );
+        }
+        // There is no cpal host to ask about, and asking is now the wrong shape
+        // of question: `open_host` is not compiled into a Windows build at all,
+        // so no key can reach a WASAPI host from here even by mistake. The
+        // `windows` job of `.github/workflows/gate.yml` says the same thing
+        // about the dependency graph the test is compiled in.
+    }
+
     /// One ASIO driver is clocked once, for both directions: an output rate
     /// saved from an older configuration is replaced by the driver's own
     /// rate rather than refused at Apply.
@@ -1343,11 +1752,13 @@ mod tests {
         assert_eq!(resolved.output_sample_rate, Some(48000.0));
     }
 
-    /// The bug this pins. A capability query opens its own `Asio`, so
-    /// `asio-sys`'s already-loaded guard — which lives on that value — is
-    /// empty, the load is granted, and the temporary handle's `Drop` stops and
-    /// exits the driver a running stream is using. While a stream owns the
-    /// driver, the question must not be put at all.
+    /// The bug this pins. A capability query used to open its own `Asio`, so
+    /// `asio-sys`'s already-loaded guard — which lives on that value — was
+    /// empty, the load was granted, and the temporary handle's `Drop` stopped
+    /// and exited the driver a running stream was using. While a stream owns
+    /// the driver, the question must not be put at all: the queries go through
+    /// `azo` now, and what its teardown does to a live stream has not been
+    /// watched. See [`ASIO_STREAMS`].
     #[test]
     fn a_capability_query_is_refused_while_a_stream_owns_the_driver() {
         // Both halves in one test on purpose: the counter is a process-wide
@@ -1361,7 +1772,11 @@ mod tests {
                 inputs: 6,
                 outputs: 2,
                 rate: Some(48_000.0),
-                buffer_range: Some((8, 2_048)),
+                ladder: Ladder {
+                    min: 8,
+                    max: 2_048,
+                    steps: Steps::Doubling,
+                },
                 buffer_pref: Some(32),
                 rates: vec![44_100.0, 48_000.0],
             })
@@ -1394,6 +1809,62 @@ mod tests {
         }
         assert!(asio_formats(&[48000.0], None, 0).is_empty());
         assert!(asio_formats(&[], Some((64, 1024)), 6).is_empty());
+    }
+
+    /// The six sizes this driver refuses, measured by asking it for each one:
+    /// on the Komplete Audio 6, `ASIOCreateBuffers` answered
+    /// `ASE_HWMALFUNCTION` to 24, 48, 96, 192, 384 and 768, and accepted every
+    /// power of two from 8 to 2048. `ASIOGetBufferSize` had answered 8, 2048
+    /// and a granularity of `-1`, which was all this panel had to go on, so it
+    /// offered exactly the six that cannot be opened.
+    #[test]
+    fn a_doubling_driver_offers_only_its_powers_of_two() {
+        let ladder = Ladder {
+            min: 8,
+            max: 2_048,
+            steps: Steps::Doubling,
+        };
+        assert_eq!(
+            asio_buffer_options(Some(ladder)),
+            vec![8, 16, 32, 64, 128, 256, 512, 1024, 2_048]
+        );
+        // The seeded default has to be one of them, or the panel preselects a
+        // choice nobody can make. This driver prefers 64 and gets it; a
+        // preference that fell between two accepted sizes rounds up to the next
+        // one the driver takes. (No driver here answers that way — the case is
+        // constructed, because the rule has to hold for one that someday does.)
+        assert_eq!(ladder.snap(Some(64)), Some(64));
+        assert_eq!(ladder.snap(Some(96)), Some(128));
+        assert_eq!(ladder.snap(None), Some(8));
+        assert_eq!(ladder.snap(Some(4_096)), Some(2_048));
+    }
+
+    /// A driver that steps linearly — the answer most of the ASIO world gives
+    /// — gets its steps honoured, and a driver that says nothing beyond min and
+    /// max still gets the whole range, which is all this filtering used to be.
+    #[test]
+    fn a_stepped_driver_offers_its_steps_and_a_silent_one_its_range() {
+        let ladder = Ladder {
+            min: 32,
+            max: 512,
+            steps: Steps::Linear(32),
+        };
+        assert_eq!(
+            asio_buffer_options(Some(ladder)),
+            vec![32, 64, 96, 128, 192, 256, 384, 512]
+        );
+        assert_eq!(ladder.snap(Some(100)), Some(128));
+        assert_eq!(
+            asio_buffer_options(Some(Ladder {
+                min: 16,
+                max: 1_024,
+                steps: Steps::Any,
+            })),
+            vec![16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1_024]
+        );
+        assert!(asio_buffer_options(Some(Ladder::UNKNOWN)).is_empty());
+        assert_eq!(Ladder::UNKNOWN.snap(Some(64)), None);
+        assert_eq!(asio_buffer_options(None), Vec::new());
     }
 
     /// The panel that prompted this: ASIO, Komplete Audio ASIO Driver, mono
@@ -1454,9 +1925,18 @@ mod tests {
         }
     }
 
-    fn core_audio_settings() -> crate::settings::Settings<crate::settings::NoPreferences> {
+    /// A settings pair whose backend key the running platform accepts.
+    ///
+    /// The tests below are about channels, rates, routes and buffers; the
+    /// backend key only has to get past the acceptance rule, because what
+    /// `resolve_settings` links or refuses to link comes off the SNAPSHOT's
+    /// `rates_linked`/`buffers_linked` flags, which each test sets for itself.
+    /// Windows is named here rather than avoided by the tests because it
+    /// accepts exactly one key, and a fixture that said `"core-audio"` there
+    /// would be testing the error path while reading like the success one.
+    fn accepted_backend_settings() -> crate::settings::Settings<crate::settings::NoPreferences> {
         crate::settings::Settings::<crate::settings::NoPreferences> {
-            backend: Some("core-audio".into()),
+            backend: Some(if cfg!(windows) { "asio" } else { "core-audio" }.into()),
             ..Default::default()
         }
     }
@@ -1475,13 +1955,13 @@ mod tests {
         snapshot.output_channel_options = output_routes(4, None);
         let unsupported = crate::settings::Settings::<crate::settings::NoPreferences> {
             output_channels: Some(Stereo([3, 4])),
-            ..core_audio_settings()
+            ..accepted_backend_settings()
         };
         assert!(snapshot.resolve_settings(&unsupported).is_err()); // only a two-channel stream is available
         snapshot.default_output_channels = None;
         assert!(
             snapshot
-                .resolve_settings(&core_audio_settings())
+                .resolve_settings(&accepted_backend_settings())
                 .unwrap_err()
                 .contains("output channel configuration")
         );
@@ -1495,7 +1975,7 @@ mod tests {
         snapshot.output_rates =
             output_rate_options(&snapshot.output_formats, snapshot.default_output_rate);
         assert_eq!(snapshot.output_rates, vec![44100.0, 48000.0]);
-        let mut settings = core_audio_settings();
+        let mut settings = accepted_backend_settings();
         let resolved = snapshot.resolve_settings(&settings).unwrap();
         assert_eq!(resolved.sample_rate, Some(48000.0));
         assert_eq!(resolved.output_sample_rate, Some(44100.0));
@@ -1524,7 +2004,9 @@ mod tests {
     #[test]
     fn queried_defaults_resolve_a_complete_mono_microphone_session() {
         let snapshot = microphone_snapshot();
-        let resolved = snapshot.resolve_settings(&core_audio_settings()).unwrap();
+        let resolved = snapshot
+            .resolve_settings(&accepted_backend_settings())
+            .unwrap();
         assert_eq!(resolved.input_device.as_deref(), Some("Microphone"));
         assert_eq!(resolved.output_device.as_deref(), Some("Speakers"));
         assert_eq!(resolved.period_size, Some(64));
@@ -1543,13 +2025,13 @@ mod tests {
         snapshot.default_input_channel = None;
         assert_eq!(
             snapshot
-                .resolve_settings(&core_audio_settings())
+                .resolve_settings(&accepted_backend_settings())
                 .unwrap_err(),
             "Select an input channel"
         );
         let settings = crate::settings::Settings::<crate::settings::NoPreferences> {
             input_channel: Some(1),
-            ..core_audio_settings()
+            ..accepted_backend_settings()
         };
         assert!(snapshot.resolve_settings(&settings).is_ok());
         snapshot.buffer_pref = None;
@@ -1557,7 +2039,6 @@ mod tests {
             snapshot.resolve_settings(&settings).unwrap_err(),
             "Select an input buffer size"
         );
-        assert!(buffer_options(&[]).is_empty());
         let silent = crate::settings::Settings::<crate::settings::NoPreferences> {
             backend: Some("dummy".into()),
             ..Default::default()
@@ -1570,26 +2051,34 @@ mod tests {
         let mut snapshot = microphone_snapshot();
         let unsupported = crate::settings::Settings::<crate::settings::NoPreferences> {
             period_size: Some(16),
-            ..core_audio_settings()
+            ..accepted_backend_settings()
         };
         assert!(snapshot.resolve_settings(&unsupported).is_err());
         let unsupported = crate::settings::Settings::<crate::settings::NoPreferences> {
             output_period_size: Some(2048),
-            ..core_audio_settings()
+            ..accepted_backend_settings()
         };
         assert!(snapshot.resolve_settings(&unsupported).is_err());
         let unsupported = crate::settings::Settings::<crate::settings::NoPreferences> {
             sample_rate: Some(96000.0),
-            ..core_audio_settings()
+            ..accepted_backend_settings()
         };
         assert!(snapshot.resolve_settings(&unsupported).is_err());
         snapshot.buffers_linked = true;
-        let resolved = snapshot.resolve_settings(&core_audio_settings()).unwrap();
+        let resolved = snapshot
+            .resolve_settings(&accepted_backend_settings())
+            .unwrap();
         assert_eq!(resolved.output_period_size, Some(64));
     }
 
+    /// The cpal half of the buffer ladder, and cpal is a non-Windows dependency:
+    /// on Windows the ladder comes from `ASIOGetBufferSize` and is tested by
+    /// [`the_cache_holds_a_refusal_so_a_pass_asks_once`] and its neighbours.
+    #[cfg(not(windows))]
     #[test]
     fn buffer_options_do_not_intersect_independent_stream_ranges() {
+        // Nothing to choose from is its own answer, not a ladder of one.
+        assert!(buffer_options(&[]).is_empty());
         let config = |min, max| {
             cpal::SupportedStreamConfigRange::new(
                 2,

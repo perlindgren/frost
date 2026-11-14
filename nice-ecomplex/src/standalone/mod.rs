@@ -2,8 +2,9 @@
 //! public Plugin/Editor interfaces; its standalone wrapper is neither built
 //! nor patched.
 //!
-//! The device transport is `nice_common::audio_io` — the same cpal, JACK and
-//! ASIO-guarded opener the rack runs — so this file holds no backend code at
+//! The device transport is `nice_common::audio_io` — ASIO on Windows, cpal's
+//! hosts and JACK elsewhere, whichever the settings page settled on — the
+//! same opener the rack runs, so this file holds no backend code at
 //! all. What it owns is everything between a settings file and that
 //! transport: resolve against the devices as they are right now, hand the
 //! rings to the pump in [`process`], keep one owner so an Apply never has two
@@ -37,8 +38,9 @@ struct Session {
 impl Drop for Session {
     fn drop(&mut self) {
         // Stop, then join, and only then let the streams go: the pump holds
-        // the endpoints, and cpal wants its callback finished before a
-        // stream's Drop runs.
+        // the endpoints, and a stream is not quiet the moment it is dropped —
+        // cpal may still be inside its callback, and an ASIO driver keeps
+        // filling buffers until `stop` returns (`asio_io.rs:650`).
         self.stop.store(true, Ordering::Release);
         if let Some(pump) = self.pump.take() {
             let _ = pump.join();

@@ -223,8 +223,10 @@ cargo test -p antifrost || fail 'cargo test -p antifrost'
 # the plugin compiling against `frost::embedded`, which is the engine's newest
 # surface, and `pitch`'s frame-budget test, which measures the wall-clock cost
 # the workspace root's `opt-level = 3` pin is what pays for. Its feature
-# combinations, the standalone link and bundling stay in
-# `nice-tuner/scripts/check.sh`, where a DAW and an ASIO SDK can join in.
+# combinations and the bundling stay in `nice-tuner/scripts/check.sh`, where a
+# DAW and a real device can join in; the standalone feature set itself is
+# compiled and tested by the gate on both platforms, which it could not do here
+# while that set meant a Steinberg SDK.
 printf 'pre-push: running `cargo test -p nice-tuner -p pitch`...\n'
 cargo test -p nice-tuner -p pitch || fail 'cargo test -p nice-tuner -p pitch'
 
@@ -232,17 +234,18 @@ cargo test -p nice-tuner -p pitch || fail 'cargo test -p nice-tuner -p pitch'
 # as above — a member nothing tests is a member that regresses quietly — and
 # worth more here than anywhere else, because `nice-nam` is written twice: once
 # against nam-rs, once against NeuralAmpModeler-rs, and this line runs whichever
-# half the pushing machine is on. The runner has one Linux job, so a Windows push
-# is the only automatic hearing the nam-rs engine gets, including the gain
-# staging read off a model file's own calibration and the files it refuses. The
-# test that holds both engines to one gain convention needs one engine on each
-# machine, which is why it sits in the suite both of them run.
+# half the pushing machine is on. The gate now compiles and tests each half on
+# its own platform — `tests/dsp_windows.rs` has had an automated run since the
+# Windows job landed — and this line is what makes the machine in front of you
+# answer for itself without waiting for a runner. The test that holds both
+# engines to one gain convention needs one engine on each machine, which is why
+# it sits in the suite both of them run.
 #
-# `--features standalone` stays out of this, as it does above: on Windows it
-# names the ASIO host, whose SDK lives outside the tree by necessity, and the
-# cheaper lesson of a hook that fails on an unset variable is that people learn
-# `--no-verify`. The plugin shape compiles the engine, the refusals and the
-# picker, which is the part that breaks.
+# `--features standalone` stays out of this, as it does in `pre-commit` — no
+# longer because of an SDK that had to live outside the tree, `azo` needing none,
+# but because this hook is the per-push half of the gate and the standalone
+# graphs have a job of their own, on both platforms. The plugin shape compiles
+# the engine, the refusals and the picker, which is the part that breaks.
 printf 'pre-push: running `cargo test -p nice-nam -p nice-common`...\n'
 cargo test -p nice-nam -p nice-common || fail 'cargo test -p nice-nam -p nice-common'
 
