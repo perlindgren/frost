@@ -177,9 +177,10 @@ jobs:
       # The standalone half, linted like the tuner's beside it: the binary
       # and the audio owner are behind `standalone`, and a step that never
       # turns the feature on would lint a source tree with the app missing
-      # from it. ASIO is not fetched here — `asio-host` is a `cfg(windows)`
-      # dependency, so this Linux runner does not see it in the graph at all, and
-      # nothing in this file vendors an SDK any more.
+      # from it. ASIO is not fetched here — `azo`, the transport the `asio-host`
+      # feature switches on, is a `cfg(windows)` dependency of nice-common, so
+      # this Linux runner does not see it in the graph at all, and nothing in
+      # this file vendors an SDK any more.
       - name: Clippy, zero warnings, the standalone wah
         run: cargo clippy -p nice-wah --features standalone --all-targets -- -D warnings
 
@@ -194,8 +195,9 @@ jobs:
       # The phaser's standalone half, linted like the wah's beside it: the
       # binary and the audio owner are behind `standalone`, and a step that
       # never turns the feature on would lint a source tree with the app
-      # missing from it. ASIO is not fetched here — `asio-host` is a `cfg(windows)`
-      # dependency, invisible to this runner's graph, and nothing in this file
+      # missing from it. ASIO is not fetched here — `azo`, the transport the
+      # `asio-host` feature switches on, is a `cfg(windows)` dependency of
+      # nice-common, invisible to this runner's graph, and nothing in this file
       # vendors an SDK any more.
       - name: Clippy, zero warnings, the standalone phaser
         run: cargo clippy -p nice-phase --features standalone --all-targets -- -D warnings
@@ -211,8 +213,9 @@ jobs:
       # Its standalone half, linted beside theirs: the binary and the audio
       # owner live behind `standalone`, and a step that never turns it on would
       # lint a source tree with the application missing from it. ASIO is not
-      # fetched here — `asio-host` is a `cfg(windows)` dependency, so this Linux
-      # runner does not see it in the graph at all.
+      # fetched here — `azo`, the transport the `asio-host` feature switches on,
+      # is a `cfg(windows)` dependency of nice-common, so this Linux runner does
+      # not see it in the graph at all.
       - name: Clippy, zero warnings, the standalone Pi-Fase
         run: cargo clippy -p nice-pi-face --features standalone --all-targets -- -D warnings
 
@@ -225,8 +228,9 @@ jobs:
       # Its standalone half beside theirs: the binary, the audio owner and
       # the settings file live behind `standalone`, and a step that never
       # turns the feature on would lint a source tree with the application
-      # missing from it. ASIO is not fetched here — `asio-host` is a
-      # `cfg(windows)` dependency, invisible to this runner's graph.
+      # missing from it. ASIO is not fetched here — `azo`, the transport the
+      # `asio-host` feature switches on, is a `cfg(windows)` dependency of
+      # nice-common, invisible to this runner's graph.
       - name: Clippy, zero warnings, the standalone Space Echo
         run: cargo clippy -p nice-echo --features standalone --all-targets -- -D warnings
 
@@ -239,8 +243,9 @@ jobs:
       # Its standalone half beside theirs: the binary, the audio owner and
       # the settings file live behind `standalone`, and a step that never
       # turns the feature on would lint a source tree with the application
-      # missing from it. ASIO is not fetched here — `asio-host` is a
-      # `cfg(windows)` dependency, invisible to this runner's graph.
+      # missing from it. ASIO is not fetched here — `azo`, the transport the
+      # `asio-host` feature switches on, is a `cfg(windows)` dependency of
+      # nice-common, invisible to this runner's graph.
       - name: Clippy, zero warnings, the standalone Echoplex
         run: cargo clippy -p nice-ecomplex --features standalone --all-targets -- -D warnings
 
@@ -313,7 +318,8 @@ jobs:
       # Rust portal one), but believed is not run, and a step that turns red for
       # a reason nobody has seen is a step that gets muted. It belongs here once
       # it has been green somewhere. ASIO is not missing from this list by
-      # oversight either: `asio-host` is a `cfg(windows)` dependency, so on this
+      # oversight either: `azo`, the transport the `asio-host` feature switches
+      # on, is a `cfg(windows)` dependency of nice-common, so on this
       # runner there is no ASIO transport in the graph to test — and the `windows`
       # job at the end of this file is where it runs, this plugin with `standalone`
       # on and the `cfg(windows)` half of the DSP suite beside it.
@@ -563,9 +569,10 @@ jobs:
         run: cargo clippy -p nice-nam -p nice-common --all-targets -- -D warnings
 
       # The shared crate with every feature on, which on this platform is the sentence
-      # "with the ASIO transport in it": `asio-host` is a `cfg(windows)` dependency, so
-      # `--all-features` on the runner above has never seen it, and it also implies the
-      # `standalone` and `widgets` halves that job tests with separate commands.
+      # "with the ASIO transport in it": `azo` is a `cfg(windows)` dependency of this
+      # crate, so `--all-features` on the runner above has never compiled it, and it
+      # also implies the `standalone` and `widgets` halves that job tests with
+      # separate commands.
       - name: Clippy, zero warnings, the shared crate with every feature
         run: cargo clippy -p nice-common --all-features --all-targets -- -D warnings
 

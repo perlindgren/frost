@@ -20,10 +20,13 @@ silent; unknown device defaults remain unset.
 Enable `devices` only in standalone applications. It provides the existing CPAL,
 CoreAudio and Linux JACK queries, ASIO stream ownership guard, serialized
 `Snapshot` protocol, and `Snapshot::resolve_settings` validation. Discovery is
-explicit and must run off the audio thread. ASIO needs the optional `asio-host`
-feature and its existing SDK requirements. A caller of `snapshot_via_child` must
-implement the `--list-devices <backend> <input> <output>` RON protocol in its own
-standalone executable, as nice-tuner does. Nice NAM has no executable yet.
+explicit and must run off the audio thread. ASIO needs the `asio-host` feature,
+which pulls [`azo`](https://github.com/LastExceed/azo) — declared under
+`cfg(windows)`, so enabling the feature off Windows compiles no ASIO and asks for
+nothing: no SDK, no `CPAL_ASIO_DIR`, no C++ compiler. A caller of
+`snapshot_via_child` must implement the `--list-devices <backend> <input>
+<output>` RON protocol in its own standalone executable, as nice-tuner and Nice
+NAM both do.
 
 ```sh
 cargo test -p nice-common --features devices

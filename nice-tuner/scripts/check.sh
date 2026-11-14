@@ -24,9 +24,10 @@ cargo fmt --all -- --check
 echo "== clippy (the plugin's own configs, deny warnings) =="
 cargo clippy -p nice-tuner -p pitch -p xtask --all-targets -- -D warnings
 cargo clippy -p nice-tuner --features standalone --all-targets -- -D warnings
-# No second feature set follows: ASIO arrives with `standalone` on Windows and
-# nowhere else, through the optional `asio-host` carrier (see the feature note
-# in nice-tuner/Cargo.toml), so there is nothing left to add to the line above.
+# No second feature set follows: ASIO arrives with `standalone` and nowhere
+# else, through the `asio-host` alias in nice-tuner/Cargo.toml — `azo` is a
+# `cfg(windows)` dependency of nice-common, so no other platform can pull it, and
+# there is nothing left to add to the line above.
 # The `--features standalone-asio` step that stood here asked for a feature the
 # manifest dropped in 3130e2e, so this script stopped at it on every platform:
 # `cargo clippy -p nice-tuner --features standalone-asio --all-targets` answers

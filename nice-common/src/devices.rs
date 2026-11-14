@@ -121,7 +121,7 @@ fn host_id_from_value(value: &str) -> Option<cpal::HostId> {
 /// Elsewhere the list is the system default first, then every host cpal built,
 /// then silence. JACK is Linux-only and remains selectable without a running
 /// server. ASIO appears in a Windows standalone build, which brings
-/// `asio-host` with it; a Windows build *without* that carrier has no audio
+/// `asio-host` with it; a Windows build *without* that feature has no audio
 /// path at all, so it offers only silence, which is the truth rather than a
 /// host that would fail when opened.
 pub fn available_backends() -> Vec<BackendOption> {
@@ -130,7 +130,7 @@ pub fn available_backends() -> Vec<BackendOption> {
         label: label.to_owned(),
     };
     // Windows writes its rows out instead of asking anything: two where the
-    // ASIO carrier is compiled in, and one where it is not.
+    // ASIO transport is compiled in, and one where it is not.
     #[cfg(windows)]
     let offered = if cfg!(feature = "asio-host") {
         vec![mk("asio", "ASIO"), mk("dummy", "no audio (dummy)")]
@@ -1195,7 +1195,7 @@ impl Snapshot {
             // row and says why Apply is objecting, and the user decides — while
             // a silent mapping would open a driver nobody picked and call the
             // settings file repaired. A Windows build compiled without the ASIO
-            // carrier is accepted by this line and refused one line further
+            // transport is accepted by this line and refused one line further
             // down, where it lists no drivers to select.
             return Err(if backend == "auto" || backend.is_empty() {
                 "Windows has no system-default audio host: choose ASIO, or no audio".into()

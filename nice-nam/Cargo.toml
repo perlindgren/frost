@@ -17,9 +17,16 @@ crate-type = ["cdylib", "lib"]
 
 [features]
 default = []
-# Application-owned standalone host. ASIO comes with it on Windows, through the
-# optional `asio-host` dependency below, and is absent on every other platform.
+# Application-owned standalone host. ASIO comes with it on Windows, and is
+# absent on every other platform; the alias below says how a feature that cannot
+# be platform-specific manages that.
 standalone = ["nice-common/ui", "nice-common/standalone", "dep:cpal", "dep:jack", "dep:plugin-buffer", "dep:tracing", "asio-host"]
+# The name `src/standalone/audio.rs` gates its ASIO halves on, in the spelling
+# nice-common gates its own with: `all(windows, feature = "asio-host")`. An alias
+# and not a dependency, because the scoping belongs with the thing scoped — `azo`
+# is declared under `cfg(windows)` in nice-common, so switching this on off
+# Windows pulls no ASIO code, and no carrier crate is needed to keep it out.
+asio-host = ["nice-common/asio-host"]
 # Native Windows placement for the standalone window: open where the last session
 # left it, or centred in the primary work area when no position was ever stored.
 # The unsafe code stays inside the wrapper crate; nice-nam keeps denying it, and a
@@ -52,9 +59,9 @@ nam_engine = { package = "NeuralAmpModeler-rs", version = "=2.0.0", default-feat
 # The Windows engine: no cabinet, and a model asking for another sample rate is
 # refused rather than run at the wrong one.
 nam_windows = { package = "nam-rs", version = "=0.4.0" }
-# ASIO in a Windows standalone build's device list, and nothing anywhere else:
-# `standalone` names it, and this section means no other platform can see it.
-asio-host = { path = "../nice-tuner/crates/asio-host", optional = true }
+# No ASIO here, and none needed: the transport is `azo`, a `cfg(windows)`
+# dependency of nice-common that the `asio-host` alias switches on, scoped where
+# it is scoped and invisible to every other platform from there.
 # Placement is implemented only by our opt-in Windows wrapper, which is also the
 # only place in this build that contains unsafe code.
 window-position = { path = "../nice-tuner/crates/window-position", optional = true }
