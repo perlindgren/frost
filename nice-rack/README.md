@@ -54,20 +54,28 @@ requested configuration asynchronously and preserves supported plugin state.
 Settings are written to `nice-rack-settings.ron` in the working directory; window
 geometry is saved independently. Missing settings boot silently.
 
-On Windows and macOS the transport is built from the selected physical CPAL
-input and output devices. On Linux the same panel also offers named JACK
-ports: the rack registers one `input` and one `left` port under its own
-client and connects them to the selected JACK source and destination, or a
-`right` port as well when a second, different destination is selected. A
-single destination carries the mono average because JACK ports are mono; the
-pair carries the true stereo graph output. The server's sample rate and
-quantum govern both directions, and the rack requests its buffer size from
-the offered quanta. The rack never offers its own audio ports to itself. The
-existing tuner/NAM JACK implementations are unchanged. Capture selects
-the configured physical mono channel and duplicates it into the rack input. The
-processed stereo signal is routed to the selected output pair, or averaged if a
-mono destination was explicitly selected. Stereo resampling uses one shared clock
-and interpolation phase for both channels.
+Which transports exist is the platform's, and the panel's backend row is where
+that shows. On Windows the row offers `ASIO` and `no audio (dummy)` and nothing
+else, and what Apply opens is `nice_common::asio_io`: one ASIO driver carrying
+both directions on one clock, its callbacks on the driver's own thread. There is
+no WASAPI stream there to fall back to — `nice-common` declares no cpal on
+Windows at all, so nothing in this build could open one — and a settings file
+naming the retired `wasapi` or `auto` key is refused in words rather than opened
+on a host nobody chose. On macOS the row offers the system default and macOS
+Core Audio, and the transport is the two cpal streams, one per direction. On
+Linux the same panel also offers named JACK ports: the rack registers one
+`input` and one `left` port under its own client and connects them to the
+selected JACK source and destination, or a `right` port as well when a second,
+different destination is selected. A single destination carries the mono average
+because JACK ports are mono; the pair carries the true stereo graph output. The
+server's sample rate and quantum govern both directions, and the rack requests
+its buffer size from the offered quanta. The rack never offers its own audio
+ports to itself. The existing tuner/NAM JACK implementations are unchanged.
+Whichever backend is open, capture selects the configured physical mono channel
+and duplicates it into the rack input. The processed stereo signal is routed to
+the selected output pair, or averaged if a mono destination was explicitly
+selected. Stereo resampling uses one shared clock and interpolation phase for
+both channels.
 
 The standalone settings include a vector of plugin instances: stable instance ID,
 serial/parallel stage, entry path, class ID, native serialized state (when CLAP

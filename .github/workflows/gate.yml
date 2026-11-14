@@ -249,6 +249,39 @@ jobs:
       - name: Clippy, zero warnings, the standalone Echoplex
         run: cargo clippy -p nice-ecomplex --features standalone --all-targets -- -D warnings
 
+      # The rack and its four crates, named for the reason this file has now
+      # written out seven times: `nice-rack`,
+      # `nice-rack-engine`, `nice-clap-host`, `nice-rack-standalone` and
+      # `rack-window-input` sit in `members` and not in `default-members`, so the
+      # bare clippy above compiles none of them while `cargo fmt --all` formats
+      # them as though it had. Nothing automatic has linted any of the five, on
+      # either platform, before this step and its twin in the Windows job below;
+      # what this runner adds over that one is the half of the graph a Windows
+      # machine never compiles — the ALSA and JACK transports behind `nice-rack`'s
+      # `audio-io`, the X11 answer to the CLAP GUI-API question
+      # (`nice-clap-host/src/controls.rs:322`, the third arm of a three-way `cfg`
+      # whose other two arms are all Windows and macOS ever build), and
+      # `clap-probe`, `nice-clap-host`'s second binary.
+      #
+      # The evidence behind these two steps is not the same on the two machines,
+      # and saying so is cheaper than being believed. The Windows twin was run on
+      # the machine it names first. This one is first run by the run that
+      # publishes it, and the honest case for it is that nothing else has ever
+      # compiled these crates on Linux: not a CI step until this line, not a line
+      # of `.githooks/`, and the README's own validation commands are written
+      # against a macOS `.dylib`. A first run that might be red is the price of
+      # ever finding out; the alternative is the state this file keeps naming —
+      # four crates that are members, and therefore, in effect, invisible.
+      #
+      # No `--features standalone`, because the rack declares no such feature: it
+      # asks `nice-common` for `ui`, `audio-io` and `asio-host` unconditionally
+      # (`nice-rack/Cargo.toml:12`), and on this platform `asio-host` adds
+      # nothing — `azo` is a `cfg(windows)` dependency, invisible to this graph.
+      # No `RUSTFLAGS` either: the rack reaches `frost` and `clack-host`, not
+      # NeuralAmpModeler-rs, so nothing in it refuses the default baseline.
+      - name: Clippy, zero warnings, the rack and its host adapter
+        run: cargo clippy -p nice-rack -p nice-rack-engine -p nice-clap-host -p nice-rack-standalone -p rack-window-input --all-targets -- -D warnings
+
       # The engine's own claim, checked rather than trusted: docs/licensing.md
       # records why these specific lines exist. A published crate that loses
       # assets/fonts/OFL.txt loses the permission to ship a font with it, and
@@ -397,6 +430,19 @@ jobs:
         run: |
           cargo test --no-fail-fast -p nice-ecomplex
           cargo test --no-fail-fast -p nice-ecomplex --features standalone
+
+      # The rack's suites. Nine tests stand aside, every one of them naming
+      # `NICE_RACK_TEST_CLAP` — this repository's own freshly built nice-tuner
+      # export, a plugin the runner could build and has no reason to load into its
+      # own process — and two of those name real audio devices as well. `cargo
+      # test` does not run ignored tests unless asked, so what runs here is the
+      # routing graph and its cycle rules, the live graph's block boundary, the
+      # drop zones and stage layout, the instance-state and editor-geometry round
+      # trip, and the controller's stop, retry and rollback paths: none of them
+      # opens a device, a window or a plugin. The same nine stand aside in the
+      # Windows twin below, for the same reasons.
+      - name: Tests, the rack and its host adapter
+        run: cargo test --no-fail-fast -p nice-rack -p nice-rack-engine -p nice-clap-host -p nice-rack-standalone -p rack-window-input
 
       # Compile and link the engine's library tests, including the GPU tree,
       # without executing them on an uncalibrated runner. Compilation errors
@@ -585,6 +631,22 @@ jobs:
           cargo clippy -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo -p nice-ecomplex --all-targets -- -D warnings
           cargo clippy -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo -p nice-ecomplex --features standalone --all-targets -- -D warnings
 
+      # The rack and its four crates, on the machine whose audio they now use.
+      # Same reason as every named step in this job — `members` without
+      # `default-members`, so the bare clippy at the top compiles none of them —
+      # and here the names buy what the runner above cannot: the azo transport
+      # behind `nice-rack`'s unconditional `asio-host`, the Win32 arms of the CLAP
+      # editor embedding, and the `windows-sys` style read and frame-pump post
+      # that keep an embedded third-party window painting. `nice-clap-host` is the
+      # one crate in this workspace that loads a foreign plugin entry point, and
+      # nothing has linted it on any platform until this line and its twin above.
+      #
+      # Both commands here ran against this tree on this machine first: no
+      # warnings across the five packages on a warm dependency cache, and the test
+      # step below at twenty-three passing, nine standing aside.
+      - name: Clippy, zero warnings, the rack and its host adapter
+        run: cargo clippy -p nice-rack -p nice-rack-engine -p nice-clap-host -p nice-rack-standalone -p rack-window-input --all-targets -- -D warnings
+
       # The transport's own tests, and the sample conversions under it: the requests
       # refused before a driver is touched, the one-driver-per-process claim, what a
       # driver is told when it asks whether overload is supported, and one block moved
@@ -623,3 +685,19 @@ jobs:
       # resolution and frame plumbing that sit on top of the azo transport.
       - name: Tests, the plugins that use the shared audio
         run: cargo test --no-fail-fast -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo -p nice-ecomplex --features standalone
+
+      # The rack, on the platform its binary ships on. Twenty-three tests run and
+      # nine stand aside: each of the nine names `NICE_RACK_TEST_CLAP`, a native
+      # CLAP export this runner could build and has no business loading into its
+      # own process, and two of those name real audio devices as well — the pair
+      # being the rack's only tests that would open this platform's driver, which
+      # is exactly the pair a runner with no hardware could not settle either way.
+      # What does run here is the routing graph, the live graph's block boundary,
+      # the drop zones, the instance-state round trip, and the controller's stop,
+      # retry and rollback paths, so the driver this platform's audio rests on
+      # stays covered by the shared crate's driver-free tests above rather than by
+      # a promise about this machine.
+      #
+      # Both numbers measured here first: twenty-three passing, nine skipped.
+      - name: Tests, the rack and its host adapter
+        run: cargo test --no-fail-fast -p nice-rack -p nice-rack-engine -p nice-clap-host -p nice-rack-standalone -p rack-window-input
