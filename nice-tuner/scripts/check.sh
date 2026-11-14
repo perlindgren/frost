@@ -98,7 +98,7 @@ done
 for shipped in \
   "target/bundled/Nice Tuner.vst3/Contents/Resources/LICENSE-FluentSystemIcons.txt" \
   "target/bundled/LICENSE-FluentSystemIcons.txt"; do
-  cmp -s nice-tuner/assets/fonts/LICENSE-FluentSystemIcons.txt "$shipped" || { echo "FAIL: $shipped is missing or differs from the icon font's MIT notice"; exit 1; }
+  cmp -s nice-common/assets/fonts/LICENSE-FluentSystemIcons.txt "$shipped" || { echo "FAIL: $shipped is missing or differs from the icon font's MIT notice"; exit 1; }
 done
 
 echo "ALL GATES PASSED"

@@ -15,10 +15,15 @@ use anyhow::{bail, Context};
 /// `nice-plug-xtask` 0.1.1 contains the binary and nothing else, because that step
 /// does not exist upstream. This puts the text where a distributor meets it rather
 /// than remembers it.
+///
+/// Both texts go into every bundle this workspace builds, whichever plugin was
+/// named on the command line, because every editor embeds both fonts: Fira Code
+/// from the repository's `assets/fonts/`, and the icon font now held by
+/// `nice-common` and handed out by `nice_common::fonts::icon_font()`.
 const FONT_LICENCES: &[(&str, &str)] = &[
     ("assets/fonts/OFL.txt", "OFL.txt"),
     (
-        "nice-tuner/assets/fonts/LICENSE-FluentSystemIcons.txt",
+        "nice-common/assets/fonts/LICENSE-FluentSystemIcons.txt",
         "LICENSE-FluentSystemIcons.txt",
     ),
 ];

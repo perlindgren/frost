@@ -182,3 +182,13 @@ travels with the font. The engine's sprites, maps and audio stay all rights
 reserved and do not appear in the plugin or its bundles; the bundler does not yet
 carry the OFL text at all, which is recorded against `nice-tuner/src/gui.rs`
 rather than assumed.
+
+The family's second embedded font, the Fluent System Icons face its panels draw
+their glyphs from, belongs to `nice-common`: that package's `assets/fonts/` holds
+the font, its provenance README and its MIT notice, and
+`nice_common::fonts::icon_font()` is the one place the bytes are embedded. It used
+to sit in `nice-tuner/assets/fonts/` while seven other crates named that path,
+which no manifest could record as a dependency — an asset seven editors share is
+not one plugin's property. The bundler ships the MIT text into every bundle the
+workspace builds, for the same reason as the OFL text: all eight editors embed the
+font, so all their distributions carry the permission.

@@ -82,7 +82,7 @@ foreach ($shipped in @(
     }
 }
 Write-Output "step [font licence in bundle] -> exit 0"
-$iconLicence = Get-Item nice-tuner\assets\fonts\LICENSE-FluentSystemIcons.txt
+$iconLicence = Get-Item nice-common\assets\fonts\LICENSE-FluentSystemIcons.txt
 foreach ($shipped in @(
     'target\bundled\Nice Tuner.vst3\Contents\Resources\LICENSE-FluentSystemIcons.txt',
     'target\bundled\LICENSE-FluentSystemIcons.txt'

@@ -19,6 +19,8 @@ pub mod devices;
 pub mod ui;
 
 #[cfg(feature = "widgets")]
+pub mod fonts;
+#[cfg(feature = "widgets")]
 pub mod knob;
 pub mod meter;
 #[cfg(feature = "widgets")]
