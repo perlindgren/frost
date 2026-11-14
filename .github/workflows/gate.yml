@@ -35,8 +35,25 @@
 # writes it down.
 name: gate
 
+# Two triggers, and one of them is scoped, because an open `push:` and a
+# `pull_request:` together gate the same commit twice. Run 154 and run 155 were the
+# same SHA, `00e047d`, minutes apart: 383 seconds as a push and 436 as a pull
+# request, two runner sets, two caches, one answer asked for twice. Since the
+# suites became conditional that is the same question put to the same diff twice,
+# and the plan is identical either way.
+#
+# So `push` is scoped to `main`, where it is not a duplicate of anything: it is the
+# only way a merged commit gets gated, and the only run whose result can be credited
+# to the branch everyone else is measured from. `pull_request` is the review gate and
+# the one the `main-gate` ruleset reads, and it fires per push to the branch.
+#
+# The cost, stated where it can be read: a branch with no open pull request is not
+# gated at all until one is opened, and its whole change is then tested in one run
+# rather than commit by commit. Nothing about the merge's own coverage narrows — a
+# push to `main` is a case the `plan` job runs everything on regardless.
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -49,7 +66,8 @@ env:
 # second run is the truth about the branch and the first is only evidence about a
 # commit that no longer exists, so the older one is cancelled rather than left to
 # spend five minutes proving something nobody will read. Scoped per ref: a push to
-# `main` and a push to a branch never cancel each other.
+# `main` and a pull request's runs never cancel each other, and since the trigger
+# above is scoped, they are now the only two kinds of run this workflow makes.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
