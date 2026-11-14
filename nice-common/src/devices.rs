@@ -1,4 +1,10 @@
-//! cpal-backed enumeration for the standalone settings page.
+//! The standalone settings page's view of the audio systems it can offer.
+//!
+//! Two roads, and which of them a platform has is a decision, not a
+//! discovery: ASIO drivers read through azo, and cpal's hosts — where on
+//! Windows there are none to offer, because the Windows audio path is ASIO
+//! (see [`available_backends`] for the offer and
+//! [`Snapshot::resolve_settings`] for what a saved setting may name).
 //!
 //! Compiled into the standalone build only: a plugin inside a host must not
 //! enumerate audio systems it does not own. Everything here runs on the GUI
@@ -27,19 +33,22 @@ pub struct BackendOption {
     pub label: String,
 }
 
+/// The settings key for a cpal host.
+///
+/// Not compiled on Windows, because nothing on Windows asks: the forward
+/// mapping exists to build the offer list, and that list has no cpal hosts
+/// there — see [`available_backends`]. Adding a Windows arm would be adding a
+/// key this build refuses to open.
+#[cfg(not(windows))]
 fn host_id_value(id: cpal::HostId) -> Option<(&'static str, &'static str)> {
     // Only hosts the application's standalone audio path supports.
     // Each variant exists only where cpal builds it (platform/feature cfg);
     // if-chains keep that exhaustiveness-free.
-    // ASIO is deliberately absent: it is not a cpal host any more, and
+    // ASIO is deliberately absent too: it is not a cpal host any more, and
     // `cpal::HostId::Asio` is not even declared unless cpal's own `asio`
     // feature is on (cpal 0.18.2, `platform/mod.rs:905`), which this workspace
     // no longer asks for. `available_backends` offers the `"asio"` key from azo
     // instead, so a Windows build needs no Steinberg SDK to compile the path.
-    #[cfg(windows)]
-    if id == cpal::HostId::Wasapi {
-        return Some(("wasapi", "Windows WASAPI"));
-    }
     #[cfg(target_os = "macos")]
     if id == cpal::HostId::CoreAudio {
         // Key must match nice-plug's clap ValueEnum spelling (`core-audio`,
@@ -61,10 +70,10 @@ fn host_id_value(id: cpal::HostId) -> Option<(&'static str, &'static str)> {
 }
 
 fn host_id_from_value(value: &str) -> Option<cpal::HostId> {
-    #[cfg(windows)]
-    if value == "wasapi" {
-        return Some(cpal::HostId::Wasapi);
-    }
+    // The inverse of `host_id_value`, so it accepts exactly the keys that one
+    // offers: `"wasapi"` is not among them on any platform now. On Windows no
+    // key is, which is what makes a saved `"wasapi"` end up refused by
+    // `resolve_settings` with words rather than opened on a host nobody chose.
     #[cfg(target_os = "macos")]
     if value == "coreaudio" || value == "core-audio" {
         return Some(cpal::HostId::CoreAudio);
@@ -81,40 +90,80 @@ fn host_id_from_value(value: &str) -> Option<cpal::HostId> {
     None
 }
 
-/// Every backend the running binary can offer, system default first.
-/// JACK is Linux-only and remains selectable without a running server.
-/// ASIO appears in a Windows standalone build, which brings `asio-host` with it.
+/// Every backend this binary can offer, and the only place that answer is
+/// written: [`Snapshot::resolve_settings`] refuses what this list does not
+/// contain, and the settings panel's backend rows are this list.
+///
+/// On Windows that answer is ASIO or silence. The decision is the reason this
+/// crate exists: ASIO gives the application one driver, one clock, and both
+/// directions in one callback, which is what the tuner's input and the model
+/// plugins' latency accounting are built on; cpal's WASAPI host gives two
+/// independently-clocked streams that nice-plug then aligns with an
+/// input-latency slack, and reports a playback hole (`DATA_DISCONTINUITY`)
+/// when that alignment slips — the gap the tuners' dropout counter counts on
+/// the platforms that still have that road. So Windows offers `"asio"` and
+/// `"dummy"`, and no `"auto"` row: there is no system host to follow, and a
+/// row that silently meant "not ASIO" would be an offer this build does not
+/// keep. `cpal::available_hosts()` is not asked here on Windows.
+///
+/// Elsewhere the list is the system default first, then every host cpal built,
+/// then silence. JACK is Linux-only and remains selectable without a running
+/// server. ASIO appears in a Windows standalone build, which brings
+/// `asio-host` with it; a Windows build *without* that carrier has no audio
+/// path at all, so it offers only silence, which is the truth rather than a
+/// host that would fail when opened.
 pub fn available_backends() -> Vec<BackendOption> {
     let mk = |id: &str, label: &str| BackendOption {
         id: id.to_owned(),
         label: label.to_owned(),
     };
-    let mut v = vec![mk("auto", "System default")];
-    // ASIO cannot come out of the loop below: cpal only lists hosts it built,
-    // and the ASIO host is exactly the one this workspace stopped asking cpal
-    // for. The key is offered here, from azo, and stays the first named choice
-    // after the default because it is the reason a Windows standalone exists.
-    #[cfg(all(windows, feature = "asio-host"))]
-    v.push(mk("asio", "ASIO"));
-    for h in cpal::available_hosts() {
-        if let Some((id, label)) = host_id_value(h) {
-            v.push(mk(id, label));
+    // Windows writes its rows out instead of asking anything: two where the
+    // ASIO carrier is compiled in, and one where it is not.
+    #[cfg(windows)]
+    let offered = if cfg!(feature = "asio-host") {
+        vec![mk("asio", "ASIO"), mk("dummy", "no audio (dummy)")]
+    } else {
+        vec![mk("dummy", "no audio (dummy)")]
+    };
+    #[cfg(not(windows))]
+    let mut offered = vec![mk("auto", "System default")];
+    #[cfg(not(windows))]
+    for host in cpal::available_hosts() {
+        if let Some((id, label)) = host_id_value(host) {
+            offered.push(mk(id, label));
         }
     }
-    v.push(mk("dummy", "no audio (dummy)"));
-    v
+    #[cfg(not(windows))]
+    offered.push(mk("dummy", "no audio (dummy)"));
+    offered
+}
+
+/// The platform's own default host, where following one is a thing this build
+/// does. `None` on Windows: `"auto"` has no host to mean there, so a saved
+/// `"auto"` reaches the caller as "no host" and is refused for its words,
+/// rather than being opened on WASAPI because that is what the system host
+/// happens to be.
+#[cfg(windows)]
+fn default_host() -> Option<cpal::Host> {
+    None
+}
+
+#[cfg(not(windows))]
+fn default_host() -> Option<cpal::Host> {
+    Some(cpal::default_host())
 }
 
 /// The cpal host behind a backend key.
 ///
 /// `None` for the keys that do not go through cpal at all: `"asio"` is served
 /// by [`crate::asio_io`] over azo, `"dummy"` by the caller refusing to open
-/// anything, and anything unrecognised by the caller's own error. Every caller
+/// anything, and anything unrecognised by the caller's own error. On Windows
+/// that is every key, including `"auto"`: see [`default_host`]. Every caller
 /// therefore has to handle `"asio"` before it reaches for a device, which is
 /// the honest shape of the choice rather than a host that would fail later.
 pub fn open_host(backend: &str) -> Option<cpal::Host> {
     if backend == "auto" || backend.is_empty() {
-        return Some(cpal::default_host());
+        return default_host();
     }
     cpal::host_from_id(host_id_from_value(backend)?).ok()
 }
@@ -589,13 +638,11 @@ pub fn default_device_names(backend: &str) -> (Option<String>, Option<String>) {
         // choice, which is the honest reading of "no device chosen yet".
         return (None, None);
     }
-    let host = if backend == "auto" || backend.is_empty() {
-        cpal::default_host()
-    } else {
-        match open_host(backend) {
-            Some(h) => h,
-            None => return (None, None),
-        }
+    // `open_host` is the one place that decides what `"auto"` means, and on
+    // Windows it decides `None`: no host to nominate a default with, which is
+    // the same answer ASIO gives two lines up.
+    let Some(host) = open_host(backend) else {
+        return (None, None);
     };
     let name = |d: Option<cpal::Device>| {
         d.and_then(|d| d.description().ok())
@@ -629,11 +676,7 @@ pub fn driver_default_rate(
         // rate to ask, and no reason to load a driver nobody chose.
         return asio_rate(&mut AsioCapsCache::default(), input, output);
     }
-    let host = if backend == "auto" || backend.is_empty() {
-        cpal::default_host()
-    } else {
-        open_host(backend)?
-    };
+    let host = open_host(backend)?;
     // A named device that cannot be found stays unknown. Falling back to the
     // system default here would report some other device's rate under the
     // name the user picked — and since ASIO's dropdown lists every registered
@@ -665,11 +708,7 @@ fn output_default_rate(backend: &str, output: Option<&str>) -> Option<f32> {
     if backend == "asio" {
         return asio_output_rate(&mut AsioCapsCache::default(), output);
     }
-    let host = if backend == "auto" || backend.is_empty() {
-        cpal::default_host()
-    } else {
-        open_host(backend)?
-    };
+    let host = open_host(backend)?;
     let device = match output {
         Some(name) => find_named(host.output_devices().ok()?, name),
         None => host.default_output_device(),
@@ -716,11 +755,7 @@ fn input_channel_count(backend: &str, input: Option<&str>) -> Option<u32> {
         // whole path exists to avoid.
         return asio_input_channels(&mut AsioCapsCache::default(), input);
     }
-    let host = if backend == "auto" || backend.is_empty() {
-        cpal::default_host()
-    } else {
-        open_host(backend)?
-    };
+    let host = open_host(backend)?;
     let device = match input {
         Some(name) => find_named(host.input_devices().ok()?, name)?,
         None => host.default_input_device()?,
@@ -857,11 +892,7 @@ pub fn stream_options(backend: &str, input: Option<&str>, output: Option<&str>) 
     if backend == "asio" {
         return asio_stream_options(&mut AsioCapsCache::default(), input, output);
     }
-    let host = if backend == "auto" || backend.is_empty() {
-        Some(cpal::default_host())
-    } else {
-        open_host(backend)
-    };
+    let host = open_host(backend);
     let in_dev = host.as_ref().and_then(|host| match input {
         Some(name) => find_named(host.input_devices().ok()?, name),
         None => host.default_input_device(),
@@ -1062,11 +1093,41 @@ impl Snapshot {
             };
             return Ok(silent);
         }
+        // The keys this build accepts are the keys it offers, and
+        // [`available_backends`] is where that list is written.
+        #[cfg(windows)]
+        if backend != "asio" {
+            // A saved choice that no longer exists gets an answer in words, not
+            // a rewrite into the one road that works. `"auto"` used to mean "the
+            // system host", and on Windows the system host was WASAPI;
+            // `"wasapi"` said it outright. Both are refused here rather than
+            // mapped, because the panel then shows the stored value in its own
+            // row and says why Apply is objecting, and the user decides — while
+            // a silent mapping would open a driver nobody picked and call the
+            // settings file repaired. A Windows build compiled without the ASIO
+            // carrier is accepted by this line and refused one line further
+            // down, where it lists no drivers to select.
+            return Err(if backend == "auto" || backend.is_empty() {
+                "Windows has no system-default audio host: choose ASIO, or no audio".into()
+            } else {
+                "Windows standalone audio is ASIO or no audio: pick ASIO in the backend row, then a driver".into()
+            });
+        }
+        #[cfg(not(windows))]
         if !matches!(
             backend,
-            "auto" | "core-audio" | "coreaudio" | "wasapi" | "asio" | "alsa"
+            "auto" | "core-audio" | "coreaudio" | "asio" | "alsa"
         ) && !(cfg!(target_os = "linux") && backend == "jack")
         {
+            // `"wasapi"` is deliberately not tolerated here either: it names a
+            // host cpal does not even build on this platform, so accepting the
+            // string would be accepting nothing. `"asio"` is kept, on the other
+            // hand: the key is part of this application's vocabulary on every
+            // platform, and the rules it selects — one driver, one clock, one
+            // buffer — are shared and tested here even though only a Windows
+            // build can load a driver. A mac or Linux settings file that says
+            // `"asio"` is refused one line further down, where the backend
+            // lists no drivers to select.
             return Err("This audio backend is not supported by the standalone application".into());
         }
         resolved.input_device = resolved.input_device.or_else(|| self.def_in.clone());
@@ -1552,6 +1613,41 @@ mod tests {
         assert_eq!(snapshot.input_channels, Some(1));
     }
 
+    /// The Windows half of the offer, and the reason the offer exists: on
+    /// Windows the audio path is the azo transport, so the panel may offer
+    /// ASIO and silence and nothing that would open a second clock.
+    #[cfg(all(windows, feature = "asio-host"))]
+    #[test]
+    fn windows_offers_asio_or_silence_and_nothing_else() {
+        let offered = available_backends();
+        let ids: Vec<&str> = offered.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, vec!["asio", "dummy"]);
+        // Neither of the words this policy retires can be picked, and neither
+        // can be applied from a settings file that still holds it.
+        for retired in ["auto", "wasapi"] {
+            assert!(!ids.contains(&retired), "{retired} is still offered");
+            let refused = Snapshot::default().resolve_settings(&crate::settings::Settings::<
+                crate::settings::NoPreferences,
+            > {
+                backend: Some(retired.into()),
+                ..Default::default()
+            });
+            let error = refused.expect_err("a retired backend must not resolve");
+            assert!(
+                error.contains("ASIO"),
+                "{retired} was refused without saying what to pick instead: {error}"
+            );
+        }
+        // And no cpal host answers to a key here, whatever cpal compiled.
+        // (`cpal::Host` has no `PartialEq`, so these ask rather than compare.)
+        assert!(open_host("auto").is_none());
+        assert!(open_host("wasapi").is_none());
+        assert!(
+            open_host("asio").is_none(),
+            "ASIO is not a cpal host on any platform"
+        );
+    }
+
     /// One ASIO driver is clocked once, for both directions: an output rate
     /// saved from an older configuration is replaced by the driver's own
     /// rate rather than refused at Apply.
@@ -1742,9 +1838,18 @@ mod tests {
         }
     }
 
-    fn core_audio_settings() -> crate::settings::Settings<crate::settings::NoPreferences> {
+    /// A settings pair whose backend key the running platform accepts.
+    ///
+    /// The tests below are about channels, rates, routes and buffers; the
+    /// backend key only has to get past the acceptance rule, because what
+    /// `resolve_settings` links or refuses to link comes off the SNAPSHOT's
+    /// `rates_linked`/`buffers_linked` flags, which each test sets for itself.
+    /// Windows is named here rather than avoided by the tests because it
+    /// accepts exactly one key, and a fixture that said `"core-audio"` there
+    /// would be testing the error path while reading like the success one.
+    fn accepted_backend_settings() -> crate::settings::Settings<crate::settings::NoPreferences> {
         crate::settings::Settings::<crate::settings::NoPreferences> {
-            backend: Some("core-audio".into()),
+            backend: Some(if cfg!(windows) { "asio" } else { "core-audio" }.into()),
             ..Default::default()
         }
     }
@@ -1763,13 +1868,13 @@ mod tests {
         snapshot.output_channel_options = output_routes(4, None);
         let unsupported = crate::settings::Settings::<crate::settings::NoPreferences> {
             output_channels: Some(Stereo([3, 4])),
-            ..core_audio_settings()
+            ..accepted_backend_settings()
         };
         assert!(snapshot.resolve_settings(&unsupported).is_err()); // only a two-channel stream is available
         snapshot.default_output_channels = None;
         assert!(
             snapshot
-                .resolve_settings(&core_audio_settings())
+                .resolve_settings(&accepted_backend_settings())
                 .unwrap_err()
                 .contains("output channel configuration")
         );
@@ -1783,7 +1888,7 @@ mod tests {
         snapshot.output_rates =
             output_rate_options(&snapshot.output_formats, snapshot.default_output_rate);
         assert_eq!(snapshot.output_rates, vec![44100.0, 48000.0]);
-        let mut settings = core_audio_settings();
+        let mut settings = accepted_backend_settings();
         let resolved = snapshot.resolve_settings(&settings).unwrap();
         assert_eq!(resolved.sample_rate, Some(48000.0));
         assert_eq!(resolved.output_sample_rate, Some(44100.0));
@@ -1812,7 +1917,9 @@ mod tests {
     #[test]
     fn queried_defaults_resolve_a_complete_mono_microphone_session() {
         let snapshot = microphone_snapshot();
-        let resolved = snapshot.resolve_settings(&core_audio_settings()).unwrap();
+        let resolved = snapshot
+            .resolve_settings(&accepted_backend_settings())
+            .unwrap();
         assert_eq!(resolved.input_device.as_deref(), Some("Microphone"));
         assert_eq!(resolved.output_device.as_deref(), Some("Speakers"));
         assert_eq!(resolved.period_size, Some(64));
@@ -1831,13 +1938,13 @@ mod tests {
         snapshot.default_input_channel = None;
         assert_eq!(
             snapshot
-                .resolve_settings(&core_audio_settings())
+                .resolve_settings(&accepted_backend_settings())
                 .unwrap_err(),
             "Select an input channel"
         );
         let settings = crate::settings::Settings::<crate::settings::NoPreferences> {
             input_channel: Some(1),
-            ..core_audio_settings()
+            ..accepted_backend_settings()
         };
         assert!(snapshot.resolve_settings(&settings).is_ok());
         snapshot.buffer_pref = None;
@@ -1858,21 +1965,23 @@ mod tests {
         let mut snapshot = microphone_snapshot();
         let unsupported = crate::settings::Settings::<crate::settings::NoPreferences> {
             period_size: Some(16),
-            ..core_audio_settings()
+            ..accepted_backend_settings()
         };
         assert!(snapshot.resolve_settings(&unsupported).is_err());
         let unsupported = crate::settings::Settings::<crate::settings::NoPreferences> {
             output_period_size: Some(2048),
-            ..core_audio_settings()
+            ..accepted_backend_settings()
         };
         assert!(snapshot.resolve_settings(&unsupported).is_err());
         let unsupported = crate::settings::Settings::<crate::settings::NoPreferences> {
             sample_rate: Some(96000.0),
-            ..core_audio_settings()
+            ..accepted_backend_settings()
         };
         assert!(snapshot.resolve_settings(&unsupported).is_err());
         snapshot.buffers_linked = true;
-        let resolved = snapshot.resolve_settings(&core_audio_settings()).unwrap();
+        let resolved = snapshot
+            .resolve_settings(&accepted_backend_settings())
+            .unwrap();
         assert_eq!(resolved.output_period_size, Some(64));
     }
 
