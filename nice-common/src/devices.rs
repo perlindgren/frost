@@ -116,9 +116,22 @@ pub fn open_host(backend: &str) -> Option<cpal::Host> {
 /// dozen vendor drivers behind. Names alone need nothing at all, so the
 /// settings dropdowns are populated from here and the capability question
 /// is put to the single driver the user actually picks.
+///
+/// `azo` reads the names out of `HKLM\SOFTWARE\ASIO`. That is one key, in the
+/// view this process sees: a driver registered per-user, or only in the
+/// 32-bit view, would be missing here. Measured on this machine against the
+/// SDK walk `asio-sys` used instead, both answer the same nine names in the
+/// same order, and `HKCU\Software\ASIO` does not exist at all.
 #[cfg(all(windows, feature = "asio-host"))]
 fn asio_driver_names() -> Vec<String> {
-    let mut names = asio_sys::Asio::new().driver_names();
+    let mut names = azo::driver::Metadata::enumerate()
+        .map(|drivers| {
+            drivers
+                .into_iter()
+                .map(|driver| driver.description.to_string_lossy())
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
     names.sort();
     names.dedup();
     names
@@ -147,7 +160,11 @@ struct AsioCaps {
     /// The rate the driver is set to right now, which is what its own
     /// control panel shows. Some drivers report 0 until a stream runs.
     rate: Option<f32>,
-    buffer_range: Option<(u32, u32)>,
+    /// The sizes this driver will take, from `ASIOGetBufferSize`.
+    ladder: Ladder,
+    /// The size to seed a fresh setting with: the driver's own preference,
+    /// snapped to a size it accepts. Measured answer here, through `azo`
+    /// 0.6.1 on the Komplete Audio 6: 64 frames.
     buffer_pref: Option<u32>,
     /// The common ladder this driver answers `ASIOCanSampleRate` to,
     /// plus the rate it is currently on. cpal probes the same ladder
@@ -156,18 +173,137 @@ struct AsioCaps {
     rates: Vec<f32>,
 }
 
+/// What one driver will take as a buffer size.
+///
+/// `ASIOGetBufferSize` answers a minimum, a maximum and a granularity, and the
+/// granularity is not decoration. Measured on this machine with `azo` 0.6.1 on
+/// the Komplete Audio 6: min 8, max 2048, granularity `-1`, and of the sizes
+/// frost offers, 24, 48, 96, 192, 384 and 768 are all refused with
+/// `ASE_HWMALFUNCTION` while every power of two between is accepted. Filtering
+/// on `min..=max` alone — which is all this code did before — therefore offered
+/// exactly the six sizes that cannot be opened: the child's answer on this
+/// driver was
+/// `[8, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 2048]`, and
+/// with the granularity honoured it is `[8, 16, 32, 64, 128, 256, 512, 1024,
+/// 2048]`. Both lists measured on the same driver by the same command, either
+/// side of this change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(all(windows, feature = "asio-host")), allow(dead_code))]
+struct Ladder {
+    min: u32,
+    max: u32,
+    steps: Steps,
+}
+
+/// How a driver fills the space between its minimum and maximum buffer size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(all(windows, feature = "asio-host")), allow(dead_code))]
+enum Steps {
+    /// Every frame count between [`Ladder::min`] and [`Ladder::max`].
+    Any,
+    /// `min`, `min + step`, `min + 2 * step`, …
+    Linear(u32),
+    /// `min`, `2 * min`, `4 * min`, … — the ASIO granularity of `-1`, which
+    /// `azo` calls `Exponential` and documents as `min * 2^n`
+    /// (`azo-0.6.1/src/dto.rs:76-82`).
+    ///
+    /// The ASIO text for `-1` is "limited to powers of two", which on a driver
+    /// whose minimum is itself a power of two — every one measured here,
+    /// minimum 8 — names the same sizes either way. On a driver that answered
+    /// `-1` with a minimum of, say, 6, "doublings from the minimum" and "powers
+    /// of two" would differ, and this machine has no such driver to ask. We
+    /// follow the doublings, as `azo` does.
+    Doubling,
+}
+
+#[cfg_attr(not(all(windows, feature = "asio-host")), allow(dead_code))]
+impl Ladder {
+    /// The answer for a driver that would not say.
+    const UNKNOWN: Ladder = Ladder {
+        min: 0,
+        max: 0,
+        steps: Steps::Any,
+    };
+
+    /// The smallest and largest sizes we may ever ask this driver for, if it
+    /// named any.
+    fn range(&self) -> Option<(u32, u32)> {
+        (self.max > 0).then_some((self.min, self.max))
+    }
+
+    /// Whether this driver takes exactly this frame count.
+    fn accepts(&self, frames: u32) -> bool {
+        if self.max == 0 || frames < self.min || frames > self.max {
+            return false;
+        }
+        match self.steps {
+            // A driver that named only a range: `granularity == 0`, or a step
+            // of `-2` or less that is not the `-1` meaning doublings. min..=max
+            // is then all anyone can know. See the note on `azo`'s `BufferSize`
+            // about how loosely this triple is answered in the wild.
+            Steps::Any => true,
+            // `max(1)` so a hand-built `Linear(0)` behaves as `Any` instead of
+            // dividing by zero; a driver cannot produce one, `Granularity`
+            // carries a `NonZeroI32`.
+            Steps::Linear(step) => (frames - self.min).is_multiple_of(step.max(1)),
+            Steps::Doubling => {
+                let mut size = self.min;
+                while size < frames {
+                    // A doubling that stops growing (a minimum of zero) can
+                    // never reach anything, rather than spinning forever.
+                    match size.checked_mul(2).filter(|next| *next > size) {
+                        Some(next) => size = next,
+                        None => return false,
+                    }
+                }
+                size == frames
+            }
+        }
+    }
+
+    /// The size to seed a fresh setting with, which has to be one of the sizes
+    /// [`asio_buffer_options`] offers or the panel would preselect a choice
+    /// nobody can make. Falls back to the driver's minimum when it reports no
+    /// preference — the only number it has given us — and to `None` when
+    /// nothing in our candidate ladder fits.
+    fn snap(&self, preferred: Option<u32>) -> Option<u32> {
+        let wanted = preferred.filter(|frames| *frames > 0).unwrap_or(self.min);
+        BUFFER_CANDIDATES
+            .into_iter()
+            .find(|frames| *frames >= wanted && self.accepts(*frames))
+            .or_else(|| {
+                BUFFER_CANDIDATES
+                    .into_iter()
+                    .rev()
+                    .find(|frames| self.accepts(*frames))
+            })
+    }
+}
+
 /// How many ASIO streams this process holds open right now.
 ///
-/// ASIO permits one loaded driver per process, and `asio-sys` guards a second
-/// load with a handle stored **on the `Asio` value** that performed the first
-/// one (`asio-sys` 0.4.0, `bindings/mod.rs:445-458`). A capability query opens
-/// its own `Asio::new()`, so that guard is empty, the load is granted, and the
-/// temporary `Driver`'s `Drop` — `stop`, `dispose_buffers`, `ASIOExit`,
-/// `remove_current_driver` (`:1035`, `:1017`, `:987-997`) — runs against the
-/// driver a running stream is using. Live audio is therefore one capability
-/// query away from silence, with nothing reported anywhere; measured on this
-/// machine as the tuner's waveform dying the moment the settings page opened
-/// and never returning until restart (`BUGS.md`).
+/// ASIO permits one loaded driver per process, and `asio-sys` — which still
+/// carries the stream — guards a second load with a handle stored **on the
+/// `Asio` value** that performed the first one (`asio-sys` 0.4.0,
+/// `bindings/mod.rs:445-458`). A capability query opened its own `Asio::new()`,
+/// so that guard was empty, the load was granted, and the temporary `Driver`'s
+/// `Drop` — `stop`, `dispose_buffers`, `ASIOExit`, `remove_current_driver`
+/// (`:1035`, `:1017`, `:987-997`) — ran against the driver a running stream was
+/// using. Live audio was therefore one capability query away from silence, with
+/// nothing reported anywhere; measured on this machine as the tuner's waveform
+/// dying the moment the settings page opened and never returning until restart
+/// (`BUGS.md`).
+///
+/// The queries now go through `azo`, which has no such guard and no teardown to
+/// trigger: a second instance of the same driver was measured opening beside the
+/// first and answering the same questions, and `azo`'s handles carry no `Drop`
+/// at all (`azo-0.6.1/src/driver.rs:157-172`, `:210-234` — the only `Drop` in the
+/// crate is `COMInit`'s `CoUninitialize`, `src/utils.rs:68`), so letting a query
+/// go releases one COM reference and sends the driver no `stop`, no
+/// `dispose_buffers` and no `exit`. What remains unmeasured is the driver's own
+/// reaction to that release, which is driver behaviour and only becomes visible
+/// on a stream that was running. Until that has been watched, the rule stands on
+/// both paths: asking is cheap, and losing the audio of a live rack is not.
 static ASIO_STREAMS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Whether this process is streaming through an ASIO driver right now.
@@ -210,40 +346,75 @@ fn asio_caps(name: &str) -> Option<AsioCaps> {
 
 #[cfg(all(windows, feature = "asio-host"))]
 fn load_asio_caps(name: &str) -> Option<AsioCaps> {
-    use asio_sys::bindings::BufferPreference;
-    let driver = asio_sys::Asio::new().load_driver(name).ok()?;
-    let channels = driver.channels().ok()?;
+    use azo::driver::{Driver, Metadata, SafeHandle};
+    use azo::dto::Granularity;
+
+    // A saved setting names a driver by the string `asio_driver_names` gave,
+    // which is this `description`. Measured on the nine drivers here, they are
+    // the same strings the previous binding enumerated, so nothing saved stops
+    // matching. Should one ever disagree, the answer is `None`: the panel shows
+    // a driver without capabilities, not a guessed one.
+    let clsid = Metadata::enumerate()
+        .ok()?
+        .into_iter()
+        .find(|meta| meta.description.to_string_lossy() == name)
+        .map(|meta| meta.clsid)?;
+    // `SafeHandle::new` is what calls `CoInitializeEx`, on this thread, and it
+    // pairs the matching `CoUninitialize` when the handle is dropped
+    // (`azo-0.6.1/src/driver.rs:157-164`). A thread already initialized in the
+    // other model therefore fails here, and `None` — no capabilities, no
+    // invented numbers — is what the panel reads.
+    let driver = SafeHandle::new(&clsid).ok()?;
+    // `init` is `ASIOInit`. Every question below needs a driver that has been
+    // initialized, and it reports failure as `false` rather than as an error.
+    if !driver.init(None) {
+        return None;
+    }
     let count = |n: i32| u32::try_from(n).unwrap_or(0);
+    let channels = driver.channel_counts().ok()?;
     let rate = driver
-        .sample_rate()
+        .get_sample_rate()
         .ok()
         .filter(|rate| *rate > 0.0)
         .map(|rate| rate as f32);
-    let range = driver.buffersize_range().ok();
-    let buffer_range = range.and_then(|range| {
-        let min = u32::try_from(range.min).ok()?;
-        let max = u32::try_from(range.max).ok()?;
-        (max > 0).then_some((min, max))
-    });
-    let buffer_pref = range
-        .map(|range| match range.preferred {
-            BufferPreference::Only(frames) | BufferPreference::Preferred(frames) => frames,
-            BufferPreference::Stepped { preferred, .. } => preferred,
-        })
-        .filter(|frames| *frames > 0);
+    // Asked once: this driver's answer is the same before and after the rate
+    // probes below, measured in one run of the same instance, and there is no
+    // reason to ask a driver the same question twice per load.
+    let sizes = driver.buffer_size().ok();
+    let ladder = match sizes.as_ref() {
+        Some(size) => Ladder {
+            min: u32::try_from(size.min).unwrap_or(0),
+            max: u32::try_from(size.max).unwrap_or(0),
+            steps: match size.granularity {
+                Some(Granularity::Exponential) => Steps::Doubling,
+                Some(Granularity::Linear { step }) if step.get() > 0 => {
+                    Steps::Linear(step.get() as u32)
+                }
+                // `None`, or a step that is not `-1` and not positive: the
+                // driver said nothing usable, and min..=max is all we know —
+                // which is all this code used before.
+                _ => Steps::Any,
+            },
+        },
+        None => Ladder::UNKNOWN,
+    };
+    let preferred = sizes
+        .as_ref()
+        .and_then(|size| u32::try_from(size.preferred).ok());
+    let buffer_pref = ladder.snap(preferred);
     let mut rates: Vec<f32> = DEFAULT_RATES
         .into_iter()
-        .filter(|rate| driver.can_sample_rate(f64::from(*rate)).unwrap_or(false))
+        .filter(|rate| driver.can_sample_rate(f64::from(*rate)).is_ok())
         .collect();
     if let Some(rate) = rate.filter(|rate| !rates.contains(rate)) {
         rates.push(rate);
         rates.sort_by(f32::total_cmp);
     }
     Some(AsioCaps {
-        inputs: count(channels.ins),
-        outputs: count(channels.outs),
+        inputs: count(channels.in_),
+        outputs: count(channels.out),
         rate,
-        buffer_range,
+        ladder,
         buffer_pref,
         rates,
     })
@@ -255,15 +426,14 @@ fn asio_caps(name: &str) -> Option<AsioCaps> {
     asio_caps_answered(name, |_| None)
 }
 
-/// Buffer sizes this driver permits, from its own min and max.
-fn asio_buffer_options(range: Option<(u32, u32)>) -> Vec<u32> {
-    let (min, max) = range.unwrap_or((0, 0));
-    if max == 0 {
+/// Buffer sizes this driver permits, from its own min, max and granularity.
+fn asio_buffer_options(ladder: Option<Ladder>) -> Vec<u32> {
+    let Some(ladder) = ladder else {
         return Vec::new();
-    }
+    };
     BUFFER_CANDIDATES
         .into_iter()
-        .filter(|frames| *frames >= min && *frames <= max)
+        .filter(|frames| ladder.accepts(*frames))
         .collect()
 }
 
@@ -622,11 +792,11 @@ fn asio_stream_options(
     let output_caps = caps.caps(output);
     let input_formats = input_caps
         .as_ref()
-        .map(|caps| asio_formats(&caps.rates, caps.buffer_range, caps.inputs))
+        .map(|caps| asio_formats(&caps.rates, caps.ladder.range(), caps.inputs))
         .unwrap_or_default();
     let output_formats = output_caps
         .as_ref()
-        .map(|caps| asio_formats(&caps.rates, caps.buffer_range, caps.outputs))
+        .map(|caps| asio_formats(&caps.rates, caps.ladder.range(), caps.outputs))
         .unwrap_or_default();
     (
         input_caps
@@ -634,8 +804,8 @@ fn asio_stream_options(
             .or(output_caps.as_ref())
             .map(|caps| caps.rates.clone())
             .unwrap_or_default(),
-        asio_buffer_options(input_caps.as_ref().and_then(|caps| caps.buffer_range)),
-        asio_buffer_options(output_caps.as_ref().and_then(|caps| caps.buffer_range)),
+        asio_buffer_options(input_caps.as_ref().map(|caps| caps.ladder)),
+        asio_buffer_options(output_caps.as_ref().map(|caps| caps.ladder)),
         input_formats,
         output_formats,
     )
@@ -784,9 +954,19 @@ pub struct Snapshot {
     pub output_formats: Vec<StreamFormat>,
     pub output_channel_options: Vec<crate::settings::OutputChannels>,
     pub default_output_channels: Option<crate::settings::OutputChannels>,
-    /// The device's OWN preferred buffer size (ASIOGetBufferSize's
-    /// `pref` — the manufacturer panel's number). cpal discards it;
-    /// the streamless child asks asio-sys directly.
+    /// The size to start someone who has never chosen with: the driver's own
+    /// `ASIOGetBufferSize` preference (the manufacturer panel's number), snapped
+    /// to a size the driver accepts. 64 frames on the driver measured here, and
+    /// the same 64 through the previous binding on the same path — this field is
+    /// not where the ladder changes anything, the list above it is.
+    ///
+    /// One footnote kept on purpose: a standalone `asio-sys` probe, asking this
+    /// same driver the same question in a different order, got `Only(2048)` for
+    /// its preference. Whether that answer depends on what was asked first is
+    /// unmeasured — the experiment to find out was stopped — and `azo`'s 64 is
+    /// the number the manufacturer's own panel shows and the driver accepts, so
+    /// that is the one used. cpal discards the preference; nothing else here
+    /// carries it to the panel.
     pub buffer_pref: Option<u32>,
     /// Number of channels reported by the selected input device.
     #[serde(default)]
@@ -1096,13 +1276,17 @@ pub fn snapshot(backend: &str, input: Option<&str>, output: Option<&str>) -> Sna
 }
 
 /// ASIO enumeration from THIS process is blind while a stream is open:
-/// asio-sys keeps ONE driver loaded globally (the running stream's) and
-/// refuses every other (`DriverAlreadyExists`), and destroying drivers
+/// asio-sys — which still carries the stream — keeps ONE driver loaded
+/// globally (the running stream's) and refuses every other
+/// (`DriverAlreadyExists`, measured by loading a second driver while the first
+/// was loaded), and destroying drivers
 /// mid-enumeration would tear at the live one. The panel cannot close
 /// the device while the application owns its live stream, and the user must not have
 /// to restart. So: ask a CHILD process, which opens no stream at all
 /// and therefore sees every registered driver. The parent's audio
 /// never stops; nothing is closed; the child enumerates and dies.
+/// Which binding the child asks through cannot matter to the parent, and the
+/// child now asks `azo`.
 pub fn snapshot_via_child(
     backend: &str,
     input: Option<&str>,
@@ -1343,11 +1527,13 @@ mod tests {
         assert_eq!(resolved.output_sample_rate, Some(48000.0));
     }
 
-    /// The bug this pins. A capability query opens its own `Asio`, so
-    /// `asio-sys`'s already-loaded guard — which lives on that value — is
-    /// empty, the load is granted, and the temporary handle's `Drop` stops and
-    /// exits the driver a running stream is using. While a stream owns the
-    /// driver, the question must not be put at all.
+    /// The bug this pins. A capability query used to open its own `Asio`, so
+    /// `asio-sys`'s already-loaded guard — which lives on that value — was
+    /// empty, the load was granted, and the temporary handle's `Drop` stopped
+    /// and exited the driver a running stream was using. While a stream owns
+    /// the driver, the question must not be put at all: the queries go through
+    /// `azo` now, and what its teardown does to a live stream has not been
+    /// watched. See [`ASIO_STREAMS`].
     #[test]
     fn a_capability_query_is_refused_while_a_stream_owns_the_driver() {
         // Both halves in one test on purpose: the counter is a process-wide
@@ -1361,7 +1547,11 @@ mod tests {
                 inputs: 6,
                 outputs: 2,
                 rate: Some(48_000.0),
-                buffer_range: Some((8, 2_048)),
+                ladder: Ladder {
+                    min: 8,
+                    max: 2_048,
+                    steps: Steps::Doubling,
+                },
                 buffer_pref: Some(32),
                 rates: vec![44_100.0, 48_000.0],
             })
@@ -1394,6 +1584,62 @@ mod tests {
         }
         assert!(asio_formats(&[48000.0], None, 0).is_empty());
         assert!(asio_formats(&[], Some((64, 1024)), 6).is_empty());
+    }
+
+    /// The six sizes this driver refuses, measured by asking it for each one:
+    /// on the Komplete Audio 6, `ASIOCreateBuffers` answered
+    /// `ASE_HWMALFUNCTION` to 24, 48, 96, 192, 384 and 768, and accepted every
+    /// power of two from 8 to 2048. `ASIOGetBufferSize` had answered 8, 2048
+    /// and a granularity of `-1`, which was all this panel had to go on, so it
+    /// offered exactly the six that cannot be opened.
+    #[test]
+    fn a_doubling_driver_offers_only_its_powers_of_two() {
+        let ladder = Ladder {
+            min: 8,
+            max: 2_048,
+            steps: Steps::Doubling,
+        };
+        assert_eq!(
+            asio_buffer_options(Some(ladder)),
+            vec![8, 16, 32, 64, 128, 256, 512, 1024, 2_048]
+        );
+        // The seeded default has to be one of them, or the panel preselects a
+        // choice nobody can make. This driver prefers 64 and gets it; a
+        // preference that fell between two accepted sizes rounds up to the next
+        // one the driver takes. (No driver here answers that way — the case is
+        // constructed, because the rule has to hold for one that someday does.)
+        assert_eq!(ladder.snap(Some(64)), Some(64));
+        assert_eq!(ladder.snap(Some(96)), Some(128));
+        assert_eq!(ladder.snap(None), Some(8));
+        assert_eq!(ladder.snap(Some(4_096)), Some(2_048));
+    }
+
+    /// A driver that steps linearly — the answer most of the ASIO world gives
+    /// — gets its steps honoured, and a driver that says nothing beyond min and
+    /// max still gets the whole range, which is all this filtering used to be.
+    #[test]
+    fn a_stepped_driver_offers_its_steps_and_a_silent_one_its_range() {
+        let ladder = Ladder {
+            min: 32,
+            max: 512,
+            steps: Steps::Linear(32),
+        };
+        assert_eq!(
+            asio_buffer_options(Some(ladder)),
+            vec![32, 64, 96, 128, 192, 256, 384, 512]
+        );
+        assert_eq!(ladder.snap(Some(100)), Some(128));
+        assert_eq!(
+            asio_buffer_options(Some(Ladder {
+                min: 16,
+                max: 1_024,
+                steps: Steps::Any,
+            })),
+            vec![16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1_024]
+        );
+        assert!(asio_buffer_options(Some(Ladder::UNKNOWN)).is_empty());
+        assert_eq!(Ladder::UNKNOWN.snap(Some(64)), None);
+        assert_eq!(asio_buffer_options(None), Vec::new());
     }
 
     /// The panel that prompted this: ASIO, Komplete Audio ASIO Driver, mono

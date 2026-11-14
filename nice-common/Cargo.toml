@@ -12,7 +12,7 @@ audio-io = ["devices", "standalone"]
 widgets = ["dep:frost"]
 ui = ["devices", "widgets", "dep:crossbeam"]
 devices = ["dep:cpal", "dep:jack", "dep:core-audio-device"]
-asio-host = ["devices", "cpal/asio", "dep:asio-sys"]
+asio-host = ["devices", "cpal/asio", "dep:azo"]
 # The parts a standalone application needs from its host: the command endpoint
 # between panel and audio owner, and the rate conversion the plugin never sees.
 standalone = ["dep:crossbeam", "dep:rtrb"]
@@ -33,7 +33,14 @@ jack = { version = "0.13.5", optional = true }
 core-audio-device = { path = "../nice-tuner/crates/core-audio-device", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-asio-sys = { version = "0.4", optional = true }
+# `azo` declares the ASIO COM interfaces itself rather than compiling Steinberg's
+# headers, so it asks a driver what it can do with no SDK, no `CPAL_ASIO_DIR`, no
+# libclang and no C compiler — see the note in `.cargo/config.toml` for what the
+# SDK route costs. The `cpal/asio` in the feature above still needs all of it,
+# until the transport stops riding on cpal too. `default-features = false` drops
+# azo's `host` thread, which nothing here uses: a query opens its own instance,
+# asks it on this thread and lets it go.
+azo = { version = "0.6.1", default-features = false, optional = true }
 
 [dev-dependencies]
 # Safe measurement API for the allocation witness; no handwritten allocator hooks.
