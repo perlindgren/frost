@@ -21,8 +21,11 @@
 # file and in `.githooks/` alike, and the shipping platform's audio code was compiled
 # on whoever's machine felt like it and nowhere else. The transport is `azo` now,
 # whose FFI layer declares the ASIO COM interfaces by hand (`azo-sys 0.4.1`: one
-# `lib.rs`, no build script, no C++), so there is no SDK to fetch and the second
-# platform costs minutes rather than a licence.
+# `lib.rs` and one `utils.rs`, no C++), so there is no SDK to fetch and the second
+# platform costs minutes rather than a licence. What it did not remove is a build
+# script: `azo 0.6.1` has one of its own, and that script needs a `rustfmt` binary
+# on PATH — see the toolchain step below, which is where this was found and why
+# the components this job installs are not merely the ones that judge code.
 #
 # Both ways this file has failed are on the record, because each taught something:
 # the commit that introduced it was rejected before a job existed, a Rust module path
@@ -491,14 +494,32 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@1.100.0
         with:
-          # clippy, and not the rustfmt beside it in the job above: there is no
-          # formatting step here for rustfmt to serve, because formatting is
-          # platform-blind — the same bytes judged by the same rustfmt, and a second
-          # run on Windows would differ only in what the checkout's line endings
-          # happen to look like, which is a git setting and not a property of the code.
-          # No wasm target either: the engine's web check above does not care which
-          # machine ran it.
-          components: clippy
+          # clippy, and rustfmt — but rustfmt is not here to judge formatting, and
+          # if this line is ever trimmed back to `clippy` the standalone tuner's
+          # step below dies. `azo`'s own build script calls the windows-bindgen
+          # builder, and windows-bindgen 0.100 formats the code it generates by
+          # piping it through a program named `rustfmt`
+          # (windows-bindgen-0.100.0/src/format.rs:15, spawn by name, with no env
+          # override: the builder's `rustfmt` method replaces the arguments, not
+          # the program), panicking `failed to format output with rustfmt` at
+          # format.rs:8 when the spawn fails. The action installs `--profile
+          # minimal`, so a component this job does not name is a binary this job
+          # does not have, and the failure arrives as `failed to run custom build
+          # command for azo v0.6.1`, nine steps in, with nothing in the message
+          # naming the cause. Measured on this machine with azo's own compiled build
+          # script, twice, with only PATH changed: without rustfmt it panics at
+          # format.rs:8 and exits 101, with it the 8 849-byte generated
+          # `windows_bindgen_output.rs` appears and it exits 0. The two runs that
+          # showed this (131 and 132) failed identically on separate runners while
+          # the Linux job stayed green, because azo is a `cfg(windows)` dependency
+          # and nowhere in that graph.
+          #
+          # Formatting itself is still judged once, by the job above: the same bytes
+          # and the same rustfmt, and a second opinion here would differ only in what
+          # the checkout's line endings happen to look like, which is a git setting
+          # and not a property of the code. No wasm target either: the engine's web
+          # check above does not care which machine ran it.
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
 
