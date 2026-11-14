@@ -12,7 +12,7 @@ audio-io = ["devices", "standalone"]
 widgets = ["dep:frost"]
 ui = ["devices", "widgets", "dep:crossbeam"]
 devices = ["dep:cpal", "dep:jack", "dep:core-audio-device"]
-asio-host = ["devices", "cpal/asio", "dep:asio-sys"]
+asio-host = ["devices", "dep:azo", "dep:crossbeam"]
 # The parts a standalone application needs from its host: the command endpoint
 # between panel and audio owner, and the rate conversion the plugin never sees.
 standalone = ["dep:crossbeam", "dep:rtrb"]
@@ -22,8 +22,20 @@ frost = { path = "..", optional = true }
 crossbeam = { version = "0.8", optional = true }
 serde = { version = "1", features = ["derive"] }
 ron = "=0.12.2"
-cpal = { version = "0.18", optional = true }
 rtrb = { version = "0.4", optional = true }
+
+[target.'cfg(not(windows))'.dependencies]
+# cpal is the *other* road — CoreAudio/ALSA/JACK, two independently clocked
+# streams aligned by nice-plug's input-latency slack. A Windows standalone has
+# no use for it: its audio path is the azo transport in `asio_io`, one driver
+# with one clock carrying both directions, so the offer list there is ASIO or
+# silence (`devices::available_backends`) and this crate declares no cpal on
+# that platform. The `windows` CI job asserts exactly that, at depth one: cpal
+# does still reach a Windows process, through `frost`'s own playback riding on
+# `rodio`, which is another consumer and none of `audio_io`'s business.
+# `devices.rs` and `audio_io.rs` keep their cpal halves under the same
+# `cfg(not(windows))` this section states.
+cpal = { version = "0.18", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "0.18", features = ["jack"], optional = true }
@@ -33,7 +45,21 @@ jack = { version = "0.13.5", optional = true }
 core-audio-device = { path = "../nice-tuner/crates/core-audio-device", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-asio-sys = { version = "0.4", optional = true }
+# `azo` declares the ASIO COM interfaces itself instead of compiling Steinberg's
+# headers, so a driver can be asked what it can do and then driven with no SDK,
+# no `CPAL_ASIO_DIR`, no libclang and no C compiler — see the note in
+# `.cargo/config.toml` for what the SDK route used to cost, and `asio_io` for the
+# transport that replaced the one riding on cpal.
+#
+# `host` is what adds azo's pump thread, and the transport needs it: a driver is
+# loaded for the whole session, its apartment belongs on a thread of its own
+# rather than on the rack's UI thread, and every call is answered by the thread
+# that made the instance. Both features are named rather than inherited from
+# `default`, so a new default in a later azo arrives by decision and not by
+# update.
+azo = { version = "0.6.1", default-features = false, features = [
+  "host",
+], optional = true }
 
 [dev-dependencies]
 # Safe measurement API for the allocation witness; no handwritten allocator hooks.

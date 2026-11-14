@@ -41,8 +41,13 @@ pub const OUR_INPUT_LATENCY_DEFAULT: f32 = 0.005;
 pub struct Settings<P = NoPreferences> {
     #[serde(flatten)]
     pub preferences: P,
-    /// A nice-plug `BackendType` value (clap spellings): `auto`, `jack`,
-    /// `alsa`, `core-audio`, `wasapi`, `asio`, `dummy`.
+    /// Which audio system this application speaks, in the key spellings that
+    /// `devices::available_backends` writes: on Windows `asio` and `dummy`,
+    /// because ASIO is the Windows audio path and there is no system host to
+    /// follow; elsewhere `auto`, `jack`, `alsa`, `core-audio` and `dummy`.
+    /// A value outside what this build offers is refused at Apply with the
+    /// words it was saved with — a choice that no longer exists is a question
+    /// for the user, not something to rewrite into the one that works.
     pub backend: Option<String>,
     /// Exact CPAL device name (ASIO driver name), or a full named JACK
     /// audio source port. For JACK, output_device is the left/mono destination.

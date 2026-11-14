@@ -225,16 +225,18 @@ cargo run -p nice-pi-face --features standalone
 cargo run -p nice-pi-face --features standalone -- --list-devices
 ```
 
-On Windows in a confined sandbox two more variables are needed: `CPAL_ASIO_DIR`
-pointing at an unpacked ASIO SDK (a relocated `TEMP` defeats asio-sys's own SDK
-lookup), and a `TEMP`/`TMP` inside the tree for the linker.
+On Windows in a confined sandbox one more variable is needed: a `TEMP`/`TMP`
+inside the tree for the linker. Nothing else. ASIO is `azo`, which declares the
+ASIO COM interfaces in Rust, so there is no SDK to unpack and no `CPAL_ASIO_DIR`
+to point at one — `.cargo/config.toml` says why the repository sets nothing.
 
 The binary is an app-owned host — nice-plug's own standalone wrapper is neither
 built nor patched. The device transport is `nice_common::audio_io`, the same
-cpal, JACK and ASIO-guarded opener the rack runs, and the audio settings page
-behind the corner cog is the same shared panel nice-nam, nice-tuner, nice-wah and
-the rack show, so device names, rates and buffer choices mean one thing across
-the workspace. `--list-devices` prints what the current backend sees and exits.
+opener the rack runs (ASIO on Windows, cpal's hosts elsewhere), and the audio
+settings page behind the corner cog is the same shared panel nice-nam,
+nice-tuner, nice-wah and the rack show, so device names, rates and buffer
+choices mean one thing across the workspace. `--list-devices` prints what the
+current backend sees and exits.
 
 Settings are `nice-pi-face-settings.ron`: the audio choices, the window geometry,
 and every control the player last moved — `None` for a control never touched, so

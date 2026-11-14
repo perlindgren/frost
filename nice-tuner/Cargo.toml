@@ -47,11 +47,12 @@ unsafe = ["dep:window-position", "window-position/unsafe"]
 # feature named `asio-host` in this file — the implicit one the dependency
 # creates is what `cfg(feature = "asio-host")` reads at the call sites.
 #
-# A Windows `standalone` build needs the Steinberg ASIO SDK, whose licence is
-# proprietary and which stays outside the tree; `asio-sys` finds it in the
-# developer's environment or downloads it, and `.cargo/config.toml` explains why
-# nothing there points at it. Plugin-only builds and every other platform never
-# reach it, so nothing in the gate asks for it.
+# Nothing has to be installed for it. The transport is `azo`, whose FFI layer
+# declares the ASIO COM interfaces by hand, so there is no Steinberg SDK to
+# obtain and no `CPAL_ASIO_DIR` to point at one; `.cargo/config.toml` says why it
+# sets nothing. That is also why the gate and the hooks can build this feature
+# set on Windows at all — while the host was cpal's, a Windows runner could
+# compile this engine and not this.
 
 [dependencies]
 nice-common = { path = "../nice-common", features = ["widgets"] }
@@ -79,10 +80,11 @@ crossbeam = "0.8"
 keyboard-types = "0.8.3"
 # Settings panel persistence (main thread only; never touched by the audio path)
 serde = { version = "1", features = ["derive"] }
-# Direct cpal dependency for device enumeration in the settings panel
-# (standalone only). Same version nice-plug resolves to; features are
-# additive on the unified dependency graph.
-cpal = { version = "0.18", optional = true }
+# The settings panel's device enumeration and the standalone's streams, on the
+# platforms that have a cpal host to talk to. Not Windows: there the tuner's
+# audio is the azo transport (`standalone-asio` used to be a thing one opted in
+# to; ASIO now arrives with `standalone`), and the two cpal streams it would
+# build are not in the build at all. Same version nice-plug resolves to.
 pitch = { path = "crates/pitch" }
 plugin-buffer = { path = "crates/plugin-buffer", optional = true }
 # RT↔UI analysis handoff (audio thread: producer; editor frame: consumer).
@@ -93,6 +95,12 @@ rtrb = "0.4"
 # The engine, as a member beside this one. The GUI hands it a surface and drives
 # it one `frame()` per redraw; see `frost::embedded`.
 frost = { path = ".." }
+
+[target.'cfg(not(windows))'.dependencies]
+# cpal with the features nice-common's `devices` also asks for; features are
+# additive on the unified dependency graph. See the note in nice-common about
+# why a Windows build declares no cpal to add features to.
+cpal = { version = "0.18", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Enable JACK with the ordinary standalone build, on Linux only. The optional

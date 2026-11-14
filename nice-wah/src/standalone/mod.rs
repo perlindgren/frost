@@ -2,8 +2,9 @@
 //! public Plugin/Editor interfaces; its standalone wrapper is neither built
 //! nor patched.
 //!
-//! The device transport is `nice_common::audio_io` — the same cpal, JACK and
-//! ASIO-guarded opener the rack runs — so this file holds no backend code at
+//! The device transport is `nice_common::audio_io` — ASIO on Windows, cpal's
+//! hosts and JACK elsewhere, whichever the settings page settled on — the
+//! same opener the rack runs, so this file holds no backend code at
 //! all. What it owns is everything between a settings file and that
 //! transport: resolve against the devices as they are right now, hand the
 //! rings to the pump in [`process`], keep one owner so an Apply never has
@@ -35,8 +36,9 @@ struct Session {
 impl Drop for Session {
     fn drop(&mut self) {
         // Stop, then join, and only then let the streams go: the pump holds
-        // the endpoints, and cpal wants its callback finished before a
-        // stream's Drop runs.
+        // the endpoints, and a stream is not quiet the moment it is dropped —
+        // cpal may still be inside its callback, and an ASIO driver keeps
+        // filling buffers until `stop` returns (`asio_io.rs:650`).
         self.stop.store(true, Ordering::Release);
         if let Some(pump) = self.pump.take() {
             let _ = pump.join();
@@ -199,11 +201,14 @@ fn audio_worker(
             .as_ref()
             .and_then(|session| session.io.failure());
         if let Some(error) = died {
-            // The transport said it will not recover. Unlike nice-nam's cpal
-            // path there is no invalidated flag to retry against — nice-common
-            // answers with a sentence and nothing more — so the honest move
-            // is to let the dead pair go, say so, and leave the choice of a
-            // new one where every other device decision lives: the panel
+            // The transport said it will not recover. A host that owns its
+            // transport gets a `Failure` with an `invalidated` flag to retry
+            // against, which is what nice-nam's carries
+            // (`nice-nam/src/standalone/audio.rs:32`). The shared opener this
+            // one runs through answers with a sentence and nothing more
+            // (`nice_common::audio_io::DeviceStreams::failure`), so the honest
+            // move is to let the dead pair go, say so, and leave the choice of
+            // a new one where every other device decision lives: the panel
             // stays open for business.
             drop(owner.session.take());
             owner.applied = Settings::default();

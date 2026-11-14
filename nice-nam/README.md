@@ -20,8 +20,9 @@ that engine.
 
 On Windows the model runs through `nam-rs`, which has no cabinet simulation, and a
 model asking for a different sample rate is refused rather than run at the wrong
-one. `standalone` there also compiles CPAL's ASIO host, which needs the Steinberg
-SDK — `.cargo/config.toml` explains where it comes from and why the repository
+one. `standalone` there brings the ASIO transport with it on Windows: `azo`,
+whose FFI layer declares the ASIO COM interfaces in Rust, so there is no
+Steinberg SDK to obtain and `.cargo/config.toml` explains why the repository
 points at nothing. Add `unsafe` to let the window reopen where you left it, or
 centred the first time; the placement code lives in `window-position`, and a
 window inside a host is never moved.

@@ -13,6 +13,23 @@ Everything below was read in the vendored sources at the paths given, or measure
 on this machine the same day. Where something is only *consistent* with the
 evidence and not established, it says so.
 
+## Superseded as this workspace's ASIO host — kept as the record it is
+
+The host reviewed here is not the one this repository uses. `crates/asio-host`
+now carries [`azo`](https://crates.io/crates/azo), whose `azo-sys` layer declares
+the same COM interfaces in Rust: no build script, no C++, no SDK, and cpal's ASIO
+host is out of the Windows dependency graph. The stream itself belongs to
+[`nice-common/src/asio_io.rs`](../../nice-common/src/asio_io.rs) — the ownership
+half of the recommendation above, one `createBuffers` carrying input and output
+together in one call.
+
+The other half is **not** done, and this review's reason for it still stands: the
+buffers are bound to the driver's first *n* channels
+([`asio_io.rs` asks `0..wanted.inputs`](../../nice-common/src/asio_io.rs)), so a
+guitar on input 3 is still unreachable. Nothing here has been rewritten: the
+findings are about cpal 0.18.2 and asio-sys 0.4.0, and they remain true of those
+crates for anyone who picks them up.
+
 ## Artifact and scope
 
 - `cpal` 0.18.2, `src/host/asio/` — `device.rs`, `host.rs`, `stream.rs`.

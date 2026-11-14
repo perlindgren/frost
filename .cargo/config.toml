@@ -9,20 +9,26 @@ rustflags = ["-C", "target-feature=+crt-static"]
 [alias]
 xtask = "run --package xtask --"
 
-# Deliberately no `[env] CPAL_ASIO_DIR` here, and putting one back would break
-# the very thing it looks like it configures.
+# Deliberately no `[env] CPAL_ASIO_DIR` here, and no path to any SDK.
 #
-# `asio-sys` finds the ASIO SDK in three steps, in order: use `CPAL_ASIO_DIR` if
-# it is set — without checking that the path exists — else use `<temp>/asio_sdk`
-# if the SDK is already unpacked there, else download it from
-# https://www.steinberg.net/asiosdk and unpack it there. cpal's README ends that
-# section "in an ideal situation you don't need to worry about this step", and
-# an entry in this file takes all three away: it *selects step one*, silently
-# disarming the fallback. That is exactly how it failed while this entry existed
-# — it pointed at `.cargohome/asiosdk`, a path carried over from the plugin's
-# previous repository that does not exist here, asio-sys compiled against three
-# nonexistent `-I` directories, and the error was a wall of `cl.exe` arguments
-# rather than one sentence about a missing SDK.
+# Nothing in this workspace reads that variable any more. Windows ASIO is `azo`,
+# whose FFI layer declares the COM interfaces by hand — no build script, no C++,
+# no Steinberg tree to point at — so the gate builds a Windows
+# `--features standalone` on every push, which is the thing this entry used to
+# make awkward. Why it was never a good idea is kept below, because it is the
+# reason not to add one back for the next dependency that grows an SDK:
+#
+# `asio-sys`, the crate this variable belonged to, finds the ASIO SDK in three
+# steps, in order: use `CPAL_ASIO_DIR` if it is set — without checking that the
+# path exists — else use `<temp>/asio_sdk` if the SDK is already unpacked there,
+# else download it from https://www.steinberg.net/asiosdk and unpack it there.
+# cpal's README ends that section "in an ideal situation you don't need to worry
+# about this step", and an entry in this file takes all three away: it
+# *selects step one*, silently disarming the fallback. That is exactly how it
+# failed while this entry existed — it pointed at `.cargohome/asiosdk`, a path
+# carried over from the plugin's previous repository that does not exist here,
+# asio-sys compiled against three nonexistent `-I` directories, and the error was
+# a wall of `cl.exe` arguments rather than one sentence about a missing SDK.
 #
 # Whether step three works depends on the machine, and the reason is upstream.
 # asio-sys 0.4.0 builds its download command as
@@ -35,24 +41,14 @@ xtask = "run --package xtask --"
 # `panic!("Failed to download ASIO SDK")`. Measured on this machine both ways,
 # same folder, two spellings: `C:\Users\Per Lindgren\...` fails as above,
 # `C:\Users\PERLIN~1\...` downloads 8,910,208 bytes, unpacks 48 files with
-# `asio.h`, and builds in 32.9 s. So zero-configuration is genuinely available,
-# just not from a path with a space in it, and neither remedy is a repository
-# fact: a space-free temp dir, or `CPAL_ASIO_DIR` set in the developer's own
-# environment, where it wins because it is theirs and not ours. The one-line
-# upstream fix — quote the path — is recorded in `TODO.md`.
-#
-# Nothing here needs the SDK either. ASIO rides with the `standalone` feature and
-# only on Windows, through the `asio-host` carrier crate, and no step in the hooks
-# or the gate builds a Windows standalone — so no CI machine ever fetches the SDK,
-# and `--all-features` on Linux or macOS cannot reach it because the dependency is
-# declared under `cfg(windows)` and does not exist for those targets. A Windows
-# `--features standalone` build does need it, which is what the three steps above
-# are for.
+# `asio.h`, and builds in 32.9 s. So zero-configuration was genuinely available,
+# just not from a path with a space in it, and the one-line upstream fix — quote
+# the path — is recorded in `TODO.md` as cpal's to make, not this file's.
 #
 # The SDK's licence is proprietary and this repository is `MIT OR Apache-2.0`,
 # which is a reason to keep it out of the *tree* — where the ignore rule and the
 # two guards (`.githooks/pre-commit`, the gate's own assertion) stand — and no
-# reason to configure a path to it. `<temp>` is not the tree.
+# reason at all left to configure a path to it. `<temp>` is not the tree.
 
 # A decision written down rather than inherited. That `+crt-static` above is the
 # engine's own choice — a game that ships as one file with no VC redist to

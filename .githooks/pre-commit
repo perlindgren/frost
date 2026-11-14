@@ -59,7 +59,11 @@ fi
 # unpacked Steinberg ASIO SDK: 48 files, 10 MB, `asio.h` and `iasiodrv.h`, the
 # licensing agreement PDF and 3 MB of logo artwork. Steinberg's licence for that
 # SDK is proprietary, incompatible with this repository's `MIT OR Apache-2.0`,
-# and cpal's build script downloads it into exactly that path (`CPAL_ASIO_DIR`).
+# and a build with cpal's `asio` feature puts it in exactly that path when
+# `CPAL_ASIO_DIR` points there. This workspace has no such feature any more — the
+# ASIO transport is `azo`, which needs no SDK — but the guard stays: the SDK is
+# still proprietary, this tree is still `MIT OR Apache-2.0`, and the next
+# dependency that wants one is not obliged to be careful where it puts it.
 # `.gitignore` now says `.cargohome/`, and the lesson of the droppings scan above
 # is that an ignore rule speaks only to *untracked* files — so the check is here
 # as well, on what is actually staged, builtins only for the same reason.
@@ -116,10 +120,12 @@ cargo clippy -p nice-tuner -p pitch --all-targets -- -D warnings || {
 # The model plugin and the crate the two plugins share, for the reason stated
 # above — and one more, specific to them: `nice-nam` is written twice, once per
 # engine, and which half a commit compiles is decided by the machine committing
-# it. The runner has one Linux job, so a Windows commit is the only place the
-# nam-rs half is ever compiled automatically. Not `--features standalone`: on
-# Windows that names the ASIO host, and a hook that fails because CPAL_ASIO_DIR
-# is unset is a hook that teaches people to type `--no-verify`.
+# it. The gate compiles each half on its own platform; this line is what makes
+# the Windows half wait for neither. Not `--features standalone`, and the reason
+# under it has changed rather than the omission: it used to be a Steinberg SDK no
+# clean checkout has, and now it is that a hook runs on every commit while seven
+# standalone graphs do not belong in one. That feature set has its own job in the
+# gate, on both platforms, on every push.
 printf 'pre-commit: clippy -D warnings (the model plugin and the shared crate)...\n'
 cargo clippy -p nice-nam -p nice-common --all-targets -- -D warnings || {
     printf 'pre-commit: clippy failed in nice-nam/nice-common - commit aborted.\n' >&2
@@ -145,8 +151,8 @@ cargo clippy -p nice-phase --all-targets -- -D warnings || {
 }
 
 # The Pi-Fase, for the same reason, and it spends its life beside the wah. Not
-# `--features standalone` here: on Windows that names the ASIO host, and a hook
-# that fails because CPAL_ASIO_DIR is unset is a hook that teaches `--no-verify`.
+# `--features standalone` here either: the gate lints it on both platforms, and a
+# hook that spent its time building seven standalone graphs is a hook people skip.
 printf 'pre-commit: clippy -D warnings (the Pi-Fase)...\n'
 cargo clippy -p nice-pi-face --all-targets -- -D warnings || {
     printf 'pre-commit: clippy failed in nice-pi-face - commit aborted.\n' >&2
@@ -154,9 +160,10 @@ cargo clippy -p nice-pi-face --all-targets -- -D warnings || {
 }
 
 # The Space Echo, by the same logic as its neighbours, and with the same
-# deliberate omission: no `--features standalone`, because on Windows that
-# names the ASIO host, and the hook's job is to lint what every commit can
-# build, not to demand an SDK it has no right to ask for.
+# deliberate omission: no `--features standalone`. That reason used to be an SDK
+# the hook had no right to demand; now it is that the hook's job is what every
+# commit can build quickly, and that feature set has a job of its own in the gate,
+# on both platforms.
 printf 'pre-commit: clippy -D warnings (the Space Echo)...\n'
 cargo clippy -p nice-echo --all-targets -- -D warnings || {
     printf 'pre-commit: clippy failed in nice-echo - commit aborted.\n' >&2
@@ -164,9 +171,11 @@ cargo clippy -p nice-echo --all-targets -- -D warnings || {
 }
 
 # The Echoplex, by the same logic as its neighbours, and with the same
-# deliberate omission: no `--features standalone`, because on Windows that
-# names the ASIO host, and the hook's job is to lint what every commit can
-# build, not to demand an SDK it has no right to ask for.
+# deliberate omission: no `--features standalone`. That reason used to be an SDK
+# the hook had no right to demand; now it is that the hook's job is what every
+# commit can build quickly, and that feature set has a job of its own in the gate,
+# on both platforms — which is the leg this crate's TODO asked for by name and
+# got.
 printf 'pre-commit: clippy -D warnings (the Echoplex)...\n'
 cargo clippy -p nice-ecomplex --all-targets -- -D warnings || {
     printf 'pre-commit: clippy failed in nice-ecomplex - commit aborted.\n' >&2

@@ -353,7 +353,12 @@ its verification written down so the next person does not mistake it for a detai
   session was built that way; neither fact has been measured in a host. Load
   `target/bundled/Nice Tuner.vst3` in a DAW both ways and then decide which is
   right, rather than keeping whichever was inherited.
-- **Quote one path upstream and a build-time setup disappears.** `asio-sys`
+- **Quote one path upstream and a build-time setup disappears.** History, kept
+  because the upstream bug is unfixed and this workspace no longer builds the
+  crate it stops: `azo` replaced cpal's ASIO host, and the `windows` job of
+  `.github/workflows/gate.yml` fails a build whose graph contains `asio-sys`.
+  The report itself still belongs in RustAudio/cpal, which is where the crate
+  lives. `asio-sys`
   0.4.0 — a member of the cpal workspace, so the report belongs in
   RustAudio/cpal — downloads the ASIO SDK when it cannot find one:
   `Command::new("powershell").arg("-Command").arg(format!("Invoke-WebRequest
@@ -372,6 +377,23 @@ its verification written down so the next person does not mistake it for a detai
   fallback for everyone and had to be deleted.
 
 ## nice-tuner: own the ASIO host side of the stream
+
+**Where this stands.** Half of it is built, in a different shape. The owner is
+`nice-common/src/asio_io.rs` over `azo`, whose `azo-sys` declares the COM
+interfaces in Rust — so there is no SDK, no build script of ours, and no
+`frost-asio` crate to write; cpal's ASIO host is out of the Windows graph, so
+nothing else holds the driver, and the enumeration this section's "already
+stands" paragraph describes lives in `nice-common/src/devices.rs` now. One
+`createBuffers` carries input and output in one call, and each channel's format
+is read from that channel instead of inferred from channel 0.
+
+What is **not** done is the port naming this section opens with: the buffers
+still go to the driver's first *n* channels, because `Wanted` carries counts and
+`asio_io.rs` maps `0..wanted.inputs` over them. The experiment below (mutating
+`channel_num` on a carried cpal stream) no longer applies — the stream is ours,
+and the open question is now smaller and harder to answer from a desk: what a
+real driver makes of a buffer list that names input 3 and no other. That needs a
+multi-input interface and someone feeding input 3.
 
 **The possibility.** nice-tuner opens its ASIO stream itself — one
 `ASIOCreateBuffers` carrying input and output together, each buffer bound to the

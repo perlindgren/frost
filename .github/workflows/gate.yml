@@ -7,13 +7,22 @@
 # enforce; the parts it cannot judge are named below and in the step names, not
 # quietly omitted.
 #
-# One runner, pinned to `ubuntu-24.04` rather than `ubuntu-latest`, which moved its
-# image on 19 October 2026 without asking: a gate whose machine shifts underneath it
-# silently is §37 in a different costume, and the image carries the system libraries,
-# linker and toolchain this file judges code with. It never compiles the Windows code
-# path — the platform this engine is developed and shipped on — which is the known
-# cost of the cheap option, and the first thing to add back when queue time stops
-# being the constraint.
+# Two runners, each pinned to a named image rather than a `-latest` label:
+# `ubuntu-24.04`, which moved its image on 19 October 2026 without asking, and
+# `windows-2025`, the platform this engine is developed and shipped on. A gate whose
+# machine shifts underneath it silently is §37 in a different costume, and the image
+# carries the system libraries, linker and toolchain this file judges code with.
+#
+# The Windows job is the recent one, and the reason it took so long is written into
+# the comments below: Windows ASIO came from cpal's `asio` feature, whose build script
+# compiles the Steinberg SDK — proprietary, refused in-tree by the scan below, and in
+# no clean checkout. A Windows runner could build this engine and could not build
+# anything with `--features standalone`, so the flag was left out everywhere, in this
+# file and in `.githooks/` alike, and the shipping platform's audio code was compiled
+# on whoever's machine felt like it and nowhere else. The transport is `azo` now,
+# whose FFI layer declares the ASIO COM interfaces by hand (`azo-sys 0.4.1`: one
+# `lib.rs`, no build script, no C++), so there is no SDK to fetch and the second
+# platform costs minutes rather than a licence.
 #
 # Both ways this file has failed are on the record, because each taught something:
 # the commit that introduced it was rejected before a job existed, a Rust module path
@@ -62,10 +71,12 @@ jobs:
           fi
 
       # The same question `.githooks/pre-commit` asks, for a push from a clone
-      # that never installed the hooks. A cargo home is a cache, and cpal's build
-      # script downloads the Steinberg ASIO SDK into one — which is precisely the
-      # directory a `git add -A` next to a plugin project sweeps in. The SDK is
-      # proprietary and this repository is `MIT OR Apache-2.0`, so one commit
+      # that never installed the hooks. A cargo home is a cache, and the Steinberg
+      # ASIO SDK ends up in one wherever a build is pointed at it — which in this
+      # tree meant cpal's `asio` feature until the azo transport replaced it, and a
+      # neighbouring project still using that feature does the same thing today. A
+      # `git add -A` next to a plugin project sweeps exactly that directory in. The
+      # SDK is proprietary and this repository is `MIT OR Apache-2.0`, so one commit
       # containing it publishes someone else's licensed tree from a public repo,
       # which no amount of force-pushing afterwards undoes.
       - name: No third-party proprietary SDK in the tree
@@ -138,9 +149,13 @@ jobs:
       # the comment above describes, found by reading the list rather than
       # trusting it: `nice-nam` and `nice-common` joined as members, never as
       # named ones, so every check in this file and in `.githooks/` passed while
-      # compiling neither. Not run with `--features standalone`, whatever the
-      # host: on Windows that feature names the ASIO host, whose SDK is
-      # proprietary and refused in-tree by the scan above.
+      # compiling neither. `--features standalone` is not on this step, and the two
+      # halves of that have different reasons. On Windows the flag means the azo
+      # transport, and the `windows` job below is where it is linted, with
+      # `--all-features` on the shared crate so nothing in that graph is left out.
+      # On Linux it means the ALSA and JACK halves, which are believed to build here
+      # and have never been run — see the test step further down — so they stay out
+      # of a clippy step too, until someone has seen them green.
       - name: Clippy, zero warnings, the model plugin and the shared crate
         env:
           # Same reason as the test step below: the Linux engine refuses to build
@@ -159,8 +174,9 @@ jobs:
       # The standalone half, linted like the tuner's beside it: the binary
       # and the audio owner are behind `standalone`, and a step that never
       # turns the feature on would lint a source tree with the app missing
-      # from it. The ASIO SDK is still fetched only where the host has one;
-      # nothing here vendors it.
+      # from it. ASIO is not fetched here — `asio-host` is a `cfg(windows)`
+      # dependency, so this Linux runner does not see it in the graph at all, and
+      # nothing in this file vendors an SDK any more.
       - name: Clippy, zero warnings, the standalone wah
         run: cargo clippy -p nice-wah --features standalone --all-targets -- -D warnings
 
@@ -175,8 +191,9 @@ jobs:
       # The phaser's standalone half, linted like the wah's beside it: the
       # binary and the audio owner are behind `standalone`, and a step that
       # never turns the feature on would lint a source tree with the app
-      # missing from it. The ASIO SDK is still fetched only where the host
-      # has one; nothing here vendors it.
+      # missing from it. ASIO is not fetched here — `asio-host` is a `cfg(windows)`
+      # dependency, invisible to this runner's graph, and nothing in this file
+      # vendors an SDK any more.
       - name: Clippy, zero warnings, the standalone phaser
         run: cargo clippy -p nice-phase --features standalone --all-targets -- -D warnings
 
@@ -293,9 +310,10 @@ jobs:
       # Rust portal one), but believed is not run, and a step that turns red for
       # a reason nobody has seen is a step that gets muted. It belongs here once
       # it has been green somewhere. ASIO is not missing from this list by
-      # oversight: `asio-host` is a `cfg(windows)` dependency, so on this runner
-      # it is not in the graph to test, and its SDK is proprietary — see the scan
-      # that refuses it in the tree.
+      # oversight either: `asio-host` is a `cfg(windows)` dependency, so on this
+      # runner there is no ASIO transport in the graph to test — and the `windows`
+      # job at the end of this file is where it runs, this plugin with `standalone`
+      # on and the `cfg(windows)` half of the DSP suite beside it.
       #
       # `RUSTFLAGS` here is the prefix `nice-nam/README.md` already tells a Linux
       # builder to use, and CI is where forgetting it shows up. NeuralAmpModeler-rs
@@ -376,3 +394,204 @@ jobs:
       # are failures; GPU runtime measurements remain a local hardware check.
       - name: GPU test tree compiles and links
         run: cargo test -p frost --lib --no-run
+
+  # Windows, in the gate at last.
+  #
+  # The header of this file tells what took so long. In short: cpal's `asio` feature
+  # needed the Steinberg SDK, so a Windows runner could compile this engine and
+  # nothing with `--features standalone` — which is why that flag appears in no step
+  # above and in no line of `.githooks/` either. The second half is the point:
+  # `pre-commit` has always linted this platform's engine and has never linted its
+  # audio code, on this machine or any other. Now neither job has to.
+  #
+  # Every command in this job ran on a Windows machine against this tree before it was
+  # written here. That is not ceremony: the two ways this file has failed are both
+  # ways of being red for a reason nobody had looked at, and a step no one has run on
+  # the platform it names is a step that gets muted the first time it is red.
+  windows:
+    # Pinned, for the reason the header gives. `windows-latest` names this same
+    # Windows Server 2025 image today; the day it stops doing that should reach this
+    # file as a commit, the way `ubuntu-latest` moving did.
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+
+      # The claim this branch makes, checked before anything compiles, and in both
+      # directions. `azo` gone from the graph would mean the Windows audio path had
+      # quietly left the build — a dependency that is optional and has exactly one
+      # `cfg(windows)` edge pointing at it is easy to orphan, and every step below
+      # would still pass without it. `asio-sys` back in the graph would mean the SDK
+      # was needed again, and a runner that happened to have one would hide that for
+      # as long as it kept it. So the graph is read rather than inferred from an exit
+      # code: the workspace is printed once and searched, which has the side benefit
+      # that a misspelling in this step cannot turn it into a permanent pass.
+      #
+      # Both variables are named because an image that grew one would make the SDK
+      # question unanswerable from here: nothing in this build reads either any more,
+      # so a value set is a leftover or a regression, and either is worth saying out
+      # loud rather than building over.
+      #
+      # `shell: pwsh` names what a Windows runner defaults to anyway, instead of
+      # assuming it. The script reads cargo's exit codes from $LASTEXITCODE and throws
+      # stderr away instead of merging it with `2>&1`, because merging is the one thing
+      # Windows PowerShell and PowerShell 7 disagree about — merging turned a clean
+      # run into a stack of RemoteException noise the first time this script was tried.
+      - name: No Steinberg SDK in this build
+        shell: pwsh
+        run: |
+          foreach ($name in 'CPAL_ASIO_DIR', 'CPAL_ESSDK_DIR') {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ($value) {
+              Write-Host "::error::$name is set to '$value'. Nothing in this build reads it."
+              exit 1
+            }
+          }
+          $tree = cargo tree --workspace --all-features | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::cargo tree failed with exit code $LASTEXITCODE; the graph cannot be judged."
+            exit 1
+          }
+          if ($tree -notmatch '\bazo v') {
+            Write-Host '::error::azo is not in the graph: the Windows audio path has left the build.'
+            exit 1
+          }
+          if ($tree -match 'asio-sys') {
+            Write-Host '::error::asio-sys is back in the graph. It builds the proprietary Steinberg C++ host layers, so any graph containing it needs the SDK the scan above refuses in the tree.'
+            exit 1
+          }
+          Write-Host 'azo carries the ASIO path, asio-sys is gone, and no SDK variable is set.'
+
+      # The other half of the claim, and stated narrowly on purpose because the
+      # broad version is false. cpal IS in a Windows build of this workspace:
+      # frost plays sounds through rodio, and rodio drives cpal. Measured, not
+      # remembered -- `cargo tree -p nice-common --all-features -i cpal --target
+      # x86_64-pc-windows-msvc` gives the one path `cpal <- rodio <- frost <-
+      # nice-common`. What must not come back is the device code declaring cpal
+      # for itself, because that is a second way to open a stream next to the
+      # ASIO one, on a second clock, which is the thing this branch removes.
+      #
+      # `--depth 1 --prefix none` is what makes the claim checkable line by line:
+      # cargo prints nice-common and its direct dependencies, unprefixed, one per
+      # line. `--target` is the other half -- without it cargo lists every
+      # platform's section, and the cfg(not(windows)) cpal this branch empties
+      # would show up and read as a failure.
+      - name: The Windows audio path declares no cpal
+        shell: pwsh
+        run: |
+          $declared = cargo tree -p nice-common --all-features -e normal,build --depth 1 --prefix none --target x86_64-pc-windows-msvc | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::cargo tree failed with exit code $LASTEXITCODE; the graph cannot be judged."
+            exit 1
+          }
+          if ($declared -match '(?m)^cpal v') {
+            Write-Host '::error::nice-common declares cpal for itself on Windows again. The device transport there is the azo path in nice-common/src/asio_io.rs, and cpal reaching the process through frost and rodio is a different consumer that must stay out of audio_io and devices.'
+            exit 1
+          }
+          Write-Host 'nice-common names no cpal on Windows: azo is the only device API it declares there.'
+
+      - uses: dtolnay/rust-toolchain@1.100.0
+        with:
+          # clippy, and not the rustfmt beside it in the job above: there is no
+          # formatting step here for rustfmt to serve, because formatting is
+          # platform-blind — the same bytes judged by the same rustfmt, and a second
+          # run on Windows would differ only in what the checkout's line endings
+          # happen to look like, which is a git setting and not a property of the code.
+          # No wasm target either: the engine's web check above does not care which
+          # machine ran it.
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # There is deliberately no system-libraries step on this platform. The one in
+      # the job above installs the ALSA, udev and JACK headers that cpal, rodio and
+      # gilrs ask pkg-config for before cargo compiles anything; here the audio backend
+      # is the operating system, and the JACK half is `cfg(target_os = "linux")`, so it
+      # is not in this graph to need anything.
+
+      # The engine and its games, on the machine the binaries run on. Two things worth
+      # naming about this step. It compiles the half of the graph that only exists
+      # here — the window and input plumbing behind `cfg(windows)` and the device
+      # panel's WASAPI path — and it compiles and links the engine's test tree, which
+      # is what the last step of the job above exists to do: on this platform the GPU
+      # tree is checked by `--all-targets`, and running those tests is refused for the
+      # §37 reason the job above gives, unchanged.
+      - name: Clippy, zero warnings, every target
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Named rather than swept in, exactly as above: `cargo clippy` with no `-p`
+      # follows `default-members`, and the tuner is not one of them.
+      - name: Clippy, zero warnings, the plugin and its detector
+        run: cargo clippy -p nice-tuner -p pitch --all-targets -- -D warnings
+
+      # The steps this job was written for. `--features standalone` on the runner above
+      # compiles the ALSA and JACK halves; here the same words compile the transport
+      # this repository now depends on for all of its Windows audio — `nice_common`'s
+      # azo transport, the driver queries behind the settings page, and the two plugins
+      # that own their own audio. Neither of the last two has ever been linted by
+      # anything automatic, on any platform, before this branch.
+      - name: Clippy, zero warnings, the standalone tuner
+        run: cargo clippy -p nice-tuner --features standalone --all-targets -- -D warnings
+
+      # No `RUSTFLAGS: -Ctarget-cpu=x86-64-v3` anywhere in this job, unlike two steps
+      # above. That flag answers NeuralAmpModeler-rs's refusal of the default x86-64
+      # baseline, and NeuralAmpModeler-rs is the Linux half of `nice-nam`; the Windows
+      # half is `nam-rs`, which asks nothing of the instruction set. Setting it here
+      # would raise the instruction floor of every build on the platform people run the
+      # binaries on, for a reason that does not exist on it.
+      - name: Clippy, zero warnings, the model plugin and the shared crate
+        run: cargo clippy -p nice-nam -p nice-common --all-targets -- -D warnings
+
+      # The shared crate with every feature on, which on this platform is the sentence
+      # "with the ASIO transport in it": `asio-host` is a `cfg(windows)` dependency, so
+      # `--all-features` on the runner above has never seen it, and it also implies the
+      # `standalone` and `widgets` halves that job tests with separate commands.
+      - name: Clippy, zero warnings, the shared crate with every feature
+        run: cargo clippy -p nice-common --all-features --all-targets -- -D warnings
+
+      # The five plugins that take their audio from `nice_common::audio_io`, plain and
+      # standalone. They share two commands here rather than the ten above because
+      # the reason for naming them — membership is not coverage — is one reason, not
+      # five, and one cargo invocation says it once.
+      - name: Clippy, zero warnings, the plugins that use the shared audio
+        run: |
+          cargo clippy -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo -p nice-ecomplex --all-targets -- -D warnings
+          cargo clippy -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo -p nice-ecomplex --features standalone --all-targets -- -D warnings
+
+      # The transport's own tests, and the sample conversions under it: the requests
+      # refused before a driver is touched, the one-driver-per-process claim, what a
+      # driver is told when it asks whether overload is supported, and one block moved
+      # through a real pair of buffers. None of them needs a driver — that was a
+      # condition of writing them, because the runner below has no audio hardware
+      # either, and a test that only passes on the machine with the interface plugged
+      # in tells you about the machine.
+      - name: Tests, the shared crate with every feature
+        run: cargo test --no-fail-fast -p nice-common --all-features
+
+      # The same three skips as the step of the same name above, and for the same
+      # reasons: one of them measures the machine rather than the code, and the other
+      # two are JACK. They are written out here too rather than dropped, because a skip
+      # that lives in only one of two identical-looking steps is a skip somebody will
+      # remove from the wrong file, and then this job goes red on a Thursday.
+      - name: Hardware-independent standalone tuner and detector tests
+        run: >-
+          cargo test --no-fail-fast -p nice-tuner -p pitch --features nice-tuner/standalone --
+          --skip search_burst_stays_inside_the_frame_budget
+          --skip jack_server_defaults_resolve_without_manual_device_settings
+          --skip named_routes_preserve_full_level_on_both_outputs_and_restore_after_failure
+
+      # The step the comment above has been waiting for. `nice-nam` splits by platform:
+      # the Linux runner is the only automatic place its NeuralAmpModeler-rs half is
+      # compiled, and `tests/dsp_windows.rs` is the twin of that suite for the engine
+      # this platform actually ships — `#[cfg(windows)]`, compiling `src/dsp.rs` in
+      # place, on the ground that a shipping binary with no DSP tests is unverified
+      # however green the other machine is. It has existed since it was written without
+      # any automated run, because there was no automated Windows run to be in.
+      - name: Tests, the model plugin with its own audio
+        run: cargo test --no-fail-fast -p nice-nam --features standalone
+
+      # The five plugins beside it, standalone only: the plain halves of their test
+      # suites are the same source the runner above executes, and what differs here is
+      # the audio owner behind `standalone` — which on this platform means the settings
+      # resolution and frame plumbing that sit on top of the azo transport.
+      - name: Tests, the plugins that use the shared audio
+        run: cargo test --no-fail-fast -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo -p nice-ecomplex --features standalone
