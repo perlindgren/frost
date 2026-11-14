@@ -25,8 +25,21 @@ NICE_RACK_TEST_CLAP="$PWD/target/debug/libnice_tuner.dylib" \
   cargo test -p nice-clap-host --test tuner_roundtrip -- --ignored
 ```
 
-On Linux/Windows, use the native library or CLAP entry path produced by that
-platform's build. Only the macOS path has been exercised so far.
+On Linux, use the native library or CLAP entry path produced by that platform's
+build. The same three steps on Windows, in PowerShell, naming the `.dll` the
+same build writes next to the host's own binaries:
+
+```powershell
+cargo build -p nice-tuner --lib
+cargo run -p nice-clap-host --bin clap-probe -- `
+  --trust-plugin target/debug/nice_tuner.dll com.nice-tuner.nice-tuner
+$env:NICE_RACK_TEST_CLAP = "$PWD\target\debug\nice_tuner.dll"
+cargo test -p nice-clap-host --test tuner_roundtrip -- --ignored
+```
+
+That Windows form has been run. The probe reported two inputs, two outputs,
+zero samples of latency and 175 saved state bytes, and all four ignored tests
+passed. The Linux form is the one that has not been exercised.
 
 The `nice-rack` application and routing engine remain safe Rust. The loader's
 unsafe precondition is intentionally not hidden behind a safe arbitrary-path API;
