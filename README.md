@@ -67,11 +67,14 @@ skip decides where the first run happens, never whether one happens.
 There is CI behind this repository now, and it is the reason the hooks stopped
 being the last line. `.github/workflows/gate.yml` runs the same rules on a
 runner — the dropper scan, `fmt`, clippy over every target, the packaging
-assertions, the web build, and the test suites a change can reach, with the `plan`
-job writing which ones and why into the run's summary — and the `main-gate` ruleset
-requires that check before `main` may move. That is precisely what a hook cannot
-be: the hooks live in per-clone config and `--no-verify` walks past them, while the
-server refuses whatever it has not seen pass. Refusing is not theoretical:
+assertions, the web build, and the test suites a change can reach, with the
+`plan` job writing which ones and why into the run's summary. The `main-gate`
+ruleset requires that check before `main` may move. Each change is gated once
+on its way in, as a pull request, and once more as the commit `main` becomes:
+`push` is scoped to `main`, so a branch with a pull request open is not gated
+twice on one commit. A hook cannot be any of this: the hooks live in per-clone
+config and `--no-verify` walks past them, while the server refuses whatever it
+has not seen pass. Refusing is not theoretical:
 
 ```text
 remote: error: GH013: Repository rule violations found for refs/heads/main.
@@ -83,12 +86,16 @@ which is what pushing a commit whose gate had failed printed, verbatim. The
 consequence for anyone working here: `main` takes a commit only after that commit
 passed on another ref, so work arrives by branch.
 
-Two things the CI does not do are worth knowing before relying on it. It runs on
-Linux only, so the Windows code path — the platform this engine is developed and
-shipped on — is compiled only on a machine like yours. And the GPU test tree
-reports without judging: a runner with no framebuffer cannot ground a pixel
-assertion, and a measurement that cannot be taken must refuse rather than come
-back green (`docs/benchmarking.md` §37).
+Two absences are worth knowing before relying on it. It has no display and no
+audio device, so the GPU test tree reports without judging: a runner with no
+framebuffer cannot ground a pixel assertion, and a measurement that cannot be
+taken must refuse rather than come back green (`docs/benchmarking.md` §37). The
+same absence rules out anything that needs a real input or output, and those
+tests are named and skipped rather than counted as passed. What it does
+cover is both platforms this engine ships on — `ubuntu-24.04` and
+`windows-2025`, both starting on every change — so the Windows transport and
+the Win32 arms of the CLAP editor embedding are compiled on every change, not
+only on whichever machine is developing them.
 
 Git runs the hooks only once this clone points at them — the trigger is a
 per-clone setting, never cloned itself. After every fresh clone, once:
