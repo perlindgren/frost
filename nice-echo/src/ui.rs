@@ -357,7 +357,7 @@ impl EchoUi {
     pub fn new(shared: Arc<EchoSharedState>, font: Arc<[u8]>) -> Self {
         Self {
             shared,
-            icon_font: crate::gui::icon_font(),
+            icon_font: nice_common::fonts::icon_font(),
             font,
             params: None,
             context: None,

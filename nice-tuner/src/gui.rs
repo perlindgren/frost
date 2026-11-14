@@ -39,14 +39,6 @@ pub fn font() -> Arc<[u8]> {
     FONT.get_or_init(|| Arc::from(BYTES)).clone()
 }
 
-/// Unmodified Fluent System Icons Regular; its MIT notice ships with bundles.
-pub fn icon_font() -> Arc<[u8]> {
-    use std::sync::OnceLock;
-    static BYTES: &[u8] = include_bytes!("../assets/fonts/FluentSystemIcons-Regular.ttf");
-    static FONT: OnceLock<Arc<[u8]>> = OnceLock::new();
-    FONT.get_or_init(|| Arc::from(BYTES)).clone()
-}
-
 pub struct TunerWindow {
     window: WindowContext,
 

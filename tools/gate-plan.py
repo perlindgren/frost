@@ -14,9 +14,9 @@ Two rules, and the second is the reason the first is allowed to exist:
    edges backwards and including dev-dependencies. The closure is read out of
    `cargo metadata`, never written by hand, because a path table rots the day a
    crate moves and a rotting path table skips tests silently. `include_str!` and
-   `include_bytes!` count as dependency edges too — six plugins and the rack
-   compile a font out of `nice-tuner`'s directory by path, and cargo has no idea
-   — so those are read off the source as well. See `embeddings()`.
+   `include_bytes!` count as dependency edges too — the plugins, the rack and the
+   games compile Fira Code out of the engine's `assets/fonts/` by path, and cargo
+   has no idea — so those are read off the source as well. See `embeddings()`.
 2. When this script cannot see far enough to decide, it says `full` and every
    suite runs: no base commit to diff against, a force-push, a push to the
    default branch, an event that is neither, a workspace member that no suite
@@ -194,12 +194,14 @@ def embeddings(cwd, directories):
 
     A dependency graph is not the only way one package ends up compiled out of
     another's files: `include_bytes!` does it by path, and cargo has no idea. This
-    tree really does it — six plugins and the rack embed
-    `nice-tuner/assets/fonts/FluentSystemIcons-Regular.ttf` from beside their own
-    icons — so without this, a change to that one file would be planned as a tuner
-    change and the seven suites that bake the font in would stand aside.
-    `.githooks/pre-push` makes the same argument for the paths it skips, which is
-    where the shape of this check came from.
+    tree really does it — the plugins, the rack and both games embed
+    `assets/fonts/FiraCode-VariableFont_wght.ttf` from the engine's package beside
+    their own assets — so without this, a change to that one file would be planned
+    as an engine change and the suites that bake the font in would stand aside.
+    It is how the icon font used to be arranged too, until it moved to
+    `nice-common` and its embedders became dependents. `.githooks/pre-push` makes
+    the same argument for the paths it skips, which is where the shape of this
+    check came from.
     """
     code, out, err = run(
         ["git", "grep", "-I", "-e", "include_str!(", "-e", "include_bytes!(", "--", "*.rs"], cwd

@@ -201,7 +201,7 @@ impl TunerUi {
         Self {
             shared,
             font,
-            icon_font: crate::gui::icon_font(),
+            icon_font: nice_common::fonts::icon_font(),
             host_controls: None,
             received_samples: 0,
             #[cfg(feature = "diag")]

@@ -2,7 +2,10 @@
 
 `FluentSystemIcons-Regular.ttf` is the unmodified Regular icon font from
 [Microsoft Fluent UI System Icons](https://github.com/microsoft/fluentui-system-icons).
-Fira Code remains the text font, shared from the workspace's `assets/fonts`.
+It belongs to `nice-common` because every plugin editor and the rack draw with it;
+they take the bytes from `nice_common::fonts::icon_font()` rather than reaching
+into a sibling plugin. Fira Code remains the text font, shared from the
+workspace's `assets/fonts`.
 
 - Upstream commit: `9bfae3d782fda4c8764f2128cec4d0dda160b283`
 - Source paths: `fonts/FluentSystemIcons-Regular.ttf`,
@@ -17,5 +20,6 @@ These private-use codepoints are specific to this font, not ordinary Unicode
 gear characters.
 
 `cargo xtask bundle` includes `LICENSE-FluentSystemIcons.txt` in VST3
-`Contents/Resources` and beside the single-file CLAP bundles. Include this notice
-with standalone distributions as well as the shared text font's `OFL.txt`.
+`Contents/Resources` and beside the single-file CLAP bundles, in every bundle the
+workspace builds rather than only the tuner's. Include this notice with standalone
+distributions as well as the shared text font's `OFL.txt`.

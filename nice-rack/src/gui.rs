@@ -225,9 +225,7 @@ pub fn run(
     }
     let font =
         Arc::from(include_bytes!("../../assets/fonts/FiraCode-VariableFont_wght.ttf").as_slice());
-    let icons = Arc::from(
-        include_bytes!("../../nice-tuner/assets/fonts/FluentSystemIcons-Regular.ttf").as_slice(),
-    );
+    let icons = nice_common::fonts::icon_font();
     let ui = RackUi {
         runtime,
         loader: Box::new(loader),

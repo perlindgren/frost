@@ -27,20 +27,6 @@ pub fn font() -> Arc<[u8]> {
     FONT.get_or_init(|| Arc::from(BYTES)).clone()
 }
 
-/// Reuse the same Fluent settings glyph and font as nice-tuner: one icon
-/// font for the family, embedded once.
-pub fn icon_font() -> Arc<[u8]> {
-    use std::sync::OnceLock;
-    static FONT: OnceLock<Arc<[u8]>> = OnceLock::new();
-    FONT.get_or_init(|| {
-        Arc::from(
-            include_bytes!("../../nice-tuner/assets/fonts/FluentSystemIcons-Regular.ttf")
-                .as_slice(),
-        )
-    })
-    .clone()
-}
-
 pub struct WahWindow {
     window: WindowContext,
 

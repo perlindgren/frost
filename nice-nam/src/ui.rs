@@ -178,7 +178,7 @@ impl NamUi {
         Self {
             shared,
             font: font.clone(),
-            icon_font: crate::gui::icon_font(),
+            icon_font: nice_common::fonts::icon_font(),
             input_meter: nice_common::meter::PeakMeter::new(crate::now_ms()),
             output_meter: nice_common::meter::PeakMeter::new(crate::now_ms()),
             gate_open: false,
