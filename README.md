@@ -58,17 +58,19 @@ commit, so a push from a dirty tree runs the suite, passes, and records no verdi
 — otherwise the commit would be credited with work it does not contain.
 
 None of this is a hole, and the reason is worth stating next to the skipping: the
-runner is unconditional. Whatever the local hook decides, `gate` builds, lints,
-packages, compiles for the web and tests the commit, and `main` will not move
-until that has passed. A local skip decides where the first run happens, never
-whether one happens.
+runner is not governed by the local one. Whatever the hook decides, `gate` builds,
+lints, packages and compiles for the web without condition, and it runs every test
+suite the pushed change can reach — everything, whenever its `plan` job cannot see
+far enough to say otherwise. `main` will not move until that has passed. A local
+skip decides where the first run happens, never whether one happens.
 
 There is CI behind this repository now, and it is the reason the hooks stopped
 being the last line. `.github/workflows/gate.yml` runs the same rules on a
 runner — the dropper scan, `fmt`, clippy over every target, the packaging
-assertions, the web build, the test suite — and the `main-gate` ruleset requires
-that check before `main` may move. That is precisely what a hook cannot be: the
-hooks live in per-clone config and `--no-verify` walks past them, while the
+assertions, the web build, and the test suites a change can reach, with the `plan`
+job writing which ones and why into the run's summary — and the `main-gate` ruleset
+requires that check before `main` may move. That is precisely what a hook cannot
+be: the hooks live in per-clone config and `--no-verify` walks past them, while the
 server refuses whatever it has not seen pass. Refusing is not theoretical:
 
 ```text

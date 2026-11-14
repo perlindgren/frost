@@ -55,7 +55,107 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Which suites a change can reach, decided once before either runner starts.
+  #
+  # The measured reason is run 151, the green run of the branch that added the rack's
+  # steps: 319 seconds on Linux and 258 on Windows with a warm cache, and of those,
+  # 203 seconds and 141 seconds were test steps. Nine steps on one machine, five on
+  # the other, every one of them re-running suites whose code was not in the change,
+  # so a README edit paid five minutes of `cargo test` and so did one plugin's own
+  # filter. That is not a gate being thorough; it is a gate nobody will wait for, and
+  # a gate nobody waits for is a gate that gets merged through.
+  #
+  # So this job reads the change, asks cargo who depends on whom, and the two runners
+  # then run the suites that answer named. `tools/gate-plan.py` holds how it decides
+  # and why the closure is read out of cargo rather than written as a path table; what
+  # belongs here is the shape of the bargain. It runs everything whenever it cannot
+  # see far enough to decide — no base commit, a force-push, a push to the default
+  # branch, a workspace member no suite names — and it writes the decision and the
+  # reason into the run's summary, so a suite that did not run is a suite that can be
+  # seen not to have run. Each output below defaults to `true` at this boundary,
+  # including when the planner fails to answer at all: the expensive failure is the
+  # one where a test nobody asked about never happens.
+  #
+  # What stays unconditional stays unconditional on purpose. Formatting, clippy on
+  # every target, the packaging check, the web check and the two scans over tracked
+  # files together cost 26 seconds of that Linux run and 30 of the Windows one, they
+  # compile or inspect the whole tree regardless, and several of the claims they make
+  # — a dependency arriving with a build script, a warning in a crate no test touches
+  # — reach a merge no test would have caught. The test suites and the two claims
+  # about the dependency graph are the conditional part because that is where the
+  # minutes are.
+  #
+  # Both runners still start on every change and still end green or red, so a
+  # repository rule that requires `gate` and `windows` by name keeps working: the jobs
+  # are never skipped, only some of the steps inside them.
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      mode: ${{ steps.decide.outputs.mode || 'full' }}
+      tuner: ${{ steps.decide.outputs.tuner || 'true' }}
+      nam: ${{ steps.decide.outputs.nam || 'true' }}
+      common: ${{ steps.decide.outputs.common || 'true' }}
+      wah: ${{ steps.decide.outputs.wah || 'true' }}
+      phase: ${{ steps.decide.outputs.phase || 'true' }}
+      pi_face: ${{ steps.decide.outputs.pi_face || 'true' }}
+      echo: ${{ steps.decide.outputs.echo || 'true' }}
+      ecomplex: ${{ steps.decide.outputs.ecomplex || 'true' }}
+      rack: ${{ steps.decide.outputs.rack || 'true' }}
+      engine: ${{ steps.decide.outputs.engine || 'true' }}
+      graph: ${{ steps.decide.outputs.graph || 'true' }}
+    steps:
+      # The default depth, not `0`: the base is fetched by name below, which costs one
+      # commit's trees instead of the repository's history.
+      - uses: actions/checkout@v5
+
+      # `python3` rather than a Rust binary, and that is a cost this file does not
+      # usually accept: a planner written in the language it plans for would have to be
+      # compiled before the gate knew whether to compile anything, which is the
+      # five minutes this job exists to avoid. The interpreter is on the runner image
+      # already, and the script's own failures are answered inside it.
+      #
+      # The fetch is a `||` rather than a step because a base this job cannot fetch is
+      # not a failure — it is the case the planner already handles, by running
+      # everything. Same for the planner itself: if `python3` were ever missing from the
+      # image, the outputs would go unset and every default above would say `true`.
+      - name: Decide which suites this change can reach
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          FORCED: ${{ github.event.forced && 'true' || 'false' }}
+          BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          base=""
+          if [ "$EVENT" = pull_request ]; then
+            base="$PR_BASE"
+          elif [ "$EVENT" = push ] && [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            base="$BEFORE"
+          fi
+          if [ -n "$base" ] && [ "$base" != "0000000000000000000000000000000000000000" ]; then
+            git fetch --no-tags --depth=1 origin "$base" \
+              || echo "::warning::the base commit $base is not fetchable; the whole gate runs"
+          else
+            base=""
+          fi
+          python3 tools/gate-plan.py \
+            --base "$base" \
+            --head "$HEAD_SHA" \
+            --event "$EVENT" \
+            --ref "$REF" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --forced "$FORCED" \
+            || {
+              echo '::warning::the planner did not produce an answer; the whole gate runs'
+              printf 'mode=full\n' >> "$GITHUB_OUTPUT"
+            }
+
   gate:
+    needs: plan
     # Pinned rather than `ubuntu-latest`, which migrated its image on 19 October
     # 2026 without asking anyone: a gate whose machine changes underneath it
     # silently is §37 in a different costume, and the runner image carries the
@@ -325,6 +425,7 @@ jobs:
       # and a module path ends in one: unquoted, this file is rejected before any
       # job is created and the only sign is a red run that ran for no time at all.
       - name: Tests (GPU tests are compiled but not executed)
+        if: needs.plan.outputs.engine == 'true'
         run: "cargo test --no-fail-fast -- --skip backend::tests::"
 
       # The plugin and its pitch detector, named rather than swept in: the step
@@ -337,17 +438,18 @@ jobs:
       # tests use generated samples, mock devices and synthetic configuration.
       # Platform-specific checks and bundling remain in the local check scripts.
       - name: Hardware-independent standalone tuner and detector tests
+        if: needs.plan.outputs.tuner == 'true'
         run: >-
           cargo test --no-fail-fast -p nice-tuner -p pitch --features nice-tuner/standalone --
           --skip search_burst_stays_inside_the_frame_budget
           --skip jack_server_defaults_resolve_without_manual_device_settings
           --skip named_routes_preserve_full_level_on_both_outputs_and_restore_after_failure
 
-      # The model plugin and the shared crate, and this is the step that matters
-      # most for them: `nice-nam` splits by platform, so a Linux runner is the
-      # only automatic place its NeuralAmpModeler-rs half is compiled at all — the
-      # nam-rs half exists solely on a Windows machine, where `.githooks/pre-push`
-      # runs the same line for that platform. The gain staging is held to one
+      # The model plugin, and this is the step that matters most for it: `nice-nam`
+      # splits by platform, so a Linux runner is the only automatic place its
+      # NeuralAmpModeler-rs half is compiled at all — the nam-rs half exists solely on
+      # a Windows machine, where `.githooks/pre-push` runs the same line for that
+      # platform. The gain staging is held to one
       # convention by a test that compares the two engines, and until now neither
       # machine could compile the side it was written against.
       #
@@ -368,15 +470,33 @@ jobs:
       # refuses to build below its SIMD baseline, and what it examines is the
       # target features rustc enables, not the runner's silicon: a default x86-64
       # target answers it with `fxsr,sse,sse2`, so the build script exits 1 on a
-      # machine whose CPU has AVX2 and AVX-512. The flag is set on these two steps
-      # rather than in `.cargo/config.toml`, because that file would raise the
-      # instruction-set floor for everything else in this repository, antifrost
-      # included, and that is a release decision rather than a build fix.
-      - name: Tests, the model plugin and the shared crate
+      # machine whose CPU has AVX2 and AVX-512. The flag is set on the steps that
+      # name `nice-nam`, and on the shared crate's step below it, rather than in
+      # `.cargo/config.toml`, because that file would raise the instruction-set floor
+      # for everything else in this repository, antifrost included, and that is a
+      # release decision rather than a build fix.
+      - name: Tests, the model plugin
+        if: needs.plan.outputs.nam == 'true'
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
+        run: cargo test --no-fail-fast -p nice-nam
+
+      # The shared crate, in a step of its own so that two questions stay two
+      # questions: a change to the crate every plugin is built on and a change to one
+      # plugin's model loader are not the same blast radius, and the `plan` job can
+      # only skip one of them if a step names one of them.
+      #
+      # `RUSTFLAGS` is repeated rather than dropped. Cargo fingerprints the flag, so
+      # building this graph at rustc's default baseline would build it twice on a full
+      # run — once under `x86-64-v3`, for the clippy step above, and once without it,
+      # here — for a difference that answers nothing. The refusal the flag is
+      # answering belongs to `nice-nam`, not to this crate.
+      - name: Tests, the shared crate
+        if: needs.plan.outputs.common == 'true'
         env:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
         run: |
-          cargo test --no-fail-fast -p nice-nam -p nice-common
+          cargo test --no-fail-fast -p nice-common
           cargo test --no-fail-fast -p nice-common --features standalone
           # The shared knob hides behind `widgets`, which neither line
           # above implies; its tests are geometry and nothing else, and
@@ -389,14 +509,21 @@ jobs:
       # filter is plain Rust that must build there like everything else. The
       # standalone half runs too, like nice-common's beside it: every test in
       # it is hardware-independent — ring plumbing, settings resolve, the
-      # dummy-backend path — and none of them opens a device. The phaser is
-      # folded in here for the same reason and by the same two commands as
-      # its sibling's: one LFO chain, no device, nothing this runner cannot
-      # answer.
-      - name: Tests, the wah and the phaser
+      # dummy-backend path — and none of them opens a device.
+      - name: Tests, the wah
+        if: needs.plan.outputs.wah == 'true'
         run: |
           cargo test --no-fail-fast -p nice-wah
           cargo test --no-fail-fast -p nice-wah --features standalone
+
+      # The phaser, on the same two commands as its sibling and for the same reason:
+      # one LFO chain, no device, nothing this runner cannot answer. It used to share
+      # the step above, which was one reason to run two suites and one wait for both;
+      # the `plan` job cannot let a phaser change skip the wah's tests while both are
+      # in the same step.
+      - name: Tests, the phaser
+        if: needs.plan.outputs.phase == 'true'
+        run: |
           cargo test --no-fail-fast -p nice-phase
           cargo test --no-fail-fast -p nice-phase --features standalone
 
@@ -409,6 +536,7 @@ jobs:
       # a Bi-Phase whose tests are only plumbing would be exactly as unverified
       # as a pass-through wearing a nicer README.
       - name: Tests, the Pi-Fase
+        if: needs.plan.outputs.pi_face == 'true'
         run: |
           cargo test --no-fail-fast -p nice-pi-face
           cargo test --no-fail-fast -p nice-pi-face --features standalone
@@ -421,6 +549,7 @@ jobs:
       # the audio thread's witness. None of it opens a device, so the
       # standalone half runs here too.
       - name: Tests, the Space Echo
+        if: needs.plan.outputs.echo == 'true'
         run: |
           cargo test --no-fail-fast -p nice-echo
           cargo test --no-fail-fast -p nice-echo --features standalone
@@ -433,6 +562,7 @@ jobs:
       # witness. None of it opens a device, so the standalone half runs here
       # too.
       - name: Tests, the Echoplex
+        if: needs.plan.outputs.ecomplex == 'true'
         run: |
           cargo test --no-fail-fast -p nice-ecomplex
           cargo test --no-fail-fast -p nice-ecomplex --features standalone
@@ -448,12 +578,14 @@ jobs:
       # opens a device, a window or a plugin. The same nine stand aside in the
       # Windows twin below, for the same reasons.
       - name: Tests, the rack and its host adapter
+        if: needs.plan.outputs.rack == 'true'
         run: cargo test --no-fail-fast -p nice-rack -p nice-rack-engine -p nice-clap-host -p nice-rack-standalone -p rack-window-input
 
       # Compile and link the engine's library tests, including the GPU tree,
       # without executing them on an uncalibrated runner. Compilation errors
       # are failures; GPU runtime measurements remain a local hardware check.
       - name: GPU test tree compiles and links
+        if: needs.plan.outputs.engine == 'true'
         run: cargo test -p frost --lib --no-run
 
   # Windows, in the gate at last.
@@ -470,12 +602,33 @@ jobs:
   # ways of being red for a reason nobody had looked at, and a step no one has run on
   # the platform it names is a step that gets muted the first time it is red.
   windows:
+    needs: plan
     # Pinned, for the reason the header gives. `windows-latest` names this same
     # Windows Server 2025 image today; the day it stops doing that should reach this
     # file as a commit, the way `ubuntu-latest` moving did.
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v5
+
+      # The half of the claim below that costs nothing, and therefore unconditional:
+      # an environment variable is not something a commit can move, so this answer is
+      # about the runner and not about the change, and there is no reason to let a
+      # planner's guess stand between it and the run page.
+      #
+      # Both variables are named because an image that grew one would make the SDK
+      # question unanswerable from here: nothing in this build reads either any more,
+      # so a value set is a leftover or a regression, and either is worth saying out
+      # loud rather than building over.
+      - name: No SDK variable in this runner
+        shell: pwsh
+        run: |
+          foreach ($name in 'CPAL_ASIO_DIR', 'CPAL_ESSDK_DIR') {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ($value) {
+              Write-Host "::error::$name is set to '$value'. Nothing in this build reads it."
+              exit 1
+            }
+          }
 
       # The claim this branch makes, checked before anything compiles, and in both
       # directions. `azo` gone from the graph would mean the Windows audio path had
@@ -487,26 +640,23 @@ jobs:
       # code: the workspace is printed once and searched, which has the side benefit
       # that a misspelling in this step cannot turn it into a permanent pass.
       #
-      # Both variables are named because an image that grew one would make the SDK
-      # question unanswerable from here: nothing in this build reads either any more,
-      # so a value set is a leftover or a regression, and either is worth saying out
-      # loud rather than building over.
-      #
       # `shell: pwsh` names what a Windows runner defaults to anyway, instead of
       # assuming it. The script reads cargo's exit codes from $LASTEXITCODE and throws
       # stderr away instead of merging it with `2>&1`, because merging is the one thing
       # Windows PowerShell and PowerShell 7 disagree about — merging turned a clean
       # run into a stack of RemoteException noise the first time this script was tried.
+      #
+      # The `if` is the planner's. It belongs on this step and not on the one above
+      # because of what this step reads: a package comes into a dependency graph or
+      # leaves it through a manifest, and nothing else a commit can change can make
+      # this answer wrong. It is worth gating for a reason the first run of this job
+      # measured — 31 seconds, all of it one `cargo tree --workspace --all-features` —
+      # and the sibling below, which asks a one-second question about the same graph,
+      # is gated on the same answer so the pair never reads as a half-claim.
       - name: No Steinberg SDK in this build
+        if: needs.plan.outputs.graph == 'true'
         shell: pwsh
         run: |
-          foreach ($name in 'CPAL_ASIO_DIR', 'CPAL_ESSDK_DIR') {
-            $value = [Environment]::GetEnvironmentVariable($name)
-            if ($value) {
-              Write-Host "::error::$name is set to '$value'. Nothing in this build reads it."
-              exit 1
-            }
-          }
           $tree = cargo tree --workspace --all-features | Out-String
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::error::cargo tree failed with exit code $LASTEXITCODE; the graph cannot be judged."
@@ -537,6 +687,7 @@ jobs:
       # platform's section, and the cfg(not(windows)) cpal this branch empties
       # would show up and read as a failure.
       - name: The Windows audio path declares no cpal
+        if: needs.plan.outputs.graph == 'true'
         shell: pwsh
         run: |
           $declared = cargo tree -p nice-common --all-features -e normal,build --depth 1 --prefix none --target x86_64-pc-windows-msvc | Out-String
@@ -661,6 +812,7 @@ jobs:
       # either, and a test that only passes on the machine with the interface plugged
       # in tells you about the machine.
       - name: Tests, the shared crate with every feature
+        if: needs.plan.outputs.common == 'true'
         run: cargo test --no-fail-fast -p nice-common --all-features
 
       # The same three skips as the step of the same name above, and for the same
@@ -669,6 +821,7 @@ jobs:
       # that lives in only one of two identical-looking steps is a skip somebody will
       # remove from the wrong file, and then this job goes red on a Thursday.
       - name: Hardware-independent standalone tuner and detector tests
+        if: needs.plan.outputs.tuner == 'true'
         run: >-
           cargo test --no-fail-fast -p nice-tuner -p pitch --features nice-tuner/standalone --
           --skip search_burst_stays_inside_the_frame_budget
@@ -683,14 +836,35 @@ jobs:
       # however green the other machine is. It has existed since it was written without
       # any automated run, because there was no automated Windows run to be in.
       - name: Tests, the model plugin with its own audio
+        if: needs.plan.outputs.nam == 'true'
         run: cargo test --no-fail-fast -p nice-nam --features standalone
 
-      # The five plugins beside it, standalone only: the plain halves of their test
-      # suites are the same source the runner above executes, and what differs here is
-      # the audio owner behind `standalone` — which on this platform means the settings
-      # resolution and frame plumbing that sit on top of the azo transport.
-      - name: Tests, the plugins that use the shared audio
-        run: cargo test --no-fail-fast -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo -p nice-ecomplex --features standalone
+      # The plugins beside it, standalone only and one step apiece: the plain halves
+      # of their test suites are the same source the runner above executes, and what
+      # differs here is the audio owner behind `standalone` — which on this platform
+      # means the settings resolution and frame plumbing that sit on top of the azo
+      # transport. Until now all five shared one step, which spent the 73 seconds that
+      # step measured on five packages whether the change had touched one of them or
+      # all five, and the planner cannot skip what shares a step.
+      - name: Tests, the wah, standalone
+        if: needs.plan.outputs.wah == 'true'
+        run: cargo test --no-fail-fast -p nice-wah --features standalone
+
+      - name: Tests, the phaser, standalone
+        if: needs.plan.outputs.phase == 'true'
+        run: cargo test --no-fail-fast -p nice-phase --features standalone
+
+      - name: Tests, the Pi-Fase, standalone
+        if: needs.plan.outputs.pi_face == 'true'
+        run: cargo test --no-fail-fast -p nice-pi-face --features standalone
+
+      - name: Tests, the Space Echo, standalone
+        if: needs.plan.outputs.echo == 'true'
+        run: cargo test --no-fail-fast -p nice-echo --features standalone
+
+      - name: Tests, the Echoplex, standalone
+        if: needs.plan.outputs.ecomplex == 'true'
+        run: cargo test --no-fail-fast -p nice-ecomplex --features standalone
 
       # The rack, on the platform its binary ships on. Twenty-three tests run and
       # nine stand aside: each of the nine names `NICE_RACK_TEST_CLAP`, a native
@@ -706,4 +880,5 @@ jobs:
       #
       # Both numbers measured here first: twenty-three passing, nine skipped.
       - name: Tests, the rack and its host adapter
+        if: needs.plan.outputs.rack == 'true'
         run: cargo test --no-fail-fast -p nice-rack -p nice-rack-engine -p nice-clap-host -p nice-rack-standalone -p rack-window-input
