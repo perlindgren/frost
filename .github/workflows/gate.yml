@@ -265,13 +265,19 @@ jobs:
       #
       # The evidence behind these two steps is not the same on the two machines,
       # and saying so is cheaper than being believed. The Windows twin was run on
-      # the machine it names first. This one is first run by the run that
-      # publishes it, and the honest case for it is that nothing else has ever
-      # compiled these crates on Linux: not a CI step until this line, not a line
-      # of `.githooks/`, and the README's own validation commands are written
-      # against a macOS `.dylib`. A first run that might be red is the price of
-      # ever finding out; the alternative is the state this file keeps naming —
-      # four crates that are members, and therefore, in effect, invisible.
+      # the machine it names first. This one was first run by the run that
+      # published it. That run was red four seconds into this step, and there was
+      # a warning here for it to find: `raw_window_handle::RawWindowHandle`,
+      # imported at the head of `nice-clap-host/src/controls.rs`, is named only
+      # from the two `cfg(target_os = "windows")` blocks at the end of that file,
+      # so on this platform it is an unused import, and `-D warnings` turns one
+      # into a build failure. It is imported under that `cfg` now, beside the
+      # calls that need it. Nothing else has ever compiled these crates on Linux —
+      # not a CI step until this line, not a line of `.githooks/`, and the README's
+      # own validation commands are written against a macOS `.dylib`. A first run
+      # that might be red is the price of ever finding out; the alternative is the
+      # state this file keeps naming — four crates that are members, and therefore,
+      # in effect, invisible.
       #
       # No `--features standalone`, because the rack declares no such feature: it
       # asks `nice-common` for `ui`, `audio-io` and `asio-host` unconditionally

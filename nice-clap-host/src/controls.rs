@@ -4,7 +4,14 @@
 //! keep its frame clock running because our own UI thread starves it.
 use super::*;
 use clack_host::events::{Pckn, event_types::ParamValueEvent};
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use raw_window_handle::HasWindowHandle;
+// The raw handle is named only by the two Win32 helpers at the end of this file,
+// so it is imported under the same `cfg` they are written in. Named alongside
+// `HasWindowHandle` instead, it would be an unused import on every platform but
+// this one, which is a warning, and the gate turns warnings into errors on the
+// platforms whose `cfg` arm this file also has to compile.
+#[cfg(target_os = "windows")]
+use raw_window_handle::RawWindowHandle;
 
 pub(in crate::graph) struct Editor {
     // Holds the native parent alive until after PluginGui::destroy.
