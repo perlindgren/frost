@@ -170,4 +170,14 @@ cargo clippy -p nice-echo --all-targets -- -D warnings || {
     exit 1
 }
 
+# The Echoplex, by the same logic as its neighbours, and with the same
+# deliberate omission: no `--features standalone`, because on Windows that
+# names the ASIO host, and the hook's job is to lint what every commit can
+# build, not to demand an SDK it has no right to ask for.
+printf 'pre-commit: clippy -D warnings (the Echoplex)...\n'
+cargo clippy -p nice-ecomplex --all-targets -- -D warnings || {
+    printf 'pre-commit: clippy failed in nice-ecomplex - commit aborted.\n' >&2
+    exit 1
+}
+
 exit 0
