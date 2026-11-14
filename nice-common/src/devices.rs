@@ -8,8 +8,10 @@
 //! Caveats the UI inherits and states honestly:
 //! - ASIO enumeration *loads* each registered driver to read its properties;
 //!   with several drivers installed, opening the page can pause for a moment.
-//! - Device lists are cpal's device names; for ASIO that is the driver name
-//!   (ports are not addressable through cpal, cf. README).
+//! - Device lists are cpal's device names, except under ASIO: there the list is
+//!   the driver names in the registry's `HKLM\SOFTWARE\ASIO` key, read by azo,
+//!   and a driver is a device — its ports are addressed by channel count, not
+//!   by name.
 
 use cpal::traits::{DeviceTrait, HostTrait};
 
@@ -29,11 +31,11 @@ fn host_id_value(id: cpal::HostId) -> Option<(&'static str, &'static str)> {
     // Only hosts the application's standalone audio path supports.
     // Each variant exists only where cpal builds it (platform/feature cfg);
     // if-chains keep that exhaustiveness-free.
-    // cpal builds the Asio variant only on Windows, feature or not.
-    #[cfg(all(windows, feature = "asio-host"))]
-    if id == cpal::HostId::Asio {
-        return Some(("asio", "ASIO"));
-    }
+    // ASIO is deliberately absent: it is not a cpal host any more, and
+    // `cpal::HostId::Asio` is not even declared unless cpal's own `asio`
+    // feature is on (cpal 0.18.2, `platform/mod.rs:905`), which this workspace
+    // no longer asks for. `available_backends` offers the `"asio"` key from azo
+    // instead, so a Windows build needs no Steinberg SDK to compile the path.
     #[cfg(windows)]
     if id == cpal::HostId::Wasapi {
         return Some(("wasapi", "Windows WASAPI"));
@@ -59,10 +61,6 @@ fn host_id_value(id: cpal::HostId) -> Option<(&'static str, &'static str)> {
 }
 
 fn host_id_from_value(value: &str) -> Option<cpal::HostId> {
-    #[cfg(all(windows, feature = "asio-host"))]
-    if value == "asio" {
-        return Some(cpal::HostId::Asio);
-    }
     #[cfg(windows)]
     if value == "wasapi" {
         return Some(cpal::HostId::Wasapi);
@@ -92,6 +90,12 @@ pub fn available_backends() -> Vec<BackendOption> {
         label: label.to_owned(),
     };
     let mut v = vec![mk("auto", "System default")];
+    // ASIO cannot come out of the loop below: cpal only lists hosts it built,
+    // and the ASIO host is exactly the one this workspace stopped asking cpal
+    // for. The key is offered here, from azo, and stays the first named choice
+    // after the default because it is the reason a Windows standalone exists.
+    #[cfg(all(windows, feature = "asio-host"))]
+    v.push(mk("asio", "ASIO"));
     for h in cpal::available_hosts() {
         if let Some((id, label)) = host_id_value(h) {
             v.push(mk(id, label));
@@ -101,6 +105,13 @@ pub fn available_backends() -> Vec<BackendOption> {
     v
 }
 
+/// The cpal host behind a backend key.
+///
+/// `None` for the keys that do not go through cpal at all: `"asio"` is served
+/// by [`crate::asio_io`] over azo, `"dummy"` by the caller refusing to open
+/// anything, and anything unrecognised by the caller's own error. Every caller
+/// therefore has to handle `"asio"` before it reaches for a device, which is
+/// the honest shape of the choice rather than a host that would fail later.
 pub fn open_host(backend: &str) -> Option<cpal::Host> {
     if backend == "auto" || backend.is_empty() {
         return Some(cpal::default_host());
@@ -187,18 +198,22 @@ struct AsioCaps {
 /// with the granularity honoured it is `[8, 16, 32, 64, 128, 256, 512, 1024,
 /// 2048]`. Both lists measured on the same driver by the same command, either
 /// side of this change.
+///
+/// `pub(crate)` rather than private because the thing that has to honour it is
+/// the transport that talks to the driver, in [`crate::asio_io`] — see
+/// [`Ladder::accepts`] for why the panel is not the place that decides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(not(all(windows, feature = "asio-host")), allow(dead_code))]
-struct Ladder {
-    min: u32,
-    max: u32,
-    steps: Steps,
+pub(crate) struct Ladder {
+    pub(crate) min: u32,
+    pub(crate) max: u32,
+    pub(crate) steps: Steps,
 }
 
 /// How a driver fills the space between its minimum and maximum buffer size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(not(all(windows, feature = "asio-host")), allow(dead_code))]
-enum Steps {
+pub(crate) enum Steps {
     /// Every frame count between [`Ladder::min`] and [`Ladder::max`].
     Any,
     /// `min`, `min + step`, `min + 2 * step`, …
@@ -219,11 +234,33 @@ enum Steps {
 #[cfg_attr(not(all(windows, feature = "asio-host")), allow(dead_code))]
 impl Ladder {
     /// The answer for a driver that would not say.
-    const UNKNOWN: Ladder = Ladder {
+    pub(crate) const UNKNOWN: Ladder = Ladder {
         min: 0,
         max: 0,
         steps: Steps::Any,
     };
+
+    /// The one reading of `ASIOGetBufferSize` this workspace has, shared by the
+    /// panel's question and the transport's. Both ends used to hold their own
+    /// version of "what a granularity means" and drift; `azo` already folds the
+    /// driver's `-1` into `Exponential` for us (`azo-0.6.1/src/dto.rs:84-92`).
+    #[cfg(all(windows, feature = "asio-host"))]
+    pub(crate) fn from_size(size: &azo::dto::BufferSize) -> Self {
+        Ladder {
+            min: u32::try_from(size.min).unwrap_or(0),
+            max: u32::try_from(size.max).unwrap_or(0),
+            steps: match size.granularity {
+                Some(azo::dto::Granularity::Exponential) => Steps::Doubling,
+                Some(azo::dto::Granularity::Linear { step }) if step.get() > 0 => {
+                    Steps::Linear(step.get() as u32)
+                }
+                // `None`, or a step that is not `-1` and not positive: the
+                // driver said nothing usable, and min..=max is all we know —
+                // which is all this code used before.
+                _ => Steps::Any,
+            },
+        }
+    }
 
     /// The smallest and largest sizes we may ever ask this driver for, if it
     /// named any.
@@ -232,7 +269,15 @@ impl Ladder {
     }
 
     /// Whether this driver takes exactly this frame count.
-    fn accepts(&self, frames: u32) -> bool {
+    ///
+    /// This is the rule the transport enforces before it asks for the size, not
+    /// a hint for the panel: a saved setting can name a size the panel never
+    /// offered — a `period_size` of 24 written while the driver's granularity was
+    /// `-1`, or copied from another driver — and the panel's own check only
+    /// validates the `min..=max` span, so such a setting resolves happily right up
+    /// to the driver refusing `createBuffers`. Asking the driver is the only
+    /// answer, and refusing it here is what turns that refusal into a sentence.
+    pub(crate) fn accepts(&self, frames: u32) -> bool {
         if self.max == 0 || frames < self.min || frames > self.max {
             return false;
         }
@@ -344,21 +389,27 @@ fn asio_caps(name: &str) -> Option<AsioCaps> {
     asio_caps_answered(name, load_asio_caps)
 }
 
+/// The registered driver a saved setting names, if it is still registered.
+///
+/// A saved setting names a driver by the string `asio_driver_names` gave, which
+/// is this `description`. Measured on the nine drivers here, they are the same
+/// strings the previous binding enumerated, so nothing saved stops matching.
+/// Should one ever disagree, the answer is `None`: the panel shows a driver
+/// without capabilities, and the transport says the driver is not registered,
+/// rather than either of them guessing at another one.
 #[cfg(all(windows, feature = "asio-host"))]
-fn load_asio_caps(name: &str) -> Option<AsioCaps> {
-    use azo::driver::{Driver, Metadata, SafeHandle};
-    use azo::dto::Granularity;
-
-    // A saved setting names a driver by the string `asio_driver_names` gave,
-    // which is this `description`. Measured on the nine drivers here, they are
-    // the same strings the previous binding enumerated, so nothing saved stops
-    // matching. Should one ever disagree, the answer is `None`: the panel shows
-    // a driver without capabilities, not a guessed one.
-    let clsid = Metadata::enumerate()
+pub(crate) fn asio_driver(name: &str) -> Option<azo::driver::Metadata> {
+    azo::driver::Metadata::enumerate()
         .ok()?
         .into_iter()
         .find(|meta| meta.description.to_string_lossy() == name)
-        .map(|meta| meta.clsid)?;
+}
+
+#[cfg(all(windows, feature = "asio-host"))]
+fn load_asio_caps(name: &str) -> Option<AsioCaps> {
+    use azo::driver::{Driver, SafeHandle};
+
+    let clsid = asio_driver(name)?.clsid;
     // `SafeHandle::new` is what calls `CoInitializeEx`, on this thread, and it
     // pairs the matching `CoUninitialize` when the handle is dropped
     // (`azo-0.6.1/src/driver.rs:157-164`). A thread already initialized in the
@@ -382,20 +433,7 @@ fn load_asio_caps(name: &str) -> Option<AsioCaps> {
     // reason to ask a driver the same question twice per load.
     let sizes = driver.buffer_size().ok();
     let ladder = match sizes.as_ref() {
-        Some(size) => Ladder {
-            min: u32::try_from(size.min).unwrap_or(0),
-            max: u32::try_from(size.max).unwrap_or(0),
-            steps: match size.granularity {
-                Some(Granularity::Exponential) => Steps::Doubling,
-                Some(Granularity::Linear { step }) if step.get() > 0 => {
-                    Steps::Linear(step.get() as u32)
-                }
-                // `None`, or a step that is not `-1` and not positive: the
-                // driver said nothing usable, and min..=max is all we know —
-                // which is all this code used before.
-                _ => Steps::Any,
-            },
-        },
+        Some(size) => Ladder::from_size(size),
         None => Ladder::UNKNOWN,
     };
     let preferred = sizes
@@ -427,7 +465,11 @@ fn asio_caps(name: &str) -> Option<AsioCaps> {
 }
 
 /// Buffer sizes this driver permits, from its own min, max and granularity.
-fn asio_buffer_options(ladder: Option<Ladder>) -> Vec<u32> {
+///
+/// `pub(crate)` for the same reason as [`Ladder::accepts`]: when the transport
+/// refuses a size the user chose, the useful part of the message is the list the
+/// driver actually gave, which is this function's answer.
+pub(crate) fn asio_buffer_options(ladder: Option<Ladder>) -> Vec<u32> {
     let Some(ladder) = ladder else {
         return Vec::new();
     };

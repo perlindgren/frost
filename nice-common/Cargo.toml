@@ -12,7 +12,7 @@ audio-io = ["devices", "standalone"]
 widgets = ["dep:frost"]
 ui = ["devices", "widgets", "dep:crossbeam"]
 devices = ["dep:cpal", "dep:jack", "dep:core-audio-device"]
-asio-host = ["devices", "cpal/asio", "dep:azo"]
+asio-host = ["devices", "dep:azo", "dep:crossbeam"]
 # The parts a standalone application needs from its host: the command endpoint
 # between panel and audio owner, and the rate conversion the plugin never sees.
 standalone = ["dep:crossbeam", "dep:rtrb"]
@@ -33,14 +33,21 @@ jack = { version = "0.13.5", optional = true }
 core-audio-device = { path = "../nice-tuner/crates/core-audio-device", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-# `azo` declares the ASIO COM interfaces itself rather than compiling Steinberg's
-# headers, so it asks a driver what it can do with no SDK, no `CPAL_ASIO_DIR`, no
-# libclang and no C compiler — see the note in `.cargo/config.toml` for what the
-# SDK route costs. The `cpal/asio` in the feature above still needs all of it,
-# until the transport stops riding on cpal too. `default-features = false` drops
-# azo's `host` thread, which nothing here uses: a query opens its own instance,
-# asks it on this thread and lets it go.
-azo = { version = "0.6.1", default-features = false, optional = true }
+# `azo` declares the ASIO COM interfaces itself instead of compiling Steinberg's
+# headers, so a driver can be asked what it can do and then driven with no SDK,
+# no `CPAL_ASIO_DIR`, no libclang and no C compiler — see the note in
+# `.cargo/config.toml` for what the SDK route used to cost, and `asio_io` for the
+# transport that replaced the one riding on cpal.
+#
+# `host` is what adds azo's pump thread, and the transport needs it: a driver is
+# loaded for the whole session, its apartment belongs on a thread of its own
+# rather than on the rack's UI thread, and every call is answered by the thread
+# that made the instance. Both features are named rather than inherited from
+# `default`, so a new default in a later azo arrives by decision and not by
+# update.
+azo = { version = "0.6.1", default-features = false, features = [
+  "host",
+], optional = true }
 
 [dev-dependencies]
 # Safe measurement API for the allocation witness; no handwritten allocator hooks.

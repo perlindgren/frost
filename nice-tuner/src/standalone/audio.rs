@@ -25,7 +25,17 @@ pub(super) trait Session {
 }
 
 pub(super) enum Streams {
-    Cpal(CpalStreams),
+    /// Boxed, because the sizes of the variants are not theirs to choose: with
+    /// the azo transport added beside it, this enum's largest variant measured
+    /// 304 bytes and the next 88, and a gap over 200 bytes is
+    /// `clippy::large_enum_variant`, which `-D warnings` turns into a build
+    /// failure. `nice_common::audio_io::Streams` already boxes the variant that
+    /// outgrew the others for the same reason (`audio_io.rs:43`). The box is one
+    /// allocation on a path that goes on to load a driver and allocate a ring
+    /// buffer, and the value it stores moves only where a stream is opened.
+    Cpal(Box<CpalStreams>),
+    #[cfg(all(windows, feature = "asio-host"))]
+    Asio(AsioStreams),
     #[cfg(target_os = "linux")]
     Jack(super::jack_audio::Streams),
 }
@@ -33,6 +43,8 @@ impl Session for Streams {
     fn wait_started(&mut self) -> Result<(), Failure> {
         match self {
             Self::Cpal(streams) => streams.wait_started(),
+            #[cfg(all(windows, feature = "asio-host"))]
+            Self::Asio(streams) => streams.wait_started(),
             #[cfg(target_os = "linux")]
             Self::Jack(streams) => streams.wait_started(),
         }
@@ -40,6 +52,8 @@ impl Session for Streams {
     fn failure(&self) -> Option<Failure> {
         match self {
             Self::Cpal(streams) => streams.failure(),
+            #[cfg(all(windows, feature = "asio-host"))]
+            Self::Asio(streams) => streams.failure(),
             #[cfg(target_os = "linux")]
             Self::Jack(streams) => streams.failure(),
         }
@@ -54,11 +68,6 @@ pub(super) struct CpalStreams {
     input_seen: Arc<AtomicBool>,
     output_seen: Arc<AtomicBool>,
     errors: Receiver<Failure>,
-    // Declared last so it drops last: ASIO capability queries stay refused
-    // until both streams are gone, because a query loads the driver a running
-    // stream is using and its Drop shuts that driver down. See
-    // `devices::asio_stream_live`.
-    _asio: Option<crate::devices::AsioStreamGuard>,
 }
 impl Session for CpalStreams {
     fn wait_started(&mut self) -> Result<(), Failure> {
@@ -83,6 +92,104 @@ impl Session for CpalStreams {
     }
     fn failure(&self) -> Option<Failure> {
         self.errors.try_recv().ok()
+    }
+}
+
+/// One ASIO driver, both directions, callbacks on the driver's own thread.
+///
+/// `nice_common::asio_io` owns the driver — and with it the claim that keeps a
+/// settings query from loading the driver this stream is using, and the guard
+/// that keeps the panel answering `None` while it runs
+/// (`nice_common::devices::asio_stream_live`). Both are released by dropping this
+/// value, which is the whole of what stopping means here.
+#[cfg(all(windows, feature = "asio-host"))]
+pub(super) struct AsioStreams {
+    stream: nice_common::asio_io::Transport,
+    input_seen: Arc<AtomicBool>,
+    output_seen: Arc<AtomicBool>,
+}
+
+#[cfg(all(windows, feature = "asio-host"))]
+impl Session for AsioStreams {
+    fn wait_started(&mut self) -> Result<(), Failure> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(error) = self.failure() {
+                return Err(error);
+            }
+            if self.input_seen.load(Ordering::Acquire) && self.output_seen.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(Failure {
+                    message:
+                        "The driver opened but did not start delivering audio within 3 seconds"
+                            .into(),
+                    invalidated: false,
+                });
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn failure(&self) -> Option<Failure> {
+        // A block the driver dropped is not a broken stream, and this host has
+        // always said so: the cpal callback below returns without a word on
+        // `Xrun`. So the channel is drained past the drops to the first message
+        // that means the device has gone.
+        loop {
+            let failure = self.stream.failure()?;
+            if failure.invalidated {
+                return Some(Failure {
+                    message: failure.message,
+                    invalidated: true,
+                });
+            }
+        }
+    }
+}
+
+/// The tuner's two halves, run from the one callback the driver makes.
+///
+/// cpal ran the capture callback and the playback callback on two threads with
+/// two buffers, and the monitor between them existed to cover the gap. Here both
+/// halves are the same call in the same order every time, so the plugin sees a
+/// fixed round trip — which is the reason this transport exists as much as the
+/// missing SDK is.
+#[cfg(all(windows, feature = "asio-host"))]
+struct Pump {
+    processor: Processor,
+    producer: rtrb::Producer<f32>,
+    monitor: Monitor,
+    destination: OutputChannels,
+    /// Channels per frame in the block the driver fills. The capture side needs
+    /// no such number because the `Processor` was built with it and de-interleaves
+    /// by itself; the playback side is written here, so it is kept.
+    outputs: usize,
+    input_seen: Arc<AtomicBool>,
+    output_seen: Arc<AtomicBool>,
+}
+
+#[cfg(all(windows, feature = "asio-host"))]
+impl nice_common::asio_io::Pump for Pump {
+    fn input(&mut self, interleaved: &[f32]) {
+        self.processor.run(interleaved, |sample| {
+            let _ = self.producer.push(sample);
+        });
+        self.input_seen.store(true, Ordering::Release);
+    }
+
+    fn output(&mut self, interleaved: &mut [f32]) {
+        let (channels, destination) = (self.outputs, self.destination);
+        let monitor = &mut self.monitor;
+        monitor.begin_block();
+        // `route` zeroes the block before it fills the channels the route names,
+        // so the driver's unused outputs are silence rather than whatever the
+        // buffer held.
+        route(interleaved, channels, destination, move || {
+            monitor.next_sample()
+        });
+        self.output_seen.store(true, Ordering::Release);
     }
 }
 
@@ -253,6 +360,109 @@ where
         .map_err(|e| e.to_string())
 }
 
+/// Open the driver both directions name, and start the tuner on it.
+///
+/// The message comes back as a [`Failure`] with `invalidated: false` rather than
+/// as a bare sentence like the cpal path's: there is no direction to name,
+/// because one call opens both halves, and the sentences
+/// `nice_common::asio_io::open` produces already say which of the two the driver
+/// refused and what it would have taken.
+#[cfg(all(windows, feature = "asio-host"))]
+fn open_asio(settings: &Settings, plugin: Arc<Mutex<TunerPlugin>>) -> Result<AsioStreams, Failure> {
+    let result = (|| -> Result<AsioStreams, String> {
+        let input_name = settings
+            .input_device
+            .clone()
+            .ok_or("Missing input device")?;
+        let output_name = settings
+            .output_device
+            .clone()
+            .ok_or("Missing output device")?;
+        let destination = settings
+            .output_channels
+            .ok_or("Missing output channel configuration")?;
+        let rate = settings.sample_rate.ok_or("Missing sample rate")?;
+        let output_rate = settings
+            .output_sample_rate
+            .ok_or("Missing output sample rate")?;
+        let frames = settings.period_size.ok_or("Missing buffer size")?;
+        let output_frames = settings.output_period_size.ok_or("Missing buffer size")?;
+        let channels = settings.input_channel.unwrap_or(1);
+        if channels > 2 {
+            // The cpal path filtered its candidates to one or two channels, so a
+            // tuner never opened a thirty-two port interface to read port one.
+            // There is nothing to filter here — the count asked for is the count
+            // opened — so the same limit is stated instead, in the same words.
+            return Err(format!(
+                "The device does not support the selected channels at {rate} Hz with a buffer of {frames} frames"
+            ));
+        }
+        let input_frames = frames as usize;
+        let output_in_input_frames =
+            (output_frames as f64 * rate as f64 / output_rate as f64).ceil() as usize;
+        let tolerance = input_frames.max(output_in_input_frames);
+        let target = tolerance
+            + (settings
+                .input_latency
+                .unwrap_or(crate::settings::OUR_INPUT_LATENCY_DEFAULT)
+                .max(0.001)
+                * rate) as usize;
+        let capacity = (target * 8).max(rate as usize / 2).next_power_of_two();
+        let (producer, consumer) = rtrb::RingBuffer::new(capacity);
+        let monitor = Monitor::new(consumer, rate as f64, output_rate as f64, target, tolerance);
+        // Before the driver starts, not after: `open` begins delivering audio
+        // before it returns, and a callback that reached an unactivated plugin or
+        // an unset input channel would be a click at the top of every launch.
+        {
+            let mut instance = plugin
+                .lock()
+                .map_err(|_| "The plugin audio state is unavailable")?;
+            process::activate(&mut instance, channels as usize, rate)?;
+            instance.shared.input_channel.store(channels);
+        }
+        let processor = Processor::new(plugin, channels as usize, rate);
+        let input_seen = Arc::new(AtomicBool::new(false));
+        let output_seen = Arc::new(AtomicBool::new(false));
+        let wanted = nice_common::asio_io::Wanted {
+            input: &input_name,
+            output: &output_name,
+            input_rate: rate as u32,
+            output_rate: output_rate as u32,
+            input_frames: frames,
+            output_frames,
+            inputs: channels,
+            outputs: destination.required_channels(),
+        };
+        let outputs = wanted.outputs as usize;
+        tracing::info!(
+            "Starting ASIO driver '{input_name}': {channels} in, {} out, {rate} Hz, {frames} frames",
+            wanted.outputs
+        );
+        let stream = nice_common::asio_io::open(
+            wanted,
+            Pump {
+                processor,
+                producer,
+                monitor,
+                destination,
+                outputs,
+                input_seen: input_seen.clone(),
+                output_seen: output_seen.clone(),
+            },
+        )
+        .map_err(|error| format!("Attempt to open ASIO driver '{input_name}' failed:\n{error}"))?;
+        Ok(AsioStreams {
+            stream,
+            input_seen,
+            output_seen,
+        })
+    })();
+    result.map_err(|message| Failure {
+        message,
+        invalidated: false,
+    })
+}
+
 pub(super) fn open(
     settings: &Settings,
     plugin: Arc<Mutex<TunerPlugin>>,
@@ -261,6 +471,10 @@ pub(super) fn open(
     if settings.backend.as_deref() == Some("jack") {
         return super::jack_audio::open(settings, plugin).map(Streams::Jack);
     }
+    #[cfg(all(windows, feature = "asio-host"))]
+    if settings.backend.as_deref() == Some("asio") {
+        return open_asio(settings, plugin).map(Streams::Asio);
+    }
     let mut direction = "input";
     let mut name = settings.input_device.clone().unwrap_or_default();
     let result = (|| -> Result<CpalStreams, String> {
@@ -268,9 +482,6 @@ pub(super) fn open(
             .backend
             .as_deref()
             .ok_or("Select an audio backend")?;
-        // Claim the driver before cpal loads anything, so that nothing on the
-        // GUI thread can load it a second time while these streams run.
-        let asio = (backend == "asio").then(crate::devices::asio_stream_guard);
         let host = crate::devices::open_host(backend)
             .ok_or_else(|| format!("Audio backend '{backend}' is unavailable"))?;
         let input = device(&host, &name, true)?;
@@ -396,13 +607,14 @@ pub(super) fn open(
             input_seen,
             output_seen,
             errors: failure,
-            _asio: asio,
         })
     })();
-    result.map(Streams::Cpal).map_err(|message| Failure {
-        message: format!("Attempt to open {direction} device '{name}' failed:\n{message}"),
-        invalidated: false,
-    })
+    result
+        .map(|streams| Streams::Cpal(Box::new(streams)))
+        .map_err(|message| Failure {
+            message: format!("Attempt to open {direction} device '{name}' failed:\n{message}"),
+            invalidated: false,
+        })
 }
 
 #[cfg(test)]
