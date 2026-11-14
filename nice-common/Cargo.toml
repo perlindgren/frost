@@ -51,6 +51,18 @@ core-audio-device = { path = "../nice-tuner/crates/core-audio-device", optional 
 # `.cargo/config.toml` for what the SDK route used to cost, and `asio_io` for the
 # transport that replaced the one riding on cpal.
 #
+# What is *not* true is that azo builds without a build script. `azo-sys` has
+# none, but `azo` 0.6.1 does: its script runs `windows-bindgen` over metadata
+# vendored in the `windows-default` crate — so nothing is downloaded and no C++
+# is compiled — and formats the generated file by running the `rustfmt`
+# program. A toolchain installed `--profile minimal` without the `rustfmt`
+# component has no such program, and the script treats its absence as
+# unformattable output: the build dies with "failed to format output with
+# `rustfmt`". `Builder::rustfmt()` replaces rustfmt's arguments, not the
+# program, so there is nothing to configure instead. The gate's Windows
+# toolchain therefore names `rustfmt` in its components; anything else that
+# builds this feature set on Windows has to do the same, local runs included.
+#
 # `host` is what adds azo's pump thread, and the transport needs it: a driver is
 # loaded for the whole session, its apartment belongs on a thread of its own
 # rather than on the rack's UI thread, and every call is answered by the thread

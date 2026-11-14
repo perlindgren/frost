@@ -47,12 +47,13 @@ unsafe = ["dep:window-position", "window-position/unsafe"]
 # feature named `asio-host` in this file — the implicit one the dependency
 # creates is what `cfg(feature = "asio-host")` reads at the call sites.
 #
-# Nothing has to be installed for it. The transport is `azo`, whose FFI layer
-# declares the ASIO COM interfaces by hand, so there is no Steinberg SDK to
-# obtain and no `CPAL_ASIO_DIR` to point at one; `.cargo/config.toml` says why it
-# sets nothing. That is also why the gate and the hooks can build this feature
-# set on Windows at all — while the host was cpal's, a Windows runner could
-# compile this engine and not this.
+# Nothing has to be installed for it but a `rustfmt` on PATH. The transport is
+# `azo`, whose FFI layer declares the ASIO COM interfaces by hand, so there is
+# no Steinberg SDK to obtain and no `CPAL_ASIO_DIR` to point at one;
+# `.cargo/config.toml` says why it sets nothing. azo's own build script is what
+# wants rustfmt, and `nice-common/Cargo.toml` says why. That is also why the
+# gate and the hooks can build this feature set on Windows at all — while the
+# host was cpal's, a Windows runner could compile this engine and not this.
 
 [dependencies]
 nice-common = { path = "../nice-common", features = ["widgets"] }

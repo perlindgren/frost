@@ -33,9 +33,14 @@
 //! one `lib.rs` and one `utils.rs`, no build script, no C++ — so there is no
 //! Steinberg tree to obtain, no `CPAL_ASIO_DIR` to point at one, and no reason
 //! left for a build of this feature set to be refused on a machine that has
-//! never heard of ASIO. While the host was cpal's, that was the case: the SDK
-//! was a licence and a C++ compile, and both the gate and the hooks left
-//! `--features standalone` out on Windows because of it.
+//! never heard of ASIO. The crate above it, `azo`, does have a build script: it
+//! generates Windows bindings with `windows-bindgen`, from metadata shipped
+//! inside the dependency, and formats them by running the `rustfmt` binary — a
+//! toolchain component, not an SDK, and one the gate's Windows toolchain
+//! installs. `nice-common/Cargo.toml` says what happens when it is missing.
+//! While the host was cpal's, that was the case: the SDK was a licence and a C++
+//! compile, and both the gate and the hooks left `--features standalone` out on
+//! Windows because of it.
 //!
 //! The name is deliberate: an optional dependency creates an implicit feature
 //! of the same name, so `cfg(feature = "asio-host")` at the call sites means

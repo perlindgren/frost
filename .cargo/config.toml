@@ -12,10 +12,13 @@ xtask = "run --package xtask --"
 # Deliberately no `[env] CPAL_ASIO_DIR` here, and no path to any SDK.
 #
 # Nothing in this workspace reads that variable any more. Windows ASIO is `azo`,
-# whose FFI layer declares the COM interfaces by hand — no build script, no C++,
-# no Steinberg tree to point at — so the gate builds a Windows
-# `--features standalone` on every push, which is the thing this entry used to
-# make awkward. Why it was never a good idea is kept below, because it is the
+# whose FFI layer — `azo-sys` — declares the COM interfaces by hand: no C++, no
+# Steinberg tree to point at. `azo` itself does run a build script, and it wants
+# a `rustfmt` binary on PATH to format the bindings it generates from metadata
+# vendored in the crate; it compiles no C++ and downloads nothing. The gate's
+# Windows toolchain names that component, which is why the gate can build a
+# Windows `--features standalone` on every push — the thing this entry used to
+# make awkward. `nice-common/Cargo.toml` has the detail. Why it was never a good idea is kept below, because it is the
 # reason not to add one back for the next dependency that grows an SDK:
 #
 # `asio-sys`, the crate this variable belonged to, finds the ASIO SDK in three
