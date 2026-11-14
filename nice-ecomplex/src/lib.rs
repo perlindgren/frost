@@ -1,9 +1,10 @@
 //! Ecomplex: a Binson Echoplex T.E.C. 1 tape-delay model as a CLAP/VST3
-//! plugin, with a frost editor. *Ecomplex* is this crate's own name; the
-//! Binson Echoplex T.E.C. 1 is named only as the machine it models, and
-//! `dsp`'s module documentation records which facts about that machine are
-//! panel knowledge and which — A-1 through A-8 — are this model's named
-//! assumptions.
+//! plugin, with a frost editor. *Ecomplex* is this crate's own name, and the
+//! plugin ships as *Nice Ecomplex*, the prefix every bundle in this workspace
+//! carries; the Binson Echoplex T.E.C. 1 is named only as the machine it
+//! models, and `dsp`'s module documentation records which facts about that
+//! machine are panel knowledge and which — A-1 through A-8 — are this model's
+//! named assumptions.
 //!
 //! This file is the interface to the host: the parameters a host can automate,
 //! a shared view of the metering for the editor, the two plugin-API identities,
@@ -334,7 +335,13 @@ impl Default for EcomplexPlugin {
 }
 
 impl Plugin for EcomplexPlugin {
-    const NAME: &'static str = "Ecomplex";
+    /// What a host lists in its plugin menu, in both wrappers. Spelled the same
+    /// way as the `name` in the workspace `bundler.toml`, because a bundle
+    /// called "Nice Ecomplex" that opens as "Ecomplex" is a name the operator
+    /// has to reconcile by hand. Neither identity string derives from this: the
+    /// CLAP id and the VST3 class id below are what a saved session resolves,
+    /// so renaming here does not orphan anyone's project.
+    const NAME: &'static str = "Nice Ecomplex";
     const VENDOR: &'static str = "frost developers";
     const URL: &'static str = "https://github.com/perlindgren/frost";
     const EMAIL: &'static str = "";

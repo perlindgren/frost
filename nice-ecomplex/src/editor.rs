@@ -72,7 +72,7 @@ impl EcomplexEditor {
 
         let window = baseview::Window::create_with_host(
             WindowSettings::new()
-                .with_title("Ecomplex")
+                .with_title("Nice Ecomplex")
                 .with_size(self.shared.logical_size())
                 .with_min_size::<LogicalSize<f32>>(Some(MIN_SIZE))
                 .with_resizable(RESIZE_HINT.can_resize)
