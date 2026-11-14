@@ -265,13 +265,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "asio-host"
-version = "0.1.0"
-dependencies = [
- "nice-common",
-]
-
-[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2082,7 +2075,6 @@ version = "0.1.0"
 dependencies = [
  "NeuralAmpModeler-rs",
  "allocation-counter",
- "asio-host",
  "audio-float",
  "baseview",
  "cpal",
@@ -2268,7 +2260,6 @@ name = "nice-tuner"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
- "asio-host",
  "baseview",
  "cpal",
  "crossbeam",

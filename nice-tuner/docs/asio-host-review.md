@@ -15,9 +15,11 @@ evidence and not established, it says so.
 
 ## Superseded as this workspace's ASIO host — kept as the record it is
 
-The host reviewed here is not the one this repository uses. `crates/asio-host`
-now carries [`azo`](https://crates.io/crates/azo), whose `azo-sys` layer declares
-the same COM interfaces in Rust: no build script, no C++, no SDK, and cpal's ASIO
+The host reviewed here is not the one this repository uses. `nice-common`'
+`asio-host` feature now carries [`azo`](https://crates.io/crates/azo), whose
+`azo-sys` layer declares the same COM interfaces in Rust — `azo-sys` with no
+build script of any kind, `azo` with one that only runs `windows-bindgen` and
+`rustfmt` — so there is no C++ to compile and no SDK to obtain, and cpal's ASIO
 host is out of the Windows dependency graph. The stream itself belongs to
 [`nice-common/src/asio_io.rs`](../../nice-common/src/asio_io.rs) — the ownership
 half of the recommendation above, one `createBuffers` carrying input and output
@@ -33,13 +35,16 @@ crates for anyone who picks them up.
 ## Artifact and scope
 
 - `cpal` 0.18.2, `src/host/asio/` — `device.rs`, `host.rs`, `stream.rs`.
-- `asio-sys` 0.4.0, `src/bindings/mod.rs` and `build.rs`. Same crate cpal pins;
-  reached through `nice-common`' `asio-host` feature, which the `asio-host`
-  carrier crate turns on for a Windows `standalone` build
-  ([`crates/asio-host`](../crates/asio-host/Cargo.toml)).
+- `asio-sys` 0.4.0, `src/bindings/mod.rs` and `build.rs`. Same crate cpal pins.
+  It sat behind `nice-common`' `asio-host` feature, which has since come to name
+  `azo` instead, so nothing in this workspace resolves `asio-sys` any more — the
+  `windows` job in `.github/workflows/gate.yml` fails a build that reintroduces
+  it.
 - The ASIO SDK as fetched by `asio-sys`'s build script from
   <https://www.steinberg.net/asiosdk>; its `common/asio.cpp` and `host/asiodrivers.cpp`
-  are compiled into every Windows build that enables this feature.
+  were compiled into every Windows build that enabled this feature. No build here
+  fetches it: `gate.yml` fails the job when `CPAL_ASIO_DIR` or `CPAL_ESSDK_DIR` is
+  set in the runner's environment.
 - Scope: capability queries, opening a duplex stream, choosing ports, and where the
   SDK comes from at build time. Not a security audit, and not a review of cpal's
   other backends, which stay as they are.
@@ -132,8 +137,8 @@ lines 12-51.
 
 **What a fresh clone gets.** `default = []`, so `cargo build -p nice-tuner` touches
 none of this, and on Linux and macOS `--features standalone` still pulls cpal
-without its `asio` feature: the carrier dependency is declared under
-`cfg(windows)`, so `asio-sys` cannot enter those graphs at all. On Windows
+without its `asio` feature: that feature was named only under `cfg(windows)`, so
+`asio-sys` cannot enter those graphs at all. On Windows
 `--features standalone` does bring ASIO, so a Windows standalone build on a
 machine with neither the SDK nor a working download fails instead of shipping
 silently without ASIO — the deliberate trade — and only that build can meet the

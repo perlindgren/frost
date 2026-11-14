@@ -40,12 +40,16 @@ standalone = ["dep:jack", "dep:cpal", "dep:tracing", "dep:tracing-subscriber", "
 # Opt in to native Windows placement inside the wrapper crate only.
 # nice-tuner itself always denies unsafe code.
 unsafe = ["dep:window-position", "window-position/unsafe"]
-# ASIO arrives with `standalone` and nowhere else, through the optional
-# `asio-host` dependency declared under cfg(windows) below: a feature cannot
-# imply different things per platform, but it can name a dependency that only
-# exists on one. There is deliberately no `standalone-asio` to remember, and no
-# feature named `asio-host` in this file — the implicit one the dependency
-# creates is what `cfg(feature = "asio-host")` reads at the call sites.
+# ASIO arrives with `standalone` and nowhere else. `asio-host` is a plain alias
+# for the nice-common feature of the same name, and it exists so that the cfgs in
+# `src/standalone/audio.rs` have a name of their own to read — the same spelling
+# nice-common gates its own ASIO halves with, `all(windows, feature = "asio-host")`.
+# The other five plugins name `nice-common/asio-host` in their `standalone`
+# features directly and need no alias, because they have no ASIO code of their
+# own to gate. The platform scoping sits one level down with the dependency:
+# `azo` is declared under `cfg(windows)` in nice-common, so a feature that cannot
+# be platform-specific still pulls no ASIO anywhere else. There is deliberately
+# no `standalone-asio` to remember.
 #
 # Nothing has to be installed for it but a `rustfmt` on PATH. The transport is
 # `azo`, whose FFI layer declares the ASIO COM interfaces by hand, so there is
@@ -54,6 +58,7 @@ unsafe = ["dep:window-position", "window-position/unsafe"]
 # wants rustfmt, and `nice-common/Cargo.toml` says why. That is also why the
 # gate and the hooks can build this feature set on Windows at all — while the
 # host was cpal's, a Windows runner could compile this engine and not this.
+asio-host = ["nice-common/asio-host"]
 
 [dependencies]
 nice-common = { path = "../nice-common", features = ["widgets"] }
@@ -113,10 +118,6 @@ jack = { version = "0.13.5", optional = true }
 [target.'cfg(windows)'.dependencies]
 # Native placement is implemented only by our opt-in Windows wrapper.
 window-position = { path = "crates/window-position", optional = true }
-# Named by `standalone` without `dep:`, so that the implicit feature it creates
-# is the cfg the ASIO code reads; absent everywhere else, and inert here unless
-# `standalone` is on. See `crates/asio-host/src/lib.rs`.
-asio-host = { path = "crates/asio-host", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 macos-metal-view = { path = "../nice-common/crates/macos-metal-view" }
