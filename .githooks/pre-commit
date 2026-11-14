@@ -182,4 +182,27 @@ cargo clippy -p nice-ecomplex --all-targets -- -D warnings || {
     exit 1
 }
 
+# The rack, its host adapter and the two crates under them, named for the reason
+# this file has now written out seven times: the five sit in `members` and not in
+# `default-members`, so the clippy near the top of this file compiles none of them
+# while the `cargo fmt --all` above formats them as though it had. The gate has
+# linted all five on both platforms since pull request 31; what was missing is the
+# half that waits for the push. Nothing extra is asked of a machine here: no
+# `--features standalone`, because the rack declares no features at all and asks
+# `nice-common` for `ui`, `audio-io` and `asio-host` unconditionally
+# (`nice-rack/Cargo.toml:12`), and no SDK, because `azo` declares the ASIO COM
+# interfaces itself rather than compiling Steinberg's headers
+# (`nice-common/Cargo.toml:48`), which is why this line runs on a machine with no
+# `CPAL_ASIO_DIR` set anywhere. Tried here before the line was written, on a warm
+# target: 1.3 seconds, and nothing to fix. That is not evidence the line is idle —
+# only that this workspace has been quiet since pull request 31. A warning costs
+# 1.3 seconds to find here and a gate round trip to find there, which is the
+# difference the two hooks exist to make.
+printf 'pre-commit: clippy -D warnings (the rack and its host adapter)...\n'
+cargo clippy -p nice-rack -p nice-rack-engine -p nice-clap-host \
+    -p nice-rack-standalone -p rack-window-input --all-targets -- -D warnings || {
+    printf 'pre-commit: clippy failed in the rack - commit aborted.\n' >&2
+    exit 1
+}
+
 exit 0
