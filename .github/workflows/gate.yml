@@ -548,14 +548,14 @@ jobs:
       - name: Clippy, zero warnings, the shared crate with every feature
         run: cargo clippy -p nice-common --all-features --all-targets -- -D warnings
 
-      # The four plugins that take their audio from `nice_common::audio_io`, plain and
-      # standalone. They share two commands here rather than the eight above because
+      # The five plugins that take their audio from `nice_common::audio_io`, plain and
+      # standalone. They share two commands here rather than the ten above because
       # the reason for naming them — membership is not coverage — is one reason, not
-      # four, and one cargo invocation says it once.
+      # five, and one cargo invocation says it once.
       - name: Clippy, zero warnings, the plugins that use the shared audio
         run: |
-          cargo clippy -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo --all-targets -- -D warnings
-          cargo clippy -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo --features standalone --all-targets -- -D warnings
+          cargo clippy -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo -p nice-ecomplex --all-targets -- -D warnings
+          cargo clippy -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo -p nice-ecomplex --features standalone --all-targets -- -D warnings
 
       # The transport's own tests, and the sample conversions under it: the requests
       # refused before a driver is touched, the one-driver-per-process claim, what a
@@ -589,9 +589,9 @@ jobs:
       - name: Tests, the model plugin with its own audio
         run: cargo test --no-fail-fast -p nice-nam --features standalone
 
-      # The four plugins beside it, standalone only: the plain halves of their test
+      # The five plugins beside it, standalone only: the plain halves of their test
       # suites are the same source the runner above executes, and what differs here is
       # the audio owner behind `standalone` — which on this platform means the settings
       # resolution and frame plumbing that sit on top of the azo transport.
       - name: Tests, the plugins that use the shared audio
-        run: cargo test --no-fail-fast -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo --features standalone
+        run: cargo test --no-fail-fast -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo -p nice-ecomplex --features standalone

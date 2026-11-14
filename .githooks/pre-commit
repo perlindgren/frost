@@ -123,7 +123,7 @@ cargo clippy -p nice-tuner -p pitch --all-targets -- -D warnings || {
 # it. The gate compiles each half on its own platform; this line is what makes
 # the Windows half wait for neither. Not `--features standalone`, and the reason
 # under it has changed rather than the omission: it used to be a Steinberg SDK no
-# clean checkout has, and now it is that a hook runs on every commit while six
+# clean checkout has, and now it is that a hook runs on every commit while seven
 # standalone graphs do not belong in one. That feature set has its own job in the
 # gate, on both platforms, on every push.
 printf 'pre-commit: clippy -D warnings (the model plugin and the shared crate)...\n'
@@ -152,7 +152,7 @@ cargo clippy -p nice-phase --all-targets -- -D warnings || {
 
 # The Pi-Fase, for the same reason, and it spends its life beside the wah. Not
 # `--features standalone` here either: the gate lints it on both platforms, and a
-# hook that spent its time building six standalone graphs is a hook people skip.
+# hook that spent its time building seven standalone graphs is a hook people skip.
 printf 'pre-commit: clippy -D warnings (the Pi-Fase)...\n'
 cargo clippy -p nice-pi-face --all-targets -- -D warnings || {
     printf 'pre-commit: clippy failed in nice-pi-face - commit aborted.\n' >&2
@@ -171,9 +171,11 @@ cargo clippy -p nice-echo --all-targets -- -D warnings || {
 }
 
 # The Echoplex, by the same logic as its neighbours, and with the same
-# deliberate omission: no `--features standalone`, because on Windows that
-# names the ASIO host, and the hook's job is to lint what every commit can
-# build, not to demand an SDK it has no right to ask for.
+# deliberate omission: no `--features standalone`. That reason used to be an SDK
+# the hook had no right to demand; now it is that the hook's job is what every
+# commit can build quickly, and that feature set has a job of its own in the gate,
+# on both platforms — which is the leg this crate's TODO asked for by name and
+# got.
 printf 'pre-commit: clippy -D warnings (the Echoplex)...\n'
 cargo clippy -p nice-ecomplex --all-targets -- -D warnings || {
     printf 'pre-commit: clippy failed in nice-ecomplex - commit aborted.\n' >&2
