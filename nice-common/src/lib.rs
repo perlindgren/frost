@@ -33,7 +33,12 @@ pub mod audio_io;
 /// run its tests is Linux.
 pub mod pcm;
 
+/// The narrow sample-format contract the shared standalone code needs from a
+/// device API, so that code does not have to name cpal to exist.
+pub mod sample;
+
 /// The Windows transport: one ASIO driver, loaded through `azo`, both
-/// directions in one `createBuffers`, no cpal and no Steinberg SDK in sight.
+/// directions in one `createBuffers`, with no cpal in the path and no Steinberg
+/// SDK in sight.
 #[cfg(all(windows, feature = "asio-host"))]
 pub mod asio_io;

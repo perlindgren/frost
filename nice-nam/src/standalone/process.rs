@@ -1,6 +1,6 @@
 //! Adapter for the same Plugin activation and process calls used by VST3/CLAP.
 use crate::NamPlugin;
-use cpal::Sample;
+use nice_common::sample::Level;
 use nice_plug::context::process::SendEventError;
 use nice_plug::prelude::*;
 use std::sync::{Arc, Mutex};
@@ -81,10 +81,10 @@ impl Processor {
             plugin,
         }
     }
-    pub fn run<T: cpal::Sample>(&mut self, input: &[T], mut output: impl FnMut(f32))
-    where
-        f32: cpal::FromSample<T>,
-    {
+    /// `T` is the sample format the device underneath was built for — `f32` on
+    /// the ASIO driver this crate drives through `azo`, whatever the device asked
+    /// for elsewhere — and [`Level`] is the conversion this loop needs from it.
+    pub fn run<T: Level>(&mut self, input: &[T], mut output: impl FnMut(f32)) {
         let Ok(mut plugin) = self.plugin.try_lock() else {
             return;
         };
@@ -93,7 +93,7 @@ impl Processor {
             let frames = block.len() / self.channels;
             self.buffer.with_buffer(frames, |buffer| {
                 for (frame, input) in block.chunks_exact(self.channels).enumerate() {
-                    let mono = input.get(selected).map_or(0.0, |s| f32::from_sample(*s));
+                    let mono = input.get(selected).map_or(0.0, |s| s.level());
                     buffer.as_slice()[0][frame] = mono;
                 }
                 plugin.process(

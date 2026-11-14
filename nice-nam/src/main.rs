@@ -4,7 +4,13 @@ fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--list-devices") {
         let snapshot = nice_nam::devices::snapshot(
-            args.get(2).map(String::as_str).unwrap_or("dummy"),
+            // A listing typed by hand names no backend; the parent half of
+            // this protocol always does. The fallback is the platform's own
+            // path, spelled out on the constant.
+            args.get(2)
+                .filter(|s| !s.is_empty())
+                .map(String::as_str)
+                .unwrap_or(nice_nam::devices::LIST_BACKEND_WHEN_UNNAMED),
             args.get(3).filter(|s| !s.is_empty()).map(String::as_str),
             args.get(4).filter(|s| !s.is_empty()).map(String::as_str),
         );

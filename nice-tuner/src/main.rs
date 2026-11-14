@@ -5,19 +5,6 @@
 use nice_tuner::settings::{self, Settings};
 use std::sync::atomic::Ordering;
 
-/// What `--list-devices` enumerates when the command line names no backend.
-/// The settings panel always names one — it asks about the backend the user is
-/// looking at — so this default only serves the internal protocol typed by
-/// hand, and it follows the platform's own rule rather than inventing a third
-/// one: on Windows there is no system host to enumerate (`devices::open_host`
-/// answers `None` for `"auto"`), so a hand-run listing without a backend names
-/// the one path Windows has, whose driver list the registry gives at no cost.
-/// Elsewhere "no backend named" means the system default host.
-#[cfg(windows)]
-const LIST_BACKEND_WHEN_UNNAMED: &str = "asio";
-#[cfg(not(windows))]
-const LIST_BACKEND_WHEN_UNNAMED: &str = "auto";
-
 fn main() {
     // Helper mode for the settings panel (see devices::snapshot_via_child):
     // enumerate one backend, print RON on stdout, exit — WITHOUT opening
@@ -31,11 +18,11 @@ fn main() {
             let backend = argv
                 .get(2)
                 .filter(|s| !s.is_empty())
-                .cloned()
-                .unwrap_or_else(|| LIST_BACKEND_WHEN_UNNAMED.to_owned());
+                .map(String::as_str)
+                .unwrap_or(nice_tuner::devices::LIST_BACKEND_WHEN_UNNAMED);
             let inp = argv.get(3).filter(|s| !s.is_empty()).map(String::as_str);
             let outp = argv.get(4).filter(|s| !s.is_empty()).map(String::as_str);
-            let snap = nice_tuner::devices::snapshot(&backend, inp, outp);
+            let snap = nice_tuner::devices::snapshot(backend, inp, outp);
             print!(
                 "{}",
                 snap.to_ron()

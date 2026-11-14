@@ -4,10 +4,23 @@ use crate::{
     TunerPlugin,
     settings::{OutputChannels, Settings},
 };
+// One host per platform, and this file is built with one of them: cpal is a
+// `cfg(not(windows))` dependency of this crate (`Cargo.toml`), so the device
+// enumeration, the per-format stream builders and the two-stream owner below are
+// compiled away on Windows instead of standing there unable to answer. The
+// Windows half of this file is `AsioStreams` and its `Pump`, one driver with one
+// clock. `route` is shared, which is why it speaks `Level` and not `cpal::Sample`.
+#[cfg(not(windows))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+#[cfg(not(windows))]
 use cpal::{Device, SampleFormat, Stream, StreamConfig, SupportedStreamConfigRange};
+// The error channel belongs to the two-stream host: each of its two callbacks
+// reports into it. The driver transport has a channel of its own inside
+// `nice_common::asio_io`, which is why this import goes where cpal's does.
+#[cfg(not(windows))]
 use crossbeam::channel::{Receiver, Sender, bounded};
 use nice_common::resample::Monitor;
+use nice_common::sample::Level;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -25,6 +38,10 @@ pub(super) trait Session {
 }
 
 pub(super) enum Streams {
+    /// Two independently clocked cpal streams. This crate declares no cpal on
+    /// Windows, so there are no streams of this kind to own there and the
+    /// variant is not built rather than refused at run time.
+    ///
     /// Boxed, because the sizes of the variants are not theirs to choose: with
     /// the azo transport added beside it, this enum's largest variant measured
     /// 304 bytes and the next 88, and a gap over 200 bytes is
@@ -33,6 +50,7 @@ pub(super) enum Streams {
     /// outgrew the others for the same reason (`audio_io.rs:43`). The box is one
     /// allocation on a path that goes on to load a driver and allocate a ring
     /// buffer, and the value it stores moves only where a stream is opened.
+    #[cfg(not(windows))]
     Cpal(Box<CpalStreams>),
     #[cfg(all(windows, feature = "asio-host"))]
     Asio(AsioStreams),
@@ -42,6 +60,7 @@ pub(super) enum Streams {
 impl Session for Streams {
     fn wait_started(&mut self) -> Result<(), Failure> {
         match self {
+            #[cfg(not(windows))]
             Self::Cpal(streams) => streams.wait_started(),
             #[cfg(all(windows, feature = "asio-host"))]
             Self::Asio(streams) => streams.wait_started(),
@@ -51,6 +70,7 @@ impl Session for Streams {
     }
     fn failure(&self) -> Option<Failure> {
         match self {
+            #[cfg(not(windows))]
             Self::Cpal(streams) => streams.failure(),
             #[cfg(all(windows, feature = "asio-host"))]
             Self::Asio(streams) => streams.failure(),
@@ -60,6 +80,7 @@ impl Session for Streams {
     }
 }
 
+#[cfg(not(windows))]
 pub(super) struct CpalStreams {
     // Dropping the capture stream joins its callback before the plugin can
     // be reactivated. The output stream never borrows or locks the plugin.
@@ -69,6 +90,7 @@ pub(super) struct CpalStreams {
     output_seen: Arc<AtomicBool>,
     errors: Receiver<Failure>,
 }
+#[cfg(not(windows))]
 impl Session for CpalStreams {
     fn wait_started(&mut self) -> Result<(), Failure> {
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -134,9 +156,11 @@ impl Session for AsioStreams {
 
     fn failure(&self) -> Option<Failure> {
         // A block the driver dropped is not a broken stream, and this host has
-        // always said so: the cpal callback below returns without a word on
-        // `Xrun`. So the channel is drained past the drops to the first message
-        // that means the device has gone.
+        // always said so: the two-stream path this transport replaced returned
+        // without a word on `cpal::ErrorKind::Xrun` (`error_callback`), and
+        // `nice_common::audio_io::DeviceStreams` counts a dropped block instead
+        // of reporting it. So the channel is drained past the drops to the first
+        // message that means the device has gone.
         loop {
             let failure = self.stream.failure()?;
             if failure.invalidated {
@@ -193,6 +217,12 @@ impl nice_common::asio_io::Pump for Pump {
     }
 }
 
+// From here to `open_asio` is cpal's shape of a device: a `Host` to walk, a
+// `Device` to ask for configurations, a stream per direction with its own clock
+// and its own error callback. On Windows the same page is written by
+// `nice_common::asio_io`, which is why the shared code above it names `Level`
+// rather than cpal's sample traits.
+#[cfg(not(windows))]
 fn device(host: &cpal::Host, name: &str, input: bool) -> Result<Device, String> {
     let devices = if input {
         host.input_devices()
@@ -212,6 +242,7 @@ fn device(host: &cpal::Host, name: &str, input: bool) -> Result<Device, String> 
             format!("Device '{name}' reports no audio channels, or is no longer available")
         })
 }
+#[cfg(not(windows))]
 fn config(
     device: &Device,
     input: bool,
@@ -263,6 +294,7 @@ fn config(
     ))
 }
 
+#[cfg(not(windows))]
 fn error_callback(
     sender: Sender<Failure>,
     direction: &'static str,
@@ -282,6 +314,7 @@ fn error_callback(
     }
 }
 
+#[cfg(not(windows))]
 fn input_stream<T>(
     device: &Device,
     config: &StreamConfig,
@@ -292,8 +325,7 @@ fn input_stream<T>(
     name: String,
 ) -> Result<Stream, String>
 where
-    T: cpal::SizedSample,
-    f32: cpal::FromSample<T>,
+    T: cpal::SizedSample + Level,
 {
     device
         .build_input_stream(
@@ -310,19 +342,26 @@ where
         .map_err(|e| e.to_string())
 }
 
-fn route<T: cpal::Sample + cpal::FromSample<f32>>(
+/// Fill a block of the device's own format with the monitor's next sample, sent
+/// to the channels this route names.
+///
+/// `T` is whatever the device asked for, which on Windows is only ever `f32` —
+/// `nice_common::asio_io` converts the driver's bytes before a callback sees them
+/// — and `Level` is the pair of conversions and the one silence value this needs
+/// from it, so the shared code does not have to say cpal to exist there.
+fn route<T: Level>(
     data: &mut [T],
     channels: usize,
     destination: OutputChannels,
     mut next: impl FnMut() -> f32,
 ) {
-    data.fill(T::EQUILIBRIUM);
+    data.fill(T::SILENCE);
     let selected = match destination {
         OutputChannels::Mono(channel) => [channel, channel],
         OutputChannels::Stereo(pair) => pair,
     };
     for frame in data.chunks_exact_mut(channels) {
-        let sample = T::from_sample(next());
+        let sample = T::from_level(next());
         for channel in selected {
             if let Some(output) = channel
                 .checked_sub(1)
@@ -333,6 +372,7 @@ fn route<T: cpal::Sample + cpal::FromSample<f32>>(
         }
     }
 }
+#[cfg(not(windows))]
 fn output_stream<T>(
     device: &Device,
     config: &StreamConfig,
@@ -343,7 +383,7 @@ fn output_stream<T>(
     name: String,
 ) -> Result<Stream, String>
 where
-    T: cpal::SizedSample + cpal::FromSample<f32>,
+    T: cpal::SizedSample + Level,
 {
     let channels = config.channels as usize;
     device
@@ -475,6 +515,27 @@ pub(super) fn open(
     if settings.backend.as_deref() == Some("asio") {
         return open_asio(settings, plugin).map(Streams::Asio);
     }
+    #[cfg(not(windows))]
+    return open_cpal(settings, plugin);
+    // And nothing to fall back to. `available_backends` offers `asio` and
+    // `dummy` on this platform (`nice_common::devices`), and the resolver
+    // refuses every other key there, so a backend that reaches this line was
+    // written for a machine whose hosts this binary does not contain.
+    #[cfg(windows)]
+    return Err(Failure {
+        message: format!(
+            "Audio backend '{}' is not built into this host: Windows speaks ASIO or nothing",
+            settings.backend.as_deref().unwrap_or("nothing selected")
+        ),
+        invalidated: false,
+    });
+}
+
+/// The host this crate was built with everywhere but Windows: two devices found
+/// by name on one backend's host, each with its own clock, its own sample format
+/// and its own error callback, with [`Monitor`] between them.
+#[cfg(not(windows))]
+fn open_cpal(settings: &Settings, plugin: Arc<Mutex<TunerPlugin>>) -> Result<Streams, Failure> {
     let mut direction = "input";
     let mut name = settings.input_device.clone().unwrap_or_default();
     let result = (|| -> Result<CpalStreams, String> {
@@ -621,6 +682,30 @@ pub(super) fn open(
 mod tests {
     use super::*;
 
+    /// A fixed-point format whose silence is not zero, which is the whole reason
+    /// it exists: the second case below can then tell `route`'s fill apart from a
+    /// fill of zeroes.
+    ///
+    /// It is not a stand-in for a real device format. A real caller hands `route`
+    /// either the driver's `f32` block — `nice_common::asio_io` converts the bytes
+    /// before a callback sees them, so `f32` is the only format a Windows build
+    /// ever passes here — or one of the formats cpal builds its streams for, and
+    /// those are `Level` only where cpal is in the graph. A witness written here
+    /// keeps the property checked on every platform instead of losing it on the
+    /// one that no longer has cpal to name a format with.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct Q15(i32);
+
+    impl Level for Q15 {
+        const SILENCE: Self = Self(32_768);
+        fn level(self) -> f32 {
+            (self.0 - 32_768) as f32 / 32_768.0
+        }
+        fn from_level(value: f32) -> Self {
+            Self((value * 32_768.0) as i32 + 32_768)
+        }
+    }
+
     #[test]
     fn routing_duplicates_selected_mono_only_to_the_selected_pair() {
         let samples = [0.25, -0.5];
@@ -632,8 +717,11 @@ mod tests {
             value
         });
         assert_eq!(output, [0.0, 0.0, 0.25, 0.25, 0.0, 0.0, -0.5, -0.5]);
-        let mut output = [0u16; 2];
-        route(&mut output, 2, OutputChannels::Mono(2), || 0.0);
-        assert_eq!(output, [32768; 2]);
+        // The channel this route does not name keeps the fill; the one it names
+        // gets the sample. A format that rests at zero could not tell those two
+        // apart.
+        let mut block = [Q15(7); 2];
+        route(&mut block, 2, OutputChannels::Mono(2), || -0.5);
+        assert_eq!(block, [Q15::SILENCE, Q15::from_level(-0.5)]);
     }
 }

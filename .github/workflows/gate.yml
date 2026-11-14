@@ -435,6 +435,34 @@ jobs:
           }
           Write-Host 'azo carries the ASIO path, asio-sys is gone, and no SDK variable is set.'
 
+      # The other half of the claim, and stated narrowly on purpose because the
+      # broad version is false. cpal IS in a Windows build of this workspace:
+      # frost plays sounds through rodio, and rodio drives cpal. Measured, not
+      # remembered -- `cargo tree -p nice-common --all-features -i cpal --target
+      # x86_64-pc-windows-msvc` gives the one path `cpal <- rodio <- frost <-
+      # nice-common`. What must not come back is the device code declaring cpal
+      # for itself, because that is a second way to open a stream next to the
+      # ASIO one, on a second clock, which is the thing this branch removes.
+      #
+      # `--depth 1 --prefix none` is what makes the claim checkable line by line:
+      # cargo prints nice-common and its direct dependencies, unprefixed, one per
+      # line. `--target` is the other half -- without it cargo lists every
+      # platform's section, and the cfg(not(windows)) cpal this branch empties
+      # would show up and read as a failure.
+      - name: The Windows audio path declares no cpal
+        shell: pwsh
+        run: |
+          $declared = cargo tree -p nice-common --all-features -e normal,build --depth 1 --prefix none --target x86_64-pc-windows-msvc | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::cargo tree failed with exit code $LASTEXITCODE; the graph cannot be judged."
+            exit 1
+          }
+          if ($declared -match '(?m)^cpal v') {
+            Write-Host '::error::nice-common declares cpal for itself on Windows again. The device transport there is the azo path in nice-common/src/asio_io.rs, and cpal reaching the process through frost and rodio is a different consumer that must stay out of audio_io and devices.'
+            exit 1
+          }
+          Write-Host 'nice-common names no cpal on Windows: azo is the only device API it declares there.'
+
       - uses: dtolnay/rust-toolchain@1.100.0
         with:
           # clippy, and not the rustfmt beside it in the job above: there is no

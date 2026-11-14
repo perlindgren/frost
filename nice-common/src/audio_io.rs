@@ -4,9 +4,19 @@ use crate::{
     OutputChannels, Preferences, Settings,
     resample::{Monitor, StereoFrame},
 };
+// The two roads this module can carry traffic on, and a Windows build is built
+// with one of them: cpal is a `cfg(not(windows))` dependency of this crate
+// (`Cargo.toml`), so everything below that speaks cpal is compiled away rather
+// than answering "no host" at run time. On Windows the road is
+// [`crate::asio_io`], and the code that could open a WASAPI stream is not linked
+// in to be asked.
+#[cfg(not(windows))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+#[cfg(not(windows))]
 use cpal::{Device, SampleFormat, Stream, StreamConfig, SupportedStreamConfigRange};
-use crossbeam::channel::{Receiver, Sender, bounded};
+#[cfg(not(windows))]
+use crossbeam::channel::Sender;
+use crossbeam::channel::{Receiver, bounded};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -29,10 +39,11 @@ pub struct Endpoints {
 /// runs the callbacks; both sides of the transport and the application DSP
 /// owner are identical, so recovery does not depend on the backend.
 enum Streams {
-    Cpal {
-        _input: Stream,
-        _output: Stream,
-    },
+    /// Two `cpal::Stream`s, one per direction. This crate declares no cpal on
+    /// Windows, so there is nothing for this variant to hold: the transport it
+    /// stands for is not compiled there, rather than refused at run time.
+    #[cfg(not(windows))]
+    Cpal { _input: Stream, _output: Stream },
     /// One driver carrying both directions, with its callbacks on the driver's
     /// own thread. The value owns the process's one ASIO slot and the guard that
     /// keeps the settings page from loading that driver behind its back, so it
@@ -57,33 +68,42 @@ pub struct DeviceStreams {
 }
 impl DeviceStreams {
     pub fn failure(&self) -> Option<String> {
-        #[cfg(target_os = "linux")]
-        if let Streams::Jack(streams) = &self.streams
-            && let failure @ Some(_) = streams.failure()
-        {
-            return failure;
-        }
-        // The ASIO transport distinguishes two kinds of news on its one channel:
-        // a stream the driver has made unusable, and one block the driver dropped.
-        // Only the first is a reason to reopen, and this transport's caller
-        // reopens on anything it hears (`nice-rack/src/runtime.rs:467-476`), while
-        // cpal delivered both through one error callback and could not tell them
-        // apart (`cpal-0.18.2/src/host/asio/stream.rs:1036-1042`). So a dropped
-        // block is counted here as the dropout it is, and the channel drained to
-        // the first message that means the stream has to go.
-        #[cfg(all(windows, feature = "asio-host"))]
-        if let Streams::Asio(stream) = &self.streams {
-            while let Some(failure) = stream.failure() {
-                if failure.invalidated {
-                    return Some(failure.message);
+        // A `match` rather than a chain of `if let`s, because on Windows this
+        // enum has exactly one variant left: an `if let` in front of the only
+        // thing a value can be is a pattern the compiler calls irrefutable, and
+        // the gate's clippy runs with `-D warnings`.
+        match &self.streams {
+            #[cfg(target_os = "linux")]
+            Streams::Jack(streams) => streams.failure().or_else(|| self.errors.try_recv().ok()),
+            // The ASIO transport distinguishes two kinds of news on its one
+            // channel: a stream the driver has made unusable, and one block the
+            // driver dropped. Only the first is a reason to reopen, and this
+            // transport's caller reopens on anything it hears
+            // (`nice-rack/src/runtime.rs:467-476`), while cpal delivered both
+            // through one error callback and could not tell them apart
+            // (`cpal-0.18.2/src/host/asio/stream.rs:1036-1042`). So a dropped
+            // block is counted here as the dropout it is, and the channel drained
+            // to the first message that means the stream has to go.
+            #[cfg(all(windows, feature = "asio-host"))]
+            Streams::Asio(stream) => {
+                while let Some(failure) = stream.failure() {
+                    if failure.invalidated {
+                        return Some(failure.message);
+                    }
+                    self.counters.dropped.fetch_add(1, Ordering::Relaxed);
                 }
-                self.counters.dropped.fetch_add(1, Ordering::Relaxed);
+                self.errors.try_recv().ok()
             }
-            return self.errors.try_recv().ok();
+            #[cfg(not(windows))]
+            Streams::Cpal { .. } => self.errors.try_recv().ok(),
         }
-        self.errors.try_recv().ok()
     }
 }
+// Everything between here and `rings` is one host's idea of a device: a `Host`
+// to enumerate, a `Device` to ask for configurations, a `Stream` to build per
+// sample format. None of it exists on Windows, where the equivalents are
+// `azo`'s driver and [`crate::asio_io::open`].
+#[cfg(not(windows))]
 fn device(host: &cpal::Host, name: &str, input: bool) -> Result<Device, String> {
     let devices = if input {
         host.input_devices()
@@ -103,6 +123,7 @@ fn device(host: &cpal::Host, name: &str, input: bool) -> Result<Device, String> 
             format!("Device '{name}' reports no audio channels, or is no longer available")
         })
 }
+#[cfg(not(windows))]
 fn config(
     device: &Device,
     input: bool,
@@ -154,6 +175,11 @@ fn config(
     ))
 }
 
+/// cpal's one error channel per stream, worded the way this module's callers
+/// already read `failure()`. The ASIO transport reports on a channel of its own
+/// instead, with the two kinds of news kept apart
+/// ([`DeviceStreams::failure`]), which is why this sits with the cpal half.
+#[cfg(not(windows))]
 fn errors(
     sender: Sender<String>,
     direction: &'static str,
@@ -163,6 +189,7 @@ fn errors(
         let _ = sender.try_send(format!("{direction} device '{name}': {error}"));
     }
 }
+#[cfg(not(windows))]
 fn capture<T: cpal::SizedSample>(
     device: &Device,
     config: &StreamConfig,
@@ -193,6 +220,7 @@ where
         )
         .map_err(|error| error.to_string())
 }
+#[cfg(not(windows))]
 fn playback<T: cpal::SizedSample + cpal::FromSample<f32>>(
     device: &Device,
     config: &StreamConfig,
@@ -438,12 +466,34 @@ pub fn open<P: Preferences>(settings: &Settings<P>) -> Result<(DeviceStreams, En
         return Err("The dummy backend opens no devices; leave audio off instead".into());
     }
     if backend == "asio" {
-        // One driver, both directions, no cpal anywhere: see `open_asio`.
+        // One driver, both directions, no cpal in the path: see `open_asio`.
         #[cfg(all(windows, feature = "asio-host"))]
         return open_asio(settings);
         #[cfg(not(all(windows, feature = "asio-host")))]
         return Err("ASIO is offered by the Windows standalone build only".into());
     }
+    #[cfg(not(windows))]
+    return open_cpal(settings);
+    // And there is no third transport to fall back on. This crate declares no
+    // cpal on Windows (`Cargo.toml`), so a key that is neither
+    // `asio` nor `dummy` names a host this binary does not contain — a settings
+    // file from another platform, or one edited by hand — rather than a device
+    // this process could go and look for.
+    #[cfg(windows)]
+    return Err(format!(
+        "Audio backend '{backend}' is not built into a Windows host: this platform speaks ASIO or nothing"
+    ));
+}
+
+/// The two streams of the platform that has cpal: one device per direction, each
+/// with its own clock, its own sample format and its own error callback, with
+/// [`crate::resample::Monitor`] between them.
+#[cfg(not(windows))]
+fn open_cpal<P: Preferences>(settings: &Settings<P>) -> Result<(DeviceStreams, Endpoints), String> {
+    let backend = settings
+        .backend
+        .as_deref()
+        .ok_or("Select an audio backend")?;
     let host = crate::devices::open_host(backend).ok_or("Audio backend is unavailable")?;
     let input_name = settings
         .input_device

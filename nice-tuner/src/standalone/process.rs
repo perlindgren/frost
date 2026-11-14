@@ -1,6 +1,6 @@
 //! Adapter for the same Plugin activation and process calls used by VST3/CLAP.
 use crate::TunerPlugin;
-use cpal::Sample;
+use nice_common::sample::Level;
 use nice_plug::context::process::SendEventError;
 use nice_plug::prelude::*;
 use std::sync::{Arc, Mutex};
@@ -97,10 +97,10 @@ impl Processor {
             plugin,
         }
     }
-    pub fn run<T: cpal::Sample>(&mut self, interleaved: &[T], mut output: impl FnMut(f32))
-    where
-        f32: cpal::FromSample<T>,
-    {
+    /// `T` is the sample format the device underneath was built for — `f32` on
+    /// the ASIO driver this crate drives through `azo`, whatever the device asked
+    /// for elsewhere — and [`Level`] is the conversion this loop needs from it.
+    pub fn run<T: Level>(&mut self, interleaved: &[T], mut output: impl FnMut(f32)) {
         // The manager locks only after both old streams have been dropped.
         // A missed lock produces silence instead of ever blocking a callback.
         let Ok(mut plugin) = self.plugin.try_lock() else {
@@ -112,7 +112,7 @@ impl Processor {
                 for (frame, input) in block.chunks_exact(self.channels).enumerate() {
                     let tone = self.tone.as_mut().map(TestTone::next);
                     for (channel, planar) in buffer.as_slice().iter_mut().enumerate() {
-                        planar[frame] = tone.unwrap_or_else(|| f32::from_sample(input[channel]));
+                        planar[frame] = tone.unwrap_or_else(|| input[channel].level());
                     }
                 }
                 let mut auxiliary = AuxiliaryBuffers {
