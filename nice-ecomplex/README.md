@@ -1,4 +1,4 @@
-# Ecomplex
+# Nice Ecomplex
 
 A model of the **Binson Echoplex T.E.C. 1** as a CLAP/VST3 plugin: one
 motor turning one drum, one playback head on it, and a tube front end in
@@ -7,7 +7,8 @@ tape* — a longer delay is literally slower tape, and slower tape wobbles
 more, so delay and wow are one control, not two. Recount feeds the echo
 back toward the record head, Timbre shapes the repeats, and Echo Volume
 sits the echo against a dry signal that is *always there*. *Ecomplex* is
-this crate's own name; "Binson Echoplex T.E.C. 1" is the name of the
+this crate's own name, and the plugin ships as *Nice Ecomplex* like every
+other bundle here; "Binson Echoplex T.E.C. 1" is the name of the
 machine being modelled, used here only to say what the subject is — the
 repository rule is that brand names never become our product names.
 
@@ -103,7 +104,7 @@ cargo xtask bundle nice-ecomplex --release
 ```
 
 That is the bundling command — `cargo build` does not produce a plugin. It
-lands `Ecomplex.clap` and `Ecomplex.vst3` in `target/bundled/`, with the
+lands `Nice Ecomplex.clap` and `Nice Ecomplex.vst3` in `target/bundled/`, with the
 font licences inside the VST3 and beside the CLAP (a CLAP is deliberately
 one file, so its licence text travels next to it). No `RUSTFLAGS` are
 needed: nothing in this crate's graph refuses rustc's default x86-64
