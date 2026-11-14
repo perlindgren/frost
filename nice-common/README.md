@@ -85,9 +85,11 @@ updates. For example:
 }
 ```
 
-Settings are read and written exclusively as RON. Legacy `.json` files are
-ignored and left untouched. A resize will not overwrite a malformed RON file.
-The device-discovery helper protocol uses RON.
+Settings are read and written exclusively as RON. The loader opens exactly the
+one path it is given — `current_dir()` joined with the `Preferences::FILE_NAME`
+its caller supplies, every one of which ends in `.ron` — and a cold start, with
+no file there yet, is defaults and no warning. A resize will not overwrite a
+malformed RON file. The device-discovery helper protocol uses RON.
 
 Settings serialize directly through RON; geometry edits use `ron::Value`.
 `nice-common` has no `serde_json` dependency.

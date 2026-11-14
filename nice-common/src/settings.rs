@@ -577,29 +577,24 @@ mod persistence_tests {
         assert_eq!(window.width, 1000.0);
     }
 
+    /// A cold start is defaults and silence. `load_from` answers a path that
+    /// does not exist with no warning, in its `Err(_) if !path.exists()` arm,
+    /// and nothing else here checks that: the other tests in this module all
+    /// write their file first, and the other half of the rule — a file that
+    /// exists but will not parse, which DOES warn — is the last thing
+    /// `ron_geometry_save_preserves_unknown_fields` does. Get this branch wrong
+    /// and every first launch of every plugin shows "ignoring unreadable …" at
+    /// someone who has never had a settings file.
+    ///
+    /// Own scratch claim, not `path()`: these tests share a process and run on
+    /// several threads, so a test that asks whether a file is absent cannot
+    /// stand in the same folder as three that write one.
     #[test]
-    fn old_json_file_is_ignored_when_ron_is_absent() {
-        let path = path();
-        let legacy = path.with_extension("json");
-        let text = r#"{"backend":"core-audio","gate_db":-40}"#;
-        std::fs::write(&legacy, text).unwrap();
+    fn a_cold_start_is_defaults_and_silence() {
+        let path = frost::scratch::claim("nice-common-cold-start").join("never-written.ron");
         let (settings, warning) = Settings::<NoPreferences>::load_from(&path);
         assert_eq!(settings, Settings::default());
         assert_eq!(warning, None);
-        Settings::<NoPreferences>::save_window_to(
-            &path,
-            WindowGeom {
-                x: None,
-                y: None,
-                width: 900.0,
-                height: 620.0,
-            },
-        )
-        .unwrap();
-        let value = read_value(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(field(&value, "backend").is_none());
-        assert!(field(&value, "gate_db").is_none());
-        assert_eq!(std::fs::read_to_string(legacy).unwrap(), text);
     }
 
     #[test]
