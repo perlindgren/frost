@@ -134,5 +134,25 @@ native processing and retirement without more capture callbacks, plus add/reorde
 remove controller behavior without opening devices or a GPU window. It does not
 replace desktop drag/drop and hardware listening checks.
 
+The same opt-in run on Windows, in PowerShell. The first line writes the `.dll`
+the variable names:
+
+```powershell
+cargo build -p nice-tuner --lib
+$env:NICE_RACK_TEST_CLAP = "$PWD\target\debug\nice_tuner.dll"
+cargo test -p nice-clap-host --test tuner_roundtrip -- --ignored
+cargo test -p nice-rack-standalone --test recovery -- --ignored
+cargo test -p nice-rack --lib -- --ignored `
+  runtime::tests::a_dropped_plugin_is_saved_before_audio_has_ever_run `
+  runtime::tests::a_refused_opening_keeps_the_chain_it_was_started_with
+```
+
+Nine tests wait on that variable. Seven of them need no device, and all seven
+pass on Windows as written above. The two left over open this machine's real
+audio devices, so they stay a deliberate run rather than a line in a script.
+What the nine are not is a cover for the rest: the rack's other 23 tests now
+run by name in `.githooks/pre-push`, on the machine doing the pushing, as the
+gate has run them on both runners since pull request 31.
+
 The UI embeds frost's Fira Code and the same Fluent settings font as nice-tuner.
 Distributable packaging must include their existing license notices.

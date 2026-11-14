@@ -295,6 +295,22 @@ cargo test -p nice-echo || fail 'cargo test -p nice-echo'
 printf 'pre-push: running `cargo test -p nice-ecomplex`...\n'
 cargo test -p nice-ecomplex || fail 'cargo test -p nice-ecomplex'
 
+# The rack, its host adapter and the two crates under it, named like every
+# plugin before it. Nothing above reaches them: `cargo test` follows
+# `default-members`, which is the engine and its games, and the rack joined the
+# gate in pull request 31 and only the gate. Its tests have run on runners ever
+# since and on no machine at the other end of a push — the adapter compiled
+# here for the first time while this line was being tried, which is the whole
+# argument for the line. Nine more stand aside behind `NICE_RACK_TEST_CLAP`,
+# which names a freshly built plugin export, and two of those open this
+# machine's real audio devices; a hook that grabs your speakers is a hook you
+# start skipping, so the export build stays out of a push. The seven that need
+# no device pass here on Windows, against the same build's
+# `nice_tuner.dll`.
+printf 'pre-push: running `cargo test -p nice-rack -p nice-rack-engine -p nice-clap-host -p nice-rack-standalone -p rack-window-input`...\n'
+cargo test -p nice-rack -p nice-rack-engine -p nice-clap-host -p nice-rack-standalone -p rack-window-input \
+    || fail 'cargo test -p nice-rack -p nice-rack-engine -p nice-clap-host -p nice-rack-standalone -p rack-window-input'
+
 # The resampler's no-allocation witness hides behind that feature, and the
 # feature is crossbeam and rtrb — no device, no SDK, no platform to disappoint.
 printf 'pre-push: running `cargo test -p nice-common --features standalone`...\n'
