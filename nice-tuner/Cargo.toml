@@ -47,11 +47,12 @@ unsafe = ["dep:window-position", "window-position/unsafe"]
 # feature named `asio-host` in this file — the implicit one the dependency
 # creates is what `cfg(feature = "asio-host")` reads at the call sites.
 #
-# A Windows `standalone` build needs the Steinberg ASIO SDK, whose licence is
-# proprietary and which stays outside the tree; `asio-sys` finds it in the
-# developer's environment or downloads it, and `.cargo/config.toml` explains why
-# nothing there points at it. Plugin-only builds and every other platform never
-# reach it, so nothing in the gate asks for it.
+# Nothing has to be installed for it. The transport is `azo`, whose FFI layer
+# declares the ASIO COM interfaces by hand, so there is no Steinberg SDK to
+# obtain and no `CPAL_ASIO_DIR` to point at one; `.cargo/config.toml` says why it
+# sets nothing. That is also why the gate and the hooks can build this feature
+# set on Windows at all — while the host was cpal's, a Windows runner could
+# compile this engine and not this.
 
 [dependencies]
 nice-common = { path = "../nice-common", features = ["widgets"] }
