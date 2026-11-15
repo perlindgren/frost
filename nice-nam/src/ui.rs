@@ -5,7 +5,20 @@ use crate::settings::Settings;
 use frost::{Color, Context, Process, Scene, SceneNode, Shape};
 #[cfg(feature = "standalone")]
 use nice_common::ui::{AudioPanel, Event};
+#[cfg(windows)]
+use std::future::Future;
+use std::path::PathBuf;
+#[cfg(windows)]
+use std::pin::Pin;
 use std::sync::{Arc, atomic::Ordering};
+#[cfg(windows)]
+use std::task::{Poll, Waker};
+
+/// A model pick that is still going: `rfd`'s dialog is on a thread of its own,
+/// and the choice arrives through this future (`pick_model` explains why the
+/// dialog goes there). The frame loop polls it, so nothing waits on it.
+#[cfg(windows)]
+type ModelPick = Pin<Box<dyn Future<Output = Option<rfd::FileHandle>>>>;
 
 /// What the model picker offers. A Windows build's engine cannot open a `.namb`
 /// container at all, so it offers the format that loads there rather than a file
@@ -164,6 +177,10 @@ pub struct NamUi {
     armed: Option<usize>,
     settings_page: bool,
     message: String,
+    /// A model dialog that is open on its own thread, waiting to be asked what
+    /// it decided (`pick_model`).
+    #[cfg(windows)]
+    pending_model: Option<ModelPick>,
     #[cfg(feature = "standalone")]
     applied: Settings,
     #[cfg(feature = "standalone")]
@@ -188,6 +205,8 @@ impl NamUi {
             armed: None,
             settings_page: false,
             message: String::new(),
+            #[cfg(windows)]
+            pending_model: None,
             #[cfg(feature = "standalone")]
             applied: Settings::load().0,
             #[cfg(feature = "standalone")]
@@ -223,27 +242,97 @@ impl NamUi {
     /// Pick a model. Every platform offers this: the engine refuses the files it
     /// cannot run, and a dialog is the only way to reach those refusals.
     ///
-    /// Windows has one caveat worth knowing before it is blamed on this plugin.
-    /// `rfd`'s synchronous picker initialises COM as single-threaded on the
-    /// calling thread; if the host already initialised that thread as
-    /// multi-threaded, the call fails and `pick_file` returns `None` — exactly
-    /// what it returns when the user presses Cancel. In such a host the button
-    /// looks dead. Nothing in the API distinguishes the two, so the message says
-    /// what the user can act on. The way out, if a host proves to need it, is
-    /// `rfd`'s async picker, which builds the dialog on a thread of its own where
-    /// the initialisation cannot conflict.
+    /// A cancelled pick leaves no trace. It used to leave a message blaming a
+    /// host for the ambiguity — `rfd`'s synchronous picker answers `None` both
+    /// when the apartment it was handed refuses it and when the user presses
+    /// Cancel — and on Windows there is no longer an apartment for it to be
+    /// handed (`pick_model`).
     fn choose_model(&mut self) {
-        let path = rfd::FileDialog::new()
+        #[cfg(windows)]
+        self.pick_model();
+        #[cfg(not(windows))]
+        if let Some(path) = rfd::FileDialog::new()
             .add_filter("NAM model", MODEL_FILTERS)
-            .pick_file();
-        let Some(path) = path else {
-            #[cfg(windows)]
-            {
-                self.message =
-                    "No model chosen — if this repeats, this host may refuse dialogs.".into();
-            }
+            .pick_file()
+        {
+            self.accept_model(path);
+        }
+    }
+    /// Ask for the dialog on a thread of its own, which is what Windows needs
+    /// and why the answer arrives on a later frame rather than under the finger
+    /// that pressed the button.
+    ///
+    /// `rfd`'s synchronous picker builds the common item dialog on the calling
+    /// thread and shows it in the apartment it finds there. A hosted plugin's
+    /// interface thread has been prepared twice before the plugin asks for
+    /// anything: `winit` initialises COM when it makes a window
+    /// (`winit-0.30.13/src/platform_impl/windows/window.rs:1442`), and
+    /// `baseview` calls `OleInitialize` and `RegisterDragDrop` for the editor
+    /// window it hands the host
+    /// (`baseview-0.3.3/src/platform/win/window.rs:315-341`). `rfd`'s own
+    /// `CoInitializeEx` then answers `S_FALSE` and the dialog runs on an
+    /// apartment whose flags and OLE state belong to the toolkit.
+    ///
+    /// What that costs was measured in nice-rack: every folder the dialog offers
+    /// fills at once — Documents, a folder inside it, a folder typed into the
+    /// path bar — except Downloads, the one folder whose items the shell hands
+    /// over asynchronously, which sits at "Working on it…" for as long as the
+    /// dialog stays open. The same build run as a standalone application, whose
+    /// picking thread belongs to it alone, fills Downloads like any other
+    /// folder. Two winit toolkits report this dialog and this folder on this
+    /// `rfd` version — issues 263 ("once I open more than one window") and 316
+    /// ("shows 'Processing…' and never completes… any other folder immediately
+    /// displays its contents") in `PolyMeilex/rfd` — and 316 carries the fix
+    /// that worked there: the async picker.
+    ///
+    /// `AsyncFileDialog` builds the identical dialog — it calls the same
+    /// `pick_file`, `backend/win_cid/file_dialog.rs:62-64` — on a thread `rfd`
+    /// spawns for it, where `CoInitializeEx` returns `S_OK` because nothing was
+    /// initialised before (`:14-29`), and hands back something to ask later
+    /// rather than a path to have now. Which part of a toolkit's apartment the
+    /// shell's delivery was waiting on — the OLE initialisation, the registered
+    /// drop target, the message filter — nothing here can say, and this does not
+    /// need to: the dialog now asks nothing of anything but a thread it shares
+    /// with `rfd`, and the thread the plugin paints on never stops painting.
+    ///
+    /// The other platforms keep the dialog on this thread. There the alternative
+    /// would come to a stop: `rfd`'s macOS path builds its panel through
+    /// `run_on_main` and settles it from the main run loop's completion handler,
+    /// after a `MainThreadMarker::new_unchecked` that assumes the caller is that
+    /// thread (`rfd-0.17.2/src/backend/macos/modal_future.rs:68,87-103`), so
+    /// waiting for it here — the only thread a Cocoa editor gets — would wait on
+    /// itself.
+    #[cfg(windows)]
+    fn pick_model(&mut self) {
+        if self.pending_model.is_some() {
+            // One dialog at a time; the open one owns the answer.
+            return;
+        }
+        let dialog = rfd::AsyncFileDialog::new().add_filter("NAM model", MODEL_FILTERS);
+        self.pending_model = Some(Box::pin(dialog.pick_file()));
+    }
+    /// Ask an open dialog whether it has answered, from every frame. Asking from
+    /// the frame clock is also what makes a waker that does nothing enough: the
+    /// next frame asks again whether or not the wake arrives.
+    ///
+    /// An editor closed while its dialog is still open drops the pick with the
+    /// rest of the view; the dialog's thread finds its send refused, so the
+    /// choice is dropped rather than applied to a window that went away.
+    #[cfg(windows)]
+    fn collect_pick(&mut self) {
+        let Some(mut pick) = self.pending_model.take() else {
             return;
         };
+        let mut cx = std::task::Context::from_waker(Waker::noop());
+        match pick.as_mut().poll(&mut cx) {
+            Poll::Ready(Some(file)) => self.accept_model(file.path().to_path_buf()),
+            // Cancelled, which is the user changing their mind and not an error.
+            Poll::Ready(None) => {}
+            Poll::Pending => self.pending_model = Some(pick),
+        }
+    }
+    /// The chosen model, handed to the loader the same way from either road.
+    fn accept_model(&mut self, path: PathBuf) {
         let mut paths = self.shared.engine.paths.lock().unwrap();
         paths.model_name = path.file_name().map(|s| s.to_string_lossy().into_owned());
         paths.model_path = Some(path);
@@ -264,6 +353,10 @@ impl NamUi {
 }
 impl Process for NamUi {
     fn process(&mut self, ctx: &mut Context, _dt: f32) {
+        // First, so that a choice the dialog made arrives before the frame that
+        // would have drawn the line naming it.
+        #[cfg(windows)]
+        self.collect_pick();
         self.shared.gate_db.store(
             self.shared
                 .engine

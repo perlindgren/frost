@@ -37,10 +37,15 @@ or whose calibration levels are beyond ±60 dB is refused before anything is bui
 rather than run. The two cabinet rows stay off: a Windows build has no cabinet
 engine to receive an impulse response.
 
-The dialog comes from `rfd`, which shows it on the interface thread after asking
-that thread to be single-threaded. A host that already made the thread
-multi-threaded gets a failure that looks exactly like a cancelled dialog, so in
-such a host the button does nothing; the plugin cannot tell the two apart.
+The dialog comes from `rfd`. On Windows it is `rfd`'s async picker, which builds
+the dialog on a thread `rfd` spawns and is collected on the frames that follow,
+so the editor keeps painting while the dialog is open. That is not a preference:
+inside a host, the interface thread already carries the COM apartment the toolkit
+made when it created the window, and a common item dialog shown in that apartment
+never finishes loading Downloads — the one folder the shell hands over
+asynchronously, which sits at "Working on it…" — while every other folder fills
+at once. Elsewhere the dialog stays on the interface thread, which on macOS is
+the only thread it may use.
 
 The app opens silently until audio settings are chosen. Open the **settings cog in the upper right**;
 use the same default-first dropdowns as nice-tuner, then click
