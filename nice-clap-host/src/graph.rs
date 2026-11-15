@@ -21,6 +21,9 @@ type ReturnHandle = (
 );
 struct Owner {
     instance: PluginInstance<Host>,
+    /// The class this instance was made from. A carried instance is only
+    /// reusable while the card in front of it still names the same plugin.
+    class: String,
     signals: Callbacks,
     returned: Receiver<ReturnHandle>,
     failure: Option<String>,
@@ -57,6 +60,105 @@ impl Owner {
             self.failure = failure.map(|error| error.to_string());
         }
     }
+    /// Whether a roster edit may hand this instance to the chain it is building:
+    /// it is off the transport, it is still the plugin its card names, and its
+    /// main buses are still the ones the graph wants around it. A plugin whose
+    /// neighbour went from stereo to mono is not the same plugin's configuration
+    /// any more, and gets a fresh instance like any new card. It is asked with
+    /// `&mut` because a CLAP handle is borrowed mutably to ask it.
+    fn reusable(&mut self, class: &str, inputs: usize, outputs: usize) -> bool {
+        !self.instance.is_active()
+            && self.class == class
+            && main_buses(&mut self.instance, inputs, outputs).is_ok()
+    }
+    /// Put a carried instance back on the transport for a new chain. Nothing
+    /// about the plugin was rebuilt — its parameters, its state and its editor
+    /// are the ones it already had — so this is the tail of [`Entry::graph_instance`]
+    /// without the instantiation, the state load or the port questions, which the
+    /// instance answered correctly the first time and [`Owner::reusable`] just
+    /// asked again.
+    fn reactivate(
+        &mut self,
+        rate: f64,
+        frames: usize,
+        inputs: usize,
+        outputs: usize,
+    ) -> Result<ClapProcessor, String> {
+        let (returned, receiver) = sync_channel(1);
+        let (changes, incoming_changes) = rtrb::RingBuffer::new(256);
+        let input = vec![vec![0.0; frames]; inputs];
+        let input_ports = AudioPorts::with_capacity(inputs, 1);
+        let output_ports = AudioPorts::with_capacity(outputs, 1);
+        self.signals.0.restart.store(false, Ordering::Release);
+        let stopped = self
+            .instance
+            .activate(
+                |_, _| (),
+                PluginAudioConfiguration {
+                    sample_rate: rate,
+                    min_frames_count: 1,
+                    max_frames_count: frames as u32,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        let latency = {
+            let handle = self.instance.plugin_handle();
+            handle
+                .get_extension::<PluginLatency>()
+                .map(|extension| extension.get(&handle) as usize)
+                .unwrap_or(0)
+        };
+        self.signals
+            .0
+            .latency_changed
+            .store(false, Ordering::Release);
+        // The failure this owner carried was reported by the chain that just
+        // came down. A new chain reports what it does itself.
+        self.failure = None;
+        self.returned = receiver;
+        self.changes = changes;
+        Ok(ClapProcessor {
+            processor: Some(stopped.into()),
+            returned,
+            failure: None,
+            input,
+            input_ports,
+            output_ports,
+            latency,
+            steady_time: 0,
+            changes: incoming_changes,
+            events: Vec::with_capacity(64),
+            restart: self.signals.clone(),
+        })
+    }
+}
+/// The one main bus per direction the graph adapter routes to, asked of an
+/// instance rather than of a plugin that is about to be built. An error is the
+/// answer either way; who hears it decides whether it is a message or a reason
+/// to build the plugin again.
+fn main_buses(
+    instance: &mut PluginInstance<Host>,
+    inputs: usize,
+    outputs: usize,
+) -> Result<(), &'static str> {
+    let handle = instance.plugin_handle();
+    let ports = handle
+        .get_extension::<PluginAudioPorts>()
+        .ok_or("Plugin has no audio port extension")?;
+    let mut scratch = AudioPortInfoBuffer::new();
+    for (is_input, expected) in [(true, inputs), (false, outputs)] {
+        if ports.count(&handle, is_input) != 1 {
+            return Err("Graph adapter supports one main bus per direction");
+        }
+        let port = ports
+            .get(&handle, 0, is_input, &mut scratch)
+            .ok_or("Could not query plugin audio port")?;
+        if port.channel_count as usize != expected || !port.flags.contains(AudioPortFlags::IS_MAIN)
+        {
+            return Err("Plugin main bus does not match graph channel configuration");
+        }
+    }
+    Ok(())
 }
 
 struct ClapProcessor {
@@ -353,6 +455,7 @@ impl Entry {
         outputs: usize,
         state: Option<&[u8]>,
     ) -> Result<(Owner, ClapProcessor), String> {
+        let name = class.to_owned();
         let class = CString::new(class).map_err(|error| error.to_string())?;
         let signals = Callbacks::default();
         let shared = signals.clone();
@@ -376,26 +479,7 @@ impl Entry {
                 .load(&handle, &mut bytes)
                 .map_err(|error| error.to_string())?;
         }
-        {
-            let handle = instance.plugin_handle();
-            let ports = handle
-                .get_extension::<PluginAudioPorts>()
-                .ok_or("Plugin has no audio port extension")?;
-            let mut scratch = AudioPortInfoBuffer::new();
-            for (is_input, expected) in [(true, inputs), (false, outputs)] {
-                if ports.count(&handle, is_input) != 1 {
-                    return Err("Graph adapter supports one main bus per direction".into());
-                }
-                let port = ports
-                    .get(&handle, 0, is_input, &mut scratch)
-                    .ok_or("Could not query plugin audio port")?;
-                if port.channel_count as usize != expected
-                    || !port.flags.contains(AudioPortFlags::IS_MAIN)
-                {
-                    return Err("Plugin main bus does not match graph channel configuration".into());
-                }
-            }
-        }
+        main_buses(&mut instance, inputs, outputs).map_err(ToString::to_string)?;
         // State operations stay outside the worker. Live reconfiguration may
         // restore a snapshot before port validation and activation.
         let _ = save_state(&mut instance)?;
@@ -426,6 +510,7 @@ impl Entry {
         Ok((
             Owner {
                 instance,
+                class: name,
                 signals: signals.clone(),
                 returned: receiver,
                 failure: None,
