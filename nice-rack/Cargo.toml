@@ -17,5 +17,11 @@ nice-clap-host = { path = "../nice-clap-host" }
 frost = { path = ".." }
 crossbeam = "0.8"
 
+# The X11 editor shim speaks Xlib directly (see `src/editors/x11.rs`);
+# winit already resolves this exact crate into the Linux binary, so this
+# only names the dependency the shim actually uses.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11-dl = "2.21.0"
+
 [dev-dependencies]
 rtrb = "0.4"

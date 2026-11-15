@@ -2238,6 +2238,7 @@ dependencies = [
  "rtrb 0.4.1",
  "serde",
  "winit",
+ "x11-dl",
 ]
 
 [[package]]
