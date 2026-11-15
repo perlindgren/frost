@@ -14,6 +14,12 @@ The small `crates/window-input` wrapper reads the macOS cursor during OS file
 drags, which winit 0.30 does not include in its drop events. Its native access
 is documented in its SAFETY.md.
 
+On Linux, drops arrive through winit under X11. winit 0.30 has no Wayland
+file-drop support, so under Wayland the standalone receives the compositor's
+data-device messages directly (`src/backend/wayland_drop.rs`) and feeds the
+same drop path as X11. The module is written to be deleted once winit 0.31
+ships native Wayland drag-and-drop.
+
 The small `crates/standalone` executable is the native-loading trust boundary.
 The nice-rack application library denies unsafe code; the executable makes the
 single unsafe call needed to load the operator's selected native CLAP entry.

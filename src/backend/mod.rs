@@ -24,6 +24,13 @@ pub(crate) use frame::*;
 
 mod windowing;
 
+/// Native Wayland drop receiving, because winit 0.30's `DroppedFile` is
+/// X11-only. Linux-gated; see the module doc for the revisit plan.
+#[cfg(target_os = "linux")]
+mod wayland_drop;
+#[cfg(target_os = "linux")]
+pub(crate) use wayland_drop::*;
+
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 #[cfg(target_arch = "wasm32")]
