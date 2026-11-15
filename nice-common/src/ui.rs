@@ -299,13 +299,33 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
             .collect(),
             Field::Extra(i) => self.extras[i].options.clone(),
         };
+        // The default row keeps its natural place in the snapshot order: a
+        // dropdown must show its alternatives in the order they were built,
+        // never with the current default hoisted to the top. Only a default
+        // that no option carries — a server period outside the fixed
+        // choices, or the empty "—" row meaning "no default" — has no place
+        // to sit, and then it leads the list as an extra row.
         let raw = self.default_raw(field);
-        let mut rows = vec![(self.default_label(field).unwrap_or("—".into()), raw.clone())];
-        rows.extend(
-            options
-                .into_iter()
-                .filter(|(_, value)| value.is_empty() || *value != raw),
-        );
+        let label = self.default_label(field);
+        let home = (!raw.is_empty())
+            .then(|| options.iter().position(|(_, value)| *value == raw))
+            .flatten();
+        let mut rows = Vec::with_capacity(options.len() + 1);
+        if let Some(at) = home {
+            for (index, (option_label, value)) in options.into_iter().enumerate() {
+                if index != at && value == raw {
+                    continue; // one row per value, as the old filter gave
+                }
+                rows.push(if index == at {
+                    (label.clone().unwrap_or(option_label), value)
+                } else {
+                    (option_label, value)
+                });
+            }
+        } else {
+            rows.push((label.unwrap_or_else(|| "—".into()), raw.clone()));
+            rows.extend(options);
+        }
         (rows, raw)
     }
     fn current_raw(&self, field: Field) -> String {
@@ -461,11 +481,11 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
     }
     fn selected_index(&self, field: Field) -> usize {
         let raw = self.current_raw(field);
-        self.rows(field)
-            .0
-            .iter()
-            .position(|(_, v)| *v == raw)
-            .unwrap_or(0)
+        let (rows, default) = self.rows(field);
+        // An empty draft means "follow the backend default", so the default
+        // row is highlighted wherever the option order puts it.
+        let want = if raw.is_empty() { &default } else { &raw };
+        rows.iter().position(|(_, v)| v == want).unwrap_or(0)
     }
     fn save(&mut self, settings: Settings<P>, window: Option<WindowGeom>) -> Option<Event> {
         self.save_with(settings, window, Settings::save)
@@ -974,27 +994,67 @@ mod tests {
         panel
     }
     #[test]
-    fn default_row_is_first_unique_and_follow_is_stored_as_none() {
+    fn default_keeps_its_sorted_place_and_follow_is_stored_as_none() {
         let mut p = panel();
+        // Default channel 1 already sat first, which hides a hoist. Move the
+        // default so the old behaviour would reorder: rows stay in order.
+        p.snapshot.default_input_channel = Some(2);
         assert_eq!(
             p.rows(Field::InputCh).0,
             vec![("1".into(), "1".into()), ("2".into(), "2".into())]
         );
-        p.pick(Field::InputCh, 1);
-        assert_eq!(p.draft.input_channel, Some(2));
         p.pick(Field::InputCh, 0);
+        assert_eq!(p.draft.input_channel, Some(1));
+        p.pick(Field::InputCh, 1); // the default row: follow, stored as None
         assert_eq!(p.draft.input_channel, None);
+        assert_eq!(p.selected_index(Field::InputCh), 1); // follows the default row
         p.snapshot.default_input_channel = None;
         assert_eq!(p.rows(Field::InputCh).0[0].0, "—");
         p.snapshot.input_channels = None;
         assert_eq!(p.rows(Field::InputCh).0.len(), 1);
     }
     #[test]
+    fn an_in_list_default_does_not_jump_to_the_top_of_the_dropdown() {
+        let mut p = panel();
+        // buffer_pref 64 sits mid-list: the dropdown keeps [32, 64, 128].
+        assert_eq!(p.default_raw(Field::InputBuffer), "64");
+        assert_eq!(
+            p.rows(Field::InputBuffer).0,
+            vec![
+                ("32".into(), "32".into()),
+                ("64".into(), "64".into()),
+                ("128".into(), "128".into()),
+            ]
+        );
+        assert_eq!(p.default_raw(Field::Rate), "48000");
+        assert_eq!(
+            p.rows(Field::Rate).0,
+            vec![
+                ("44100 Hz".into(), "44100".into()),
+                ("48000 Hz".into(), "48000".into())
+            ]
+        );
+        // A default no option carries (a JACK server period beyond the
+        // fixed choices) leads the list instead of reordering anything.
+        p.draft.backend = Some("jack".into());
+        p.applied.backend = Some("jack".into());
+        p.live_frames = Some(256);
+        assert_eq!(
+            p.rows(Field::InputBuffer).0,
+            vec![
+                ("256".into(), "256".into()),
+                ("32".into(), "32".into()),
+                ("64".into(), "64".into()),
+                ("128".into(), "128".into()),
+            ]
+        );
+    }
+    #[test]
     fn independent_output_defaults_and_linked_controls_follow_the_same_rules() {
         let mut p = panel();
         assert_eq!(p.default_raw(Field::Rate), "48000");
         assert_eq!(p.default_raw(Field::OutputRate), "44100");
-        p.pick(Field::InputBuffer, 1); // 32; default 64 is not duplicated
+        p.pick(Field::InputBuffer, 0); // 32; default 64 keeps its sorted place
         assert_eq!(p.draft.period_size, Some(32));
         assert_eq!(p.draft.output_period_size, None);
         p.snapshot.buffers_linked = true;
@@ -1002,7 +1062,7 @@ mod tests {
         assert_eq!(p.draft.period_size, p.draft.output_period_size);
         assert!(p.disabled(Field::OutputBuffer));
         p.snapshot.rates_linked = true;
-        p.pick(Field::Rate, 1);
+        p.pick(Field::Rate, 0); // 44100; default 48000 sits second now
         assert_eq!(p.draft.sample_rate, p.draft.output_sample_rate);
         assert!(p.disabled(Field::OutputRate));
         p.draft.backend = Some("asio".into());
@@ -1202,9 +1262,9 @@ mod output_route_persistence_tests {
         panel.adopt_stream_defaults();
         assert_eq!(panel.draft.output_channels, Some(stereo));
         panel.draft.output_channels = None;
-        panel.pick(Field::OutputCh, 0);
+        panel.pick(Field::OutputCh, 1); // [Mono, Stereo(default)]: order kept
         assert_eq!(panel.draft.output_channels, Some(stereo));
-        assert_eq!(panel.selected_index(Field::OutputCh), 0);
+        assert_eq!(panel.selected_index(Field::OutputCh), 1);
         let window = WindowGeom {
             x: None,
             y: None,
