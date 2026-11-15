@@ -10,9 +10,9 @@ vertically. VST3 hosting remains a future step.
 cargo run -p nice-rack-standalone --release
 ```
 
-The small `crates/window-input` wrapper reads the macOS cursor during OS file
-drags, which winit 0.30 does not include in its drop events. Its native access
-is documented in its SAFETY.md.
+The small `crates/window-input` wrapper reads the macOS and Windows cursor during
+OS file drags, which winit 0.30 does not include in its drop events. Its native
+access is documented in its SAFETY.md.
 
 On Linux, drops arrive through winit under X11. winit 0.30 has no Wayland
 file-drop support, so under Wayland the standalone receives the compositor's
