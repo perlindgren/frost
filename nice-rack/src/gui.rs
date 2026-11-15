@@ -329,6 +329,7 @@ impl Process for RackUi {
         }
     }
     fn process(&mut self, ctx: &mut Context, dt: f32) {
+        self.windows.probe_shell(ctx.window());
         self.windows.capture(&mut self.runtime);
         self.runtime.tick();
         let (w, h) = ctx.size();
