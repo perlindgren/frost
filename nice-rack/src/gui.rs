@@ -390,6 +390,19 @@ impl Process for RackUi {
             } else {
                 self.runtime.applied.clone()
             };
+            // The panel shows the transport's live block size whenever the
+            // draft agrees with what is applied on JACK; the standalone
+            // plugins stamp their own pump quantum there, and this is the
+            // rack's turn at the same slot: the trial size the running
+            // transport was opened with. Without it the panel answers with
+            // the server's own period (`buffer_pref`) instead, which made a
+            // successfully applied request look like it had reverted to the
+            // JACK server's frames on the next look.
+            panel.live_frames = self
+                .runtime
+                .audio_running()
+                .then_some(self.runtime.applied.period_size)
+                .flatten();
             let runtime = &mut self.runtime;
             let event = panel.process(
                 ctx,
