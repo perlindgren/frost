@@ -44,6 +44,8 @@ use crate::backend::frame::*;
 #[cfg(target_arch = "wasm32")]
 use crate::backend::wasm::hide_fallback;
 use crate::backend::windowing::*;
+#[cfg(target_os = "linux")]
+use crate::backend::{WaylandDrop, WaylandDropEvent};
 use crate::objects::*;
 use crate::text;
 use crate::{Canvas, Context, KeyCode, Process};
@@ -146,6 +148,15 @@ pub(crate) struct Frost<P: Process> {
     tone_map: f32,
     #[allow(dead_code)]
     window_id: Option<WindowId>,
+    /// Native Wayland drop receiver, Linux only: winit 0.30 delivers
+    /// `DroppedFile` on X11 alone, so under a Wayland session the drops
+    /// this field catches are the whole story. `None` on X11 (the handle
+    /// asks for a Wayland display and gets an X11 one) and on any window
+    /// made before the compositor globals answered; re-armed with each
+    /// attached window because the data device is keyed to the surface
+    /// that receives `enter`.
+    #[cfg(target_os = "linux")]
+    wayland_drop: Option<WaylandDrop>,
     /// The winit window (shared), kept so we can call `request_redraw` for
     /// continuous per-frame rendering.
     window: Option<Arc<Window>>,
@@ -836,6 +847,8 @@ impl<P: Process> Frost<P> {
             bloom,
             tone_map,
             window_id: None,
+            #[cfg(target_os = "linux")]
+            wayland_drop: None,
             window: None,
             logical_size: (0, 0),
             aspect_pending: None,
@@ -1150,6 +1163,31 @@ impl<P: Process> ApplicationHandler for Frost<P> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Wayland drops arrive on winit's own `wl_display`, on an event
+        // queue winit never reads (0.30 has no `wl_data_device` code).
+        // The queue wakes the loop through the same fd winit polls, so by
+        // the time we are here there may be a drag offer to dispatch —
+        // pump before handing the idle moment to the process. X11 keeps
+        // its `DroppedFile` window-event path untouched.
+        #[cfg(target_os = "linux")]
+        if let Some(dnd) = self.wayland_drop.as_mut() {
+            for event in dnd.pump() {
+                match event {
+                    WaylandDropEvent::HoverStart => {
+                        self.process.file_hovered(Some(std::path::PathBuf::new()));
+                    }
+                    WaylandDropEvent::HoverEnd => self.process.file_hovered(None),
+                    WaylandDropEvent::Dropped(paths) => {
+                        // Mirror the winit semantics the window-event arm
+                        // below applies for X11: hover clears, then files.
+                        self.process.file_hovered(None);
+                        for path in paths {
+                            self.process.file_dropped(path);
+                        }
+                    }
+                }
+            }
+        }
         self.process.native_about_to_wait(event_loop);
         // Drain the gamepad events accumulated since the last poll, so the
         // state gilrs keeps for its connected gamepads is current before
@@ -1385,6 +1423,14 @@ impl<P: Process> Frost<P> {
 
     pub(crate) fn attach_window(&mut self, window: Arc<Window>) {
         self.window_id = Some(window.id());
+        // Re-arm Wayland drop receiving for this window — replacing any
+        // prior receiver drops its connection and device with it. On X11
+        // the handles name an Xlib display, `new` says no, and drops
+        // keep flowing through winit's `DroppedFile` events.
+        #[cfg(target_os = "linux")]
+        {
+            self.wayland_drop = WaylandDrop::new(&window);
+        }
         // winit reports the client area in *physical* pixels, so convert it
         // to logical here; `pixel_size()` multiplies by the scale factor.
         let inner = window.inner_size();

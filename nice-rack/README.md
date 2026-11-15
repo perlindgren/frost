@@ -14,6 +14,26 @@ The small `crates/window-input` wrapper reads the macOS cursor during OS file
 drags, which winit 0.30 does not include in its drop events. Its native access
 is documented in its SAFETY.md.
 
+On Linux, drops arrive through winit under X11. winit 0.30 has no Wayland
+file-drop support, so under Wayland the standalone receives the compositor's
+data-device messages directly (`src/backend/wayland_drop.rs`) and feeds the
+same drop path as X11. The module is written to be deleted once winit 0.31
+ships native Wayland drag-and-drop.
+
+Editors on Linux arrive through X11 too, for a different reason. The plugin
+side implements the X11, Cocoa and Win32 embedding APIs only, so handing it a
+Wayland window makes it refuse the attach and no editor opens. The CLAP ABI
+does name a `"wayland"` window API, but its window-handle union carries no
+Wayland member, so there is nothing to hand a plugin even where one asks —
+whatever the host wanted. So when the rack window is a Wayland window, each
+editor
+window is instead built on a second winit event loop pinned to X11
+(`src/editors/x11.rs`) and the plugin is given that Xlib handle through the
+same attach path that already works under native X11. The editor windows are
+XWayland windows; on a fractional-scaling desktop KDE scales them by
+rasterising, not natively. Like the drop module, this file is written to be
+deleted once plugins attach natively.
+
 The small `crates/standalone` executable is the native-loading trust boundary.
 The nice-rack application library denies unsafe code; the executable makes the
 single unsafe call needed to load the operator's selected native CLAP entry.
@@ -87,8 +107,8 @@ an error rather than silently overwriting the saved rack.
 
 Editor positions use physical screen coordinates; content sizes use logical
 points. Positions stranded on disconnected displays are discarded. Editors close
-before graph replacement and do not stop audio when closed normally. Native
-Wayland and floating-only editors currently use generic controls instead; their
+before graph replacement and do not stop audio when closed normally.
+Floating-only editors currently use generic controls instead; their
 window placement cannot be managed through this embedded-window path. Plugins
 requiring timer/FD host extensions need further integration. Native editor
 placement still needs desktop verification.

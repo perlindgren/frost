@@ -107,6 +107,26 @@ rodio = "0.23.0"
 # itself `cfg`-gated out of the wasm build), and Windows has no
 # signal-zero to ask (see the `alive` arms in src/tell.rs).
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Native Wayland drop receiving (src/backend/wayland_drop.rs): winit 0.30
+# implements file drops only on X11 (XDND), so dropping a plugin onto the
+# rack does nothing when KDE runs a native Wayland session. Receiving
+# `wl_data_device` offers needs the wire protocol itself, and *this* crate,
+# not an example, is the one that owns the window — hence a direct
+# dependency, gated to Linux where the gap exists. `features = ["system"]`
+# pins the same C-lib backend winit already selects for Wayland (its
+# wayland-backend dep enables `client_system`); sharing that choice is the
+# contract that lets us read drops off winit's own `wl_display` instead of
+# a rival libwayland. Stated by name because a dependency's opinion is not
+# a contract. Revisit when winit 0.31 ships native Wayland DnD: the module
+# is written to be deleted then.
+wayland-client = { version = "0.31", features = ["system"] }
+# The handle types behind `winit::window::Window`'s `HasDisplayHandle` /
+# `HasWindowHandle` impls; needed by name to reach the `wl_display` and
+# `wl_surface` pointers the drop module binds its device against. Already
+# in the graph — winit 0.30.13 re-exports its impls from this very crate.
+raw-window-handle = "0.6"
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Wall-clock access for `Rng::new` (`Date.now()`): `std::time` is not
 # implemented on wasm32-unknown-unknown and calling it aborts the module.
