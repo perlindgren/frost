@@ -592,6 +592,72 @@ mod tests {
         );
     }
 
+    /// The reason the X11 loop exists, witnessed end to end with a real
+    /// plugin and no UI: a frame built by the loop must carry an editor the
+    /// way a frost window carries one on X11 — the same `open_editor` call
+    /// the pump makes, against the same session type the rack runs. The
+    /// gated loop test only proves a frame can be built; this one proves a
+    /// plugin takes it. `NICE_RACK_TEST_X11` and `NICE_RACK_TEST_CLAP` are
+    /// both required because a machine with no X server or no plugin has
+    /// nothing to witness here.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires NICE_RACK_TEST_X11=1, a live X server, and NICE_RACK_TEST_CLAP"]
+    #[allow(unsafe_code)]
+    fn a_shim_frame_carries_a_real_plugin_editor() {
+        use crate::runtime::{Card, chain};
+        use std::{collections::BTreeMap, path::PathBuf};
+
+        assert!(
+            std::env::var_os("NICE_RACK_TEST_X11").is_some(),
+            "Set NICE_RACK_TEST_X11=1 to run against this machine's X server"
+        );
+        let path = PathBuf::from(
+            std::env::var_os("NICE_RACK_TEST_CLAP").expect("Set NICE_RACK_TEST_CLAP"),
+        );
+        // SAFETY: explicit test opt-in to this repository's own plugin export.
+        let entry = unsafe { nice_clap_host::Entry::load(&path).unwrap() };
+        let class = entry
+            .descriptors()
+            .unwrap()
+            .first()
+            .expect("the test export contains at least one plugin")
+            .id
+            .clone();
+        let card = Card::new(NodeId(2), path, entry, class, "Test plugin".into()).unwrap();
+        let (graph, bindings) = chain(&[card]);
+        let (mut session, _audio) = nice_clap_host::LiveSession::prepare(
+            &graph,
+            &bindings,
+            48000.0,
+            1024,
+            &BTreeMap::new(),
+        )
+        .expect("the test chain builds");
+
+        let service = super::x11::Service::start().expect("the editor loop starts under XWayland");
+        let opened = service
+            .open(NodeId(2), "frost x11 editor test", None)
+            .expect("the loop builds a frame");
+        // The exact call `open_x11` makes, minus the rack around it.
+        let opened_editor =
+            session.open_editor(NodeId(2), opened.parent, None, opened.scale_factor);
+        let result = match opened_editor {
+            Ok((size, resizable)) => {
+                println!("the plugin took the X11 frame: {size:?} resizable {resizable}");
+                session.close_editor(NodeId(2));
+                Ok(())
+            }
+            Err(error) => {
+                println!("the plugin refused the X11 frame: {error}");
+                Err(error)
+            }
+        };
+        service.close(NodeId(2));
+        service.quit();
+        assert!(result.is_ok(), "the plugin refused the X11 frame");
+    }
+
     /// Quitting is the one interruption after which nothing is asked for again:
     /// the rack is not coming back with a chain to build, and the editors still
     /// waiting for one are gone along with the instances that had them.
