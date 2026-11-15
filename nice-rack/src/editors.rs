@@ -13,17 +13,27 @@ pub(crate) struct Windows {
     pending: Vec<NodeId>,
     /// The editors the user is asking for, as this layer understands it.
     ///
-    /// A roster edit destroys every plugin instance, and a CLAP editor cannot
-    /// outlive its instance, so an open editor goes down with the chain — but
-    /// nobody asked for that, and the new chain is built out of the state the
-    /// old one saved (`Runtime::states` reaches `LiveSession::prepare`). So an
-    /// id stays in here for as long as its owner wants the window, through
-    /// every rebuild and through a rollback that rebuilds the old chain, and
-    /// leaves when the user closes the editor, when the plugin closes it, when
-    /// its card is gone, or when the rack itself quits. Everything on screen or
-    /// on its way is in here; the reverse is not true while a rebuild has the
-    /// chain down.
+    /// A CLAP editor cannot outlive the instance it is attached to, and a roster
+    /// edit still takes the chain down — but the plugins it did not touch come
+    /// back as the same plugins (`LiveSession::reusing` carries them), so their
+    /// editors sit through it untouched. What is left to remember is the rest: a
+    /// node whose instance had to be built again loses the frame that was opened
+    /// for the instance before it, and nobody asked for that either. So an id
+    /// stays in here for as long as its owner wants the window, through every
+    /// rebuild and through a rollback that rebuilds the old chain, and leaves when
+    /// the user closes the editor, when the plugin closes it, when its card is
+    /// gone, or when the rack itself quits. Everything on screen or on its way is
+    /// in here; the reverse is not true while a rebuild has the chain down.
     wanted: Vec<NodeId>,
+    /// Frames the user closed while no chain was on the transport to take the
+    /// editor down with them.
+    ///
+    /// The frame is the rack's and goes at once; the editor belongs to a plugin
+    /// instance that is off the transport in a session nothing is asking anything
+    /// of, and `Owner` is the one that destroys it. These ids wait for a session
+    /// to hand them back to, which keeps a plugin from being asked to destroy its
+    /// interface while its audio is still being pulled.
+    dismissed: Vec<NodeId>,
 }
 impl Windows {
     /// What the editor button asks for: open the editor, or bring a live one
@@ -60,6 +70,43 @@ impl Windows {
         self.wanted.retain(|wanted| *wanted != id);
         self.pending.retain(|pending| *pending != id);
     }
+    /// Take a frame down without giving up on the editor. The plugin its editor
+    /// was drawn by is gone; the card that names that plugin is still in the rack,
+    /// and the instance built for it now is as willing a host as the one before
+    /// it, so `wanted` keeps the id and `requeue_wanted` asks again — in the same
+    /// frame this one comes down.
+    fn close_window(&mut self, id: NodeId) {
+        self.windows.remove(&id);
+    }
+    /// Close every frame whose plugin no longer has an editor.
+    ///
+    /// An untouched plugin keeps its instance across a roster edit, and its window
+    /// keeps standing; a node that had to be built again does not, and the frame
+    /// left over it is a window around nothing, since the instance it was opened
+    /// for was retired along with the chain before it. The card that is gone
+    /// entirely is caught by the same question — it has no instance to answer —
+    /// and its id leaves `wanted` one step later, with the pending pass that finds
+    /// no card to build a window for.
+    fn close_orphaned(&mut self, runtime: &mut Runtime) {
+        let orphaned: Vec<NodeId> = runtime
+            .session
+            .as_ref()
+            .map(|session| {
+                self.windows
+                    .keys()
+                    .copied()
+                    .filter(|id| !session.has_editor(*id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if orphaned.is_empty() {
+            return;
+        }
+        self.capture(runtime);
+        for id in orphaned {
+            self.close_window(id);
+        }
+    }
     pub fn capture(&self, runtime: &mut Runtime) {
         for (&id, window) in &self.windows {
             if window.inner_size().width == 0 || window.inner_size().height == 0 {
@@ -87,17 +134,33 @@ impl Windows {
         }
         self.windows.clear();
         self.pending.clear();
+        // Every editor this session had is gone with `close_editors` above, so
+        // none of them is waiting to be told about a frame that already fell.
+        self.dismissed.clear();
     }
     pub fn service(&mut self, event_loop: &ActiveEventLoop, runtime: &mut Runtime) {
-        if runtime.busy() {
+        if runtime.closing {
             self.close(runtime);
             return;
         }
+        if runtime.busy() || runtime.session.is_none() {
+            // The chain is down and the next one is on its way, and there is
+            // nothing here to do in the meantime. A window whose instance was
+            // carried is attached to a plugin that is merely off the transport;
+            // one whose instance was not is judged against the chain that
+            // replaces this, which is the first thing that happens when there is
+            // a session to judge it by again.
+            return;
+        }
+        self.close_orphaned(runtime);
         // Anything the user still wants that the rebuild took away goes back
         // on the queue: dropping a plugin into the rack is not a request to
         // close the editors of the plugins that were already there.
         self.requeue_wanted();
         if let Some(session) = &mut runtime.session {
+            for id in std::mem::take(&mut self.dismissed) {
+                session.close_editor(id);
+            }
             for (id, event) in session.editor_events() {
                 if let Some(window) = self.windows.get(&id) {
                     match event {
@@ -189,7 +252,9 @@ impl Windows {
         match event {
             WindowEvent::CloseRequested => {
                 self.capture(runtime);
-                if let Some(session) = &mut runtime.session {
+                if runtime.busy() || runtime.session.is_none() {
+                    self.dismissed.push(node);
+                } else if let Some(session) = &mut runtime.session {
                     session.close_editor(node);
                 }
                 self.windows.remove(&node);
@@ -236,51 +301,45 @@ mod tests {
     use super::Windows;
     use crate::{routing::NodeId, runtime::Runtime};
 
-    /// Dropping a second plugin into the rack rebuilds the chain, which
-    /// destroys every plugin instance, and a CLAP editor cannot outlive its
-    /// instance — so the editors of the plugins that stayed went down with it.
-    /// Nobody asked for that, so what the user wants open is now kept apart
-    /// from what happens to be on screen: the windows go, the wanting does not,
-    /// and the first idle frame after the new chain queues them again. The
-    /// window server stays out of it because every step here only moves ids.
+    /// The wanting is not the window. A chain that had to build a node's instance
+    /// again leaves the frame opened for the instance before it standing over
+    /// nothing, and that frame comes down — but the card is still in the rack, and
+    /// its new instance is asked for an editor in the same frame this one fell, so
+    /// what the user opened stays open. A plugin the edit did not touch never
+    /// comes here: its instance was carried into the new chain, and its window
+    /// never stopped being the one attached to it.
     #[test]
-    fn a_rebuilt_chain_buys_its_editors_back() {
+    fn a_frame_taken_down_leaves_its_wanting() {
         let mut windows = Windows::default();
-        let mut runtime = Runtime::new(crate::Settings::default());
         windows.open(NodeId(3));
         windows.open(NodeId(7));
 
-        windows.close(&mut runtime);
-        assert!(
-            windows.windows.is_empty() && windows.pending.is_empty(),
-            "an edit should close the windows"
-        );
+        windows.close_window(NodeId(3));
         assert_eq!(
             windows.wanted,
             vec![NodeId(3), NodeId(7)],
-            "an edit should not cancel the editors"
+            "taking a frame down should not cancel the editor it stood for"
         );
 
-        // `service` asks every frame from here on, and a second request for an
-        // editor already on its way would re-focus it each time.
-        for _ in 0..3 {
-            windows.requeue_wanted();
-        }
-        assert_eq!(windows.pending, vec![NodeId(3), NodeId(7)]);
+        windows.requeue_wanted();
+        assert!(
+            windows.pending.contains(&NodeId(3)),
+            "the editor whose frame came down should be on its way back"
+        );
     }
 
-    /// Closing an editor is a decision the next rebuild does not get to
-    /// overrule, which is the other half of remembering what the user wanted:
-    /// the wanting ends when the editor ends.
+    /// Closing an editor is a decision the next rebuild does not get to overrule,
+    /// which is the other half of remembering what the user wanted: the wanting
+    /// ends when the editor ends, not when a frame does.
     #[test]
     fn a_closed_editor_stays_closed_through_a_rebuild() {
         let mut windows = Windows::default();
-        let mut runtime = Runtime::new(crate::Settings::default());
         windows.open(NodeId(3));
         windows.open(NodeId(7));
         windows.forget(NodeId(3));
+        windows.close_window(NodeId(3));
+        windows.close_window(NodeId(7));
 
-        windows.close(&mut runtime);
         windows.requeue_wanted();
         assert_eq!(
             windows.pending,
@@ -289,17 +348,25 @@ mod tests {
         );
     }
 
+    /// Quitting is the one interruption after which nothing is asked for again:
+    /// the rack is not coming back with a chain to build, and the editors still
+    /// waiting for one are gone along with the instances that had them.
     #[test]
     fn quitting_the_rack_promises_nothing_back() {
         let mut windows = Windows::default();
         let mut runtime = Runtime::new(crate::Settings::default());
         runtime.closing = true;
         windows.open(NodeId(3));
+        windows.dismissed.push(NodeId(3));
 
         windows.close(&mut runtime);
         assert!(
             windows.wanted.is_empty(),
             "a rack that is closing left an editor queued for a session that will not exist"
+        );
+        assert!(
+            windows.dismissed.is_empty(),
+            "a rack that is closing left an editor waiting for a session to close it"
         );
     }
 }

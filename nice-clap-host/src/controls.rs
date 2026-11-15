@@ -153,6 +153,18 @@ impl LiveSession {
         }
         result
     }
+    /// Whether the instance behind this node is showing an editor of ours.
+    ///
+    /// A rack window is built for one instance, and an instance is the only thing
+    /// a CLAP editor can be attached to, so a window standing over a node that
+    /// answers no here is a frame around an instance that has since been built
+    /// again — the number it was opened for outlived the plugin it was opened on.
+    /// It is the rack's to take down.
+    pub fn has_editor(&self, id: NodeId) -> bool {
+        self.owners
+            .get(&id)
+            .is_some_and(|owner| owner.editor.is_some())
+    }
     pub fn close_editor(&mut self, id: NodeId) {
         if let Some(owner) = self.owners.get_mut(&id)
             && let Some(parent) = owner.editor.take()

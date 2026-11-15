@@ -231,6 +231,14 @@ pub struct Runtime {
     pub message: String,
     pub levels: Arc<Levels>,
     pub(crate) session: Option<LiveSession>,
+    /// The session the chain before this one was built from, held between the
+    /// moment it came off the transport and the moment the next chain is ready.
+    /// Its instances are off the transport but they are still the plugins the
+    /// cards name, so the ones a roster edit did not touch go forward into the
+    /// new chain (`LiveSession::reusing`) instead of being saved, thrown away and
+    /// rebuilt from their own state — which is also what their editor windows are
+    /// attached to.
+    retired: Option<LiveSession>,
     pub(crate) editor_geometry: BTreeMap<NodeId, crate::EditorGeometry>,
     last_save: Instant,
     pub(crate) persistence_path: Option<PathBuf>,
@@ -269,6 +277,7 @@ impl Runtime {
             message: String::new(),
             levels: Arc::default(),
             session: None,
+            retired: None,
             editor_geometry: settings
                 .preferences
                 .plugins
@@ -339,9 +348,12 @@ impl Runtime {
         }
     }
     fn begin(&mut self, action: Action) {
-        if let Some(session) = &mut self.session {
-            session.close_editors();
-        }
+        // The editors stay where they are. A roster edit used to shut every one
+        // of them here because it threw away every plugin instance and a CLAP
+        // editor cannot outlive its instance; the instances this edit does not
+        // touch now go forward into the new chain, so there is nothing of theirs
+        // to close. The ones it does replace are closed in `Windows::service`,
+        // on the frame the new chain arrives with them.
         self.message = "Stopping audio…".into();
         self.retry = None;
         if let Some(session) = &self.session {
@@ -350,9 +362,12 @@ impl Runtime {
         self.action = Some(action);
     }
     pub fn close(&mut self) {
-        if let Some(session) = &mut self.session {
+        // Quitting is the one interruption nothing survives, so the instances
+        // parked for a chain that will never be built go here, editors first.
+        for session in [&mut self.session, &mut self.retired].into_iter().flatten() {
             session.close_editors();
         }
+        self.retired = None;
         self.closing = true;
         self.retry = None;
         if let Some(session) = &self.session {
@@ -361,6 +376,20 @@ impl Runtime {
     }
     pub fn stopped(&self) -> bool {
         self.worker.is_none() && self.opening.is_none() && self.io.is_none()
+    }
+    /// Take the session off the running chain and hold it for the one on its way.
+    ///
+    /// Every roster edit brings the chain down, and the session that was running
+    /// it holds the plugin instances — with their parameters, their state and the
+    /// editors the user opened. Handing them to `LiveSession::reusing` is what
+    /// lets the plugins an edit did not touch stay the same plugins, so a chain
+    /// that comes down is never thrown away while a parked one is still waiting:
+    /// the two are only in play together when the parked one is all that is left
+    /// of those plugins, which is exactly the lot worth carrying.
+    fn park(&mut self) {
+        if let Some(session) = self.session.take() {
+            self.retired = Some(session);
+        }
     }
     pub fn tick(&mut self) {
         let mut native_error = None;
@@ -392,7 +421,9 @@ impl Runtime {
                     Err(error) => native_error = Some(error),
                 }
             }
-            self.session = None;
+            // The chain came down because its DSP owner stopped. The plugins are
+            // not gone with it.
+            self.park();
             if self.action.is_none() && !self.closing && !self.halted {
                 self.recover(
                     native_error.unwrap_or_else(|| "Plugin requested an audio restart".into()),
@@ -433,6 +464,7 @@ impl Runtime {
             if self.worker.is_none() {
                 self.persist();
                 self.session = None;
+                self.retired = None;
                 self.action = None;
                 if let Some(io) = self.io.take() {
                     let idle = self.idle.take();
@@ -506,7 +538,10 @@ impl Runtime {
                     self.states.extend(states);
                 }
             }
-            self.session = None;
+            // The chain comes down here, and its plugins come with it into
+            // `retired` rather than out of the process: the ones the action does
+            // not touch are about to be asked for by name.
+            self.park();
             // Dropping a plugin onto a rack that is making sound changes the
             // chain, and the transport is not part of the chain: it carries
             // frames between two rings that the DSP owner on this thread feeds
@@ -589,8 +624,14 @@ impl Runtime {
                 let Some((io, endpoints, resolved)) = opened else {
                     // Retain inactive instances for controls even with audio off.
                     let (graph, bindings) = chain(&opening.action.cards);
-                    let (mut session, mut audio) =
-                        LiveSession::prepare(&graph, &bindings, 48000.0, BLOCK, &self.states)?;
+                    let (mut session, mut audio) = LiveSession::reusing(
+                        self.retired.take(),
+                        &graph,
+                        &bindings,
+                        48000.0,
+                        BLOCK,
+                        &self.states,
+                    )?;
                     session.request_stop();
                     std::thread::spawn(move || {
                         let _ = audio.process(&[], &mut [], 0);
@@ -603,20 +644,26 @@ impl Runtime {
                 };
                 let rate = resolved.sample_rate.unwrap() as f64;
                 let (graph, bindings) = chain(&opening.action.cards);
-                let (session, audio) =
-                    match LiveSession::prepare(&graph, &bindings, rate, BLOCK, &self.states) {
-                        Ok(built) => built,
-                        // The transport is not what failed. Handing it back rather
-                        // than letting it go here is the same release the rack
-                        // avoids everywhere else, and the rollback two lines below
-                        // is about to ask for those devices again.
-                        Err(error) => {
-                            self.io = Some(io);
-                            self.idle = Some(endpoints);
-                            self.live_settings = Some(resolved);
-                            return Err(error);
-                        }
-                    };
+                let (session, audio) = match LiveSession::reusing(
+                    self.retired.take(),
+                    &graph,
+                    &bindings,
+                    rate,
+                    BLOCK,
+                    &self.states,
+                ) {
+                    Ok(built) => built,
+                    // The transport is not what failed. Handing it back rather
+                    // than letting it go here is the same release the rack
+                    // avoids everywhere else, and the rollback two lines below
+                    // is about to ask for those devices again.
+                    Err(error) => {
+                        self.io = Some(io);
+                        self.idle = Some(endpoints);
+                        self.live_settings = Some(resolved);
+                        return Err(error);
+                    }
+                };
                 self.worker = Some(spawn_dsp(audio, endpoints, self.levels.clone()));
                 self.session = Some(session);
                 self.io = Some(io);

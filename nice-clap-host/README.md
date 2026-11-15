@@ -89,6 +89,20 @@ returns a fresh LiveAudio. Failed replacement leaves the old stopped session
 intact, so it can be retried or rebuilt at the previous configuration. Plugins
 without a state extension currently return to defaults on replacement.
 
+A roster edit takes a different road. `LiveSession::reusing` is handed the session
+that just came off the transport and carries every instance that edit did not
+touch into the chain it is building — the same instance, with its parameters, its
+state and its open editor — reactivated for the new graph rather than instantiated
+again. State save is a favour a plugin does its host, and what it cannot carry (an
+editor on screen, which page of it the user was reading) is worth not losing for a
+plugin nobody changed. An instance is carried while it is inactive, its card still
+names the class it was made from, and its main buses are still the ones the graph
+wants around it; everything else is built again out of the states the chain before
+it saved, which is what every rebuild looked like. The witness is
+`tests/tuner_reuse.rs`: a parameter no saved state carries survives the rebuild,
+and the block of audio that comes out muted is being processed by that same
+instance.
+
 This is the lifecycle foundation for device Apply, not device I/O itself. The
 caller must complete cooperative stop before dropping an active audio endpoint
 or its owner. A dead device cannot drive that handshake by itself. The rack therefore uses

@@ -330,9 +330,6 @@ impl Process for RackUi {
     }
     fn process(&mut self, ctx: &mut Context, dt: f32) {
         self.windows.capture(&mut self.runtime);
-        if self.runtime.busy() {
-            self.windows.close(&mut self.runtime);
-        }
         self.runtime.tick();
         let (w, h) = ctx.size();
         let mouse = ctx.mouse_position();

@@ -191,6 +191,54 @@ impl LiveSession {
         max_frames: usize,
         states: &BTreeMap<NodeId, Vec<u8>>,
     ) -> Result<(Self, LiveAudio), String> {
+        Self::build(
+            BTreeMap::new(),
+            graph,
+            bindings,
+            sample_rate,
+            max_frames,
+            states,
+        )
+    }
+    /// Build the chain a roster edit asks for, carrying over every instance that
+    /// edit did not touch.
+    ///
+    /// Saving and restoring state is a favour a plugin does its host, and not
+    /// every plugin does it: what a snapshot cannot carry — an editor on screen,
+    /// which page of it the user was looking at, a meter's history — is lost when
+    /// the instance is replaced. A card whose instance was made from the class
+    /// that card still names, and whose buses are still the ones the graph wants
+    /// around it, has no reason to be rebuilt at all, so it keeps its instance and
+    /// everything hanging off it, and only the plugins the edit actually changed
+    /// pay for the new chain. `states` is for those, and for a `previous` session
+    /// whose instances could not be carried — refused, still on the transport, or
+    /// asked for a different configuration — which is what a rebuild without this
+    /// looked like.
+    pub fn reusing(
+        previous: Option<Self>,
+        graph: &RackGraph,
+        bindings: &BTreeMap<NodeId, Binding>,
+        sample_rate: f64,
+        max_frames: usize,
+        states: &BTreeMap<NodeId, Vec<u8>>,
+    ) -> Result<(Self, LiveAudio), String> {
+        Self::build(
+            previous.map_or_else(BTreeMap::new, |previous| previous.owners),
+            graph,
+            bindings,
+            sample_rate,
+            max_frames,
+            states,
+        )
+    }
+    fn build(
+        mut previous: BTreeMap<NodeId, Owner>,
+        graph: &RackGraph,
+        bindings: &BTreeMap<NodeId, Binding>,
+        sample_rate: f64,
+        max_frames: usize,
+        states: &BTreeMap<NodeId, Vec<u8>>,
+    ) -> Result<(Self, LiveAudio), String> {
         if !sample_rate.is_finite() || sample_rate <= 0.0 || !(1..=65536).contains(&max_frames) {
             return Err("Invalid live graph audio configuration".into());
         }
@@ -214,14 +262,30 @@ impl LiveSession {
                 let NodeKind::Plugin { inputs, outputs } = graph.nodes[&id] else {
                     unreachable!()
                 };
-                let (owner, processor) = binding.entry.graph_instance(
-                    &binding.class,
-                    sample_rate,
-                    max_frames,
-                    channel_count(inputs),
-                    channel_count(outputs),
-                    states.get(&id).map(Vec::as_slice),
-                )?;
+                let (inputs, outputs) = (channel_count(inputs), channel_count(outputs));
+                // The instance in front of this card is only worth carrying if it
+                // still answers to it. Refused, it dies here with the rest of what
+                // this edit did not carry, its editor with it.
+                let kept = previous.remove(&id).and_then(|mut owner| {
+                    owner
+                        .reusable(&binding.class, inputs, outputs)
+                        .then_some(owner)
+                });
+                let (owner, processor) = match kept {
+                    Some(mut owner) => {
+                        let processor =
+                            owner.reactivate(sample_rate, max_frames, inputs, outputs)?;
+                        (owner, processor)
+                    }
+                    None => binding.entry.graph_instance(
+                        &binding.class,
+                        sample_rate,
+                        max_frames,
+                        inputs,
+                        outputs,
+                        states.get(&id).map(Vec::as_slice),
+                    )?,
+                };
                 owners.insert(id, owner);
                 processors.insert(
                     id,
