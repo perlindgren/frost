@@ -73,6 +73,12 @@ pub struct Settings<P = NoPreferences> {
     /// that fallback is not a device-reported default in the settings UI.
     #[serde(deserialize_with = "deserialize_input_channel")]
     pub input_channel: Option<u32>,
+    /// ASIO only: the first channel (1-based, as this file spells them) of a
+    /// second output group that carries an exact copy of the first one. The
+    /// group is as wide as the route needs and sits on the driver's own
+    /// channels, so `Some(3)` with a route reaching channel 2 copies 1–2 onto
+    /// 3–4. Absent means one output group.
+    pub asio_second_output: Option<u32>,
     /// Standalone window geometry (top-left in physical screen px; size
     /// in logical units). None = never saved → the window centers itself
     /// on first launch. Hosts own their windows; this is standalone-only.
@@ -243,6 +249,7 @@ impl<P: Preferences> Settings<P> {
             && self.output_period_size.is_none()
             && self.input_latency.is_none()
             && self.input_channel.is_none()
+            && self.asio_second_output.is_none()
             && self.preferences.is_blank()
     }
 
@@ -541,6 +548,36 @@ mod persistence_tests {
         let (restored, warning) = Settings::<NoPreferences>::load_from(&path);
         assert_eq!(warning, None);
         assert_eq!(restored, settings);
+    }
+
+    /// A second output group is a decision, so it survives a save, and a file
+    /// written before the row existed still loads as "one output group".
+    #[test]
+    fn a_second_output_group_round_trips_and_absent_means_one_group() {
+        let path = frost::scratch::claim("nice-common-second-output").join("settings.ron");
+        let settings = Settings::<NoPreferences> {
+            backend: Some("asio".into()),
+            output_channels: Some(OutputChannels::Stereo([1, 2])),
+            asio_second_output: Some(3),
+            ..Default::default()
+        };
+        settings.save_to(&path).unwrap();
+        let (restored, warning) = Settings::<NoPreferences>::load_from(&path);
+        assert_eq!(warning, None);
+        assert_eq!(restored, settings);
+        assert!(!restored.is_blank(), "a chosen group read as a cold start");
+
+        let before = Settings::<NoPreferences>::from_ron(
+            r#"{ "backend": "asio", "output_channels": {"kind":"stereo", "channels":[1,2]} }"#,
+        )
+        .unwrap();
+        assert_eq!(before.asio_second_output, None);
+        assert_eq!(
+            Settings::<NoPreferences>::from_ron(r#"{ "asio_second_output": 5 }"#)
+                .unwrap()
+                .asio_second_output,
+            Some(5)
+        );
     }
 
     #[test]

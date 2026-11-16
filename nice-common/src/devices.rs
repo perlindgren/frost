@@ -1336,6 +1336,47 @@ impl Snapshot {
                     .into(),
             );
         }
+        // A second output pair is the same driver asked for one more group on
+        // channels of its own, so it answers to the same format list as the
+        // first: a driver that has eight channels at this rate and period is a
+        // driver that can hand out 5–6. The count a copy needs is the count it
+        // copies, so a route reaching channel 2 wants two channels over.
+        if let Some(start) = resolved.asio_second_output {
+            if backend != "asio" {
+                return Err(
+                    "A second output pair needs ASIO, the one backend where both groups come \
+                     from the same driver"
+                        .into(),
+                );
+            }
+            let width = output_route.required_channels().max(1);
+            if start <= width {
+                return Err(format!(
+                    "The second output pair starts at output {start}, which the first {width} \
+                     already use: pick {} or later",
+                    width + 1
+                ));
+            }
+            let end = start
+                .checked_add(width - 1)
+                .ok_or("The second output pair is wider than any device has")?;
+            if !self.output_formats.is_empty()
+                && !self.output_formats.iter().any(|format| {
+                    format.channels >= end && supports(format, output_rate, output_buffer)
+                })
+            {
+                let widest = self
+                    .output_formats
+                    .iter()
+                    .map(|format| format.channels)
+                    .max()
+                    .unwrap_or(0);
+                return Err(format!(
+                    "The output device has no {end} output channels at this sample rate and \
+                     buffer size (its widest is {widest})"
+                ));
+            }
+        }
         resolved.input_channel = Some(channel);
         resolved.output_channels = Some(output_route);
         resolved.sample_rate = Some(rate);
@@ -1965,6 +2006,101 @@ mod tests {
                 .unwrap_err()
                 .contains("output channel configuration")
         );
+    }
+
+    /// The microphone snapshot with room behind the route: a driver with eight
+    /// output channels where the first group sits on 1–2.
+    fn eight_channel_snapshot() -> Snapshot {
+        let mut snapshot = microphone_snapshot();
+        let wide = StreamFormat {
+            channels: 8,
+            ..snapshot.output_formats[0].clone()
+        };
+        snapshot.output_formats.push(wide);
+        snapshot.output_channel_options =
+            output_routes(8, Some(crate::settings::OutputChannels::Stereo([1, 2])));
+        snapshot
+    }
+
+    /// A settings file that picks ASIO and a second pair starting at `start`.
+    fn second_output(start: u32) -> crate::settings::Settings<crate::settings::NoPreferences> {
+        crate::settings::Settings::<crate::settings::NoPreferences> {
+            backend: Some("asio".into()),
+            asio_second_output: Some(start),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_second_output_pair_needs_asio_room_behind_the_route_and_the_same_format() {
+        use crate::settings::OutputChannels::Mono;
+        let snapshot = eight_channel_snapshot();
+        // Any start whose copy lands inside the driver resolves as it stands.
+        for start in [3, 4, 7] {
+            assert_eq!(
+                snapshot
+                    .resolve_settings(&second_output(start))
+                    .unwrap()
+                    .asio_second_output,
+                Some(start)
+            );
+        }
+        // 8–9 is not a pair on an eight channel driver, and 2 is a channel the
+        // stereo route already plays.
+        assert!(
+            snapshot
+                .resolve_settings(&second_output(8))
+                .unwrap_err()
+                .contains("no 9 output channels")
+        );
+        assert!(
+            snapshot
+                .resolve_settings(&second_output(2))
+                .unwrap_err()
+                .contains("pick 3 or later")
+        );
+        // A mono route copies one channel, so the group behind it starts one
+        // earlier and a number means something else than it did for a pair.
+        let mono = crate::settings::Settings {
+            output_channels: Some(Mono(1)),
+            ..second_output(2)
+        };
+        assert_eq!(
+            snapshot.resolve_settings(&mono).unwrap().asio_second_output,
+            Some(2)
+        );
+        let overlap = crate::settings::Settings {
+            output_channels: Some(Mono(1)),
+            ..second_output(1)
+        };
+        assert!(
+            snapshot
+                .resolve_settings(&overlap)
+                .unwrap_err()
+                .contains("pick 2 or later")
+        );
+        // A driver whose channels the first group already fills has nothing to
+        // hand out, however the settings file spells the request.
+        let narrow = microphone_snapshot();
+        assert!(
+            narrow
+                .resolve_settings(&second_output(3))
+                .unwrap_err()
+                .contains("widest is 2")
+        );
+        // Only one backend opens both groups from one driver.
+        if !cfg!(windows) {
+            let other = crate::settings::Settings {
+                asio_second_output: Some(3),
+                ..accepted_backend_settings()
+            };
+            assert!(
+                narrow
+                    .resolve_settings(&other)
+                    .unwrap_err()
+                    .contains("needs ASIO")
+            );
+        }
     }
 
     #[test]

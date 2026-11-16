@@ -392,6 +392,10 @@ fn open_asio<P: Preferences>(settings: &Settings<P>) -> Result<(DeviceStreams, E
             .ok_or("Select output buffer size")?,
         inputs: selected + 1,
         outputs: route.required_channels(),
+        // The settings page's second output pair, if it picked one: the transport
+        // opens those channels too and hands the same block to them, so nothing
+        // here — not the route, not the pump's block — gets wider.
+        second_output: settings.asio_second_output,
     };
     // `fits` is not redundant here even though `outputs` was derived from the
     // route: a hand-edited settings file can name channel 0, or the same channel

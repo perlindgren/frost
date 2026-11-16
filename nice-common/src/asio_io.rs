@@ -127,12 +127,24 @@ pub struct Wanted<'a> {
     pub inputs: u32,
     /// How many output channels to open, from the driver's first.
     pub outputs: u32,
+    /// First channel of a second output group that carries a copy of the first,
+    /// in the 1-based spelling the settings page uses: `Some(3)` with a stereo
+    /// route copies channels 1–2 onto 3–4. The copy is as wide as
+    /// [`Wanted::outputs`], and both groups are asked for in the one
+    /// `ASIOCreateBuffers` this host makes, because that call takes the whole
+    /// buffer list and there is no way to append a group later
+    /// (`azo-0.6.1/src/driver.rs:92-103`, `:412-415`). `None` is one group.
+    pub second_output: Option<u32>,
 }
 
 /// What a host does with each block. Both runs are interleaved — `frames` frames
 /// of [`Transport::inputs`] and [`Transport::outputs`] channels — so a host that
 /// wants one physical input reads every `inputs`-th sample, and a host that owns
 /// the driver's first two outputs writes them in order.
+///
+/// A second output group ([`Wanted::second_output`]) does not widen either block:
+/// the transport copies what the pump wrote, so a host writes one signal and
+/// hears it on both groups.
 ///
 /// Called on the driver's thread: allocate nothing, lock nothing, and do not call
 /// back into the transport. The module documentation says why.
@@ -176,6 +188,10 @@ impl Channel {
 struct State {
     inputs: Vec<Channel>,
     outputs: Vec<Channel>,
+    /// The copy this stream was asked for: the same block laid down again on
+    /// channels the group above does not use, each in its own format. Empty when
+    /// [`Wanted::second_output`] named none.
+    mirror: Vec<Channel>,
     frames: usize,
     /// Interleaved scratch, allocated at open so the callback allocates nothing.
     /// cpal's callback resized a `Vec` per block on the way to its own
@@ -238,7 +254,9 @@ impl State {
     }
 
     /// One block out into one half: fill the interleaved scratch, then lay each
-    /// channel's bytes down in its own buffer.
+    /// channel's bytes down in its own buffer — and lay the same block down again
+    /// on the copy's channels, which is the whole of what a second output group
+    /// is.
     unsafe fn playback(&self, half: usize) {
         let channels = self.outputs.len();
         if channels == 0 {
@@ -252,15 +270,23 @@ impl State {
         // garbage (`cpal-0.18.2/src/host/asio/stream.rs:442-451`, `:648`).
         scratch.fill(0.0);
         unsafe { (*self.pump.get()).output(scratch) };
-        for (index, channel) in self.outputs.iter().enumerate() {
-            let Some(plane) = channel.plane(half, self.frames) else {
-                continue;
-            };
-            let width = channel.pcm.bytes_per_frame();
-            for frame in 0..self.frames {
-                let source = &scratch[frame * channels + index..][..1];
-                let target = &mut plane[frame * width..][..width];
-                channel.pcm.write(source, target);
+        let block = &*scratch;
+        // Both groups read the same frames at the same stride: they were opened
+        // the same width, and the copy is the same signal, not a second one.
+        // `take(channels)` is the belt on that — a channel past the block's width
+        // could only come from a state built wrong, and here it is silence rather
+        // than a panic on the driver's own thread.
+        for group in [&self.outputs, &self.mirror] {
+            for (index, channel) in group.iter().enumerate().take(channels) {
+                let Some(plane) = channel.plane(half, self.frames) else {
+                    continue;
+                };
+                let width = channel.pcm.bytes_per_frame();
+                for frame in 0..self.frames {
+                    let source = &block[frame * channels + index..][..1];
+                    let target = &mut plane[frame * width..][..width];
+                    channel.pcm.write(source, target);
+                }
             }
         }
     }
@@ -730,6 +756,27 @@ pub fn open(wanted: Wanted<'_>, pump: impl Pump + 'static) -> Result<Transport, 
     if wanted.inputs == 0 && wanted.outputs == 0 {
         return Err("An ASIO stream needs at least one input or one output channel".into());
     }
+    // A second output group is a copy of the first one on channels of its own,
+    // so it needs something to copy and a start beyond what the first group
+    // takes. Both are arithmetic on the request rather than a question for the
+    // hardware, so they are answered here, in words, before a driver is loaded.
+    if let Some(start) = wanted.second_output {
+        if wanted.outputs == 0 {
+            return Err(
+                "A second output pair copies the first one, and this stream has no output \
+                 channels to copy"
+                    .into(),
+            );
+        }
+        if start <= wanted.outputs {
+            return Err(format!(
+                "The second output pair starts at output {start}, which the first {} already \
+                 use: pick {} or later",
+                wanted.outputs,
+                wanted.outputs + 1
+            ));
+        }
+    }
     let rate = wanted.input_rate;
     let frames = wanted.input_frames;
     let driver_name = wanted.input;
@@ -783,6 +830,25 @@ pub fn open(wanted: Wanted<'_>, pump: impl Pump + 'static) -> Result<Transport, 
             "'{driver_name}' has {} output channels and this needs {}",
             channels.out, wanted.outputs
         ));
+    }
+    // The copy sits on the driver's own channels, so its span is measured the same
+    // way as the first group's. `checked_add` because a hand-edited settings file
+    // can name a start so high that the width runs off the end of the number type;
+    // that is a refusal, not an overflow.
+    if let Some(start) = wanted.second_output {
+        let Some(end) = start.checked_add(wanted.outputs - 1) else {
+            return Err(format!(
+                "The second output pair starts at output {start}, which is past the end of any \
+                 driver: '{driver_name}' has {}",
+                channels.out
+            ));
+        };
+        if !enough(channels.out, end) {
+            return Err(format!(
+                "'{driver_name}' has {} output channels and the second output pair needs {}–{}",
+                channels.out, start, end
+            ));
+        }
     }
 
     // The size, asked of the driver and judged by the rule the panel's list is
@@ -853,8 +919,8 @@ pub fn open(wanted: Wanted<'_>, pump: impl Pump + 'static) -> Result<Transport, 
     // asked channel 0 and assumed the rest agree; here a driver that mixes
     // formats is refused by the channel that differs, in the words the driver
     // itself used to name it.
-    let formats = |input: bool, count: u32| -> Result<Vec<Pcm>, String> {
-        (0..count)
+    let formats = |input: bool, first: u32, count: u32| -> Result<Vec<Pcm>, String> {
+        (first..first + count)
             .map(|index| -> Result<Pcm, String> {
                 let id = ChannelId {
                     input,
@@ -878,12 +944,30 @@ pub fn open(wanted: Wanted<'_>, pump: impl Pump + 'static) -> Result<Transport, 
             })
             .collect()
     };
-    let input_formats = formats(true, wanted.inputs)?;
-    let output_formats = formats(false, wanted.outputs)?;
+    let input_formats = formats(true, 0, wanted.inputs)?;
+    let output_formats = formats(false, 0, wanted.outputs)?;
+    // The copy's channels are asked the same question, and the driver answers it
+    // per channel: its third output is not obliged to be the sample type its first
+    // one is, and a copy is only faithful in the format the driver agreed to.
+    let mirror_formats = match wanted.second_output {
+        // `start` is beyond the first group, which is checked above, so this is
+        // the driver's own zero-based index of that same channel.
+        Some(start) => formats(false, start - 1, wanted.outputs)?,
+        None => Vec::new(),
+    };
 
-    // Both directions, one call, inputs first. The buffers come back as two
-    // pointers per channel, in the order they were asked for
-    // (`azo-0.6.1/src/driver.rs:92-103`).
+    // Both directions, one call, inputs first, and the copy's channels last. One
+    // call is not a style: `ASIOCreateBuffers` takes the whole buffer list and
+    // `ASIODisposeBuffers` throws the whole list away, so a channel this host will
+    // write has to be in the list it makes now (`azo-0.6.1/src/driver.rs:404-415`).
+    // The buffers come back as two pointers per channel, in the order they were
+    // asked for (`azo-0.6.1/src/driver.rs:92-103`).
+    let mirror_ids = wanted.second_output.into_iter().flat_map(|start| {
+        (start - 1..start - 1 + wanted.outputs).map(move |index| ChannelId {
+            input: false,
+            index: index as c_long,
+        })
+    });
     let ids = (0..wanted.inputs)
         .map(|index| ChannelId {
             input: true,
@@ -892,7 +976,9 @@ pub fn open(wanted: Wanted<'_>, pump: impl Pump + 'static) -> Result<Transport, 
         .chain((0..wanted.outputs).map(|index| ChannelId {
             input: false,
             index: index as c_long,
-        }));
+        }))
+        .chain(mirror_ids);
+    let asked_buffers = wanted.inputs + wanted.outputs + mirror_formats.len() as u32;
     let frames_long =
         c_long::try_from(frames).map_err(|_| "Buffer size is out of range".to_owned())?;
     // The one obligation `create_buffers` states: the callbacks must outlive the
@@ -909,16 +995,17 @@ pub fn open(wanted: Wanted<'_>, pump: impl Pump + 'static) -> Result<Transport, 
             )
         })?
         .collect::<Vec<_>>();
-    if halves.len() != (wanted.inputs + wanted.outputs) as usize {
+    if halves.len() != asked_buffers as usize {
         // A driver that answered fewer buffers than channels would have the
         // indexing below reach past the answer, so it is an error and not a panic.
         return Err(format!(
             "'{driver_name}' answered {} buffers for {} channels",
             halves.len(),
-            wanted.inputs + wanted.outputs
+            asked_buffers
         ));
     }
-    let (input_halves, output_halves) = halves.split_at(wanted.inputs as usize);
+    let (input_halves, rest) = halves.split_at(wanted.inputs as usize);
+    let (output_halves, mirror_halves) = rest.split_at(wanted.outputs as usize);
     let inputs: Vec<Channel> = input_formats
         .iter()
         .zip(input_halves)
@@ -935,6 +1022,14 @@ pub fn open(wanted: Wanted<'_>, pump: impl Pump + 'static) -> Result<Transport, 
             pcm: *pcm,
         })
         .collect();
+    let mirror: Vec<Channel> = mirror_formats
+        .iter()
+        .zip(mirror_halves)
+        .map(|(pcm, halves)| Channel {
+            halves: *halves,
+            pcm: *pcm,
+        })
+        .collect();
 
     let (sender, errors) = bounded(16);
     let notify = sender.clone();
@@ -942,6 +1037,7 @@ pub fn open(wanted: Wanted<'_>, pump: impl Pump + 'static) -> Result<Transport, 
     let state = Box::new(State {
         inputs,
         outputs,
+        mirror,
         frames: frames_usize,
         capture: UnsafeCell::new(vec![0.0; frames_usize * wanted.inputs as usize]),
         playback: UnsafeCell::new(vec![0.0; frames_usize * wanted.outputs as usize]),
@@ -957,7 +1053,7 @@ pub fn open(wanted: Wanted<'_>, pump: impl Pump + 'static) -> Result<Transport, 
     // Silence, before the driver starts and before anyone can hear it. Zero bytes
     // is silence in every format this module writes: the integral ones are
     // two's-complement and a float zero is all-bits-zero.
-    for channel in &state.outputs {
+    for channel in state.outputs.iter().chain(&state.mirror) {
         for half in 0..HALVES {
             if let Some(plane) = channel.plane(half, frames_usize) {
                 plane.fill(0);
@@ -1108,6 +1204,7 @@ mod tests {
             output_frames: 64,
             inputs: 1,
             outputs: 2,
+            second_output: None,
         }
     }
 
@@ -1163,6 +1260,29 @@ mod tests {
             .expect("a stream with no channels");
         assert!(nothing.contains("at least one"), "{nothing}");
 
+        // A copy that starts inside the group it copies is not a second output
+        // pair; it is the same signal written to one channel twice, and the
+        // driver would be the one to notice.
+        let (pump, _) = counting();
+        let mut inside = wanted("Driver", "Driver");
+        inside.second_output = Some(2);
+        let inside = open(inside, pump)
+            .err()
+            .expect("a second output pair inside the first one");
+        assert!(
+            inside.contains("starts at output 2") && inside.contains("pick 3 or later"),
+            "{inside}"
+        );
+
+        let (pump, _) = counting();
+        let mut no_copy = wanted("Driver", "Driver");
+        no_copy.outputs = 0;
+        no_copy.second_output = Some(3);
+        let no_copy = open(no_copy, pump)
+            .err()
+            .expect("a second output pair with nothing to copy");
+        assert!(no_copy.contains("no output channels to copy"), "{no_copy}");
+
         assert_eq!(
             calls.load(Ordering::Relaxed),
             0,
@@ -1205,6 +1325,7 @@ mod tests {
                 halves: [output[0].as_mut_ptr().cast(), output[1].as_mut_ptr().cast()],
                 pcm: Pcm::Float32 { big_endian: false },
             }],
+            mirror: Vec::new(),
             frames: 2,
             capture: UnsafeCell::new(vec![0.0; 2]),
             playback: UnsafeCell::new(vec![0.0; 2]),
@@ -1257,6 +1378,82 @@ mod tests {
         );
     }
 
+    /// One block, two groups: the copy is the same frames the pump filled, in the
+    /// order it filled them, laid down again in the copy's own format. The copy is
+    /// `Float64` where the group above it is `Float32`, so bytes that came out
+    /// equal to their neighbours would mean a shortcut this module does not have.
+    #[test]
+    fn a_second_output_group_gets_the_same_block_in_its_own_format() {
+        let mut group_left = [vec![0u8; 8], vec![0u8; 8]];
+        let mut group_right = [vec![0u8; 8], vec![0u8; 8]];
+        let mut copy_left = [vec![0u8; 16], vec![0u8; 16]];
+        let mut copy_right = [vec![0u8; 16], vec![0u8; 16]];
+        let channel = |buffer: &mut [Vec<u8>; 2], pcm| Channel {
+            halves: [buffer[0].as_mut_ptr().cast(), buffer[1].as_mut_ptr().cast()],
+            pcm,
+        };
+        let (sender, _errors) = bounded(16);
+        let state = State {
+            inputs: Vec::new(),
+            outputs: vec![
+                channel(&mut group_left, Pcm::Float32 { big_endian: false }),
+                channel(&mut group_right, Pcm::Float32 { big_endian: false }),
+            ],
+            mirror: vec![
+                channel(&mut copy_left, Pcm::Float64 { big_endian: false }),
+                channel(&mut copy_right, Pcm::Float64 { big_endian: false }),
+            ],
+            frames: 2,
+            capture: UnsafeCell::new(Vec::new()),
+            playback: UnsafeCell::new(vec![0.0; 4]),
+            pump: UnsafeCell::new(Box::new(Tape {
+                blocks: Arc::new(AtomicUsize::new(0)),
+                heard: Arc::new(Mutex::new(Vec::new())),
+            }) as Box<dyn Pump>),
+            errors: sender,
+            phase: AtomicU8::new(RUNNING),
+            inside: AtomicUsize::new(0),
+            last_half: AtomicUsize::new(usize::MAX),
+            rate: 48_000.0,
+            overloads: AtomicU64::new(0),
+        };
+
+        // `Tape` writes `(index + 1) / 8` across the block, so two frames of two
+        // channels is 0.125 and 0.25 in the first frame, 0.375 and 0.5 in the next.
+        state.exchange(0, false);
+        let float = |left: f32, right: f32| -> Vec<u8> {
+            [left.to_le_bytes(), right.to_le_bytes()].concat()
+        };
+        let double = |left: f32, right: f32| -> Vec<u8> {
+            [(left as f64).to_le_bytes(), (right as f64).to_le_bytes()].concat()
+        };
+        assert_eq!(
+            group_left[0],
+            float(0.125, 0.375),
+            "the first channel of the first group did not get its frames"
+        );
+        assert_eq!(
+            group_right[0],
+            float(0.25, 0.5),
+            "the second channel of the first group did not get its frames"
+        );
+        assert_eq!(
+            copy_left[0],
+            double(0.125, 0.375),
+            "the copy's first channel is not the signal the first group's first channel got"
+        );
+        assert_eq!(
+            copy_right[0],
+            double(0.25, 0.5),
+            "the copy's second channel is not the signal the first group's second channel got"
+        );
+        assert_eq!(
+            copy_left[1],
+            vec![0u8; 16],
+            "one callback wrote both halves of the copy"
+        );
+    }
+
     /// The process holds one slot, one state, and the answers a driver is given
     /// while it holds them — so they are tested in one test, in order. `cargo
     /// test` runs the tests of a binary in threads of one process, and a second
@@ -1280,6 +1477,7 @@ mod tests {
         let state = Box::into_raw(Box::new(State {
             inputs: Vec::new(),
             outputs: Vec::new(),
+            mirror: Vec::new(),
             frames: 0,
             capture: UnsafeCell::new(Vec::new()),
             playback: UnsafeCell::new(Vec::new()),

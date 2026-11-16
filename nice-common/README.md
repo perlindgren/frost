@@ -94,6 +94,14 @@ its caller supplies, every one of which ends in `.ron` — and a cold start, wit
 no file there yet, is defaults and no warning. A resize will not overwrite a
 malformed RON file. The device-discovery helper protocol uses RON.
 
+`asio_second_output` names the first channel (1-based, as this file spells them)
+of a second output group carrying an exact copy of the first: `Some(5)` behind a
+stereo route on 1–2 plays the same signal on 5–6. It belongs to ASIO, the one
+backend where a single driver owns both groups, so `resolve_settings` refuses it
+elsewhere and refuses a start that lands on the channels the first group already
+plays. The copy is as wide as the route it copies, so the file carries a start
+and never a second channel count.
+
 Settings serialize directly through RON; geometry edits use `ron::Value`.
 `nice-common` has no `serde_json` dependency.
 
@@ -109,3 +117,11 @@ The selected input channel is duplicated to stereo; processed stereo frames use
 one SPSC queue and one `Monitor<StereoFrame>` clock/phase for independent-rate
 playback. Existing `Monitor<f32>` callers remain source-compatible. The rack uses
 this transport; the established tuner/NAM stream owners remain unchanged.
+
+`asio_io::open` is the ASIO shape of the same promise. Its `Wanted` names the one
+driver, the channel counts and an optional `second_output` — the first channel of
+a group that carries a copy of the first one — and every channel is asked for in
+the single `create_buffers` a driver is given before it starts. The copy belongs
+to the transport, not to a pump: a callback is still handed the block width it
+was built for, and the extra channels are filled from that same scratch block in
+the sample format each of them reports.

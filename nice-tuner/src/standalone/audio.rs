@@ -472,10 +472,22 @@ fn open_asio(settings: &Settings, plugin: Arc<Mutex<TunerPlugin>>) -> Result<Asi
             output_frames,
             inputs: channels,
             outputs: destination.required_channels(),
+            // The settings page's second pair, if it picked one. The transport
+            // opens those channels and copies the same block into them, so this
+            // pump goes on carrying the block it was built for.
+            second_output: settings.asio_second_output,
         };
         let outputs = wanted.outputs as usize;
+        let copy = match settings.asio_second_output {
+            Some(start) if wanted.outputs > 1 => format!(
+                ", and the same output again from {start} to {}",
+                start + wanted.outputs - 1
+            ),
+            Some(start) => format!(", and the same output again on {start}"),
+            None => String::new(),
+        };
         tracing::info!(
-            "Starting ASIO driver '{input_name}': {channels} in, {} out, {rate} Hz, {frames} frames",
+            "Starting ASIO driver '{input_name}': {channels} in, {} out, {rate} Hz, {frames} frames{copy}",
             wanted.outputs
         );
         let stream = nice_common::asio_io::open(
