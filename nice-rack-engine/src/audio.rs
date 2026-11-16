@@ -2,6 +2,8 @@
 //! processing borrows external buffers and never changes graph topology.
 use crate::{Channels, GraphError, NodeId, NodeKind, RackGraph};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Plan-owned planar sample storage. Only the requested frame prefix is valid
 /// during a process call. Processors must write every output sample in that prefix.
@@ -135,6 +137,120 @@ struct Edge {
     source: usize,
     delay: Delay,
 }
+
+/// One published wire observation. The key is the metered node id folded to
+/// a wire side (`id << 1 | side`); zero marks a free slot because plugin
+/// card ids start at one and auxiliary ids near `u64::MAX` are never metered.
+struct WireSlot {
+    key: AtomicU64,
+    rms: AtomicU32,
+    peak: AtomicU32,
+}
+
+/// Lock-free wire observations shared between the audio thread and the UI.
+/// A control thread registers wires through [`PreparedRack::attach_wire_levels`]
+/// before the plan crosses to the audio thread; from then on the audio thread
+/// only stores f32 bits and the UI samples by key, so metering costs no locks
+/// and no allocations in `process`.
+pub struct WireLevels {
+    slots: Vec<WireSlot>,
+}
+
+impl Default for WireLevels {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+impl WireLevels {
+    /// A table with room for `capacity` wires. Allocation happens only here,
+    /// keeping `attach`, `publish` and `sample` allocation-free.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            slots: (0..capacity)
+                .map(|_| WireSlot {
+                    key: AtomicU64::new(0),
+                    rms: AtomicU32::new(0),
+                    peak: AtomicU32::new(0),
+                })
+                .collect(),
+        }
+    }
+
+    /// Clear the table for a fresh registration. Control thread only: a
+    /// rebuild always joins the previous audio worker before the new plan is
+    /// attached, so no reader races this store.
+    fn reset(&self) {
+        for slot in &self.slots {
+            slot.key.store(0, Ordering::Relaxed);
+            slot.rms.store(0, Ordering::Relaxed);
+            slot.peak.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// Reserve a slot for `key`. Control thread only (see `reset`). A zero
+    /// key or a full table declines the wire; that meter then stays
+    /// unobserved instead of displacing an already published wire.
+    fn attach(&self, key: u64) -> Option<usize> {
+        if key == 0 {
+            return None;
+        }
+        let index = self
+            .slots
+            .iter()
+            .position(|slot| slot.key.load(Ordering::Relaxed) == 0)?;
+        self.slots[index].rms.store(0, Ordering::Relaxed);
+        self.slots[index].peak.store(0, Ordering::Relaxed);
+        self.slots[index].key.store(key, Ordering::Release);
+        Some(index)
+    }
+
+    fn publish(&self, index: usize, rms: f32, peak: f32) {
+        let Some(slot) = self.slots.get(index) else {
+            return;
+        };
+        slot.rms.store(rms.to_bits(), Ordering::Relaxed);
+        slot.peak.store(peak.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The latest (rms, peak) published for `key`, or `None` while the key
+    /// is not registered in this table.
+    pub fn sample(&self, key: u64) -> Option<(f32, f32)> {
+        if key == 0 {
+            return None;
+        }
+        self.slots
+            .iter()
+            .find(|slot| slot.key.load(Ordering::Acquire) == key)
+            .map(|slot| {
+                (
+                    f32::from_bits(slot.rms.load(Ordering::Relaxed)),
+                    f32::from_bits(slot.peak.load(Ordering::Relaxed)),
+                )
+            })
+    }
+}
+
+/// Loudness observation of one wire for a block: a stereo-coerced RMS that
+/// keeps the louder of the two channels per frame, and the largest absolute
+/// sample. `frames` is nonzero whenever `process` calls this.
+fn wire_level(buffer: &AudioBuffer, frames: usize) -> (f32, f32) {
+    let mut energy = 0f64;
+    let mut peak = 0f32;
+    if buffer.channels() >= 2 {
+        for (left, right) in buffer.0[0].iter().zip(&buffer.0[1]).take(frames) {
+            energy += (left * left).max(right * right) as f64;
+            peak = peak.max(left.abs()).max(right.abs());
+        }
+    } else {
+        for sample in buffer.0[0].iter().take(frames) {
+            energy += (sample * sample) as f64;
+            peak = peak.max(sample.abs());
+        }
+    }
+    ((energy / frames as f64).sqrt() as f32, peak)
+}
+
 struct Node {
     kind: NodeKind,
     input: AudioBuffer,
@@ -143,6 +259,10 @@ struct Node {
     processor: Option<ProcessorSlot>,
     bypass: Delay,
     id: NodeId,
+    /// Wire meter slots inside `PreparedRack::wires`, reserved by
+    /// `attach_wire_levels`; `None` until then and for every non-plugin node.
+    wire_in: Option<usize>,
+    wire_out: Option<usize>,
 }
 /// Owns all buffers and processor handles. Keep destruction and replacement on
 /// a control/main thread; block-boundary handover is not implemented yet.
@@ -153,6 +273,9 @@ pub struct PreparedRack {
     output_index: usize,
     max_frames: usize,
     latency: usize,
+    /// Wire observations shared with the UI. The table is empty until a
+    /// control thread attaches one, so an unobserved plan pays nothing.
+    wires: Arc<WireLevels>,
 }
 fn count(channels: Channels) -> usize {
     match channels {
@@ -259,6 +382,8 @@ impl PreparedRack {
                 processor,
                 bypass,
                 id,
+                wire_in: None,
+                wire_out: None,
             });
         }
         if let Some((&id, _)) = processors.first_key_value() {
@@ -271,7 +396,31 @@ impl PreparedRack {
             output_index: indices[&output_id],
             max_frames,
             latency: latencies[&output_id],
+            wires: Arc::new(WireLevels::default()),
         })
+    }
+    /// Register every wire the UI should watch, then share `levels` with the
+    /// plan. Call on the control thread before the plan crosses to the audio
+    /// thread: the table is cleared and refilled here, which is safe because
+    /// a rebuild always joins the previous audio worker first. Each plugin
+    /// folds to two keys (`id << 1 | side`): the input side observes the
+    /// node's summed input buffer, the output side its processed output.
+    pub fn attach_wire_levels(&mut self, levels: Arc<WireLevels>) {
+        levels.reset();
+        for node in &mut self.nodes {
+            // Card ids are validated small by the rack, so `id << 1` stays
+            // injective; the guard only refuses auxiliary ids near `u64::MAX`.
+            let metered =
+                matches!(node.kind, NodeKind::Plugin { .. }) && node.id.0 <= u64::MAX >> 1;
+            if metered {
+                node.wire_in = levels.attach(node.id.0 << 1);
+                node.wire_out = levels.attach((node.id.0 << 1) | 1);
+            } else {
+                node.wire_in = None;
+                node.wire_out = None;
+            }
+        }
+        self.wires = levels;
     }
     pub fn latency_samples(&self) -> usize {
         self.latency
@@ -299,6 +448,7 @@ impl PreparedRack {
         {
             return Err(ProcessError::InvalidBuffers);
         }
+        let wires = &self.wires;
         for index in 0..self.nodes.len() {
             let (before, after) = self.nodes.split_at_mut(index);
             let node = &mut after[0];
@@ -322,6 +472,17 @@ impl PreparedRack {
                         slot.processor
                             .process(&node.input, &mut node.output, frames)
                             .map_err(|_| ProcessError::NodeFailed(node.id))?;
+                    }
+                    // Meter both stubs of this card from the settled buffers.
+                    // Keys are only registered by `attach_wire_levels`, so
+                    // an unobserved plan takes two `None` loads per node.
+                    if let Some(slot) = node.wire_in {
+                        let (rms, peak) = wire_level(&node.input, frames);
+                        wires.publish(slot, rms, peak);
+                    }
+                    if let Some(slot) = node.wire_out {
+                        let (rms, peak) = wire_level(&node.output, frames);
+                        wires.publish(slot, rms, peak);
                     }
                 }
                 NodeKind::ChannelMap { .. } if node.input.channels() != node.output.channels() => {
