@@ -146,22 +146,25 @@ const GAIN_TEXT: f32 = 18.0;
 const GAIN_CHAR_W: f32 = GAIN_TEXT * 0.6;
 const GAIN_PAD: f32 = 10.0;
 const GAIN_COLS: usize = 16;
-/// How far FiraCode's cap-height sits above its baseline anchor; frost
-/// draws its field's text at the same lift, and the readout with it, so
-/// the digits hold their pixels when the field opens around them.
-const GAIN_LIFT: f32 = 0.344;
 /// Half-extents of the field's rect: the value's five characters and a
-/// pad on each side, and room for the caret. The pad doubles as the
-/// inset from the card's edge, so the field's outer border is the
-/// card's own corner.
+/// pad on each side, and room for the caret. The value is drawn centred
+/// in the rect, not pinned to its left padding as frost's own
+/// popup-sized field does — `ctx.text` centres the layout on the point
+/// given, so a four-character value (the common `+0.0`) keeps the same
+/// pixels in the readout and in the open field.
 const GAIN_HALF_W: f32 = 5.0 * GAIN_CHAR_W / 2.0 + GAIN_PAD;
 const GAIN_HALF_H: f32 = 12.0;
+/// How far a corner box sits inside the card's edges, on both axes: the
+/// card keeps a margin of its own colour around every box, so each box
+/// reads as its corner without crowding the card's border.
+const GAIN_INSET: f32 = 6.0;
 /// The centre of one wire's dB readout: the output trim in the card's
-/// bottom-right corner, the input trim in its top-left — each number
-/// at the corner of the edge its wire leaves (or enters).
+/// bottom-right corner, the input trim in its top-left — each box
+/// tucked `GAIN_INSET` inside the corner of the edge its wire leaves
+/// (or enters).
 fn gain_center(x: f32, y: f32, side: bool) -> [f32; 2] {
-    let sx = CARD_WIDTH / 2.0 - GAIN_HALF_W;
-    let sy = TRACK_HALF - GAIN_HALF_H - 6.0;
+    let sx = CARD_WIDTH / 2.0 - GAIN_HALF_W - GAIN_INSET;
+    let sy = TRACK_HALF - GAIN_HALF_H - GAIN_INSET;
     if side {
         [x + sx, y - sy]
     } else {
@@ -1184,15 +1187,24 @@ impl Process for RackUi {
                     rgb(255, 255, 255),
                     0.3,
                 );
-                // The gain in dB, big and in the card's corner — the
-                // clickable numeric handle, no unit suffix. The anchor
-                // and size match what the open field draws, so clicking
-                // the number swaps the chrome around it, not the digits
-                // themselves.
+                // The corner box is always there — the readout's
+                // frame, not just the editor's — so clicking the
+                // number opens the field around it without the card
+                // changing shape underneath.
+                ctx.rectangle(
+                    gx,
+                    gy,
+                    GAIN_HALF_W,
+                    GAIN_HALF_H,
+                    rgb(24, 20, 38),
+                    if editing { 0.35 } else { 0.3 },
+                );
+                // The gain in dB, centred in that box — the clickable
+                // numeric handle, no unit suffix.
                 if !editing {
                     ctx.text(
                         gx,
-                        gy - GAIN_LIFT * GAIN_TEXT,
+                        gy,
                         &self.font,
                         format!("{:+.1}", wire.gain_db),
                         GAIN_TEXT,
@@ -1201,14 +1213,17 @@ impl Process for RackUi {
                         0.3,
                     );
                 }
-                // The field, drawn where the readout stands. frost's
-                // `TextInput` owns the editing — keys, caret, selection,
-                // blink — and these calls mirror its own field drawing
-                // at the corner metrics, so the number holds its pixels
-                // and the card wears the editor instead of a popup
-                // covering it. A draft wider than the rect spills past
-                // it, as frost's own field does; a dB value never needs
-                // one.
+                // The field, drawn exactly where the readout stands.
+                // frost's `TextInput` owns the editing — keys, caret,
+                // selection, blink — and these calls draw its state at
+                // the box's own anchors: the value's visible block is
+                // centred on `gx` and the caret and selection columns
+                // share that origin, so view and editor are the same
+                // pixels. frost anchors its popup-sized field's text to
+                // its left padding instead; the rack's 24 px box
+                // centres, on purpose. A draft wider than the rect
+                // spills past it, as frost's own field does; a dB value
+                // never needs one.
                 if editing {
                     let left = gx - GAIN_HALF_W;
                     let bottom = gy - GAIN_HALF_H;
@@ -1222,13 +1237,17 @@ impl Process for RackUi {
                     let chars: Vec<char> = draft.chars().collect();
                     let scroll = self.gain_input.scroll_offset();
                     let shown = chars.len().min(scroll + GAIN_COLS);
-                    ctx.rectangle(gx, gy, GAIN_HALF_W, GAIN_HALF_H, rgb(24, 20, 38), 0.35);
+                    // The visible block's columns, measured from the
+                    // block's centred left edge — the anchor the static
+                    // readout draws its string around.
+                    let half = (shown - scroll) as f32 * GAIN_CHAR_W / 2.0;
+                    let col_x = |col: usize| gx - half + (col - scroll) as f32 * GAIN_CHAR_W;
                     if let Some((start, end)) = self.gain_input.selection_range() {
                         let a = start.max(scroll);
                         let b = end.min(scroll + GAIN_COLS).min(chars.len());
                         if a < b {
-                            let x0 = left + GAIN_PAD + (a - scroll) as f32 * GAIN_CHAR_W;
-                            let x1 = left + GAIN_PAD + (b - scroll) as f32 * GAIN_CHAR_W;
+                            let x0 = col_x(a);
+                            let x1 = col_x(b);
                             ctx.rectangle(
                                 (x0 + x1) / 2.0,
                                 gy,
@@ -1241,10 +1260,9 @@ impl Process for RackUi {
                     }
                     if shown > scroll {
                         let visible: String = chars[scroll..shown].iter().collect();
-                        let block = (shown - scroll) as f32;
                         ctx.text(
-                            left + GAIN_PAD + block * GAIN_CHAR_W / 2.0,
-                            gy - GAIN_LIFT * GAIN_TEXT,
+                            gx,
+                            gy,
                             &self.font,
                             visible,
                             GAIN_TEXT,
@@ -1255,9 +1273,7 @@ impl Process for RackUi {
                     }
                     if self.gain_input.focused() {
                         if self.gain_input.blink_on() {
-                            let cx = left
-                                + GAIN_PAD
-                                + (self.gain_input.cursor_column() - scroll) as f32 * GAIN_CHAR_W;
+                            let cx = col_x(self.gain_input.cursor_column());
                             ctx.line(cx, bottom + 5.0, cx, top - 5.0, accent, 1.5, 0.35);
                         }
                         for [x0, y0, x1, y1] in [
@@ -1665,12 +1681,12 @@ mod tests {
         assert!(input[0] < 0.0 && input[1] > 0.0);
         assert_eq!([out[0], out[1]], [-input[0], -input[1]]);
 
-        // The pad doubles as the inset, so the field's outer border is
-        // the card's own corner: flush with the vertical edge, and 6 px
-        // clear of the horizontal ones so the card's border still shows
-        // above and below the field.
-        assert!((out[0].abs() + GAIN_HALF_W - CARD_WIDTH / 2.0).abs() < 1e-3);
-        assert!((out[1].abs() + GAIN_HALF_H - (TRACK_HALF - 6.0)).abs() < 1e-3);
+        // Each box sits a uniform inset inside its corner, on both
+        // axes: the card's own colour shows on every side, so the box
+        // reads as part of the corner instead of spilling over its
+        // border.
+        assert!((CARD_WIDTH / 2.0 - out[0].abs() - GAIN_HALF_W - GAIN_INSET).abs() < 1e-3);
+        assert!((TRACK_HALF - out[1].abs() - GAIN_HALF_H - GAIN_INSET).abs() < 1e-3);
 
         // And the field stops short of the meter track it sits under, so
         // a press on the track's inner edge still starts a drag instead
