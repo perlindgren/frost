@@ -347,6 +347,18 @@ impl TextInput {
         self.blink < BLINK / 2.0
     }
 
+    /// The cursor's absolute character column into [`Self::buffer`].
+    pub fn cursor_column(&self) -> usize {
+        self.cursor
+    }
+
+    /// The leftmost character column visible in the field's window;
+    /// [`Self::selection_range`] columns are absolute, so a drawer
+    /// subtracts this offset to place them on screen.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll
+    }
+
     /// Handles the frame's keyboard: advances the cursor blink, reads the
     /// modifier and editing keys, and applies their actions to the buffer
     /// when the field is focused. Returns `true` on the frame **Enter** is
