@@ -78,6 +78,20 @@ impl LiveAudio {
         }
         result.map(|()| LiveStatus::Running)
     }
+
+    /// Hand the shared per-wire meter table to the prepared graph. Control
+    /// thread only, and only before this `LiveAudio` crosses to the DSP
+    /// worker: the attach resets the table and registers every metered wire
+    /// in one synchronous step, so no audio-side publish can observe a
+    /// half-registered plan.
+    pub fn attach_wire_levels(
+        &mut self,
+        levels: std::sync::Arc<nice_rack_engine::audio::WireLevels>,
+    ) {
+        if let Some(rack) = &mut self.rack {
+            rack.attach_wire_levels(levels);
+        }
+    }
 }
 impl LiveSession {
     pub fn latency_samples(&self) -> usize {

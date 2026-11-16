@@ -47,6 +47,11 @@ struct RackUi {
     next_id: u64,
     input: PeakMeter,
     output: PeakMeter,
+    /// Open per-wire meters, keyed `(plugin id, is_output)` — the same key
+    /// the engine registers its wire slots under (`id << 1 | side`). A key
+    /// present here is exactly a stub box the user opened, so closing the
+    /// box drops the meter and its peak-hold with it.
+    wire_meters: std::collections::BTreeMap<(u64, bool), PeakMeter>,
     size: Option<(u32, u32)>,
     windows: crate::editors::Windows,
     overlay: Option<NodeId>,
@@ -64,6 +69,12 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color {
 }
 fn hit(mouse: Option<[f32; 2]>, x: f32, y: f32, w: f32, h: f32) -> bool {
     mouse.is_some_and(|p| (p[0] - x).abs() <= w && (p[1] - y).abs() <= h)
+}
+fn wire_box_x(x: f32, side: bool) -> f32 {
+    // Stub box centres for one card: 6 px out from each vertical card edge,
+    // on the input wire for `side == false` and the output wire otherwise.
+    let edge = CARD_WIDTH / 2.0 + 6.0;
+    if side { x + edge } else { x - edge }
 }
 fn short(text: &str, count: usize) -> String {
     if text.chars().count() <= count {
@@ -245,6 +256,7 @@ pub fn run(
         next_id,
         input: PeakMeter::new(now()),
         output: PeakMeter::new(now()),
+        wire_meters: Default::default(),
         size: None,
         windows: Default::default(),
         overlay: None,
@@ -606,6 +618,29 @@ impl Process for RackUi {
                 if visible(slot, layout.top, layout.bottom, w) {
                     ctx.line(split, slot.y, x - CARD_WIDTH / 2.0, slot.y, wire, 2.0, 0.1);
                     ctx.line(x + CARD_WIDTH / 2.0, slot.y, merge, slot.y, wire, 2.0, 0.1);
+                    for side in [false, true] {
+                        let bx = wire_box_x(x, side);
+                        let key = (slot.id.0, side);
+                        if clicked && self.choosing.is_none() && hit(mouse, bx, slot.y, 4.0, 6.0) {
+                            // Toggle: closing drops the meter, opening starts
+                            // a fresh peak-hold at silence.
+                            if self.wire_meters.remove(&key).is_none() {
+                                self.wire_meters.insert(key, PeakMeter::new(now()));
+                            }
+                        }
+                        ctx.rectangle(
+                            bx,
+                            slot.y,
+                            4.0,
+                            6.0,
+                            if self.wire_meters.contains_key(&key) {
+                                rgb(103, 237, 175)
+                            } else {
+                                wire
+                            },
+                            0.25,
+                        );
+                    }
                 }
             }
             previous_x = merge;
@@ -845,6 +880,50 @@ impl Process for RackUi {
         let output_peak = f32::from_bits(self.runtime.levels.output_peak.load(Ordering::Relaxed));
         self.input.tick(db(input), db(input_peak), time);
         self.output.tick(db(output), db(output_peak), time);
+        for ((id, side), meter) in &mut self.wire_meters {
+            // A wire whose card was removed samples as gone, so its meter
+            // decays to silence on its own until its box is opened again.
+            let (rms, peak) = self
+                .runtime
+                .wires
+                .sample(*id << 1 | u64::from(*side))
+                .unwrap_or((0.0, 0.0));
+            meter.tick(db(rms), db(peak), time);
+        }
+        for slot in &layout.slots {
+            if !visible(slot, layout.top, layout.bottom, w) {
+                continue;
+            }
+            for side in [false, true] {
+                let Some(meter) = self.wire_meters.get(&(slot.id.0, side)) else {
+                    continue;
+                };
+                let bx = wire_box_x(slot.x, side);
+                // The vertical meter carries the card's full height and
+                // scales over the last 48 dB, screen y pointing up.
+                ctx.rectangle(bx, slot.y, 3.0, 56.0, rgb(30, 25, 45), 0.3);
+                let t = ((meter.level_db().max(-48.0) + 48.0) / 48.0).clamp(0.0, 1.0);
+                if t > 0.0 {
+                    ctx.rectangle(
+                        bx,
+                        slot.y - 56.0 + 56.0 * t,
+                        3.0,
+                        56.0 * t,
+                        rgb(103, 237, 175),
+                        0.3,
+                    );
+                }
+                let p = ((meter.peak_db().max(-48.0) + 48.0) / 48.0).clamp(0.0, 1.0);
+                ctx.rectangle(
+                    bx,
+                    slot.y - 56.0 + 112.0 * p,
+                    4.5,
+                    1.0,
+                    rgb(226, 232, 240),
+                    0.3,
+                );
+            }
+        }
         let fit = (w / 1000.0).clamp(0.45, 1.0);
         let y = -h / 2.0 + 58.0;
         self.input.draw(

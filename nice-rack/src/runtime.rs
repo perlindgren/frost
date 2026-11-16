@@ -230,6 +230,12 @@ pub struct Runtime {
     pub applied: Settings,
     pub message: String,
     pub levels: Arc<Levels>,
+    /// Per-wire meter table shared with the DSP thread. Each wire of a
+    /// metered plugin takes a slot when its chain is handed to the audio
+    /// side, keyed `id << 1 | side`, and the GUI samples by the same key.
+    /// The capacity is fixed at startup so a wider plan leaves its extra
+    /// wires unmeasured instead of making the audio side allocate.
+    pub wires: Arc<crate::routing::audio::WireLevels>,
     pub(crate) session: Option<LiveSession>,
     /// The session the chain before this one was built from, held between the
     /// moment it came off the transport and the moment the next chain is ready.
@@ -276,6 +282,8 @@ impl Runtime {
             applied: Settings::default(),
             message: String::new(),
             levels: Arc::default(),
+            // Two slots per plugin; a few hundred cards is ample headroom.
+            wires: Arc::new(crate::routing::audio::WireLevels::new(512)),
             session: None,
             retired: None,
             editor_geometry: settings
@@ -644,7 +652,7 @@ impl Runtime {
                 };
                 let rate = resolved.sample_rate.unwrap() as f64;
                 let (graph, bindings) = chain(&opening.action.cards);
-                let (session, audio) = match LiveSession::reusing(
+                let (session, mut audio) = match LiveSession::reusing(
                     self.retired.take(),
                     &graph,
                     &bindings,
@@ -664,6 +672,11 @@ impl Runtime {
                         return Err(error);
                     }
                 };
+                // Register the wire meters before the plan crosses to the DSP
+                // thread. The attach resets the table, which is safe here
+                // because `park` joined the previous worker earlier in this
+                // same tick, so no publish can still be in flight.
+                audio.attach_wire_levels(self.wires.clone());
                 self.worker = Some(spawn_dsp(audio, endpoints, self.levels.clone()));
                 self.session = Some(session);
                 self.io = Some(io);

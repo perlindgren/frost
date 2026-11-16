@@ -1,6 +1,7 @@
 #![deny(unsafe_code)]
 use nice_rack_engine::{audio::*, *};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 struct Effect {
     gain: f32,
@@ -237,6 +238,8 @@ fn prepared_processing_delay_and_reset_do_not_allocate() {
         4,
     )
     .unwrap();
+    // Metering is attached too: publishing must stay allocation-free.
+    rack.attach_wire_levels(Arc::new(WireLevels::new(4)));
     let mut output = [0.0; 4];
     let allocations = allocation_counter::measure(|| {
         for frames in [4, 1, 3, 2, 4] {
@@ -286,4 +289,60 @@ fn preparation_rejects_missing_processors_and_excessive_delays() {
         PreparedRack::prepare(&graph(), effects, 4),
         Err(PrepareError::BufferBudgetExceeded)
     ));
+}
+#[test]
+fn attached_wires_publish_each_plugins_input_and_output() {
+    let mut rack = PreparedRack::prepare(
+        &graph(),
+        [
+            (NodeId(1), slot(2.0, false, false)),
+            (NodeId(2), slot(0.5, false, false)),
+        ]
+        .into(),
+        4,
+    )
+    .unwrap();
+    let levels = Arc::new(WireLevels::new(4));
+    rack.attach_wire_levels(Arc::clone(&levels));
+    let mut output = [0.0; 4];
+    rack.process(&[&[1.0, -1.0, 0.5, 0.0]], &mut [&mut output], 4)
+        .unwrap();
+    // Both branches see the input block: rms sqrt(2.25/4) = 0.75, peak 1.0;
+    // each output reflects its own gain.
+    let input_rms = (2.25f32 / 4.0).sqrt();
+    assert_eq!(levels.sample(NodeId(1).0 << 1), Some((input_rms, 1.0)));
+    assert_eq!(levels.sample(NodeId(1).0 << 1 | 1), Some((1.5, 2.0)));
+    assert_eq!(levels.sample(NodeId(2).0 << 1), Some((input_rms, 1.0)));
+    assert_eq!(levels.sample(NodeId(2).0 << 1 | 1), Some((0.375, 0.5)));
+    // The mixer is not a plugin, so its small id gets no meter.
+    assert_eq!(levels.sample(NodeId(3).0 << 1), None);
+    // Without a fresh process call the keys still report the last block.
+    assert_eq!(levels.sample(NodeId(1).0 << 1), Some((input_rms, 1.0)));
+}
+#[test]
+fn wire_registration_resets_and_declines_wires_beyond_capacity() {
+    let mut rack = PreparedRack::prepare(
+        &graph(),
+        [
+            (NodeId(1), slot(1.0, false, false)),
+            (NodeId(2), slot(1.0, false, false)),
+        ]
+        .into(),
+        4,
+    )
+    .unwrap();
+    let first = Arc::new(WireLevels::new(3));
+    rack.attach_wire_levels(Arc::clone(&first));
+    // Registration follows the deterministic plan order, so the third slot
+    // truncates the second card: its output is declined, not overwritten.
+    assert!(first.sample(NodeId(1).0 << 1).is_some());
+    assert!(first.sample(NodeId(1).0 << 1 | 1).is_some());
+    assert!(first.sample(NodeId(2).0 << 1).is_some());
+    assert_eq!(first.sample(NodeId(2).0 << 1 | 1), None);
+    // A rebuild re-attaches onto a fresh table: cleared keys never block the
+    // new registration, and the old table is left alone.
+    let second = Arc::new(WireLevels::new(4));
+    rack.attach_wire_levels(Arc::clone(&second));
+    assert!(second.sample(NodeId(2).0 << 1 | 1).is_some());
+    assert_eq!(second.sample(NodeId(0).0), None);
 }
