@@ -55,6 +55,12 @@ follow input values. Apply changes devices without restarting the application.
 Input and output device rates may differ; monitoring uses the tuner's existing
 band-limited conversion with clock drift compensation. Linux JACK uses named
 ports, with an optional second output destination for duplicated stereo.
+On ASIO the two settings rows **Second output** and **Second device** copy what is
+being played — onto a higher pair of the output driver's channels, or onto a second
+ASIO interface running on its own clock — which is a copy of the signal rather than
+a second destination: the JACK row above is still the one that opens another port.
+[nice-tuner's README](../nice-tuner/README.md#second-output) documents what the two
+rows offer and refuse.
 
 ## Main view and processing
 

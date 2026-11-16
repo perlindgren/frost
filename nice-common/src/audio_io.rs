@@ -394,8 +394,10 @@ fn open_asio<P: Preferences>(settings: &Settings<P>) -> Result<(DeviceStreams, E
         outputs: route.required_channels(),
         // The settings page's second output pair, if it picked one: the transport
         // opens those channels too and hands the same block to them, so nothing
-        // here — not the route, not the pump's block — gets wider.
+        // here — not the route, not the pump's block — gets wider. The driver named
+        // with it, if any, carries that copy on an interface of its own.
         second_output: settings.asio_second_output,
+        second_device: settings.asio_second_device.as_deref(),
     };
     // `fits` is not redundant here even though `outputs` was derived from the
     // route: a hand-edited settings file can name channel 0, or the same channel

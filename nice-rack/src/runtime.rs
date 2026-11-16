@@ -220,8 +220,10 @@ fn same_devices(one: &Settings, other: &Settings) -> bool {
         && one.output_channels == other.output_channels
         // A second output pair is a channel list the driver was opened with, so
         // adding or removing one is a different set of streams, not the same one
-        // carrying a new line in a file.
+        // carrying a new line in a file. And a pair riding another driver is a
+        // second driver loaded beside the first, which no reuse can arrange.
         && one.asio_second_output == other.asio_second_output
+        && one.asio_second_device == other.asio_second_device
         && one.sample_rate == other.sample_rate
         && one.output_sample_rate == other.output_sample_rate
         && one.period_size == other.period_size

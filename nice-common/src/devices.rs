@@ -381,6 +381,62 @@ impl Ladder {
         }
     }
 
+    /// The smallest period this driver takes at or above `frames` — or, when it
+    /// takes nothing that high, the largest it takes below.
+    ///
+    /// [`Ladder::accepts`] answers the question the live stream asks, which is
+    /// "did the host not say something absurd". This answers a softer one, for a
+    /// stream that has no opinion of its own to defend: a copy riding a second
+    /// driver takes the period that second driver hands out, because the crossing
+    /// between the two clocks absorbs any size and a copy is not late for
+    /// anything. A driver that takes 64 gives 64 and nothing is rounded.
+    pub(crate) fn nearest_at_least(&self, frames: u32) -> Option<u32> {
+        let (min, max) = self.range()?;
+        // A driver that answered a minimum above its maximum has answered two
+        // numbers that contradict each other, and inventing an opening out of that
+        // is not this function's business: it says nothing, and the copy is refused
+        // in the words the driver's own numbers make.
+        if min > max {
+            return None;
+        }
+        let want = frames.max(min).max(1);
+        if self.accepts(want) {
+            return Some(want);
+        }
+        match self.steps {
+            // Every size between the two is a size it takes, so `want` above the
+            // maximum is the only way here, and the maximum is the answer.
+            Steps::Any => Some(max),
+            Steps::Linear(step) => {
+                let step = step.max(1);
+                let up = min.saturating_add((want - min).div_ceil(step).saturating_mul(step));
+                Some(if up <= max {
+                    up
+                } else {
+                    min + ((max - min) / step) * step
+                })
+            }
+            Steps::Doubling => {
+                // With doublings there is nothing between the sizes, so walking
+                // them is the list. A minimum that never doubles (zero) stops the
+                // walk rather than spinning in it, same as [`Ladder::accepts`].
+                let mut best = None;
+                let mut size = min.max(1);
+                while size <= max {
+                    if size >= want {
+                        return Some(size);
+                    }
+                    best = Some(size);
+                    let Some(next) = size.checked_mul(2).filter(|next| *next > size) else {
+                        break;
+                    };
+                    size = next;
+                }
+                best
+            }
+        }
+    }
+
     /// The size to seed a fresh setting with, which has to be one of the sizes
     /// [`asio_buffer_options`] offers or the panel would preselect a choice
     /// nobody can make. Falls back to the driver's minimum when it reports no
@@ -1336,19 +1392,45 @@ impl Snapshot {
                     .into(),
             );
         }
-        // A second output pair is the same driver asked for one more group on
-        // channels of its own, so it answers to the same format list as the
-        // first: a driver that has eight channels at this rate and period is a
-        // driver that can hand out 5–6. The count a copy needs is the count it
-        // copies, so a route reaching channel 2 wants two channels over.
-        if let Some(start) = resolved.asio_second_output {
-            if backend != "asio" {
-                return Err(
-                    "A second output pair needs ASIO, the one backend where both groups come \
-                     from the same driver"
-                        .into(),
-                );
+        // Which driver carries the copy: the one named, when naming it means
+        // something. A file that names the output driver as the carrier has said
+        // "the copy stays where the signal is", which is exactly what naming
+        // nothing says; the shorter spelling is the one this writes back, so a
+        // hand-edited file settles into the shape the panel uses.
+        let copy = resolved
+            .asio_second_device
+            .as_deref()
+            .filter(|driver| Some(*driver) != resolved.output_device.as_deref());
+        if backend != "asio" && (resolved.asio_second_output.is_some() || copy.is_some()) {
+            return Err(
+                "A second output pair needs ASIO, the one backend where this host drives the \
+                 driver the copy rides on"
+                    .into(),
+            );
+        }
+        if let Some(driver) = copy {
+            if !self.outputs.iter().any(|name| name == driver) {
+                return Err(format!(
+                    "Select an available second ASIO driver: '{driver}' is not one"
+                ));
             }
+            if resolved.asio_second_output.is_none() {
+                return Err(format!(
+                    "'{driver}' is chosen to carry a copy, so pick which output channel the copy \
+                     starts on"
+                ));
+            }
+        }
+        // A second output pair is a copy of the first one, and whose channels it
+        // lands on decides what can be answered here. On the driver it is copied
+        // from, it answers to the same format list as the group above it — a driver
+        // with eight channels at this rate and period is a driver that can hand out
+        // 5–6 — and it may not start on a channel that group is already writing. On
+        // another driver neither rule reaches: its channels are that driver's own
+        // and start at its own 1, and this snapshot describes the output driver, not
+        // it. What the second driver will take for a rate and a period is a question
+        // it is asked when the stream opens, and it answers in the same words.
+        if let Some(start) = resolved.asio_second_output.filter(|_| copy.is_none()) {
             let width = output_route.required_channels().max(1);
             if start <= width {
                 return Err(format!(
@@ -1383,6 +1465,7 @@ impl Snapshot {
         resolved.output_sample_rate = Some(output_rate);
         resolved.period_size = Some(input_buffer);
         resolved.output_period_size = Some(output_buffer);
+        resolved.asio_second_device = copy.map(str::to_owned);
         Ok(resolved)
     }
 }
@@ -1509,14 +1592,21 @@ pub fn snapshot(backend: &str, input: Option<&str>, output: Option<&str>) -> Sna
     }
 }
 
-/// ASIO enumeration from THIS process is blind while a stream is open: the API
-/// keeps ONE driver loaded per process, the running stream's, and refuses every
-/// other — azo states the rule as a law of ASIO, and it is what this workspace
-/// measured through the previous binding, loading a second driver while the
-/// first was loaded (`DriverAlreadyExists`). Destroying drivers
-/// mid-enumeration would tear at the live one. The panel cannot close
-/// the device while the application owns its live stream, and the user must not have
-/// to restart. So: ask a CHILD process, which opens no stream at all
+/// ASIO enumeration from THIS process is blind while a stream is open: a capability
+/// query LOADS the driver it asks about, and the SDK's own host code keeps ONE
+/// driver per process — `IASIO *theAsioDriver` at `common/asio.cpp:44`, established
+/// with sources in `nice-tuner/docs/asio-host-review.md:54-63`, and what this
+/// workspace measured as `DriverAlreadyExists` through the previous binding, loading
+/// a second driver while the first was loaded. `azo` steps around that global rather
+/// than obeying it: its worker keeps a TABLE of drivers in one apartment
+/// (`azo-0.6.1/src/worker.rs:140-144`). This host's answer to that freedom is one
+/// driver per `Host` and one apartment per driver (`asio_io`), which is what lets a
+/// copy ride a second interface without the two drivers meeting inside one
+/// apartment. A settings page loading a THIRD, unnamed driver beside them and
+/// disposing of it halfway through a list is the case none of that makes safe:
+/// destroying drivers mid-enumeration would tear at the live ones. The panel cannot
+/// close the device while the application owns its live stream, and the user must not
+/// have to restart. So: ask a CHILD process, which opens no stream at all
 /// and therefore sees every registered driver. The parent's audio
 /// never stops; nothing is closed; the child enumerates and dies.
 /// Which binding the child asks through cannot matter to the parent, and the
@@ -1908,6 +1998,65 @@ mod tests {
         assert_eq!(asio_buffer_options(None), Vec::new());
     }
 
+    /// The question a copy asks, which is not the question [`Ladder::accepts`]
+    /// answers: not "will you take this size" but "what will you take, nearest the
+    /// block I am handing you". A second driver whose ladder starts at 512 must not
+    /// veto a live stream running at 64, because the crossing in front of the copy
+    /// turns one block into the other; a driver that takes 64 gives 64.
+    #[test]
+    fn a_copy_takes_the_nearest_size_the_second_driver_takes() {
+        let doubling = Ladder {
+            min: 8,
+            max: 2_048,
+            steps: Steps::Doubling,
+        };
+        assert_eq!(doubling.nearest_at_least(64), Some(64));
+        assert_eq!(doubling.nearest_at_least(96), Some(128));
+        // Nothing at or above: the largest it takes, which is still seconds of
+        // sound and still a period the driver agreed to.
+        assert_eq!(doubling.nearest_at_least(4_096), Some(2_048));
+        // The live path is 64 frames and this driver's ladder starts at 512: the
+        // copy runs at 512 and the ring absorbs the difference.
+        let chunky = Ladder {
+            min: 512,
+            max: 512,
+            steps: Steps::Any,
+        };
+        assert!(!chunky.accepts(64));
+        assert_eq!(chunky.nearest_at_least(64), Some(512));
+        let stepped = Ladder {
+            min: 32,
+            max: 512,
+            steps: Steps::Linear(32),
+        };
+        assert_eq!(stepped.nearest_at_least(100), Some(128));
+        assert_eq!(stepped.nearest_at_least(600), Some(512));
+        // A step that does not reach its own maximum stops short of it rather than
+        // promising a size the driver never named.
+        assert_eq!(
+            Ladder {
+                min: 32,
+                max: 100,
+                steps: Steps::Linear(32),
+            }
+            .nearest_at_least(90),
+            Some(96)
+        );
+        // Nothing to go on, and a driver whose two numbers contradict each other:
+        // both answer nothing, which sends the copy back as a refusal in the
+        // driver's own words rather than as a size nobody asked for.
+        assert_eq!(Ladder::UNKNOWN.nearest_at_least(64), None);
+        assert_eq!(
+            Ladder {
+                min: 1_024,
+                max: 128,
+                steps: Steps::Any,
+            }
+            .nearest_at_least(64),
+            None
+        );
+    }
+
     /// The panel that prompted this: ASIO, Komplete Audio ASIO Driver, mono
     /// input at 48000/128, stereo output. It has to resolve.
     #[test]
@@ -2101,6 +2250,77 @@ mod tests {
                     .contains("needs ASIO")
             );
         }
+    }
+
+    /// A copy on a driver of its own lives on that driver's channels: a start of 1
+    /// is ordinary there, the room behind the first group is not its business, and
+    /// what the second driver takes for a rate and a period is a question it is
+    /// asked when the stream opens. Naming a driver without a channel is half a
+    /// decision, and naming the driver the copy comes from is one decision twice.
+    #[test]
+    fn a_copy_on_a_second_driver_is_measured_on_that_driver() {
+        let mut snapshot = eight_channel_snapshot();
+        snapshot.outputs.push("ReaRoute 3".into());
+        let request = |start, driver: Option<&str>| crate::settings::Settings {
+            asio_second_output: Some(start),
+            asio_second_device: driver.map(str::to_owned),
+            ..second_output(start)
+        };
+        // 1–2 on the second interface is the pair that interface has, and the eight
+        // channels of the first one do not enter into it.
+        let other = snapshot
+            .resolve_settings(&request(1, Some("ReaRoute 3")))
+            .expect("a copy on another driver");
+        assert_eq!(other.asio_second_output, Some(1));
+        assert_eq!(other.asio_second_device.as_deref(), Some("ReaRoute 3"));
+        // A start this snapshot's own driver has no channels for is not refused
+        // here, because it is not this driver's channels: the second driver is the
+        // one that will say whether it has a 9 and a 10, when the stream is opened.
+        assert!(
+            snapshot
+                .resolve_settings(&request(9, Some("ReaRoute 3")))
+                .is_ok()
+        );
+        // The half where a driver was chosen and no channel was, and the half where
+        // the driver is not on this machine: both are Apply objecting in words, not
+        // a stream opening on a guess.
+        let no_channel = crate::settings::Settings::<crate::settings::NoPreferences> {
+            backend: Some("asio".into()),
+            asio_second_device: Some("ReaRoute 3".into()),
+            ..Default::default()
+        };
+        assert!(
+            snapshot
+                .resolve_settings(&no_channel)
+                .unwrap_err()
+                .contains("starts on")
+        );
+        let absent = request(3, Some("ReaRoute 4"));
+        assert!(
+            snapshot
+                .resolve_settings(&absent)
+                .unwrap_err()
+                .contains("second ASIO driver")
+        );
+        // Naming the driver the copy is copied from means the copy stays where the
+        // signal already is, which is what naming nothing means; the overlap rule is
+        // back with it, and the file is written back the short way.
+        let twice = request(2, Some("Speakers"));
+        assert!(
+            snapshot
+                .resolve_settings(&twice)
+                .unwrap_err()
+                .contains("pick 3 or later")
+        );
+        let healed = request(3, Some("Speakers"));
+        assert_eq!(
+            snapshot
+                .resolve_settings(&healed)
+                .unwrap()
+                .asio_second_device,
+            None,
+            "a driver named twice was written back as a driver named twice"
+        );
     }
 
     #[test]
