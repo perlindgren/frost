@@ -119,9 +119,9 @@ const TRACK_HALF: f32 = 56.0;
 /// 0.05 dB, and that rate grows exponentially with the drag's speed (px
 /// per frame), so a slow, careful drag keeps fractions-of-a-dB control
 /// while a fast flick sweeps the range in a swipe. The result clamps to
-/// the ±24 dB the track spans.
+/// the ±[`crate::TRIM_DB`] dB the track spans.
 fn gain_drag_delta(px: f32, gain_db: f32) -> f32 {
-    (gain_db + px * 0.05 * (px.abs() / 8.0).exp()).clamp(-24.0, 24.0)
+    (gain_db + px * 0.05 * (px.abs() / 8.0).exp()).clamp(-crate::TRIM_DB, crate::TRIM_DB)
 }
 /// Parse the editor's draft: a comma stands in for the decimal point,
 /// and anything that is not a plain, finite dB value is no value at all.
@@ -131,20 +131,23 @@ fn parse_gain(text: &str) -> Option<f32> {
         .parse::<f32>()
         .ok()
         .filter(|db| db.is_finite())
-        .map(|db| db.clamp(-24.0, 24.0))
+        .map(|db| db.clamp(-crate::TRIM_DB, crate::TRIM_DB))
 }
 /// The track height a gain dB sits at — the inverse mapping the white
 /// gain line is drawn from.
 fn gain_line_y(gain_db: f32, wire_y: f32) -> f32 {
-    wire_y - TRACK_HALF + 2.0 * TRACK_HALF * ((gain_db + 24.0) / 48.0).clamp(0.0, 1.0)
+    wire_y - TRACK_HALF
+        + 2.0 * TRACK_HALF * ((gain_db + crate::TRIM_DB) / (2.0 * crate::TRIM_DB)).clamp(0.0, 1.0)
 }
 /// The trim a wire shows *before* its meter exists: the engine's own
-/// linear factor in dB, over the ±24 dB the track spans, so the number
-/// in the card's corner is the gain the wire is actually applying and
-/// not a placeholder. A key the slot table does not hold is unity, and
+/// linear factor in dB, over the ±[`crate::TRIM_DB`] dB the track spans, so
+/// the number in the card's corner is the gain the wire is actually applying
+/// and not a placeholder. A key the slot table does not hold is unity, and
 /// unity reads `+0.0`.
 fn engine_gain_db(linear: Option<f32>) -> f32 {
-    linear.map_or(0.0, |gain| (20.0f32 * gain.log10()).clamp(-24.0, 24.0))
+    linear.map_or(0.0, |gain| {
+        (20.0f32 * gain.log10()).clamp(-crate::TRIM_DB, crate::TRIM_DB)
+    })
 }
 /// What a card's corner reads: the trim the rack is applying on that wire,
 /// and whether the meter there is over full scale — the clip travels with
@@ -164,15 +167,25 @@ fn corner_reading(wire: Option<&WireMeter>, engine_linear: Option<f32>) -> (f32,
         None => (engine_gain_db(engine_linear), false),
     }
 }
-/// A meter for one wire, born collapsed. It opens at whatever trim the
-/// engine already applies to that wire, so the white line stands where the
-/// gain actually is, and it is built latching: a clip it catches stays on the
-/// stub until somebody clicks it away, which is the point of a meter nobody
-/// is watching.
-fn new_wire_meter(gain_linear: Option<f32>, time: u64) -> WireMeter {
+/// Where a meter born on this wire opens: the trim the rack remembered for it,
+/// if the rack remembered one, otherwise the gain the engine is applying, and
+/// unity where it has no word from either. The remembered value comes first
+/// because on a resumed rack the audio has not run — the slot table holds no
+/// key until the chain reaches the audio side — so a meter that opened at the
+/// engine would open at unity and then, a frame later, be pushed to the
+/// operator's own number by the tick pass that re-states every meter. Reading
+/// the file first is what lets a resumed rack show the trim it was left at
+/// before it has made a sound.
+fn remembered_trim(remembered: Option<f32>, engine_linear: Option<f32>) -> f32 {
+    remembered.unwrap_or_else(|| engine_gain_db(engine_linear))
+}
+/// A meter for one wire, born collapsed at a trim already known in dB. It is
+/// built latching: a clip it catches stays on the stub until somebody clicks it
+/// away, which is the point of a meter nobody is watching.
+fn new_wire_meter(gain_db: f32, time: u64) -> WireMeter {
     WireMeter {
         peak: PeakMeter::latching(time),
-        gain_db: engine_gain_db(gain_linear),
+        gain_db,
         open: false,
     }
 }
@@ -189,6 +202,7 @@ fn new_wire_meter(gain_linear: Option<f32>, time: u64) -> WireMeter {
 fn watch_wires(
     meters: &mut std::collections::BTreeMap<(u64, bool), WireMeter>,
     ids: impl IntoIterator<Item = u64>,
+    mut remembered: impl FnMut(u64, bool) -> Option<f32>,
     mut gain_of: impl FnMut(u64) -> Option<f32>,
     time: u64,
 ) {
@@ -198,8 +212,8 @@ fn watch_wires(
             if meters.contains_key(&key) {
                 continue;
             }
-            let gain_linear = gain_of(id << 1 | u64::from(side));
-            meters.insert(key, new_wire_meter(gain_linear, time));
+            let gain_db = remembered_trim(remembered(id, side), gain_of(id << 1 | u64::from(side)));
+            meters.insert(key, new_wire_meter(gain_db, time));
         }
     }
 }
@@ -540,17 +554,19 @@ impl RackUi {
         }
     }
     /// Writes a wire's trim wherever that trim lives: the meter's own copy,
-    /// which is what the white line draws and the tick loop re-states, and the
-    /// engine's slot table, which is what the audio path actually applies. A
-    /// card that is no longer on the canvas has no meter to write, so both are
-    /// written on one call and neither is trusted alone, because the readout
-    /// shows a single value and this is what makes it true. The dB→linear
+    /// which is what the white line draws and the tick loop re-states, the
+    /// engine's slot table, which is what the audio path actually applies, and
+    /// the rack's record, which is what a resumed rack opens with. A card that
+    /// is no longer on the canvas has no meter to write, so all three are
+    /// written on one call and none of them is trusted alone, because the
+    /// readout shows a single value and this is what makes it true. The dB→linear
     /// conversion is the one the tick loop uses, so the two paths can never
     /// drift apart.
     fn set_trim(&mut self, id: u64, side: bool, gain_db: f32) {
         if let Some(wire) = self.wire_meters.get_mut(&(id, side)) {
             wire.gain_db = gain_db;
         }
+        self.runtime.set_trim(id, side, gain_db);
         self.runtime
             .wires
             .set_gain(id << 1 | u64::from(side), 10f32.powf(gain_db / 20.0));
@@ -628,10 +644,14 @@ impl Process for RackUi {
         self.windows.capture(&mut self.runtime);
         self.runtime.tick();
         // Every wire the rack carries gets its meter here, before anything is
-        // drawn, so a clip shows up on a stub nobody has ever clicked.
+        // drawn, so a clip shows up on a stub nobody has ever clicked. A wire
+        // whose card came out of the settings file is born at the trim the rack
+        // saved for it, which is the only gain a rack can know before its
+        // audio has run a block.
         watch_wires(
             &mut self.wire_meters,
             self.runtime.cards.iter().map(|card| card.id.0),
+            |id, side| self.runtime.trim(id, side),
             |key| self.runtime.wires.gain_of(key),
             now(),
         );
@@ -927,12 +947,16 @@ impl Process for RackUi {
                             // away or brings it back and the peak-hold runs
                             // straight through the collapse. The insert arm
                             // is a fallback so a click can never be
-                            // swallowed, not the normal way in.
+                            // swallowed, not the normal way in — but it asks
+                            // the same question `watch_wires` asks, so a meter
+                            // born here opens at the saved trim too.
                             let meter = self.wire_meters.entry(key).or_insert_with(|| {
-                                new_wire_meter(
-                                    self.runtime.wires.gain_of(slot.id.0 << 1 | u64::from(side)),
-                                    now(),
-                                )
+                                let key = slot.id.0 << 1 | u64::from(side);
+                                let gain_db = remembered_trim(
+                                    self.runtime.trim(slot.id.0, side),
+                                    self.runtime.wires.gain_of(key),
+                                );
+                                new_wire_meter(gain_db, now())
                             });
                             meter.open = !meter.open;
                             // A click on the meter body is also the rack's
@@ -1231,10 +1255,13 @@ impl Process for RackUi {
         if let Some((id, side, last_y)) = self.gain_drag {
             if ctx.key_down(frost::KeyCode::Escape) || !down || self.overlay.is_some() {
                 self.gain_drag = None;
-            } else if let Some(wire) = self.wire_meters.get_mut(&(id, side))
-                && let Some([_, my]) = ctx.mouse_position()
+            } else if let Some([_, my]) = ctx.mouse_position()
+                && let Some(db) = self
+                    .wire_meters
+                    .get(&(id, side))
+                    .map(|wire| gain_drag_delta(my - last_y, wire.gain_db))
             {
-                wire.gain_db = gain_drag_delta(my - last_y, wire.gain_db);
+                self.set_trim(id, side, db);
                 self.gain_drag = Some((id, side, my));
             } else {
                 self.gain_drag = None;
@@ -2164,7 +2191,7 @@ mod tests {
         // its own; opening a track is the operator's, and the two are not
         // the same act.
         let mut meters: BTreeMap<(u64, bool), WireMeter> = BTreeMap::new();
-        watch_wires(&mut meters, [1, 3], |_| None, 0);
+        watch_wires(&mut meters, [1, 3], |_, _| None, |_| None, 0);
         let keys: Vec<(u64, bool)> = meters.keys().copied().collect();
         assert_eq!(keys, vec![(1, false), (1, true), (3, false), (3, true)]);
         for wire in meters.values() {
@@ -2179,12 +2206,56 @@ mod tests {
         // by the engine. A meter born around it opens where the gain is, so
         // the white line does not have to be chased down after the fact.
         let mut meters: BTreeMap<(u64, bool), WireMeter> = BTreeMap::new();
-        watch_wires(&mut meters, [4], |key| (key == 9).then_some(0.5), 0);
+        watch_wires(
+            &mut meters,
+            [4],
+            |_, _| None,
+            |key| (key == 9).then_some(0.5),
+            0,
+        );
         assert_eq!(meters[&(4, false)].gain_db, 0.0, "an untrimmed wire");
         assert!(
             (meters[&(4, true)].gain_db + 6.0206).abs() < 0.01,
             "and a trimmed one reads its trim: {:?}",
             meters[&(4, true)].gain_db
+        );
+    }
+    #[test]
+    fn a_saved_trim_beats_the_engine_when_a_meter_is_born() {
+        use std::collections::BTreeMap;
+        // Two sources for one number, and the order between them has to be
+        // written down somewhere: the rack remembers trims in its settings
+        // file, while the engine only knows what it is applying right now.
+        // On a cold start the engine is at unity for every wire, so a
+        // remembered trim has to win or the restored gain staging would be
+        // drawn at 0 dB while the file says otherwise. An unrecorded wire
+        // still follows the engine, and one with neither stays at unity.
+        let mut meters: BTreeMap<(u64, bool), WireMeter> = BTreeMap::new();
+        watch_wires(
+            &mut meters,
+            [7, 8],
+            |id, side| (id == 7 && !side).then_some(-9.0),
+            |key| (key == (7 << 1 | 1) || key == (8 << 1)).then_some(0.25),
+            0,
+        );
+        assert!(
+            (meters[&(7, false)].gain_db + 9.0).abs() < 1e-6,
+            "the file's number, not the engine's: {:?}",
+            meters[&(7, false)].gain_db
+        );
+        assert!(
+            (meters[&(7, true)].gain_db + 12.0412).abs() < 0.01,
+            "unrecorded, so the engine's quarter gain: {:?}",
+            meters[&(7, true)].gain_db
+        );
+        assert!(
+            (meters[&(8, false)].gain_db + 12.0412).abs() < 0.01,
+            "same for a card the file never mentioned"
+        );
+        assert_eq!(
+            meters[&(8, true)].gain_db,
+            0.0,
+            "and unity where neither spoke"
         );
     }
     #[test]
@@ -2194,12 +2265,12 @@ mod tests {
         // operator set, the track they left open and a clip they have not
         // acknowledged are all theirs, not this pass's to reset.
         let mut meters: BTreeMap<(u64, bool), WireMeter> = BTreeMap::new();
-        watch_wires(&mut meters, [2], |_| None, 0);
+        watch_wires(&mut meters, [2], |_, _| None, |_| None, 0);
         let wire = meters.get_mut(&(2, true)).unwrap();
         wire.open = true;
         wire.gain_db = -12.0;
         wire.peak.tick(-18.0, 1.4, 16);
-        watch_wires(&mut meters, [2], |_| Some(4.0), 1_000);
+        watch_wires(&mut meters, [2], |_, _| Some(4.0), |_| None, 1_000);
         let wire = &meters[&(2, true)];
         assert!(wire.open, "still expanded");
         assert_eq!(wire.gain_db, -12.0, "still the operator's trim");
@@ -2213,7 +2284,7 @@ mod tests {
         // start, and it is the latching kind, so the red it earns in the
         // dark is still on the stub when the operator finally looks.
         let mut meters: BTreeMap<(u64, bool), WireMeter> = BTreeMap::new();
-        watch_wires(&mut meters, [6], |_| None, 0);
+        watch_wires(&mut meters, [6], |_, _| None, |_| None, 0);
         let wire = meters.get_mut(&(6, false)).unwrap();
         wire.peak.tick(-18.0, 1.4, 16);
         for t in (16..4_000).step_by(16) {

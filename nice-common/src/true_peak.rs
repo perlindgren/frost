@@ -117,14 +117,112 @@
 //! `tests/true_peak_never_allocates.rs`.
 //!
 //! Measured, in release, on 4096 128-frame stereo blocks of tone plus burst
-//! (`examples/true_peak_cost.rs`, fastest of seven runs): 1.63 ns per sample per
-//! channel, 412 ns per stereo block, 0.0155 % of one core at 48 kHz. The old
-//! `max |x|` fold clocks 0.13 ns per sample, so this is about 12× the fold —
-//! worth naming rather than smoothing over, and worth reading with its reason:
-//! a reduction has no dependency between samples and the compiler widens it to
-//! SIMD, while this loop's history is a recurrence the width of the tap count.
-//! Twelve times 412 ns is still 0.0004 ms of the 2.67 ms a 128-frame block has
-//! at 48 kHz, and the meter is one pass over buffers the plugin already walked.
+//! (`examples/true_peak_cost.rs`, fastest of seven runs, a million samples per
+//! channel streamed block after block): 0.95 ns per sample per channel, 242 ns
+//! per stereo block, 0.0091 % of one core at 48 kHz, on a 32-thread Ryzen 9
+//! 7950X3D. The target matters here: the same example built for the plain
+//! `x86-64` baseline instead of the `x86-64-v3` this workspace is compiled for
+//! costs 1.64 ns per sample and 420 ns per block, because at the baseline the
+//! 24-tap inner loop stays scalar while the wider target folds the three phase
+//! branches into FMA lanes. Both readings are real; the cheaper one is the one
+//! the rack actually ships with.
+//!
+//! The `max |x|` fold this replaced clocks 0.067 ns per sample on the same
+//! buffers, 0.130 ns at the baseline, so the estimator is 12 to 14 times a plain
+//! fold — worth naming rather than smoothing over, and worth reading with its
+//! reason: a reduction has no dependency between samples and the compiler widens
+//! it to SIMD even at the baseline, while this loop's history is a recurrence the
+//! width of the tap count. Twelve times 242 ns is still 0.0002 ms of the
+//! 2.67 ms a 128-frame block has at 48 kHz, and the meter is one pass over
+//! buffers the plugin already walked.
+//!
+//! ## Measured inside the rack
+//!
+//! Those are the figures for the loop alone. What a metered wire actually costs
+//! is the fold, the two gain multiplies, the peak read and the atomic publish
+//! together, in `WireLevels`, on 128-frame stereo blocks whose buffers are
+//! already in L1 because the graph just walked them. Every row below is printed
+//! by the harness that measures them, in the engine, where those private parts
+//! are reachable:
+//!
+//! ```text
+//! RUSTFLAGS="-Ctarget-cpu=x86-64-v3" \
+//!   cargo test -p nice-rack-engine --release --lib -- \
+//!   --ignored --nocapture --test-threads=1 cost_bench
+//! ```
+//!
+//! Medians, at the target this workspace ships:
+//!
+//! | per 128-frame stereo block | cost | share of a 48 kHz block |
+//! | --- | --- | --- |
+//! | one metered wire end to end | 344 ns | 0.013 % |
+//! | its true-peak pass alone | 255 ns | 0.010 % |
+//! | its fold of absolute values alone | 16 ns | 0.001 % |
+//! | an rms fold for comparison | 75 ns | 0.003 % |
+//! | both channels through a 0.5 trim | 7 ns | |
+//! | one buffer copied between two cards | 10 ns | |
+//! | publishing two wires | 2 ns | |
+//! | clearing a two-channel buffer | 7 ns | |
+//!
+//! A median moves a few percent with whatever else the machine is doing. The
+//! fold, the copy and the publish are stable to the nanosecond; the rows that
+//! contain the estimator wander by half a dozen, which is why each of them is
+//! the median of thirty chunks rather than a single timing.
+//!
+//! The estimator lands within a few percent of the standalone example, and so
+//! does the fold: 16 ns over the 256 samples of a stereo block is 0.063 ns a
+//! sample, against the 0.067 ns the standalone fold clocked. An earlier draft of
+//! this table said 62 ns for that row, from a hand-written loop the compiler
+//! scalarised, which
+//! is the shape nobody ships; the harness reads `AudioBuffer` the way
+//! `wire_level` does, and the agreement with the standalone measurement is the
+//! reason to trust it. The estimator pass alone is about sixteen times the fold
+//! and between three and four times the rms fold — the two reductions differ
+//! from each other more than either differs from the rack. The absolute numbers
+//! are the useful ones either way.
+//!
+//! Eight pass-through cards, metered, cost 6.0 µs of the block — 0.226 % of a
+//! core — and the metering part of that is 0.34 µs per wire, linear in the number
+//! of wires, which is what a per-sample filter should do. Nothing else in the
+//! plumbing is above 100 ns per wire.
+//!
+//! ## Measured against real plugins
+//!
+//! Against the DSP the meter sits behind, the same bill disappears. These are
+//! real CLAP cards loaded through the host, one chain of 128-frame stereo
+//! blocks, once with a registered `WireLevels` and once with one that registers
+//! nothing — so the dark run never calls the estimator at all. Medians of twelve
+//! chunks of a thousand blocks, on the same machine, with the cards built at
+//! the same `x86-64-v3` code generation as the harness. That last condition is
+//! not decoration: run the same test without the flag and the dark rows stay
+//! where they are — the shipped cards are already built for `v3` — while the
+//! metering increment climbs from 0.29–0.35 µs a wire to 0.44–0.59 µs, because
+//! the metering half is host code and it is the half that stops being
+//! vectorised. The two numbers only mean something when they were compiled the
+//! same way.
+//!
+//! | card | one card, dark | one card, metered | four cards, dark | four cards, metered |
+//! | --- | --- | --- | --- | --- |
+//! | Nice Echo | 13.4 µs | 14.0 µs | 51.2 µs | 53.9 µs |
+//! | Nice Pi-Fase | 8.9 µs | 9.6 µs | 35.3 µs | 37.7 µs |
+//! | Nice Wah | 3.2 µs | 3.9 µs | 12.4 µs | 15.1 µs |
+//! | Nice Ecomplex | 3.2 µs | 3.9 µs | 12.4 µs | 15.1 µs |
+//! | Nice Phase | 2.7 µs | 3.4 µs | 10.8 µs | 13.4 µs |
+//! | Nice Tuner | 0.7 µs | 1.4 µs | 2.3 µs | 5.1 µs |
+//!
+//! The extra time per metered wire comes out between 0.29 µs and 0.35 µs on
+//! every one of them — the 0.34 µs the engine harness measured, in front of six
+//! different kinds of DSP, and no part of it depends on what the card does. Per
+//! card that is two wires, about 0.68 µs, or 0.025 % of a core. The honest
+//! summary is a percentage read in two directions: 4.5 to 8 % on a card that
+//! works for a living, 20 to 26 % on a cheap one, and a little more than double
+//! the block time of a card that does almost nothing, since 1.4 µs of metered
+//! tuner against 0.7 µs of dark one is the one pairing where the meter is the
+//! expensive part. A rack full of tuners would notice; a rack with something
+//! audible in it will not. These are single-host numbers, and every row is
+//! printed by `nice-clap-host`'s `live_cost` test, which loads the card named
+//! by `NICE_RACK_TEST_CLAP` and prints the table above; its module docs carry
+//! the command.
 
 /// Oversampling factor of the filter bank: one branch per quarter sample.
 pub const OVER: usize = 4;

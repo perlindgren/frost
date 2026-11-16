@@ -6,6 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+#[cfg(test)]
+mod cost_bench;
+
 /// Plan-owned planar sample storage. Only the requested frame prefix is valid
 /// during a process call. Processors must write every output sample in that prefix.
 pub struct AudioBuffer(Vec<Vec<f32>>);
