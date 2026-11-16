@@ -254,6 +254,16 @@ pub struct Runtime {
     last_save: Instant,
     pub(crate) persistence_path: Option<PathBuf>,
     saved_plugins: Vec<crate::SavedPlugin>,
+    /// The gain staging the rack remembers: every wire's trim in dB, keyed
+    /// `(card id, is output)`. The GUI holds the copy the operator drags and
+    /// types; this is the copy the rack keeps, written by [`Runtime::set_trim`]
+    /// and read back when a wire's meter is born, so a resumed rack starts at
+    /// the levels it was left at. Card ids are never reused — `next_id` only
+    /// ever grows, past every id a file named — so a remembered trim cannot
+    /// drift onto a different card. What is *not* in here is clip state, for
+    /// the reason [`crate::SavedPlugin`] spells out: a held clip is a report
+    /// about audio that already passed.
+    trims: BTreeMap<(u64, bool), f32>,
     worker: Option<JoinHandle<Endpoints>>,
     io: Option<DeviceStreams>,
     /// The rings of `io` while no worker owns them. `spawn_dsp` returns them
@@ -280,6 +290,28 @@ pub struct Runtime {
     diagnostic: Option<String>,
     halted: bool,
 }
+/// The gain staging a saved rack starts with: both wires of every instance the
+/// file names, in dB, clamped back into the range a trim can hold. A file
+/// written before trims existed names none and every wire starts at unity,
+/// which is the gain that rack was running; a hand-edited value beyond the end
+/// of the track is brought back to the end, so the number the rack reads out is
+/// a number it can also show and the next save writes the file back sane.
+fn remembered_trims(plugins: &[crate::SavedPlugin]) -> BTreeMap<(u64, bool), f32> {
+    plugins
+        .iter()
+        .flat_map(|saved| {
+            [
+                ((saved.id, false), saved.gain_in),
+                ((saved.id, true), saved.gain_out),
+            ]
+        })
+        // `f32::clamp` passes a `NaN` straight through, and a `NaN` trim is a
+        // meter with no white line and a gain the engine will not apply, so a
+        // number that is not a number is treated as no record at all.
+        .filter(|(_, db)| db.is_finite())
+        .map(|(key, db)| (key, db.clamp(-crate::TRIM_DB, crate::TRIM_DB)))
+        .collect()
+}
 impl Runtime {
     pub fn new(settings: Settings) -> Self {
         let mut runtime = Self {
@@ -298,6 +330,7 @@ impl Runtime {
                 .filter_map(|p| p.editor.map(|g| (NodeId(p.id), g)))
                 .collect(),
             saved_plugins: settings.preferences.plugins.clone(),
+            trims: remembered_trims(&settings.preferences.plugins),
             last_save: Instant::now(),
             persistence_path: None,
             worker: None,
@@ -740,6 +773,27 @@ impl Runtime {
             action.cards = cards;
         }
     }
+    /// What the rack remembers for one wire, in dB: the trim a resumed rack
+    /// opens its meter at, and what gets saved back out. `None` means the rack
+    /// holds no record of this wire at all, which is what a card dragged in
+    /// this session looks like before its first trim.
+    pub(crate) fn trim(&self, id: u64, side: bool) -> Option<f32> {
+        self.trims.get(&(id, side)).copied()
+    }
+    /// Take ownership of a wire's trim. Every way a trim changes in the GUI —
+    /// a drag, a typed number, a value arriving from a saved file — goes
+    /// through the one place that writes the meter and the engine, and that
+    /// place calls this, so [`Runtime::persist`] needs to know nothing about
+    /// where a trim came from. A non-finite number is refused rather than
+    /// remembered: the engine already declines to apply one, and a `NaN`
+    /// written into the settings file would come back as a file the rack
+    /// cannot read.
+    pub(crate) fn set_trim(&mut self, id: u64, side: bool, gain_db: f32) {
+        if gain_db.is_finite() {
+            self.trims
+                .insert((id, side), gain_db.clamp(-crate::TRIM_DB, crate::TRIM_DB));
+        }
+    }
     pub(crate) fn persist(&mut self) {
         if self.action.is_some() || self.opening.is_some() {
             return;
@@ -767,6 +821,13 @@ impl Runtime {
                 name: card.name.clone(),
                 state: self.states.get(&card.id).cloned(),
                 editor: self.editor_geometry.get(&card.id).copied(),
+                // A card carries its own trims out of the rack's memory, so a
+                // card removed from the canvas takes them with it. The map
+                // itself keeps its entries, exactly as `editor_geometry` does:
+                // an edit may be undone, and a trim the operator set is the
+                // kind of thing worth having back.
+                gain_in: self.trim(card.id.0, false).unwrap_or_default(),
+                gain_out: self.trim(card.id.0, true).unwrap_or_default(),
             })
             .collect();
         if plugins != self.saved_plugins {
@@ -1207,6 +1268,111 @@ mod tests {
         assert_eq!(saved.preferences.plugins.len(), 2);
         assert_eq!(saved.preferences.plugins[1].class, second_class);
         assert!(!runtime.busy());
+        runtime.close();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !runtime.stopped() {
+            runtime.tick();
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
+    /// The gain staging belongs to the arrangement, so a rack whose output
+    /// wire was pulled down 6 dB comes back with that wire at −6 dB, and the
+    /// operator does not rediscover their levels by ear after every launch.
+    /// This runs on the same cold controller the drop test above uses — no
+    /// backend chosen, no audio ever started — because what is on trial is the
+    /// record and not the sound.
+    ///
+    /// The shape of the test is deliberate: a trim is changed with nothing
+    /// else about the rack touched, and the file is rewritten by the ordinary
+    /// two second debounce inside [`Runtime::tick`], exactly as it happens
+    /// when someone drags a white line and walks away. A save forced through
+    /// `persist` would prove far less, because the GUI is the only thing that
+    /// calls it and `persist` knows nothing about where a trim came from.
+    ///
+    /// The last part is the half of the request that says *without the
+    /// clipping state*: a rack saved while every meter in it was red has to
+    /// resume green. Nothing about a latch is written out, so the check is
+    /// that the file does not mention one.
+    #[test]
+    #[ignore = "requires NICE_RACK_TEST_CLAP pointing to a freshly built repository CLAP export"]
+    #[allow(unsafe_code)]
+    fn the_gain_staging_comes_back_with_the_rack() {
+        let path = PathBuf::from(
+            std::env::var_os("NICE_RACK_TEST_CLAP").expect("Set NICE_RACK_TEST_CLAP"),
+        );
+        // SAFETY: explicit test opt-in to this repository's own plugin export.
+        let entry = unsafe { nice_clap_host::Entry::load(&path).unwrap() };
+        let class = entry
+            .descriptors()
+            .unwrap()
+            .first()
+            .expect("the test export contains at least one plugin")
+            .id
+            .clone();
+        let card = Card::new(NodeId(2), path, entry, class.clone(), "Test plugin".into()).unwrap();
+        let file = frost::scratch::claim("rack-gain-staging").join("nice-rack-settings.ron");
+        let _ = std::fs::remove_file(&file);
+
+        let mut runtime = Runtime::new(Settings::default());
+        settle(&mut runtime);
+        runtime.edit(vec![card]);
+        settle(&mut runtime);
+        runtime.persistence_path = Some(file.clone());
+        runtime.last_save = Instant::now() - Duration::from_secs(3);
+        runtime.tick();
+        let (saved, warning) = Settings::load_from(&file);
+        assert_eq!(warning, None);
+        assert_eq!(saved.preferences.plugins.len(), 1);
+        assert_eq!(
+            (
+                saved.preferences.plugins[0].gain_in,
+                saved.preferences.plugins[0].gain_out
+            ),
+            (0.0, 0.0),
+            "a card dragged in this session is remembered at unity"
+        );
+
+        runtime.set_trim(2, true, -6.0);
+        runtime.set_trim(2, false, 3.5);
+        runtime.last_save = Instant::now() - Duration::from_secs(3);
+        runtime.tick();
+        let (saved, warning) = Settings::load_from(&file);
+        assert_eq!(warning, None);
+        assert_eq!(saved.preferences.plugins.len(), 1, "one card, still");
+        assert_eq!(saved.preferences.plugins[0].class, class);
+        assert_eq!(saved.preferences.plugins[0].gain_out, -6.0);
+        assert_eq!(saved.preferences.plugins[0].gain_in, 3.5);
+
+        // Back into a controller that never saw the drag, which is what a
+        // resume is: the trims arrive as file data and are clamped on the way
+        // in, so a hand-edited file cannot smuggle a trim outside the range
+        // the GUI can draw.
+        let remembered = remembered_trims(&saved.preferences.plugins);
+        assert_eq!(remembered.get(&(2, true)).copied(), Some(-6.0));
+        assert_eq!(remembered.get(&(2, false)).copied(), Some(3.5));
+        let wild = remembered_trims(&[crate::SavedPlugin {
+            gain_in: 900.0,
+            gain_out: f32::NAN,
+            ..saved.preferences.plugins[0].clone()
+        }]);
+        assert_eq!(
+            wild.get(&(2, false)).copied(),
+            Some(crate::TRIM_DB),
+            "a number past the range is drawn at the end of it"
+        );
+        assert_eq!(
+            wild.get(&(2, true)),
+            None,
+            "and a `NaN` is no record at all, so the meter falls back to the engine"
+        );
+
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            !text.contains("clip") && !text.contains("latch"),
+            "the saved rack holds gain staging and no clipping state: {text}"
+        );
+
         runtime.close();
         let deadline = Instant::now() + Duration::from_secs(2);
         while !runtime.stopped() {
