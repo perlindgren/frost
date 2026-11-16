@@ -1,6 +1,7 @@
 //! Prepared, single-thread graph execution. Preparation owns all allocation;
 //! processing borrows external buffers and never changes graph topology.
 use crate::{Channels, GraphError, NodeId, NodeKind, RackGraph};
+use nice_common::true_peak::TruePeak;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -144,14 +145,24 @@ struct Edge {
 struct WireSlot {
     key: AtomicU64,
     rms: AtomicU32,
+    /// True peak of the wire (dBTP) in f32 bits. A linear amplitude, so it can
+    /// exceed `1.0`: the inter-sample crest of a full-scale step is above full
+    /// scale by construction. See [`nice_common::true_peak`].
     peak: AtomicU32,
+    /// Applied UI trim as a linear multiplier in f32 bits, `1.0` for unity.
+    /// The UI thread stores it at any time and the audio thread reads it once
+    /// per block: a block carries either the old trim or the new one, which
+    /// is exactly what a live slider needs, and a rebuild keeps the trim
+    /// because the slot keeps its key (`reset` retires only dead keys).
+    gain: AtomicU32,
 }
 
 /// Lock-free wire observations shared between the audio thread and the UI.
 /// A control thread registers wires through [`PreparedRack::attach_wire_levels`]
 /// before the plan crosses to the audio thread; from then on the audio thread
-/// only stores f32 bits and the UI samples by key, so metering costs no locks
-/// and no allocations in `process`.
+/// only stores f32 bits, the UI samples by key and pushes trims through
+/// [`WireLevels::set_gain`], so metering and per-wire gain cost no locks and
+/// no allocations in `process`.
 pub struct WireLevels {
     slots: Vec<WireSlot>,
 }
@@ -164,7 +175,7 @@ impl Default for WireLevels {
 
 impl WireLevels {
     /// A table with room for `capacity` wires. Allocation happens only here,
-    /// keeping `attach`, `publish` and `sample` allocation-free.
+    /// keeping `attach`, `publish`, `sample` and the gain path allocation-free.
     pub fn new(capacity: usize) -> Self {
         Self {
             slots: (0..capacity)
@@ -172,36 +183,52 @@ impl WireLevels {
                     key: AtomicU64::new(0),
                     rms: AtomicU32::new(0),
                     peak: AtomicU32::new(0),
+                    gain: AtomicU32::new(1.0f32.to_bits()),
                 })
                 .collect(),
         }
     }
 
-    /// Clear the table for a fresh registration. Control thread only: a
-    /// rebuild always joins the previous audio worker before the new plan is
-    /// attached, so no reader races this store.
-    fn reset(&self) {
+    /// Retire slots whose key the rebuilt plan no longer registers, and calm
+    /// the levels of the wires that stay. Control thread only: a rebuild
+    /// always joins the previous audio worker before the new plan is attached,
+    /// so no reader races these stores. A key that stays keeps its slot — and
+    /// with it the trim the UI applied — so rebuilding the rack to add or
+    /// remove one card never silently resets the gains of the others.
+    fn reset(&self, keeping: &[u64]) {
         for slot in &self.slots {
-            slot.key.store(0, Ordering::Relaxed);
+            let key = slot.key.load(Ordering::Relaxed);
+            if key != 0 && !keeping.contains(&key) {
+                slot.key.store(0, Ordering::Relaxed);
+                slot.gain.store(1.0f32.to_bits(), Ordering::Relaxed);
+            }
             slot.rms.store(0, Ordering::Relaxed);
             slot.peak.store(0, Ordering::Relaxed);
         }
     }
 
-    /// Reserve a slot for `key`. Control thread only (see `reset`). A zero
-    /// key or a full table declines the wire; that meter then stays
-    /// unobserved instead of displacing an already published wire.
+    /// Reserve a slot for `key`. Control thread only (see `reset`). A key the
+    /// table already holds keeps its slot and its applied trim; a new key
+    /// takes a free slot at unity gain. A zero key or a full table declines
+    /// the wire; that meter then stays unobserved instead of displacing an
+    /// already published wire.
     fn attach(&self, key: u64) -> Option<usize> {
         if key == 0 {
             return None;
         }
+        let held = |slot: &WireSlot| slot.key.load(Ordering::Relaxed);
         let index = self
             .slots
             .iter()
-            .position(|slot| slot.key.load(Ordering::Relaxed) == 0)?;
-        self.slots[index].rms.store(0, Ordering::Relaxed);
-        self.slots[index].peak.store(0, Ordering::Relaxed);
-        self.slots[index].key.store(key, Ordering::Release);
+            .position(|slot| held(slot) == key)
+            .or_else(|| self.slots.iter().position(|slot| held(slot) == 0))?;
+        let slot = &self.slots[index];
+        if held(slot) != key {
+            slot.gain.store(1.0f32.to_bits(), Ordering::Relaxed);
+        }
+        slot.rms.store(0, Ordering::Relaxed);
+        slot.peak.store(0, Ordering::Relaxed);
+        slot.key.store(key, Ordering::Release);
         Some(index)
     }
 
@@ -213,8 +240,48 @@ impl WireLevels {
         slot.peak.store(peak.to_bits(), Ordering::Relaxed);
     }
 
-    /// The latest (rms, peak) published for `key`, or `None` while the key
-    /// is not registered in this table.
+    /// Apply a linear `gain` to the wire `key`, from the UI thread, at any
+    /// time; the bound keeps a runaway slider from stacking up grossly
+    /// overdriven plugins. Non-finite values and unregistered keys are
+    /// declined: the plan owns registration, so a UI that set a trim while
+    /// audio was stopped re-states it once the wires are attached again.
+    pub fn set_gain(&self, key: u64, gain: f32) {
+        if key == 0 || !gain.is_finite() {
+            return;
+        }
+        if let Some(slot) = self
+            .slots
+            .iter()
+            .find(|slot| slot.key.load(Ordering::Acquire) == key)
+        {
+            slot.gain
+                .store(gain.clamp(0.0, 16.0).to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// The trim applied to a registered wire slot, for the audio thread.
+    fn gain(&self, index: usize) -> f32 {
+        self.slots.get(index).map_or(1.0, |slot| {
+            f32::from_bits(slot.gain.load(Ordering::Relaxed))
+        })
+    }
+
+    /// The trim applied to `key`, or `None` while the key is not registered
+    /// in this table. Lets the UI adopt the live trim when it opens a meter.
+    pub fn gain_of(&self, key: u64) -> Option<f32> {
+        if key == 0 {
+            return None;
+        }
+        self.slots
+            .iter()
+            .find(|slot| slot.key.load(Ordering::Acquire) == key)
+            .map(|slot| f32::from_bits(slot.gain.load(Ordering::Relaxed)))
+    }
+
+    /// The latest `(rms, true peak)` published for `key`, both linear, or
+    /// `None` while the key is not registered in this table. The peak is the
+    /// reconstructed crest (dBTP), not the largest sample, and a faithful
+    /// reading of a signal at full scale can sit above `1.0`.
     pub fn sample(&self, key: u64) -> Option<(f32, f32)> {
         if key == 0 {
             return None;
@@ -232,23 +299,53 @@ impl WireLevels {
 }
 
 /// Loudness observation of one wire for a block: a stereo-coerced RMS that
-/// keeps the louder of the two channels per frame, and the largest absolute
-/// sample. `frames` is nonzero whenever `process` calls this.
-fn wire_level(buffer: &AudioBuffer, frames: usize) -> (f32, f32) {
+/// keeps the louder of the two channels per frame, and the wire's **true
+/// peak** (dBTP) — the crest of the waveform the DAC would rebuild, not the
+/// largest sample in it. A 48 kHz sine at 12 kHz whose samples all sit at
+/// 1/√2 reads 0.707 as a sample peak and 0.979 as a true peak.
+///
+/// `meters` is one estimator per channel and must outlive the call: the
+/// history they carry across blocks is what lets a *held* level read its own
+/// value instead of the +0.8 dB overshoot of an onset. Passing a fresh
+/// estimator per block would make every constant read high.
+///
+/// `frames` is nonzero whenever `process` calls this.
+fn wire_level(buffer: &AudioBuffer, frames: usize, meters: &mut [TruePeak]) -> (f32, f32) {
     let mut energy = 0f64;
-    let mut peak = 0f32;
     if buffer.channels() >= 2 {
         for (left, right) in buffer.0[0].iter().zip(&buffer.0[1]).take(frames) {
             energy += (left * left).max(right * right) as f64;
-            peak = peak.max(left.abs()).max(right.abs());
         }
     } else {
         for sample in buffer.0[0].iter().take(frames) {
             energy += (sample * sample) as f64;
-            peak = peak.max(sample.abs());
         }
     }
+    let mut peak = 0f32;
+    // A wire carries mono or stereo, so the two meters the node owns always
+    // cover it; the spare only keeps a hypothetically wider buffer from
+    // metering silently low instead of at all.
+    let mut spare = TruePeak::new();
+    for (index, channel) in buffer.0.iter().enumerate() {
+        let meter = meters.get_mut(index).unwrap_or(&mut spare);
+        meter.process(&channel[..frames]);
+        peak = peak.max(meter.take());
+    }
     ((energy / frames as f64).sqrt() as f32, peak)
+}
+
+/// Scale a block in place by a linear gain. Unity — the state of every
+/// untouched wire — is free, and scaling never allocates, so per-wire trims
+/// keep the audio-path contract of `process` intact.
+fn apply_gain(buffer: &mut AudioBuffer, frames: usize, gain: f32) {
+    if gain == 1.0 {
+        return;
+    }
+    for channel in &mut buffer.0 {
+        for sample in channel[..frames].iter_mut() {
+            *sample *= gain;
+        }
+    }
 }
 
 struct Node {
@@ -263,6 +360,11 @@ struct Node {
     /// `attach_wire_levels`; `None` until then and for every non-plugin node.
     wire_in: Option<usize>,
     wire_out: Option<usize>,
+    /// True-peak history of each metered side, one estimator per channel.
+    /// Owned here rather than built inside [`wire_level`] so a wire's crest
+    /// survives block boundaries and a held level reads exactly itself.
+    tp_in: [TruePeak; 2],
+    tp_out: [TruePeak; 2],
 }
 /// Owns all buffers and processor handles. Keep destruction and replacement on
 /// a control/main thread; block-boundary handover is not implemented yet.
@@ -384,6 +486,8 @@ impl PreparedRack {
                 id,
                 wire_in: None,
                 wire_out: None,
+                tp_in: [TruePeak::new(), TruePeak::new()],
+                tp_out: [TruePeak::new(), TruePeak::new()],
             });
         }
         if let Some((&id, _)) = processors.first_key_value() {
@@ -401,12 +505,25 @@ impl PreparedRack {
     }
     /// Register every wire the UI should watch, then share `levels` with the
     /// plan. Call on the control thread before the plan crosses to the audio
-    /// thread: the table is cleared and refilled here, which is safe because
-    /// a rebuild always joins the previous audio worker first. Each plugin
-    /// folds to two keys (`id << 1 | side`): the input side observes the
-    /// node's summed input buffer, the output side its processed output.
+    /// thread: slots whose keys this plan no longer registers are retired and
+    /// all levels are calmed here, which is safe because a rebuild always
+    /// joins the previous audio worker first. Keys that survive keep their
+    /// slot and the trim the UI had applied to it. Each plugin folds to two
+    /// keys (`id << 1 | side`): the input side observes the node's summed
+    /// input buffer, the output side its processed output.
     pub fn attach_wire_levels(&mut self, levels: Arc<WireLevels>) {
-        levels.reset();
+        // Control-thread allocation is fine here; `process` stays
+        // allocation-free.
+        let keys: Vec<u64> = self
+            .nodes
+            .iter()
+            .filter(|node| {
+                matches!(node.kind, NodeKind::Plugin { .. }) && node.id.0 <= u64::MAX >> 1
+            })
+            .flat_map(|node| [node.id.0 << 1, (node.id.0 << 1) | 1])
+            .collect();
+        levels.reset(&keys);
+        self.reset_metering();
         for node in &mut self.nodes {
             // Card ids are validated small by the rack, so `id << 1` stays
             // injective; the guard only refuses auxiliary ids near `u64::MAX`.
@@ -465,6 +582,13 @@ impl PreparedRack {
                     }
                 }
                 NodeKind::Plugin { .. } => {
+                    // A wire trim sits on the wire itself: the input trim
+                    // scales the summed buffer before the processor sees it,
+                    // so the plugin and everything downstream share what the
+                    // wire actually carries.
+                    if let Some(trim) = node.wire_in {
+                        apply_gain(&mut node.input, frames, wires.gain(trim));
+                    }
                     let slot = node.processor.as_mut().unwrap();
                     if slot.bypassed {
                         node.bypass.add(&node.input, &mut node.output, frames);
@@ -473,15 +597,20 @@ impl PreparedRack {
                             .process(&node.input, &mut node.output, frames)
                             .map_err(|_| ProcessError::NodeFailed(node.id))?;
                     }
-                    // Meter both stubs of this card from the settled buffers.
-                    // Keys are only registered by `attach_wire_levels`, so
-                    // an unobserved plan takes two `None` loads per node.
+                    if let Some(trim) = node.wire_out {
+                        apply_gain(&mut node.output, frames, wires.gain(trim));
+                    }
+                    // Meter both stubs of this card from the settled buffers,
+                    // after the trims, so the meter and the white gain line
+                    // describe the same signal. Keys are only registered by
+                    // `attach_wire_levels`, so an unobserved plan takes two
+                    // `None` loads per node.
                     if let Some(slot) = node.wire_in {
-                        let (rms, peak) = wire_level(&node.input, frames);
+                        let (rms, peak) = wire_level(&node.input, frames, &mut node.tp_in);
                         wires.publish(slot, rms, peak);
                     }
                     if let Some(slot) = node.wire_out {
-                        let (rms, peak) = wire_level(&node.output, frames);
+                        let (rms, peak) = wire_level(&node.output, frames, &mut node.tp_out);
                         wires.publish(slot, rms, peak);
                     }
                 }
@@ -518,7 +647,11 @@ impl PreparedRack {
         }
     }
 
+    /// Drop every stored history on the processing thread: buffers, delays,
+    /// processors and the true-peak estimators, which otherwise would still
+    /// carry the level from before the reset into the block after it.
     pub fn reset(&mut self) {
+        self.reset_metering();
         for node in &mut self.nodes {
             node.input.clear(self.max_frames);
             node.output.clear(self.max_frames);
@@ -528,6 +661,17 @@ impl PreparedRack {
             node.bypass.reset();
             if let Some(slot) = &mut node.processor {
                 slot.processor.reset();
+            }
+        }
+    }
+
+    /// Clear the metering histories. A true-peak estimator is a filter with
+    /// memory, so `reset` is the one moment its held level is known stale —
+    /// after it, a signal arriving is an onset and reads as one.
+    fn reset_metering(&mut self) {
+        for node in &mut self.nodes {
+            for meter in node.tp_in.iter_mut().chain(node.tp_out.iter_mut()) {
+                meter.reset();
             }
         }
     }

@@ -6,5 +6,12 @@ license.workspace = true
 publish = false
 description = "Safe routing graph foundation for the nice-rack plugin host"
 
+[dependencies]
+# Only for the shared true-peak estimator: a wire meter that reports the
+# largest *sample* cannot see a crest that lives between samples, and the
+# rack must grade a signal the same way every nice-* plugin does. No default
+# features, so the engine pays for `true_peak` and nothing else.
+nice-common = { path = "../nice-common", default-features = false }
+
 [dev-dependencies]
 allocation-counter = "=0.8.1"

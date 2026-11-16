@@ -15,8 +15,8 @@
 //!
 //! The field has the same editing capabilities as the `text_input` example:
 //! drag the mouse (or hold **Shift** with the arrow keys) to mark a range,
-//! **Ctrl-C** copies the mark (or the whole buffer), **Ctrl-X** cuts it,
-//! **Ctrl-V** pastes the clipboard, and a right-click pastes too.
+//! then type, **Backspace**, or **Delete** over it. The library carries no
+//! system clipboard, so there is no copy/paste.
 
 use std::sync::Arc;
 
@@ -119,10 +119,9 @@ impl Process for Demo {
         let rect = field_rect();
         let pos = ctx.mouse_position();
         let down = ctx.mouse_button_down(frost::MouseButton::Left);
-        let rdown = ctx.mouse_button_down(frost::MouseButton::Right);
 
-        // The mouse: focus, drag-select, and right-click paste.
-        self.input.process_mouse(pos, down, rdown, rect);
+        // The mouse: focus and drag-select.
+        self.input.process_mouse(pos, down, rect);
 
         // The field's keys act only while it is focused; Enter commits the
         // buffer to the label.
@@ -167,7 +166,7 @@ impl Process for Demo {
             0.0,
             HINT2_CY - RON_LIFT * HINT_SIZE,
             &self.font,
-            "Drag or Shift+Arrows to select, Ctrl-C/X/V to copy/cut/paste, right-click to paste",
+            "Drag or Shift+Arrows to select, then type over it",
             HINT_SIZE,
             400.0,
             DIM,

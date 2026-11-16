@@ -170,7 +170,19 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::Release);
         let mut consumer = shared.take_consumer().unwrap();
         let mut adapter = Processor::new(Arc::new(Mutex::new(plugin)), 2, 48000.0);
-        let mut samples = 0;
+        // Feed the level once before measuring it. A constant that arrives at
+        // an empty true-peak estimator is an onset and rings above itself for
+        // that first block; a settled signal then reads exactly (see
+        // `nice_common::true_peak`). The warm-up block is accounted for in the
+        // counters below and drained from the ring.
+        adapter.run(&vec![0.375f32; 64 * 2], |_| {});
+        while consumer.pop().is_ok() {}
+        let base_calls = shared
+            .process_calls
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let mut samples = shared
+            .feed_samples
+            .load(std::sync::atomic::Ordering::Relaxed);
         for (call, frames) in [48, 32, 48, 96, 256, 48, 1024, 48].into_iter().enumerate() {
             adapter.run(&vec![0.375f32; frames * 2], |_| {});
             samples += frames as u64;
@@ -178,7 +190,7 @@ mod tests {
                 shared
                     .process_calls
                     .load(std::sync::atomic::Ordering::Relaxed),
-                call as u64 + 1
+                base_calls + call as u64 + 1
             );
             assert_eq!(
                 shared

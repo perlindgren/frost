@@ -9,6 +9,7 @@
 
 use baseview::{HandlerError, WindowContext, WindowSettings};
 use crossbeam::atomic::AtomicCell;
+use nice_common::true_peak::TruePeak;
 use nice_plug::context::gui::GuiContext;
 use nice_plug::editor::dpi::{LogicalSize, NativeSize};
 use nice_plug::editor::{EditorHandle, HostMethods, SpawnedEditor};
@@ -43,12 +44,17 @@ pub struct TunerSharedState {
     /// RMS level of the analysed window (for the input meter).
     pub rms: AtomicCell<f32>,
     /// Input meter truth, computed on the audio thread BEFORE the mono
-    /// downmix: RMS of the hottest channel and the block's sample peak.
-    /// Metering the downmix average understates a live channel beside a
-    /// silent sibling by up to 6 dB — hosts meter the live channel.
+    /// downmix: RMS of the hottest channel and the block's true peak (dBTP,
+    /// see [`nice_common::true_peak`]). Metering the downmix average
+    /// understates a live channel beside a silent sibling by up to 6 dB —
+    /// hosts meter the live channel.
     pub input_rms: AtomicCell<f32>,
+    /// The true peak the line above describes. A reading above 1.0 is a
+    /// finding, not an overflow: the inter-sample crest of a signal whose
+    /// samples all fit inside full scale really can exceed it.
     pub input_peak: AtomicCell<f32>,
     pub output_rms: AtomicCell<f32>,
+    /// As the input pair, of what the tuner sent out (zero while muted).
     pub output_peak: AtomicCell<f32>,
     pub muted: AtomicBool,
     /// Selected input channel: 0 = auto, n = 1-based channel for BOTH the
@@ -65,6 +71,7 @@ pub struct TunerSharedState {
     pub feed_samples: AtomicU64,
     pub dropped_samples: AtomicU64,
     pub process_channels: AtomicCell<u32>,
+    /// Per-channel true peak of the input, first two channels (linear).
     pub channel_peaks: [AtomicCell<f32>; 2],
     /// Standalone top-level window position, physical px (top-left),
     /// polled by the gui on Windows; read when geometry is persisted.
@@ -221,13 +228,57 @@ mod tests {
     fn output_mute_silences_all_channels_and_metering() {
         let mut left = [0.25f32; 32];
         let mut right = [-0.5f32; 32];
+        let mut meters = [TruePeak::new(); METER_CHANNELS];
+        // First pass warms the histories. A level arriving at an empty
+        // estimator is an onset and rings above itself for a few samples
+        // (see `nice_common::true_peak`); a settled one reads exactly.
+        meter_output(&mut [&mut left, &mut right], false, &mut meters);
         assert_eq!(
-            meter_output(&mut [&mut left, &mut right], false),
+            meter_output(&mut [&mut left, &mut right], false, &mut meters),
             (0.5, 0.5)
         );
-        assert_eq!(meter_output(&mut [&mut left, &mut right], true), (0.0, 0.0));
+        assert_eq!(
+            meter_output(&mut [&mut left, &mut right], true, &mut meters),
+            (0.0, 0.0)
+        );
         assert_eq!(left, [0.0; 32]);
         assert_eq!(right, [0.0; 32]);
+        // Mute is a hard break, not a fade: the estimator histories went with
+        // it, so the signal returning after unmute is an onset again rather
+        // than a continuation it could read off the held history.
+        left.fill(0.25);
+        right.fill(-0.5);
+        let (_, ringing) = meter_output(&mut [&mut left, &mut right], false, &mut meters);
+        assert!(
+            ringing > 0.5,
+            "expected onset ringing after unmute, read {ringing}"
+        );
+    }
+
+    /// A quarter-rate sine whose every sample sits at 1/√2: the crest lives
+    /// entirely between samples. A raw fold reports 0.7071, the tuner's
+    /// output meter reports the true peak (~0.98) — and, like any tone below
+    /// full scale, still stays under it.
+    #[test]
+    fn output_metering_finds_the_crest_between_samples() {
+        let mut left = [0.0f32; 64];
+        let mut right = [0.0f32; 64];
+        for (i, sample) in left.iter_mut().enumerate() {
+            *sample = (std::f32::consts::FRAC_PI_2 * i as f32 + std::f32::consts::FRAC_PI_4).sin();
+        }
+        right.copy_from_slice(&left);
+        let raw = left.iter().fold(0.0f32, |acc, &v| acc.max(v.abs()));
+        let mut meters = [TruePeak::new(); METER_CHANNELS];
+        let (_rms, peak) = meter_output(&mut [&mut left, &mut right], false, &mut meters);
+        assert!(
+            (raw - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-5,
+            "samples should all sit at 1/sqrt(2), folded {raw}"
+        );
+        assert!(
+            peak > 0.95 && peak < 1.0,
+            "true peak {peak} should surface the inter-sample crest without \
+             over-reading a tone"
+        );
     }
 
     #[test]
@@ -523,7 +574,24 @@ pub struct TunerPlugin {
     /// Producer half of the analysis feed (lock-free, preallocated; see
     /// `tests/rt_handoff_no_alloc.rs`).
     audio_ring: rtrb::Producer<f32>,
+    /// True-peak estimators for the metered input channels, one per channel,
+    /// carried between callbacks so a crest straddling a block boundary is
+    /// still found. Fixed-size and stack-copied in `process`: the audio
+    /// thread allocates nothing.
+    tp_in: [TruePeak; METER_CHANNELS],
+    /// The same for the output, which is metered on every callback.
+    tp_out: [TruePeak; METER_CHANNELS],
+    /// Whether the previous callback metered the input. That pass is gated
+    /// on an open editor, and an estimator whose history froze while the
+    /// window was shut must not ring against the first block after a reopen
+    /// — so the histories are cleared on that edge.
+    input_metering_warm: bool,
 }
+
+/// Channels the metering pass covers. Both declared layouts are mono or
+/// stereo; the headroom is for whatever a host hands us anyway, and it keeps
+/// every metering array a fixed-size stack array.
+const METER_CHANNELS: usize = 8;
 
 #[derive(Params)]
 pub struct TunerParams {
@@ -567,6 +635,9 @@ impl Default for TunerPlugin {
             params: Arc::new(TunerParams::default()),
             shared,
             audio_ring: producer,
+            tp_in: std::array::from_fn(|_| TruePeak::new()),
+            tp_out: std::array::from_fn(|_| TruePeak::new()),
+            input_metering_warm: false,
         }
     }
 }
@@ -681,6 +752,12 @@ impl Plugin for TunerPlugin {
             .max_buffer_frames
             .store(buffer_config.max_buffer_size);
         self.shared.buffer_frames.store(0);
+        // A fresh stream: whatever the last activation left in the meter
+        // histories belongs to a different signal.
+        for meter in self.tp_in.iter_mut().chain(self.tp_out.iter_mut()) {
+            meter.reset();
+        }
+        self.input_metering_warm = false;
         true
     }
 
@@ -720,33 +797,44 @@ impl Plugin for TunerPlugin {
             const CHUNK: usize = 4096;
             let mut mono = [0f32; CHUNK];
             // Input metering truth, gathered here on the RT thread before
-            // the mix: per-channel sums of squares and the block sample
-            // peak. Stack arrays, pure arithmetic — no allocation, one
-            // atomic store after the loop.
+            // the mix: per-channel sums of squares and per-channel TRUE peak,
+            // estimated by [`nice_common::true_peak`] and carried between
+            // callbacks. Stack arrays and a copied fixed-size estimator row,
+            // pure arithmetic — no allocation, one atomic store after the
+            // loop.
             let sel_ch = self.shared.input_channel.load();
-            const MAX_CH: usize = 8;
-            let mut sq = [0f64; MAX_CH];
-            let mut pks = [0f32; MAX_CH];
+            let mut sq = [0f64; METER_CHANNELS];
+            let mut pks = [0f32; METER_CHANNELS];
+            let mut tp = self.tp_in;
+            if !self.input_metering_warm {
+                // Reopening the editor after a gap: the held history belongs
+                // to a stream that is no longer continuous with this one.
+                for meter in tp.iter_mut() {
+                    meter.reset();
+                }
+                self.input_metering_warm = true;
+            }
             let mut frames = 0usize;
+            let mut nch_seen = 1usize;
             for (_start, blk) in buffer.iter_blocks(CHUNK) {
                 let n = blk.samples().min(CHUNK);
-                // Downmix and metering see the first MAX_CH channels; the
-                // divisor matches exactly what was summed.
-                let nch = blk.channels().clamp(1, MAX_CH);
+                // Downmix and metering see the first METER_CHANNELS channels;
+                // the divisor matches exactly what was summed.
+                let nch = blk.channels().clamp(1, METER_CHANNELS);
                 frames += n;
+                nch_seen = nch;
+                for (c, meter) in tp.iter_mut().enumerate().take(nch) {
+                    if let Some(ch) = blk.get(c) {
+                        meter.process(&ch[..n]);
+                    }
+                }
                 for i in 0..n {
                     let mut acc = 0.0f32;
-                    for (c, (ch_sq, ch_pk)) in
-                        sq.iter_mut().zip(pks.iter_mut()).take(nch).enumerate()
-                    {
+                    for (c, ch_sq) in sq.iter_mut().take(nch).enumerate() {
                         if let Some(ch) = blk.get(c) {
                             let v = ch[i];
                             acc += v;
                             *ch_sq += (v as f64) * (v as f64);
-                            let av = if v < 0.0 { -v } else { v };
-                            if av > *ch_pk {
-                                *ch_pk = av;
-                            }
                         }
                     }
                     mono[i] = if sel_ch >= 1 && sel_ch <= nch as u32 {
@@ -766,11 +854,22 @@ impl Plugin for TunerPlugin {
                 };
                 counter.fetch_add(n as u64, Ordering::Relaxed);
             }
+            // The estimators keep their history across callbacks; their
+            // running peak is what this call measured, then it restarts. A
+            // channel the buffer stopped carrying gets a clean history, so it
+            // cannot ring on samples from before it disappeared.
+            for (c, (peak, meter)) in pks.iter_mut().zip(tp.iter_mut()).enumerate() {
+                *peak = meter.take();
+                if c >= nch_seen {
+                    meter.reset();
+                }
+            }
+            self.tp_in = tp;
             for (peak, value) in self.shared.channel_peaks.iter().zip(pks) {
                 peak.store(value);
             }
             if frames > 0 {
-                let pick = if sel_ch >= 1 && (sel_ch as usize) <= MAX_CH {
+                let pick = if sel_ch >= 1 && (sel_ch as usize) <= METER_CHANNELS {
                     sel_ch as usize - 1
                 } else {
                     usize::MAX
@@ -789,12 +888,17 @@ impl Plugin for TunerPlugin {
                 self.shared.input_rms.store(r as f32);
                 self.shared.input_peak.store(p);
             }
+        } else {
+            // Metering paused while the editor is shut, so the held histories
+            // are no longer continuous with the stream: flag it cold and the
+            // first callback after a reopen starts from silence.
+            self.input_metering_warm = false;
         }
 
         // Muting happens after the analysis feed; an open editor's detector
         // keeps seeing the original input while output is muted.
         let muted = self.shared.muted.load(Ordering::Relaxed);
-        let (rms, peak) = meter_output(buffer.as_slice(), muted);
+        let (rms, peak) = meter_output(buffer.as_slice(), muted, &mut self.tp_out);
         self.shared.output_rms.store(rms as f32);
         self.shared.output_peak.store(peak);
         ProcessStatus::Normal
@@ -802,16 +906,31 @@ impl Plugin for TunerPlugin {
 }
 
 /// Meter the hottest output channel after applying mute to every channel.
-fn meter_output(channels: &mut [&mut [f32]], muted: bool) -> (f64, f32) {
+///
+/// The peak is the true peak (dBTP) of each channel, read by the persistent
+/// `meters` — one per channel, so a crest straddling a callback boundary is
+/// still found. Muting IS digital silence here, so a muted channel's
+/// estimator is reset rather than fed: the meter reads nothing, and the next
+/// unmuted block starts from an empty history.
+///
+/// `meters` covers [`METER_CHANNELS`] channels, which is more than either
+/// declared layout; a channel beyond that gets a throwaway estimator, i.e.
+/// full 4× precision with the history restarted each callback.
+fn meter_output(channels: &mut [&mut [f32]], muted: bool, meters: &mut [TruePeak]) -> (f64, f32) {
     let mut peak = 0.0f32;
     let mut rms = 0.0f64;
-    for channel in channels {
+    let mut spare = TruePeak::new();
+    for (index, channel) in channels.iter_mut().enumerate() {
+        let meter = meters.get_mut(index).unwrap_or(&mut spare);
         if muted {
             channel.fill(0.0);
+            meter.reset();
+            continue;
         }
+        meter.process(channel);
+        peak = peak.max(meter.take());
         let mut sum = 0.0f64;
         for &sample in channel.iter() {
-            peak = peak.max(sample.abs());
             sum += f64::from(sample).powi(2);
         }
         if !channel.is_empty() {

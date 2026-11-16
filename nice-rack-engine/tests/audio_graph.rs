@@ -305,11 +305,22 @@ fn attached_wires_publish_each_plugins_input_and_output() {
     let levels = Arc::new(WireLevels::new(4));
     rack.attach_wire_levels(Arc::clone(&levels));
     let mut output = [0.0; 4];
-    rack.process(&[&[1.0, -1.0, 0.5, 0.0]], &mut [&mut output], 4)
-        .unwrap();
-    // Both branches see the input block: rms sqrt(2.25/4) = 0.75, peak 1.0;
-    // each output reflects its own gain.
+    let block = [1.0, -1.0, 0.5, 0.0];
     let input_rms = (2.25f32 / 4.0).sqrt();
+    // A wire's first block arrives on an empty estimator, which reconstructs
+    // the crest of the arriving edge rather than reporting a maximum sample:
+    // here 1.0183787, above the loudest sample because the interpolated
+    // step really does overshoot full scale.
+    rack.process(&[&block], &mut [&mut output], 4).unwrap();
+    assert_eq!(
+        levels.sample(NodeId(1).0 << 1),
+        Some((input_rms, 1.018_378_7))
+    );
+    // One block later the same pattern is a steady signal, so what the wire
+    // publishes is its inter-sample crest. Both branches see the input block,
+    // rms sqrt(2.25/4) = 0.75 with a crest of 1.0, and each output reflects
+    // its own gain: true peak scales with the signal, so 2.0 and 0.5.
+    rack.process(&[&block], &mut [&mut output], 4).unwrap();
     assert_eq!(levels.sample(NodeId(1).0 << 1), Some((input_rms, 1.0)));
     assert_eq!(levels.sample(NodeId(1).0 << 1 | 1), Some((1.5, 2.0)));
     assert_eq!(levels.sample(NodeId(2).0 << 1), Some((input_rms, 1.0)));
@@ -345,4 +356,120 @@ fn wire_registration_resets_and_declines_wires_beyond_capacity() {
     rack.attach_wire_levels(Arc::clone(&second));
     assert!(second.sample(NodeId(2).0 << 1 | 1).is_some());
     assert_eq!(second.sample(NodeId(0).0), None);
+}
+#[test]
+fn wire_trims_scale_the_signal_and_its_meter_together() {
+    let mut rack = PreparedRack::prepare(
+        &graph(),
+        [
+            (NodeId(1), slot(2.0, false, false)),
+            (NodeId(2), slot(0.5, false, false)),
+        ]
+        .into(),
+        4,
+    )
+    .unwrap();
+    let levels = Arc::new(WireLevels::new(4));
+    rack.attach_wire_levels(Arc::clone(&levels));
+    // Half gain on card 1's input wire, quadruple on card 2's output wire.
+    // The input trim lands before the processor, so plugin, meter and the
+    // downstream mixer all share what the wire carries.
+    levels.set_gain(NodeId(1).0 << 1, 0.5);
+    levels.set_gain(NodeId(2).0 << 1 | 1, 4.0);
+    let mut output = [0.0; 4];
+    // The first block is an onset, so it reads above its loudest sample; the
+    // repeating pattern below reads its inter-sample crest from block two on
+    // (see `attached_wires_publish_each_plugins_input_and_output`).
+    rack.process(&[&[1.0, -1.0, 0.5, 0.0]], &mut [&mut output], 4)
+        .unwrap();
+    rack.process(&[&[1.0, -1.0, 0.5, 0.0]], &mut [&mut output], 4)
+        .unwrap();
+    assert_eq!(levels.sample(NodeId(1).0 << 1), Some((0.375, 0.5)));
+    assert_eq!(levels.sample(NodeId(1).0 << 1 | 1), Some((0.75, 1.0)));
+    assert_eq!(levels.sample(NodeId(2).0 << 1), Some((0.75, 1.0)));
+    assert_eq!(levels.sample(NodeId(2).0 << 1 | 1), Some((1.5, 2.0)));
+    // Audible proof, not just metering: the summed output reflects both trims.
+    assert_eq!(output, [3.0, -3.0, 1.5, 0.0]);
+}
+#[test]
+fn a_rebuild_keeps_live_trims_and_retires_cards_that_left() {
+    let levels = Arc::new(WireLevels::new(4));
+    let mut rack = PreparedRack::prepare(
+        &graph(),
+        [
+            (NodeId(1), slot(1.0, false, false)),
+            (NodeId(2), slot(1.0, false, false)),
+        ]
+        .into(),
+        4,
+    )
+    .unwrap();
+    rack.attach_wire_levels(Arc::clone(&levels));
+    levels.set_gain(NodeId(1).0 << 1 | 1, 0.25);
+    levels.set_gain(NodeId(2).0 << 1, 2.0);
+    // A rebuild re-registers the same plan on the same table: the trims the
+    // user set must survive it.
+    rack.attach_wire_levels(Arc::clone(&levels));
+    assert_eq!(levels.gain_of(NodeId(1).0 << 1 | 1), Some(0.25));
+    assert_eq!(levels.gain_of(NodeId(2).0 << 1), Some(2.0));
+    let mut output = [0.0; 4];
+    rack.process(&[&[1.0; 4]], &mut [&mut output], 4).unwrap();
+    assert_eq!(levels.sample(NodeId(1).0 << 1 | 1), Some((0.25, 0.25)));
+    assert_eq!(levels.sample(NodeId(2).0 << 1), Some((2.0, 2.0)));
+    assert_eq!(output, [2.25; 4]);
+    // A card removed from the rack retires: its key, its trim and its slot.
+    let smaller = RackGraph {
+        nodes: [
+            (NodeId(0), NodeKind::Input(Channels::Mono)),
+            (
+                NodeId(1),
+                NodeKind::Plugin {
+                    inputs: Channels::Mono,
+                    outputs: Channels::Mono,
+                },
+            ),
+            (NodeId(4), NodeKind::Output(Channels::Mono)),
+        ]
+        .into(),
+        connections: [(0, 1), (1, 4)]
+            .map(|(a, b)| Connection {
+                from: NodeId(a),
+                to: NodeId(b),
+            })
+            .into(),
+    };
+    let mut smaller =
+        PreparedRack::prepare(&smaller, [(NodeId(1), slot(1.0, false, false))].into(), 4).unwrap();
+    smaller.attach_wire_levels(Arc::clone(&levels));
+    assert_eq!(levels.sample(NodeId(2).0 << 1), None);
+    assert_eq!(levels.gain_of(NodeId(2).0 << 1), None);
+    assert_eq!(levels.gain_of(NodeId(1).0 << 1 | 1), Some(0.25));
+    // Retirement freed the slots, so the full plan fits again on a rebuild.
+    rack.attach_wire_levels(Arc::clone(&levels));
+    assert!(levels.sample(NodeId(2).0 << 1 | 1).is_some());
+}
+#[test]
+fn gain_requests_decline_unknown_keys_and_rude_values() {
+    let mut rack = PreparedRack::prepare(
+        &graph(),
+        [
+            (NodeId(1), slot(1.0, false, false)),
+            (NodeId(2), slot(1.0, false, false)),
+        ]
+        .into(),
+        4,
+    )
+    .unwrap();
+    let levels = Arc::new(WireLevels::new(4));
+    // Before any plan registers wires, every key is unregistered.
+    levels.set_gain(NodeId(1).0 << 1, 0.5);
+    assert_eq!(levels.gain_of(NodeId(1).0 << 1), None);
+    assert_eq!(levels.gain_of(0), None);
+    rack.attach_wire_levels(Arc::clone(&levels));
+    levels.set_gain(NodeId(1).0 << 1 | 1, f32::NAN);
+    assert_eq!(levels.gain_of(NodeId(1).0 << 1 | 1), Some(1.0));
+    // Out-of-range demands clamp instead of stacking grossly overdriven
+    // plugins behind one slider gesture.
+    levels.set_gain(NodeId(1).0 << 1 | 1, 100.0);
+    assert_eq!(levels.gain_of(NodeId(1).0 << 1 | 1), Some(16.0));
 }

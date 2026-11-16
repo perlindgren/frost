@@ -2246,6 +2246,7 @@ name = "nice-rack-engine"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "nice-common",
 ]
 
 [[package]]

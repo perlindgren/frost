@@ -54,6 +54,7 @@ mod menu;
 mod panel;
 mod style;
 mod table;
+mod text_input;
 mod tree;
 
 pub use menu::{ItemKind, Menu, MenuEvent, MenuItem};
@@ -65,6 +66,8 @@ use table::TableFrame;
 #[cfg(test)]
 use table::resolve_cols;
 pub use table::{Align, Col, ColSize};
+use text_input::FieldState;
+pub use text_input::TextInput;
 pub use tree::{TreeEvent, TreeLine, TreeOut, TreeSpec, TreeState, TreeStyle};
 
 /// The FNV-1a parameters: a cheap, deterministic byte hash. Determinism
@@ -106,6 +109,12 @@ impl Rect {
             && p[0] <= self.left + self.w
             && p[1] <= self.top
             && p[1] >= self.top - self.h
+    }
+
+    /// As `[left, bottom, right, top]` — the flat rect form the text
+    /// field's own hit tests take (see [`crate::TextInput::click_at`]).
+    fn to_array(self) -> [f32; 4] {
+        [self.left, self.top - self.h, self.left + self.w, self.top]
     }
 }
 
@@ -197,6 +206,9 @@ pub struct Ui {
     /// Each table's retained auto column widths, keyed by its id (scoped
     /// to the enclosing panel), measured last frame.
     tables: HashMap<u64, Vec<f32>>,
+    /// Each text field's retained editing state, keyed by its widget id
+    /// (see [`Ui::text_input`]).
+    text_fields: HashMap<u64, FieldState>,
     /// The alignment of the slot the last [`Ui::row`] call returned:
     /// a table column's, or `Center` for a plain row. Text widgets honor
     /// it.
@@ -245,6 +257,7 @@ impl Ui {
             candidates: Vec::new(),
             panels: HashMap::new(),
             tables: HashMap::new(),
+            text_fields: HashMap::new(),
             align: Align::Center,
             layout: Vec::new(),
             z: 0.0,

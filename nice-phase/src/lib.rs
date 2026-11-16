@@ -16,6 +16,7 @@ mod ui;
 
 use crossbeam::atomic::AtomicCell;
 use editor::PhaseEditor;
+use nice_common::true_peak::TruePeak;
 use nice_plug::editor::dpi::LogicalSize;
 use std::num::NonZeroU32;
 use std::sync::{
@@ -51,8 +52,12 @@ use nice_plug::prelude::*;
 /// worth a lock.
 pub struct PhaseSharedState {
     pub input_rms: AtomicCell<f32>,
+    /// Linear *true* peak (dBTP) of the input: the crest of the waveform the
+    /// DAC rebuilds between the samples, not the loudest sample. A reading
+    /// above 1.0 is a finding, not an overflow.
     pub input_peak: AtomicCell<f32>,
     pub output_rms: AtomicCell<f32>,
+    /// As the input peak, of what the plugin sent out.
     pub output_peak: AtomicCell<f32>,
     /// Where the sine stood, 0..1, and the stage frequency that position
     /// named — the sweep as the thread that knows the sample rate ran it.
@@ -204,26 +209,45 @@ impl PhaseParams {
 }
 
 /// The metering's two questions to one block of scratch: total energy, and
-/// the loudest sample. Over the channel dimension first and the sample
+/// the loudest *true* peak. Over the channel dimension first and the sample
 /// dimension second — a mixup of those two once crashed the metering inside
 /// a real host while every in-crate test stayed green, which is why this
 /// is a function with a test rather than four expressions inlined twice.
-fn block_stats(scratch: &[[f32; dsp::BLOCK]; 2], channels: usize, n: usize) -> (f64, f32) {
-    scratch[..channels]
-        .iter()
-        .fold((0.0f64, 0.0f32), |(energy, peak), channel| {
-            channel[..n]
-                .iter()
-                .fold((energy, peak), |(energy, peak), &x| {
-                    (energy + f64::from(x).powi(2), peak.max(x.abs()))
-                })
-        })
+///
+/// The caller lends the per-channel estimators, which is what makes the peak
+/// honest across a block boundary: the crest of a hump lands a few samples
+/// *after* the samples that cause it, so an estimator that forgot its history
+/// at every block would cap that hump at its loudest sample — the very number
+/// the interpolator exists to exceed. Both answers still come from the one
+/// pass over the scratch, as they must on the audio thread.
+fn block_stats(
+    scratch: &[[f32; dsp::BLOCK]; 2],
+    channels: usize,
+    n: usize,
+    tp: &mut [TruePeak; 2],
+) -> (f64, f32) {
+    let mut energy = 0.0f64;
+    let mut peak = 0.0f32;
+    for (channel, meter) in scratch[..channels].iter().zip(&mut tp[..channels]) {
+        meter.process(&channel[..n]);
+        peak = peak.max(meter.take());
+        energy += channel[..n]
+            .iter()
+            .map(|&x| f64::from(x).powi(2))
+            .sum::<f64>();
+    }
+    (energy, peak)
 }
 
 pub struct PhasePlugin {
     params: Arc<PhaseParams>,
     shared: Arc<PhaseSharedState>,
     filter: dsp::Phase,
+    /// True-peak tracking of what arrives and what leaves, one estimator
+    /// per channel, kept alive between blocks for the reason in
+    /// [`block_stats`].
+    tp_in: [TruePeak; 2],
+    tp_out: [TruePeak; 2],
 }
 
 /// Seed the shared cells from the saved standalone preferences. A `None`
@@ -298,6 +322,8 @@ impl Default for PhasePlugin {
             params,
             shared,
             filter,
+            tp_in: [TruePeak::new(); 2],
+            tp_out: [TruePeak::new(); 2],
         }
     }
 }
@@ -349,6 +375,13 @@ impl Plugin for PhasePlugin {
 
     fn reset(&mut self) {
         self.filter.reset();
+        // The meters come back empty with it: a crest does not outlive
+        // the audio it was read from, and an estimator carrying a block of
+        // sound from before the reset would ring into the first block after
+        // it.
+        for meter in self.tp_in.iter_mut().chain(self.tp_out.iter_mut()) {
+            meter.reset();
+        }
     }
 
     fn process(
@@ -379,7 +412,7 @@ impl Plugin for PhasePlugin {
                 let samples = block.get(channel).unwrap();
                 scratch[..n].copy_from_slice(&samples[..n]);
             }
-            let (energy, peak) = block_stats(&input, channels, n);
+            let (energy, peak) = block_stats(&input, channels, n, &mut self.tp_in);
             input_energy += energy;
             input_peak = input_peak.max(peak);
             if channels == 1 {
@@ -393,7 +426,7 @@ impl Plugin for PhasePlugin {
                     [&mut left[0][..n], &mut right[0][..n]],
                 );
             }
-            let (energy, peak) = block_stats(&output, channels, n);
+            let (energy, peak) = block_stats(&output, channels, n, &mut self.tp_out);
             output_energy += energy;
             output_peak = output_peak.max(peak);
             count += n;
@@ -581,14 +614,21 @@ mod tests {
         for sample in scratch[1].iter_mut() {
             *sample = 0.25;
         }
-        let (energy, peak) = block_stats(&scratch, 2, dsp::BLOCK);
+        // The first block lands on a history of silence, which is an abrupt
+        // onset as far as the interpolator is concerned; the second identical
+        // block is the steady state the meter settles to, and that is the
+        // reading pinned here: the crest of a constant is the constant, never
+        // the overshoot of its own edge.
+        let mut tp = [TruePeak::new(); 2];
+        block_stats(&scratch, 2, dsp::BLOCK, &mut tp);
+        let (energy, peak) = block_stats(&scratch, 2, dsp::BLOCK, &mut tp);
         assert!((energy - (dsp::BLOCK as f64 * (0.25 + 0.0625))).abs() < 1e-9);
         assert_eq!(peak, 0.5);
         // A partial tail block reads only its first `n` samples; whatever
         // the previous block left behind in the scratch is not this block's
         // business.
         scratch[0][0] = 1.0;
-        let (energy, peak) = block_stats(&scratch, 1, 0);
+        let (energy, peak) = block_stats(&scratch, 1, 0, &mut tp);
         assert_eq!((energy, peak), (0.0, 0.0));
     }
 }

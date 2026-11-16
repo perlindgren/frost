@@ -243,8 +243,8 @@ pub use diagnostics::{Diagnostics, DiagnosticsFlags};
 
 mod ui;
 pub use ui::{
-    Align, Answer, Col, ColSize, ItemKind, Menu, MenuEvent, MenuItem, TreeEvent, TreeLine, TreeOut,
-    TreeSpec, TreeState, TreeStyle, Ui, UiStyle,
+    Align, Answer, Col, ColSize, ItemKind, Menu, MenuEvent, MenuItem, TextInput, TreeEvent,
+    TreeLine, TreeOut, TreeSpec, TreeState, TreeStyle, Ui, UiStyle,
 };
 
 mod rng;
