@@ -364,6 +364,18 @@ test = true
 name = "text_input"
 path = "examples/text/text_input.rs"
 
+# The two `examples/ui/` demos from the text-input merge. They shipped
+# unregistered — and an unregistered subfolder example is compiled by
+# nothing, so both drifted from the widget they demonstrate. Named now,
+# the gate builds and lints them with every other target.
+[[example]]
+name = "ui_text_input"
+path = "examples/ui/text_input.rs"
+
+[[example]]
+name = "ui_scene_text_input"
+path = "examples/ui/scene_text_input.rs"
+
 # The measurement harness, named because it is the one example carrying tests.
 # An example's unit tests are not built by `cargo test` unless the target asks:
 # `test` defaults to false for examples, so the harness's sixteen tests — the

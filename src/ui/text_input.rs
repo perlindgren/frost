@@ -12,13 +12,19 @@
 //!
 //! The field shows `COLS` characters at a time and scrolls the rest past as
 //! the cursor moves. It keeps a marked range (the selection) that the
-//! clipboard and the editing keys act on.
+//! editing keys act on.
+//!
+//! The field carries no system clipboard: frost has no clipboard
+//! dependency (`arboard` is a dev-dependency, visible to examples only,
+//! and the repository rules bar adding one to the library), so **Ctrl-C /
+//! X / V** and right-click paste are not wired — selection, cursor
+//! movement, and typing all work.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::{Color, Context, KeyCode, SceneNode, Shape, Transform};
 use super::{Rect, Ui, UiStyle};
+use crate::{Color, Context, KeyCode, SceneNode, Shape, Transform};
 
 /// The field's font size, in user units.
 const SIZE: f32 = 18.0;
@@ -58,14 +64,14 @@ const TYPABLE: &[char] = &[
 
 /// A single-line text field: a fixed-width buffer that shows `COLS`
 /// characters at a time and scrolls the rest past as the cursor moves. It
-/// keeps a marked range (the selection) that the clipboard and the editing
-/// keys act on.
+/// keeps a marked range (the selection) that the editing keys act on.
 ///
 /// The state and the input handling live here; drawing does not. Feed it
 /// each frame with [`process_keys`](Self::process_keys) and
 /// [`process_mouse`](Self::process_mouse), then read it back through
 /// [`buffer`](Self::buffer) or push it onto the screen with
 /// [`update_scene`](Self::update_scene) or the [`Ui::text_input`] widget.
+#[derive(Default)]
 pub struct TextInput {
     buffer: String,
     cursor: usize,
@@ -80,9 +86,6 @@ pub struct TextInput {
     keys: KeyState,
     /// The mouse's edge and drag state, spanning frames.
     mouse: MouseState,
-    /// The system clipboard, created lazily on first use: `None` where the
-    /// platform has no clipboard (a web build, a headless test).
-    clipboard: Option<arboard::Clipboard>,
 }
 
 /// The keyboard's state spanning frames: the previous frame's key edges and
@@ -95,9 +98,6 @@ struct KeyState {
     was_delete: bool,
     was_enter: bool,
     was_esc: bool,
-    was_copy: bool,
-    was_paste: bool,
-    was_cut: bool,
     /// The typable characters held last frame.
     was_typed: HashSet<char>,
     repeat_left: f32,
@@ -113,7 +113,6 @@ struct KeyState {
 #[derive(Default)]
 struct MouseState {
     was_down: bool,
-    was_rdown: bool,
     /// The cursor column a held left button is dragging the selection from.
     drag: Option<usize>,
 }
@@ -130,7 +129,6 @@ impl TextInput {
             blink: 0.0,
             keys: KeyState::default(),
             mouse: MouseState::default(),
-            clipboard: None,
         }
     }
 
@@ -349,15 +347,6 @@ impl TextInput {
         self.blink < BLINK / 2.0
     }
 
-    /// The system clipboard, created on first use and `None` where the
-    /// platform has none.
-    fn clipboard_mut(&mut self) -> Option<&mut arboard::Clipboard> {
-        if self.clipboard.is_none() {
-            self.clipboard = arboard::Clipboard::new().ok();
-        }
-        self.clipboard.as_mut()
-    }
-
     /// Handles the frame's keyboard: advances the cursor blink, reads the
     /// modifier and editing keys, and applies their actions to the buffer
     /// when the field is focused. Returns `true` on the frame **Enter** is
@@ -391,21 +380,32 @@ impl TextInput {
         // while the field is unfocused doesn't fire a stale repeat on focus.
         let tick_left = key_tick(left, self.keys.was_left, &mut self.keys.repeat_left, dt);
         let tick_right = key_tick(right, self.keys.was_right, &mut self.keys.repeat_right, dt);
-        let tick_backspace =
-            key_tick(backspace, self.keys.was_backspace, &mut self.keys.repeat_backspace, dt);
-        let tick_delete = key_tick(delete, self.keys.was_delete, &mut self.keys.repeat_delete, dt);
+        let tick_backspace = key_tick(
+            backspace,
+            self.keys.was_backspace,
+            &mut self.keys.repeat_backspace,
+            dt,
+        );
+        let tick_delete = key_tick(
+            delete,
+            self.keys.was_delete,
+            &mut self.keys.repeat_delete,
+            dt,
+        );
         let mut tick_typed: HashSet<char> = HashSet::new();
         for &ch in TYPABLE {
             let held = !ctrl && ctx.char_down(ch);
             let was = self.keys.was_typed.contains(&ch);
-            let tick = key_tick(held, was, self.keys.repeat_typed.entry(ch).or_insert(0.0), dt);
+            let tick = key_tick(
+                held,
+                was,
+                self.keys.repeat_typed.entry(ch).or_insert(0.0),
+                dt,
+            );
             if tick {
                 tick_typed.insert(ch);
             }
         }
-        let copy_key = ctrl && ctx.key_down(KeyCode::KeyC);
-        let paste_key = ctrl && ctx.key_down(KeyCode::KeyV);
-        let cut_key = ctrl && ctx.key_down(KeyCode::KeyX);
 
         let mut committed = false;
         if self.focused {
@@ -438,35 +438,6 @@ impl TextInput {
             for &ch in &tick_typed {
                 self.insert(ch);
             }
-            // Clipboard shortcuts. The text is read before the clipboard is
-            // borrowed, so the two borrows of `self` never overlap.
-            if copy_key && !self.keys.was_copy {
-                let text = if self.selection_range().is_some() {
-                    self.selected_text()
-                } else {
-                    self.buffer.clone()
-                };
-                if let Some(clip) = self.clipboard_mut() {
-                    let _ = clip.set_text(text);
-                }
-            }
-            if paste_key && !self.keys.was_paste {
-                if let Some(clip) = self.clipboard_mut()
-                    && let Ok(text) = clip.get_text()
-                {
-                    let text: String = text.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-                    self.insert_str(&text);
-                }
-            }
-            if cut_key && !self.keys.was_cut {
-                let text = self.selected_text();
-                if !text.is_empty() {
-                    if let Some(clip) = self.clipboard_mut() {
-                        let _ = clip.set_text(text);
-                    }
-                    self.delete_selection();
-                }
-            }
         }
 
         // Update the edge state for next frame.
@@ -475,9 +446,6 @@ impl TextInput {
         self.keys.was_right = right;
         self.keys.was_backspace = backspace;
         self.keys.was_delete = delete;
-        self.keys.was_copy = copy_key;
-        self.keys.was_paste = paste_key;
-        self.keys.was_cut = cut_key;
         self.keys.was_typed = TYPABLE
             .iter()
             .copied()
@@ -489,36 +457,25 @@ impl TextInput {
 
     /// Handles the frame's mouse: a press in the field focuses it, places
     /// the cursor, and starts a selection drag; a press elsewhere
-    /// unfocuses; a held left button in the focused field drags the mark;
-    /// and a right-click in the focused field pastes the clipboard.
+    /// unfocuses; a held left button in the focused field drags the mark.
     ///
     /// `rect` is the field's `[left, bottom, right, top]` rect in the same
     /// space as `pos`.
-    pub fn process_mouse(
-        &mut self,
-        pos: Option<[f32; 2]>,
-        down: bool,
-        right_down: bool,
-        rect: [f32; 4],
-    ) {
-        let rpressed = right_down && !self.mouse.was_rdown;
-        self.mouse.was_rdown = right_down;
+    pub fn process_mouse(&mut self, pos: Option<[f32; 2]>, down: bool, rect: [f32; 4]) {
         let pressed = down && !self.mouse.was_down;
         let released = !down && self.mouse.was_down;
         self.mouse.was_down = down;
 
         // A press in the field focuses it, places the cursor, and starts a
         // drag; a press elsewhere unfocuses.
-        if pressed {
-            if let Some(p) = pos {
-                if in_rect(rect, p) {
-                    self.set_focus(true);
-                    self.click_at(p[0], rect);
-                    self.mouse.drag = Some(self.cursor);
-                } else {
-                    self.set_focus(false);
-                    self.mouse.drag = None;
-                }
+        if pressed && let Some(p) = pos {
+            if in_rect(rect, p) {
+                self.set_focus(true);
+                self.click_at(p[0], rect);
+                self.mouse.drag = Some(self.cursor);
+            } else {
+                self.set_focus(false);
+                self.mouse.drag = None;
             }
         }
         // A held left button in the focused field drags the selection.
@@ -532,17 +489,6 @@ impl TextInput {
         }
         if released {
             self.mouse.drag = None;
-        }
-        // A right-click in the focused field pastes the clipboard.
-        if rpressed
-            && self.focused
-            && let Some(p) = pos
-            && in_rect(rect, p)
-            && let Some(clip) = self.clipboard_mut()
-            && let Ok(text) = clip.get_text()
-        {
-            let text: String = text.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-            self.insert_str(&text);
         }
     }
 
@@ -721,7 +667,15 @@ impl Ui {
         // Draw the field.
         let blink_on = st.input.blink_on();
         let mut z = self.z;
-        draw_field(ctx, &field, &self.font, &st.input, blink_on, &mut z, &self.style);
+        draw_field(
+            ctx,
+            &field,
+            &self.font,
+            &st.input,
+            blink_on,
+            &mut z,
+            &self.style,
+        );
         self.z = z;
 
         // Write the buffer back to the caller.
@@ -774,14 +728,31 @@ fn draw_field(
         let visible: String = chars[input.scroll..end].iter().collect();
         let block_cx = field.left + PAD + n as f32 * CHAR_W / 2.0;
         let y = cy - RON_LIFT * SIZE;
-        ctx.text(block_cx, y, font, visible, SIZE, style.font_weight, style.text, *z);
+        ctx.text(
+            block_cx,
+            y,
+            font,
+            visible,
+            SIZE,
+            style.font_weight,
+            style.text,
+            *z,
+        );
         *z += 1.0;
     }
 
     // The cursor.
     if input.focused && blink_on {
         let cx = field.left + PAD + (input.cursor - input.scroll) as f32 * CHAR_W;
-        ctx.line(cx, field.top - field.h + 5.0, cx, field.top - 5.0, style.accent, 1.5, *z);
+        ctx.line(
+            cx,
+            field.top - field.h + 5.0,
+            cx,
+            field.top - 5.0,
+            style.accent,
+            1.5,
+            *z,
+        );
         *z += 1.0;
     }
 

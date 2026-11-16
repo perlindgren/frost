@@ -7,9 +7,8 @@
 //!
 //! The field has the same editing capabilities as the scene-tree variant
 //! (`scene_text_input`): drag the mouse (or hold **Shift** with the arrow
-//! keys) to mark a range, **Ctrl-C** copies the mark (or the whole buffer),
-//! **Ctrl-X** cuts it, **Ctrl-V** pastes the clipboard, and a right-click
-//! pastes too.
+//! keys) to mark a range, then type, **Backspace**, or **Delete** over it.
+//! The library carries no system clipboard, so there is no copy/paste.
 //!
 //! The field's state — buffer, cursor, mark, blink — lives in the engine's
 //! [`frost::TextInput`]; the widget is a thin adapter that draws it and
