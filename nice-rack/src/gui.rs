@@ -67,17 +67,16 @@ struct RackUi {
     /// what moves the trim, so the grab tracks the pointer, and the rack
     /// can scroll mid-drag without the gain jumping.
     gain_drag: Option<(u64, bool, f32)>,
-    /// Open dB editor: `(plugin id, is_output, panel anchor)`. Clicking a
-    /// meter's readout opens a frost panel holding a text field with the
-    /// trim's value; the anchor remembers where the readout stood when
-    /// the click happened.
-    gain_edit: Option<(u64, bool, [f32; 2])>,
-    /// The editor field's draft text, adopted and written back by the
-    /// frost text input every frame it is open.
-    gain_buffer: String,
-    /// The frost widget layer behind the dB editor. Its panel draws far
-    /// above the rack (its base z is 10 000).
-    hud: frost::Ui,
+    /// Open dB editor: `(plugin id, is_output)`. Clicking a card-corner
+    /// readout edits that trim in place; the field's rect is recomputed
+    /// from the card's live slot every frame, so scrolling carries the
+    /// open editor along with its card.
+    gain_edit: Option<(u64, bool)>,
+    /// The editor's field: frost's `TextInput` logic — buffer, caret,
+    /// selection, blink — adopted from the trim's dB text when the edit
+    /// opens. The rack draws it itself at the card's corner, mirroring
+    /// frost's own field drawing at the `GAIN_` metrics.
+    gain_input: frost::TextInput,
     size: Option<(u32, u32)>,
     windows: crate::editors::Windows,
     overlay: Option<NodeId>,
@@ -139,6 +138,36 @@ fn short(text: &str, count: usize) -> String {
     }
 }
 const CARD_WIDTH: f32 = 186.0;
+/// The corner readout's type size. frost's `TextInput` lays its cursor,
+/// clicks and caret out in its own metrics — a 0.6 em advance, padded
+/// 10 px, 16 visible columns — and the rack's field reuses that logic
+/// as it is, so the readout draws at the same size the field will.
+const GAIN_TEXT: f32 = 18.0;
+const GAIN_CHAR_W: f32 = GAIN_TEXT * 0.6;
+const GAIN_PAD: f32 = 10.0;
+const GAIN_COLS: usize = 16;
+/// How far FiraCode's cap-height sits above its baseline anchor; frost
+/// draws its field's text at the same lift, and the readout with it, so
+/// the digits hold their pixels when the field opens around them.
+const GAIN_LIFT: f32 = 0.344;
+/// Half-extents of the field's rect: the value's five characters and a
+/// pad on each side, and room for the caret. The pad doubles as the
+/// inset from the card's edge, so the field's outer border is the
+/// card's own corner.
+const GAIN_HALF_W: f32 = 5.0 * GAIN_CHAR_W / 2.0 + GAIN_PAD;
+const GAIN_HALF_H: f32 = 12.0;
+/// The centre of one wire's dB readout: the output trim in the card's
+/// bottom-right corner, the input trim in its top-left — each number
+/// at the corner of the edge its wire leaves (or enters).
+fn gain_center(x: f32, y: f32, side: bool) -> [f32; 2] {
+    let sx = CARD_WIDTH / 2.0 - GAIN_HALF_W;
+    let sy = TRACK_HALF - GAIN_HALF_H - 6.0;
+    if side {
+        [x + sx, y - sy]
+    } else {
+        [x - sx, y + sy]
+    }
+}
 const COLUMN_STEP: f32 = 224.0;
 #[derive(Clone, Copy)]
 struct Slot {
@@ -287,10 +316,6 @@ pub fn run(
     let font: Arc<[u8]> =
         Arc::from(include_bytes!("../../assets/fonts/FiraCode-VariableFont_wght.ttf").as_slice());
     let icons = nice_common::fonts::icon_font();
-    // The frost widget layer the dB editor lives in, on the same bundled
-    // font the rack draws with. It clones the bytes it needs, so `font`
-    // still moves into the rack below.
-    let hud = frost::Ui::from_bytes(&font).expect("the bundled font is a valid font file");
     let ui = RackUi {
         runtime,
         loader: Box::new(loader),
@@ -313,8 +338,7 @@ pub fn run(
         wire_meters: Default::default(),
         gain_drag: None,
         gain_edit: None,
-        gain_buffer: String::new(),
-        hud,
+        gain_input: frost::TextInput::default(),
         size: None,
         windows: Default::default(),
         overlay: None,
@@ -435,20 +459,16 @@ impl Process for RackUi {
             }
         }
         let down = ctx.mouse_button_down(frost::MouseButton::Left);
-        // The frost HUD snapshots the frame's raw pointer state before
-        // any rack hit test, so its widgets resolve this frame's press
-        // as their own.
-        self.hud.begin(ctx);
         let press = down && !self.pressed;
         let released = !down && self.pressed;
         self.pressed = down;
         let overlay_clicked = press;
-        // A press on the HUD — or, while the dB editor stands, a press
-        // anywhere — belongs to the HUD: it edits the field or closes
-        // the trim, and the rack never also selects or drags something
-        // underneath the editor.
-        let hud_busy = self.hud.hovering() || (self.gain_edit.is_some() && self.overlay.is_none());
-        let clicked = press && self.overlay.is_none() && !hud_busy;
+        // While the dB editor stands, a press belongs to it alone: the
+        // field's own mouse handling places the caret, or the editor
+        // lifecycle below commits or drops the draft — and the rack
+        // never also selects or drags something underneath the field.
+        let editor_open = self.gain_edit.is_some() && self.overlay.is_none();
+        let clicked = press && self.overlay.is_none() && !editor_open;
         if self.settings_page {
             let saved = Settings::load().0;
             let panel = self.settings.get_or_insert_with(|| {
@@ -584,9 +604,10 @@ impl Process for RackUi {
             self.settings_page = true;
             self.settings = None;
             self.drag = None;
-            // The settings page takes the whole window; a dB editor left
-            // open would have no meter to draw its panel against.
+            // The settings page takes the whole window; an open dB
+            // editor would have no card corner left to draw in.
             self.gain_edit = None;
+            self.gain_input.set_focus(false);
             return;
         }
         let groups = groups(&self.runtime.cards);
@@ -754,6 +775,26 @@ impl Process for RackUi {
             rgb(103, 237, 175),
             0.2,
         );
+        // A press on a corner readout belongs to that readout: it
+        // stands inside its card's hover rect, so without this veto the
+        // opening click would also grab the card and start a drag. The
+        // test mirrors the meter loop's own opening gates, so exactly
+        // the presses that open an editor are the ones the cards are
+        // denied; a press that opens nothing drags as before.
+        let readout_press = press
+            && self.overlay.is_none()
+            && self.gain_edit.is_none()
+            && self.choosing.is_none()
+            && self.gain_drag.is_none()
+            && layout.slots.iter().any(|slot| {
+                visible(slot, layout.top, layout.bottom, w)
+                    && [false, true].into_iter().any(|side| {
+                        self.wire_meters.contains_key(&(slot.id.0, side)) && {
+                            let [gx, gy] = gain_center(slot.x, slot.y, side);
+                            hit(mouse, gx, gy, GAIN_HALF_W, GAIN_HALF_H)
+                        }
+                    })
+            });
         let mut remove = None;
         for slot in &layout.slots {
             if !visible(slot, layout.top, layout.bottom, w) {
@@ -814,7 +855,7 @@ impl Process for RackUi {
                 rgb(220, 160, 160),
                 0.22,
             );
-            if !self.runtime.busy() && self.choosing.is_none() {
+            if !self.runtime.busy() && self.choosing.is_none() && !readout_press {
                 if clicked && hit(mouse, rx, ry, 12.0, 12.0) {
                     remove = Some(card.id);
                 } else if clicked && hover {
@@ -823,7 +864,15 @@ impl Process for RackUi {
                     self.moved = false;
                 }
             }
-            if hover && self.drag.is_none() && self.choosing.is_none() && self.overlay.is_none() {
+            // The hover tooltip draws far above the rack, where an open
+            // corner field would sit, so it stands aside while the
+            // editor is up.
+            if hover
+                && self.drag.is_none()
+                && self.choosing.is_none()
+                && self.overlay.is_none()
+                && self.gain_edit.is_none()
+            {
                 draw_details(ctx, &self.font, card);
             }
         }
@@ -986,20 +1035,37 @@ impl Process for RackUi {
             }
         }
         // The dB editor stands until it is answered: Escape abandons the
-        // draft, a press outside the panel commits it if it parses and
-        // drops it otherwise, and an editor whose meter vanished — card
-        // gone, box closed, or an overlay taking the window — dies with it.
-        if let Some((id, side, _)) = self.gain_edit {
+        // draft, an editor whose meter vanished — card gone, box closed,
+        // or an overlay taking the window — dies with it, and a press
+        // outside the field commits the draft if it parses and drops it
+        // otherwise. Testing "outside" needs the field's live rect, so
+        // its card is looked up again here; a card scrolled off-screen
+        // has no rect, which makes any press an outside one. (Enter is
+        // answered where the field itself draws, in the meter loop.)
+        if let Some((id, side)) = self.gain_edit {
             let gone = !self.wire_meters.contains_key(&(id, side));
             if ctx.key_down(frost::KeyCode::Escape) || self.overlay.is_some() || gone {
                 self.gain_edit = None;
-            } else if press && !self.hud.hovering() {
-                if let Some(db) = parse_gain(&self.gain_buffer)
-                    && let Some(wire) = self.wire_meters.get_mut(&(id, side))
-                {
-                    wire.gain_db = db;
+                self.gain_input.set_focus(false);
+            } else if press {
+                let inside = layout
+                    .slots
+                    .iter()
+                    .find(|slot| slot.id.0 == id && visible(slot, layout.top, layout.bottom, w))
+                    .is_some_and(|slot| {
+                        let [gx, gy] = gain_center(slot.x, slot.y, side);
+                        hit(mouse, gx, gy, GAIN_HALF_W, GAIN_HALF_H)
+                    });
+                if !inside {
+                    let draft = self.gain_input.buffer().to_string();
+                    if let Some(db) = parse_gain(&draft)
+                        && let Some(wire) = self.wire_meters.get_mut(&(id, side))
+                    {
+                        wire.gain_db = db;
+                    }
+                    self.gain_edit = None;
+                    self.gain_input.set_focus(false);
                 }
-                self.gain_edit = None;
             }
         }
         for ((id, side), wire) in &mut self.wire_meters {
@@ -1024,7 +1090,7 @@ impl Process for RackUi {
                     continue;
                 };
                 let bx = wire_box_x(slot.x, side);
-                let readout_y = slot.y - TRACK_HALF - 9.0;
+                let [gx, gy] = gain_center(slot.x, slot.y, side);
                 let dragging = self
                     .gain_drag
                     .is_some_and(|(id, grabbed, _)| id == slot.id.0 && grabbed == side);
@@ -1043,18 +1109,22 @@ impl Process for RackUi {
                     // excluded from the grab.
                     self.gain_drag = Some((slot.id.0, side, my));
                 }
-                // The readout under the meter is the numeric handle: a
-                // click opens the frost panel whose text field edits
-                // this trim in dB, anchored where the readout stands.
+                // The corner readout is the numeric handle: a click
+                // adopts the trim's value into the field and the number
+                // becomes editable in place. `clicked` is already false
+                // while an editor stands, so one click opens exactly one
+                // field, and the same press that opened it lands on the
+                // field's own mouse handling below.
                 if clicked
                     && self.choosing.is_none()
                     && self.gain_drag.is_none()
-                    && self.gain_edit.is_none()
-                    && hit(mouse, bx, readout_y, 20.0, 8.0)
+                    && hit(mouse, gx, gy, GAIN_HALF_W, GAIN_HALF_H)
                 {
-                    self.gain_edit = Some((slot.id.0, side, [bx, readout_y - 14.0]));
-                    self.gain_buffer = format!("{:+.1}", wire.gain_db);
+                    self.gain_edit = Some((slot.id.0, side));
+                    self.gain_input.adopt(format!("{:+.1}", wire.gain_db));
+                    self.gain_input.set_focus(true);
                 }
+                let editing = self.gain_edit == Some((slot.id.0, side));
                 let hovered = dragging || hit(mouse, bx, slot.y, 4.5, TRACK_HALF);
                 // The vertical meter carries the card's full height and
                 // scales over the last 48 dB, screen y pointing up. The
@@ -1114,56 +1184,103 @@ impl Process for RackUi {
                     rgb(255, 255, 255),
                     0.3,
                 );
-                // The gain in dB, underneath the meter, as the clickable
-                // numeric handle — no unit suffix; the editor says "dB".
-                ctx.text(
-                    bx,
-                    readout_y,
-                    &self.font,
-                    format!("{:+.1}", wire.gain_db),
-                    11.0,
-                    500.0,
-                    rgb(226, 232, 240),
-                    0.3,
-                );
-                // The frost panel that edits this wire's gain, anchored
-                // just under the readout that opened it. Its title names
-                // the card and the side, so the panel — and the spot
-                // frost remembers for it — belongs to this wire alone.
-                if let Some((eid, eside, at)) = self.gain_edit
-                    && eid == slot.id.0
-                    && eside == side
-                {
-                    let title = format!(
-                        "{} {}",
-                        short(
-                            self.runtime
-                                .cards
-                                .iter()
-                                .find(|c| c.id == slot.id)
-                                .map_or("?", |c| c.name.as_str()),
-                            12
-                        ),
-                        if side { "out" } else { "in" }
+                // The gain in dB, big and in the card's corner — the
+                // clickable numeric handle, no unit suffix. The anchor
+                // and size match what the open field draws, so clicking
+                // the number swaps the chrome around it, not the digits
+                // themselves.
+                if !editing {
+                    ctx.text(
+                        gx,
+                        gy - GAIN_LIFT * GAIN_TEXT,
+                        &self.font,
+                        format!("{:+.1}", wire.gain_db),
+                        GAIN_TEXT,
+                        500.0,
+                        rgb(226, 232, 240),
+                        0.3,
                     );
-                    let commit = {
-                        let RackUi {
-                            hud, gain_buffer, ..
-                        } = self;
-                        let mut commit = false;
-                        hud.panel(ctx, &title, at, 240.0, |ui, ctx| {
-                            commit |= ui.text_input(ctx, "dB", gain_buffer, dt);
-                            commit |= ui.button(ctx, "Set");
-                        });
-                        commit
-                    };
-                    if commit {
-                        match parse_gain(&self.gain_buffer) {
+                }
+                // The field, drawn where the readout stands. frost's
+                // `TextInput` owns the editing — keys, caret, selection,
+                // blink — and these calls mirror its own field drawing
+                // at the corner metrics, so the number holds its pixels
+                // and the card wears the editor instead of a popup
+                // covering it. A draft wider than the rect spills past
+                // it, as frost's own field does; a dB value never needs
+                // one.
+                if editing {
+                    let left = gx - GAIN_HALF_W;
+                    let bottom = gy - GAIN_HALF_H;
+                    let right = gx + GAIN_HALF_W;
+                    let top = gy + GAIN_HALF_H;
+                    let accent = rgb(103, 237, 175);
+                    let committed = self.gain_input.process_keys(ctx, dt);
+                    self.gain_input
+                        .process_mouse(mouse, down, [left, bottom, right, top]);
+                    let draft = self.gain_input.buffer().to_string();
+                    let chars: Vec<char> = draft.chars().collect();
+                    let scroll = self.gain_input.scroll_offset();
+                    let shown = chars.len().min(scroll + GAIN_COLS);
+                    ctx.rectangle(gx, gy, GAIN_HALF_W, GAIN_HALF_H, rgb(24, 20, 38), 0.35);
+                    if let Some((start, end)) = self.gain_input.selection_range() {
+                        let a = start.max(scroll);
+                        let b = end.min(scroll + GAIN_COLS).min(chars.len());
+                        if a < b {
+                            let x0 = left + GAIN_PAD + (a - scroll) as f32 * GAIN_CHAR_W;
+                            let x1 = left + GAIN_PAD + (b - scroll) as f32 * GAIN_CHAR_W;
+                            ctx.rectangle(
+                                (x0 + x1) / 2.0,
+                                gy,
+                                (x1 - x0) / 2.0,
+                                GAIN_HALF_H,
+                                Color { a: 0.30, ..accent },
+                                0.35,
+                            );
+                        }
+                    }
+                    if shown > scroll {
+                        let visible: String = chars[scroll..shown].iter().collect();
+                        let block = (shown - scroll) as f32;
+                        ctx.text(
+                            left + GAIN_PAD + block * GAIN_CHAR_W / 2.0,
+                            gy - GAIN_LIFT * GAIN_TEXT,
+                            &self.font,
+                            visible,
+                            GAIN_TEXT,
+                            500.0,
+                            rgb(226, 232, 240),
+                            0.35,
+                        );
+                    }
+                    if self.gain_input.focused() {
+                        if self.gain_input.blink_on() {
+                            let cx = left
+                                + GAIN_PAD
+                                + (self.gain_input.cursor_column() - scroll) as f32 * GAIN_CHAR_W;
+                            ctx.line(cx, bottom + 5.0, cx, top - 5.0, accent, 1.5, 0.35);
+                        }
+                        for [x0, y0, x1, y1] in [
+                            [left, bottom, right, bottom],
+                            [left, top, right, top],
+                            [left, bottom, left, top],
+                            [right, bottom, right, top],
+                        ] {
+                            ctx.line(x0, y0, x1, y1, accent, 2.0, 0.35);
+                        }
+                    }
+                    if committed {
+                        // Enter answers the editor: a number is written
+                        // back and the field closes; a draft that is not
+                        // one keeps the field open and says what it
+                        // wanted.
+                        match parse_gain(&draft) {
                             Some(db) => {
                                 if let Some(wire) = self.wire_meters.get_mut(&(slot.id.0, side)) {
                                     wire.gain_db = db;
                                 }
                                 self.gain_edit = None;
+                                self.gain_input.set_focus(false);
                             }
                             None => self.runtime.message = "Type a dB number".to_string(),
                         }
@@ -1535,5 +1652,30 @@ mod tests {
         // clamps them.
         assert_eq!(gain_line_y(99.0, 0.0), gain_line_y(24.0, 0.0));
         assert_eq!(gain_line_y(-99.0, 0.0), gain_line_y(-24.0, 0.0));
+    }
+    #[test]
+    fn the_trim_readouts_sit_in_the_card_corners() {
+        // The output trim lives in the card's bottom-right corner and
+        // the input trim in its top-left — each number at the corner of
+        // the edge its wire leaves (or enters) — and the two sit exactly
+        // opposite each other across the card's centre.
+        let out = gain_center(0.0, 0.0, true);
+        let input = gain_center(0.0, 0.0, false);
+        assert!(out[0] > 0.0 && out[1] < 0.0);
+        assert!(input[0] < 0.0 && input[1] > 0.0);
+        assert_eq!([out[0], out[1]], [-input[0], -input[1]]);
+
+        // The pad doubles as the inset, so the field's outer border is
+        // the card's own corner: flush with the vertical edge, and 6 px
+        // clear of the horizontal ones so the card's border still shows
+        // above and below the field.
+        assert!((out[0].abs() + GAIN_HALF_W - CARD_WIDTH / 2.0).abs() < 1e-3);
+        assert!((out[1].abs() + GAIN_HALF_H - (TRACK_HALF - 6.0)).abs() < 1e-3);
+
+        // And the field stops short of the meter track it sits under, so
+        // a press on the track's inner edge still starts a drag instead
+        // of opening the editor.
+        let track_inner = wire_box_x(0.0, true).abs() - 4.5;
+        assert!(out[0].abs() + GAIN_HALF_W < track_inner);
     }
 }
