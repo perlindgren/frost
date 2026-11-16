@@ -62,11 +62,22 @@ struct RackUi {
     /// meter; this copy is what the white line and the readout draw, and
     /// what gets re-stated to the engine every tick.
     wire_meters: std::collections::BTreeMap<(u64, bool), WireMeter>,
-    /// Gain slider grab: `(plugin id, is_output, wire height at grab)`.
-    /// The wire height is captured because the rack can scroll mid-drag;
-    /// the slider then stays glued to the track the user grabbed instead
-    /// of chasing the layout under the pointer.
+    /// Gain slider grab: `(plugin id, is_output, pointer height last
+    /// frame)`. The drag is *relative*: each frame's pointer travel is
+    /// what moves the trim, so the grab tracks the pointer, and the rack
+    /// can scroll mid-drag without the gain jumping.
     gain_drag: Option<(u64, bool, f32)>,
+    /// Open dB editor: `(plugin id, is_output, panel anchor)`. Clicking a
+    /// meter's readout opens a frost panel holding a text field with the
+    /// trim's value; the anchor remembers where the readout stood when
+    /// the click happened.
+    gain_edit: Option<(u64, bool, [f32; 2])>,
+    /// The editor field's draft text, adopted and written back by the
+    /// frost text input every frame it is open.
+    gain_buffer: String,
+    /// The frost widget layer behind the dB editor. Its panel draws far
+    /// above the rack (its base z is 10 000).
+    hud: frost::Ui,
     size: Option<(u32, u32)>,
     windows: crate::editors::Windows,
     overlay: Option<NodeId>,
@@ -92,12 +103,23 @@ fn wire_box_x(x: f32, side: bool) -> f32 {
     if side { x + edge } else { x - edge }
 }
 const TRACK_HALF: f32 = 56.0;
-/// Meter slider mapping: a pointer height maps onto the track exactly as
-/// the meter's own 48 dB scale maps onto its 112 px, with the wire height
-/// (track midpoint) as 0 dB — so the gain reads at the same height the
-/// level is drawn. Screen y points up; grabs past the ends clamp.
-fn gain_at(mouse_y: f32, wire_y: f32) -> f32 {
-    ((mouse_y - (wire_y - TRACK_HALF)) / (2.0 * TRACK_HALF)).clamp(0.0, 1.0) * 48.0 - 24.0
+/// Relative drag mapping: each pixel of pointer travel turns the trim by
+/// 0.05 dB, and that rate grows exponentially with the drag's speed (px
+/// per frame), so a slow, careful drag keeps fractions-of-a-dB control
+/// while a fast flick sweeps the range in a swipe. The result clamps to
+/// the ±24 dB the track spans.
+fn gain_drag_delta(px: f32, gain_db: f32) -> f32 {
+    (gain_db + px * 0.05 * (px.abs() / 8.0).exp()).clamp(-24.0, 24.0)
+}
+/// Parse the editor's draft: a comma stands in for the decimal point,
+/// and anything that is not a plain, finite dB value is no value at all.
+fn parse_gain(text: &str) -> Option<f32> {
+    text.trim()
+        .replace(',', ".")
+        .parse::<f32>()
+        .ok()
+        .filter(|db| db.is_finite())
+        .map(|db| db.clamp(-24.0, 24.0))
 }
 /// The track height a gain dB sits at — the inverse mapping the white
 /// gain line is drawn from.
@@ -262,9 +284,13 @@ pub fn run(
     if let Some(warning) = warning {
         runtime.message = warning;
     }
-    let font =
+    let font: Arc<[u8]> =
         Arc::from(include_bytes!("../../assets/fonts/FiraCode-VariableFont_wght.ttf").as_slice());
     let icons = nice_common::fonts::icon_font();
+    // The frost widget layer the dB editor lives in, on the same bundled
+    // font the rack draws with. It clones the bytes it needs, so `font`
+    // still moves into the rack below.
+    let hud = frost::Ui::from_bytes(&font).expect("the bundled font is a valid font file");
     let ui = RackUi {
         runtime,
         loader: Box::new(loader),
@@ -286,6 +312,9 @@ pub fn run(
         output: PeakMeter::new(now()),
         wire_meters: Default::default(),
         gain_drag: None,
+        gain_edit: None,
+        gain_buffer: String::new(),
+        hud,
         size: None,
         windows: Default::default(),
         overlay: None,
@@ -406,11 +435,20 @@ impl Process for RackUi {
             }
         }
         let down = ctx.mouse_button_down(frost::MouseButton::Left);
-        let clicked = down && !self.pressed;
+        // The frost HUD snapshots the frame's raw pointer state before
+        // any rack hit test, so its widgets resolve this frame's press
+        // as their own.
+        self.hud.begin(ctx);
+        let press = down && !self.pressed;
         let released = !down && self.pressed;
         self.pressed = down;
-        let overlay_clicked = clicked;
-        let clicked = clicked && self.overlay.is_none();
+        let overlay_clicked = press;
+        // A press on the HUD — or, while the dB editor stands, a press
+        // anywhere — belongs to the HUD: it edits the field or closes
+        // the trim, and the rack never also selects or drags something
+        // underneath the editor.
+        let hud_busy = self.hud.hovering() || (self.gain_edit.is_some() && self.overlay.is_none());
+        let clicked = press && self.overlay.is_none() && !hud_busy;
         if self.settings_page {
             let saved = Settings::load().0;
             let panel = self.settings.get_or_insert_with(|| {
@@ -546,6 +584,9 @@ impl Process for RackUi {
             self.settings_page = true;
             self.settings = None;
             self.drag = None;
+            // The settings page takes the whole window; a dB editor left
+            // open would have no meter to draw its panel against.
+            self.gain_edit = None;
             return;
         }
         let groups = groups(&self.runtime.cards);
@@ -924,19 +965,41 @@ impl Process for RackUi {
         let output_peak = f32::from_bits(self.runtime.levels.output_peak.load(Ordering::Relaxed));
         self.input.tick(db(input), db(input_peak), time);
         self.output.tick(db(output), db(output_peak), time);
-        // Dragging an open meter with the left button moves its gain trim.
-        // The drag tracks the wire height captured at grab, so it survives
-        // the card scrolling out of view, and it lets go the moment the
-        // button, an editor overlay or Escape takes the pointer away.
-        if let Some((id, side, wire_y)) = self.gain_drag {
+        // Dragging an open meter with the left button trims its gain
+        // *relative* to where the trim stands: each frame's pointer step
+        // nudges the gain by a step-scaled amount, so a slow drag keeps
+        // fractions-of-a-dB control while a fast flick sweeps the range
+        // (see gain_drag_delta). The grab tracks the pointer itself, so
+        // the drag survives the card scrolling out of view, and it lets
+        // go the moment the button, an editor overlay or Escape takes
+        // the pointer away.
+        if let Some((id, side, last_y)) = self.gain_drag {
             if ctx.key_down(frost::KeyCode::Escape) || !down || self.overlay.is_some() {
                 self.gain_drag = None;
             } else if let Some(wire) = self.wire_meters.get_mut(&(id, side))
                 && let Some([_, my]) = ctx.mouse_position()
             {
-                wire.gain_db = gain_at(my, wire_y);
+                wire.gain_db = gain_drag_delta(my - last_y, wire.gain_db);
+                self.gain_drag = Some((id, side, my));
             } else {
                 self.gain_drag = None;
+            }
+        }
+        // The dB editor stands until it is answered: Escape abandons the
+        // draft, a press outside the panel commits it if it parses and
+        // drops it otherwise, and an editor whose meter vanished — card
+        // gone, box closed, or an overlay taking the window — dies with it.
+        if let Some((id, side, _)) = self.gain_edit {
+            let gone = !self.wire_meters.contains_key(&(id, side));
+            if ctx.key_down(frost::KeyCode::Escape) || self.overlay.is_some() || gone {
+                self.gain_edit = None;
+            } else if press && !self.hud.hovering() {
+                if let Some(db) = parse_gain(&self.gain_buffer)
+                    && let Some(wire) = self.wire_meters.get_mut(&(id, side))
+                {
+                    wire.gain_db = db;
+                }
+                self.gain_edit = None;
             }
         }
         for ((id, side), wire) in &mut self.wire_meters {
@@ -961,20 +1024,36 @@ impl Process for RackUi {
                     continue;
                 };
                 let bx = wire_box_x(slot.x, side);
+                let readout_y = slot.y - TRACK_HALF - 9.0;
                 let dragging = self
                     .gain_drag
                     .is_some_and(|(id, grabbed, _)| id == slot.id.0 && grabbed == side);
                 if clicked
                     && self.choosing.is_none()
                     && self.gain_drag.is_none()
+                    && self.gain_edit.is_none()
+                    && let Some([_, my]) = mouse
                     && hit(mouse, bx, slot.y, 4.5, TRACK_HALF)
                     && !hit(mouse, bx, slot.y, 4.0, 6.0)
                 {
                     // Grabbing the track turns the meter into the gain
-                    // slider: midpoint 0 dB, same dB/px as the meter. The
-                    // stub box sits at the track centre and keeps its
-                    // toggle, so it is excluded from the grab.
-                    self.gain_drag = Some((slot.id.0, side, slot.y));
+                    // slider: the grab records the pointer height so the
+                    // drag is relative from here. The stub box sits at
+                    // the track centre and keeps its toggle, so it is
+                    // excluded from the grab.
+                    self.gain_drag = Some((slot.id.0, side, my));
+                }
+                // The readout under the meter is the numeric handle: a
+                // click opens the frost panel whose text field edits
+                // this trim in dB, anchored where the readout stands.
+                if clicked
+                    && self.choosing.is_none()
+                    && self.gain_drag.is_none()
+                    && self.gain_edit.is_none()
+                    && hit(mouse, bx, readout_y, 20.0, 8.0)
+                {
+                    self.gain_edit = Some((slot.id.0, side, [bx, readout_y - 14.0]));
+                    self.gain_buffer = format!("{:+.1}", wire.gain_db);
                 }
                 let hovered = dragging || hit(mouse, bx, slot.y, 4.5, TRACK_HALF);
                 // The vertical meter carries the card's full height and
@@ -1035,17 +1114,61 @@ impl Process for RackUi {
                     rgb(255, 255, 255),
                     0.3,
                 );
-                // The gain in dB, underneath the meter.
+                // The gain in dB, underneath the meter, as the clickable
+                // numeric handle — no unit suffix; the editor says "dB".
                 ctx.text(
                     bx,
-                    slot.y - TRACK_HALF - 9.0,
+                    readout_y,
                     &self.font,
-                    format!("{:+.1} dB", wire.gain_db),
+                    format!("{:+.1}", wire.gain_db),
                     11.0,
                     500.0,
                     rgb(226, 232, 240),
                     0.3,
                 );
+                // The frost panel that edits this wire's gain, anchored
+                // just under the readout that opened it. Its title names
+                // the card and the side, so the panel — and the spot
+                // frost remembers for it — belongs to this wire alone.
+                if let Some((eid, eside, at)) = self.gain_edit
+                    && eid == slot.id.0
+                    && eside == side
+                {
+                    let title = format!(
+                        "{} {}",
+                        short(
+                            self.runtime
+                                .cards
+                                .iter()
+                                .find(|c| c.id == slot.id)
+                                .map_or("?", |c| c.name.as_str()),
+                            12
+                        ),
+                        if side { "out" } else { "in" }
+                    );
+                    let commit = {
+                        let RackUi {
+                            hud, gain_buffer, ..
+                        } = self;
+                        let mut commit = false;
+                        hud.panel(ctx, &title, at, 240.0, |ui, ctx| {
+                            commit |= ui.text_input(ctx, "dB", gain_buffer, dt);
+                            commit |= ui.button(ctx, "Set");
+                        });
+                        commit
+                    };
+                    if commit {
+                        match parse_gain(&self.gain_buffer) {
+                            Some(db) => {
+                                if let Some(wire) = self.wire_meters.get_mut(&(slot.id.0, side)) {
+                                    wire.gain_db = db;
+                                }
+                                self.gain_edit = None;
+                            }
+                            None => self.runtime.message = "Type a dB number".to_string(),
+                        }
+                    }
+                }
             }
         }
         let fit = (w / 1000.0).clamp(0.45, 1.0);
@@ -1359,29 +1482,58 @@ mod tests {
         assert!(layout.slots[2].x > layout.slots[0].x);
     }
     #[test]
-    fn the_gain_slider_shares_the_meters_scale() {
-        // Midpoint — the wire height — is 0 dB and the track ends are
-        // ±24 dB, so the slider spans exactly the meter's 48 dB over the
-        // same 112 px.
-        assert_eq!(gain_at(0.0, 0.0), 0.0);
-        assert_eq!(gain_at(TRACK_HALF, 0.0), 24.0);
-        assert_eq!(gain_at(-TRACK_HALF, 0.0), -24.0);
-        assert_eq!(gain_at(28.0, 0.0), 12.0);
-        assert_eq!(gain_at(-28.0, 0.0), -12.0);
-        // Grabs past the ends clamp instead of running away with the gain.
-        assert_eq!(gain_at(90.0, 10.0), 24.0);
-        assert_eq!(gain_at(-90.0, 10.0), -24.0);
-        // 6 dB of gain moves the white line 14 px — the same distance the
-        // meter's own fill moves for 6 dB, and where the gray marks sit.
+    fn a_slow_drag_trims_finer_than_a_fast_one() {
+        // Standing still leaves the trim exactly where it was.
+        assert_eq!(gain_drag_delta(0.0, 3.0), 3.0);
+        // A slow step — a couple of pixels a frame — stays sub-decibel
+        // by design, which is the whole point of the relative drag.
+        assert!((1..=2).all(|px| gain_drag_delta(px as f32, 0.0).abs() < 0.15));
+        // The response grows super-linearly with drag speed: eight times
+        // the pixels land far more than eight times the trim, so a flick
+        // sweeps the range a careful drag would take seconds to cross.
+        let slow = gain_drag_delta(2.0, 0.0);
+        let fast = gain_drag_delta(16.0, 0.0);
+        assert!(fast > 8.0 * slow);
+        // The trim answers either direction, evenly and monotonically.
+        assert!(gain_drag_delta(1.0, 0.0) > 0.0);
+        assert_eq!(gain_drag_delta(-1.0, 0.0), -gain_drag_delta(1.0, 0.0));
+        for px in 1..20 {
+            let px = px as f32;
+            assert!(gain_drag_delta(px + 1.0, 0.0) > gain_drag_delta(px, 0.0));
+        }
+        // And the ±24 dB the track spans bounds any flick.
+        assert_eq!(gain_drag_delta(500.0, 20.0), 24.0);
+        assert_eq!(gain_drag_delta(-500.0, -20.0), -24.0);
+    }
+    #[test]
+    fn the_editor_accepts_plain_decibel_numbers() {
+        assert_eq!(parse_gain("6"), Some(6.0));
+        assert_eq!(parse_gain("-3,5"), Some(-3.5));
+        assert_eq!(parse_gain(" 30 "), Some(24.0));
+        assert_eq!(parse_gain("dB"), None);
+        assert_eq!(parse_gain(""), None);
+        // "inf" parses as a float, but not as a gain.
+        assert_eq!(parse_gain("inf"), None);
+    }
+    #[test]
+    fn the_gain_line_marks_the_trim_on_the_meters_scale() {
+        // 6 dB of gain moves the white line 14 px — the same distance
+        // the meter's own fill moves for 6 dB, and where the gray marks
+        // sit, so the trim reads against the meter's scale directly.
         assert_eq!(gain_line_y(6.0, 0.0) - gain_line_y(0.0, 0.0), 14.0);
         assert_eq!(gain_line_y(0.0, 0.0), 0.0);
-        // The line lands where the drag put it, at any card height.
+        // The line lands where the drag or the editor put it, at any
+        // card height.
         for (db, wire_y) in [(-24.0, -140.0), (-12.0, 0.0), (12.0, 7.5), (24.0, 200.0)] {
             let y = gain_line_y(db, wire_y);
-            assert!(
-                (gain_at(y, wire_y) - db).abs() < 1e-4,
-                "{db} dB at {wire_y}"
-            );
+            // The line sits exactly where the meter's own 48 dB over
+            // 112 px scale puts that gain.
+            let scale = wire_y - TRACK_HALF + 2.0 * TRACK_HALF * ((db + 24.0) / 48.0);
+            assert!((y - scale).abs() < 1e-4, "{db} dB at {wire_y}");
         }
+        // Values past the track ends draw at the ends, like the drag
+        // clamps them.
+        assert_eq!(gain_line_y(99.0, 0.0), gain_line_y(24.0, 0.0));
+        assert_eq!(gain_line_y(-99.0, 0.0), gain_line_y(-24.0, 0.0));
     }
 }
