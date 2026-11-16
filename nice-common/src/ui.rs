@@ -15,18 +15,22 @@ pub enum Field {
     InputCh,
     Output,
     OutputCh,
+    SecondDevice,
+    SecondOutput,
     InputBuffer,
     OutputBuffer,
     Rate,
     OutputRate,
     Extra(usize),
 }
-const AUDIO_ROWS: [(&str, Field); 9] = [
+const AUDIO_ROWS: [(&str, Field); 11] = [
     ("Backend", Field::Backend),
     ("Input device", Field::Input),
     ("Input channel", Field::InputCh),
     ("Output device", Field::Output),
     ("Output channels", Field::OutputCh),
+    ("Second device", Field::SecondDevice),
+    ("Second output", Field::SecondOutput),
     ("Input buffer size", Field::InputBuffer),
     ("Output buffer size", Field::OutputBuffer),
     ("Input sample rate", Field::Rate),
@@ -55,6 +59,11 @@ pub struct AudioPanel<P> {
     pub applied: Settings<P>,
     pub saved: Settings<P>,
     pub snapshot: Snapshot,
+    /// How far up the second driver's own outputs a copy can reach, which is the
+    /// one question this page asks that driver: its channels are not the first
+    /// driver's, so a copy riding it is measured on it. `None` means it has not
+    /// answered, which is not the same as having no channels.
+    second_reach: Option<u32>,
     pub note: Option<String>,
     pub live_frames: Option<u32>,
     pub cold: bool,
@@ -85,6 +94,8 @@ pub fn audio_equal<P>(a: &Settings<P>, b: &Settings<P>) -> bool {
         && a.output_device == b.output_device
         && a.jack_output_right == b.jack_output_right
         && a.output_channels == b.output_channels
+        && a.asio_second_device == b.asio_second_device
+        && a.asio_second_output == b.asio_second_output
         && a.input_channel == b.input_channel
         && a.sample_rate == b.sample_rate
         && a.output_sample_rate == b.output_sample_rate
@@ -99,6 +110,7 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
             applied,
             saved,
             snapshot: Snapshot::default(),
+            second_reach: None,
             note: None,
             live_frames: None,
             cold,
@@ -160,8 +172,134 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
                 .input_device
                 .clone()
                 .or(self.snapshot.def_in.clone());
+            // A second driver named that is the driver the copy is copied from,
+            // which is what naming nothing means.
+            self.same_driver_is_no_driver();
+            self.ask_second_reach();
+            self.prune_second_output();
+        } else {
+            self.second_reach = None;
         }
         self.sync_linked();
+    }
+    /// Write the copy's carrier back the short way: the row offers "Same as
+    /// output" and a list of other drivers, and a file naming this one says the
+    /// first of those in the second row's words.
+    fn same_driver_is_no_driver(&mut self) {
+        if self
+            .draft
+            .asio_second_device
+            .as_deref()
+            .is_some_and(|driver| Some(driver) == self.draft.output_device.as_deref())
+        {
+            self.draft.asio_second_device = None;
+        }
+    }
+    /// The driver the copy rides on, or `None` when it rides the one carrying the
+    /// live stream. Only a name other than the output row's is another driver.
+    fn copy_driver(&self) -> Option<&str> {
+        let driver = self.draft.asio_second_device.as_deref()?;
+        (Some(driver) != self.draft.output_device.as_deref()).then_some(driver)
+    }
+    /// Ask the driver the copy rides on how many output channels it has, as its
+    /// own output and not as anybody's input. A second snapshot is what that
+    /// question costs, and it is a question the first snapshot cannot answer: the
+    /// channels of the live driver are not the ones the copy lands on.
+    fn ask_second_reach(&mut self) {
+        let Some(driver) = self.copy_driver().map(str::to_owned) else {
+            self.second_reach = None;
+            return;
+        };
+        let snapshot = if devices::asio_stream_live() {
+            devices::snapshot_via_child(self.backend(), None, Some(&driver))
+        } else {
+            Some(devices::snapshot(self.backend(), None, Some(&driver)))
+        };
+        self.second_reach = snapshot.and_then(|snapshot| Self::reach(&snapshot));
+    }
+    /// How far up channels a copy can reach, counted on whichever driver carries
+    /// it: the second one's own channels when there is a second one.
+    fn copy_reach(&self) -> Option<u32> {
+        if self.copy_driver().is_some() {
+            self.second_reach
+        } else {
+            self.output_reach()
+        }
+    }
+    /// Drop a second output start the carrier cannot host: a row offering a span
+    /// the driver does not have is not a choice, and one landing on the first
+    /// group would copy nothing. A driver that will not say how wide it is gets no
+    /// verdict here — this page is beyond knowing, and the driver refuses the open
+    /// in its own words when the channels are absent.
+    fn prune_second_output(&mut self) {
+        let width = self.output_width();
+        let first = if self.copy_driver().is_some() {
+            1
+        } else {
+            width + 1
+        };
+        let keep = self.draft.asio_second_output.is_some_and(|start| {
+            self.copy_reach().is_none_or(|reach| {
+                start >= first && start.checked_add(width - 1).is_some_and(|end| end <= reach)
+            })
+        });
+        if !keep {
+            self.draft.asio_second_output = None;
+        }
+    }
+    /// The width of the first output group, which is what a second one copies:
+    /// the route as chosen, or as the device reported it, or one while neither is
+    /// known.
+    fn output_width(&self) -> u32 {
+        self.draft
+            .output_channels
+            .or(self.snapshot.default_output_channels)
+            .map_or(1, |route| route.required_channels().max(1))
+    }
+    /// How far up the live driver's output channels a stream can reach.
+    fn output_reach(&self) -> Option<u32> {
+        Self::reach(&self.snapshot)
+    }
+    /// How far up the outputs of one snapshot's device a stream can reach, which
+    /// is the same question as how many output channels it has. `None` is a device
+    /// that has not answered, not a device with none.
+    fn reach(snapshot: &Snapshot) -> Option<u32> {
+        snapshot
+            .output_formats
+            .iter()
+            .map(|format| format.channels)
+            .max()
+            .filter(|&channels| channels > 0)
+    }
+    /// The settings page as rows: the shared audio rows, with the two ASIO-only
+    /// copy rows only where they apply, then the application's own rows.
+    /// The second value is how many rows are audio, which is where the gap in
+    /// front of the application rows belongs.
+    fn page_rows(&self) -> (Vec<(String, Field)>, usize) {
+        let mut rows: Vec<(String, Field)> = AUDIO_ROWS
+            .iter()
+            // The copy is an ASIO idea: no other backend shares one device
+            // whose channels can be handed out twice, nor has a second driver
+            // this host could load beside the first.
+            .filter(|(_, field)| {
+                !matches!(field, Field::SecondDevice | Field::SecondOutput)
+                    || self.backend() == "asio"
+            })
+            .map(|(label, field)| (label.to_string(), *field))
+            .collect();
+        if self.backend() == "jack" {
+            rows[1].0 = "Input source".into();
+            rows[3].0 = "Output left / mono".into();
+            rows[4].0 = "Output right".into();
+        }
+        let audio = rows.len();
+        rows.extend(
+            self.extras
+                .iter()
+                .enumerate()
+                .map(|(i, row)| (row.label.clone(), Field::Extra(i))),
+        );
+        (rows, audio)
     }
     fn sync_linked(&mut self) {
         if self.snapshot.buffers_linked {
@@ -197,6 +335,55 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
         }
         self.sync_linked();
     }
+    /// The drivers a copy can ride on: every ASIO driver this machine has apart
+    /// from the one the Output row already names, because naming that one is what
+    /// the leading "Same as output" row means.
+    fn second_device_rows(&self) -> Vec<(String, String)> {
+        let output = self
+            .draft
+            .output_device
+            .as_deref()
+            .or(self.snapshot.def_out.as_deref());
+        self.snapshot
+            .outputs
+            .iter()
+            .filter(|driver| Some(driver.as_str()) != output)
+            .map(|driver| (driver.clone(), driver.clone()))
+            .collect()
+    }
+    /// Every start whose copy fits: the channels the carrier has after the first
+    /// group, each labelled with the span it lands on — "3–4" for a route reaching
+    /// channel 2, and plain "3" for a mono one, because a span of one is not a
+    /// span. On the driver carrying the live stream the first group is in the way,
+    /// so the choices start behind it; on a driver of its own, channel 1 is as
+    /// good as any.
+    fn second_output_rows(&self) -> Vec<(String, String)> {
+        let width = self.output_width();
+        let Some(tail) = self.copy_reach().and_then(|reach| reach.checked_sub(width)) else {
+            return Vec::new();
+        };
+        let first = if self.copy_driver().is_some() {
+            1
+        } else {
+            width + 1
+        };
+        let last = tail + 1;
+        if last < first {
+            return Vec::new();
+        }
+        (first..=last)
+            .map(|start| {
+                (
+                    if width == 1 {
+                        start.to_string()
+                    } else {
+                        format!("{start}–{}", start + width - 1)
+                    },
+                    start.to_string(),
+                )
+            })
+            .collect()
+    }
     fn buffer_default(&self, field: Field) -> Option<u32> {
         if self.backend() == "jack"
             && self.applied.backend.as_deref() == Some("jack")
@@ -217,6 +404,10 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
             Field::Input => self.snapshot.def_in.clone(),
             Field::Output => self.snapshot.def_out.clone(),
             Field::InputCh => self.snapshot.default_input_channel.map(|v| v.to_string()),
+            // One output group is the default everywhere: a second one is a
+            // choice, not something a device reports. The same for the driver it
+            // rides on, which is the one carrying the first group until told.
+            Field::SecondDevice | Field::SecondOutput => None,
             Field::OutputCh if self.backend() == "jack" => None,
             Field::OutputCh => self.snapshot.default_output_channels.map(|v| v.raw()),
             Field::Rate => self
@@ -237,6 +428,16 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
         .unwrap_or_default()
     }
     fn default_label(&self, field: Field) -> Option<String> {
+        if field == Field::SecondOutput {
+            // The empty value means one output group. "Off" says that better
+            // than the dash this panel otherwise uses for "no default".
+            return Some("Off".into());
+        }
+        if field == Field::SecondDevice {
+            // And the empty value there means the driver the first group is
+            // already on, which is the whole alternative to choosing.
+            return Some("Same as output".into());
+        }
         if field == Field::OutputCh && self.backend() != "jack" {
             return self.snapshot.default_output_channels.map(|v| v.label());
         }
@@ -297,6 +498,8 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
             .iter()
             .map(|v| (v.to_string(), v.to_string()))
             .collect(),
+            Field::SecondDevice => self.second_device_rows(),
+            Field::SecondOutput => self.second_output_rows(),
             Field::Extra(i) => self.extras[i].options.clone(),
         };
         // The default row keeps its natural place in the snapshot order: a
@@ -336,6 +539,8 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
             Field::InputCh => self.draft.input_channel.map(|v| v.to_string()),
             Field::OutputCh if self.backend() == "jack" => self.draft.jack_output_right.clone(),
             Field::OutputCh => self.draft.output_channels.map(|v| v.raw()),
+            Field::SecondDevice => self.draft.asio_second_device.clone(),
+            Field::SecondOutput => self.draft.asio_second_output.map(|v| v.to_string()),
             Field::Rate => self.draft.sample_rate.map(rate),
             Field::OutputRate => self.draft.output_sample_rate.map(rate),
             Field::InputBuffer => self.draft.period_size.map(|v| v.to_string()),
@@ -376,6 +581,8 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
             || (field == Field::InputCh && self.backend() == "jack")
             || (field == Field::Output && self.backend() == "asio")
             || (field == Field::OutputBuffer && self.snapshot.buffers_linked)
+            || (field == Field::SecondDevice && self.second_device_rows().is_empty())
+            || (field == Field::SecondOutput && self.second_output_rows().is_empty())
             || (field == Field::OutputRate && self.snapshot.rates_linked)
             || (matches!(field, Field::OutputCh | Field::OutputRate)
                 && (self
@@ -406,6 +613,8 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
                 self.draft.input_channel = None;
                 self.draft.jack_output_right = None;
                 self.draft.output_channels = None;
+                self.draft.asio_second_device = None;
+                self.draft.asio_second_output = None;
                 self.draft.sample_rate = None;
                 self.draft.output_sample_rate = None;
                 self.draft.period_size = None;
@@ -428,6 +637,8 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
                 if self.backend() == "asio" {
                     self.draft.output_device = self.draft.input_device.clone();
                 }
+                // Which driver the copy rides on is decided again in here: this
+                // driver may be the one its row names.
                 self.refresh();
                 self.adopt_stream_defaults();
             }
@@ -436,6 +647,9 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
                 self.draft.output_channels = None;
                 self.draft.output_period_size = None;
                 self.draft.output_sample_rate = None;
+                // A start channel only means something on the driver it was
+                // counted on.
+                self.draft.asio_second_output = None;
                 if self.draft.jack_output_right.as_ref()
                     == self
                         .draft
@@ -453,7 +667,32 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
             Field::OutputCh => {
                 // An explicitly selected default route must survive saving.
                 // An unknown default still has an empty raw value and stays None.
-                self.draft.output_channels = OutputChannels::parse(&raw)
+                let before = self.output_width();
+                self.draft.output_channels = OutputChannels::parse(&raw);
+                if before != self.output_width() {
+                    // The copy is as wide as the route it copies, so a start
+                    // counted for another width would name another span.
+                    self.draft.asio_second_output = None;
+                }
+            }
+            Field::SecondDevice => {
+                self.draft.asio_second_device = value;
+                // A start channel is a channel on a particular driver, and this
+                // row has just said which driver that is.
+                self.draft.asio_second_output = None;
+                // The live driver is untouched by this choice, so the only question
+                // worth asking again is the one about the carrier.
+                self.same_driver_is_no_driver();
+                self.ask_second_reach();
+                self.prune_second_output();
+            }
+            Field::SecondOutput => {
+                self.draft.asio_second_output = value.and_then(|v| v.parse().ok());
+                if self.draft.asio_second_output.is_none() {
+                    // Off means no copy at all, and a driver named to carry one
+                    // would then be a name with nothing behind it.
+                    self.draft.asio_second_device = None;
+                }
             }
             Field::Rate => self.draft.sample_rate = value.and_then(|v| v.parse().ok()),
             Field::OutputRate => self.draft.output_sample_rate = value.and_then(|v| v.parse().ok()),
@@ -612,23 +851,14 @@ impl<P: Preferences + PartialEq> AudioPanel<P> {
         let mouse = ctx.mouse_position();
         let font = font.clone();
         let z = 0.4;
-        let mut rows: Vec<(String, Field)> = AUDIO_ROWS
-            .iter()
-            .map(|(label, field)| (label.to_string(), *field))
-            .collect();
-        if self.backend() == "jack" {
-            rows[1].0 = "Input source".into();
-            rows[3].0 = "Output left / mono".into();
-            rows[4].0 = "Output right".into();
-        }
-        rows.extend(
-            self.extras
-                .iter()
-                .enumerate()
-                .map(|(i, row)| (row.label.clone(), Field::Extra(i))),
-        );
+        let (rows, audio_rows) = self.page_rows();
+        // Application rows sit a little lower than the audio block, so the gap
+        // follows however many audio rows are on the page right now.
         let row_y = |i: usize| {
-            h / 2.0 - 32.0 * fit - i as f32 * 24.0 * fit - if i >= 9 { 10.0 * fit } else { 0.0 }
+            h / 2.0
+                - 32.0 * fit
+                - i as f32 * 24.0 * fit
+                - if i >= audio_rows { 10.0 * fit } else { 0.0 }
         };
         let lx = -w / 2.0 + 18.0 * fit;
         let charw = ctx
@@ -1141,6 +1371,236 @@ mod tests {
         assert!(
             matches!(p.pick(Field::Extra(0), 1), Some(Event::ExtraPicked(0, Some(value))) if value == "4")
         );
+    }
+    /// The settings page as an ASIO user sees it: one driver holding both
+    /// directions, and a device that says how many output channels it has.
+    fn asio_panel(channels: u32) -> AudioPanel<NoPreferences> {
+        let mut p = panel();
+        p.draft.backend = Some("asio".into());
+        p.applied.backend = Some("asio".into());
+        let route = Some(OutputChannels::Stereo([1, 2]));
+        p.draft.output_channels = route;
+        p.applied.output_channels = route;
+        p.saved.output_channels = route;
+        p.snapshot.output_formats = vec![devices::StreamFormat {
+            channels,
+            min_rate: 44100,
+            max_rate: 48000,
+            buffer_range: None,
+        }];
+        p
+    }
+    #[test]
+    fn a_second_output_offers_the_spans_that_fit_after_the_first_one() {
+        let mut p = asio_panel(8);
+        // Every start whose copy lands inside the driver, not one per aligned
+        // pair: a stereo route on 1–2 has a second pair waiting on 4–5 too.
+        assert_eq!(
+            p.rows(Field::SecondOutput).0,
+            vec![
+                ("Off".into(), String::new()),
+                ("3–4".into(), "3".into()),
+                ("4–5".into(), "4".into()),
+                ("5–6".into(), "5".into()),
+                ("6–7".into(), "6".into()),
+                ("7–8".into(), "7".into()),
+            ]
+        );
+        p.pick(Field::SecondOutput, 5);
+        assert_eq!(p.draft.asio_second_output, Some(7));
+        assert_eq!(p.value_text(Field::SecondOutput), "7–8");
+        // The row on top means one output group, and stores nothing.
+        p.pick(Field::SecondOutput, 0);
+        assert_eq!(p.draft.asio_second_output, None);
+        assert_eq!(p.value_text(Field::SecondOutput), "Off");
+        assert!(audio_equal(&p.draft, &p.applied));
+        p.pick(Field::SecondOutput, 1);
+        assert!(!audio_equal(&p.draft, &p.applied));
+    }
+    #[test]
+    fn a_device_without_room_for_a_second_group_offers_no_start() {
+        // Four channels, stereo route: 3–4 is the last pair the driver has.
+        let p = asio_panel(4);
+        assert_eq!(p.rows(Field::SecondOutput).0.len(), 2);
+        assert!(!p.disabled(Field::SecondOutput));
+        // A driver whose channels the first group already fills, and one leaving
+        // a single channel over, both have no span to hand out.
+        for width in [2, 3] {
+            let p = asio_panel(width);
+            assert!(p.disabled(Field::SecondOutput));
+            assert_eq!(p.rows(Field::SecondOutput).0.len(), 1);
+            assert_eq!(p.value_text(Field::SecondOutput), "Off");
+        }
+    }
+    #[test]
+    fn a_second_output_is_as_wide_as_the_route_it_copies() {
+        let mut p = asio_panel(8);
+        p.pick(Field::SecondOutput, 1); // 3–4 behind a stereo route
+        assert_eq!(p.draft.asio_second_output, Some(3));
+        // On a mono route the same numbers mean different spans, so the rows are
+        // counted again and nothing carries over from the pair.
+        p.pick(Field::OutputCh, 0);
+        assert_eq!(p.draft.output_channels, Some(OutputChannels::Mono(1)));
+        assert_eq!(p.draft.asio_second_output, None);
+        assert_eq!(
+            p.rows(Field::SecondOutput).0,
+            vec![
+                ("Off".into(), String::new()),
+                ("2".into(), "2".into()),
+                ("3".into(), "3".into()),
+                ("4".into(), "4".into()),
+                ("5".into(), "5".into()),
+                ("6".into(), "6".into()),
+                ("7".into(), "7".into()),
+                ("8".into(), "8".into()),
+            ]
+        );
+    }
+    #[test]
+    fn a_start_the_device_cannot_host_is_dropped_and_an_unknown_width_is_left_alone() {
+        let mut p = asio_panel(8);
+        p.draft.asio_second_output = Some(7);
+        p.prune_second_output();
+        assert_eq!(p.draft.asio_second_output, Some(7));
+        // The same number behind a smaller driver is not a choice.
+        p.snapshot.output_formats[0].channels = 4;
+        p.prune_second_output();
+        assert_eq!(p.draft.asio_second_output, None);
+        // Nor is one landing on the group it should copy.
+        p.snapshot.output_formats[0].channels = 8;
+        p.draft.asio_second_output = Some(2);
+        p.prune_second_output();
+        assert_eq!(p.draft.asio_second_output, None);
+        // A driver that will not say how wide it is gets no verdict from here.
+        p.draft.asio_second_output = Some(7);
+        p.snapshot.output_formats.clear();
+        p.prune_second_output();
+        assert_eq!(p.draft.asio_second_output, Some(7));
+    }
+    #[test]
+    fn the_second_output_row_shares_the_page_only_with_asio() {
+        let names = |p: &AudioPanel<NoPreferences>| -> Vec<String> {
+            p.page_rows()
+                .0
+                .iter()
+                .map(|(label, _)| label.clone())
+                .collect()
+        };
+        let mut p = panel();
+        assert!(!names(&p).contains(&"Second output".to_string()));
+        assert!(!names(&p).contains(&"Second device".to_string()));
+        assert_eq!(names(&p).len(), 9);
+        p.draft.backend = Some("asio".into());
+        assert_eq!(
+            names(&p),
+            [
+                "Backend",
+                "Input device",
+                "Input channel",
+                "Output device",
+                "Output channels",
+                "Second device",
+                "Second output",
+                "Input buffer size",
+                "Output buffer size",
+                "Input sample rate",
+                "Output sample rate",
+            ]
+        );
+        // The driver is named before the channel that rides on it, and the pair
+        // sits with the output rows it belongs to, not below the buffers.
+        assert_eq!(
+            names(&p)[5..7],
+            ["Second device".to_string(), "Second output".to_string()]
+        );
+    }
+    /// A second driver is a second set of channels: the starts are counted on it,
+    /// from its channel 1, and the first driver's width has nothing to say about
+    /// them.
+    #[test]
+    fn a_copy_on_a_second_driver_starts_where_that_driver_starts() {
+        let mut p = asio_panel(8);
+        // One driver on the machine, so the row says what the copy rides on and
+        // offers nothing else.
+        p.snapshot.outputs = vec!["First driver".into()];
+        p.draft.output_device = Some("First driver".into());
+        assert_eq!(
+            p.rows(Field::SecondDevice).0,
+            vec![("Same as output".into(), String::new())]
+        );
+        assert!(p.disabled(Field::SecondDevice));
+        assert_eq!(p.value_text(Field::SecondDevice), "Same as output");
+        // A second driver appears in the row, and the live one does not: naming it
+        // would say what "Same as output" says.
+        p.snapshot.outputs.push("Second driver".into());
+        assert!(!p.disabled(Field::SecondDevice));
+        assert_eq!(
+            p.rows(Field::SecondDevice).0,
+            vec![
+                ("Same as output".into(), String::new()),
+                ("Second driver".into(), "Second driver".into()),
+            ]
+        );
+        // Eight channels on the carrier, a stereo route: the copy may sit anywhere
+        // from its channel 1 to its channel 7, because nothing is in the way. The
+        // first driver's eight channels would have started the list at 3.
+        p.second_reach = Some(8);
+        p.draft.asio_second_device = Some("Second driver".into());
+        let mut expected = vec![("Off".into(), String::new())];
+        expected
+            .extend((1..=7u32).map(|start| (format!("{start}–{}", start + 1), start.to_string())));
+        assert_eq!(p.rows(Field::SecondOutput).0, expected);
+        // A start counted for the live driver's channels is dropped when the copy
+        // moves, because channel 2 of another driver is another socket.
+        p.draft.asio_second_output = Some(9);
+        p.prune_second_output();
+        assert_eq!(p.draft.asio_second_output, None);
+        p.draft.asio_second_output = Some(1);
+        p.prune_second_output();
+        assert_eq!(p.draft.asio_second_output, Some(1));
+        // And the copy's channel is remembered per carrier: turning the choice back
+        // to "same as output" starts the counting behind the first group again.
+        p.draft.asio_second_device = None;
+        p.prune_second_output();
+        assert_eq!(p.draft.asio_second_output, None);
+    }
+    /// The two rows are one decision: turning the copy off leaves no driver named
+    /// to carry it, and naming the driver the copy comes from is what naming
+    /// nothing means.
+    #[test]
+    fn the_two_copy_rows_answer_for_each_other() {
+        let mut p = asio_panel(8);
+        p.snapshot.outputs = vec!["First driver".into(), "Second driver".into()];
+        p.draft.output_device = Some("First driver".into());
+        // Chosen as the row would have it chosen; asking a driver that is not here
+        // for its width is not part of what these two rows decide.
+        p.second_reach = Some(2);
+        p.draft.asio_second_device = Some("Second driver".into());
+        assert_eq!(p.value_text(Field::SecondDevice), "Second driver");
+        // A carrier with one pair of its own has exactly one place for a stereo
+        // copy, and the row says so in that driver's numbers: 1–2, not 3–4.
+        assert_eq!(
+            p.rows(Field::SecondOutput).0,
+            vec![("Off".into(), String::new()), ("1–2".into(), "1".into())]
+        );
+        p.pick(Field::SecondOutput, 1);
+        assert_eq!(p.draft.asio_second_output, Some(1));
+        // Off means no copy, so the carrier goes with it.
+        p.pick(Field::SecondOutput, 0);
+        assert_eq!(p.draft.asio_second_output, None);
+        assert_eq!(p.draft.asio_second_device, None);
+        assert_eq!(p.value_text(Field::SecondDevice), "Same as output");
+        // And the row's own empty answer means the same thing: no copy rides
+        // anywhere but where the first group already is.
+        p.draft.asio_second_output = Some(3);
+        p.pick(Field::SecondDevice, 0);
+        assert_eq!(p.draft.asio_second_device, None);
+        assert_eq!(p.draft.asio_second_output, None);
+        // A file naming the driver the copy is copied from says the same thing in
+        // the other row's words, and the page writes it back the short way.
+        p.draft.asio_second_device = Some("First driver".into());
+        p.same_driver_is_no_driver();
+        assert_eq!(p.draft.asio_second_device, None);
     }
 }
 

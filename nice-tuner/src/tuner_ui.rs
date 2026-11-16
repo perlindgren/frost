@@ -1264,12 +1264,17 @@ impl TunerUi {
     /// Read the current backend ONCE: devices, defaults, rates, buffers.
     ///
     /// ASIO is asked through a child process, because asking in process is not
-    /// free while audio runs: ASIO allows one driver open per process, and a
-    /// capability query opens the driver it asks about — measured on the SDK
+    /// free while audio runs: a capability query opens the driver it asks about,
+    /// and the SDK's own host code keeps one driver per process — measured on the SDK
     /// binding this workspace used before `azo`, where the second load answered
     /// `DriverAlreadyExists` and the temporary handle shut the live driver down
     /// on the way out, so a query here would silence the stream with nothing
-    /// reported. `azo` carries the same one-driver rule; what this process may
+    /// reported. `azo` does not enforce that rule — its worker keeps a TABLE of
+    /// drivers in one apartment (`azo-0.6.1/src/worker.rs:140-144`) — which is how
+    /// this host is able to carry a second driver at all: one driver per `Host`, so
+    /// a pair and the copy riding another interface never share an apartment
+    /// (`nice_common::asio_io`). A settings page opening a third, unnamed driver
+    /// beside two live ones is still what it always was. What this process may
     /// answer while a stream owns the driver is unknowns by design (see
     /// `devices::asio_stream_live`). The child opens no
     /// stream, so it loads the SELECTED driver freely and answers its real

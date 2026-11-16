@@ -278,10 +278,14 @@ fails a build whose tree has no `azo` or still contains `asio-sys`. The SDK
 download bug that used to decide how a Windows build was configured is recorded
 against the crate it belongs to in the workspace `TODO.md`.
 
-ASIO uses one driver per process and one buffer size per driver. The settings
-panel links input and output buffer sizes when they belong to the same driver.
-The standalone application's monitoring latency defaults to 5 ms of additional
-buffering unless the settings file specifies otherwise.
+ASIO gives one driver one buffer size for both directions, and the SDK's own host
+code keeps one loaded driver per process. This host loads a second driver for one
+reason only — the copy described under **Second output** — and gives each of the
+two its own single-threaded COM apartment, which is what keeps two live drivers
+out of each other's apartment. The settings panel links input and output buffer
+sizes when they belong to the same driver. The standalone application's monitoring
+latency defaults to 5 ms of additional buffering unless the settings file specifies
+otherwise.
 
 ### Output channels
 
@@ -295,6 +299,26 @@ same signal at unity gain on both channels; unselected outputs stay silent.
 Input analysis reads the original channels before duplication. Plugin-host mode
 retains its existing passthrough behavior. The route is saved as `output_channels`
 and audio changes continue to use the live Apply path on CoreAudio.
+
+### Second output
+
+With ASIO selected, **Second output** copies what is being played onto a higher
+pair of the output driver's own channels: `5–6` behind a route on `1–2` plays the
+same signal on that driver's next pair, in whatever sample format those channels
+report. The copy is as wide as the route it copies, so the row offers start
+channels and never a second channel count.
+
+**Second device** puts that copy on another ASIO interface instead: a second
+driver, live beside the first and running on its own clock, whose start channel is
+counted on itself — `1–2` there is that interface's first pair. Left at *Same as
+output*, or spelled like the output device, is the one-driver case above. The two
+rows answer for each other: moving the copy to another driver drops a start that
+was counted on the first one, and turning it off forgets the driver.
+
+Two interfaces are two clocks. The copy crosses a lock-free ring into a band-limited
+resampler, arrives one frame behind the signal it was made from, and never waits on
+the live path or makes it wait: an interface that stops taking frames loses its
+newest frames, says so once, and leaves the running stream alone.
 
 ### Output sample rate
 
@@ -413,13 +437,17 @@ the gathered copy, so a driver whose hardware is off is refused once per pass
 rather than once per row. Opening the stream asks that one driver again, through
 `nice_common::asio_io`; nothing enumerates at that moment.
 
-- **One ASIO driver**: selecting ASIO pins the output device row to the input
-  driver — it shows that name and is gray, because a second driver cannot be
-  loaded in this process to be anything else — and that driver's single buffer
-  size and single sample rate govern both directions, so the output buffer and
-  output rate rows follow the input ones and are gray. Resolving the stream says
-  the same: an output rate left behind by an older settings file is replaced by
-  the driver's rate rather than refused at Apply. Core Audio shares only the
+- **One ASIO driver for the live stream**: selecting ASIO pins the output device
+  row to the input driver — it shows that name and is gray, because the clock a
+  stream runs at belongs to the driver it was opened on, and a stream reading one
+  interface while playing to another is two clocks sharing one callback. That
+  driver's single buffer size and single sample rate govern both directions, so
+  the output buffer and output rate rows follow the input ones and are gray.
+  Resolving the stream says the same: an output rate left behind by an older
+  settings file is replaced by the driver's rate rather than refused at Apply.
+  A second driver is loaded for exactly one thing — the copy under **Second
+  output** — it runs on its own clock, and it carries output and nothing else.
+  Core Audio shares only the
   buffer rule, when input and output are the same device; its independent output
   rate is what the output rate row exists to set.
 - **Persistence**: `APPLY` writes `nice-tuner-settings.ron` to the **current

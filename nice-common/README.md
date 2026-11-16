@@ -94,6 +94,24 @@ its caller supplies, every one of which ends in `.ron` — and a cold start, wit
 no file there yet, is defaults and no warning. A resize will not overwrite a
 malformed RON file. The device-discovery helper protocol uses RON.
 
+`asio_second_output` names the first channel (1-based, as this file spells them)
+of a second output group carrying an exact copy of the first: `Some(5)` behind a
+stereo route on 1–2 plays the same signal on 5–6. It belongs to ASIO, the one
+backend where a single driver owns both groups, so `resolve_settings` refuses it
+elsewhere and refuses a start that lands on the channels the first group already
+plays. The copy is as wide as the route it copies, so the file carries a start
+and never a second channel count.
+
+`asio_second_device` names the driver carrying that copy. Absent, or spelled
+exactly like the output, is the case above: one driver, two groups, one clock.
+Any other name is a second driver, loaded beside the first and running on its own
+clock, and the start channel is then counted on it — `Some(1)` is that interface's
+first pair, not the first driver's, which is why moving a copy to another driver
+drops a start that no longer means anything. A start beyond what that driver
+answers for is refused; a driver chosen without a start channel is refused, since
+guessing where a second interface's sockets are would be a guess about someone's
+speaker cables.
+
 Settings serialize directly through RON; geometry edits use `ron::Value`.
 `nice-common` has no `serde_json` dependency.
 
@@ -109,3 +127,32 @@ The selected input channel is duplicated to stereo; processed stereo frames use
 one SPSC queue and one `Monitor<StereoFrame>` clock/phase for independent-rate
 playback. Existing `Monitor<f32>` callers remain source-compatible. The rack uses
 this transport; the established tuner/NAM stream owners remain unchanged.
+
+`asio_io::open` is the ASIO shape of the same promise. Its `Wanted` names the
+driver, the channel counts and an optional `second_output` — the first channel of
+a group that carries a copy of the first one — and every channel is asked for in
+the single `create_buffers` a driver is given before it starts. The copy belongs
+to the transport, not to a pump: a callback is still handed the block width it
+was built for, and the extra channels are filled from that same scratch block in
+the sample format each of them reports.
+
+A copy named onto another driver is a second stream inside the first, and this
+host is the only thing holding the two apart. `azo` will hand one apartment as
+many drivers as it is asked for, so each driver here gets its own `Host`, which is
+its own thread and its own single-threaded COM apartment; the SDK's one-global-
+driver-per-process rule is stepped around rather than obeyed, and that is what the
+pair is buying. The two are torn down in the order they are declared: the copy
+stopped and its buffers given back before the live driver is touched. The second
+driver is asked for its own rate and period first, since 64 frames on one
+interface is not 64 frames on another, and a period the live stream was built
+around is never traded for it.
+
+Between the two clocks, every channel pair crosses one lock-free ring and one
+`Monitor<StereoFrame>` — one phase and one clock correction for a pair, so the
+copy's left ear is never corrected a frame away from its right — and an odd last
+channel crosses alone. Each crossing holds two blocks of the reading driver, the
+writer never waits for a reader that has stopped, and a copy that falls behind
+loses its newest frames, says so once, and leaves the live stream running. Two
+drivers set to 48 kHz are not at the same rate, so the crossing resamples even
+when the two numbers agree, and the copy arrives one frame behind the one it was
+made from.

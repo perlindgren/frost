@@ -55,7 +55,9 @@ pub struct Monitor<F: Frame = f32> {
     needed: usize,
     nominal_ratio: f64,
     ratio: f64,
-    kernels: Box<[[f32; TAPS]]>,
+    /// One band-limited table per phase, and `None` for two clocks that are
+    /// already the same rate: the path that would read it is not the one taken.
+    kernels: Option<Box<[[f32; TAPS]]>>,
     target: usize,
     tolerance: usize,
     started: bool,
@@ -76,27 +78,36 @@ impl<F: Frame> Monitor<F> {
         // Leave a transition band below the lower Nyquist limit. A Blackman
         // window suppresses aliases when downsampling; each phase has unity DC.
         let cutoff = (1.0 / ratio).min(1.0) * 0.94;
-        let mut kernels = vec![[0.0; TAPS]; PHASES].into_boxed_slice();
-        for (phase, kernel) in kernels.iter_mut().enumerate() {
-            let fraction = phase as f64 / PHASES as f64;
-            let mut sum = 0.0;
-            for (tap, coefficient) in kernel.iter_mut().enumerate() {
-                let distance = (TAPS / 2) as f64 - fraction - tap as f64;
-                let x = distance * cutoff;
-                let sinc = if x.abs() < 1e-12 {
-                    1.0
-                } else {
-                    (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
-                };
-                let window_phase = std::f64::consts::PI * distance / (TAPS / 2) as f64;
-                let window = 0.42 + 0.5 * window_phase.cos() + 0.08 * (2.0 * window_phase).cos();
-                *coefficient = (cutoff * sinc * window) as f32;
-                sum += *coefficient as f64;
+        // Half a megabyte of phases, and only for a monitor that will read them:
+        // equal rates take the interpolated path in `next_sample` and never name a
+        // kernel. A copy to a second device runs one monitor per channel pair at
+        // the rate the first device is already running at, so paying for the table
+        // there would be four tables of nothing.
+        let kernels = (ratio != 1.0).then(|| {
+            let mut kernels = vec![[0.0; TAPS]; PHASES].into_boxed_slice();
+            for (phase, kernel) in kernels.iter_mut().enumerate() {
+                let fraction = phase as f64 / PHASES as f64;
+                let mut sum = 0.0;
+                for (tap, coefficient) in kernel.iter_mut().enumerate() {
+                    let distance = (TAPS / 2) as f64 - fraction - tap as f64;
+                    let x = distance * cutoff;
+                    let sinc = if x.abs() < 1e-12 {
+                        1.0
+                    } else {
+                        (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
+                    };
+                    let window_phase = std::f64::consts::PI * distance / (TAPS / 2) as f64;
+                    let window =
+                        0.42 + 0.5 * window_phase.cos() + 0.08 * (2.0 * window_phase).cos();
+                    *coefficient = (cutoff * sinc * window) as f32;
+                    sum += *coefficient as f64;
+                }
+                for coefficient in kernel {
+                    *coefficient /= sum as f32;
+                }
             }
-            for coefficient in kernel {
-                *coefficient /= sum as f32;
-            }
-        }
+            kernels
+        });
         Self {
             input,
             history: [F::default(); TAPS],
@@ -153,10 +164,16 @@ impl<F: Frame> Monitor<F> {
             let previous = self.history[(self.head + TAPS - 1) % TAPS];
             previous + (self.history[self.head] - previous) * self.phase as f32
         } else {
-            let kernel = &self.kernels[((self.phase * PHASES as f64) as usize).min(PHASES - 1)];
             let mut value = F::default();
-            for (tap, coefficient) in kernel.iter().enumerate() {
-                value += self.history[(self.head + TAPS - tap) % TAPS] * *coefficient;
+            // No table means equal rates, and equal rates take the branch above,
+            // so this guard is here for the day the two conditions are separated.
+            // It answers silence rather than panicking because the caller is a
+            // driver's own callback.
+            if let Some(kernels) = self.kernels.as_deref() {
+                let kernel = &kernels[((self.phase * PHASES as f64) as usize).min(PHASES - 1)];
+                for (tap, coefficient) in kernel.iter().enumerate() {
+                    value += self.history[(self.head + TAPS - tap) % TAPS] * *coefficient;
+                }
             }
             value
         };
@@ -219,6 +236,20 @@ mod tests {
             .sqrt();
         assert!(rms < 0.001, "aliased RMS: {rms}");
     }
+    /// The table behind the band-limited path is half a megabyte. Two clocks at
+    /// one rate — the case a copy to a second device is in — interpolate instead,
+    /// and building twelve of those tables to read none of them is a cost this
+    /// module can state it does not pay.
+    #[test]
+    fn equal_rates_do_not_pay_for_a_table_they_never_read() {
+        let (_, consumer) = rtrb::RingBuffer::new(8);
+        let same = Monitor::<f32>::new(consumer, 48_000.0, 48_000.0, 1, 1);
+        assert!(same.kernels.is_none());
+        let (_, consumer) = rtrb::RingBuffer::new(8);
+        let apart = Monitor::<f32>::new(consumer, 48_000.0, 44_100.0, 1, 1);
+        assert!(apart.kernels.is_some());
+    }
+
     #[test]
     fn matching_rates_preserve_samples_and_underflow_is_silence() {
         let (mut producer, consumer) = rtrb::RingBuffer::new(8);

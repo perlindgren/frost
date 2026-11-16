@@ -9,7 +9,10 @@ use crate::{
 // enumeration, the per-format stream builders and the two-stream owner below are
 // compiled away on Windows instead of standing there unable to answer. The
 // Windows half of this file is `AsioStreams` and its `Pump`, one driver with one
-// clock. `route` is shared, which is why it speaks `Level` and not `cpal::Sample`.
+// clock. A copy put on a second interface is the transport's business, not this
+// file's: the pump below is asked for its block once and hears nothing of the
+// second driver. `route` is shared, which is why it speaks `Level` and not
+// `cpal::Sample`.
 #[cfg(not(windows))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 #[cfg(not(windows))]
@@ -472,10 +475,30 @@ fn open_asio(settings: &Settings, plugin: Arc<Mutex<TunerPlugin>>) -> Result<Asi
             output_frames,
             inputs: channels,
             outputs: destination.required_channels(),
+            // The settings page's second pair, if it picked one, and the driver
+            // that carries it. The transport opens those channels and copies the
+            // same block into them, so this pump goes on carrying the block it
+            // was built for.
+            second_output: settings.asio_second_output,
+            second_device: settings.asio_second_device.as_deref(),
         };
         let outputs = wanted.outputs as usize;
+        let copy = match settings.asio_second_output {
+            Some(start) if wanted.outputs > 1 => format!(
+                ", and the same output again from {start} to {}",
+                start + wanted.outputs - 1
+            ),
+            Some(start) => format!(", and the same output again on {start}"),
+            None => String::new(),
+        };
+        // Which driver the copy rides on, said only when it is not the one this
+        // line already names.
+        let carrier = match settings.asio_second_device.as_deref() {
+            Some(driver) if driver != output_name.as_str() => format!(" on '{driver}'"),
+            _ => String::new(),
+        };
         tracing::info!(
-            "Starting ASIO driver '{input_name}': {channels} in, {} out, {rate} Hz, {frames} frames",
+            "Starting ASIO driver '{input_name}': {channels} in, {} out, {rate} Hz, {frames} frames{copy}{carrier}",
             wanted.outputs
         );
         let stream = nice_common::asio_io::open(

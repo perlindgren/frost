@@ -73,6 +73,22 @@ pub struct Settings<P = NoPreferences> {
     /// that fallback is not a device-reported default in the settings UI.
     #[serde(deserialize_with = "deserialize_input_channel")]
     pub input_channel: Option<u32>,
+    /// ASIO only: the first channel (1-based, as this file spells them) of a
+    /// second output group that carries a copy of the first one. The group is as
+    /// wide as the route needs, so `Some(3)` with a route reaching channel 2
+    /// copies 1–2 onto 3–4. Absent means one output group.
+    ///
+    /// Whose channels those are is `asio_second_device`: absent, the group is on
+    /// the output driver, one clock and a bit-for-bit copy; named, the copy rides
+    /// a second driver at that driver's own period, with the two clocks of two
+    /// interfaces slowly walking apart.
+    pub asio_second_output: Option<u32>,
+    /// ASIO only: the driver carrying the copy named by `asio_second_output`.
+    /// Absent — or saved as the same name as `output_device`, which means the same
+    /// thing and is read back as absent — the copy stays on the output driver's own
+    /// channels. Any other name is a second driver, opened beside the first and
+    /// fed a copy of the same signal.
+    pub asio_second_device: Option<String>,
     /// Standalone window geometry (top-left in physical screen px; size
     /// in logical units). None = never saved → the window centers itself
     /// on first launch. Hosts own their windows; this is standalone-only.
@@ -243,6 +259,8 @@ impl<P: Preferences> Settings<P> {
             && self.output_period_size.is_none()
             && self.input_latency.is_none()
             && self.input_channel.is_none()
+            && self.asio_second_output.is_none()
+            && self.asio_second_device.is_none()
             && self.preferences.is_blank()
     }
 
@@ -541,6 +559,73 @@ mod persistence_tests {
         let (restored, warning) = Settings::<NoPreferences>::load_from(&path);
         assert_eq!(warning, None);
         assert_eq!(restored, settings);
+    }
+
+    /// A second output group is a decision, so it survives a save, and a file
+    /// written before the row existed still loads as "one output group".
+    #[test]
+    fn a_second_output_group_round_trips_and_absent_means_one_group() {
+        let path = frost::scratch::claim("nice-common-second-output").join("settings.ron");
+        let settings = Settings::<NoPreferences> {
+            backend: Some("asio".into()),
+            output_channels: Some(OutputChannels::Stereo([1, 2])),
+            asio_second_output: Some(3),
+            ..Default::default()
+        };
+        settings.save_to(&path).unwrap();
+        let (restored, warning) = Settings::<NoPreferences>::load_from(&path);
+        assert_eq!(warning, None);
+        assert_eq!(restored, settings);
+        assert!(!restored.is_blank(), "a chosen group read as a cold start");
+
+        let before = Settings::<NoPreferences>::from_ron(
+            r#"{ "backend": "asio", "output_channels": {"kind":"stereo", "channels":[1,2]} }"#,
+        )
+        .unwrap();
+        assert_eq!(before.asio_second_output, None);
+        assert_eq!(
+            Settings::<NoPreferences>::from_ron(r#"{ "asio_second_output": 5 }"#)
+                .unwrap()
+                .asio_second_output,
+            Some(5)
+        );
+    }
+
+    /// The driver carrying a copy is a decision too, so it survives a save; a file
+    /// written before the row existed, and one where the row was never touched,
+    /// both load as "the copy stays on the output driver".
+    #[test]
+    fn a_second_asio_device_round_trips_and_absent_means_the_output_driver() {
+        let path = frost::scratch::claim("nice-common-second-device").join("settings.ron");
+        let settings = Settings::<NoPreferences> {
+            backend: Some("asio".into()),
+            output_device: Some("Komplete Audio 6".into()),
+            output_channels: Some(OutputChannels::Stereo([1, 2])),
+            asio_second_output: Some(3),
+            asio_second_device: Some("ReaRoute 3".into()),
+            ..Default::default()
+        };
+        settings.save_to(&path).unwrap();
+        let (restored, warning) = Settings::<NoPreferences>::load_from(&path);
+        assert_eq!(warning, None);
+        assert_eq!(restored, settings);
+        assert!(
+            !restored.is_blank(),
+            "a chosen second driver read as a cold start"
+        );
+
+        let before = Settings::<NoPreferences>::from_ron(
+            r#"{ "backend": "asio", "output_device": "Komplete Audio 6" }"#,
+        )
+        .unwrap();
+        assert_eq!(before.asio_second_device, None);
+        // A driver named on its own is not a blank file either: it is half a
+        // decision the panel has to show, not one it gets to lose.
+        let alone =
+            Settings::<NoPreferences>::from_ron(r#"{ "asio_second_device": "ReaRoute 3" }"#)
+                .unwrap();
+        assert_eq!(alone.asio_second_device.as_deref(), Some("ReaRoute 3"));
+        assert!(!alone.is_blank());
     }
 
     #[test]
