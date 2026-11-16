@@ -6,6 +6,7 @@ use crate::{
 use crossbeam::channel::{Receiver, Sender, bounded};
 use nice_clap_host::{Binding, Entry, LiveAudio, LiveSession, LiveStatus};
 use nice_common::audio_io::{DeviceStreams, Endpoints};
+use nice_common::true_peak::TruePeak;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -176,6 +177,10 @@ pub fn chain(cards: &[Card]) -> (RackGraph, BTreeMap<NodeId, Binding>) {
     });
     (graph, bindings)
 }
+/// Master metering, published as f32 bits by the DSP thread and read by the
+/// window. `input`/`output` carry linear RMS; the peak fields carry linear
+/// *true* peak (dBTP), reconstructed between the samples, so a reading above
+/// `1.0` means the signal would clip a converter downstream.
 #[derive(Default)]
 pub struct Levels {
     pub input: AtomicU32,
@@ -866,6 +871,16 @@ impl Drop for Runtime {
         }
     }
 }
+/// One block's linear true-peak reading of a stereo pair. Each channel keeps
+/// its reconstruction history across blocks, so a crest that straddles a block
+/// boundary is still found. A reading above `1.0` is a finding, not an
+/// overflow: the waveform between the samples really is over full scale.
+fn block_peak(meters: &mut [TruePeak; 2], left: &[f32], right: &[f32]) -> f32 {
+    for (channel, meter) in [left, right].into_iter().zip(meters.iter_mut()) {
+        meter.process(channel);
+    }
+    meters[0].take().max(meters[1].take())
+}
 /// Start the device-independent DSP owner. The matching main-thread session
 /// must be serviced and stopped before joining this worker.
 pub fn spawn_dsp(
@@ -878,18 +893,20 @@ pub fn spawn_dsp(
         let mut right = [0.0; BLOCK];
         let mut out_left = [0.0; BLOCK];
         let mut out_right = [0.0; BLOCK];
+        // Both sides keep their reconstruction history from block to block, so
+        // a crest that lands across a block boundary is still found.
+        let mut meter_in = [TruePeak::new(), TruePeak::new()];
+        let mut meter_out = [TruePeak::new(), TruePeak::new()];
         loop {
             let count = io.input.slots().min(BLOCK);
             let mut energy = 0.0f64;
-            let mut input_peak = 0.0f32;
-            let mut output_peak = 0.0f32;
             for frame in 0..count {
                 let samples = io.input.pop().unwrap();
                 left[frame] = samples[0];
                 right[frame] = samples[1];
                 energy += f64::from(samples[0]).powi(2);
-                input_peak = input_peak.max(samples[0].abs()).max(samples[1].abs());
             }
+            let input_peak = block_peak(&mut meter_in, &left[..count], &right[..count]);
             let status = audio.process(
                 &[&left[..count], &right[..count]],
                 &mut [&mut out_left[..count], &mut out_right[..count]],
@@ -910,14 +927,12 @@ pub fn spawn_dsp(
                 output_energy += f64::from(out_left[frame])
                     .powi(2)
                     .max(f64::from(out_right[frame]).powi(2));
-                output_peak = output_peak
-                    .max(out_left[frame].abs())
-                    .max(out_right[frame].abs());
                 let _ = io.output.push(nice_common::resample::StereoFrame([
                     out_left[frame],
                     out_right[frame],
                 ]));
             }
+            let output_peak = block_peak(&mut meter_out, &out_left[..count], &out_right[..count]);
             levels
                 .input_peak
                 .store(input_peak.to_bits(), Ordering::Relaxed);
@@ -992,6 +1007,47 @@ mod tests {
         assert_eq!(session.service().unwrap(), LiveStatus::Stopped);
         assert_eq!(output.pop().unwrap().0, [0.25, -0.5]);
         assert_eq!(output.pop().unwrap().0, [0.75, -1.0]);
+    }
+
+    /// A quarter-rate sine whose every sample sits a quarter period away from
+    /// a crest: the loudest sample is 0.707 while the signal itself reaches
+    /// 1.0 between them. The meter has to report the signal, not the samples.
+    #[test]
+    fn published_peaks_are_true_peaks_not_loudest_samples() {
+        let (graph, bindings) = chain(&[]);
+        let (session, audio) =
+            LiveSession::prepare(&graph, &bindings, 48000.0, BLOCK, &BTreeMap::new()).unwrap();
+        let (io, mut capture, mut output) = endpoints();
+        let tone: Vec<[f32; 2]> = (0..64)
+            .map(|frame| {
+                let sample = (std::f32::consts::FRAC_PI_4
+                    + frame as f32 * std::f32::consts::FRAC_PI_2)
+                    .sin();
+                [sample, -sample]
+            })
+            .collect();
+        for sample in &tone {
+            capture.push(*sample).unwrap();
+        }
+        let levels = Arc::new(Levels::default());
+        let worker = spawn_dsp(audio, io, Arc::clone(&levels));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while levels.updated.load(Ordering::Acquire) == 0 {
+            assert!(Instant::now() < deadline, "DSP never published levels");
+            std::thread::yield_now();
+        }
+        session.request_stop();
+        let _ = worker.join().unwrap();
+        while output.pop().is_ok() {}
+        let loudest_sample = tone
+            .iter()
+            .flatten()
+            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        let input = f32::from_bits(levels.input_peak.load(Ordering::Relaxed));
+        let out = f32::from_bits(levels.output_peak.load(Ordering::Relaxed));
+        assert!((loudest_sample - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-5);
+        assert!(input > 0.95 && input < 1.01, "input peak read {input}");
+        assert!(out > 0.95 && out < 1.01, "output peak read {out}");
     }
     #[test]
     fn closing_before_audio_start_cancels_pending_open() {

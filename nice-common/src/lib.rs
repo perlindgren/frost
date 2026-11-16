@@ -25,6 +25,10 @@ pub mod knob;
 pub mod meter;
 #[cfg(feature = "widgets")]
 pub mod tooltip;
+/// The peak a meter should publish: the crest of the reconstruction between the
+/// samples, not the largest sample. Ungated like `meter`, because every
+/// producer in the workspace publishes through it.
+pub mod true_peak;
 
 #[cfg(feature = "audio-io")]
 pub mod audio_io;

@@ -39,6 +39,10 @@ pub const BORE: Color = rgb(46, 40, 60);
 pub const GREEN: Color = rgb(103, 237, 175);
 /// The house amber: a grabbed control, a held peak, an active choice.
 pub const AMBER: Color = rgb(250, 190, 115);
+/// The house red: a true peak over full scale. Deliberately not the amber of
+/// a held peak — the two sit side by side on a meter and have to be told
+/// apart at a glance, one meaning "loud", the other "this does not fit".
+pub const RED: Color = rgb(248, 81, 73);
 pub const TEXT: Color = rgb(235, 230, 241);
 pub const MUTED: Color = rgb(150, 142, 166);
 

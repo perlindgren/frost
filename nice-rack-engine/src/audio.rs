@@ -1,6 +1,7 @@
 //! Prepared, single-thread graph execution. Preparation owns all allocation;
 //! processing borrows external buffers and never changes graph topology.
 use crate::{Channels, GraphError, NodeId, NodeKind, RackGraph};
+use nice_common::true_peak::TruePeak;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -144,6 +145,9 @@ struct Edge {
 struct WireSlot {
     key: AtomicU64,
     rms: AtomicU32,
+    /// True peak of the wire (dBTP) in f32 bits. A linear amplitude, so it can
+    /// exceed `1.0`: the inter-sample crest of a full-scale step is above full
+    /// scale by construction. See [`nice_common::true_peak`].
     peak: AtomicU32,
     /// Applied UI trim as a linear multiplier in f32 bits, `1.0` for unity.
     /// The UI thread stores it at any time and the audio thread reads it once
@@ -274,8 +278,10 @@ impl WireLevels {
             .map(|slot| f32::from_bits(slot.gain.load(Ordering::Relaxed)))
     }
 
-    /// The latest (rms, peak) published for `key`, or `None` while the key
-    /// is not registered in this table.
+    /// The latest `(rms, true peak)` published for `key`, both linear, or
+    /// `None` while the key is not registered in this table. The peak is the
+    /// reconstructed crest (dBTP), not the largest sample, and a faithful
+    /// reading of a signal at full scale can sit above `1.0`.
     pub fn sample(&self, key: u64) -> Option<(f32, f32)> {
         if key == 0 {
             return None;
@@ -293,21 +299,37 @@ impl WireLevels {
 }
 
 /// Loudness observation of one wire for a block: a stereo-coerced RMS that
-/// keeps the louder of the two channels per frame, and the largest absolute
-/// sample. `frames` is nonzero whenever `process` calls this.
-fn wire_level(buffer: &AudioBuffer, frames: usize) -> (f32, f32) {
+/// keeps the louder of the two channels per frame, and the wire's **true
+/// peak** (dBTP) — the crest of the waveform the DAC would rebuild, not the
+/// largest sample in it. A 48 kHz sine at 12 kHz whose samples all sit at
+/// 1/√2 reads 0.707 as a sample peak and 0.979 as a true peak.
+///
+/// `meters` is one estimator per channel and must outlive the call: the
+/// history they carry across blocks is what lets a *held* level read its own
+/// value instead of the +0.8 dB overshoot of an onset. Passing a fresh
+/// estimator per block would make every constant read high.
+///
+/// `frames` is nonzero whenever `process` calls this.
+fn wire_level(buffer: &AudioBuffer, frames: usize, meters: &mut [TruePeak]) -> (f32, f32) {
     let mut energy = 0f64;
-    let mut peak = 0f32;
     if buffer.channels() >= 2 {
         for (left, right) in buffer.0[0].iter().zip(&buffer.0[1]).take(frames) {
             energy += (left * left).max(right * right) as f64;
-            peak = peak.max(left.abs()).max(right.abs());
         }
     } else {
         for sample in buffer.0[0].iter().take(frames) {
             energy += (sample * sample) as f64;
-            peak = peak.max(sample.abs());
         }
+    }
+    let mut peak = 0f32;
+    // A wire carries mono or stereo, so the two meters the node owns always
+    // cover it; the spare only keeps a hypothetically wider buffer from
+    // metering silently low instead of at all.
+    let mut spare = TruePeak::new();
+    for (index, channel) in buffer.0.iter().enumerate() {
+        let meter = meters.get_mut(index).unwrap_or(&mut spare);
+        meter.process(&channel[..frames]);
+        peak = peak.max(meter.take());
     }
     ((energy / frames as f64).sqrt() as f32, peak)
 }
@@ -338,6 +360,11 @@ struct Node {
     /// `attach_wire_levels`; `None` until then and for every non-plugin node.
     wire_in: Option<usize>,
     wire_out: Option<usize>,
+    /// True-peak history of each metered side, one estimator per channel.
+    /// Owned here rather than built inside [`wire_level`] so a wire's crest
+    /// survives block boundaries and a held level reads exactly itself.
+    tp_in: [TruePeak; 2],
+    tp_out: [TruePeak; 2],
 }
 /// Owns all buffers and processor handles. Keep destruction and replacement on
 /// a control/main thread; block-boundary handover is not implemented yet.
@@ -459,6 +486,8 @@ impl PreparedRack {
                 id,
                 wire_in: None,
                 wire_out: None,
+                tp_in: [TruePeak::new(), TruePeak::new()],
+                tp_out: [TruePeak::new(), TruePeak::new()],
             });
         }
         if let Some((&id, _)) = processors.first_key_value() {
@@ -494,6 +523,7 @@ impl PreparedRack {
             .flat_map(|node| [node.id.0 << 1, (node.id.0 << 1) | 1])
             .collect();
         levels.reset(&keys);
+        self.reset_metering();
         for node in &mut self.nodes {
             // Card ids are validated small by the rack, so `id << 1` stays
             // injective; the guard only refuses auxiliary ids near `u64::MAX`.
@@ -576,11 +606,11 @@ impl PreparedRack {
                     // `attach_wire_levels`, so an unobserved plan takes two
                     // `None` loads per node.
                     if let Some(slot) = node.wire_in {
-                        let (rms, peak) = wire_level(&node.input, frames);
+                        let (rms, peak) = wire_level(&node.input, frames, &mut node.tp_in);
                         wires.publish(slot, rms, peak);
                     }
                     if let Some(slot) = node.wire_out {
-                        let (rms, peak) = wire_level(&node.output, frames);
+                        let (rms, peak) = wire_level(&node.output, frames, &mut node.tp_out);
                         wires.publish(slot, rms, peak);
                     }
                 }
@@ -617,7 +647,11 @@ impl PreparedRack {
         }
     }
 
+    /// Drop every stored history on the processing thread: buffers, delays,
+    /// processors and the true-peak estimators, which otherwise would still
+    /// carry the level from before the reset into the block after it.
     pub fn reset(&mut self) {
+        self.reset_metering();
         for node in &mut self.nodes {
             node.input.clear(self.max_frames);
             node.output.clear(self.max_frames);
@@ -627,6 +661,17 @@ impl PreparedRack {
             node.bypass.reset();
             if let Some(slot) = &mut node.processor {
                 slot.processor.reset();
+            }
+        }
+    }
+
+    /// Clear the metering histories. A true-peak estimator is a filter with
+    /// memory, so `reset` is the one moment its held level is known stale —
+    /// after it, a signal arriving is an onset and reads as one.
+    fn reset_metering(&mut self) {
+        for node in &mut self.nodes {
+            for meter in node.tp_in.iter_mut().chain(node.tp_out.iter_mut()) {
+                meter.reset();
             }
         }
     }

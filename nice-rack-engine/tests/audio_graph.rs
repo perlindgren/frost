@@ -305,11 +305,22 @@ fn attached_wires_publish_each_plugins_input_and_output() {
     let levels = Arc::new(WireLevels::new(4));
     rack.attach_wire_levels(Arc::clone(&levels));
     let mut output = [0.0; 4];
-    rack.process(&[&[1.0, -1.0, 0.5, 0.0]], &mut [&mut output], 4)
-        .unwrap();
-    // Both branches see the input block: rms sqrt(2.25/4) = 0.75, peak 1.0;
-    // each output reflects its own gain.
+    let block = [1.0, -1.0, 0.5, 0.0];
     let input_rms = (2.25f32 / 4.0).sqrt();
+    // A wire's first block arrives on an empty estimator, which reconstructs
+    // the crest of the arriving edge rather than reporting a maximum sample:
+    // here 1.0183787, above the loudest sample because the interpolated
+    // step really does overshoot full scale.
+    rack.process(&[&block], &mut [&mut output], 4).unwrap();
+    assert_eq!(
+        levels.sample(NodeId(1).0 << 1),
+        Some((input_rms, 1.018_378_7))
+    );
+    // One block later the same pattern is a steady signal, so what the wire
+    // publishes is its inter-sample crest. Both branches see the input block,
+    // rms sqrt(2.25/4) = 0.75 with a crest of 1.0, and each output reflects
+    // its own gain: true peak scales with the signal, so 2.0 and 0.5.
+    rack.process(&[&block], &mut [&mut output], 4).unwrap();
     assert_eq!(levels.sample(NodeId(1).0 << 1), Some((input_rms, 1.0)));
     assert_eq!(levels.sample(NodeId(1).0 << 1 | 1), Some((1.5, 2.0)));
     assert_eq!(levels.sample(NodeId(2).0 << 1), Some((input_rms, 1.0)));
@@ -366,6 +377,11 @@ fn wire_trims_scale_the_signal_and_its_meter_together() {
     levels.set_gain(NodeId(1).0 << 1, 0.5);
     levels.set_gain(NodeId(2).0 << 1 | 1, 4.0);
     let mut output = [0.0; 4];
+    // The first block is an onset, so it reads above its loudest sample; the
+    // repeating pattern below reads its inter-sample crest from block two on
+    // (see `attached_wires_publish_each_plugins_input_and_output`).
+    rack.process(&[&[1.0, -1.0, 0.5, 0.0]], &mut [&mut output], 4)
+        .unwrap();
     rack.process(&[&[1.0, -1.0, 0.5, 0.0]], &mut [&mut output], 4)
         .unwrap();
     assert_eq!(levels.sample(NodeId(1).0 << 1), Some((0.375, 0.5)));

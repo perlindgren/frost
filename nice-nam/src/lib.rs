@@ -13,6 +13,7 @@ use crossbeam::atomic::AtomicCell;
 use editor::NamEditor;
 #[cfg(feature = "standalone")]
 use editor::NamEditorHandle;
+use nice_common::true_peak::TruePeak;
 use nice_plug::editor::dpi::LogicalSize;
 use std::sync::{
     Mutex,
@@ -43,8 +44,13 @@ use std::sync::Arc;
 
 pub struct NamSharedState {
     pub input_rms: AtomicCell<f32>,
+    /// Linear *true* peak (dBTP) of the input: the crest of the waveform the
+    /// DAC rebuilds between the samples, not the loudest sample. A reading
+    /// above 1.0 is a finding, not an overflow.
     pub input_peak: AtomicCell<f32>,
     pub output_rms: AtomicCell<f32>,
+    /// As the input peak, of what the plugin sent out — the hotter of the two
+    /// sides, since the model copies a mono input to both.
     pub output_peak: AtomicCell<f32>,
     pub gate_db: AtomicCell<f32>,
     pub meter_updated: AtomicU64,
@@ -79,6 +85,12 @@ pub struct NamPlugin {
     retiring: rtrb::Producer<Box<dsp::Chain>>,
     chain: Option<Box<dsp::Chain>>,
     gate_gain: f32,
+    /// True-peak estimators for the two metered levels, one each and carried
+    /// between blocks so a crest straddling a block boundary is still found.
+    /// One per side rather than per channel: the input layout is mono, and the
+    /// two output channels are copies of the same rendered buffer.
+    tp_in: TruePeak,
+    tp_out: TruePeak,
 }
 #[derive(Default, Params)]
 struct NamParams {
@@ -118,6 +130,8 @@ impl Default for NamPlugin {
             retiring,
             chain: None,
             gate_gain: 1.0,
+            tp_in: TruePeak::new(),
+            tp_out: TruePeak::new(),
         }
     }
 }
@@ -168,6 +182,8 @@ impl Plugin for NamPlugin {
         if let Some(chain) = &mut self.chain {
             chain.reset();
         }
+        self.tp_in.reset();
+        self.tp_out.reset();
     }
     fn process(
         &mut self,
@@ -201,9 +217,8 @@ impl Plugin for NamPlugin {
                 .map(|&x| f64::from(x).powi(2))
                 .sum::<f64>();
             input_energy += energy;
-            input_peak = input[..n]
-                .iter()
-                .fold(input_peak, |peak, x| peak.max(x.abs()));
+            self.tp_in.process(&input[..n]);
+            input_peak = input_peak.max(self.tp_in.take());
             let target = if n > 0 && (energy / n as f64).sqrt() >= f64::from(threshold) {
                 1.0
             } else {
@@ -224,9 +239,8 @@ impl Plugin for NamPlugin {
                 .iter()
                 .map(|&x| f64::from(x).powi(2))
                 .sum::<f64>();
-            output_peak = output[..n]
-                .iter()
-                .fold(output_peak, |peak, x| peak.max(x.abs()));
+            self.tp_out.process(&output[..n]);
+            output_peak = output_peak.max(self.tp_out.take());
             count += n;
             for channel in block.into_iter() {
                 channel.copy_from_slice(&output[..n]);
