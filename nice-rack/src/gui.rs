@@ -28,6 +28,13 @@ struct Dropped {
     point: Option<[f32; 2]>,
     captured: bool,
 }
+/// One open per-wire meter: its peak-hold plus the gain trim (dB) the
+/// user sets by dragging the meter as a slider. The engine keeps its own
+/// linear copy so the trim survives a closed meter and rack rebuilds.
+struct WireMeter {
+    peak: PeakMeter,
+    gain_db: f32,
+}
 struct RackUi {
     runtime: Runtime,
     loader: Loader,
@@ -50,8 +57,16 @@ struct RackUi {
     /// Open per-wire meters, keyed `(plugin id, is_output)` — the same key
     /// the engine registers its wire slots under (`id << 1 | side`). A key
     /// present here is exactly a stub box the user opened, so closing the
-    /// box drops the meter and its peak-hold with it.
-    wire_meters: std::collections::BTreeMap<(u64, bool), PeakMeter>,
+    /// box drops the meter and its peak-hold with it. The gain trim itself
+    /// also lives in the engine's slot table, so it survives closing the
+    /// meter; this copy is what the white line and the readout draw, and
+    /// what gets re-stated to the engine every tick.
+    wire_meters: std::collections::BTreeMap<(u64, bool), WireMeter>,
+    /// Gain slider grab: `(plugin id, is_output, wire height at grab)`.
+    /// The wire height is captured because the rack can scroll mid-drag;
+    /// the slider then stays glued to the track the user grabbed instead
+    /// of chasing the layout under the pointer.
+    gain_drag: Option<(u64, bool, f32)>,
     size: Option<(u32, u32)>,
     windows: crate::editors::Windows,
     overlay: Option<NodeId>,
@@ -75,6 +90,19 @@ fn wire_box_x(x: f32, side: bool) -> f32 {
     // on the input wire for `side == false` and the output wire otherwise.
     let edge = CARD_WIDTH / 2.0 + 6.0;
     if side { x + edge } else { x - edge }
+}
+const TRACK_HALF: f32 = 56.0;
+/// Meter slider mapping: a pointer height maps onto the track exactly as
+/// the meter's own 48 dB scale maps onto its 112 px, with the wire height
+/// (track midpoint) as 0 dB — so the gain reads at the same height the
+/// level is drawn. Screen y points up; grabs past the ends clamp.
+fn gain_at(mouse_y: f32, wire_y: f32) -> f32 {
+    ((mouse_y - (wire_y - TRACK_HALF)) / (2.0 * TRACK_HALF)).clamp(0.0, 1.0) * 48.0 - 24.0
+}
+/// The track height a gain dB sits at — the inverse mapping the white
+/// gain line is drawn from.
+fn gain_line_y(gain_db: f32, wire_y: f32) -> f32 {
+    wire_y - TRACK_HALF + 2.0 * TRACK_HALF * ((gain_db + 24.0) / 48.0).clamp(0.0, 1.0)
 }
 fn short(text: &str, count: usize) -> String {
     if text.chars().count() <= count {
@@ -257,6 +285,7 @@ pub fn run(
         input: PeakMeter::new(now()),
         output: PeakMeter::new(now()),
         wire_meters: Default::default(),
+        gain_drag: None,
         size: None,
         windows: Default::default(),
         overlay: None,
@@ -623,9 +652,24 @@ impl Process for RackUi {
                         let key = (slot.id.0, side);
                         if clicked && self.choosing.is_none() && hit(mouse, bx, slot.y, 4.0, 6.0) {
                             // Toggle: closing drops the meter, opening starts
-                            // a fresh peak-hold at silence.
+                            // a fresh peak-hold at silence — and adopts the
+                            // live trim if the wire already carries one, so
+                            // the white line opens where the gain actually is.
                             if self.wire_meters.remove(&key).is_none() {
-                                self.wire_meters.insert(key, PeakMeter::new(now()));
+                                let gain_db = self
+                                    .runtime
+                                    .wires
+                                    .gain_of(slot.id.0 << 1 | u64::from(side))
+                                    .map_or(0.0, |gain| {
+                                        (20.0f32 * gain.log10()).clamp(-24.0, 24.0)
+                                    });
+                                self.wire_meters.insert(
+                                    key,
+                                    WireMeter {
+                                        peak: PeakMeter::new(now()),
+                                        gain_db,
+                                    },
+                                );
                             }
                         }
                         ctx.rectangle(
@@ -880,29 +924,76 @@ impl Process for RackUi {
         let output_peak = f32::from_bits(self.runtime.levels.output_peak.load(Ordering::Relaxed));
         self.input.tick(db(input), db(input_peak), time);
         self.output.tick(db(output), db(output_peak), time);
-        for ((id, side), meter) in &mut self.wire_meters {
+        // Dragging an open meter with the left button moves its gain trim.
+        // The drag tracks the wire height captured at grab, so it survives
+        // the card scrolling out of view, and it lets go the moment the
+        // button, an editor overlay or Escape takes the pointer away.
+        if let Some((id, side, wire_y)) = self.gain_drag {
+            if ctx.key_down(frost::KeyCode::Escape) || !down || self.overlay.is_some() {
+                self.gain_drag = None;
+            } else if let Some(wire) = self.wire_meters.get_mut(&(id, side))
+                && let Some([_, my]) = ctx.mouse_position()
+            {
+                wire.gain_db = gain_at(my, wire_y);
+            } else {
+                self.gain_drag = None;
+            }
+        }
+        for ((id, side), wire) in &mut self.wire_meters {
             // A wire whose card was removed samples as gone, so its meter
             // decays to silence on its own until its box is opened again.
-            let (rms, peak) = self
-                .runtime
+            let key = *id << 1 | u64::from(*side);
+            // Re-state the trim every tick: a wire registered while audio
+            // was stopped comes up at unity, and this re-claim is what
+            // keeps the audible gain where the white line shows it.
+            self.runtime
                 .wires
-                .sample(*id << 1 | u64::from(*side))
-                .unwrap_or((0.0, 0.0));
-            meter.tick(db(rms), db(peak), time);
+                .set_gain(key, 10f32.powf(wire.gain_db / 20.0));
+            let (rms, peak) = self.runtime.wires.sample(key).unwrap_or((0.0, 0.0));
+            wire.peak.tick(db(rms), db(peak), time);
         }
         for slot in &layout.slots {
             if !visible(slot, layout.top, layout.bottom, w) {
                 continue;
             }
             for side in [false, true] {
-                let Some(meter) = self.wire_meters.get(&(slot.id.0, side)) else {
+                let Some(wire) = self.wire_meters.get(&(slot.id.0, side)) else {
                     continue;
                 };
                 let bx = wire_box_x(slot.x, side);
+                let dragging = self
+                    .gain_drag
+                    .is_some_and(|(id, grabbed, _)| id == slot.id.0 && grabbed == side);
+                if clicked
+                    && self.choosing.is_none()
+                    && self.gain_drag.is_none()
+                    && hit(mouse, bx, slot.y, 4.5, TRACK_HALF)
+                    && !hit(mouse, bx, slot.y, 4.0, 6.0)
+                {
+                    // Grabbing the track turns the meter into the gain
+                    // slider: midpoint 0 dB, same dB/px as the meter. The
+                    // stub box sits at the track centre and keeps its
+                    // toggle, so it is excluded from the grab.
+                    self.gain_drag = Some((slot.id.0, side, slot.y));
+                }
+                let hovered = dragging || hit(mouse, bx, slot.y, 4.5, TRACK_HALF);
                 // The vertical meter carries the card's full height and
-                // scales over the last 48 dB, screen y pointing up.
-                ctx.rectangle(bx, slot.y, 3.0, 56.0, rgb(30, 25, 45), 0.3);
-                let t = ((meter.level_db().max(-48.0) + 48.0) / 48.0).clamp(0.0, 1.0);
+                // scales over the last 48 dB, screen y pointing up. The
+                // track brightens while grabbed or hovered, saying "this
+                // is the slider" before the first drag even starts.
+                ctx.rectangle(
+                    bx,
+                    slot.y,
+                    3.0,
+                    56.0,
+                    if hovered {
+                        rgb(45, 38, 64)
+                    } else {
+                        rgb(30, 25, 45)
+                    },
+                    0.3,
+                );
+                let t = ((wire.peak.level_db().max(-48.0) + 48.0) / 48.0).clamp(0.0, 1.0);
                 if t > 0.0 {
                     ctx.rectangle(
                         bx,
@@ -913,12 +1004,45 @@ impl Process for RackUi {
                         0.3,
                     );
                 }
-                let p = ((meter.peak_db().max(-48.0) + 48.0) / 48.0).clamp(0.0, 1.0);
+                // Gray marks every 6 dB: the meter's own scale runs −48 to
+                // 0 over the 112 px track, so a mark lands every 14 px.
+                for step in 1..8 {
+                    ctx.rectangle(
+                        bx,
+                        slot.y - 56.0 + 14.0 * step as f32,
+                        3.0,
+                        0.5,
+                        rgb(107, 114, 128),
+                        0.3,
+                    );
+                }
+                let p = ((wire.peak.peak_db().max(-48.0) + 48.0) / 48.0).clamp(0.0, 1.0);
+                // Dimmed to slate so the white gain line stays the one
+                // bright mark on the track.
                 ctx.rectangle(
                     bx,
                     slot.y - 56.0 + 112.0 * p,
                     4.5,
                     1.0,
+                    rgb(148, 163, 184),
+                    0.3,
+                );
+                ctx.rectangle(
+                    bx,
+                    gain_line_y(wire.gain_db, slot.y),
+                    4.5,
+                    0.5,
+                    rgb(255, 255, 255),
+                    0.3,
+                );
+                // The gain in dB, underneath the meter.
+                ctx.text(
+                    bx,
+                    slot.y - TRACK_HALF - 9.0,
+                    &self.font,
+                    format!("{:+.1} dB", wire.gain_db),
+                    11.0,
+                    500.0,
                     rgb(226, 232, 240),
                     0.3,
                 );
@@ -1233,5 +1357,31 @@ mod tests {
         assert_eq!(layout.slots[0].x, layout.slots[1].x);
         assert!(layout.slots[0].y > layout.slots[1].y);
         assert!(layout.slots[2].x > layout.slots[0].x);
+    }
+    #[test]
+    fn the_gain_slider_shares_the_meters_scale() {
+        // Midpoint — the wire height — is 0 dB and the track ends are
+        // ±24 dB, so the slider spans exactly the meter's 48 dB over the
+        // same 112 px.
+        assert_eq!(gain_at(0.0, 0.0), 0.0);
+        assert_eq!(gain_at(TRACK_HALF, 0.0), 24.0);
+        assert_eq!(gain_at(-TRACK_HALF, 0.0), -24.0);
+        assert_eq!(gain_at(28.0, 0.0), 12.0);
+        assert_eq!(gain_at(-28.0, 0.0), -12.0);
+        // Grabs past the ends clamp instead of running away with the gain.
+        assert_eq!(gain_at(90.0, 10.0), 24.0);
+        assert_eq!(gain_at(-90.0, 10.0), -24.0);
+        // 6 dB of gain moves the white line 14 px — the same distance the
+        // meter's own fill moves for 6 dB, and where the gray marks sit.
+        assert_eq!(gain_line_y(6.0, 0.0) - gain_line_y(0.0, 0.0), 14.0);
+        assert_eq!(gain_line_y(0.0, 0.0), 0.0);
+        // The line lands where the drag put it, at any card height.
+        for (db, wire_y) in [(-24.0, -140.0), (-12.0, 0.0), (12.0, 7.5), (24.0, 200.0)] {
+            let y = gain_line_y(db, wire_y);
+            assert!(
+                (gain_at(y, wire_y) - db).abs() < 1e-4,
+                "{db} dB at {wire_y}"
+            );
+        }
     }
 }
