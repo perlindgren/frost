@@ -68,9 +68,6 @@ RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo xtask bundle \
   -p nice-pi-face -p nice-echo -p nice-ecomplex --release
 ```
 
-and on macOS, `bundle-universal` stands in for `bundle` and builds one binary
-carrying both architectures.
-
 Bundles land in `target/bundled/` under the display name from
 [`bundler.toml`](bundler.toml) — `nice-echo` becomes `Nice Echo`, `nice-pi-face`
 becomes `Nice Pi-Fase` — and each package yields both `Nice Echo.clap` and
@@ -81,6 +78,29 @@ the VST3 is a directory on all three. `cargo xtask` is the alias in
 which also puts the two font licence texts beside the bundles: a CLAP is one file
 and cannot carry the OFL text for the embedded Fira Code, so it travels next to
 it instead.
+
+macOS has one extra subcommand, for carrying both Apple instruction sets in one
+binary so an Intel Mac and an Apple Silicon Mac load the same file:
+
+```shell
+rustup target add x86_64-apple-darwin aarch64-apple-darwin
+cargo xtask bundle-universal nice-echo --release
+```
+
+Both targets must be installed, and the two legs are joined with `lipo` from the
+Xcode command line tools. Each package is built twice, serially, into
+`target/x86_64-apple-darwin/release` and `target/aarch64-apple-darwin/release`,
+so expect roughly twice the time, and `--target` is refused out of hand because
+the subcommand supplies it itself twice; everything else passes through to both
+legs. A plain `bundle` on a Mac is not wrong — you get the same `.clap` and
+`.vst3`, carrying only the host architecture, which is all a single machine
+needs. `nice-nam` is the one card to leave out of a universal build: the x86-64
+leg builds nothing that works, the NAM engine not supporting Intel Macs at all
+([nice-nam/README.md](nice-nam/README.md)); bundle it plain, on arm64, where as
+said above it needs no `RUSTFLAGS` either. Every macOS bundle is finished the way
+Apple wants one — an `Info.plist` and a `PkgInfo` in `Contents/`, then a
+`codesign -f -s -` over the directory, because arm64 macOS sometimes refuses an
+unsigned self-built plugin and a missing `codesign` is only a warning.
 
 ### Standalone plugins
 
@@ -101,7 +121,10 @@ and exits. The feature is required rather than advisory: the `[[bin]]` target
 declares `required-features`, so a `cargo build --release` without it compiles the
 plugin and says nothing whatever about the application. The same command leaves
 the raw shared object beside the binary — `libnice_echo.so`, `libnice_echo.dylib`,
-`nice-echo.dll` — which is what the bundler renames.
+`nice_echo.dll` — which is what the bundler renames. Bundled on macOS the
+application is not a loose file either: build it with the `standalone` feature
+and `cargo xtask bundle` wraps it in `Nice Echo.app`, because that is where a Mac
+expects an application to live; plain `cargo run` needs no such thing.
 
 ### The rack
 
