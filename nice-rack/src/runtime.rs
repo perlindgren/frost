@@ -8,7 +8,7 @@ use nice_clap_host::{Binding, Entry, LiveAudio, LiveSession, LiveStatus};
 use nice_common::audio_io::{DeviceStreams, Endpoints};
 use nice_common::true_peak::TruePeak;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -270,6 +270,24 @@ pub struct Runtime {
     /// the reason [`crate::SavedPlugin`] spells out: a held clip is a report
     /// about audio that already passed.
     trims: BTreeMap<(u64, bool), f32>,
+    /// The breaks the rack remembers: one entry per wire the operator left
+    /// open, keyed `(card id, is output)` exactly as [`Runtime::trims`] is. A
+    /// set rather than a map, because a break has no magnitude to carry — a
+    /// cable is broken or it is not, and "how broken" is a question only a
+    /// trim answers. The GUI asks for it the way it asks for a trim, on a
+    /// wire's meter making its way out to the canvas, so a resumed rack starts
+    /// with the switches as they were left. Card ids are never reused, so a
+    /// remembered break cannot drift onto a different card.
+    open_circuits: BTreeSet<(u64, bool)>,
+    /// The level a wire's minimised meter has to reach to light up, in dBFS —
+    /// the rack's one view preference, held next to the trims because it is
+    /// remembered the same way: the GUI reads and writes this copy every frame
+    /// and [`Runtime::persist`] is the only thing that puts it in a file.
+    meter_gate_db: f32,
+    /// The gate the file at `persistence_path` was last written with, for the
+    /// same reason [`Runtime::saved_plugins`] exists: it is what tells
+    /// `persist` a gate change is waiting.
+    saved_meter_gate_db: f32,
     worker: Option<JoinHandle<Endpoints>>,
     io: Option<DeviceStreams>,
     /// The rings of `io` while no worker owns them. `spawn_dsp` returns them
@@ -318,6 +336,39 @@ fn remembered_trims(plugins: &[crate::SavedPlugin]) -> BTreeMap<(u64, bool), f32
         .map(|(key, db)| (key, db.clamp(-crate::TRIM_DB, crate::TRIM_DB)))
         .collect()
 }
+/// The breaks a saved rack starts with: one entry per wire the file says the
+/// operator left open. A file written before wires could break says nothing and
+/// every wire starts closed, which is how every rack in existence was wired, so
+/// nothing here has to guess what a missing record meant. There is nothing to
+/// clamp either: a break is a bool, not a number a hand-edited file can put
+/// past the end of a track.
+fn remembered_opens(plugins: &[crate::SavedPlugin]) -> BTreeSet<(u64, bool)> {
+    plugins
+        .iter()
+        .flat_map(|saved| {
+            [
+                ((saved.id, false), saved.open_in),
+                ((saved.id, true), saved.open_out),
+            ]
+        })
+        .filter(|(_, open)| *open)
+        .map(|(key, _)| key)
+        .collect()
+}
+/// The gate a saved rack starts with, in dBFS. A file written before stubs had
+/// a gate says nothing and the rack opens with the gate it ships — the level
+/// that every stub was already resting behind. A hand-edited number is taken
+/// as written, even one the dropdown does not offer, because a threshold is
+/// only a comparison and the page shows whatever it reads; `NaN` and the
+/// infinities are not comparisons, so they go back to the shipped default
+/// rather than being saved out as a file the rack cannot read.
+fn remembered_gate(db: f32) -> f32 {
+    if db.is_finite() {
+        db
+    } else {
+        crate::METER_GATE_DEFAULT_DB
+    }
+}
 impl Runtime {
     pub fn new(settings: Settings) -> Self {
         let mut runtime = Self {
@@ -337,6 +388,11 @@ impl Runtime {
                 .collect(),
             saved_plugins: settings.preferences.plugins.clone(),
             trims: remembered_trims(&settings.preferences.plugins),
+            open_circuits: remembered_opens(&settings.preferences.plugins),
+            meter_gate_db: remembered_gate(settings.preferences.meter_gate_db),
+            // The file's own number, sane or not, so a gate the rack had to
+            // look past is one `persist` writes back proper.
+            saved_meter_gate_db: settings.preferences.meter_gate_db,
             last_save: Instant::now(),
             persistence_path: None,
             worker: None,
@@ -800,6 +856,42 @@ impl Runtime {
                 .insert((id, side), gain_db.clamp(-crate::TRIM_DB, crate::TRIM_DB));
         }
     }
+    /// Whether the rack remembers this wire as an open circuit. `false` means it
+    /// holds no break here, which is what every wire of a card dragged in this
+    /// session looks like: a cable is closed until somebody throws its switch.
+    pub(crate) fn open_circuit(&self, id: u64, side: bool) -> bool {
+        self.open_circuits.contains(&(id, side))
+    }
+    /// Take ownership of a wire's break, for the same reason
+    /// [`Runtime::set_trim`] takes ownership of a trim: the right-click that
+    /// throws the switch is one of several ways it moves — a saved file and an
+    /// undo are others — and [`Runtime::persist`] should not have to care which
+    /// one moved it. Closing a wire takes its entry out again rather than
+    /// recording a `false`, so the set stays a list of the cables actually
+    /// broken and a rack with nothing broken saves out as one.
+    pub(crate) fn set_open_circuit(&mut self, id: u64, side: bool, open: bool) {
+        if open {
+            self.open_circuits.insert((id, side));
+        } else {
+            self.open_circuits.remove(&(id, side));
+        }
+    }
+    /// The level a minimised meter has to reach to be drawn in colour, in dB.
+    /// The view reads this every frame it paints a stub box, so it lives here
+    /// rather than being read out of the settings file over and over.
+    pub(crate) fn meter_gate(&self) -> f32 {
+        self.meter_gate_db
+    }
+    /// Take ownership of the meter gate, for the same reason [`Runtime::set_trim`]
+    /// takes ownership of a trim: the settings page is one of several ways the
+    /// number can move, and [`Runtime::persist`] should not have to care which
+    /// one moved it. A non-finite number is refused; the gate stays where it
+    /// was, and the next save writes the value the rack is actually using.
+    pub(crate) fn set_meter_gate(&mut self, db: f32) {
+        if db.is_finite() {
+            self.meter_gate_db = db;
+        }
+    }
     pub(crate) fn persist(&mut self) {
         if self.action.is_some() || self.opening.is_some() {
             return;
@@ -827,26 +919,39 @@ impl Runtime {
                 name: card.name.clone(),
                 state: self.states.get(&card.id).cloned(),
                 editor: self.editor_geometry.get(&card.id).copied(),
-                // A card carries its own trims out of the rack's memory, so a
-                // card removed from the canvas takes them with it. The map
-                // itself keeps its entries, exactly as `editor_geometry` does:
-                // an edit may be undone, and a trim the operator set is the
-                // kind of thing worth having back.
+                // A card carries its own trims and breaks out of the rack's
+                // memory, so a card removed from the canvas takes them with it.
+                // The maps themselves keep their entries, exactly as
+                // `editor_geometry` does: an edit may be undone, and a trim or a
+                // switch the operator set is the kind of thing worth having
+                // back.
                 gain_in: self.trim(card.id.0, false).unwrap_or_default(),
                 gain_out: self.trim(card.id.0, true).unwrap_or_default(),
+                open_in: self.open_circuit(card.id.0, false),
+                open_out: self.open_circuit(card.id.0, true),
             })
             .collect();
-        if plugins != self.saved_plugins {
+        // One write covers both kinds of preference the rack keeps changing
+        // under the operator's hands: the cards with their trims and breaks, and
+        // the gate the stub boxes are coloured against. Either of them moving is
+        // enough to rewrite the file, because a settings file holds one snapshot
+        // of both and cannot be brought half up to date. A break needs no extra
+        // comparison of its own: it travels on the card it belongs to, so a wire
+        // thrown open makes the cards differ from the last thing written.
+        if plugins != self.saved_plugins || self.meter_gate_db != self.saved_meter_gate_db {
             let (mut settings, warning) = Settings::load_from(&path);
             if let Some(warning) = warning {
                 self.message = warning;
                 return;
             }
             settings.preferences.plugins = plugins.clone();
+            settings.preferences.meter_gate_db = self.meter_gate_db;
             match settings.save_to(&path) {
                 Ok(()) => {
                     self.applied.preferences.plugins = plugins.clone();
+                    self.applied.preferences.meter_gate_db = self.meter_gate_db;
                     self.saved_plugins = plugins;
+                    self.saved_meter_gate_db = self.meter_gate_db;
                 }
                 Err(error) => self.message = error,
             }
@@ -1373,6 +1478,35 @@ mod tests {
             "and a `NaN` is no record at all, so the meter falls back to the engine"
         );
 
+        // A break is remembered the same way, and needs no comparison of its
+        // own to be noticed: it rides on the card it belongs to, so throwing a
+        // switch is enough to make the cards differ from the last thing
+        // written. This is the part of the request that says *of course* — a
+        // rack left with a cable pulled is that rack, and a resume that
+        // quietly closed it would be rewiring the thing behind the operator.
+        runtime.set_open_circuit(2, true, true);
+        runtime.last_save = Instant::now() - Duration::from_secs(3);
+        runtime.tick();
+        let (saved, warning) = Settings::load_from(&file);
+        assert_eq!(warning, None);
+        assert!(
+            saved.preferences.plugins[0].open_out,
+            "the cable left broken comes back broken"
+        );
+        assert!(
+            !saved.preferences.plugins[0].open_in,
+            "and its neighbour still says the other one carries"
+        );
+        assert_eq!(
+            remembered_opens(&saved.preferences.plugins),
+            [(2u64, true)].into_iter().collect::<BTreeSet<_>>()
+        );
+        runtime.set_open_circuit(2, true, false);
+        assert!(
+            !runtime.open_circuit(2, true),
+            "closing a wire takes the record away rather than arguing with it"
+        );
+
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(
             !text.contains("clip") && !text.contains("latch"),
@@ -1386,6 +1520,54 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::yield_now();
         }
+    }
+    /// What a remembered break is made of, checked without a plugin: the file
+    /// says which of a card's two cables it left broken, and the controller
+    /// turns that into the set the GUI asks. The two sides are keyed apart the
+    /// way the trims are, because they are different cables — breaking the wire
+    /// into a card does not break the wire out of it, and a record that could
+    /// not tell them apart could not be trusted to draw the gap in the right
+    /// place.
+    #[test]
+    fn a_remembered_break_names_the_cable_and_not_the_card() {
+        let saved = crate::SavedPlugin {
+            id: 7,
+            stage: 1,
+            path: "/plugins/tuner.clap".into(),
+            class: "same-class".into(),
+            name: "Tuner".into(),
+            state: None,
+            editor: None,
+            gain_in: 0.0,
+            gain_out: 0.0,
+            open_in: true,
+            open_out: false,
+        };
+        let opens = remembered_opens(std::slice::from_ref(&saved));
+        assert!(opens.contains(&(7, false)), "the side the file names");
+        assert!(!opens.contains(&(7, true)), "and only that side");
+        assert_eq!(opens.len(), 1, "a closed cable is no record at all");
+
+        // A file from before the feature names nothing, which is the empty set
+        // and not a rack full of silent wires.
+        let before = crate::SavedPlugin {
+            open_in: false,
+            ..saved
+        };
+        assert!(remembered_opens(&[before]).is_empty());
+
+        // And the controller's own copy answers the same way the file does,
+        // including on the way back to closed.
+        let mut runtime = Runtime::new(Settings::default());
+        assert!(
+            !runtime.open_circuit(7, false),
+            "a fresh rack breaks nothing"
+        );
+        runtime.set_open_circuit(7, false, true);
+        assert!(runtime.open_circuit(7, false));
+        assert!(!runtime.open_circuit(7, true));
+        runtime.set_open_circuit(7, false, false);
+        assert!(!runtime.open_circuit(7, false));
     }
     /// A window that stopped answering the moment a second plugin was dropped
     /// on it, with a backend chosen in Settings and the devices therefore

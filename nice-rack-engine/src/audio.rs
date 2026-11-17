@@ -4,10 +4,12 @@ use crate::{Channels, GraphError, NodeId, NodeKind, RackGraph};
 use nice_common::true_peak::TruePeak;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 #[cfg(test)]
 mod cost_bench;
+#[cfg(test)]
+mod tests;
 
 /// Plan-owned planar sample storage. Only the requested frame prefix is valid
 /// during a process call. Processors must write every output sample in that prefix.
@@ -158,14 +160,25 @@ struct WireSlot {
     /// is exactly what a live slider needs, and a rebuild keeps the trim
     /// because the slot keeps its key (`reset` retires only dead keys).
     gain: AtomicU32,
+    /// Whether the wire is an open circuit. A closed wire — `false`, the
+    /// state every wire starts in — carries its signal; an open one is a
+    /// switch thrown on the cable, and nothing passes it. The UI thread
+    /// stores it through [`WireLevels::set_open`] at any time and the audio
+    /// thread reads it once per block, exactly like `gain`, so a block is
+    /// either broken whole or whole. A rebuild keeps the state with the key
+    /// for the same reason the trim does; a wire that arrives under a key the
+    /// table had retired comes back closed, because the plan, not the switch,
+    /// decides what a new wire is.
+    open: AtomicBool,
 }
 
 /// Lock-free wire observations shared between the audio thread and the UI.
 /// A control thread registers wires through [`PreparedRack::attach_wire_levels`]
 /// before the plan crosses to the audio thread; from then on the audio thread
 /// only stores f32 bits, the UI samples by key and pushes trims through
-/// [`WireLevels::set_gain`], so metering and per-wire gain cost no locks and
-/// no allocations in `process`.
+/// [`WireLevels::set_gain`] and switches through [`WireLevels::set_open`], so
+/// metering, per-wire gain and per-wire breaks cost no locks and no
+/// allocations in `process`.
 pub struct WireLevels {
     slots: Vec<WireSlot>,
 }
@@ -187,6 +200,7 @@ impl WireLevels {
                     rms: AtomicU32::new(0),
                     peak: AtomicU32::new(0),
                     gain: AtomicU32::new(1.0f32.to_bits()),
+                    open: AtomicBool::new(false),
                 })
                 .collect(),
         }
@@ -196,14 +210,16 @@ impl WireLevels {
     /// the levels of the wires that stay. Control thread only: a rebuild
     /// always joins the previous audio worker before the new plan is attached,
     /// so no reader races these stores. A key that stays keeps its slot — and
-    /// with it the trim the UI applied — so rebuilding the rack to add or
-    /// remove one card never silently resets the gains of the others.
+    /// with it the trim the UI applied and the switch it threw — so rebuilding
+    /// the rack to add or remove one card never silently resets the gains of
+    /// the others or closes a wire the operator left broken.
     fn reset(&self, keeping: &[u64]) {
         for slot in &self.slots {
             let key = slot.key.load(Ordering::Relaxed);
             if key != 0 && !keeping.contains(&key) {
                 slot.key.store(0, Ordering::Relaxed);
                 slot.gain.store(1.0f32.to_bits(), Ordering::Relaxed);
+                slot.open.store(false, Ordering::Relaxed);
             }
             slot.rms.store(0, Ordering::Relaxed);
             slot.peak.store(0, Ordering::Relaxed);
@@ -211,10 +227,10 @@ impl WireLevels {
     }
 
     /// Reserve a slot for `key`. Control thread only (see `reset`). A key the
-    /// table already holds keeps its slot and its applied trim; a new key
-    /// takes a free slot at unity gain. A zero key or a full table declines
-    /// the wire; that meter then stays unobserved instead of displacing an
-    /// already published wire.
+    /// table already holds keeps its slot, its applied trim and its switch; a
+    /// new key takes a free slot at unity gain and closed. A zero key or a
+    /// full table declines the wire; that meter then stays unobserved instead
+    /// of displacing an already published wire.
     fn attach(&self, key: u64) -> Option<usize> {
         if key == 0 {
             return None;
@@ -228,6 +244,7 @@ impl WireLevels {
         let slot = &self.slots[index];
         if held(slot) != key {
             slot.gain.store(1.0f32.to_bits(), Ordering::Relaxed);
+            slot.open.store(false, Ordering::Relaxed);
         }
         slot.rms.store(0, Ordering::Relaxed);
         slot.peak.store(0, Ordering::Relaxed);
@@ -262,11 +279,57 @@ impl WireLevels {
         }
     }
 
+    /// Throw or close the switch on the wire `key`, from the UI thread, at
+    /// any time. An open wire carries no signal past its stub, which is the
+    /// whole of what this does to the audio; the wire is still measured up to
+    /// the switch (see [`PreparedRack::process`]), so the meter on a broken
+    /// wire says what is arriving at the gap rather than that the gap is
+    /// silent. Unregistered keys are declined for the reason [`WireLevels::set_gain`]
+    /// gives: a UI that broke a wire while audio was stopped re-states the
+    /// break once the wires are attached again.
+    pub fn set_open(&self, key: u64, open: bool) {
+        if key == 0 {
+            return;
+        }
+        if let Some(slot) = self
+            .slots
+            .iter()
+            .find(|slot| slot.key.load(Ordering::Acquire) == key)
+        {
+            slot.open.store(open, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether `key` is an open circuit, or `false` while the key is not
+    /// registered in this table. A wire nobody registered carries nothing,
+    /// which is not the same fact as a switch thrown on a wire that exists,
+    /// and the UI only needs to know about the latter: an unmeasured wire is
+    /// drawn as plain cable.
+    pub fn open_of(&self, key: u64) -> bool {
+        if key == 0 {
+            return false;
+        }
+        self.slots
+            .iter()
+            .find(|slot| slot.key.load(Ordering::Acquire) == key)
+            .is_some_and(|slot| slot.open.load(Ordering::Relaxed))
+    }
+
     /// The trim applied to a registered wire slot, for the audio thread.
     fn gain(&self, index: usize) -> f32 {
         self.slots.get(index).map_or(1.0, |slot| {
             f32::from_bits(slot.gain.load(Ordering::Relaxed))
         })
+    }
+
+    /// Whether a registered wire slot is an open circuit, for the audio
+    /// thread. An out-of-range index is closed: the plan owns the indices it
+    /// handed out, and a wire that has no slot is not one the operator can
+    /// break.
+    fn open_at(&self, index: usize) -> bool {
+        self.slots
+            .get(index)
+            .is_some_and(|slot| slot.open.load(Ordering::Relaxed))
     }
 
     /// The trim applied to `key`, or `None` while the key is not registered
@@ -588,32 +651,57 @@ impl PreparedRack {
                     // A wire trim sits on the wire itself: the input trim
                     // scales the summed buffer before the processor sees it,
                     // so the plugin and everything downstream share what the
-                    // wire actually carries.
-                    if let Some(trim) = node.wire_in {
+                    // wire actually carries. The two slots are copied out
+                    // first because measuring a wire borrows two of the node's
+                    // fields at once.
+                    let (wire_in, wire_out) = (node.wire_in, node.wire_out);
+                    if let Some(trim) = wire_in {
                         apply_gain(&mut node.input, frames, wires.gain(trim));
                     }
-                    let slot = node.processor.as_mut().unwrap();
-                    if slot.bypassed {
+                    // An open circuit is measured before it is broken. The
+                    // stub on the switch then keeps reading the signal that
+                    // arrives at the gap, which is what tells an operator
+                    // chasing a fault that the far side of the break is alive;
+                    // what goes on past the gap is silence. Clearing the input
+                    // here also feeds that silence to a bypassed card, whose
+                    // copy would otherwise walk the broken wire straight
+                    // around the plugin.
+                    let arrival = wire_in
+                        .is_some()
+                        .then(|| wire_level(&node.input, frames, &mut node.tp_in));
+                    if wire_in.is_some_and(|slot| wires.open_at(slot)) {
+                        node.input.clear(frames);
+                    }
+                    let processor = node.processor.as_mut().unwrap();
+                    if processor.bypassed {
                         node.bypass.add(&node.input, &mut node.output, frames);
                     } else {
-                        slot.processor
+                        processor
+                            .processor
                             .process(&node.input, &mut node.output, frames)
                             .map_err(|_| ProcessError::NodeFailed(node.id))?;
                     }
-                    if let Some(trim) = node.wire_out {
+                    if let Some(trim) = wire_out {
                         apply_gain(&mut node.output, frames, wires.gain(trim));
+                    }
+                    let departure = wire_out
+                        .is_some()
+                        .then(|| wire_level(&node.output, frames, &mut node.tp_out));
+                    // A card's output buffer is what every edge out of it
+                    // reads, so breaking there is what makes the whole rest of
+                    // the chain go quiet and not just the card next door.
+                    if wire_out.is_some_and(|slot| wires.open_at(slot)) {
+                        node.output.clear(frames);
                     }
                     // Meter both stubs of this card from the settled buffers,
                     // after the trims, so the meter and the white gain line
                     // describe the same signal. Keys are only registered by
                     // `attach_wire_levels`, so an unobserved plan takes two
                     // `None` loads per node.
-                    if let Some(slot) = node.wire_in {
-                        let (rms, peak) = wire_level(&node.input, frames, &mut node.tp_in);
+                    if let (Some(slot), Some((rms, peak))) = (wire_in, arrival) {
                         wires.publish(slot, rms, peak);
                     }
-                    if let Some(slot) = node.wire_out {
-                        let (rms, peak) = wire_level(&node.output, frames, &mut node.tp_out);
+                    if let (Some(slot), Some((rms, peak))) = (wire_out, departure) {
                         wires.publish(slot, rms, peak);
                     }
                 }

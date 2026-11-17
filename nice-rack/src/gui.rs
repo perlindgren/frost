@@ -40,7 +40,14 @@ struct Dropped {
 struct WireMeter {
     peak: PeakMeter,
     gain_db: f32,
+    /// Whether the track is expanded. The rack's word for an opened meter.
     open: bool,
+    /// Whether the operator left this wire as an open circuit, so that the
+    /// signal stops at the stub box. Called `open_circuit` and not `open`
+    /// because in this file `open` already means a meter someone expanded,
+    /// and the two have nothing to do with each other: a collapsed track can
+    /// be carrying nothing and an expanded one can be broken.
+    open_circuit: bool,
 }
 struct RackUi {
     runtime: Runtime,
@@ -50,6 +57,9 @@ struct RackUi {
     settings: Option<AudioPanel<crate::RackPreferences>>,
     settings_page: bool,
     pressed: bool,
+    /// Last frame's right button, so a break toggles on the press and not on
+    /// every frame the button is held.
+    pressed_right: bool,
     drag: Option<crate::routing::NodeId>,
     scroll: f32,
     drops: VecDeque<Dropped>,
@@ -105,14 +115,155 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color {
         a: 1.0,
     }
 }
+/// What a *level* is drawn in: the bar of an expanded track, the `main` both
+/// master meters are drawn with — and so, through the shared widget's
+/// `MeterColors`, their bars too. It is the house green, named once here
+/// instead of repeating the same three numbers wherever a level gets a
+/// rectangle, because a minimised meter colours itself with it (see
+/// [`stub_color`]) and the two colours have to stay one colour: a stub that
+/// brightens is saying what its own bar would say if it were drawn.
+const LEVEL: Color = nice_common::knob::GREEN;
 fn hit(mouse: Option<[f32; 2]>, x: f32, y: f32, w: f32, h: f32) -> bool {
     mouse.is_some_and(|p| (p[0] - x).abs() <= w && (p[1] - y).abs() <= h)
 }
+/// Half-width of a stub box, in pixels. It is the width the box is drawn at,
+/// the width a click is accepted over, and the distance a broken wire's line
+/// stops short of its box, all from one number — so the gap a break opens can
+/// never be a hair narrower or wider than the box that marks it.
+const STUB_HALF: f32 = 4.0;
+/// Half-height of a stub box. Taller than wide so the box reads as a terminal
+/// on the wire rather than a dot on it.
+const STUB_TALL: f32 = 6.0;
+/// How far a stub box stands off the card's vertical edge.
+const STUB_GAP: f32 = 6.0;
+/// How much further out the columns are that a parallel stage's risers stand
+/// in — the split on the left and the merge on the right. The gap is what
+/// leaves room for a card's own short run of wire between its stub box and
+/// the column its stage shares with the other cards in it, which is the only
+/// part of a parallel stage's wiring that belongs to that one card.
+const JUNCTION_GAP: f32 = 12.0;
+/// How far above and below a wire a right-click still counts as aimed at it.
+/// The line itself is 2 px wide, so without some generosity here the operator
+/// would have to be exact about a target they cannot make much wider.
+const BREAK_HALF: f32 = 5.0;
+/// How far a broken wire's line pulls back from its stub box, on top of the
+/// box's own half-width. The box is 8 px across and sits between the card and
+/// the column its wire runs to, so stopping the line at the box's face would
+/// leave a gap barely wider than the mark inside it. This is the air that makes
+/// an open circuit read as a hole in the wire and not as a box painted a
+/// different colour.
+const BREAK_GAP: f32 = 4.0;
+/// How much of a card's run is given up at an end that stands in a column more
+/// than one wire passes through. The risers of a parallel stage carry every card
+/// in it and are nobody's to break, and where a riser crosses a card's own row
+/// the two are the same pixels; two cards meeting in a merge column are the same
+/// overlap in miniature. Stepping back hands the column to the wire that ends
+/// there, so the operator can aim at it and never open two circuits at once.
+const RISER_KEEP: f32 = 3.0;
 fn wire_box_x(x: f32, side: bool) -> f32 {
-    // Stub box centres for one card: 6 px out from each vertical card edge,
-    // on the input wire for `side == false` and the output wire otherwise.
-    let edge = CARD_WIDTH / 2.0 + 6.0;
+    // Stub box centres for one card: `STUB_GAP` out from each vertical card
+    // edge, on the input wire for `side == false` and the output wire
+    // otherwise.
+    let edge = CARD_WIDTH / 2.0 + STUB_GAP;
     if side { x + edge } else { x - edge }
+}
+/// The column a stage's risers stand in — where its wires split out to the
+/// cards of a parallel stage and merge back together.
+fn junction_x(x: f32, side: bool) -> f32 {
+    let edge = CARD_WIDTH / 2.0 + JUNCTION_GAP;
+    if side { x + edge } else { x - edge }
+}
+/// The stretch of wire that belongs to one side of one card: the signal's
+/// whole journey between the card's edge and the junction it reaches, so that
+/// clicking anywhere along it means the same thing — this card's input, or
+/// this card's output. [`wire_click`] turns it into a target no two wires can
+/// share.
+///
+/// Where the stage has only this card, the junction is the previous stage's
+/// merge column and the next one's split, so the input stretch takes in the
+/// entire connector between the two cards' meters: the wire the operator
+/// actually sees, from an output meter to an input meter. The output stretch
+/// ends at its own merge column, because the connector beyond it is the next
+/// card's input — except in the last stage, where there is no next card and the
+/// stretch runs on into the rack's `OUT` jack. Where the stage holds several
+/// cards in parallel, both junction columns and the risers between them belong
+/// to the stage and not to any one card, so each card keeps only its short run
+/// beside its stub box — and the vertical connections are never anybody's to
+/// break.
+///
+/// `feed` is the column the wire arrives from on the left (the head feed's `IN`
+/// jack for the first stage) and `out` the column it leaves for on the right
+/// (the `OUT` jack's run for the last stage). Each is ignored where the other
+/// side owns that stretch instead: a shared stage's junction columns, or the
+/// next card's input.
+///
+/// The intervals here meet at the columns and may touch there; [`wire_click`]
+/// is what decides which wire a touch belongs to. The drawing of a wire is a
+/// separate matter — the parts of a stage's wiring that cross rows are drawn one
+/// row at a time, each cut at its own height — so nothing here is used to put ink
+/// down.
+fn wire_run(x: f32, side: bool, shared: bool, feed: f32, out: f32) -> (f32, f32) {
+    let edge = CARD_WIDTH / 2.0;
+    if side {
+        (x + edge, if shared { junction_x(x, true) } else { out })
+    } else {
+        (if shared { junction_x(x, false) } else { feed }, x - edge)
+    }
+}
+/// [`wire_run`] as a click target: the same stretch, minus the few pixels at an
+/// end that stands in a column two wires meet in.
+///
+/// A card's output finishes in a column, and a stage's input starts in one — its
+/// own riser where the stage is shared, otherwise the previous stage's merge
+/// column. Wherever that is, the column itself is given to the wire that ends
+/// there and the wire that starts there steps back by [`RISER_KEEP`], so a click
+/// opens exactly one circuit: aiming at a riser hits neither of the wires that
+/// pass it, and aiming where two cards' meters hand the signal over breaks the
+/// one whose run finishes there. The two ends that stand at one of the rack's
+/// own jacks — the head feed on the left, the last card's run into `OUT` on the
+/// right — are nobody's second wire, and are kept in full.
+fn wire_click(x: f32, side: bool, shared: bool, fed: bool, feed: f32, out: f32) -> (f32, f32) {
+    let (from, to) = wire_run(x, side, shared, feed, out);
+    if side {
+        (from, if shared { to - RISER_KEEP } else { to })
+    } else {
+        (
+            if shared || fed {
+                from + RISER_KEEP
+            } else {
+                from
+            },
+            to,
+        )
+    }
+}
+/// Where a stretch of wire stops when the switch on it is open: short of its
+/// stub box, with [`BREAK_GAP`] of air between the two. Closed, it runs to the
+/// column it was drawn to anyway.
+///
+/// The far side of the hole is simply not drawn, which is what makes a break
+/// read as an open circuit: a wire with nothing beyond it is the same inkless
+/// nothing as a wire nobody has connected, and the box standing alone in the
+/// gap says which of the two it is.
+fn wire_end(to: f32, box_x: f32, open: bool) -> f32 {
+    if open {
+        (box_x - STUB_HALF - BREAK_GAP).min(to)
+    } else {
+        to
+    }
+}
+/// A stretch of wire, if there is one left to draw after the cut above.
+fn wire_segment(ctx: &mut Context, from: f32, to: f32, y: f32, color: Color) {
+    if from <= to {
+        ctx.line(from, y, to, y, color, 2.0, 0.1);
+    }
+}
+/// Whether a pointer is on a wire: anywhere along the stretch it owns within
+/// [`BREAK_HALF`] of the line, or on its stub box, which is the part that is
+/// always this wire's and nobody else's.
+fn wire_hit(mouse: Option<[f32; 2]>, from: f32, to: f32, y: f32, box_x: f32) -> bool {
+    hit(mouse, box_x, y, STUB_HALF, STUB_TALL)
+        || mouse.is_some_and(|p| (from..=to).contains(&p[0]) && (p[1] - y).abs() <= BREAK_HALF)
 }
 const TRACK_HALF: f32 = 56.0;
 /// Relative drag mapping: each pixel of pointer travel turns the trim by
@@ -187,6 +338,53 @@ fn new_wire_meter(gain_db: f32, time: u64) -> WireMeter {
         peak: PeakMeter::latching(time),
         gain_db,
         open: false,
+        open_circuit: false,
+    }
+}
+/// What colour a stub box is drawn in, for a wire whose meter may or may not
+/// exist yet.
+///
+/// A clip outranks the rest: a wire that went over full scale stays red until
+/// somebody acknowledges it, whatever it is doing now, because the one thing a
+/// meter nobody is watching has to survive is the peak it was not watching for.
+///
+/// Everything else bright is one colour, [`LEVEL`], the green the rack's meters
+/// draw their level bars in. An expanded track has always worn it: there the
+/// colour says "the meter is out" and the bar beside it says how much. A
+/// collapsed meter joins it at or above the rack's meter gate, because signal
+/// coming through this wire right now is worth knowing on a canvas of stubs
+/// nobody has opened — and it is worth knowing *in the meter's own colour*, so
+/// that an operator who has seen a green bar on an opened track reads a green
+/// stub the same way, with nothing new to learn. Borrowing the stub a colour of
+/// its own would have made the rack say one thing two ways.
+///
+/// Strictly below the gate, the stub keeps the plain wire colour it has always
+/// worn, so a rack at rest is as quiet as it looks. The live bar's level is the
+/// one compared, not the held peak: the gate asks what is passing now, and a
+/// peak the release long since walked down would keep a wire bright for a second
+/// after the sound stopped.
+///
+/// A wire the operator left open sits between the clip and the level, in amber.
+/// It is not a report about the audio — nothing is coming through, so the gate
+/// has nothing to say about it — it is a control someone moved, and amber is
+/// what this rack already wears for that: [`nice_common::knob::AMBER`] is the
+/// colour a knob takes on once it is off its default, and the rack's knobs
+/// define the colour by being touched, not by being loud. Reading a stub amber
+/// therefore costs the operator nothing new, and it outranks green because a
+/// silent stub that is silent *by hand* must not be mistaken for one that is
+/// silent because nothing is playing. The clip still outranks the break: a wire
+/// broken after it clipped has both to report, and the peak nobody has read yet
+/// is the one that cannot be allowed to disappear under a colour the operator
+/// chose themselves.
+fn stub_color(stub: Option<&WireMeter>, gate_db: f32, wire: Color) -> Color {
+    if stub.is_some_and(|meter| meter.peak.clipping()) {
+        nice_common::knob::RED
+    } else if stub.is_some_and(|meter| meter.open_circuit) {
+        nice_common::knob::AMBER
+    } else if stub.is_some_and(|meter| meter.open || meter.peak.level_db() >= gate_db) {
+        LEVEL
+    } else {
+        wire
     }
 }
 /// Put a meter on every wire the rack carries, keyed the way the engine keys
@@ -195,15 +393,22 @@ fn new_wire_meter(gain_db: f32, time: u64) -> WireMeter {
 /// with no meter behind it has nothing to colour itself with and reads green
 /// through any amount of clipping.
 ///
+/// A meter is also born knowing whether its wire is an open circuit, for the
+/// same reason the trim is read from the rack and not from the engine: on a
+/// resumed rack the audio has not run yet, so the slot table holds no key, and
+/// a stub that asked the engine would draw one frame of unbroken wire before
+/// the tick pass re-stated the break.
+///
 /// An entry that is already there is left exactly where the operator left it
-/// — the trim they set, whether the track is expanded, and a clip they have
-/// not acknowledged — so this is called every frame and changes nothing
-/// except for the wires that are new.
+/// — the trim they set, whether the track is expanded, whether the wire is
+/// broken, and a clip they have not acknowledged — so this is called every
+/// frame and changes nothing except for the wires that are new.
 fn watch_wires(
     meters: &mut std::collections::BTreeMap<(u64, bool), WireMeter>,
     ids: impl IntoIterator<Item = u64>,
     mut remembered: impl FnMut(u64, bool) -> Option<f32>,
     mut gain_of: impl FnMut(u64) -> Option<f32>,
+    mut open_of: impl FnMut(u64, bool) -> bool,
     time: u64,
 ) {
     for id in ids {
@@ -213,7 +418,13 @@ fn watch_wires(
                 continue;
             }
             let gain_db = remembered_trim(remembered(id, side), gain_of(id << 1 | u64::from(side)));
-            meters.insert(key, new_wire_meter(gain_db, time));
+            meters.insert(
+                key,
+                WireMeter {
+                    open_circuit: open_of(id, side),
+                    ..new_wire_meter(gain_db, time)
+                },
+            );
         }
     }
 }
@@ -483,6 +694,7 @@ pub fn run(
         settings: None,
         settings_page: false,
         pressed: false,
+        pressed_right: false,
         drag: None,
         scroll: 0.0,
         drops: VecDeque::new(),
@@ -571,6 +783,56 @@ impl RackUi {
             .wires
             .set_gain(id << 1 | u64::from(side), 10f32.powf(gain_db / 20.0));
     }
+    /// Open or close one wire, written to the same three places a trim is
+    /// written to: the rack's meter, which draws the amber stub and the gap in
+    /// the wire; the rack's record, which is what a resumed rack opens with; and
+    /// the engine's slot table, which is what actually stops the audio. The
+    /// meter may be missing — a wire whose card has left the canvas keeps its
+    /// entry, so in practice it is there — but nothing here depends on it, for
+    /// the same reason `set_trim` does not.
+    ///
+    /// A break is not a trim at zero: the meter on the source side of the break
+    /// keeps measuring what arrives at it, so a card that is switched off still
+    /// reads as alive, which is the whole difference between a wire that is
+    /// unplugged and an amplifier that is turned down.
+    fn set_open_circuit(&mut self, id: u64, side: bool, open: bool) {
+        if let Some(wire) = self.wire_meters.get_mut(&(id, side)) {
+            wire.open_circuit = open;
+        }
+        self.runtime.set_open_circuit(id, side, open);
+        self.runtime.wires.set_open(id << 1 | u64::from(side), open);
+    }
+    /// Whether the switch on one wire stands open. The meter is asked rather
+    /// than the record, because the meter is what the gap and the amber stub are
+    /// drawn from: the two have to agree on the same frame, and a wire on the
+    /// canvas has had its meter since the frame its card appeared.
+    fn wire_open(&self, id: u64, side: bool) -> bool {
+        self.wire_meters
+            .get(&(id, side))
+            .is_some_and(|wire| wire.open_circuit)
+    }
+    /// The right button's whole job: flip one wire and say so on the rack's
+    /// message line. Every way of pointing at a wire ends here — the long
+    /// connector between two meters, a card's own short run, the head feed from
+    /// `IN`, the run into `OUT`, the stub box — so they cannot answer with
+    /// different words, or worse, different states.
+    fn toggle_wire(&mut self, id: u64, side: bool) {
+        let open = !self.wire_open(id, side);
+        self.set_open_circuit(id, side, open);
+        // Named by the card it hangs on, since that is what an operator is
+        // looking at when they reach for a wire. A card that has just been
+        // removed leaves the line alone: there is nothing left to point at.
+        let Some(card) = self.runtime.cards.iter().find(|card| card.id.0 == id) else {
+            return;
+        };
+        let name = short(&card.name, 20);
+        let side = if side { "output" } else { "input" };
+        self.runtime.message = if open {
+            format!("{name} {side} wire is open — nothing passes it")
+        } else {
+            format!("{name} {side} wire is closed again")
+        };
+    }
     /// Whether the meter at `pos` is red. Every wire the rack carries has a
     /// meter from the frame its card appeared, so a stub that has never been
     /// clicked can be red here and owes an acknowledgement like any other;
@@ -653,6 +915,7 @@ impl Process for RackUi {
             self.runtime.cards.iter().map(|card| card.id.0),
             |id, side| self.runtime.trim(id, side),
             |key| self.runtime.wires.gain_of(key),
+            |id, side| self.runtime.open_circuit(id, side),
             now(),
         );
         let (w, h) = ctx.size();
@@ -698,6 +961,19 @@ impl Process for RackUi {
         // never also selects or drags something underneath the field.
         let editor_open = self.gain_edit.is_some() && self.overlay.is_none();
         let clicked = press && self.overlay.is_none() && !editor_open;
+        // The right button is the rack's other hand, and it is tracked on its
+        // own so that breaking a wire neither selects a card nor disturbs a
+        // drag in progress: left-drag still moves cards and still nothing else,
+        // and a right-click beside a card being dragged breaks nothing. While a
+        // plugin's window covers the rack, or the dB editor is taking the
+        // keyboard, the button does nothing at all.
+        let right_down = ctx.mouse_button_down(frost::MouseButton::Right);
+        let broke = right_down
+            && !self.pressed_right
+            && self.overlay.is_none()
+            && !editor_open
+            && self.choosing.is_none();
+        self.pressed_right = right_down;
         if self.settings_page {
             let saved = Settings::load().0;
             let panel = self.settings.get_or_insert_with(|| {
@@ -732,12 +1008,32 @@ impl Process for RackUi {
                 .audio_running()
                 .then_some(self.runtime.applied.period_size)
                 .flatten();
+            // One rack preference rides below the audio block: the level a
+            // minimised meter has to reach before it is drawn in colour. Its
+            // options are labelled with the numbers they stand for, because
+            // the page titles the default row with the raw it is the default
+            // for — a unit written into an option would be painted over on
+            // that one row. The unit belongs to the label instead.
+            let gate = self.runtime.meter_gate();
+            let extras = vec![nice_common::ui::ExtraRow {
+                label: "Meter gate (dB)".into(),
+                options: crate::METER_GATES
+                    .iter()
+                    .map(|db| {
+                        let text = crate::meter_gate_text(*db);
+                        (text.clone(), text)
+                    })
+                    .collect(),
+                default: crate::meter_gate_text(crate::METER_GATE_DEFAULT_DB),
+                current: (gate != crate::METER_GATE_DEFAULT_DB)
+                    .then(|| crate::meter_gate_text(gate)),
+            }];
             let runtime = &mut self.runtime;
             let event = panel.process(
                 ctx,
                 &self.font,
                 clicked,
-                Vec::new(),
+                extras,
                 Some(nice_common::WindowGeom {
                     x: None,
                     y: None,
@@ -747,6 +1043,19 @@ impl Process for RackUi {
                 !runtime.busy(),
                 |settings| runtime.apply(settings),
             );
+            // The gate is the only extra on this page, so the row it reports
+            // an index for is that one. A pick of the default arrives as no
+            // value at all — the page keeps a setting at its default unspoken
+            // — and that is how a rack picked up at -12 finds its way back to
+            // -60. Anything unparseable is refused by the runtime, which
+            // leaves the gate exactly where it was.
+            if let Some(Event::ExtraPicked(0, raw)) = &event {
+                let gate = raw
+                    .as_deref()
+                    .and_then(|text| text.parse::<f32>().ok())
+                    .unwrap_or(crate::METER_GATE_DEFAULT_DB);
+                self.runtime.set_meter_gate(gate);
+            }
             if matches!(event, Some(Event::Back | Event::Applied)) {
                 self.settings_page = false;
                 self.settings = None;
@@ -899,17 +1208,47 @@ impl Process for RackUi {
             0.2,
         );
         let wire = rgb(107, 114, 128);
+        // One gate for the whole rack, read once a frame: every stub box on
+        // every wire is measured against the same number.
+        let gate = self.runtime.meter_gate();
+        // The rack's own `OUT` jack: the column its label stands in, and the
+        // column the wire running into it stops at. Worked out before any of the
+        // wiring, because that run is not the jack's wire — it is the last card's
+        // output, and a click on it has to reach that card's output meter and the
+        // switch on that wire. An empty rack has the jack on its own, with no
+        // wire on it to break.
+        let out_x = layout
+            .slots
+            .last()
+            .map_or(layout.left + 130.0, |slot| junction_x(slot.x, true) + 60.0);
+        let out_wire = out_x - 25.0;
+        // The wire arrives from the rack's `IN` jack. Neither jack is a break
+        // target in itself: a master meter has no stub box, and the engine gives
+        // a node that is not a plugin no wire slot at all. But the two wires that
+        // lead to them are, and each belongs to the card it touches — the head
+        // feed to the first card's input, the run to `OUT` to the last card's
+        // output.
         let mut previous_x = layout.left + 25.0;
-        for group in &groups {
+        // The last stage that stood on its own, with its column: that card's
+        // output owns the run into `OUT`, and by the time the run is drawn the
+        // cards are out of scope. A last stage in parallel has no such card, and
+        // its run to the jack belongs to the stage as a whole.
+        let mut tail: Option<(u64, f32)> = None;
+        for (index, group) in groups.iter().enumerate() {
             let stage_slots = layout
                 .slots
                 .iter()
                 .filter(|slot| group.contains(&slot.id))
                 .collect::<Vec<_>>();
             let x = stage_slots[0].x;
-            let split = x - CARD_WIDTH / 2.0 - 12.0;
-            let merge = x + CARD_WIDTH / 2.0 + 12.0;
-            ctx.line(previous_x, layout.flow, split, layout.flow, wire, 2.0, 0.1);
+            let shared = group.len() > 1;
+            let last = index + 1 == groups.len();
+            // Whether the wire arriving here comes out of an earlier stage rather
+            // than out of the rack's `IN` jack, which decides whether the left end
+            // of this stage's input is a column somebody else's wire ends in.
+            let fed = index > 0;
+            let split = junction_x(x, false);
+            let merge = junction_x(x, true);
             let low = stage_slots
                 .iter()
                 .map(|slot| slot.y)
@@ -920,7 +1259,27 @@ impl Process for RackUi {
                 .map(|slot| slot.y)
                 .fold(layout.flow, f32::max)
                 .min(layout.top);
-            if group.len() > 1 {
+            // The trunk, up to the column this stage splits at, at the height
+            // signals flow at. A stage on its own sits on that very line, so its
+            // trunk is the connector an operator sees running between two meters,
+            // and it is that card's input: an open switch cuts it short of the
+            // stub box like any other wire. In a parallel stage the signals of
+            // every card in it pass down into the risers it feeds, so the trunk
+            // is the stage's and stays whole — like the risers themselves, which
+            // are nobody's to break.
+            //
+            // Drawn on the flow line wherever it is, and not only where a card is
+            // visible: a rack scrolled along its wiring still shows it running
+            // past the edge.
+            let feed_open = !shared && self.wire_open(stage_slots[0].id.0, false);
+            wire_segment(
+                ctx,
+                previous_x,
+                wire_end(split, wire_box_x(x, false), feed_open),
+                layout.flow,
+                wire,
+            );
+            if shared {
                 ctx.line(split, low, split, high, wire, 2.0, 0.1);
                 ctx.line(merge, low, merge, high, wire, 2.0, 0.1);
                 ctx.text(
@@ -934,69 +1293,101 @@ impl Process for RackUi {
                     0.22,
                 );
             }
-            for slot in stage_slots {
-                if visible(slot, layout.top, layout.bottom, w) {
-                    ctx.line(split, slot.y, x - CARD_WIDTH / 2.0, slot.y, wire, 2.0, 0.1);
-                    ctx.line(x + CARD_WIDTH / 2.0, slot.y, merge, slot.y, wire, 2.0, 0.1);
-                    for side in [false, true] {
-                        let bx = wire_box_x(x, side);
-                        let key = (slot.id.0, side);
-                        if clicked && self.choosing.is_none() && hit(mouse, bx, slot.y, 4.0, 6.0) {
-                            // Toggle. The meter has been running since the
-                            // card appeared, so this only folds the track
-                            // away or brings it back and the peak-hold runs
-                            // straight through the collapse. The insert arm
-                            // is a fallback so a click can never be
-                            // swallowed, not the normal way in — but it asks
-                            // the same question `watch_wires` asks, so a meter
-                            // born here opens at the saved trim too.
-                            let meter = self.wire_meters.entry(key).or_insert_with(|| {
-                                let key = slot.id.0 << 1 | u64::from(side);
-                                let gain_db = remembered_trim(
-                                    self.runtime.trim(slot.id.0, side),
-                                    self.runtime.wires.gain_of(key),
-                                );
-                                new_wire_meter(gain_db, now())
-                            });
-                            meter.open = !meter.open;
-                            // A click on the meter body is also the rack's
-                            // "yes, I saw it": a red meter here, and every
-                            // meter the clipped signal reached after it, go
-                            // back to their resting colours.
-                            self.acknowledge_clip(MeterPos::Wire(slot.id.0, side));
-                        }
-                        // The stub says "meter on this wire" in green while
-                        // the track is expanded, and in red when that meter
-                        // reads above full scale — the whole meter carries the
-                        // clip, stub included.
-                        let stub = self.wire_meters.get(&key);
-                        let stub_color = if stub.is_some_and(|meter| meter.peak.clipping()) {
-                            nice_common::knob::RED
-                        } else if stub.is_some_and(|meter| meter.open) {
-                            rgb(103, 237, 175)
-                        } else {
-                            wire
-                        };
-                        ctx.rectangle(bx, slot.y, 4.0, 6.0, stub_color, 0.25);
+            for slot in &stage_slots {
+                if !visible(slot, layout.top, layout.bottom, w) {
+                    continue;
+                }
+                for side in [false, true] {
+                    let bx = wire_box_x(x, side);
+                    let key = (slot.id.0, side);
+                    let open = self.wire_open(slot.id.0, side);
+                    // The whole stretch this side owns, narrowed to what a click
+                    // on it may claim; see [`wire_click`]. The wire is still drawn
+                    // in full, so an open one stays as easy to close as it was to
+                    // open.
+                    let (from, to) = wire_click(
+                        x,
+                        side,
+                        shared,
+                        fed,
+                        previous_x,
+                        if last { out_wire } else { merge },
+                    );
+                    if broke && wire_hit(mouse, from, to, slot.y, bx) {
+                        // The wire as a whole is the target, not just its box:
+                        // the run between two meters is long, and an operator
+                        // points at it rather than at a terminal on it. Breaking
+                        // is the right hand's only job, so it takes no card and
+                        // starts no drag, and it leaves an expanded meter
+                        // expanded — a meter that is open can still be broken.
+                        self.toggle_wire(slot.id.0, side);
                     }
+                    if clicked
+                        && self.choosing.is_none()
+                        && hit(mouse, bx, slot.y, STUB_HALF, STUB_TALL)
+                    {
+                        // Toggle. The meter has been running since the
+                        // card appeared, so this only folds the track
+                        // away or brings it back and the peak-hold runs
+                        // straight through the collapse. The insert arm
+                        // is a fallback so a click can never be
+                        // swallowed, not the normal way in — but it asks
+                        // the same question `watch_wires` asks, so a meter
+                        // born here opens at the saved trim, and on a wire
+                        // remembered open.
+                        let meter = self.wire_meters.entry(key).or_insert_with(|| {
+                            let key = slot.id.0 << 1 | u64::from(side);
+                            let gain_db = remembered_trim(
+                                self.runtime.trim(slot.id.0, side),
+                                self.runtime.wires.gain_of(key),
+                            );
+                            WireMeter {
+                                open_circuit: self.runtime.open_circuit(slot.id.0, side),
+                                ..new_wire_meter(gain_db, now())
+                            }
+                        });
+                        meter.open = !meter.open;
+                        // A click on the meter body is also the rack's
+                        // "yes, I saw it": a red meter here, and every
+                        // meter the clipped signal reached after it, go
+                        // back to their resting colours.
+                        self.acknowledge_clip(MeterPos::Wire(slot.id.0, side));
+                    }
+                    // This card's own row: in from the column its stage shares to
+                    // the card's edge, and out from the edge to that column again.
+                    // These are the short pieces a parallel stage leaves to each
+                    // of the cards in it; what an operator sees as one long
+                    // connector between two meters is the trunk above, which runs
+                    // on the flow line — the very row a solo card sits on.
+                    let (inner, outer) = if side {
+                        (x + CARD_WIDTH / 2.0, merge)
+                    } else {
+                        (split, x - CARD_WIDTH / 2.0)
+                    };
+                    wire_segment(ctx, inner, wire_end(outer, bx, open), slot.y, wire);
+                    // The stub box is the whole of a minimised meter's
+                    // face, so it carries everything the rack knows about
+                    // the wire: red for a clip nobody has acknowledged, amber
+                    // for a circuit somebody has opened, the meter's own level
+                    // green for a track that is expanded or is carrying signal
+                    // over the gate, and the plain wire colour while nothing is
+                    // passing.
+                    let stub_color = stub_color(self.wire_meters.get(&key), gate, wire);
+                    ctx.rectangle(bx, slot.y, STUB_HALF, STUB_TALL, stub_color, 0.25);
                 }
             }
             previous_x = merge;
+            tail = (!shared).then(|| (stage_slots[0].id.0, x));
         }
-        let out_x = if groups.is_empty() {
-            layout.left + 130.0
-        } else {
-            previous_x + 60.0
-        };
-        ctx.line(
-            previous_x,
-            layout.flow,
-            out_x - 25.0,
-            layout.flow,
-            wire,
-            2.0,
-            0.1,
-        );
+        // The run from the last stage into the jack, drawn past the loop so it
+        // keeps running when the card it belongs to has scrolled away — and cut
+        // like any other wire, by the switch on the output of that last card
+        // standing on its own. Where the last stage is a parallel one there is no
+        // such card, and the run into `OUT` is the stage's: whole.
+        let tail_end = tail.map_or(out_wire, |(id, x)| {
+            wire_end(out_wire, wire_box_x(x, true), self.wire_open(id, true))
+        });
+        wire_segment(ctx, previous_x, tail_end, layout.flow, wire);
         ctx.text(
             out_x,
             layout.flow,
@@ -1313,6 +1704,11 @@ impl Process for RackUi {
             self.runtime
                 .wires
                 .set_gain(key, 10f32.powf(wire.gain_db / 20.0));
+            // And the switch, for the same reason: a wire registered while audio
+            // was stopped comes back closed, and a rack that was saved with a
+            // cable out of it has to go quiet again where it was quiet, whether
+            // or not the engine happened to be running when it was switched.
+            self.runtime.wires.set_open(key, wire.open_circuit);
             let (rms, peak) = self.runtime.wires.sample(key).unwrap_or((0.0, 0.0));
             wire.peak.tick(db(rms), db(peak), time);
         }
@@ -1495,7 +1891,7 @@ impl Process for RackUi {
                     && self.gain_edit.is_none()
                     && let Some([_, my]) = mouse
                     && hit(mouse, bx, slot.y, 4.5, TRACK_HALF)
-                    && !hit(mouse, bx, slot.y, 4.0, 6.0)
+                    && !hit(mouse, bx, slot.y, STUB_HALF, STUB_TALL)
                 {
                     // Grabbing the track turns the meter into the gain
                     // slider: the grab records the pointer height so the
@@ -1542,11 +1938,7 @@ impl Process for RackUi {
                         slot.y - 56.0 + 56.0 * t,
                         3.0,
                         56.0 * t,
-                        if clip {
-                            nice_common::knob::RED
-                        } else {
-                            rgb(103, 237, 175)
-                        },
+                        if clip { nice_common::knob::RED } else { LEVEL },
                         0.3,
                     );
                 }
@@ -1593,22 +1985,12 @@ impl Process for RackUi {
         }
         let fit = (w / 1000.0).clamp(0.45, 1.0);
         let y = -h / 2.0 + 58.0;
-        let over_input = self.input.draw(
-            ctx,
-            &self.font,
-            [-w / 4.0, y],
-            w * 0.20,
-            fit,
-            rgb(103, 237, 175),
-        );
-        let over_output = self.output.draw(
-            ctx,
-            &self.font,
-            [w / 4.0, y],
-            w * 0.20,
-            fit,
-            rgb(103, 237, 175),
-        );
+        let over_input = self
+            .input
+            .draw(ctx, &self.font, [-w / 4.0, y], w * 0.20, fit, LEVEL);
+        let over_output = self
+            .output
+            .draw(ctx, &self.font, [w / 4.0, y], w * 0.20, fit, LEVEL);
         // The two master meters take part in the same acknowledgement rule as
         // the wire meters: the input one is upstream of every card, so
         // acknowledging it clears the rack end to end, and the output one is
@@ -2037,11 +2419,13 @@ mod tests {
             peak: PeakMeter::new(0),
             gain_db: -6.5,
             open: true,
+            open_circuit: false,
         };
         let collapsed = WireMeter {
             peak: PeakMeter::new(0),
             gain_db: -6.5,
             open: false,
+            open_circuit: false,
         };
         // The engine's copy is deliberately wrong here: where a meter
         // exists, the meter is what the rack reads and re-states.
@@ -2059,6 +2443,69 @@ mod tests {
     }
     fn covers(from: MeterPos) -> Vec<MeterPos> {
         acknowledged(from, &rack())
+    }
+    /// Where a stage's card stands, in the same units as [`wire_targets`]: the
+    /// rack's own inset from `left`, plus 224 px for every stage to its left.
+    fn card_x(index: usize) -> f32 {
+        -158.0 + 183.0 + index as f32 * 224.0
+    }
+    /// One side of one card's wiring, as the operator can aim at it.
+    struct Click {
+        card: usize,
+        /// The card's own centre, so a test can find its stub box.
+        x: f32,
+        side: bool,
+        y: f32,
+        from: f32,
+        to: f32,
+    }
+    /// Every click target in a rack laid out the way the draw pass lays one
+    /// out, the cards numbered in the order the pass walks them. `stages` is how
+    /// many cards stand in each stage, from left to right. The geometry is the
+    /// rack's: a stage on its own sits on the line signals flow at, and a stage
+    /// holding several cards hangs them a row apart, centred on that line.
+    fn wire_targets(stages: &[usize]) -> Vec<Click> {
+        let flow = 0.0;
+        let row_step = 128.0;
+        let out_wire = junction_x(card_x(stages.len() - 1), true) + 60.0 - 25.0;
+        let mut targets = Vec::new();
+        let mut previous_x = -158.0 + 25.0;
+        let mut card = 0;
+        for (index, count) in stages.iter().enumerate() {
+            let x = card_x(index);
+            let shared = *count > 1;
+            let last = index + 1 == stages.len();
+            let fed = index > 0;
+            let merge = junction_x(x, true);
+            for row in 0..*count {
+                let y = if shared {
+                    flow + (row as f32 - (*count as f32 - 1.0) / 2.0) * row_step
+                } else {
+                    flow
+                };
+                for side in [false, true] {
+                    let (from, to) = wire_click(
+                        x,
+                        side,
+                        shared,
+                        fed,
+                        previous_x,
+                        if last { out_wire } else { merge },
+                    );
+                    targets.push(Click {
+                        card,
+                        x,
+                        side,
+                        y,
+                        from,
+                        to,
+                    });
+                }
+                card += 1;
+            }
+            previous_x = merge;
+        }
+        targets
     }
     #[test]
     fn a_clip_reports_itself_and_everything_the_signal_reaches_after() {
@@ -2170,6 +2617,7 @@ mod tests {
             peak,
             gain_db: 0.0,
             open: false,
+            open_circuit: false,
         };
         assert!(
             corner_reading(Some(&collapsed), None).1,
@@ -2191,7 +2639,7 @@ mod tests {
         // its own; opening a track is the operator's, and the two are not
         // the same act.
         let mut meters: BTreeMap<(u64, bool), WireMeter> = BTreeMap::new();
-        watch_wires(&mut meters, [1, 3], |_, _| None, |_| None, 0);
+        watch_wires(&mut meters, [1, 3], |_, _| None, |_| None, |_, _| false, 0);
         let keys: Vec<(u64, bool)> = meters.keys().copied().collect();
         assert_eq!(keys, vec![(1, false), (1, true), (3, false), (3, true)]);
         for wire in meters.values() {
@@ -2211,6 +2659,7 @@ mod tests {
             [4],
             |_, _| None,
             |key| (key == 9).then_some(0.5),
+            |_, _| false,
             0,
         );
         assert_eq!(meters[&(4, false)].gain_db, 0.0, "an untrimmed wire");
@@ -2236,6 +2685,7 @@ mod tests {
             [7, 8],
             |id, side| (id == 7 && !side).then_some(-9.0),
             |key| (key == (7 << 1 | 1) || key == (8 << 1)).then_some(0.25),
+            |_, _| false,
             0,
         );
         assert!(
@@ -2265,12 +2715,19 @@ mod tests {
         // operator set, the track they left open and a clip they have not
         // acknowledged are all theirs, not this pass's to reset.
         let mut meters: BTreeMap<(u64, bool), WireMeter> = BTreeMap::new();
-        watch_wires(&mut meters, [2], |_, _| None, |_| None, 0);
+        watch_wires(&mut meters, [2], |_, _| None, |_| None, |_, _| false, 0);
         let wire = meters.get_mut(&(2, true)).unwrap();
         wire.open = true;
         wire.gain_db = -12.0;
         wire.peak.tick(-18.0, 1.4, 16);
-        watch_wires(&mut meters, [2], |_, _| Some(4.0), |_| None, 1_000);
+        watch_wires(
+            &mut meters,
+            [2],
+            |_, _| Some(4.0),
+            |_| None,
+            |_, _| false,
+            1_000,
+        );
         let wire = &meters[&(2, true)];
         assert!(wire.open, "still expanded");
         assert_eq!(wire.gain_db, -12.0, "still the operator's trim");
@@ -2284,7 +2741,7 @@ mod tests {
         // start, and it is the latching kind, so the red it earns in the
         // dark is still on the stub when the operator finally looks.
         let mut meters: BTreeMap<(u64, bool), WireMeter> = BTreeMap::new();
-        watch_wires(&mut meters, [6], |_, _| None, |_| None, 0);
+        watch_wires(&mut meters, [6], |_, _| None, |_| None, |_, _| false, 0);
         let wire = meters.get_mut(&(6, false)).unwrap();
         wire.peak.tick(-18.0, 1.4, 16);
         for t in (16..4_000).step_by(16) {
@@ -2298,6 +2755,278 @@ mod tests {
         assert!(
             !wire.peak.clipping(),
             "and one click of that stub clears it"
+        );
+    }
+    #[test]
+    fn a_minimised_meter_colours_itself_against_the_gate() {
+        use std::collections::BTreeMap;
+        let wire = rgb(107, 114, 128);
+        let mut meters: BTreeMap<(u64, bool), WireMeter> = BTreeMap::new();
+        watch_wires(&mut meters, [5], |_, _| None, |_| None, |_, _| false, 0);
+        // Nothing has been played through the rack: a meter that never heard a
+        // sample sits at digital silence, well under any gate on offer, and
+        // the stub is as bare as it was before the gate existed. A wire with
+        // no meter behind it looks exactly the same, which is the point — the
+        // stub's colour means "signal", not "meter".
+        let quiet = meters.get(&(5, false)).unwrap();
+        assert_eq!(stub_color(Some(quiet), -60.0, wire), wire);
+        assert_eq!(stub_color(None, -60.0, wire), wire, "meter or none");
+        // Something is coming through the input wire now.
+        let meter = meters.get_mut(&(5, false)).unwrap();
+        for t in (16..=160).step_by(16) {
+            meter.peak.tick(-20.0, -20.0, t);
+        }
+        let loud = meters.get(&(5, false)).unwrap();
+        assert!(loud.peak.level_db() > -21.0, "the bar got there");
+        assert_eq!(
+            stub_color(Some(loud), -60.0, wire),
+            LEVEL,
+            "and the stub says so"
+        );
+        // The same stub, the same signal, a gate moved above it: the number is
+        // doing the work and not the mere fact that a meter exists.
+        assert_eq!(stub_color(Some(loud), -12.0, wire), wire);
+        // At the gate is over it. Silence against a gate of -120 dBFS is the
+        // case where the two are exactly equal, and it reads as signal.
+        let idle = new_wire_meter(0.0, 0);
+        assert_eq!(stub_color(Some(&idle), -120.0, wire), LEVEL);
+        assert_eq!(stub_color(Some(&idle), -119.0, wire), wire);
+        // An expanded track keeps the colour it has always had. The bar beside
+        // it already says how much is coming through; the stub's job there is
+        // to say the track is open. The gate goes above the signal so that the
+        // only thing left that could brighten this stub is the open flag.
+        let meter = meters.get_mut(&(5, false)).unwrap();
+        meter.open = true;
+        assert_eq!(
+            stub_color(meters.get(&(5, false)), -12.0, wire),
+            LEVEL,
+            "green for open, under the gate"
+        );
+        // A clip outranks both. It was latched while the meter was loud, and
+        // the red has to survive the long way down through the gate and past
+        // it — that fall is exactly the interval in which a plain level rule
+        // would have quietly painted the stub grey again.
+        let meter = meters.get_mut(&(5, false)).unwrap();
+        meter.peak.tick(-20.0, 1.4, 200);
+        for t in (216..4_000).step_by(16) {
+            meter.peak.tick(-120.0, -120.0, t);
+        }
+        let burnt = meters.get_mut(&(5, false)).unwrap();
+        assert!(burnt.peak.clipping() && burnt.peak.level_db() < -60.0);
+        assert_eq!(
+            stub_color(Some(burnt), -60.0, wire),
+            nice_common::knob::RED,
+            "red while the bar is well under the gate"
+        );
+        burnt.peak.clear_clip();
+        assert_eq!(
+            stub_color(Some(burnt), -60.0, wire),
+            LEVEL,
+            "and the track it was drawn on is still open"
+        );
+        // Close it and the red is gone, not remembered: the clip was the only
+        // thing holding the stub bright and it has drained far below the gate.
+        burnt.open = false;
+        assert_eq!(
+            stub_color(Some(burnt), -60.0, wire),
+            wire,
+            "red retired with the clip"
+        );
+    }
+    #[test]
+    fn a_meter_is_born_knowing_its_wire_is_open() {
+        use std::collections::BTreeMap;
+        let mut meters: BTreeMap<(u64, bool), WireMeter> = BTreeMap::new();
+        // A rack resumed with a cable left open has heard no audio yet, so the
+        // engine's slot table holds no key at all. What the file remembered is
+        // the only place a stub can learn it is an open circuit, and a meter
+        // that had to wait for the first sample would draw one frame of whole
+        // wire before the tick pass re-stated the break.
+        watch_wires(
+            &mut meters,
+            [5],
+            |_, _| None,
+            |_| None,
+            |id, side| id == 5 && !side,
+            0,
+        );
+        assert!(meters.get(&(5, false)).unwrap().open_circuit);
+        assert!(
+            !meters.get(&(5, true)).unwrap().open_circuit,
+            "and the wire nobody broke is whole"
+        );
+        // Called again the next frame — as it is, every frame — this leaves
+        // what is already there alone. `open_of` reports what was *remembered*;
+        // since the first frame the operator may have closed the wire, and the
+        // rack's own state is the live one.
+        meters.get_mut(&(5, false)).unwrap().open_circuit = false;
+        watch_wires(
+            &mut meters,
+            [5],
+            |_, _| None,
+            |_| None,
+            |id, side| id == 5 && !side,
+            16,
+        );
+        assert!(
+            !meters.get(&(5, false)).unwrap().open_circuit,
+            "a birth reading does not overrule the operator"
+        );
+    }
+    #[test]
+    fn a_wire_left_open_wears_amber_and_a_clip_outranks_it() {
+        use std::collections::BTreeMap;
+        let wire = rgb(107, 114, 128);
+        let mut meters: BTreeMap<(u64, bool), WireMeter> = BTreeMap::new();
+        watch_wires(&mut meters, [5], |_, _| None, |_| None, |_, side| !side, 0);
+        // Grey is what a wire that is passing nothing has always looked like, so
+        // it cannot also mean "someone opened this circuit on purpose" — the
+        // operator would have no way to tell a break from a rack at rest.
+        let broken = meters.get(&(5, false)).unwrap();
+        assert_eq!(
+            stub_color(Some(broken), -60.0, wire),
+            nice_common::knob::AMBER
+        );
+        assert_eq!(
+            stub_color(meters.get(&(5, true)), -60.0, wire),
+            wire,
+            "the wire still closed next door keeps the plain wire colour"
+        );
+        // Amber outranks green: an expanded track whose wire is open must not
+        // read as merely idle, and the gate is set above anything this meter has
+        // heard so that the open flag is the only rung left to decide it.
+        let meter = meters.get_mut(&(5, false)).unwrap();
+        meter.open = true;
+        assert_eq!(
+            stub_color(meters.get(&(5, false)), -12.0, wire),
+            nice_common::knob::AMBER,
+            "open by hand, not by volume"
+        );
+        // A clip outranks amber. The break is a colour the operator chose and
+        // can look up again in a second; the peak nobody has acknowledged yet is
+        // the one that must not disappear underneath it.
+        let meter = meters.get_mut(&(5, false)).unwrap();
+        meter.peak.tick(-20.0, 1.4, 200);
+        for t in (216..4_000).step_by(16) {
+            meter.peak.tick(-120.0, -120.0, t);
+        }
+        let burnt = meters.get_mut(&(5, false)).unwrap();
+        assert!(burnt.open_circuit && burnt.peak.clipping());
+        assert_eq!(stub_color(Some(burnt), -60.0, wire), nice_common::knob::RED);
+        burnt.peak.clear_clip();
+        assert_eq!(
+            stub_color(Some(burnt), -60.0, wire),
+            nice_common::knob::AMBER,
+            "and the break is still there to be read once the clip has been"
+        );
+    }
+    #[test]
+    fn a_broken_wire_leaves_a_hole_its_own_box_cannot_fill() {
+        // The input wire of a card standing at the origin: the signal arrives
+        // from the left, the stub box sits 6 px inside the card's edge.
+        let to = -CARD_WIDTH / 2.0;
+        let box_x = wire_box_x(0.0, false);
+        assert_eq!(wire_end(to, box_x, false), to, "closed, it runs on anyway");
+        let open = wire_end(to, box_x, true);
+        assert_eq!(open, box_x - STUB_HALF - BREAK_GAP, "cut short of the box");
+        assert!(
+            to - open > 2.0 * STUB_HALF + BREAK_GAP,
+            "the hole is {hole} px for an {} px box, so the mark sits in air and \
+             not on a line",
+            2.0 * STUB_HALF,
+            hole = to - open,
+        );
+        // The cut only ever shortens a stretch. Where a wire stops before it even
+        // reaches its box, breaking it must not draw it further than it was going
+        // — that would hang a piece of wire past a column it never touched.
+        let short = box_x - 20.0;
+        assert!(short < open);
+        assert_eq!(wire_end(short, box_x, true), short);
+        assert!(wire_end(to, box_x, true) <= to);
+    }
+    #[test]
+    fn no_two_wires_ask_for_the_same_click() {
+        for stages in [
+            &[1usize][..],
+            &[1, 1],
+            &[1, 1, 1],
+            &[2, 1],
+            &[1, 2],
+            &[1, 2, 1],
+            &[2, 2],
+        ] {
+            let targets = wire_targets(stages);
+            for (index, wire) in targets.iter().enumerate() {
+                let Click {
+                    card,
+                    x,
+                    side,
+                    from,
+                    to,
+                    ..
+                } = *wire;
+                // A target at least as wide as its own box, so a switch is
+                // never reachable only by the two pixels beside it.
+                assert!(
+                    to - from >= 2.0 * STUB_HALF,
+                    "card {card} {side} in {stages:?} has only {} px of wire to aim at",
+                    to - from,
+                );
+                // The box stands inside its own stretch. The box is a target in
+                // its own right too, so this is what guarantees an open wire
+                // stays as easy to close as it was to open even where the break
+                // swallows the line drawn beside it.
+                let box_x = wire_box_x(x, side);
+                assert!(
+                    from <= box_x && box_x <= to,
+                    "card {card} {side} in {stages:?} cannot be reached at its own box",
+                );
+                for other in &targets[index + 1..] {
+                    let same_row = (wire.y - other.y).abs() <= 2.0 * BREAK_HALF;
+                    let overlaps = from <= other.to && other.from <= to;
+                    assert!(
+                        !(same_row && overlaps),
+                        "{stages:?}: card {card} {side} [{from}..={to}] and card \
+                         {} {} [{:?}..={:?}] both claim the same touch",
+                        other.card,
+                        other.side,
+                        other.from,
+                        other.to,
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn a_parallel_stages_columns_and_spine_belong_to_no_card() {
+        // `in → [a] → [b ∥ c] → [d] → out`, with the middle stage shared.
+        let stages = [1usize, 2, 1];
+        let targets = wire_targets(&stages);
+        let claimed = |column: f32| targets.iter().any(|t| t.from <= column && column <= t.to);
+        let split = junction_x(card_x(1), false);
+        let merge = junction_x(card_x(1), true);
+        // The risers stand in these two columns and carry every card in the
+        // stage, so neither column may be a wire's: a click aimed at the vertical
+        // connection has to open nothing rather than guess which card meant.
+        assert!(!claimed(split), "the split column is claimed");
+        assert!(!claimed(merge), "the merge column is claimed");
+        // The spine feeding them is the same matter one level up: that trunk
+        // carries the signal that is about to be shared out, and breaking it
+        // would be breaking both cards at once.
+        let head = junction_x(card_x(0), true);
+        assert!(
+            !claimed((head + split) / 2.0),
+            "the shared spine is claimed"
+        );
+        // A card's own short run beside its stub box is still its own.
+        let meter = wire_box_x(card_x(1), false);
+        assert!(claimed(meter), "a parallel card cannot reach its own box");
+        // And the trunk that leaves the merge is one wire again — the merged
+        // signal going into one card — so it is that card's input to break.
+        let on = junction_x(card_x(2), false);
+        assert!(
+            claimed((merge + on) / 2.0),
+            "the run out of a merge is nobody's"
         );
     }
 }
