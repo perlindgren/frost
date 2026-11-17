@@ -493,3 +493,66 @@ exists: build two themes whose roles are all distinct numbers and assert that a
 widget asked for the role it used, which no amount of per-file `rgb` can be made
 to answer. Nothing here needs a dependency — a palette is a struct of `Color`,
 and `Color` is already one of ours.
+
+## A switch for the card, beside the switch for the cable
+
+**The possibility.** Give every card the control its cable just got: one click
+that takes the plugin out of the path and puts the dry signal back where the wet
+was, remembered in the rack file beside the trims and the breaks. The engine has
+been able to do this since the beginning; the rack has never had a handle on it.
+
+**Why it matters.**
+
+- The capability is built and unreachable. `ProcessorSlot::bypassed`
+  (`nice-rack-engine/src/audio.rs:60-61`, whose own doc comment says *Fixed for
+  this plan*) makes a node add its dry copy through a `Delay` the length of the
+  plugin's latency (`:523-527`, `:676-678`) instead of running the plugin, so a
+  silent card stays in time with its neighbours rather than arriving early. Every
+  construction site in the workspace passes `false`
+  (`nice-clap-host/src/graph.rs:339`, `nice-clap-host/src/graph/live.rs:308` and
+  `:408`); the only `true` anywhere is a test helper
+  (`nice-rack-engine/tests/audio_graph.rs:44`). The word does not occur in
+  `nice-rack/src` at all.
+- A broken cable already stands in for it, and poorly. Now that a right click
+  opens a wire, the way to hear a card out is to break the cable feeding it —
+  which is right for chasing a fault and wrong for asking whether the change came
+  from the cab or the amp, because the break silences everything downstream too
+  (`:661-668` makes it feed silence to the dry copy deliberately). Two questions
+  want two switches.
+- Latency is the part that cannot be wished away later. The bypass `Delay` is
+  sized at plan build from the flag, so a card planned as live owns a zero-length
+  delay line and its `bypass.add` path degenerates to a plain add (`:117-124`).
+  Flipping a plain `bool` at runtime would therefore drop that card's latency out
+  of the graph and move every other card relative to it — the exact thing the
+  plan-time sizing was there to prevent. The fix is not subtle but it is not
+  free: plan every card with `bypass_latency` equal to its own latency whether it
+  is bypassed or not, and let a live flag choose which path runs. That spends
+  `channels × latency_samples` from the one `SAMPLE_BUDGET` (`:88`, `:109-114`)
+  that the per-edge arrival delays already draw on, so a rack of long-latency
+  plugins gains a second reason to answer `BufferBudgetExceeded` at load.
+
+**What already stands.** Three things this feature needed and found waiting. The
+per-key `AtomicBool` in `WireLevels` is the shape a live bypass wants — a cell
+addressed by wire key, read in the audio thread, written from the GUI, held
+across a rebuild by identity rather than by position. The three writes a break
+takes are already lined up in one place (`RackUi::set_open_circuit`: the meter's
+`open_circuit`, the runtime's remembered set, the engine's slot), and a card
+switch wants the same triple with the id keyed to the card instead of the wire.
+`SavedPlugin` shows how a bool joins the file without a migration:
+`#[serde(default)]` on `open_in`/`open_out` (`nice-rack/src/lib.rs:86-89`). And
+the engine already refuses a bypass it cannot honour,
+`PrepareError::BypassRequiresMatchingChannels` (`:520-522`) — the check a live
+switch has to keep enforcing when a plugin swaps its channel count under it.
+
+**What to build.** Decide the latency answer first, in the engine, and let it be
+visible: build the bypass delay at the card's latency always, and change
+`bypassed` into something the audio thread can read — an `AtomicBool` on the
+slot is the whole mechanism. Then one place to turn it, and that is a real
+question rather than a second flag: the corner box is the only handle a card has,
+and a left click there already means something else. Then a read for a card out
+of circuit, and one `bool` in `SavedPlugin`. The test that matters is the one the
+current code makes impossible: plan a two-card rack, bypass the first while it is
+running, and assert that the second card's output has not moved in time — a claim
+no plan-time flag can be made to answer. Nothing here needs a dependency, and
+nothing needs a plugin's cooperation: no plugin in the tree reports its own
+bypass, so the host's dry copy is the only bypass there is.
