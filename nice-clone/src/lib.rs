@@ -1,7 +1,8 @@
-//! Nice Clone plugin scaffold. Controls are stored and automated; audio is unchanged.
+//! Nice Clone: a component-based Centaur-style overdrive with a frost editor.
 #![deny(unsafe_code)]
 
 const BLOCK: usize = 128;
+pub mod dsp;
 mod editor;
 mod gui;
 #[cfg(feature = "standalone")]
@@ -63,6 +64,14 @@ impl CloneSharedState {
         self.scale_factor.load()
     }
 
+    fn controls(&self) -> dsp::Controls {
+        dsp::Controls {
+            gain: self.gain.load(),
+            treble: self.treble.load(),
+            output: self.output.load(),
+        }
+    }
+
     fn publish(&self, params: &CloneParams) {
         self.gain.store(params.gain.value());
         self.treble.store(params.treble.value());
@@ -70,7 +79,7 @@ impl CloneSharedState {
     }
 }
 
-/// Normalized knob positions. Their DSP mapping is intentionally deferred.
+/// Normalized physical knob positions, shared by the circuit and editor.
 #[derive(Params)]
 pub struct CloneParams {
     #[id = "gain"]
@@ -112,6 +121,7 @@ fn block_stats(
 pub struct ClonePlugin {
     params: Arc<CloneParams>,
     shared: Arc<CloneSharedState>,
+    drive: dsp::CloneDrive,
     tp_in: [TruePeak; 2],
     tp_out: [TruePeak; 2],
 }
@@ -163,9 +173,11 @@ impl Default for ClonePlugin {
             }
             seed_standalone_params(&shared, &params, &settings.preferences);
         }
+        let drive = dsp::CloneDrive::new(44_100.0, &shared.controls());
         Self {
             params,
             shared,
+            drive,
             tp_in: [TruePeak::new(); 2],
             tp_out: [TruePeak::new(); 2],
         }
@@ -210,13 +222,24 @@ impl Plugin for ClonePlugin {
     fn activate(
         &mut self,
         _: &AudioIOLayout,
-        _config: &BufferConfig,
-        _: &mut impl ActivateContext<Self>,
+        config: &BufferConfig,
+        context: &mut impl ActivateContext<Self>,
     ) -> bool {
+        if !config.sample_rate.is_finite() || config.sample_rate < 8_000.0 {
+            return false;
+        }
+        if !STANDALONE_MODE.load(Ordering::Relaxed) {
+            self.shared.publish(&self.params);
+        }
+        self.drive.set_rate(config.sample_rate);
+        self.drive.set_controls(&self.shared.controls());
+        self.drive.reset();
+        context.set_latency_samples(dsp::LATENCY);
         true
     }
 
     fn reset(&mut self) {
+        self.drive.reset();
         for meter in self.tp_in.iter_mut().chain(self.tp_out.iter_mut()) {
             meter.reset();
         }
@@ -231,6 +254,7 @@ impl Plugin for ClonePlugin {
         if !STANDALONE_MODE.load(Ordering::Relaxed) {
             self.shared.publish(&self.params);
         }
+        self.drive.set_controls(&self.shared.controls());
         let channels = buffer.channels();
         let mut input = [[0.0f32; BLOCK]; 2];
         let mut input_energy = 0.0f64;
@@ -247,8 +271,15 @@ impl Plugin for ClonePlugin {
             let (energy, peak) = block_stats(&input, channels, n, &mut self.tp_in);
             input_energy += energy;
             input_peak = input_peak.max(peak);
-            // Scaffold only: copy samples unchanged, regardless of controls.
-            let output = input;
+            let mut output = [[0.0f32; BLOCK]; 2];
+            for frame in 0..n {
+                let processed = self.drive.process([
+                    input[0][frame],
+                    if channels == 2 { input[1][frame] } else { 0.0 },
+                ]);
+                output[0][frame] = processed[0];
+                output[1][frame] = processed[1];
+            }
             let (energy, peak) = block_stats(&output, channels, n, &mut self.tp_out);
             output_energy += energy;
             output_peak = output_peak.max(peak);
@@ -275,7 +306,7 @@ impl Plugin for ClonePlugin {
 impl ClapPlugin for ClonePlugin {
     const CLAP_ID: &'static str = "com.frost.nice-clone";
     const CLAP_DESCRIPTION: Option<&'static str> =
-        Some("Overdrive scaffold; audio passes through unchanged");
+        Some("Component-based Centaur-style germanium overdrive");
     const CLAP_MANUAL_URL: Option<&'static str> = None;
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] =

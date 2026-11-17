@@ -466,3 +466,9 @@ opt-level = 3
 # on a busy machine.
 [profile.dev.package.pitch]
 opt-level = 3
+
+# The oversampled circuit runs on the audio thread even in a development
+# standalone. Keep its fixed-size matrix arithmetic optimized while retaining
+# debug information; do not change the other workspace members' build profile.
+[profile.dev.package.nice-clone]
+opt-level = 2

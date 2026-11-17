@@ -350,7 +350,7 @@ impl Process for CloneUi {
             ctx,
             0.0,
             -h / 2.0 + 28.0 * fit,
-            "Audio passes through unchanged".into(),
+            "GERMANIUM OVERDRIVE".into(),
             12.0 * fit,
             MUTED,
         );

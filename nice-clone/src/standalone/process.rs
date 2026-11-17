@@ -28,7 +28,7 @@ impl Context {
     }
 }
 
-// No MIDI, background tasks, latency, or voices in this scaffold.
+// No MIDI, background tasks, or voices. Standalone needs no host latency compensation.
 impl ActivateContext<ClonePlugin> for Context {
     fn plugin_api(&self) -> PluginApi {
         PluginApi::Standalone
@@ -169,7 +169,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn activation_and_one_pump_move_audio_straight_through_unchanged() {
+    fn activation_and_one_pump_run_the_circuit() {
         // The standalone's whole promise in one test: the same plugin the
         // CLAP entry point builds runs on this transport, frames in one ring
         // and out the other, meters published, nothing allocated.
@@ -196,11 +196,12 @@ mod tests {
             4
         );
         assert_eq!(drain.slots(), 4);
+        let mut reference = crate::dsp::CloneDrive::new(48_000.0, &crate::dsp::Controls::default());
         for frame in expected {
-            assert_eq!(drain.pop().unwrap().0, frame);
+            assert_eq!(drain.pop().unwrap().0, reference.process(frame));
         }
-        assert_eq!(shared.input_rms.load(), shared.output_rms.load());
-        assert_eq!(shared.input_peak.load(), shared.output_peak.load());
+        assert!(shared.input_peak.load() > 0.0);
+        assert!(shared.output_peak.load().is_finite());
         assert_eq!(
             shared.buffer_frames.load(Ordering::Relaxed),
             4,
@@ -228,14 +229,16 @@ mod tests {
 }
 
 #[cfg(test)]
-mod scaffold_tests {
+mod processing_tests {
     use super::*;
 
     #[test]
-    fn mono_and_stereo_pass_through_across_blocks() {
+    fn mono_and_stereo_match_the_circuit_across_host_block_boundaries() {
         for channels in [1, 2] {
             let mut plugin = ClonePlugin::default();
             activate(&mut plugin, 48_000.0).unwrap();
+            let mut reference =
+                crate::dsp::CloneDrive::new(48_000.0, &crate::dsp::Controls::default());
             let mut context = Context::new(48_000.0);
             let mut planar = plugin_buffer::PlanarBuffer::<{ 6 * BLOCK }>::new(channels, 3 * BLOCK);
             for frames in [0, 1, BLOCK - 1, BLOCK, BLOCK + 1, 2 * BLOCK + 7] {
@@ -255,9 +258,12 @@ mod scaffold_tests {
                             &mut context,
                         );
                     }
-                    for (ch, samples) in buffer.as_slice_immutable().iter().enumerate() {
-                        for (i, &sample) in samples[..frames].iter().enumerate() {
-                            assert_eq!(sample, ((i * 13 + ch * 29) % 101) as f32 / 100.0 - 0.5);
+                    for i in 0..frames {
+                        let input = |ch: usize| ((i * 13 + ch * 29) % 101) as f32 / 100.0 - 0.5;
+                        let expected = reference
+                            .process([input(0), if channels == 2 { input(1) } else { 0.0 }]);
+                        for (ch, &expected) in expected.iter().enumerate().take(channels) {
+                            assert_eq!(buffer.as_slice_immutable()[ch][i], expected);
                         }
                     }
                 });

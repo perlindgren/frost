@@ -3,7 +3,7 @@ name = "nice-clone"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
-description = "Klon-style overdrive scaffolding with a frost editor and shared nice-common controls"
+description = "Component-based Centaur-style overdrive with a frost editor and shared nice-common controls"
 license.workspace = true
 publish = false
 
@@ -57,6 +57,7 @@ macos-metal-view = { path = "../nice-common/crates/macos-metal-view" }
 macos-frame-sync = { path = "../nice-tuner/crates/macos-frame-sync" }
 
 [dev-dependencies]
+allocation-counter = "=0.8.1"
 # The settings round-trip test reads the saved file as RON.
 ron = "=0.12.2"
 # The pump test drives the transport's rings the way the device callbacks do.

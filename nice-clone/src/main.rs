@@ -1,4 +1,4 @@
-//! Application-owned standalone host; shares its editor and DSP with CLAP/VST3.
+//! Application-owned standalone host; shares its editor and circuit model with CLAP/VST3.
 #![deny(unsafe_code)]
 fn main() {
     let args: Vec<_> = std::env::args().collect();

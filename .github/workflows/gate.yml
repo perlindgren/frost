@@ -307,7 +307,7 @@ jobs:
       # `cfg(not(standalone))`, and the plugin's host-facing half is
       # exactly what lives there. No RUSTFLAGS either — the same plain-
       # Rust graph as its sibling.
-      - name: Clippy, zero warnings, nice-clone scaffold
+      - name: Clippy, zero warnings, nice-clone
         run: |
           cargo clippy -p nice-clone --all-targets -- -D warnings
           cargo clippy -p nice-clone --features standalone --all-targets -- -D warnings
@@ -544,7 +544,7 @@ jobs:
       # the step above, which was one reason to run two suites and one wait for both;
       # the `plan` job cannot let a phaser change skip the wah's tests while both are
       # in the same step.
-      - name: Tests, nice-clone scaffold
+      - name: Tests, nice-clone
         run: cargo test --no-fail-fast -p nice-clone --features standalone
 
       - name: Tests, the phaser
@@ -876,7 +876,7 @@ jobs:
         if: needs.plan.outputs.wah == 'true'
         run: cargo test --no-fail-fast -p nice-wah --features standalone
 
-      - name: Tests, nice-clone scaffold, standalone
+      - name: Tests, nice-clone, standalone
         run: cargo test --no-fail-fast -p nice-clone --features standalone
 
       - name: Tests, the phaser, standalone
