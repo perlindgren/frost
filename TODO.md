@@ -439,3 +439,57 @@ thing owns the driver, and `devices.rs` no longer mapping `"asio"` onto a cpal
 `HostId`. In parallel, the small upstream ask: an explicit-port variant of
 `prepare_input_stream` and `prepare_output_stream`, so the durable version of this
 is a public API rather than our own FFI.
+
+## GUI themes (one palette, many skins)
+
+**The possibility.** Every colour the GUI draws comes from one named palette that
+a process hands to its widgets, instead of each widget carrying its own numbers.
+Then "a theme" is a value — a table of colour roles — and a second skin, a light
+skin, an accessible one, or one borrowed from the host's own chrome, is a second
+table rather than an edit spread across every panel in the workspace.
+
+**Why it matters.**
+
+- Right now a theme means finding numbers. `rgb(` appears 144 times across the
+  workspace's Rust files, 47 of them in `nice-rack/src/gui.rs`; the helper behind
+  those numbers is copy-pasted eleven times — `nice-common/src/ui.rs:1164`,
+  `nice-common/src/dropdown/selector.rs:256`, `nice-common/src/knob.rs:24`,
+  `nice-rack/src/gui.rs:100`, one in each of the six plugin panels, and a plain
+  `fn rgb` at `nice-nam/src/ui.rs:148` where even the `const` was dropped.
+- The names already disagree with themselves. Four places inside nice-common keep
+  a private colour table, and they use the same words for different colours:
+  `GREEN` is `rgb(103, 237, 175)` at `nice-common/src/ui.rs:1174` and `0x4ade80`
+  at `nice-common/src/dropdown/selector.rs:247`; `DIM` is `170, 164, 183` in the
+  first and `107, 114, 128` at `nice-common/src/meter.rs:272`; `MENU_BG` is
+  `45, 39, 59` in `ui.rs:1178`, a near-black `0x0d0a16` in the selector, and a
+  third shade again in `nice-common/src/tooltip.rs:26`. Nothing breaks today
+  because nothing compares them; a theme pass has to compare them.
+- The meter gate showed the cost of the alternative. Making a stub box brighten in
+  the colour its own bar would have used meant first introducing `LEVEL` in the
+  rack (`nice-rack/src/gui.rs:115`) so the bar, the two master meters and the stub
+  could not drift apart. That works for one colour and one crate; it is not a
+  theme, and the next such colour will be argued again.
+
+**What already stands.** Colour is already a parameter in exactly one place, and
+it is the shape the rest wants: `PeakMeter::draw` takes `main` and its
+`MeterColors` (`nice-common/src/meter.rs:177`) puts it in the bar slot, so a
+meter's level colour is supplied rather than known — the rack passes `LEVEL`,
+which is `nice_common::knob::GREEN`. `nice-common/src/knob.rs:34-47` is a public
+palette, seven names shared by the whole knob family, and it is the only place a
+colour has been promoted out of the file that uses it. The immediate-mode
+discipline does the rest of the work: a skin is data read once per frame, so
+nothing cached has to be invalidated when the table changes.
+
+**What to build.** First the roles, before any second theme: one struct of names
+a widget can ask for — surface, bore, ink, dim, level, warning, clip, menu —
+living beside `knob`'s constants, with those constants re-exported through it so
+existing callers keep compiling. Then the boring census, one crate at a time:
+every literal becomes a role, and the four private tables inside nice-common are
+resolved as they are found, keeping whichever value the screen actually shows and
+saying so in the commit. Then a theme is a second value of that struct, chosen in
+the settings panel that already hosts the rack preferences and persisted by the
+`Settings<P>` that already carries them. The test writes itself once the table
+exists: build two themes whose roles are all distinct numbers and assert that a
+widget asked for the role it used, which no amount of per-file `rgb` can be made
+to answer. Nothing here needs a dependency — a palette is a struct of `Color`,
+and `Color` is already one of ours.
