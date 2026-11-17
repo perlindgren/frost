@@ -307,6 +307,11 @@ jobs:
       # `cfg(not(standalone))`, and the plugin's host-facing half is
       # exactly what lives there. No RUSTFLAGS either — the same plain-
       # Rust graph as its sibling.
+      - name: Clippy, zero warnings, nice-clone scaffold
+        run: |
+          cargo clippy -p nice-clone --all-targets -- -D warnings
+          cargo clippy -p nice-clone --features standalone --all-targets -- -D warnings
+
       - name: Clippy, zero warnings, the phaser
         run: cargo clippy -p nice-phase --all-targets -- -D warnings
 
@@ -539,6 +544,9 @@ jobs:
       # the step above, which was one reason to run two suites and one wait for both;
       # the `plan` job cannot let a phaser change skip the wah's tests while both are
       # in the same step.
+      - name: Tests, nice-clone scaffold
+        run: cargo test --no-fail-fast -p nice-clone --features standalone
+
       - name: Tests, the phaser
         if: needs.plan.outputs.phase == 'true'
         run: |
@@ -803,8 +811,8 @@ jobs:
       # five, and one cargo invocation says it once.
       - name: Clippy, zero warnings, the plugins that use the shared audio
         run: |
-          cargo clippy -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo -p nice-ecomplex --all-targets -- -D warnings
-          cargo clippy -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo -p nice-ecomplex --features standalone --all-targets -- -D warnings
+          cargo clippy -p nice-wah -p nice-phase -p nice-clone -p nice-pi-face -p nice-echo -p nice-ecomplex --all-targets -- -D warnings
+          cargo clippy -p nice-wah -p nice-phase -p nice-clone -p nice-pi-face -p nice-echo -p nice-ecomplex --features standalone --all-targets -- -D warnings
 
       # The rack and its four crates, on the machine whose audio they now use.
       # Same reason as every named step in this job — `members` without
@@ -867,6 +875,9 @@ jobs:
       - name: Tests, the wah, standalone
         if: needs.plan.outputs.wah == 'true'
         run: cargo test --no-fail-fast -p nice-wah --features standalone
+
+      - name: Tests, nice-clone scaffold, standalone
+        run: cargo test --no-fail-fast -p nice-clone --features standalone
 
       - name: Tests, the phaser, standalone
         if: needs.plan.outputs.phase == 'true'

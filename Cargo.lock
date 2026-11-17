@@ -2002,6 +2002,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "nice-clone"
+version = "0.1.0"
+dependencies = [
+ "baseview",
+ "crossbeam",
+ "frost",
+ "keyboard-types",
+ "macos-frame-sync",
+ "macos-metal-view",
+ "nice-common",
+ "nice-plug",
+ "plugin-buffer",
+ "pollster",
+ "ron",
+ "rtrb 0.4.1",
+ "serde",
+ "wgpu",
+ "window-position",
+]
+
+[[package]]
 name = "nice-common"
 version = "0.1.0"
 dependencies = [
