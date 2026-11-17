@@ -6,6 +6,10 @@ license.workspace = true
 publish = false
 description = "Project-owned CLAP hosting adapter for nice-rack"
 
+[[test]]
+name = "nam_unload"
+harness = false
+
 [dependencies]
 raw-window-handle = "0.6"
 rtrb = "0.4"

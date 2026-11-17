@@ -95,6 +95,18 @@ Validation needed: destruction while idle, while preparing assets, and with
 ready/retirement queues populated. Assert worker completion before destruction
 returns, then exercise native load/create/destroy/unload in an isolated process.
 
+Implementation follow-up (NAM worker shutdown): NamPlugin now owns a worker
+guard with a stop signal and JoinHandle. Destruction signals stop, unparks the
+worker and joins before releasing instance fields. An already-running load
+must finish; cancellation is checked before and after loading, and an observed
+cancelled result is not published. Idle, in-flight, queue-cleanup, panic and
+editor-retained-state tests cover the ownership contract. The optional
+`nice-clap-host` `nam_unload` test uses Clack directly in an isolated process for
+32 native load/create/destroy/entry-release cycles; it does not use the rack's
+library pinning. OS residency policies may delay actual unmapping, and the
+native check does not load models or open editors. Other plugin/library unload
+obligations and the rack's retention policy are unchanged.
+
 ## 3. [P1] Delay effects report no tail to the host
 
 Source:
