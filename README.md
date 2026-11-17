@@ -50,6 +50,8 @@ why a bundle meant for somebody's DAW is better built without the static CRT.
 
 ### Bundled plugins
 
+Under Linux, the command carries the baseline:
+
 ```shell
 RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo xtask bundle nice-echo --release
 ```
@@ -79,28 +81,29 @@ which also puts the two font licence texts beside the bundles: a CLAP is one fil
 and cannot carry the OFL text for the embedded Fira Code, so it travels next to
 it instead.
 
-macOS has one extra subcommand, for carrying both Apple instruction sets in one
-binary so an Intel Mac and an Apple Silicon Mac load the same file:
+macOS wants none of the `RUSTFLAGS` prefix — the flag names an x86-64 target,
+and on Apple Silicon it names nothing — so the bundle command is bare. The one
+extra subcommand carries both Apple instruction sets in one binary, which is
+what a bundle leaving your machine wants:
 
 ```shell
+cargo xtask bundle nice-echo --release
 rustup target add x86_64-apple-darwin aarch64-apple-darwin
 cargo xtask bundle-universal nice-echo --release
 ```
 
-Both targets must be installed, and the two legs are joined with `lipo` from the
-Xcode command line tools. Each package is built twice, serially, into
+The plain build is for the machine it runs on. The universal one wants both
+targets installed — the second line, once — and joins its two legs with `lipo`
+from the Xcode command line tools. Each package is built twice, serially, into
 `target/x86_64-apple-darwin/release` and `target/aarch64-apple-darwin/release`,
 so expect roughly twice the time, and `--target` is refused out of hand because
 the subcommand supplies it itself twice; everything else passes through to both
-legs. A plain `bundle` on a Mac is not wrong — you get the same `.clap` and
-`.vst3`, carrying only the host architecture, which is all a single machine
-needs. `nice-nam` is the one card to leave out of a universal build: the x86-64
-leg builds nothing that works, the NAM engine not supporting Intel Macs at all
-([nice-nam/README.md](nice-nam/README.md)); bundle it plain, on arm64, where as
-said above it needs no `RUSTFLAGS` either. Every macOS bundle is finished the way
-Apple wants one — an `Info.plist` and a `PkgInfo` in `Contents/`, then a
-`codesign -f -s -` over the directory, because arm64 macOS sometimes refuses an
-unsigned self-built plugin and a missing `codesign` is only a warning.
+legs. `nice-nam` is the one card to leave out of a universal build: the x86-64
+leg builds nothing that works ([nice-nam/README.md](nice-nam/README.md)); bundle
+it plain, on arm64. Every macOS bundle is finished the way Apple wants one — an
+`Info.plist` and a `PkgInfo` in `Contents/`, then a `codesign -f -s -` over the
+directory, because arm64 macOS sometimes refuses an unsigned self-built plugin
+and a missing `codesign` is only a warning.
 
 ### Standalone plugins
 
