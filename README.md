@@ -25,6 +25,99 @@ or under Win11 with Powershell:
 $env:RUST_LOG="info"; cargo run --example gizmos
 ```
 
+## Plugins and the rack
+
+Seven cards live in this workspace — `nice-tuner`, `nice-nam`, `nice-wah`,
+`nice-phase`, `nice-pi-face`, `nice-echo` and `nice-ecomplex` — and each one is a
+single editor and `process` implementation in two shapes: a plugin, built from
+the crate's `cdylib`, and a standalone application, built from its `src/main.rs`.
+
+The `RUSTFLAGS` in the commands below is an instruction-set baseline and not
+decoration: NeuralAmpModeler-rs wants AVX2, so `nice-nam` has no working models
+without it. It is spelled out per command rather than put into
+[`.cargo/config.toml`](.cargo/config.toml) on purpose — an entry there raises the
+floor for every member of the workspace, `antifrost` included, which is a release
+decision and not a build convenience. An Apple Silicon Mac has nothing to set,
+because the flag names an x86-64 target and the NAM engine does not support Intel
+Macs at all. On Windows, setting the variable *replaces* the `+crt-static` that
+`.cargo/config.toml` asks for on MSVC — the environment wins over `rustflags`
+there, as that file says — so name both if you want both, and read its note on
+why a bundle meant for somebody's DAW is better built without the static CRT.
+
+### Bundled plugins
+
+```shell
+RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo xtask bundle nice-echo --release
+```
+
+or under Win11 with Powershell:
+
+```powershell
+$env:RUSTFLAGS="-Ctarget-cpu=x86-64-v3"; cargo xtask bundle nice-echo --release
+```
+
+Several at once takes `-p` per package, there being no `all`:
+
+```shell
+RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo xtask bundle \
+  -p nice-tuner -p nice-nam -p nice-wah -p nice-phase \
+  -p nice-pi-face -p nice-echo -p nice-ecomplex --release
+```
+
+and on macOS, `bundle-universal` stands in for `bundle` and builds one binary
+carrying both architectures.
+
+Bundles land in `target/bundled/` under the display name from
+[`bundler.toml`](bundler.toml) — `nice-echo` becomes `Nice Echo`, `nice-pi-face`
+becomes `Nice Pi-Fase` — and each package yields both `Nice Echo.clap` and
+`Nice Echo.vst3`, because these crates export both entry points. A CLAP is a
+single file on Linux and Windows and a `.clap/Contents/MacOS/…` bundle on macOS;
+the VST3 is a directory on all three. `cargo xtask` is the alias in
+[`.cargo/config.toml`](.cargo/config.toml) for the driver in `nice-tuner/xtask`,
+which also puts the two font licence texts beside the bundles: a CLAP is one file
+and cannot carry the OFL text for the embedded Fira Code, so it travels next to
+it instead.
+
+### Standalone plugins
+
+```shell
+RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo build -p nice-echo --release --features standalone
+```
+
+or under Win11 with Powershell:
+
+```powershell
+$env:RUSTFLAGS="-Ctarget-cpu=x86-64-v3"; cargo build -p nice-echo --release --features standalone
+```
+
+The executable is `target/release/nice-echo-standalone`, `.exe` on Windows, and it
+owns its own audio device — CPAL, JACK on Linux, ASIO as well on Windows — where
+the plugin is driven by a host. `--list-devices` prints the device snapshot as RON
+and exits. The feature is required rather than advisory: the `[[bin]]` target
+declares `required-features`, so a `cargo build --release` without it compiles the
+plugin and says nothing whatever about the application. The same command leaves
+the raw shared object beside the binary — `libnice_echo.so`, `libnice_echo.dylib`,
+`nice-echo.dll` — which is what the bundler renames.
+
+### The rack
+
+```shell
+cargo run -p nice-rack-standalone --release
+```
+
+or under Win11 with Powershell:
+
+```powershell
+cargo run -p nice-rack-standalone --release
+```
+
+The package is `nice-rack-standalone`, the executable it builds is `nice-rack`,
+and it wants no prefix: it compiles at the default baseline, and each card brings
+its own code generation with it. It also wants no plugin path and no scan
+directory, because cards arrive by drag and drop — drop a `Nice Echo.clap` out of
+`target/bundled/` onto the window. [nice-rack/README.md](nice-rack/README.md) is
+about the view, the routing and the editors.
+
 ## Repository hooks
 
 The versioned hooks in `.githooks/` gate commits (fmt + clippy) and pushes (the
