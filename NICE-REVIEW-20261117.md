@@ -7,8 +7,8 @@ wrapper crates and documentation. Third-party dependency implementations were
 not reviewed as deliverables or modified. Public dependency contracts were
 consulted to understand our callers' obligations.
 
-This records findings before implementation. All items below remain open at the
-time of writing. Severity reflects potential impact; source-level findings are
+This records findings before implementation. All items were open at the time
+of the original review; see the implementation follow-up below. Severity reflects potential impact; source-level findings are
 distinguished from behavior reproduced in a focused probe.
 
 ## 1. [P1] Process-global macOS display callback class name
@@ -39,6 +39,17 @@ not a sufficient lifetime solution.
 
 Validation needed: open, close and reopen editors from at least two distinct
 plugin bundles in the same macOS host, with multiple instances of each.
+
+Implementation follow-up (2026-11-17): the shared wrapper now uses one uniquely
+named, cached class per loaded library, with a suffix for occupied names. Native
+targets borrow rather than own Rust callback state; stopping clears that borrow
+before invalidation and destruction. Unit tests and a main-thread native test
+cover independent cdylibs, multiple instances, reopening, self-destruction during
+dispatch, late dispatch after stop, and release before library unload. See
+[the updated safety contract](nice-tuner/crates/macos-frame-sync/SAFETY.md).
+Visible editor cadence and mixed-plugin behavior in a real DAW remain desktop
+verification tasks; this follow-up does not resolve finding 2 or other unload
+obligations.
 
 ## 2. [P1] NAM preparation worker can outlive its plugin library
 
