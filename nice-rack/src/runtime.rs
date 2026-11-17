@@ -270,6 +270,15 @@ pub struct Runtime {
     /// the reason [`crate::SavedPlugin`] spells out: a held clip is a report
     /// about audio that already passed.
     trims: BTreeMap<(u64, bool), f32>,
+    /// The level a wire's minimised meter has to reach to light up, in dBFS —
+    /// the rack's one view preference, held next to the trims because it is
+    /// remembered the same way: the GUI reads and writes this copy every frame
+    /// and [`Runtime::persist`] is the only thing that puts it in a file.
+    meter_gate_db: f32,
+    /// The gate the file at `persistence_path` was last written with, for the
+    /// same reason [`Runtime::saved_plugins`] exists: it is what tells
+    /// `persist` a gate change is waiting.
+    saved_meter_gate_db: f32,
     worker: Option<JoinHandle<Endpoints>>,
     io: Option<DeviceStreams>,
     /// The rings of `io` while no worker owns them. `spawn_dsp` returns them
@@ -318,6 +327,20 @@ fn remembered_trims(plugins: &[crate::SavedPlugin]) -> BTreeMap<(u64, bool), f32
         .map(|(key, db)| (key, db.clamp(-crate::TRIM_DB, crate::TRIM_DB)))
         .collect()
 }
+/// The gate a saved rack starts with, in dBFS. A file written before stubs had
+/// a gate says nothing and the rack opens with the gate it ships — the level
+/// that every stub was already resting behind. A hand-edited number is taken
+/// as written, even one the dropdown does not offer, because a threshold is
+/// only a comparison and the page shows whatever it reads; `NaN` and the
+/// infinities are not comparisons, so they go back to the shipped default
+/// rather than being saved out as a file the rack cannot read.
+fn remembered_gate(db: f32) -> f32 {
+    if db.is_finite() {
+        db
+    } else {
+        crate::METER_GATE_DEFAULT_DB
+    }
+}
 impl Runtime {
     pub fn new(settings: Settings) -> Self {
         let mut runtime = Self {
@@ -337,6 +360,10 @@ impl Runtime {
                 .collect(),
             saved_plugins: settings.preferences.plugins.clone(),
             trims: remembered_trims(&settings.preferences.plugins),
+            meter_gate_db: remembered_gate(settings.preferences.meter_gate_db),
+            // The file's own number, sane or not, so a gate the rack had to
+            // look past is one `persist` writes back proper.
+            saved_meter_gate_db: settings.preferences.meter_gate_db,
             last_save: Instant::now(),
             persistence_path: None,
             worker: None,
@@ -800,6 +827,22 @@ impl Runtime {
                 .insert((id, side), gain_db.clamp(-crate::TRIM_DB, crate::TRIM_DB));
         }
     }
+    /// The level a minimised meter has to reach to be drawn in colour, in dB.
+    /// The view reads this every frame it paints a stub box, so it lives here
+    /// rather than being read out of the settings file over and over.
+    pub(crate) fn meter_gate(&self) -> f32 {
+        self.meter_gate_db
+    }
+    /// Take ownership of the meter gate, for the same reason [`Runtime::set_trim`]
+    /// takes ownership of a trim: the settings page is one of several ways the
+    /// number can move, and [`Runtime::persist`] should not have to care which
+    /// one moved it. A non-finite number is refused; the gate stays where it
+    /// was, and the next save writes the value the rack is actually using.
+    pub(crate) fn set_meter_gate(&mut self, db: f32) {
+        if db.is_finite() {
+            self.meter_gate_db = db;
+        }
+    }
     pub(crate) fn persist(&mut self) {
         if self.action.is_some() || self.opening.is_some() {
             return;
@@ -836,17 +879,25 @@ impl Runtime {
                 gain_out: self.trim(card.id.0, true).unwrap_or_default(),
             })
             .collect();
-        if plugins != self.saved_plugins {
+        // One write covers both kinds of preference the rack keeps changing
+        // under the operator's hands: the cards with their trims, and the gate
+        // the stub boxes are coloured against. Either of them moving is enough
+        // to rewrite the file, because a settings file holds one snapshot of
+        // both and cannot be brought half up to date.
+        if plugins != self.saved_plugins || self.meter_gate_db != self.saved_meter_gate_db {
             let (mut settings, warning) = Settings::load_from(&path);
             if let Some(warning) = warning {
                 self.message = warning;
                 return;
             }
             settings.preferences.plugins = plugins.clone();
+            settings.preferences.meter_gate_db = self.meter_gate_db;
             match settings.save_to(&path) {
                 Ok(()) => {
                     self.applied.preferences.plugins = plugins.clone();
+                    self.applied.preferences.meter_gate_db = self.meter_gate_db;
                     self.saved_plugins = plugins;
+                    self.saved_meter_gate_db = self.meter_gate_db;
                 }
                 Err(error) => self.message = error,
             }

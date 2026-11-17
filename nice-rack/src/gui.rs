@@ -105,6 +105,14 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color {
         a: 1.0,
     }
 }
+/// What a *level* is drawn in: the bar of an expanded track, the `main` both
+/// master meters are drawn with — and so, through the shared widget's
+/// `MeterColors`, their bars too. It is the house green, named once here
+/// instead of repeating the same three numbers wherever a level gets a
+/// rectangle, because a minimised meter colours itself with it (see
+/// [`stub_color`]) and the two colours have to stay one colour: a stub that
+/// brightens is saying what its own bar would say if it were drawn.
+const LEVEL: Color = nice_common::knob::GREEN;
 fn hit(mouse: Option<[f32; 2]>, x: f32, y: f32, w: f32, h: f32) -> bool {
     mouse.is_some_and(|p| (p[0] - x).abs() <= w && (p[1] - y).abs() <= h)
 }
@@ -187,6 +195,37 @@ fn new_wire_meter(gain_db: f32, time: u64) -> WireMeter {
         peak: PeakMeter::latching(time),
         gain_db,
         open: false,
+    }
+}
+/// What colour a stub box is drawn in, for a wire whose meter may or may not
+/// exist yet.
+///
+/// A clip outranks the rest: a wire that went over full scale stays red until
+/// somebody acknowledges it, whatever it is doing now, because the one thing a
+/// meter nobody is watching has to survive is the peak it was not watching for.
+///
+/// Everything else bright is one colour, [`LEVEL`], the green the rack's meters
+/// draw their level bars in. An expanded track has always worn it: there the
+/// colour says "the meter is out" and the bar beside it says how much. A
+/// collapsed meter joins it at or above the rack's meter gate, because signal
+/// coming through this wire right now is worth knowing on a canvas of stubs
+/// nobody has opened — and it is worth knowing *in the meter's own colour*, so
+/// that an operator who has seen a green bar on an opened track reads a green
+/// stub the same way, with nothing new to learn. Borrowing the stub a colour of
+/// its own would have made the rack say one thing two ways.
+///
+/// Strictly below the gate, the stub keeps the plain wire colour it has always
+/// worn, so a rack at rest is as quiet as it looks. The live bar's level is the
+/// one compared, not the held peak: the gate asks what is passing now, and a
+/// peak the release long since walked down would keep a wire bright for a second
+/// after the sound stopped.
+fn stub_color(stub: Option<&WireMeter>, gate_db: f32, wire: Color) -> Color {
+    if stub.is_some_and(|meter| meter.peak.clipping()) {
+        nice_common::knob::RED
+    } else if stub.is_some_and(|meter| meter.open || meter.peak.level_db() >= gate_db) {
+        LEVEL
+    } else {
+        wire
     }
 }
 /// Put a meter on every wire the rack carries, keyed the way the engine keys
@@ -732,12 +771,32 @@ impl Process for RackUi {
                 .audio_running()
                 .then_some(self.runtime.applied.period_size)
                 .flatten();
+            // One rack preference rides below the audio block: the level a
+            // minimised meter has to reach before it is drawn in colour. Its
+            // options are labelled with the numbers they stand for, because
+            // the page titles the default row with the raw it is the default
+            // for — a unit written into an option would be painted over on
+            // that one row. The unit belongs to the label instead.
+            let gate = self.runtime.meter_gate();
+            let extras = vec![nice_common::ui::ExtraRow {
+                label: "Meter gate (dB)".into(),
+                options: crate::METER_GATES
+                    .iter()
+                    .map(|db| {
+                        let text = crate::meter_gate_text(*db);
+                        (text.clone(), text)
+                    })
+                    .collect(),
+                default: crate::meter_gate_text(crate::METER_GATE_DEFAULT_DB),
+                current: (gate != crate::METER_GATE_DEFAULT_DB)
+                    .then(|| crate::meter_gate_text(gate)),
+            }];
             let runtime = &mut self.runtime;
             let event = panel.process(
                 ctx,
                 &self.font,
                 clicked,
-                Vec::new(),
+                extras,
                 Some(nice_common::WindowGeom {
                     x: None,
                     y: None,
@@ -747,6 +806,19 @@ impl Process for RackUi {
                 !runtime.busy(),
                 |settings| runtime.apply(settings),
             );
+            // The gate is the only extra on this page, so the row it reports
+            // an index for is that one. A pick of the default arrives as no
+            // value at all — the page keeps a setting at its default unspoken
+            // — and that is how a rack picked up at -12 finds its way back to
+            // -60. Anything unparseable is refused by the runtime, which
+            // leaves the gate exactly where it was.
+            if let Some(Event::ExtraPicked(0, raw)) = &event {
+                let gate = raw
+                    .as_deref()
+                    .and_then(|text| text.parse::<f32>().ok())
+                    .unwrap_or(crate::METER_GATE_DEFAULT_DB);
+                self.runtime.set_meter_gate(gate);
+            }
             if matches!(event, Some(Event::Back | Event::Applied)) {
                 self.settings_page = false;
                 self.settings = None;
@@ -899,6 +971,9 @@ impl Process for RackUi {
             0.2,
         );
         let wire = rgb(107, 114, 128);
+        // One gate for the whole rack, read once a frame: every stub box on
+        // every wire is measured against the same number.
+        let gate = self.runtime.meter_gate();
         let mut previous_x = layout.left + 25.0;
         for group in &groups {
             let stage_slots = layout
@@ -965,18 +1040,13 @@ impl Process for RackUi {
                             // back to their resting colours.
                             self.acknowledge_clip(MeterPos::Wire(slot.id.0, side));
                         }
-                        // The stub says "meter on this wire" in green while
-                        // the track is expanded, and in red when that meter
-                        // reads above full scale — the whole meter carries the
-                        // clip, stub included.
-                        let stub = self.wire_meters.get(&key);
-                        let stub_color = if stub.is_some_and(|meter| meter.peak.clipping()) {
-                            nice_common::knob::RED
-                        } else if stub.is_some_and(|meter| meter.open) {
-                            rgb(103, 237, 175)
-                        } else {
-                            wire
-                        };
+                        // The stub box is the whole of a minimised meter's
+                        // face, so it carries everything the rack knows about
+                        // the wire: red for a clip nobody has acknowledged, the
+                        // meter's own level green for a track that is expanded
+                        // or is carrying signal over the gate, and the plain
+                        // wire colour while nothing is passing.
+                        let stub_color = stub_color(self.wire_meters.get(&key), gate, wire);
                         ctx.rectangle(bx, slot.y, 4.0, 6.0, stub_color, 0.25);
                     }
                 }
@@ -1542,11 +1612,7 @@ impl Process for RackUi {
                         slot.y - 56.0 + 56.0 * t,
                         3.0,
                         56.0 * t,
-                        if clip {
-                            nice_common::knob::RED
-                        } else {
-                            rgb(103, 237, 175)
-                        },
+                        if clip { nice_common::knob::RED } else { LEVEL },
                         0.3,
                     );
                 }
@@ -1593,22 +1659,12 @@ impl Process for RackUi {
         }
         let fit = (w / 1000.0).clamp(0.45, 1.0);
         let y = -h / 2.0 + 58.0;
-        let over_input = self.input.draw(
-            ctx,
-            &self.font,
-            [-w / 4.0, y],
-            w * 0.20,
-            fit,
-            rgb(103, 237, 175),
-        );
-        let over_output = self.output.draw(
-            ctx,
-            &self.font,
-            [w / 4.0, y],
-            w * 0.20,
-            fit,
-            rgb(103, 237, 175),
-        );
+        let over_input = self
+            .input
+            .draw(ctx, &self.font, [-w / 4.0, y], w * 0.20, fit, LEVEL);
+        let over_output = self
+            .output
+            .draw(ctx, &self.font, [w / 4.0, y], w * 0.20, fit, LEVEL);
         // The two master meters take part in the same acknowledgement rule as
         // the wire meters: the input one is upstream of every card, so
         // acknowledging it clears the rack end to end, and the output one is
@@ -2298,6 +2354,82 @@ mod tests {
         assert!(
             !wire.peak.clipping(),
             "and one click of that stub clears it"
+        );
+    }
+    #[test]
+    fn a_minimised_meter_colours_itself_against_the_gate() {
+        use std::collections::BTreeMap;
+        let wire = rgb(107, 114, 128);
+        let mut meters: BTreeMap<(u64, bool), WireMeter> = BTreeMap::new();
+        watch_wires(&mut meters, [5], |_, _| None, |_| None, 0);
+        // Nothing has been played through the rack: a meter that never heard a
+        // sample sits at digital silence, well under any gate on offer, and
+        // the stub is as bare as it was before the gate existed. A wire with
+        // no meter behind it looks exactly the same, which is the point — the
+        // stub's colour means "signal", not "meter".
+        let quiet = meters.get(&(5, false)).unwrap();
+        assert_eq!(stub_color(Some(quiet), -60.0, wire), wire);
+        assert_eq!(stub_color(None, -60.0, wire), wire, "meter or none");
+        // Something is coming through the input wire now.
+        let meter = meters.get_mut(&(5, false)).unwrap();
+        for t in (16..=160).step_by(16) {
+            meter.peak.tick(-20.0, -20.0, t);
+        }
+        let loud = meters.get(&(5, false)).unwrap();
+        assert!(loud.peak.level_db() > -21.0, "the bar got there");
+        assert_eq!(
+            stub_color(Some(loud), -60.0, wire),
+            LEVEL,
+            "and the stub says so"
+        );
+        // The same stub, the same signal, a gate moved above it: the number is
+        // doing the work and not the mere fact that a meter exists.
+        assert_eq!(stub_color(Some(loud), -12.0, wire), wire);
+        // At the gate is over it. Silence against a gate of -120 dBFS is the
+        // case where the two are exactly equal, and it reads as signal.
+        let idle = new_wire_meter(0.0, 0);
+        assert_eq!(stub_color(Some(&idle), -120.0, wire), LEVEL);
+        assert_eq!(stub_color(Some(&idle), -119.0, wire), wire);
+        // An expanded track keeps the colour it has always had. The bar beside
+        // it already says how much is coming through; the stub's job there is
+        // to say the track is open. The gate goes above the signal so that the
+        // only thing left that could brighten this stub is the open flag.
+        let meter = meters.get_mut(&(5, false)).unwrap();
+        meter.open = true;
+        assert_eq!(
+            stub_color(meters.get(&(5, false)), -12.0, wire),
+            LEVEL,
+            "green for open, under the gate"
+        );
+        // A clip outranks both. It was latched while the meter was loud, and
+        // the red has to survive the long way down through the gate and past
+        // it — that fall is exactly the interval in which a plain level rule
+        // would have quietly painted the stub grey again.
+        let meter = meters.get_mut(&(5, false)).unwrap();
+        meter.peak.tick(-20.0, 1.4, 200);
+        for t in (216..4_000).step_by(16) {
+            meter.peak.tick(-120.0, -120.0, t);
+        }
+        let burnt = meters.get_mut(&(5, false)).unwrap();
+        assert!(burnt.peak.clipping() && burnt.peak.level_db() < -60.0);
+        assert_eq!(
+            stub_color(Some(burnt), -60.0, wire),
+            nice_common::knob::RED,
+            "red while the bar is well under the gate"
+        );
+        burnt.peak.clear_clip();
+        assert_eq!(
+            stub_color(Some(burnt), -60.0, wire),
+            LEVEL,
+            "and the track it was drawn on is still open"
+        );
+        // Close it and the red is gone, not remembered: the clip was the only
+        // thing holding the stub bright and it has drained far below the gate.
+        burnt.open = false;
+        assert_eq!(
+            stub_color(Some(burnt), -60.0, wire),
+            wire,
+            "red retired with the clip"
         );
     }
 }
