@@ -73,6 +73,20 @@ pub struct SavedPlugin {
     pub gain_in: f32,
     #[serde(default)]
     pub gain_out: f32,
+    /// Whether the operator left this instance's input wire or output wire
+    /// broken — an open circuit, which passes nothing.
+    ///
+    /// A break belongs in the file for the reason the trims do and the meters
+    /// do not: it is a switch the operator left thrown, a decision about how the
+    /// rack is wired, and a resumed rack that closed it would be rewiring the
+    /// rack behind their back. Both fields are `#[serde(default)]` on their own,
+    /// so a file written before wires could break still loads, and a wire the
+    /// file does not name reads closed — the state every cable has always
+    /// started in.
+    #[serde(default)]
+    pub open_in: bool,
+    #[serde(default)]
+    pub open_out: bool,
 }
 /// Half the range a wire's gain trim spans, in dB: the track is drawn across
 /// ±24 dB, the drag clamps to it, a typed number is answered at it, the
@@ -137,7 +151,9 @@ mod tests {
     fn instance_states_and_editor_geometry_round_trip_independently() {
         let path = frost::scratch::claim("rack-settings").join("rack.ron");
         let mut settings = Settings::default();
-        for (id, state, x) in [(1, vec![0, 255, 1], 20), (3, vec![42, 8], 840)] {
+        for (id, state, x, open_out) in
+            [(1, vec![0, 255, 1], 20, true), (3, vec![42, 8], 840, false)]
+        {
             settings.preferences.plugins.push(SavedPlugin {
                 id,
                 stage: 1,
@@ -151,6 +167,12 @@ mod tests {
                 }),
                 gain_in: -6.0,
                 gain_out: 2.5,
+                // One card left with a cable broken and one without, so the
+                // file is read for both answers and not just the interesting
+                // one: a saved rack that says nothing is broken has to say so
+                // in as many words as one that says something is.
+                open_in: false,
+                open_out,
             });
         }
         settings.save_to(&path).unwrap();
@@ -207,6 +229,14 @@ mod tests {
         // the trims the file did write.
         assert_eq!(loaded.preferences.plugins[0].gain_in, -3.0);
         assert_eq!(loaded.preferences.plugins[0].gain_out, 0.0);
+        // The same argument one feature later, for the fields this file also
+        // predates: a rack saved before a wire could be broken is a rack with
+        // nothing broken, which is the answer `#[serde(default)]` gives, and
+        // not a file the rack refuses to open.
+        assert!(
+            !loaded.preferences.plugins[0].open_in && !loaded.preferences.plugins[0].open_out,
+            "a file that predates breaks opens with every cable closed"
+        );
     }
 
     #[test]
