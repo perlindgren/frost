@@ -58,6 +58,23 @@ isolation or make an arbitrary third-party plugin safe.
   no supported embedded editor exists, a frost overlay exposes the plugin's
   parameters. Drag the sliders, scroll for more controls, and close with × or
   Escape. A drag beyond five logical points moves the card instead of opening it.
+- Right-click either meter beside a card, expanded or minimized, to toggle
+  **bypass**. Both meters collapse and an amber wire goes up from the input,
+  across above the card, and down to the output. The short leads into the card
+  and the gain readouts disappear. Bypass skips the processor and both gain
+  trims, passing unity dry audio with the card's latency preserved for parallel
+  alignment. The previous trims and cable breaks return when bypass is removed.
+- Right-click the **card body** to toggle **pause**. A paused card is dimmed and
+  marked PAUSED in its status line, keeping its name. Both gain readouts and
+  gain handles are hidden and inactive; the saved trims return on resume. Its
+  processor is not called and its output signal and output meter are zero,
+  including any previous tail. Pause and bypass are separate:
+  enabling bypass around a paused plugin passes dry audio; removing bypass
+  returns to silence until the card is resumed. Its utilization bar immediately
+  removes the added DSP segment while keeping incoming usage; hovering reports
+  DSP 0.0% and separately identifies any remaining rack overhead.
+  Both switches are saved with
+  the rack. Right-clicking bare cable still toggles its existing wire break.
 - Input and output RMS/peak-hold meters sit at the bottom.
 - Every effect card has its own bottom-edge audio-budget meter. Muted purple
   fills from the left for time already spent before that card; green adds that

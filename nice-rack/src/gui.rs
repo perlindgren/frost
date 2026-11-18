@@ -268,6 +268,43 @@ fn wire_hit(mouse: Option<[f32; 2]>, from: f32, to: f32, y: f32, box_x: f32) -> 
     hit(mouse, box_x, y, STUB_HALF, STUB_TALL)
         || mouse.is_some_and(|p| (from..=to).contains(&p[0]) && (p[1] - y).abs() <= BREAK_HALF)
 }
+/// A meter body outranks a cable hit. Collapsed meters only own their stub;
+/// expanded meters also own the full vertical track outside the card.
+fn meter_hit(mouse: Option<[f32; 2]>, x: f32, y: f32, side: bool, expanded: bool) -> bool {
+    hit(
+        mouse,
+        wire_box_x(x, side),
+        y,
+        if expanded { 4.5 } else { STUB_HALF },
+        if expanded { TRACK_HALF } else { STUB_TALL },
+    )
+}
+fn card_lead(x: f32, side: bool, split: f32, merge: f32, bypassed: bool) -> (f32, f32) {
+    let endpoint = if bypassed {
+        wire_box_x(x, side)
+    } else {
+        x + if side {
+            CARD_WIDTH / 2.0
+        } else {
+            -CARD_WIDTH / 2.0
+        }
+    };
+    if side {
+        (endpoint, merge)
+    } else {
+        (split, endpoint)
+    }
+}
+fn bypass_path(x: f32, y: f32, clearance: f32) -> [[f32; 2]; 4] {
+    let left = wire_box_x(x, false);
+    let right = wire_box_x(x, true);
+    [
+        [left, y],
+        [left, y + TRACK_HALF + clearance],
+        [right, y + TRACK_HALF + clearance],
+        [right, y],
+    ]
+}
 const TRACK_HALF: f32 = 56.0;
 /// Relative drag mapping: each pixel of pointer travel turns the trim by
 /// 0.05 dB, and that rate grows exponentially with the drag's speed (px
@@ -811,11 +848,64 @@ impl RackUi {
     /// drawn from: the two have to agree on the same frame, and a wire on the
     /// canvas has had its meter since the frame its card appeared.
     fn wire_open(&self, id: u64, side: bool) -> bool {
-        self.wire_meters
-            .get(&(id, side))
-            .is_some_and(|wire| wire.open_circuit)
+        !self.runtime.bypassed(id)
+            && self
+                .wire_meters
+                .get(&(id, side))
+                .is_some_and(|wire| wire.open_circuit)
     }
-    /// The right button's whole job: flip one wire and say so on the rack's
+    fn toggle_pause(&mut self, id: u64) {
+        let paused = !self.runtime.paused(id);
+        self.runtime.set_paused(id, paused);
+        if self.gain_drag.is_some_and(|(card, _, _)| card == id) {
+            self.gain_drag = None;
+        }
+        if self.gain_edit.is_some_and(|(card, _)| card == id) {
+            self.gain_edit = None;
+            self.gain_input.set_focus(false);
+        }
+        if paused
+            && !self.runtime.bypassed(id)
+            && let Some(meter) = self.wire_meters.get_mut(&(id, true))
+        {
+            meter.peak = PeakMeter::latching(now());
+        }
+        self.runtime.message = if paused {
+            if self.runtime.bypassed(id) {
+                "Plugin paused; dry bypass remains active"
+            } else {
+                "Plugin paused: output muted"
+            }
+        } else {
+            "Plugin resumed"
+        }
+        .into();
+    }
+    fn toggle_bypass(&mut self, id: u64) {
+        let bypassed = !self.runtime.bypassed(id);
+        self.runtime.set_bypassed(id, bypassed);
+        if bypassed {
+            for side in [false, true] {
+                if let Some(meter) = self.wire_meters.get_mut(&(id, side)) {
+                    meter.open = false;
+                }
+            }
+            if self.gain_drag.is_some_and(|(card, _, _)| card == id) {
+                self.gain_drag = None;
+            }
+            if self.gain_edit.is_some_and(|(card, _)| card == id) {
+                self.gain_edit = None;
+                self.gain_input.set_focus(false);
+            }
+        }
+        self.runtime.message = if bypassed {
+            "Card bypassed: unity dry signal"
+        } else {
+            "Card enabled"
+        }
+        .into();
+    }
+    /// A right-click on cable outside the meter flips one wire and updates the rack's
     /// message line. Every way of pointing at a wire ends here — the long
     /// connector between two meters, a card's own short run, the head feed from
     /// `IN`, the run into `OUT`, the stub box — so they cannot answer with
@@ -925,10 +1015,23 @@ impl Process for RackUi {
         self.timing_meters
             .retain(|id, _| self.runtime.cards.iter().any(|card| card.id == *id));
         for card in &self.runtime.cards {
-            self.timing_meters
-                .entry(card.id)
-                .or_default()
-                .tick(self.runtime.timings.sample(card.id), dt);
+            let bypassed = self.runtime.bypassed(card.id.0);
+            self.runtime.wires.set_bypassed(card.id, bypassed);
+            self.runtime
+                .wires
+                .set_paused(card.id, self.runtime.paused(card.id.0));
+            if bypassed {
+                for side in [false, true] {
+                    if let Some(meter) = self.wire_meters.get_mut(&(card.id.0, side)) {
+                        meter.open = false;
+                    }
+                }
+            }
+            self.timing_meters.entry(card.id).or_default().tick(
+                self.runtime.timings.sample(card.id),
+                dt,
+                self.runtime.paused(card.id.0),
+            );
         }
         let (w, h) = ctx.size();
         let mouse = ctx.mouse_position();
@@ -1199,6 +1302,48 @@ impl Process for RackUi {
         }
         self.scroll = self.scroll.clamp(0.0, max_scroll);
         let layout = geometry(&groups, w, h, self.scroll, self.vertical);
+        let bypass_target = if broke && self.drag.is_none() && self.gain_drag.is_none() {
+            layout
+                .slots
+                .iter()
+                .filter(|slot| visible(slot, layout.top, layout.bottom, w))
+                .find(|slot| {
+                    [false, true].into_iter().any(|side| {
+                        let expanded = !self.runtime.bypassed(slot.id.0)
+                            && self
+                                .wire_meters
+                                .get(&(slot.id.0, side))
+                                .is_some_and(|meter| meter.open);
+                        meter_hit(mouse, slot.x, slot.y, side, expanded)
+                    })
+                })
+                .map(|slot| slot.id.0)
+        } else {
+            None
+        };
+        if let Some(id) = bypass_target {
+            self.toggle_bypass(id);
+        }
+
+        let pause_target = if broke
+            && bypass_target.is_none()
+            && self.drag.is_none()
+            && self.gain_drag.is_none()
+        {
+            layout
+                .slots
+                .iter()
+                .find(|slot| {
+                    visible(slot, layout.top, layout.bottom, w)
+                        && hit(mouse, slot.x, slot.y, CARD_WIDTH / 2.0, TRACK_HALF)
+                })
+                .map(|slot| slot.id.0)
+        } else {
+            None
+        };
+        if let Some(id) = pause_target {
+            self.toggle_pause(id);
+        }
         ctx.text(
             layout.left,
             layout.flow,
@@ -1309,6 +1454,25 @@ impl Process for RackUi {
                 if !visible(slot, layout.top, layout.bottom, w) {
                     continue;
                 }
+                if self.runtime.bypassed(slot.id.0) {
+                    let gap = stage_slots
+                        .iter()
+                        .filter(|other| other.y > slot.y)
+                        .map(|other| other.y - slot.y - 2.0 * TRACK_HALF)
+                        .fold(24.0, f32::min);
+                    let path = bypass_path(slot.x, slot.y, (gap / 2.0).min(12.0));
+                    for segment in path.windows(2) {
+                        ctx.line(
+                            segment[0][0],
+                            segment[0][1],
+                            segment[1][0],
+                            segment[1][1],
+                            nice_common::knob::AMBER,
+                            2.0,
+                            0.18,
+                        );
+                    }
+                }
                 for side in [false, true] {
                     let bx = wire_box_x(x, side);
                     let key = (slot.id.0, side);
@@ -1325,7 +1489,12 @@ impl Process for RackUi {
                         previous_x,
                         if last { out_wire } else { merge },
                     );
-                    if broke && wire_hit(mouse, from, to, slot.y, bx) {
+                    if broke
+                        && bypass_target.is_none()
+                        && pause_target.is_none()
+                        && !self.runtime.bypassed(slot.id.0)
+                        && wire_hit(mouse, from, to, slot.y, bx)
+                    {
                         // The wire as a whole is the target, not just its box:
                         // the run between two meters is long, and an operator
                         // points at it rather than at a terminal on it. Breaking
@@ -1335,6 +1504,7 @@ impl Process for RackUi {
                         self.toggle_wire(slot.id.0, side);
                     }
                     if clicked
+                        && !self.runtime.bypassed(slot.id.0)
                         && self.choosing.is_none()
                         && hit(mouse, bx, slot.y, STUB_HALF, STUB_TALL)
                     {
@@ -1371,12 +1541,14 @@ impl Process for RackUi {
                     // of the cards in it; what an operator sees as one long
                     // connector between two meters is the trunk above, which runs
                     // on the flow line — the very row a solo card sits on.
-                    let (inner, outer) = if side {
-                        (x + CARD_WIDTH / 2.0, merge)
+                    let bypassed = self.runtime.bypassed(slot.id.0);
+                    let (inner, outer) = card_lead(x, side, split, merge, bypassed);
+                    let outer = if bypassed {
+                        outer
                     } else {
-                        (split, x - CARD_WIDTH / 2.0)
+                        wire_end(outer, bx, open)
                     };
-                    wire_segment(ctx, inner, wire_end(outer, bx, open), slot.y, wire);
+                    wire_segment(ctx, inner, outer, slot.y, wire);
                     // The stub box is the whole of a minimised meter's
                     // face, so it carries everything the rack knows about
                     // the wire: red for a clip nobody has acknowledged, amber
@@ -1423,6 +1595,8 @@ impl Process for RackUi {
             && self.gain_drag.is_none()
             && layout.slots.iter().any(|slot| {
                 visible(slot, layout.top, layout.bottom, w)
+                    && !self.runtime.bypassed(slot.id.0)
+                    && !self.runtime.paused(slot.id.0)
                     && [false, true].into_iter().any(|side| {
                         let [gx, gy] = gain_center(slot.x, slot.y, side);
                         hit(mouse, gx, gy, GAIN_HALF_W, GAIN_HALF_H)
@@ -1442,12 +1616,15 @@ impl Process for RackUi {
             let x = slot.x;
             let y = slot.y;
             let hover = hit(mouse, x, y, CARD_WIDTH / 2.0, 56.0);
+            let paused = self.runtime.paused(card.id.0);
             ctx.rectangle(
                 x,
                 y,
                 CARD_WIDTH / 2.0,
                 56.0,
-                if self.drag == Some(card.id) {
+                if paused {
+                    rgb(26, 24, 33)
+                } else if self.drag == Some(card.id) {
                     rgb(75, 62, 100)
                 } else if hover {
                     rgb(58, 51, 79)
@@ -1463,14 +1640,22 @@ impl Process for RackUi {
                 short(&card.name, 16),
                 18.0,
                 600.0,
-                rgb(235, 230, 241),
+                if paused {
+                    nice_common::knob::MUTED
+                } else {
+                    rgb(235, 230, 241)
+                },
                 0.21,
             );
             ctx.text(
                 x,
                 layout_text_y(y),
                 &self.font,
-                format!("{:?} → {:?}", card.inputs, card.outputs),
+                if paused {
+                    "PAUSED".into()
+                } else {
+                    format!("{:?} → {:?}", card.inputs, card.outputs)
+                },
                 12.0,
                 500.0,
                 rgb(150, 145, 164),
@@ -1737,10 +1922,14 @@ impl Process for RackUi {
             // or not the engine happened to be running when it was switched.
             self.runtime.wires.set_open(key, wire.open_circuit);
             let (rms, peak) = self.runtime.wires.sample(key).unwrap_or((0.0, 0.0));
-            wire.peak.tick(db(rms), db(peak), time);
+            if *side && self.runtime.paused(*id) && !self.runtime.bypassed(*id) {
+                wire.peak = PeakMeter::latching(time);
+            } else {
+                wire.peak.tick(db(rms), db(peak), time);
+            }
         }
         for slot in &layout.slots {
-            if !visible(slot, layout.top, layout.bottom, w) {
+            if self.runtime.bypassed(slot.id.0) || !visible(slot, layout.top, layout.bottom, w) {
                 continue;
             }
             for side in [false, true] {
@@ -1762,140 +1951,143 @@ impl Process for RackUi {
                 let level_db = wire.map_or(-120.0, |meter| meter.peak.level_db());
                 let peak_db = wire.map_or(-120.0, |meter| meter.peak.peak_db());
                 let bx = wire_box_x(slot.x, side);
-                let [gx, gy] = gain_center(slot.x, slot.y, side);
-                // The corner readout is the numeric handle: a click
-                // adopts the trim's value into the field and the number
-                // becomes editable in place. `clicked` is already false
-                // while an editor stands, so one click opens exactly one
-                // field, and the same press that opened it lands on the
-                // field's own mouse handling below.
-                if clicked
-                    && self.choosing.is_none()
-                    && self.gain_drag.is_none()
-                    && hit(mouse, gx, gy, GAIN_HALF_W, GAIN_HALF_H)
-                {
-                    self.gain_edit = Some((slot.id.0, side));
-                    self.gain_input.adopt(format!("{:+.1}", gain_db));
-                    self.gain_input.set_focus(true);
-                }
-                let editing = self.gain_edit == Some((slot.id.0, side));
-                // The corner box is always there — the readout's
-                // frame, not just the editor's — so clicking the
-                // number opens the field around it without the card
-                // changing shape underneath.
-                ctx.rectangle(
-                    gx,
-                    gy,
-                    GAIN_HALF_W,
-                    GAIN_HALF_H,
-                    rgb(24, 20, 38),
-                    if editing { 0.35 } else { 0.3 },
-                );
-                // The gain in dB, centred in that box — the clickable
-                // numeric handle, no unit suffix. Above full scale it turns
-                // red with the rest of the meter: the readout is the part of
-                // the meter you are most likely to be looking at, and a clip
-                // that only shows up in the track is a clip you will miss.
-                if !editing {
-                    ctx.text(
+                let paused = self.runtime.paused(slot.id.0);
+                if !paused {
+                    let [gx, gy] = gain_center(slot.x, slot.y, side);
+                    // The corner readout is the numeric handle: a click
+                    // adopts the trim's value into the field and the number
+                    // becomes editable in place. `clicked` is already false
+                    // while an editor stands, so one click opens exactly one
+                    // field, and the same press that opened it lands on the
+                    // field's own mouse handling below.
+                    if clicked
+                        && self.choosing.is_none()
+                        && self.gain_drag.is_none()
+                        && hit(mouse, gx, gy, GAIN_HALF_W, GAIN_HALF_H)
+                    {
+                        self.gain_edit = Some((slot.id.0, side));
+                        self.gain_input.adopt(format!("{:+.1}", gain_db));
+                        self.gain_input.set_focus(true);
+                    }
+                    let editing = self.gain_edit == Some((slot.id.0, side));
+                    // The corner box is always there — the readout's
+                    // frame, not just the editor's — so clicking the
+                    // number opens the field around it without the card
+                    // changing shape underneath.
+                    ctx.rectangle(
                         gx,
                         gy,
-                        &self.font,
-                        format!("{:+.1}", gain_db),
-                        GAIN_TEXT,
-                        500.0,
-                        if clip {
-                            nice_common::knob::RED
-                        } else {
-                            rgb(226, 232, 240)
-                        },
-                        0.3,
+                        GAIN_HALF_W,
+                        GAIN_HALF_H,
+                        rgb(24, 20, 38),
+                        if editing { 0.35 } else { 0.3 },
                     );
-                }
-                // The field, drawn exactly where the readout stands.
-                // frost's `TextInput` owns the editing — keys, caret,
-                // selection, blink — and these calls draw its state at
-                // the box's own anchors: the value's visible block is
-                // centred on `gx` and the caret and selection columns
-                // share that origin, so view and editor are the same
-                // pixels. frost anchors its popup-sized field's text to
-                // its left padding instead; the rack's 24 px box
-                // centres, on purpose. A draft wider than the rect
-                // spills past it, as frost's own field does; a dB value
-                // never needs one.
-                if editing {
-                    let left = gx - GAIN_HALF_W;
-                    let bottom = gy - GAIN_HALF_H;
-                    let right = gx + GAIN_HALF_W;
-                    let top = gy + GAIN_HALF_H;
-                    let accent = rgb(103, 237, 175);
-                    let committed = self.gain_input.process_keys(ctx, dt);
-                    self.gain_input
-                        .process_mouse(mouse, down, [left, bottom, right, top]);
-                    let draft = self.gain_input.buffer().to_string();
-                    let chars: Vec<char> = draft.chars().collect();
-                    let scroll = self.gain_input.scroll_offset();
-                    let shown = chars.len().min(scroll + GAIN_COLS);
-                    // The visible block's columns, measured from the
-                    // block's centred left edge — the anchor the static
-                    // readout draws its string around.
-                    let half = (shown - scroll) as f32 * GAIN_CHAR_W / 2.0;
-                    let col_x = |col: usize| gx - half + (col - scroll) as f32 * GAIN_CHAR_W;
-                    if let Some((start, end)) = self.gain_input.selection_range() {
-                        let a = start.max(scroll);
-                        let b = end.min(scroll + GAIN_COLS).min(chars.len());
-                        if a < b {
-                            let x0 = col_x(a);
-                            let x1 = col_x(b);
-                            ctx.rectangle(
-                                (x0 + x1) / 2.0,
-                                gy,
-                                (x1 - x0) / 2.0,
-                                GAIN_HALF_H,
-                                Color { a: 0.30, ..accent },
-                                0.35,
-                            );
-                        }
-                    }
-                    if shown > scroll {
-                        let visible: String = chars[scroll..shown].iter().collect();
+                    // The gain in dB, centred in that box — the clickable
+                    // numeric handle, no unit suffix. Above full scale it turns
+                    // red with the rest of the meter: the readout is the part of
+                    // the meter you are most likely to be looking at, and a clip
+                    // that only shows up in the track is a clip you will miss.
+                    if !editing {
                         ctx.text(
                             gx,
                             gy,
                             &self.font,
-                            visible,
+                            format!("{:+.1}", gain_db),
                             GAIN_TEXT,
                             500.0,
-                            rgb(226, 232, 240),
-                            0.35,
+                            if clip {
+                                nice_common::knob::RED
+                            } else {
+                                rgb(226, 232, 240)
+                            },
+                            0.3,
                         );
                     }
-                    if self.gain_input.focused() {
-                        if self.gain_input.blink_on() {
-                            let cx = col_x(self.gain_input.cursor_column());
-                            ctx.line(cx, bottom + 5.0, cx, top - 5.0, accent, 1.5, 0.35);
-                        }
-                        for [x0, y0, x1, y1] in [
-                            [left, bottom, right, bottom],
-                            [left, top, right, top],
-                            [left, bottom, left, top],
-                            [right, bottom, right, top],
-                        ] {
-                            ctx.line(x0, y0, x1, y1, accent, 2.0, 0.35);
-                        }
-                    }
-                    if committed {
-                        // Enter answers the editor: a number is written
-                        // back and the field closes; a draft that is not
-                        // one keeps the field open and says what it
-                        // wanted.
-                        match parse_gain(&draft) {
-                            Some(db) => {
-                                self.set_trim(slot.id.0, side, db);
-                                self.gain_edit = None;
-                                self.gain_input.set_focus(false);
+                    // The field, drawn exactly where the readout stands.
+                    // frost's `TextInput` owns the editing — keys, caret,
+                    // selection, blink — and these calls draw its state at
+                    // the box's own anchors: the value's visible block is
+                    // centred on `gx` and the caret and selection columns
+                    // share that origin, so view and editor are the same
+                    // pixels. frost anchors its popup-sized field's text to
+                    // its left padding instead; the rack's 24 px box
+                    // centres, on purpose. A draft wider than the rect
+                    // spills past it, as frost's own field does; a dB value
+                    // never needs one.
+                    if editing {
+                        let left = gx - GAIN_HALF_W;
+                        let bottom = gy - GAIN_HALF_H;
+                        let right = gx + GAIN_HALF_W;
+                        let top = gy + GAIN_HALF_H;
+                        let accent = rgb(103, 237, 175);
+                        let committed = self.gain_input.process_keys(ctx, dt);
+                        self.gain_input
+                            .process_mouse(mouse, down, [left, bottom, right, top]);
+                        let draft = self.gain_input.buffer().to_string();
+                        let chars: Vec<char> = draft.chars().collect();
+                        let scroll = self.gain_input.scroll_offset();
+                        let shown = chars.len().min(scroll + GAIN_COLS);
+                        // The visible block's columns, measured from the
+                        // block's centred left edge — the anchor the static
+                        // readout draws its string around.
+                        let half = (shown - scroll) as f32 * GAIN_CHAR_W / 2.0;
+                        let col_x = |col: usize| gx - half + (col - scroll) as f32 * GAIN_CHAR_W;
+                        if let Some((start, end)) = self.gain_input.selection_range() {
+                            let a = start.max(scroll);
+                            let b = end.min(scroll + GAIN_COLS).min(chars.len());
+                            if a < b {
+                                let x0 = col_x(a);
+                                let x1 = col_x(b);
+                                ctx.rectangle(
+                                    (x0 + x1) / 2.0,
+                                    gy,
+                                    (x1 - x0) / 2.0,
+                                    GAIN_HALF_H,
+                                    Color { a: 0.30, ..accent },
+                                    0.35,
+                                );
                             }
-                            None => self.runtime.message = "Type a dB number".to_string(),
+                        }
+                        if shown > scroll {
+                            let visible: String = chars[scroll..shown].iter().collect();
+                            ctx.text(
+                                gx,
+                                gy,
+                                &self.font,
+                                visible,
+                                GAIN_TEXT,
+                                500.0,
+                                rgb(226, 232, 240),
+                                0.35,
+                            );
+                        }
+                        if self.gain_input.focused() {
+                            if self.gain_input.blink_on() {
+                                let cx = col_x(self.gain_input.cursor_column());
+                                ctx.line(cx, bottom + 5.0, cx, top - 5.0, accent, 1.5, 0.35);
+                            }
+                            for [x0, y0, x1, y1] in [
+                                [left, bottom, right, bottom],
+                                [left, top, right, top],
+                                [left, bottom, left, top],
+                                [right, bottom, right, top],
+                            ] {
+                                ctx.line(x0, y0, x1, y1, accent, 2.0, 0.35);
+                            }
+                        }
+                        if committed {
+                            // Enter answers the editor: a number is written
+                            // back and the field closes; a draft that is not
+                            // one keeps the field open and says what it
+                            // wanted.
+                            match parse_gain(&draft) {
+                                Some(db) => {
+                                    self.set_trim(slot.id.0, side, db);
+                                    self.gain_edit = None;
+                                    self.gain_input.set_focus(false);
+                                }
+                                None => self.runtime.message = "Type a dB number".to_string(),
+                            }
                         }
                     }
                 }
@@ -1913,6 +2105,7 @@ impl Process for RackUi {
                     .gain_drag
                     .is_some_and(|(id, grabbed, _)| id == slot.id.0 && grabbed == side);
                 if clicked
+                    && !paused
                     && self.choosing.is_none()
                     && self.gain_drag.is_none()
                     && self.gain_edit.is_none()
@@ -2000,14 +2193,16 @@ impl Process for RackUi {
                     },
                     0.3,
                 );
-                ctx.rectangle(
-                    bx,
-                    gain_line_y(gain_db, slot.y),
-                    4.5,
-                    0.5,
-                    rgb(255, 255, 255),
-                    0.3,
-                );
+                if !paused {
+                    ctx.rectangle(
+                        bx,
+                        gain_line_y(gain_db, slot.y),
+                        4.5,
+                        0.5,
+                        rgb(255, 255, 255),
+                        0.3,
+                    );
+                }
             }
         }
         let fit = (w / 1000.0).clamp(0.45, 1.0);
@@ -3055,5 +3250,41 @@ mod tests {
             claimed((merge + on) / 2.0),
             "the run out of a merge is nobody's"
         );
+    }
+}
+
+#[cfg(test)]
+mod bypass_tests {
+    use super::*;
+    #[test]
+    fn bypass_wires_stay_outside_the_card_and_leads_end_at_the_minimised_meters() {
+        let (x, y) = (200.0, 100.0);
+        let path = bypass_path(x, y, 12.0);
+        assert_eq!(path[0], [wire_box_x(x, false), y]);
+        assert_eq!(path[3], [wire_box_x(x, true), y]);
+        for pair in path.windows(2) {
+            if pair[0][1] == pair[1][1] {
+                assert!(pair[0][1] > y + TRACK_HALF);
+            } else {
+                assert!((pair[0][0] - x).abs() > CARD_WIDTH / 2.0);
+            }
+        }
+        let tight = bypass_path(x, y, 2.0);
+        assert!(
+            tight[1][1] > y + TRACK_HALF && tight[1][1] < y + 116.0 - TRACK_HALF,
+            "the bypass must also fit between densely stacked parallel cards"
+        );
+        for side in [false, true] {
+            let (start, end) = card_lead(x, side, junction_x(x, false), junction_x(x, true), true);
+            if side {
+                assert_eq!(start, wire_box_x(x, true));
+            } else {
+                assert_eq!(end, wire_box_x(x, false));
+            }
+            let bx = wire_box_x(x, side);
+            assert!(meter_hit(Some([bx, y]), x, y, side, false));
+            assert!(!meter_hit(Some([bx, y + 35.0]), x, y, side, false));
+            assert!(meter_hit(Some([bx, y + 35.0]), x, y, side, true));
+        }
     }
 }

@@ -9,12 +9,24 @@ pub(super) struct TimingMeter {
     value: ProcessingTime,
     live: bool,
     overload: f32,
+    paused: bool,
+    host_overhead: f64,
 }
 impl TimingMeter {
-    pub fn tick(&mut self, sample: Option<ProcessingTime>, dt: f32) {
+    pub fn tick(&mut self, sample: Option<ProcessingTime>, dt: f32, paused: bool) {
+        if self.paused != paused {
+            self.value.added = 0.0;
+            self.overload = 0.0;
+        }
+        self.paused = paused;
         let dt = dt.clamp(0.0, 0.25);
         self.overload = (self.overload - dt).max(0.0);
-        if let Some(value) = sample {
+        if let Some(mut value) = sample {
+            self.host_overhead = if paused { value.added } else { 0.0 };
+            if paused {
+                value.added = 0.0;
+            }
+
             if value.total() >= 1.0 {
                 self.overload = 0.5;
             }
@@ -28,6 +40,7 @@ impl TimingMeter {
             self.live = true;
         } else {
             self.live = false;
+            self.host_overhead = 0.0;
             self.value = ProcessingTime::default();
             self.overload = 0.0;
         }
@@ -91,7 +104,17 @@ impl TimingMeter {
             },
             0.9,
         );
-        let rows = if self.live {
+        let rows = if self.paused {
+            [
+                "PAUSED: DSP 0.0%".into(),
+                format!("Incoming budget: {:.1}%", self.value.incoming * 100.0),
+                if self.live {
+                    format!("Rack overhead: {:.2}%", self.host_overhead * 100.0)
+                } else {
+                    "No live processing timing".into()
+                },
+            ]
+        } else if self.live {
             [
                 format!("Audio budget: {:.1}% used", self.value.total() * 100.0),
                 format!(
@@ -135,6 +158,7 @@ mod tests {
                 added: 0.1,
             }),
             0.016,
+            false,
         );
         meter.tick(
             Some(ProcessingTime {
@@ -142,12 +166,53 @@ mod tests {
                 added: 0.3,
             }),
             0.016,
+            false,
         );
         assert!(meter.value.total() > 0.3 && meter.value.total() < 1.1);
         assert_eq!(meter.overload, 0.5);
-        meter.tick(None, 0.016);
+        meter.tick(None, 0.016, false);
         assert_eq!(meter.value.total(), 0.0);
         assert!(!meter.live);
         assert_eq!(meter.overload, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod paused_tests {
+    use super::*;
+    #[test]
+    fn pause_clears_the_cards_dsp_usage_immediately_and_keeps_incoming_cost() {
+        let mut meter = TimingMeter::default();
+        meter.tick(
+            Some(ProcessingTime {
+                incoming: 0.3,
+                added: 0.2,
+            }),
+            0.016,
+            false,
+        );
+        assert_eq!(meter.value.added, 0.2);
+        meter.tick(
+            Some(ProcessingTime {
+                incoming: 0.3,
+                added: 0.001,
+            }),
+            0.016,
+            true,
+        );
+        assert_eq!(meter.value.added, 0.0);
+        assert_eq!(meter.value.incoming, 0.3);
+        assert_eq!(meter.host_overhead, 0.001);
+        assert_eq!(meter.value.segments(), (0.3, 0.0));
+        meter.tick(
+            Some(ProcessingTime {
+                incoming: 0.3,
+                added: 0.25,
+            }),
+            0.016,
+            false,
+        );
+        assert!(meter.value.added > 0.0);
+        assert_eq!(meter.host_overhead, 0.0);
     }
 }

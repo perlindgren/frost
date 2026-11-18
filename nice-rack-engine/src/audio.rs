@@ -136,6 +136,50 @@ impl Delay {
             }
         }
     }
+    /// Keep the untrimmed dry history warm while the effect is active.
+    fn advance(&mut self, input: &AudioBuffer, frames: usize) {
+        let length = self.history[0].len();
+        if length == 0 {
+            return;
+        }
+        for (history, source) in self.history.iter_mut().zip(&input.0) {
+            let mut cursor = self.cursor;
+            for &sample in &source[..frames] {
+                history[cursor] = sample;
+                cursor = (cursor + 1) % length;
+            }
+        }
+        self.cursor = (self.cursor + frames) % length;
+    }
+    /// Latency-compensated unity bypass, with the graph's normal mono/stereo
+    /// conversion when a processor has different input and output layouts.
+    fn dry(&mut self, input: &AudioBuffer, output: &mut AudioBuffer, frames: usize) {
+        let length = self.history[0].len();
+        for frame in 0..frames {
+            let mut samples = [0.0; 2];
+            for (channel, sample) in samples.iter_mut().enumerate().take(input.channels()) {
+                *sample = if length == 0 {
+                    input.0[channel][frame]
+                } else {
+                    let old = self.history[channel][self.cursor];
+                    self.history[channel][self.cursor] = input.0[channel][frame];
+                    old
+                };
+            }
+            if length != 0 {
+                self.cursor = (self.cursor + 1) % length;
+            }
+            for channel in 0..output.channels() {
+                output.0[channel][frame] = if input.channels() == output.channels() {
+                    samples[channel]
+                } else if output.channels() == 1 {
+                    (samples[0] + samples[1]) * 0.5
+                } else {
+                    samples[0]
+                };
+            }
+        }
+    }
     fn reset(&mut self) {
         self.cursor = 0;
         for channel in &mut self.history {
@@ -174,6 +218,9 @@ struct WireSlot {
     /// table had retired comes back closed, because the plan, not the switch,
     /// decides what a new wire is.
     open: AtomicBool,
+    /// Card bypass is held on its input slot and read once per block.
+    bypassed: AtomicBool,
+    paused: AtomicBool,
 }
 
 /// Lock-free wire observations shared between the audio thread and the UI.
@@ -205,6 +252,8 @@ impl WireLevels {
                     peak: AtomicU32::new(0),
                     gain: AtomicU32::new(1.0f32.to_bits()),
                     open: AtomicBool::new(false),
+                    bypassed: AtomicBool::new(false),
+                    paused: AtomicBool::new(false),
                 })
                 .collect(),
         }
@@ -224,6 +273,8 @@ impl WireLevels {
                 slot.key.store(0, Ordering::Relaxed);
                 slot.gain.store(1.0f32.to_bits(), Ordering::Relaxed);
                 slot.open.store(false, Ordering::Relaxed);
+                slot.bypassed.store(false, Ordering::Relaxed);
+                slot.paused.store(false, Ordering::Relaxed);
             }
             slot.rms.store(0, Ordering::Relaxed);
             slot.peak.store(0, Ordering::Relaxed);
@@ -249,6 +300,8 @@ impl WireLevels {
         if held(slot) != key {
             slot.gain.store(1.0f32.to_bits(), Ordering::Relaxed);
             slot.open.store(false, Ordering::Relaxed);
+            slot.bypassed.store(false, Ordering::Relaxed);
+            slot.paused.store(false, Ordering::Relaxed);
         }
         slot.rms.store(0, Ordering::Relaxed);
         slot.peak.store(0, Ordering::Relaxed);
@@ -264,6 +317,43 @@ impl WireLevels {
         slot.peak.store(peak.to_bits(), Ordering::Relaxed);
     }
 
+    /// Toggle the whole card's latency-preserving unity bypass, from the UI.
+    /// Trims and cable breaks stay saved but do not affect bypassed audio.
+    pub fn set_bypassed(&self, id: NodeId, bypassed: bool) {
+        if id.0 == 0 || id.0 > u64::MAX >> 1 {
+            return;
+        }
+        if let Some(slot) = self
+            .slots
+            .iter()
+            .find(|slot| slot.key.load(Ordering::Acquire) == id.0 << 1)
+        {
+            slot.bypassed.store(bypassed, Ordering::Relaxed);
+        }
+    }
+    /// Pause only the plugin branch. A separately enabled dry bypass wins.
+    pub fn set_paused(&self, id: NodeId, paused: bool) {
+        if id.0 == 0 || id.0 > u64::MAX >> 1 {
+            return;
+        }
+        if let Some(slot) = self
+            .slots
+            .iter()
+            .find(|slot| slot.key.load(Ordering::Acquire) == id.0 << 1)
+        {
+            slot.paused.store(paused, Ordering::Relaxed);
+        }
+    }
+    fn paused_at(&self, index: usize) -> bool {
+        self.slots
+            .get(index)
+            .is_some_and(|slot| slot.paused.load(Ordering::Relaxed))
+    }
+    fn bypassed_at(&self, index: usize) -> bool {
+        self.slots
+            .get(index)
+            .is_some_and(|slot| slot.bypassed.load(Ordering::Relaxed))
+    }
     /// Apply a linear `gain` to the wire `key`, from the UI thread, at any
     /// time; the bound keeps a runaway slider from stacking up grossly
     /// overdriven plugins. Non-finite values and unregistered keys are
@@ -523,15 +613,9 @@ impl PreparedRack {
                 .as_ref()
                 .map(|slot| slot.processor.latency_samples())
                 .unwrap_or(0);
-            if processor.as_ref().is_some_and(|slot| slot.bypassed) && in_count != out_count {
-                return Err(PrepareError::BypassRequiresMatchingChannels(id));
-            }
-            let bypass_latency = if processor.as_ref().is_some_and(|slot| slot.bypassed) {
-                latency
-            } else {
-                0
-            };
-            let bypass = Delay::new(in_count, bypass_latency, &mut budget)?;
+            // Allocate once even for active plugins: a live bypass must not
+            // allocate or rebuild the graph when its switch changes.
+            let bypass = Delay::new(in_count, latency, &mut budget)?;
             let mut edges = Vec::new();
             for edge in incoming {
                 edges.push(Edge {
@@ -690,42 +774,54 @@ impl PreparedRack {
                     // first because measuring a wire borrows two of the node's
                     // fields at once.
                     let (wire_in, wire_out) = (node.wire_in, node.wire_out);
-                    if let Some(trim) = wire_in {
+                    let bypassed = node.processor.as_ref().unwrap().bypassed
+                        || wire_in.is_some_and(|slot| wires.bypassed_at(slot));
+                    let paused = wire_in.is_some_and(|slot| wires.paused_at(slot));
+                    if !bypassed {
+                        node.bypass.advance(&node.input, frames);
+                    }
+                    if let Some(trim) = wire_in.filter(|_| !bypassed && !paused) {
                         apply_gain(&mut node.input, frames, wires.gain(trim));
                     }
                     // An open circuit is measured before it is broken. The
                     // stub on the switch then keeps reading the signal that
                     // arrives at the gap, which is what tells an operator
                     // chasing a fault that the far side of the break is alive;
-                    // what goes on past the gap is silence. Clearing the input
-                    // here also feeds that silence to a bypassed card, whose
-                    // copy would otherwise walk the broken wire straight
-                    // around the plugin.
+                    // what goes on past the gap is silence. A card
+                    // bypass ignores both saved breaks and trims, routing the
+                    // unmodified dry signal around this branch instead.
                     let arrival = wire_in
                         .is_some()
                         .then(|| wire_level(&node.input, frames, &mut node.tp_in));
-                    if wire_in.is_some_and(|slot| wires.open_at(slot)) {
+                    if !bypassed && wire_in.is_some_and(|slot| wires.open_at(slot)) {
                         node.input.clear(frames);
                     }
                     let processor = node.processor.as_mut().unwrap();
-                    if processor.bypassed {
-                        node.bypass.add(&node.input, &mut node.output, frames);
-                    } else {
+                    if bypassed {
+                        node.bypass.dry(&node.input, &mut node.output, frames);
+                    } else if !paused {
                         processor
                             .processor
                             .process(&node.input, &mut node.output, frames)
                             .map_err(|_| ProcessError::NodeFailed(node.id))?;
                     }
-                    if let Some(trim) = wire_out {
+                    if let Some(trim) = wire_out.filter(|_| !bypassed && !paused) {
                         apply_gain(&mut node.output, frames, wires.gain(trim));
                     }
-                    let departure = wire_out
-                        .is_some()
-                        .then(|| wire_level(&node.output, frames, &mut node.tp_out));
+                    let departure = wire_out.is_some().then(|| {
+                        if paused && !bypassed {
+                            for meter in &mut node.tp_out {
+                                meter.reset();
+                            }
+                            (0.0, 0.0)
+                        } else {
+                            wire_level(&node.output, frames, &mut node.tp_out)
+                        }
+                    });
                     // A card's output buffer is what every edge out of it
                     // reads, so breaking there is what makes the whole rest of
                     // the chain go quiet and not just the card next door.
-                    if wire_out.is_some_and(|slot| wires.open_at(slot)) {
+                    if !bypassed && wire_out.is_some_and(|slot| wires.open_at(slot)) {
                         node.output.clear(frames);
                     }
                     // Meter both stubs of this card from the settled buffers,

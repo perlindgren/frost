@@ -553,3 +553,306 @@ fn each_cards_budget_accumulates_in_execution_order_and_uses_the_actual_block_de
     assert_eq!(times.sample(NodeId(1)), None);
     assert_eq!(times.sample(NodeId(2)), None);
 }
+
+#[test]
+fn live_bypass_is_unity_skips_the_processor_and_keeps_untrimmed_latency_history() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    struct Counted {
+        effect: Effect,
+        calls: Arc<AtomicU64>,
+    }
+    impl Processor for Counted {
+        fn latency_samples(&self) -> usize {
+            3
+        }
+        fn process(
+            &mut self,
+            input: &AudioBuffer,
+            output: &mut AudioBuffer,
+            frames: usize,
+        ) -> Result<(), ProcessError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.effect.process(input, output, frames)
+        }
+    }
+    let calls = Arc::new(AtomicU64::new(0));
+    let graph = RackGraph {
+        nodes: [
+            (NodeId(0), NodeKind::Input(Channels::Mono)),
+            (
+                NodeId(1),
+                NodeKind::Plugin {
+                    inputs: Channels::Mono,
+                    outputs: Channels::Mono,
+                },
+            ),
+            (NodeId(2), NodeKind::Output(Channels::Mono)),
+        ]
+        .into(),
+        connections: vec![
+            Connection {
+                from: NodeId(0),
+                to: NodeId(1),
+            },
+            Connection {
+                from: NodeId(1),
+                to: NodeId(2),
+            },
+        ],
+    };
+    let mut rack = PreparedRack::prepare(
+        &graph,
+        [(
+            NodeId(1),
+            ProcessorSlot {
+                processor: Box::new(Counted {
+                    calls: calls.clone(),
+                    effect: Effect {
+                        gain: 2.0,
+                        delayed: true,
+                        history: [0.0; 3],
+                        cursor: 0,
+                        fail: false,
+                    },
+                }),
+                bypassed: false,
+            },
+        )]
+        .into(),
+        4,
+    )
+    .unwrap();
+    let wires = Arc::new(WireLevels::new(2));
+    rack.attach_wire_levels(wires.clone());
+    wires.set_gain(2, 4.0);
+    wires.set_gain(3, 2.0);
+    let mut output = [0.0; 4];
+    rack.process(&[&[0.25; 4]], &mut [&mut output], 4).unwrap();
+    assert_eq!(output, [0.0, 0.0, 0.0, 4.0]);
+    wires.set_bypassed(NodeId(1), true);
+    wires.set_open(2, true);
+    wires.set_open(3, true);
+    rack.process(&[&[0.5, 0.6, 0.7, 0.8]], &mut [&mut output], 4)
+        .unwrap();
+    assert_eq!(output, [0.25, 0.25, 0.25, 0.5]);
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_eq!(rack.latency_samples(), 3);
+    assert_eq!(wires.gain_of(2), Some(4.0));
+    assert_eq!(wires.gain_of(3), Some(2.0));
+    wires.set_bypassed(NodeId(1), false);
+    rack.process(&[&[0.4; 4]], &mut [&mut output], 4).unwrap();
+    assert_eq!(
+        output, [0.0; 4],
+        "the saved cable breaks return when re-enabled"
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    wires.set_open(2, false);
+    wires.set_open(3, false);
+    let allocations = allocation_counter::measure(|| {
+        for bypassed in [true, false, true, false] {
+            wires.set_bypassed(NodeId(1), bypassed);
+            rack.process(&[&[0.25; 4]], &mut [&mut output], 4).unwrap();
+        }
+    });
+    assert_eq!(allocations.count_total, 0);
+}
+
+#[test]
+fn live_bypass_supports_mono_stereo_conversion_and_keeps_parallel_branches() {
+    struct Uncalled;
+    impl Processor for Uncalled {
+        fn process(
+            &mut self,
+            _: &AudioBuffer,
+            _: &mut AudioBuffer,
+            _: usize,
+        ) -> Result<(), ProcessError> {
+            panic!("a bypassed processor must not be called")
+        }
+    }
+    for (input, output) in [
+        (Channels::Mono, Channels::Stereo),
+        (Channels::Stereo, Channels::Mono),
+    ] {
+        let graph = RackGraph {
+            nodes: [
+                (NodeId(0), NodeKind::Input(input)),
+                (
+                    NodeId(1),
+                    NodeKind::Plugin {
+                        inputs: input,
+                        outputs: output,
+                    },
+                ),
+                (NodeId(2), NodeKind::Output(output)),
+            ]
+            .into(),
+            connections: vec![
+                Connection {
+                    from: NodeId(0),
+                    to: NodeId(1),
+                },
+                Connection {
+                    from: NodeId(1),
+                    to: NodeId(2),
+                },
+            ],
+        };
+        let mut rack = PreparedRack::prepare(
+            &graph,
+            [(
+                NodeId(1),
+                ProcessorSlot {
+                    processor: Box::new(Uncalled),
+                    bypassed: false,
+                },
+            )]
+            .into(),
+            4,
+        )
+        .unwrap();
+        let wires = Arc::new(WireLevels::new(2));
+        rack.attach_wire_levels(wires.clone());
+        wires.set_bypassed(NodeId(1), true);
+        let mut left = [0.0; 4];
+        let mut right = [0.0; 4];
+        if input == Channels::Mono {
+            rack.process(&[&[0.75; 4]], &mut [&mut left, &mut right], 4)
+                .unwrap();
+            assert_eq!(left, [0.75; 4]);
+            assert_eq!(right, left);
+        } else {
+            rack.process(&[&[0.75; 4], &[0.25; 4]], &mut [&mut left], 4)
+                .unwrap();
+            assert_eq!(left, [0.5; 4]);
+        }
+    }
+    let mut rack = PreparedRack::prepare(
+        &graph(),
+        [
+            (NodeId(1), slot(2.0, false, false)),
+            (NodeId(2), slot(3.0, false, false)),
+        ]
+        .into(),
+        4,
+    )
+    .unwrap();
+    let wires = Arc::new(WireLevels::new(4));
+    rack.attach_wire_levels(wires.clone());
+    wires.set_bypassed(NodeId(1), true);
+    let mut output = [0.0; 4];
+    rack.process(&[&[0.1; 4]], &mut [&mut output], 4).unwrap();
+    for sample in output {
+        assert!((sample - 0.4).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn pause_mutes_audio_and_output_meter_but_can_be_bypassed_independently() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Tail(Arc<AtomicUsize>);
+    impl Processor for Tail {
+        fn process(
+            &mut self,
+            _: &AudioBuffer,
+            output: &mut AudioBuffer,
+            frames: usize,
+        ) -> Result<(), ProcessError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            output.channel_mut(0, frames).fill(0.75);
+            Ok(())
+        }
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let graph = RackGraph {
+        nodes: [
+            (NodeId(0), NodeKind::Input(Channels::Mono)),
+            (
+                NodeId(1),
+                NodeKind::Plugin {
+                    inputs: Channels::Mono,
+                    outputs: Channels::Mono,
+                },
+            ),
+            (NodeId(2), NodeKind::Output(Channels::Mono)),
+        ]
+        .into(),
+        connections: vec![
+            Connection {
+                from: NodeId(0),
+                to: NodeId(1),
+            },
+            Connection {
+                from: NodeId(1),
+                to: NodeId(2),
+            },
+        ],
+    };
+    let mut rack = PreparedRack::prepare(
+        &graph,
+        [(
+            NodeId(1),
+            ProcessorSlot {
+                processor: Box::new(Tail(calls.clone())),
+                bypassed: false,
+            },
+        )]
+        .into(),
+        64,
+    )
+    .unwrap();
+    let wires = Arc::new(WireLevels::new(2));
+    rack.attach_wire_levels(wires.clone());
+    wires.set_gain(2, 2.0);
+    wires.set_gain(3, 2.0);
+    let mut output = [0.0; 64];
+    rack.process(&[&[0.25; 64]], &mut [&mut output], 64)
+        .unwrap();
+    assert_eq!(output, [1.5; 64]);
+    assert!(wires.sample(3).unwrap().1 > 0.0);
+    wires.set_paused(NodeId(1), true);
+    rack.process(&[&[0.25; 64]], &mut [&mut output], 64)
+        .unwrap();
+    assert_eq!(
+        output, [0.0; 64],
+        "a paused processor's tail cannot reach its output"
+    );
+    assert_eq!(
+        wires.sample(3),
+        Some((0.0, 0.0)),
+        "no old true-peak history may leak into the paused meter"
+    );
+    assert!(
+        wires.sample(2).unwrap().0 > 0.0,
+        "the input still reads its arriving signal"
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    wires.set_bypassed(NodeId(1), true);
+    rack.process(&[&[0.25; 64]], &mut [&mut output], 64)
+        .unwrap();
+    assert_eq!(
+        output, [0.25; 64],
+        "dry bypass works even while the plugin remains paused, without either gain trim"
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    wires.set_bypassed(NodeId(1), false);
+    rack.process(&[&[0.25; 64]], &mut [&mut output], 64)
+        .unwrap();
+    assert_eq!(
+        output, [0.0; 64],
+        "removing bypass returns to the paused branch"
+    );
+    wires.set_paused(NodeId(1), false);
+    rack.process(&[&[0.25; 64]], &mut [&mut output], 64)
+        .unwrap();
+    assert_eq!(output, [1.5; 64]);
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    let allocations = allocation_counter::measure(|| {
+        for paused in [true, false, true, false] {
+            wires.set_paused(NodeId(1), paused);
+            rack.process(&[&[0.25; 64]], &mut [&mut output], 64)
+                .unwrap();
+        }
+    });
+    assert_eq!(allocations.count_total, 0);
+}

@@ -280,6 +280,8 @@ pub struct Runtime {
     /// with the switches as they were left. Card ids are never reused, so a
     /// remembered break cannot drift onto a different card.
     open_circuits: BTreeSet<(u64, bool)>,
+    bypassed: BTreeSet<u64>,
+    paused: BTreeSet<u64>,
     /// The level a wire's minimised meter has to reach to light up, in dBFS —
     /// the rack's one view preference, held next to the trims because it is
     /// remembered the same way: the GUI reads and writes this copy every frame
@@ -391,6 +393,20 @@ impl Runtime {
             saved_plugins: settings.preferences.plugins.clone(),
             trims: remembered_trims(&settings.preferences.plugins),
             open_circuits: remembered_opens(&settings.preferences.plugins),
+            bypassed: settings
+                .preferences
+                .plugins
+                .iter()
+                .filter(|saved| saved.bypassed)
+                .map(|saved| saved.id)
+                .collect(),
+            paused: settings
+                .preferences
+                .plugins
+                .iter()
+                .filter(|saved| saved.paused)
+                .map(|saved| saved.id)
+                .collect(),
             meter_gate_db: remembered_gate(settings.preferences.meter_gate_db),
             // The file's own number, sane or not, so a gate the rack had to
             // look past is one `persist` writes back proper.
@@ -779,6 +795,10 @@ impl Runtime {
                 // because `park` joined the previous worker earlier in this
                 // same tick, so no publish can still be in flight.
                 audio.attach_wire_levels(self.wires.clone());
+                for card in &opening.action.cards {
+                    self.wires.set_bypassed(card.id, self.bypassed(card.id.0));
+                    self.wires.set_paused(card.id, self.paused(card.id.0));
+                }
                 audio.attach_processing_times(self.timings.clone(), rate);
                 self.worker = Some(spawn_dsp(audio, endpoints, self.levels.clone()));
                 self.session = Some(session);
@@ -837,6 +857,28 @@ impl Runtime {
         if let Some(action) = &mut self.action {
             action.cards = cards;
         }
+    }
+    pub(crate) fn paused(&self, id: u64) -> bool {
+        self.paused.contains(&id)
+    }
+    pub(crate) fn set_paused(&mut self, id: u64, paused: bool) {
+        if paused {
+            self.paused.insert(id);
+        } else {
+            self.paused.remove(&id);
+        }
+        self.wires.set_paused(NodeId(id), paused);
+    }
+    pub(crate) fn bypassed(&self, id: u64) -> bool {
+        self.bypassed.contains(&id)
+    }
+    pub(crate) fn set_bypassed(&mut self, id: u64, bypassed: bool) {
+        if bypassed {
+            self.bypassed.insert(id);
+        } else {
+            self.bypassed.remove(&id);
+        }
+        self.wires.set_bypassed(NodeId(id), bypassed);
     }
     /// What the rack remembers for one wire, in dB: the trim a resumed rack
     /// opens its meter at, and what gets saved back out. `None` means the rack
@@ -932,6 +974,8 @@ impl Runtime {
                 gain_out: self.trim(card.id.0, true).unwrap_or_default(),
                 open_in: self.open_circuit(card.id.0, false),
                 open_out: self.open_circuit(card.id.0, true),
+                bypassed: self.bypassed(card.id.0),
+                paused: self.paused(card.id.0),
             })
             .collect();
         // One write covers both kinds of preference the rack keeps changing
@@ -1545,6 +1589,8 @@ mod tests {
             gain_out: 0.0,
             open_in: true,
             open_out: false,
+            bypassed: false,
+            paused: false,
         };
         let opens = remembered_opens(std::slice::from_ref(&saved));
         assert!(opens.contains(&(7, false)), "the side the file names");
@@ -1935,5 +1981,53 @@ mod tests {
         assert!(runtime.action.is_none());
         assert!(runtime.retry.is_none());
         assert_eq!(runtime.message, "Device sample rate changed");
+    }
+}
+
+#[cfg(test)]
+mod card_mode_tests {
+    use super::*;
+    #[test]
+    fn paused_and_bypassed_restore_independently_from_saved_cards() {
+        let saved: crate::SavedPlugin = saved_card();
+        let mut settings = Settings::default();
+        settings.preferences.plugins.push(saved.clone());
+        let mut runtime = Runtime::new(settings);
+        assert!(runtime.paused(7));
+        assert!(runtime.bypassed(7));
+        runtime.set_bypassed(7, false);
+        assert!(runtime.paused(7));
+        assert!(!runtime.bypassed(7));
+        runtime.set_paused(7, false);
+        assert!(!runtime.paused(7));
+        let mut before = saved;
+        before.paused = false;
+        before.bypassed = false;
+        let settings = Settings {
+            preferences: crate::RackPreferences {
+                plugins: vec![before],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let runtime = Runtime::new(settings);
+        assert!(!runtime.paused(7) && !runtime.bypassed(7));
+    }
+    fn saved_card() -> crate::SavedPlugin {
+        crate::SavedPlugin {
+            id: 7,
+            stage: 7,
+            path: "/plugins/test.clap".into(),
+            class: "test".into(),
+            name: "Test".into(),
+            state: None,
+            editor: None,
+            gain_in: 3.0,
+            gain_out: -2.0,
+            open_in: false,
+            open_out: false,
+            bypassed: true,
+            paused: true,
+        }
     }
 }
