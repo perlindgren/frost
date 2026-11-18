@@ -79,6 +79,17 @@ impl LiveAudio {
         result.map(|()| LiveStatus::Running)
     }
 
+    /// Control-thread registration of per-card block-budget observations.
+    pub fn attach_processing_times(
+        &mut self,
+        times: std::sync::Arc<nice_rack_engine::audio::ProcessingTimes>,
+        sample_rate: f64,
+    ) {
+        if let Some(rack) = &mut self.rack {
+            rack.attach_processing_times(times, sample_rate);
+        }
+    }
+
     /// Hand the shared per-wire meter table to the prepared graph. Control
     /// thread only, and only before this `LiveAudio` crosses to the DSP
     /// worker: the attach resets the table and registers every metered wire

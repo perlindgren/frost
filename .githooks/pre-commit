@@ -123,7 +123,7 @@ cargo clippy -p nice-tuner -p pitch --all-targets -- -D warnings || {
 # it. The gate compiles each half on its own platform; this line is what makes
 # the Windows half wait for neither. Not `--features standalone`, and the reason
 # under it has changed rather than the omission: it used to be a Steinberg SDK no
-# clean checkout has, and now it is that a hook runs on every commit while seven
+# clean checkout has, and now it is that a hook runs on every commit while eight
 # standalone graphs do not belong in one. That feature set has its own job in the
 # gate, on both platforms, on every push.
 printf 'pre-commit: clippy -D warnings (the model plugin and the shared crate)...\n'
@@ -152,7 +152,7 @@ cargo clippy -p nice-phase --all-targets -- -D warnings || {
 
 # The Pi-Fase, for the same reason, and it spends its life beside the wah. Not
 # `--features standalone` here either: the gate lints it on both platforms, and a
-# hook that spent its time building seven standalone graphs is a hook people skip.
+# hook that spent its time building eight standalone graphs is a hook people skip.
 printf 'pre-commit: clippy -D warnings (the Pi-Fase)...\n'
 cargo clippy -p nice-pi-face --all-targets -- -D warnings || {
     printf 'pre-commit: clippy failed in nice-pi-face - commit aborted.\n' >&2
@@ -182,8 +182,25 @@ cargo clippy -p nice-ecomplex --all-targets -- -D warnings || {
     exit 1
 }
 
+# The Clone, by the same logic as its neighbours, and with the same deliberate
+# omission: no `--features standalone`. That reason used to be an SDK the hook
+# had no right to demand; now it is that the hook's job is what every commit can
+# build quickly, and that feature set has a job of its own in the gate, on both
+# platforms. What is particular here is what the plain lint is paid to watch:
+# this card solves a circuit — the diode pair, the input buffer and the feedback
+# amplifier are written as components — so a warning inside that arithmetic is a
+# wrong sound, not a style complaint. It asks nothing extra of the machine
+# either: no SDK, and no instruction-set floor, because there is no SIMD engine
+# under these component models, which is why the line ran clean on this machine
+# at the default x86-64 baseline before it was written.
+printf 'pre-commit: clippy -D warnings (the Clone)...\n'
+cargo clippy -p nice-clone --all-targets -- -D warnings || {
+    printf 'pre-commit: clippy failed in nice-clone - commit aborted.\n' >&2
+    exit 1
+}
+
 # The rack, its host adapter and the two crates under them, named for the reason
-# this file has now written out seven times: the five sit in `members` and not in
+# this file has now written out eight times: the five sit in `members` and not in
 # `default-members`, so the clippy near the top of this file compiles none of them
 # while the `cargo fmt --all` above formats them as though it had. The gate has
 # linted all five on both platforms since pull request 31; what was missing is the

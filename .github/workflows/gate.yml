@@ -118,6 +118,7 @@ jobs:
       pi_face: ${{ steps.decide.outputs.pi_face || 'true' }}
       echo: ${{ steps.decide.outputs.echo || 'true' }}
       ecomplex: ${{ steps.decide.outputs.ecomplex || 'true' }}
+      clone: ${{ steps.decide.outputs.clone || 'true' }}
       rack: ${{ steps.decide.outputs.rack || 'true' }}
       engine: ${{ steps.decide.outputs.engine || 'true' }}
       graph: ${{ steps.decide.outputs.graph || 'true' }}
@@ -367,8 +368,26 @@ jobs:
       - name: Clippy, zero warnings, the standalone Echoplex
         run: cargo clippy -p nice-ecomplex --features standalone --all-targets -- -D warnings
 
+      # The Clone, named like every plugin above it for the same reason: a
+      # member `cargo clippy` with no `-p` would never compile it, and
+      # membership is not coverage. No RUSTFLAGS, unlike the model plugin's
+      # step — the Centaur's filter is plain Rust over component models, with
+      # no SIMD engine under it, so nothing in its graph refuses the default
+      # baseline.
+      - name: Clippy, zero warnings, the Clone
+        run: cargo clippy -p nice-clone --all-targets -- -D warnings
+
+      # Its standalone half beside theirs: the binary, the audio owner and
+      # the settings file live behind `standalone`, and a step that never
+      # turns the feature on would lint a source tree with the application
+      # missing from it. ASIO is not fetched here — `azo`, the transport the
+      # `asio-host` feature switches on, is a `cfg(windows)` dependency of
+      # nice-common, invisible to this runner's graph.
+      - name: Clippy, zero warnings, the standalone Clone
+        run: cargo clippy -p nice-clone --features standalone --all-targets -- -D warnings
+
       # The rack and its four crates, named for the reason this file has now
-      # written out seven times: `nice-rack`,
+      # written out eight times: `nice-rack`,
       # `nice-rack-engine`, `nice-clap-host`, `nice-rack-standalone` and
       # `rack-window-input` sit in `members` and not in `default-members`, so the
       # bare clippy above compiles none of them while `cargo fmt --all` formats
@@ -585,6 +604,21 @@ jobs:
           cargo test --no-fail-fast -p nice-ecomplex
           cargo test --no-fail-fast -p nice-ecomplex --features standalone
 
+      # The Clone, named like every plugin before it. Its suite is the
+      # circuit — Kirchhoff held across the diode solution, the input buffer
+      # and the feedback amplifier kept inside their supply headroom, the
+      # time domain measured against an independent nodal AC reference,
+      # transients through the op-amp's own saturation, oversampling that
+      # fades through zero and rejects its images — plus the host-facing
+      # parameter list, the settings round trip, and `tests/no_alloc.rs` as
+      # the audio thread's witness. None of it opens a device, so the
+      # standalone half runs here too.
+      - name: Tests, the Clone
+        if: needs.plan.outputs.clone == 'true'
+        run: |
+          cargo test --no-fail-fast -p nice-clone
+          cargo test --no-fail-fast -p nice-clone --features standalone
+
       # The rack's suites. Nine tests stand aside, every one of them naming
       # `NICE_RACK_TEST_CLAP` — this repository's own freshly built nice-tuner
       # export, a plugin the runner could build and has no reason to load into its
@@ -797,14 +831,15 @@ jobs:
       - name: Clippy, zero warnings, the shared crate with every feature
         run: cargo clippy -p nice-common --all-features --all-targets -- -D warnings
 
-      # The five plugins that take their audio from `nice_common::audio_io`, plain and
-      # standalone. They share two commands here rather than the ten above because
-      # the reason for naming them — membership is not coverage — is one reason, not
-      # five, and one cargo invocation says it once.
+      # The six plugins that take their audio from `nice_common::audio_io`,
+      # plain and standalone. They share two commands here rather than the
+      # twelve above because the reason for naming them — membership is not
+      # coverage — is one reason, not six, and one cargo invocation says it
+      # once.
       - name: Clippy, zero warnings, the plugins that use the shared audio
         run: |
-          cargo clippy -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo -p nice-ecomplex --all-targets -- -D warnings
-          cargo clippy -p nice-wah -p nice-phase -p nice-pi-face -p nice-echo -p nice-ecomplex --features standalone --all-targets -- -D warnings
+          cargo clippy -p nice-wah -p nice-phase -p nice-clone -p nice-pi-face -p nice-echo -p nice-ecomplex --all-targets -- -D warnings
+          cargo clippy -p nice-wah -p nice-phase -p nice-clone -p nice-pi-face -p nice-echo -p nice-ecomplex --features standalone --all-targets -- -D warnings
 
       # The rack and its four crates, on the machine whose audio they now use.
       # Same reason as every named step in this job — `members` without
@@ -883,6 +918,10 @@ jobs:
       - name: Tests, the Echoplex, standalone
         if: needs.plan.outputs.ecomplex == 'true'
         run: cargo test --no-fail-fast -p nice-ecomplex --features standalone
+
+      - name: Tests, the Clone, standalone
+        if: needs.plan.outputs.clone == 'true'
+        run: cargo test --no-fail-fast -p nice-clone --features standalone
 
       # The rack, on the platform its binary ships on. Twenty-three tests run and
       # nine stand aside: each of the nine names `NICE_RACK_TEST_CLAP`, a native

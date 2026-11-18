@@ -91,7 +91,7 @@ pub fn draw(
         let (sx, sy) = (a.sin(), a.cos());
         ctx.line(
             kx + sx * radius * 1.06,
-            ky + sy * radius * 1.22,
+            ky + sy * radius * 1.06,
             kx + sx * radius * 1.3,
             ky + sy * radius * 1.3,
             MUTED,

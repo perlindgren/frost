@@ -58,7 +58,39 @@ isolation or make an arbitrary third-party plugin safe.
   no supported embedded editor exists, a frost overlay exposes the plugin's
   parameters. Drag the sliders, scroll for more controls, and close with × or
   Escape. A drag beyond five logical points moves the card instead of opening it.
+- Double-click either gain value in normal mode to reset that trim to 0 dB
+  (unity). A single click still opens its numeric editor.
+- Right-click either meter beside a card, expanded or minimized, to toggle
+  **bypass**. Both meters collapse and an amber wire goes up from the input,
+  across above the card, and down to the output. The short leads into the card
+  and the gain readouts disappear. Bypass keeps the processor running on actual
+  input while discarding its wet output. It skips both gain trims, passing unity
+  dry audio with the card's latency preserved for parallel
+  alignment. The previous trims and cable breaks return when bypass is removed.
+- Right-click the **card body** to toggle **pause**. A paused card is dimmed and
+  marked PAUSED in its status line, keeping its name. Both gain readouts and
+  gain handles are hidden and inactive; the saved trims return on resume. Its
+  processor is not called and its output signal and output meter are zero,
+  including any previous tail. Pause and bypass are separate:
+  enabling bypass around a paused plugin passes dry audio; removing bypass
+  returns to silence until the card is resumed. Its utilization bar immediately
+  removes the added DSP segment while keeping incoming usage; hovering reports
+  DSP 0.0% and separately identifies any remaining rack overhead.
+  Both switches are saved with
+  the rack. Right-clicking bare cable still toggles its existing wire break.
 - Input and output RMS/peak-hold meters sit at the bottom.
+- Every effect card has its own bottom-edge audio-budget meter. Muted purple
+  fills from the left for time already spent before that card; green adds that
+  card's contribution. It turns amber from 85% and red at 100%; a red end marker
+  holds a detected overrun briefly. Hover over the line for the percentage split.
+  The full card width is one actual audio block's deadline (`frames / sample rate`),
+  including short blocks. This is live processing time, not plugin latency in
+  samples or total machine CPU usage. Routing, trims and wire meters belong to
+  each card's measured cost; the incoming portion includes earlier graph work.
+  Parallel branches execute on the same audio thread, so already-executed peers
+  count toward the budget too. Device transport and work outside graph execution
+  are excluded. Readings are gently smoothed and clear when audio stops.
+
 
 The first version accepts effects with one mono/stereo main bus in each direction.
 The rack input/output is stereo. Explicit channel-map nodes duplicate mono into

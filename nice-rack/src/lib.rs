@@ -87,6 +87,11 @@ pub struct SavedPlugin {
     pub open_in: bool,
     #[serde(default)]
     pub open_out: bool,
+    /// Unity dry route around this card, with its trims temporarily disabled.
+    #[serde(default)]
+    pub bypassed: bool,
+    #[serde(default)]
+    pub paused: bool,
 }
 /// Half the range a wire's gain trim spans, in dB: the track is drawn across
 /// ±24 dB, the drag clamps to it, a typed number is answered at it, the
@@ -173,6 +178,8 @@ mod tests {
                 // in as many words as one that says something is.
                 open_in: false,
                 open_out,
+                bypassed: id == 1,
+                paused: id == 3,
             });
         }
         settings.save_to(&path).unwrap();

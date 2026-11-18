@@ -27,10 +27,11 @@ $env:RUST_LOG="info"; cargo run --example gizmos
 
 ## Plugins and the rack
 
-Seven cards live in this workspace — `nice-tuner`, `nice-nam`, `nice-wah`,
-`nice-phase`, `nice-pi-face`, `nice-echo` and `nice-ecomplex` — and each one is a
-single editor and `process` implementation in two shapes: a plugin, built from
-the crate's `cdylib`, and a standalone application, built from its `src/main.rs`.
+Eight cards live in this workspace — `nice-tuner`, `nice-nam`, `nice-wah`,
+`nice-phase`, `nice-pi-face`, `nice-echo`, `nice-ecomplex` and `nice-clone` —
+and each one is a single editor and `process` implementation in two shapes: a
+plugin, built from the crate's `cdylib`, and a standalone application, built
+from its `src/main.rs`.
 
 The `RUSTFLAGS` in the commands below is an instruction-set baseline and not
 decoration: NeuralAmpModeler-rs wants AVX2, so `nice-nam` has no working models
@@ -67,7 +68,8 @@ Several at once takes `-p` per package, there being no `all`:
 ```shell
 RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo xtask bundle \
   -p nice-tuner -p nice-nam -p nice-wah -p nice-phase \
-  -p nice-pi-face -p nice-echo -p nice-ecomplex --release
+  -p nice-pi-face -p nice-echo -p nice-ecomplex \
+  -p nice-clone --release
 ```
 
 Bundles land in `target/bundled/` under the display name from

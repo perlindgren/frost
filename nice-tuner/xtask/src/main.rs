@@ -1,7 +1,7 @@
 //! Plugin bundler entry point: `cargo xtask bundle nice-tuner --release`.
 //!
-//! Everything about assembling the plugin is `nice-plug-xtask`'s. This file adds
-//! the font licence notices that must accompany the embedded editor assets.
+//! Native bundle assembly uses nice-plug-xtask public APIs. This wrapper keeps
+//! nested worktrees in their own workspace and ships embedded font licences.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,14 +29,30 @@ const FONT_LICENCES: &[(&str, &str)] = &[
 ];
 
 fn main() -> anyhow::Result<()> {
-    nice_plug_xtask::chdir_workspace_root()?;
-    let root = std::env::current_dir().context("could not read the working directory")?;
-    let bundling = std::env::args().nth(1).as_deref() == Some("bundle");
+    // Cargo knows the nearest workspace. The upstream bundler instead picks
+    // the outermost Cargo.toml, which leaves a worktree nested in a checkout.
+    // Use the public build/bundle APIs from Cargo's actual workspace root.
+    let located = std::process::Command::new("cargo")
+        .args(["locate-project", "--workspace", "--message-format", "plain"])
+        .output()
+        .context("could not locate the Cargo workspace")?;
+    if !located.status.success() {
+        bail!("cargo could not locate the workspace");
+    }
+    let manifest = String::from_utf8(located.stdout).context("workspace path is not UTF-8")?;
+    let root = Path::new(manifest.trim())
+        .parent()
+        .context("workspace manifest has no parent")?
+        .to_path_buf();
+    std::env::set_current_dir(&root).context("could not enter the Cargo workspace")?;
+    let bundling = matches!(
+        std::env::args().nth(1).as_deref(),
+        Some("bundle" | "bundle-universal")
+    );
 
     // Read before building, not after: a licence text that has gone missing is a
     // reason to stop, not a reason to spend two minutes compiling and then mention
-    // it. `chdir_workspace_root` is idempotent, so `main` calling it again for its
-    // own sake costs nothing.
+    // it. The bundler runs below without changing to an outer checkout.
     let licences = if bundling {
         FONT_LICENCES
             .iter()
@@ -50,24 +66,27 @@ fn main() -> anyhow::Result<()> {
         Vec::new()
     };
 
-    nice_plug_xtask::main()?;
+    run_command(&root, std::env::args().skip(1).collect())?;
 
+    let mut modified_bundles = std::collections::BTreeSet::new();
     for (name, licence) in licences {
-        ship_font_licence(&root, name, &licence)?;
+        modified_bundles.extend(ship_font_licence(&root, name, &licence)?);
+    }
+    // The public bundler signs during assembly. Resource writes invalidate
+    // that seal, so sign again only after every licence has been installed.
+    for bundle in modified_bundles {
+        if bundle.join("Contents/MacOS").is_dir() {
+            sign_and_verify(&bundle)?;
+        }
     }
     Ok(())
 }
 
 /// Write the font's licence text into every bundle just built.
 ///
-/// Two destinations, because the two formats are different shapes. A `.vst3` is a
-/// directory and a host reads what it asks for, so the text can ride inside at
-/// `Contents/Resources/OFL.txt` and a bundle copied anywhere carries its own
-/// licence. A CLAP is deliberately *one file* — that is the format's point — so
-/// nothing goes inside it; the text lands beside the bundles with a line saying so,
-/// because from there the duty belongs to whoever builds the archive, and the only
-/// defence against forgetting is making it unavoidable.
-fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<()> {
+/// Directory bundles (VST3 and macOS CLAP) carry notices in Contents/Resources.
+/// Single-file CLAP exports carry their notices beside the binary.
+fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<Vec<PathBuf>> {
     // `nice-plug-xtask` resolves the real target directory through
     // `cargo metadata`; this repeats the part of that rule a build here can hit. A
     // `[build] target-dir` in a cargo config would land elsewhere, and that case
@@ -85,6 +104,7 @@ fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<
         )
     })?;
 
+    let mut modified = Vec::new();
     let mut written = 0usize;
     let mut single_file_bundles = 0usize;
     for entry in entries {
@@ -93,7 +113,7 @@ fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if path.is_dir() && bundle_name.ends_with(".vst3") {
+        if path.is_dir() && (bundle_name.ends_with(".vst3") || bundle_name.ends_with(".clap")) {
             let target = path.join("Contents").join("Resources").join(name);
             let dir = target
                 .parent()
@@ -101,9 +121,10 @@ fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<
             fs::create_dir_all(dir)?;
             fs::write(&target, licence)?;
             println!(
-                "Added the font licence to the VST3 bundle at '{}'",
+                "Added the font licence to the plugin bundle at '{}'",
                 target.display()
             );
+            modified.push(path);
             written += 1;
         } else if path.is_file() && bundle_name.ends_with(".clap") {
             single_file_bundles += 1;
@@ -132,5 +153,126 @@ fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<
             bundled.display()
         );
     }
+    Ok(modified)
+}
+
+/// Seal the final resources and fail packaging if signing or verification fails.
+/// No dependency sources are changed; non-macOS bundle layouts skip this step.
+fn sign_and_verify(bundle: &Path) -> anyhow::Result<()> {
+    for args in [
+        &["--force", "--sign", "-"][..],
+        &["--verify", "--deep", "--strict"][..],
+    ] {
+        let output = std::process::Command::new("codesign")
+            .args(args)
+            .arg(bundle)
+            .output()
+            .with_context(|| format!("could not run codesign for '{}'", bundle.display()))?;
+        if !output.status.success() {
+            bail!(
+                "codesign {} failed for '{}': {}",
+                args[0],
+                bundle.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+    }
+    println!(
+        "Signed and verified completed bundle '{}'",
+        bundle.display()
+    );
     Ok(())
+}
+
+/// Keep workspace selection application-owned while delegating native artifact
+/// construction to the bundler's public APIs (no dependency modifications).
+fn run_command(root: &Path, args: Vec<String>) -> anyhow::Result<()> {
+    let command = args
+        .first()
+        .context("expected bundle, bundle-universal, or known-packages")?;
+    if command == "known-packages" {
+        return nice_plug_xtask::list_known_packages();
+    }
+    if command != "bundle" && command != "bundle-universal" {
+        bail!("unknown command: {command}");
+    }
+    let (packages, build_args) = bundle_args(&args[1..])?;
+    let metadata = cargo_metadata::MetadataCommand::new()
+        .manifest_path(root.join("Cargo.toml"))
+        .no_deps()
+        .exec()?;
+    let universal = command == "bundle-universal";
+    if universal {
+        if build_args
+            .iter()
+            .any(|arg| arg == "--target" || arg.starts_with("--target="))
+        {
+            bail!("bundle-universal cannot take --target");
+        }
+        for target in ["x86_64-apple-darwin", "aarch64-apple-darwin"] {
+            let mut target_args = build_args.clone();
+            target_args.push(format!("--target={target}"));
+            nice_plug_xtask::build(&packages, &target_args)?;
+        }
+    } else {
+        nice_plug_xtask::build(&packages, &build_args)?;
+    }
+    for package in &packages {
+        nice_plug_xtask::bundle(
+            metadata.target_directory.as_std_path(),
+            package,
+            &build_args,
+            universal,
+        )?;
+    }
+    Ok(())
+}
+fn bundle_args(args: &[String]) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    let mut packages = Vec::new();
+    let mut build_args = Vec::new();
+    let mut args = args.iter().peekable();
+    if args.peek().is_some_and(|arg| !arg.starts_with('-')) {
+        packages.push(args.next().unwrap().clone());
+    }
+    while let Some(arg) = args.next() {
+        if arg == "-p" || arg == "--package" {
+            packages.push(args.next().context("missing package name")?.clone());
+        } else if let Some(package) = arg.strip_prefix("--package=") {
+            packages.push(package.into());
+        } else {
+            build_args.push(arg.clone());
+        }
+    }
+    if packages.is_empty() {
+        bail!("specify a package: cargo xtask bundle nice-clone [--release]");
+    }
+    Ok((packages, build_args))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn package_selection_keeps_cargo_build_options_intact() {
+        let args = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            bundle_args(&args(&["nice-clone", "--release", "--offline"])).unwrap(),
+            (args(&["nice-clone"]), args(&["--release", "--offline"]))
+        );
+        assert_eq!(
+            bundle_args(&args(&[
+                "-p",
+                "nice-clone",
+                "-p",
+                "nice-wah",
+                "--features",
+                "standalone"
+            ]))
+            .unwrap(),
+            (
+                args(&["nice-clone", "nice-wah"]),
+                args(&["--features", "standalone"])
+            )
+        );
+        assert!(bundle_args(&args(&["-p"])).is_err());
+    }
 }
