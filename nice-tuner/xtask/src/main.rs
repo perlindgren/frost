@@ -68,8 +68,16 @@ fn main() -> anyhow::Result<()> {
 
     run_command(&root, std::env::args().skip(1).collect())?;
 
+    let mut modified_bundles = std::collections::BTreeSet::new();
     for (name, licence) in licences {
-        ship_font_licence(&root, name, &licence)?;
+        modified_bundles.extend(ship_font_licence(&root, name, &licence)?);
+    }
+    // The public bundler signs during assembly. Resource writes invalidate
+    // that seal, so sign again only after every licence has been installed.
+    for bundle in modified_bundles {
+        if bundle.join("Contents/MacOS").is_dir() {
+            sign_and_verify(&bundle)?;
+        }
     }
     Ok(())
 }
@@ -78,7 +86,7 @@ fn main() -> anyhow::Result<()> {
 ///
 /// Directory bundles (VST3 and macOS CLAP) carry notices in Contents/Resources.
 /// Single-file CLAP exports carry their notices beside the binary.
-fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<()> {
+fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<Vec<PathBuf>> {
     // `nice-plug-xtask` resolves the real target directory through
     // `cargo metadata`; this repeats the part of that rule a build here can hit. A
     // `[build] target-dir` in a cargo config would land elsewhere, and that case
@@ -96,6 +104,7 @@ fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<
         )
     })?;
 
+    let mut modified = Vec::new();
     let mut written = 0usize;
     let mut single_file_bundles = 0usize;
     for entry in entries {
@@ -115,6 +124,7 @@ fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<
                 "Added the font licence to the plugin bundle at '{}'",
                 target.display()
             );
+            modified.push(path);
             written += 1;
         } else if path.is_file() && bundle_name.ends_with(".clap") {
             single_file_bundles += 1;
@@ -143,6 +153,34 @@ fn ship_font_licence(root: &Path, name: &str, licence: &[u8]) -> anyhow::Result<
             bundled.display()
         );
     }
+    Ok(modified)
+}
+
+/// Seal the final resources and fail packaging if signing or verification fails.
+/// No dependency sources are changed; non-macOS bundle layouts skip this step.
+fn sign_and_verify(bundle: &Path) -> anyhow::Result<()> {
+    for args in [
+        &["--force", "--sign", "-"][..],
+        &["--verify", "--deep", "--strict"][..],
+    ] {
+        let output = std::process::Command::new("codesign")
+            .args(args)
+            .arg(bundle)
+            .output()
+            .with_context(|| format!("could not run codesign for '{}'", bundle.display()))?;
+        if !output.status.success() {
+            bail!(
+                "codesign {} failed for '{}': {}",
+                args[0],
+                bundle.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+    }
+    println!(
+        "Signed and verified completed bundle '{}'",
+        bundle.display()
+    );
     Ok(())
 }
 
