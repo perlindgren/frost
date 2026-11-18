@@ -84,6 +84,12 @@ cargo test -p nice-clone --features standalone
 cargo clippy -p nice-clone --features standalone --all-targets -- -D warnings
 ```
 
+The bundle lands in `target/bundled/` as `Nice Clone.clap` and
+`Nice Clone.vst3` — the display name comes from
+[`bundler.toml`](../bundler.toml), and the crate exports both entry points, so
+the same build serves a CLAP host, a VST3 host, and `nice-rack`, which takes
+the CLAP by drag and drop.
+
 ## Validation
 
 The checked-in reference generators use only Python's standard library. They

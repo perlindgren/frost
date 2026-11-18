@@ -295,6 +295,18 @@ cargo test -p nice-echo || fail 'cargo test -p nice-echo'
 printf 'pre-push: running `cargo test -p nice-ecomplex`...\n'
 cargo test -p nice-ecomplex || fail 'cargo test -p nice-ecomplex'
 
+# The Clone, named like every plugin before it. Its suite is the circuit
+# itself — the diode solution held to Kirchhoff at small and extreme drive, the
+# input buffer and feedback amplifier kept inside their supply headroom, the
+# time domain measured against an independent nodal AC reference, transients
+# through the op-amp's own saturation, oversampling that carries its reported
+# delay and refuses its images — plus the host-facing parameter list, the
+# settings round trip, and `tests/no_alloc.rs` carrying no `cfg` so it runs
+# here on Windows too, where the editor's wgpu graph also compiles. None of it
+# opens a device.
+printf 'pre-push: running `cargo test -p nice-clone`...\n'
+cargo test -p nice-clone || fail 'cargo test -p nice-clone'
+
 # The rack, its host adapter and the two crates under it, named like every
 # plugin before it. Nothing above reaches them: `cargo test` follows
 # `default-members`, which is the engine and its games, and the rack joined the
