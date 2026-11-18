@@ -242,10 +242,6 @@ impl Ecomplex {
         machine
     }
 
-    pub fn rate(&self) -> f32 {
-        self.rate
-    }
-
     /// Re-arm the tape for a new sample rate. Called at `activate` and on a
     /// rate change — lifecycle moments, not block-time — so this is where
     /// the one allocation of the machine's life happens.
@@ -253,7 +249,14 @@ impl Ecomplex {
         self.rate = rate;
         let frames = (DELAY_MAX_S * rate).ceil() as usize + 8;
         self.line = vec![0.0; frames];
+        self.reset();
+    }
+
+    /// Clear audio and modulation history in place, preserving controls and rate.
+    pub fn reset(&mut self) {
+        self.line.fill(0.0);
         self.write = 0;
+        self.wow_phase = 0.0;
         self.lp_state = 0.0;
         self.hp_prev = 0.0;
         self.hp_state = 0.0;

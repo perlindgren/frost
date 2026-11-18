@@ -503,13 +503,9 @@ impl Plugin for EchoPlugin {
     }
 
     fn reset(&mut self) {
-        // Re-arming at the current rate is this transport's whole state
-        // reset: the loop, the heads, the tank and the filters all come back
-        // empty, which is what a tape transport that never ran looks like.
-        // The meters come back empty with them, so a meter does not hold a
-        // crest across a reset that erased the audio behind it.
-        let rate = self.echo.rate();
-        self.echo.set_rate(rate);
+        // Reset in place: a host may call this on its audio thread.
+        // Start the transport from rest at the current parameter values.
+        self.echo.reset(&self.params.controls());
         for meter in self.tp_in.iter_mut().chain(self.tp_out.iter_mut()) {
             meter.reset();
         }

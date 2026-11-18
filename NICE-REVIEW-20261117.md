@@ -173,6 +173,17 @@ Validation needed: count allocations and frees during reset as well as process;
 test reset after a nontrivial history and after parameter changes. Existing DSP
 allocation tests measure processing and moving controls, not these reset paths.
 
+Implementation follow-up (delay resets): both plugin reset callbacks now clear
+existing DSP storage in place instead of invoking allocating rate preparation.
+Echo clears both tape lanes, heads, spring tanks, tone/record filters, drive
+envelopes, noise seeds and shared modulation state, and starts transport speed
+at the current Repeat Rate setting. Ecomplex clears the tape, tone filters and
+wow phase. Parameters and prepared sample rate remain unchanged; meters retain
+their existing reset behavior. Regression tests measure reset allocations and
+frees, then compare four seconds of stereo impulse response against a fresh
+instance at 8, 48 and 96 kHz, after history and control changes and repeated
+resets. Native audio-thread reset execution in a DAW remains untested.
+
 ## Documentation inconsistencies
 
 ### Hosting unsafe-code inventory is incomplete
