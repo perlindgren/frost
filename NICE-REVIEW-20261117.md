@@ -248,6 +248,17 @@ write, and replacing the destination using a platform-appropriate operation.
 Preserve the previous valid file if the write fails. Add failure-path tests,
 including the geometry-only save path.
 
+Implementation follow-up (atomic settings saves): full settings and geometry-only
+saves now stage a uniquely reserved file in the destination directory, finish
+and sync its contents, close it, then replace the destination with the standard
+library's rename operation. No delete-first fallback is used. Normal failures
+clean up staging files and preserve the previous destination; abrupt termination
+may leave an unused temporary file. Unix staging files are owner-readable and
+owner-writable only. Tests cover replacing existing settings, partial writes,
+failed geometry replacement, missing parents and a real rename failure. This
+does not serialize concurrent read/modify/write saves or guarantee directory-entry
+durability across power loss. Windows and Linux runtime validation remain pending.
+
 ### Extend lifecycle and native integration coverage
 
 Prioritize tests for:
