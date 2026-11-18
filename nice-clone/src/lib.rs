@@ -44,6 +44,7 @@ pub struct CloneSharedState {
     pub gain: AtomicCell<f32>,
     pub treble: AtomicCell<f32>,
     pub output: AtomicCell<f32>,
+    pub oversampling: AtomicCell<i32>,
     pub buffer_frames: AtomicU32,
     pub dropped: AtomicU64,
     logical_size: AtomicCell<LogicalSize<f32>>,
@@ -76,6 +77,7 @@ impl CloneSharedState {
         self.gain.store(params.gain.value());
         self.treble.store(params.treble.value());
         self.output.store(params.output.value());
+        self.oversampling.store(params.oversampling.value());
     }
 }
 
@@ -88,6 +90,8 @@ pub struct CloneParams {
     pub treble: FloatParam,
     #[id = "output"]
     pub output: FloatParam,
+    #[id = "oversampling"]
+    pub oversampling: IntParam,
 }
 impl Default for CloneParams {
     fn default() -> Self {
@@ -95,6 +99,17 @@ impl Default for CloneParams {
             gain: FloatParam::new("Gain", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 }),
             treble: FloatParam::new("Treble", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 }),
             output: FloatParam::new("Output", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 }),
+            oversampling: IntParam::new("Oversampling", 3, IntRange::Linear { min: 0, max: 3 })
+                .with_value_to_string(Arc::new(|index| {
+                    dsp::Oversampling::from_index(index).label().into()
+                }))
+                .with_string_to_value(Arc::new(|text| {
+                    dsp::Oversampling::ALL
+                        .iter()
+                        .find(|mode| mode.label().eq_ignore_ascii_case(text.trim()))
+                        .map(|mode| mode.index())
+                }))
+                .non_automatable(),
         }
     }
 }
@@ -122,6 +137,7 @@ pub struct ClonePlugin {
     params: Arc<CloneParams>,
     shared: Arc<CloneSharedState>,
     drive: dsp::CloneDrive,
+    reported_latency: u32,
     tp_in: [TruePeak; 2],
     tp_out: [TruePeak; 2],
 }
@@ -141,6 +157,11 @@ pub(crate) fn seed_standalone_params(
     seed(&shared.gain, &params.gain, prefs.gain);
     seed(&shared.treble, &params.treble, prefs.treble);
     seed(&shared.output, &params.output, prefs.output);
+    if let Some(factor) = prefs.oversampling {
+        shared
+            .oversampling
+            .store(dsp::Oversampling::from_factor(factor).index());
+    }
 }
 
 impl Default for ClonePlugin {
@@ -155,6 +176,7 @@ impl Default for ClonePlugin {
             gain: AtomicCell::new(params.gain.value()),
             treble: AtomicCell::new(params.treble.value()),
             output: AtomicCell::new(params.output.value()),
+            oversampling: AtomicCell::new(params.oversampling.value()),
             buffer_frames: AtomicU32::new(0),
             dropped: AtomicU64::new(0),
             logical_size: AtomicCell::new(DEFAULT_SIZE),
@@ -173,10 +195,15 @@ impl Default for ClonePlugin {
             }
             seed_standalone_params(&shared, &params, &settings.preferences);
         }
-        let drive = dsp::CloneDrive::new(44_100.0, &shared.controls());
+        let drive = dsp::CloneDrive::with_oversampling(
+            44_100.0,
+            &shared.controls(),
+            dsp::Oversampling::from_index(shared.oversampling.load()),
+        );
         Self {
             params,
             shared,
+            reported_latency: drive.latency(),
             drive,
             tp_in: [TruePeak::new(); 2],
             tp_out: [TruePeak::new(); 2],
@@ -231,10 +258,15 @@ impl Plugin for ClonePlugin {
         if !STANDALONE_MODE.load(Ordering::Relaxed) {
             self.shared.publish(&self.params);
         }
+        self.drive
+            .request_oversampling(dsp::Oversampling::from_index(
+                self.shared.oversampling.load(),
+            ));
         self.drive.set_rate(config.sample_rate);
         self.drive.set_controls(&self.shared.controls());
         self.drive.reset();
-        context.set_latency_samples(dsp::LATENCY);
+        self.reported_latency = self.drive.latency();
+        context.set_latency_samples(self.reported_latency);
         true
     }
 
@@ -249,12 +281,16 @@ impl Plugin for ClonePlugin {
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext<Self>,
+        context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         if !STANDALONE_MODE.load(Ordering::Relaxed) {
             self.shared.publish(&self.params);
         }
         self.drive.set_controls(&self.shared.controls());
+        self.drive
+            .request_oversampling(dsp::Oversampling::from_index(
+                self.shared.oversampling.load(),
+            ));
         let channels = buffer.channels();
         let mut input = [[0.0f32; BLOCK]; 2];
         let mut input_energy = 0.0f64;
@@ -287,6 +323,10 @@ impl Plugin for ClonePlugin {
             for (channel, out) in block.into_iter().enumerate().take(channels) {
                 out.copy_from_slice(&output[channel][..n]);
             }
+        }
+        if self.drive.latency() != self.reported_latency {
+            self.reported_latency = self.drive.latency();
+            context.set_latency_samples(self.reported_latency);
         }
         if count > 0 {
             self.shared
@@ -327,4 +367,28 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod parameter_tests {
+    use super::*;
+
+    #[test]
+    fn oversampling_is_a_saved_non_automatable_host_parameter_with_eightfold_default() {
+        let params = CloneParams::default();
+        assert_eq!(params.oversampling.value(), dsp::Oversampling::X8.index());
+        assert!(
+            params
+                .oversampling
+                .flags()
+                .contains(ParamFlags::NON_AUTOMATABLE)
+        );
+        let mut ids: Vec<_> = params
+            .param_map()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["gain", "output", "oversampling", "treble"]);
+    }
 }

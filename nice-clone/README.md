@@ -26,9 +26,10 @@ The model includes:
   to the wet-path network; there is no arbitrary dry/wet crossfade.
 - The summing stage, component-derived treble transfer, output coupling, linear
   10k output pot, 100k load, and effect-on leakage through the bypass bridge.
-- Eightfold oversampling using 257-tap Blackman-windowed sinc interpolation and
-  decimation filters. Reported processing latency is 32 host samples (0.67 ms at
-  48 kHz), excluding the circuit's frequency-dependent phase response.
+- Selectable Off, 2×, 4×, or 8× oversampling. The Blackman-windowed sinc
+  interpolation/decimation filters use 65, 129, or 257 taps respectively.
+  Reported latency is zero with oversampling Off and 32 host samples in each
+  oversampled mode (0.67 ms at 48 kHz), excluding circuit phase response.
 - Independent left/right circuits, mono support, and 10 ms control smoothing.
   Resistance matrices update every 16 host samples, independently of host block
   boundaries; capacitor voltages and currents survive control changes.
@@ -46,6 +47,21 @@ The treble midpoint follows the traced component network, including its slight
 boost; it is not forcibly equalized to an ideal flat response. Output positions
 use the traced linear pot law. Neither pot tapers nor tolerances have been
 verified on a Behringer unit.
+
+## Oversampling and CPU
+
+The **Oversampling** dropdown above the knobs is available in the plugin and
+standalone. **8×** remains the default, including when loading older sessions or
+settings files. Lower factors reduce both circuit evaluations and resampling
+work. **Off** runs the nonlinear circuit directly at the host sample rate and
+skips all resampling filters. Lower settings trade alias suppression for CPU.
+
+The choice is saved in the host's plugin state or the standalone preferences.
+It is a manual setting rather than an automatable control because it can change
+processing latency. Live changes fade down over 64 host samples, rebuild the
+rate-dependent circuit/filter state at silence, then fade up over 64 samples.
+The host receives a latency update when the active mode changes to or from Off.
+Changing sample rate or resetting the plugin preserves the selected factor.
 
 ## Signal calibration
 
@@ -86,7 +102,8 @@ python3 nice-clone/tests/reference/transient_reference.py
 Tests also check nonlinear equation residuals, gain-dependent distortion, treble
 and output response, oversampling delay and image rejection, folded distortion
 harmonics, stereo separation, reset, host block boundaries, unusual inputs, and
-allocation-free processing while controls move.
+allocation-free processing while controls move or oversampling switches, all
+four factors, saved settings migration, and host latency notifications.
 
 No hardware measurement or listening match is claimed. A captured calibration
 signal, swept tones, and guitar DI/reamped pairs at known knob settings would be

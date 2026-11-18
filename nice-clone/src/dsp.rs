@@ -3,12 +3,60 @@
 //!
 //! Capacitors use trapezoidal companion models. The two clean feed-forward
 //! paths and diode loading are solved as connected networks, not a dry/wet
-//! crossfade. Independent stereo circuits run at 8x the host rate.
+//! crossfade. Independent stereo circuits run at the selected oversampling rate.
 #![allow(clippy::needless_range_loop)] // Circuit matrices have fixed, small dimensions.
 
-const OS: usize = 8;
-const TAPS: usize = 257;
-pub const LATENCY: u32 = 32;
+const TAPS: usize = 257; // Storage for the largest (8x) filter.
+const SWITCH_FADE: f64 = 1.0 / 64.0;
+
+/// Stable host parameter order. Existing sessions default to the original 8x.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Oversampling {
+    Off,
+    X2,
+    X4,
+    #[default]
+    X8,
+}
+impl Oversampling {
+    pub const ALL: [Self; 4] = [Self::Off, Self::X2, Self::X4, Self::X8];
+    pub fn from_index(index: i32) -> Self {
+        match index {
+            0 => Self::Off,
+            1 => Self::X2,
+            2 => Self::X4,
+            _ => Self::X8,
+        }
+    }
+    pub fn from_factor(factor: u32) -> Self {
+        match factor {
+            1 => Self::Off,
+            2 => Self::X2,
+            4 => Self::X4,
+            _ => Self::X8,
+        }
+    }
+    pub fn index(self) -> i32 {
+        self as i32
+    }
+    pub fn factor(self) -> usize {
+        1 << self.index()
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::X2 => "2×",
+            Self::X4 => "4×",
+            Self::X8 => "8×",
+        }
+    }
+    pub fn latency(self) -> u32 {
+        if self == Self::Off { 0 } else { 32 }
+    }
+    fn taps(self) -> usize {
+        32 * self.factor() + 1
+    }
+}
 /// A digital sample of 1.0 represents one volt peak at the pedal input/output.
 /// This is a calibration convention, not a property inferred from an interface.
 const VOLTS_PER_SAMPLE: f64 = 1.0;
@@ -440,14 +488,14 @@ impl Oversampler {
             down_at: 0,
         }
     }
-    fn tick(&mut self, sample: f64, taps: &[f64; TAPS], circuit: &mut Circuit) -> f64 {
+    fn tick(&mut self, sample: f64, taps: &[f64], factor: usize, circuit: &mut Circuit) -> f64 {
         self.up[self.up_at] = sample;
         let mut output = 0.0;
-        for phase in 0..OS {
+        for phase in 0..factor {
             let mut upsampled = 0.0;
             let mut j = self.up_at;
-            for k in (phase..TAPS).step_by(OS) {
-                upsampled += OS as f64 * taps[k] * self.up[j];
+            for k in (phase..taps.len()).step_by(factor) {
+                upsampled += factor as f64 * taps[k] * self.up[j];
                 j = if j == 0 { 32 } else { j - 1 };
             }
             self.down[self.down_at] = circuit.tick(upsampled);
@@ -455,25 +503,27 @@ impl Oversampler {
                 let mut j = self.down_at;
                 for &tap in taps {
                     output += tap * self.down[j];
-                    j = if j == 0 { TAPS - 1 } else { j - 1 };
+                    j = if j == 0 { taps.len() - 1 } else { j - 1 };
                 }
             }
-            self.down_at = (self.down_at + 1) % TAPS;
+            self.down_at = (self.down_at + 1) % taps.len();
         }
         self.up_at = (self.up_at + 1) % 33;
         output
     }
 }
-fn fir() -> [f64; TAPS] {
+fn fir(mode: Oversampling) -> [f64; TAPS] {
+    let factor = mode.factor();
+    let count = mode.taps();
     let mut taps = [0.0; TAPS];
-    for (i, tap) in taps.iter_mut().enumerate() {
-        let n = i as f64 - 128.0;
+    for (i, tap) in taps[..count].iter_mut().enumerate() {
+        let n = i as f64 - (count - 1) as f64 / 2.0;
         let sinc = if n == 0.0 {
-            1.0 / OS as f64
+            1.0 / factor as f64
         } else {
-            (std::f64::consts::PI * n / OS as f64).sin() / (std::f64::consts::PI * n)
+            (std::f64::consts::PI * n / factor as f64).sin() / (std::f64::consts::PI * n)
         };
-        let theta = 2.0 * std::f64::consts::PI * i as f64 / (TAPS - 1) as f64;
+        let theta = 2.0 * std::f64::consts::PI * i as f64 / (count - 1) as f64;
         *tap = sinc * (0.42 - 0.5 * theta.cos() + 0.08 * (2.0 * theta).cos());
     }
     let sum: f64 = taps.iter().sum();
@@ -492,9 +542,15 @@ pub struct CloneDrive {
     until_update: usize,
     smoothing: f64,
     rate: f64,
+    mode: Oversampling,
+    requested_mode: Oversampling,
+    switch_gain: f64,
 }
 impl CloneDrive {
     pub fn new(rate: f32, controls: &Controls) -> Self {
+        Self::with_oversampling(rate, controls, Oversampling::default())
+    }
+    pub fn with_oversampling(rate: f32, controls: &Controls, mode: Oversampling) -> Self {
         let rate = f64::from(rate);
         assert!(rate.is_finite() && rate >= 8_000.0);
         let values = [
@@ -503,14 +559,17 @@ impl CloneDrive {
             position(controls.output),
         ];
         Self {
-            channels: std::array::from_fn(|_| Circuit::new(rate * OS as f64, values)),
+            channels: std::array::from_fn(|_| Circuit::new(rate * mode.factor() as f64, values)),
             resamplers: std::array::from_fn(|_| Oversampler::new()),
-            taps: fir(),
+            taps: fir(mode),
             smoothed: values,
             targets: values,
             until_update: 0,
             smoothing: (-(UPDATE as f64) / (SMOOTH_SECONDS * rate)).exp(),
             rate,
+            mode,
+            requested_mode: mode,
+            switch_gain: 1.0,
         }
     }
     pub fn set_rate(&mut self, rate: f32) {
@@ -519,10 +578,36 @@ impl CloneDrive {
             treble: self.targets[1] as f32,
             output: self.targets[2] as f32,
         };
-        *self = Self::new(rate, &controls);
+        *self = Self::with_oversampling(rate, &controls, self.requested_mode);
     }
     pub fn reset(&mut self) {
         self.set_rate(self.rate as f32);
+    }
+    pub fn oversampling(&self) -> Oversampling {
+        self.mode
+    }
+    pub fn latency(&self) -> u32 {
+        self.mode.latency()
+    }
+    /// Switch during playback: fade down before replacing rate-dependent state,
+    /// then fade up. There is no heap allocation and no parallel old/new engine.
+    pub fn request_oversampling(&mut self, mode: Oversampling) {
+        self.requested_mode = mode;
+    }
+    fn update_oversampling(&mut self) {
+        if self.requested_mode != self.mode {
+            self.switch_gain = (self.switch_gain - SWITCH_FADE).max(0.0);
+            if self.switch_gain == 0.0 {
+                self.mode = self.requested_mode;
+                self.channels = std::array::from_fn(|_| {
+                    Circuit::new(self.rate * self.mode.factor() as f64, self.smoothed)
+                });
+                self.resamplers = std::array::from_fn(|_| Oversampler::new());
+                self.taps = fir(self.mode);
+            }
+        } else {
+            self.switch_gain = (self.switch_gain + SWITCH_FADE).min(1.0);
+        }
     }
     pub fn set_controls(&mut self, controls: &Controls) {
         self.targets = [
@@ -532,6 +617,7 @@ impl CloneDrive {
         ];
     }
     pub fn process(&mut self, input: [f32; 2]) -> [f32; 2] {
+        self.update_oversampling();
         if self.until_update == 0 {
             let mut changed = false;
             for i in 0..3 {
@@ -562,11 +648,18 @@ impl CloneDrive {
             } else {
                 0.0
             };
-            output[i] = (self.resamplers[i].tick(
-                sample * VOLTS_PER_SAMPLE,
-                &self.taps,
-                &mut self.channels[i],
-            ) / VOLTS_PER_SAMPLE) as f32;
+            let volts = sample * VOLTS_PER_SAMPLE;
+            let processed = if self.mode == Oversampling::Off {
+                self.channels[i].tick(volts)
+            } else {
+                self.resamplers[i].tick(
+                    volts,
+                    &self.taps[..self.mode.taps()],
+                    self.mode.factor(),
+                    &mut self.channels[i],
+                )
+            };
+            output[i] = (processed * self.switch_gain / VOLTS_PER_SAMPLE) as f32;
         }
         output
     }
@@ -641,14 +734,14 @@ mod tests {
 
     #[test]
     fn oversampling_has_the_reported_delay_and_rejects_images() {
-        let taps = fir();
+        let taps = fir(Oversampling::X8);
         let mut impulse = [0.0; 65];
         // Linear up/down round trip, independent of the circuit's own phase.
         for (host, output) in impulse.iter_mut().enumerate() {
             for a in 0..TAPS {
-                let b = host * OS;
+                let b = host * 8;
                 if b >= a && b - a < TAPS {
-                    *output += OS as f64 * taps[a] * taps[b - a];
+                    *output += 8.0 * taps[a] * taps[b - a];
                 }
             }
         }
@@ -658,7 +751,7 @@ mod tests {
             .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
             .unwrap()
             .0;
-        assert_eq!(peak, LATENCY as usize);
+        assert_eq!(peak, Oversampling::X8.latency() as usize);
         let gain: f64 = impulse.iter().sum();
         assert!((gain - 1.0).abs() < 1e-6);
         let response = |frequency: f64| {
@@ -670,8 +763,8 @@ mod tests {
             }
             re.hypot(im)
         };
-        assert!(response(0.4 / OS as f64) > 0.999);
-        assert!(response(0.6 / OS as f64) < 0.001);
+        assert!(response(0.4 / 8.0) > 0.999);
+        assert!(response(0.6 / 8.0) < 0.001);
     }
 
     #[test]
@@ -897,5 +990,104 @@ mod alias_tests {
             high < low * 0.1,
             "alias amplitude: oversampled={high}, base-rate={low}"
         );
+    }
+}
+
+#[cfg(test)]
+mod selectable_oversampling_tests {
+    use super::*;
+
+    #[test]
+    fn every_factor_has_correct_internal_rate_filter_length_and_delay() {
+        for mode in Oversampling::ALL {
+            let drive = CloneDrive::with_oversampling(48_000.0, &Controls::default(), mode);
+            assert_eq!(drive.channels[0].rate, 48_000.0 * mode.factor() as f64);
+            assert_eq!(Oversampling::from_index(mode.index()), mode);
+            assert_eq!(Oversampling::from_factor(mode.factor() as u32), mode);
+            if mode == Oversampling::Off {
+                assert_eq!(drive.latency(), 0);
+                continue;
+            }
+            let taps = &drive.taps[..mode.taps()];
+            assert_eq!(taps.len(), 32 * mode.factor() + 1);
+            let mut impulse = [0.0f64; 65];
+            for (i, y) in impulse.iter_mut().enumerate() {
+                let time = i * mode.factor();
+                for a in 0..taps.len() {
+                    if time >= a && time - a < taps.len() {
+                        *y += mode.factor() as f64 * taps[a] * taps[time - a];
+                    }
+                }
+            }
+            let peak = impulse
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+                .unwrap()
+                .0;
+            assert_eq!(peak as u32, drive.latency());
+            assert!((impulse.iter().sum::<f64>() - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn off_processes_the_host_rate_circuit_without_any_resampling() {
+        let controls = Controls::default();
+        let mut drive = CloneDrive::with_oversampling(48_000.0, &controls, Oversampling::Off);
+        let mut circuit = Circuit::new(48_000.0, [0.5; 3]);
+        for i in 0..2048 {
+            let input = (i as f32 * 0.18).sin() * 0.5;
+            assert_eq!(
+                drive.process([input, 0.0])[0],
+                circuit.tick(f64::from(input)) as f32
+            );
+        }
+    }
+
+    #[test]
+    fn live_switches_fade_through_zero_and_survive_rate_change_and_reset() {
+        let mut drive = CloneDrive::new(48_000.0, &Controls::default());
+        for target in [
+            Oversampling::Off,
+            Oversampling::X2,
+            Oversampling::X4,
+            Oversampling::X8,
+        ] {
+            for _ in 0..256 {
+                drive.process([0.2; 2]);
+            }
+            drive.request_oversampling(target);
+            for i in 0..128 {
+                let previous = drive.oversampling();
+                let output = drive.process([0.2; 2]);
+                if drive.oversampling() != previous {
+                    assert_eq!(i, 63);
+                    assert_eq!(output, [0.0; 2]);
+                }
+                assert!(output.iter().all(|v| v.is_finite()));
+            }
+            assert_eq!(drive.oversampling(), target);
+            assert_eq!(drive.switch_gain, 1.0);
+            drive.reset();
+            assert_eq!(drive.oversampling(), target);
+            drive.set_rate(96_000.0);
+            assert_eq!(drive.oversampling(), target);
+            assert_eq!(drive.channels[0].rate, 96_000.0 * target.factor() as f64);
+            drive.set_rate(48_000.0);
+        }
+    }
+
+    #[test]
+    fn changing_rates_keeps_stereo_separation_and_finite_output() {
+        for mode in Oversampling::ALL {
+            for rate in [8_000.0, 44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+                let mut drive = CloneDrive::with_oversampling(rate, &Controls::default(), mode);
+                for i in 0..512 {
+                    let output = drive.process([(i as f32 * 0.23).sin(), 0.0]);
+                    assert_eq!(output[1], 0.0);
+                    assert!(output[0].is_finite());
+                }
+            }
+        }
     }
 }

@@ -1,6 +1,8 @@
+use crate::dsp::Oversampling;
 use crate::{CloneParams, CloneSharedState};
 use crossbeam::atomic::AtomicCell;
 use frost::{Color, Context, Process, Scene, SceneNode, Shape};
+use nice_common::dropdown::{Placement, draw_dropdown};
 use nice_common::knob;
 use nice_common::meter::PeakMeter;
 use nice_plug::context::gui::GuiContext;
@@ -80,6 +82,7 @@ impl Knob {
 enum Hover {
     Knob(Knob),
     Cog,
+    Oversampling,
 }
 
 #[derive(Clone, Copy)]
@@ -100,6 +103,9 @@ pub struct CloneUi {
     drag_anchor: f32,
     drag_start: f32,
     armed: Option<Hover>,
+    oversampling_open: bool,
+    oversampling_scroll: f32,
+    oversampling_dragging: bool,
     #[cfg(feature = "standalone")]
     settings_page: bool,
     #[cfg(feature = "standalone")]
@@ -127,6 +133,9 @@ impl CloneUi {
             drag_anchor: 0.0,
             drag_start: 0.0,
             armed: None,
+            oversampling_open: false,
+            oversampling_scroll: 0.0,
+            oversampling_dragging: false,
             #[cfg(feature = "standalone")]
             settings_page: false,
             #[cfg(feature = "standalone")]
@@ -160,6 +169,25 @@ impl CloneUi {
         }
     }
 
+    fn oversampling(&self, params: &CloneParams) -> Oversampling {
+        Oversampling::from_index(if crate::STANDALONE_MODE.load(Ordering::Relaxed) {
+            self.shared.oversampling.load()
+        } else {
+            params.oversampling.value()
+        })
+    }
+
+    fn set_oversampling(&mut self, params: &CloneParams, mode: Oversampling) {
+        if let Some(context) = &self.context {
+            let setter = context.param_setter();
+            setter.begin_set_parameter(&params.oversampling);
+            setter.set_parameter(&params.oversampling, mode.index());
+            setter.end_set_parameter(&params.oversampling);
+        }
+        self.shared.oversampling.store(mode.index());
+        self.save_preferences();
+    }
+
     fn save_preferences(&mut self) {
         #[cfg(feature = "standalone")]
         if crate::STANDALONE_MODE.load(Ordering::Relaxed) {
@@ -168,6 +196,8 @@ impl CloneUi {
             settings.gain = Some(shared.gain.load());
             settings.treble = Some(shared.treble.load());
             settings.output = Some(shared.output.load());
+            settings.oversampling =
+                Some(Oversampling::from_index(shared.oversampling.load()).factor() as u32);
             if let Err(error) = settings.save() {
                 self.message = error;
             }
@@ -259,6 +289,9 @@ impl Process for CloneUi {
         let x = |i: usize| (i as f32 - 1.0) * 190.0 * fit;
         let y = 5.0 * fit;
         let cog_at = [w / 2.0 - 30.0 * fit, h / 2.0 - 30.0 * fit];
+        let oversampling_at = [80.0 * fit, h / 2.0 - 85.0 * fit];
+        let oversampling_half = [60.0 * fit, 15.0 * fit];
+        let menu_was_open = self.oversampling_open;
         let standalone = crate::STANDALONE_MODE.load(Ordering::Relaxed);
         let mouse = ctx.mouse_position();
         let down = ctx.mouse_button_down(frost::MouseButton::Left);
@@ -267,7 +300,9 @@ impl Process for CloneUi {
         let fine =
             ctx.key_down(frost::KeyCode::ShiftLeft) || ctx.key_down(frost::KeyCode::ShiftRight);
         let mut hover = None;
-        if let Some(at) = mouse {
+        if let Some(at) = mouse
+            && !menu_was_open
+        {
             for (i, kind) in Knob::ALL.iter().enumerate() {
                 if knob::contains([x(i), y], radius, at) {
                     hover = Some(Hover::Knob(*kind));
@@ -279,6 +314,14 @@ impl Process for CloneUi {
             {
                 hover = Some(Hover::Cog);
             }
+        }
+        if !menu_was_open
+            && mouse.is_some_and(|at| {
+                (at[0] - oversampling_at[0]).abs() <= oversampling_half[0]
+                    && (at[1] - oversampling_at[1]).abs() <= oversampling_half[1]
+            })
+        {
+            hover = Some(Hover::Oversampling);
         }
         if pressed {
             self.armed = hover;
@@ -309,7 +352,11 @@ impl Process for CloneUi {
                 }
                 self.save_preferences();
             }
-            if self.armed.take() == Some(Hover::Cog) && hover == Some(Hover::Cog) {
+            let clicked = self.armed.take().filter(|armed| Some(*armed) == hover);
+            if clicked == Some(Hover::Oversampling) {
+                self.oversampling_open = true;
+            }
+            if clicked == Some(Hover::Cog) {
                 #[cfg(feature = "standalone")]
                 {
                     self.panel = None;
@@ -366,6 +413,34 @@ impl Process for CloneUi {
                 0.5,
             );
         }
+        self.text(
+            ctx,
+            -70.0 * fit,
+            oversampling_at[1],
+            "OVERSAMPLING".into(),
+            12.0 * fit,
+            MUTED,
+        );
+        ctx.rectangle(
+            oversampling_at[0],
+            oversampling_at[1],
+            oversampling_half[0],
+            oversampling_half[1],
+            knob::PANEL,
+            0.48,
+        );
+        self.text(
+            ctx,
+            oversampling_at[0],
+            oversampling_at[1],
+            format!("{} ▾", self.oversampling(&params).label()),
+            14.0 * fit,
+            if hover == Some(Hover::Oversampling) || self.oversampling_open {
+                knob::AMBER
+            } else {
+                TEXT
+            },
+        );
         for (i, kind) in Knob::ALL.iter().enumerate() {
             let value = self.knob_value(&params, *kind);
             let touched = hover == Some(Hover::Knob(*kind))
@@ -435,6 +510,35 @@ impl Process for CloneUi {
             11.0 * fit,
             MUTED,
         );
+        // Shared selector draws last and owns all pointer/wheel input while open.
+        if self.oversampling_open {
+            let items: Vec<_> = Oversampling::ALL
+                .iter()
+                .map(|mode| (mode.label().to_owned(), mode.index().to_string()))
+                .collect();
+            let response = draw_dropdown(
+                ctx,
+                &self.font,
+                [w, h],
+                fit,
+                Placement::Row(oversampling_at, oversampling_half),
+                0.9,
+                pressed,
+                &items,
+                self.oversampling(&params).index() as usize,
+                "",
+                "Oversampling",
+                false,
+                &mut self.oversampling_scroll,
+                &mut self.oversampling_dragging,
+            );
+            if let Some(index) = response.picked {
+                self.set_oversampling(&params, Oversampling::ALL[index]);
+                self.oversampling_open = false;
+            } else if (pressed && !response.consumed) || ctx.key_down(frost::KeyCode::Escape) {
+                self.oversampling_open = false;
+            }
+        }
     }
 }
 

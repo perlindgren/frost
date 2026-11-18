@@ -18,12 +18,20 @@ pub(super) const BLOCK: usize = crate::BLOCK;
 
 pub(super) struct Context {
     transport: Transport,
+    #[cfg(test)]
+    latency: std::cell::Cell<u32>,
+    #[cfg(test)]
+    latency_reports: std::cell::Cell<usize>,
 }
 
 impl Context {
     pub fn new(rate: f32) -> Self {
         Self {
             transport: Transport::new(rate),
+            #[cfg(test)]
+            latency: std::cell::Cell::new(0),
+            #[cfg(test)]
+            latency_reports: std::cell::Cell::new(0),
         }
     }
 }
@@ -34,7 +42,15 @@ impl ActivateContext<ClonePlugin> for Context {
         PluginApi::Standalone
     }
     fn execute(&self, _: ()) {}
-    fn set_latency_samples(&self, _: u32) {}
+    fn set_latency_samples(&self, samples: u32) {
+        #[cfg(test)]
+        {
+            self.latency.set(samples);
+            self.latency_reports.set(self.latency_reports.get() + 1);
+        }
+        #[cfg(not(test))]
+        let _ = samples;
+    }
     fn set_current_voice_capacity(&self, _: u32) {}
 }
 
@@ -56,7 +72,15 @@ impl ProcessContext<ClonePlugin> for Context {
     ) -> Result<(), (PluginNoteEvent<ClonePlugin>, SendEventError)> {
         Err((event, SendEventError::NoOutputBuffer))
     }
-    fn set_latency_samples(&self, _: u32) {}
+    fn set_latency_samples(&self, samples: u32) {
+        #[cfg(test)]
+        {
+            self.latency.set(samples);
+            self.latency_reports.set(self.latency_reports.get() + 1);
+        }
+        #[cfg(not(test))]
+        let _ = samples;
+    }
     fn request_restart(&self) {}
     fn set_current_voice_capacity(&self, _: u32) {}
 }
@@ -269,5 +293,90 @@ mod processing_tests {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod oversampling_host_tests {
+    use super::*;
+    use crate::dsp::Oversampling;
+
+    fn select(plugin: &mut ClonePlugin, mode: Oversampling) {
+        plugin.params = Arc::new(crate::CloneParams {
+            oversampling: IntParam::new(
+                "Oversampling",
+                mode.index(),
+                IntRange::Linear { min: 0, max: 3 },
+            ),
+            ..Default::default()
+        });
+    }
+    fn block(
+        plugin: &mut ClonePlugin,
+        buffer: &mut plugin_buffer::PlanarBuffer<64>,
+        context: &mut Context,
+    ) {
+        buffer.with_buffer(32, |buffer| {
+            plugin.process(
+                buffer,
+                &mut AuxiliaryBuffers {
+                    inputs: &mut [],
+                    outputs: &mut [],
+                },
+                context,
+            );
+        });
+    }
+
+    #[test]
+    fn host_gets_latency_updates_when_the_active_rate_changes_including_reset() {
+        let mut plugin = ClonePlugin::default();
+        let mut context = Context::new(48_000.0);
+        assert!(plugin.activate(
+            &ClonePlugin::AUDIO_IO_LAYOUTS[0],
+            &BufferConfig {
+                sample_rate: 48_000.0,
+                min_buffer_size: None,
+                max_buffer_size: 32,
+                process_mode: ProcessMode::Realtime,
+            },
+            &mut context
+        ));
+        assert_eq!(context.latency.get(), 32);
+        let mut buffer = plugin_buffer::PlanarBuffer::<64>::new(2, 32);
+        for mode in [
+            Oversampling::Off,
+            Oversampling::X2,
+            Oversampling::X4,
+            Oversampling::X8,
+        ] {
+            let previous_latency = plugin.drive.latency();
+            let reports = context.latency_reports.get();
+            select(&mut plugin, mode);
+            block(&mut plugin, &mut buffer, &mut context);
+            assert_eq!(
+                context.latency_reports.get(),
+                reports,
+                "switch has not finished fading down"
+            );
+            for _ in 0..3 {
+                block(&mut plugin, &mut buffer, &mut context);
+            }
+            assert_eq!(plugin.drive.oversampling(), mode);
+            assert_eq!(context.latency.get(), mode.latency());
+            assert_eq!(
+                context.latency_reports.get(),
+                reports + usize::from(previous_latency != mode.latency())
+            );
+        }
+        select(&mut plugin, Oversampling::Off);
+        block(&mut plugin, &mut buffer, &mut context);
+        plugin.reset();
+        block(&mut plugin, &mut buffer, &mut context);
+        assert_eq!(
+            context.latency.get(),
+            0,
+            "a reset during a pending switch still needs a latency notification"
+        );
     }
 }
