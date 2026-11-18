@@ -355,16 +355,19 @@ impl crate::asio_io::Pump for Driver {
     }
 }
 
-/// Open the one ASIO driver both directions name, on the settings page's rate
-/// and period.
+/// The settings page's choices as one [`crate::asio_io::Wanted`], the only shape
+/// the transport takes.
 ///
-/// Nothing here is chosen. [`crate::asio_io::open`] takes the rate and the buffer
-/// it is handed or refuses in words, so what is left is the two translations the
-/// settings page's choices need — a 1-based input channel into a count of channels
-/// to open, a 1-based output route into a count — and the rings, sized from the
-/// same four numbers before the driver starts because the pump carries them in.
+/// Its own function because the same numbers have to be read the same way by
+/// everything that opens this stream: the rack, and a host that wants to ask a
+/// second driver what it does with a copy while nobody downstream is listening.
+/// Both translations here are the settings page's habit of counting from one: a
+/// chosen input channel becomes a count of channels opened from the driver's first,
+/// and a chosen output route becomes the width that covers it.
 #[cfg(all(windows, feature = "asio-host"))]
-fn open_asio<P: Preferences>(settings: &Settings<P>) -> Result<(DeviceStreams, Endpoints), String> {
+pub fn wanted<P: Preferences>(
+    settings: &Settings<P>,
+) -> Result<crate::asio_io::Wanted<'_>, String> {
     let input_name = settings
         .input_device
         .as_deref()
@@ -406,6 +409,33 @@ fn open_asio<P: Preferences>(settings: &Settings<P>) -> Result<(DeviceStreams, E
     if !route.fits(wanted.outputs) {
         return Err("Output route is outside the device layout".into());
     }
+    Ok(wanted)
+}
+
+/// Open the one ASIO driver both directions name, on the settings page's rate
+/// and period.
+///
+/// Nothing here is chosen. [`crate::asio_io::open`] takes the rate and the buffer
+/// it is handed or refuses in words, so what is left is the two translations the
+/// settings page's choices need — a 1-based input channel into a count of channels
+/// to open, a 1-based output route into a count — and the rings, sized from the
+/// same four numbers before the driver starts because the pump carries them in.
+#[cfg(all(windows, feature = "asio-host"))]
+fn open_asio<P: Preferences>(settings: &Settings<P>) -> Result<(DeviceStreams, Endpoints), String> {
+    let input_name = settings
+        .input_device
+        .as_deref()
+        .ok_or("Select an input device")?;
+    // Both of these are the settings' own numbers, checked by [`wanted`] on the way
+    // past. They come back here because the pump needs the shape of the block the
+    // route implies, and because the block it fills is routed, not merely wide.
+    let route = settings.output_channels.ok_or("Select output channels")?;
+    let selected = settings
+        .input_channel
+        .ok_or("Select an input channel")?
+        .checked_sub(1)
+        .ok_or("Input channels start at 1")?;
+    let wanted = wanted(settings)?;
     let Rings {
         capture: capture_queue,
         input: input_queue,
@@ -451,6 +481,134 @@ fn open_asio<P: Preferences>(settings: &Settings<P>) -> Result<(DeviceStreams, E
             output: output_queue,
         },
     ))
+}
+
+/// One second's account of an open stream, as [`probe`] reports it.
+#[cfg(all(windows, feature = "asio-host"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Probe {
+    /// What the live driver's callbacks did: the driver the meters are fed from.
+    pub live: crate::asio_io::Pulse,
+    /// What the second driver's callbacks did. `None` is no second driver to ask,
+    /// which is a different answer from one that has been asked nothing.
+    pub copy: Option<crate::asio_io::Pulse>,
+    /// The sample type the copy's channels were opened in, as named by the driver
+    /// that gave them; empty when there is no copy. Read this before the counts:
+    /// a type the far side does not read is indistinguishable from silence, and
+    /// then every delivered block on this line delivered nothing anyone could hear.
+    pub copy_formats: Vec<&'static str>,
+    /// `outputReady` announcements made to the copy's driver, and among them the
+    /// ones it refused. Against [`Probe::copy`] this tells three silences apart:
+    /// blocks served with no announcements is a host that never said it was done
+    /// writing; announcements refused is a driver that would not listen; and
+    /// accepted announcements with a quiet far side moves the search to the
+    /// shared memory itself.
+    pub copy_announced: (u64, u64),
+    /// The code of the copy driver's last refusal, named: a refusal count with a
+    /// name next to it says whether the announcement does not exist for this
+    /// driver, or exists and is being answered in a way this host does not fit.
+    pub copy_refusal: Option<String>,
+    /// How many blocks the host filled. Short against [`Probe::live`] by one is a
+    /// block the driver took back before asking for it.
+    pub blocks: u64,
+    /// `kAsioOverload` so far, counted on the live driver.
+    pub overloads: u64,
+}
+
+/// One sine wave, standing in for a rack that has something to say.
+#[cfg(all(windows, feature = "asio-host"))]
+struct Tone {
+    outputs: usize,
+    /// Cycles per frame, and how far the cycle has got.
+    step: f64,
+    phase: f64,
+    /// Peak amplitude, set by the caller: see [`probe`].
+    level: f32,
+    blocks: Arc<AtomicU64>,
+}
+
+#[cfg(all(windows, feature = "asio-host"))]
+impl crate::asio_io::Pump for Tone {
+    fn input(&mut self, _interleaved: &[f32]) {}
+
+    fn output(&mut self, interleaved: &mut [f32]) {
+        for frame in interleaved.chunks_exact_mut(self.outputs) {
+            // The level is the caller's because this tone comes out of whatever
+            // monitors are wired to the first driver as well as into the second one,
+            // and a test worth repeating six times is a test that should not have to
+            // be announced to the room each time.
+            let sample = (self.phase * std::f64::consts::TAU).sin() as f32 * self.level;
+            for channel in frame {
+                *channel = sample;
+            }
+            self.phase += self.step;
+            if self.phase >= 1.0 {
+                self.phase -= 1.0;
+            }
+        }
+        self.blocks.fetch_add(1, Ordering::Release);
+    }
+}
+
+/// Open what the settings name, with nothing behind it but a 1 kHz tone, and report
+/// each driver's callbacks once a second, `seconds` times.
+///
+/// "The second output is open and nothing arrives" has three answers — the second
+/// driver never called back, it called back and was handed silence, or it was handed
+/// sound that nobody downstream collected — and a panel cannot tell them apart,
+/// because all three are an `Ok` from the open and a healthy meter on the live
+/// driver, which is the only driver a panel shows. The counts decide it: a copy whose
+/// `arrivals` never leaves zero is a driver that is not running this stream at all,
+/// and a copy counting blocks at its own period is sound that left here, which moves
+/// the search to whoever was supposed to be listening on the far side.
+///
+/// The tone is the other half of the answer. A level on the far side of a second
+/// driver is not evidence of anything until it has a pitch: −38 dB of floor and a
+/// guitar that arrived look the same on a meter, and do not sound the same.
+///
+/// `level` is that tone's peak amplitude, and it is a parameter rather than a
+/// constant because the honest form of this test is to run it several times with one
+/// thing changed each time, and every run plays out of the monitors on the first
+/// driver as well as into the second. Half full scale is the ceiling: it is a
+/// diagnostic, and a diagnostic that can shout at full scale is one mistake away
+/// from a blown driver.
+#[cfg(all(windows, feature = "asio-host"))]
+pub fn probe<P: Preferences>(
+    settings: &Settings<P>,
+    seconds: u64,
+    level: f32,
+    mut each: impl FnMut(u64, &Probe),
+) -> Result<(), String> {
+    let wanted = wanted(settings)?;
+    let (outputs, rate) = (wanted.outputs as usize, f64::from(wanted.input_rate.max(1)));
+    let blocks = Arc::new(AtomicU64::new(0));
+    let stream = crate::asio_io::open(
+        wanted,
+        Tone {
+            outputs,
+            step: 1_000.0 / rate,
+            phase: 0.0,
+            level: level.clamp(0.0, 0.5),
+            blocks: blocks.clone(),
+        },
+    )?;
+    for second in 1..=seconds {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let (told, refused, refusal) = stream.copy_announced();
+        each(
+            second,
+            &Probe {
+                live: stream.pulse(),
+                copy: stream.copy_pulse(),
+                copy_formats: stream.copy_formats(),
+                copy_announced: (told, refused),
+                copy_refusal: refusal,
+                blocks: blocks.load(Ordering::Relaxed),
+                overloads: stream.overloads(),
+            },
+        );
+    }
+    Ok(())
 }
 
 /// Call off the UI thread. Settings must already be resolved against a snapshot.

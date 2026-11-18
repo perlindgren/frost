@@ -196,6 +196,38 @@ impl OutputChannels {
     }
 }
 
+/// Where a second output pair lands once the drivers are open: which driver
+/// carries it, and which of that driver's channels.
+///
+/// These are the numbers the stream is opened with, not a restatement of the
+/// file: the group is as wide as the route the first group needs, it starts on
+/// the channel the settings named, and the driver is the one named with it —
+/// unless that name is the output driver's own, which means one driver with two
+/// groups on one clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecondGroup<'a> {
+    /// The driver carrying the copy: the second device, or the output device
+    /// when the copy rides channels above the first group.
+    pub driver: &'a str,
+    /// First channel of the copy on that driver, 1-based, as the file spells it.
+    pub first: u32,
+    /// Last channel of the copy, inclusive.
+    pub last: u32,
+}
+
+impl SecondGroup<'_> {
+    /// `3–4` for a stereo copy starting at 3, `3` for a copy of one channel:
+    /// the spelling a host shows next to the driver an operator goes looking
+    /// for in another program.
+    pub fn span(&self) -> String {
+        if self.last == self.first {
+            self.first.to_string()
+        } else {
+            format!("{}–{}", self.first, self.last)
+        }
+    }
+}
+
 /// Serialized window placement for the standalone binary. `x`/`y` are
 /// physical screen px (top-left) and known only on Windows — elsewhere
 /// baseview has no position concept at all; size is logical px. Both
@@ -228,6 +260,31 @@ impl<P: Preferences> Settings<P> {
             }
             self.output_channels = None;
         }
+    }
+
+    /// Where the second output pair lands, for a host to show an operator who is
+    /// looking for the copy in another program. `None` means one output group:
+    /// either no second pair was asked for, or the file names a pair with no route
+    /// for it to copy, which is a settings file no stream ever opened.
+    ///
+    /// A second device naming the output device is not a second driver — that is
+    /// what the file writes for a copy on the driver it was copied from — so the
+    /// answer names the output driver either way, and only a genuinely other name
+    /// puts the copy somewhere else.
+    pub fn second_group(&self) -> Option<SecondGroup<'_>> {
+        let first = self.asio_second_output?;
+        // The copy is as wide as the group it copies, which is the highest channel
+        // the route names — the same arithmetic the driver is opened with.
+        let width = self.output_channels?.required_channels().max(1);
+        let driver = match self.asio_second_device.as_deref() {
+            Some(driver) if Some(driver) != self.output_device.as_deref() => driver,
+            _ => self.output_device.as_deref()?,
+        };
+        Some(SecondGroup {
+            driver,
+            first,
+            last: first.checked_add(width - 1)?,
+        })
     }
 
     pub fn path() -> PathBuf {
@@ -626,6 +683,62 @@ mod persistence_tests {
                 .unwrap();
         assert_eq!(alone.asio_second_device.as_deref(), Some("ReaRoute 3"));
         assert!(!alone.is_blank());
+    }
+
+    /// Where the copy lands is the one thing an operator cannot read off the two
+    /// rows that set it: the pair is as wide as the route it copies, so a stereo
+    /// route starting at 3 is channels 3–4, and the driver is the second device
+    /// only when that name is a genuinely other driver than the output's.
+    #[test]
+    fn a_second_output_pair_names_the_driver_and_channels_it_covers() {
+        let settings =
+            |device: Option<&str>, second: Option<&str>, route| Settings::<NoPreferences> {
+                output_device: device.map(str::to_owned),
+                output_channels: Some(route),
+                asio_second_output: Some(3),
+                asio_second_device: second.map(str::to_owned),
+                ..Default::default()
+            };
+        let stereo = OutputChannels::Stereo([1, 2]);
+
+        let second = settings(
+            Some("Komplete Audio 6"),
+            Some("ReaRoute ASIO (x64)"),
+            stereo,
+        );
+        let group = second.second_group().unwrap();
+        assert_eq!(group.driver, "ReaRoute ASIO (x64)");
+        assert_eq!(group.span(), "3–4");
+
+        // The row left alone means the copy rides the output driver's own
+        // channels above the first group, so that is the driver the line names.
+        let first = settings(Some("Komplete Audio 6"), None, stereo);
+        let on_itself = first.second_group().unwrap();
+        assert_eq!(on_itself.driver, "Komplete Audio 6");
+        assert_eq!(on_itself.span(), "3–4");
+
+        // …and a file that spells the row as the output driver's own name says
+        // the same thing, which is how `Settings` reads it back.
+        let spelled = settings(Some("Komplete Audio 6"), Some("Komplete Audio 6"), stereo);
+        assert_eq!(spelled.second_group(), Some(on_itself));
+
+        // A mono route copies one channel, so there is no span to name.
+        let single = settings(Some("Interface"), Some("Cable"), OutputChannels::Mono(1));
+        assert_eq!(single.second_group().unwrap().span(), "3");
+
+        // No second pair, and a pair with nothing to copy: one output group, and
+        // a file no stream ever opened.
+        let none = Settings::<NoPreferences> {
+            output_device: Some("Interface".into()),
+            output_channels: Some(stereo),
+            ..Default::default()
+        };
+        assert_eq!(none.second_group(), None);
+        let unopened = Settings::<NoPreferences> {
+            asio_second_output: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(unopened.second_group(), None);
     }
 
     #[test]

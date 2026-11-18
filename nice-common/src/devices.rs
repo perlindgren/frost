@@ -23,9 +23,9 @@
 //! - ASIO enumeration *loads* each registered driver to read its properties;
 //!   with several drivers installed, opening the page can pause for a moment.
 //! - Device lists are cpal's device names, except under ASIO: there the list is
-//!   the driver names in the registry's `HKLM\SOFTWARE\ASIO` key, read by azo,
-//!   and a driver is a device — its ports are addressed by channel count, not
-//!   by name.
+//!   the driver names in the registry's `HKLM\SOFTWARE\ASIO` key plus the
+//!   per-user `HKCU\Software\ASIO` key, and a driver is a device — its ports
+//!   are addressed by channel count, not by name.
 
 #[cfg(not(windows))]
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -205,9 +205,10 @@ pub fn open_host(backend: &str) -> Option<cpal::Host> {
 ///
 /// `azo` reads the names out of `HKLM\SOFTWARE\ASIO`. That is one key, in the
 /// view this process sees: a driver registered per-user, or only in the
-/// 32-bit view, would be missing here. Measured on this machine against the
-/// SDK walk `asio-sys` used instead, both answer the same nine names in the
-/// same order, and `HKCU\Software\ASIO` does not exist at all.
+/// 32-bit view, would be missing here. Per-user matters — it is where the
+/// NiceRack ASIO device registers itself without asking for elevation — so
+/// `HKCU\Software\ASIO` is merged in by [`hkcu_asio`] below, and the two
+/// lists are sorted and deduplicated together.
 #[cfg(all(windows, feature = "asio-host"))]
 fn asio_driver_names() -> Vec<String> {
     let mut names = azo::driver::Metadata::enumerate()
@@ -218,9 +219,179 @@ fn asio_driver_names() -> Vec<String> {
                 .collect::<Vec<String>>()
         })
         .unwrap_or_default();
+    names.extend(hkcu_asio::drivers().into_iter().map(|d| d.description));
     names.sort();
     names.dedup();
     names
+}
+
+/// The per-user half of the ASIO registry, read with the fewest Win32
+/// calls that can answer "which drivers does this user see that the
+/// machine-wide key does not mention".
+///
+/// `azo` 0.6.1 reads `HKLM` only (`azo-0.6.1/src/driver.rs:123-136`), so a
+/// per-user driver — which is how the NiceRack ASIO device installs, on the
+/// deliberate choice that a driver needing elevation to install is a driver
+/// guests cannot install — is invisible to it. Raw `advapi32` declarations
+/// rather than a registry crate, per the workspace's dependency rules, and
+/// the module-level exemption follows `asio_io`'s precedent: this is the
+/// registry read-only, and every handle the module opens it closes on
+/// every path out.
+#[cfg(all(windows, feature = "asio-host"))]
+#[allow(unsafe_code)]
+mod hkcu_asio {
+    use std::os::raw::c_void;
+
+    /// One `HKCU\Software\ASIO\<name>` entry with a parseable class id.
+    pub struct Entry {
+        pub description: String,
+        pub clsid: String,
+    }
+
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn RegOpenKeyExW(
+            hkey: *mut c_void,
+            sub_key: *const u16,
+            options: u32,
+            sam_desired: u32,
+            phk_result: *mut *mut c_void,
+        ) -> i32;
+        fn RegCloseKey(hkey: *mut c_void) -> i32;
+        fn RegEnumKeyExW(
+            hkey: *mut c_void,
+            index: u32,
+            name: *mut u16,
+            cch_name: *mut u32,
+            reserved: *const u32,
+            class: *const u16,
+            cch_class: *const u32,
+            last_write: *const u64,
+        ) -> i32;
+        fn RegQueryValueExW(
+            hkey: *mut c_void,
+            value_name: *const u16,
+            reserved: *const u32,
+            kind: *mut u32,
+            data: *mut u8,
+            cb_data: *mut u32,
+        ) -> i32;
+    }
+
+    const HKEY_CURRENT_USER: *mut c_void = 0x8000_0001usize as *mut c_void;
+    const KEY_READ: u32 = 0x20019;
+    const ERROR_SUCCESS: i32 = 0;
+    const REG_SZ: u32 = 1;
+
+    /// NUL-terminated UTF-16, the form advapi32 speaks.
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// A `REG_SZ` value as a `String`; anything else reads as absent.
+    fn sz(key: *mut c_void, name: &str) -> Option<String> {
+        let name = wide(name);
+        let mut len = 0u32;
+        let mut kind = 0u32;
+        // Two calls: the size probe answers even with a null buffer.
+        let code = unsafe {
+            RegQueryValueExW(
+                key,
+                name.as_ptr(),
+                std::ptr::null(),
+                &mut kind,
+                std::ptr::null_mut(),
+                &mut len,
+            )
+        };
+        if code != ERROR_SUCCESS || kind != REG_SZ || len < 2 || !len.is_multiple_of(2) {
+            return None;
+        }
+        let mut buf = vec![0u16; (len as usize / 2).saturating_sub(1)];
+        let mut len2 = len;
+        let code = unsafe {
+            RegQueryValueExW(
+                key,
+                name.as_ptr(),
+                std::ptr::null(),
+                &mut kind,
+                buf.as_mut_ptr() as *mut u8,
+                &mut len2,
+            )
+        };
+        if code != ERROR_SUCCESS {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buf))
+    }
+
+    pub fn drivers() -> Vec<Entry> {
+        let mut out = Vec::new();
+        let root = wide(r"Software\ASIO");
+        let mut key = std::ptr::null_mut::<c_void>();
+        if unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, root.as_ptr(), 0, KEY_READ, &mut key) }
+            != ERROR_SUCCESS
+        {
+            return out; // the ordinary case on a machine with no per-user drivers
+        }
+        let mut index = 0u32;
+        loop {
+            let mut name = [0u16; 256];
+            let mut cch = name.len() as u32;
+            let code = unsafe {
+                RegEnumKeyExW(
+                    key,
+                    index,
+                    name.as_mut_ptr(),
+                    &mut cch,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            };
+            if code != ERROR_SUCCESS {
+                break;
+            }
+            index += 1;
+            let driver = String::from_utf16_lossy(&name[..cch as usize]);
+            let path = format!(r"Software\ASIO\{driver}");
+            let path = wide(&path);
+            let mut sub = std::ptr::null_mut::<c_void>();
+            if unsafe { RegOpenKeyExW(key, path.as_ptr(), 0, KEY_READ, &mut sub) } != ERROR_SUCCESS
+            {
+                continue;
+            }
+            if let Some(clsid) = sz(sub, "clsid") {
+                out.push(Entry {
+                    description: sz(sub, "description").unwrap_or(driver),
+                    clsid,
+                });
+            }
+            unsafe { RegCloseKey(sub) };
+        }
+        unsafe { RegCloseKey(key) };
+        out
+    }
+}
+
+/// The `HKCU` entries in the same shape `azo` hands out for `HKLM`, so
+/// every consumer that resolves a name to a class id sees one list.
+#[cfg(all(windows, feature = "asio-host"))]
+fn hkcu_drivers() -> Vec<azo::driver::Metadata> {
+    hkcu_asio::drivers()
+        .into_iter()
+        .filter_map(|d| {
+            let clsid = azo::windows_core::GUID::try_from(
+                d.clsid.trim().trim_start_matches('{').trim_end_matches('}'),
+            )
+            .ok()?;
+            Some(azo::driver::Metadata {
+                clsid,
+                description: d.description.as_str().into(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(not(all(windows, feature = "asio-host")))]
@@ -530,10 +701,16 @@ fn asio_caps(name: &str) -> Option<AsioCaps> {
 /// rather than either of them guessing at another one.
 #[cfg(all(windows, feature = "asio-host"))]
 pub(crate) fn asio_driver(name: &str) -> Option<azo::driver::Metadata> {
-    azo::driver::Metadata::enumerate()
-        .ok()?
+    let machine = azo::driver::Metadata::enumerate()
+        .ok()
+        .unwrap_or_default()
         .into_iter()
-        .find(|meta| meta.description.to_string_lossy() == name)
+        .find(|meta| meta.description.to_string_lossy() == name);
+    machine.or_else(|| {
+        hkcu_drivers()
+            .into_iter()
+            .find(|meta| meta.description.to_string_lossy() == name)
+    })
 }
 
 #[cfg(all(windows, feature = "asio-host"))]

@@ -75,15 +75,20 @@
 //! crossing a clock costs.
 //!
 //! One deliberate difference from the SDK path, stated because it is a behaviour
-//! change and not an oversight: `outputReady` is never called. It exists so a
-//! driver with hardware DSP learns the output is filled earlier in the block, and
-//! calling it through `azo` means a `SendMessageW` to the pump thread from the
-//! real-time thread — the deadlock above. cpal could do it because it calls the C
-//! function directly, and probes once at `createBuffers` whether the driver
-//! implements it at all (`asio-sys …:708-711`, `:1243-1245`). For every driver
-//! measured on this machine it changes nothing; a machine whose driver needs it
-//! would run one buffer late on output, and would hear about it from this
-//! paragraph rather than from a hum.
+//! change and not an oversight: `outputReady` is called for a copy's driver — by
+//! [`Announcer`], from its own thread, never from a callback. It used to be never
+//! called at all, because through `azo` every driver method is a `SendMessageW`
+//! to the driver's pump thread, and a real-time callback that blocks there can
+//! meet a `stop` already in that queue. Then ReaRoute was measured: with REAPER's
+//! bridge in place it fires `bufferSwitch` about 1.5 million times a second and
+//! commits nothing to its shared memory — the pacing of a driver waiting for the
+//! announcement a host never makes, which is silence with a healthy-looking
+//! stream. So the announcement is made, but from a named thread that watches
+//! [`State::written`] and is stopped and joined before `stop` is ever sent:
+//! nothing blocks on the pump from inside a callback, which was the whole of what
+//! the old refusal protected. The live driver gets no announcer — every live
+//! driver measured on this machine asks for nothing, and a thread for no reason
+//! is a behaviour change nobody needs.
 
 // The whole module is a driver interface: buffers the driver owns, function
 // pointers it calls, one global it reaches through. `nice-common` says
@@ -98,14 +103,16 @@ use crate::resample::{Monitor, StereoFrame};
 use azo::Host;
 use azo::driver::Driver as _;
 use azo::dto::{ChannelId, ChannelInfoResponse};
-use azo::sys::{Bool, Callbacks, MessageSelector, SampleType, Time};
+use azo::sys::{Bool, Callbacks, MessageSelector, ResultCode, SampleType, Time};
 use crossbeam::channel::{Receiver, Sender, bounded};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::cell::UnsafeCell;
 use std::ffi::{c_long, c_void};
 use std::ptr::null_mut;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI64, AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering,
+};
 use std::thread::yield_now;
 use std::time::{Duration, Instant};
 
@@ -137,6 +144,26 @@ pub struct Failure {
     /// reopened. False means one bad block: the stream carries on, and a host that
     /// counts dropouts may count this.
     pub invalidated: bool,
+}
+
+/// What one driver's callbacks have done since its transport opened, read without
+/// asking the driver's thread anything.
+///
+/// This exists because a second driver can open, be configured, be handed its own
+/// buffers and never once call its host back, and every other number a host has —
+/// the rate it applied, the buffers it got, the fact that `start` returned no error
+/// — looks the same as a stream carrying sound. Read together with the [`Transport`]
+/// that is open beside it, it separates a driver that is not answering from one that
+/// is answering and being ignored by whoever is supposed to be listening.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pulse {
+    /// Every `bufferSwitch` the driver fired, including the ones judged a repeat of
+    /// the previous half.
+    pub arrivals: u64,
+    /// The ones that moved a block. Fewer than [`Pulse::arrivals`] by about half is
+    /// the shape of a driver that reports one half twice; zero beside a rising
+    /// `arrivals` is a driver that never alternates.
+    pub served: u64,
 }
 
 /// The two directions of one ASIO stream — and, if the settings asked for one, a
@@ -453,8 +480,10 @@ struct Channel {
 }
 
 impl Channel {
-    /// One half as the driver's own bytes. A null half is a driver that allocated
-    /// less than it promised, which is an answer rather than a crash.
+    /// One half as the driver's own bytes. A driver that hands back a null half for a
+    /// channel it accepted is refused at [`Side::open`], so `None` here is a pointer
+    /// withdrawn after the open — which is why the callbacks step over it instead of
+    /// writing through it.
     ///
     /// The `&mut` comes out of a `&self` because the bytes are not borrowed from
     /// the `Channel`: the driver owns them, and this is the handle to them. Two
@@ -470,6 +499,23 @@ impl Channel {
             std::slice::from_raw_parts_mut(base.cast::<u8>(), self.pcm.block_bytes(frames))
         })
     }
+}
+
+/// Nanoseconds from this process's first look at the steady clock.
+///
+/// Only differences are taken from it, so the origin is free to be arbitrary, and
+/// `Instant` rather than the wall clock because a host that runs across a clock
+/// correction must not have a callback gap jump an hour in either direction.
+///
+/// This is `QueryPerformanceCounter` on Windows: no allocation, no lock, and the
+/// only thing on this module's real-time path that asks the operating system
+/// anything. It is asked once per `bufferSwitch`, including by the drivers that fire
+/// a million of them a second, which is a few percent of one core against the
+/// alternative of never noticing those drivers at all.
+fn nanos() -> u64 {
+    static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let origin = ORIGIN.get_or_init(Instant::now);
+    Instant::now().saturating_duration_since(*origin).as_nanos() as u64
 }
 
 /// Everything the driver's thread needs, reached through [`STATES`] because ASIO
@@ -508,6 +554,18 @@ struct State {
     /// one half — Focusrite USB ASIO and ReaRoute do
     /// (`cpal-0.18.2/src/host/asio/stream.rs:227-230`).
     last_half: AtomicUsize,
+    /// When the last block was served, in [`nanos`] units. Together with
+    /// [`State::block_gap`] this is what decides whether a callback repeating the
+    /// previous half is a repeat at all, which the half index cannot decide alone:
+    /// see [`State::exchange`].
+    last_block: AtomicU64,
+    /// Three quarters of one block of this driver's own period, in nanoseconds: any
+    /// shorter than this, and two callbacks cannot have been two blocks. Three
+    /// quarters rather than the whole period so a driver that hands its buffers back
+    /// a little early still gets its second block, while a driver that repeats a
+    /// half inside the block it repeats — which it does microseconds later — does
+    /// not.
+    block_gap: u64,
     /// The rate this stream was opened at, which is what `sampleRateDidChange` is
     /// compared against. asio-sys keeps the same baseline in a process-global
     /// (`asio-sys-0.4.0/src/bindings/mod.rs:374`) so one stream can silence
@@ -516,6 +574,23 @@ struct State {
     rate: f64,
     /// `kAsioOverload` reports, so a host that shows dropouts has a number.
     overloads: AtomicU64,
+    /// Every `bufferSwitch` this driver has fired, counted before [`State::last_half`]
+    /// gets to judge it, and the ones that went past that guard and moved a block.
+    ///
+    /// The pair is the difference between a driver that is running and one that is
+    /// only knocking. A driver that reports the same half twice — ReaRoute and
+    /// Focusrite USB ASIO, per [`State::last_half`] — lands every second call in
+    /// `arrivals` and never in `served`, and from outside the callback that looks
+    /// exactly like a stream carrying silence: the transport is open, the buffers
+    /// are its own, and nothing arrives.
+    arrivals: AtomicU64,
+    served: AtomicU64,
+    /// Blocks this state has laid down *complete*, published to [`Announcer`]'s
+    /// thread: the count moves only after a whole block is written, so another
+    /// thread reading it sees nothing it still has to finish. This is the one
+    /// number here another thread reads, and it is an `Arc` rather than a field
+    /// because the announcer owns no borrow of this state.
+    written: Arc<AtomicU64>,
 }
 
 impl State {
@@ -590,8 +665,20 @@ impl State {
         }
     }
 
+    /// What this driver's callbacks have done so far. Two relaxed loads, so the two
+    /// numbers may be a block apart from each other: a host reading them once a
+    /// second is comparing rates, not sequences, and the alternative is a lock on
+    /// the driver's own thread to settle a question of arithmetic.
+    fn pulse(&self) -> Pulse {
+        Pulse {
+            arrivals: self.arrivals.load(Ordering::Relaxed),
+            served: self.served.load(Ordering::Relaxed),
+        }
+    }
+
     /// The body of both buffer callbacks.
     fn exchange(&self, half: usize, direct: bool) {
+        self.arrivals.fetch_add(1, Ordering::Relaxed);
         // Twice for the same half is a driver doing something we have measured it
         // doing. With `directProcess` there is no other half to wait for, so the
         // same index twice really is two blocks — and the SDK path drops the flag
@@ -599,10 +686,26 @@ impl State {
         // duplicate guard then swallows the second call
         // (`cpal-0.18.2/src/host/asio/stream.rs:227-230`), which is how a driver in
         // that mode loses every other block.
-        if !direct && self.last_half.load(Ordering::Relaxed) == half {
+        //
+        // The half index alone cannot say whether a repeat is a repeat, because a
+        // driver may never name the other half at all. ReaRoute is that driver: with
+        // REAPER running and its bridge in place, `--audio-probe` measured 1.68
+        // million callbacks a second on the copy, every one of them index zero, and
+        // one block served in total — the index guard refusing all of them, forever,
+        // which is a mute with the shape of a working stream. So a repeat is only a
+        // repeat inside the block it repeats. The clock can tell those apart and the
+        // index cannot: a genuine duplicate follows the first by microseconds, and
+        // a second block cannot be due until a block of time has gone by.
+        let now = nanos();
+        if !direct
+            && self.last_half.load(Ordering::Relaxed) == half
+            && now.saturating_sub(self.last_block.load(Ordering::Relaxed)) < self.block_gap
+        {
             return;
         }
         self.last_half.store(half, Ordering::Relaxed);
+        self.last_block.store(now, Ordering::Relaxed);
+        self.served.fetch_add(1, Ordering::Relaxed);
         // Input first, so a capture and the playback that answers it are as close
         // as this API allows.
         unsafe {
@@ -610,6 +713,14 @@ impl State {
                 return;
             }
             self.playback(half);
+        }
+        // Announced last: the count below wakes another thread to tell the
+        // driver its output is ready, so it has to mean *complete*, not
+        // *started*. A `directProcess` callback processes the block inside this
+        // call and must not be answered with `outputReady` — there was no buffer
+        // in flight to be done — so a direct callback publishes nothing.
+        if !direct {
+            self.written.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -982,6 +1093,12 @@ struct Asking {
     /// — and a copy's does not, because the crossing in front of it absorbs
     /// whatever the second clock hands out.
     exact_period: bool,
+    /// Whether this driver is owed an `outputReady` for every block this host
+    /// writes. A copy's driver is: ReaRoute paces on the announcement, and a host
+    /// that never makes it is a silent stream with healthy counters. A live
+    /// driver is not — every live driver measured on this machine asks for
+    /// nothing — and the announcing costs a thread, so it is a copy's alone.
+    announce: bool,
     /// The rate to ask for. Both drivers are asked for the same one: a copy at
     /// another rate is a copy of a different signal.
     rate: u32,
@@ -1009,6 +1126,60 @@ impl Asking {
     }
 }
 
+/// The thread that tells a copy's driver what this host finished writing.
+///
+/// The ASIO contract is that a host which has filled the buffer `bufferSwitch`
+/// named calls `outputReady`, and a driver that commits its output on that
+/// signal commits nothing until it hears it — `azo`'s own sine example calls it
+/// after every fill. Whether ReaRoute is such a driver is what this exists to
+/// find out: before the announcement existed, and with it running at roughly
+/// sixty announcements a second, the driver fired `bufferSwitch` about 1.5
+/// million times a second either way, so that flood is the driver's own polling
+/// and not a wait for us. What the announcement decides is the shared memory,
+/// which no counter in this process can see — and the announcement has to come
+/// from somewhere, because a driver that does pace on it hears nothing until
+/// this thread says so.
+///
+/// It cannot be made from the callback, and not because of its cost: through
+/// `azo` every driver method is a `SendMessageW` to the driver's own pump thread
+/// (`azo-0.6.1/src/host.rs:72-73`), and a real-time thread blocking there can
+/// meet a `stop` already in the queue whose driver is waiting for that callback
+/// to return. So this thread watches [`State::written`] — which says *complete*,
+/// never *started* — on a two-millisecond period that is a rounding error
+/// against the copy's own blocks, and [`Side::drop`] stops and joins it before
+/// that side sends a driver anything at all. The pump is then never blocked from
+/// inside a callback, which was the only thing the old never-call-`outputReady`
+/// paragraph was really protecting.
+struct Announcer {
+    /// Set once, on the way down; the loop reads it between announcements.
+    quit: Arc<AtomicBool>,
+    /// `None` only while it is being joined.
+    handle: Option<std::thread::JoinHandle<()>>,
+    /// Announcements made, and among them the ones the driver answered with an
+    /// error. `--audio-probe` prints these next to the copy's arrivals, because
+    /// "the host announced" and "the driver heard it" are different claims, and
+    /// silence sounds exactly like both of them.
+    told: Arc<AtomicU64>,
+    refused: Arc<AtomicU64>,
+    /// The code of the last refusal, so "the driver would not listen" can say
+    /// what it answered: `azo` carries the driver's own result code out of
+    /// `outputReady`, and the difference between `NOT_PRESENT` and `INVALID_MODE`
+    /// is the difference between "this driver has no announcement to hear" and
+    /// "it hears announcements but not like this".
+    last_refusal: Arc<AtomicI64>,
+}
+
+impl Drop for Announcer {
+    fn drop(&mut self) {
+        self.quit.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            // The loop sleeps two milliseconds at most and one `outputReady` is
+            // one queued message, so this waits out a rounding error.
+            let _ = handle.join();
+        }
+    }
+}
+
 /// One driver a [`Transport`] holds open: the state its callbacks reach while it is
 /// up, and the way to say goodbye to it.
 ///
@@ -1032,6 +1203,10 @@ struct Side {
     /// The transport's failure channel. A driver that would not stop is the host's
     /// news, not the news of whichever thread happened to drop the transport.
     notify: Sender<Failure>,
+    /// The thread announcing blocks to this driver, for the copy whose driver
+    /// paces on `outputReady`. Stopped first on the way down, before `close`, so
+    /// the two never queue to one pump at once.
+    announcer: Option<Announcer>,
 }
 
 /// An open ASIO stream: both directions of one driver, and a copy of the output on
@@ -1044,9 +1219,9 @@ pub struct Transport {
     /// running when the live driver is stopped keeps calling its own `bufferSwitch`
     /// into a ring nobody is filling any more, and its teardown is the one with new
     /// material in it. Whatever a second vendor's driver does on the way out, it
-    /// should not do it while the first one is being taken apart. Read by nothing
-    /// else, hence the name.
-    _copy: Option<Side>,
+    /// should not do it while the first one is being taken apart. Read for one
+    /// other reason, its callback count, by [`Transport::copy_pulse`].
+    copy: Option<Side>,
     /// The driver the host's [`Pump`] runs on. Every number below describes this
     /// one; the copy has its own period and does not care about these.
     first: Side,
@@ -1076,6 +1251,12 @@ unsafe impl Send for Transport {}
 
 impl Drop for Side {
     fn drop(&mut self) {
+        // The announcer goes first, before anything is sent to the pump: it is
+        // itself a sender to that pump, and a `stop` and an `outputReady` in one
+        // queue while the driver waits for the callback that queued them is the
+        // exact shape this module exists to avoid. Joined here, so `close` below
+        // speaks to the pump alone.
+        drop(self.announcer.take());
         // The SDK's order, and the SDK's error reporting which it did not have.
         // Both calls are `SendMessageW` to this driver's pump thread, which is why
         // they happen here and never from a callback.
@@ -1150,6 +1331,82 @@ impl Transport {
         unsafe { &*self.first.state }
             .overloads
             .load(Ordering::Relaxed)
+    }
+
+    /// What the live driver's callbacks have done. See [`Pulse`].
+    pub fn pulse(&self) -> Pulse {
+        // SAFETY: `first` owns the state and the transport owns `first`, so the
+        // pointer is alive for as long as `&self` is; the two numbers are atomics
+        // the driver's thread writes.
+        unsafe { &*self.first.state }.pulse()
+    }
+
+    /// What the driver carrying the copy has done, when there is a second driver.
+    ///
+    /// `arrivals` staying at zero here while the live driver's count climbs is the
+    /// answer to "the second output is open, configured and silent": the transport
+    /// holds the driver, the driver has buffers, and it has never once asked for a
+    /// block. Anything above zero is the other question — sound is going out and
+    /// somebody on the far side is not picking it up.
+    pub fn copy_pulse(&self) -> Option<Pulse> {
+        self.copy
+            .as_ref()
+            // SAFETY: as [`Transport::pulse`], for the second driver's state.
+            .map(|side| unsafe { &*side.state }.pulse())
+    }
+
+    /// The sample type each channel of the copy is written in, named the way the
+    /// driver named it at the open.
+    ///
+    /// This is the first thing to read next to [`Transport::copy_pulse`], because a
+    /// mismatch between what was written and what the far side reads looks exactly
+    /// like silence: integers read back as float are numbers around 10⁻³⁸, and no
+    /// meter can tell those from nothing at all. A count of delivered blocks means
+    /// nothing until the format says the blocks mean the same thing on both sides.
+    /// Empty means there is no copy: no second driver, and no second output on the
+    /// live one either.
+    pub fn copy_formats(&self) -> Vec<&'static str> {
+        // SAFETY: as [`Transport::pulse`]. A side owns its state, and the
+        // transport owns its sides, so both pointers are alive for as long as
+        // `&self` is; `pcm` is written once, at the open, and never again.
+        match &self.copy {
+            Some(side) => unsafe { &*side.state }
+                .outputs
+                .iter()
+                .map(|channel| channel.pcm.name())
+                .collect(),
+            None => unsafe { &*self.first.state }
+                .mirror
+                .iter()
+                .map(|channel| channel.pcm.name())
+                .collect(),
+        }
+    }
+
+    /// The announcements made to the driver carrying the copy, among them the ones
+    /// it answered with an error, and the code of the last such answer named the
+    /// way the driver's own error type names it; `0, 0, None` when there is no
+    /// announcer running. Read this next to [`Transport::copy_pulse`]: arrivals
+    /// without announcements means the host never said it was done writing,
+    /// announcements refused means it said so and the driver answered `no` and
+    /// said why in a code, and accepted announcements with a quiet far side moves
+    /// the search to the shared memory itself — three different silences, and
+    /// only this line tells them apart without the meter on the far side.
+    pub fn copy_announced(&self) -> (u64, u64, Option<String>) {
+        self.copy
+            .as_ref()
+            .and_then(|side| side.announcer.as_ref())
+            .map(|announcer| {
+                let refused = announcer.refused.load(Ordering::Relaxed);
+                let code = announcer.last_refusal.load(Ordering::Relaxed);
+                (
+                    announcer.told.load(Ordering::Relaxed),
+                    refused,
+                    (refused > 0 && code != 0)
+                        .then(|| format!("{}({code})", ResultCode(code as _))),
+                )
+            })
+            .unwrap_or((0, 0, None))
     }
 
     /// The next thing a driver said, if either of them said anything. Nothing here
@@ -1283,6 +1540,11 @@ pub fn open(wanted: Wanted<'_>, pump: impl Pump + 'static) -> Result<Transport, 
         frames,
         exact_period: true,
         rate,
+        // No announcer for the live driver: it was measured answering 751
+        // `bufferSwitch`es a second against a 48000/64 clock, which is a driver
+        // pacing on its own clock, and it has worked all along without the
+        // announcement.
+        announce: false,
     };
 
     let mut feed = None;
@@ -1309,6 +1571,9 @@ pub fn open(wanted: Wanted<'_>, pump: impl Pump + 'static) -> Result<Transport, 
                 frames,
                 exact_period: false,
                 rate,
+                // The copy's driver is the one measured waiting for the
+                // announcement; see `Asking::announce`.
+                announce: true,
             },
             &sender,
             |at| {
@@ -1354,7 +1619,7 @@ pub fn open(wanted: Wanted<'_>, pump: impl Pump + 'static) -> Result<Transport, 
     })?;
 
     Ok(Transport {
-        _copy: copy_side,
+        copy: copy_side,
         first,
         // The number the user chose, which is the one the rings were sized from;
         // what the driver answered is within a hertz of it.
@@ -1414,7 +1679,7 @@ impl Side {
             ));
         }
 
-        let channels = driver.channel_counts().map_err(|error| {
+        let mut channels = driver.channel_counts().map_err(|error| {
             refusal(
                 complaint(
                     &driver,
@@ -1423,6 +1688,38 @@ impl Side {
                 error,
             )
         })?;
+        // The counts ride in the refusal sentences below because ReaRoute taught
+        // the lesson: attached to its bridge it answers *zero outputs* to a copy
+        // that asks to send, and "has 0 output channels" on its own cannot tell
+        // a half-open bridge from a driver that grants receive channels but not
+        // send ones — which is the difference between "look at the far side" and
+        // "look at how this host registered there".
+        //
+        // A driver that answers zero for both directions right after `init` may
+        // simply not have finished becoming itself: one whose bridge attaches on
+        // a thread of its own answers the channel question from a table nobody
+        // has filled yet, and an answer of zero is not a refusal to wait for
+        // the filling. Three quarters of a second, asked four times, is the
+        // difference between refusing a driver that was ready one tick later and
+        // reporting the same zero with the bridge demonstrably in no hurry.
+        if channels.in_ == 0 && channels.out == 0 {
+            for _ in 0..3 {
+                std::thread::sleep(Duration::from_millis(250));
+                let now = driver.channel_counts().map_err(|error| {
+                    refusal(
+                        complaint(
+                            &driver,
+                            &format!("'{driver_name}' would not say how many channels it has"),
+                        ),
+                        error,
+                    )
+                })?;
+                if now.in_ != 0 || now.out != 0 {
+                    channels = now;
+                    break;
+                }
+            }
+        }
         let enough = |have: c_long, want: u32| u32::try_from(have).unwrap_or(0) >= want;
         if !enough(channels.in_, wanted.inputs) {
             return Err(format!(
@@ -1446,8 +1743,9 @@ impl Side {
             })?;
         if !enough(channels.out, want_out) {
             return Err(format!(
-                "'{driver_name}' has {} output channels and this needs one at channel {want_out}",
-                channels.out
+                "'{driver_name}' has {} input and {} output channels, and this needs an output \
+                 at channel {want_out}",
+                channels.in_, channels.out
             ));
         }
         // The copy sits on the driver's own channels, so its span is measured the same
@@ -1657,7 +1955,37 @@ impl Side {
             })
             .collect();
 
+        // A channel the driver agreed to and then gave no memory for cannot carry a
+        // sample, and this module used to run on one anyway: `Channel::plane` answers
+        // `None` for a null half, the write loop steps over it, and the callback still
+        // counts the block it wrote nothing into. That is the least useful failure
+        // there is — silence, with every counter in the process reporting health, and
+        // a meter on the far side that nobody can see from here — so a promise the
+        // driver did not keep is refused at the one moment the information exists.
+        let missing =
+            |kind: &str, channels: &[Channel]| -> Option<String> {
+                channels.iter().enumerate().find_map(|(index, channel)| {
+                    channel.halves.iter().position(|half| half.is_null()).map(|half| {
+                    format!(
+                        "'{driver_name}' gave no buffer space for {kind} channel {} half {}",
+                        index + 1,
+                        half + 1
+                    )
+                })
+                })
+            };
+        if let Some(problem) = missing("input", &inputs)
+            .or_else(|| missing("output", &outputs))
+            .or_else(|| missing("second output", &mirror))
+        {
+            return Err(problem);
+        }
+
         let frames_usize = frames as usize;
+        // The count of finished blocks, shared with the announcer built below so
+        // that it can watch the one number that says a buffer is safe to hand to
+        // the driver — see [`State::written`].
+        let written = Arc::new(AtomicU64::new(0));
         let state = Box::new(State {
             name: driver_name.to_owned(),
             inputs,
@@ -1672,7 +2000,15 @@ impl Side {
             inside: AtomicUsize::new(0),
             last_half: AtomicUsize::new(usize::MAX),
             rate: applied,
+            // Three quarters of one block of the rate and period this driver just
+            // agreed to, in nanoseconds. `applied` is the rate the driver accepted,
+            // not the one it was asked for, and the gap has to be the driver's.
+            block_gap: (frames as u64 * 1_000_000_000 / applied.max(1.0) as u64) * 3 / 4,
+            last_block: AtomicU64::new(0),
             overloads: AtomicU64::new(0),
+            arrivals: AtomicU64::new(0),
+            served: AtomicU64::new(0),
+            written: Arc::clone(&written),
         });
 
         // Silence, before the driver starts and before anyone can hear it. Zero bytes
@@ -1717,6 +2053,54 @@ impl Side {
                 .compare_exchange(STARTING, RUNNING, Ordering::AcqRel, Ordering::Relaxed)
                 .ok();
         }
+        // Shared with the announcer, which needs to reach the driver after the
+        // `close` closure below has taken it: `azo`'s handle is thread-safe but
+        // not `Clone`, and its `Drop` releases the driver, so an owner is shared,
+        // not copied (`azo-0.6.1/src/host.rs:89`).
+        let driver = Arc::new(driver);
+        // The announcement this copy's driver paces on, made from a thread of its
+        // own because it cannot be made from the callback — see [`Announcer`].
+        let announcer = asking.announce.then(|| {
+            let tell = Arc::clone(&driver);
+            let quit = Arc::new(AtomicBool::new(false));
+            let complete = Arc::clone(&written);
+            let watching = Arc::clone(&quit);
+            let told = Arc::new(AtomicU64::new(0));
+            let refused = Arc::new(AtomicU64::new(0));
+            let last_refusal = Arc::new(AtomicI64::new(0));
+            let counted = Arc::clone(&told);
+            let failing = Arc::clone(&refused);
+            let storing = Arc::clone(&last_refusal);
+            let handle = std::thread::spawn(move || {
+                let mut announced = 0u64;
+                loop {
+                    // Announce the blocks laid down since the last announcement,
+                    // which is what a host that filled both halves before
+                    // announcing does. Quitting means `stop` is on its way to the
+                    // same pump, so nothing is announced then.
+                    if watching.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let done = complete.load(Ordering::Relaxed);
+                    if done > announced {
+                        counted.fetch_add(1, Ordering::Relaxed);
+                        if let Err(error) = tell.output_ready() {
+                            failing.fetch_add(1, Ordering::Relaxed);
+                            storing.store(i64::from(error.code().0), Ordering::Relaxed);
+                        }
+                        announced = done;
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            });
+            Announcer {
+                quit,
+                handle: Some(handle),
+                told,
+                refused,
+                last_refusal,
+            }
+        });
         // Built last, because it takes the driver with it: after this there is no
         // handle left to ask a question of, and `start` was the last thing needed.
         let name = driver_name.to_owned();
@@ -1725,16 +2109,18 @@ impl Side {
             // `stop` first: after it returns, a driver that keeps its side of the
             // standard calls no more callbacks. Both sentences name the driver, because
             // with two of them open "it would not stop" is not an answer.
+            // `&*driver` because the handle is shared with the announcer and a trait
+            // bound reaches the `Proxy` through it, not the `Arc`.
             if let Err(error) = driver.stop() {
                 problems.push(refusal(
-                    complaint(&driver, &format!("'{name}' would not stop")),
+                    complaint(&*driver, &format!("'{name}' would not stop")),
                     error,
                 ));
             }
             if let Err(error) = driver.dispose_buffers() {
                 problems.push(refusal(
                     complaint(
-                        &driver,
+                        &*driver,
                         &format!("'{name}' would not give its buffers back"),
                     ),
                     error,
@@ -1747,6 +2133,7 @@ impl Side {
             state: published,
             close: Some(close),
             notify: errors.clone(),
+            announcer,
         })
     }
 }
@@ -1951,12 +2338,14 @@ mod tests {
         unsafe { asio_message::<0>(selector, value, null(), null()) }
     }
 
-    /// One block each way, in the driver's own bytes, and the two rules about
-    /// which half a callback is about. The buffers are two `Vec`s standing in for
-    /// what `createBuffers` would hand back; everything else — the conversion,
-    /// the deduplication, the interleaving — is the code a real driver runs.
+    /// One block each way, in the driver's own bytes, and the two rules about which
+    /// half a callback is about: a repeat of the previous half is the same block
+    /// while that block could still be being answered, and a new one after it. The
+    /// buffers are two `Vec`s standing in for what `createBuffers` would hand back;
+    /// everything else — the conversion, the deduplication, the interleaving — is the
+    /// code a real driver runs.
     #[test]
-    fn one_half_is_one_block_however_often_the_driver_names_it() {
+    fn one_half_is_one_block_until_that_block_could_be_a_new_one() {
         // Two frames: four bytes of 16-bit integers in, eight bytes of 32-bit
         // floats out, per half.
         let mut input = [vec![0u8; 4], vec![0u8; 4]];
@@ -1968,7 +2357,7 @@ mod tests {
         let blocks = Arc::new(AtomicUsize::new(0));
         let heard = Arc::new(Mutex::new(Vec::new()));
         let (sender, _errors) = bounded(16);
-        let state = State {
+        let mut state = State {
             name: "Test driver".into(),
             inputs: vec![Channel {
                 halves: [input[0].as_mut_ptr().cast(), input[1].as_mut_ptr().cast()],
@@ -1990,8 +2379,16 @@ mod tests {
             phase: AtomicU8::new(RUNNING),
             inside: AtomicUsize::new(0),
             last_half: AtomicUsize::new(usize::MAX),
+            // A minute, so that no test's two callbacks are ever far enough apart to
+            // look like two blocks by the clock. The test that wants the other answer
+            // shrinks the gap to one a driver's own period would give it.
+            block_gap: 60_000_000_000,
+            last_block: AtomicU64::new(0),
             rate: 48_000.0,
             overloads: AtomicU64::new(0),
+            arrivals: AtomicU64::new(0),
+            served: AtomicU64::new(0),
+            written: Arc::new(AtomicU64::new(0)),
         };
 
         state.exchange(0, false);
@@ -2007,17 +2404,32 @@ mod tests {
             "the host's ramp did not reach the driver's bytes in the order the host wrote it"
         );
 
-        // The same half a second time is a driver doing what Focusrite USB ASIO
-        // and ReaRoute do (`cpal-0.18.2/src/host/asio/stream.rs:227-230`), and
-        // one block is all it is.
+        // The same half a second time, inside the block it repeats, is a driver
+        // doing what Focusrite USB ASIO does
+        // (`cpal-0.18.2/src/host/asio/stream.rs:227-230`), and one block is all it is.
         state.exchange(0, false);
         assert_eq!(
             blocks.load(Ordering::Relaxed),
             1,
             "the same half twice became two blocks"
         );
+        // The same half again, once a block's worth of time has gone by, is a second
+        // block. This is the reading that keeps a driver which never names the other
+        // half audible at all — the copy ReaRoute gives `--audio-probe`, a million
+        // index-zero callbacks a second and one block served under the index rule
+        // alone. The gap is shrunk to a millisecond so the test says "a block's worth
+        // of time" without waiting a minute for one; five is comfortably a block of
+        // anything, and a slow machine can only make the gap longer.
+        state.block_gap = 1_000_000;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        state.exchange(0, false);
+        assert_eq!(
+            blocks.load(Ordering::Relaxed),
+            2,
+            "a repeat that arrived after its block was still eaten as a duplicate"
+        );
         state.exchange(1, false);
-        assert_eq!(blocks.load(Ordering::Relaxed), 2, "the other half was lost");
+        assert_eq!(blocks.load(Ordering::Relaxed), 3, "the other half was lost");
         // With `directProcess` there is no other half to wait for, so the same
         // index twice is two blocks. Dropping the flag — which is what the SDK
         // path does (`asio-sys-0.4.0/src/bindings/mod.rs:1226`) — turns these two
@@ -2026,8 +2438,20 @@ mod tests {
         state.exchange(1, true);
         assert_eq!(
             blocks.load(Ordering::Relaxed),
-            4,
+            5,
             "`directProcess` blocks were deduplicated like double-buffered ones"
+        );
+        // The two counts keep the difference between a driver that fires twice for
+        // one half and a driver that fires: six calls in, five blocks out. The gap
+        // is the whole of what a host can see of the guard from outside a callback,
+        // which is what a second driver that "opened and stayed silent" turns on.
+        assert_eq!(
+            state.pulse(),
+            Pulse {
+                arrivals: 6,
+                served: 5
+            },
+            "the callback counts did not keep the block the guard ate"
         );
     }
 
@@ -2068,8 +2492,16 @@ mod tests {
             phase: AtomicU8::new(RUNNING),
             inside: AtomicUsize::new(0),
             last_half: AtomicUsize::new(usize::MAX),
+            // A minute, so that no test's two callbacks are ever far enough apart to
+            // look like two blocks by the clock. The test that wants the other answer
+            // shrinks the gap to one a driver's own period would give it.
+            block_gap: 60_000_000_000,
+            last_block: AtomicU64::new(0),
             rate: 48_000.0,
             overloads: AtomicU64::new(0),
+            arrivals: AtomicU64::new(0),
+            served: AtomicU64::new(0),
+            written: Arc::new(AtomicU64::new(0)),
         };
 
         // `Tape` writes `(index + 1) / 8` across the block, so two frames of two
@@ -2170,8 +2602,16 @@ mod tests {
             phase: AtomicU8::new(RUNNING),
             inside: AtomicUsize::new(0),
             last_half: AtomicUsize::new(usize::MAX),
+            // A minute, so that no test's two callbacks are ever far enough apart to
+            // look like two blocks by the clock. The test that wants the other answer
+            // shrinks the gap to one a driver's own period would give it.
+            block_gap: 60_000_000_000,
+            last_block: AtomicU64::new(0),
             rate: 48_000.0,
             overloads: AtomicU64::new(0),
+            arrivals: AtomicU64::new(0),
+            served: AtomicU64::new(0),
+            written: Arc::new(AtomicU64::new(0)),
         }));
         STATES[1].store(state, Ordering::Release);
 

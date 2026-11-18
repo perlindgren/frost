@@ -112,6 +112,33 @@ answers for is refused; a driver chosen without a start channel is refused, sinc
 guessing where a second interface's sockets are would be a guess about someone's
 speaker cables.
 
+`Settings::second_group` answers the one question those two rows leave open: which
+driver the copy ends up on, and which of that driver's channels — `3–4` for a
+stereo route starting at 3. nice-rack writes that into its status line
+(`Audio running — copy to 'ReaRoute ASIO (x64)' 1–2`) because a second driver with
+nothing on the other end looks, from inside this process, exactly like one carrying
+a copy nobody asked for: the second driver's own callback is what drains the
+crossing, so a copy going nowhere never falls behind and never says so. The line
+says where to look; only the program on the far side can say whether anything is
+listening there.
+
+What "nothing is listening" means was measured rather than guessed, and the
+measurement changed the code. `asio_io::Transport::pulse` and
+`Transport::copy_pulse` answer, for each open driver, how many `bufferSwitch` calls
+it has fired and how many of them moved a block, and the standalone's
+`--audio-probe <seconds>` opens the saved settings' drivers with a 1 kHz tone in
+place of a guitar and prints those numbers once a second. ReaRoute, with REAPER
+running: 1.68 million callbacks a second on the copy, every one of them naming
+buffer half zero, and one block served in total. A driver that never names the other
+half is not double-buffered, and a guard that drops every repeat of an index mutes
+such a driver for the life of the stream. So a repeat now counts as a repeat only
+while the block it repeats could still be being answered — three quarters of that
+driver's own period, chosen so a driver that returns its buffers early still gets
+its second block and one that repeats a half microseconds later does not — and after
+that gap it is the next block. Three quarters rather than the whole period because
+being early is recoverable and being late is not, and no driver tells a host how
+fast it actually reads.
+
 Settings serialize directly through RON; geometry edits use `ron::Value`.
 `nice-common` has no `serde_json` dependency.
 

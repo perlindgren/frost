@@ -10,7 +10,7 @@ pub mod dropdown;
 #[cfg(feature = "standalone")]
 pub mod resample;
 pub mod settings;
-pub use settings::{OutputChannels, Preferences, Settings, WindowGeom};
+pub use settings::{OutputChannels, Preferences, SecondGroup, Settings, WindowGeom};
 
 #[cfg(feature = "devices")]
 pub mod devices;

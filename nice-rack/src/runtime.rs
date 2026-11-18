@@ -737,6 +737,14 @@ impl Runtime {
                     self.retreat = None;
                     self.states
                         .retain(|id, _| self.cards.iter().any(|card| card.id == *id));
+                    // Where this stream's copy is going, read off the settings the
+                    // drivers were actually opened with rather than the file on
+                    // disk: a second driver that refused to open is a refusal, and a
+                    // refusal never reaches this line.
+                    let copy = match (&self.io, &self.live_settings) {
+                        (Some(_), Some(live)) => live.second_group(),
+                        _ => None,
+                    };
                     self.message = if self.io.is_some() {
                         "Audio running".into()
                     } else {
@@ -746,6 +754,21 @@ impl Runtime {
                         && let Some(error) = &self.diagnostic
                     {
                         self.message = format!("{} — {error}", self.message);
+                    } else if let Some(group) = copy {
+                        // A second driver with nothing on the other end looks, and
+                        // sounds, exactly like one carrying a copy nobody asked for:
+                        // its own callback is what drains the crossing, so a copy
+                        // going nowhere never falls behind. The line cannot say
+                        // whether anything is listening — an open ASIO driver that is
+                        // unread is indistinguishable from a played one from here —
+                        // but it can say which driver and which channels an operator
+                        // should be finding in the program on the other side.
+                        self.message = format!(
+                            "{} — copy to '{}' {}",
+                            self.message,
+                            group.driver,
+                            group.span()
+                        );
                     }
                     if let Some(reply) = opening.action.reply {
                         let _ = reply.send(Ok(()));
