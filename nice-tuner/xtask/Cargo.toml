@@ -11,6 +11,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# Already used by nice-plug-xtask; name the public workspace metadata API.
+cargo_metadata = "=0.23.1"
 nice-plug-xtask = "0.1"
 # `nice-plug-xtask` re-exports its `Result` and not its `Error`, and the bundling
 # step below has failures of its own to name (a licence text that is gone, a

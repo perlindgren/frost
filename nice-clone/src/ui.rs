@@ -106,7 +106,6 @@ pub struct CloneUi {
     oversampling_open: bool,
     oversampling_scroll: f32,
     oversampling_dragging: bool,
-    #[cfg(feature = "standalone")]
     settings_page: bool,
     #[cfg(feature = "standalone")]
     message: String,
@@ -136,7 +135,6 @@ impl CloneUi {
             oversampling_open: false,
             oversampling_scroll: 0.0,
             oversampling_dragging: false,
-            #[cfg(feature = "standalone")]
             settings_page: false,
             #[cfg(feature = "standalone")]
             message: String::new(),
@@ -200,6 +198,105 @@ impl CloneUi {
                 Some(Oversampling::from_index(shared.oversampling.load()).factor() as u32);
             if let Err(error) = settings.save() {
                 self.message = error;
+            }
+        }
+    }
+
+    /// Device-independent settings are available inside a plugin host too.
+    fn draw_plugin_settings(&mut self, ctx: &mut Context) {
+        let Some(params) = self.params.clone() else {
+            return;
+        };
+        let (w, h) = ctx.size();
+        let fit = (w / 860.0).min(h / 440.0).clamp(0.45, 1.5);
+        let mouse = ctx.mouse_position();
+        let down = ctx.mouse_button_down(frost::MouseButton::Left);
+        let pressed = down && !self.was_down;
+        self.was_down = down;
+        let was_open = self.oversampling_open;
+        let at = [60.0 * fit, 25.0 * fit];
+        let half = [80.0 * fit, 16.0 * fit];
+        let inside = |at: [f32; 2], half: [f32; 2]| {
+            mouse
+                .is_some_and(|p| (p[0] - at[0]).abs() <= half[0] && (p[1] - at[1]).abs() <= half[1])
+        };
+        self.text(
+            ctx,
+            0.0,
+            h / 2.0 - 45.0 * fit,
+            "NICE CLONE SETTINGS".into(),
+            23.0 * fit,
+            TEXT,
+        );
+        self.text(
+            ctx,
+            -100.0 * fit,
+            at[1],
+            "Oversampling".into(),
+            14.0 * fit,
+            MUTED,
+        );
+        ctx.rectangle(at[0], at[1], half[0], half[1], knob::PANEL, 0.48);
+        self.text(
+            ctx,
+            at[0],
+            at[1],
+            format!("{} ▾", self.oversampling(&params).label()),
+            16.0 * fit,
+            knob::AMBER,
+        );
+        self.text(
+            ctx,
+            0.0,
+            -30.0 * fit,
+            "Lower rates use less CPU; higher rates reduce aliasing.".into(),
+            12.0 * fit,
+            MUTED,
+        );
+        let back = [0.0, -h / 2.0 + 40.0 * fit];
+        ctx.rectangle(back[0], back[1], 55.0 * fit, 16.0 * fit, knob::PANEL, 0.48);
+        self.text(ctx, back[0], back[1], "BACK".into(), 14.0 * fit, TEXT);
+        if pressed && !was_open {
+            if inside(at, half) {
+                self.oversampling_open = true;
+            }
+            if inside(back, [55.0 * fit, 16.0 * fit]) {
+                self.settings_page = false;
+            }
+        }
+        if self.oversampling_open {
+            let items: Vec<_> = Oversampling::ALL
+                .iter()
+                .map(|mode| (mode.label().to_owned(), mode.index().to_string()))
+                .collect();
+            let response = draw_dropdown(
+                ctx,
+                &self.font,
+                [w, h],
+                fit,
+                Placement::Row(at, half),
+                0.9,
+                pressed && was_open,
+                &items,
+                self.oversampling(&params).index() as usize,
+                "",
+                "Oversampling",
+                false,
+                &mut self.oversampling_scroll,
+                &mut self.oversampling_dragging,
+            );
+            if let Some(index) = response.picked {
+                self.set_oversampling(&params, Oversampling::ALL[index]);
+                self.oversampling_open = false;
+            } else if pressed && was_open && !response.consumed {
+                self.oversampling_open = false;
+            }
+        }
+        if ctx.key_down(frost::KeyCode::Escape) {
+            if was_open {
+                self.oversampling_open = false;
+            } else {
+                self.settings_page = false;
             }
         }
     }
@@ -275,9 +372,13 @@ impl Process for CloneUi {
             self.applied = Settings::default();
             self.panel = None;
         }
-        #[cfg(feature = "standalone")]
         if self.settings_page {
-            self.draw_settings_page(ctx);
+            #[cfg(feature = "standalone")]
+            if crate::STANDALONE_MODE.load(Ordering::Relaxed) {
+                self.draw_settings_page(ctx);
+                return;
+            }
+            self.draw_plugin_settings(ctx);
             return;
         }
         let Some(params) = self.params.clone() else {
@@ -292,7 +393,6 @@ impl Process for CloneUi {
         let oversampling_at = [80.0 * fit, h / 2.0 - 85.0 * fit];
         let oversampling_half = [60.0 * fit, 15.0 * fit];
         let menu_was_open = self.oversampling_open;
-        let standalone = crate::STANDALONE_MODE.load(Ordering::Relaxed);
         let mouse = ctx.mouse_position();
         let down = ctx.mouse_button_down(frost::MouseButton::Left);
         let pressed = down && !self.was_down;
@@ -308,10 +408,7 @@ impl Process for CloneUi {
                     hover = Some(Hover::Knob(*kind));
                 }
             }
-            if standalone
-                && (at[0] - cog_at[0]).abs() < 20.0 * fit
-                && (at[1] - cog_at[1]).abs() < 20.0 * fit
-            {
+            if (at[0] - cog_at[0]).abs() < 20.0 * fit && (at[1] - cog_at[1]).abs() < 20.0 * fit {
                 hover = Some(Hover::Cog);
             }
         }
@@ -357,10 +454,11 @@ impl Process for CloneUi {
                 self.oversampling_open = true;
             }
             if clicked == Some(Hover::Cog) {
+                self.settings_page = true;
+                self.oversampling_open = false;
                 #[cfg(feature = "standalone")]
                 {
                     self.panel = None;
-                    self.settings_page = true;
                     self.pressed = false;
                 }
             }
@@ -401,7 +499,7 @@ impl Process for CloneUi {
             12.0 * fit,
             MUTED,
         );
-        if standalone {
+        {
             ctx.text(
                 cog_at[0],
                 cog_at[1],

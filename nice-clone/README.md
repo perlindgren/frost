@@ -51,7 +51,8 @@ verified on a Behringer unit.
 ## Oversampling and CPU
 
 The **Oversampling** dropdown above the knobs is available in the plugin and
-standalone. **8×** remains the default, including when loading older sessions or
+standalone. In CLAP/VST3, the upper-right settings cog also opens a plugin
+settings page with the same dropdown. Device settings remain standalone-only. **8×** remains the default, including when loading older sessions or
 settings files. Lower factors reduce both circuit evaluations and resampling
 work. **Off** runs the nonlinear circuit directly at the host sample rate and
 skips all resampling filters. Lower settings trade alias suppression for CPU.
