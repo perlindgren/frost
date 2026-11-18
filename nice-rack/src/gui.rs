@@ -51,6 +51,33 @@ struct WireMeter {
     /// be carrying nothing and an expanded one can be broken.
     open_circuit: bool,
 }
+/// Track presses independently of the text editor: its first click opens the
+/// editor, so the second press must still be able to reset that same value.
+#[derive(Default)]
+struct GainClick {
+    previous: Option<((u64, bool), std::time::Instant)>,
+}
+impl GainClick {
+    fn press(
+        &mut self,
+        target: Option<(u64, bool)>,
+        time: std::time::Instant,
+    ) -> Option<(u64, bool)> {
+        let previous = self.previous.take();
+        let target = target?;
+        if previous.is_some_and(|(old, at)| {
+            old == target
+                && time
+                    .checked_duration_since(at)
+                    .is_some_and(|elapsed| elapsed <= std::time::Duration::from_millis(350))
+        }) {
+            Some(target)
+        } else {
+            self.previous = Some((target, time));
+            None
+        }
+    }
+}
 struct RackUi {
     runtime: Runtime,
     loader: Loader,
@@ -98,6 +125,7 @@ struct RackUi {
     /// from the card's live slot every frame, so scrolling carries the
     /// open editor along with its card.
     gain_edit: Option<(u64, bool)>,
+    gain_click: GainClick,
     /// The editor's field: frost's `TextInput` logic — buffer, caret,
     /// selection, blink — adopted from the trim's dB text when the edit
     /// opens. The rack draws it itself at the card's corner, mirroring
@@ -750,6 +778,7 @@ pub fn run(
         timing_meters: Default::default(),
         gain_drag: None,
         gain_edit: None,
+        gain_click: GainClick::default(),
         gain_input: frost::TextInput::default(),
         size: None,
         windows: Default::default(),
@@ -855,6 +884,7 @@ impl RackUi {
                 .is_some_and(|wire| wire.open_circuit)
     }
     fn toggle_pause(&mut self, id: u64) {
+        self.gain_click = GainClick::default();
         let paused = !self.runtime.paused(id);
         self.runtime.set_paused(id, paused);
         if self.gain_drag.is_some_and(|(card, _, _)| card == id) {
@@ -882,6 +912,7 @@ impl RackUi {
         .into();
     }
     fn toggle_bypass(&mut self, id: u64) {
+        self.gain_click = GainClick::default();
         let bypassed = !self.runtime.bypassed(id);
         self.runtime.set_bypassed(id, bypassed);
         if bypassed {
@@ -1343,6 +1374,38 @@ impl Process for RackUi {
         };
         if let Some(id) = pause_target {
             self.toggle_pause(id);
+        }
+        let gain_reset = if press {
+            let target =
+                if self.overlay.is_none() && self.choosing.is_none() && self.gain_drag.is_none() {
+                    layout
+                        .slots
+                        .iter()
+                        .filter(|slot| {
+                            visible(slot, layout.top, layout.bottom, w)
+                                && !self.runtime.paused(slot.id.0)
+                                && !self.runtime.bypassed(slot.id.0)
+                        })
+                        .find_map(|slot| {
+                            [false, true]
+                                .into_iter()
+                                .find(|side| {
+                                    let [gx, gy] = gain_center(slot.x, slot.y, *side);
+                                    hit(mouse, gx, gy, GAIN_HALF_W, GAIN_HALF_H)
+                                })
+                                .map(|side| (slot.id.0, side))
+                        })
+                } else {
+                    None
+                };
+            self.gain_click.press(target, std::time::Instant::now())
+        } else {
+            None
+        };
+        if let Some((id, side)) = gain_reset {
+            self.set_trim(id, side, 0.0);
+            self.gain_edit = None;
+            self.gain_input.set_focus(false);
         }
         ctx.text(
             layout.left,
@@ -1961,6 +2024,7 @@ impl Process for RackUi {
                     // field, and the same press that opened it lands on the
                     // field's own mouse handling below.
                     if clicked
+                        && gain_reset != Some((slot.id.0, side))
                         && self.choosing.is_none()
                         && self.gain_drag.is_none()
                         && hit(mouse, gx, gy, GAIN_HALF_W, GAIN_HALF_H)
@@ -3286,5 +3350,44 @@ mod bypass_tests {
             assert!(!meter_hit(Some([bx, y + 35.0]), x, y, side, false));
             assert!(meter_hit(Some([bx, y + 35.0]), x, y, side, true));
         }
+    }
+}
+
+#[cfg(test)]
+mod gain_double_click_tests {
+    use super::GainClick;
+    use std::time::{Duration, Instant};
+    #[test]
+    fn only_two_quick_presses_on_the_same_value_reset_and_a_third_starts_over() {
+        let mut clicks = GainClick::default();
+        let now = Instant::now();
+        let target = Some((7, false));
+        assert_eq!(clicks.press(target, now), None);
+        assert_eq!(
+            clicks.press(target, now + Duration::from_millis(150)),
+            target
+        );
+        assert_eq!(clicks.press(target, now + Duration::from_millis(220)), None);
+        assert_eq!(
+            clicks.press(Some((7, true)), now + Duration::from_millis(250)),
+            None
+        );
+        assert_eq!(
+            clicks.press(Some((9, true)), now + Duration::from_millis(280)),
+            None
+        );
+        assert_eq!(
+            clicks.press(Some((9, true)), now + Duration::from_millis(700)),
+            None
+        );
+        assert_eq!(clicks.press(None, now + Duration::from_millis(710)), None);
+        assert_eq!(
+            clicks.press(Some((9, true)), now + Duration::from_millis(720)),
+            None
+        );
+        assert_eq!(
+            clicks.press(Some((9, true)), now + Duration::from_millis(800)),
+            Some((9, true))
+        );
     }
 }
