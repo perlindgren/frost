@@ -305,7 +305,7 @@ impl<P: Preferences> Settings<P> {
     pub fn save_to(&self, path: &std::path::Path) -> Result<(), String> {
         let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
             .map_err(|e| e.to_string())?;
-        std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
+        atomic_write(path, text.as_bytes())
     }
 
     /// Update only window geometry, preserving saved preferences and unknown
@@ -316,6 +316,14 @@ impl<P: Preferences> Settings<P> {
 
     /// Update geometry at an explicit path without overwriting preferences.
     pub fn save_window_to(path: &std::path::Path, window: WindowGeom) -> Result<(), String> {
+        Self::save_window_to_with(path, window, atomic_write)
+    }
+
+    fn save_window_to_with(
+        path: &std::path::Path,
+        window: WindowGeom,
+        write: impl FnOnce(&std::path::Path, &[u8]) -> Result<(), String>,
+    ) -> Result<(), String> {
         if !window.width.is_finite()
             || !window.height.is_finite()
             || window.width <= 0.0
@@ -361,7 +369,9 @@ impl<P: Preferences> Settings<P> {
             geometry.insert("y", Value::from(Some(y)));
         }
         if value != original {
-            write_value(path, &value)?;
+            let text = ron::ser::to_string_pretty(&value, ron::ser::PrettyConfig::default())
+                .map_err(|e| e.to_string())?;
+            write(path, text.as_bytes())?;
         }
         Ok(())
     }
@@ -523,15 +533,181 @@ impl<'de> serde::Deserializer<'de> for SettingsValue {
 fn read_value(text: &str) -> Result<Value, String> {
     ron::from_str(text).map_err(|e| e.to_string())
 }
-fn write_value(path: &std::path::Path, value: &Value) -> Result<(), String> {
-    let text = ron::ser::to_string_pretty(value, ron::ser::PrettyConfig::default())
-        .map_err(|e| e.to_string())?;
-    std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
+/// Stage in the destination directory so rename stays on one filesystem.
+/// A successful replacement exposes the complete new file; no delete-first
+/// fallback is permitted. This is not a power-loss durability guarantee for
+/// the directory entry, nor a lock against concurrent read/modify/write saves.
+fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    atomic_write_with(
+        path,
+        |file| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        },
+        |from, to| std::fs::rename(from, to),
+    )
+    .map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn atomic_write_with(
+    path: &std::path::Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+    replace: impl FnOnce(&std::path::Path, &std::path::Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    struct Staged(PathBuf);
+    impl Drop for Staged {
+        fn drop(&mut self) {
+            // Also clean up on write/sync/rename failure or unwinding. The
+            // handle is closed first, including on Windows.
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    if path.file_name().is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Missing settings filename",
+        ));
+    }
+    // create_new never truncates someone else's temporary file. The bounded
+    // retries also tolerate files left by an abruptly terminated process.
+    for _ in 0..128 {
+        let temporary = parent.join(format!(
+            ".nice-settings-{}-{}.tmp",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = match options.open(&temporary) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let staged = Staged(temporary);
+        let mut file = file;
+        // Declare the handle after the guard so unwinding closes it first.
+        // Normal error handling closes explicitly before the guard runs.
+        let result = write(&mut file);
+        drop(file);
+        result?;
+        return replace(&staged.0, path);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "Could not reserve a settings temporary file",
+    ))
 }
 
 #[cfg(all(test, feature = "widgets"))]
 mod persistence_tests {
     use super::*;
+
+    fn only_destination_remains(path: &std::path::Path) {
+        let entries: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(entries, [path]);
+    }
+
+    #[test]
+    fn atomic_save_replaces_an_existing_file() {
+        let path = path();
+        let original = Settings::<NoPreferences>::default();
+        original.save_to(&path).unwrap();
+        let updated = Settings::<NoPreferences> {
+            backend: Some("dummy".into()),
+            sample_rate: Some(96_000.0),
+            ..original
+        };
+        updated.save_to(&path).unwrap();
+        assert_eq!(Settings::<NoPreferences>::load_from(&path), (updated, None));
+        only_destination_remains(&path);
+    }
+
+    #[test]
+    fn a_partial_write_failure_preserves_the_previous_file() {
+        use std::io::Write;
+        let path = path();
+        Settings::<NoPreferences>::default().save_to(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let error = atomic_write_with(
+            &path,
+            |file| {
+                file.write_all(b"incomplete")?;
+                Err(std::io::Error::other("injected write failure"))
+            },
+            |_, _| panic!("must not replace after a failed write"),
+        );
+        assert!(error.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        only_destination_remains(&path);
+    }
+
+    #[test]
+    fn a_failed_geometry_replacement_preserves_preferences_and_geometry() {
+        use std::io::Write;
+        let path = path();
+        Settings::<NoPreferences>::default().save_to(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let error = Settings::<NoPreferences>::save_window_to_with(
+            &path,
+            WindowGeom {
+                width: 900.0,
+                height: 620.0,
+                x: Some(10),
+                y: Some(20),
+            },
+            |path, bytes| {
+                atomic_write_with(
+                    path,
+                    |file| {
+                        file.write_all(bytes)?;
+                        file.sync_all()
+                    },
+                    |staged, destination| {
+                        // Complete new RON exists, but the destination has not changed.
+                        assert!(read_value(&std::fs::read_to_string(staged)?).is_ok());
+                        assert_eq!(std::fs::read(destination)?, before);
+                        Err(std::io::Error::other("injected replacement failure"))
+                    },
+                )
+                .map_err(|e| e.to_string())
+            },
+        );
+        assert!(error.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        only_destination_remains(&path);
+    }
+
+    #[test]
+    fn missing_parent_and_real_replacement_failure_leave_no_temporary_file() {
+        let root = path();
+        let missing = root.join("missing").join("settings.ron");
+        assert!(
+            Settings::<NoPreferences>::default()
+                .save_to(&missing)
+                .is_err()
+        );
+        assert!(!root.exists());
+        // Renaming a file over a directory fails on every supported platform.
+        std::fs::create_dir(&root).unwrap();
+        assert!(atomic_write(&root, b"new settings").is_err());
+        assert!(root.is_dir());
+        only_destination_remains(&root);
+    }
 
     fn field<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
         match value {

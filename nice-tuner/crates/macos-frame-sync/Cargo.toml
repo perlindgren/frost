@@ -6,6 +6,10 @@ description = "Safe main-thread display-synchronized callbacks for macOS views"
 license.workspace = true
 publish = false
 
+[[test]]
+name = "multi_library"
+harness = false
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSView", "NSResponder", "objc2-quartz-core"] }
