@@ -12,7 +12,19 @@ path = "src/main.rs"
 [dependencies]
 nice-rack = { path = "../.." }
 nice-clap-host = { path = "../../../nice-clap-host" }
-nice-common = { path = "../../../nice-common", features = ["devices"] }
+nice-common = { path = "../../../nice-common", features = ["devices", "audio-io"] }
+# The virtual device's installer: this binary is the front door that puts
+# `niceroute.dll` into the registry, so the DLL and the command that
+# installs it ship as one executable.
+nice-azo-host = { path = "../nice-azo-host" }
+
+[features]
+# Spelled here rather than inherited, because the `--audio-probe` branch of this
+# binary is compiled on it: a build without the Windows transport has no driver to
+# probe, and gets no flag instead of a flag that fails when used. The library this
+# binary is a front door for selects the feature itself, so it is on by default.
+default = ["asio-host"]
+asio-host = ["nice-common/asio-host"]
 
 [dev-dependencies]
 rtrb = "0.4"

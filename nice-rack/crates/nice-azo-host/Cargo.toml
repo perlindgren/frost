@@ -1,0 +1,27 @@
+[package]
+name = "nice-azo-host"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+description = "NiceRack ASIO: a virtual ASIO driver whose bus is served over shared memory by whichever instance holds the hardware"
+
+# The cdylib is the device every ASIO host loads; the rlib is what nice-rack's
+# own binary uses to register it and — in its `niceroute-probe` sibling — to
+# talk to it over exactly the same COM path REAPER takes.
+[lib]
+# Named for the artifact: the cdylib that ships and registers is
+# `niceroute.dll`, and consumers (`niceroute-probe`, nice-rack itself)
+# call the crate by the same name they see in Explorer.
+name = "niceroute"
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(windows)'.dependencies]
+# Used in the *host* direction only, and only by the instance that wins the
+# election: the master wraps the real driver (azo driving it like `asio_io`
+# drives it) while every instance, master included, answers hosts as a driver
+# through the hand-written vtable in `abi` — whose layout `azo`'s own host
+# bindings then verify from the outside in `niceroute-probe loopback`.
+azo = { version = "0.6.1", default-features = false, features = [
+  "host",
+] }

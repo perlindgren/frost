@@ -1989,6 +1989,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nice-azo-host"
+version = "0.1.0"
+dependencies = [
+ "azo",
+]
+
+[[package]]
 name = "nice-clap-host"
 version = "0.1.0"
 dependencies = [
@@ -2253,6 +2260,7 @@ dependencies = [
 name = "nice-rack-standalone"
 version = "0.1.0"
 dependencies = [
+ "nice-azo-host",
  "nice-clap-host",
  "nice-common",
  "nice-rack",
