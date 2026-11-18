@@ -1,5 +1,9 @@
 //! Prepared, single-thread graph execution. Preparation owns all allocation;
 //! processing borrows external buffers and never changes graph topology.
+mod timing;
+use std::time::Instant;
+pub use timing::{ProcessingTime, ProcessingTimes};
+
 use crate::{Channels, GraphError, NodeId, NodeKind, RackGraph};
 use nice_common::true_peak::TruePeak;
 use std::collections::{BTreeMap, BTreeSet};
@@ -426,6 +430,7 @@ struct Node {
     /// `attach_wire_levels`; `None` until then and for every non-plugin node.
     wire_in: Option<usize>,
     wire_out: Option<usize>,
+    timing_slot: Option<usize>,
     /// True-peak history of each metered side, one estimator per channel.
     /// Owned here rather than built inside [`wire_level`] so a wire's crest
     /// survives block boundaries and a held level reads exactly itself.
@@ -444,6 +449,7 @@ pub struct PreparedRack {
     /// Wire observations shared with the UI. The table is empty until a
     /// control thread attaches one, so an unobserved plan pays nothing.
     wires: Arc<WireLevels>,
+    timings: Option<(Arc<ProcessingTimes>, f64)>,
 }
 fn count(channels: Channels) -> usize {
     match channels {
@@ -552,6 +558,7 @@ impl PreparedRack {
                 id,
                 wire_in: None,
                 wire_out: None,
+                timing_slot: None,
                 tp_in: [TruePeak::new(), TruePeak::new()],
                 tp_out: [TruePeak::new(), TruePeak::new()],
             });
@@ -567,6 +574,7 @@ impl PreparedRack {
             max_frames,
             latency: latencies[&output_id],
             wires: Arc::new(WireLevels::default()),
+            timings: None,
         })
     }
     /// Register every wire the UI should watch, then share `levels` with the
@@ -605,6 +613,27 @@ impl PreparedRack {
         }
         self.wires = levels;
     }
+    /// Attach timing observations before transferring this plan to its worker.
+    /// The deadline is recomputed for each actual block, including short tails.
+    pub fn attach_processing_times(&mut self, times: Arc<ProcessingTimes>, sample_rate: f64) {
+        assert!(sample_rate.is_finite() && sample_rate > 0.0);
+        let ids: Vec<_> = self
+            .nodes
+            .iter()
+            .filter(|node| node.processor.is_some())
+            .map(|node| node.id)
+            .collect();
+        times.register(&ids);
+        let mut index = 0;
+        for node in &mut self.nodes {
+            node.timing_slot = node.processor.as_ref().map(|_| {
+                let slot = index;
+                index += 1;
+                slot
+            });
+        }
+        self.timings = Some((times, sample_rate));
+    }
     pub fn latency_samples(&self) -> usize {
         self.latency
     }
@@ -632,9 +661,15 @@ impl PreparedRack {
             return Err(ProcessError::InvalidBuffers);
         }
         let wires = &self.wires;
+        let started = self.timings.as_ref().map(|_| Instant::now());
+        let deadline = self
+            .timings
+            .as_ref()
+            .map_or(1.0, |(_, rate)| frames as f64 / rate);
         for index in 0..self.nodes.len() {
             let (before, after) = self.nodes.split_at_mut(index);
             let node = &mut after[0];
+            let node_started = node.timing_slot.map(|_| Instant::now());
             node.input.clear(frames);
             node.output.clear(frames);
             for edge in &mut node.edges {
@@ -722,6 +757,19 @@ impl PreparedRack {
                         destination[..frames].copy_from_slice(&source[..frames]);
                     }
                 }
+            }
+            if let (Some((times, _)), Some(started), Some(node_started), Some(slot)) =
+                (&self.timings, started, node_started, node.timing_slot)
+            {
+                let end = Instant::now();
+                times.publish(
+                    slot,
+                    ProcessingTime {
+                        incoming: node_started.duration_since(started).as_secs_f64() / deadline,
+                        added: end.duration_since(node_started).as_secs_f64() / deadline,
+                    },
+                    end,
+                );
             }
         }
         for (source, destination) in self.nodes[self.output_index].output.0.iter().zip(output) {

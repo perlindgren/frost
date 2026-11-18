@@ -59,6 +59,18 @@ isolation or make an arbitrary third-party plugin safe.
   parameters. Drag the sliders, scroll for more controls, and close with × or
   Escape. A drag beyond five logical points moves the card instead of opening it.
 - Input and output RMS/peak-hold meters sit at the bottom.
+- Every effect card has its own bottom-edge audio-budget meter. Muted purple
+  fills from the left for time already spent before that card; green adds that
+  card's contribution. It turns amber from 85% and red at 100%; a red end marker
+  holds a detected overrun briefly. Hover over the line for the percentage split.
+  The full card width is one actual audio block's deadline (`frames / sample rate`),
+  including short blocks. This is live processing time, not plugin latency in
+  samples or total machine CPU usage. Routing, trims and wire meters belong to
+  each card's measured cost; the incoming portion includes earlier graph work.
+  Parallel branches execute on the same audio thread, so already-executed peers
+  count toward the budget too. Device transport and work outside graph execution
+  are excluded. Readings are gently smoothed and clear when audio stops.
+
 
 The first version accepts effects with one mono/stereo main bus in each direction.
 The rack input/output is stereo. Explicit channel-map nodes duplicate mono into

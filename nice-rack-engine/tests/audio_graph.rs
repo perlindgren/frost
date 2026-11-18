@@ -240,6 +240,7 @@ fn prepared_processing_delay_and_reset_do_not_allocate() {
     .unwrap();
     // Metering is attached too: publishing must stay allocation-free.
     rack.attach_wire_levels(Arc::new(WireLevels::new(4)));
+    rack.attach_processing_times(Arc::new(ProcessingTimes::new(2)), 48_000.0);
     let mut output = [0.0; 4];
     let allocations = allocation_counter::measure(|| {
         for frames in [4, 1, 3, 2, 4] {
@@ -472,4 +473,83 @@ fn gain_requests_decline_unknown_keys_and_rude_values() {
     // plugins behind one slider gesture.
     levels.set_gain(NodeId(1).0 << 1 | 1, 100.0);
     assert_eq!(levels.gain_of(NodeId(1).0 << 1 | 1), Some(16.0));
+}
+
+#[test]
+fn each_cards_budget_accumulates_in_execution_order_and_uses_the_actual_block_deadline() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+    struct Work(Arc<AtomicU64>);
+    impl Processor for Work {
+        fn process(
+            &mut self,
+            input: &AudioBuffer,
+            output: &mut AudioBuffer,
+            frames: usize,
+        ) -> Result<(), ProcessError> {
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_micros(100) {
+                std::hint::spin_loop();
+            }
+            output
+                .channel_mut(0, frames)
+                .copy_from_slice(input.channel(0, frames));
+            self.0
+                .store(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+    let elapsed = Arc::new(AtomicU64::new(0));
+    let mut rack = PreparedRack::prepare(
+        &graph(),
+        [
+            (
+                NodeId(1),
+                ProcessorSlot {
+                    processor: Box::new(Work(elapsed.clone())),
+                    bypassed: false,
+                },
+            ),
+            (NodeId(2), slot(1.0, false, false)),
+        ]
+        .into(),
+        128,
+    )
+    .unwrap();
+    let times = Arc::new(ProcessingTimes::new(2));
+    rack.attach_processing_times(times.clone(), 48_000.0);
+    for frames in [1, 64, 128] {
+        let mut output = [0.0; 128];
+        rack.process(&[&[0.25; 128]], &mut [&mut output], frames)
+            .unwrap();
+        let first = times.sample(NodeId(1)).unwrap();
+        let second = times.sample(NodeId(2)).unwrap();
+        let measured = elapsed.load(Ordering::Relaxed) as f64 * 1e-9;
+        assert!(
+            first.added + 1e-10 >= measured * 48_000.0 / frames as f64,
+            "the denominator must be this call's frames, not the prepared maximum"
+        );
+        assert!(
+            second.incoming >= first.total(),
+            "parallel branches share this single processing thread's budget"
+        );
+        assert!(first.incoming >= 0.0 && second.added >= 0.0);
+        assert_eq!(output[..frames], vec![0.5; frames]);
+    }
+    // A new plan clears measurements for removed and retained cards alike.
+    let empty = RackGraph {
+        nodes: [
+            (NodeId(0), NodeKind::Input(Channels::Mono)),
+            (NodeId(4), NodeKind::Output(Channels::Mono)),
+        ]
+        .into(),
+        connections: vec![Connection {
+            from: NodeId(0),
+            to: NodeId(4),
+        }],
+    };
+    let mut rebuilt = PreparedRack::prepare(&empty, BTreeMap::new(), 128).unwrap();
+    rebuilt.attach_processing_times(times.clone(), 48_000.0);
+    assert_eq!(times.sample(NodeId(1)), None);
+    assert_eq!(times.sample(NodeId(2)), None);
 }

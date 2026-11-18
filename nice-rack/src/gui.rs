@@ -1,3 +1,4 @@
+mod timing;
 use crate::{
     Settings,
     layout::{Side, Target},
@@ -15,6 +16,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, atomic::Ordering},
 };
+use timing::TimingMeter;
 
 type Loader = Box<dyn FnMut(&Path) -> Result<Entry, String>>;
 struct Choosing {
@@ -85,6 +87,7 @@ struct RackUi {
     /// card: ids are never handed out twice, so a leftover meter can only
     /// ever read silence.
     wire_meters: std::collections::BTreeMap<(u64, bool), WireMeter>,
+    timing_meters: std::collections::BTreeMap<NodeId, TimingMeter>,
     /// Gain slider grab: `(plugin id, is_output, pointer height last
     /// frame)`. The drag is *relative*: each frame's pointer travel is
     /// what moves the trim, so the grab tracks the pointer, and the rack
@@ -707,6 +710,7 @@ pub fn run(
         input: PeakMeter::latching(now()),
         output: PeakMeter::latching(now()),
         wire_meters: Default::default(),
+        timing_meters: Default::default(),
         gain_drag: None,
         gain_edit: None,
         gain_input: frost::TextInput::default(),
@@ -918,6 +922,14 @@ impl Process for RackUi {
             |id, side| self.runtime.open_circuit(id, side),
             now(),
         );
+        self.timing_meters
+            .retain(|id, _| self.runtime.cards.iter().any(|card| card.id == *id));
+        for card in &self.runtime.cards {
+            self.timing_meters
+                .entry(card.id)
+                .or_default()
+                .tick(self.runtime.timings.sample(card.id), dt);
+        }
         let (w, h) = ctx.size();
         let mouse = ctx.mouse_position();
         let native_mouse = ctx.window().and_then(rack_window_input::cursor).or(mouse);
@@ -1464,6 +1476,20 @@ impl Process for RackUi {
                 rgb(150, 145, 164),
                 0.21,
             );
+            let timing_hover = hit(mouse, x, y - 54.0, CARD_WIDTH / 2.0, 5.0);
+            if let Some(meter) = self.timing_meters.get(&card.id) {
+                meter.draw(
+                    ctx,
+                    &self.font,
+                    [x, y],
+                    CARD_WIDTH,
+                    timing_hover
+                        && self.drag.is_none()
+                        && self.choosing.is_none()
+                        && self.overlay.is_none()
+                        && self.gain_edit.is_none(),
+                );
+            }
             let rx = x + CARD_WIDTH / 2.0 - 14.0;
             let ry = y + 42.0;
             ctx.text(
@@ -1489,6 +1515,7 @@ impl Process for RackUi {
             // corner field would sit, so it stands aside while the
             // editor is up.
             if hover
+                && !timing_hover
                 && self.drag.is_none()
                 && self.choosing.is_none()
                 && self.overlay.is_none()

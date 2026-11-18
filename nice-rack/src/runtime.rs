@@ -247,6 +247,7 @@ pub struct Runtime {
     /// The capacity is fixed at startup so a wider plan leaves its extra
     /// wires unmeasured instead of making the audio side allocate.
     pub wires: Arc<crate::routing::audio::WireLevels>,
+    pub timings: Arc<crate::routing::audio::ProcessingTimes>,
     pub(crate) session: Option<LiveSession>,
     /// The session the chain before this one was built from, held between the
     /// moment it came off the transport and the moment the next chain is ready.
@@ -378,6 +379,7 @@ impl Runtime {
             levels: Arc::default(),
             // Two slots per plugin; a few hundred cards is ample headroom.
             wires: Arc::new(crate::routing::audio::WireLevels::new(512)),
+            timings: Arc::new(crate::routing::audio::ProcessingTimes::new(256)),
             session: None,
             retired: None,
             editor_geometry: settings
@@ -777,6 +779,7 @@ impl Runtime {
                 // because `park` joined the previous worker earlier in this
                 // same tick, so no publish can still be in flight.
                 audio.attach_wire_levels(self.wires.clone());
+                audio.attach_processing_times(self.timings.clone(), rate);
                 self.worker = Some(spawn_dsp(audio, endpoints, self.levels.clone()));
                 self.session = Some(session);
                 self.io = Some(io);

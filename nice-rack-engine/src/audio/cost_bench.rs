@@ -318,3 +318,40 @@ fn cost_of_a_metered_rack() {
         );
     }
 }
+
+#[test]
+#[ignore = "prints the optional per-card timing overhead; not a wall-clock gate"]
+fn cost_of_per_card_timing() {
+    let (left, right) = signal();
+    let mut out_left = [0.0; FRAMES];
+    let mut out_right = [0.0; FRAMES];
+    for cards in [1, 5, 16] {
+        let mut baseline = rack(cards);
+        let mut observed = rack(cards);
+        observed.attach_processing_times(Arc::new(ProcessingTimes::new(cards)), 48_000.0);
+        row(
+            &format!("{cards} cards without timing"),
+            timed(|| {
+                baseline
+                    .process(
+                        &[&left, &right],
+                        &mut [&mut out_left, &mut out_right],
+                        FRAMES,
+                    )
+                    .unwrap();
+            }),
+        );
+        row(
+            &format!("{cards} cards with timing"),
+            timed(|| {
+                observed
+                    .process(
+                        &[&left, &right],
+                        &mut [&mut out_left, &mut out_right],
+                        FRAMES,
+                    )
+                    .unwrap();
+            }),
+        );
+    }
+}
