@@ -555,7 +555,7 @@ fn each_cards_budget_accumulates_in_execution_order_and_uses_the_actual_block_de
 }
 
 #[test]
-fn live_bypass_is_unity_skips_the_processor_and_keeps_untrimmed_latency_history() {
+fn live_bypass_is_unity_keeps_processing_and_preserves_untrimmed_latency_history() {
     use std::sync::atomic::{AtomicU64, Ordering};
     struct Counted {
         effect: Effect,
@@ -635,7 +635,7 @@ fn live_bypass_is_unity_skips_the_processor_and_keeps_untrimmed_latency_history(
     rack.process(&[&[0.5, 0.6, 0.7, 0.8]], &mut [&mut output], 4)
         .unwrap();
     assert_eq!(output, [0.25, 0.25, 0.25, 0.5]);
-    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
     assert_eq!(rack.latency_samples(), 3);
     assert_eq!(wires.gain_of(2), Some(4.0));
     assert_eq!(wires.gain_of(3), Some(2.0));
@@ -645,7 +645,7 @@ fn live_bypass_is_unity_skips_the_processor_and_keeps_untrimmed_latency_history(
         output, [0.0; 4],
         "the saved cable breaks return when re-enabled"
     );
-    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    assert_eq!(calls.load(Ordering::Relaxed), 3);
     wires.set_open(2, false);
     wires.set_open(3, false);
     let allocations = allocation_counter::measure(|| {
@@ -659,15 +659,18 @@ fn live_bypass_is_unity_skips_the_processor_and_keeps_untrimmed_latency_history(
 
 #[test]
 fn live_bypass_supports_mono_stereo_conversion_and_keeps_parallel_branches() {
-    struct Uncalled;
-    impl Processor for Uncalled {
+    struct WetOutput;
+    impl Processor for WetOutput {
         fn process(
             &mut self,
             _: &AudioBuffer,
-            _: &mut AudioBuffer,
-            _: usize,
+            output: &mut AudioBuffer,
+            frames: usize,
         ) -> Result<(), ProcessError> {
-            panic!("a bypassed processor must not be called")
+            for channel in 0..output.channels() {
+                output.channel_mut(channel, frames).fill(123.0);
+            }
+            Ok(())
         }
     }
     for (input, output) in [
@@ -703,7 +706,7 @@ fn live_bypass_supports_mono_stereo_conversion_and_keeps_parallel_branches() {
             [(
                 NodeId(1),
                 ProcessorSlot {
-                    processor: Box::new(Uncalled),
+                    processor: Box::new(WetOutput),
                     bypassed: false,
                 },
             )]
@@ -855,4 +858,57 @@ fn pause_mutes_audio_and_output_meter_but_can_be_bypassed_independently() {
         }
     });
     assert_eq!(allocations.count_total, 0);
+}
+
+#[test]
+fn bypass_does_not_replay_old_history_and_tracks_input_while_bypassed() {
+    let graph = RackGraph {
+        nodes: [
+            (NodeId(0), NodeKind::Input(Channels::Mono)),
+            (
+                NodeId(1),
+                NodeKind::Plugin {
+                    inputs: Channels::Mono,
+                    outputs: Channels::Mono,
+                },
+            ),
+            (NodeId(2), NodeKind::Output(Channels::Mono)),
+        ]
+        .into(),
+        connections: [(0, 1), (1, 2)]
+            .map(|(from, to)| Connection {
+                from: NodeId(from),
+                to: NodeId(to),
+            })
+            .into(),
+    };
+    // Exercise both live and prepare-time bypass, and partial blocks.
+    for prepared_bypass in [false, true] {
+        let mut rack = PreparedRack::prepare(
+            &graph,
+            [(NodeId(1), slot(2.0, true, prepared_bypass))].into(),
+            4,
+        )
+        .unwrap();
+        let wires = Arc::new(WireLevels::new(2));
+        rack.attach_wire_levels(wires.clone());
+        let mut output = [0.0; 4];
+        rack.process(&[&[1.0]], &mut [&mut output], 1).unwrap();
+        assert_eq!(output[0], 0.0);
+        wires.set_bypassed(NodeId(1), true);
+        for _ in 0..8 {
+            rack.process(&[&[0.0; 4]], &mut [&mut output], 4).unwrap();
+        }
+        // An impulse from before bypass must have left the processor already.
+        wires.set_bypassed(NodeId(1), false);
+        rack.process(&[&[0.0; 4]], &mut [&mut output], 4).unwrap();
+        assert_eq!(output, [0.0; 4]);
+        // New input during bypass must reach the wet history, not just silence.
+        wires.set_bypassed(NodeId(1), true);
+        rack.process(&[&[0.25]], &mut [&mut output], 1).unwrap();
+        wires.set_bypassed(NodeId(1), false);
+        rack.process(&[&[0.0; 4]], &mut [&mut output], 4).unwrap();
+        let expected = if prepared_bypass { 0.25 } else { 0.5 };
+        assert_eq!(output, [0.0, 0.0, expected, 0.0]);
+    }
 }

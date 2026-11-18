@@ -63,8 +63,9 @@ isolation or make an arbitrary third-party plugin safe.
 - Right-click either meter beside a card, expanded or minimized, to toggle
   **bypass**. Both meters collapse and an amber wire goes up from the input,
   across above the card, and down to the output. The short leads into the card
-  and the gain readouts disappear. Bypass skips the processor and both gain
-  trims, passing unity dry audio with the card's latency preserved for parallel
+  and the gain readouts disappear. Bypass keeps the processor running on actual
+  input while discarding its wet output. It skips both gain trims, passing unity
+  dry audio with the card's latency preserved for parallel
   alignment. The previous trims and cable breaks return when bypass is removed.
 - Right-click the **card body** to toggle **pause**. A paused card is dimmed and
   marked PAUSED in its status line, keeping its name. Both gain readouts and

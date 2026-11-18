@@ -797,13 +797,18 @@ impl PreparedRack {
                         node.input.clear(frames);
                     }
                     let processor = node.processor.as_mut().unwrap();
-                    if bypassed {
-                        node.bypass.dry(&node.input, &mut node.output, frames);
-                    } else if !paused {
+                    // Bypass changes routing, not time: keep the effect's
+                    // history current with actual input. Only Pause suspends DSP.
+                    if !paused {
                         processor
                             .processor
                             .process(&node.input, &mut node.output, frames)
                             .map_err(|_| ProcessError::NodeFailed(node.id))?;
+                    }
+                    if bypassed {
+                        // Overwrite every wet sample with latency-matched dry
+                        // audio, including when Pause is independently enabled.
+                        node.bypass.dry(&node.input, &mut node.output, frames);
                     }
                     if let Some(trim) = wire_out.filter(|_| !bypassed && !paused) {
                         apply_gain(&mut node.output, frames, wires.gain(trim));
