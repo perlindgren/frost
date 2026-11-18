@@ -86,6 +86,17 @@ The small local [`audio-float`](crates/audio-float/SAFETY.md) wrapper temporaril
 sets the floating-point mode required by NAM and restores the caller's state.
 The application itself denies unsafe code.
 
+The plugin instance owns its preparation worker's stop signal and join handle.
+Instance destruction wakes an idle worker and joins it before releasing the
+instance's fields or returning to the host. This happens during destruction,
+never in `process()`, `reset()` or ordinary deactivation. A model/cabinet load
+already running through a non-cancellable dependency API must finish before
+destruction can return. Cancellation is checked before and after preparation;
+a result completed after cancellation is observed is discarded on the worker.
+Pending and retired chains are cleaned up there; ready chains not consumed by
+the plugin are released with the instance's fields after the join. Keeping a
+copy of the GUI's shared state alive does not keep the preparation worker alive.
+
 Standalone model name, model path, cabinet path, audio settings and window size
 are stored in `nice-nam-settings.ron` in the working directory. Only successful
 asset preparations are saved. DAW instances persist asset paths through nice-plug
@@ -122,6 +133,26 @@ community models, multi-instance DAW use and loading the bundles in a real host
 require further integration testing. Models using mirrored memory also need
 native POSIX shared memory permissions; a restricted process may refuse their
 allocation.
+
+Worker lifecycle tests also cover idle shutdown with retained shared state,
+in-flight cancellation, a full ready queue with pending/retired chains, worker
+panic cleanup, and plugin destruction before editor-held shared state expires.
+An optional native check runs 32 load/create/destroy/entry-release cycles in an
+isolated process, using Clack directly rather than the rack's library pinning:
+
+```sh
+cargo build -p nice-nam --lib --locked
+NICE_RACK_TEST_NAM="$PWD/target/debug/libnice_nam.dylib" \
+  cargo test -p nice-clap-host --test nam_unload --locked
+```
+
+The path above is for macOS; use `libnice_nam.so` on Linux (with the documented
+SIMD build flags) or `nice_nam.dll` on Windows. The check uses no model, native
+editor or audio device. Operating-system loader residency can delay unmapping,
+so the unit tests separately verify worker completion before destruction
+returns. With no `NICE_RACK_TEST_NAM` set, the native check explicitly reports
+that it was not run. This does not establish every third-party engine's unload
+contract or justify removing the rack's general library-retention policy.
 
 The main view has input and output RMS/peak-hold meters along the bottom. The
 input meter measures before the gate; the output meter measures after the model

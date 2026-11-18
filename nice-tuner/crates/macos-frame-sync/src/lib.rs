@@ -8,77 +8,16 @@
 )]
 
 use objc2::rc::Retained;
-use objc2::{DefinedClass, MainThreadOnly, Message, available, define_class, msg_send, sel};
+use objc2::{available, sel};
 use objc2_app_kit::NSView;
-use objc2_foundation::{
-    MainThreadMarker, NSObject, NSObjectProtocol, NSRunLoop, NSRunLoopCommonModes,
-};
+use objc2_foundation::{MainThreadMarker, NSRunLoop, NSRunLoopCommonModes};
 use objc2_quartz_core::CADisplayLink;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use std::cell::{Cell, RefCell};
-use std::panic::{AssertUnwindSafe, catch_unwind};
 
-struct Callback {
-    call: RefCell<Box<dyn FnMut() -> bool>>,
-    stopped: Cell<bool>,
-    panicked: Cell<bool>,
-}
-impl Callback {
-    fn new(call: impl FnMut() -> bool + 'static) -> Self {
-        Self {
-            call: RefCell::new(Box::new(call)),
-            stopped: Cell::new(false),
-            panicked: Cell::new(false),
-        }
-    }
-    fn invoke(&self) -> bool {
-        if self.stopped.get() {
-            return false;
-        }
-        // A nested run-loop dispatch must not recursively render the same UI.
-        let Ok(mut call) = self.call.try_borrow_mut() else {
-            return true;
-        };
-        let keep_running = match catch_unwind(AssertUnwindSafe(&mut *call)) {
-            Ok(keep_running) => keep_running,
-            Err(_) => {
-                self.panicked.set(true);
-                false
-            }
-        };
-        // The callback may have dropped its driver while it was running.
-        let keep_running = keep_running && !self.stopped.get();
-        self.stopped.set(!keep_running);
-        keep_running
-    }
-}
-
-define_class!(
-    // SAFETY: NSObject has no subclass-specific invariants. This class has no
-    // custom Drop and is main-thread-only, including its non-Send callback.
-    #[unsafe(super = NSObject)]
-    #[thread_kind = MainThreadOnly]
-    #[name = "FrostNiceTunerDisplaySyncTarget"]
-    #[ivars = Callback]
-    struct Target;
-
-    // SAFETY: NSObjectProtocol adds no requirements beyond NSObject.
-    unsafe impl NSObjectProtocol for Target {}
-
-    impl Target {
-        // SAFETY: CADisplayLink invokes a void method with itself as its one
-        // object argument. The signature matches exactly and panics in the
-        // supplied Rust callback are contained by Callback::invoke.
-        #[unsafe(method(frame:))]
-        fn frame(&self, link: &CADisplayLink) {
-            // The callback is allowed to drop its driver. Retain both native
-            // objects locally so invalidation cannot release them mid-call.
-            let _target = self.retain();
-            let _link = link.retain();
-            if !self.ivars().invoke() { link.invalidate(); }
-        }
-    }
-);
+mod callback;
+use callback::Callback;
+mod target;
+use target::Target;
 
 /// Owns a display callback. Drop invalidates it synchronously on the main thread.
 /// The callback follows the view's display and pauses when the view is hidden.
@@ -90,7 +29,7 @@ define_class!(
 /// ```
 pub struct DisplaySync {
     link: Retained<CADisplayLink>,
-    target: Retained<Target>,
+    target: Target,
 }
 
 impl DisplaySync {
@@ -110,17 +49,14 @@ impl DisplaySync {
         let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
             return Err("Display synchronization requires an AppKit view".into());
         };
-        let allocated = Target::alloc(mtm).set_ivars(Callback::new(callback));
-        // SAFETY: NSObject's init signature is correct; our ivars were set
-        // before initialization and the superclass requires no arguments.
-        let target: Retained<Target> = unsafe { msg_send![super(allocated), init] };
+        let target = Target::new(Callback::new(callback), mtm)?;
         // SAFETY: HasWindowHandle's AppKit contract guarantees a live NSView
         // for this borrow; we are on the main thread. It is used only to create
         // the display link, never stored or messaged after this borrowed call.
         let view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
         // SAFETY: Target implements frame: with the exact display-link
         // callback signature. The retained link owns its target until invalidated.
-        let link = unsafe { view.displayLinkWithTarget_selector(&target, sel!(frame:)) };
+        let link = unsafe { view.displayLinkWithTarget_selector(target.object(), sel!(frame:)) };
         // SAFETY: This immutable Foundation constant is a valid run-loop mode.
         let mode = unsafe { NSRunLoopCommonModes };
         // SAFETY: Both creation and registration occur on the main thread,
@@ -131,57 +67,13 @@ impl DisplaySync {
 
     /// Whether the callback panicked. The link is stopped when this happens.
     pub fn has_panicked(&self) -> bool {
-        self.target.ivars().panicked.get()
+        self.target.has_panicked()
     }
 }
 
 impl Drop for DisplaySync {
     fn drop(&mut self) {
-        self.target.ivars().stopped.set(true);
+        self.target.stop();
         self.link.invalidate();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::rc::Rc;
-    #[test]
-    fn stopping_and_panics_prevent_future_callbacks() {
-        let calls = Rc::new(Cell::new(0));
-        let counter = calls.clone();
-        let callback = Callback::new(move || {
-            counter.set(counter.get() + 1);
-            false
-        });
-        assert!(!callback.invoke());
-        assert!(!callback.invoke());
-        assert_eq!(calls.get(), 1);
-        let panicking = Callback::new(|| panic!("test callback"));
-        assert!(!panicking.invoke());
-        assert!(panicking.panicked.get());
-        assert!(!panicking.invoke());
-    }
-    #[test]
-    fn reentrant_dispatch_is_skipped_without_stopping_the_driver() {
-        let callback = Callback::new(|| true);
-        let borrow = callback.call.borrow_mut();
-        assert!(callback.invoke());
-        assert!(!callback.stopped.get());
-        drop(borrow);
-        assert!(callback.invoke());
-    }
-
-    #[test]
-    fn cancellation_from_inside_a_callback_cannot_restart_it() {
-        let callback: Rc<Callback> = Rc::new_cyclic(|weak: &std::rc::Weak<Callback>| {
-            let weak = weak.clone();
-            Callback::new(move || {
-                weak.upgrade().unwrap().stopped.set(true);
-                true
-            })
-        });
-        assert!(!callback.invoke());
-        assert!(!callback.invoke());
     }
 }

@@ -332,6 +332,12 @@ impl Comb {
         self.lp = 0.0;
     }
 
+    fn reset(&mut self) {
+        self.buf.fill(0.0);
+        self.i = 0;
+        self.lp = 0.0;
+    }
+
     /// Read what is on the line, damp it into the feedback path, write the
     /// input plus the damped tail at the cursor. The low-pass inside the
     /// loop is what makes the ring dim treble-first: each lap loses top
@@ -367,6 +373,16 @@ impl Spring {
         self.pre_lp = 0.0;
         for (i, s) in SPRING_COMB_S.iter().enumerate() {
             self.combs[i].set_delay((s * rate).round() as usize);
+        }
+        self.tail_state = 0.0;
+    }
+
+    fn reset(&mut self) {
+        self.pre.fill(0.0);
+        self.pre_i = 0;
+        self.pre_lp = 0.0;
+        for comb in &mut self.combs {
+            comb.reset();
         }
         self.tail_state = 0.0;
     }
@@ -573,9 +589,28 @@ impl Echo {
         self.tone_treble_a = lp_coeff(4_500.0, rate);
     }
 
-    /// The sample rate the transport was armed for.
-    pub fn rate(&self) -> f32 {
-        self.rate
+    /// Clear audio and modulation history without allocating or freeing storage.
+    /// Controls are preserved; transport speed starts at the current knob value.
+    pub fn reset(&mut self, controls: &Controls) {
+        for tape in &mut self.tapes {
+            tape.line.fill(0.0);
+            tape.write = 0;
+            tape.heads = [Head::default(); 3];
+            tape.rng = 0;
+            tape.drive_env = 0.0;
+            tape.rec_lp = 0.0;
+        }
+        for spring in &mut self.springs {
+            spring.reset();
+        }
+        self.tone = [Tone::default(); 2];
+        self.speed = tape_speed(controls.repeat_rate);
+        self.wow_p = 0.0;
+        self.flutter_p = 0.0;
+        self.wear_p = 0.0;
+        self.wear_s = 0.0;
+        self.wear_c = 1.0;
+        self.wow_lfo = 0.0;
     }
 
     /// Process one mono block — at most [`BLOCK`] frames.

@@ -7,8 +7,8 @@ wrapper crates and documentation. Third-party dependency implementations were
 not reviewed as deliverables or modified. Public dependency contracts were
 consulted to understand our callers' obligations.
 
-This records findings before implementation. All items below remain open at the
-time of writing. Severity reflects potential impact; source-level findings are
+This records findings before implementation. All items were open at the time
+of the original review; see the implementation follow-up below. Severity reflects potential impact; source-level findings are
 distinguished from behavior reproduced in a focused probe.
 
 ## 1. [P1] Process-global macOS display callback class name
@@ -39,6 +39,17 @@ not a sufficient lifetime solution.
 
 Validation needed: open, close and reopen editors from at least two distinct
 plugin bundles in the same macOS host, with multiple instances of each.
+
+Implementation follow-up (2026-11-17): the shared wrapper now uses one uniquely
+named, cached class per loaded library, with a suffix for occupied names. Native
+targets borrow rather than own Rust callback state; stopping clears that borrow
+before invalidation and destruction. Unit tests and a main-thread native test
+cover independent cdylibs, multiple instances, reopening, self-destruction during
+dispatch, late dispatch after stop, and release before library unload. See
+[the updated safety contract](nice-tuner/crates/macos-frame-sync/SAFETY.md).
+Visible editor cadence and mixed-plugin behavior in a real DAW remain desktop
+verification tasks; this follow-up does not resolve finding 2 or other unload
+obligations.
 
 ## 2. [P1] NAM preparation worker can outlive its plugin library
 
@@ -83,6 +94,18 @@ been fixed; other callbacks and library-owned activity need separate validation.
 Validation needed: destruction while idle, while preparing assets, and with
 ready/retirement queues populated. Assert worker completion before destruction
 returns, then exercise native load/create/destroy/unload in an isolated process.
+
+Implementation follow-up (NAM worker shutdown): NamPlugin now owns a worker
+guard with a stop signal and JoinHandle. Destruction signals stop, unparks the
+worker and joins before releasing instance fields. An already-running load
+must finish; cancellation is checked before and after loading, and an observed
+cancelled result is not published. Idle, in-flight, queue-cleanup, panic and
+editor-retained-state tests cover the ownership contract. The optional
+`nice-clap-host` `nam_unload` test uses Clack directly in an isolated process for
+32 native load/create/destroy/entry-release cycles; it does not use the rack's
+library pinning. OS residency policies may delay actual unmapping, and the
+native check does not load models or open editors. Other plugin/library unload
+obligations and the rack's retention policy are unchanged.
 
 ## 3. [P1] Delay effects report no tail to the host
 
@@ -150,6 +173,17 @@ Validation needed: count allocations and frees during reset as well as process;
 test reset after a nontrivial history and after parameter changes. Existing DSP
 allocation tests measure processing and moving controls, not these reset paths.
 
+Implementation follow-up (delay resets): both plugin reset callbacks now clear
+existing DSP storage in place instead of invoking allocating rate preparation.
+Echo clears both tape lanes, heads, spring tanks, tone/record filters, drive
+envelopes, noise seeds and shared modulation state, and starts transport speed
+at the current Repeat Rate setting. Ecomplex clears the tape, tone filters and
+wow phase. Parameters and prepared sample rate remain unchanged; meters retain
+their existing reset behavior. Regression tests measure reset allocations and
+frees, then compare four seconds of stereo impulse response against a fresh
+instance at 8, 48 and 96 kHz, after history and control changes and repeated
+resets. Native audio-thread reset execution in a DAW remains untested.
+
 ## Documentation inconsistencies
 
 ### Hosting unsafe-code inventory is incomplete
@@ -213,6 +247,17 @@ Prefer writing a temporary file in the destination directory, completing the
 write, and replacing the destination using a platform-appropriate operation.
 Preserve the previous valid file if the write fails. Add failure-path tests,
 including the geometry-only save path.
+
+Implementation follow-up (atomic settings saves): full settings and geometry-only
+saves now stage a uniquely reserved file in the destination directory, finish
+and sync its contents, close it, then replace the destination with the standard
+library's rename operation. No delete-first fallback is used. Normal failures
+clean up staging files and preserve the previous destination; abrupt termination
+may leave an unused temporary file. Unix staging files are owner-readable and
+owner-writable only. Tests cover replacing existing settings, partial writes,
+failed geometry replacement, missing parents and a real rename failure. This
+does not serialize concurrent read/modify/write saves or guarantee directory-entry
+durability across power loss. Windows and Linux runtime validation remain pending.
 
 ### Extend lifecycle and native integration coverage
 

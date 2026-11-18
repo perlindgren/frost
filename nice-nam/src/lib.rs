@@ -91,6 +91,7 @@ pub struct NamPlugin {
     /// two output channels are copies of the same rendered buffer.
     tp_in: TruePeak,
     tp_out: TruePeak,
+    worker: engine::Worker,
 }
 #[derive(Default, Params)]
 struct NamParams {
@@ -103,7 +104,12 @@ impl Default for NamPlugin {
         if STANDALONE_MODE.load(Ordering::Relaxed) {
             *params.paths.lock().unwrap() = settings::Settings::load().0.preferences;
         }
-        let (engine, incoming, retiring) = engine::start(Arc::clone(&params.paths));
+        let engine::Started {
+            state: engine,
+            incoming,
+            retiring,
+            worker,
+        } = engine::start(Arc::clone(&params.paths));
         let gate_db = params.paths.lock().unwrap().gate_db.unwrap_or(-60.0);
         let shared = Arc::new(NamSharedState {
             input_rms: AtomicCell::new(0.0),
@@ -132,7 +138,18 @@ impl Default for NamPlugin {
             gate_gain: 1.0,
             tp_in: TruePeak::new(),
             tp_out: TruePeak::new(),
+            worker,
         }
+    }
+}
+
+impl Drop for NamPlugin {
+    fn drop(&mut self) {
+        // This is instance destruction, not deactivate/reset/process. Editors
+        // may retain shared state, so weak-reference polling is insufficient.
+        // Stop/join before any instance fields are released or the host is
+        // allowed to unload the library containing the worker's code.
+        self.worker.shutdown();
     }
 }
 

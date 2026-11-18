@@ -417,11 +417,8 @@ impl Plugin for EcomplexPlugin {
     }
 
     fn reset(&mut self) {
-        // Re-arming at the current rate is this transport's whole state
-        // reset: the loop, the tone stage and the wow phase all come back
-        // empty, which is what a tape transport that never ran looks like.
-        let rate = self.ecomplex.rate();
-        self.ecomplex.set_rate(rate);
+        // Reset in place, including wow phase; hosts may reset on the audio thread.
+        self.ecomplex.reset();
         // The meters come back empty with it: a crest does not outlive
         // the audio it was read from, and an estimator carrying a block of
         // sound from before the reset would ring into the first block after

@@ -81,15 +81,11 @@ pub struct Descriptor {
 
 /// Every entry this process has opened, held for the life of the process.
 ///
-/// A `.clap` file is not data with a lifetime, it is code. A plugin can leave
-/// a thread of its own running on after its last instance is gone — nice-nam
-/// starts a preparation thread per instance which wakes every twenty
-/// milliseconds and nothing joins it — and a library released underneath a
-/// thread still standing on it is an access violation reported against a
-/// module the loader has already unmapped, in a fault no host can catch and
-/// no stack trace explains. Hosts that have been shown this once keep plugins
-/// mapped until the process ends, and so do we: the price is one handle per
-/// distinct file, which the operating system takes back at exit anyway.
+/// Native plugins may leave threads or callbacks running after their last
+/// instance is destroyed. Unmapping that code can crash the process. NAM now
+/// joins its preparation worker, but this host cannot establish every plugin's
+/// shutdown contract. Keep one entry per distinct file mapped until process
+/// exit, when the operating system releases it.
 static LOADED: Mutex<Vec<(PathBuf, PluginEntry)>> = Mutex::new(Vec::new());
 
 /// An entry whose lifetime is managed by Clack. Instantiation stays on the
