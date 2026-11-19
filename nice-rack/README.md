@@ -59,7 +59,11 @@ isolation or make an arbitrary third-party plugin safe.
   parameters. Drag the sliders, scroll for more controls, and close with × or
   Escape. A drag beyond five logical points moves the card instead of opening it.
 - Double-click either gain value in normal mode to reset that trim to 0 dB
-  (unity). A single click still opens its numeric editor.
+  (unity). A single click still opens its numeric editor. Each corner shows
+  its trim to one decimal; at unity the box and its value are both gone,
+  and a drag on the meter's track brings them back — through unity and all
+  — until it releases there. The corner's place stays the click target for
+  that wire's gain either way.
 - Right-click either meter beside a card, expanded or minimized, to toggle
   **bypass**. Both meters collapse and an amber wire goes up from the input,
   across above the card, and down to the output. The short leads into the card

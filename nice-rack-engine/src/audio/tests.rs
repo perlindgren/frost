@@ -63,7 +63,11 @@ fn rack(cards: usize) -> (PreparedRack, Arc<WireLevels>) {
         from: previous,
         to: NodeId(1_000),
     });
-    let graph = RackGraph { nodes, connections };
+    let graph = RackGraph {
+        nodes,
+        connections,
+        ..RackGraph::default()
+    };
     let processors = (0..cards)
         .map(|index| {
             (
@@ -100,9 +104,10 @@ fn run(prepared: &mut PreparedRack, left: &[f32], right: &[f32]) -> (Vec<f32>, V
     let mut out_right = vec![0.0; FRAMES];
     {
         let input = [left, right];
-        let mut output: Vec<&mut [f32]> = vec![&mut out_left, &mut out_right];
+        let mut group: Vec<&mut [f32]> = vec![&mut out_left, &mut out_right];
+        let mut outputs = [&mut group[..]];
         prepared
-            .process(&input, &mut output, FRAMES)
+            .process(&input, &mut outputs, FRAMES)
             .expect("process");
     }
     (out_left, out_right)

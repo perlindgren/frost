@@ -45,6 +45,11 @@ impl TimingMeter {
             self.overload = 0.0;
         }
     }
+    /// The smoothed audio-budget fraction, or `None` while there is no
+    /// live processing timing to show.
+    pub fn reading(&self) -> Option<f64> {
+        self.live.then_some(self.value.total())
+    }
     pub fn draw(
         &self,
         ctx: &mut Context,
@@ -174,6 +179,26 @@ mod tests {
         assert_eq!(meter.value.total(), 0.0);
         assert!(!meter.live);
         assert_eq!(meter.overload, 0.0);
+    }
+    #[test]
+    fn a_reading_shows_the_smoothed_total_only_while_the_meter_is_live() {
+        let mut meter = TimingMeter::default();
+        assert_eq!(meter.reading(), None);
+        meter.tick(
+            Some(ProcessingTime {
+                incoming: 0.4,
+                added: 0.2,
+            }),
+            0.016,
+            false,
+        );
+        assert!(
+            meter
+                .reading()
+                .is_some_and(|total| (total - 0.6).abs() < 1e-9)
+        );
+        meter.tick(None, 0.016, false);
+        assert_eq!(meter.reading(), None);
     }
 }
 

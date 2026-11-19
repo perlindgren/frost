@@ -126,7 +126,11 @@ fn rack(cards: usize) -> PreparedRack {
         from: previous,
         to: NodeId(1_000),
     });
-    let graph = RackGraph { nodes, connections };
+    let graph = RackGraph {
+        nodes,
+        connections,
+        ..RackGraph::default()
+    };
     let processors = (0..cards)
         .map(|index| {
             (
@@ -289,7 +293,8 @@ fn cost_of_a_metered_rack() {
             let mut out1 = [0f32; FRAMES];
             let input: [&[f32]; 2] = [black_box(&left), black_box(&right)];
             let mut output: [&mut [f32]; 2] = [&mut out0, &mut out1];
-            blind.process(&input, &mut output, FRAMES).unwrap();
+            let mut outputs = [&mut output[..]];
+            blind.process(&input, &mut outputs, FRAMES).unwrap();
             black_box((out0[0], out1[0]));
         });
         let (on_min, on_median) = timed(|| {
@@ -297,7 +302,8 @@ fn cost_of_a_metered_rack() {
             let mut out1 = [0f32; FRAMES];
             let input: [&[f32]; 2] = [black_box(&left), black_box(&right)];
             let mut output: [&mut [f32]; 2] = [&mut out0, &mut out1];
-            metered.process(&input, &mut output, FRAMES).unwrap();
+            let mut outputs = [&mut output[..]];
+            metered.process(&input, &mut outputs, FRAMES).unwrap();
             black_box((out0[0], out1[0]));
         });
         row(
@@ -332,24 +338,20 @@ fn cost_of_per_card_timing() {
         row(
             &format!("{cards} cards without timing"),
             timed(|| {
+                let mut group = [&mut out_left[..], &mut out_right[..]];
+                let mut outputs = [&mut group[..]];
                 baseline
-                    .process(
-                        &[&left, &right],
-                        &mut [&mut out_left, &mut out_right],
-                        FRAMES,
-                    )
+                    .process(&[&left, &right], &mut outputs, FRAMES)
                     .unwrap();
             }),
         );
         row(
             &format!("{cards} cards with timing"),
             timed(|| {
+                let mut group = [&mut out_left[..], &mut out_right[..]];
+                let mut outputs = [&mut group[..]];
                 observed
-                    .process(
-                        &[&left, &right],
-                        &mut [&mut out_left, &mut out_right],
-                        FRAMES,
-                    )
+                    .process(&[&left, &right], &mut outputs, FRAMES)
                     .unwrap();
             }),
         );

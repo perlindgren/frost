@@ -88,6 +88,7 @@ fn repository_plugins_render_serial_and_parallel_graphs_and_recover_from_setup_e
                     to: NodeId(to),
                 })
                 .collect(),
+            ..RackGraph::default()
         };
         let report = entry
             .render_graph(&graph, &classes, &input, 48000.0, 128)
@@ -174,6 +175,7 @@ fn live_graph_stops_at_a_block_boundary_then_reconfigures_and_resumes() {
             },
         ]
         .into(),
+        ..RackGraph::default()
     };
     let classes = BTreeMap::from([(NodeId(1), "com.nice-tuner.nice-tuner".into())]);
     let (mut session, audio) = entry.prepare_live(&graph, &classes, 48000.0, 128).unwrap();
@@ -190,7 +192,7 @@ fn live_graph_stops_at_a_block_boundary_then_reconfigures_and_resumes() {
                     audio
                         .process(
                             &[&[0.125; 128], &[-0.25; 128]],
-                            &mut [&mut left, &mut right],
+                            &mut [&mut [&mut left[..], &mut right[..]][..]],
                             37
                         )
                         .unwrap(),
@@ -203,7 +205,7 @@ fn live_graph_stops_at_a_block_boundary_then_reconfigures_and_resumes() {
                     let status = audio
                         .process(
                             &[&[0.125; 128], &[-0.25; 128]],
-                            &mut [&mut left, &mut right],
+                            &mut [&mut [&mut left[..], &mut right[..]][..]],
                             37,
                         )
                         .unwrap();
@@ -265,6 +267,7 @@ fn generic_mute_controls_and_native_state_are_independent_per_instance() {
                 to: NodeId(2),
             },
         ],
+        ..RackGraph::default()
     };
     let bindings = BTreeMap::from([(
         NodeId(1),
@@ -293,7 +296,7 @@ fn generic_mute_controls_and_native_state_are_independent_per_instance() {
                 audio
                     .process(
                         &[&[0.25; 32], &[-0.5; 32]],
-                        &mut [&mut left, &mut right],
+                        &mut [&mut [&mut left[..], &mut right[..]][..]],
                         32,
                     )
                     .unwrap();

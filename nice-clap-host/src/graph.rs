@@ -294,14 +294,19 @@ impl Entry {
                 "Input must contain equal-length nonempty channels matching the graph".into(),
             );
         }
-        let output_channels = graph
+        let output_nodes: Vec<usize> = graph
             .nodes
             .values()
-            .find_map(|kind| match kind {
+            .filter_map(|kind| match kind {
                 NodeKind::Output(channels) => Some(channel_count(*channels)),
                 _ => None,
             })
-            .ok_or("Graph has no output")?;
+            .collect();
+        let output_channels = match output_nodes.as_slice() {
+            [] => return Err("Graph has no output".into()),
+            [channels] => *channels,
+            _ => return Err("Offline rendering supports one output bus".into()),
+        };
         let plugin_count = graph
             .nodes
             .values()
@@ -373,7 +378,7 @@ impl Entry {
                     let mut buffers: [&mut [f32]; 2] = [&mut first, &mut second];
                     if let Err(error) = rack.process(
                         &inputs[..input_channels],
-                        &mut buffers[..output_channels],
+                        &mut [&mut buffers[..output_channels]],
                         count,
                     ) {
                         result = Err(format!("Graph processing failed: {error:?}"));

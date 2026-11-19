@@ -33,6 +33,7 @@ fn clone_oversampling_is_visible_editable_and_saved_through_clap() {
                 to: NodeId(2),
             },
         ],
+        ..RackGraph::default()
     };
     let bindings = [(
         NodeId(1),
